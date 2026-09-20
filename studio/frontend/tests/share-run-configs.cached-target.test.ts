@@ -21,6 +21,7 @@ installLocalStorageFake();
 const variantsRequest = await import(
   "../src/features/chat/api/gguf-variants-request.ts"
 );
+const abortSignals = await import("../src/features/hub/lib/abort-signals.ts");
 const inventoryFreshness = await import(
   "../src/features/hub/inventory/inventory-freshness.ts"
 );
@@ -74,6 +75,10 @@ function harness({
   listingsByRepo,
   status = 200,
   inventoryError = false,
+  sourceErrors = [],
+  listingErrors = [],
+  inventoryDelayMs = 0,
+  variantDelayMs = 0,
 }: {
   cachedGguf?: CachedGgufRepo[];
   cachedModels?: CachedModelRepo[];
@@ -82,6 +87,10 @@ function harness({
   listingsByRepo?: Record<string, GgufVariantDetail[]>;
   status?: number;
   inventoryError?: boolean;
+  sourceErrors?: string[];
+  listingErrors?: string[];
+  inventoryDelayMs?: number;
+  variantDelayMs?: number;
 } = {}) {
   const scans: string[] = [];
   const requests: URL[] = [];
@@ -95,8 +104,12 @@ function harness({
     {
       "@/features/auth": {
         authFetch: async (url: string) => {
+          if (variantDelayMs)
+            await new Promise((resolve) => setTimeout(resolve, variantDelayMs));
           const request = new URL(url, "http://localhost");
           requests.push(request);
+          if (listingErrors.includes(request.searchParams.get("repo_id") ?? ""))
+            throw new Error("Listing unavailable");
           const listed = listingsByRepo
             ? (listingsByRepo[request.searchParams.get("repo_id") ?? ""] ?? [])
             : variants;
@@ -125,12 +138,18 @@ function harness({
           source: "cachedGguf" | "cachedModels" | "localModels",
         ) => {
           scans.push(source);
-          if (inventoryError) throw new Error("Inventory unavailable");
+          if (inventoryDelayMs)
+            await new Promise((resolve) =>
+              setTimeout(resolve, inventoryDelayMs),
+            );
+          if (inventoryError || sourceErrors.includes(source))
+            throw new Error("Inventory unavailable");
           return { cachedGguf, cachedModels, localModels }[source];
         },
       },
       "../chat/api/gguf-variants-request": variantsRequest,
       "../hub/inventory/inventory-freshness": inventoryFreshness,
+      "../hub/lib/abort-signals": abortSignals,
       "../model-picker/model-config/model-identity": identity,
     },
   );
@@ -211,7 +230,7 @@ test("a complete native snapshot bypasses staging without listing GGUF variants"
   assert.deepEqual(app.requests, []);
 });
 
-test("a matching model in local inventory uses the locally supplied load path", async () => {
+test("a matching HF cache model in local inventory uses the locally supplied load path", async () => {
   const app = harness({
     localModels: [
       {
@@ -219,7 +238,7 @@ test("a matching model in local inventory uses the locally supplied load path", 
         path: "/models/local.gguf",
         model_id: model,
         model_format: "gguf",
-        source: "custom",
+        source: "hf_cache",
         display_name: "Local",
       },
     ],
@@ -236,7 +255,7 @@ test("legacy local GGUF metadata cannot satisfy a native-format import", async (
         id: "/models/local.gguf",
         path: "/models/local.gguf",
         model_id: model,
-        source: "custom",
+        source: "hf_cache",
         display_name: "Local",
       },
     ],
@@ -374,4 +393,89 @@ test("inventory errors, variant errors and cancellation cannot produce an uncach
     name: "AbortError",
   });
   assert.deepEqual(app.requests, []);
+});
+
+for (const source of ["lmstudio", "custom", "ollama"] as const) {
+  test(`${source} models cannot be adopted into a Hub repo's settings identity`, async () => {
+    const app = harness({
+      localModels: [
+        {
+          id: model,
+          model_id: model,
+          load_id: "/models/local.gguf",
+          path: "/models/local.gguf",
+          source,
+          model_format: "gguf",
+          display_name: "Local",
+        },
+      ],
+    });
+    assert.equal(await app.resolve(), target);
+    assert.deepEqual(app.requests, []);
+  });
+}
+
+test("an unrelated inventory failure cannot hide a complete cached copy", async () => {
+  for (const source of ["localModels", "cachedGguf"]) {
+    const app = harness({
+      sourceErrors: [source],
+      cachedGguf: [
+        { repo_id: model, load_id: "/cache/pinned", size_bytes: 1024 },
+      ],
+      localModels: [
+        {
+          id: model,
+          model_id: model,
+          load_id: "/local/pinned",
+          path: "/local/pinned",
+          source: "hf_cache",
+          model_format: "gguf",
+          display_name: "Local",
+        },
+      ],
+    });
+    assert.equal(
+      (await app.resolve()).meta.loadId,
+      source === "localModels" ? "/cache/pinned" : "/local/pinned",
+    );
+  }
+});
+
+test("failed variant listings cannot hide a later complete snapshot", async () => {
+  const app = harness({
+    cachedGguf: ["/cache/failed", "/cache/available"].map((loadId) => ({
+      repo_id: model,
+      load_id: loadId,
+      size_bytes: 1024,
+    })),
+    listingErrors: ["/cache/failed"],
+  });
+  assert.equal((await app.resolve()).meta.loadId, "/cache/available");
+});
+
+test("incomplete availability after a failed scan still rejects instead of staging a download", async () => {
+  await assert.rejects(
+    harness({ sourceErrors: ["localModels"] }).resolve(),
+    /Inventory unavailable/,
+  );
+});
+
+test("inventory scans and each variant listing have independent timeout budgets", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const app = harness({
+    inventoryDelayMs: 20_000,
+    variantDelayMs: 20_000,
+    cachedGguf: ["/cache/missing", "/cache/available"].map((load_id) => ({
+      repo_id: model,
+      load_id,
+      size_bytes: 1024,
+    })),
+    listingsByRepo: { "/cache/missing": [], "/cache/available": [quant] },
+  });
+  const pending = app.resolve();
+  for (let step = 0; step < 3; step += 1) {
+    t.mock.timers.tick(20_000);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+  }
+  assert.equal((await pending).meta.loadId, "/cache/available");
 });

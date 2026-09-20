@@ -7,7 +7,7 @@ import {
   SHARED_CONFIG_KEYS,
   type SharedConfigKey,
   isSharedConfigKey,
-} from "./fields.ts";
+} from "./fields";
 
 export const MAX_RUN_CONFIG_URL_LENGTH = 16_384;
 export type SharedRunConfig = {

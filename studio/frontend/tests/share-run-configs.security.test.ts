@@ -180,7 +180,14 @@ test("only exact argument boundaries and bounded inference values are accepted",
     ["--threads", "4\n"],
     ["--threads", " 4"],
     ["--threads", "4\t"],
-    ["--threads", "0"],
+    ["--threads", "-2"],
+    ["--seed", "-2"],
+    ["-c", "-1"],
+    ["-c", "127"],
+    ["-t", "4", "--threads", "5"],
+    ["--gpu-layers", "4", "--n-gpu-layers", "5"],
+    ["--ctx-size", "4096", "-c", "0"],
+    ["--threads-batch", "2", "-tb", "4"],
     ["--threads", "1025"],
     ["--threads", "4.5"],
     ["--threads", "0x4"],
@@ -219,6 +226,12 @@ test("only exact argument boundaries and bounded inference values are accepted",
   for (const args of invalid) rejects(query("llamaExtraArgs", args));
   const valid = [
     [],
+    ["--threads", "0"],
+    ["-t", "-1"],
+    ["-tb", "-1"],
+    ["-c", "0", "--seed", "-1"],
+    ["--ctx-size", "0", "--yarn-orig-ctx", "0"],
+    ["-t", "4", "--threads-batch", "8"],
     ["--threads", "4"],
     ["-t", "4"],
     ["--no-warmup", "--no-context-shift"],
@@ -507,27 +520,50 @@ test("bounded mutations of a permitted argv value cannot introduce syntax", () =
   }
 });
 
-test("deterministic malformed-input fuzzing cannot throw, mutate prototypes or produce executable settings", () => {
+test("10,000 deterministic adversarial inputs reject against independent expectations", () => {
   let seed = 0x5eed;
   const next = () => {
     seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0;
     return seed;
   };
-  const alphabet = '%&=+[]{}"\\<>;$`\u0000\n\ud800abc012-_/';
+  const prototypes = Object.getOwnPropertyDescriptors(Object.prototype);
+  const hostile = [";", "\\", "/", "\n", "\u0000", "\u202e", "$", "`", " "];
+  const mutations = [
+    () =>
+      query("llamaExtraArgs", [
+        "--threads",
+        `${1 + (next() % 1024)}${hostile[next() % hostile.length]}`,
+      ]),
+    () =>
+      query("llamaExtraArgs", [
+        sensitiveFlags[next() % sensitiveFlags.length],
+        String(next()),
+      ]),
+    () => new URLSearchParams({ nParallel: String(65 + next()) }).toString(),
+    () => new URLSearchParams({ model: `owner/../model${next()}` }).toString(),
+    () =>
+      new URLSearchParams({ ggufVariant: `../model${next()}.gguf` }).toString(),
+    () => `nParallel=2&%6eParallel=${1 + (next() % 64)}`,
+    () => query("__proto__", { polluted: next() }),
+    () =>
+      query("llamaExtraArgs", [
+        "-t",
+        "4",
+        "--threads",
+        String(1 + (next() % 1024)),
+      ]),
+    () =>
+      new URLSearchParams({
+        customContextLength: "4096",
+        maxSeqLength: String(4097 + (next() % 1000)),
+      }).toString(),
+    () => query("tensorParallel", { value: next() }),
+  ];
   for (let index = 0; index < 10_000; index += 1) {
-    let payload = "";
-    const length = next() % 100;
-    for (let char = 0; char < length; char += 1)
-      payload += alphabet[next() % alphabet.length];
-    const result = parseRunConfigLink(
-      `${prefixes[index % prefixes.length]}llamaExtraArgs=${payload}`,
-    );
-    if (result.kind === "valid") {
-      assert.ok(
-        result.value.config.llamaExtraArgs === null ||
-          validSharedExtraArgs(result.value.config.llamaExtraArgs),
-      );
-    }
+    rejects(mutations[index % mutations.length]());
   }
-  assert.equal(Object.hasOwn(Object.prototype, "polluted"), false);
+  assert.deepEqual(
+    Object.getOwnPropertyDescriptors(Object.prototype),
+    prototypes,
+  );
 });

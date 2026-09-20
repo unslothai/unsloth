@@ -16,7 +16,7 @@ installLocalStorageFake();
 const { createRunConfigInbox } = await import(
   "../src/features/share-run-configs/inbox.ts"
 );
-const { parseRunConfigLink } = await import(
+const { parseRunConfigLink, createRunConfigLink } = await import(
   "../src/features/share-run-configs/links.ts"
 );
 
@@ -63,7 +63,9 @@ function harness(sharedLinks = true) {
         createModelConfigHandoffRequestId: () => `request-${++nextId}`,
       },
       "./inbox": { runConfigInbox: inbox },
-      "./links": { parseRunConfigLink },
+      "./links": { parseRunConfigLink, createRunConfigLink },
+      "../deep-links/deep-link-intent": { createDeepLinkIntentGate },
+      "../auth/session": { hasAuthToken: () => true },
     },
   );
   const { DeepLinkHandler } = loadWithStubs<{

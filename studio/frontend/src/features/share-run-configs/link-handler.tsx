@@ -10,16 +10,12 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
-import { useChatRuntimeStore } from "@/features/chat";
+import { clearNewChatDraft, useChatRuntimeStore } from "@/features/chat";
 import { useHfTokenStore, useInventoryVersion } from "@/features/hub";
 import { toast } from "@/lib/toast";
 import { useNavigate, useRouterState } from "@tanstack/react-router";
-import { useEffect, useState, useSyncExternalStore } from "react";
-import {
-  AUTH_SESSION_STORED_EVENT,
-  hasAuthToken,
-  mustChangePassword,
-} from "../auth/session";
+import { useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { hasAuthToken, mustChangePassword } from "../auth/session";
 import { isExternalModelId } from "../chat/external-providers";
 import { modelConfigDraftKey } from "../model-picker/model-config/model-config-draft";
 import {
@@ -32,6 +28,7 @@ import { isShareableModelId } from "./links";
 import {
   receiveRunConfigUrl,
   receiveStartupRunConfigUrl,
+  subscribeRunConfigSession,
 } from "./receive-link";
 import { resolveRunConfigTarget } from "./target";
 
@@ -50,6 +47,8 @@ export function SharedRunConfigLinkHandler() {
   );
   const [, setAuthRevision] = useState(0);
   const [modelInput, setModelInput] = useState("");
+  const previousUrl = useRef(window.location.href);
+  const navigation = useRef<{ id: string; from: string } | null>(null);
   const hfToken = useHfTokenStore((state) => state.token) || undefined;
   const inventoryVersion = useInventoryVersion();
   const checkpoint = useChatRuntimeStore((state) => state.params.checkpoint);
@@ -65,34 +64,97 @@ export function SharedRunConfigLinkHandler() {
 
   useEffect(() => {
     receiveStartupRunConfigUrl(window.location.href);
-    let previousUrl = window.location.href;
+    previousUrl.current = window.location.href;
     const onLocation = () => {
       const currentUrl = window.location.href;
-      if (currentUrl === previousUrl) {
+      if (currentUrl === previousUrl.current) {
         return;
       }
-      previousUrl = currentUrl;
+      previousUrl.current = currentUrl;
       receiveRunConfigUrl(currentUrl);
     };
     const onAuth = () => setAuthRevision((revision) => revision + 1);
     window.addEventListener("hashchange", onLocation);
     window.addEventListener("popstate", onLocation);
-    window.addEventListener(AUTH_SESSION_STORED_EVENT, onAuth);
+    const unsubscribeSession = subscribeRunConfigSession(onAuth);
     return () => {
       window.removeEventListener("hashchange", onLocation);
       window.removeEventListener("popstate", onLocation);
-      window.removeEventListener(AUTH_SESSION_STORED_EVENT, onAuth);
+      unsubscribeSession();
     };
   }, []);
 
   useEffect(() => {
-    if (!pending || pending.draftKey || !canOpen || !settingsHydrated) {
+    const currentUrl = new URL(location.href, window.location.origin).href;
+    if (previousUrl.current !== currentUrl) {
+      previousUrl.current = currentUrl;
+      receiveRunConfigUrl(currentUrl);
+    }
+  }, [location.href]);
+
+  useEffect(() => {
+    if (
+      !pending ||
+      pending.draftKey ||
+      !canOpen ||
+      !settingsHydrated ||
+      runConfigInbox.getSnapshot() !== pending ||
+      !(pending.value.model ?? currentModel)
+    ) {
       return;
     }
-    if (runConfigInbox.getSnapshot() !== pending) {
+    const atDestination =
+      location.pathname === "/chat" &&
+      new URLSearchParams(location.searchStr).get("new") === pending.id;
+    if (navigation.current?.id === pending.id) {
+      if (atDestination) {
+        navigation.current.from = location.href;
+      } else if (location.href !== navigation.current.from) {
+        runConfigInbox.clear(pending.id);
+      }
       return;
     }
-    if (!(pending.value.model ?? currentModel)) {
+    navigation.current = { id: pending.id, from: location.href };
+    clearNewChatDraft();
+    const runtime = useChatRuntimeStore.getState();
+    runtime.setActiveThreadId(null);
+    runtime.setActiveProjectId(null);
+    runtime.setIncognito(false);
+    navigate({
+      to: "/chat",
+      search: { new: pending.id },
+      replace: pending.replaceHistory === true,
+    }).catch(() => {
+      if (runConfigInbox.getSnapshot()?.id !== pending.id) {
+        return;
+      }
+      clearModelConfigHandoff(pending.id);
+      runConfigInbox.clear(pending.id);
+      toast.error("Could not open the model’s run settings.");
+    });
+  }, [
+    canOpen,
+    currentModel,
+    location.href,
+    location.pathname,
+    location.searchStr,
+    navigate,
+    pending,
+    settingsHydrated,
+  ]);
+
+  useEffect(() => {
+    if (
+      !pending ||
+      pending.draftKey ||
+      !canOpen ||
+      !settingsHydrated ||
+      !routeReady ||
+      !(pending.value.model ?? currentModel) ||
+      location.pathname !== "/chat" ||
+      new URLSearchParams(location.searchStr).get("new") !== pending.id ||
+      runConfigInbox.getSnapshot() !== pending
+    ) {
       return;
     }
     const target = resolveRunConfigTarget(
@@ -100,24 +162,6 @@ export function SharedRunConfigLinkHandler() {
       useChatRuntimeStore.getState(),
     );
     if (!target) {
-      return;
-    }
-    if (
-      location.pathname !== "/chat" ||
-      new URLSearchParams(location.searchStr).get("new") !== pending.id
-    ) {
-      navigate({
-        to: "/chat",
-        search: { new: pending.id },
-        replace: true,
-      }).catch(() => {
-        clearModelConfigHandoff(pending.id);
-        runConfigInbox.clear(pending.id);
-        toast.error("Could not open the model’s run settings.");
-      });
-      return;
-    }
-    if (!routeReady) {
       return;
     }
     const controller = new AbortController();
@@ -157,7 +201,6 @@ export function SharedRunConfigLinkHandler() {
     currentModel,
     location.pathname,
     location.searchStr,
-    navigate,
     pending,
     settingsHydrated,
     routeReady,

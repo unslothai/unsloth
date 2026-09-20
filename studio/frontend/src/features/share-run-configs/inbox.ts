@@ -2,13 +2,14 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import type { PerModelConfig } from "../model-picker/model-config/per-model-config";
-import { SHARED_CONFIG_KEYS } from "./fields.ts";
-import type { SharedRunConfig } from "./links.ts";
+import { SHARED_CONFIG_KEYS } from "./fields";
+import type { SharedRunConfig } from "./links";
 
 export type RunConfigRequest = {
   id: string;
   value: SharedRunConfig;
   draftKey?: string;
+  replaceHistory?: boolean;
 };
 
 export function mergeSharedRunConfig(

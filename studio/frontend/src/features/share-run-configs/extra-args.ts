@@ -28,7 +28,9 @@ const choice =
   (values: readonly string[]): ValueRule =>
   (value) =>
     values.includes(value);
-const threads = number(1, 1024, true);
+const threads = number(-1, 1024, true);
+const context: ValueRule = (value) =>
+  value === "0" || number(128, 2_147_483_647, true)(value);
 const batch = number(1, 65_536, true);
 const layers = number(-1, 2_147_483_647, true);
 const cache: ValueRule = (value) =>
@@ -38,30 +40,17 @@ const tensorRatio = number(0, 1_000_000);
 
 const rules: Readonly<Record<string, ValueRule | null>> = {
   "--threads": threads,
-  "-t": threads,
   "--threads-batch": threads,
-  "-tb": threads,
-  "--ctx-size": number(128, 2_147_483_647, true),
-  "-c": number(128, 2_147_483_647, true),
+  "--ctx-size": context,
   "--batch-size": batch,
-  "-b": batch,
   "--ubatch-size": batch,
-  "-ub": batch,
   "--gpu-layers": layers,
-  "--n-gpu-layers": layers,
-  "-ngl": layers,
   "--n-cpu-moe": number(0, 2_147_483_647, true),
-  "-ncmoe": number(0, 2_147_483_647, true),
   "--main-gpu": number(0, 255, true),
-  "-mg": number(0, 255, true),
   "--flash-attn": choice(["on", "off", "auto"]),
-  "-fa": choice(["on", "off", "auto"]),
   "--cache-type-k": cache,
-  "-ctk": cache,
   "--cache-type-v": cache,
-  "-ctv": cache,
   "--split-mode": choice(["none", "layer", "row", "tensor"]),
-  "-sm": choice(["none", "layer", "row", "tensor"]),
   "--tensor-split": (value) => {
     const ratios = value.split(",");
     return (
@@ -74,12 +63,12 @@ const rules: Readonly<Record<string, ValueRule | null>> = {
   "--rope-scale": number(0.001, 1_000_000),
   "--rope-freq-base": number(0.001, 1_000_000_000),
   "--rope-freq-scale": number(0.001, 1_000_000),
-  "--yarn-orig-ctx": number(128, 2_147_483_647, true),
+  "--yarn-orig-ctx": context,
   "--yarn-ext-factor": number(-1, 1_000_000),
   "--yarn-attn-factor": number(0, 1_000_000),
   "--yarn-beta-fast": number(0, 1_000_000),
   "--yarn-beta-slow": number(0, 1_000_000),
-  "--seed": number(0, 4_294_967_295, true),
+  "--seed": number(-1, 4_294_967_295, true),
   "--temp": number(0, 100),
   "--top-k": number(0, 1_000_000, true),
   "--top-p": ratio,
@@ -90,6 +79,22 @@ const rules: Readonly<Record<string, ValueRule | null>> = {
   "--frequency-penalty": number(-2, 2),
   "--no-warmup": null,
   "--no-context-shift": null,
+};
+
+const aliases: Readonly<Record<string, string>> = {
+  "-t": "--threads",
+  "-tb": "--threads-batch",
+  "-c": "--ctx-size",
+  "-b": "--batch-size",
+  "-ub": "--ubatch-size",
+  "--n-gpu-layers": "--gpu-layers",
+  "-ngl": "--gpu-layers",
+  "-ncmoe": "--n-cpu-moe",
+  "-mg": "--main-gpu",
+  "-fa": "--flash-attn",
+  "-ctk": "--cache-type-k",
+  "-ctv": "--cache-type-v",
+  "-sm": "--split-mode",
 };
 
 function boundedTokens(value: unknown): value is string[] {
@@ -115,7 +120,8 @@ export function validSharedExtraArgs(value: unknown): value is string[] {
   }
   const seen = new Set<string>();
   const tokens = value[Symbol.iterator]();
-  for (const flag of tokens) {
+  for (const token of tokens) {
+    const flag = Object.hasOwn(aliases, token) ? aliases[token] : token;
     if (!Object.hasOwn(rules, flag) || seen.has(flag)) {
       return false;
     }

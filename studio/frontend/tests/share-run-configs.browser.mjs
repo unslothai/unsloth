@@ -111,7 +111,9 @@ async function fixture({
       ["/api/hub/cached-gguf", "/api/hub/cached-models"].includes(url.pathname)
     ) {
       body = {
-        cached: url.pathname.endsWith("cached-gguf") ? cachedGguf : cachedModels,
+        cached: url.pathname.endsWith("cached-gguf")
+          ? cachedGguf
+          : cachedModels,
         scan_confirmed: true,
       };
     }
@@ -176,6 +178,212 @@ async function waitForSettings(page) {
 }
 
 try {
+  for (const id of [
+    "/models/model-Q4_K_M.gguf",
+    "C:\\Models\\model-Q4_K_M.gguf",
+    "model-Q4_K_M.gguf",
+  ]) {
+    const { context, page, errors } = await fixture();
+    await page.goto(`${base}/chat`);
+    await waitForSettings(page);
+    await page.evaluate(async (id) => {
+      const { savePerModelConfig, DEFAULT_PER_MODEL_CONFIG } = await import(
+        "/src/features/model-picker/model-config/per-model-config.ts"
+      );
+      savePerModelConfig(id, null, {
+        ...DEFAULT_PER_MODEL_CONFIG,
+        nParallel: 8,
+      });
+      const { useChatRuntimeStore: store } = await import(
+        "/src/features/chat/stores/chat-runtime-store.ts"
+      );
+      store.setState({
+        params: { ...store.getState().params, checkpoint: id },
+        loadedIsGguf: true,
+        activeGgufVariant: "Q4_K_M",
+        activeLoadId: id,
+        activeNativePathToken:
+          id.includes("/") || id.includes("\\") ? null : "native-test-token",
+      });
+    }, id);
+    await value(page, "Parallel decode slots", "8");
+    await nativeLink(page, "nParallel=3");
+    const editor = page.getByRole("dialog", { name: /^Run settings for/ });
+    await editor.waitFor();
+    await value(
+      page,
+      "Parallel decode slots",
+      "3",
+      '[data-slot="popover-content"]',
+    );
+    const slots = await page
+      .getByLabel("Parallel decode slots", { exact: true })
+      .evaluateAll((inputs) => inputs.map((input) => input.value));
+    assert.deepEqual(slots, ["3", "3"]);
+    assert.equal(
+      await editor
+        .getByRole("checkbox", { name: "Remember for this model" })
+        .isChecked(),
+      true,
+    );
+    await editor.getByRole("button", { name: "Share", exact: true }).focus();
+    await page
+      .getByRole("textbox", { name: "Message input", exact: true })
+      .focus();
+    await editor.waitFor({ state: "hidden" });
+    assert.deepEqual(errors, []);
+    await context.close();
+    console.log(
+      `PASS: standalone identity, remembered settings, sidebar draft and focus dismissal: ${id}`,
+    );
+  }
+  {
+    const { context, page, errors } = await fixture({
+      cachedGguf: [
+        { repo_id: model, load_id: "/cache/pinned", size_bytes: 1024 },
+      ],
+    });
+    let release;
+    let entered;
+    const held = new Promise((resolve) => {
+      release = resolve;
+    });
+    const started = new Promise((resolve) => {
+      entered = resolve;
+    });
+    await page.route("**/api/hub/gguf-variants?**", async (route) => {
+      entered();
+      await held;
+      await route.fulfill({
+        json: {
+          variants: [
+            { quant: "Q4_K_M", filename: "model.gguf", downloaded: true },
+          ],
+        },
+      });
+    });
+    await page.goto(`${base}/chat#run?${params({ nParallel: "3" })}`);
+    await started;
+    await page.evaluate(async () => {
+      const { router } = await import("/src/app/router.tsx");
+      await router.navigate({ to: "/hub" });
+    });
+    await page.waitForFunction(
+      async () =>
+        (
+          await import("/src/features/share-run-configs/inbox.ts")
+        ).runConfigInbox.getSnapshot() === null,
+    );
+    release();
+    assert.equal(new URL(page.url()).pathname, "/hub");
+    assert.deepEqual(errors, []);
+    await context.close();
+    console.log(
+      "PASS: navigating away cancels a delayed handoff without redirecting back",
+    );
+  }
+  {
+    const { context, page, errors } = await fixture();
+    const query = String(params({ nParallel: "3" }));
+    await page.goto(`${base}/chat#run?${query}`);
+    await value(page, "Parallel decode slots", "3");
+    const first = new URL(page.url()).searchParams.get("new");
+    await page.evaluate(async () => {
+      const { router } = await import("/src/app/router.tsx");
+      await router.navigate({ to: "/chat", search: {} });
+    });
+    await page.waitForURL(`${base}/chat`);
+    await page.evaluate((query) => {
+      window.location.hash = `run?${query}`;
+    }, query);
+    await page.waitForFunction((first) => {
+      const id = new URL(window.location.href).searchParams.get("new");
+      return id && id !== first;
+    }, first);
+    await value(page, "Parallel decode slots", "3");
+    assert.deepEqual(errors, []);
+    await context.close();
+    console.log(
+      "PASS: the identical browser link can reopen after router navigation to bare chat",
+    );
+  }
+  {
+    const { context, page, errors } = await fixture();
+    await page.goto(`${base}/hub`);
+    await waitForSettings(page);
+    await page.evaluate(async () => {
+      const { useChatRuntimeStore: store } = await import(
+        "/src/features/chat/stores/chat-runtime-store.ts"
+      );
+      store.setState({
+        incognito: true,
+        activeProjectId: "previous-project",
+        activeThreadId: "previous-thread",
+      });
+    });
+    await nativeLink(page, params({ nParallel: "3" }));
+    await value(page, "Parallel decode slots", "3");
+    assert.deepEqual(
+      await page.evaluate(async () => {
+        const state = (
+          await import("/src/features/chat/stores/chat-runtime-store.ts")
+        ).useChatRuntimeStore.getState();
+        return [state.incognito, state.activeProjectId, state.activeThreadId];
+      }),
+      [false, null, null],
+    );
+    await page.goBack();
+    assert.equal(new URL(page.url()).pathname, "/hub");
+    assert.deepEqual(errors, []);
+    await context.close();
+    console.log(
+      "PASS: native handoffs reset temporary/project context and preserve the previous history entry",
+    );
+  }
+  for (const previousAccount of [null, "account:old:previous"]) {
+    const { context, page, errors } = await fixture({ authenticated: false });
+    if (previousAccount)
+      await page.addInitScript((marker) => {
+        if (!localStorage.getItem("unsloth.browser-account.v1")) {
+          localStorage.setItem("unsloth.browser-account.v1", marker);
+        }
+      }, previousAccount);
+    await page.route("**/api/auth/status", (route) =>
+      route.fulfill({
+        json: {
+          initialized: true,
+          requires_password_change: false,
+          login_mode: "multi",
+        },
+      }),
+    );
+    const token = `header.${Buffer.from(JSON.stringify({ sub: "alice", role: "member" })).toString("base64url")}.signature`;
+    await page.route("**/api/auth/login", (route) =>
+      route.fulfill({
+        json: {
+          access_token: token,
+          refresh_token: "refresh",
+          must_change_password: false,
+          account_id: "alice-id",
+        },
+      }),
+    );
+    await page.goto(`${base}/chat#run?${params({ nParallel: "6" })}`);
+    await page.waitForURL("**/login");
+    await page.getByLabel("Username", { exact: true }).fill("alice");
+    await page
+      .getByLabel("Password", { exact: true })
+      .fill("local-test-password");
+    const navigated = page.waitForEvent("domcontentloaded");
+    await page.getByRole("button", { name: "Login", exact: true }).click();
+    await navigated;
+    await value(page, "Parallel decode slots", "6");
+    assert.deepEqual(errors, []);
+    await context.close();
+    console.log(
+      `PASS: a link survives ${previousAccount ? "account-switch" : "first managed sign-in"} document replacement`,
+    );
+  }
   for (const { loadId, isGguf } of [
     {
       loadId: "/secondary/cache/models--unsloth--Test-GGUF/snapshots/pinned",
@@ -215,9 +423,8 @@ try {
       await waitForSettings(page);
       if (!active && !isGguf) {
         await page.evaluate(async () => {
-          const { fetchInventorySource, useDeviceInventoryStore } = await import(
-            "/src/features/hub/inventory/use-device-inventory.ts"
-          );
+          const { fetchInventorySource, useDeviceInventoryStore } =
+            await import("/src/features/hub/inventory/use-device-inventory.ts");
           const { getInventoryVersion } = await import(
             "/src/features/hub/stores/inventory-events.ts"
           );
@@ -435,7 +642,9 @@ try {
     await value(page, "Prompt batch size", "1024");
     const share = page.getByRole("button", { name: "Share", exact: true });
     assert.equal(
-      await page.getByRole("button", { name: "Load model", exact: true }).count(),
+      await page
+        .getByRole("button", { name: "Load model", exact: true })
+        .count(),
       1,
     );
     assert.equal(
@@ -467,7 +676,9 @@ try {
         let text = "";
         Object.defineProperty(navigator, "clipboard", {
           value: {
-            writeText: async (value) => { text = value; },
+            writeText: async (value) => {
+              text = value;
+            },
             readText: async () => text,
           },
         });
@@ -497,7 +708,12 @@ try {
     assert.equal(partial.has("nParallel"), false);
     assert.equal(partial.has("model"), false);
     assert.deepEqual(JSON.parse(partial.get("llamaExtraArgs")), args);
-    await dialog.getByLabel("Open in", { exact: true }).selectOption("desktop");
+    await dialog
+      .getByRole("combobox", { name: "Open in", exact: true })
+      .click();
+    await page
+      .getByRole("option", { name: "Unsloth desktop app", exact: true })
+      .click();
     assert.ok(
       (await dialog.getByLabel("Shareable link").inputValue()).startsWith(
         "unsloth://run?",
@@ -654,21 +870,37 @@ try {
     );
   }
   {
-    const { context, page, writes, errors } = await fixture({ delay: 2000 });
+    const { context, page, writes, errors } = await fixture();
+    let releaseRead;
+    const heldRead = new Promise((resolve) => {
+      releaseRead = resolve;
+    });
+    await page.route(
+      "**/api/settings/openai-auto-switch/overrides?**",
+      async (route) => {
+        await heldRead;
+        await route.fallback();
+      },
+    );
     await page.goto(`${base}/chat#run?${params({ nParallel: "6" })}`);
     await page.getByRole("button", { name: "Share", exact: true }).waitFor();
     await nativeLink(
       page,
       params({ nParallel: "9", llamaExtraArgs: '["--agent"]' }),
     );
+    await page.waitForFunction(
+      async () =>
+        (
+          await import("/src/features/share-run-configs/inbox.ts")
+        ).runConfigInbox.getSnapshot() === null,
+    );
+    releaseRead();
     await value(page, "Parallel decode slots", "8");
     await page.waitForFunction(() =>
       [...document.querySelectorAll("button")].some(
         (button) => button.textContent === "Share" && !button.disabled,
       ),
     );
-    await page.waitForTimeout(200);
-    await value(page, "Parallel decode slots", "8");
     assert.ok(
       writes.every((path) =>
         [
@@ -856,7 +1088,9 @@ try {
       () =>
         document.activeElement?.getAttribute("aria-label") === "Message input",
     );
-    await page.getByRole("button", { name: "Select model", exact: true }).click();
+    await page
+      .getByRole("button", { name: "Select model", exact: true })
+      .click();
     await page.evaluate(async () => {
       const { requestModelConfigHandoff } = await import(
         "/src/features/model-picker/model-config/model-config-handoff.ts"

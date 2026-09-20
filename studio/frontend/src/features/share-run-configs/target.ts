@@ -6,9 +6,10 @@ import type { ChatLoraSummary, ChatModelSummary } from "../chat/types/runtime";
 import type { ModelConfigHandoffRequest } from "../model-picker/model-config/model-config-handoff";
 import {
   ggufVariantsMatch,
+  isStandaloneGgufPath,
   residentModelIdMatches,
 } from "../model-picker/model-config/model-identity";
-import { type SharedRunConfig, isShareableModelId } from "./links.ts";
+import { type SharedRunConfig, isShareableModelId } from "./links";
 
 const ggufName = /(?:-gguf|\.gguf)$/i;
 
@@ -29,7 +30,7 @@ function resolveFormat(
   selectedVariant: string | null,
 ) {
   const ggufVariant =
-    value.isGguf === false
+    value.isGguf === false || isStandaloneGgufPath(id)
       ? undefined
       : (value.ggufVariant ?? selectedVariant ?? undefined);
   return {
@@ -67,7 +68,8 @@ export function resolveRunConfigTarget(
   const sameArtifact =
     sameModel &&
     selection.loadedIsGguf === isGguf &&
-    ggufVariantsMatch(ggufVariant, selection.activeGgufVariant);
+    (isStandaloneGgufPath(id) ||
+      ggufVariantsMatch(ggufVariant, selection.activeGgufVariant));
   return {
     id,
     meta: {

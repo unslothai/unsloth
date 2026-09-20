@@ -10,6 +10,14 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { Textarea } from "@/components/ui/textarea";
 import { isTauri } from "@/lib/api-base";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { toast } from "@/lib/toast";
@@ -199,17 +207,17 @@ export function ShareRunConfigDialog({
           <label htmlFor={`${id}-destination`} className="text-sm font-medium">
             Open in
           </label>
-          <select
-            id={`${id}-destination`}
-            className="w-full rounded-md border bg-background p-2"
-            value={destination}
-            onChange={(event) => setDestination(event.target.value)}
-          >
-            <option value="desktop">Unsloth desktop app</option>
-            {!isTauri && (
-              <option value="browser">This Studio web address</option>
-            )}
-          </select>
+          <Select value={destination} onValueChange={setDestination}>
+            <SelectTrigger id={`${id}-destination`} className="w-full">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="desktop">Unsloth desktop app</SelectItem>
+              {!isTauri && (
+                <SelectItem value="browser">This Studio web address</SelectItem>
+              )}
+            </SelectContent>
+          </Select>
           <p className="text-xs text-muted-foreground">
             {destination === "browser"
               ? "The recipient needs access to this Studio address. A localhost address opens Studio on their own computer."
@@ -218,13 +226,14 @@ export function ShareRunConfigDialog({
           <label htmlFor={`${id}-link`} className="block text-sm font-medium">
             Shareable link
           </label>
-          <textarea
+          <Textarea
             id={`${id}-link`}
             readOnly={true}
             value={link}
             rows={3}
+            fieldSizing="fixed"
             onFocus={(event) => event.target.select()}
-            className="w-full resize-none rounded-md border bg-background p-2 text-xs"
+            className="text-xs md:text-xs"
           />
           {error && (
             <p role="alert" className="text-sm text-destructive">

@@ -459,3 +459,28 @@ test("exported GGUF and adapter identities use existing inventory metadata", () 
   assert.equal(adapter?.meta.isLora, true);
   assert.equal(adapter?.meta.isGguf, false);
 });
+
+for (const id of [
+  "/models/model-Q4_K_M.gguf",
+  "C:\\Models\\model-Q4_K_M.gguf",
+  "model-Q4_K_M.gguf",
+  "\\\\server\\models\\model.gguf",
+]) {
+  test(`standalone GGUF import uses the existing file identity: ${id}`, () => {
+    for (const ggufVariant of [undefined, "Q4_K_M", "Q8_0"]) {
+      const target = resolveRunConfigTarget(
+        { ggufVariant, config: { nParallel: 3 } },
+        {
+          ...selection,
+          params: { checkpoint: id },
+          activeLoadId: id,
+        },
+      );
+      assert.equal(target?.meta.ggufVariant, undefined);
+      assert.equal(target?.meta.isGguf, true);
+      assert.equal(target?.meta.isDownloaded, true);
+      assert.equal(target?.meta.nativePathToken, "local-token");
+      assert.equal(target?.meta.loadId, id);
+    }
+  });
+}

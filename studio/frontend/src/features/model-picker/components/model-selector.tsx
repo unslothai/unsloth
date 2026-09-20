@@ -10,6 +10,7 @@ import {
 } from "@/components/ui/popover";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { ApiProviderLogo } from "@/features/chat/api-provider-logo";
+import { SHARED_RUN_CONFIG_FOCUS_SELECTOR } from "@/features/share-run-configs/focus-guard";
 
 import type { HfTaskFilter } from "@/features/hub/hooks/use-hub-model-search";
 // eslint-disable-next-line no-restricted-imports -- The settings barrel imports this feature back.
@@ -531,7 +532,7 @@ function ModelSelectorContent({
       ref={contentRef}
       align="start"
       onFocusOutside={(event) => {
-        if (contentRef.current?.querySelector("[data-shared-run-config]")) {
+        if (contentRef.current?.querySelector(SHARED_RUN_CONFIG_FOCUS_SELECTOR)) {
           event.preventDefault();
         }
       }}

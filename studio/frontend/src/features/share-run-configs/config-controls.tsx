@@ -18,6 +18,7 @@ import {
   readModelConfigDraft,
 } from "../model-picker/model-config/model-config-draft";
 import type { PerModelConfig } from "../model-picker/model-config/per-model-config";
+import { SHARED_RUN_CONFIG_FOCUS_ATTRIBUTE } from "./focus-guard";
 import { mergeSharedRunConfig, runConfigInbox } from "./inbox";
 import { ShareRunConfigDialog } from "./share-dialog";
 
@@ -39,7 +40,6 @@ export function SharedRunConfigControls({
   onImport: () => void;
 }) {
   const [sharing, setSharing] = useState(false);
-  const [importedKey, setImportedKey] = useState<string | null>(null);
   const pending = useSyncExternalStore(
     runConfigInbox.subscribe,
     runConfigInbox.getSnapshot,
@@ -48,9 +48,6 @@ export function SharedRunConfigControls({
     target.configId ?? target.id,
     target.ggufVariant,
   );
-  if (canImport && pending?.draftKey === key && importedKey !== key) {
-    setImportedKey(key);
-  }
   useLayoutEffect(() => {
     if (canImport) {
       return runConfigInbox.retainEditor(key);
@@ -100,12 +97,12 @@ export function SharedRunConfigControls({
         size="sm"
         variant="ghost"
         className="h-8"
-        data-shared-run-config={
-          sharing ||
-          (canImport && (importedKey === key || pending?.draftKey === key))
-            ? ""
-            : undefined
-        }
+        {...{
+          [SHARED_RUN_CONFIG_FOCUS_ATTRIBUTE]:
+            sharing || (canImport && pending?.draftKey === key)
+              ? ""
+              : undefined,
+        }}
         disabled={!ready || disabled}
         onClick={() => setSharing(true)}
       >

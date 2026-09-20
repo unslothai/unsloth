@@ -20,7 +20,7 @@ import {
   N_PARALLEL_MIN,
   SPECULATIVE_TYPES,
 } from "../model-picker/model-config/per-model-config";
-import { validSharedExtraArgs } from "./extra-args.ts";
+import { validSharedExtraArgs } from "./extra-args";
 
 export type SharedConfigKey = keyof PerModelConfig;
 type Validator = (value: unknown) => boolean;
