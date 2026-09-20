@@ -440,8 +440,11 @@ def test_the_ownership_flag_follows_where_the_runtimes_land(tmp_path, environmen
     stage = tmp_path / "stage"
     stage.mkdir()
     resolved = {
-        key: str(stage) if value == "STAGE" else
-        str(home / ".unsloth") if value == "LEGACY" else value
+        key: str(stage)
+        if value == "STAGE"
+        else str(home / ".unsloth")
+        if value == "LEGACY"
+        else value
         for key, value in environment.items()
     }
     if "UNSLOTH_HOME" not in resolved:
