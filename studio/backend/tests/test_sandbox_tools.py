@@ -1150,12 +1150,11 @@ class TestBashBlocklistPosition:
                 "FOO=bar coproc JOB if rm -f victim; then :; fi",
                 id = "coproc_named_after_assign_blocked",
             ),
-            # Quoting the lookahead makes it a lie: shlex hands back the same token for `{` and `'{'`, but bash
-            # reads the SIMPLE form and `coproc rm '{' -f victim` deletes. A blocked word is never a name.
+            # Quoting forges the lookahead: shlex hands back the same token for `{` and `'{'`, while bash reads
+            # `coproc rm '{' -f victim` as the SIMPLE form and deletes.
             pytest.param("rm", "coproc rm '{' -f victim", id = "coproc_quoted_brace_blocked"),
             pytest.param("rm", "coproc rm 'if' -f victim", id = "coproc_quoted_keyword_blocked"),
-            # The name is read as a command word, so a specially scanned one keeps its special scan: sed's `e`
-            # program is still screened rather than lost behind a forged name.
+            # The name is read, not skipped, so a sed there still has its `e` program screened.
             pytest.param(
                 "rm",
                 "coproc sed 'if' -e '1e rm -f victim' input",
@@ -1747,21 +1746,18 @@ class TestBashBlocklistPosition:
     def test_coproc_classifies_exactly_as_the_command_behind_it(self, command):
         # Equal in BOTH directions: merely getting stricter would start prompting for coprocesses that are fine.
         assert self._find()(f"coproc {command}") == self._find()(command)
-        # A forged lookahead moves nothing: shlex has already dropped the quotes, so the walker reads the same
-        # token either way and must not take the command word for a coprocess name.
+        # A forged lookahead moves nothing, since the walker reads the name rather than skipping it.
         head, _, rest = command.partition(" ")
         assert self._find()(f"coproc {head} 'if' {rest}") == self._find()(f"{head} 'if' {rest}")
         assert is_high_risk_tool_call(
             "terminal", {"command": f"coproc {command}"}
         ) == is_high_risk_tool_call("terminal", {"command": command})
         assert self._find()(f"coproc JOB if {command}; then :; fi") == self._find()(command)
-        # A named coprocess runs its condition, and `git clean -fd` is destructive without being blocklisted, so
-        # the auto-mode gate has to reach past the name too.
+        # `git clean -fd` is destructive without being blocklisted, so the auto gate must reach past the name.
         assert is_high_risk_tool_call(
             "terminal", {"command": "coproc JOB if git clean -fd; then :; fi"}
         ) == is_high_risk_tool_call("terminal", {"command": "git clean -fd"})
-        # ...including when the name is spelled like a wrapper, which it may be: bash cares only that it is a
-        # name, so spending the wrapper on the compound behind it demoted the real command.
+        # ...including a name spelled like a wrapper, which bash allows and which used to eat the compound.
         assert is_high_risk_tool_call(
             "terminal", {"command": "coproc env if git clean -fd; then :; fi"}
         ) == is_high_risk_tool_call("terminal", {"command": "git clean -fd"})

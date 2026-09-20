@@ -214,8 +214,10 @@ _COPROC_NAME_RE = re.compile(r"^[A-Za-z_]\w*$")
 def _is_coproc_name(tokens: "list[str]", index: int) -> bool:
     """Whether `tokens[index]` is the NAME of a `coproc NAME compound-command`, not a command word.
 
-    Gate this on the caller having just consumed the `coproc` KEYWORD: the neighbouring tokens cannot decide it,
-    since `echo coproc JOB if rm -f x` prints three words while `time coproc JOB if rm -f x` really deletes.
+    Callers gate this on having just consumed the `coproc` KEYWORD, which the neighbouring tokens cannot decide:
+    `echo coproc JOB if rm -f x` prints three words while `time coproc JOB if rm -f x` really deletes. They then
+    READ the name like any other command word rather than skipping it, since shlex has already dropped the quotes
+    and a forged `'{'` would otherwise hide whatever stands there; only command position carries past it.
     """
     return (
         index > 0
@@ -1281,8 +1283,6 @@ def _exec_scan_layout(
             # Only a find/fd the shell really RUNS forwards its exec flags. Any token spelled `fd`/`find` used to turn
             # one on, so `echo fd -x rm` came back with rm and was refused.
             forwarding = True
-        # A coprocess NAME is READ as a command word rather than skipped, so no spelling of the lookahead can hide
-        # one behind it; only command position carries past it, to the compound the name introduces.
         at_command = coproc_name_here
         wrapper = ""
     return frozenset(exec_flags), frozenset(stops), frozenset(redirects)
@@ -1524,16 +1524,12 @@ def _find_blocked_commands(command: str) -> set[str]:
             blocked |= _blocked_matching_glob(base)
         # Wrappers (env/time/xargs/sudo) consume one command; the next non-flag, non-numeric token is the real
         # command. sudo is also in _BLOCKED_COMMANDS.
-        # A coprocess NAME is not one of them, and letting `coproc env if rm -f x; then :; fi` spend the wrapper on
-        # the `if` demoted the command behind it to an argument.
         if base in _COMMAND_PREFIXES and not coproc_name_here:
             if base == "xargs" and xargs_index < 0:
                 xargs_index = token_index
             prefix_pending = True
             prefix_command = base
             continue
-        # A coprocess NAME is read as a command word rather than skipped, so no spelling of the lookahead can hide
-        # one behind it; command position simply carries past it to the compound it introduces.
         expect_command = coproc_name_here
         prefix_pending = False
         prefix_command = ""
@@ -8408,8 +8404,6 @@ def _terminal_is_high_risk(command: str, _depth: int = 0) -> bool:
                     for cand in (raw, _expand_param_defaults(raw), _expand_shell_assignments(raw))
                 ):
                     return True
-            # A coprocess NAME is judged as a command word like any other, and only command position carries
-            # past it: `coproc JOB if git clean -fd; then :; fi` really runs the condition.
             expect_command = coproc_name_here
             prefix_pending = False
     return False
