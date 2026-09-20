@@ -14,6 +14,12 @@ export interface MemoryTotalDevice {
   shared_memory?: boolean;
   /** host-backed portion of the shared pool; the rest is reserved GPU memory. */
   shared_memory_host_backed_gb?: number | null;
+  /** The backend's per-device `unified_memory`, for a ROCm APU. Read here for the
+   *  same reason `MemoryCapacityDevice` reads it: `hardware.py` sets `shared_memory`
+   *  only on Windows, so on Linux the very same APU arrives as
+   *  `unified_memory: true, shared_memory: false`, and splitting on `shared_memory`
+   *  alone counted its GTT window as dedicated VRAM standing BESIDE system RAM. */
+  unified_memory?: boolean;
 }
 
 export interface GpuMemoryTotalsGb {
@@ -27,6 +33,16 @@ export interface VramReportingGpu {
   /** Used VRAM across the visible GPUs when no single device's usage could be
    * attributed. Windows ROCm only; null everywhere else. See #7452. */
   vram_used_gb_aggregate?: number | null;
+}
+
+/** Whether this device's memory is a view into host RAM, in the wire shape the totals
+ *  above are given. The same question `sharesHostMemory` answers for the capacity
+ *  resolver, asked of a `MemoryTotalDevice` so the two cannot drift apart. */
+function sharesHostMemoryDevice(device: MemoryTotalDevice): boolean {
+  return sharesHostMemory({
+    sharedMemory: device.shared_memory === true,
+    unifiedMemory: device.unified_memory === true,
+  });
 }
 
 /** Sum dedicated VRAM while counting a shared host-memory pool only once. Devices arrive rounded to 2dp, so
@@ -45,13 +61,20 @@ export function gpuMemoryTotalsGb(
     const total = device.memory_total_gb ?? 0;
     return Number.isFinite(total) && total > 0 ? total : 0;
   };
+  // `sharesHostMemory`, not `shared_memory` alone. The two flags mean the same thing
+  // for capacity and the backend simply reports them differently per platform, which
+  // is what that helper exists to fold. Every caller that had learned this folded on
+  // its own way in (use-gpu-info's RAM subtraction, memory-fit's independent total,
+  // resolveMemoryCapacityGb below); folding here instead fixes the ones that had not,
+  // and is a no-op for the ones that had, since folding an already-folded flag
+  // returns it unchanged.
   const dedicatedDevices = roundToDevicePrecision(
     devices
-      .filter((device) => !device.shared_memory)
+      .filter((device) => !sharesHostMemoryDevice(device))
       .reduce((sum, device) => sum + size(device), 0),
   );
   const sharedPool = devices
-    .filter((device) => device.shared_memory)
+    .filter(sharesHostMemoryDevice)
     .reduce(
       (totals, device) => {
         const total = size(device);
