@@ -19,6 +19,7 @@ from . import mxc_adapter, mxc_policy, mxc_runtime
 
 _lock = threading.Lock()
 _cache: dict[tuple[str, str, str, str], tuple[float, bool, str]] = {}
+_inflight: dict[tuple[str, str, str, str], threading.Event] = {}
 POSITIVE_TTL = 300.0
 NEGATIVE_TTL = 30.0
 
@@ -240,13 +241,28 @@ def probe(
         execution_kind,
         os.path.abspath(selected_executable),
     )
-    with _lock:
-        cached = _cache.get(key)
-        if cached is not None and not force and time.monotonic() < cached[0]:
-            return cached[1], cached[2]
+    while True:
+        with _lock:
+            cached = _cache.get(key)
+            if cached is not None and not force and time.monotonic() < cached[0]:
+                return cached[1], cached[2]
+            flight = _inflight.get(key)
+            if flight is None:
+                flight = threading.Event()
+                _inflight[key] = flight
+                break
+        while not flight.wait(0.05):
+            if cancel_event is not None and cancel_event.is_set():
+                return False, "MXC capability probe was cancelled"
+
+    try:
         result = _probe(selected_executable, execution_kind, cancel_event)
-        if cancel_event is not None and cancel_event.is_set():
-            return result
-        ttl = POSITIVE_TTL if result[0] else NEGATIVE_TTL
-        _cache[key] = (time.monotonic() + ttl, *result)
+        with _lock:
+            if cancel_event is None or not cancel_event.is_set():
+                ttl = POSITIVE_TTL if result[0] else NEGATIVE_TTL
+                _cache[key] = (time.monotonic() + ttl, *result)
         return result
+    finally:
+        with _lock:
+            _inflight.pop(key, None)
+            flight.set()

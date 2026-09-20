@@ -213,6 +213,37 @@ def test_capability_probe_is_single_flight_and_keyed_by_runtime(monkeypatch, tmp
     assert len(calls) == 2
 
 
+def test_cancelled_probe_waiter_does_not_block_behind_the_live_probe(monkeypatch, tmp_path):
+    from core.inference import mxc_probe
+
+    mxc_probe.invalidate_cache()
+    started = threading.Event()
+    release = threading.Event()
+    calls = []
+    monkeypatch.setattr(mxc_probe.mxc_runtime, "installation_identity", lambda: "generation")
+
+    def live_probe(*_args, **_kwargs):
+        calls.append(True)
+        started.set()
+        assert release.wait(5)
+        return True, "qualified"
+
+    monkeypatch.setattr(mxc_probe, "_probe", live_probe)
+    executable = str(tmp_path / "python.exe")
+    cancel = threading.Event()
+    with ThreadPoolExecutor(max_workers = 2) as executor:
+        leader = executor.submit(mxc_probe.probe, executable)
+        assert started.wait(2)
+        waiter = executor.submit(mxc_probe.probe, executable, cancel_event = cancel)
+        cancel.set()
+        assert waiter.result(timeout = 1) == (False, "MXC capability probe was cancelled")
+        assert not release.is_set()
+        mxc_probe.invalidate_cache()
+        release.set()
+        assert leader.result(timeout = 2) == (True, "qualified")
+    assert calls == [True]
+
+
 @pytest.mark.skipif(sys.platform != "win32", reason = "requires Windows MXC launch routing")
 def test_runner_replacement_after_probe_is_refused_before_spawn(monkeypatch, tmp_path):
     from core.inference import sandbox_windows_mxc
