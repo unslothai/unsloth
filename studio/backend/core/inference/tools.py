@@ -16090,14 +16090,24 @@ def _check_signal_escape_patterns(code: str):
     # RecursionError out of a tool call.
     _MAX_RESOLVE_DEPTH = 24
 
-    def _takes_url_first_arg(fq: str) -> bool:
-        """True when the call's first positional argument (or url= / fullurl=) is the target URL.
-        Constructors that take no URL (`requests.Session()`, `socket.socket(...)`) are excluded, so
-        an unresolvable argument there is never mistaken for a hidden target."""
+    def _takes_a_url_argument(fq: str) -> bool:
+        """True when the call takes the target URL as an argument. Constructors that take no URL
+        (`requests.Session()`, `socket.socket(...)`) are excluded, so an unresolvable argument there
+        is never mistaken for a hidden target."""
         if fq in ("urllib.request.urlopen", "urllib.request.urlretrieve", "urllib.request.Request"):
             return True
         owner, _, method = fq.rpartition(".")
         return bool(owner) and method in _HTTP_METHOD_NAMES and owner in _URL_OWNERS
+
+    def _url_arg_index(fq: str) -> int:
+        """Which positional argument holds the URL. `requests.request(method, url)` and the session
+        and client `.request` methods take the method first, so reading argument zero there polices
+        the verb and lets the real target through."""
+        return 1 if fq.rpartition(".")[2] == "request" else 0
+
+    # Wrappers whose own first argument is the URL the request will use, so a Request object is
+    # policed like the url string it was built from.
+    _URL_WRAPPER_FQ = ("urllib.request.Request",)
 
     def _written_fq(func_node) -> str:
         """The dotted call name exactly as the source spells it."""
@@ -16350,6 +16360,17 @@ def _check_signal_escape_patterns(code: str):
             # A literal on the left does not make the result start with it: str.__add__ returns
             # NotImplemented for a non-str right operand and Python then calls its __radd__, which
             # may return anything at all. Unlike an f-string, a half-known sum knows nothing.
+            return "", False
+        if isinstance(node, ast.Call):
+            # urllib.request.Request("...") carries the URL the later urlopen will use.
+            if _canonical_fq(node.func, bindings) in _URL_WRAPPER_FQ:
+                inner = node.args[0] if node.args else None
+                for kw in node.keywords or []:
+                    if kw.arg in _URL_KWARGS:
+                        inner = kw.value
+                        break
+                if inner is not None:
+                    return _static_str_prefix(inner, bindings, seen, depth + 1)
             return "", False
         if isinstance(node, ast.Name):
             if node.id in seen:
@@ -16713,7 +16734,8 @@ def _check_signal_escape_patterns(code: str):
                 # 2) Resolve the host (URL string, bound variable, or (host, port) tuple).
                 host_arg = None
                 target_resolved = True
-                url_node = node.args[0] if node.args else None
+                url_index = _url_arg_index(network_fq)
+                url_node = node.args[url_index] if len(node.args) > url_index else None
                 for kw in node.keywords or []:
                     if kw.arg in _URL_KWARGS:
                         url_node = kw.value
@@ -16727,7 +16749,7 @@ def _check_signal_escape_patterns(code: str):
                 if (
                     host_arg is None
                     and not target_resolved
-                    and _takes_url_first_arg(network_fq)
+                    and _takes_a_url_argument(network_fq)
                     and _externally_sourced(url_node, _bindings)
                 ):
                     # A target read from the environment, stdin or argv is chosen outside the source

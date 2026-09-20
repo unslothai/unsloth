@@ -2831,3 +2831,62 @@ class TestNameResolutionDoesNotLoseOrInventAHost:
             f'import requests\nu = "{_METADATA_URL}"\ndef go():\n    requests.get(u)',
             expect_phrase = "Blocked: cloud-metadata host",
         )
+
+
+class TestRequestMethodAndWrapperArguments:
+    @pytest.mark.parametrize(
+        "code",
+        [
+            pytest.param(
+                f'import requests\nrequests.request("GET", "{_METADATA_URL}")', id = "requests"
+            ),
+            pytest.param(
+                f'import requests\ns = requests.Session()\ns.request("GET", "{_METADATA_URL}")',
+                id = "session",
+            ),
+            pytest.param(
+                f'import httpx\nhttpx.request("GET", "{_METADATA_URL}")', id = "httpx"
+            ),
+            pytest.param(
+                f'import requests\nrequests.request("GET", url = "{_METADATA_URL}")',
+                id = "url_keyword",
+            ),
+        ],
+    )
+    def test_request_takes_the_url_second_blocked(self, code):
+        # .request(method, url): reading argument zero polices the verb and lets the target through.
+        _blocked(code, expect_phrase = "Blocked: cloud-metadata host")
+
+    def test_a_computed_method_is_not_mistaken_for_the_target_ok(self):
+        _ok('import requests\nmeth = input()\nrequests.request(meth, "https://huggingface.co")')
+
+    def test_a_computed_url_on_request_is_still_blocked(self):
+        _blocked(
+            'import os, requests\nrequests.request("GET", os.environ["TARGET"])',
+            expect_phrase = "Blocked: request target is read from the environment or input",
+        )
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            pytest.param(
+                "import urllib.request\n"
+                f'req = urllib.request.Request("{_METADATA_URL}")\nurllib.request.urlopen(req)',
+                id = "bound_request_object",
+            ),
+            pytest.param(
+                "import urllib.request\n"
+                f'urllib.request.urlopen(urllib.request.Request("{_METADATA_URL}"))',
+                id = "inline_request_object",
+            ),
+        ],
+    )
+    def test_a_request_object_carries_its_url_blocked(self, code):
+        _blocked(code, expect_phrase = "Blocked: cloud-metadata host")
+
+    def test_a_request_object_to_an_allowed_host_ok(self):
+        _ok(
+            "import urllib.request\n"
+            'req = urllib.request.Request("https://en.wikipedia.org/wiki/Python")\n'
+            "urllib.request.urlopen(req)"
+        )
