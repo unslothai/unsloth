@@ -164,14 +164,11 @@ test("the turn-on reaches neither the installation nor the open chat's snapshot"
 });
 
 test("a chat opened after Full access was picked still gets the code tools", async (t) => {
-  // Full access is session-scoped: applyThreadScopedSettings deliberately keeps
-  // it across a chat switch, while Code is replaced by the incoming chat's own
-  // preference. Deriving the grant from a flag armed once on entry left that
-  // chat on Full access with no code tools, the state this feature prevents.
+  // Full access outlives a chat switch but Code does not, so a grant armed once
+  // on entry left the incoming chat on Full access with no code tools.
   enableCountedTimers(t);
   const tick = (ms: number) => t.mock.timers.tick(ms);
-  // Code already on in the chat where Full access is picked: the case that
-  // arms nothing, because there is nothing to turn on.
+  // Code already on where Full access is picked: the case that arms nothing.
   const { mod, store, on, state } = await freshStore(true);
   const drain = () =>
     drainMockedTimers(tick, {

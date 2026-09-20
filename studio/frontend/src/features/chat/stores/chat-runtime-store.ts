@@ -1878,8 +1878,7 @@ function savePermissionMode(mode: PermissionMode): void {
 
 const INITIAL_PERMISSION_MODE: PermissionMode = loadPermissionMode();
 
-/** Whether a manual Code-off stands when Full access is reselected: re-picking the level already
- *  in force is not a fresh grant, so an answer already given is kept. */
+/** Re-picking the level already in force is not a fresh grant, so a manual Code-off stands. */
 function codeDeclinedOnEnteringFullAccess(state: ChatRuntimeStore): boolean {
   return state.permissionMode === "full"
     ? state.codeToolsDeclinedUnderFullAccess
@@ -1887,12 +1886,9 @@ function codeDeclinedOnEnteringFullAccess(state: ChatRuntimeStore): boolean {
 }
 
 /** Effective Code setting. Full access auto-enables it only for local models.
- *
- *  Derived from the level being full RIGHT NOW rather than from a flag armed once on entry:
- *  Full access is session-scoped and applyThreadScopedSettings deliberately keeps it across a chat
- *  switch, while codeToolsEnabled is replaced by the incoming chat's own preference. A grant
- *  snapshotted at entry therefore did not cover a chat opened afterwards, dropping that chat back
- *  to Full access with no code tools -- the exact state this feature exists to prevent. */
+ *  Read the level live, never a flag armed on entry: Full access outlives a chat switch
+ *  (applyThreadScopedSettings) but codeToolsEnabled does not, so a snapshotted grant missed
+ *  every chat opened afterwards. */
 export function codeToolsOn(
   state: Pick<
     ChatRuntimeStore,
@@ -2330,8 +2326,8 @@ type ChatRuntimeStore = {
   toolsEnabled: boolean;
   /** Persisted Code preference. Use codeToolsOn() for the effective value. */
   codeToolsEnabled: boolean;
-  /** Session-only: the user turned Code off by hand while Full access was on, so the grant is not
-   *  re-applied over their answer. Cleared on entering or leaving Full access. */
+  /** Session-only: a manual Code-off under Full access, so the grant is not re-applied over it.
+   *  Cleared on entering or leaving the level. */
   codeToolsDeclinedUnderFullAccess: boolean;
   imageToolsEnabled: boolean;
   deepResearchEnabled: boolean;
