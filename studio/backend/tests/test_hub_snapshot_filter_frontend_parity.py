@@ -23,7 +23,12 @@ from hub.utils.snapshot_filters import DUPLICATE_WEIGHT_FORMAT_PATTERNS
 
 _DATASET_SIZE_TS = (
     Path(__file__).resolve().parents[2]
-    / "frontend" / "src" / "features" / "hub" / "lib" / "dataset-size.ts"
+    / "frontend"
+    / "src"
+    / "features"
+    / "hub"
+    / "lib"
+    / "dataset-size.ts"
 )
 
 # Each backend fnmatch pattern and the fragment its frontend regex counterpart must contain.
@@ -53,9 +58,7 @@ def test_every_backend_duplicate_pattern_has_a_frontend_counterpart():
     )
     src = _ts_source()
     for pattern in DUPLICATE_WEIGHT_FORMAT_PATTERNS:
-        assert _TS_COUNTERPARTS[pattern] in src, (
-            f"{pattern} has no counterpart in dataset-size.ts"
-        )
+        assert _TS_COUNTERPARTS[pattern] in src, f"{pattern} has no counterpart in dataset-size.ts"
     # The index.json trio is one alternation branch in the regex rather than three patterns.
     assert r"\.index\.json$" in src
 
