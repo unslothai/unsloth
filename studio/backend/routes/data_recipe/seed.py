@@ -24,6 +24,7 @@ from auth.authentication import allow_ambient_hf_token
 from core.data_recipe.jsonable import to_preview_jsonable
 from hub.services.datasets.local_options import (
     _sharded_splits,
+    _IGNORED_DATA_FILENAMES,
     _MAX_MODULE_INFERENCE_FILES,
     _METADATA_FILENAMES,
     _SEP,
@@ -326,6 +327,17 @@ def _class_end(pattern: str, start: int) -> int:
     return closing if closing > start else -1
 
 
+def _ignored_by_the_loader(path: str, pattern: str) -> bool:
+    """Whether the loader drops this match by name, as dataset_info.json.
+
+    `datasets` removes those basenames from a glob's matches unless the pattern
+    is that file itself (`data_files.FILES_TO_IGNORE`), so a card's `*` covers
+    the shards and none of the metadata sitting beside them.
+    """
+    name = PurePosixPath(path).name
+    return name in _IGNORED_DATA_FILENAMES and PurePosixPath(pattern).name != name
+
+
 def _hidden_to_the_loader(path: str, pattern: str) -> bool:
     """Whether a match sits in a part the loader skips unless it was asked for.
 
@@ -365,7 +377,11 @@ def _files_under_patterns(
         f
         for f in data_files
         if any(
-            m.match(f) and not (as_the_loader_would and _hidden_to_the_loader(f, p))
+            m.match(f)
+            and not (
+                as_the_loader_would
+                and (_hidden_to_the_loader(f, p) or _ignored_by_the_loader(f, p))
+            )
             for p, m in matchers
         )
     ]

@@ -1157,6 +1157,17 @@ def test_seed_hf_path_collapses_a_parent_component_in_a_card_path(monkeypatch, t
     assert resolved == "datasets/org/repo/data/a.parquet"
 
 
+def test_seed_hf_path_leaves_loader_ignored_metadata_out_of_a_card_glob(monkeypatch, tmp_path):
+    seed_route = _load_seed_route(monkeypatch, tmp_path)
+    files = ["train.jsonl", "dataset_info.json"]
+    configs = [{"config_name": "default", "data_files": [{"split": "train", "path": "*"}]}]
+
+    resolved = seed_route._resolve_seed_hf_path("org/repo", files, "train", None, configs)
+
+    matched = seed_route._files_under_patterns([resolved[len("datasets/org/repo/") :]], files)
+    assert matched == ["train.jsonl"]
+
+
 def test_seed_hf_path_unions_an_exact_and_a_qualified_split_folder(monkeypatch, tmp_path):
     seed_route = _load_seed_route(monkeypatch, tmp_path)
     files = ["train/0.parquet", "sets/train_a/1.parquet", "sets/test_b/2.parquet"]
