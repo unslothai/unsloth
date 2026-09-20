@@ -250,7 +250,10 @@ async function loadConversationMessages(
   if (!hasParentIds) return raw;
   // Newest saved turn of the branch on screen: a reply still generating is not stored yet, and falling back to the newest leaf would export the reply it replaces.
   const storedIds = new Set(raw.map((m) => m.id));
-  const headId = liveBranch
+  // A branch with no message on it yet is not an opinion about which branch is on screen: switching
+  // chats sets remoteId before the history load refills the view, and exporting in that window used to
+  // hand back an empty file. No live branch and an empty one both mean "follow the newest turn".
+  const headId = liveBranch?.length
     ? ([...liveBranch].reverse().find((id) => storedIds.has(id)) ?? null)
     : undefined;
   return orderByParentChain(raw, { includeSiblings, headId }) as typeof raw;
