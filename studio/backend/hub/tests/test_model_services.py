@@ -4309,6 +4309,166 @@ def test_gguf_variants_partial_marker_overrides_size_only_downloaded(monkeypatch
     assert result.variants[0].partial is True
 
 
+def test_local_gguf_state_demotes_matching_main_until_companion_completes(monkeypatch, tmp_path):
+    repo_id = "Org/CompanionRepo"
+    quant = "UD-Q4_K_XL"
+    state_quant = quant.lower()
+    main_name = "Model-UD-Q4_K_XL.gguf"
+    companion_name = "MTP/mtp-Q8_0.gguf"
+    hub_cache = tmp_path / "hub"
+    repo_dir = hub_cache / "models--Org--CompanionRepo"
+    snapshot = repo_dir / "snapshots" / ("a" * 40)
+    snapshot.mkdir(parents = True)
+    (repo_dir / "blobs").mkdir()
+    (repo_dir / "blobs" / "main").write_bytes(b"m")
+    (repo_dir / "refs").mkdir()
+    (repo_dir / "refs" / "main").write_text("a" * 40, encoding = "utf-8")
+    (snapshot / main_name).write_bytes(b"m")
+    (snapshot / "Model-Q8_0.gguf").write_bytes(b"8")
+
+    monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path / "studio-state")
+    monkeypatch.setattr(inventory_scan, "hf_cache_roots", lambda **_kw: [hub_cache])
+    monkeypatch.setattr(
+        "utils.hf_cache_settings.get_hf_cache_paths",
+        lambda: SimpleNamespace(hub_cache = hub_cache),
+    )
+    inventory_scan.invalidate_hf_cache_scans()
+    assert download_manifest.write_manifest(
+        "model",
+        repo_id,
+        state_quant,
+        [
+            download_manifest.ExpectedFile(path = main_name, size = 1, sha256 = "main"),
+            download_manifest.ExpectedFile(
+                path = companion_name,
+                size = 2,
+                sha256 = "companion",
+            ),
+        ],
+        "xet",
+        hub_cache = hub_cache,
+    )
+    assert download_manifest.write_cancel_marker(
+        "model",
+        repo_id,
+        state_quant,
+        "xet",
+        hub_cache = hub_cache,
+    )
+
+    try:
+        partial = asyncio.run(
+            gguf_variants.get_gguf_variants_response(repo_id, prefer_local_cache = True)
+        )
+        rows = [row for row in partial.variants if row.quant.lower() == state_quant]
+        assert len(rows) == 1
+        row = rows[0]
+        assert row.filename == main_name
+        assert row.quant == quant
+        assert row.size_bytes == 1
+        assert row.download_size_bytes == 3
+        assert row.download_remaining_bytes == 2
+        assert row.downloaded is False
+        assert row.partial is True
+        assert row.partial_transport == "xet"
+        assert row.partial_resumable is False
+        assert partial.default_variant == "Q8_0"
+
+        download_manifest.clear_cancel_marker(
+            "model",
+            repo_id,
+            state_quant,
+            hub_cache = hub_cache,
+        )
+        companion = snapshot / companion_name
+        companion.parent.mkdir()
+        companion.write_bytes(b"mt")
+        inventory_scan.invalidate_hf_cache_scans()
+
+        completed = asyncio.run(
+            gguf_variants.get_gguf_variants_response(repo_id, prefer_local_cache = True)
+        )
+    finally:
+        inventory_scan.invalidate_hf_cache_scans()
+
+    completed_row = next(row for row in completed.variants if row.quant == quant)
+    assert completed_row.filename == main_name
+    assert completed_row.downloaded is True
+    assert completed_row.partial is False
+    assert completed_row.partial_transport is None
+    assert completed.default_variant == quant
+
+
+@pytest.mark.parametrize("pin_snapshot", [True, False])
+def test_complete_gguf_ignores_newer_state_but_keeps_state_only_quant(
+    monkeypatch, tmp_path, pin_snapshot
+):
+    repo_id = "Org/PinnedRepo"
+    hub_cache = tmp_path / "hub"
+    repo_dir = hub_cache / "models--Org--PinnedRepo"
+    old_snapshot = repo_dir / "snapshots" / "old"
+    new_snapshot = repo_dir / "snapshots" / "new"
+    old_snapshot.mkdir(parents = True)
+    new_snapshot.mkdir(parents = True)
+    (repo_dir / "blobs").mkdir()
+    (repo_dir / "refs").mkdir()
+    (repo_dir / "refs" / "main").write_text("new", encoding = "utf-8")
+    (old_snapshot / "Model-Q4_K_M.gguf").write_bytes(b"4")
+    (new_snapshot / "Model-Q8_0.gguf").write_bytes(b"8")
+    os.utime(old_snapshot, (1, 1))
+    os.utime(new_snapshot, (2, 2))
+
+    monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path / "studio-state")
+    monkeypatch.setattr(inventory_scan, "hf_cache_roots", lambda **_kw: [hub_cache])
+    monkeypatch.setattr(
+        "utils.hf_cache_settings.get_hf_cache_paths",
+        lambda: SimpleNamespace(hub_cache = hub_cache),
+    )
+    inventory_scan.invalidate_hf_cache_scans()
+    assert download_manifest.write_manifest(
+        "model",
+        repo_id,
+        "Q4_K_M",
+        [
+            download_manifest.ExpectedFile(
+                path = "Model-Q4_K_M.gguf",
+                size = 1,
+                sha256 = "newer-main",
+            )
+        ],
+        "xet",
+        hub_cache = hub_cache,
+    )
+    assert download_manifest.write_cancel_marker(
+        "model", repo_id, "Q4_K_M", "xet", hub_cache = hub_cache
+    )
+    assert download_manifest.write_cancel_marker(
+        "model", repo_id, "q5_k_m", "xet", hub_cache = hub_cache
+    )
+
+    try:
+        result = asyncio.run(
+            gguf_variants.get_gguf_variants_response(
+                repo_id,
+                prefer_local_cache = True,
+                local_path = str(old_snapshot) if pin_snapshot else None,
+            )
+        )
+    finally:
+        inventory_scan.invalidate_hf_cache_scans()
+
+    q4 = next(row for row in result.variants if row.quant == "Q4_K_M")
+    assert q4.filename == "Model-Q4_K_M.gguf"
+    assert q4.downloaded is True
+    assert q4.partial is False
+    q5_rows = [row for row in result.variants if row.quant.lower() == "q5_k_m"]
+    assert len(q5_rows) == 1
+    assert q5_rows[0].downloaded is False
+    assert q5_rows[0].partial is True
+    assert q5_rows[0].partial_transport == "xet"
+    assert result.default_variant == "Q4_K_M"
+
+
 def test_gguf_variants_scopes_partial_state_to_requested_cache(monkeypatch, tmp_path):
     async def _run_inline(fn, *args, **kwargs):
         return fn(*args, **kwargs)
