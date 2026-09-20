@@ -11,7 +11,7 @@ import time
 from loggers import get_logger
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Union
 import shutil
 import tempfile
 from utils.paths.path_utils import is_appledouble_metadata
@@ -737,7 +737,7 @@ def snapshot_is_loadable(snapshot, model_name: str) -> bool:
 _METAL_QUEUE_DEAD_MARKERS = ("gpu timeout", "submissionsignored")
 
 
-def is_metal_queue_dead(error: Exception) -> bool:
+def is_metal_queue_dead(error: Union[Exception, str]) -> bool:
     """The watchdog kill and the refusal after it -- not mlx's ``Command buffer execution
     failed:`` wrapper, which also carries a recoverable ``Insufficient Memory``."""
     text = str(error).lower()

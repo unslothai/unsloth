@@ -29,7 +29,7 @@ from core.inference.audio_errors import (
     AudioGenerationCancelledError,
 )
 from utils.hardware import get_device, prepare_gpu_selection
-from utils.utils import hf_env_offline
+from utils.utils import hf_env_offline, is_metal_queue_dead
 
 # Re-exported from the shared helper so GGUF, training and inference share one type. Via PEP 562, not a module-level
 # import: resolving the name imports unsloth_zoo, hence torch, and routes/inference.py imports this module at startup
@@ -173,6 +173,14 @@ def _redact_worker_output(text: str) -> str:
     except Exception:  # noqa: BLE001
         pass
     return _ABSOLUTE_PATH_RE.sub(_shorten_path, redacted)
+
+
+class _WorkerMailbox(queue.Queue):
+    """Carries the worker it was opened for, which it outlives."""
+
+    def __init__(self, worker):
+        super().__init__()
+        self.worker = worker
 
 
 class _LoadCancelled(Exception):
@@ -983,6 +991,36 @@ class InferenceOrchestrator:
     def _ensure_subprocess_alive(self) -> bool:
         return self._proc is not None and self._proc.is_alive()
 
+    def _observe_response(self, resp, worker):
+        """Retire ``worker`` if its Metal queue is dead, and pass the response on. Nothing else
+        reaps the process, and a cancelled request would discard the fault before any error
+        handler saw it."""
+        detail = resp.get("error") or ""
+        if worker is None or not is_metal_queue_dead(detail):
+            return resp
+        # the lock a load publishes under; ``worker`` may be stale by the time it is taken
+        with self._subprocess_shutdown_lock:
+            if self._proc is not worker:
+                return resp
+            logger.error("Retiring the inference worker: its GPU queue is dead (%s)", detail)
+            if self._shutdown_subprocess_locked(5):  # a survivor still holds the model
+                self.active_model_name = None
+                self.models.clear()
+        return resp
+
+    def _observe_off_thread(self, resp, worker) -> None:
+        """Observe without waiting on a consumer: a stream that ends before its last read leaves
+        the fault in a mailbox nobody empties, and nothing else reaps the worker. Off the
+        dispatcher thread because retiring joins it."""
+        if worker is None or not is_metal_queue_dead(resp.get("error") or ""):
+            return
+        threading.Thread(
+            target = self._observe_response,
+            args = (resp, worker),
+            daemon = True,
+            name = "inference-retire-worker",
+        ).start()
+
     def _subprocess_crash_message(
         self,
         context: str,
@@ -1045,12 +1083,32 @@ class InferenceOrchestrator:
         except (OSError, ValueError) as exc:
             raise RuntimeError(f"Failed to send command to subprocess: {exc}")
 
-    def _read_resp(self, timeout: float = 1.0) -> Optional[dict]:
-        """Read a response from the subprocess (non-blocking with timeout)."""
-        if self._resp_queue is None:
+    def _read_mailbox(
+        self,
+        mailbox: _WorkerMailbox,
+        timeout: Optional[float] = None,
+    ):
+        """Take one routed response. The dispatcher fills mailboxes off the worker's queue, so a
+        mailbox read may be the first sight of one."""
+        resp = mailbox.get_nowait() if timeout is None else mailbox.get(timeout = timeout)
+        return self._observe_response(resp, mailbox.worker)
+
+    def _read_resp(
+        self,
+        timeout: float = 1.0,
+        observe: bool = True,
+    ) -> Optional[dict]:
+        """Read a response from the subprocess (non-blocking with timeout). ``observe = False``
+        leaves retiring to the caller, for a reader that must first deliver what it took."""
+        # Handle before queue: reversed, a reload between the two would blame the replacement
+        # for its predecessor's fault.
+        worker = self._proc
+        resp_queue = self._resp_queue
+        if resp_queue is None:
             return None
         try:
-            return self._resp_queue.get(timeout = timeout)
+            resp = resp_queue.get(timeout = timeout)
+            return self._observe_response(resp, worker) if observe else resp
         except queue.Empty:
             return None
         except (EOFError, OSError, ValueError):
@@ -1144,22 +1202,23 @@ class InferenceOrchestrator:
 
         Returns (read_one, drain, release).
         """
-        mailbox: queue.Queue = queue.Queue()
+        mailbox = _WorkerMailbox(self._proc)
         with self._mailbox_lock:
             self._direct_mailboxes[request_id] = mailbox
 
         def read_one(timeout: float = 1.0):
             try:
-                return mailbox.get_nowait()
+                return self._read_mailbox(mailbox)
             except queue.Empty:
                 pass
             thread = self._dispatcher_thread
             if thread is not None and thread.is_alive():
                 try:
-                    return mailbox.get(timeout = timeout)
+                    return self._read_mailbox(mailbox, timeout)
                 except queue.Empty:
                     return None
-            resp = self._read_resp(timeout = timeout)
+            worker = self._proc  # handle before queue, as in _read_resp
+            resp = self._read_resp(timeout = timeout, observe = False)
             if resp is None:
                 return None
             rid = resp.get("request_id")
@@ -1174,9 +1233,12 @@ class InferenceOrchestrator:
                         else:
                             self._mark_worker_started(owner)
                     other.put(resp)
+                # Only once it has been handed over: retiring clears the registry, so observing
+                # first would leave the request this fault belongs to waiting out its read timeout.
+                self._observe_response(resp, worker)
                 # Outside the mailbox check on purpose: a released request's late frames go to nobody.
                 return None
-            return resp
+            return self._observe_response(resp, worker)
 
         def drain(timeout: float = 5.0) -> bool:
             deadline = time.monotonic() + timeout
@@ -1408,6 +1470,7 @@ class InferenceOrchestrator:
             if self._resp_queue is None:
                 break
 
+            worker = self._proc  # handle before queue, as in _read_resp
             try:
                 resp = self._resp_queue.get(timeout = _DISPATCH_POLL_INTERVAL)
             except queue.Empty:
@@ -1426,6 +1489,7 @@ class InferenceOrchestrator:
                     continue
 
                 # Route to mailbox if a matching request_id exists
+                delivered = False
                 if rid:
                     with self._mailbox_lock:
                         mbox = self._mailboxes.get(rid) or self._direct_mailboxes.get(rid)
@@ -1440,13 +1504,17 @@ class InferenceOrchestrator:
                             else:
                                 self._mark_worker_started(owner)
                         mbox.put(resp)
-                        continue
+                        delivered = True
 
-                logger.debug(
-                    "Dispatcher: no mailbox for request_id=%s type=%s, dropping",
-                    rid,
-                    rtype,
-                )
+                if not delivered:
+                    logger.debug(
+                        "Dispatcher: no mailbox for request_id=%s type=%s, dropping",
+                        rid,
+                        rtype,
+                    )
+                # Every response, delivered or not: a mailbox its stream has abandoned is emptied
+                # by nobody, so a fault left in one would never retire the worker that raised it.
+                self._observe_off_thread(resp, worker)
             except Exception:
                 logger.exception("Inference dispatcher: failed to route a response; continuing")
                 continue
@@ -1545,7 +1613,7 @@ class InferenceOrchestrator:
             video_b64 = video,
         )
 
-        mailbox: queue.Queue = queue.Queue()
+        mailbox = _WorkerMailbox(self._proc)
         with self._mailbox_lock:
             # _unload_pending alone is not enough: an unload that ran fully since _start_dispatcher clears it in its
             # finally and stops the dispatcher, so it reads False here though the dispatcher is gone and the model
@@ -1605,7 +1673,7 @@ class InferenceOrchestrator:
 
         def read_mailbox(timeout):
             try:
-                return mailbox.get(timeout = timeout)
+                return self._read_mailbox(mailbox, timeout)
             except queue.Empty:
                 return None
 
@@ -1629,15 +1697,15 @@ class InferenceOrchestrator:
 
     def _drain_mailbox(
         self,
-        mailbox: queue.Queue,
+        mailbox: _WorkerMailbox,
         timeout: float = 5.0,
     ) -> None:
         """Drain a mailbox until gen_done/gen_error, discarding tokens."""
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             try:
-                resp = mailbox.get(
-                    timeout = min(_DISPATCH_POLL_INTERVAL, deadline - time.monotonic())
+                resp = self._read_mailbox(
+                    mailbox, min(_DISPATCH_POLL_INTERVAL, deadline - time.monotonic())
                 )
             except queue.Empty:
                 continue

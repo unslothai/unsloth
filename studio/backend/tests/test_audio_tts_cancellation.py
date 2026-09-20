@@ -86,6 +86,7 @@ def _bare_orchestrator():
     orchestrator._dispatcher_thread = None
     orchestrator._dispatcher_stop = threading.Event()
     orchestrator._dispatcher_lifecycle_lock = threading.Lock()
+    orchestrator._subprocess_shutdown_lock = threading.Lock()
     orchestrator._mailbox_lock = threading.Lock()
     orchestrator._mailboxes = {}
     orchestrator._direct_mailboxes = {}
@@ -232,6 +233,81 @@ def test_audio_response_cancellation_signals_worker_and_drains_terminal_response
     assert released == [True]
     assert orchestrator._active_cancel_events == []
     assert orchestrator._executing_cancel_events == []
+
+
+_GPU_TIMEOUT = (
+    "[METAL] Command buffer execution failed: Caused GPU Timeout Error "
+    "(00000002:kIOGPUCommandBufferCallbackErrorTimeout)"
+)
+
+
+class _WorkerQueue:
+    """Replies to whichever request was just sent; a step is a response or a callable."""
+
+    def __init__(self, sent, *steps):
+        self._sent = sent
+        self._steps = list(steps)
+
+    def get(self, timeout = None):
+        if not self._steps:
+            raise queue.Empty
+        step = self._steps.pop(0)
+        resp = step() if callable(step) else step
+        if resp is None:
+            raise queue.Empty
+        return {**resp, "request_id": self._sent[0]["request_id"]}
+
+
+def _watch_teardown(orchestrator, monkeypatch):
+    torn_down = []
+
+    def shutdown(timeout):
+        torn_down.append(timeout)
+        orchestrator._proc = None
+        return True
+
+    monkeypatch.setattr(orchestrator, "_shutdown_subprocess_locked", shutdown)
+    return torn_down
+
+
+@pytest.mark.parametrize("rtype", ["audio_error", "error"])
+def test_a_dead_gpu_queue_during_audio_generation_retires_the_worker(rtype, monkeypatch):
+    """TTS reads the worker itself, and either error reply can carry the fault."""
+    orchestrator = _bare_orchestrator()
+    monkeypatch.setattr(orchestrator, "_ensure_subprocess_alive", lambda: True)
+    sent = []
+    monkeypatch.setattr(orchestrator, "_send_cmd", lambda cmd: sent.append(cmd))
+    torn_down = _watch_teardown(orchestrator, monkeypatch)
+    orchestrator._resp_queue = _WorkerQueue(sent, {"type": rtype, "error": _GPU_TIMEOUT})
+
+    with pytest.raises(RuntimeError, match = "GPU Timeout"):
+        orchestrator.generate_audio_response("hello")
+
+    assert torn_down, "a dead GPU queue must retire the worker"
+    assert orchestrator.active_model_name is None
+    assert orchestrator.models == {}
+
+
+def test_a_cancelled_audio_request_still_retires_the_poisoned_worker(monkeypatch):
+    """The cancelled request reports cancellation, never the fault."""
+    orchestrator = _bare_orchestrator()
+    monkeypatch.setattr(orchestrator, "_ensure_subprocess_alive", lambda: True)
+    sent = []
+    monkeypatch.setattr(orchestrator, "_send_cmd", lambda cmd: sent.append(cmd))
+    torn_down = _watch_teardown(orchestrator, monkeypatch)
+    caller_cancel = threading.Event()
+    orchestrator._resp_queue = _WorkerQueue(
+        sent,
+        {"type": "audio_started"},
+        caller_cancel.set,
+        {"type": "audio_error", "error": _GPU_TIMEOUT},
+    )
+
+    with pytest.raises(RuntimeError, match = "cancel"):
+        orchestrator.generate_audio_response("hello", cancel_event = caller_cancel)
+
+    assert torn_down
+    assert orchestrator.active_model_name is None
 
 
 def test_audio_response_cancellation_bounds_an_unresponsive_worker(monkeypatch):
