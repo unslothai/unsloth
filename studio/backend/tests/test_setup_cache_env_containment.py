@@ -1520,8 +1520,9 @@ def test_a_file_where_the_config_dir_belongs_declines_the_pin_on_windows_too(mon
 
     monkeypatch.setattr(sr.os, "lstat", windows_shaped_lstat)
 
-    assert sr._nothing_at(config / "matplotlibrc") is False, \
-        "a file where the config dir belongs read as 'nothing there'"
+    assert (
+        sr._nothing_at(config / "matplotlibrc") is False
+    ), "a file where the config dir belongs read as 'nothing there'"
     # A genuinely empty, genuinely present directory must still read as empty, or the fix above
     # would decline every pin and the guard would stop guarding anything.
     empty = tmp_path / "really-empty"
