@@ -135,7 +135,11 @@ def test_returns_none_for_non_gguf(tmp_path: Path):
     assert read_gguf_general_metadata(str(p)) is None
 
 
-def _write_legacy_q2_offset_mismatch_gguf(path: Path) -> Path:
+def _write_legacy_q2_offset_mismatch_gguf(
+    path: Path,
+    *,
+    mismatch_tensor: str = "blk.0.weight",
+) -> Path:
     """Two-tensor header where the second offset matches legacy Q2_0 packing, not mainline."""
     _GGML_TYPE_Q2_0 = 42
     _GGML_TYPE_F32 = 0
@@ -145,7 +149,7 @@ def _write_legacy_q2_offset_mismatch_gguf(path: Path) -> Path:
     tensor_info = b""
     for name, ggml_type, ne, offset in (
         ("token_embd.weight", _GGML_TYPE_Q2_0, (64, 64), 0),
-        ("blk.0.weight", _GGML_TYPE_F32, (1,), legacy_running),
+        (mismatch_tensor, _GGML_TYPE_F32, (1,), legacy_running),
     ):
         tensor_info += _enc_string(name)
         tensor_info += struct.pack("<I", len(ne))
@@ -162,6 +166,15 @@ def _write_legacy_q2_offset_mismatch_gguf(path: Path) -> Path:
 def test_gguf_mainline_q2_offset_mismatch_detects_legacy_packing(tmp_path: Path):
     p = _write_legacy_q2_offset_mismatch_gguf(tmp_path / "bonsai-legacy.gguf")
     assert gguf_mainline_q2_offset_mismatch(str(p)) == "blk.0.weight"
+
+
+def test_gguf_mainline_q2_probe_on_reported_dspark_q4_1_filename(tmp_path: Path):
+    """#11259: sidecar is named *-dspark-Q4_1.gguf but legacy Q2_0 packing trips on dspark.fc.weight."""
+    p = _write_legacy_q2_offset_mismatch_gguf(
+        tmp_path / "Ternary-Bonsai-27B-dspark-Q4_1.gguf",
+        mismatch_tensor = "dspark.fc.weight",
+    )
+    assert gguf_mainline_q2_offset_mismatch(str(p)) == "dspark.fc.weight"
 
 
 def test_prism_legacy_q2_message_names_the_tensor():

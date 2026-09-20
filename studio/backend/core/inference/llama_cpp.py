@@ -20248,15 +20248,21 @@ class LlamaCppBackend:
             re.IGNORECASE,
         )
         if tensor_offset_mismatch:
-            from utils.models.gguf_metadata import prism_legacy_q2_gguf_user_message
-            return LlamaCppBackend._with_startup_diagnostics(
-                prism_legacy_q2_gguf_user_message(
-                    tensor_name = tensor_offset_mismatch.group(1),
-                ),
-                output,
-                log_path,
-                secrets,
+            from utils.models.gguf_metadata import (
+                gguf_mainline_q2_offset_mismatch,
+                prism_legacy_q2_gguf_user_message,
             )
+
+            legacy_tensor: Optional[str] = None
+            if gguf_path and Path(gguf_path).is_file():
+                legacy_tensor = gguf_mainline_q2_offset_mismatch(gguf_path)
+            if legacy_tensor is not None:
+                return LlamaCppBackend._with_startup_diagnostics(
+                    prism_legacy_q2_gguf_user_message(tensor_name = legacy_tensor),
+                    output,
+                    log_path,
+                    secrets,
+                )
 
         if "invalid magic characters" in lowered:
             # Not necessarily the main model: the projector and drafter report this too.
