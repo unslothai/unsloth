@@ -15825,6 +15825,27 @@ def _check_signal_escape_patterns(code: str):
         "httpx.request",
         "urllib.request.urlopen",
         "urllib.request.Request",
+        # Session-bound equivalents, synthesised for `s = requests.Session(); s.post(...)`.
+        "requests.Session.post",
+        "requests.Session.put",
+        "requests.Session.patch",
+        "requests.Session.delete",
+        "requests.Session.request",
+        "httpx.Client.post",
+        "httpx.Client.put",
+        "httpx.Client.patch",
+        "httpx.Client.delete",
+        "httpx.Client.request",
+        "httpx.AsyncClient.post",
+        "httpx.AsyncClient.put",
+        "httpx.AsyncClient.patch",
+        "httpx.AsyncClient.delete",
+        "httpx.AsyncClient.request",
+        "aiohttp.ClientSession.post",
+        "aiohttp.ClientSession.put",
+        "aiohttp.ClientSession.patch",
+        "aiohttp.ClientSession.delete",
+        "aiohttp.ClientSession.request",
     )
     _UPLOAD_HF_FQ = (
         "huggingface_hub.upload_file",
@@ -16011,6 +16032,219 @@ def _check_signal_escape_patterns(code: str):
         if h in _TRUSTED_PUBLIC_HOST_LITERALS:
             return True
         return any(h.endswith(s) for s in _TRUSTED_PUBLIC_HOST_SUFFIXES)
+
+    # The FQ name the visitor builds from the call site is only canonical when the call is written
+    # out in full. `import requests as r; r.get(...)`, `from requests import get as fetch;
+    # fetch(...)` and `s = requests.Session(); s.get(...)` all produce a name no prefix in
+    # _NETWORK_FQ_PREFIXES matches, so the host allowlist never ran on them. These tables let an
+    # aliased or session-bound call be rewritten to its canonical name before any policy check.
+    _NET_MODULES = frozenset(
+        {
+            "requests",
+            "requests.sessions",
+            "httpx",
+            "urllib",
+            "urllib.request",
+            "urllib3",
+            "socket",
+            "http",
+            "http.client",
+            "aiohttp",
+        }
+    )
+    # Constructor FQ -> the canonical prefix its instance methods are attributed to. The synthesised
+    # name ("requests.Session.get") is already covered by the "requests.Session" entry in
+    # _NETWORK_FQ_PREFIXES, since that test is a startswith.
+    _SESSION_FACTORY_FQ = {
+        "requests.Session": "requests.Session",
+        "requests.sessions.Session": "requests.Session",
+        "httpx.Client": "httpx.Client",
+        "httpx.AsyncClient": "httpx.AsyncClient",
+        "aiohttp.ClientSession": "aiohttp.ClientSession",
+    }
+    _URL_KWARGS = ("url", "fullurl")
+    _HTTP_METHOD_NAMES = frozenset(
+        {"get", "post", "put", "patch", "delete", "head", "options", "request"}
+    )
+    _URL_OWNERS = frozenset(
+        {
+            "requests",
+            "httpx",
+            "requests.Session",
+            "httpx.Client",
+            "httpx.AsyncClient",
+            "aiohttp.ClientSession",
+        }
+    )
+    _URL_HOST_RE = re.compile(r"^\w+://([^/?#]+)(?:[/?#]|$)")
+
+    def _takes_url_first_arg(fq: str) -> bool:
+        """True when the call's first positional argument (or url= / fullurl=) is the target URL.
+        Constructors that take no URL (`requests.Session()`, `socket.socket(...)`) are excluded, so
+        an unresolvable argument there is never mistaken for a hidden target."""
+        if fq in ("urllib.request.urlopen", "urllib.request.urlretrieve", "urllib.request.Request"):
+            return True
+        owner, _, method = fq.rpartition(".")
+        return bool(owner) and method in _HTTP_METHOD_NAMES and owner in _URL_OWNERS
+
+    def _canonical_fq(func_node, bindings) -> str:
+        """Dotted call name, with import aliases and session variables resolved to real names."""
+        parts: list[str] = []
+        cur = func_node
+        while isinstance(cur, ast.Attribute):
+            parts.insert(0, cur.attr)
+            cur = cur.value
+        if isinstance(cur, ast.Name):
+            parts.insert(0, cur.id)
+        if not parts:
+            return ""
+        head = parts[0]
+        if len(parts) == 1:
+            return bindings.funcs.get(head, head)
+        for table in (bindings.sessions, bindings.modules, bindings.funcs):
+            if head in table:
+                return ".".join([table[head]] + parts[1:])
+        return ".".join(parts)
+
+    class _NameBindings(ast.NodeVisitor):
+        """Import aliases and single-assignment string / session bindings for the module.
+
+        Imports are collected first so an alias is known before the assignment that uses it. A name
+        bound more than once, or bound by a loop / with / except / comprehension target, a function
+        parameter or a def, resolves to nothing: sandboxed code must not be able to launder a
+        blocked URL through a rebind."""
+
+        def __init__(self):
+            self.modules: dict[str, str] = {}
+            self.funcs: dict[str, str] = {}
+            self.strings: dict[str, ast.AST] = {}
+            self.sessions: dict[str, str] = {}
+            self._counts: dict[str, int] = {}
+            self._candidates: dict[str, ast.AST] = {}
+
+        def _mark(self, name: "str | None") -> None:
+            if name:
+                self._counts[name] = self._counts.get(name, 0) + 1
+
+        def _bind(self, target, value) -> None:
+            if isinstance(target, ast.Name):
+                self._mark(target.id)
+                self._candidates.setdefault(target.id, value)
+            else:
+                for sub in ast.walk(target):
+                    if isinstance(sub, ast.Name):
+                        self._mark(sub.id)
+
+        def collect(self, tree) -> "_NameBindings":
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Import):
+                    for alias in node.names:
+                        self._mark(alias.asname or alias.name.split(".")[0])
+                        # Without `as`, the bound name is already the canonical head of the FQ name.
+                        if alias.asname and alias.name in _NET_MODULES:
+                            self.modules[alias.asname] = alias.name
+                elif isinstance(node, ast.ImportFrom):
+                    for alias in node.names:
+                        local = alias.asname or alias.name
+                        self._mark(local)
+                        if node.level or node.module is None:
+                            continue
+                        fq = f"{node.module}.{alias.name}"
+                        if fq in _NET_MODULES:
+                            self.modules[local] = fq
+                        elif node.module in _NET_MODULES:
+                            self.funcs[local] = fq
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Assign):
+                    for target in node.targets:
+                        self._bind(target, node.value)
+                elif isinstance(node, (ast.AnnAssign, ast.NamedExpr)):
+                    if node.value is not None:
+                        self._bind(node.target, node.value)
+                elif isinstance(node, ast.AugAssign):
+                    self._bind(node.target, None)
+                elif isinstance(node, (ast.For, ast.AsyncFor)):
+                    self._bind(node.target, None)
+                elif isinstance(node, ast.comprehension):
+                    self._bind(node.target, None)
+                elif isinstance(node, ast.withitem):
+                    if node.optional_vars is not None:
+                        self._bind(node.optional_vars, None)
+                elif isinstance(node, ast.ExceptHandler):
+                    self._mark(node.name)
+                elif isinstance(node, ast.arg):
+                    self._mark(node.arg)
+                elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                    self._mark(node.name)
+                elif isinstance(node, (ast.Global, ast.Nonlocal)):
+                    for name in node.names:
+                        self._mark(name)
+            for name, value in self._candidates.items():
+                if value is None or self._counts.get(name, 0) != 1:
+                    continue
+                if isinstance(value, ast.Call):
+                    factory = _SESSION_FACTORY_FQ.get(_canonical_fq(value.func, self))
+                    if factory is not None:
+                        self.sessions[name] = factory
+                    continue
+                self.strings[name] = value
+            return self
+
+    def _static_str_prefix(node, bindings, seen = None) -> "tuple[str, bool]":
+        """``(text, is_complete)``: the longest statically known leading part of *node* as a string,
+        and whether the whole value is known. An f-string keeps its literal prefix so
+        ``f"https://duckduckgo.com/?q={q}"`` still resolves to a host."""
+        if seen is None:
+            seen = set()
+        if isinstance(node, ast.Constant):
+            return (node.value, True) if isinstance(node.value, str) else ("", False)
+        if isinstance(node, ast.JoinedStr):
+            out = ""
+            for part in node.values:
+                if isinstance(part, ast.Constant) and isinstance(part.value, str):
+                    out += part.value
+                    continue
+                if (
+                    isinstance(part, ast.FormattedValue)
+                    and part.format_spec is None
+                    and part.conversion in (-1, None)
+                ):
+                    inner, complete = _static_str_prefix(part.value, bindings, seen)
+                    if complete:
+                        out += inner
+                        continue
+                return out, False
+            return out, True
+        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+            left, left_complete = _static_str_prefix(node.left, bindings, seen)
+            if not left_complete:
+                return left, False
+            right, right_complete = _static_str_prefix(node.right, bindings, seen)
+            return left + right, right_complete
+        if isinstance(node, ast.Name):
+            if node.id in seen:
+                return "", False
+            seen.add(node.id)
+            bound = bindings.strings.get(node.id)
+            if bound is None:
+                return "", False
+            return _static_str_prefix(bound, bindings, seen)
+        return "", False
+
+    def _host_from_url_node(node, bindings) -> "tuple[str | None, bool]":
+        """``(host, resolved)`` for a URL argument. ``resolved`` is False only when the target
+        cannot be pinned down at all, which is what makes the allowlist unenforceable."""
+        text, complete = _static_str_prefix(node, bindings)
+        if text:
+            m = _URL_HOST_RE.match(text)
+            if m:
+                return m.group(1), True
+        if complete:
+            # A fully known string with no scheme is not a URL the host policy can act on.
+            return None, True
+        return None, False
+
+    _bindings = _NameBindings().collect(tree)
 
     def _call_is_upload_shape(node: ast.Call, fq: str) -> bool:
         """True for statically obvious upload shapes (files=, data=open(), bytes literal)."""
@@ -16257,14 +16491,7 @@ def _check_signal_escape_patterns(code: str):
 
     class NetworkAndIoVisitor(ast.NodeVisitor):
         def visit_Call(self, node):
-            parts: list[str] = []
-            cur = node.func
-            while isinstance(cur, ast.Attribute):
-                parts.insert(0, cur.attr)
-                cur = cur.value
-            if isinstance(cur, ast.Name):
-                parts.insert(0, cur.id)
-            fq = ".".join(parts) if parts else ""
+            fq = _canonical_fq(node.func, _bindings)
 
             hf_upload_name = _method_call_hf_upload_name(node)
             if hf_upload_name is not None:
@@ -16282,12 +16509,10 @@ def _check_signal_escape_patterns(code: str):
             if isinstance(node.func, ast.Attribute) and node.func.attr == "connect" and node.args:
                 a0 = node.args[0]
                 host_lit = None
-                if isinstance(a0, ast.Tuple) and a0.elts:
-                    e0 = a0.elts[0]
-                    if isinstance(e0, ast.Constant) and isinstance(e0.value, str):
-                        host_lit = e0.value
-                elif isinstance(a0, ast.Constant) and isinstance(a0.value, str):
-                    host_lit = a0.value
+                host_node = a0.elts[0] if isinstance(a0, ast.Tuple) and a0.elts else a0
+                text, complete = _static_str_prefix(host_node, _bindings)
+                if complete and text:
+                    host_lit = text
                 if host_lit:
                     if _is_metadata_host(host_lit):
                         network_calls.append(
@@ -16320,23 +16545,35 @@ def _check_signal_escape_patterns(code: str):
                         }
                     )
 
-                # 2) Extract literal host (URL string or (host, port) tuple).
+                # 2) Resolve the host (URL string, bound variable, or (host, port) tuple).
                 host_arg = None
-                url_arg = None
-                if node.args:
-                    a0 = node.args[0]
-                    if isinstance(a0, ast.Constant) and isinstance(a0.value, str):
-                        url_arg = a0.value
-                    elif isinstance(a0, ast.Tuple) and a0.elts:
-                        e0 = a0.elts[0]
-                        if isinstance(e0, ast.Constant) and isinstance(e0.value, str):
-                            host_arg = e0.value
-                if url_arg and host_arg is None:
-                    m = re.match(r"^\w+://([^/?#]+)", url_arg)
-                    if m:
-                        host_arg = m.group(1)
+                target_resolved = True
+                url_node = node.args[0] if node.args else None
+                for kw in node.keywords or []:
+                    if kw.arg in _URL_KWARGS:
+                        url_node = kw.value
+                        break
+                if isinstance(url_node, ast.Tuple) and url_node.elts:
+                    text, complete = _static_str_prefix(url_node.elts[0], _bindings)
+                    host_arg = text if (complete and text) else None
+                elif url_node is not None:
+                    host_arg, target_resolved = _host_from_url_node(url_node, _bindings)
 
-                if host_arg:
+                if host_arg is None and not target_resolved and _takes_url_first_arg(fq):
+                    # The allowlist is exhaustive, so a target that cannot be read off the source is
+                    # a target it cannot vouch for: env vars, user input and runtime-built hosts all
+                    # land here. A literal or an f-string whose host part is literal still passes.
+                    network_calls.append(
+                        {
+                            "type": "opaque_url_blocked",
+                            "line": getattr(node, "lineno", -1),
+                            "description": (
+                                "Blocked: request target is computed at runtime; "
+                                "use a literal URL on an allowed informational source"
+                            ),
+                        }
+                    )
+                elif host_arg:
                     if _is_metadata_host(host_arg):
                         network_calls.append(
                             {

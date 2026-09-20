@@ -135,9 +135,13 @@ class TestUntrustedHostBlock:
     def test_untrusted_host_block_blocked(self, code):
         _blocked(code, expect_phrase = "Blocked: host not in sandbox allowlist")
 
-    def test_dynamic_url_not_statically_blocked(self):
-        # Static AST can't resolve runtime URLs; bash blocklist is the fallback.
-        _ok('import requests; url = "https://example.com/"; requests.get(url)')
+    def test_url_bound_to_a_variable_is_resolved(self):
+        # A single-assignment string binding is followed, so binding the URL to a name no longer
+        # walks past the allowlist.
+        _blocked(
+            'import requests; url = "https://example.com/"; requests.get(url)',
+            expect_phrase = "Blocked: host not in sandbox allowlist",
+        )
 
 
 class TestHostNormalization:
@@ -2423,3 +2427,205 @@ class TestHfUploadEnvAndSecretLeakBlock:
             ' repo_id="r", api_key="abc")',
             expect_phrase = "HF upload api_key= cannot be set",
         )
+
+
+_METADATA_URL = "http://169.254.169.254/latest/meta-data/"
+
+
+class TestAliasedNetworkCalls:
+    """An aliased import or a session object used to produce a call name no prefix matched, so the
+    host allowlist never ran on it."""
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            pytest.param(
+                f'import requests as r\nr.get("{_METADATA_URL}")', id = "module_alias"
+            ),
+            pytest.param(
+                f'from requests import get as fetch\nfetch("{_METADATA_URL}")',
+                id = "from_import_alias",
+            ),
+            pytest.param(
+                f'from requests import get\nget("{_METADATA_URL}")', id = "from_import_bare"
+            ),
+            pytest.param(
+                f'import urllib.request as ur\nur.urlopen("{_METADATA_URL}")',
+                id = "urllib_module_alias",
+            ),
+            pytest.param(
+                f'from urllib import request as rq\nrq.urlopen("{_METADATA_URL}")',
+                id = "urllib_submodule_alias",
+            ),
+            pytest.param(
+                f'import httpx as hx\nhx.get("{_METADATA_URL}")', id = "httpx_module_alias"
+            ),
+        ],
+    )
+    def test_aliased_call_still_policed_blocked(self, code):
+        _blocked(code, expect_phrase = "Blocked: cloud-metadata host")
+
+    def test_alias_to_untrusted_host_blocked(self):
+        _blocked(
+            'import requests as r\nr.get("https://example.com/")',
+            expect_phrase = "Blocked: host not in sandbox allowlist",
+        )
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            pytest.param(
+                'import requests as r\nr.get("https://huggingface.co/api/models")',
+                id = "module_alias_allowed",
+            ),
+            pytest.param(
+                'from requests import get as fetch\nfetch("https://en.wikipedia.org/wiki/Foo")',
+                id = "from_import_alias_allowed",
+            ),
+        ],
+    )
+    def test_aliased_call_to_allowed_host_ok(self, code):
+        _ok(code)
+
+
+class TestSessionBoundNetworkCalls:
+    @pytest.mark.parametrize(
+        "code",
+        [
+            pytest.param(
+                f'import requests\ns = requests.Session()\ns.get("{_METADATA_URL}")',
+                id = "requests_session",
+            ),
+            pytest.param(
+                f'import requests as r\nses = r.Session()\nses.post("{_METADATA_URL}")',
+                id = "aliased_requests_session",
+            ),
+            pytest.param(
+                f'from requests.sessions import Session\ns = Session()\ns.get("{_METADATA_URL}")',
+                id = "session_from_import",
+            ),
+            pytest.param(
+                f'import httpx\nc = httpx.Client()\nc.get("{_METADATA_URL}")',
+                id = "httpx_client",
+            ),
+            pytest.param(
+                f'import httpx\nc = httpx.AsyncClient()\nc.get("{_METADATA_URL}")',
+                id = "httpx_async_client",
+            ),
+        ],
+    )
+    def test_session_method_policed_blocked(self, code):
+        _blocked(code, expect_phrase = "Blocked: cloud-metadata host")
+
+    def test_session_upload_shape_blocked(self):
+        _blocked(
+            "import requests\n"
+            "s = requests.Session()\n"
+            's.post("https://huggingface.co/upload", files={"f": open("a.bin", "rb")})',
+            expect_phrase = "Blocked: file upload disallowed in sandbox",
+        )
+
+    def test_session_to_allowed_host_ok(self):
+        _ok(
+            "import requests\n"
+            "s = requests.Session()\n"
+            's.get("https://huggingface.co/api/models")'
+        )
+
+
+class TestUrlBindingResolution:
+    @pytest.mark.parametrize(
+        "code",
+        [
+            pytest.param(
+                f'import requests\nu = "{_METADATA_URL}"\nrequests.get(u)', id = "bound_literal"
+            ),
+            pytest.param(
+                f'import requests\nrequests.get(url = "{_METADATA_URL}")', id = "url_keyword"
+            ),
+            pytest.param(
+                'import requests\nh = "169.254.169.254"\nrequests.get(f"http://{h}/latest")',
+                id = "fstring_bound_host",
+            ),
+            pytest.param(
+                'import requests\nbase = "http://169.254.169.254"\nrequests.get(base + "/latest")',
+                id = "concatenated_literal",
+            ),
+            pytest.param(
+                f'import requests\ns = requests.Session()\nu = "{_METADATA_URL}"\ns.get(u)',
+                id = "session_with_bound_url",
+            ),
+        ],
+    )
+    def test_bound_url_resolved_blocked(self, code):
+        _blocked(code, expect_phrase = "Blocked: cloud-metadata host")
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            pytest.param(
+                'import requests\nu = "https://huggingface.co/api/models"\nrequests.get(u)',
+                id = "bound_allowed_literal",
+            ),
+            pytest.param(
+                'import requests\nq = input()\nrequests.get(f"https://duckduckgo.com/html/?q={q}")',
+                id = "fstring_literal_host_dynamic_query",
+            ),
+            pytest.param(
+                'import requests\nbase = "https://api.github.com"\nrequests.get(base + "/repos/x")',
+                id = "concatenated_allowed_literal",
+            ),
+        ],
+    )
+    def test_bound_url_to_allowed_host_ok(self, code):
+        _ok(code)
+
+    def test_rebound_name_is_not_trusted_blocked(self):
+        # Two assignments to one name: neither value may be used to vouch for the call.
+        _blocked(
+            'import requests\nu = "https://huggingface.co"\nu = "http://169.254.169.254"\n'
+            "requests.get(u)",
+            expect_phrase = "Blocked: request target is computed at runtime",
+        )
+
+    def test_loop_variable_is_not_trusted_blocked(self):
+        _blocked(
+            'import requests\nfor u in ["https://huggingface.co"]:\n    requests.get(u)',
+            expect_phrase = "Blocked: request target is computed at runtime",
+        )
+
+
+class TestOpaqueUrlTargets:
+    @pytest.mark.parametrize(
+        "code",
+        [
+            pytest.param(
+                'import os, requests\nrequests.get(os.environ["TARGET"])', id = "env_var_target"
+            ),
+            pytest.param(
+                "import requests\nrequests.get(input())", id = "user_input_target"
+            ),
+            pytest.param(
+                'import requests\nrequests.get(f"{input()}/latest")', id = "fstring_dynamic_host"
+            ),
+            pytest.param(
+                "import urllib.request\nurllib.request.urlopen(input())", id = "urlopen_dynamic"
+            ),
+        ],
+    )
+    def test_unresolvable_target_blocked(self, code):
+        _blocked(code, expect_phrase = "Blocked: request target is computed at runtime")
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            pytest.param("import requests\ns = requests.Session()", id = "session_constructor"),
+            pytest.param(
+                "import socket\ns = socket.socket(socket.AF_INET, socket.SOCK_STREAM)",
+                id = "socket_constructor",
+            ),
+            pytest.param("import httpx\nc = httpx.Client(timeout = 5)", id = "httpx_constructor"),
+        ],
+    )
+    def test_constructors_without_a_url_ok(self, code):
+        _ok(code)
