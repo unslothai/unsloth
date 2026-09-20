@@ -143,6 +143,10 @@ export const CHAT_COLLAPSE_HTML_ARTIFACTS_KEY =
   "unsloth_chat_collapse_html_artifacts";
 export const CHAT_ALLOW_ARTIFACT_NETWORK_ACCESS_KEY =
   "unsloth_chat_allow_artifact_network_access";
+export const CHAT_WEB_SEARCH_PROVIDER_KEY =
+  "unsloth_chat_web_search_provider";
+export const CHAT_PARALLEL_SEARCH_API_KEY =
+  "unsloth_chat_parallel_search_api_key";
 export const CHAT_SEARCH_IMAGES_KEY = "unsloth_chat_search_images";
 export const CHAT_MCP_ENABLED_KEY = "unsloth_chat_mcp_enabled";
 export const CHAT_CONFIRM_TOOL_CALLS_KEY = "unsloth_chat_confirm_tool_calls";
@@ -188,6 +192,9 @@ export function readPendingAttachmentTargetClaim(): number {
 }
 
 export type RagMode = "hybrid" | "lexical" | "dense";
+
+export type WebSearchProvider = "duckduckgo" | "parallel";
+export const DEFAULT_WEB_SEARCH_PROVIDER: WebSearchProvider = "duckduckgo";
 
 export const DEFAULT_RAG_SOURCE: RagSource = { type: "thread" };
 export const DEFAULT_RAG_MODE: RagMode = "hybrid";
@@ -634,6 +641,15 @@ function writeStorageValue(key: string, raw: string): void {
   }
 }
 
+function removeStorageValue(key: string): void {
+  if (!canUseStorage()) return;
+  try {
+    localStorage.removeItem(key);
+  } catch {
+    // Keep the in-memory setting when storage is unavailable.
+  }
+}
+
 type MirroredSettingCodec = {
   encode: (value: unknown) => string;
   decode: (raw: string) => unknown;
@@ -730,6 +746,14 @@ const MIRRORED_SETTINGS = {
     ...BOOLEAN_SETTING,
   },
   searchImages: { storageKey: CHAT_SEARCH_IMAGES_KEY, ...BOOLEAN_SETTING },
+  webSearchProvider: {
+    storageKey: CHAT_WEB_SEARCH_PROVIDER_KEY,
+    ...STRING_SETTING,
+  },
+  parallelSearchApiKey: {
+    storageKey: CHAT_PARALLEL_SEARCH_API_KEY,
+    ...STRING_SETTING,
+  },
   mcpEnabledForChat: { storageKey: CHAT_MCP_ENABLED_KEY, ...BOOLEAN_SETTING },
   confirmToolCalls: {
     storageKey: CHAT_CONFIRM_TOOL_CALLS_KEY,
@@ -1917,6 +1941,32 @@ function saveString(key: string, value: string): void {
 
 // Canonicalises any backend value onto the Speculative Decoding modes; legacy backend-only
 // aliases map to their closest UI mode.
+function clearStringSetting(key: string): void {
+  // A removal still mirrors an explicit empty value so the backend clears it too.
+  removeStorageValue(key);
+  mirrorSettingToBackend(key, "");
+}
+
+export function readPersistedWebSearchProvider(): WebSearchProvider {
+  const raw = loadString(
+    CHAT_WEB_SEARCH_PROVIDER_KEY,
+    DEFAULT_WEB_SEARCH_PROVIDER,
+  );
+  return raw === "parallel" ? "parallel" : DEFAULT_WEB_SEARCH_PROVIDER;
+}
+
+export function readPersistedParallelSearchApiKey(): string | null {
+  const trimmed = (readStorageValue(CHAT_PARALLEL_SEARCH_API_KEY) ?? "")
+    .trim()
+    .slice(0, 500);
+  // An install that cached a null before cacheHydratedSettings skipped them holds the literal
+  // "null"; it is not a Bearer key, and no real key is that string either.
+  return trimmed && trimmed !== "null" ? trimmed : null;
+}
+
+// Canonicalises any backend value onto the Speculative Decoding dropdown's
+// modes ("auto"/"mtp"/"dspark"/"dflash"/"ngram"/"mtp+ngram"/"off"/null). Backend-only
+// legacy aliases map to their closest UI mode.
 export function normalizeSpeculativeType(
   v: string | null | undefined,
 ): string | null {
@@ -2340,6 +2390,10 @@ type ChatRuntimeStore = {
   allowArtifactNetworkAccess: boolean;
   // web_search also returns images the model can place inline; read by the backend per call.
   searchImages: boolean;
+  // web_search backend; read by the backend per call. Defaults to DuckDuckGo.
+  webSearchProvider: WebSearchProvider;
+  // Optional Parallel Bearer key; null when unset. Never logged.
+  parallelSearchApiKey: string | null;
   mcpEnabledForChat: boolean;
   ragEnabled: boolean;
   ragSource: RagSource;
@@ -2633,6 +2687,8 @@ type ChatRuntimeStore = {
   setCollapseHtmlArtifacts: (enabled: boolean) => void;
   setAllowArtifactNetworkAccess: (enabled: boolean) => void;
   setSearchImages: (enabled: boolean) => void;
+  setWebSearchProvider: (provider: WebSearchProvider) => void;
+  setParallelSearchApiKey: (key: ChatRuntimeStore["parallelSearchApiKey"]) => void;
   setMcpEnabledForChat: (enabled: boolean) => void;
   setConfirmToolCalls: (enabled: boolean) => void;
   setBypassPermissions: (enabled: boolean) => void;
@@ -2732,6 +2788,8 @@ type ScalarSettingKey =
   | "collapseHtmlArtifacts"
   | "allowArtifactNetworkAccess"
   | "searchImages"
+  | "webSearchProvider"
+  | "parallelSearchApiKey"
   | "autoHealToolCalls"
   | "nudgeToolCalls"
   | "autoCompactEnabled"
@@ -2785,6 +2843,8 @@ const SCALAR_SETTING_KEYS = [
   "collapseHtmlArtifacts",
   "allowArtifactNetworkAccess",
   "searchImages",
+  "webSearchProvider",
+  "parallelSearchApiKey",
   "autoHealToolCalls",
   "nudgeToolCalls",
   "autoCompactEnabled",
@@ -2913,11 +2973,19 @@ function cacheHydratedSettings(
 ): void {
   for (const [name, setting] of Object.entries(MIRRORED_SETTINGS)) {
     const field = name as MirroredSettingKey;
-    const value = settings[field];
+    const value: unknown = settings[field];
     if (value === undefined) continue;
     if (
       scalarSettingMutationVersions[field] !== versions.scalarSettings[field]
     ) {
+      continue;
+    }
+    // null is how the server says a nullable field is unset (the backend normalizes a blank
+    // Parallel key to it). STRING_SETTING.encode is String(), so caching one would store the
+    // literal "null" and readPersistedParallelSearchApiKey would then send it as a Bearer key.
+    // Clearing the slot is what "unset" means locally too.
+    if (value === null) {
+      removeStorageValue(setting.storageKey);
       continue;
     }
     writeStorageValue(setting.storageKey, setting.encode(value));
@@ -4144,6 +4212,8 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
     false,
   ),
   searchImages: loadBool(CHAT_SEARCH_IMAGES_KEY, false),
+  webSearchProvider: readPersistedWebSearchProvider(),
+  parallelSearchApiKey: readPersistedParallelSearchApiKey(),
   mcpEnabledForChat: loadBool(CHAT_MCP_ENABLED_KEY, false),
   // Mirrors permissionMode (gate requested for ask/auto) so both controls agree on load.
   confirmToolCalls:
@@ -5430,6 +5500,21 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
     set(() => {
       saveBool(CHAT_SEARCH_IMAGES_KEY, searchImages);
       return { searchImages };
+    }),
+  setWebSearchProvider: (webSearchProvider) =>
+    set(() => {
+      saveString(CHAT_WEB_SEARCH_PROVIDER_KEY, webSearchProvider);
+      return { webSearchProvider };
+    }),
+  setParallelSearchApiKey: (key) =>
+    set(() => {
+      const trimmed = (key ?? "").trim().slice(0, 500);
+      if (trimmed) {
+        saveString(CHAT_PARALLEL_SEARCH_API_KEY, trimmed);
+      } else {
+        clearStringSetting(CHAT_PARALLEL_SEARCH_API_KEY);
+      }
+      return { parallelSearchApiKey: trimmed || null };
     }),
   setMcpEnabledForChat: (mcpEnabledForChat) =>
     set((state) => {
