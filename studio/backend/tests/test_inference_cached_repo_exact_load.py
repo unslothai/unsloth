@@ -276,7 +276,8 @@ def test_load_model_hands_the_verdict_to_both_loaders():
 
     source = (_BACKEND / "core/inference/inference.py").read_text(encoding = "utf-8")
     load_model = next(
-        node for node in ast.walk(ast.parse(source))
+        node
+        for node in ast.walk(ast.parse(source))
         if isinstance(node, ast.FunctionDef) and node.name == "load_model"
     )
 
@@ -307,6 +308,7 @@ def test_load_model_hands_the_verdict_to_both_loaders():
             for kw in node.keywords
         )
     }
-    assert forwarded == {"FastLanguageModel", "FastVisionModel"}, (
-        f"only {sorted(forwarded)} receive use_exact_model_name"
-    )
+    assert forwarded == {
+        "FastLanguageModel",
+        "FastVisionModel",
+    }, f"only {sorted(forwarded)} receive use_exact_model_name"
