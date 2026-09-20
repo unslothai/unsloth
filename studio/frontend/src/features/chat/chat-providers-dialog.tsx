@@ -45,6 +45,7 @@ import { OpenAICodexConnect } from "./openai-codex-connect";
 import {
   type CodexSubscriptionModels,
   type ProviderAuthStatus,
+  type ProviderApiType,
   type ProviderRegistryEntry,
   createProviderConfig,
   deleteProviderConfig,
@@ -250,6 +251,7 @@ export function ChatProvidersSettings({
 
   const [clearApiKeyRequested, setClearApiKeyRequested] = useState(false);
   const [baseUrlDraft, setBaseUrlDraft] = useState("");
+  const [apiType, setApiType] = useState<ProviderApiType>("chat_completions");
   const [maxOutputTokensDraft, setMaxOutputTokensDraft] = useState("");
   const [editingBackendProviderType, setEditingBackendProviderType] = useState<
     string | null
@@ -393,6 +395,7 @@ export function ChatProvidersSettings({
     if (seededProviderTypeRef.current === providerType) return;
     seededProviderTypeRef.current = providerType;
     setMaxOutputTokensDraft("");
+    setApiType("chat_completions");
     setEditingBackendProviderType(null);
     const entry = registryByType.get(providerType);
     if (!entry) {
@@ -513,6 +516,7 @@ export function ChatProvidersSettings({
     setShowApiKey(false);
     setBaseUrlDraft("");
     setMaxOutputTokensDraft("");
+    setApiType("chat_completions");
     setEditingBackendProviderType(null);
     setAvailableModels([]);
     setSelectedModelIds([]);
@@ -677,6 +681,7 @@ export function ChatProvidersSettings({
         providerId: editingProviderId,
         apiKey: apiKey.trim(),
         baseUrl,
+        apiType: providerType === LEGACY_CUSTOM_PROVIDER_TYPE ? apiType : undefined,
       });
       const registryDefaults = supportsRemoteModelCatalog(providerType)
         ? []
@@ -750,6 +755,7 @@ export function ChatProvidersSettings({
         providerType: created.provider_type,
         name: created.display_name,
         baseUrl: created.base_url ?? "",
+        apiType: created.api_type ?? "chat_completions",
         models,
         availableModels: available,
         hasApiKey: created.has_api_key,
@@ -851,6 +857,7 @@ export function ChatProvidersSettings({
         providerType: backendProviderType,
         displayName,
         baseUrl,
+        apiType: providerType === LEGACY_CUSTOM_PROVIDER_TYPE ? apiType : undefined,
         models: modelsToSave,
         availableModels: manualOnly
           ? []
@@ -875,6 +882,7 @@ export function ChatProvidersSettings({
         backendProviderType: created.provider_type,
         name: created.display_name,
         baseUrl: created.base_url ?? "",
+        apiType: created.api_type ?? "chat_completions",
         models: modelsToSave,
         availableModels: manualOnly
           ? []
@@ -999,6 +1007,7 @@ export function ChatProvidersSettings({
             customProviderDisplayName(existing.providerType)
           : existing.name,
         baseUrl,
+        apiType: providerType === LEGACY_CUSTOM_PROVIDER_TYPE ? apiType : undefined,
         models: modelsToSave,
         availableModels: manualOnly
           ? []
@@ -1025,6 +1034,7 @@ export function ChatProvidersSettings({
         backendProviderType: updated.provider_type,
         name: updated.display_name,
         baseUrl: updated.base_url ?? "",
+        apiType: updated.api_type ?? "chat_completions",
         models: modelsToSave,
         availableModels: manualOnly
           ? []
@@ -1134,6 +1144,7 @@ export function ChatProvidersSettings({
     setClearApiKeyRequested(false);
     setShowApiKey(false);
     setBaseUrlDraft(provider.baseUrl);
+    setApiType(provider.apiType ?? "chat_completions");
     // Seeded at the floor: parseMaxOutputTokens throws below it, so a row stored under one would
     // fail every unrelated edit. The resolver already reads it as the floor.
     setMaxOutputTokensDraft(
@@ -1292,6 +1303,7 @@ export function ChatProvidersSettings({
         providerId: provider.id,
         apiKey: savedKey,
         baseUrl: provider.baseUrl || null,
+        apiType: provider.apiType,
         modelId:
           provider.providerType === LEGACY_CUSTOM_PROVIDER_TYPE
             ? (provider.models[0] ?? null)
@@ -1529,6 +1541,32 @@ export function ChatProvidersSettings({
                 </div>
               ) : null}
 
+              {providerType === LEGACY_CUSTOM_PROVIDER_TYPE &&
+              (!editingProviderId ||
+                editingBackendProviderType === LEGACY_CUSTOM_PROVIDER_TYPE) ? (
+                <div className="grid grid-cols-[minmax(140px,0.8fr)_minmax(0,1.2fr)] items-center gap-4 px-4 py-3 @max-[520px]:grid-cols-1">
+                  <div className="flex min-w-0 flex-col gap-0.5">
+                    <Label htmlFor="provider-api-type" className="text-sm font-medium">
+                      API type
+                    </Label>
+                    <p className="text-xs leading-snug text-muted-foreground">
+                      Choose the endpoint your enabled models support.
+                    </p>
+                  </div>
+                  <Select
+                    value={apiType}
+                    onValueChange={(value) => setApiType(value as ProviderApiType)}
+                  >
+                    <SelectTrigger id="provider-api-type" className="h-9 w-full text-sm">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="chat_completions">OpenAI Chat Completions</SelectItem>
+                      <SelectItem value="responses">OpenAI Responses</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+              ) : null}
               {isCustomProvider &&
               selectedProviderContract?.base_url_editable !== false ? (
                 <div className="grid grid-cols-[minmax(140px,0.8fr)_minmax(0,1.2fr)] items-center gap-4 px-4 py-3 @max-[520px]:grid-cols-1">

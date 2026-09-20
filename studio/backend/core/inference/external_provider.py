@@ -1191,8 +1191,11 @@ class ExternalProviderClient:
         base_url: str,
         api_key: str,
         timeout: float = 120.0,
+        *,
+        api_type: str = "chat_completions",
     ):
         self.provider_type = provider_type
+        self.api_type = api_type if provider_type == "custom" else "chat_completions"
         # Single choke point for every outbound provider request (chat, models, responses, messages, containers): the
         # URL is caller-controlled, so it is validated here even when a route already checked it. Routes turn the
         # ValueError into a 400; reaching it here means a caller bypassed them.
@@ -1257,7 +1260,7 @@ class ExternalProviderClient:
         self,
         messages: list[dict[str, Any]],
         model: str,
-        temperature: float = 0.7,
+        temperature: Optional[float] = 0.7,
         top_p: Optional[float] = 0.95,
         max_tokens: Optional[int] = None,
         presence_penalty: float = 0.0,
@@ -1290,6 +1293,22 @@ class ExternalProviderClient:
         tool_choice_disabled = (
             isinstance(tool_choice, str) and tool_choice.strip().lower() == "none"
         )
+
+        # custom and self-hosted endpoints apply model chat templates on both api paths.
+        if self.provider_type in _TEMPLATE_APPLYING_PROVIDERS:
+            from core.inference.chat_template_helpers import (
+                neutralize_control_markup_in_messages,
+                neutralize_tool_descriptions,
+                reconciled_tool_choice,
+            )
+            messages = neutralize_control_markup_in_messages(messages)
+            if tools:
+                safe_tools = neutralize_tool_descriptions(tools)
+                # reconcile a forced tool choice when sanitization removes its function from a mixed catalog.
+                tool_choice = reconciled_tool_choice(tool_choice, tools, safe_tools)
+                if not safe_tools:
+                    tool_choice = None
+                tools = safe_tools
 
         if not self._is_openai_compatible():
             # Gemini speaks its own native REST shape (contents/parts); `_stream_gemini` translates request/response
@@ -1336,7 +1355,7 @@ class ExternalProviderClient:
         # OpenAI moved flagship models (gpt-5.x) off /v1/chat/completions -- those endpoints return 404 "This is not a
         # chat model" for the new families. Route all OpenAI traffic through /v1/responses instead and translate the
         # Responses SSE back into Chat Completions chunks so the frontend stays endpoint-agnostic.
-        if self.provider_type == "openai":
+        if self.provider_type == "openai" or self.api_type == "responses":
             async for line in self._stream_openai_responses(
                 messages,
                 model,
@@ -1378,25 +1397,6 @@ class ExternalProviderClient:
             ):
                 yield line
             return
-
-        # A self-hosted server templates client text just like the in-process paths, so the same "</think>" or turn
-        # marker forges a turn (#7066). Hosted APIs are left alone: their prompt assembly is not ours to rewrite.
-        if self.provider_type in _TEMPLATE_APPLYING_PROVIDERS:
-            from core.inference.chat_template_helpers import (
-                neutralize_control_markup_in_messages,
-                neutralize_tool_descriptions,
-                reconciled_tool_choice,
-            )
-            messages = neutralize_control_markup_in_messages(messages)
-            if tools:
-                safe_tools = neutralize_tool_descriptions(tools)
-                # A mixed catalog keeps safe_tools non-empty while dropping the one tool the client forced, so an
-                # empty check is not enough: without the passthrough builder's per-name reconciliation the body names
-                # an unadvertised function.
-                tool_choice = reconciled_tool_choice(tool_choice, tools, safe_tools)
-                if not safe_tools:
-                    tool_choice = None
-                tools = safe_tools
 
         # Both are set because a server rejects continuing while a generation prompt is still asked for. Sent only to
         # the two documenting the pair: "custom" is any user-supplied base_url and a strict endpoint 400s on an
@@ -4890,8 +4890,8 @@ class ExternalProviderClient:
         self,
         messages: list[dict[str, Any]],
         model: str,
-        temperature: float,
-        top_p: float,
+        temperature: Optional[float],
+        top_p: Optional[float],
         max_tokens: Optional[int],
         enable_thinking: Optional[bool],
         reasoning_effort: Optional[str],
@@ -5176,16 +5176,16 @@ class ExternalProviderClient:
                     break
             input_items[insert_at:insert_at] = openai_replay_items
 
-        # Reasoning families reject temperature/top_p, and the UI hides both sliders for the rest
-        # (provider-capabilities.ts), so the only values arriving here are ChatCompletionRequest's 0.6/0.95 defaults,
-        # which would override OpenAI's own with a number the user never chose.
-        del temperature, top_p  # accepted for API symmetry, not forwarded.
-
         body: dict[str, Any] = {
             "model": model,
             "input": input_items,
             "stream": True,
         }
+        if self.provider_type == "custom":
+            if temperature is not None:
+                body["temperature"] = temperature
+            if top_p is not None:
+                body["top_p"] = top_p
         if previous_response_id:
             body["previous_response_id"] = previous_response_id
         # `summary: "auto"` is what makes /v1/responses emit reasoning summary events; without it the reasoning panel

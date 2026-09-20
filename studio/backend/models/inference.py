@@ -2379,6 +2379,7 @@ class ChatCompletionRequest(BaseModel):
         None,
         description = "[x-unsloth] Saved provider config ID. Its stored key is used when encrypted_api_key is omitted.",
     )
+    provider_api_type: Literal["chat_completions", "responses"] = "chat_completions"
     provider_type: Optional[str] = Field(
         None,
         description = "[x-unsloth] Provider type (e.g. 'openai', 'mistral'). Used if provider_id is not set.",

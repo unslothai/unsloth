@@ -296,6 +296,7 @@ export async function syncExternalProvidersFromBackend(
         backendProviderType: config.provider_type,
         name: config.display_name,
         baseUrl: config.base_url ?? "",
+        apiType: config.api_type ?? "chat_completions",
         models: resolvedModels,
         availableModels: resolvedAvailableModels,
         maxOutputTokens: config.max_output_tokens ?? undefined,

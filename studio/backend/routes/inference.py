@@ -22589,6 +22589,7 @@ async def _proxy_to_external_provider(
     # Resolve provider type and base URL
     provider_type = payload.provider_type
     base_url = payload.provider_base_url
+    api_type = payload.provider_api_type
     saved_provider_snapshot: Optional[dict] = None
 
     if payload.provider_id and not payload.encrypted_api_key:
@@ -22609,6 +22610,7 @@ async def _proxy_to_external_provider(
         saved_provider_snapshot = config
         provider_type = config["provider_type"]
         base_url = config["base_url"]
+        api_type = config.get("api_type", "chat_completions")
 
     if not provider_type:
         raise HTTPException(
@@ -23149,7 +23151,7 @@ async def _proxy_to_external_provider(
     if saved_provider_snapshot is not None:
         async with provider_config_guard(payload.provider_id):
             current = await asyncio.to_thread(providers_db.get_provider, payload.provider_id)
-            routing_fields = ("provider_type", "base_url", "is_enabled")
+            routing_fields = ("provider_type", "base_url", "api_type", "is_enabled")
             if current is None or any(
                 current.get(field) != saved_provider_snapshot.get(field) for field in routing_fields
             ):
@@ -23226,6 +23228,7 @@ async def _proxy_to_external_provider(
         provider_type = provider_type,
         base_url = base_url,
         api_key = api_key,
+        api_type = api_type,
     )
 
     # Schema defaults are non-None (20, 0.01, 1.0) for the local path, so only
@@ -23290,7 +23293,13 @@ async def _proxy_to_external_provider(
 
     async def _stream():
         _provider_kwargs = dict(
-            temperature = payload.temperature,
+            temperature = (
+                None
+                if provider_type == "custom"
+                and api_type == "responses"
+                and "temperature" not in payload.model_fields_set
+                else payload.temperature
+            ),
             top_p = _top_p_explicit,
             # Honor max_completion_tokens when max_tokens is absent, so a
             # provider-routed request capped only by the newer field still gets

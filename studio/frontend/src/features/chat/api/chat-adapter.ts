@@ -5948,6 +5948,7 @@ export function createOpenAIStreamAdapter(
         });
         const externalCapabilities = getProviderCapabilities(
           externalProvider?.providerType,
+          externalProvider?.apiType,
         );
         const externalReasoningCaps: ReturnType<
           typeof getExternalReasoningCapabilities
@@ -6273,6 +6274,7 @@ export function createOpenAIStreamAdapter(
                   }
                 : {}),
               provider_base_url: externalProvider.baseUrl || null,
+              provider_api_type: externalProvider.apiType ?? "chat_completions",
               ...(openaiCodeExecContainerId
                 ? {
                     openai_code_exec_container_id: openaiCodeExecContainerId,

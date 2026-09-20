@@ -79,6 +79,10 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         conn.execute(
             "ALTER TABLE llm_providers ADD COLUMN available_models_json TEXT NOT NULL DEFAULT '[]'"
         )
+    if "api_type" not in existing_cols:
+        conn.execute(
+            "ALTER TABLE llm_providers ADD COLUMN api_type TEXT NOT NULL DEFAULT 'chat_completions'"
+        )
     if "max_output_tokens" not in existing_cols:
         conn.execute("ALTER TABLE llm_providers ADD COLUMN max_output_tokens INTEGER")
 
@@ -139,6 +143,7 @@ def create_provider(
     models: Optional[list[str]] = None,
     available_models: Optional[list[str]] = None,
     max_output_tokens: Optional[int] = None,
+    api_type: str = "chat_completions",
 ) -> None:
     """Insert a new provider configuration."""
     now = datetime.now(timezone.utc).isoformat()
@@ -148,10 +153,10 @@ def create_provider(
             """
             INSERT INTO llm_providers (
                 id, provider_type, display_name, base_url,
-                models_json, available_models_json, max_output_tokens,
+                models_json, available_models_json, max_output_tokens, api_type,
                 created_at, updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 id,
@@ -161,6 +166,7 @@ def create_provider(
                 _encode_models_json(models),
                 _encode_models_json(available_models),
                 max_output_tokens,
+                api_type,
                 now,
                 now,
             ),
@@ -180,6 +186,7 @@ def update_provider(
     max_output_tokens: int | None | object = _UNSET,
     *,
     connection: sqlite3.Connection | None = None,
+    api_type: str | None = None,
 ) -> bool:
     """Update fields on an existing provider. Returns True if a row was updated."""
     updates = []
@@ -190,6 +197,9 @@ def update_provider(
     if base_url is not None:
         updates.append("base_url = ?")
         params.append(base_url)
+    if api_type is not None:
+        updates.append("api_type = ?")
+        params.append(api_type)
     if is_enabled is not None:
         updates.append("is_enabled = ?")
         params.append(1 if is_enabled else 0)

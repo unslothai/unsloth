@@ -705,8 +705,12 @@ const DEFAULT_EXTERNAL_CAPABILITIES = OPENAI_COMPAT_BASE;
  *  callers treat as "every knob applies". */
 export function getProviderCapabilities(
   providerType: string | null | undefined,
+  apiType?: "chat_completions" | "responses",
 ): ProviderCapabilities | null {
   if (!providerType) return null;
+  if (providerType === "custom" && apiType === "responses") {
+    return PROVIDER_CAPABILITIES.openai;
+  }
   return PROVIDER_CAPABILITIES[providerType] ?? DEFAULT_EXTERNAL_CAPABILITIES;
 }
 
