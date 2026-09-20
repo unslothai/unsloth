@@ -16586,18 +16586,27 @@ def _check_signal_escape_patterns(code: str):
             return False
 
         def is_bound(self, name: str, node) -> bool:
-            """Whether the source gives this name a meaning of its own anywhere the use can see,
-            which is what says a builtin or a module has been shadowed.
+            """Whether the source has given this name a meaning of its own by the time *node*
+            runs, which is what says a builtin or a module has been shadowed.
 
             An import of the same name is not a shadow: `import os` is how you get the real `os`.
-            A `def`, a `class` or an assignment is."""
+            A `def`, a `class` or an assignment is. Position matters: a shadow written below the
+            call has not happened yet, so the call still reads the builtin, and answering
+            otherwise would take the call out of the policy."""
+            where = self._position(node)
             for scope in self._chain(node):
                 key = (scope, name)
-                if key not in self._counts:
+                positions = self._bind_positions.get(key)
+                if key not in self._counts or not positions:
                     continue
-                return any(
-                    not is_alias for _position, is_alias in self._bind_positions.get(key, [])
-                )
+                if self._scope_of.get(id(node)) != scope:
+                    # A body runs when it is called, so any shadow in an enclosing scope may
+                    # already have happened. Reading it as the real module is the safe answer.
+                    return False
+                before = [entry for entry in positions if entry[0] <= where]
+                if not before:
+                    return False
+                return not max(before)[1]
             return False
 
         def possible_values(self, name: str, node) -> list:
@@ -17267,7 +17276,9 @@ def _check_signal_escape_patterns(code: str):
                         # whatever the source says it returns.
                         return True
                 if isinstance(sub, ast.Attribute) and isinstance(sub.value, ast.Name):
-                    if sub.value.id == "sys" and sub.attr in ("argv", "stdin"):
+                    if sub.attr in ("argv", "stdin") and _names_the_real_module(
+                        sub.value, "sys", bindings
+                    ):
                         return True
                 if _reads_a_file(sub):
                     return True

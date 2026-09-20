@@ -4701,3 +4701,45 @@ class TestEveryValueABindingCanHold:
             'import requests\nu = "https://huggingface.co/api/models"\nrequests.get(u)\n'
             f'u = "{_METADATA_URL}"'
         )
+
+
+class TestShadowsHappenWhereTheyAreWritten:
+    """A shadow below the call has not happened yet, so the call still reads the builtin."""
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            pytest.param(
+                'import requests\nrequests.get(input())\ninput = lambda: "https://huggingface.co"',
+                id = "input_rebound_after",
+            ),
+            pytest.param(
+                'import os, requests\nrequests.get(os.getenv("URL"))\nos = object()',
+                id = "os_rebound_after",
+            ),
+        ],
+    )
+    def test_a_shadow_written_below_the_call_does_not_excuse_it(self, code):
+        _blocked(code, expect_phrase = "Blocked: request target is read")
+
+    def test_a_shadow_written_above_the_call_still_counts_ok(self):
+        _ok(
+            "import requests\n"
+            "def input():\n"
+            '    return "https://huggingface.co/x"\n'
+            "requests.get(input())"
+        )
+
+    def test_a_local_class_named_sys_is_not_process_input_ok(self):
+        _ok(
+            "import requests\n"
+            "class sys:\n"
+            '    argv = ["https://huggingface.co/x"]\n'
+            "requests.get(sys.argv[0])"
+        )
+
+    def test_the_imported_sys_is_still_process_input(self):
+        _blocked(
+            "import sys, requests\nrequests.get(sys.argv[1])",
+            expect_phrase = "Blocked: request target is read",
+        )
