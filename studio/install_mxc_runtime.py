@@ -81,6 +81,15 @@ def default_dest() -> str:
         from core.inference.sandbox_windows import managed_mxc_dir
         return managed_mxc_dir()
     except Exception:  # noqa: BLE001 - setup can run before the backend imports
+        # The same custom-home fallback managed_mxc_dir() uses. Without it a
+        # degraded install on a custom-home Studio writes to ~/.unsloth/mxc and
+        # reports success, while the backend later looks in <custom-home>/mxc
+        # and reports the executor as not installed.
+        override = (
+            os.environ.get("UNSLOTH_STUDIO_HOME") or os.environ.get("STUDIO_HOME") or ""
+        ).strip()
+        if override:
+            return os.path.join(os.path.expanduser(override), "mxc")
         return os.path.join(os.path.expanduser("~"), ".unsloth", "mxc")
 
 

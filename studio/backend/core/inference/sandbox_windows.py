@@ -481,12 +481,23 @@ def _reconcile_container(executor: str, container_id: str) -> None:
     already cleaned up, which is the common case; this covers the kill path.
     """
     try:
-        subprocess.run(
+        completed = subprocess.run(
             [executor, "--delete", "--containername", container_id],
             capture_output = True,
             timeout = 60,
             creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
+        if completed.returncode != 0:
+            # An executor that started and then refused the delete is the case
+            # that leaves DENY and ALLOW ACEs on the user's own workdir after a
+            # hard kill, and it exits non-zero rather than raising, so it would
+            # otherwise be recorded as a successful teardown.
+            detail = (completed.stderr or b"").decode(errors = "replace").strip()[:300]
+            raise RuntimeError(
+                f"MXC could not reconcile container {container_id} "
+                f"(exit {completed.returncode}): {detail or 'no output'}. "
+                "Temporary file permission changes may still be in place."
+            )
     except (OSError, subprocess.SubprocessError) as exc:
         # Surfaced through cleanup_diagnostics by the caller's cleanup().
         raise RuntimeError(f"could not reconcile MXC container {container_id}: {exc}") from exc

@@ -556,3 +556,57 @@ def test_setup_accepts_every_enabled_preview_value():
     line = next(l for l in body.splitlines() if "$MxcPreview =" in l)
     for value in ("1", "true", "yes", "on"):
         assert f'"{value}"' in line, f"setup does not accept {value!r} as an enabled preview"
+
+
+def test_a_failed_mxc_teardown_is_reported_rather_than_recorded_as_success(monkeypatch):
+    """An executor that starts and refuses --delete exits non-zero.
+
+    That is the case which leaves DENY and ALLOW ACEs on the user's own workdir
+    after a hard kill, and subprocess.run does not raise for it, so without a
+    returncode check cleanup recorded a successful teardown that never happened.
+    """
+    import subprocess as sp
+
+    def refusing_delete(argv, **kwargs):
+        return sp.CompletedProcess(argv, 3, b"", b"access denied")
+
+    monkeypatch.setattr(sandbox_windows.subprocess, "run", refusing_delete)
+
+    with pytest.raises(RuntimeError) as failure:
+        sandbox_windows._reconcile_container("wxc-exec.exe", "unsloth-test")
+
+    assert "could not reconcile" in str(failure.value)
+    assert "access denied" in str(failure.value)
+
+
+def test_a_successful_mxc_teardown_stays_quiet(monkeypatch):
+    """The common case is that the executor already cleaned up."""
+    import subprocess as sp
+
+    monkeypatch.setattr(
+        sandbox_windows.subprocess, "run",
+        lambda argv, **kwargs: sp.CompletedProcess(argv, 0, b"", b""),
+    )
+
+    sandbox_windows._reconcile_container("wxc-exec.exe", "unsloth-test")
+
+
+def test_the_degraded_installer_honours_a_custom_studio_home(monkeypatch, tmp_path):
+    """A degraded install on a custom-home Studio must not write where the
+    backend will not look: it would report success and the preview would still
+    say the executor is not installed."""
+    import builtins
+
+    installer = _installer_module()
+    real_import = builtins.__import__
+
+    def no_backend(name, *args, **kwargs):
+        if name.startswith("core.inference"):
+            raise ImportError("simulated degraded environment")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", no_backend)
+    monkeypatch.delenv("UNSLOTH_MXC_DIR", raising = False)
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "custom"))
+
+    assert installer.default_dest() == os.path.join(str(tmp_path / "custom"), "mxc")
