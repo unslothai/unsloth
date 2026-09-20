@@ -9269,7 +9269,19 @@ def _note_tool_execution(record) -> None:
 
 
 def _requested_execution_mode(tool_execution_mode: str, disable_sandbox: bool) -> str:
-    """Require disable_sandbox for full access; it also selects env and software guards."""
+    """Require disable_sandbox for full access; it also selects env and software guards.
+
+    The membership check lives here rather than in the planner because a managed
+    account's confinement is the outer launch contract and skips the planner
+    entirely, so validating there made the answer to "is this mode real"
+    depend on which account ran the call.
+    """
+    if tool_execution_mode not in os_sandbox.TOOL_EXECUTION_MODES:
+        raise os_sandbox.SandboxUnavailableError(
+            f"TOOL_EXECUTION_MODE_INVALID: {tool_execution_mode!r} is not a tool "
+            f"execution mode ({', '.join(os_sandbox.TOOL_EXECUTION_MODES)})",
+            remediation = "Use 'auto' or 'required'.",
+        )
     if disable_sandbox:
         return "full"
     if tool_execution_mode == "full":
@@ -9383,13 +9395,28 @@ def _prepare_tool_launch(plan):
         return _software_safeguards_launch(plan, "sandbox_planner_error")
 
 
+# What each launcher prints on stderr when it refuses to build the sandbox, as
+# opposed to the payload failing inside a sandbox that was built correctly.
+_LAUNCHER_FAILURE_MARKERS = {
+    "bubblewrap": "bwrap: ",
+    "macos-seatbelt": "sandbox-exec: ",
+}
+
+
 def _forget_sandbox_capability_if_the_backend_failed(prepared, output: str) -> None:
     """``prepare()`` only builds an argv, so a stale probe verdict is not found
     until bwrap exits at exec. Dropping it bounds the damage to that one call
     instead of every call for the rest of the cache's life."""
     if prepared is None or prepared.backend == "software-safeguards":
         return
-    if not output.startswith("Exit code ") or "bwrap: " not in output[:400]:
+    if not output.startswith("Exit code "):
+        return
+    # Keyed on the backend that actually ran, not on one launcher's prefix:
+    # Seatbelt reports a rejected profile as `sandbox-exec:`, so matching only
+    # `bwrap:` left macOS launching a known-broken backend for the whole
+    # positive TTL instead of re-probing and letting `auto` fall back.
+    marker = _LAUNCHER_FAILURE_MARKERS.get(prepared.backend)
+    if marker is None or marker not in output[:400]:
         return
     logger.warning("The sandbox backend failed at launch; re-probing the capability")
     try:
