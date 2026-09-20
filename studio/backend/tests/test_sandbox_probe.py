@@ -531,3 +531,53 @@ def test_a_cached_verdict_outlives_the_old_sixty_second_window(monkeypatch, tmp_
     available, reason = sandbox_probe.probe(Backend)
     assert (available, reason) == (True, "seeded")
     assert calls == [], "the probe re-ran 70s later, which is the cost this fixed"
+
+
+def test_an_unavailable_verdict_is_not_cached_for_the_long_window(monkeypatch, tmp_path):
+    """A user who installs bubblewrap must not wait 15 minutes for it to count.
+
+    The cache key carries the backend name and the runtime identity, and
+    neither moves when bubblewrap is installed or the AppArmor profile is
+    loaded, which is exactly what the remediation text tells the user to do.
+    With one TTL for both verdicts, `auto` keeps running unisolated and
+    `required` keeps refusing for the whole window after the remediation was
+    applied. The long TTL exists for the hot path, where the verdict is
+    available, so the negative case keeps the short one.
+    """
+    from core.inference import os_sandbox as _os_sandbox
+    from core.inference import sandbox_probe
+
+    assert sandbox_probe._CACHE_TTL_UNAVAILABLE_SECONDS <= 120, (
+        "an unavailable verdict is cached long enough to outlive the user's "
+        "own remediation"
+    )
+
+    probes = []
+
+    class Backend:
+        BACKEND_NAME = "unavailable-probe"
+
+        @staticmethod
+        def prepare(plan):
+            probes.append(plan)
+            raise RuntimeError("bubblewrap is not installed")
+
+    sandbox_probe.reset_probe_cache()
+    clock = {"now": 5000.0}
+    monkeypatch.setattr(sandbox_probe.time, "monotonic", lambda: clock["now"])
+
+    available, _ = sandbox_probe.probe(Backend)
+    assert available is False
+    assert len(probes) == 1
+
+    clock["now"] += 30.0
+    sandbox_probe.probe(Backend)
+    assert len(probes) == 1, "an unavailable verdict should still be cached briefly"
+
+    # Past the short window: the prerequisite may have been installed since.
+    clock["now"] += 100.0
+    sandbox_probe.probe(Backend)
+    assert len(probes) == 2, (
+        "the host was never re-examined, so installing bubblewrap does not "
+        "take effect until the long TTL expires"
+    )
