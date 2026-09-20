@@ -96,8 +96,20 @@ class FileHold:
         handle, self._handle = self._handle, None
         try:
             import ctypes
-            if hasattr(ctypes, "WinDLL"):
-                ctypes.WinDLL("kernel32", use_last_error = True).CloseHandle(handle)
+
+            if not hasattr(ctypes, "WinDLL"):
+                return
+            from ctypes import wintypes
+
+            kernel32 = ctypes.WinDLL("kernel32", use_last_error = True)
+            # argtypes is not optional here. Without it ctypes converts the
+            # handle with the default c_int, which on 64-bit Windows truncates
+            # it, so nothing is closed and every probe and launch leaks a
+            # deny-write handle on the executor until Studio exits, at which
+            # point the file cannot be replaced or reinstalled either.
+            kernel32.CloseHandle.argtypes = (wintypes.HANDLE,)
+            kernel32.CloseHandle.restype = wintypes.BOOL
+            kernel32.CloseHandle(ctypes.c_void_p(handle))
         except Exception:  # noqa: BLE001 - a released handle is not worth a failed call
             pass
 

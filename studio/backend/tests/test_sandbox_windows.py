@@ -972,3 +972,39 @@ def test_the_probe_does_not_run_an_executor_swapped_after_hashing(tmp_path, monk
     assert ok is False
     assert "changed after it was verified" in reason
     assert ran == [], "the swapped executor was run"
+
+
+def test_the_file_hold_closes_with_a_full_width_handle(monkeypatch):
+    """Without argtypes, ctypes converts the handle with the default c_int.
+
+    On 64-bit Windows that truncates it, so nothing is closed and every probe
+    and launch leaks a deny-write handle on the executor, eventually
+    preventing the file from being replaced or reinstalled.
+    """
+    import ctypes
+    import types
+
+    from core.inference import mxc_pins
+
+    handle = 0x7FF6_1234_5678          # wider than 32 bits
+    closed = []
+    recorded = {}
+
+    class FakeCloseHandle:
+        argtypes = None
+        restype = None
+
+        def __call__(self, value):
+            # ctypes would have raised on a truncating conversion; record what
+            # the caller declared and what it passed.
+            recorded["argtypes"] = self.argtypes
+            closed.append(value.value if hasattr(value, "value") else value)
+            return 1
+
+    fake_kernel32 = types.SimpleNamespace(CloseHandle = FakeCloseHandle())
+    monkeypatch.setattr(ctypes, "WinDLL", lambda *a, **k: fake_kernel32, raising = False)
+
+    mxc_pins.FileHold(handle).close()
+
+    assert closed == [handle], "the handle was not closed intact"
+    assert recorded["argtypes"] is not None, "CloseHandle was called without argtypes"
