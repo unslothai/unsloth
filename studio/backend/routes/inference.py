@@ -2427,7 +2427,7 @@ async def _openai_llama_admission_reserve_async(
     would make it parse one."""
     tokens = _TOKENS_UNSET
     if payload is not None and _messages_mention_mcp_images(
-        messages_override if messages_override is not None else payload.messages
+        messages_override if messages_override is not None else getattr(payload, "messages", None)
     ):
         tokens = await asyncio.to_thread(
             _openai_llama_admission_estimate,
