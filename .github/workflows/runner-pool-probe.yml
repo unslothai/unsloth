@@ -18,8 +18,17 @@ on:
 # and four of these ten cells are macOS against a cap of five concurrent macOS jobs
 # ACCOUNT-WIDE, across every repository -- the cap tests/studio/test_macos_slots_per_commit.py
 # exists to protect, and the reason macOS queue waits here are measured in hours rather
-# than minutes. A superseded matrix was holding four of those five for up to ten minutes,
-# and the queue it delays is the whole account's, not this workflow's.
+# than minutes.
+#
+# The cost is the QUEUE, not occupancy. A cell that reaches a runner holds it for about
+# five seconds, because the whole job is one echo: measured over the 16 macOS cells of the
+# last four successful dispatches, median 4s and longest 6s. `timeout-minutes: 10` below is
+# the cutoff for a cell that HANGS and nothing else; reading it as what a superseded matrix
+# holds overstates the normal case by two orders of magnitude. What a superseded matrix
+# really does is sit in the account-wide macOS queue ahead of work that matters, and the
+# queue is where the time goes: those same 16 cells waited a median of 15 minutes to start,
+# and one waited just over 3 hours. The superseded dispatch that prompted this sat there
+# 5 minutes 9 seconds before the newer push cleared it.
 #
 # Superseding does not weaken the measurement. The probe compares labels WITHIN one
 # dispatch -- the ten cells leave the queue in the same second, and that is the only
