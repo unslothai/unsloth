@@ -10,6 +10,9 @@ import sys
 from pathlib import Path
 
 import pytest
+from unsloth_pwsh_runner import run_pwsh
+
+from unsloth_pwsh_runner import run_pwsh
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 INSTALL_SH = REPO_ROOT / "install.sh"
@@ -416,7 +419,7 @@ def test_setup_ps1_stale_sweep_only_removes_its_own_litter(tmp_path):
     )
     script = tmp_path / "sweep.ps1"
     script.write_text(preamble + sweep + "\n", encoding = "utf-8")
-    subprocess.run(
+    run_pwsh(
         ["pwsh", "-NoProfile", "-File", str(script)],
         check = True,
         capture_output = True,
@@ -458,13 +461,13 @@ def test_setup_ps1_stale_sweep_refuses_a_custom_root_it_cannot_claim(tmp_path):
     )
     script = tmp_path / "sweep_custom.ps1"
     script.write_text(preamble + sweep + "\n", encoding = "utf-8")
-    subprocess.run(["pwsh", "-NoProfile", "-File", str(script)], check = True, capture_output = True)
+    run_pwsh(["pwsh", "-NoProfile", "-File", str(script)], check = True, capture_output = True)
     assert litter.exists(), "an unclaimable custom root must be left entirely alone"
 
     # Negative control: the same tree with the ownership marker present is swept, so the assertion
     # above is about ownership and not about some other reason nothing was deleted.
     (venv / ".unsloth-studio-owned").write_text("", encoding = "utf-8")
-    subprocess.run(["pwsh", "-NoProfile", "-File", str(script)], check = True, capture_output = True)
+    run_pwsh(["pwsh", "-NoProfile", "-File", str(script)], check = True, capture_output = True)
     assert not litter.exists(), "a custom root carrying the owned marker is ours to tidy"
 
 
@@ -517,7 +520,7 @@ class TestSetupHostInterpreterInVenv:
                     "import subprocess, sys; sys.exit(subprocess.call(sys.argv[1:]))",
                     *cmd,
                 ]
-            out = subprocess.run(cmd, env = env, text = True, capture_output = True, timeout = 120)
+            out = run_pwsh(cmd, env = env, text = True, capture_output = True, timeout = 120)
             assert out.returncode == 0, out.stdout + out.stderr
             return out.stdout.strip().splitlines()[-1]
 

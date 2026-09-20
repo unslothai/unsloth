@@ -1938,7 +1938,7 @@ export const ja = {
         desktopAvailableDescription:
           "今すぐアップデートします。完了するとデスクトップアプリが再起動します。",
         desktopExternalServer:
-          "サーバーを起動したターミナルで `unsloth studio update` を実行してください。",
+          "アプリはすでに実行中の Studio サーバーに接続しているため、更新できません。そのサーバーを停止し、デスクトップアプリを終了してから再度開き、更新してください。",
         desktopManualInstall:
           "リリースページを開き、最新の Linux パッケージをインストールしてください。",
         desktopCheckFailed: "アップデートを確認できませんでした",

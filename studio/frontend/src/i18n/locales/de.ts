@@ -2020,7 +2020,7 @@ export const de = {
         desktopAvailableDescription:
           "Aktualisieren Sie jetzt. Die Desktop-App wird nach Abschluss des Updates neu gestartet.",
         desktopExternalServer:
-          "Führen Sie `unsloth studio update` in dem Terminal aus, über das Sie Ihren Server gestartet haben.",
+          "Die App ist mit einem bereits laufenden Studio-Server verbunden und kann ihn nicht aktualisieren. Stoppen Sie diesen Server, beenden Sie die Desktop-App und öffnen Sie sie erneut, um das Update zu installieren.",
         desktopManualInstall:
           "Öffnen Sie die Release-Seite, um das neueste Linux-Paket zu installieren.",
         desktopCheckFailed: "Die Suche nach Updates ist fehlgeschlagen",

@@ -183,6 +183,7 @@ def test_desktop_release_asset_names_are_human_readable() -> None:
         "Linux.AppImage",
         "Linux.AppImage.sig",
         "Ubuntu.deb",
+        "Ubuntu.deb.sig",
         "Windows.exe",
         "Windows.exe.sig",
         "Windows-ARM64.exe",
