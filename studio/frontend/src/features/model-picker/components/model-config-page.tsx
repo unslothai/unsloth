@@ -983,7 +983,8 @@ function AdvancedSettingsToggle({
           Advanced settings
         </span>
         <InfoHint>
-          Extra options for how the model loads. Most setups don't need these.
+          Extra options for how the model loads. Unsloth already picks the best
+          settings for your device, so most setups don't need these.
         </InfoHint>
       </div>
       <Switch
@@ -1106,8 +1107,9 @@ function LoadModeRow({
           <span className={LABEL_CLASS}>Mmap/Mlock</span>
           <InfoHint>
             How the weights are read off disk (--load-mode). Auto is the
-            default and picks for you. mmap maps the file, mlock keeps the model
-            in RAM, DirectIO streams it, and None asks for no special mode.
+            default and lets Unsloth pick. mmap maps the file, mlock keeps the
+            model in RAM, DirectIO streams it, and None asks for no special
+            mode.
             Model Memory, in Settings, overrides this when it is on.
           </InfoHint>
         </div>
