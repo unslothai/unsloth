@@ -520,7 +520,8 @@ def test_the_installer_destination_override_is_honoured(tmp_path, monkeypatch):
     # executable_path() now verifies the digest at the trust boundary, so a
     # stand-in has to be pinned for this to be a test about the DIRECTORY.
     monkeypatch.setitem(
-        mxc_pins.EXECUTOR_SHA256, mxc_pins.arch_dir(), mxc_pins.digest(str(executor)))
+        mxc_pins.EXECUTOR_SHA256, mxc_pins.arch_dir(), mxc_pins.digest(str(executor))
+    )
 
     monkeypatch.setenv("UNSLOTH_MXC_DIR", str(dest))
 
@@ -647,7 +648,8 @@ def test_the_pinned_executor_is_accepted(tmp_path, monkeypatch):
     executor = tmp_path / "wxc-exec.exe"
     executor.write_bytes(b"pretend this is wxc-exec")
     monkeypatch.setitem(
-        mxc_pins.EXECUTOR_SHA256, mxc_pins.arch_dir(), mxc_pins.digest(str(executor)))
+        mxc_pins.EXECUTOR_SHA256, mxc_pins.arch_dir(), mxc_pins.digest(str(executor))
+    )
     monkeypatch.setenv("UNSLOTH_MXC_EXEC", str(executor))
 
     assert sandbox_windows.executable_path() == str(executor)
@@ -677,16 +679,19 @@ def test_a_failed_host_preparation_exits_non_zero(tmp_path, monkeypatch):
     installer = _installer_module()
 
     monkeypatch.setattr(
-        installer, "prepare_host",
+        installer,
+        "prepare_host",
         lambda dest, timeout: {"prepare-system-drive": {"exit": 65}},
     )
-    monkeypatch.setattr(installer.sys, "argv", ["install_mxc_runtime.py", "--prepare-host",
-                                                "--dest", str(tmp_path)])
+    monkeypatch.setattr(
+        installer.sys, "argv", ["install_mxc_runtime.py", "--prepare-host", "--dest", str(tmp_path)]
+    )
 
     assert installer.main() == 1
 
     monkeypatch.setattr(
-        installer, "prepare_host",
+        installer,
+        "prepare_host",
         lambda dest, timeout: {"prepare-system-drive": {"exit": 0}},
     )
     assert installer.main() == 0

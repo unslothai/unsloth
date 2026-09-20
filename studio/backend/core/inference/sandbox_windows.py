@@ -125,7 +125,9 @@ def executable_path() -> str | None:
     if not mxc_pins.matches_pin(candidate, mxc_pins.EXECUTOR_SHA256):
         logger.warning(
             "Ignoring %s: it is not the pinned MXC %s executor. Re-run "
-            "Studio setup to reinstall it.", candidate, mxc_pins.MXC_VERSION,
+            "Studio setup to reinstall it.",
+            candidate,
+            mxc_pins.MXC_VERSION,
         )
         return None
     return candidate

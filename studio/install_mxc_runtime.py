@@ -30,6 +30,7 @@ import tarfile
 import tempfile
 import urllib.request
 
+
 # The pinned identity lives in one dependency-free module the backend reads
 # too, so the installer and the launch-time trust check cannot disagree about
 # what the binary is. Imported by path rather than as a package, because setup
@@ -40,7 +41,10 @@ def _load_pins():
 
     path = os.path.join(
         os.path.dirname(os.path.abspath(__file__)),
-        "backend", "core", "inference", "mxc_pins.py",
+        "backend",
+        "core",
+        "inference",
+        "mxc_pins.py",
     )
     spec = importlib.util.spec_from_file_location("mxc_pins", path)
     if spec is None or spec.loader is None:
