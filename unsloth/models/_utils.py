@@ -3169,6 +3169,35 @@ def _unsloth_pre_compute_loss(self, model, inputs, *args, **kwargs):
     return outputs
 
 
+# The attributes a training wrapper keeps its wrappee under. DDP, FSDP1 and DataParallel use
+# `module`; `torch.compile` uses `_orig_mod`; FSDP's own wrapper policy uses `_fsdp_wrapped_module`.
+_UNSLOTH_WRAPPED_MODULE_ATTRS = ("module", "_orig_mod", "_fsdp_wrapped_module")
+
+
+def _unsloth_wrappees_are_in_train_mode(model):
+    """Whether every module `model` merely wraps also reports training mode.
+
+    `training_step` is handed `self.model_wrapped`, but `Trainer.evaluation_loop` calls `.eval()`
+    on `self._wrap_model(self.model, training=False)`, which under DDP is the module INSIDE the
+    wrapper. That leaves the wrapper's own `.training` True while the whole model sits in eval,
+    so the root flag alone cannot tell the two apart and training would silently continue with
+    every dropout disabled. This is a handful of attribute reads, not the module walk being
+    skipped, and on an unwrapped model it stops at the first miss.
+    """
+    inner = model
+    for _ in range(4):
+        for attr in _UNSLOTH_WRAPPED_MODULE_ATTRS:
+            wrappee = getattr(inner, attr, None)
+            if isinstance(wrappee, torch.nn.Module):
+                break
+        else:
+            return True
+        if not wrappee.training:
+            return False
+        inner = wrappee
+    return True
+
+
 def _unsloth_train_if_needed(model):
     """`Trainer.training_step` calls `model.train()` on every micro-step. On a PEFT-wrapped 9B
     model that is a recursive walk over ~2k modules with a `__setattr__` each, several ms of
@@ -3176,7 +3205,11 @@ def _unsloth_train_if_needed(model):
     the walk when the root already reports training mode and we were the ones who set it. A root
     `.eval()` (evaluation, `for_inference`) flips `model.training`, so the next call walks again.
     """
-    if model.training and getattr(model, "_unsloth_train_mode_asserted", False):
+    if (
+        model.training
+        and getattr(model, "_unsloth_train_mode_asserted", False)
+        and _unsloth_wrappees_are_in_train_mode(model)
+    ):
         return model
     model.train()
     try:
@@ -3233,6 +3266,12 @@ def patch_fla_autotuner_fast_path():
 def patch_gradient_accumulation_fix(Trainer):
     # Fixes "Output 0 of UnslothFusedLossBackward is a view and is being modified inplace" and gradient accumulation.
     import inspect
+
+    # Before the early returns below: the fla patch is unrelated to gradient accumulation, and it
+    # can only install once fla has been imported. Loading a non-fla model first (llama.py's
+    # FastLlamaModel.from_pretrained never imports fla) and a gated-deltanet model second would
+    # otherwise leave it permanently uninstalled, since the second call returns here.
+    patch_fla_autotuner_fast_path()
 
     if hasattr(Trainer, "get_batch_samples"):
         if Trainer.get_batch_samples.__name__ == "_unsloth_get_batch_samples":
@@ -3394,8 +3433,6 @@ def patch_gradient_accumulation_fix(Trainer):
         _unsloth_trainer_init.__wrapped__ = _original_trainer_init
         Trainer.__init__ = _unsloth_trainer_init
         Trainer._unsloth_init_wrapped_for_accelerate_gas = True
-
-    patch_fla_autotuner_fast_path()
 
 
 def _unsloth_compile_cache_leaves():
