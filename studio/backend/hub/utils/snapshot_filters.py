@@ -28,13 +28,10 @@ DUPLICATE_WEIGHT_FORMAT_PATTERNS: tuple[str, ...] = (
     "flax_model.msgpack.index.json",
     "rust_model.ot",
 )
-# The torch checkpoints are resolved per repo rather than globbed, because a dtype variant is
-# only redundant when the SAME variant ships as safetensors: "model.safetensors" does not
-# satisfy a variant="fp16" load, a rule this codebase already pins in
-# tests/test_prefetch_snapshot_scope.py::test_variant_keeps_bin_when_only_default_safetensors.
-# A glob also kept openai/whisper-large-v3's "pytorch_model.bin.index.fp32.json" while dropping
-# the shards it indexes. Both shard layouts are accepted, because transformers writes the
-# counter-first one and unsloth/models/_utils.py already recognises both.
+# Resolved per repo, not globbed: a dtype variant is redundant only when the SAME variant ships
+# as safetensors (test_prefetch_snapshot_scope.py::test_variant_keeps_bin_when_only_default_safetensors),
+# and a glob kept whisper-large-v3's pytorch_model.bin.index.fp32.json while dropping its shards.
+# Both shard layouts, since transformers writes the counter-first one (unsloth/models/_utils.py).
 _BIN_WEIGHT_RES = (
     re.compile(r"pytorch_model(?:\.(?P<variant>[A-Za-z0-9_]+))?(?:[-_][0-9]+-of-[0-9]+)?\.bin"),
     re.compile(r"pytorch_model[-_][0-9]+-of-[0-9]+\.(?P<variant>[A-Za-z0-9_]+)\.bin"),
@@ -98,10 +95,8 @@ def repo_ships_transformers_weights(filenames: Iterable[str]) -> bool:
 def repo_ships_root_safetensors(filenames: Iterable[str]) -> bool:
     """Whether a load would find a COMPLETE root safetensors checkpoint.
 
-    Numbered shards are not loadable on their own: transformers resolves them through
-    model.safetensors.index.json and, with no index, falls back to looking for a single
-    file and raises. So one shard is not evidence a checkpoint is there, and treating it
-    as such would drop a working pytorch_model.bin the load still needed.
+    Numbered shards are resolved through the index; with none, a load looks for a single
+    file and raises. So one shard is not evidence a checkpoint is there.
     """
     names = list(filenames)
     if any(name == "model.safetensors" for name in names):
@@ -114,18 +109,15 @@ def repo_ships_root_safetensors(filenames: Iterable[str]) -> bool:
 def _variant_ships_as_safetensors(names: list[str], variant: str | None) -> bool:
     """Whether `variant` is already covered by a COMPLETE safetensors checkpoint.
 
-    ``None`` is the canonical checkpoint, which the root-safetensors gate has established.
-    A named variant needs its OWN safetensors (the default ``model.safetensors`` cannot
-    serve a ``variant=`` load), and its sharded form needs an index for the same reason the
-    canonical one does: numbered shards are not loadable without it.
+    ``None`` is the canonical one, established by the root-safetensors gate. A named variant
+    needs its own safetensors, and its sharded form needs an index, as the canonical one does.
     """
     if variant is None:
         return True
     if f"model.{variant}.safetensors" in names:
         return True
-    # transformers' _add_variant puts the variant second-to-last, so the index a variant load
-    # looks for is exactly this one; model.<variant>.safetensors.index.json is not a spelling
-    # it can find, and accepting it would drop bins over an index nothing reads.
+    # _add_variant puts the variant second-to-last, so this is the only index spelling a
+    # variant load can find; accepting another would drop bins over an index nothing reads.
     if f"model.safetensors.index.{variant}.json" not in names:
         return False
     return any(_variant_shard_re(variant).fullmatch(name) for name in names)
