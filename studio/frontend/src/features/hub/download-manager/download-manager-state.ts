@@ -23,7 +23,6 @@ import {
 import {
   ACTIVE_STATES,
   MAX_PROGRESS_FRACTION,
-  isPersistedJobState,
 } from "./download-manager-config";
 import {
   type DownloadManagerState,
@@ -32,6 +31,7 @@ import {
   downloadInventoryHintKind,
   scopedDownloadInventoryKind,
 } from "./download-manager-types";
+import { presentationForExpectedBytesUpdate } from "./download-presentation";
 import {
   clearRuntimeTimer,
   pruneSuppressedCompletedInventoryHints as pruneRuntimeSuppressedHints,
@@ -55,6 +55,35 @@ function finiteNumber(value: unknown, fallback: number): number {
 
 function nonNegativeNumber(value: unknown, fallback = 0): number {
   return Math.max(0, finiteNumber(value, fallback));
+}
+
+function presentationOfPersisted(value: Record<string, unknown>) {
+  if (!isRecord(value.presentation)) return {};
+  const { label, filename, expectedBytes, cachedPlanPrefixBytes } =
+    value.presentation;
+  if (
+    typeof label !== "string" ||
+    !label.trim() ||
+    typeof filename !== "string" ||
+    !filename.trim() ||
+    typeof expectedBytes !== "number" ||
+    !Number.isFinite(expectedBytes) ||
+    expectedBytes <= 0
+  ) {
+    return {};
+  }
+  return {
+    presentation: {
+      label: label.trim(),
+      filename: filename.trim(),
+      expectedBytes,
+      ...(typeof cachedPlanPrefixBytes === "number" &&
+      Number.isFinite(cachedPlanPrefixBytes) &&
+      cachedPlanPrefixBytes >= 0
+        ? { cachedPlanPrefixBytes }
+        : {}),
+    },
+  };
 }
 
 /**
@@ -92,7 +121,7 @@ function sanitizePersistedJob(
   const kind = isDownloadKind(value.kind) ? value.kind : null;
   const repoId = typeof value.repoId === "string" ? value.repoId : null;
   const state = value.state as DownloadJobState;
-  if (!kind || !repoId || !isPersistedJobState(state)) return null;
+  if (!kind || !repoId || !ACTIVE_STATES.has(state)) return null;
 
   const variant = typeof value.variant === "string" ? value.variant : null;
   const key = jobKeyOf(kind, repoId, variant);
@@ -106,6 +135,7 @@ function sanitizePersistedJob(
     completedBytes: nonNegativeNumber(value.completedBytes),
     completeOnDisk: false,
     expectedBytes: nonNegativeNumber(value.expectedBytes),
+    ...presentationOfPersisted(value),
     fraction: Math.min(Math.max(finiteNumber(value.fraction, 0), 0), 1),
     bytesPerSec: 0,
     etaSeconds: 0,
@@ -168,6 +198,9 @@ function toPersistedJob(
     downloadedBytes: job.downloadedBytes,
     completedBytes: job.completedBytes,
     expectedBytes: job.expectedBytes,
+    ...(job.presentation !== undefined
+      ? { presentation: job.presentation }
+      : {}),
     fraction: job.fraction,
     error: job.error,
     startedAt: job.startedAt,
@@ -300,10 +333,7 @@ export const useDownloadManagerStore = create<DownloadManagerState>()(
     partialize: (state) => ({
       jobs: Object.fromEntries(
         Object.entries(state.jobs)
-          // External jobs have no hub job to resume into, so they are not saved.
-          // Failed and cancelled jobs stay: the Downloads list is the resume
-          // entry after a mid-transfer failure or a restart (#9780).
-          .filter(([, job]) => !job.external && isPersistedJobState(job.state))
+          .filter(([, job]) => !job.external && ACTIVE_STATES.has(job.state))
           .map(([key, job]) => [key, toPersistedJob(job)] as const),
       ),
       conflicts: {},
@@ -661,6 +691,11 @@ export function setExpectedBytesForJob(
   if (!job || job.state !== "running" || bytes <= job.expectedBytes) return;
   patchJob(job.key, {
     expectedBytes: bytes,
+    presentation: presentationForExpectedBytesUpdate(
+      job.presentation,
+      job.expectedBytes,
+      bytes,
+    ),
     // Measured against the old, smaller total, so wrong the moment the total grows.
     etaSeconds: 0,
     fraction:

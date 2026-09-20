@@ -365,11 +365,8 @@ if __name__ == "__main__":
 
 # ---- the kwargs the wrapper exists to move -------------------------------
 #
-# A real trl config, not a stand-in: `new_init` branches on
-# isinstance(TrainingArguments), so a plain dataclass takes the other branch and
-# the tests would pass against the bug.
-
-
+# A real trl config, not a stand-in: `new_init` branches on isinstance(TrainingArguments), so a plain dataclass takes
+# the other branch and the tests would pass against the bug.
 def _sft_config():
     pytest.importorskip("trl")
     # Not `trl.SFTConfig`: on Apple Silicon `import unsloth` rebinds that name to

@@ -29,6 +29,7 @@ import subprocess
 import sys
 import tarfile
 from pathlib import Path
+from unittest import mock
 
 import pytest
 
@@ -50,6 +51,7 @@ def _load(name: str, path: Path):
     return module
 
 
+run_studio_gpu = _load("studio_gpu_payload_main", PAYLOAD_DIR / "run_studio_gpu.py")
 build_kernel = _load("studio_ci_build_kernel", CI_DIR / "build_kernel.py")
 collect_evidence = _load("studio_ci_collect_evidence", CI_DIR / "collect_evidence.py")
 
@@ -75,6 +77,40 @@ def test_compute_apps_skips_a_header_and_an_unreported_size():
 
 def test_no_compute_apps_at_all_is_an_empty_dict_not_a_crash():
     assert gpu_assert.parse_compute_apps("") == {}
+
+
+def test_listed_pids_are_counted_even_when_no_memory_is_attributed():
+    """Windows (WDDM) and unified-memory parts list every CUDA process with [N/A].
+    The GB10 lists a -ngl 0 server too, so this is neither "nothing on the card" nor
+    proof of offload: it is the signal to fall back to the device delta."""
+    text = "pid, used_gpu_memory\n1234, [N/A]\n5678, [N/A]\n"
+    assert gpu_assert.parse_compute_apps(text) == {}
+    assert gpu_assert.count_listed_pids(text) == 2
+
+
+def test_listed_pids_ignore_the_header_and_junk_rows():
+    assert gpu_assert.count_listed_pids("pid, used_gpu_memory\n[N/A], [N/A]\n\n") == 0
+    assert gpu_assert.count_listed_pids("") == 0
+    assert gpu_assert.count_listed_pids("1234, 2048\n5678, [N/A]\n") == 2
+
+
+def test_an_all_unattributed_listing_reads_as_cannot_enumerate(monkeypatch):
+    import run_studio_gpu  # the payload, on sys.path beside gpu_assert
+
+    """So cli_run_gpu_failure takes its device-delta branch rather than concluding that
+    no process appeared. Readable rows still come back as the usual dict."""
+
+    class _P:
+        def __init__(self, out):
+            self.returncode = 0
+            self.stdout = out
+
+    monkeypatch.setattr(run_studio_gpu, "run", lambda *a, **k: _P("4242, [N/A]\n4243, [N/A]\n"))
+    assert run_studio_gpu.nvidia_compute_apps() is None
+    monkeypatch.setattr(run_studio_gpu, "run", lambda *a, **k: _P("4242, 512\n4243, [N/A]\n"))
+    assert run_studio_gpu.nvidia_compute_apps() == {4242: 512}
+    monkeypatch.setattr(run_studio_gpu, "run", lambda *a, **k: _P(""))
+    assert run_studio_gpu.nvidia_compute_apps() == {}
 
 
 # ------------------------------------------------------------ llama.cpp log
@@ -807,12 +843,10 @@ def test_the_two_kaggle_legs_fit_the_account_side_by_side():
     which is why this asserts the sum rather than the group names.
     """
     yaml = pytest.importorskip("yaml")
-    # Read the cap out of gate.py's SOURCE rather than importing it. Both
-    # .github/scripts/kaggle_studio_ci and .github/scripts/kaggle_t4_ci ship a
-    # module called `report`, so putting either on sys.path here decides which
-    # one `import report` resolves to for every test that runs afterwards in
-    # the same process. An earlier draft of this test did exactly that and took
-    # nine unrelated summary tests down with it.
+    # Read the cap out of gate.py's SOURCE rather than importing it. Both .github/scripts/kaggle_studio_ci and
+    # .github/scripts/kaggle_t4_ci ship a module called `report`, so putting either on sys.path here decides which one
+    # `import report` resolves to for every test that runs afterwards in the same process. An earlier draft of this test
+    # did exactly that and took nine unrelated summary tests down with it.
     gate_src = (REPO_ROOT / ".github" / "scripts" / "kaggle_t4_ci" / "gate.py").read_text(
         encoding = "utf-8"
     )
@@ -831,8 +865,8 @@ def test_the_two_kaggle_legs_fit_the_account_side_by_side():
         "the two legs share a concurrency group again, so Unsloth waits out the "
         "whole notebook job for a Kaggle session that is free"
     )
-    # Neither may be keyed on the ref: one account, so two branches of the SAME
-    # workflow still must not overlap even though the two workflows may.
+    # Neither may be keyed on the ref: one account, so two branches of the SAME workflow still must not overlap even
+    # though the two workflows may.
     for group in (studio_group, notebook_group):
         assert "github.ref" not in group, group
 
@@ -909,22 +943,18 @@ def test_studio_is_sampled_harder_than_the_notebook_leg():
         "0.75 GPU-h" in studio and "TOTAL, expected                             ~0.25 h" in notebook
     )
 
-    # Share of the shared 50h CI allowance, and the stand-down floor that
-    # enforces the priority: the cheap leg stops first so the expensive one
-    # gets the tail of the week.
+    # Share of the shared 50h CI allowance, and the stand-down floor that enforces the priority: the cheap leg stops
+    # first so the expensive one gets the tail of the week.
     assert "The split is Unsloth 35, this leg 15" in notebook
     assert "--reserve-hours 20" in notebook and "--reserve-hours 10" in studio
 
-    # The Unsloth block states the notebook leg's reserve in PROSE, so the number
-    # lives in two files and one of them is not executable. Raising the notebook
-    # reserve without touching that sentence leaves the Unsloth budget arguing from
-    # a figure that is no longer true, which is exactly how the "cheap leg yields
-    # first" priority gets documented backwards. Assert the sentence agrees.
+    # The Unsloth block states the notebook leg's reserve in PROSE, so the number lives in two files and one of them is
+    # not executable. Raising the notebook reserve without touching that sentence leaves the Unsloth budget arguing from
+    # a figure that is no longer true, which is exactly how the "cheap leg yields first" priority gets documented
+    # backwards. Assert the sentence agrees.
     assert "reserve-hours is 10 rather than the notebook leg's 20" in studio
 
-    # Both budget blocks must name the other leg. Two independently-tuned
-    # rates against one account is how the 50h ceiling gets exceeded by
-    # accident.
+    # Both budget blocks must name the other leg.
     assert "kaggle-t4-studio-gpu-ci.yml" in notebook
     assert "kaggle-t4-notebook-ci.yml" in studio
 
@@ -948,24 +978,28 @@ def test_the_two_legs_together_fit_inside_the_ci_allowance():
     notebook_spend = 231 * rate(notebook) * 0.25  # busy week, the pessimistic end
     assert studio_spend > notebook_spend
     assert studio_spend + notebook_spend <= 50.0
-    # And with margin, because the ceiling is enforced by a quota read that
-    # only sees the account AFTER the hours are gone.
+    # And with margin, because the ceiling is enforced by a quota read that only sees the account AFTER the hours are
+    # gone.
     assert studio_spend + notebook_spend <= 40.0
 
 
 def test_the_reserve_leaves_ci_the_fifty_hours_it_is_allowed():
     source = WORKFLOW.read_text(encoding = "utf-8")
     assert "--reserve-hours 10" in source
-    assert "--budget-hours 2" in source
+    assert "--budget-hours 4" in source
+    assert "--budget-hours 2" not in source
 
 
-def test_the_budget_hours_flag_covers_the_kernel_ceiling():
-    """budget-hours is the worst case one invocation can cost, and the
-    kernel ceiling is what enforces that worst case."""
+def test_the_budget_hours_flag_covers_the_reaper_window():
+    """budget-hours is the worst case one invocation can cost. Nothing waits on
+    the kernel now, so a kernel that ignores its own timeout is left to the
+    collector's reaper window rather than to the kernel ceiling."""
     source = WORKFLOW.read_text(encoding = "utf-8")
     assert "--kernel-timeout-sec 4200" in source
     ceiling_hours = 4200 / 3600
-    assert ceiling_hours <= 2.0
+    budgets = {int(b) for b in re.findall(r"--budget-hours (\d+)", source)}
+    assert len(budgets) == 1, budgets
+    assert budgets.pop() >= ceiling_hours
 
 
 def test_the_opt_in_label_the_summary_names_is_the_one_the_gate_reads():
@@ -990,13 +1024,13 @@ def test_the_gate_and_launcher_are_the_shared_ones():
     assert not (CI_DIR / "launch.py").exists()
 
 
-# ------------------------------------------------------------------ report
-
-
 _PASSING = [{"label": "studio-gpu", "passed": True, "assertions": []}]
 _FAILING = [{"label": "studio-gpu", "passed": False, "failures": ["x"], "assertions": []}]
 # A training leg from the merged kernel. Not this reporter's payload.
 _LEG = [{"label": "control", "passed": False, "steps": []}]
+
+
+# ------------------------------------------------------------------ report
 
 
 @pytest.mark.parametrize(
@@ -1218,13 +1252,18 @@ def test_the_ui_driver_gets_a_freshly_seeded_account():
     ), "the password must be read after the restart, or it is the old one"
 
 
+# The llama.cpp install step.
+# Four hardware runs reported install_kind=None and failed the export assertion for it, because nothing had ever
+# installed a llama.cpp under STUDIO_HOME.
+# install_llama_prebuilt.py resolves a real "linux-cuda" kind on an x64 CUDA host, so the bundle was available the whole
+# time and simply never fetched.
+
+
 # The llama.cpp install step. Four hardware runs reported install_kind=None and
 # failed the export assertion for it, because nothing had ever installed a
 # llama.cpp under STUDIO_HOME. install_llama_prebuilt.py resolves a real
 # "linux-cuda" kind on an x64 CUDA host, so the bundle was available the whole
 # time and simply never fetched.
-
-
 def _load_payload():
     """Import run_studio_gpu under a private name.
 
@@ -1307,10 +1346,7 @@ def test_the_llama_cpp_install_actually_invokes_the_installer(tmp_path, monkeypa
     recorded = [entry for entry in session.assertions if entry["name"] == "llama_cpp_install"]
     assert len(recorded) == 1
     assert recorded[0]["llama_cpp_install_kind"] == "cuda13"
-    # install.sh --local claims to put a llama.cpp on disk. Recording what
-    # was there first is what keeps "install.sh installed nothing" and
-    # "install.sh installed a CPU bundle" distinguishable once this step
-    # fixes both.
+    # install.sh --local claims to put a llama.cpp on disk.
     assert "install_kind_before" in recorded[0]
 
 
@@ -1354,8 +1390,7 @@ def test_a_failed_llama_cpp_install_does_not_stop_the_run():
         "a llama.cpp install failure now aborts the run, so a box that cannot "
         "install the bundle reports nothing about inference, training or the UI"
     )
-    # And it must happen before the server, so the export route never sees a
-    # llama.cpp appear underneath it.
+    # And it must happen before the server, so the export route never sees a llama.cpp appear underneath it.
     assert body.index("self.install_llama_cpp()") < body.index("self.start_server()")
 
 
@@ -1635,11 +1670,8 @@ def test_a_loaded_list_alone_is_enough_to_unload(tmp_path, monkeypatch):
 
 # ------------------------------------------------- the evidence the launcher left
 #
-# The launcher collects each kernel into its own subdirectory, and the
-# workflow hands collect_evidence.py the parent. A non-recursive walk of that
-# parent finds nothing at all.
-
-
+# The launcher collects each kernel into its own subdirectory and the workflow hands collect_evidence.py the parent, so
+# a non-recursive walk of that parent finds nothing at all.
 def test_the_bundle_is_found_in_the_per_kernel_directory_the_launcher_writes(tmp_path):
     """launch.py::fetch_evidence writes kaggle_evidence/<slug>/..., and the
     workflow passes kaggle_evidence. A top-level glob reported every real run
@@ -1677,6 +1709,44 @@ def test_a_nested_executed_notebook_is_read_too(tmp_path):
         collect_evidence.iter_text(tmp_path / "evidence")
     )
     assert total and len(chunks) == total
+
+
+def test_evidence_that_is_json_but_not_a_notebook_does_not_raise(tmp_path):
+    """`[]`, a string cell, a numeric output: all valid JSON, all seen back from
+    a kernel. The reader used to raise on the first `.get`, failing the job
+    after its verdict was already posted."""
+    evidence = tmp_path / "evidence" / "unsloth-t4-ci-1234"
+    evidence.mkdir(parents = True)
+    (evidence / "a_output.ipynb").write_text("[]", encoding = "utf-8")
+    (evidence / "b_output.ipynb").write_text(
+        json.dumps({"cells": ["not a cell", {"outputs": [7, {"text": ["x", 1]}]}]}),
+        encoding = "utf-8",
+    )
+    blob = _bundle({"studio.log": b"a log"})
+    (evidence / "c_output.ipynb").write_text(
+        json.dumps({"cells": [{"outputs": [{"text": "\n".join(_chunk_lines(blob))}]}]}),
+        encoding = "utf-8",
+    )
+    streams = list(collect_evidence.iter_text(tmp_path / "evidence"))
+    assert "x1" in streams
+    chunks, total = collect_evidence.collect_chunks(iter(streams))
+    assert total and len(chunks) == total
+
+
+def test_the_evidence_unpack_is_best_effort_on_the_gpu_job():
+    """The notebook and scheduled unpacks already are; this one decided the
+    colour of a job whose verdict had already been posted."""
+    yaml = pytest.importorskip("yaml")
+    workflow = yaml.safe_load(WORKFLOW.read_text(encoding = "utf-8"))
+    steps = [
+        s
+        for job in workflow["jobs"].values()
+        for s in job.get("steps", [])
+        if "collect_evidence.py" in (s.get("run") or "")
+    ]
+    assert steps, "no unpack step"
+    for step in steps:
+        assert step.get("continue-on-error") is True, step.get("name")
 
 
 # ------------------------------------------------------- a diverged training run
@@ -1804,8 +1874,7 @@ def test_the_payload_can_find_a_llama_server_in_the_process_table(tmp_path):
         executable = sys.executable,
     )
     try:
-        # Only the discovery mechanism is exercised here; the name match is
-        # what the real llama-server supplies.
+        # Only the discovery mechanism is exercised here; the name match is what the real llama-server supplies.
         assert isinstance(module.llama_server_pids(), list)
     finally:
         proc.kill()
@@ -1833,7 +1902,6 @@ def test_an_earlier_loads_offload_line_is_not_evidence_for_the_next(tmp_path):
     scoped = module.studio_log_text(server_log, home, since = marks)
     assert "offloaded" not in scoped
     assert gpu_assert.offloaded_layers(scoped) is None
-    # And the whole file still reads back when nothing is scoped away.
     assert "offloaded" in module.studio_log_text(server_log, home)
 
 
@@ -2446,3 +2514,466 @@ def test_every_assertion_carries_its_own_wall_clock():
     # And an absolute position, so a reader can line the report up against the
     # driver's own interval for the payload.
     assert runner.assertions[1]["at_seconds"] >= runner.assertions[0]["at_seconds"]
+
+
+class TestAMixedListingIsNotProofOfCpu:
+    """A readable row on one GPU keeps the mapping nonempty, hiding an [N/A] server.
+
+    The all-[N/A] guard fires only when NOTHING parsed. On a box with a TCC card whose
+    process reports a figure and a WDDM or unified-memory card where the newly launched
+    server reports [N/A], the mapping is nonempty, the guard stays quiet, and the server's
+    pid is simply missing -- so nothing "appeared" and the harness failed a run whose model
+    was on the card the whole time.
+    """
+
+    @staticmethod
+    def _verdict(**kwargs):
+        return run_studio_gpu.cli_run_gpu_failure(**kwargs)
+
+    def test_an_appeared_but_unattributed_pid_defers_to_the_device_delta(self):
+        """On a card this run OWNS: nothing was there before, so the total is ours."""
+        failure, detail = self._verdict(
+            apps_before = {},
+            apps_after = {},
+            baseline = 1000.0,
+            settled = 1600.0,
+            listed_before = set(),
+            listed_after = {222},
+        )
+        assert failure is None, (
+            "the device grew by 600 MiB and pid 222 is listed but unattributed, which is "
+            f"the offloaded server, not an absence: {detail}"
+        )
+        assert detail["compute_apps_unattributed"] == [222]
+
+    def test_an_unattributed_pid_with_no_device_growth_still_fails(self):
+        failure, detail = self._verdict(
+            apps_before = {},
+            apps_after = {},
+            baseline = 1000.0,
+            settled = 1010.0,
+            listed_before = set(),
+            listed_after = {222},
+        )
+        assert failure is not None and "served from the CPU" in failure
+        assert "222" in failure, "the message names the process it could not attribute"
+
+    def test_an_unattributed_pid_with_no_device_reading_is_unmeasured(self):
+        failure, detail = self._verdict(
+            apps_before = {},
+            apps_after = {111: 500},
+            baseline = None,
+            settled = None,
+            listed_before = set(),
+            listed_after = {111, 222},
+        )
+        assert failure is not None and "unmeasured" in failure
+
+    def test_an_attributed_new_process_is_unaffected(self):
+        """The ordinary path must not start deferring to the shared device counter."""
+        failure, detail = self._verdict(
+            apps_before = {111: 500},
+            apps_after = {111: 500, 222: 2600},
+            baseline = 1000.0,
+            settled = 900.0,
+            listed_before = {111},
+            listed_after = {111, 222},
+        )
+        assert failure is None, "a co-tenant freeing memory must not sink an attributed pid"
+        assert detail["process_vram_mib"] == 2600
+
+    def test_a_pid_already_present_but_unattributed_is_not_new(self):
+        """Only a pid that APPEARED counts; a co-tenant showing [N/A] throughout is theirs."""
+        failure, detail = self._verdict(
+            apps_before = {111: 500},
+            apps_after = {111: 500},
+            baseline = 1000.0,
+            settled = 1010.0,
+            listed_before = {111, 999},
+            listed_after = {111, 999},
+        )
+        assert "compute_apps_unattributed" not in detail
+        assert failure is not None and "no process appeared" in failure
+
+    def test_the_old_callers_still_work(self):
+        """The listed sets are optional, so a caller that has none keeps the old verdict."""
+        failure, _ = self._verdict(
+            apps_before = {},
+            apps_after = {222: 2600},
+            baseline = None,
+            settled = None,
+        )
+        assert failure is None
+
+
+class TestTheListingNamesItsPids:
+    def test_listed_pids_includes_unattributed_rows(self):
+        csv_text = "111, 500\n222, [N/A]\n"
+        assert gpu_assert.parse_compute_apps(csv_text) == {111: 500}
+        assert gpu_assert.listed_pids(csv_text) == {111, 222}
+
+    def test_listed_pids_ignores_headers_and_junk(self):
+        assert gpu_assert.listed_pids("pid, used_gpu_memory\n\nnotapid, 5\n333, 10\n") == {333}
+
+    def test_the_sample_is_taken_once(self):
+        """Two nvidia-smi calls would describe two different moments, so the attributed
+        mapping and the listed pids could disagree about which processes exist.
+        """
+        body = (PAYLOAD_DIR / "run_studio_gpu.py").read_text(encoding = "utf-8")
+        assert body.count("nvidia_compute_apps_listing()") >= 3
+        assert "apps_before = attributed_apps(_listing_before)" in body
+        assert "apps_after = attributed_apps(_listing_after)" in body
+
+
+class TestASharedCardIsNotMeasuredByItsTotal:
+    """The device total only measures THIS process when THIS process owns the card.
+
+    Under --studio-concurrent a training leg shares it and both allocates and frees inside
+    the window: one recorded run read the delta as -182.0 MiB while the server genuinely
+    held 2.6 GB. Accepting a +200 MiB rise there would pass a CPU-served run on memory
+    somebody else allocated, so a fallback to the total is refused when anything was on the
+    card before the launch.
+    """
+
+    @staticmethod
+    def _verdict(**kwargs):
+        return run_studio_gpu.cli_run_gpu_failure(**kwargs)
+
+    def test_a_co_tenant_blocks_the_no_enumeration_fallback(self):
+        failure, detail = self._verdict(
+            apps_before = {111: 500},
+            apps_after = None,
+            baseline = 1000.0,
+            settled = 9000.0,
+            listed_before = {111},
+            listed_after = None,
+        )
+        assert failure is not None and "unmeasured rather than proven" in failure
+        assert detail["card_shared_before_launch"] is True
+
+    def test_a_co_tenant_blocks_the_mixed_listing_fallback(self):
+        failure, detail = self._verdict(
+            apps_before = {111: 500},
+            apps_after = {111: 500},
+            baseline = 1000.0,
+            settled = 9000.0,
+            listed_before = {111},
+            listed_after = {111, 222},
+        )
+        assert failure is not None and "unmeasured rather than proven" in failure
+        assert detail["card_shared_before_launch"] is True
+
+    def test_a_listed_but_unattributed_co_tenant_counts(self):
+        """A co-tenant reporting [N/A] is still a co-tenant."""
+        failure, _ = self._verdict(
+            apps_before = {},
+            apps_after = None,
+            baseline = 1000.0,
+            settled = 9000.0,
+            listed_before = {999},
+            listed_after = None,
+        )
+        assert failure is not None and "unmeasured rather than proven" in failure
+
+    def test_an_empty_card_keeps_the_fallback(self):
+        """The fallback exists for parts that report [N/A] for everything; it stays."""
+        failure, _ = self._verdict(
+            apps_before = {},
+            apps_after = None,
+            baseline = 1000.0,
+            settled = 1600.0,
+            listed_before = set(),
+            listed_after = None,
+        )
+        assert failure is None
+
+    def test_attribution_still_wins_over_the_rule(self):
+        """A co-tenant does not sink a run whose own process WAS attributed."""
+        failure, detail = self._verdict(
+            apps_before = {111: 500},
+            apps_after = {111: 500, 222: 2600},
+            baseline = 1000.0,
+            settled = 900.0,
+            listed_before = {111},
+            listed_after = {111, 222},
+        )
+        assert failure is None
+        assert detail["process_vram_mib"] == 2600
+
+    def test_unknown_co_tenancy_is_not_invented(self):
+        """No listing at all is no evidence either way, so behaviour is unchanged."""
+        failure, _ = self._verdict(
+            apps_before = None,
+            apps_after = None,
+            baseline = 1000.0,
+            settled = 1600.0,
+        )
+        assert failure is None
+
+
+class TestTheSamplesAreScopedToTheVisibleCard:
+    """nvidia-smi ignores CUDA_VISIBLE_DEVICES and answers for every PHYSICAL card.
+
+    Kaggle offers a two-GPU T4 session and build_kernel.py pins each payload to one card,
+    so both samplers were reading the whole box. An unrelated process starting on the
+    HIDDEN card and taking 200 MiB was then enough evidence for the device-wide delta to
+    carry a CPU-served run past the memory assertion.
+    """
+
+    @staticmethod
+    def _selector(value):
+        env = dict(os.environ)
+        if value is None:
+            env.pop("CUDA_VISIBLE_DEVICES", None)
+        else:
+            env["CUDA_VISIBLE_DEVICES"] = value
+        with mock.patch.dict(os.environ, env, clear = True):
+            return run_studio_gpu.visible_device_selector()
+
+    def test_unset_selects_every_card(self):
+        assert self._selector(None) is None
+
+    def test_a_pinned_card_selects_only_it(self):
+        assert self._selector("1") == "1"
+
+    def test_a_list_is_carried_through(self):
+        assert self._selector("0, 1") == "0,1"
+
+    def test_a_uuid_needs_no_mapping(self):
+        """`nvidia-smi -i` takes the GPU-UUID form directly."""
+        assert self._selector("GPU-84ccface-663f") == "GPU-84ccface-663f"
+
+    def test_an_empty_value_is_no_cards_not_all_of_them(self):
+        assert self._selector("") == ""
+
+    @staticmethod
+    def _scoped(value):
+        env = dict(os.environ)
+        if value is None:
+            env.pop("CUDA_VISIBLE_DEVICES", None)
+        else:
+            env["CUDA_VISIBLE_DEVICES"] = value
+        with mock.patch.dict(os.environ, env, clear = True):
+            return run_studio_gpu._scoped(["nvidia-smi", "--query-gpu=memory.used"])
+
+    def test_the_pin_reaches_the_command(self):
+        assert self._scoped("1") == ["nvidia-smi", "-i", "1", "--query-gpu=memory.used"]
+
+    def test_no_pin_leaves_the_command_alone(self):
+        assert self._scoped(None) == ["nvidia-smi", "--query-gpu=memory.used"]
+
+    def test_no_visible_card_takes_no_sample(self):
+        assert self._scoped("") is None
+
+    def test_both_samplers_are_scoped(self):
+        """The pair is the point: scoping one ruler and not the other still compares
+        a card-local reading against a box-wide one."""
+        seen = []
+
+        def fake_run(cmd, **kwargs):
+            seen.append(cmd)
+            return subprocess.CompletedProcess(cmd, 0, "7, 100\n", "")
+
+        with mock.patch.dict(os.environ, {"CUDA_VISIBLE_DEVICES": "7"}):
+            with mock.patch.object(run_studio_gpu, "run", fake_run):
+                run_studio_gpu.nvidia_used_mib()
+                run_studio_gpu.nvidia_compute_apps_listing()
+        assert len(seen) == 2
+        for cmd in seen:
+            assert cmd[1:3] == ["-i", "7"], f"unscoped sample: {cmd}"
+
+    def test_neither_sampler_runs_without_a_visible_card(self):
+        def explode(cmd, **kwargs):
+            raise AssertionError(f"sampled with no visible card: {cmd}")
+
+        with mock.patch.dict(os.environ, {"CUDA_VISIBLE_DEVICES": ""}):
+            with mock.patch.object(run_studio_gpu, "run", explode):
+                assert run_studio_gpu.nvidia_used_mib() is None
+                assert run_studio_gpu.nvidia_compute_apps_listing() is None
+
+
+class TestTheServerIsStoppedBeforeTheCliBaselineRegardlessOfSkipUi:
+    """assert_chat_ui ends by stopping the Studio server, so with --skip-ui nothing did, and
+    the still-running llama-server sat in assert_cli_run's before-launch listing. On parts that
+    report [N/A] per process that pid read as a co-tenant, the device-delta fallback was
+    refused, and a GPU-backed run came back "unmeasured rather than proven"."""
+
+    def test_stop_server_precedes_the_cli_assertion_unconditionally(self):
+        text = Path(run_studio_gpu.__file__).read_text(encoding = "utf-8")
+        ui = text.index("if not self.args.skip_ui:\n            self.assert_chat_ui()")
+        cli = text.index("        self.assert_cli_run()", ui)
+        between = text[ui:cli]
+        stop = between.rindex("self.stop_server()")
+        # At the method's own indentation, i.e. not inside the skip_ui branch.
+        line_start = between.rfind("\n", 0, stop) + 1
+        assert (
+            between[line_start:stop] == "        "
+        ), "stop_server must not sit inside the skip_ui guard"
+
+    def test_the_card_is_settled_between_the_stop_and_the_assertion(self):
+        """Stopping is not the same as having stopped. Source order, because the two calls
+        are orchestration in run() and there is no seam between them to observe."""
+        text = Path(run_studio_gpu.__file__).read_text(encoding = "utf-8")
+        cli = text.index("        self.assert_cli_run()")
+        between = text[
+            text.index("if not self.args.skip_ui:\n            self.assert_chat_ui()") : cli
+        ]
+        assert between.rindex("self.stop_server()") < between.rindex("wait_for_card_to_settle()")
+
+
+class TestTheCardIsGivenTimeToSettleAfterAStop:
+    """A terminated llama-server keeps its allocation, and keeps being LISTED, for a moment
+    after it exits. Sampled straight away that pid is assert_cli_run's before-launch state:
+    card_is_shared() withdraws the device-delta fallback and a GPU-backed run reports
+    "unmeasured rather than proven", which is the false red this PR set out to remove.
+    """
+
+    @staticmethod
+    def _settle(samples):
+        """Drive wait_for_card_to_settle over `samples` of (used_mib, listed pids), the
+        last one repeating. (None, None) is an nvidia-smi that did not answer. Returns the
+        number of polls taken: two nvidia-smi calls each, the entry sample included."""
+        taken = []
+
+        def fake_run(cmd, **kwargs):
+            used, pids = samples[min(len(taken) // 2, len(samples) - 1)]
+            taken.append(cmd)
+            if pids is None:
+                return subprocess.CompletedProcess(cmd, 9, "", "no devices were found")
+            if "--query-compute-apps=pid,used_gpu_memory" in cmd:
+                # The [N/A] shape: every pid listed, none of them attributed.
+                return subprocess.CompletedProcess(
+                    cmd, 0, "".join(f"{p}, [N/A]\n" for p in pids), ""
+                )
+            return subprocess.CompletedProcess(cmd, 0, f"{used}\n", "")
+
+        with mock.patch.object(run_studio_gpu, "run", fake_run):
+            with mock.patch.object(run_studio_gpu.time, "sleep", lambda _s: None):
+                run_studio_gpu.wait_for_card_to_settle()
+        return len(taken) // 2
+
+    def test_it_waits_for_the_stopped_server_to_leave_the_listing(self):
+        """Two equal samples are not proof of a settled card when the driver has not begun
+        giving the memory back, which is why the pid is what is waited on."""
+        assert self._settle([(3400.0, [4242]), (3400.0, [4242]), (200.0, []), (200.0, [])]) == 5
+
+    def test_it_waits_for_the_memory_to_come_back(self):
+        """The pid can go while the driver is still returning the allocation."""
+        assert self._settle([(3400.0, []), (1800.0, []), (200.0, []), (200.0, [])]) == 5
+
+    def test_a_stalled_reclaim_with_no_pid_to_wait_on_is_not_settled(self):
+        """The pid can also be gone BEFORE the first sample, leaving nothing to wait on. One
+        flat interval is then a stall as easily as a finished reclaim, and taking it as
+        settled hands assert_cli_run a baseline with the old model still in it."""
+        assert self._settle([(3400.0, []), (3400.0, []), (200.0, []), (200.0, [])]) == 5
+
+    def test_a_settled_card_costs_only_the_quiet_window(self):
+        assert self._settle([(200.0, [])]) == run_studio_gpu.VRAM_SETTLE_QUIET_POLLS + 1
+
+    def test_a_co_tenant_arriving_afterwards_does_not_hold_the_run(self):
+        """Only the pids the card carried at entry are the stop's to wait for."""
+        assert self._settle([(200.0, []), (2600.0, [777]), (2600.0, [777])]) == 3
+
+    def test_an_unanswering_smi_is_not_waited_on(self):
+        assert self._settle([(None, None)]) == 3
+
+    def test_the_wait_is_bounded(self):
+        """A co-tenant never leaves, and a card somebody else is draining never settles."""
+        assert (
+            self._settle([(3400.0 - 100.0 * i, [4242]) for i in range(60)])
+            == run_studio_gpu.VRAM_SETTLE_SAMPLES + 1
+        )
+
+    def test_the_settled_listing_no_longer_reads_as_a_co_tenant(self):
+        """The point of the wait, stated as the verdict it changes."""
+        stale = run_studio_gpu.cli_run_gpu_failure(
+            {},
+            None,
+            3400.0,
+            3900.0,
+            {4242},
+            {4242, 5555},
+        )[0]
+        assert stale is not None and "already on the card" in stale
+        settled = run_studio_gpu.cli_run_gpu_failure(
+            {},
+            None,
+            200.0,
+            700.0,
+            set(),
+            {5555},
+        )[0]
+        assert settled is None
+
+
+class TestTheTwoRulersAreReadInTheRightOrder:
+    """Which pids count as new, and which reading is allowed to overrule which.
+
+    Both of these are the mixed listing, where one new pid carries a figure and another
+    does not, and both come out of splitting "listed" from "attributed": the split is only
+    half applied unless the exclusion uses it too, and the weaker ruler must not be allowed
+    to contradict the stronger one.
+    """
+
+    @staticmethod
+    def _verdict(**kwargs):
+        return run_studio_gpu.cli_run_gpu_failure(**kwargs)
+
+    def test_a_flat_device_total_does_not_disprove_an_attributed_process(self):
+        """2.6 GiB read off pid 222 is not a CPU-served run because pid 333 was also new
+        and unreadable. The total is a shared counter and cannot outrank a direct reading;
+        which of the two is the server is still unknown, so this hedges rather than passes.
+        """
+        failure, detail = self._verdict(
+            apps_before = {},
+            apps_after = {222: 2600},
+            baseline = 1000.0,
+            settled = 1050.0,
+            listed_before = set(),
+            listed_after = {222, 333},
+        )
+        assert failure is not None
+        assert "served from the CPU" not in failure, failure
+        assert "unmeasured rather than disproven" in failure
+        assert detail["process_vram_mib"] == 2600
+        assert detail["compute_apps_unattributed"] == [333]
+
+    def test_a_co_tenant_that_becomes_readable_is_still_not_new(self):
+        """pid 77 was on the card at launch and merely unattributable then. Keying the
+        exclusion on the attributed map alone counted its 500 MiB as this launch's and
+        passed a server that never left the CPU."""
+        failure, detail = self._verdict(
+            apps_before = {},
+            apps_after = {77: 500},
+            baseline = 1000.0,
+            settled = 1000.0,
+            listed_before = {77},
+            listed_after = {77},
+        )
+        assert failure is not None and "no process appeared" in failure
+        assert detail["compute_apps_appeared"] == {}
+
+    def test_the_same_co_tenant_does_not_carry_the_mixed_listing_either(self):
+        failure, detail = self._verdict(
+            apps_before = {},
+            apps_after = {77: 500},
+            baseline = 1000.0,
+            settled = 1000.0,
+            listed_before = {77},
+            listed_after = {77, 888},
+        )
+        assert failure is not None and "unmeasured rather than proven" in failure
+        assert detail["card_shared_before_launch"] is True
+
+    def test_an_attributed_launch_on_an_empty_card_still_passes(self):
+        """The ordinary verdict is untouched: the exclusion only ever grows."""
+        failure, detail = self._verdict(
+            apps_before = {},
+            apps_after = {222: 2600},
+            baseline = 1000.0,
+            settled = 3600.0,
+            listed_before = set(),
+            listed_after = {222},
+        )
+        assert failure is None
+        assert detail["process_vram_mib"] == 2600

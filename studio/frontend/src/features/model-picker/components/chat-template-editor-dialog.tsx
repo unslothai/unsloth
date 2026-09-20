@@ -117,19 +117,23 @@ export function ChatTemplateEditorDialog({
               : "Override the model's chat template with custom Jinja. The change applies when the model loads. Saving an empty template or one that matches the default clears the override."}
           </DialogDescription>
         </DialogHeader>
-        <Textarea
-          value={renderedDraft}
-          onChange={(event) => {
-            if (readOnly) return;
-            setDraft(event.target.value);
-            setError(null);
-          }}
-          readOnly={readOnly}
-          className="min-h-[20rem] max-h-[50dvh] overflow-y-auto border-0 font-mono text-xs leading-5 corner-squircle focus-visible:ring-0"
-          rows={14}
-          spellCheck={false}
-          placeholder={defaultLoading ? "Loading model default..." : ""}
-        />
+        {/* Chrome does not clip a scroll area to a squircle, which squared off
+            the scrollbar's corners. The wrapper carries the shape instead. */}
+        <div className="corner-squircle overflow-hidden rounded-xl">
+          <Textarea
+            value={renderedDraft}
+            onChange={(event) => {
+              if (readOnly) return;
+              setDraft(event.target.value);
+              setError(null);
+            }}
+            readOnly={readOnly}
+            className="min-h-[20rem] max-h-[50dvh] overflow-y-auto rounded-none border-0 font-mono text-xs leading-5 focus-visible:ring-0"
+            rows={14}
+            spellCheck={false}
+            placeholder={defaultLoading ? "Loading model default..." : ""}
+          />
+        </div>
         {readOnly ? null : (
           <div className="flex items-center justify-between gap-3 px-0.5 text-ui-11">
             <span

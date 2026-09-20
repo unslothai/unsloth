@@ -11,6 +11,10 @@ export {
   usePinnedModelsStore,
 } from "./components/model-selector/pinned-models";
 export {
+  pinnedReasoningEffort,
+  useModelReasoningEffortStore,
+} from "./components/model-selector/model-reasoning-effort";
+export {
   hfModelFitsDevice,
   loadScopedGpu,
 } from "./components/model-selector/recommended-fit";
@@ -40,6 +44,18 @@ export type {
   ModelSelectorChangeMeta,
 } from "./components/model-selector";
 export { modelConfigInstanceKey } from "./model-config/config-signature";
+export { modelConfigDraftKey } from "./model-config/model-config-draft";
+export {
+  clearModelConfigHandoff,
+  createModelConfigHandoffRequestId,
+  modelConfigHandoffForDestination,
+  modelConfigTarget,
+  modelConfigTargetIsResident,
+  modelConfigTargetMatchesSelection,
+  requestModelConfigHandoff,
+  useModelConfigHandoffStore,
+  type ModelConfigHandoffRequest,
+} from "./model-config/model-config-handoff";
 export {
   applyModelLoadConfigToRuntime,
   applyPerModelConfigToRuntime,

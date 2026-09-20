@@ -33,6 +33,7 @@ from dataclasses import dataclass
 from typing import Optional
 
 from loggers import get_logger
+from utils.account_context import current_account_id
 
 logger = get_logger(__name__)
 
@@ -54,6 +55,9 @@ _RETRY_AFTER_S = 30
 # cannot hold the slot
 _FAILED_HOLD_S = 3 * _RETRY_AFTER_S
 _MAX_LISTED_VARIANTS = 8
+# Probe the selected weight: speech GGUFs need not publish tokenizer sidecars.
+_REMOTE_GGUF_SPEECH_PROBE_BYTES = 32 * 1024**2
+_REMOTE_GGUF_SPEECH_PROBE_TIMEOUT_S = _CODE_PROBE_TIMEOUT_S - 2.0
 
 
 @dataclass(frozen = True)
@@ -75,11 +79,12 @@ class _Active:
     expected_bytes: int = 0
     monitor_id: Optional[str] = None
     started_at: float = 0.0
-    # held until a retry surfaces it: Retry-After is far longer than the watcher poll
     # Set when the worker failed. Held until a retry surfaces it: Retry-After is far longer than the watcher poll, so
     # the client would restart the same failing download.
     error: Optional[str] = None
     failed_at: float = 0.0
+    # Who asked: another account's busy answer names no repo or quant.
+    account_id: Optional[str] = None
 
 
 _lock = threading.Lock()
@@ -255,6 +260,27 @@ def _auth_denied(repo_id: str, hf_token: Optional[str]) -> bool:
     return False
 
 
+def _probe_remote_gguf_audio_type(
+    repo_id: str, gguf_filename: str, hf_token: Optional[str], revision: Optional[str]
+) -> tuple[Optional[str], bool]:
+    try:
+        from core.inference.diffusion_compat import _read_gguf_header
+        from utils.models.gguf_metadata import classify_gguf_tts_audio_prefix
+
+        prefix = _read_gguf_header(
+            repo_id,
+            gguf_filename,
+            _hub_token(hf_token),
+            revision = revision,
+            max_bytes = _REMOTE_GGUF_SPEECH_PROBE_BYTES,
+            timeout_seconds = _REMOTE_GGUF_SPEECH_PROBE_TIMEOUT_S,
+        )
+        return classify_gguf_tts_audio_prefix(prefix) if prefix else (None, False)
+    except Exception as exc:
+        logger.debug("remote GGUF speech probe failed for %s/%s: %s", repo_id, gguf_filename, exc)
+        return None, False
+
+
 def _gguf_variants(siblings, repo_id: str = "") -> dict[str, int]:
     """Quant label -> bytes the download will actually fetch.
 
@@ -346,7 +372,7 @@ def _enough_disk(need_bytes: int) -> tuple[bool, int]:
 
 
 def _gb(num_bytes: int) -> str:
-    return f"{num_bytes / 1024**3:.1f} GB"
+    return f"{num_bytes / 1e9:.1f} GB"
 
 
 async def _job_state(repo_id: str, variant: Optional[str]) -> tuple[str, Optional[str]]:
@@ -406,8 +432,6 @@ async def _watch(active: _Active, hf_token: Optional[str]) -> None:
             state, error = await _job_state(active.repo_id, active.variant)
             if state in ("running", "cancelling", "unknown"):
                 if timed_out:
-                    # a running worker still owns the slot, and releasing on the clock alone would admit a second
-                    # multi-GB download beside it
                     # A running worker still owns the slot: releasing on the clock alone would admit a second multi-GB
                     # download beside it. "unknown" cannot confirm it is alive, so release then, or a broken probe
                     # wedges us.
@@ -496,6 +520,7 @@ async def maybe_auto_download(
     *,
     hf_token: Optional[str] = None,
     require_vision: bool = False,
+    require_speech: bool = False,
     subject: Optional[str] = None,
     via_api_key: bool = False,
 ) -> Optional[AutoDownloadRefusal]:
@@ -504,9 +529,9 @@ async def maybe_auto_download(
     Returns None when the request should carry on unchanged, or a refusal the
     caller must raise. Only called after the local resolver has already missed.
 
-    ``require_vision`` refuses a target with no mmproj companion rather than spend
-    gigabytes on weights that cannot answer the request; the local capability guard
-    only ever sees an already-downloaded model.
+    ``require_vision`` and ``require_speech`` refuse incapable targets before spending
+    gigabytes on weights; the local capability guard only ever sees an already-downloaded
+    model.
 
     ``subject`` and ``via_api_key`` describe the caller for the monitor row this
     opens: the same /v1 endpoints serve Unsloth's own chat on a session JWT, so the
@@ -535,7 +560,9 @@ async def maybe_auto_download(
             busy = current
         else:
             adopted = None
-            provisional = _Active(repo_id = repo_id, started_at = time.time())
+            provisional = _Active(
+                repo_id = repo_id, started_at = time.time(), account_id = current_account_id()
+            )
             _active = provisional
 
     if busy is not None:
@@ -544,13 +571,14 @@ async def maybe_auto_download(
         # a 2nd download.
         if not await _is_downloadable_model(repo_id, hf_token):
             return None
+        if busy.account_id == current_account_id():
+            what = f"Already downloading '{_public_label(busy.repo_id, busy.variant)}'."
+        else:
+            what = "Another download is in progress."
         return AutoDownloadRefusal(
             status = 503,
             code = "model_download_busy",
-            message = (
-                f"Already downloading '{_public_label(busy.repo_id, busy.variant)}'. "
-                f"Retry '{requested_model}' once it finishes."
-            ),
+            message = f"{what} Retry '{requested_model}' once it finishes.",
             retry_after = _RETRY_AFTER_S,
         )
 
@@ -588,6 +616,7 @@ async def maybe_auto_download(
             hf_token,
             provisional,
             require_vision,
+            require_speech,
             subject = subject,
             via_api_key = via_api_key,
         )
@@ -604,6 +633,7 @@ async def _admit_and_start(
     hf_token: Optional[str],
     active: _Active,
     require_vision: bool = False,
+    require_speech: bool = False,
     *,
     subject: Optional[str] = None,
     via_api_key: bool = False,
@@ -737,6 +767,63 @@ async def _admit_and_start(
             ),
         )
 
+    if require_speech:
+        from functools import partial
+        from utils.audio_tokens import GGUF_TTS_AUDIO_TYPES
+        from utils.models.model_config import detect_audio_type_checked
+
+        audio_type, definitive = await _bounded_probe(
+            partial(
+                detect_audio_type_checked,
+                repo_id,
+                hf_token = _hub_token(hf_token),
+                revision = getattr(info, "sha", None),
+            ),
+            timeout = _CODE_PROBE_TIMEOUT_S,
+            default = (None, False),
+        )
+        if definitive and (audio_type is None or audio_type in GGUF_TTS_AUDIO_TYPES):
+            sidecar_audio_type = audio_type
+            main_files = sorted(getattr(plan, "main_filenames", ()) or ())
+            probed_audio_type, probed_definitive = await _bounded_probe(
+                partial(
+                    _probe_remote_gguf_audio_type,
+                    repo_id,
+                    main_files[0] if main_files else "",
+                    hf_token,
+                    getattr(info, "sha", None),
+                ),
+                timeout = _CODE_PROBE_TIMEOUT_S,
+                default = (None, False),
+            )
+            if probed_definitive:
+                audio_type, definitive = probed_audio_type, True
+            elif sidecar_audio_type in GGUF_TTS_AUDIO_TYPES:
+                audio_type, definitive = sidecar_audio_type, True
+            else:
+                audio_type, definitive = None, False
+        if not definitive:
+            _release(active)
+            return AutoDownloadRefusal(
+                status = 503,
+                code = "model_lookup_failed",
+                message = (
+                    f"Could not verify that '{_public_label(repo_id, variant)}' supports "
+                    "text-to-speech. It was not downloaded; retry shortly."
+                ),
+                retry_after = _RETRY_AFTER_S,
+            )
+        if audio_type not in GGUF_TTS_AUDIO_TYPES:
+            _release(active)
+            return AutoDownloadRefusal(
+                status = 400,
+                code = "invalid_value",
+                message = (
+                    f"'{_public_label(repo_id, variant)}' is not a supported "
+                    "text-to-speech GGUF model. It was not downloaded."
+                ),
+            )
+
     need_bytes = _remaining_bytes(repo_id, plan, expected_bytes)
     fits, free = _enough_disk(need_bytes)
     if not fits:
@@ -791,7 +878,6 @@ def _bare_quant_alias(wanted: str, lowered: dict[str, str]) -> Optional[str]:
     target = (wanted or "").strip().lower()
     if not target:
         return None
-    # PATH-qualified keys only: an H3 root stem's bare quant names both partitions
     # PATH-qualified keys only, not is_qualified_gguf_variant_key: an H3 root stem's bare quant names both partitions,
     # so it must miss rather than serve one of them.
     matches = [
@@ -882,10 +968,9 @@ async def _dispatch(
         return busy
 
     monitor_id = api_monitor.record_lifecycle(
-        # only /v1 reaches auto-download, but that is not API-key traffic
         # Reason "api" since only /v1 reaches auto-download, but that is not API-key traffic: Unsloth's chat calls /v1
-        # on a JWT, and marking its download would pop the overlay mid-chat. So attribution comes from the request, plus
-        # its caller, since the row is shared.
+        # on a JWT, and marking its download would pop the overlay mid-chat. So attribution comes from the request,
+        # plus its caller, since the row is shared.
         event = "download",
         model = label,
         reason = "api",
@@ -901,7 +986,14 @@ async def _dispatch(
             tracked = active
         else:
             # Released underneath us: track the job we started, but never stomp a newer owner.
-            tracked = _Active(repo_id, variant, expected_bytes, monitor_id, time.time())
+            tracked = _Active(
+                repo_id,
+                variant,
+                expected_bytes,
+                monitor_id,
+                time.time(),
+                account_id = active.account_id,
+            )
             if _active is None:
                 _active = tracked
 

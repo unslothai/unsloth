@@ -1075,14 +1075,7 @@ def settings(ctx: ActionContext) -> ActionResult:
 
 @register_action(name = "model_change", default_budget_ms = 10000)
 def model_change(ctx: ActionContext) -> ActionResult:
-    """Open the model picker and select a row.
-
-    THE WEAKEST SELECTOR IN THE SUITE, and it is recorded as such rather than hidden. The picker's
-    option rows are plain `<button>` elements with utility classes: no `role="option"`, no
-    `data-model-id`, no CommandItem, nothing stable anywhere in features/model-picker. So the row
-    is found by position among the menu's buttons and the assertion is on the trigger's LABEL
-    changing, which is an observable consequence rather than a selector.
-    """
+    """Open the model picker and select a row marked with data-model-picker-option."""
     trigger = ctx.page.query_selector("button.unsloth-model-selector-trigger")
     if trigger is None:
         return not_run("no model selector trigger on the page")
@@ -1129,7 +1122,7 @@ def model_change(ctx: ActionContext) -> ActionResult:
             "label_before": before,
             "label_after": after,
             "menu_closed": closed,
-            "selector_confidence": "low: the option rows carry no stable attribute",
+            "selector_confidence": "high: data-model-picker-option identifies selectable rows",
         },
         timings = {"open_ms": round(opened_ms, 1), "select_ms": round(select_ms, 1)},
         reason = None if ok else "no option could be selected, or the menu stayed open",
@@ -1613,6 +1606,39 @@ IMAGE_BUTTON_DIAGNOSTIC = """() => {
 }"""
 
 
+#: THERE ARE TWO COMPOSERS AND THEY SHARE NO MARKUP, so counting one of them is counting none on
+#: the screen that uses the other. The chat thread renders assistant-ui's composer, where every
+#: attachment goes through `AttachmentPrimitive.Root` as `.aui-attachment-root` inside
+#: `.aui-composer-attachments` (studio/frontend/src/components/assistant-ui/attachment.tsx). The
+#: compare screen renders `SharedComposer`, which keeps its own pending-image and pending-audio
+#: markup (studio/frontend/src/features/chat/shared-composer.tsx) and carries the assistant-ui
+#: classes nowhere; its elements are tagged `data-composer-attachment` inside
+#: `[data-composer-attachments]` so they have a handle that is not a utility class.
+#:
+#: Both containers are mounted whenever their composer is, and hidden while empty, so a missing
+#: container means the markup moved rather than that nothing is attached.
+#: `selftest/test_studiobench_composer_attachment_selector.py` pins every name below against the
+#: file that renders it, because a selector that matches nothing counts zero and reads exactly like
+#: an upload that never happened.
+_COMPOSER_ATTACHMENT_CONTAINERS = (".aui-composer-attachments", "[data-composer-attachments]")
+_COMPOSER_ATTACHMENT_TILES = (".aui-attachment-root", "[data-composer-attachment]")
+
+_COMPOSER_ATTACHMENT_SELECTOR = ", ".join(
+    f"{container} {tile}"
+    for container, tile in zip(_COMPOSER_ATTACHMENT_CONTAINERS, _COMPOSER_ATTACHMENT_TILES)
+)
+
+_COMPOSER_ATTACHMENT_CONTAINER_SELECTOR = ", ".join(_COMPOSER_ATTACHMENT_CONTAINERS)
+
+_COUNT_COMPOSER_ATTACHMENTS_JS = (
+    f"() => document.querySelectorAll('{_COMPOSER_ATTACHMENT_SELECTOR}').length"
+)
+
+_COUNT_COMPOSER_ATTACHMENT_CONTAINERS_JS = (
+    f"() => document.querySelectorAll('{_COMPOSER_ATTACHMENT_CONTAINER_SELECTOR}').length"
+)
+
+
 @register_action(name = "image_upload", default_budget_ms = 12000)
 def image_upload(ctx: ActionContext) -> ActionResult:
     """Attach an image through the composer's file chooser.
@@ -1638,17 +1664,17 @@ def image_upload(ctx: ActionContext) -> ActionResult:
         plus = None
     if plus is None:
         # WHY, not just THAT: a bare "not visible" conflates a button that is absent, one that is covered
-        # and a locator that disagrees with the page, and has already cost three wrong hypotheses.
-        # Carrying the probe state into the row means the next run answers it.
+        # and a locator that disagrees with the page, and has already cost three wrong hypotheses. A
+        # direct probe once found the control at 36x36, fully opaque and hit-testable, on a fresh chat,
+        # after a settings round trip and under a 20,000-character composer fill, so those states alone
+        # did not explain it then; a fixture that loads no model has no attachments button at all, and
+        # nothing here rules out a change in the current build. Read the diagnostic below rather than
+        # this note. Carrying the probe state into the row means the next run answers it.
         return not_run(
             "no visible attachments button on the composer: "
             + json.dumps(_ev(ctx, IMAGE_BUTTON_DIAGNOSTIC) or {})
         )
-    before = _ev(
-        ctx,
-        "() => document.querySelectorAll('.aui-composer-attachment, "
-        '[data-slot="composer-attachment"]\').length',
-    )
+    before = _ev(ctx, _COUNT_COMPOSER_ATTACHMENTS_JS)
     started = time.monotonic()
     # Bounded by what is left of the slot, never by Playwright's 30s default.
     try:
@@ -1667,19 +1693,37 @@ def image_upload(ctx: ActionContext) -> ActionResult:
         ctx.page.keyboard.press("Escape")
         return not_run(f"the file chooser never opened: {type(exc).__name__}: {exc}")
     ctx.page.wait_for_timeout(800)
-    after = _ev(
-        ctx,
-        "() => document.querySelectorAll('.aui-composer-attachment, "
-        '[data-slot="composer-attachment"]\').length',
-    )
+    after = _ev(ctx, _COUNT_COMPOSER_ATTACHMENTS_JS)
     elapsed = (time.monotonic() - started) * 1000
     ok = after is not None and before is not None and after > before
+    containers = None
+    reason = None
+    if not ok:
+        # A STALE SELECTOR AND A FAILED UPLOAD BOTH COUNT ZERO, and that is exactly how this
+        # assertion spent its first life: it counted a class the frontend has never rendered, so
+        # `after > before` could not come out true however well the composer worked. It stayed
+        # invisible because the action only mounts once a model is selected, and until then
+        # `--allow-not-run image_upload` excused every row. Probe the container before blaming the
+        # upload, so the next failure says which file to open.
+        containers = _ev(ctx, _COUNT_COMPOSER_ATTACHMENT_CONTAINERS_JS)
+        if not containers:
+            reason = (
+                "no attachment appeared, and neither composer's attachment container "
+                f"({_COMPOSER_ATTACHMENT_CONTAINER_SELECTOR}) is in the page either, so this run "
+                "cannot tell a failed upload from a selector that no longer matches the frontend"
+            )
+        else:
+            reason = "no attachment appeared in the composer after the file was set"
     return ActionResult(
         ran = True,
         expect_ok = ok,
-        expect = {"attachments_before": before, "attachments_after": after},
+        expect = {
+            "attachments_before": before,
+            "attachments_after": after,
+            "attachment_containers": containers,
+        },
         timings = {"upload_ms": round(elapsed, 1)},
-        reason = None if ok else "no attachment appeared in the composer after the file was set",
+        reason = reason,
     )
 
 

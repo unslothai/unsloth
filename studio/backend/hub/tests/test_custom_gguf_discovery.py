@@ -13,6 +13,15 @@ from hub.utils import gguf
 from utils.models.model_config import detect_gguf_model, _find_local_gguf_by_variant
 
 
+def _shared_setup_1(tmp_path):
+    root = tmp_path / "root"
+    parent = root / "parent"
+    _write_gguf(parent / "parent-Q4_K_M.gguf")
+    (parent / "config.json").write_text("{}", encoding = "utf-8")
+    child = parent / "child"
+    return child, parent, root
+
+
 def _write_gguf(path: Path, size: int = 4) -> Path:
     path.parent.mkdir(parents = True, exist_ok = True)
     path.write_bytes(b"G" * size)
@@ -223,30 +232,40 @@ def test_symlinked_and_real_parent_roots_dedupe_group_rows(tmp_path):
     assert Path(rows[0].path).resolve() == real_model.resolve()
 
 
-def test_split_gguf_shards_stay_grouped(tmp_path):
+@pytest.mark.parametrize(
+    "folder, first_file, second_file",
+    [
+        pytest.param(
+            "model",
+            "model-Q4_K_M-00001-of-00002.gguf",
+            "model-Q4_K_M-00002-of-00002.gguf",
+            id = "split_gguf_shards_stay_grouped",
+        ),
+        pytest.param(
+            "model",
+            "model-00001-of-00002-Q4_K_M.gguf",
+            "model-00002-of-00002-Q4_K_M.gguf",
+            id = "pre_quant_split_markers_stay_grouped",
+        ),
+        pytest.param(
+            "minimax-h3",
+            "minimax_h3_fl2va-Q4_K_M.gguf",
+            "minimax_h3_ref2va-Q4_K_M.gguf",
+            id = "minimax_h3_partitions_stay_grouped",
+        ),
+        pytest.param(
+            "model",
+            "model-Q4_K_M.GGUF",
+            "model-Q8_0.GguF",
+            id = "mixed_case_gguf_suffixes_stay_grouped",
+        ),
+    ],
+)
+def test_gguf_variants_of_one_model_stay_grouped(tmp_path, folder, first_file, second_file):
     root = tmp_path / "root"
-    model = root / "model"
-    _write_gguf(model / "model-Q4_K_M-00001-of-00002.gguf")
-    _write_gguf(model / "model-Q4_K_M-00002-of-00002.gguf")
-
-    assert [Path(row.path) for row in _custom_rows(root)] == [model]
-
-
-def test_pre_quant_split_markers_stay_grouped(tmp_path):
-    root = tmp_path / "root"
-    model = root / "model"
-    _write_gguf(model / "model-00001-of-00002-Q4_K_M.gguf")
-    _write_gguf(model / "model-00002-of-00002-Q4_K_M.gguf")
-
-    assert [Path(row.path) for row in _custom_rows(root)] == [model]
-
-
-def test_minimax_h3_partitions_stay_grouped(tmp_path):
-    root = tmp_path / "root"
-    model = root / "minimax-h3"
-    _write_gguf(model / "minimax_h3_fl2va-Q4_K_M.gguf")
-    _write_gguf(model / "minimax_h3_ref2va-Q4_K_M.gguf")
-
+    model = root / folder
+    _write_gguf(model / first_file)
+    _write_gguf(model / second_file)
     assert [Path(row.path) for row in _custom_rows(root)] == [model]
 
 
@@ -430,11 +449,7 @@ def test_symlinked_nested_quant_root_keeps_the_real_parent_group(tmp_path):
 
 
 def test_overlapping_nested_independent_model_root_stays_selectable(tmp_path):
-    root = tmp_path / "root"
-    parent = root / "parent"
-    _write_gguf(parent / "parent-Q4_K_M.gguf")
-    (parent / "config.json").write_text("{}", encoding = "utf-8")
-    child = parent / "child"
+    child, parent, root = _shared_setup_1(tmp_path)
     _write_gguf(child / "child-Q8_0.gguf")
     (child / "config.json").write_text("{}", encoding = "utf-8")
 
@@ -444,11 +459,7 @@ def test_overlapping_nested_independent_model_root_stays_selectable(tmp_path):
 
 
 def test_overlapping_nested_independent_loose_root_stays_selectable(tmp_path):
-    root = tmp_path / "root"
-    parent = root / "parent"
-    _write_gguf(parent / "parent-Q4_K_M.gguf")
-    (parent / "config.json").write_text("{}", encoding = "utf-8")
-    child = parent / "child"
+    child, parent, root = _shared_setup_1(tmp_path)
     loose = _write_gguf(child / "child-Q8_0.gguf")
 
     rows = _custom_rows(root, child)
@@ -457,11 +468,7 @@ def test_overlapping_nested_independent_loose_root_stays_selectable(tmp_path):
 
 
 def test_aliased_nested_independent_loose_root_stays_selectable(tmp_path):
-    root = tmp_path / "root"
-    parent = root / "parent"
-    _write_gguf(parent / "parent-Q4_K_M.gguf")
-    (parent / "config.json").write_text("{}", encoding = "utf-8")
-    child = parent / "child"
+    child, parent, root = _shared_setup_1(tmp_path)
     loose = _write_gguf(child / "child-Q8_0.gguf")
     alias_child = tmp_path / "alias-child"
     _symlink_dir(alias_child, child)
@@ -609,15 +616,6 @@ def test_incomplete_custom_models_stay_hidden(tmp_path):
     complete = _write_gguf(root / "complete.gguf")
 
     assert [Path(row.path) for row in _custom_rows(root)] == [complete]
-
-
-def test_mixed_case_gguf_suffixes_stay_grouped(tmp_path):
-    root = tmp_path / "root"
-    model = root / "model"
-    _write_gguf(model / "model-Q4_K_M.GGUF")
-    _write_gguf(model / "model-Q8_0.GguF")
-
-    assert [Path(row.path) for row in _custom_rows(root)] == [model]
 
 
 def test_symlinked_model_directory_stays_grouped(tmp_path):

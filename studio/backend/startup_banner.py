@@ -1,10 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Terminal banner for Unsloth startup.
-
-Stdlib only -- safe to import without the rest of the backend.
-"""
+"""Terminal banner for Unsloth startup. Stdlib only -- safe to import without the rest of the backend."""
 
 from __future__ import annotations
 
@@ -84,23 +81,16 @@ def print_studio_access_banner(
     lan_addresses: "tuple[str, ...]" = (),
     wsl_windows_browser_hint: bool = False,
 ) -> None:
-    """Pretty-print URLs once the server is listening. Set
-    ``include_stop_hint=False`` to omit the trailing stop block; pair with
-    :func:`print_studio_stop_hint` after inserting your own content.
-
-    ``lan_addresses`` are the addresses a runtime LAN listener (Settings > LAN
-    access) is already serving on. A loopback launch that carries one is not
-    reachable on this machine only, so the banner must say where else it answers.
-
-    ``network_host`` is the address printed under "another device on your
-    network", defaulting to ``display_host``. A wildcard-bind caller passes both:
-    ``display_host`` can be a public WAN IP, which is the reachability probe's
-    business and not what a LAN peer can open (#8868).
-
-    ``wsl_windows_browser_hint`` adds a line for WSL2 NAT launches where no LAN
-    URL can be advertised: open ``http://localhost:<port>`` from the Windows host
-    (#11187).
-    """
+    """Pretty-print URLs once the server is listening. Set ``include_stop_hint=False`` to omit the
+    trailing stop block; pair with :func:`print_studio_stop_hint` after inserting your own content.
+    ``lan_addresses`` are the addresses a runtime LAN listener (Settings > LAN access) is already
+    serving on. A loopback launch that carries one is not reachable on this machine only, so the
+    banner must say where else it answers. ``network_host`` is the address printed under "another
+    device on your network", defaulting to ``display_host``. A wildcard-bind caller passes both:
+    ``display_host`` can be a public WAN IP, which is the reachability probe's business and not what
+    a LAN peer can open (#8868). ``wsl_windows_browser_hint`` adds a line for WSL2 NAT launches
+    where no LAN URL can be advertised: open ``http://localhost:<port>`` from the Windows host
+    (#11187)."""
     use_color = stdout_supports_color()
     dim = "\033[38;5;245m"
     title = "\033[38;5;150m"

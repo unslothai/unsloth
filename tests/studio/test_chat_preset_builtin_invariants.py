@@ -71,10 +71,10 @@ def _ensure_harness():
 def _run(script: str):
     _require_node()
     _ensure_harness()
-    # Unique per call: a shared run.mts let two xdist workers interleave write and exec,
-    # so one ran the other's script (5-6 of these 9 failed on every -n 4 run).
-    # A unique name, not a per-call dir like _node_harness.py uses: these scripts reach
-    # the sources by a path relative to TEMP, so an extra level breaks every import.
+    # Unique per call: a shared run.mts let two xdist workers interleave write and exec, so one ran the other's script
+    # (5-6 of these 9 failed on every -n 4 run).
+    # A unique name, not a per-call dir like _node_harness.py uses: these scripts reach the sources by a path relative
+    # to TEMP, so an extra level breaks every import.
     script_path = TEMP / f"run_{uuid.uuid4().hex}.mts"
     script_path.write_text(script, encoding = "utf-8")
     env = dict(os.environ, NODE_NO_WARNINGS = "1")

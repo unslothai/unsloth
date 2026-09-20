@@ -36,6 +36,8 @@ import {
   worseMemoryFit,
 } from "../src/lib/memory/verdict.ts";
 
+import { readSrc } from "./helpers/kit.ts";
+
 const GIB = 1024 ** 3;
 
 // ---------------------------------------------------------------------------
@@ -256,14 +258,7 @@ test("an absent or unusable budget falls back rather than refusing everything", 
 test("the badge's call sites read the live fraction", async () => {
   // The classifier taking a fraction is worthless if nothing passes one. Asserted
   // on source because these are .tsx call sites the runner cannot render.
-  const { readFileSync } = await import("node:fs");
-  const card = readFileSync(
-    new URL(
-      "../src/features/hub/catalog/gguf-download-card.tsx",
-      import.meta.url,
-    ),
-    "utf8",
-  );
+  const card = readSrc("features/hub/catalog/gguf-download-card.tsx");
   assert.match(
     card,
     /useVramBudgetFraction\(\)/,
@@ -328,14 +323,11 @@ test("every fit-scoring surface reads the saved budget, not just the Hub card", 
   // The Hub download card got the live fraction; the On Device card did not, and
   // it renders a memory bar (which uses the saved value) directly above a quant
   // menu sorted by classifyGgufFit (which did not). One card, two budgets.
-  const { readFileSync } = await import("node:fs");
-  const read = (rel: string) =>
-    readFileSync(new URL(rel, import.meta.url), "utf8");
   for (const rel of [
-    "../src/features/hub/catalog/gguf-download-card.tsx",
-    "../src/features/hub/catalog/local-on-device-card.tsx",
+    "features/hub/catalog/gguf-download-card.tsx",
+    "features/hub/catalog/local-on-device-card.tsx",
   ]) {
-    const source = read(rel);
+    const source = readSrc(rel);
     assert.match(
       source,
       /useVramBudgetFraction\(\)/,
@@ -355,12 +347,7 @@ test("the budget read is shared, not one request per mounted card", async () => 
   // requests overlap in time. A Hub catalog mounts a card per repo progressively
   // through scrolling and filtering, so a per-card call is a GET per card, and a
   // 404 per card on a backend predating the route.
-  const source = await import("node:fs").then(({ readFileSync }) =>
-    readFileSync(
-      new URL("../src/hooks/use-vram-budget-fraction.ts", import.meta.url),
-      "utf8",
-    ),
-  );
+  const source = readSrc("hooks/use-vram-budget-fraction.ts");
   assert.match(
     source,
     /let cachedFraction/,
@@ -383,4 +370,42 @@ test("the budget read is shared, not one request per mounted card", async () => 
     /subscribeVramBudgetSettings\(\([\s\S]{0,200}?cachedFraction = settings\.fraction/,
     "the change event must refresh the cache, or a save never reaches the cards",
   );
+});
+
+// ---------------------------------------------------------------------------
+// A verdict on a VARIANT scores the whole footprint the download plan fetches
+
+test("a variant's fit counts the companions fetched with it", async () => {
+  // Bartowski Muse Glimmer Q3_K_S: 12.79 GB of weights, a 3.85 GB projector and a
+  // 1.45 GB DFlash drafter. Only the weights clear a 16 GiB card.
+  const { classifyGgufVariantFit, ggufVariantFitSizeBytes } = await import(
+    "../src/lib/gguf-fit.ts"
+  );
+  const weights = 12_789_199_648;
+  const variant = {
+    size_bytes: weights,
+    download_size_bytes: weights + 3_849_173_920 + 1_451_094_176,
+  };
+  const budget = { gpuGb: 16, systemRamGb: 32 };
+
+  assert.equal(ggufVariantFitSizeBytes(variant), variant.download_size_bytes);
+  assert.equal(
+    classifyGgufVariantFit({ size_bytes: weights }, budget),
+    "fits",
+    "the fixture only proves anything while the weights alone still fit",
+  );
+  assert.equal(classifyGgufVariantFit(variant, budget), "partial");
+});
+
+test("a total below the weights never lowers the estimate", async () => {
+  // A positive-but-smaller total is the case a `??` or `||` fallback lets through.
+  const { ggufVariantFitSizeBytes } = await import("../src/lib/gguf-fit.ts");
+  const bytes = 12 * GIB;
+  for (const download_size_bytes of [undefined, 0, bytes - 1, 1]) {
+    assert.equal(
+      ggufVariantFitSizeBytes({ size_bytes: bytes, download_size_bytes }),
+      bytes,
+      `a total of ${download_size_bytes} must not score below the weights`,
+    );
+  }
 });

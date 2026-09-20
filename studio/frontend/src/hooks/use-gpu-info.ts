@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { useEffect, useMemo, useState } from "react";
+import { normalizeDenseQuantSchemes } from "@/lib/dense-quant-schemes";
 import {
   type GpuIndexKind,
   type PinnableGpuContext,
@@ -46,6 +47,11 @@ export interface GpuInfo {
    * GPU-less one, because "which runtimes can this host place" is exactly the question a host
    * with no usable GPU has to answer. Empty until system info arrives. */
   backend: string;
+  /** Backend-reported dense quant capability. False until system info arrives. */
+  denseQuantSupported: boolean;
+  /** The dense quant schemes the backend says this host can run, best first ("fp8", "int8"). Empty
+   *  until system info arrives, and on a backend too old to report the field. */
+  denseQuantSchemes: readonly string[];
   name: string;
   memoryTotalGb: number;
   memorySharedGb: number;
@@ -70,6 +76,8 @@ export interface GpuInfo {
   systemRamAvailableGb: number;
   /** raw host RAM free as the probe reported it. */
   systemRamAvailableHostGb: number;
+  /** Whether host available memory was reported, including a real zero. */
+  systemRamAvailableKnown?: boolean;
   systemRamTotalGb: number;
 }
 
@@ -79,6 +87,8 @@ const DEFAULT_GPU: GpuInfo = {
   sharedMemory: false,
   unifiedMemory: false,
   backend: "",
+  denseQuantSupported: false,
+  denseQuantSchemes: [],
   name: "Unknown",
   memoryTotalGb: 0,
   memorySharedGb: 0,
@@ -92,6 +102,7 @@ const DEFAULT_GPU: GpuInfo = {
   cpuThread: 0,
   systemRamAvailableGb: 0,
   systemRamAvailableHostGb: 0,
+  systemRamAvailableKnown: false,
   systemRamTotalGb: 0,
 };
 
@@ -103,10 +114,15 @@ function toGpuInfo(
   // path: unified-memory math still needs a RAM budget to work with.
   const base = {
     backend: data?.device_backend ?? "",
+    denseQuantSupported: data?.dense_quant_supported === true,
+    denseQuantSchemes: normalizeDenseQuantSchemes(data?.dense_quant_schemes),
     cpuCore: data?.cpu?.physical_count ?? 0,
     cpuThread: data?.cpu?.logical_count ?? 0,
     systemRamAvailableGb: data?.memory?.available_gb ?? 0,
     systemRamAvailableHostGb: data?.memory?.available_gb ?? 0,
+    systemRamAvailableKnown:
+      Number.isFinite(data?.memory?.available_gb) &&
+      (data?.memory?.available_gb as number) >= 0,
     systemRamTotalGb: data?.memory?.total_gb ?? 0,
   };
   const gpuData =
@@ -135,10 +151,9 @@ function toGpuInfo(
       ),
     ),
     sharedMemory: memoryTotals.shared > 0 && memoryTotals.dedicated === 0,
-    // Additive, and deliberately some() where sharedMemory above is "no dedicated
-    // pool at all": one unified part makes the aggregate total partly host RAM,
-    // which is already enough to stop it being a VRAM ceiling a fit verdict can
-    // be measured against.
+    // Additive, and deliberately some() where sharedMemory above is "no dedicated pool at all": one
+    // unified part makes the aggregate total partly host RAM, which is already enough to stop it
+    // being a VRAM ceiling a fit verdict can be measured against.
     unifiedMemory: devices.some((device) => device.unified_memory === true),
     available: true,
     budgetKnown: true,
@@ -168,17 +183,15 @@ function toGpuDevices(
   // about the CUDA / ROCm devices an image or video load can be pinned to.
   forDiffusion = false,
 ): SystemGpuDevice[] {
-  // GGUF loads run through llama-server, so on a Vulkan build the pickable set
-  // is the inference inventory, not the torch view: it can see cards torch
-  // cannot, and its indices are the ggml ordinals `--device Vulkan<i>` pins.
-  // The XPU ban does not apply there, it is about torch-xpu ordinals that no
-  // applicator speaks; a Vulkan pick does not use them.
+  // GGUF loads run through llama-server, so on a Vulkan build the pickable set is the inference
+  // inventory, not the torch view: it can see cards torch cannot, and its indices are the ggml
+  // ordinals `--device Vulkan<i>` pins. The XPU ban does not apply there, it is about torch-xpu
+  // ordinals that no applicator speaks; a Vulkan pick does not use them.
   const inference = data?.inference_gpu;
   if (!forDiffusion && inference?.backend === "vulkan") {
-    // The installed inference backend is confirmed Vulkan, so even an empty
-    // device list (probe still cold, or transiently failed) must NOT fall
-    // through to the torch/CUDA inventory below: those physical IDs are
-    // meaningless to a Vulkan llama-server, and the backend rejects every
+    // The installed inference backend is confirmed Vulkan, so even an empty device list (probe
+    // still cold, or transiently failed) must NOT fall through to the torch/CUDA inventory below:
+    // those physical IDs are meaningless to a Vulkan llama-server, and the backend rejects every
     // explicit diffusion pin outright while is_vulkan_build is true. Report no
     // pinnable/diffusionPinnable devices until the probe succeeds.
     if (!(inference.devices ?? []).length) return [];
@@ -191,6 +204,8 @@ function toGpuDevices(
         name: d.name ?? `GPU ${d.index}`,
         memoryTotalGb: d.memory_total_gb ?? 0,
         memoryFreeGb: d.vram_free_gb ?? 0,
+        memoryFreeKnown:
+          Number.isFinite(d.vram_free_gb) && (d.vram_free_gb as number) >= 0,
         sharedMemory: d.shared_memory === true,
         sharedMemoryHostBackedGb: d.shared_memory_host_backed_gb,
         unifiedMemory: d.unified_memory === true,
@@ -219,6 +234,8 @@ function toGpuDevices(
       name: d.name ?? `GPU ${d.index}`,
       memoryTotalGb: d.memory_total_gb ?? 0,
       memoryFreeGb: d.vram_free_gb ?? 0,
+      memoryFreeKnown:
+        Number.isFinite(d.vram_free_gb) && (d.vram_free_gb as number) >= 0,
       sharedMemory: d.shared_memory === true,
       sharedMemoryHostBackedGb: d.shared_memory_host_backed_gb,
       unifiedMemory: d.unified_memory === true,
@@ -231,6 +248,27 @@ function toGpuDevices(
           (data?.device_backend !== "xpu" && d.index_kind === "physical")),
       diffusionPinnable: diffusionBackend && d.index_kind === "physical",
     }));
+}
+
+/**
+ * Carry the previous `denseQuantSchemes` array forward when its contents are unchanged.
+ *
+ * `refresh_memory=true` re-probes `memory.available_gb`, so nearly every poll yields a new snapshot,
+ * but this list is a hardware capability that does not move. Consumers memoise the media picker's
+ * option list on it (`useImageModels`, `curatedRowLabelFor`), so an equal-but-fresh array detached
+ * and re-created every row on every probe.
+ */
+export function withStableSchemes(current: GpuInfo, next: GpuInfo): GpuInfo {
+  const held = current.denseQuantSchemes;
+  const fresh = next.denseQuantSchemes;
+  if (held === fresh) return next;
+  if (
+    held.length === fresh.length &&
+    held.every((scheme, index) => scheme === fresh[index])
+  ) {
+    return { ...next, denseQuantSchemes: held };
+  }
+  return next;
 }
 
 /** Aggregate GPU info from /api/system; shares one module-level fetch across all GPU hooks. */
@@ -247,7 +285,9 @@ function useGpuInfoSource(source: "gpu" | "inference_gpu"): GpuInfo {
       if (cancelled) return;
       const next = toGpuInfo(data, source);
       setGpu((current) =>
-        JSON.stringify(current) === JSON.stringify(next) ? current : next,
+        JSON.stringify(current) === JSON.stringify(next)
+          ? current
+          : withStableSchemes(current, next),
       );
     };
     const update = () => {

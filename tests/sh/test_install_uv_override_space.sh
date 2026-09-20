@@ -7,13 +7,8 @@
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+. "$SCRIPT_DIR/_harness.sh"
 INSTALL_SH="$SCRIPT_DIR/../../install.sh"
-PASS=0
-FAIL=0
-
-ok()  { echo "  PASS: $1"; PASS=$((PASS + 1)); }
-bad() { echo "  FAIL: $1"; FAIL=$((FAIL + 1)); }
-
 # Extract the UV_OVERRIDE hardening block (outer case ... esac plus the export)
 # and run it directly, so the test tracks install.sh rather than a copy of it.
 BLOCK=$(awk '

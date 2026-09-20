@@ -433,14 +433,15 @@ def test_a_plain_run_and_a_plain_resume_are_unaffected(studio):
     )
 
 
-# The external probe on the record. `SBENCH_EXTRA_INIT_SCRIPT` is an ENVIRONMENT variable, so it
-# outlives the command that wanted it: a resume under a shell that still has it set runs the rungs
-# still owed with the probe in the page and appends a probed `run_meta`, and `refuse_if_probed`
-# reads every `run_meta` in a file, so cells recorded cleanly before it stop being scorable too,
-# permanently. So `run_meta` has to carry the probe and `--resume` has to compare it.
-
-
 # ── the external probe on the record ────────────────────────────────────────────────────────
+#
+# `SBENCH_EXTRA_INIT_SCRIPT` is an ENVIRONMENT variable, not a flag, so it outlives the command
+# that wanted it: a resume under a shell that still has it set runs the rungs still owed with the
+# probe in the page and appends a probed `run_meta`, and `refuse_if_probed` reads every `run_meta`
+# in a file, so cells recorded cleanly before it stop being scorable too, permanently, because a
+# payload is append-only. So `run_meta` has to carry the probe and `--resume` has to compare it.
+
+
 class _ProbedBundle(_Bundle):
     """A probe run attaches console and `pageerror` listeners, which a `None` page cannot take."""
 
