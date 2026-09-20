@@ -136,16 +136,45 @@ def _project_of(thread_id: Optional[str]) -> Optional[str]:
 
 
 def active_project_ids(account_id: Optional[str] = None) -> list[str]:
-    """Distinct projects a generation was running in when it started."""
+    """Distinct projects the in-flight generations are running in.
+
+    A first turn can register before its thread row has been written, so the capture
+    at registration has nothing to read and records None. That is retried here and
+    frozen the moment it succeeds, rather than left None for the life of the run:
+    the row can appear and then be moved out of the project while the generation is
+    still going, which would take it out of both this answer and current membership.
+
+    The row is read outside the lock; holding it across a database call would put
+    every generation behind that read.
+    """
     with _LOCK:
         entries = [
             e for e in _ACTIVE.values() if account_id is None or e["account_id"] == account_id
         ]
-    seen: list[str] = []
-    for entry in entries:
-        project_id = entry.get("project_id")
-        if project_id and project_id not in seen:
-            seen.append(project_id)
+        pending = [
+            (e["handle"], e["thread_id"])
+            for e in entries
+            if not e.get("project_id") and e.get("thread_id")
+        ]
+    for handle, thread_id in pending:
+        project_id = _project_of(thread_id)
+        if not project_id:
+            continue
+        with _LOCK:
+            entry = _ACTIVE.get(handle)
+            # Still unset: a capture that has since succeeded elsewhere wins, and an
+            # entry whose generation ended in the meantime is not resurrected.
+            if entry is not None and not entry.get("project_id"):
+                entry["project_id"] = project_id
+    with _LOCK:
+        current = [
+            e for e in _ACTIVE.values() if account_id is None or e["account_id"] == account_id
+        ]
+        seen: list[str] = []
+        for entry in current:
+            project_id = entry.get("project_id")
+            if project_id and project_id not in seen:
+                seen.append(project_id)
     return seen
 
 

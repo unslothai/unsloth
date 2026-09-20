@@ -2567,3 +2567,53 @@ def test_another_accounts_generation_does_not_block_this_folder_change(
         assert changed, "another account's generation refused this account's folder change"
     finally:
         registration.__exit__()
+
+
+def test_a_first_turn_that_registered_before_its_row_still_holds_the_project(
+    tmp_path, monkeypatch, workspace_projects_home
+):
+    """The thread row is written asynchronously, so a first turn can beat it.
+
+    Capturing None and keeping it would lose the association for the life of the
+    run, and the row can appear and then be moved out while it is still going.
+    """
+    import threading
+
+    from core.inference import tools
+    from state import active_generations
+
+    _reset_studio_db(tmp_path, monkeypatch, projects_home = workspace_projects_home)
+    first = workspace_projects_home / "folder-a"
+    second = workspace_projects_home / "folder-b"
+    for folder in (first, second):
+        folder.mkdir()
+
+    project = studio_db.upsert_chat_project(_project(), external_workspace_path = str(first))
+    thread_id = f"thread-of-{project['id']}"
+
+    # The generation registers while the row is still not there.
+    with active_generations.ActiveGeneration(
+        threading.Event(), thread_id = thread_id, run_id = "first-turn"
+    ):
+        assert active_generations.active_project_ids() == [], "the row existed too early"
+
+        # The row lands mid-run ...
+        studio_db.upsert_chat_thread({
+            "id": thread_id, "title": "t", "modelType": "gguf", "modelId": "m",
+            "projectId": project["id"], "archived": 0, "createdAt": 1, "updatedAt": 1,
+        })
+        assert project["id"] in active_generations.active_project_ids()
+
+        # ... and is then moved out, which used to take the run out of both answers.
+        studio_db.upsert_chat_thread({
+            "id": thread_id, "title": "t", "modelType": "gguf", "modelId": "m",
+            "projectId": None, "archived": 0, "createdAt": 1, "updatedAt": 2,
+        })
+        assert studio_db.project_thread_ids(project["id"]) == []
+
+        changed, _ = tools.update_project_workspace_when_idle(
+            project["id"],
+            lambda: studio_db.set_chat_project_workspace(
+                project["id"], external_workspace_path = str(second)),
+        )
+        assert not changed, "a first turn lost its project and the workspace rotated"
