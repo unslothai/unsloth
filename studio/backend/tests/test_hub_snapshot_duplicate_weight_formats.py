@@ -118,3 +118,17 @@ def test_underscore_sharded_safetensors_still_skip_the_bin_copy():
         "model_00002-of-00072.safetensors",
         "model.safetensors.index.json",
     }
+
+
+def test_a_non_ascii_shard_number_does_not_open_the_gate():
+    # Python's \d matches non-ASCII digits and JavaScript's does not, so a \d here would
+    # have this repo lose its .bin copy in the backend while the frontend still sized it
+    # in -- the download and the number shown in the Model hub would disagree. Both sides
+    # spell the shard number [0-9] so neither treats these as a root checkpoint.
+    arabic_indic = {
+        "config.json": 2,
+        "model-٠١-of-٠٢.safetensors": 500,
+        "pytorch_model.bin": 500,
+    }
+    assert _kept(arabic_indic) == set(arabic_indic)
+    assert "pytorch_model*.bin" not in resolve_snapshot_ignore_patterns_for_files(arabic_indic)

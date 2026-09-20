@@ -272,7 +272,9 @@ const SNAPSHOT_WEIGHT_FILE_RE =
 const SNAPSHOT_NON_BIN_WEIGHT_FILE_RE =
   /\.(safetensors|pt|pth|ckpt|h5|msgpack|npz)$/i;
 const SNAPSHOT_BIN_WEIGHT_PREFIX_RE = /^(model|pytorch_model|adapter_model).*\.bin$/i;
-const ROOT_SAFETENSORS_RE = /^model([-_]\d+-of-\d+)?\.safetensors$/;
+// [0-9] rather than \d, to stay identical to the backend's ROOT_SAFETENSORS_RE in
+// studio/backend/hub/utils/snapshot_filters.py, where \d would also match non-ASCII digits.
+const ROOT_SAFETENSORS_RE = /^model([-_][0-9]+-of-[0-9]+)?\.safetensors$/;
 const DUPLICATE_WEIGHT_FORMAT_RE =
   /^(?:(?:original|metal|coreml)\/|(?:pytorch_model.*\.bin|tf_model.*\.h5|flax_model.*\.msgpack)$|(?:pytorch_model\.bin|tf_model\.h5|flax_model\.msgpack)\.index\.json$|rust_model\.ot$)/s;
 

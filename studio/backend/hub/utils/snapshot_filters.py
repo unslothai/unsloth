@@ -30,7 +30,9 @@ DUPLICATE_WEIGHT_FORMAT_PATTERNS: tuple[str, ...] = (
     "flax_model.msgpack.index.json",
     "rust_model.ot",
 )
-ROOT_SAFETENSORS_RE = re.compile(r"model([-_]\d+-of-\d+)?\.safetensors")
+# [0-9] rather than \d: Python's \d also matches non-ASCII digits while JavaScript's does not, and the
+# frontend mirror in studio/frontend/src/features/hub/lib/dataset-size.ts has to answer this identically.
+ROOT_SAFETENSORS_RE = re.compile(r"model([-_][0-9]+-of-[0-9]+)?\.safetensors")
 SNAPSHOT_WEIGHT_EXTENSIONS = (
     ".safetensors",
     ".bin",

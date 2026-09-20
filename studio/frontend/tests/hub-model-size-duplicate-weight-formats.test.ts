@@ -87,3 +87,19 @@ test("underscore-sharded root safetensors still skip the bin copy", async () => 
     weightsBytes: 4_900 + 4_900,
   });
 });
+
+test("a non-ascii shard number does not open the gate", async () => {
+  // The backend's ROOT_SAFETENSORS_RE is the authority on what gets downloaded. Python's
+  // \d matches these digits and JavaScript's does not, so spelling either side \d would
+  // size this repo here while the backend dropped its .bin copy. Both use [0-9]; neither
+  // treats this as a root checkpoint, so nothing is skipped.
+  stubSiblings({
+    "config.json": 2,
+    "model-٠١-of-٠٢.safetensors": 500,
+    "pytorch_model.bin": 500,
+  });
+  assert.deepEqual(await fetchModelSize("acme/non-ascii-shards"), {
+    totalBytes: 2 + 500 + 500,
+    weightsBytes: 500 + 500,
+  });
+});
