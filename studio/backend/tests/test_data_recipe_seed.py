@@ -907,6 +907,62 @@ def test_seed_hf_path_matches_config_names_case_sensitively(
     assert seed_route._resolve_seed_hf_path("org/repo", files, "train", subset, configs) == expected
 
 
+def test_seed_hf_path_keeps_shards_spread_over_sibling_folders(monkeypatch, tmp_path):
+    seed_route = _load_seed_route(monkeypatch, tmp_path)
+    files = ["a/train-0.parquet", "b/train-1.parquet", "a/test-0.parquet"]
+
+    resolved = seed_route._resolve_seed_hf_path("org/repo", files, "train")
+
+    assert resolved == "datasets/org/repo/**/train-*.parquet"
+
+
+def test_seed_hf_path_leaves_sibling_configs_alone(monkeypatch, tmp_path):
+    """Folders holding a whole split each are configs, not shards of one split."""
+    seed_route = _load_seed_route(monkeypatch, tmp_path)
+    files = [
+        "main/train-0.parquet",
+        "main/test-0.parquet",
+        "socratic/train-0.parquet",
+        "socratic/test-0.parquet",
+    ]
+
+    resolved = seed_route._resolve_seed_hf_path("org/repo", files, "train")
+
+    assert resolved == "datasets/org/repo/main/train-*.parquet"
+
+
+def test_seed_preview_file_follows_the_config_data_dir(monkeypatch, tmp_path):
+    seed_route = _load_seed_route(monkeypatch, tmp_path)
+    files = ["en/train.parquet", "fr/train.parquet"]
+    configs = [{"config_name": "french", "data_dir": "fr"}]
+    monkeypatch.setattr(seed_route, "_list_hf_data_files", lambda **kwargs: files)
+    monkeypatch.setattr(seed_route, "_list_hf_dataset_configs", lambda **kwargs: configs)
+    monkeypatch.setattr(
+        seed_route, "refuse_unauthorized_dataset_preview", lambda *args, **kwargs: None
+    )
+    seen: list[str | None] = []
+
+    def fake_preview(*, load_dataset_fn, load_kwargs, preview_size):
+        seen.append((load_kwargs.get("data_files") or [None])[0])
+        return [{"text": "row"}]
+
+    monkeypatch.setattr(seed_route, "_load_preview_rows", fake_preview)
+
+    response = seed_route.inspect_seed_dataset(
+        SimpleNamespace(
+            dataset_name = "org/repo",
+            split = "train",
+            subset = "french",
+            hf_token = None,
+            preview_size = 1,
+        ),
+        allow_ambient_token = False,
+    )
+
+    assert seen[0] == "fr/train.parquet"
+    assert response.resolved_path == "datasets/org/repo/fr/train*.parquet"
+
+
 def test_seed_hf_path_treats_an_unnamed_config_as_the_default(monkeypatch, tmp_path):
     seed_route = _load_seed_route(monkeypatch, tmp_path)
     configs = [

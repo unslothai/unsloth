@@ -329,6 +329,15 @@ def _split_labels(split_lower: str) -> tuple[str, ...]:
     return (split_lower,)
 
 
+def _carries_another_split(path: str, split_lower: str) -> bool:
+    """The path is labelled with a split, and it is not the one being asked for."""
+    wanted = set(_split_labels(split_lower))
+    return any(
+        canonical not in wanted and _split_rank(path, canonical) <= 1
+        for canonical in _SPLIT_KEYWORDS
+    )
+
+
 def _split_rank(path: str, split_lower: str) -> int:
     """0 the split is a folder, 1 the file name carries it, 2 neither.
 
@@ -385,21 +394,24 @@ def _select_best_file(
 
 
 def _pattern_fits_the_split(
-    data_files: list[str], wanted: set[str], parent: str, pattern: str
+    data_files: list[str], wanted: set[str], root: str, pattern: str
 ) -> bool:
-    """The pattern must take every wanted file in the folder, and no other file there.
+    """The pattern must take every wanted file under the root, and no other file there.
 
     A folder may name one split several ways at once (train-part.parquet beside
     questions_train.parquet), so a glob built from whichever file was picked can
     drop the rest; a loose glob can just as easily swallow a neighbouring split.
+    Read relative to the root the pattern is anchored at, so a split spread over
+    sibling folders is only accepted by a pattern that reaches all of them.
     Judged against the WHOLE listing, since a candidate checked only against the
     subset slice can still match another subset's files.
     """
     matcher = _glob_to_regex(pattern)
+    prefix = f"{root}/" if root and root != "." else ""
     for path in data_files:
-        if Path(path).parent.as_posix() != parent:
+        if not path.startswith(prefix):
             continue
-        if bool(matcher.match(Path(path).name)) != (path in wanted):
+        if bool(matcher.match(path[len(prefix) :])) != (path in wanted):
             return False
     return True
 
@@ -576,10 +588,27 @@ def _resolve_seed_hf_path(
     if not _split_folder(selected.lower(), _split_labels(split_lower)):
         # The files this request is for: in the chosen subset, and of this split.
         wanted = {f for f in scoped if _split_rank(f, split_lower) <= 1}
+        # A split sharded over sibling folders, as a/train-0.parquet beside
+        # b/train-1.parquet, cannot be written under the one folder its chosen
+        # file sits in, so the pattern is anchored at the folder they share and
+        # walks down from there. Sibling folders that hold splits of their own
+        # are configs rather than shards of this one (main beside socratic), and
+        # reaching into those would read another config, so they stay out.
+        outside = [f for f in data_files if Path(f).parent.as_posix() != parent]
+        spread = any(f in wanted for f in outside) and not any(
+            _carries_another_split(f, split_lower) for f in outside
+        )
+        root = _common_parent(sorted(wanted | {selected})) if spread else parent
+        root_base = (
+            f"datasets/{dataset_name}/{root}"
+            if root and root != "."
+            else f"datasets/{dataset_name}"
+        )
         stem = Path(selected).name[: -len(suffix)]
         for candidate in _candidate_patterns(stem, suffix, split_lower):
-            if _pattern_fits_the_split(data_files, wanted, parent, candidate):
-                return f"{base}/{candidate}"
+            pattern = f"**/{candidate}" if spread else candidate
+            if _pattern_fits_the_split(data_files, wanted, root, pattern):
+                return f"{root_base}/{pattern}"
     return f"{base}/**/*{ext}"
 
 
@@ -794,7 +823,11 @@ def inspect_seed_dataset(
     # Same format the resolved path will read, or the rows on screen come from a
     # file the recipe never opens.
     declared_files = _of_suffix(declared_files, _dominant_suffix(declared_files))
-    selected_file = _select_best_file(declared_files or data_files, split, subset)
+    # A config that only names a folder declares no files, and its name need not
+    # be that folder, so the fallback previews the folder rather than the repo.
+    folder = _config_scope(configs, subset)
+    in_folder = [f for f in data_files if f.startswith(f"{folder}/")] if folder else []
+    selected_file = _select_best_file(declared_files or in_folder or data_files, split, subset)
     if selected_file:
         try:
             single_file_kwargs = _build_stream_load_kwargs(
