@@ -231,8 +231,13 @@ def test_the_timeout_is_never_offered_as_what_a_superseded_matrix_holds():
             if not _about_a_hung_cell(rationale, occupied[match.start()]):
                 offenders.append(window)
                 continue
-        # Otherwise it passes only if named, right here, as the cutoff it is.
-        if not re.search(r"timeout|hang\w*|hung|cutoff", window, re.I):
+        # Otherwise it passes only if ITS OWN clause names it as the cutoff. A window
+        # lets a bare claim borrow the qualification from the clause before it: "A
+        # superseded matrix costs ten minutes" placed after the accurate timeout
+        # sentence is not an occupancy verb, so it lands here, and it read as excused.
+        if not re.search(
+            r"timeout|hang\w*|hung|cutoff", _clause_before(rationale, match.start()), re.I
+        ):
             offenders.append(window)
     assert not offenders, (
         f"{WORKFLOW.name} gives {minutes} minutes as something a cell occupies, or as a "
@@ -296,24 +301,24 @@ def test_every_occupancy_claim_is_a_measured_one():
         f"form 'holds it for <duration>'. Without that the timeout is the only occupancy "
         f"figure in the comment, which is the reading this whole guard exists to prevent"
     )
-    measured = _MEASURED.search(rationale)
-    assert measured, (
-        f"{WORKFLOW.name} cites no median. Saying a figure was measured without giving "
-        f"the measurement leaves nothing for the claim to be checked against, which is "
-        f"how 'about five seconds' could have read 600 and still passed"
+    # The median has to come from a sentence that MAKES a claim, not from anywhere in the
+    # comment. A queue figure reading "median 500s" elsewhere would otherwise become the
+    # yardstick, and a 500-second occupancy claim sitting beside its own "median 4s" would
+    # measure as consistent.
+    grounded = [
+        (claim, _MEASURED.search(_sentence_around(rationale, claim.start(), claim.end())))
+        for claim in claims
+    ]
+    grounded = [(claim, found) for claim, found in grounded if found]
+    assert grounded, (
+        f"no occupancy claim carries a median in its own sentence: "
+        f"{[claim.group(0) for claim in claims]}. Saying a figure was measured without "
+        f"giving the measurement beside it leaves nothing for the claim to be checked "
+        f"against, which is how 'about five seconds' could have read 600 and still passed"
     )
+    measured = grounded[0][1]
     observed = _value(measured.group("value"))
     assert observed is not None, f"unreadable median: {measured.group(0)!r}"
-    grounded = [
-        claim
-        for claim in claims
-        if _MEASURED.search(_sentence_around(rationale, claim.start(), claim.end()))
-    ]
-    assert grounded, (
-        f"the median is reported, but not in the sentence that makes an occupancy claim: "
-        f"{[claim.group(0) for claim in claims]}. Provenance has to belong to a claim or "
-        f"it is decoration"
-    )
     for claim in claims:
         claimed = _value(claim.group("value"))
         assert claimed is not None, (
