@@ -3791,3 +3791,68 @@ class TestLongChainsResolveRatherThanLapse:
     def test_a_long_chain_of_allowed_literals_keeps_working_ok(self):
         chain = "".join(f"a{i} = a{i - 1}\n" for i in range(1, 500))
         _ok('import requests\na0 = "https://huggingface.co/api/models"\n' + chain + "requests.get(a499)")
+
+
+class TestAuthoritiesThatReachTwoHosts:
+    r"""Clients disagree about a backslash in the authority: requests percent-encodes it into the
+    path, httpx keeps it in the userinfo. Reading it one way alone is a bypass on the other."""
+
+    def test_a_host_before_the_backslash_is_screened(self):
+        _blocked(
+            'import requests\nrequests.get("http://169.254.169.254\\\\@huggingface.co/latest/")',
+            expect_phrase = "Blocked: cloud-metadata host",
+        )
+
+    def test_a_host_after_the_backslash_is_screened_too(self):
+        _blocked(
+            'import httpx\nhttpx.get("http://huggingface.co\\\\@evil.example/x")',
+            expect_phrase = "Blocked: host not in sandbox allowlist",
+        )
+
+    def test_a_metadata_host_either_side_is_blocked(self):
+        _blocked(
+            'import httpx\nhttpx.get("http://169.254.169.254\\\\@huggingface.co/x")',
+            expect_phrase = "Blocked: cloud-metadata host",
+        )
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            pytest.param(
+                'import requests\nrequests.get("http://huggingface.co\\\\@huggingface.co/x")',
+                id = "allowed_either_way",
+            ),
+            pytest.param(
+                'import requests\nrequests.get("https://user:pw@huggingface.co/api/models")',
+                id = "ordinary_userinfo",
+            ),
+            pytest.param(
+                'import requests\nrequests.get("https://huggingface.co:443/api/models")',
+                id = "explicit_port",
+            ),
+        ],
+    )
+    def test_an_authority_that_is_allowed_whichever_way_it_reads_is_fine_ok(self, code):
+        _ok(code)
+
+
+class TestAiohttpPositionalBaseUrl:
+    """aiohttp takes its base URL positionally, so argument zero is where its host is set."""
+
+    def test_a_positional_base_url_from_the_environment_is_refused(self):
+        _blocked(
+            'import os, aiohttp\nc = aiohttp.ClientSession(os.environ["TARGET"])\nc.get("/latest")',
+            expect_phrase = "Blocked: request target is read",
+        )
+
+    def test_a_positional_metadata_base_url_is_blocked(self):
+        _blocked(
+            'import aiohttp\nc = aiohttp.ClientSession("http://169.254.169.254")\nc.get("/latest")',
+            expect_phrase = "Blocked: cloud-metadata host",
+        )
+
+    def test_a_positional_allowed_base_url_keeps_working_ok(self):
+        _ok(
+            'import aiohttp\nc = aiohttp.ClientSession("https://huggingface.co")\n'
+            'c.get("/api/models")'
+        )

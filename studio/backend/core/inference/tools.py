@@ -16003,14 +16003,8 @@ def _check_signal_escape_patterns(code: str):
     )
     _SENSITIVE_FILE_RE = re.compile(r"^/proc/(?:self|\d+)/(?:environ|cmdline|task/\d+/environ)$")
 
-    def _normalize_host(host: str) -> str:
-        if not host:
-            return ""
-        h = host.strip().lower().rstrip(".")
-        # A backslash ends the authority for the HTTP clients (requests percent-encodes it into the
-        # path), so "169.254.169.254\@huggingface.co" reaches the metadata IP while reading like
-        # userinfo. Cut there first, or the userinfo strip below hands back the decoy host.
-        h = h.split("\\", 1)[0].rstrip(".")
+    def _strip_userinfo_and_port(host: str) -> str:
+        h = host
         if "@" in h:
             h = h.split("@", 1)[1]
         if h.startswith("[") and "]" in h:
@@ -16019,23 +16013,49 @@ def _check_signal_escape_patterns(code: str):
             h = h.split(":", 1)[0]
         return h
 
+    def _host_candidates(host: str) -> "list[str]":
+        r"""Every host this authority can reach. The clients disagree about a backslash:
+        requests percent-encodes it into the path, so "169.254.169.254\@huggingface.co" reaches
+        the metadata IP, while httpx keeps it in the userinfo and reaches huggingface.co. Reading
+        it either way alone is a bypass on the other client, so both are answered for."""
+        if not host:
+            return []
+        h = host.strip().lower().rstrip(".")
+        variants = [h]
+        if "\\" in h:
+            variants.append(h.split("\\", 1)[0].rstrip("."))
+        out = []
+        for variant in variants:
+            cleaned = _strip_userinfo_and_port(variant)
+            if cleaned and cleaned not in out:
+                out.append(cleaned)
+        return out
+
+    def _normalize_host(host: str) -> str:
+        candidates = _host_candidates(host)
+        return candidates[0] if candidates else ""
+
     def _is_metadata_host(host: str) -> bool:
-        h = _normalize_host(host)
-        if not h:
-            return False
-        if h in _METADATA_HOST_LITERALS:
-            return True
-        if any(h.startswith(p) for p in _METADATA_HOST_PREFIXES):
-            return True
+        # Any host it can reach being a metadata host is enough to refuse it.
+        for h in _host_candidates(host):
+            if h in _METADATA_HOST_LITERALS:
+                return True
+            if any(h.startswith(p) for p in _METADATA_HOST_PREFIXES):
+                return True
         return False
 
     def _is_trusted_host(host: str) -> bool:
-        h = _normalize_host(host)
-        if not h:
+        candidates = _host_candidates(host)
+        if not candidates:
             return False
-        if h in _TRUSTED_PUBLIC_HOST_LITERALS:
-            return True
-        return any(h.endswith(s) for s in _TRUSTED_PUBLIC_HOST_SUFFIXES)
+        # Every host it can reach has to be allowed, not just the one this client would pick.
+        for h in candidates:
+            if h in _TRUSTED_PUBLIC_HOST_LITERALS:
+                continue
+            if any(h.endswith(suffix) for suffix in _TRUSTED_PUBLIC_HOST_SUFFIXES):
+                continue
+            return False
+        return True
 
     # The FQ name the visitor builds from the call site is only canonical when the call is written
     # out in full. `import requests as r; r.get(...)`, `from requests import get as fetch;
@@ -17276,7 +17296,8 @@ def _check_signal_escape_patterns(code: str):
         for kw in node.keywords or []:
             if kw.arg in ("base_url", "host"):
                 return kw.value
-        return node.args[0] if (is_pool and node.args) else None
+        takes_positional = is_pool or fq == "aiohttp.ClientSession"
+        return node.args[0] if (takes_positional and node.args) else None
 
     def _configured_host(host_node) -> "str | None":
         """The host that constructor argument names, when it is known."""
