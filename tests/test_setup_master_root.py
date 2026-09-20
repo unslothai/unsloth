@@ -1237,7 +1237,14 @@ def test_the_windows_note_writer_creates_its_staging_file_exclusively():
     assert "WriteAllText($noteTmp" not in block
 
 
-def _run_note_block(tmp_path, studio_home, master, *, existing_note = None, home = None):
+def _run_note_block(
+    tmp_path,
+    studio_home,
+    master,
+    *,
+    existing_note = None,
+    home = None,
+):
     """Run the shipped note gate + writer + legacy sweep against a fixture, and report the note.
 
     The whole region is executed, not pattern-matched: the gate, the writer it guards and the
@@ -1318,7 +1325,11 @@ def test_the_legacy_default_root_is_never_recorded_and_an_old_note_is_cleared(tm
 
     # An install that already carries one from an earlier build is repaired in place.
     value, _ = _run_note_block(
-        tmp_path, studio_home, legacy_master, existing_note = legacy_master, home = home,
+        tmp_path,
+        studio_home,
+        legacy_master,
+        existing_note = legacy_master,
+        home = home,
     )
     assert value is None, "a stale legacy-root note survived"
 
@@ -1326,7 +1337,11 @@ def test_the_legacy_default_root_is_never_recorded_and_an_old_note_is_cleared(tm
     other = tmp_path / "portable"
     other.mkdir()
     value, _ = _run_note_block(
-        tmp_path, studio_home, legacy_master, existing_note = other, home = home,
+        tmp_path,
+        studio_home,
+        legacy_master,
+        existing_note = other,
+        home = home,
     )
     assert value == str(other)
 

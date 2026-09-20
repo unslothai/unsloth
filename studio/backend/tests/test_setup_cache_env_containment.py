@@ -1329,7 +1329,8 @@ def test_a_genuinely_absent_note_is_still_cached(monkeypatch, tmp_path):
     # a note into a tree this process already looked at is what forget_recorded_master_root() is
     # for, and it still works.
     (studio / "share" / ".unsloth-master-root").write_text(
-        str(tmp_path / "root") + "\n", encoding = "utf-8",
+        str(tmp_path / "root") + "\n",
+        encoding = "utf-8",
     )
     assert sr.unsloth_home() is None
     sr.forget_recorded_master_root()
