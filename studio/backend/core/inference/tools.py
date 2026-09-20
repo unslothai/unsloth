@@ -16077,6 +16077,14 @@ def _check_signal_escape_patterns(code: str):
         }
     )
     _URL_HOST_RE = re.compile(r"^\w+://([^/?#]+)(?:[/?#]|$)")
+    # For a string only known up to a prefix, the authority counts as read only when the prefix
+    # already passed it: "https://huggingface.co" + suffix really targets huggingface.co.evil.org,
+    # so an unterminated authority must never vouch for the call.
+    _URL_HOST_TERMINATED_RE = re.compile(r"^\w+://([^/?#]+)[/?#]")
+    # Resolution follows name bindings, so a chain of them is a chain of recursive calls. Valid
+    # source can be thousands deep; the budget keeps that a "cannot resolve" answer rather than a
+    # RecursionError out of a tool call.
+    _MAX_RESOLVE_DEPTH = 24
 
     def _takes_url_first_arg(fq: str) -> bool:
         """True when the call's first positional argument (or url= / fullurl=) is the target URL.
@@ -16118,6 +16126,10 @@ def _check_signal_escape_patterns(code: str):
             self.modules: dict[str, str] = {}
             self.funcs: dict[str, str] = {}
             self.strings: dict[str, ast.AST] = {}
+            # Every value ever assigned to a name, single-assignment or not. Resolution only trusts
+            # a name bound once, but "where did this value come from" has to see them all: a rebind
+            # must not be able to hide that one of them reads the environment.
+            self.all_values: dict[str, list] = {}
             self.sessions: dict[str, str] = {}
             self._counts: dict[str, int] = {}
             self._candidates: dict[str, ast.AST] = {}
@@ -16130,10 +16142,17 @@ def _check_signal_escape_patterns(code: str):
             if isinstance(target, ast.Name):
                 self._mark(target.id)
                 self._candidates.setdefault(target.id, value)
-            else:
-                for sub in ast.walk(target):
-                    if isinstance(sub, ast.Name):
-                        self._mark(sub.id)
+                if value is not None:
+                    self.all_values.setdefault(target.id, []).append(value)
+                return
+            # Only a Name, or a Name inside a tuple / list / star target, is rebound. `d[u] = 1` and
+            # `obj.u = 1` read `u` and `obj`, they do not rebind them, so counting those names would
+            # discard a binding that is still good.
+            if isinstance(target, ast.Starred):
+                self._bind(target.value, None)
+            elif isinstance(target, (ast.Tuple, ast.List)):
+                for element in target.elts:
+                    self._bind(element, None)
 
         def collect(self, tree) -> "_NameBindings":
             for node in ast.walk(tree):
@@ -16155,6 +16174,12 @@ def _check_signal_escape_patterns(code: str):
                         elif node.module in _NET_MODULES:
                             self.funcs[local] = fq
             for node in ast.walk(tree):
+                if isinstance(node, ast.MatchAs) or isinstance(node, ast.MatchStar):
+                    self._mark(node.name)
+                elif isinstance(node, ast.MatchMapping):
+                    self._mark(node.rest)
+                elif type(node).__name__ == "TypeAlias":  # 3.12+, absent on the floor
+                    self._mark(getattr(getattr(node, "name", None), "id", None))
                 if isinstance(node, ast.Assign):
                     for target in node.targets:
                         self._bind(target, node.value)
@@ -16179,27 +16204,43 @@ def _check_signal_escape_patterns(code: str):
                 elif isinstance(node, (ast.Global, ast.Nonlocal)):
                     for name in node.names:
                         self._mark(name)
+            # An alias table entry is only good while the name means one thing. `import requests as
+            # r` followed by `import socket as r`, or by an assignment to `r`, leaves the last one
+            # walked in the table, and ast.walk order is not specified, so drop both.
+            for table in (self.modules, self.funcs):
+                for name in [n for n in table if self._counts.get(n, 0) != 1]:
+                    del table[name]
+            # Sessions are resolved in their own pass: classifying them while the table fills would
+            # let one binding's result change how the next one is read.
+            factories = {}
             for name, value in self._candidates.items():
                 if value is None or self._counts.get(name, 0) != 1:
                     continue
                 if isinstance(value, ast.Call):
                     factory = _SESSION_FACTORY_FQ.get(_canonical_fq(value.func, self))
                     if factory is not None:
-                        self.sessions[name] = factory
-                    continue
+                        factories[name] = factory
+                        continue
+                # A call resolves to no text, but it is still where the name's value came from, so
+                # `u = input()` has to stay followable.
                 self.strings[name] = value
+            self.sessions.update(factories)
             return self
 
     def _static_str_prefix(
         node,
         bindings,
-        seen = None,
+        seen = frozenset(),
+        depth = 0,
     ) -> "tuple[str, bool]":
         """``(text, is_complete)``: the longest statically known leading part of *node* as a string,
         and whether the whole value is known. An f-string keeps its literal prefix so
-        ``f"https://duckduckgo.com/?q={q}"`` still resolves to a host."""
-        if seen is None:
-            seen = set()
+        ``f"https://duckduckgo.com/?q={q}"`` still resolves to a host.
+
+        ``seen`` is the names on the current resolution path, not the names met anywhere: shared
+        across siblings it would make ``x + x`` unresolvable. ``depth`` bounds a binding chain."""
+        if depth > _MAX_RESOLVE_DEPTH:
+            return "", False
         if isinstance(node, ast.Constant):
             return (node.value, True) if isinstance(node.value, str) else ("", False)
         if isinstance(node, ast.JoinedStr):
@@ -16213,26 +16254,25 @@ def _check_signal_escape_patterns(code: str):
                     and part.format_spec is None
                     and part.conversion in (-1, None)
                 ):
-                    inner, complete = _static_str_prefix(part.value, bindings, seen)
+                    inner, complete = _static_str_prefix(part.value, bindings, seen, depth + 1)
                     if complete:
                         out += inner
                         continue
                 return out, False
             return out, True
         if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
-            left, left_complete = _static_str_prefix(node.left, bindings, seen)
+            left, left_complete = _static_str_prefix(node.left, bindings, seen, depth + 1)
             if not left_complete:
                 return left, False
-            right, right_complete = _static_str_prefix(node.right, bindings, seen)
+            right, right_complete = _static_str_prefix(node.right, bindings, seen, depth + 1)
             return left + right, right_complete
         if isinstance(node, ast.Name):
             if node.id in seen:
                 return "", False
-            seen.add(node.id)
             bound = bindings.strings.get(node.id)
             if bound is None:
                 return "", False
-            return _static_str_prefix(bound, bindings, seen)
+            return _static_str_prefix(bound, bindings, seen | {node.id}, depth + 1)
         return "", False
 
     def _host_from_url_node(node, bindings) -> "tuple[str | None, bool]":
@@ -16240,13 +16280,39 @@ def _check_signal_escape_patterns(code: str):
         cannot be pinned down at all, which is what makes the allowlist unenforceable."""
         text, complete = _static_str_prefix(node, bindings)
         if text:
-            m = _URL_HOST_RE.match(text)
+            # Only a complete string may end at its authority; a prefix has to show the delimiter
+            # that closed it, or what follows could still be part of the host.
+            m = (_URL_HOST_RE if complete else _URL_HOST_TERMINATED_RE).match(text)
             if m:
                 return m.group(1), True
         if complete:
             # A fully known string with no scheme is not a URL the host policy can act on.
             return None, True
         return None, False
+
+    def _externally_sourced(node, bindings, seen = frozenset(), depth = 0) -> bool:
+        """Whether *node* takes its value from outside the program: env, stdin, argv, a file read.
+        Bindings are followed, so `u = os.environ["T"]` reads the same as the expression inline.
+
+        This is what separates a target the allowlist cannot police from one it merely cannot
+        read. An ordinary loop variable or function parameter is unresolvable too, but its value
+        came from the same source file; only an external one lets the host be chosen off-source."""
+        if depth > _MAX_RESOLVE_DEPTH or node is None:
+            return False
+        if _reads_env_or_secret(node):
+            return True
+        for sub in ast.walk(node):
+            if isinstance(sub, ast.Call) and isinstance(sub.func, ast.Name):
+                if sub.func.id in ("input", "getpass"):
+                    return True
+            if isinstance(sub, ast.Attribute) and isinstance(sub.value, ast.Name):
+                if sub.value.id == "sys" and sub.attr in ("argv", "stdin"):
+                    return True
+            if isinstance(sub, ast.Name) and sub.id not in seen:
+                for bound in bindings.all_values.get(sub.id, ()):
+                    if _externally_sourced(bound, bindings, seen | {sub.id}, depth + 1):
+                        return True
+        return False
 
     _bindings = _NameBindings().collect(tree)
 
@@ -16563,16 +16629,23 @@ def _check_signal_escape_patterns(code: str):
                 elif url_node is not None:
                     host_arg, target_resolved = _host_from_url_node(url_node, _bindings)
 
-                if host_arg is None and not target_resolved and _takes_url_first_arg(fq):
-                    # The allowlist is exhaustive, so a target that cannot be read off the source is
-                    # a target it cannot vouch for: env vars, user input and runtime-built hosts all
-                    # land here. A literal or an f-string whose host part is literal still passes.
+                if (
+                    host_arg is None
+                    and not target_resolved
+                    and _takes_url_first_arg(fq)
+                    and _externally_sourced(url_node, _bindings)
+                ):
+                    # A target read from the environment, stdin or argv is chosen outside the source
+                    # the allowlist was applied to, which is the one unresolvable shape that makes
+                    # the allowlist unenforceable rather than merely unread. Every other
+                    # unresolvable target (a loop variable, a parameter, a response field) keeps its
+                    # prior treatment: ordinary code fetching ordinary URLs must keep working.
                     network_calls.append(
                         {
                             "type": "opaque_url_blocked",
                             "line": getattr(node, "lineno", -1),
                             "description": (
-                                "Blocked: request target is computed at runtime; "
+                                "Blocked: request target is read from the environment or input; "
                                 "use a literal URL on an allowed informational source"
                             ),
                         }

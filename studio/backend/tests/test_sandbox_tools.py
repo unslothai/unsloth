@@ -2576,39 +2576,78 @@ class TestUrlBindingResolution:
     def test_bound_url_to_allowed_host_ok(self, code):
         _ok(code)
 
-    def test_rebound_name_is_not_trusted_blocked(self):
-        # Two assignments to one name: neither value may be used to vouch for the call.
+    def test_rebound_name_does_not_vouch_for_the_call(self):
+        # Two assignments to one name: the first value must not be usable to vouch for the second.
         _blocked(
-            'import requests\nu = "https://huggingface.co"\nu = "http://169.254.169.254"\n'
+            'import os, requests\nu = "https://huggingface.co"\nu = os.environ["TARGET"]\n'
             "requests.get(u)",
-            expect_phrase = "Blocked: request target is computed at runtime",
+            expect_phrase = "Blocked: request target is read from the environment or input",
         )
 
-    def test_loop_variable_is_not_trusted_blocked(self):
-        _blocked(
-            'import requests\nfor u in ["https://huggingface.co"]:\n    requests.get(u)',
-            expect_phrase = "Blocked: request target is computed at runtime",
-        )
+    @pytest.mark.parametrize(
+        "code",
+        [
+            pytest.param(
+                'import requests\nfor u in ["https://huggingface.co"]:\n    requests.get(u)',
+                id = "loop_variable",
+            ),
+            pytest.param(
+                "import requests\ndef fetch(u):\n    return requests.get(u)\n"
+                'fetch("https://huggingface.co")',
+                id = "function_parameter",
+            ),
+            pytest.param(
+                'import requests\nurls = ["https://huggingface.co"]\nrequests.get(urls[0])',
+                id = "list_subscript",
+            ),
+            pytest.param(
+                'import requests\nr = requests.get("https://api.github.com/x").json()\n'
+                'requests.get(r["url"])',
+                id = "response_field",
+            ),
+        ],
+    )
+    def test_targets_from_inside_the_program_keep_their_prior_treatment_ok(self, code):
+        # A documented limit, not an oversight: these are unresolvable but not chosen off-source,
+        # and blocking them would break ordinary fetch-a-list-of-pages code. Same verdict as before
+        # the resolver existed.
+        _ok(code)
 
 
-class TestOpaqueUrlTargets:
+class TestExternallySourcedTargets:
     @pytest.mark.parametrize(
         "code",
         [
             pytest.param(
                 'import os, requests\nrequests.get(os.environ["TARGET"])', id = "env_var_target"
             ),
+            pytest.param(
+                'import os, requests\nu = os.environ["TARGET"]\nrequests.get(u)',
+                id = "env_var_bound",
+            ),
+            pytest.param(
+                'import os, requests\nu = os.getenv("TARGET")\nrequests.get(u)',
+                id = "getenv_bound",
+            ),
             pytest.param("import requests\nrequests.get(input())", id = "user_input_target"),
             pytest.param(
+                "import requests\nu = input()\nrequests.get(u)", id = "user_input_bound"
+            ),
+            pytest.param(
                 'import requests\nrequests.get(f"{input()}/latest")', id = "fstring_dynamic_host"
+            ),
+            pytest.param(
+                "import sys, requests\nrequests.get(sys.argv[1])", id = "argv_target"
             ),
             pytest.param(
                 "import urllib.request\nurllib.request.urlopen(input())", id = "urlopen_dynamic"
             ),
         ],
     )
-    def test_unresolvable_target_blocked(self, code):
-        _blocked(code, expect_phrase = "Blocked: request target is computed at runtime")
+    def test_target_chosen_outside_the_source_blocked(self, code):
+        _blocked(
+            code, expect_phrase = "Blocked: request target is read from the environment or input"
+        )
 
     @pytest.mark.parametrize(
         "code",
@@ -2622,4 +2661,109 @@ class TestOpaqueUrlTargets:
         ],
     )
     def test_constructors_without_a_url_ok(self, code):
+        _ok(code)
+
+
+class TestResolverRobustness:
+    """Regressions found by simulating the resolver against adversarial and ordinary source."""
+
+    def test_unterminated_authority_does_not_vouch_for_the_host_blocked(self):
+        # "https://huggingface.co" + input() really targets huggingface.co<whatever>, so the
+        # prefix must not be read as the host.
+        _blocked(
+            'import requests\nrequests.get("https://huggingface.co" + input())',
+            expect_phrase = "Blocked: request target is read from the environment or input",
+        )
+
+    def test_unterminated_authority_resolves_when_the_rest_is_known_blocked(self):
+        _blocked(
+            'import requests\nx = "co"\nrequests.get("https://huggingface." + x + x + ".evil.org")',
+            expect_phrase = "Blocked: host not in sandbox allowlist",
+        )
+
+    def test_terminated_authority_still_resolves_ok(self):
+        _ok('import requests\nq = input()\nrequests.get(f"https://duckduckgo.com/html/?q={q}")')
+
+    def test_one_name_used_twice_still_resolves_ok(self):
+        # `seen` tracks the current resolution path, not every name met, so x + x resolves.
+        _ok('import requests\nx = "api/models"\nrequests.get("https://huggingface.co/" + x + x)')
+
+    def test_a_long_binding_chain_does_not_raise(self):
+        chain = "".join(f"a{i} = a{i - 1}\n" for i in range(1, 5000))
+        code = 'import requests\na0 = "https://huggingface.co"\n' + chain + "requests.get(a4999)"
+        assert _check_code_safety(code) is None
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            pytest.param(
+                "import requests as r\nimport socket as r\nr.get(input())", id = "requests_first"
+            ),
+            pytest.param(
+                "import socket as r\nimport requests as r\nr.get(input())", id = "socket_first"
+            ),
+            pytest.param(
+                "def unused():\n    import socket as r\nimport requests as r\nr.get(input())",
+                id = "import_in_a_function",
+            ),
+        ],
+    )
+    def test_a_name_imported_twice_resolves_to_nothing_either_way(self, code):
+        # ast.walk order is unspecified, so a doubly bound alias must not be resolved at all
+        # rather than resolved to whichever import the walk reached last.
+        assert _check_code_safety(code) is None, code
+
+    def test_a_subscript_write_does_not_discard_the_binding_blocked(self):
+        # table[u] = 0 reads u, it does not rebind it.
+        _blocked(
+            'import requests\nu = "http://169.254.169.254/latest/"\ntable = {}\ntable[u] = 0\n'
+            "requests.get(u)",
+            expect_phrase = "Blocked: cloud-metadata host",
+        )
+
+    def test_an_attribute_write_does_not_discard_the_binding_blocked(self):
+        _blocked(
+            'import requests\nu = "http://169.254.169.254/latest/"\n'
+            "class C:\n    pass\nc = C()\nc.u = 0\nrequests.get(u)",
+            expect_phrase = "Blocked: cloud-metadata host",
+        )
+
+    def test_a_match_capture_rebinds_the_name_ok(self):
+        # The capture replaces u, so the earlier literal may no longer vouch for the call.
+        _ok(
+            'import requests\nu = "https://huggingface.co"\nmatch input():\n'
+            "    case u:\n        pass\nrequests.get(u)"
+        )
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            pytest.param(
+                "import requests\nurl = 'https://api.github.com/x'\nfor _ in range(3):\n"
+                "    resp = requests.get(url)\n    url = resp.links['next']['url']",
+                id = "pagination_rebind",
+            ),
+            pytest.param(
+                "import requests\nq = 'python'\n"
+                "u = 'https://duckduckgo.com/html/?q={}'.format(q)\nrequests.get(u)",
+                id = "str_format",
+            ),
+            pytest.param(
+                "import requests\nfrom urllib.parse import urljoin\n"
+                "u = urljoin('https://en.wikipedia.org', '/wiki/Python')\nrequests.get(u)",
+                id = "urljoin",
+            ),
+            pytest.param(
+                "import requests\ns = requests.Session()\n"
+                "for u in ['https://huggingface.co/api/models']:\n    s.get(u)",
+                id = "session_over_a_list",
+            ),
+            pytest.param(
+                "import requests\nurl = 'https://huggingface.co'\nurl += '/api/models'\n"
+                "requests.get(url)",
+                id = "augmented_assignment",
+            ),
+        ],
+    )
+    def test_ordinary_fetch_shapes_keep_working_ok(self, code):
         _ok(code)
