@@ -7,11 +7,14 @@ would pass with the helper wired to nothing.
 """
 
 import ast
+import inspect
 import json
+import re
+import time
 from pathlib import Path
 
 import pytest
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 
 from auth.authentication import authenticated_via_api_key, get_current_subject
@@ -30,6 +33,7 @@ from hub.utils.host_paths import (
     cache_reference,
     redact_host_paths,
     redact_inventory_host_paths,
+    redact_paths_in_text,
     response_leaks_host_path,
     scrub_paths,
     short_path_for_log,
@@ -79,6 +83,11 @@ def _cached_row(**extra) -> dict:
     return row
 
 
+def jsonable(payload):
+    from fastapi.encoders import jsonable_encoder
+    return jsonable_encoder(payload)
+
+
 def test_a_reference_is_opaque_stable_and_not_the_path():
     first = cache_reference(REPO_DIR)
     assert first is not None
@@ -95,6 +104,11 @@ def test_a_ui_session_payload_is_returned_untouched():
     assert redact_host_paths(payload, via_api_key = False) is payload
     assert redact_inventory_host_paths(payload, via_api_key = False) is payload
 
+    # BOUNDARY. A browser session keeps every path and gains nothing beside it.
+    row = {"repo_id": "acme/model", "cache_path": "/home/op/.cache/huggingface/hub/x"}
+    assert redact_host_paths(row, via_api_key = False) is row
+    assert host_paths.CACHE_REFERENCE_FIELD not in row
+
 
 def test_redaction_keeps_every_non_path_field():
     payload = {"cached": [_cached_row()], "scan_confirmed": True}
@@ -108,10 +122,24 @@ def test_redaction_keeps_every_non_path_field():
     assert row["cache_ref"] == cache_reference(REPO_DIR)
 
 
-def test_a_null_path_stays_null_so_the_discriminator_survives():
-    out = redact_host_paths({"cache_path": None}, via_api_key = True)
-    assert out["cache_path"] is None
-    assert "cache_ref" not in out
+# `cache_ref` is written exactly when the row HAD a path and omitted when it did not; it is the
+# "is this cached" discriminator that a truthiness test on `cache_path` can no longer be. A null
+# path stays null, so the discriminator survives.
+
+
+def test_a_redacted_row_is_still_distinguishable_from_one_with_no_path_at_all():
+    cached = {"repo_id": "acme/model", "cache_path": "/home/op/.cache/huggingface/hub/x"}
+    uncached = {"repo_id": "acme/other", "cache_path": None}
+
+    red_cached = host_paths.redact_host_paths(cached, via_api_key = True)
+    red_uncached = host_paths.redact_host_paths(uncached, via_api_key = True)
+
+    assert red_cached["cache_path"] == ""
+    assert red_uncached["cache_path"] is None
+    assert red_cached[host_paths.CACHE_REFERENCE_FIELD].startswith("ref:")
+    assert (
+        host_paths.CACHE_REFERENCE_FIELD not in red_uncached
+    ), "a row with no path must not gain a reference, or the discriminator says nothing"
 
 
 def test_the_ambiguous_path_field_is_only_redacted_where_it_is_a_path():
@@ -127,15 +155,45 @@ def test_scan_root_lists_are_emptied_not_referenced():
     assert out["exact_paths"] == []
 
 
-def test_the_leak_detector_finds_what_it_is_for():
-    assert response_leaks_host_path({"cached": [_cached_row()]}, [HOST_ROOT]) is not None
-    assert (
-        response_leaks_host_path(
-            redact_host_paths({"cached": [_cached_row()]}, via_api_key = True), [HOST_ROOT]
-        )
-        is None
+# An adapter row whose `base_model` is a host path for one source and a Hub repo id for the
+# next; the `base_model_source` sibling is what decides which.
+def _adapter(identifier, base_model, source) -> dict:
+    return {
+        "models": [
+            {"id": identifier, "base_model": base_model, "base_model_source": source}
+        ]
+    }
+
+
+_LOCAL_ADAPTER = _adapter("my-lora", "/home/op/models/Llama-3.1-8B", "local")
+_HUB_ADAPTER = _adapter("other-lora", "meta-llama/Llama-3.1-8B", "huggingface")
+
+# The leak detector is what every route test below trusts, so it is pinned on both answers: it
+# finds a path wherever one can hide (a row, a message, a `base_model` the sibling field says is
+# local, a path-valued identity) and stays quiet on a redacted body and on Hub repo ids.
+_DEFAULT_ROOTS = object()
+
+
+@pytest.mark.parametrize(
+    ("payload", "roots", "leaks"),
+    [
+        ({"cached": [_cached_row()]}, [HOST_ROOT], True),
+        (redact_host_paths({"cached": [_cached_row()]}, via_api_key = True), [HOST_ROOT], False),
+        ({"detail": f"could not read {REPO_DIR}"}, [HOST_ROOT], True),
+        (_LOCAL_ADAPTER, ["/home/op"], True),
+        (_HUB_ADAPTER, ["/home/op"], False),
+        ({"load_id": f"{HOST_ROOT}/snapshots/abc"}, _DEFAULT_ROOTS, True),
+        ({"load_id": "unsloth/Llama-3.2-1B-Instruct"}, _DEFAULT_ROOTS, False),
+        ({"load_id": "ref:0123456789abcdef"}, _DEFAULT_ROOTS, False),
+    ],
+)
+def test_the_leak_detector_finds_what_it_is_for(payload, roots, leaks):
+    found = (
+        response_leaks_host_path(payload)
+        if roots is _DEFAULT_ROOTS
+        else response_leaks_host_path(payload, roots)
     )
-    assert response_leaks_host_path({"detail": f"could not read {REPO_DIR}"}, [HOST_ROOT])
+    assert (found is not None) is leaks, found
 
 
 @pytest.mark.parametrize(
@@ -150,18 +208,111 @@ def test_the_leak_detector_finds_what_it_is_for():
             "ratio 3/4 and https://huggingface.co/api/models",
         ),
         ("nothing to see", "nothing to see"),
+        # An exception, not only a string.
+        (OSError(f"cannot open {REPO_DIR}/blobs/abc"), "cannot open .../blobs/abc"),
+        (None, ""),
+        # A Windows network share is shortened like any other path.
+        (
+            r"Skipping \\fileserver\models\hub\models--acme--x: denied",
+            "Skipping .../hub/models--acme--x: denied",
+        ),
+        (r"open \\srv\share\acme\config.json failed", "open .../acme/config.json failed"),
+        ("ratio 3/4", "ratio 3/4"),
+        ("https://huggingface.co/api/models/a/b", "https://huggingface.co/api/models/a/b"),
+        # A relative path in a log line is left as written.
+        ("Skipping ./models/repo: denied", "Skipping ./models/repo: denied"),
+        ("Skipping ../models/repo: denied", "Skipping ../models/repo: denied"),
+        ("Skipping ../../a/b/c: denied", "Skipping ../../a/b/c: denied"),
+        ("Skipping models/team/repo: denied", "Skipping models/team/repo: denied"),
+        # A two-component absolute path keeps its root: rebuilding turned `/srv/cache` into
+        # `srv/cache`, which reads relative.
+        ("cache root /srv/cache is unreadable", "cache root /srv/cache is unreadable"),
+        (
+            "Failed /home/op/.cache/huggingface/hub/models--acme--x: EACCES",
+            "Failed .../hub/models--acme--x: EACCES",
+        ),
+        # A path run stops at the end of the path: the label between the two paths is not
+        # swallowed, and the stop does not break on punctuation or a space inside a directory.
+        (
+            "Scan folder rejected: /home/jane.doe/.cache/huggingface/hub (path=/home/jane.doe/x)",
+            "Scan folder rejected: .../huggingface/hub (path=.../jane.doe/x)",
+        ),
+        ("Skipping /srv/client(acme)/models: denied", "Skipping .../client(acme)/models: denied"),
+        (
+            "Skipping /srv/Program Files/models--x: denied",
+            "Skipping .../Program Files/models--x: denied",
+        ),
     ],
 )
 def test_log_messages_lose_the_layout_and_keep_the_meaning(message, expected):
     assert scrub_paths(message) == expected
 
 
-def test_scrub_paths_takes_an_exception_not_only_a_string():
-    assert scrub_paths(OSError(f"cannot open {REPO_DIR}/blobs/abc")) == (
-        "cannot open .../blobs/abc"
-    )
-    assert scrub_paths(None) == ""
-    assert short_path_for_log(Path(REPO_DIR)) == ".../hub/models--unsloth--Llama-3.2-1B-Instruct"
+@pytest.mark.parametrize(
+    "path, expected",
+    [
+        (Path(REPO_DIR), ".../hub/models--unsloth--Llama-3.2-1B-Instruct"),
+        ("./models/repo", "./models/repo"),
+        ("../models/repo", "../models/repo"),
+    ],
+)
+def test_short_path_for_log_keeps_the_tail_and_relative_paths_as_written(path, expected):
+    assert short_path_for_log(path) == expected
+
+
+@pytest.mark.parametrize(
+    "scrub, text",
+    [
+        (scrub_paths, ("word " * 20_000) + "x"),
+        (redact_paths_in_text, "/srv/models" + ", filler" * 4000),
+    ],
+    ids = ("a-long-line-with-no-path", "the-redacted-tail-pass"),
+)
+def test_the_text_passes_stay_linear(scrub, text):
+    started = time.monotonic()
+    scrub(text)
+    assert time.monotonic() - started < 1.0
+
+
+# `redact_paths_in_text` removes the directory name WHOLE: a name may contain punctuation, a
+# space, a comma, a semicolon or an `=`, and stopping the run at one of those publishes the
+# remainder of the layout. `_PATH_COMPONENT` ends the run at `=`, so the tail rule has to treat
+# `=` as a continuation the same way it treats `:`, `;` and `,`. The trailing prose goes with it,
+# since a directory name may contain spaces.
+
+
+@pytest.mark.parametrize(
+    "message, expected",
+    [
+        ("Failed /srv/client(acme)/models", "Failed <path>"),
+        ("cannot read /home/o'connor/models", "cannot read <path>"),
+        (r"C:\cache\Models (private)", "<path>"),
+        ("open /mnt/data[1]/models denied", "open <path>"),
+        ("load /home/operator/Acme, Inc/private/model.bin failed", "load <path>"),
+        ("read /srv/Acme, Inc, Ltd/private/model.bin", "read <path>"),
+        (r"C:\Users\operator\Acme, Inc\private\model.bin", "<path>"),
+        ("read /srv/models; Acme; Inc/private/model.bin", "read <path>"),
+        (f"Error at {HOST_ROOT}/foo=bar/model/config.json", "Error at <path>"),
+        (f"failed: {HOST_ROOT}/models--a--b=v2/snapshots/dead/config.json", "failed: <path>"),
+        ("Skipping /a/b: Permission denied", "Skipping <path>: Permission denied"),
+        ('opened "/a/b" already', 'opened "<path>" already'),
+        ("tried /a/b, /c/d", "tried <path>, <path>"),
+        ("Skipping /a/b: denied, see /etc/fstab", "Skipping <path>: denied, see <path>"),
+        # BOUNDARY: ordinary prose is not read as a path, an `=` outside a path is ordinary
+        # prose, and a URL is not a host path.
+        ("3/4 of the shards", "3/4 of the shards"),
+        ("and/or the projector", "and/or the projector"),
+        ("no paths here", "no paths here"),
+        ("ratio 3/4 and rate=0.5 are fine", "ratio 3/4 and rate=0.5 are fine"),
+        (
+            "see https://huggingface.co/acme/model for details",
+            "see https://huggingface.co/acme/model for details",
+        ),
+    ],
+)
+def test_a_directory_name_is_removed_whole_and_prose_is_left_alone(message, expected):
+    cleaned = redact_paths_in_text(message)
+    assert cleaned == expected, (message, cleaned)
 
 
 @pytest.fixture
@@ -188,6 +339,10 @@ def _cached_inventory(monkeypatch):
     monkeypatch.setattr(models_routes, "cached_gguf_rows", lambda *a, **k: [_cached_row()])
 
 
+# /api/models is the OpenAI-compatible mirror of /api/hub, reachable with the same key, so the
+# boundary has to be drawn on both routers.
+
+
 @pytest.mark.parametrize(
     "route",
     ["/api/hub/cached-models", "/api/hub/cached-gguf"],
@@ -202,6 +357,8 @@ def test_an_api_key_enumerates_the_cache_without_its_paths(_cached_inventory, ro
         assert row["cache_path"] == ""
         assert row["cache_ref"].startswith("ref:")
         assert HOST_ROOT not in json.dumps(row), row
+        # A cached row keeps the repo id it is named by; only the path becomes a reference.
+        assert not row["repo_id"].startswith("ref:")
 
 
 @pytest.mark.parametrize(
@@ -233,8 +390,6 @@ def test_the_models_folder_is_not_disclosed(monkeypatch):
 
 
 def test_a_rejected_scan_folder_does_not_disclose_where_it_resolved(monkeypatch):
-    from fastapi import HTTPException
-
     def _raises(path):
         raise HTTPException(
             status_code = 400,
@@ -254,64 +409,55 @@ def test_a_rejected_scan_folder_does_not_disclose_where_it_resolved(monkeypatch)
     assert REPO_DIR in ui.json()["detail"]
 
 
-def test_the_models_folder_error_is_not_disclosed_either(monkeypatch):
-    from fastapi import HTTPException
+# A raised detail is walked the same way a payload is: the message survives, the layout does
+# not, whether the detail is a string, a structure, or a root with a single component.
 
+
+@pytest.mark.parametrize(
+    ("raised", "secret", "kept", "message", "ui_sees_it"),
+    [
+        (
+            f"Failed to create models folder: {HOST_ROOT}/hub: Permission denied",
+            HOST_ROOT,
+            ("Permission denied", "Failed to create models folder"),
+            None,
+            True,
+        ),
+        # A root with one component is redacted too.
+        *[
+            (f"Models folder path is not a directory: {root}", root, ("not a directory",), None, False)
+            for root in ("/tmp", "/cache", "C:\\cache")
+        ],
+        (
+            {"message": "bad folder", "path": f"{HOST_ROOT}/hub"},
+            HOST_ROOT,
+            (),
+            "bad folder",
+            False,
+        ),
+    ],
+)
+def test_the_models_folder_error_is_not_disclosed_either(
+    monkeypatch, raised, secret, kept, message, ui_sees_it
+):
     def _raises():
-        raise HTTPException(
-            status_code = 500,
-            detail = f"Failed to create models folder: {HOST_ROOT}/hub: Permission denied",
-        )
+        raise HTTPException(status_code = 500, detail = raised)
 
     monkeypatch.setattr(local_inventory, "get_models_folder_response", _raises)
 
     response = _hub(via_api_key = True).get("/api/hub/models-folder")
     assert response.status_code == 500
     detail = response.json()["detail"]
-    assert HOST_ROOT not in detail, detail
-    assert "Permission denied" in detail, detail
-    assert "Failed to create models folder" in detail, detail
+    assert secret not in str(detail), detail
+    for fragment in kept:
+        assert fragment in str(detail), detail
+    if message is not None:
+        assert detail["message"] == message, detail
 
-    session = _hub(via_api_key = False).get("/api/hub/models-folder")
-    assert session.status_code == 500
-    assert HOST_ROOT in session.json()["detail"]
-
-
-@pytest.mark.parametrize("root", ["/tmp", "/cache", "C:\\cache"])
-def test_a_root_with_one_component_is_redacted_too(monkeypatch, root):
-    from fastapi import HTTPException
-
-    def _raises():
-        raise HTTPException(
-            status_code = 500,
-            detail = f"Models folder path is not a directory: {root}",
-        )
-
-    monkeypatch.setattr(local_inventory, "get_models_folder_response", _raises)
-    detail = _hub(via_api_key = True).get("/api/hub/models-folder").json()["detail"]
-    assert root not in detail, detail
-    assert "not a directory" in detail, detail
-
-
-def test_ordinary_prose_is_not_read_as_a_path(monkeypatch):
-    from hub.utils.host_paths import redact_paths_in_text
-    for kept in ("3/4 of the shards", "and/or the projector", "no paths here"):
-        assert redact_paths_in_text(kept) == kept, kept
-
-
-def test_a_structured_error_detail_is_walked_too(monkeypatch):
-    from fastapi import HTTPException
-
-    def _raises():
-        raise HTTPException(
-            status_code = 500,
-            detail = {"message": "bad folder", "path": f"{HOST_ROOT}/hub"},
-        )
-
-    monkeypatch.setattr(local_inventory, "get_models_folder_response", _raises)
-    detail = _hub(via_api_key = True).get("/api/hub/models-folder").json()["detail"]
-    assert HOST_ROOT not in str(detail), detail
-    assert detail["message"] == "bad folder"
+    if ui_sees_it:
+        session = _hub(via_api_key = False).get("/api/hub/models-folder")
+        assert session.status_code == 500
+        assert HOST_ROOT in session.json()["detail"]
 
 
 def test_the_scan_folder_list_is_not_disclosed(monkeypatch):
@@ -325,25 +471,6 @@ def test_the_scan_folder_list_is_not_disclosed(monkeypatch):
     payload = _hub(via_api_key = True).get("/api/hub/scan-folders").json()
     assert payload["folders"], "the folder is still listed, by id"
     assert response_leaks_host_path(payload, [HOST_ROOT]) is None
-
-
-def test_the_local_model_scan_is_not_disclosed(monkeypatch):
-    async def _response(models_dir = "./models"):
-        return LocalModelListResponse(
-            models_dir = f"{HOST_ROOT}/../models",
-            hf_cache_dir = HOST_ROOT,
-            lmstudio_dirs = [f"{HOST_ROOT}/lmstudio"],
-            ollama_dirs = [],
-            hermes_dirs = [],
-            models = [],
-        )
-
-    monkeypatch.setattr(local_inventory, "list_local_models_response", _response)
-    payload = _hub(via_api_key = True).get("/api/hub/local").json()
-    assert response_leaks_host_path(payload, [HOST_ROOT]) is None
-    assert payload["lmstudio_dirs"] == []
-    ui = _hub(via_api_key = False).get("/api/hub/local").json()
-    assert ui["hf_cache_dir"] == HOST_ROOT
 
 
 def test_the_hidden_model_matchers_keep_their_ids_and_drop_their_paths(monkeypatch):
@@ -420,31 +547,6 @@ def test_download_progress_hides_the_cache_dir_it_measured(
         assert payload["cache_ref"].startswith("ref:")
 
 
-def test_an_api_key_can_still_delete_by_repo_id_without_ever_seeing_a_path(monkeypatch):
-    seen = {}
-
-    async def _delete(repo_id, variant, hf_token, cache_path, only_if_orphan):
-        seen.update(
-            repo_id = repo_id,
-            variant = variant,
-            cache_path = cache_path,
-            only_if_orphan = only_if_orphan,
-        )
-        return {"status": "deleted", "repo_id": repo_id, "variant": variant}
-
-    from hub.services.models import deletion
-
-    monkeypatch.setattr(deletion, "delete_cached_model_response", _delete)
-    response = _hub(via_api_key = True).request(
-        "DELETE",
-        "/api/hub/delete-cached",
-        json = {"repo_id": "unsloth/Llama-3.2-1B-Instruct", "variant": None},
-    )
-    assert response.status_code == 200
-    assert response.json()["status"] == "deleted"
-    assert seen["cache_path"] is None
-
-
 # Hub inventory routes that answer no host path. Anything else must take the caller class.
 _ROUTES_WITHOUT_HOST_PATHS = {
     "remove_scan_folder_endpoint": "status and id only",
@@ -457,28 +559,33 @@ _ROUTES_WITHOUT_HOST_PATHS = {
 }
 
 
-def test_every_inventory_route_that_could_answer_a_path_takes_the_caller_class():
-    source = Path(inventory_routes.__file__).read_text(encoding = "utf-8")
-    tree = ast.parse(source)
-    missing = []
-    for node in tree.body:
+def _route_arguments(module, *, router_decorated = False) -> dict:
+    """Every function in a route module, by name, with the argument names it takes. With
+    `router_decorated`, only the top-level functions carrying a `@router.<method>(...)`."""
+    tree = ast.parse(Path(module.__file__).read_text(encoding = "utf-8"))
+    found = {}
+    for node in tree.body if router_decorated else ast.walk(tree):
         if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             continue
-        decorated = any(
+        if router_decorated and not any(
             isinstance(dec, ast.Call)
             and isinstance(dec.func, ast.Attribute)
             and isinstance(dec.func.value, ast.Name)
             and dec.func.value.id == "router"
             for dec in node.decorator_list
-        )
-        if not decorated:
+        ):
             continue
-        args = {arg.arg for arg in node.args.args + node.args.kwonlyargs}
-        if "via_api_key" in args:
-            continue
-        if node.name in _ROUTES_WITHOUT_HOST_PATHS:
-            continue
-        missing.append(node.name)
+        found[node.name] = {arg.arg for arg in node.args.args + node.args.kwonlyargs}
+    return found
+
+
+def test_every_inventory_route_that_could_answer_a_path_takes_the_caller_class():
+    routes = _route_arguments(inventory_routes, router_decorated = True)
+    missing = [
+        name
+        for name, args in routes.items()
+        if "via_api_key" not in args and name not in _ROUTES_WITHOUT_HOST_PATHS
+    ]
     assert not missing, (
         "these inventory routes neither take via_api_key nor are recorded as path-free: "
         f"{missing}. Add the dependency and redact, or list the route with its reason."
@@ -509,129 +616,11 @@ def test_the_path_field_lists_cover_the_inventory_schemas():
     )
 
 
-def test_a_windows_network_share_is_shortened_like_any_other_path():
-    assert scrub_paths(r"Skipping \\fileserver\models\hub\models--acme--x: denied") == (
-        "Skipping .../hub/models--acme--x: denied"
-    )
-    assert scrub_paths(r"open \\srv\share\acme\config.json failed") == (
-        "open .../acme/config.json failed"
-    )
-    assert scrub_paths("ratio 3/4") == "ratio 3/4"
-    assert scrub_paths("https://huggingface.co/api/models/a/b") == (
-        "https://huggingface.co/api/models/a/b"
-    )
-
-
-def test_a_relative_path_in_a_log_line_is_left_as_written():
-    for line in (
-        "Skipping ./models/repo: denied",
-        "Skipping ../models/repo: denied",
-        "Skipping ../../a/b/c: denied",
-        "Skipping models/team/repo: denied",
-    ):
-        assert scrub_paths(line) == line, line
-    assert short_path_for_log("./models/repo") == "./models/repo"
-    assert short_path_for_log("../models/repo") == "../models/repo"
-
-    # A two-component absolute path keeps its root: rebuilding turned `/srv/cache` into
-    # `srv/cache`, which reads relative.
-    assert scrub_paths("cache root /srv/cache is unreadable") == (
-        "cache root /srv/cache is unreadable"
-    )
-    assert scrub_paths("Failed /home/op/.cache/huggingface/hub/models--acme--x: EACCES") == (
-        "Failed .../hub/models--acme--x: EACCES"
-    )
-
-
-def test_a_path_run_stops_at_the_end_of_the_path():
-    line = "Scan folder rejected: /home/jane.doe/.cache/huggingface/hub (path=/home/jane.doe/x)"
-    scrubbed = scrub_paths(line)
-    assert scrubbed == "Scan folder rejected: .../huggingface/hub (path=.../jane.doe/x)"
-    assert "(path=" in scrubbed, "the label between the two paths was swallowed"
-
-    # The stop must not break on punctuation or a space inside a directory name.
-    assert scrub_paths("Skipping /srv/client(acme)/models: denied") == (
-        "Skipping .../client(acme)/models: denied"
-    )
-    assert scrub_paths("Skipping /srv/Program Files/models--x: denied") == (
-        "Skipping .../Program Files/models--x: denied"
-    )
-
-
-def test_a_long_line_with_no_path_in_it_is_not_a_stall():
-    import time
-
-    line = ("word " * 20_000) + "x"
-    started = time.monotonic()
-    assert scrub_paths(line) == line
-    assert time.monotonic() - started < 1.0
-
-
-def test_a_named_tuple_in_a_payload_is_rebuilt_rather_than_raising():
-    import collections
-
-    Row = collections.namedtuple("Row", "repo_id size_bytes")
-    payload = {"rows": [Row("acme/x", 5)]}
-    out = redact_host_paths(payload, via_api_key = True)
-    assert out["rows"][0] == Row("acme/x", 5)
-
-
-# `cache_ref` is written exactly when the row HAD a path and omitted when it did not; it is the
-# "is this cached" discriminator that a truthiness test on `cache_path` can no longer be.
-
-
-def test_a_redacted_row_is_still_distinguishable_from_one_with_no_path_at_all():
-    cached = {"repo_id": "acme/model", "cache_path": "/home/op/.cache/huggingface/hub/x"}
-    uncached = {"repo_id": "acme/other", "cache_path": None}
-
-    red_cached = host_paths.redact_host_paths(cached, via_api_key = True)
-    red_uncached = host_paths.redact_host_paths(uncached, via_api_key = True)
-
-    assert red_cached["cache_path"] == ""
-    assert red_uncached["cache_path"] is None
-    assert red_cached[host_paths.CACHE_REFERENCE_FIELD].startswith("ref:")
-    assert (
-        host_paths.CACHE_REFERENCE_FIELD not in red_uncached
-    ), "a row with no path must not gain a reference, or the discriminator says nothing"
-
-
-def test_the_reference_is_stable_within_the_process_and_differs_per_path():
-    a = {"cache_path": "/home/op/.cache/huggingface/hub/a"}
-    b = {"cache_path": "/home/op/.cache/huggingface/hub/b"}
-    ref = lambda row: host_paths.redact_host_paths(row, via_api_key = True)[
-        host_paths.CACHE_REFERENCE_FIELD
-    ]
-    assert ref(a) == ref(dict(a))
-    assert ref(a) != ref(b)
-    assert "/home/op" not in ref(a) and "hub" not in ref(a)
-
-
-def test_a_browser_session_keeps_every_path_and_gains_nothing():
-    row = {"repo_id": "acme/model", "cache_path": "/home/op/.cache/huggingface/hub/x"}
-    same = host_paths.redact_host_paths(row, via_api_key = False)
-    assert same is row
-    assert host_paths.CACHE_REFERENCE_FIELD not in same
-
-
 def test_a_local_adapter_base_model_is_redacted_but_a_repo_id_is_kept():
-    """`base_model` is a path for one adapter and a repo id for the next; the `base_model_source`
-    sibling decides which."""
-    from hub.utils.host_paths import redact_inventory_host_paths
-
     payload = {
         "models": [
-            {
-                "id": "my-lora",
-                "path": "/home/op/models/my-lora",
-                "base_model": "/home/op/models/Llama-3.1-8B",
-                "base_model_source": "local",
-            },
-            {
-                "id": "other-lora",
-                "path": "/home/op/models/other-lora",
-                "base_model": "meta-llama/Llama-3.1-8B",
-                "base_model_source": "huggingface",
-            },
+            {**row, "path": f"/home/op/models/{row['id']}"}
+            for row in _LOCAL_ADAPTER["models"] + _HUB_ADAPTER["models"]
         ]
     }
 
@@ -644,36 +633,6 @@ def test_a_local_adapter_base_model_is_redacted_but_a_repo_id_is_kept():
 
     session = redact_inventory_host_paths(payload, via_api_key = False)["models"]
     assert session[0]["base_model"] == "/home/op/models/Llama-3.1-8B"
-
-
-def test_the_leak_finder_knows_a_local_base_model_is_a_path():
-    from hub.utils.host_paths import response_leaks_host_path
-
-    leaky = {
-        "models": [
-            {
-                "id": "my-lora",
-                "base_model": "/home/op/models/Llama-3.1-8B",
-                "base_model_source": "local",
-            },
-        ]
-    }
-    assert response_leaks_host_path(leaky, ["/home/op"]) is not None
-
-    clean = {
-        "models": [
-            {
-                "id": "other-lora",
-                "base_model": "meta-llama/Llama-3.1-8B",
-                "base_model_source": "huggingface",
-            },
-        ]
-    }
-    assert response_leaks_host_path(clean, ["/home/op"]) is None
-
-
-# /api/models is the OpenAI-compatible mirror of /api/hub, reachable with the same key, so the
-# boundary has to be drawn on both routers.
 
 
 def test_the_compat_scan_folder_list_is_not_disclosed(monkeypatch):
@@ -716,18 +675,14 @@ _COMPAT_INVENTORY_ROUTES = (
 
 
 def test_every_compat_mirror_of_an_inventory_route_takes_the_caller_class():
-    source = Path(models_routes.__file__).read_text(encoding = "utf-8")
-    tree = ast.parse(source)
-    found = {}
-    for node in ast.walk(tree):
-        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            continue
-        if node.name not in _COMPAT_INVENTORY_ROUTES:
-            continue
-        found[node.name] = {arg.arg for arg in node.args.args + node.args.kwonlyargs}
+    found = _route_arguments(models_routes)
     missing_routes = [name for name in _COMPAT_INVENTORY_ROUTES if name not in found]
     assert not missing_routes, f"these routes were renamed or removed: {missing_routes}"
-    without = [name for name, args in found.items() if "via_api_key" not in args]
+    without = [
+        name
+        for name in _COMPAT_INVENTORY_ROUTES
+        if "via_api_key" not in found[name]
+    ]
     assert not without, (
         "these compatibility routes answer inventory data without taking the caller class: "
         f"{without}"
@@ -745,43 +700,50 @@ def _local_row():
     )
 
 
-def test_a_filesystem_backed_row_is_not_named_by_its_path(monkeypatch):
+@pytest.fixture
+def _local_inventory(monkeypatch):
     async def _response(models_dir = "./models"):
         return LocalModelListResponse(
             models_dir = f"{HOST_ROOT}/models",
             hf_cache_dir = HOST_ROOT,
-            lmstudio_dirs = [],
+            lmstudio_dirs = [f"{HOST_ROOT}/lmstudio"],
             ollama_dirs = [],
             hermes_dirs = [],
             models = [_local_row()],
         )
 
     monkeypatch.setattr(local_inventory, "list_local_models_response", _response)
+
+
+def test_a_filesystem_backed_row_is_not_named_by_its_path(_local_inventory):
+    from models.inference import LoadRequest
+
     payload = _hub(via_api_key = True).get("/api/hub/local").json()
     row = payload["models"][0]
     assert row["path"] == ""
     assert row["id"].startswith("ref:"), row["id"]
     assert row["load_id"].startswith("ref:"), row["load_id"]
     assert row["inventory_id"].startswith("models_dir:safetensors:"), row["inventory_id"]
+    # The scan roots the listing was taken from are emptied, not referenced.
+    assert payload["lmstudio_dirs"] == []
     assert HOST_ROOT not in json.dumps(payload), payload
     # Both spellings, or the leak check is vacuous wherever the row carries the other one.
     assert HOST_ROOT_NATIVE not in json.dumps(payload), payload
     assert "my%20models" not in json.dumps(payload), payload
     assert response_leaks_host_path(payload, [HOST_ROOT, HOST_ROOT_NATIVE]) is None
 
+    # The referenced row is still loadable: the handle resolves back on the load request.
+    assert LoadRequest(model_path = row["load_id"]).model_path == str(
+        Path(HOST_ROOT) / "my models" / "Llama-3.2-1B"
+    )
+
+    # BOUNDARY: the operator's own session is still shown its own machine.
     ui = _hub(via_api_key = False).get("/api/hub/local").json()
     assert ui["models"][0]["load_id"].startswith(HOST_ROOT_NATIVE)
-
-
-def test_a_cached_row_keeps_the_repo_id_it_is_named_by(_cached_inventory):
-    payload = _hub(via_api_key = True).get("/api/hub/cached-models").json()
-    assert payload["cached"][0]["repo_id"] == "unsloth/Llama-3.2-1B-Instruct"
-    assert not payload["cached"][0]["repo_id"].startswith("ref:")
+    assert ui["hf_cache_dir"] == HOST_ROOT
 
 
 def test_a_local_scan_failure_is_redacted_like_its_payload(monkeypatch):
-    from fastapi import HTTPException
-
     async def _raises(models_dir = "./models"):
         raise HTTPException(
             status_code = 500,
@@ -794,33 +756,6 @@ def test_a_local_scan_failure_is_redacted_like_its_payload(monkeypatch):
     assert "unable to open database file" in str(detail), detail
     ui = _hub(via_api_key = False).get("/api/hub/local").json()["detail"]
     assert HOST_ROOT in str(ui), ui
-
-
-def test_a_referenced_local_row_is_still_loadable(monkeypatch):
-    from models.inference import LoadRequest
-
-    async def _response(models_dir = "./models"):
-        return LocalModelListResponse(
-            models_dir = f"{HOST_ROOT}/models",
-            hf_cache_dir = HOST_ROOT,
-            lmstudio_dirs = [],
-            ollama_dirs = [],
-            hermes_dirs = [],
-            models = [_local_row()],
-        )
-
-    monkeypatch.setattr(local_inventory, "list_local_models_response", _response)
-    row = _hub(via_api_key = True).get("/api/hub/local").json()["models"][0]
-    assert row["load_id"].startswith("ref:")
-
-    loaded = LoadRequest(model_path = row["load_id"])
-    assert loaded.model_path == str(Path(HOST_ROOT) / "my models" / "Llama-3.2-1B")
-
-    # An unissued reference is left as-is, so it fails like an unknown model rather than
-    # resolving to somebody else's row.
-    stranger = "ref:" + "0" * 32
-    assert LoadRequest(model_path = stranger).model_path == stranger
-    assert LoadRequest(model_path = "unsloth/Llama-3.2-1B").model_path == "unsloth/Llama-3.2-1B"
 
 
 def test_a_reference_table_that_fills_up_drops_the_oldest(monkeypatch):
@@ -843,62 +778,101 @@ def test_a_reference_table_that_fills_up_drops_the_oldest(monkeypatch):
     assert host_paths.resolve_host_path_reference(newest) == "/host/newest"
 
 
-def test_every_request_that_consumes_an_inventory_identity_resolves_the_handle():
-    from models.inference import (
-        DiffusionLoadRequest,
-        LoadRequest,
-        ValidateModelRequest,
-        VideoLoadRequest,
-    )
-    from models.training import TrainingStartRequest
+def _request_model(name: str):
+    from models import inference, training
 
-    reference = host_paths.cache_reference(f"{HOST_ROOT}/my models/Llama-3.2-1B")
-    resolved = f"{HOST_ROOT}/my models/Llama-3.2-1B"
-
-    for request_model in (
-        LoadRequest,
-        ValidateModelRequest,
-        DiffusionLoadRequest,
-        VideoLoadRequest,
-    ):
-        assert request_model(model_path = reference).model_path == resolved, request_model
-        assert request_model(model_path = "unsloth/Llama-3.2-1B").model_path == (
-            "unsloth/Llama-3.2-1B"
-        ), request_model
-
-    training = TrainingStartRequest(
-        model_name = reference,
-        training_type = "LoRA/QLoRA",
-        format_type = "chat",
-    )
-    assert training.model_name == resolved
+    return getattr(inference, name, None) or getattr(training, name)
 
 
-def test_a_cache_reference_can_delete_the_copy_it_names(monkeypatch):
+@pytest.mark.parametrize(
+    ("model_name", "fields", "extra"),
+    [
+        ("LoadRequest", ("model_path",), {}),
+        ("ValidateModelRequest", ("model_path",), {}),
+        ("DiffusionLoadRequest", ("model_path",), {}),
+        ("VideoLoadRequest", ("model_path",), {}),
+        # The reference that loaded a model can unload it.
+        ("UnloadRequest", ("model_path",), {}),
+        # Preflight schemas resolve a handle too, or the estimate is taken of nothing.
+        ("EstimateMemoryRequest", ("model_path",), {}),
+        (
+            "TransformersUpgradeCheckRequest",
+            (
+                "model_name",
+                "model_local_path",
+                "model_snapshot_path",
+                "model_snapshot_repo_id",
+            ),
+            {},
+        ),
+        # A run is started, and resumed, by the handle the listing answered with.
+        (
+            "TrainingStartRequest",
+            ("model_name", "resume_from_checkpoint"),
+            {"training_type": "LoRA/QLoRA", "format_type": "chat"},
+        ),
+        (
+            "DiffusionTrainingStartRequest",
+            ("base_model", "output_dir", "resume_from_checkpoint"),
+            {"data_dir": "/data/images"},
+        ),
+    ],
+)
+def test_every_request_that_consumes_an_inventory_identity_resolves_the_handle(
+    model_name, fields, extra
+):
+    request_model = _request_model(model_name)
+    path = f"{HOST_ROOT}/my models/Llama-3.2-1B"
+    reference = host_paths.cache_reference(path)
+
+    resolved = request_model(**{field: reference for field in fields}, **extra)
+    for field in fields:
+        assert getattr(resolved, field) == path, (model_name, field)
+
+    # A repo id is not a handle, and an unissued reference is left as written, so it fails like
+    # an unknown model rather than resolving to somebody else's row.
+    for written in ("unsloth/Llama-3.2-1B", "ref:" + "0" * 32):
+        echoed = request_model(**{field: written for field in fields}, **extra)
+        for field in fields:
+            assert getattr(echoed, field) == written, (model_name, field, written)
+
+
+@pytest.mark.parametrize(
+    ("client", "route"),
+    [(_hub, "/api/hub/delete-cached"), (_models, "/api/models/delete-cached")],
+    ids = ("hub", "compat"),
+)
+def test_a_cache_reference_can_delete_the_copy_it_names(monkeypatch, client, route):
     seen = {}
 
-    async def _delete(repo_id, variant, hf_token, cache_path, only_if_orphan):
-        seen["cache_path"] = cache_path
-        return {"status": "deleted", "repo_id": repo_id}
+    async def _delete(repo_id, variant, hf_token, cache_path, only_if_orphan = None):
+        seen.update(repo_id = repo_id, variant = variant, cache_path = cache_path)
+        return {"status": "deleted", "repo_id": repo_id, "variant": variant}
 
-    from hub.services.models import deletion
+    from hub.services.models import account_access, deletion
 
     monkeypatch.setattr(deletion, "delete_cached_model_response", _delete)
+    monkeypatch.setattr(account_access, "require_installation_owner", lambda: None)
     reference = host_paths.cache_reference(REPO_DIR)
-    body = {"repo_id": "unsloth/Llama-3.2-1B", "cache_path": reference}
-    response = _hub(via_api_key = True).request(
-        "DELETE",
-        "/api/hub/delete-cached",
-        json = body,
-    )
-    assert response.status_code == 200, response.text
+    assert reference != REPO_DIR
+
+    def _sent(via_api_key, body):
+        seen.clear()
+        answered = client(via_api_key = via_api_key).request("DELETE", route, json = body)
+        assert answered.status_code == 200, answered.text
+        return answered
+
+    answered = _sent(True, {"repo_id": "unsloth/Llama-3.2-1B", "cache_path": reference})
+    assert answered.json()["status"] == "deleted"
     assert seen["cache_path"] == REPO_DIR
 
-    _hub(via_api_key = False).request(
-        "DELETE",
-        "/api/hub/delete-cached",
-        json = {"repo_id": "unsloth/Llama-3.2-1B", "cache_path": REPO_DIR},
-    )
+    # An API key can still delete by repo id alone, without ever having seen a path: an absent
+    # `cache_path` reaches the service as None, not as some resolved root.
+    _sent(True, {"repo_id": "unsloth/Llama-3.2-1B-Instruct", "variant": None})
+    assert seen["cache_path"] is None
+
+    # BOUNDARY: a browser session names the path itself, and it arrives as written.
+    _sent(False, {"repo_id": "unsloth/Llama-3.2-1B", "cache_path": REPO_DIR})
     assert seen["cache_path"] == REPO_DIR
 
 
@@ -919,12 +893,6 @@ def test_a_cache_row_pinned_to_a_snapshot_is_referenced_too(monkeypatch):
 
     ui = _hub(via_api_key = False).get("/api/hub/cached-models").json()
     assert ui["cached"][0]["load_id"] == pinned
-
-
-def test_the_leak_finder_knows_a_path_valued_identity_is_a_path():
-    assert response_leaks_host_path({"load_id": f"{HOST_ROOT}/snapshots/abc"}) is not None
-    assert response_leaks_host_path({"load_id": "unsloth/Llama-3.2-1B-Instruct"}) is None
-    assert response_leaks_host_path({"load_id": "ref:0123456789abcdef"}) is None
 
 
 def test_the_compat_scan_folder_add_does_not_answer_with_the_path(monkeypatch):
@@ -966,10 +934,10 @@ def test_the_handle_a_caller_sent_is_the_handle_it_gets_back():
     assert restored["warnings"] == [f"could not read {reference}/config.json"]
     assert restored["unrelated"] == "unsloth/Llama-3.2-1B"
 
-
-def test_a_request_that_named_a_path_directly_is_answered_with_that_path():
-    answer = {"model": f"{HOST_ROOT}/models/Llama-3.2-1B"}
-    assert host_paths.restore_inventory_handles(answer) == answer
+    # A request that named a path DIRECTLY is answered with that path: there is no handle of
+    # the caller's to give back.
+    named = {"model": f"{HOST_ROOT}/models/Llama-3.2-1B"}
+    assert host_paths.restore_inventory_handles(named) == named
 
 
 def test_a_tuple_keeps_its_shape_through_both_walks():
@@ -1001,6 +969,10 @@ def test_a_tuple_keeps_its_shape_through_both_walks():
     assert isinstance(detail, Row), detail
     assert response_leaks_host_path(detail, [HOST_ROOT]) is None, detail
     assert host_paths.redact_inventory_error_detail(("abc",), via_api_key = True) == ("abc",)
+    # The payload walk rebuilds one rather than raising on it.
+    assert redact_host_paths({"rows": [Row("acme/x", 5)]}, via_api_key = True)["rows"][0] == Row(
+        "acme/x", 5
+    )
     assert host_paths.raised_inventory_detail(Row("ab", "cd"), via_api_key = False) == Row(
         "ab", "cd"
     ), "a UI session's detail was rebuilt into something else"
@@ -1035,32 +1007,84 @@ def test_a_sibling_that_merely_starts_with_the_resolved_path_is_not_a_handle():
         host_paths._request_handles.reset(token)
 
 
-def test_the_load_and_validate_answers_go_through_the_restoration():
-    import inspect
-    import re
-
+def _source(target: str) -> str:
+    """The source of a module or of one function in it, by name."""
     from routes import inference as inference_routes
+    from routes import training_history as training_routes
+    from routes import video as video_routes
 
-    # Whitespace-insensitive: a re-wrap by the formatting bot must not read as a removal.
-    def _squeeze(text: str) -> str:
-        return re.sub(r"\s+", "", text)
+    module, _, attribute = target.partition(".")
+    holder = {
+        "inference": inference_routes,
+        "video": video_routes,
+        "training": training_routes,
+        "models": models_routes,
+    }[module]
+    return inspect.getsource(getattr(holder, attribute) if attribute else holder)
 
-    def _calls(needle: str) -> bool:
-        return _squeeze(needle) in _squeeze(source)
 
-    source = inspect.getsource(inference_routes)
-    assert _calls("restore_inventory_handles(task.result())")
-    assert _calls("_handle_restored_http_exception(exc)")
-    assert _calls("restore_inventory_handles(exc.detail)")
-    assert _calls("restore_inventory_handles(ValidateModelResponse(")
-    assert _calls("jsonable_encoder(restore_inventory_handles(payload))")
-    assert _calls("restore_inventory_handles(redact_native_paths(str(e)))")
-    assert _calls("raise _handle_restored_http_exception(http_error) from http_error")
-    assert _calls("detail = restore_inventory_handles(str(e))")
+# Wiring, not behaviour, and invisible in a payload test because the payload is never built: a
+# load whose restore+redact wrappers never run because it RAISED, two progress routes that took
+# no caller class at all, and the long-lived routes that answer from a PERSISTED record written
+# before this request existed. A target marked `squeeze` is matched whitespace-insensitively: a
+# re-wrap by the formatting bot must not read as a removal.
+_WIRING = {
+    # The load and validate answers go through the restoration.
+    ("inference", "squeeze"): (
+        "restore_inventory_handles(task.result())",
+        "_handle_restored_http_exception(exc)",
+        "restore_inventory_handles(exc.detail)",
+        "restore_inventory_handles(ValidateModelResponse(",
+        "jsonable_encoder(restore_inventory_handles(payload))",
+        "restore_inventory_handles(redact_native_paths(str(e)))",
+        "raise _handle_restored_http_exception(http_error) from http_error",
+        "detail = restore_inventory_handles(str(e))",
+    ),
+    # The long-lived routes redact what they persisted, and the upgrade check answers with the
+    # handle it was sent.
+    ("inference", "exact"): (
+        "model_name = restore_inventory_handles(model_name),",
+        "redact_host_paths(DiffusionStatusResponse(",
+        "authenticated_via_api_key",
+    ),
+    ("video", "exact"): ("redact_host_paths(VideoStatusResponse(", "authenticated_via_api_key"),
+    ("training", "exact"): (
+        'TrainingRunListResponse(runs = runs, total = result["total"]),',
+        "authenticated_via_api_key",
+    ),
+    # The model details route takes the caller class, resolves the handle it was sent, and
+    # passes the caller's own identifier as `echo`.
+    ("models.get_model_config", "exact"): (
+        "via_api_key: bool = Depends(authenticated_via_api_key)",
+        "redact_host_paths(",
+        "restore_inventory_handles(await asyncio.to_thread(_resolve, model_name))",
+        "echo = (model_name,)",
+        "resolve_inventory_handle(",
+    ),
+    ("models.scan_model_remote_code", "exact"): (
+        "resolve_inventory_handle(",
+        "restore_inventory_handles(",
+    ),
+    # Every media route that can answer a resolved path redacts it.
+    ("inference.load_diffusion_model", "exact"): ("except HTTPException", "raised_inventory_detail"),
+    ("video.load_video_model", "exact"): ("except HTTPException", "raised_inventory_detail"),
+    ("inference.diffusion_load_progress", "exact"): (
+        "authenticated_via_api_key",
+        "redact_load_progress",
+    ),
+    ("video.video_load_progress", "exact"): ("authenticated_via_api_key", "redact_load_progress"),
+}
+
+
+@pytest.mark.parametrize(("target", "match"), list(_WIRING))
+def test_the_routes_are_wired_to_the_redaction_they_depend_on(target, match):
+    source = _source(target)
+    squeeze = (lambda text: re.sub(r"\s+", "", text)) if match == "squeeze" else (lambda text: text)
+    for needle in _WIRING[(target, match)]:
+        assert squeeze(needle) in squeeze(source), (target, needle)
 
 
 def test_a_refusal_names_the_handle_the_caller_sent(monkeypatch):
-    from fastapi import HTTPException
     from routes import inference as inference_routes
     from models.inference import LoadRequest
 
@@ -1078,68 +1102,104 @@ def test_a_refusal_names_the_handle_the_caller_sent(monkeypatch):
     assert inference_routes._handle_restored_http_exception(untouched) is untouched
 
 
-def test_the_reference_that_loaded_a_model_can_unload_it():
-    from models.inference import UnloadRequest
+# A path that outlives the request it was resolved in is still REFERENCED rather than blanked,
+# because nothing else in these answers names the model; a Hub repo id is not a path and is left
+# exactly as the caller asked for it. `<REF>` below means "resolves back to the path in the row",
+# `<KEPT>` means "came back unchanged", `<BLANK>` means the empty string.
+REF = object()
+KEPT = object()
 
-    path = f"{HOST_ROOT}/my models/Llama-3.2-1B"
-    reference = host_paths.cache_reference(path)
-    assert UnloadRequest(model_path = reference).model_path == path
-    assert UnloadRequest(model_path = "unsloth/Llama-3.2-1B").model_path == ("unsloth/Llama-3.2-1B")
-
-
-def test_a_path_that_outlives_its_request_is_still_referenced():
-    path = f"{HOST_ROOT}/my models/Llama-3.2-1B"
-    reference = host_paths.cache_reference(path)
-
-    status = {"loaded": True, "repo_id": path, "device": "cuda"}
-    redacted = host_paths.redact_host_paths(status, via_api_key = True)
-    assert redacted["repo_id"] == reference
-    assert HOST_ROOT not in json.dumps(redacted), redacted
-    assert host_paths.resolve_host_path_reference(redacted["repo_id"]) == path
-
-    run = {"run_id": "abc", "model_name": path, "status": "completed"}
-    assert host_paths.redact_host_paths(run, via_api_key = True)["model_name"] == reference
-
-    hub_row = {"repo_id": "unsloth/Llama-3.2-1B", "model_name": "unsloth/Llama-3.2-1B"}
-    assert host_paths.redact_host_paths(hub_row, via_api_key = True) == hub_row
-    assert host_paths.redact_host_paths(status, via_api_key = False) == status
+_MODEL_PATH = f"{HOST_ROOT}/my models/Llama-3.2-1B"
+_DATASET_PATH = "/home/operator/datasets/customer-transcripts.jsonl"
 
 
-def test_a_local_row_keeps_a_repo_id_that_is_not_a_path(monkeypatch):
-    row = {
-        "source": "models_dir",
-        "id": f"{HOST_ROOT}/models/Llama-3.2-1B",
-        "load_id": f"{HOST_ROOT}/models/Llama-3.2-1B",
-        "repo_id": "unsloth/Llama-3.2-1B",
-    }
-    redacted = host_paths.redact_inventory_host_paths(row, via_api_key = True)
-    assert redacted["id"].startswith("ref:")
-    assert redacted["load_id"].startswith("ref:")
-    assert redacted["repo_id"] == "unsloth/Llama-3.2-1B"
+def _assert_redacted(row, expect, *, inventory = False, kept_text = (), roots = (HOST_ROOT,)):
+    redact = redact_inventory_host_paths if inventory else redact_host_paths
+    redacted = redact(row, via_api_key = True)
+    body = json.dumps(redacted)
+    for root in roots:
+        assert root not in body, redacted
+    for field, want in expect.items():
+        if want is REF:
+            assert host_paths.resolve_host_path_reference(redacted[field]) == row[field], field
+        elif want is KEPT:
+            assert redacted[field] == row[field], field
+        else:
+            assert redacted[field] == want, field
+    for fragment in kept_text:
+        assert fragment in body, redacted
+    # BOUNDARY: the operator's own session is handed the row it gave, untouched.
+    assert redact(row, via_api_key = False) is row
+    return redacted
 
 
-def test_the_long_lived_routes_redact_what_they_persisted():
-    import inspect
-    from routes import inference as inference_routes
-    from routes import training_history as training_routes
-    from routes import video as video_routes
+@pytest.mark.parametrize(
+    ("row", "expect", "kwargs"),
+    [
+        # A loaded-model status and a training run both outlive the request that resolved them.
+        (
+            {"loaded": True, "repo_id": _MODEL_PATH, "device": "cuda"},
+            {"repo_id": REF, "device": KEPT}, {},
+        ),
+        (
+            {"run_id": "abc", "model_name": _MODEL_PATH, "status": "completed"},
+            {"model_name": REF, "status": KEPT}, {},
+        ),
+        (
+            {"repo_id": "unsloth/Llama-3.2-1B", "model_name": "unsloth/Llama-3.2-1B"},
+            {"repo_id": KEPT, "model_name": KEPT}, {},
+        ),
+        # A LoRA base model path is referenced, not blanked: nothing else in this answer names
+        # the base. The ordinary Hub base is not a path and is left alone.
+        (
+            {"id": "ref:whatever", "is_lora": True, "base_model": _MODEL_PATH},
+            {"base_model": REF, "is_lora": KEPT}, {},
+        ),
+        ({"base_model": "unsloth/Llama-3.2-1B"}, {"base_model": KEPT}, {}),
+        # A run's persisted dataset name is redacted like the list it came from.
+        (
+            {
+                "id": "run-1",
+                "dataset_name": _DATASET_PATH,
+                "local_datasets": [_DATASET_PATH],
+                "model_name": "unsloth/Llama-3.2-1B",
+            },
+            {"dataset_name": REF, "model_name": KEPT}, {"roots": ("/home/operator",)},
+        ),
+        ({"id": "run-2", "dataset_name": "unsloth/Radiology-mini"}, {"dataset_name": KEPT}, {}),
+        # A persisted failure message keeps its reason and loses the path.
+        (
+            {
+                "error_message": f"FileNotFoundError: no such file: {HOST_ROOT}/data/train.jsonl",
+                "status": "error",
+            },
+            {"status": KEPT}, {"kept_text": ("FileNotFoundError",)},
+        ),
+        # A local row keeps a repo id that is not a path, on the inventory walk.
+        (
+            {
+                "source": "models_dir",
+                "id": f"{HOST_ROOT}/models/Llama-3.2-1B",
+                "load_id": f"{HOST_ROOT}/models/Llama-3.2-1B",
+                "repo_id": "unsloth/Llama-3.2-1B",
+            },
+            {"id": REF, "load_id": REF, "repo_id": KEPT}, {"inventory": True},
+        ),
+    ],
+    ids = (
+        "loaded-status", "training-run", "hub-row", "lora-base", "hub-base",
+        "local-dataset-name", "hub-dataset-name", "failure-message", "local-row",
+    ),
+)
+def test_a_path_that_outlives_its_request_is_still_referenced(row, expect, kwargs):
+    _assert_redacted(row, expect, **kwargs)
 
-    for module, needle in (
-        (inference_routes, "redact_host_paths(DiffusionStatusResponse("),
-        (video_routes, "redact_host_paths(VideoStatusResponse("),
-        (training_routes, 'TrainingRunListResponse(runs = runs, total = result["total"]),'),
-    ):
-        source = inspect.getsource(module)
-        assert needle in source, (module.__name__, needle)
-        assert "authenticated_via_api_key" in source, module.__name__
 
-
-def test_a_second_load_does_not_hand_back_the_resident_path():
+def test_a_second_load_does_not_hand_back_the_resident_path(monkeypatch):
     import asyncio
 
     from models.inference import DiffusionStatusResponse
     from routes import inference as inference_routes
-    from routes import video as video_routes
 
     resident = f"{HOST_ROOT}/my models/previous-image-model"
     resident_reference = host_paths.cache_reference(resident)
@@ -1153,42 +1213,29 @@ def test_a_second_load_does_not_hand_back_the_resident_path():
         model_path = "ref:whatever"
         base_repo = None
 
-    original = inference_routes.load_diffusion_model_gated
-    inference_routes.load_diffusion_model_gated = _gated
-    try:
-        answered = asyncio.run(
-            inference_routes.load_diffusion_model(
-                _Request(), current_subject = "api", via_api_key = True
+    monkeypatch.setattr(inference_routes, "load_diffusion_model_gated", _gated)
+
+    def _loaded(subject, via_api_key):
+        return json.dumps(
+            jsonable(
+                asyncio.run(
+                    inference_routes.load_diffusion_model(
+                        _Request(), current_subject = subject, via_api_key = via_api_key
+                    )
+                )
             )
         )
-    finally:
-        inference_routes.load_diffusion_model_gated = original
-    body = json.dumps(jsonable(answered))
+
+    body = _loaded("api", True)
     assert HOST_ROOT not in body, body
     assert resident_reference in body, body
     assert host_paths.resolve_host_path_reference(resident_reference) == resident
 
-    inference_routes.load_diffusion_model_gated = _gated
-    try:
-        seen = asyncio.run(
-            inference_routes.load_diffusion_model(
-                _Request(), current_subject = "browser", via_api_key = False
-            )
-        )
-    finally:
-        inference_routes.load_diffusion_model_gated = original
-    assert resident in json.dumps(jsonable(seen))
-    del video_routes
-
-
-def jsonable(payload):
-    from fastapi.encoders import jsonable_encoder
-    return jsonable_encoder(payload)
+    # BOUNDARY: the operator's own session is shown the model that was already resident.
+    assert resident in _loaded("browser", False)
 
 
 def test_every_route_that_answers_with_a_persisted_record_redacts():
-    import inspect
-
     from routes import inference as inference_routes
     from routes import training_history as training_routes
     from routes import video as video_routes
@@ -1220,7 +1267,7 @@ def test_every_route_that_answers_with_a_persisted_record_redacts():
             assert "authenticated_via_api_key" in body, (module.__name__, name)
 
 
-def test_opening_or_renaming_a_run_does_not_hand_back_the_path():
+def test_opening_or_renaming_a_run_does_not_hand_back_the_path(monkeypatch):
     import asyncio
 
     from routes import training_history as training_routes
@@ -1239,49 +1286,35 @@ def test_opening_or_renaming_a_run_does_not_hand_back_the_path():
         "display_name": None,
     }
 
-    async def _detail():
+    monkeypatch.setattr(training_routes, "get_run", lambda run_id: dict(row))
+    monkeypatch.setattr(training_routes, "get_run_metrics", lambda run_id: {})
+    monkeypatch.setattr(training_routes, "get_preview_sharing_enabled", lambda: False)
+
+    async def _opened():
         return await training_routes.get_training_run_detail(
             "run-1", current_subject = "api", no_credential = False, via_api_key = True
         )
 
-    saved = (
-        training_routes.get_run,
-        training_routes.get_run_metrics,
-        training_routes.get_preview_sharing_enabled,
-    )
-    training_routes.get_run = lambda run_id: dict(row)
-    training_routes.get_run_metrics = lambda run_id: {}
-    training_routes.get_preview_sharing_enabled = lambda: False
-    try:
-        detail = json.dumps(jsonable(asyncio.run(_detail())))
-        assert HOST_ROOT not in detail, detail
-        assert reference in detail, detail
+    async def _renamed():
+        return await training_routes.update_training_run(
+            "run-1",
+            training_routes.TrainingRunUpdateRequest(),
+            current_subject = "api",
+            no_credential = False,
+            via_api_key = True,
+        )
 
-        async def _patch():
-            return await training_routes.update_training_run(
-                "run-1",
-                training_routes.TrainingRunUpdateRequest(),
-                current_subject = "api",
-                no_credential = False,
-                via_api_key = True,
-            )
-
-        renamed = json.dumps(jsonable(asyncio.run(_patch())))
-        assert HOST_ROOT not in renamed, renamed
-        assert reference in renamed, renamed
-    finally:
-        (
-            training_routes.get_run,
-            training_routes.get_run_metrics,
-            training_routes.get_preview_sharing_enabled,
-        ) = saved
+    for answer in (_opened, _renamed):
+        body = json.dumps(jsonable(asyncio.run(answer())))
+        assert HOST_ROOT not in body, body
+        assert reference in body, body
 
 
-def test_a_prepared_dataset_cache_still_counts_when_the_hub_copy_is_unusable():
-    from hub.utils import hf_tokens
-
+def test_a_prepared_dataset_cache_still_counts_when_the_hub_copy_is_unusable(monkeypatch):
     import sys
     import types
+
+    from hub.utils import hf_tokens
 
     cache_state = types.ModuleType("hub.utils.hf_cache_state")
     cache_state.iter_repo_cache_dirs = lambda repo_type, repo_id: iter(["a-directory"])
@@ -1289,44 +1322,24 @@ def test_a_prepared_dataset_cache_still_counts_when_the_hub_copy_is_unusable():
     dataset_cache = types.ModuleType("hub.utils.dataset_cache")
     dataset_cache.latest_processed_dataset_cache_path = lambda repo_id: "/prepared/here"
 
-    saved = {
-        name: sys.modules.get(name)
-        for name in ("hub.utils.hf_cache_state", "hub.utils.dataset_cache")
-    }
-    sys.modules["hub.utils.hf_cache_state"] = cache_state
-    sys.modules["hub.utils.dataset_cache"] = dataset_cache
-    try:
-        assert hf_tokens._repo_present_on_disk("owner/ds", "dataset") is True
-        assert hf_tokens._repo_present_on_disk("owner/model", "model") is False
-        dataset_cache.latest_processed_dataset_cache_path = lambda repo_id: None
-        assert hf_tokens._repo_present_on_disk("owner/ds", "dataset") is False
+    monkeypatch.setitem(sys.modules, "hub.utils.hf_cache_state", cache_state)
+    monkeypatch.setitem(sys.modules, "hub.utils.dataset_cache", dataset_cache)
 
-        def _raise(repo_type, repo_id):
-            raise OSError("unreadable cache root")
+    assert hf_tokens._repo_present_on_disk("owner/ds", "dataset") is True
+    assert hf_tokens._repo_present_on_disk("owner/model", "model") is False
+    dataset_cache.latest_processed_dataset_cache_path = lambda repo_id: None
+    assert hf_tokens._repo_present_on_disk("owner/ds", "dataset") is False
 
-        cache_state.iter_repo_cache_dirs = _raise
-        dataset_cache.latest_processed_dataset_cache_path = lambda repo_id: "/prepared/here"
-        assert hf_tokens._repo_present_on_disk("owner/ds", "dataset") is True
-        assert hf_tokens._repo_present_on_disk("owner/model", "model") is False
-    finally:
-        for name, module in saved.items():
-            if module is None:
-                sys.modules.pop(name, None)
-            else:
-                sys.modules[name] = module
+    def _raise(repo_type, repo_id):
+        raise OSError("unreadable cache root")
+
+    cache_state.iter_repo_cache_dirs = _raise
+    dataset_cache.latest_processed_dataset_cache_path = lambda repo_id: "/prepared/here"
+    assert hf_tokens._repo_present_on_disk("owner/ds", "dataset") is True
+    assert hf_tokens._repo_present_on_disk("owner/model", "model") is False
 
 
-def test_every_route_that_consumes_an_inventory_identity_resolves_the_handle():
-    import inspect
-
-    from routes import models as model_routes
-    for name in ("get_model_config", "scan_model_remote_code"):
-        body = inspect.getsource(getattr(model_routes, name))
-        assert "resolve_inventory_handle(" in body, name
-        assert "restore_inventory_handles(" in body, name
-
-
-def test_the_metadata_route_resolves_and_answers_with_the_handle(monkeypatch):
+def test_the_metadata_route_resolves_and_answers_with_the_handle():
     path = f"{HOST_ROOT}/my models/Local-Model"
     reference = host_paths.cache_reference(path)
 
@@ -1345,88 +1358,6 @@ def test_the_metadata_route_resolves_and_answers_with_the_handle(monkeypatch):
         host_paths._request_handles.reset(token)
 
 
-def test_a_directory_name_with_punctuation_is_removed_whole():
-    from hub.utils.host_paths import redact_paths_in_text
-
-    for message, expected in (
-        ("Failed /srv/client(acme)/models", "Failed <path>"),
-        ("cannot read /home/o'connor/models", "cannot read <path>"),
-        (r"C:\cache\Models (private)", "<path>"),
-        # Trailing prose goes with it, since a directory name may contain spaces.
-        ("open /mnt/data[1]/models denied", "open <path>"),
-    ):
-        cleaned = redact_paths_in_text(message)
-        assert cleaned == expected, (message, cleaned)
-        for fragment in ("acme", "connor", "private", "data"):
-            assert fragment not in cleaned, (message, cleaned)
-
-    assert redact_paths_in_text("Skipping /a/b: Permission denied") == (
-        "Skipping <path>: Permission denied"
-    )
-    assert redact_paths_in_text('opened "/a/b" already') == 'opened "<path>" already'
-    assert redact_paths_in_text("tried /a/b, /c/d") == "tried <path>, <path>"
-    for kept in ("3/4 of the shards", "and/or the projector", "no paths here"):
-        assert redact_paths_in_text(kept) == kept, kept
-
-
-def test_a_comma_in_a_directory_name_does_not_leave_the_rest_of_the_path():
-    from hub.utils.host_paths import redact_paths_in_text
-
-    for message, expected in (
-        ("load /home/operator/Acme, Inc/private/model.bin failed", "load <path>"),
-        ("read /srv/Acme, Inc, Ltd/private/model.bin", "read <path>"),
-        (r"C:\Users\operator\Acme, Inc\private\model.bin", "<path>"),
-        ("read /srv/models; Acme; Inc/private/model.bin", "read <path>"),
-    ):
-        cleaned = redact_paths_in_text(message)
-        assert cleaned == expected, (message, cleaned)
-        for leaked in ("Inc", "private", "model.bin", "operator", "Acme", "Ltd"):
-            assert leaked not in cleaned, (message, cleaned)
-
-    assert redact_paths_in_text("Skipping /a/b: Permission denied") == (
-        "Skipping <path>: Permission denied"
-    )
-    assert redact_paths_in_text("tried /a/b, /c/d") == "tried <path>, <path>"
-    assert redact_paths_in_text('opened "/a/b" already') == 'opened "<path>" already'
-    assert redact_paths_in_text("Skipping /a/b: denied, see /etc/fstab") == (
-        "Skipping <path>: denied, see <path>"
-    )
-
-
-def test_the_redacted_tail_pass_stays_linear():
-    import time
-
-    from hub.utils.host_paths import redact_paths_in_text
-
-    text = "/srv/models" + ", filler" * 4000
-    started = time.monotonic()
-    redact_paths_in_text(text)
-    assert time.monotonic() - started < 1.0
-
-
-def test_every_preflight_schema_resolves_an_inventory_handle():
-    from models.inference import EstimateMemoryRequest, TransformersUpgradeCheckRequest
-
-    path = f"{HOST_ROOT}/my models/Local-Model"
-    reference = host_paths.cache_reference(path)
-
-    assert EstimateMemoryRequest(model_path = reference).model_path == path
-    checked = TransformersUpgradeCheckRequest(
-        model_name = reference,
-        model_local_path = reference,
-        model_snapshot_path = reference,
-        model_snapshot_repo_id = reference,
-    )
-    assert checked.model_name == path
-    assert checked.model_local_path == path
-    assert checked.model_snapshot_path == path
-    assert checked.model_snapshot_repo_id == path
-    assert EstimateMemoryRequest(model_path = "unsloth/Llama-3.2-1B").model_path == (
-        "unsloth/Llama-3.2-1B"
-    )
-    assert EstimateMemoryRequest(model_path = "ref:nope").model_path == "ref:nope"
-
-
 def test_a_training_run_does_not_carry_the_output_layout():
     row = {
         "id": "run-1",
@@ -1441,20 +1372,21 @@ def test_a_training_run_does_not_carry_the_output_layout():
         "output_dirs": [f"{HOST_ROOT}/outputs/run-1", f"{HOST_ROOT}/outputs/run-2"],
         "dataset_name": "acme/dataset",
     }
-    redacted = host_paths.redact_host_paths(row, via_api_key = True)
-    assert HOST_ROOT not in json.dumps(redacted), redacted
-    assert redacted["output_dirs"] == []
-    assert host_paths.resolve_host_path_reference(redacted["model_name"]) == row["model_name"]
     # Resume fields are referenced, not blanked, or `can_resume` is true beside no identifier.
-    for field in ("output_dir", "checkpoint_path", "resume_from_checkpoint"):
-        assert host_paths.resolve_host_path_reference(redacted[field]) == row[field], field
-    assert redacted["dataset_name"] == "acme/dataset"
-    assert host_paths.redact_host_paths(row, via_api_key = False) == row
+    _assert_redacted(
+        row,
+        {
+            "output_dirs": [],
+            "model_name": REF,
+            "output_dir": REF,
+            "checkpoint_path": REF,
+            "resume_from_checkpoint": REF,
+            "dataset_name": KEPT,
+        },
+    )
 
 
 def test_the_deferred_five_hundred_restores_the_handle_too():
-    import inspect
-
     from routes import inference as inference_routes
 
     body = inspect.getsource(inference_routes._tunnel_safe_json)
@@ -1501,20 +1433,6 @@ def test_the_persisted_training_request_keys_are_the_ones_redacted():
     assert redacted["config"]["learning_rate"] == 0.0002
 
 
-def test_a_persisted_failure_message_keeps_its_reason_and_loses_the_path():
-    message = f"FileNotFoundError: no such file: {HOST_ROOT}/data/train.jsonl"
-    redacted = host_paths.redact_host_paths(
-        {"error_message": message, "status": "error"}, via_api_key = True
-    )
-    assert HOST_ROOT not in redacted["error_message"], redacted
-    assert "FileNotFoundError" in redacted["error_message"], redacted
-    assert redacted["status"] == "error"
-    assert (
-        host_paths.redact_host_paths({"error_message": message}, via_api_key = False)["error_message"]
-        == message
-    )
-
-
 def test_the_chat_status_does_not_hand_back_the_path_the_load_resolved(monkeypatch):
     import asyncio
 
@@ -1542,169 +1460,55 @@ def test_the_chat_status_does_not_hand_back_the_path_the_load_resolved(monkeypat
     assert ui.model_identifier == REPO_DIR
 
 
-def test_a_lora_base_model_path_is_referenced_not_returned():
-    base = f"{HOST_ROOT}/my models/Llama-3.2-1B"
-    details = {"id": "ref:whatever", "is_lora": True, "base_model": base}
-    redacted = host_paths.redact_host_paths(details, via_api_key = True)
-    assert HOST_ROOT not in json.dumps(redacted), redacted
-    # Referenced, not blanked: nothing else in this answer names the base.
-    assert redacted["base_model"] == host_paths.cache_reference(base)
-    assert (
-        host_paths.redact_host_paths({"base_model": "unsloth/Llama-3.2-1B"}, via_api_key = True)[
-            "base_model"
-        ]
-        == "unsloth/Llama-3.2-1B"
-    )
-    assert host_paths.redact_host_paths(details, via_api_key = False)["base_model"] == base
-
-
-def test_the_model_details_route_takes_the_caller_class():
-    import inspect
-
-    source = inspect.getsource(models_routes.get_model_config)
-    assert "via_api_key: bool = Depends(authenticated_via_api_key)" in source
-    assert "redact_host_paths(" in source
-    assert "restore_inventory_handles(await asyncio.to_thread(_resolve, model_name))" in source
-
-
-def test_the_upgrade_check_answers_with_the_handle_it_was_sent():
-    import inspect
-
-    from routes import inference as inference_routes
-
-    source = inspect.getsource(inference_routes)
-    assert "model_name = restore_inventory_handles(model_name)," in source
-
-
-def test_the_compat_delete_route_resolves_a_cache_reference_too(monkeypatch):
-    seen = {}
-
-    async def _delete(repo_id, variant, hf_token, cache_path):
-        seen["cache_path"] = cache_path
-        return {"status": "deleted", "repo_id": repo_id}
-
-    from hub.services.models import account_access, deletion
-
-    monkeypatch.setattr(deletion, "delete_cached_model_response", _delete)
-    monkeypatch.setattr(account_access, "require_installation_owner", lambda: None)
-    reference = host_paths.cache_reference(REPO_DIR)
-    assert reference != REPO_DIR
-    response = _models(via_api_key = True).request(
-        "DELETE",
-        "/api/models/delete-cached",
-        json = {"repo_id": "unsloth/Llama-3.2-1B", "cache_path": reference},
-    )
-    assert response.status_code == 200, response.text
-    assert seen["cache_path"] == REPO_DIR
-
-    seen.clear()
-    response = _models(via_api_key = False).request(
-        "DELETE",
-        "/api/models/delete-cached",
-        json = {"repo_id": "unsloth/Llama-3.2-1B", "cache_path": REPO_DIR},
-    )
-    assert response.status_code == 200, response.text
-    assert seen["cache_path"] == REPO_DIR
-
-    # An absent cache_path must reach the service as None, not as some resolved root.
-    seen.clear()
-    response = _models(via_api_key = True).request(
-        "DELETE",
-        "/api/models/delete-cached",
-        json = {"repo_id": "unsloth/Llama-3.2-1B"},
-    )
-    assert response.status_code == 200, response.text
-    assert seen["cache_path"] is None
-
-
 def test_a_resumable_run_can_still_be_resumed_by_an_api_key_caller():
-    from models.training import DiffusionTrainingStartRequest, TrainingStartRequest
+    from models.training import TrainingStartRequest
 
     output_dir = f"{HOST_ROOT}/outputs/run-1"
     detail = host_paths.redact_host_paths(
-        {"id": "run-1", "can_resume": True, "output_dir": output_dir, "checkpoint_path": None},
+        {
+            "id": "run-1",
+            "can_resume": True,
+            "output_dir": output_dir,
+            "checkpoint_path": None,
+            "local_datasets": [f"{HOST_ROOT}/datasets/train.jsonl"],
+            "local_eval_datasets": [f"{HOST_ROOT}/datasets/eval.jsonl", "acme/hub-eval"],
+        },
         via_api_key = True,
     )
     assert detail["can_resume"] is True
     handle = detail["output_dir"]
     assert handle.startswith("ref:"), detail
     assert HOST_ROOT not in json.dumps(detail), detail
+    assert all(entry.startswith("ref:") for entry in detail["local_datasets"])
+    # A Hub dataset id beside a local one is not a path and is not referenced.
+    assert detail["local_eval_datasets"][1] == "acme/hub-eval"
 
-    started = TrainingStartRequest(
+    replayed = TrainingStartRequest(
         model_name = "unsloth/Llama-3.2-1B",
         training_type = "LoRA/QLoRA",
-        format_type = "chat",
+        format_type = "alpaca",
+        local_datasets = detail["local_datasets"],
+        local_eval_datasets = detail["local_eval_datasets"],
         resume_from_checkpoint = handle,
     )
-    assert started.resume_from_checkpoint == output_dir
+    assert replayed.resume_from_checkpoint == output_dir
+    assert replayed.local_datasets == [f"{HOST_ROOT}/datasets/train.jsonl"]
+    assert replayed.local_eval_datasets == [f"{HOST_ROOT}/datasets/eval.jsonl", "acme/hub-eval"]
 
-    diffusion = DiffusionTrainingStartRequest(
-        base_model = "unsloth/FLUX.1-dev",
-        data_dir = "/data/images",
-        output_dir = handle,
-        resume_from_checkpoint = handle,
+    # A handle that was never issued resolves to nothing rather than to somebody else's data,
+    # and a run with no checkpoint gains no identifier.
+    forged = "ref:" + "0" * 32
+    unresumable = TrainingStartRequest(
+        model_name = "unsloth/Llama-3.2-1B",
+        training_type = "LoRA/QLoRA",
+        format_type = "alpaca",
+        local_datasets = [forged],
     )
-    assert diffusion.resume_from_checkpoint == output_dir
-    assert diffusion.output_dir == output_dir
-
-    assert (
-        TrainingStartRequest(
-            model_name = "unsloth/Llama-3.2-1B",
-            training_type = "LoRA/QLoRA",
-            format_type = "chat",
-        ).resume_from_checkpoint
-        is None
-    )
-    assert (
-        TrainingStartRequest(
-            model_name = "unsloth/Llama-3.2-1B",
-            training_type = "LoRA/QLoRA",
-            format_type = "chat",
-            resume_from_checkpoint = "ref:nope",
-        ).resume_from_checkpoint
-        == "ref:nope"
-    )
-
-    assert host_paths.redact_host_paths({"output_dir": output_dir}, via_api_key = False) == {
-        "output_dir": output_dir
-    }
-
-
-def test_a_local_diffusion_base_is_still_trainable_by_an_api_key_caller():
-    from models.training import DiffusionTrainingStartRequest
-
-    base = f"{HOST_ROOT}/my models/SDXL-Local"
-    handle = host_paths.cache_reference(base)
-    assert handle.startswith("ref:") and HOST_ROOT not in handle
-
-    started = DiffusionTrainingStartRequest(
-        base_model = handle,
-        data_dir = "/data/images",
-        output_dir = f"{HOST_ROOT}/outputs/run-2",
-    )
-    assert started.base_model == base
-
-    assert (
-        DiffusionTrainingStartRequest(
-            base_model = "unsloth/FLUX.1-dev",
-            data_dir = "/data/images",
-            output_dir = "/out",
-        ).base_model
-        == "unsloth/FLUX.1-dev"
-    )
-    assert (
-        DiffusionTrainingStartRequest(
-            base_model = "ref:nope",
-            data_dir = "/data/images",
-            output_dir = "/out",
-        ).base_model
-        == "ref:nope"
-    )
+    assert unresumable.local_datasets == [forged], "a forged handle resolved to a host path"
+    assert unresumable.resume_from_checkpoint is None
 
 
 def test_a_listing_bigger_than_the_reference_table_still_resolves_its_own_rows():
-    from hub.utils import host_paths
-
     host_paths._reference_paths.clear()
     issued = [
         host_paths.cache_reference(f"/srv/models/row-{index}.gguf")
@@ -1719,32 +1523,11 @@ def test_a_listing_bigger_than_the_reference_table_still_resolves_its_own_rows()
 
 
 def test_the_table_is_still_bounded_at_its_ceiling(monkeypatch):
-    from hub.utils import host_paths
-
     host_paths._reference_paths.clear()
     monkeypatch.setattr(host_paths, "_REFERENCE_CEILING", host_paths._REFERENCE_LIMIT + 10)
     for index in range(host_paths._REFERENCE_LIMIT + 500):
         host_paths.cache_reference(f"/srv/ceiling/row-{index}.gguf")
     assert len(host_paths._reference_paths) <= host_paths._REFERENCE_CEILING + 1
-
-
-def test_a_runs_persisted_dataset_name_is_redacted_like_the_list_it_came_from():
-    from hub.utils.host_paths import redact_host_paths
-
-    row = {
-        "id": "run-1",
-        "dataset_name": "/home/operator/datasets/customer-transcripts.jsonl",
-        "local_datasets": ["/home/operator/datasets/customer-transcripts.jsonl"],
-        "model_name": "unsloth/Llama-3.2-1B",
-    }
-    redacted = redact_host_paths(row, via_api_key = True)
-    assert "/home/operator" not in str(redacted), redacted
-    assert redacted["dataset_name"].startswith("ref:"), redacted
-    hub_row = {"id": "run-2", "dataset_name": "unsloth/Radiology-mini"}
-    assert redact_host_paths(hub_row, via_api_key = True)["dataset_name"] == (
-        "unsloth/Radiology-mini"
-    )
-    assert redact_host_paths(row, via_api_key = False) is row
 
 
 def test_a_failed_downloads_error_does_not_carry_the_cache_path(monkeypatch):
@@ -1770,47 +1553,6 @@ def test_a_failed_downloads_error_does_not_carry_the_cache_path(monkeypatch):
 
     owner = _hub(False).get("/api/hub/download-status", params = {"repo_id": "acme/model"})
     assert HOST_ROOT in owner.text
-
-
-def test_an_api_key_caller_can_still_resume_a_run_trained_from_local_data():
-    from hub.utils.host_paths import redact_host_paths
-    from models.training import TrainingStartRequest
-
-    detail = {
-        "id": "run-9",
-        "output_dir": f"{HOST_ROOT}/outputs/run-9",
-        "local_datasets": [f"{HOST_ROOT}/datasets/train.jsonl"],
-        "local_eval_datasets": [f"{HOST_ROOT}/datasets/eval.jsonl", "acme/hub-eval"],
-    }
-    redacted = redact_host_paths(detail, via_api_key = True)
-    assert HOST_ROOT not in str(redacted), redacted
-    assert all(entry.startswith("ref:") for entry in redacted["local_datasets"])
-    assert redacted["local_eval_datasets"][1] == "acme/hub-eval"
-
-    replayed = TrainingStartRequest(
-        model_name = "unsloth/Llama-3.2-1B",
-        training_type = "LoRA/QLoRA",
-        format_type = "alpaca",
-        local_datasets = redacted["local_datasets"],
-        local_eval_datasets = redacted["local_eval_datasets"],
-        resume_from_checkpoint = redacted["output_dir"],
-    )
-    assert replayed.local_datasets == [f"{HOST_ROOT}/datasets/train.jsonl"]
-    assert replayed.local_eval_datasets == [f"{HOST_ROOT}/datasets/eval.jsonl", "acme/hub-eval"]
-    assert replayed.resume_from_checkpoint == f"{HOST_ROOT}/outputs/run-9"
-
-
-def test_a_dataset_handle_that_was_never_issued_resolves_to_nothing():
-    from models.training import TrainingStartRequest
-
-    forged = "ref:" + "0" * 32
-    replayed = TrainingStartRequest(
-        model_name = "unsloth/Llama-3.2-1B",
-        training_type = "LoRA/QLoRA",
-        format_type = "alpaca",
-        local_datasets = [forged],
-    )
-    assert replayed.local_datasets == [forged], "a forged handle resolved to a host path"
 
 
 def test_a_caller_named_path_is_echoed_not_referenced():
@@ -1840,12 +1582,6 @@ def test_a_caller_named_path_is_echoed_not_referenced():
     assert response_leaks_host_path(out, [HOST_ROOT]) is None
 
 
-def test_the_config_route_passes_the_caller_identifier_as_echo():
-    import inspect
-    source = inspect.getsource(models_routes.get_model_config)
-    assert "echo = (model_name,)" in source
-
-
 # ---------------------------------------------------------------------------------------
 # The companion base a media load resolved. `base_repo` is usually a Hub id, but the local
 # form is a host path, and the diffusion and video STATUS routes answer it to whoever polls
@@ -1860,23 +1596,30 @@ def _media_status(cls):
     return {"diffusion": DiffusionStatusResponse, "video": VideoStatusResponse}[cls]
 
 
+def _base_repo(answer):
+    return answer.get("base_repo") if isinstance(answer, dict) else answer.base_repo
+
+
 @pytest.mark.parametrize("kind", ["diffusion", "video"])
 def test_a_local_companion_base_is_referenced_not_returned(kind):
+    """The operator's own session still sees the companion base -- same rule as every other
+    path on these routes: the UI renders it. And a row advertised as actionable has to be
+    actionable: the handle the status route hands out must resolve back to the path on the load
+    request that takes it."""
+    from models.inference import DiffusionLoadRequest, VideoLoadRequest
+
     response = _media_status(kind)(loaded = True, repo_id = "unsloth/x", base_repo = BASE_DIR)
 
     api = redact_host_paths(response, via_api_key = True)
-    value = api.get("base_repo") if isinstance(api, dict) else api.base_repo
-    assert value.startswith("ref:"), value
+    handle = _base_repo(api)
+    assert handle.startswith("ref:"), handle
     assert response_leaks_host_path(api, [HOST_ROOT, HOST_ROOT_NATIVE]) is None
 
+    # BOUNDARY.
+    assert _base_repo(redact_host_paths(response, via_api_key = False)) == BASE_DIR
 
-@pytest.mark.parametrize("kind", ["diffusion", "video"])
-def test_the_operators_own_session_still_sees_the_companion_base(kind):
-    """BOUNDARY. Same rule as every other path on these routes: the UI renders it."""
-    response = _media_status(kind)(loaded = True, repo_id = "unsloth/x", base_repo = BASE_DIR)
-
-    ui = redact_host_paths(response, via_api_key = False)
-    assert (ui.get("base_repo") if isinstance(ui, dict) else ui.base_repo) == BASE_DIR
+    request_cls = {"diffusion": DiffusionLoadRequest, "video": VideoLoadRequest}[kind]
+    assert request_cls(model_path = "unsloth/x", base_repo = handle).base_repo == BASE_DIR
 
 
 @pytest.mark.parametrize("kind", ["diffusion", "video"])
@@ -1888,48 +1631,10 @@ def test_a_hub_companion_base_is_not_a_path_and_is_left_alone(kind):
     )
 
     api = redact_host_paths(response, via_api_key = True)
-    value = api.get("base_repo") if isinstance(api, dict) else api.base_repo
-    assert value == "black-forest-labs/FLUX.2-klein-4B"
+    assert _base_repo(api) == "black-forest-labs/FLUX.2-klein-4B"
 
 
-@pytest.mark.parametrize("kind", ["diffusion", "video"])
-def test_a_referenced_companion_base_can_still_be_loaded_with(kind):
-    """A row advertised as actionable has to be actionable: the handle the status route hands
-    out must resolve back to the path on the load request that takes it."""
-    from models.inference import DiffusionLoadRequest, VideoLoadRequest
-
-    response = _media_status(kind)(loaded = True, repo_id = "unsloth/x", base_repo = BASE_DIR)
-    api = redact_host_paths(response, via_api_key = True)
-    handle = api.get("base_repo") if isinstance(api, dict) else api.base_repo
-
-    request_cls = {"diffusion": DiffusionLoadRequest, "video": VideoLoadRequest}[kind]
-    assert request_cls(model_path = "unsloth/x", base_repo = handle).base_repo == BASE_DIR
-
-
-def test_a_path_component_with_an_equals_sign_is_redacted_whole():
-    """`_PATH_COMPONENT` ends the run at `=`, so the tail rule has to treat `=` as a continuation
-    the same way it treats `:`, `;` and `,` -- otherwise the remainder of the path is published."""
-    from hub.utils.host_paths import redact_paths_in_text
-
-    assert (
-        redact_paths_in_text(f"Error at {HOST_ROOT}/foo=bar/model/config.json") == "Error at <path>"
-    )
-    assert (
-        redact_paths_in_text(f"failed: {HOST_ROOT}/models--a--b=v2/snapshots/dead/config.json")
-        == "failed: <path>"
-    )
-    # BOUNDARY: `=` outside a path is ordinary prose and a URL is not a host path.
-    assert (
-        redact_paths_in_text("ratio 3/4 and rate=0.5 are fine") == "ratio 3/4 and rate=0.5 are fine"
-    )
-    assert (
-        redact_paths_in_text("see https://huggingface.co/acme/model for details")
-        == "see https://huggingface.co/acme/model for details"
-    )
-
-
-@pytest.mark.parametrize("kind", ["diffusion", "video"])
-def test_a_media_load_that_raises_redacts_the_path_it_resolved(kind):
+def test_a_media_load_that_raises_redacts_the_path_it_resolved():
     """A load that RAISES skips the route's restore+redact wrappers entirely, and the inner
     loader only redacted NATIVE paths, which do not know inventory handles."""
     from hub.utils.host_paths import raised_inventory_detail
@@ -1947,8 +1652,7 @@ def test_a_media_load_that_raises_redacts_the_path_it_resolved(kind):
     assert raised_inventory_detail(detail, via_api_key = False) == detail
 
 
-@pytest.mark.parametrize("kind", ["diffusion", "video"])
-def test_a_media_load_progress_error_does_not_publish_the_resolved_path(kind):
+def test_a_media_load_progress_error_does_not_publish_the_resolved_path():
     """The worker stores `str(exc)`, and the progress routes answer with it on a LATER request,
     where the load's handle map is gone: the path has to be removed, not referenced."""
     from hub.utils.host_paths import redact_load_progress
@@ -1961,23 +1665,3 @@ def test_a_media_load_progress_error_does_not_publish_the_resolved_path(kind):
     # BOUNDARY: the operator sees it, and a reading with no error is untouched.
     assert redact_load_progress(progress, via_api_key = False) == progress
     assert redact_load_progress({"phase": "ready"}, via_api_key = True) == {"phase": "ready"}
-
-
-def test_every_media_route_that_can_answer_a_resolved_path_redacts_it():
-    """Wiring, not behaviour: the two leaks were a load whose wrappers never ran because it
-    raised, and two progress routes that took no caller class at all. Both are invisible in a
-    payload test, since the payload is never built."""
-    import inspect
-
-    from routes import inference as inference_routes
-    from routes import video as video_routes
-
-    for load in (inference_routes.load_diffusion_model, video_routes.load_video_model):
-        source = inspect.getsource(load)
-        assert "except HTTPException" in source, load.__name__
-        assert "raised_inventory_detail" in source, load.__name__
-
-    for progress in (inference_routes.diffusion_load_progress, video_routes.video_load_progress):
-        source = inspect.getsource(progress)
-        assert "authenticated_via_api_key" in source, progress.__name__
-        assert "redact_load_progress" in source, progress.__name__

@@ -44,7 +44,20 @@ OPERATOR_TOKEN = "hf_operator_ambient_token"
 # returns it, and the UI replays it per request in X-Unsloth-HF-Token.
 STUDIO_UI_TOKEN = "hf_saved_in_studio_settings"
 FOREIGN_TOKEN = "hf_some_other_callers_token"
+# The same two principals again, where the question is about the PROVENANCE record rather than
+# about a credential store: the host's own credential, and a one-off somebody sent in a header.
+HOST_CREDENTIAL = "hf_the_operators_own_credential"
+ONE_OFF = "hf_a_one_off_someone_else_sent"
+ROTATED_AWAY = "hf_the_credential_this_host_used_to_hold"
 REVISION = "a" * 40
+
+# The caller with no credential at all. It asks through a different entry point than a
+# credentialed one, so `_reads` and `_refused` route it there.
+ANON = SimpleNamespace(caller = "no credential at all")
+
+
+class _ProbeUnreachable(Exception):
+    """Stands in for a refused connection: not an answer, so the fallback applies."""
 
 
 @pytest.fixture(autouse = True)
@@ -71,31 +84,81 @@ def _saved_studio_credential(monkeypatch):
     monkeypatch.setattr(hf_tokens, "_saved_studio_hf_token", lambda: (True, None))
 
 
+# The `hf_tokens` attributes this file stands in for, under the short name a test names them by.
+_HF_STUBS = {
+    "ambient": "_ambient_hf_token",
+    "saved": "_saved_studio_hf_token",
+    "credentials": "_host_hf_credentials",
+    "identities": "_host_credential_identities",
+    "recorded": "_recorded_request_token_repos",
+    "present": "_repo_present_on_disk",
+    "no_other_held": "_no_other_credential_ever_held",
+    "filled_by_caller": "_caller_populated_the_cache",
+    "fetched_with_request_token": "_repo_was_fetched_with_a_request_token",
+    "unrecorded": "_unrecorded_fetches",
+    "as_owner": "_as_owner",
+    "denial_max": "_DENIAL_MEMORY_MAX",
+    "noted_identities": "_noted_credential_identities",
+}
+# These three are plain attributes rather than readers, so their value goes on as it is.
+_HF_PLAIN = ("unrecorded", "denial_max", "noted_identities")
+
+
+def _hf_state(monkeypatch, **state) -> None:
+    """Every `hf_tokens` stub this file installs, in one call, so a test states the host's state
+    instead of repeating four `monkeypatch.setattr` blocks. A reader's argument is the VALUE that
+    reader should answer with, or a callable installed as it is."""
+    for key, value in state.items():
+        plain = key in _HF_PLAIN or callable(value)
+        stub = value if plain else (lambda *_a, _v = value, **_k: _v)
+        monkeypatch.setattr(hf_tokens, _HF_STUBS[key], stub)
+
+
 def _no_host_credential(monkeypatch):
-    monkeypatch.setattr(hf_tokens, "_ambient_hf_token", lambda: (True, None))
+    _hf_state(monkeypatch, ambient = (True, None))
 
 
-def _saved_ui_credential(monkeypatch, token = STUDIO_UI_TOKEN):
-    monkeypatch.setattr(hf_tokens, "_saved_studio_hf_token", lambda: (True, token))
+def _reads(caller, repo, **kw) -> bool:
+    """`cache_reads_authorized` for a credentialed caller, `public_cache_read_authorized` for
+    ANON: the same question asked by the two kinds of caller, through the two entry points."""
+    if caller is ANON:
+        return public_cache_read_authorized(repo_id = repo, **kw)
+    return cache_reads_authorized(caller, repo_id = repo, **kw)
 
 
-def _materialize_repo(
-    root: Path,
-    repo_id: str,
-    repo_type: str = "model",
-    *,
-    files: tuple[str, ...] = ("config.json", "model.safetensors"),
-) -> Path:
-    repo_dir = root / f"{repo_type}s--{repo_id.replace('/', '--')}"
+def _refused(caller, repo, **kw) -> bool:
+    """`cached_read_refused`, the mirror of `_reads` that the route guards actually call, for a
+    repo the caller does hold a cached copy of."""
+    caller = False if caller is ANON else caller
+    return cached_read_refused(caller, repo_id = repo, is_cached = lambda: True, **kw)
+
+
+def _key(repo: str):
+    """The provenance map's key for a model repo, spelled out often enough to be worth a name."""
+    return hf_tokens._request_token_repo_key(repo, "model")
+
+
+def _filled_by(token, repo: str) -> bool:
+    """Whether this caller's own credential is the one that filled the cache for this repo."""
+    return hf_tokens._caller_populated_the_cache(token, repo_id = repo, repo_type = "model")
+
+
+def _noted(token, repo: str) -> None:
+    hf_tokens.note_repo_fetched_with_a_request_token(token, repo, "model")
+
+
+def _fetched_with_a_token(repo: str):
+    return hf_tokens._repo_was_fetched_with_a_request_token(repo, "model")
+
+
+def _materialize_repo(root: Path, repo_id: str) -> Path:
+    repo_dir = root / f"models--{repo_id.replace('/', '--')}"
     snapshot = repo_dir / "snapshots" / REVISION
     snapshot.mkdir(parents = True, exist_ok = True)
     (repo_dir / "refs").mkdir(parents = True, exist_ok = True)
     (repo_dir / "refs" / "main").write_text(REVISION, encoding = "utf-8")
-    for name in files:
-        (snapshot / name).write_text(
-            '{"model_type": "llama"}' if name.endswith(".json") else "x",
-            encoding = "utf-8",
-        )
+    (snapshot / "config.json").write_text('{"model_type": "llama"}', encoding = "utf-8")
+    (snapshot / "model.safetensors").write_text("x", encoding = "utf-8")
     return snapshot
 
 
@@ -149,6 +212,37 @@ def recorded_fetches(monkeypatch) -> list[tuple[str, str]]:
     return seen
 
 
+@pytest.fixture
+def writes(monkeypatch) -> list:
+    """What the provenance writer actually handed the store, on a host that holds one credential.
+    The arguments are captured whole, because writing the right repo under the wrong key or with
+    the wrong arity would still be a bad record."""
+    seen: list = []
+    _hf_state(
+        monkeypatch,
+        credentials = (True, ("hf_theoperators",)),
+        as_owner = lambda call, *a, **k: seen.append(a),
+    )
+    return seen
+
+
+@pytest.fixture
+def provenance(monkeypatch) -> dict:
+    """A host holding exactly ONE credential, everything on disk, and a real provenance map that
+    the writer under test fills -- so the READ side is asked about a record this code actually
+    wrote rather than one the test spelled out itself."""
+    recorded: dict = {}
+    _hf_state(
+        monkeypatch,
+        credentials = (True, (HOST_CREDENTIAL,)),
+        no_other_held = True,
+        present = True,
+        recorded = recorded,
+        as_owner = lambda call, _key_unused, entry, value: recorded.__setitem__(entry, value),
+    )
+    return recorded
+
+
 def _counting_probe(
     monkeypatch,
     verdict,
@@ -170,26 +264,14 @@ def _counting_probe(
 
 def _probe_against(monkeypatch, response_factory):
     class _Session:
-        def get(
-            self,
-            url,
-            *,
-            headers = None,
-            timeout = None,
-            **_k,
-        ):
+        def get(self, url, **_k):
             return response_factory(url)
 
     monkeypatch.setattr("huggingface_hub.utils.get_session", lambda: _Session())
     monkeypatch.setattr(hf_tokens, "_hub_offline", lambda: False)
 
 
-def _response(
-    status: int,
-    *,
-    error_code: str | None = None,
-    url: str | None = None,
-):
+def _response(status: int, error_code: str | None, url: str | None):
     headers = {"X-Error-Code": error_code} if error_code else {}
     return SimpleNamespace(
         status_code = status,
@@ -215,26 +297,42 @@ def _raiser(status: int, url):
     return _raise
 
 
-def test_an_offline_explicit_token_reads_a_repo_already_on_disk(monkeypatch, on_disk):
-    probes = _counting_probe(monkeypatch, True, offline = True)
-
-    assert cache_reads_authorized(OPERATOR_TOKEN, repo_id = ON_DISK) is True
-    assert probes["n"] == 0, "the offline answer went to the network"
-
-
-def test_the_callers_own_offline_contract_reads_a_repo_on_disk(monkeypatch, on_disk):
-    probes = _counting_probe(monkeypatch, True, offline = False)
-
-    assert cache_reads_authorized(OPERATOR_TOKEN, repo_id = ON_DISK, offline = True) is True
-    assert probes["n"] == 0
+# Every shape in which the Hub fails to ANSWER: the env/config verdict the probe short-circuits
+# on, the caller's own offline contract, and a Hub that was reached for and did not answer.
+UNASKABLE = [
+    ("env-offline", True, True, {}),
+    ("caller-offline", True, False, {"offline": True}),
+    ("unreachable", requests.exceptions.ConnectionError("refused"), False, {}),
+    ("timeout", requests.exceptions.ReadTimeout("slow"), False, {}),
+]
 
 
-def test_an_offline_caller_is_still_denied_a_repo_that_is_not_on_disk(monkeypatch, tmp_path):
-    _cache_root(monkeypatch, tmp_path)
-    _counting_probe(monkeypatch, True, offline = True)
+@pytest.mark.parametrize(
+    ("verdict", "hub_offline", "call_kw"),
+    [case[1:] for case in UNASKABLE],
+    ids = [case[0] for case in UNASKABLE],
+)
+def test_an_unaskable_hub_resolves_against_the_disk_and_only_for_its_own_caller(
+    monkeypatch, on_disk, verdict, hub_offline, call_kw
+):
+    """The fix, and the two boundaries it must not move, through every unaskable shape: the
+    caller whose credential filled this cache reads the repo that IS here, a second principal
+    never inherits it, and a repo that is NOT here is refused to everyone regardless."""
+    probes = _counting_probe(monkeypatch, verdict, offline = hub_offline)
 
-    assert cache_reads_authorized(OPERATOR_TOKEN, repo_id = ABSENT) is False
-    assert public_cache_read_authorized(repo_id = ABSENT) is False
+    assert _reads(OPERATOR_TOKEN, ON_DISK, **call_kw) is True
+    if hub_offline or call_kw.get("offline"):
+        assert probes["n"] == 0, "the offline answer went to the network"
+
+    # BOUNDARY. "The repo is on this disk" is a fact about the OPERATOR, not about whoever is
+    # asking, and the remembered denial does not close the gap: it may never have been
+    # collected, and is lost on restart.
+    assert _reads(FOREIGN_TOKEN, ON_DISK, **call_kw) is False
+    assert _refused(FOREIGN_TOKEN, ON_DISK, **call_kw) is True
+
+    # BOUNDARY. Not on this disk answers nothing, so there is nothing to fall back to.
+    assert _reads(OPERATOR_TOKEN, ABSENT, **call_kw) is False
+    assert _reads(ANON, ABSENT, **call_kw) is False
 
 
 def test_an_interrupted_download_is_not_a_repo_on_disk(monkeypatch, tmp_path):
@@ -243,28 +341,69 @@ def test_an_interrupted_download_is_not_a_repo_on_disk(monkeypatch, tmp_path):
     (root / f"models--{ON_DISK.replace('/', '--')}" / "snapshots" / REVISION).mkdir(parents = True)
     _counting_probe(monkeypatch, True, offline = True)
 
-    assert cache_reads_authorized(OPERATOR_TOKEN, repo_id = ON_DISK) is False
+    assert _reads(OPERATOR_TOKEN, ON_DISK) is False
 
 
-def test_an_anonymous_caller_keeps_its_own_cached_repo_offline(monkeypatch, tmp_path, on_disk):
-    _no_host_credential(monkeypatch)
-    _counting_probe(monkeypatch, True, offline = True)
+# The two credential stores a host can answer from, as the `(readable, token)` pair each reader
+# returns. Exactly one readable credential, matching the caller's, is what authorizes: two
+# different ones mean either could have filled the cache, and an unreadable one means the
+# question could not be settled at all.
+HOST_STORES = {
+    "ambient": ((True, OPERATOR_TOKEN), (True, None)),
+    "saved-in-studio": ((True, None), (True, STUDIO_UI_TOKEN)),
+    "both-the-same": ((True, OPERATOR_TOKEN), (True, OPERATOR_TOKEN)),
+    "two-different": ((True, OPERATOR_TOKEN), (True, STUDIO_UI_TOKEN)),
+    "none": ((True, None), (True, None)),
+    "unreadable-saved": ((True, OPERATOR_TOKEN), (False, None)),
+    "unreadable-saved-only": ((True, None), (False, None)),
+}
 
-    assert public_cache_read_authorized(repo_id = ON_DISK) is True
-    assert cached_read_refused(False, repo_id = ON_DISK, is_cached = lambda: True) is False
 
+@pytest.mark.parametrize(
+    ("stores", "caller", "authorized"),
+    [
+        ("ambient", OPERATOR_TOKEN, True),
+        ("ambient", FOREIGN_TOKEN, False),
+        ("ambient", ANON, False),
+        # The operator's own session is unchanged: the UI's ambient marker and a bare None are
+        # the host itself asking, and were never gated on a probe.
+        ("ambient", AmbientAuthorizedToken("hf_ui"), True),
+        ("ambient", None, True),
+        # A host that holds nothing downloaded only what needed nothing, so its own anonymous
+        # caller keeps its own cached repo.
+        ("none", ANON, True),
+        # `get_token()` never returns the Settings-saved credential, so a host whose only
+        # credential lives there must still recognise the UI replaying it per request -- and a
+        # credential-less caller still needs BOTH stores empty.
+        ("saved-in-studio", STUDIO_UI_TOKEN, True),
+        ("saved-in-studio", FOREIGN_TOKEN, False),
+        ("saved-in-studio", ANON, False),
+        # Either store answers for the host, and the same credential in both is still one.
+        ("both-the-same", OPERATOR_TOKEN, True),
+        ("both-the-same", FOREIGN_TOKEN, False),
+        # BOUNDARY. Two DIFFERENT host credentials: either could have filled this cache, so
+        # neither of them is the one that did.
+        ("two-different", OPERATOR_TOKEN, False),
+        ("two-different", STUDIO_UI_TOKEN, False),
+        # BOUNDARY. "Cannot be read" is not "empty". A store this process cannot open could hold
+        # the credential that filled the cache, so an unreadable one authorizes nobody.
+        ("unreadable-saved", OPERATOR_TOKEN, False),
+        ("unreadable-saved", ANON, False),
+        ("unreadable-saved-only", ANON, False),
+        ("unreadable-saved-only", OPERATOR_TOKEN, False),
+    ],
+)
+def test_offline_only_the_caller_whose_credential_filled_the_cache_may_read_it(
+    monkeypatch, on_disk, stores, caller, authorized
+):
+    ambient, saved = HOST_STORES[stores]
+    _hf_state(monkeypatch, ambient = ambient, saved = saved)
+    probes = _counting_probe(monkeypatch, True, offline = True)
 
-def test_the_operators_own_session_is_unchanged(monkeypatch, tmp_path, on_disk):
-    _counting_probe(monkeypatch, False, offline = True)
-
-    assert cache_reads_authorized(AmbientAuthorizedToken("hf_ui"), repo_id = ON_DISK) is True
-    assert cache_reads_authorized(None, repo_id = ON_DISK) is True
-
-
-def test_an_unreachable_hub_does_not_deny_a_repo_on_disk(monkeypatch, on_disk):
-    _counting_probe(monkeypatch, requests.exceptions.ConnectionError("refused"), offline = False)
-
-    assert cache_reads_authorized(OPERATOR_TOKEN, repo_id = ON_DISK) is True
+    assert _reads(caller, ON_DISK) is authorized
+    assert probes["n"] == 0, "the offline answer went to the network"
+    if caller is ANON or isinstance(caller, str):
+        assert _refused(caller, ON_DISK) is not authorized
 
 
 def test_an_unreachable_probe_is_memoized_as_unknown_not_as_a_denial(monkeypatch, cache_root):
@@ -272,102 +411,89 @@ def test_an_unreachable_probe_is_memoized_as_unknown_not_as_a_denial(monkeypatch
         monkeypatch, requests.exceptions.ConnectionError("refused"), offline = False
     )
 
-    assert cache_reads_authorized(OPERATOR_TOKEN, repo_id = ON_DISK) is False
+    assert _reads(OPERATOR_TOKEN, ON_DISK) is False
     assert [v for _expiry, v in hf_tokens._repo_access_cache.values()] == [None]
 
     # The repo arrives only now, so the second call proves the memo was reconsulted, not the probe.
     _materialize_repo(cache_root, ON_DISK)
-    assert cache_reads_authorized(OPERATOR_TOKEN, repo_id = ON_DISK) is True
+    assert _reads(OPERATOR_TOKEN, ON_DISK) is True
     assert probes["n"] == 1, "the memo did not spare the second caller the dead round trip"
 
 
-def test_a_hub_that_answered_no_still_denies_a_repo_on_disk(monkeypatch, on_disk):
+@pytest.mark.parametrize(
+    ("overturn", "still_refused"),
+    [
+        # Nothing at all: the answered no refuses the cached copy on the spot, is remembered,
+        # and the test reset is what drops that memory again.
+        ("nothing", True),
+        # 429 and 5xx are unaskable while reachable, so a denied caller is one outage away. The
+        # verdict cache is what expires; the denial is what does not.
+        ("an-outage", True),
+        # An expiry made the boundary defeatable with the one input the caller controls: the
+        # clock. Waiting must not hand back a repo the Hub refused.
+        ("the-clock", True),
+        # The one thing that DOES overturn a remembered refusal is the Hub itself answering
+        # yes, after which a later outage may serve the cached repo again.
+        ("the-hub-saying-yes", False),
+    ],
+)
+def test_nothing_but_the_hub_overturns_a_hub_that_answered_no(
+    monkeypatch, on_disk, overturn, still_refused
+):
     _counting_probe(monkeypatch, False, offline = False)
+    assert _reads(OPERATOR_TOKEN, ON_DISK) is False
+    assert _refused(OPERATOR_TOKEN, ON_DISK) is True
+    assert len(hf_tokens._denied_repo_access) == 1
 
-    assert cache_reads_authorized(OPERATOR_TOKEN, repo_id = ON_DISK) is False
-    assert cached_read_refused(OPERATOR_TOKEN, repo_id = ON_DISK, is_cached = lambda: True) is True
+    if overturn == "nothing":
+        reset_repo_access_cache()
+        assert not hf_tokens._denied_repo_access, "the reset left the denial behind"
+        return
 
+    if overturn == "the-hub-saying-yes":
+        hf_tokens._repo_access_cache.clear()
+        _counting_probe(monkeypatch, True, offline = False)
+        assert _reads(OPERATOR_TOKEN, ON_DISK) is True
 
-def test_an_answered_no_is_not_overturned_by_a_later_outage(monkeypatch, tmp_path, on_disk):
-    """429 and 5xx are unaskable while reachable, so a denied caller is one outage away."""
-    _counting_probe(monkeypatch, False, offline = False)
-    assert cache_reads_authorized(OPERATOR_TOKEN, repo_id = ON_DISK) is False
+    if overturn == "the-clock":
+        later = hf_tokens.time.monotonic() + 86_400.0
+        monkeypatch.setattr(hf_tokens, "time", SimpleNamespace(monotonic = lambda: later))
+    else:
+        hf_tokens._repo_access_cache.clear()
 
-    hf_tokens._repo_access_cache.clear()
-    _counting_probe(monkeypatch, requests.exceptions.ConnectionError("refused"), offline = False)
-    assert (
-        cache_reads_authorized(OPERATOR_TOKEN, repo_id = ON_DISK) is False
-    ), "an outage handed out a repo the Hub had already refused this caller"
-    assert cached_read_refused(OPERATOR_TOKEN, repo_id = ON_DISK, is_cached = lambda: True) is True
-
-
-def test_waiting_does_not_hand_back_a_repo_the_hub_refused(monkeypatch, tmp_path, on_disk):
-    """An expiry made the boundary defeatable with the one input the caller controls: the clock."""
-    _counting_probe(monkeypatch, False, offline = False)
-    assert cache_reads_authorized(OPERATOR_TOKEN, repo_id = ON_DISK) is False
-
-    later = hf_tokens.time.monotonic() + 86_400.0
-    monkeypatch.setattr(hf_tokens, "time", SimpleNamespace(monotonic = lambda: later))
-    _counting_probe(monkeypatch, requests.exceptions.ConnectionError("refused"), offline = False)
-    assert (
-        cache_reads_authorized(OPERATOR_TOKEN, repo_id = ON_DISK) is False
-    ), "the refusal was handed back to the caller by the passage of time alone"
-    assert cached_read_refused(OPERATOR_TOKEN, repo_id = ON_DISK, is_cached = lambda: True) is True
-
-
-def test_a_remembered_denial_is_dropped_once_the_hub_says_yes(monkeypatch, tmp_path, on_disk):
-    _counting_probe(monkeypatch, False, offline = False)
-    assert cache_reads_authorized(OPERATOR_TOKEN, repo_id = ON_DISK) is False
-
-    hf_tokens._repo_access_cache.clear()
-    _counting_probe(monkeypatch, True, offline = False)
-    assert cache_reads_authorized(OPERATOR_TOKEN, repo_id = ON_DISK) is True
-
-    hf_tokens._repo_access_cache.clear()
-    _counting_probe(monkeypatch, requests.exceptions.ConnectionError("refused"), offline = False)
-    assert cache_reads_authorized(OPERATOR_TOKEN, repo_id = ON_DISK) is True
+    _counting_probe(monkeypatch, _ProbeUnreachable(), offline = False)
+    assert _reads(OPERATOR_TOKEN, ON_DISK) is not still_refused, "an outage overturned the Hub"
+    if still_refused:
+        assert _refused(OPERATOR_TOKEN, ON_DISK) is True
 
 
 def test_a_repo_fetched_with_a_one_off_token_is_not_served_to_a_tokenless_caller(
     monkeypatch, on_disk
 ):
-    root = on_disk
     _counting_probe(monkeypatch, requests.exceptions.ConnectionError("refused"), offline = False)
-    monkeypatch.setattr(hf_tokens, "_host_hf_credentials", lambda: (True, ()))
-
     recorded: dict = {}
-    monkeypatch.setattr(
-        hf_tokens,
-        "_repo_was_fetched_with_a_request_token",
-        lambda repo_id, repo_type: recorded.get(
-            hf_tokens._request_token_repo_key(repo_id, repo_type), False
-        ),
+    _hf_state(
+        monkeypatch,
+        credentials = (True, ()),
+        fetched_with_request_token = lambda repo, kind: recorded.get(_key(repo), False),
     )
-    assert public_cache_read_authorized(repo_id = ON_DISK) is True
+    assert _reads(ANON, ON_DISK) is True
 
-    recorded[hf_tokens._request_token_repo_key(ON_DISK, "model")] = True
+    recorded[_key(ON_DISK)] = True
     hf_tokens._repo_access_cache.clear()
-    assert (
-        public_cache_read_authorized(repo_id = ON_DISK) is False
-    ), "a repo downloaded with a one-off token was served to a caller with no token"
-    _materialize_repo(root, "acme/other")
+    assert _reads(ANON, ON_DISK) is False, "a one-off token's repo went to a tokenless caller"
+    _materialize_repo(on_disk, "acme/other")
     hf_tokens._repo_access_cache.clear()
-    assert public_cache_read_authorized(repo_id = "acme/other") is True
+    assert _reads(ANON, "acme/other") is True
 
-    monkeypatch.setattr(
-        hf_tokens, "_repo_was_fetched_with_a_request_token", lambda repo_id, repo_type: None
-    )
+    _hf_state(monkeypatch, fetched_with_request_token = None)
     hf_tokens._repo_access_cache.clear()
-    assert public_cache_read_authorized(repo_id = "acme/other") is False
+    assert _reads(ANON, "acme/other") is False
 
 
 def test_the_provenance_key_is_case_folded_like_every_other_repo_lookup():
-    assert hf_tokens._request_token_repo_key("Org/Private", "model") == (
-        hf_tokens._request_token_repo_key("org/private", "MODEL")
-    )
-    assert hf_tokens._request_token_repo_key("org/private", "dataset") != (
-        hf_tokens._request_token_repo_key("org/private", "model")
-    )
+    assert _key("Org/Private") == hf_tokens._request_token_repo_key("org/private", "MODEL")
+    assert hf_tokens._request_token_repo_key("org/private", "dataset") != _key("org/private")
 
 
 def test_every_route_that_can_fetch_with_a_one_off_token_records_it():
@@ -375,12 +501,6 @@ def test_every_route_that_can_fetch_with_a_one_off_token_records_it():
 
     from hub.services import download_lifecycle
     from routes import video as video_routes
-
-    lifecycle = inspect.getsource(download_lifecycle)
-    assert "note_repo_fetched_with_a_request_token(hf_token, repo_id, repo_type)" in lifecycle
-    assert lifecycle.index("note_repo_fetched_with_a_request_token") < lifecycle.index(
-        "proc = spawn()"
-    )
 
     text_load = inspect.getsource(inference_routes._load_model_impl)
     assert "_note_load_fetched_with_a_request_token(request.model_path" in text_load
@@ -416,92 +536,80 @@ def test_every_route_that_can_fetch_with_a_one_off_token_records_it():
 
     assert "note_repo_fetched_with_a_request_token" not in inspect.getsource(downloads)
 
-    # The DIRECT fetches, which do not go through a download worker or a load route at all: each
-    # lands files in the hub cache under the caller's credential, and an unrecorded one reads back
-    # later as "nothing here needed a credential" on a host that now holds none.
+    # The download worker, and the DIRECT fetches that do not go through a worker or a load route
+    # at all: each lands files in the hub cache under the caller's credential, and an unrecorded
+    # one reads back later as "nothing here needed a credential" on a host that now holds none.
+    # Every one of them has to write the record BEFORE the call that can fetch.
     from hub.services.datasets import formatting
     from picker import service as picker_module
 
-    preview = inspect.getsource(formatting.check_format_response)
-    assert "note_repo_fetched_with_a_request_token(hf_token, request.dataset_name" in preview
-    assert preview.index("note_repo_fetched_with_a_request_token") < preview.index(
-        "load_dataset("
-    ), "the preview recorded its fetch only after making it"
-
-    template = inspect.getsource(picker_module)
-    assert "note_repo_fetched_with_a_request_token(hf_token, resolved" in template
-    assert template.index("note_repo_fetched_with_a_request_token") < template.index(
-        "path = hf_hub_download("
-    )
+    for source, call, fetches_at in (
+        (inspect.getsource(download_lifecycle), "(hf_token, repo_id, repo_type)", "proc = spawn()"),
+        (
+            inspect.getsource(formatting.check_format_response),
+            "(hf_token, request.dataset_name",
+            "load_dataset(",
+        ),
+        (inspect.getsource(picker_module), "(hf_token, resolved", "path = hf_hub_download("),
+    ):
+        assert f"note_repo_fetched_with_a_request_token{call}" in source
+        assert source.index("note_repo_fetched_with_a_request_token") < source.index(
+            fetches_at
+        ), "the fetch was recorded only after making it"
 
     config_read = inspect.getsource(model_config_module)
     assert "note_repo_fetched_with_a_request_token(token, model_name" in config_read
 
 
-def test_every_credentialed_fetch_is_recorded_not_only_a_foreign_one(monkeypatch):
-    calls: list = []
-    monkeypatch.setattr(hf_tokens, "_as_owner", lambda call, *a, **k: calls.append(a))
-    monkeypatch.setattr(hf_tokens, "_host_hf_credentials", lambda: (True, ("hf_theoperators",)))
-
+def test_every_credentialed_fetch_is_recorded_not_only_a_foreign_one(monkeypatch, writes):
     def written():
-        return [call for call in calls if len(call) == 3]
+        return [call for call in writes if len(call) == 3]
 
-    hf_tokens.note_repo_fetched_with_a_request_token(False, "acme/public", "model")
+    _noted(False, "acme/public")
     assert written() == [], "an anonymous fetch says nothing about anybody"
 
-    hf_tokens.note_repo_fetched_with_a_request_token("hf_theoperators", "acme/saved", "model")
-    hf_tokens.note_repo_fetched_with_a_request_token(None, "acme/ambient", "model")
-    assert [call[1] for call in written()] == [
-        hf_tokens._request_token_repo_key("acme/saved", "model"),
-        hf_tokens._request_token_repo_key("acme/ambient", "model"),
-    ]
+    _noted("hf_theoperators", "acme/saved")
+    _noted(None, "acme/ambient")
+    assert [call[1] for call in written()] == [_key("acme/saved"), _key("acme/ambient")]
 
-    hf_tokens.note_repo_fetched_with_a_request_token("hf_someoneelses", "acme/private", "model")
-    assert written()[-1][1] == hf_tokens._request_token_repo_key("acme/private", "model")
+    _noted("hf_someoneelses", "acme/private")
+    assert written()[-1][1] == _key("acme/private")
 
-    calls.clear()
-    monkeypatch.setattr(hf_tokens, "_host_hf_credentials", lambda: (True, ()))
-    hf_tokens.note_repo_fetched_with_a_request_token(None, "acme/public2", "model")
+    writes.clear()
+    _hf_state(monkeypatch, credentials = (True, ()))
+    _noted(None, "acme/public2")
     assert written() == []
 
 
 def test_a_deleted_credential_does_not_reopen_the_cache(monkeypatch):
-    monkeypatch.setattr(hf_tokens, "_ambient_hf_token", lambda: (True, None))
-    monkeypatch.setattr(hf_tokens, "_saved_studio_hf_token", lambda: (True, None))
-    monkeypatch.setattr(hf_tokens, "_repo_present_on_disk", lambda repo, repo_type: True)
-    monkeypatch.setattr(
-        hf_tokens,
-        "_recorded_request_token_repos",
-        lambda: {hf_tokens._request_token_repo_key("acme/private", "model"): {"at": 0}},
+    _hf_state(
+        monkeypatch,
+        ambient = (True, None),
+        saved = (True, None),
+        present = True,
+        recorded = {_key("acme/private"): {"at": 0}},
     )
     hf_tokens.reset_repo_access_cache()
 
-    assert not hf_tokens.public_cache_read_authorized(repo_id = "acme/private", offline = True)
-    assert hf_tokens.public_cache_read_authorized(repo_id = "acme/public", offline = True)
+    assert not _reads(ANON, "acme/private", offline = True)
+    assert _reads(ANON, "acme/public", offline = True)
 
 
-def test_a_repo_that_was_never_refused_still_resolves_against_the_disk(
-    monkeypatch, tmp_path, on_disk
-):
-    root = on_disk
-    _materialize_repo(root, "acme/other")
+def test_a_repo_that_was_never_refused_still_resolves_against_the_disk(monkeypatch, on_disk):
+    _materialize_repo(on_disk, "acme/other")
     _counting_probe(monkeypatch, False, offline = False)
-    assert cache_reads_authorized(OPERATOR_TOKEN, repo_id = ON_DISK) is False
+    assert _reads(OPERATOR_TOKEN, ON_DISK) is False
 
     hf_tokens._repo_access_cache.clear()
     _counting_probe(monkeypatch, requests.exceptions.ConnectionError("refused"), offline = False)
-    assert cache_reads_authorized(OPERATOR_TOKEN, repo_id = "acme/other") is True
-    assert (
-        cache_reads_authorized(FOREIGN_TOKEN, repo_id = ON_DISK) is False
-    ), "a second principal inherited the operator's cache through an outage"
+    assert _reads(OPERATOR_TOKEN, "acme/other") is True
+    assert _reads(FOREIGN_TOKEN, ON_DISK) is False, "a second principal inherited that cache"
 
 
-def test_a_refusal_the_table_had_to_forget_closes_the_outage_path(monkeypatch, tmp_path, on_disk):
-    root = on_disk
-    monkeypatch.setattr(hf_tokens, "_DENIAL_MEMORY_MAX", 4)
-
+def test_a_refusal_the_table_had_to_forget_closes_the_outage_path(monkeypatch, on_disk):
+    _hf_state(monkeypatch, denial_max = 4)
     _counting_probe(monkeypatch, False, offline = False)
-    assert cache_reads_authorized(OPERATOR_TOKEN, repo_id = ON_DISK) is False
+    assert _reads(OPERATOR_TOKEN, ON_DISK) is False
     assert not hf_tokens._denial_memory_lost_an_entry()
 
     # The filler has to be repos that EARN a slot, which now means on this disk and refused to
@@ -511,28 +619,24 @@ def test_a_refusal_the_table_had_to_forget_closes_the_outage_path(monkeypatch, t
     # must not read a forgotten refusal as "never refused".
     for index in range(8):
         filler = f"acme/filler-{index}"
-        _materialize_repo(root, filler)
+        _materialize_repo(on_disk, filler)
         hf_tokens._repo_access_cache.clear()
-        assert cache_reads_authorized(OPERATOR_TOKEN, repo_id = filler) is False
+        assert _reads(OPERATOR_TOKEN, filler) is False
     assert hf_tokens._denial_memory_lost_an_entry(), "the table dropped nothing"
 
     hf_tokens._repo_access_cache.clear()
     _counting_probe(monkeypatch, requests.exceptions.ConnectionError("refused"), offline = False)
-    assert (
-        cache_reads_authorized(OPERATOR_TOKEN, repo_id = ON_DISK) is False
-    ), "a forgotten refusal read as never refused, and the outage served the cached repo"
+    assert _reads(OPERATOR_TOKEN, ON_DISK) is False, "a forgotten refusal read as never refused"
 
 
-def test_forgetting_one_refusal_is_not_a_reason_to_refuse_an_answered_hub(
-    monkeypatch, tmp_path, on_disk
-):
-    monkeypatch.setattr(hf_tokens, "_DENIAL_MEMORY_MAX", 1)
+def test_forgetting_one_refusal_is_not_a_reason_to_refuse_an_answered_hub(monkeypatch, on_disk):
+    _hf_state(monkeypatch, denial_max = 1)
     hf_tokens._remember_denial(("acme/one", "model", "hash"), 1.0)
     hf_tokens._remember_denial(("acme/two", "model", "hash"), 2.0)
     assert hf_tokens._denial_memory_lost_an_entry()
 
     _counting_probe(monkeypatch, True, offline = False)
-    assert cache_reads_authorized(OPERATOR_TOKEN, repo_id = ON_DISK) is True
+    assert _reads(OPERATOR_TOKEN, ON_DISK) is True
 
     reset_repo_access_cache()
     assert (
@@ -541,7 +645,7 @@ def test_forgetting_one_refusal_is_not_a_reason_to_refuse_an_answered_hub(
 
 
 def test_a_refusal_still_being_re_asked_is_not_the_one_dropped(monkeypatch):
-    monkeypatch.setattr(hf_tokens, "_DENIAL_MEMORY_MAX", 3)
+    _hf_state(monkeypatch, denial_max = 3)
     keys = [(f"acme/{index}", "model", "hash") for index in range(3)]
     for at, key in enumerate(keys):
         hf_tokens._remember_denial(key, float(at))
@@ -551,126 +655,59 @@ def test_a_refusal_still_being_re_asked_is_not_the_one_dropped(monkeypatch):
     assert not hf_tokens._denial_is_remembered(keys[1])
 
 
-def test_the_denial_memory_is_dropped_by_the_test_reset(monkeypatch, tmp_path, on_disk):
-    _counting_probe(monkeypatch, False, offline = False)
-    assert cache_reads_authorized(OPERATOR_TOKEN, repo_id = ON_DISK) is False
-    assert hf_tokens._denied_repo_access
+def test_the_ownership_check_reads_the_hosts_token_every_time(monkeypatch, on_disk):
+    _counting_probe(monkeypatch, True, offline = True)
 
-    reset_repo_access_cache()
-    assert not hf_tokens._denied_repo_access
-
-
-# "The repo is on this disk" is a fact about the OPERATOR, not about whoever is asking, and the
-# remembered denial does not close the gap: it may never have been collected, and is lost on
-# restart.
-
-
-def test_a_foreign_credential_is_not_handed_the_operators_cached_repo_offline(monkeypatch, on_disk):
-    probes = _counting_probe(monkeypatch, True, offline = True)
-
-    assert cache_reads_authorized(FOREIGN_TOKEN, repo_id = ON_DISK) is False
-    assert cached_read_refused(FOREIGN_TOKEN, repo_id = ON_DISK, is_cached = lambda: True) is True
-    assert probes["n"] == 0
-    assert cache_reads_authorized(OPERATOR_TOKEN, repo_id = ON_DISK) is True
+    assert _reads(OPERATOR_TOKEN, ON_DISK) is True
+    _hf_state(monkeypatch, ambient = (True, "hf_rotated"))
+    assert _reads(OPERATOR_TOKEN, ON_DISK) is False
+    assert _reads("hf_rotated", ON_DISK) is True
 
 
 @pytest.mark.parametrize(
-    "failure",
+    ("reader", "target", "raw", "stripped", "failure"),
     [
-        requests.exceptions.ConnectionError("refused"),
-        requests.exceptions.ReadTimeout("slow"),
+        (
+            "ambient",
+            "huggingface_hub.get_token",
+            "  hf_from_hub  ",
+            "hf_from_hub",
+            OSError("token file unreadable"),
+        ),
+        (
+            "saved",
+            "storage.credential_secrets.get_hf_token",
+            "  hf_from_store  ",
+            "hf_from_store",
+            RuntimeError("credential database is locked"),
+        ),
     ],
-    ids = ["unreachable", "timeout"],
+    ids = ("the-hosts-own-token", "the-studio-credential-store"),
 )
-def test_a_foreign_credential_is_refused_through_every_unaskable_shape(
-    monkeypatch, on_disk, failure
+def test_a_credential_reader_separates_an_absent_credential_from_an_unreadable_one(
+    monkeypatch, reader, target, raw, stripped, failure
 ):
-    _counting_probe(monkeypatch, failure, offline = False)
+    read = _REAL_AMBIENT_HF_TOKEN if reader == "ambient" else _REAL_SAVED_STUDIO_HF_TOKEN
+    if reader == "ambient":
+        # The env fallback must not answer in place of the Hub's own store.
+        for key in hf_tokens._HF_TOKEN_ENV_KEYS:
+            monkeypatch.delenv(key, raising = False)
 
-    assert cache_reads_authorized(FOREIGN_TOKEN, repo_id = ON_DISK) is False
+    monkeypatch.setattr(target, lambda: raw)
+    assert read() == (True, stripped)
 
-
-def test_a_credential_less_caller_is_refused_on_a_host_that_holds_a_token(
-    monkeypatch, tmp_path, on_disk
-):
-    _counting_probe(monkeypatch, True, offline = True)
-
-    assert public_cache_read_authorized(repo_id = ON_DISK) is False
-    assert cached_read_refused(False, repo_id = ON_DISK, is_cached = lambda: True) is True
-
-
-def test_the_ownership_check_reads_the_hosts_token_every_time(monkeypatch, tmp_path, on_disk):
-    _counting_probe(monkeypatch, True, offline = True)
-
-    assert cache_reads_authorized(OPERATOR_TOKEN, repo_id = ON_DISK) is True
-    monkeypatch.setattr(hf_tokens, "_ambient_hf_token", lambda: (True, "hf_rotated"))
-    assert cache_reads_authorized(OPERATOR_TOKEN, repo_id = ON_DISK) is False
-    assert cache_reads_authorized("hf_rotated", repo_id = ON_DISK) is True
-
-
-def test_the_ambient_token_reader_prefers_the_hub_and_falls_back_to_the_env(monkeypatch):
-    read = _REAL_AMBIENT_HF_TOKEN
-    monkeypatch.setattr("huggingface_hub.get_token", lambda: "  hf_from_hub  ")
-    for key in hf_tokens._HF_TOKEN_ENV_KEYS:
-        monkeypatch.delenv(key, raising = False)
-    assert read() == (True, "hf_from_hub")
-
-    monkeypatch.setattr("huggingface_hub.get_token", lambda: None)
+    monkeypatch.setattr(target, lambda: None)
     assert read() == (True, None)
 
     # Asked and NOT answered is the third outcome; collapsing it into "no credential" is a
-    # fail-open, since the token file could hold one this process cannot read.
+    # fail-open, since the store could hold one this process cannot read.
     def _raises():
-        raise OSError("token file unreadable")
+        raise failure
 
-    monkeypatch.setattr("huggingface_hub.get_token", _raises)
+    monkeypatch.setattr(target, _raises)
     assert read() == (False, None)
     assert hf_tokens._caller_populated_the_cache(None) is False
     assert hf_tokens._caller_populated_the_cache("hf_anything") is False
-
-
-def test_the_ui_token_that_filled_the_cache_is_authorized_without_a_global_token(
-    monkeypatch, on_disk
-):
-    _no_host_credential(monkeypatch)
-    _saved_ui_credential(monkeypatch)
-    _counting_probe(monkeypatch, True, offline = True)
-
-    assert cache_reads_authorized(STUDIO_UI_TOKEN, repo_id = ON_DISK) is True
-    assert cache_reads_authorized(FOREIGN_TOKEN, repo_id = ON_DISK) is False
-    assert public_cache_read_authorized(repo_id = ON_DISK) is False
-
-
-def test_either_store_answers_for_the_host(monkeypatch, tmp_path, on_disk):
-    _saved_ui_credential(monkeypatch, OPERATOR_TOKEN)
-    _counting_probe(monkeypatch, True, offline = True)
-
-    assert cache_reads_authorized(OPERATOR_TOKEN, repo_id = ON_DISK) is True
-    assert cache_reads_authorized(FOREIGN_TOKEN, repo_id = ON_DISK) is False
-
-    _no_host_credential(monkeypatch)
-    _saved_ui_credential(monkeypatch)
-    assert cache_reads_authorized(STUDIO_UI_TOKEN, repo_id = ON_DISK) is True
-    assert cache_reads_authorized(FOREIGN_TOKEN, repo_id = ON_DISK) is False
-
-
-def test_a_credential_less_caller_still_needs_both_stores_empty(monkeypatch, tmp_path, on_disk):
-    _no_host_credential(monkeypatch)
-    _saved_ui_credential(monkeypatch)
-    _counting_probe(monkeypatch, True, offline = True)
-
-    assert public_cache_read_authorized(repo_id = ON_DISK) is False
-
-    monkeypatch.setattr(hf_tokens, "_saved_studio_hf_token", lambda: (True, None))
-    assert public_cache_read_authorized(repo_id = ON_DISK) is True
-
-
-def test_an_unreadable_credential_store_authorizes_nobody(monkeypatch, tmp_path, on_disk):
-    monkeypatch.setattr(hf_tokens, "_saved_studio_hf_token", lambda: (False, None))
-    _counting_probe(monkeypatch, True, offline = True)
-
-    assert cache_reads_authorized(OPERATOR_TOKEN, repo_id = ON_DISK) is False
-    assert public_cache_read_authorized(repo_id = ON_DISK) is False
 
 
 def test_an_unreadable_saved_credential_is_unknown_rather_than_absent(monkeypatch):
@@ -694,17 +731,6 @@ def test_an_unreadable_saved_credential_is_unknown_rather_than_absent(monkeypatc
     assert read() == (False, None)
 
 
-def test_an_unreadable_saved_credential_refuses_the_anonymous_caller(
-    monkeypatch, tmp_path, on_disk
-):
-    _no_host_credential(monkeypatch)
-    monkeypatch.setattr(hf_tokens, "_saved_studio_hf_token", lambda: (False, None))
-    _counting_probe(monkeypatch, True, offline = True)
-
-    assert public_cache_read_authorized(repo_id = ON_DISK) is False
-    assert cache_reads_authorized(OPERATOR_TOKEN, repo_id = ON_DISK) is False
-
-
 def test_the_row_check_does_not_need_to_decrypt(monkeypatch):
     from pathlib import Path as _Path
 
@@ -719,61 +745,30 @@ def test_the_row_check_does_not_need_to_decrypt(monkeypatch):
     assert "SELECT 1" in code
 
 
-def test_the_saved_token_reader_reads_the_studio_credential_store(monkeypatch):
-    from storage import credential_secrets
-
-    read = _REAL_SAVED_STUDIO_HF_TOKEN
-    monkeypatch.setattr(credential_secrets, "get_hf_token", lambda: "  hf_from_store  ")
-    assert read() == (True, "hf_from_store")
-
-    monkeypatch.setattr(credential_secrets, "get_hf_token", lambda: None)
-    assert read() == (True, None)
-
-    def _raises():
-        raise RuntimeError("credential database is locked")
-
-    monkeypatch.setattr(credential_secrets, "get_hf_token", _raises)
-    assert read() == (False, None)
-    assert hf_tokens._caller_populated_the_cache(None) is False
-    assert hf_tokens._caller_populated_the_cache("hf_anything") is False
-
-
 @pytest.mark.parametrize(
-    "status, error_code, expected",
+    ("status", "error_code", "landed_on", "expected"),
     [
-        (200, None, True),
-        (401, None, False),
-        (403, None, False),
-        (404, "RepoNotFound", False),
-        (410, None, False),
+        (200, None, None, True),
+        (401, None, None, False),
+        (403, None, None, False),
+        (404, "RepoNotFound", None, False),
+        (410, None, None, False),
         # Could not be asked: none of these is a statement about this caller.
-        (404, None, None),  # an HF_ENDPOINT mirror with no /auth-check route
-        (405, None, None),  # a mirror that rejects the method
-        (429, None, None),  # rate limited
-        (500, None, None),  # outage
-        (502, None, None),  # gateway in front of the Hub
+        (404, None, None, None),  # an HF_ENDPOINT mirror with no /auth-check route
+        (405, None, None, None),  # a mirror that rejects the method
+        (429, None, None, None),  # rate limited
+        (500, None, None, None),  # outage
+        (502, None, None, None),  # gateway in front of the Hub
+        # A 200 from somewhere else entirely: a redirect answers about wherever it landed.
+        (200, None, "https://huggingface.co/login", None),
     ],
 )
 def test_the_probe_separates_an_answer_from_a_failure_to_answer(
-    monkeypatch, status, error_code, expected
+    monkeypatch, status, error_code, landed_on, expected
 ):
-    _probe_against(monkeypatch, lambda url: _response(status, error_code = error_code, url = url))
+    _probe_against(monkeypatch, lambda url: _response(status, error_code, landed_on or url))
 
     assert hf_tokens._probe_repo_access(ON_DISK, OPERATOR_TOKEN, "model") is expected
-
-
-def test_a_redirected_probe_answers_nothing_about_the_repo(monkeypatch):
-    _probe_against(
-        monkeypatch,
-        lambda url: SimpleNamespace(
-            status_code = 200,
-            headers = {},
-            raise_for_status = lambda: None,
-            url = "https://huggingface.co/login",
-        ),
-    )
-
-    assert hf_tokens._probe_repo_access(ON_DISK, OPERATOR_TOKEN, "model") is None
 
 
 def test_a_probe_timeout_is_not_an_answer(monkeypatch):
@@ -789,7 +784,7 @@ def test_a_probe_timeout_is_not_an_answer(monkeypatch):
         hf_tokens._probe_repo_access(ON_DISK, OPERATOR_TOKEN, "model")
 
 
-def test_the_presence_check_never_reaches_the_network(monkeypatch, tmp_path, on_disk):
+def test_the_presence_check_never_reaches_the_network(monkeypatch, on_disk):
     def _forbidden(*_a, **_k):
         raise AssertionError("the local presence check opened a connection")
 
@@ -823,15 +818,31 @@ def test_an_unreadable_cache_does_not_authorize_anything(monkeypatch, tmp_path):
     _counting_probe(monkeypatch, True, offline = True)
 
     assert hf_tokens._repo_present_on_disk(ON_DISK, "model") is False
-    assert cache_reads_authorized(OPERATOR_TOKEN, repo_id = ON_DISK) is False
+    assert _reads(OPERATOR_TOKEN, ON_DISK) is False
 
 
-def test_tier_detection_reads_a_cached_config_offline(monkeypatch, tmp_path, on_disk):
-    root = on_disk
+def test_one_unreadable_cache_root_does_not_make_every_repo_present(monkeypatch, tmp_path):
+    """``repo_cache_has_usable_snapshot`` answers True for an unenumerable root, which here would
+    declare every repo present."""
+
+    def _roots(scan_errors = None):
+        if scan_errors is not None:
+            scan_errors.append(OSError("EACCES"))
+        return []
+
+    monkeypatch.setattr(hf_cache_state, "hf_cache_roots", _roots)
+    assert hf_cache_state.repo_cache_has_usable_snapshot("model", ON_DISK) is True
+    assert hf_tokens._repo_present_on_disk(ON_DISK, "model") is False
+
+    _counting_probe(monkeypatch, True, offline = True)
+    assert _reads(OPERATOR_TOKEN, ON_DISK) is False
+
+
+def test_tier_detection_reads_a_cached_config_offline(monkeypatch, on_disk):
     monkeypatch.setattr(
         transformers_version,
         "get_hf_cache_paths",
-        lambda: SimpleNamespace(hub_cache = root),
+        lambda: SimpleNamespace(hub_cache = on_disk),
     )
     monkeypatch.setattr(transformers_version, "_env_offline", lambda: True)
     _counting_probe(monkeypatch, True, offline = True)
@@ -844,15 +855,10 @@ def test_tier_detection_reads_a_cached_config_offline(monkeypatch, tmp_path, on_
 
 def test_the_capability_probes_cache_only_gate_allows_a_repo_on_disk(monkeypatch, on_disk):
     _counting_probe(monkeypatch, True, offline = True)
+    refused = model_config_module._offline_cache_read_refused
 
-    assert (
-        model_config_module._offline_cache_read_refused(OPERATOR_TOKEN, ON_DISK, ON_DISK, True)
-        is False
-    )
-    assert (
-        model_config_module._offline_cache_read_refused(OPERATOR_TOKEN, ABSENT, ABSENT, True)
-        is True
-    )
+    assert refused(OPERATOR_TOKEN, ON_DISK, ON_DISK, True) is False
+    assert refused(OPERATOR_TOKEN, ABSENT, ABSENT, True) is True
 
 
 @pytest.mark.parametrize(
@@ -877,17 +883,21 @@ def test_the_picker_serves_a_cached_chat_template_offline(
 
 
 def _stub_autoconfig(monkeypatch) -> dict:
+    """Stands in for the real config read, recording what it was asked for and how often. It is
+    imported inside the function under test, so the stand-in goes on the package."""
     import transformers
 
-    seen: dict = {}
+    seen = {"n": 0}
 
-    def _from_pretrained(_cls_or_name, *args, **kwargs):
-        name = args[0] if args else _cls_or_name
-        seen["name"] = name
-        seen["local_files_only"] = kwargs.get("local_files_only")
-        return SimpleNamespace(model_type = "llama")
+    class _AutoConfig:
+        @staticmethod
+        def from_pretrained(name, *_a, **kwargs):
+            seen["n"] += 1
+            seen["name"] = name
+            seen["local_files_only"] = kwargs.get("local_files_only")
+            return SimpleNamespace(model_type = "llama")
 
-    monkeypatch.setattr(transformers.AutoConfig, "from_pretrained", classmethod(_from_pretrained))
+    monkeypatch.setattr(transformers, "AutoConfig", _AutoConfig)
     return seen
 
 
@@ -906,67 +916,39 @@ def test_an_anonymous_cache_only_config_read_serves_a_repo_on_disk(monkeypatch, 
     assert probes["n"] == 0, "a cache-only read went to the network"
 
 
-def test_an_anonymous_config_read_is_still_refused_an_answered_no(monkeypatch, tmp_path, on_disk):
-    monkeypatch.setattr(model_config_module, "_config_json_already_cached", lambda *_a, **_k: True)
-    _counting_probe(monkeypatch, False, offline = False)
-    _stub_autoconfig(monkeypatch)
-
-    with pytest.raises(OSError):
-        model_config_module.load_model_config(ON_DISK, token = False)
-
-    assert cached_read_refused(False, repo_id = ON_DISK, is_cached = lambda: True) is True
-
-
-def test_one_unreadable_cache_root_does_not_make_every_repo_present(monkeypatch, tmp_path):
-    """``repo_cache_has_usable_snapshot`` answers True for an unenumerable root, which here would
-    declare every repo present."""
-    root = tmp_path / "hub"
-    root.mkdir()
-
-    def _roots(scan_errors = None):
-        if scan_errors is not None:
-            scan_errors.append(OSError("EACCES"))
-        return []
-
-    monkeypatch.setattr(hf_cache_state, "hf_cache_roots", _roots)
-    assert hf_cache_state.repo_cache_has_usable_snapshot("model", ON_DISK) is True
-    assert hf_tokens._repo_present_on_disk(ON_DISK, "model") is False
-
-    _counting_probe(monkeypatch, True, offline = True)
-    assert cache_reads_authorized(OPERATOR_TOKEN, repo_id = ON_DISK) is False
-
-
-def _offline_route_guard(monkeypatch, tmp_path, repo_id: str, *, on_disk: bool):
+def _offline_route_guard(monkeypatch, tmp_path, repo_id, present, host_token):
     import utils.utils as utils_module
 
-    _no_host_credential(monkeypatch)
+    if host_token is None:
+        _no_host_credential(monkeypatch)
     root = _cache_root(monkeypatch, tmp_path)
-    if on_disk:
+    if present:
         _materialize_repo(root, repo_id)
     monkeypatch.setattr(utils_module, "hf_env_offline", lambda: True)
     monkeypatch.setattr(hf_tokens, "_hub_offline", lambda: True)
     return utils_module.anonymous_and_offline(False, repo_id = repo_id)
 
 
-def test_the_route_entry_guard_serves_a_repo_that_is_on_disk(monkeypatch, tmp_path):
-    assert _offline_route_guard(monkeypatch, tmp_path, ON_DISK, on_disk = True) is False
-
-
-def test_the_route_entry_guard_still_refuses_a_repo_that_is_not_on_disk(monkeypatch, tmp_path):
-    assert _offline_route_guard(monkeypatch, tmp_path, ABSENT, on_disk = False) is True
-
-
-def test_the_route_entry_guard_keeps_refusing_on_a_host_that_holds_a_token(
-    monkeypatch, tmp_path, on_disk
+@pytest.mark.parametrize(
+    ("repo_id", "present", "host_token", "refused"),
+    [
+        (ON_DISK, True, None, False),
+        # BOUNDARY. A repo that is not on this disk is refused as it always was.
+        (ABSENT, False, None, True),
+        # BOUNDARY. A host that HOLDS a credential could have filled this cache with it, so the
+        # tokenless caller at the route entry keeps being refused.
+        (ON_DISK, True, OPERATOR_TOKEN, True),
+    ],
+    ids = ("on-disk", "not-on-disk", "host-holds-a-token"),
+)
+def test_the_route_entry_guard_serves_only_what_the_anonymous_caller_may_have(
+    monkeypatch, tmp_path, repo_id, present, host_token, refused
 ):
-    import utils.utils as utils_module
-
-    monkeypatch.setattr(utils_module, "hf_env_offline", lambda: True)
-    monkeypatch.setattr(hf_tokens, "_hub_offline", lambda: True)
-    assert utils_module.anonymous_and_offline(False, repo_id = ON_DISK) is True
+    guard = _offline_route_guard(monkeypatch, tmp_path, repo_id, present, host_token)
+    assert guard is refused
 
 
-def test_the_route_entry_guard_keeps_its_blanket_answer_without_a_repo_id(monkeypatch, tmp_path):
+def test_the_route_entry_guard_keeps_its_blanket_answer_without_a_repo_id(monkeypatch):
     import utils.utils as utils_module
 
     monkeypatch.setattr(utils_module, "hf_env_offline", lambda: True)
@@ -974,9 +956,7 @@ def test_the_route_entry_guard_keeps_its_blanket_answer_without_a_repo_id(monkey
     assert utils_module.anonymous_and_offline(None) is False
 
 
-def test_the_route_entry_guard_leaves_online_behaviour_exactly_as_it_was(
-    monkeypatch, tmp_path, on_disk
-):
+def test_the_route_entry_guard_leaves_online_behaviour_exactly_as_it_was(monkeypatch, on_disk):
     import utils.utils as utils_module
 
     monkeypatch.setattr(utils_module, "hf_env_offline", lambda: False)
@@ -985,124 +965,65 @@ def test_the_route_entry_guard_leaves_online_behaviour_exactly_as_it_was(
     assert probes["n"] == 0
 
 
-def test_two_different_host_credentials_authorize_neither_of_them(monkeypatch, tmp_path, on_disk):
-    _counting_probe(monkeypatch, True, offline = True)
-    _saved_ui_credential(monkeypatch)  # STUDIO_UI_TOKEN, alongside the ambient OPERATOR_TOKEN
+def test_a_repo_already_recorded_is_not_written_again(monkeypatch, writes):
+    _hf_state(monkeypatch, recorded = {_key("acme/private"): {"at": 1.0}})
 
-    assert cache_reads_authorized(OPERATOR_TOKEN, repo_id = ON_DISK) is False
-    assert cache_reads_authorized(STUDIO_UI_TOKEN, repo_id = ON_DISK) is False
-
-    _saved_ui_credential(monkeypatch, OPERATOR_TOKEN)
-    assert cache_reads_authorized(OPERATOR_TOKEN, repo_id = ON_DISK) is True
-
-
-def test_a_repo_already_recorded_is_not_written_again(monkeypatch):
-    writes: list = []
-    monkeypatch.setattr(hf_tokens, "_host_hf_credentials", lambda: (True, ("hf_theoperators",)))
-    monkeypatch.setattr(
-        hf_tokens,
-        "_recorded_request_token_repos",
-        lambda: {hf_tokens._request_token_repo_key("acme/private", "model"): {"at": 1.0}},
-    )
-    monkeypatch.setattr(hf_tokens, "_as_owner", lambda call, *a, **k: writes.append(a))
-
-    hf_tokens.note_repo_fetched_with_a_request_token("hf_someoneelses", "acme/private", "model")
+    _noted("hf_someoneelses", "acme/private")
     assert writes == []
-    hf_tokens.note_repo_fetched_with_a_request_token("hf_someoneelses", "acme/other", "model")
+    _noted("hf_someoneelses", "acme/other")
     assert len(writes) == 1
 
 
-def test_the_provenance_map_is_bounded_and_says_so_when_it_is_full(monkeypatch):
-    writes: list = []
+def test_the_provenance_map_is_bounded_and_says_so_when_it_is_full(monkeypatch, writes):
     full = {
         f"model:acme/repo-{index}": {"at": 1.0}
         for index in range(hf_tokens._REQUEST_TOKEN_REPOS_MAX)
     }
-    monkeypatch.setattr(hf_tokens, "_host_hf_credentials", lambda: (True, ("hf_theoperators",)))
-    monkeypatch.setattr(hf_tokens, "_recorded_request_token_repos", lambda: full)
-    monkeypatch.setattr(hf_tokens, "_as_owner", lambda call, *a, **k: writes.append(a))
+    _hf_state(monkeypatch, recorded = full)
 
-    hf_tokens.note_repo_fetched_with_a_request_token("hf_someoneelses", "acme/new", "model")
+    _noted("hf_someoneelses", "acme/new")
     assert writes == [], "the map kept growing on a caller-supplied repo id"
-    assert hf_tokens._repo_was_fetched_with_a_request_token("acme/new", "model") is None
-    assert hf_tokens._repo_was_fetched_with_a_request_token("acme/repo-0", "model") is True
-    monkeypatch.setattr(hf_tokens, "_host_hf_credentials", lambda: (True, ()))
-    assert (
-        hf_tokens._caller_populated_the_cache(None, repo_id = "acme/new", repo_type = "model") is False
-    )
+    assert _fetched_with_a_token("acme/new") is None
+    assert _fetched_with_a_token("acme/repo-0") is True
+    _hf_state(monkeypatch, credentials = (True, ()))
+    assert _filled_by(None, "acme/new") is False
 
 
-def _recording_map(monkeypatch) -> dict:
-    """A real provenance map the writer under test fills, so the READ side is asked about a
-    record this code actually wrote rather than one the test spelled out itself."""
-    recorded: dict = {}
-
-    def _write(call, _key, entry, value):
-        recorded[entry] = value
-
-    monkeypatch.setattr(hf_tokens, "_recorded_request_token_repos", lambda: recorded)
-    monkeypatch.setattr(hf_tokens, "_as_owner", _write)
-    return recorded
+def test_a_map_below_the_cap_still_answers_no_for_a_repo_it_does_not_hold(monkeypatch):
+    _hf_state(monkeypatch, recorded = {})
+    assert _fetched_with_a_token("acme/other") is False
 
 
-def test_a_credential_does_not_inherit_a_repo_another_credential_fetched(monkeypatch):
+def test_a_credential_does_not_inherit_a_repo_another_credential_fetched(provenance):
     """The whole point of the unaskable fallback is that the caller's OWN credential filled this
     cache. Holding the credential the host holds now is not that: a one-off X-Unsloth-HF-Token
     reaches private repos the host credential cannot, and its bytes land in the same cache.
     """
-    host = "hf_the_operators_own_credential"
-    foreign = "hf_a_one_off_someone_else_sent"
-    monkeypatch.setattr(hf_tokens, "_host_hf_credentials", lambda: (True, (host,)))
-    monkeypatch.setattr(hf_tokens, "_no_other_credential_ever_held", lambda tokens: True)
-    monkeypatch.setattr(hf_tokens, "_repo_present_on_disk", lambda repo, kind: True)
-    recorded = _recording_map(monkeypatch)
+    _noted(ONE_OFF, "acme/theirs")
+    _noted(None, "acme/ours")
 
-    hf_tokens.note_repo_fetched_with_a_request_token(foreign, "acme/theirs", "model")
-    hf_tokens.note_repo_fetched_with_a_request_token(None, "acme/ours", "model")
-
-    assert (
-        hf_tokens._caller_populated_the_cache(host, repo_id = "acme/theirs", repo_type = "model")
-        is False
-    ), "the host credential inherited a repo a foreign token fetched"
-    assert hf_tokens._resolve_unaskable("acme/theirs", "model", token = host) is False
+    assert _filled_by(HOST_CREDENTIAL, "acme/theirs") is False, "the host inherited a foreign repo"
+    assert hf_tokens._resolve_unaskable("acme/theirs", "model", token = HOST_CREDENTIAL) is False
 
     # The cases the rule exists for are untouched: the repo this credential itself fetched, and
     # a cache older than the record, which is the tokenless offline install on first upgrade.
-    assert (
-        hf_tokens._caller_populated_the_cache(host, repo_id = "acme/ours", repo_type = "model") is True
-    )
-    assert (
-        hf_tokens._caller_populated_the_cache(host, repo_id = "acme/never-seen", repo_type = "model")
-        is True
-    )
+    assert _filled_by(HOST_CREDENTIAL, "acme/ours") is True
+    assert _filled_by(HOST_CREDENTIAL, "acme/never-seen") is True
     # And the foreign token is still not a host credential, so it is refused as it always was.
+    assert _filled_by(ONE_OFF, "acme/theirs") is False
+    assert provenance[_key("acme/theirs")]["by"] == hf_tokens._credential_identity(ONE_OFF)
+
+
+def test_a_repo_two_different_credentials_fetched_belongs_to_neither(provenance):
+    _noted(None, "acme/shared")
+    _noted(ONE_OFF, "acme/shared")
+
+    assert provenance[_key("acme/shared")]["by"] is None
     assert (
-        hf_tokens._caller_populated_the_cache(foreign, repo_id = "acme/theirs", repo_type = "model")
-        is False
-    )
-    assert recorded[hf_tokens._request_token_repo_key("acme/theirs", "model")]["by"] == (
-        hf_tokens._credential_identity(foreign)
-    )
-
-
-def test_a_repo_two_different_credentials_fetched_belongs_to_neither(monkeypatch):
-    host = "hf_the_operators_own_credential"
-    foreign = "hf_a_one_off_someone_else_sent"
-    monkeypatch.setattr(hf_tokens, "_host_hf_credentials", lambda: (True, (host,)))
-    monkeypatch.setattr(hf_tokens, "_no_other_credential_ever_held", lambda tokens: True)
-    monkeypatch.setattr(hf_tokens, "_repo_present_on_disk", lambda repo, kind: True)
-    recorded = _recording_map(monkeypatch)
-
-    hf_tokens.note_repo_fetched_with_a_request_token(None, "acme/shared", "model")
-    hf_tokens.note_repo_fetched_with_a_request_token(foreign, "acme/shared", "model")
-
-    assert recorded[hf_tokens._request_token_repo_key("acme/shared", "model")]["by"] is None
-    assert (
-        hf_tokens._caller_populated_the_cache(host, repo_id = "acme/shared", repo_type = "model")
-        is False
+        _filled_by(HOST_CREDENTIAL, "acme/shared") is False
     ), "a repo more than one credential fetched was claimed by one of them"
     # Still recorded as fetched under SOME credential, so a tokenless caller is refused too.
-    assert hf_tokens._repo_was_fetched_with_a_request_token("acme/shared", "model") is True
+    assert _fetched_with_a_token("acme/shared") is True
 
 
 def test_a_provenance_write_that_failed_is_not_read_as_nothing_to_record(monkeypatch):
@@ -1110,26 +1031,26 @@ def test_a_provenance_write_that_failed_is_not_read_as_nothing_to_record(monkeyp
     missing record as "nothing here needed a credential": that is the same absence a repo nobody
     ever fetched leaves, and only one of the two authorizes.
     """
-    monkeypatch.setattr(hf_tokens, "_unrecorded_fetches", set())
-    monkeypatch.setattr(hf_tokens, "_host_hf_credentials", lambda: (True, ()))
-    monkeypatch.setattr(hf_tokens, "_no_other_credential_ever_held", lambda tokens: True)
-    monkeypatch.setattr(hf_tokens, "_recorded_request_token_repos", lambda: {})
 
     def _raises(*_a, **_k):
         raise RuntimeError("database is locked")
 
-    monkeypatch.setattr(hf_tokens, "_as_owner", _raises)
-    hf_tokens.note_repo_fetched_with_a_request_token("hf_a_one_off", "acme/private", "model")
+    _hf_state(
+        monkeypatch,
+        unrecorded = set(),
+        credentials = (True, ()),
+        no_other_held = True,
+        recorded = {},
+        as_owner = _raises,
+    )
+    _noted("hf_a_one_off", "acme/private")
 
-    assert hf_tokens._repo_was_fetched_with_a_request_token("acme/private", "model") is None
+    assert _fetched_with_a_token("acme/private") is None
     assert (
-        hf_tokens._caller_populated_the_cache(None, repo_id = "acme/private", repo_type = "model")
-        is False
+        _filled_by(None, "acme/private") is False
     ), "a repo whose provenance write failed was read as one nothing ever fetched"
     # Only that repo. The cost of a locked database is not the whole host losing its own cache.
-    assert (
-        hf_tokens._caller_populated_the_cache(None, repo_id = "acme/other", repo_type = "model") is True
-    )
+    assert _filled_by(None, "acme/other") is True
 
 
 def test_a_denial_is_remembered_when_the_facts_that_could_overturn_it_cannot_be_read(monkeypatch):
@@ -1137,94 +1058,184 @@ def test_a_denial_is_remembered_when_the_facts_that_could_overturn_it_cannot_be_
     its callees swallow their own failures. A denial arriving in that window was dropped, and the
     next outage then authorized the caller the Hub had refused.
     """
-    token = "hf_the_operators_own_credential"
-    monkeypatch.setattr(hf_tokens, "_repo_present_on_disk", lambda repo, kind: True)
-    monkeypatch.setattr(hf_tokens, "_unrecorded_fetches", set())
+    overturnable = hf_tokens._denial_can_be_overturned
+    _hf_state(monkeypatch, present = True, unrecorded = set())
 
-    monkeypatch.setattr(hf_tokens, "_host_hf_credentials", lambda: (False, ()))
-    assert hf_tokens._denial_can_be_overturned("acme/private", "model", token) is True
+    _hf_state(monkeypatch, credentials = (False, ()))
+    assert overturnable("acme/private", "model", HOST_CREDENTIAL) is True
 
-    monkeypatch.setattr(hf_tokens, "_host_hf_credentials", lambda: (True, (token,)))
-    monkeypatch.setattr(hf_tokens, "_recorded_request_token_repos", lambda: None)
-    assert hf_tokens._denial_can_be_overturned("acme/private", "model", token) is True
+    _hf_state(monkeypatch, credentials = (True, (HOST_CREDENTIAL,)), recorded = None)
+    assert overturnable("acme/private", "model", HOST_CREDENTIAL) is True
 
     # The boundary this must not move: where everything IS readable and the fallback could never
     # have authorized this caller anyway, the denial still buys nothing and the slot is not spent.
-    monkeypatch.setattr(hf_tokens, "_recorded_request_token_repos", lambda: {})
-    monkeypatch.setattr(hf_tokens, "_caller_populated_the_cache", lambda *a, **k: False)
-    assert hf_tokens._denial_can_be_overturned("acme/private", "model", token) is False
+    _hf_state(monkeypatch, recorded = {}, filled_by_caller = False)
+    assert overturnable("acme/private", "model", HOST_CREDENTIAL) is False
 
 
 def test_a_ledger_write_that_failed_is_retried_rather_than_remembered(monkeypatch):
     """A missing ledger entry is not the harmless direction: a shorter ledger reads as "this host
     never held anything else", which authorizes more.
     """
-    token = "hf_the_operators_own_credential"
-    identity = hf_tokens._credential_identity(token)
-    monkeypatch.setattr(hf_tokens, "_noted_credential_identities", set())
+    identity = hf_tokens._credential_identity(HOST_CREDENTIAL)
     ledger: dict = {}
     attempts = {"n": 0}
 
-    def _write(call, _key, entry, value):
+    def _write(call, _key_unused, entry, value):
         attempts["n"] += 1
         if attempts["n"] == 1:
             raise RuntimeError("database is locked")
         ledger[entry] = value
 
-    monkeypatch.setattr(hf_tokens, "_host_credential_identities", lambda: dict(ledger))
-    monkeypatch.setattr(hf_tokens, "_as_owner", _write)
+    _hf_state(
+        monkeypatch,
+        noted_identities = set(),
+        identities = lambda: dict(ledger),
+        as_owner = _write,
+    )
 
-    hf_tokens._note_host_credential_identities([token])
+    hf_tokens._note_host_credential_identities([HOST_CREDENTIAL])
     assert ledger == {}, "the write did not fail"
-    hf_tokens._note_host_credential_identities([token])
+    hf_tokens._note_host_credential_identities([HOST_CREDENTIAL])
     assert attempts["n"] == 2, "a failed ledger write was never retried"
     assert identity in ledger
-    hf_tokens._note_host_credential_identities([token])
+    hf_tokens._note_host_credential_identities([HOST_CREDENTIAL])
     assert attempts["n"] == 2, "a ledger entry already present was rewritten"
 
 
 def test_an_unreadable_ledger_is_not_remembered_as_written(monkeypatch):
-    token = "hf_the_operators_own_credential"
-    monkeypatch.setattr(hf_tokens, "_noted_credential_identities", set())
-    monkeypatch.setattr(hf_tokens, "_host_credential_identities", lambda: None)
-    monkeypatch.setattr(
-        hf_tokens, "_as_owner", lambda *a, **k: pytest.fail("wrote into a ledger it cannot read")
+    _hf_state(
+        monkeypatch,
+        noted_identities = set(),
+        identities = None,
+        as_owner = lambda *a, **k: pytest.fail("wrote into a ledger it cannot read"),
     )
-    hf_tokens._note_host_credential_identities([token])
+    hf_tokens._note_host_credential_identities([HOST_CREDENTIAL])
     assert hf_tokens._noted_credential_identities == set()
 
 
-def test_a_map_below_the_cap_still_answers_no_for_a_repo_it_does_not_hold(monkeypatch):
-    monkeypatch.setattr(hf_tokens, "_recorded_request_token_repos", lambda: {})
-    assert hf_tokens._repo_was_fetched_with_a_request_token("acme/other", "model") is False
+def test_the_ledger_records_an_identity_and_never_the_credential(monkeypatch):
+    """It answers "was it this one" and must not be somewhere a credential is readable."""
+    written: dict = {}
+    _hf_state(
+        monkeypatch,
+        identities = lambda: dict(written),
+        as_owner = lambda call, _key_unused, entry, value: written.setdefault(entry, value),
+    )
+    hf_tokens.reset_repo_access_cache()
+
+    hf_tokens._note_host_credential_identities((OPERATOR_TOKEN,))
+    assert list(written) == [hf_tokens._credential_identity(OPERATOR_TOKEN)]
+    assert OPERATOR_TOKEN not in repr(written)
+    assert hf_tokens._credential_identity(OPERATOR_TOKEN) != hf_tokens._credential_identity(
+        ROTATED_AWAY
+    )
+
+    # Written once: this runs on the authorization path, not on a settings save.
+    written.clear()
+    hf_tokens._note_host_credential_identities((OPERATOR_TOKEN,))
+    assert written == {}, "the ledger was rewritten on every check"
 
 
-def test_a_lora_loads_base_is_recorded_too(monkeypatch, recorded_fetches):
+def _ledger(monkeypatch, *tokens: str) -> None:
+    """The credentials this host is recorded as having held."""
+    _hf_state(
+        monkeypatch,
+        identities = {hf_tokens._credential_identity(token): {"at": 1.0} for token in tokens},
+    )
+
+
+@pytest.mark.parametrize(
+    ("held", "caller", "authorized"),
+    [
+        # Holding the credential NOW is not having filled the cache with it. The operator rotates
+        # from one login to another; the new one must not be handed the old one's downloads.
+        ((ROTATED_AWAY, OPERATOR_TOKEN), OPERATOR_TOKEN, False),
+        # BOUNDARY: a host that never rotated is unchanged, which is nearly every host.
+        ((OPERATOR_TOKEN,), OPERATOR_TOKEN, True),
+        # The other half of the same fact: remove the credential and the private repos it
+        # downloaded are still on the disk, so "the host holds none" stops meaning "none was
+        # needed".
+        ((ROTATED_AWAY,), ANON, False),
+        # BOUNDARY: a host that never held one downloaded only what needed none.
+        ((), ANON, True),
+        # Same rule as the credential stores: cannot be established is not "empty".
+        (None, OPERATOR_TOKEN, False),
+        (None, ANON, False),
+    ],
+)
+def test_an_outage_serves_the_cache_only_to_a_credential_that_really_filled_it(
+    monkeypatch, on_disk, held, caller, authorized
+):
+    _counting_probe(monkeypatch, requests.exceptions.ConnectionError("refused"), offline = False)
+    if caller is ANON:
+        _hf_state(monkeypatch, ambient = (True, None), recorded = {})
+    if held is None:
+        _hf_state(monkeypatch, identities = None)
+    else:
+        _ledger(monkeypatch, *held)
+
+    assert _reads(caller, ON_DISK) is authorized
+
+
+def test_a_non_ascii_credential_is_compared_not_crashed_on(monkeypatch, on_disk):
+    """`hmac.compare_digest` refuses a str with any non-ASCII character. Both operands here are
+    text somebody else chose: the caller's own X-Unsloth-HF-Token header, and the credential the
+    host happens to hold. Either one carrying a single high byte turned an authorization
+    question into a 500 that quoted the exception."""
+    _counting_probe(monkeypatch, _ProbeUnreachable(), offline = False)
+
+    # A caller-supplied header byte. Starlette latin-1 decodes 0xE9 to U+00E9.
+    assert _reads("hf_é_not_the_hosts", ON_DISK) is False
+
+    # And the mirror image: the HOST's credential is the non-ASCII one, and the caller presents
+    # it correctly, so the answer is a real match rather than a crash.
+    _hf_state(monkeypatch, ambient = (True, "hf_opérateur"))
+    assert _reads("hf_opérateur", ON_DISK) is True
+
+
+@pytest.mark.parametrize(
+    ("base", "in_cache", "already_cached", "recorded"),
+    [
+        ("acme/private-base", True, None, [("acme/private-base", "hf_someoneelses")]),
+        # A base that cannot be resolved, one that was never pulled, and a cache that cannot be
+        # read are all "no base this load fetched", and each must record nothing.
+        (None, True, None, []),
+        ("acme/never-pulled", False, None, []),
+        (OSError(13, "denied"), True, None, []),
+        # And a base that was ALREADY in the cache when the load started was not fetched by it.
+        ("acme/public-base", True, "acme/public-base", []),
+    ],
+    ids = ("pulled", "unresolved", "not-in-the-cache", "cache-unreadable", "already-cached"),
+)
+def test_only_a_lora_base_this_load_really_pulled_is_recorded(
+    monkeypatch, recorded_fetches, base, in_cache, already_cached, recorded
+):
+    def _resolve(_repo):
+        if isinstance(base, BaseException):
+            raise base
+        return base
+
+    monkeypatch.setattr(transformers_version, "_adapter_base_from_hf_cache", _resolve)
+    monkeypatch.setattr(inference_routes, "_repo_is_in_the_hub_cache", lambda ref: in_cache)
+
+    inference_routes._note_lora_base_fetched_with_a_request_token(
+        "acme/adapter", "hf_someoneelses", already_cached = already_cached
+    )
+
+    assert recorded_fetches == recorded
+
+
+def test_the_base_a_load_started_with_is_the_one_read_before_it(monkeypatch):
+    """The before-reading the parametrized case above is handed: the base already in the cache."""
     monkeypatch.setattr(
-        transformers_version, "_adapter_base_from_hf_cache", lambda repo: "acme/private-base"
+        transformers_version, "_adapter_base_from_hf_cache", lambda repo: "acme/public-base"
     )
     monkeypatch.setattr(inference_routes, "_repo_is_in_the_hub_cache", lambda ref: True)
-    inference_routes._note_lora_base_fetched_with_a_request_token("acme/adapter", "hf_someoneelses")
-    assert recorded_fetches == [("acme/private-base", "hf_someoneelses")]
 
-
-def test_a_base_that_cannot_be_resolved_records_nothing(monkeypatch, recorded_fetches):
-    monkeypatch.setattr(inference_routes, "_repo_is_in_the_hub_cache", lambda ref: True)
-    monkeypatch.setattr(transformers_version, "_adapter_base_from_hf_cache", lambda repo: None)
-    inference_routes._note_lora_base_fetched_with_a_request_token("acme/adapter", "hf_x")
-    monkeypatch.setattr(
-        transformers_version, "_adapter_base_from_hf_cache", lambda repo: "acme/never-pulled"
+    assert (
+        inference_routes._lora_base_already_in_the_hub_cache("acme/adapter") == "acme/public-base"
     )
-    monkeypatch.setattr(inference_routes, "_repo_is_in_the_hub_cache", lambda ref: False)
-    inference_routes._note_lora_base_fetched_with_a_request_token("acme/adapter", "hf_x")
-    monkeypatch.setattr(inference_routes, "_repo_is_in_the_hub_cache", lambda ref: True)
-
-    def _raises(_repo):
-        raise OSError(13, "denied")
-
-    monkeypatch.setattr(transformers_version, "_adapter_base_from_hf_cache", _raises)
-    inference_routes._note_lora_base_fetched_with_a_request_token("acme/adapter", "hf_x")
-    assert recorded_fetches == []
 
 
 def test_the_load_reads_the_base_after_the_fetch_not_before_it():
@@ -1294,41 +1305,59 @@ def test_a_media_load_refused_by_validation_records_no_fetch(monkeypatch, record
     assert recorded_fetches == [], "a load refused before any worker started recorded a fetch"
 
 
+def test_a_media_load_records_at_entry_because_its_fetch_is_on_a_worker_thread():
+    import inspect
+
+    from core.inference import diffusion, video as video_core
+    for begin in (diffusion.DiffusionBackend.begin_load, video_core.VideoBackend.begin_load):
+        doc = inspect.getdoc(begin) or ""
+        assert "Returns at once" in doc or "daemon thread" in doc, (
+            f"{begin.__qualname__} no longer hands off; the media routes could compare "
+            "before and after like the text load does"
+        )
+
+
 def test_the_presence_probe_answers_none_for_anything_that_is_not_a_repo(monkeypatch):
     for local in ("/srv/models/model.gguf", "./model.gguf", "~/model.gguf", "C:/models", ""):
         assert inference_routes._repo_is_in_the_hub_cache(local) is None, local
 
-    from hub.utils import hf_tokens as _hf_tokens
-
-    monkeypatch.setattr(_hf_tokens, "_repo_present_on_disk", lambda repo, kind: True)
+    _hf_state(monkeypatch, present = True)
     assert inference_routes._repo_is_in_the_hub_cache("acme/model") is True
 
     def _raises(_repo, _kind):
         raise OSError(13, "denied")
 
-    monkeypatch.setattr(_hf_tokens, "_repo_present_on_disk", _raises)
+    _hf_state(monkeypatch, present = _raises)
     assert inference_routes._repo_is_in_the_hub_cache("acme/model") is None
 
 
-def test_a_load_that_added_blobs_to_an_existing_repo_is_recorded(monkeypatch, tmp_path):
+def test_only_real_growth_in_the_hub_cache_counts_as_a_fetch(monkeypatch, tmp_path):
     blobs = _cached_repo_dir(monkeypatch, tmp_path, "acme/private", a = 10) / "blobs"
+    monkeypatch.setattr(inference_routes, "_repo_is_in_the_hub_cache", lambda ref: True)
+    fetched = inference_routes._load_fetched_bytes
 
     before = inference_routes._hub_cache_footprint("acme/private")
     assert before == (1, 10)
-    monkeypatch.setattr(inference_routes, "_repo_is_in_the_hub_cache", lambda ref: True)
-    assert not inference_routes._load_fetched_bytes(
-        "acme/private", True, before
-    ), "a pure cache hit was recorded as a fetch"
+    assert not fetched("acme/private", True, before), "a pure cache hit was recorded as a fetch"
 
     (blobs / "b").write_bytes(b"y" * 4096)  # the blob this load pulled
-    assert inference_routes._load_fetched_bytes(
-        "acme/private", True, before
-    ), "a credentialed refetch of an existing repo was lost"
-    assert not inference_routes._load_fetched_bytes(
-        "acme/private", True, None
-    ), "an unreadable footprint guessed instead of abstaining"
+    assert fetched("acme/private", True, before), "a refetch of an existing repo was lost"
+    assert not fetched("acme/private", True, None), "an unreadable before-reading guessed"
+    assert fetched("acme/private", False, None)
 
-    assert inference_routes._load_fetched_bytes("acme/private", False, None)
+    # A prune is not a fetch, and neither is an after-reading that could not be taken at all.
+    after_the_pull = inference_routes._hub_cache_footprint("acme/private")
+    (blobs / "b").unlink()
+    assert not fetched("acme/private", True, after_the_pull)
+    monkeypatch.setattr(inference_routes, "_hub_cache_footprint", lambda ref: None)
+    assert not fetched("acme/private", True, before), "an unreadable after-reading counted"
+
+    # Growth in either component is a fetch: a new blob moves the count, an appended partial
+    # moves only the bytes.
+    monkeypatch.setattr(inference_routes, "_hub_cache_footprint", lambda ref: (2, 10))
+    assert fetched("acme/private", True, before)
+    monkeypatch.setattr(inference_routes, "_hub_cache_footprint", lambda ref: (1, 9000))
+    assert fetched("acme/private", True, before)
 
 
 def test_refs_and_no_exist_markers_are_not_read_as_a_fetch(monkeypatch, tmp_path):
@@ -1342,59 +1371,6 @@ def test_refs_and_no_exist_markers_are_not_read_as_a_fetch(monkeypatch, tmp_path
     assert inference_routes._hub_cache_footprint("acme/public") == before
 
 
-def test_a_base_that_was_already_cached_is_not_marked_as_fetched(monkeypatch, recorded_fetches):
-    monkeypatch.setattr(
-        transformers_version, "_adapter_base_from_hf_cache", lambda repo: "acme/public-base"
-    )
-    monkeypatch.setattr(inference_routes, "_repo_is_in_the_hub_cache", lambda ref: True)
-
-    before = inference_routes._lora_base_already_in_the_hub_cache("acme/adapter")
-    assert before == "acme/public-base"
-    inference_routes._note_lora_base_fetched_with_a_request_token(
-        "acme/adapter", "hf_someoneelses", already_cached = before
-    )
-    assert recorded_fetches == [], "a base that was already cached was recorded as fetched"
-
-    inference_routes._note_lora_base_fetched_with_a_request_token(
-        "acme/adapter", "hf_someoneelses", already_cached = None
-    )
-    assert recorded_fetches == [("acme/public-base", "hf_someoneelses")]
-
-
-def test_only_growth_counts_as_a_fetch(monkeypatch, tmp_path):
-    blobs = _cached_repo_dir(monkeypatch, tmp_path, "acme/public", a = 4096, b = 4096) / "blobs"
-    monkeypatch.setattr(inference_routes, "_repo_is_in_the_hub_cache", lambda ref: True)
-    before = inference_routes._hub_cache_footprint("acme/public")
-    assert before == (2, 8192)
-
-    (blobs / "b").unlink()  # a prune, not a fetch
-    assert not inference_routes._load_fetched_bytes("acme/public", True, before)
-
-    monkeypatch.setattr(inference_routes, "_hub_cache_footprint", lambda ref: None)
-    assert not inference_routes._load_fetched_bytes(
-        "acme/public", True, before
-    ), "an unreadable after-reading was counted as a fetch"
-
-    # Growth in either component is a fetch: a new blob moves the count, an appended partial
-    # moves only the bytes.
-    monkeypatch.setattr(inference_routes, "_hub_cache_footprint", lambda ref: (3, 8192))
-    assert inference_routes._load_fetched_bytes("acme/public", True, before)
-    monkeypatch.setattr(inference_routes, "_hub_cache_footprint", lambda ref: (2, 9000))
-    assert inference_routes._load_fetched_bytes("acme/public", True, before)
-
-
-def test_a_media_load_records_at_entry_because_its_fetch_is_on_a_worker_thread():
-    import inspect
-
-    from core.inference import diffusion, video as video_core
-    for begin in (diffusion.DiffusionBackend.begin_load, video_core.VideoBackend.begin_load):
-        doc = inspect.getdoc(begin) or ""
-        assert "Returns at once" in doc or "daemon thread" in doc, (
-            f"{begin.__qualname__} no longer hands off; the media routes could compare "
-            "before and after like the text load does"
-        )
-
-
 # ---------------------------------------------------------------------------------------
 # The denial memory is a fixed number of slots keyed partly on caller-supplied input, so what
 # is allowed to occupy one decides whether a caller can exhaust it. These pin that only a
@@ -1402,66 +1378,43 @@ def test_a_media_load_records_at_entry_because_its_fetch_is_on_a_worker_thread()
 # ---------------------------------------------------------------------------------------
 
 
-def test_a_denial_for_a_repo_not_on_disk_does_not_occupy_a_slot(monkeypatch, tmp_path):
-    """The flood shape: 401s for repositories that do not exist. Nothing on disk can overturn
-    them, so remembering them protects nothing and only spends the memory."""
-    _cache_root(monkeypatch, tmp_path)
+@pytest.mark.parametrize(
+    ("caller_for", "repo_for"),
+    [
+        # The flood shape: 401s for repositories that do not exist. Nothing on disk can overturn
+        # them, so remembering them protects nothing and only spends the memory.
+        (lambda i: OPERATOR_TOKEN, lambda i: f"attacker/absent-{i}"),
+        # The other flood shape: one real on-disk repo, many caller-supplied tokens. A token the
+        # host does not hold can never be authorized by the fallback, whatever the disk says.
+        (lambda i: f"hf_stranger_{i}", lambda i: ON_DISK),
+    ],
+    ids = ("a-repo-not-on-disk", "a-credential-this-host-never-held"),
+)
+def test_a_denial_the_disk_could_never_overturn_does_not_occupy_a_slot(
+    monkeypatch, on_disk, caller_for, repo_for
+):
     _counting_probe(monkeypatch, False)
 
     for i in range(64):
-        assert cache_reads_authorized(OPERATOR_TOKEN, repo_id = f"attacker/absent-{i}") is False
+        assert _reads(caller_for(i), repo_for(i)) is False
 
     assert len(hf_tokens._denied_repo_access) == 0
     assert hf_tokens._denial_memory_lost_an_entry() is False
 
 
-def test_a_denial_for_a_credential_this_host_never_held_does_not_occupy_a_slot(
-    monkeypatch, on_disk
-):
-    """The other flood shape: one real on-disk repo, many caller-supplied tokens. A token the
-    host does not hold can never be authorized by the fallback, whatever the disk says."""
-    _counting_probe(monkeypatch, False)
-
-    for i in range(64):
-        assert cache_reads_authorized(f"hf_stranger_{i}", repo_id = ON_DISK) is False
-
-    assert len(hf_tokens._denied_repo_access) == 0
-    assert hf_tokens._denial_memory_lost_an_entry() is False
-
-
-def test_a_flood_does_not_take_the_offline_fallback_away_from_everyone_else(
-    monkeypatch, tmp_path, on_disk
-):
+def test_a_flood_does_not_take_the_offline_fallback_away_from_everyone_else(monkeypatch, on_disk):
     """The defect this closes: one evicted entry set `_denial_memory_is_complete` False for the
     life of the process, after which every unaskable probe read as a refusal, for every repo
     and every caller."""
     _counting_probe(monkeypatch, False)
 
     for i in range(hf_tokens._DENIAL_MEMORY_MAX + 16):
-        cache_reads_authorized(f"hf_stranger_{i}", repo_id = f"attacker/absent-{i}")
+        _reads(f"hf_stranger_{i}", f"attacker/absent-{i}")
 
     assert hf_tokens._denial_memory_lost_an_entry() is False
     reset_repo_access_cache()
     _counting_probe(monkeypatch, _ProbeUnreachable(), offline = False)
-    assert cache_reads_authorized(OPERATOR_TOKEN, repo_id = ON_DISK) is True
-
-
-def test_a_denial_that_could_be_overturned_is_still_remembered(monkeypatch, tmp_path, on_disk):
-    """The boundary the three above must not move: the Hub refused the operator's OWN
-    credential for a repo that IS on this disk, so an outage must not hand it over."""
-    _counting_probe(monkeypatch, False)
-
-    assert cache_reads_authorized(OPERATOR_TOKEN, repo_id = ON_DISK) is False
-    assert len(hf_tokens._denied_repo_access) == 1
-
-    _counting_probe(monkeypatch, _ProbeUnreachable(), offline = False)
-    # The verdict cache is what expires; the denial is what does not.
-    hf_tokens._repo_access_cache.clear()
-    assert cache_reads_authorized(OPERATOR_TOKEN, repo_id = ON_DISK) is False
-
-
-class _ProbeUnreachable(Exception):
-    """Stands in for a refused connection: not an answer, so the fallback applies."""
+    assert _reads(OPERATOR_TOKEN, ON_DISK) is True
 
 
 # ---------------------------------------------------------------------------------------
@@ -1471,162 +1424,48 @@ class _ProbeUnreachable(Exception):
 # ---------------------------------------------------------------------------------------
 
 
-def _anonymous_config_read(monkeypatch, tmp_path, *, probe, env_offline: bool):
+def _anonymous_config_read(monkeypatch, tmp_path, probe, env_offline):
     root = _cache_root(monkeypatch, tmp_path)
     _materialize_repo(root, ON_DISK)
     _counting_probe(monkeypatch, probe, offline = False)
     monkeypatch.setattr(model_config_module, "_env_offline", lambda: env_offline)
     monkeypatch.setattr(model_config_module, "_config_json_already_cached", lambda *_a, **_k: True)
-    served = {"n": 0}
-
-    class _AutoConfig:
-        @staticmethod
-        def from_pretrained(*_a, **_k):
-            served["n"] += 1
-            return SimpleNamespace(model_type = "llama")
-
-    # Imported inside the function under test, so the stand-in goes on the package.
-    import transformers
-
-    monkeypatch.setattr(transformers, "AutoConfig", _AutoConfig)
-    return served
+    return _stub_autoconfig(monkeypatch)
 
 
-def test_an_unaskable_hub_still_serves_a_cached_config_to_the_anonymous_caller(
-    monkeypatch, tmp_path
+@pytest.mark.parametrize(
+    ("host_holds_a_credential", "probe", "env_offline", "served"),
+    [
+        # The host holds a credential, so the provenance rule cannot vouch for a tokenless
+        # caller; but the Hub never said no, and the merge base served this. A DNS blip must not
+        # take a downloaded PUBLIC model away.
+        (True, _ProbeUnreachable(), False, True),
+        # BOUNDARY. The reverse hole #10264 left open: online, the Hub refuses this caller, and
+        # the cached config.json was handed over anyway. That must stay closed.
+        (True, False, False, False),
+        # BOUNDARY. Declared offline is the path the PR narrows on purpose: a tokenless caller on
+        # a host that HOLDS a credential is refused, because either could have filled the cache.
+        (True, _ProbeUnreachable(), True, False),
+        # BOUNDARY. The case the whole PR exists for keeps working through the added clause.
+        (False, _ProbeUnreachable(), True, True),
+    ],
+    ids = ("unaskable-online", "an-answered-no", "declared-offline", "offline-no-credential"),
+)
+def test_an_anonymous_cached_config_read_turns_only_on_an_answered_no(
+    monkeypatch, tmp_path, host_holds_a_credential, probe, env_offline, served
 ):
-    """The host holds a credential, so the provenance rule cannot vouch for a tokenless
-    caller; but the Hub never said no, and the merge base served this. A DNS blip must not
-    take a downloaded PUBLIC model away."""
-    served = _anonymous_config_read(
-        monkeypatch, tmp_path, probe = _ProbeUnreachable(), env_offline = False
-    )
+    if not host_holds_a_credential:
+        _no_host_credential(monkeypatch)
+    reads = _anonymous_config_read(monkeypatch, tmp_path, probe, env_offline)
 
-    model_config_module.load_model_config(ON_DISK, use_auth = False, token = False)
-    assert served["n"] == 1
-
-
-def test_an_answered_no_still_refuses_the_cached_config(monkeypatch, tmp_path):
-    """BOUNDARY. The reverse hole #10264 left open: online, the Hub refuses this caller, and
-    the cached config.json was handed over anyway. That must stay closed."""
-    served = _anonymous_config_read(monkeypatch, tmp_path, probe = False, env_offline = False)
-
-    with pytest.raises(OSError, match = "not available to an unauthorized caller"):
+    if served:
         model_config_module.load_model_config(ON_DISK, use_auth = False, token = False)
-    assert served["n"] == 0
+        assert reads["n"] == 1
+    else:
+        with pytest.raises(OSError, match = "not available to an unauthorized caller"):
+            model_config_module.load_model_config(ON_DISK, use_auth = False, token = False)
+        assert reads["n"] == 0
 
-
-def test_offline_the_narrow_provenance_rule_still_decides(monkeypatch, tmp_path):
-    """BOUNDARY. Declared offline is the path the PR narrows on purpose: a tokenless caller on
-    a host that HOLDS a credential is refused, because either could have filled the cache."""
-    served = _anonymous_config_read(
-        monkeypatch, tmp_path, probe = _ProbeUnreachable(), env_offline = True
-    )
-
-    with pytest.raises(OSError, match = "not available to an unauthorized caller"):
-        model_config_module.load_model_config(ON_DISK, use_auth = False, token = False)
-    assert served["n"] == 0
-
-
-def test_offline_a_credential_less_host_still_reads_its_own_cache(monkeypatch, tmp_path):
-    """BOUNDARY. The case the whole PR exists for keeps working through the added clause."""
-    _no_host_credential(monkeypatch)
-    served = _anonymous_config_read(
-        monkeypatch, tmp_path, probe = _ProbeUnreachable(), env_offline = True
-    )
-
-    model_config_module.load_model_config(ON_DISK, use_auth = False, token = False)
-    assert served["n"] == 1
-
-
-def test_a_non_ascii_credential_is_compared_not_crashed_on(monkeypatch, tmp_path, on_disk):
-    """`hmac.compare_digest` refuses a str with any non-ASCII character. Both operands here are
-    text somebody else chose: the caller's own X-Unsloth-HF-Token header, and the credential the
-    host happens to hold. Either one carrying a single high byte turned an authorization
-    question into a 500 that quoted the exception."""
-    _counting_probe(monkeypatch, _ProbeUnreachable(), offline = False)
-
-    # A caller-supplied header byte. Starlette latin-1 decodes 0xE9 to U+00E9.
-    assert cache_reads_authorized("hf_é_not_the_hosts", repo_id = ON_DISK) is False
-
-    # And the mirror image: the HOST's credential is the non-ASCII one, and the caller presents
-    # it correctly, so the answer is a real match rather than a crash.
-    monkeypatch.setattr(hf_tokens, "_ambient_hf_token", lambda: (True, "hf_opérateur"))
-    assert cache_reads_authorized("hf_opérateur", repo_id = ON_DISK) is True
-
-
-def _ledger(monkeypatch, *tokens: str) -> None:
-    """The credentials this host is recorded as having held."""
-    monkeypatch.setattr(
-        hf_tokens,
-        "_host_credential_identities",
-        lambda: {hf_tokens._credential_identity(token): {"at": 1.0} for token in tokens},
-    )
-
-
-ROTATED_AWAY = "hf_the_credential_this_host_used_to_hold"
-
-
-def test_a_rotated_credential_does_not_inherit_what_the_old_one_downloaded(monkeypatch, on_disk):
-    """Holding the credential NOW is not having filled the cache with it. The operator rotates
-    from one login to another; the new one must not be handed the old one's private downloads."""
-    _counting_probe(monkeypatch, requests.exceptions.ConnectionError("refused"), offline = False)
-    monkeypatch.setattr(hf_tokens, "_ambient_hf_token", lambda: (True, OPERATOR_TOKEN))
-
-    _ledger(monkeypatch, ROTATED_AWAY, OPERATOR_TOKEN)
-    assert cache_reads_authorized(OPERATOR_TOKEN, repo_id = ON_DISK) is False
-
-    # BOUNDARY: a host that never rotated is unchanged, which is nearly every host.
-    _ledger(monkeypatch, OPERATOR_TOKEN)
-    hf_tokens.reset_repo_access_cache()
-    assert cache_reads_authorized(OPERATOR_TOKEN, repo_id = ON_DISK) is True
-
-
-def test_a_credential_this_host_gave_up_is_not_inherited_by_a_tokenless_caller(
-    monkeypatch, on_disk
-):
-    """The other half of the same fact: remove the credential and the private repos it
-    downloaded are still on the disk, so "the host holds none" stops meaning "none was needed"."""
-    _counting_probe(monkeypatch, requests.exceptions.ConnectionError("refused"), offline = False)
-    _no_host_credential(monkeypatch)
-    monkeypatch.setattr(hf_tokens, "_recorded_request_token_repos", lambda: {})
-
-    _ledger(monkeypatch, ROTATED_AWAY)
-    assert public_cache_read_authorized(repo_id = ON_DISK) is False
-
-    # BOUNDARY: a host that never held one downloaded only what needed none.
-    _ledger(monkeypatch)
-    hf_tokens.reset_repo_access_cache()
-    assert public_cache_read_authorized(repo_id = ON_DISK) is True
-
-
-def test_an_unreadable_ledger_authorizes_nobody(monkeypatch, on_disk):
-    """Same rule as the credential stores: cannot be established is not "empty"."""
-    _counting_probe(monkeypatch, requests.exceptions.ConnectionError("refused"), offline = False)
-    monkeypatch.setattr(hf_tokens, "_host_credential_identities", lambda: None)
-
-    assert cache_reads_authorized(OPERATOR_TOKEN, repo_id = ON_DISK) is False
-    _no_host_credential(monkeypatch)
-    assert public_cache_read_authorized(repo_id = ON_DISK) is False
-
-
-def test_the_ledger_records_an_identity_and_never_the_credential(monkeypatch):
-    """It answers "was it this one" and must not be somewhere a credential is readable."""
-    written: dict = {}
-    monkeypatch.setattr(hf_tokens, "_host_credential_identities", lambda: dict(written))
-    monkeypatch.setattr(
-        hf_tokens, "_as_owner", lambda call, _key, entry, value: written.setdefault(entry, value)
-    )
-    hf_tokens.reset_repo_access_cache()
-
-    hf_tokens._note_host_credential_identities((OPERATOR_TOKEN,))
-    assert list(written) == [hf_tokens._credential_identity(OPERATOR_TOKEN)]
-    assert OPERATOR_TOKEN not in repr(written)
-    assert hf_tokens._credential_identity(OPERATOR_TOKEN) != hf_tokens._credential_identity(
-        ROTATED_AWAY
-    )
-
-    # Written once: this runs on the authorization path, not on a settings save.
-    written.clear()
-    hf_tokens._note_host_credential_identities((OPERATOR_TOKEN,))
-    assert written == {}, "the ledger was rewritten on every check"
+    if probe is False:
+        # The same answered no, through the guard the routes themselves call.
+        assert _refused(ANON, ON_DISK) is True
