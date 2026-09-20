@@ -100,6 +100,16 @@ EMPTY_SEARCH_RESULTS = (
 # ddgs signals an empty sweep by raising rather than returning [].
 _DDGS_EMPTY_SWEEP = "No results found"
 
+# Text search runs an ALLOWLIST, tier by tier, and never ddgs's own "auto" set: auto dispatches to
+# every enabled engine including Yandex, which some networks block outright. Tier 1 is tried first
+# and tier 2 only if it produced nothing; members WITHIN a tier run in parallel, because that is
+# what ddgs does with a comma-delimited backend. Anything absent from both tiers (yandex, bing, the
+# mullvad_* mirrors) is never named, and naming is the only way an engine is reached.
+_SEARCH_ENGINE_TIERS = (
+    ("wikipedia", "brave", "duckduckgo", "mojeek", "startpage"),
+    ("grokipedia", "google", "yahoo"),
+)
+
 # Import at module level so the preexec_fn closure triggers no imports in the forked child (which can deadlock
 # multi-threaded servers).
 _libc = None
@@ -15128,6 +15138,31 @@ def _search_failure_message(exc: BaseException, timeout: int) -> str:
     return f"Search failed: {exc}"
 
 
+def _resolve_engine_tiers(text_engines) -> list:
+    """``_SEARCH_ENGINE_TIERS`` reduced to the engines this ddgs actually has, in tier order.
+
+    Filtering before the call is the whole guarantee, because naming an engine the registry lacks is
+    not an error in ddgs. Measured on both pinned versions: 9.14.4 drops the unknown names, warns and
+    keeps the rest, while 9.8.0 raises ``KeyError`` on the first one and silently re-runs the request
+    as ``auto`` -- the Yandex fan-out the allowlist exists to prevent. Tier 1 as written trips exactly
+    that on 9.8.0, which has no ``startpage``.
+
+    An empty tier is dropped rather than passed down, since a tier that resolves to nothing would be
+    the all-unknown case that falls back to ``auto`` on BOTH versions.
+    """
+    engines = text_engines or {}
+    resolved = []
+    for tier in _SEARCH_ENGINE_TIERS:
+        live = [
+            name
+            for name in tier
+            if engines.get(name) is not None and not getattr(engines.get(name), "disabled", False)
+        ]
+        if live:
+            resolved.append(",".join(live))
+    return resolved
+
+
 def _image_search_or_none(subjects: list, timeout, cancel_event, website_policy) -> "str | None":
     """``_image_search`` that reports a failure as None instead of raising. Every caller sits inside
     ``_web_search``'s own ``except``, which would turn a raise into Search failed: ... and throw
@@ -15176,7 +15211,7 @@ def _web_search(
     include_images: bool = False,
     image_queries = None,
 ) -> str:
-    """Search the web with DuckDuckGo and return formatted results. If ``url`` is provided,
+    """Search the web through the approved engine tiers and return formatted results. If ``url`` is provided,
     fetches that page directly instead of searching. ``include_images`` adds image results registered
     server-side and offered to the model as ``[[img:<id>]]`` tokens, with a frontend-only
     envelope appended: one picture per ``image_queries`` subject when the model named them, else
@@ -15214,11 +15249,12 @@ def _web_search(
 
         from .web_access_policy import check_url_access, scope_search_query
 
-        # DDGS defaults to multiple providers (including Yandex), and even an explicit
-        # backend falls back to auto if it is absent from the enabled engine registry.
-        engine = ENGINES.get("text", {}).get("duckduckgo")
-        if engine is None or engine.disabled:
-            return "Search failed: DuckDuckGo search is unavailable."
+        # DDGS defaults to every enabled provider including Yandex, and even an explicit backend falls
+        # back to auto when nothing it names is in the registry. Resolve the allowlist first, so the
+        # only engines that can be reached are ones this ddgs really has AND we approved.
+        engine_tiers = _resolve_engine_tiers(ENGINES.get("text", {}))
+        if not engine_tiers:
+            return "Search failed: no approved search engine is available."
 
         effective_query = scope_search_query(query, website_policy)
         # The policy filters below, so ask for a deeper pool when one actually restricts: a page whose top hits are
@@ -15229,7 +15265,23 @@ def _web_search(
         )
         wanted = max_results * _POLICY_OVERFETCH if restricted else max_results
         client = DDGS(timeout = timeout)
-        results = client.text(effective_query, max_results = wanted, backend = "duckduckgo")
+        # Tier at a time: tier 2 is only asked when tier 1 yielded nothing, so the usual search costs
+        # one sweep. ddgs signals an empty sweep by RAISING, so a tier's exception is a reason to try
+        # the next tier, not the answer; the last one is re-raised for _search_failure_message to
+        # classify exactly as a single-tier failure would have been.
+        results, last_error = [], None
+        for backend in engine_tiers:
+            if cancel_event is not None and cancel_event.is_set():
+                return "Search cancelled."
+            try:
+                results = client.text(effective_query, max_results = wanted, backend = backend)
+            except Exception as exc:  # noqa: BLE001 - re-raised below when no tier produced anything
+                last_error = exc
+                continue
+            if results:
+                break
+        if not results and last_error is not None:
+            raise last_error
         if cancel_event is not None and cancel_event.is_set():
             return "Search cancelled."
         if not results:
