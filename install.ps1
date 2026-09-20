@@ -14,6 +14,28 @@
 #
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+# Remove-Item's -ErrorAction does not cover every failure. For a path the FileSystem provider
+# cannot resolve it raises a terminating PSArgumentException ("An object at the specified path
+# ... does not exist"), which -ErrorAction SilentlyContinue cannot suppress, so an unguarded
+# removal during a rollback aborts the rest of the cleanup it belongs to (#11290). Guard on
+# existence and catch everything, so a missing or unresolvable temp path is never fatal. Used
+# for the temp files whose names can come from an 8.3 alias.
+#
+# Top level, NOT inside Install-UnslothStudio: a nested function lives in its parent's local
+# scope and is gone once the parent returns, and the outer finally below runs after exactly
+# that. Defined there, the finally's two calls raise CommandNotFoundException and leave the
+# overrides file -- which carries the caller's UV_OVERRIDE lines -- on disk.
+# tests/studio/test_unsloth_torch_override.ps1 pins the placement.
+function Remove-UnslothTempFileQuietly {
+    param([string]$Path)
+    if (-not $Path) { return }
+    try {
+        if (-not (Test-Path -LiteralPath $Path)) { return }
+        Remove-Item -LiteralPath $Path -Force -ErrorAction Stop
+    } catch { }
+}
+
 function Install-UnslothStudio {
     $ErrorActionPreference = "Stop"
 
@@ -9484,21 +9506,6 @@ exit 0
             Where-Object { $_.FullName -like "*studio*backend*requirements*no-torch-runtime.txt" } |
             Select-Object -ExpandProperty FullName -First 1
         return $installed
-    }
-
-    # Remove-Item's -ErrorAction does not cover every failure. For a path the FileSystem provider
-    # cannot resolve it raises a terminating PSArgumentException ("An object at the specified path
-    # ... does not exist"), which -ErrorAction SilentlyContinue cannot suppress, so an unguarded
-    # removal during a rollback aborts the rest of the cleanup it belongs to (#11290). Guard on
-    # existence and catch everything, so a missing or unresolvable temp path is never fatal. Used
-    # for the temp files whose names can come from an 8.3 alias.
-    function Remove-UnslothTempFileQuietly {
-        param([string]$Path)
-        if (-not $Path) { return }
-        try {
-            if (-not (Test-Path -LiteralPath $Path)) { return }
-            Remove-Item -LiteralPath $Path -Force -ErrorAction Stop
-        } catch { }
     }
 
     # ── Freeze the trio: a released unsloth wheel can downgrade it. The caller removes it. ──

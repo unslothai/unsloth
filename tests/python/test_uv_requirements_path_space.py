@@ -150,3 +150,23 @@ def test_an_8dot3_alias_is_only_used_once_it_resolves():
         f"{HELPER} accepts an 8.3 short path on 'contains no space' alone, so an alias that "
         "does not resolve is handed to uv and later to Remove-Item"
     )
+
+
+def test_get_uv_safe_path_also_requires_the_alias_to_resolve():
+    """The same defect class as above, in the twin that feeds UV_OVERRIDE (issue #11290).
+
+    `Get-UvSafePath` is the helper behind `UV_OVERRIDE`, `UV_FIND_LINKS`, `PIP_FIND_LINKS` and
+    the `--find-links` arguments, across both install.ps1 and studio/setup.ps1. It took the FSO
+    `ShortPath` on "contains no space" alone, so on a volume where the 8.3 name was never
+    created it handed uv a path that does not exist. Both copies must validate it, and they are
+    byte-identical bodies, so both are checked here.
+    """
+    guard = r"-and \(Test-Path -LiteralPath \$short\)"
+    for path in (INSTALL_PS1, REPO_ROOT / "studio" / "setup.ps1"):
+        text = path.read_text(encoding = "utf-8")
+        start = text.index("function Get-UvSafePath")
+        body = text[start : text.index("\n}", start)]
+        assert re.search(guard, body), (
+            f"{path.name}: Get-UvSafePath accepts an 8.3 short path without checking that it "
+            "resolves, so uv is pointed at a file it cannot open"
+        )

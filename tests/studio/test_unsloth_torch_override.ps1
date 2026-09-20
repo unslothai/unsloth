@@ -93,12 +93,28 @@ Check "outer finally still clears UNSLOTH_KEPT_TORCH" ($finallyText -match 'Remo
 Check "overrides path reset to null before the outer try" (
     $installText -match '(?m)^\$script:TorchOverridesFile = \$null\r?\ntry \{\r?\n\s*Install-UnslothStudio @args')
 
-# The finally body calls this, and PowerShell does not hoist, so define it here from install.ps1.
 $guardAst = $ast.FindAll({ param($n)
     $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
     $n.Name -eq "Remove-UnslothTempFileQuietly"
 }, $true)
 Check "Remove-UnslothTempFileQuietly defined exactly once" ($guardAst.Count -eq 1)
+# WHERE it is defined is the whole point. A function nested inside Install-UnslothStudio lives in
+# that call's local scope and is gone the moment it returns, so the outer finally -- which runs
+# after exactly that -- would hit CommandNotFoundException and leave the credential-bearing
+# overrides file on disk. Defined at top level it is in scope both inside the installer and after
+# it returns, so assert the definition is not a descendant of any function (#11290).
+$guardEnclosing = $null
+$_guardParent = $guardAst[0].Parent
+while ($_guardParent) {
+    if ($_guardParent -is [System.Management.Automation.Language.FunctionDefinitionAst]) {
+        $guardEnclosing = $_guardParent.Name
+        break
+    }
+    $_guardParent = $_guardParent.Parent
+}
+Check "the guard is defined at top level, not nested inside a function" ($null -eq $guardEnclosing)
+if ($guardEnclosing) { Write-Host "        enclosed by $guardEnclosing, so the outer finally cannot see it" -ForegroundColor Red }
+# Define it the way install.ps1 does, from its own source, rather than assuming this scope has it.
 Invoke-Expression $guardAst[0].Extent.Text
 
 Write-Host "Remove-UnslothTempFileQuietly is a no-op for anything that is not there"
@@ -130,6 +146,32 @@ Check "temp overrides file removed" (-not (Test-Path -LiteralPath $leakFile))
 Check "kept-torch handoff still cleared" ($null -eq $env:UNSLOTH_KEPT_TORCH)
 Check "tracked path reset so a rerun cannot re-remove it" ($null -eq $script:TorchOverridesFile)
 Remove-Item -LiteralPath $leakFile -Force -ErrorAction SilentlyContinue
+
+Write-Host "and it deletes it in a scope built only from install.ps1's own top-level definitions"
+# The replay above runs in THIS scope, which was handed the guard by the Invoke-Expression higher
+# up -- a scope production does not have. A fresh runspace inherits nothing, so seeding it with
+# only install.ps1's top-level function definitions is what the script itself has when the outer
+# finally runs. Without the guard at top level, this leaves the file behind (#11290).
+$topLevelDefs = @($ast.FindAll({ param($n)
+    $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+    -not ($n.Parent.Parent -is [System.Management.Automation.Language.FunctionDefinitionAst])
+}, $false) | Where-Object { $_.Name -ne "Install-UnslothStudio" } | ForEach-Object { $_.Extent.Text })
+$isolatedLeak = [System.IO.Path]::GetTempFileName()
+Set-Content -LiteralPath $isolatedLeak -Encoding ascii -Value "torch==2.11.0+cu128"
+$ps = [powershell]::Create()
+try {
+    $null = $ps.AddScript(@"
+`$ErrorActionPreference = 'Continue'
+$($topLevelDefs -join "`n")
+`$script:WoaResolverEnvSaved = `$null
+`$script:WoaSessionOverrides = `$null
+`$script:TorchOverridesFile = '$isolatedLeak'
+$finallyBody
+"@)
+    $null = $ps.Invoke()
+} finally { $ps.Dispose() }
+Check "the file is gone when the finally runs with install.ps1's own scope" (-not (Test-Path -LiteralPath $isolatedLeak))
+Remove-Item -LiteralPath $isolatedLeak -Force -ErrorAction SilentlyContinue
 
 Write-Host "an unresolvable tracked path cannot abort the cleanup (#11290)"
 # Shadow Remove-Item for the rest of the file. The reported failure is a *terminating* error the
