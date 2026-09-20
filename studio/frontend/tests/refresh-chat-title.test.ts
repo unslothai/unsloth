@@ -274,3 +274,34 @@ test("legacy string content contributes to the refreshed title", async () => {
   assert.ok(transcript.includes("renewal terms"));
   assert.equal(state.threads[0].title, "Contract Negotiation");
 });
+
+test("ChatGPT subscription titles use streaming and collect the text deltas", async () => {
+  state.model = "external::subscription::gpt-5.3-codex";
+  state.providers = [
+    {
+      id: "subscription",
+      providerType: "openai_codex",
+      baseUrl: "",
+      hasApiKey: true,
+    },
+  ];
+  await refreshChatTitle(item);
+  assert.equal(state.requests[0].stream, true);
+  assert.equal(state.requests[0].enable_tools, false);
+  assert.equal(state.threads[0].title, "Contract Negotiation");
+});
+
+test("a truncated subscription title preserves the existing title", async () => {
+  state.model = "external::subscription::gpt-5.3-codex";
+  state.providers = [
+    {
+      id: "subscription",
+      providerType: "openai_codex",
+      baseUrl: "",
+      hasApiKey: true,
+    },
+  ];
+  state.response.choices[0].finish_reason = "length";
+  await assert.rejects(refreshChatTitle(item));
+  assert.equal(state.threads[0].title, item.title);
+});

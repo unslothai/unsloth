@@ -69,9 +69,31 @@ export async function updateChatThread(
 }
 export async function authFetch(_url: string, init: RequestInit) {
   state.requests.push(JSON.parse(init.body as string));
+  const request = state.requests.at(-1)!;
+  if (request.provider_type === "openai_codex" && !request.stream) {
+    return new Response("ChatGPT subscription chat requires stream=true.", {
+      status: 400,
+    });
+  }
   await state.wait;
   return new Response(JSON.stringify(state.response), { status: state.status });
 }
 export async function encryptProviderApiKey(value: string) {
   return `encrypted:${value}`;
+}
+
+export async function* streamChatCompletions(payload: unknown) {
+  state.requests.push(JSON.parse(JSON.stringify(payload)));
+  const choice = state.response.choices[0];
+  yield {
+    choices: [{ delta: { content: choice.message.content.slice(0, 9) } }],
+  };
+  yield {
+    choices: [
+      {
+        delta: { content: choice.message.content.slice(9) },
+        finish_reason: choice.finish_reason,
+      },
+    ],
+  };
 }

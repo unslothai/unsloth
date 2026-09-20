@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { streamChatCompletions } from "../api/chat-api";
+import type { OpenAIChatCompletionsRequest } from "../types/api";
 import { authFetch } from "@/features/auth";
 import { encryptProviderApiKey } from "../api/providers-api";
 import {
@@ -69,41 +71,54 @@ export async function generateChatTitle(
         }
       : {};
 
-  const response = await authFetch("/v1/chat/completions", {
-    method: "POST",
-    signal,
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      model,
-      ...external,
-      stream: false,
-      temperature: 0.2,
-      top_p: 0.9,
-      max_tokens: 24,
-      top_k: 20,
-      repetition_penalty: 1.0,
-      enable_thinking: false,
-      reasoning_effort: "none",
-      // title generation must not inherit the server's tools-on default.
-      enable_tools: false,
-      messages: [
-        {
-          role: "system",
-          content:
-            "Write 1 concise chat title summarizing the conversation topic, not the user's exact wording. Use the assistant reply as context when provided. Reflect how the topic has evolved. Rules: 2-6 words, no quotes, no punctuation, ASCII only, do not echo input. Output title only.",
-        },
-        { role: "user", content: conversation },
-      ],
-    }),
-  });
-
-  const body = (await response
-    .json()
-    .catch(() => null)) as TitleResponse | null;
-  if (!response.ok) return null;
-  const choice = body?.choices?.[0];
-  if (choice?.finish_reason === "length") return null;
-  const raw: string | undefined = choice?.message?.content;
+  const payload: OpenAIChatCompletionsRequest = {
+    model,
+    ...external,
+    stream: provider?.providerType === "openai_codex",
+    temperature: 0.2,
+    top_p: 0.9,
+    max_tokens: 24,
+    top_k: 20,
+    repetition_penalty: 1.0,
+    enable_thinking: false,
+    reasoning_effort: "none",
+    // title generation must not inherit the server's tools-on default.
+    enable_tools: false,
+    messages: [
+      {
+        role: "system",
+        content:
+          "Write 1 concise chat title summarizing the conversation topic, not the user's exact wording. Use the assistant reply as context when provided. Reflect how the topic has evolved. Rules: 2-6 words, no quotes, no punctuation, ASCII only, do not echo input. Output title only.",
+      },
+      { role: "user", content: conversation },
+    ],
+  };
+  let raw: string | undefined;
+  if (payload.stream) {
+    raw = "";
+    for await (const chunk of streamChatCompletions(
+      { ...payload, reasoning_effort: undefined },
+      signal ?? new AbortController().signal,
+    )) {
+      const choice = chunk.choices?.[0];
+      if (choice?.finish_reason === "length") return null;
+      raw += choice?.delta?.content ?? "";
+    }
+  } else {
+    const response = await authFetch("/v1/chat/completions", {
+      method: "POST",
+      signal,
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    const body = (await response
+      .json()
+      .catch(() => null)) as TitleResponse | null;
+    if (!response.ok) return null;
+    const choice = body?.choices?.[0];
+    if (choice?.finish_reason === "length") return null;
+    raw = choice?.message?.content;
+  }
   if (!raw || /<\/?think>/i.test(raw)) return null;
   return normalizeTitle(raw);
 }
