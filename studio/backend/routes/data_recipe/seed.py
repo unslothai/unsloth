@@ -115,6 +115,75 @@ def _list_hf_data_files(*, dataset_name: str, token: HfTokenArg) -> list[str]:
         return []
 
 
+def _list_hf_dataset_configs(*, dataset_name: str, token: HfTokenArg) -> list[dict[str, Any]]:
+    """The `configs:` block of the dataset card, which maps a config to its own file globs.
+
+    A config name is not required to be a folder name: fineweb-edu's `sample-10BT`
+    lives under `sample/10BT/`, so a folder-name guess reads a different config.
+    """
+    try:
+        from huggingface_hub import HfApi
+        from huggingface_hub.utils import HfHubHTTPError
+    except ImportError:
+        return []
+    try:
+        api = HfApi(token = token)
+        card_data = api.dataset_info(dataset_name, token = token).card_data
+        configs = (card_data or {}).get("configs") if card_data is not None else None
+    except (HfHubHTTPError, OSError, ValueError, AttributeError):
+        return []
+    return [config for config in (configs or []) if isinstance(config, dict)]
+
+
+def _declared_split_patterns(
+    configs: list[dict[str, Any]],
+    split: str = DEFAULT_SPLIT,
+    subset: str | None = None,
+) -> list[str]:
+    """The globs the card declares for this split, under the named config."""
+    wanted = (subset or "default").lower()
+    for config in configs:
+        name = str(config.get("config_name") or "default")
+        if name.lower() != wanted:
+            continue
+        for entry in config.get("data_files") or []:
+            if not isinstance(entry, dict) or str(entry.get("split") or "").lower() != split.lower():
+                continue
+            path = entry.get("path")
+            if isinstance(path, str):
+                return [path]
+            if isinstance(path, list):
+                return [p for p in path if isinstance(p, str)]
+    return []
+
+
+def _pattern_prefix(pattern: str) -> str:
+    """The literal part of a glob, up to its first wildcard."""
+    cut = min((i for i in (pattern.find(c) for c in "*?[") if i >= 0), default = len(pattern))
+    return pattern[:cut]
+
+
+def _files_under_patterns(patterns: list[str], data_files: list[str]) -> list[str]:
+    prefixes = [_pattern_prefix(p) for p in patterns]
+    return [f for f in data_files if any(f.startswith(prefix) for prefix in prefixes)]
+
+
+def _split_rank(path: str, split_lower: str) -> int:
+    """0 the split is a folder, 1 the file name carries it, 2 neither."""
+    name = f"/{path.lower()}"
+    if f"/{split_lower}/" in name:
+        return 0
+    if (
+        f"_{split_lower}." in name
+        or f"-{split_lower}." in name
+        or f"/{split_lower}." in name
+        or f"/{split_lower}_" in name
+        or f"/{split_lower}-" in name
+    ):
+        return 1
+    return 2
+
+
 def _select_best_file(
     data_files: list[str],
     split: str = DEFAULT_SPLIT,
@@ -128,21 +197,25 @@ def _select_best_file(
         in_subset = [f for f in data_files if subset_lower in f.lower().split("/")[:-1]]
         data_files = in_subset or data_files
 
-    def score(path: str) -> tuple[int, int]:
-        name = f"/{path.lower()}"
-        if f"/{split_lower}/" in name:
-            return (0, len(path))
-        if (
-            f"_{split_lower}." in name
-            or f"-{split_lower}." in name
-            or f"/{split_lower}." in name
-            or f"/{split_lower}_" in name
-            or f"/{split_lower}-" in name
-        ):
-            return (1, len(path))
-        return (2, len(path))
+    return sorted(data_files, key = lambda p: (_split_rank(p, split_lower), len(p)))[0]
 
-    return sorted(data_files, key = score)[0]
+
+def _covers_the_split(
+    data_files: list[str], parent: str, prefix: str, suffix: str, split_lower: str
+) -> bool:
+    """True when every file of this split in this folder starts with the same prefix.
+
+    A folder may name one split several ways at once (train-part.parquet beside
+    questions_train.parquet), and a glob built from whichever file was picked
+    would silently drop the others.
+    """
+    for path in data_files:
+        if Path(path).parent.as_posix() != parent or _split_rank(path, split_lower) > 1:
+            continue
+        name = Path(path).name
+        if not (name.startswith(prefix) and name.endswith(suffix)):
+            return False
+    return True
 
 
 def _resolve_seed_hf_path(
@@ -150,8 +223,19 @@ def _resolve_seed_hf_path(
     data_files: list[str],
     split: str = DEFAULT_SPLIT,
     subset: str | None = None,
+    configs: list[dict[str, Any]] | None = None,
 ) -> str | None:
-    selected = _select_best_file(data_files, split, subset)
+    declared = _declared_split_patterns(configs or [], split, subset)
+    declared_files = _files_under_patterns(declared, data_files)
+    # The card's own mapping beats any guess from the folder names, but only when it
+    # resolves to a single glob over files that are really there.
+    if len(declared) == 1 and declared_files:
+        pattern = declared[0]
+        if Path(pattern).suffix.lower() not in DATA_EXTS:
+            pattern = f"{pattern}{Path(declared_files[0]).suffix}"
+        return f"datasets/{dataset_name}/{pattern}"
+
+    selected = _select_best_file(declared_files or data_files, split, subset)
     if not selected:
         return None
 
@@ -170,12 +254,15 @@ def _resolve_seed_hf_path(
         name = Path(selected).name
         stem = name[: -len(suffix)]
         stem_lower = stem.lower()
+        prefix = None
         if stem_lower.startswith((f"{split_lower}-", f"{split_lower}_", f"{split_lower}.")):
-            return f"{base}/{stem[: len(split_lower) + 1]}*{suffix}"
-        if stem_lower == split_lower or stem_lower.endswith((f"_{split_lower}", f"-{split_lower}")):
+            prefix = stem[: len(split_lower) + 1]
+        elif stem_lower == split_lower or stem_lower.endswith((f"_{split_lower}", f"-{split_lower}")):
             # Keep the trailing star: the split may still be sharded as train.jsonl,
             # train_2.jsonl, so an exact file name would read only the first shard.
-            return f"{base}/{stem}*{suffix}"
+            prefix = stem
+        if prefix and _covers_the_split(data_files, parent, prefix, suffix, split_lower):
+            return f"{base}/{prefix}*{suffix}"
     return f"{base}/**/*{ext}"
 
 
@@ -380,8 +467,14 @@ def inspect_seed_dataset(
 
     preview_rows: list[dict[str, Any]] = []
     data_files = _list_hf_data_files(dataset_name = dataset_name, token = token)
+    configs = _list_hf_dataset_configs(dataset_name = dataset_name, token = token)
 
-    selected_file = _select_best_file(data_files, split, subset)
+    # Preview the same files the recipe will read, so the rows on screen are not
+    # from a config the resolved path excludes.
+    declared_files = _files_under_patterns(
+        _declared_split_patterns(configs, split, subset), data_files
+    )
+    selected_file = _select_best_file(declared_files or data_files, split, subset)
     if selected_file:
         try:
             single_file_kwargs = _build_stream_load_kwargs(
@@ -429,7 +522,7 @@ def inspect_seed_dataset(
     if not data_files:
         resolved_path = f"datasets/{dataset_name}/**/*.parquet"
     else:
-        resolved_path = _resolve_seed_hf_path(dataset_name, data_files, split, subset)
+        resolved_path = _resolve_seed_hf_path(dataset_name, data_files, split, subset, configs)
         if not resolved_path:
             raise HTTPException(status_code = 422, detail = "unable to resolve seed dataset path")
 

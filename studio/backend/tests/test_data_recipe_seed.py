@@ -499,6 +499,60 @@ def test_seed_preview_file_comes_from_the_chosen_subset(monkeypatch, tmp_path):
     )
 
 
+# fineweb-edu: the config name is not a folder, so a folder-name guess reads a
+# different config entirely.
+_SAMPLE_FILES = [
+    "data/CC-MAIN-2013-20/train-00000-of-00014.parquet",
+    "sample/10BT/000_00000.parquet",
+    "sample/10BT/001_00000.parquet",
+]
+_SAMPLE_CONFIGS = [
+    {"config_name": "default", "data_files": [{"split": "train", "path": "data/*/*"}]},
+    {"config_name": "sample-10BT", "data_files": [{"split": "train", "path": "sample/10BT/*"}]},
+]
+
+
+@pytest.mark.parametrize(
+    ("subset", "expected"),
+    [
+        ("sample-10BT", "datasets/org/repo/sample/10BT/*.parquet"),
+        (None, "datasets/org/repo/data/*/*.parquet"),
+    ],
+)
+def test_seed_hf_path_follows_the_dataset_card_config_mapping(
+    monkeypatch, tmp_path, subset, expected
+):
+    seed_route = _load_seed_route(monkeypatch, tmp_path)
+    resolved = seed_route._resolve_seed_hf_path(
+        "org/repo", _SAMPLE_FILES, "train", subset, _SAMPLE_CONFIGS
+    )
+    assert resolved == expected
+
+
+def test_seed_hf_path_ignores_a_card_mapping_pointing_at_nothing(monkeypatch, tmp_path):
+    seed_route = _load_seed_route(monkeypatch, tmp_path)
+    configs = [{"config_name": "main", "data_files": [{"split": "train", "path": "gone/*"}]}]
+    resolved = seed_route._resolve_seed_hf_path(
+        "org/repo", _GSM8K_FILES, "train", "main", configs
+    )
+    assert resolved == "datasets/org/repo/main/train-*.parquet"
+
+
+def test_seed_hf_path_widens_when_one_split_uses_several_name_forms(monkeypatch, tmp_path):
+    seed_route = _load_seed_route(monkeypatch, tmp_path)
+    files = [
+        "data/train-part.parquet",
+        "data/questions_train.parquet",
+        "data/test-part.parquet",
+    ]
+    # train-part.parquet wins on length, but questions_train.parquet is train too,
+    # so the narrow glob would drop it.
+    assert (
+        seed_route._resolve_seed_hf_path("org/repo", files, "train")
+        == "datasets/org/repo/data/**/*.parquet"
+    )
+
+
 @pytest.mark.parametrize(
     ("files", "expected"),
     [
