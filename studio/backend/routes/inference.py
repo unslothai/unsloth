@@ -29528,7 +29528,7 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
     # `body` carries a prompt rather than messages, which the estimator prices as an equal
     # share of the cache (see _openai_llama_admission_tokens).
     try:
-        reservation, admission_config = _openai_llama_admission_reserve(
+        reservation, admission_config = await _openai_llama_admission_reserve_async(
             request = request,
             llama_backend = llama_backend,
             payload = body,
