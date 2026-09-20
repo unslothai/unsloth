@@ -3394,9 +3394,7 @@ def project_thread_ids(id: str) -> list[str]:
     try:
         return [
             str(row["id"])
-            for row in conn.execute(
-                "SELECT id FROM chat_threads WHERE project_id = ?", (id,)
-            )
+            for row in conn.execute("SELECT id FROM chat_threads WHERE project_id = ?", (id,))
         ]
     finally:
         conn.close()
@@ -3697,7 +3695,9 @@ def _set_chat_project_workspace(
     if external_workspace_path is None:
         root_path = _unclaimed_managed_root(project, root_path)
         root_path = _ensure_project_workspace(
-            root_path, check_descendants = True, exclude_project_id = id,
+            root_path,
+            check_descendants = True,
+            exclude_project_id = id,
             owner_project_id = id,
         )
         workspace_path = None

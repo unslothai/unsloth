@@ -363,14 +363,14 @@ def test_a_managed_account_gets_a_403_not_a_500(monkeypatch):
         update = {"workspaceKind": "external", "nativePathLease": "lease"}
     )
     monkeypatch.setattr(
-        chat_history, "_resolve_project_workspace_path",
+        chat_history,
+        "_resolve_project_workspace_path",
         lambda _lease: ("/tmp/picked", ("1", "2")),
     )
     monkeypatch.setattr(chat_history, "get_chat_project", lambda _id: None)
 
     def refuse(*_args, **_kwargs):
         from storage.studio_db import ProjectWorkspaceOwnerRequiredError
-
         raise ProjectWorkspaceOwnerRequiredError(
             "Only the owner account can use an existing folder as a project workspace"
         )

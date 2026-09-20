@@ -2277,9 +2277,9 @@ def test_a_stranger_at_the_reserved_root_is_not_adopted_as_the_managed_one(
 
     studio_db.set_chat_project_workspace(project["id"], external_workspace_path = None)
     switched = studio_db.get_chat_project(project["id"])
-    assert Path(switched["rootPath"]).resolve() != reserved.resolve(), (
-        "a directory Studio never created was adopted as the managed root"
-    )
+    assert (
+        Path(switched["rootPath"]).resolve() != reserved.resolve()
+    ), "a directory Studio never created was adopted as the managed root"
 
     studio_db.delete_chat_project(project["id"], delete_files = True)
     assert precious.exists(), "deleting the project removed an unrelated directory"
@@ -2307,14 +2307,23 @@ def test_a_folder_change_waits_for_a_generation_that_is_between_tool_calls(
 
     project = studio_db.upsert_chat_project(_project(), external_workspace_path = str(first))
     thread_id = f"thread-of-{project['id']}"
-    studio_db.upsert_chat_thread({
-        "id": thread_id, "title": "t", "modelType": "gguf", "modelId": "m",
-        "projectId": project["id"], "archived": 0, "createdAt": 1, "updatedAt": 1,
-    })
+    studio_db.upsert_chat_thread(
+        {
+            "id": thread_id,
+            "title": "t",
+            "modelType": "gguf",
+            "modelId": "m",
+            "projectId": project["id"],
+            "archived": 0,
+            "createdAt": 1,
+            "updatedAt": 1,
+        }
+    )
 
     def change():
         return studio_db.set_chat_project_workspace(
-            project["id"], external_workspace_path = str(second))
+            project["id"], external_workspace_path = str(second)
+        )
 
     with active_generations.ActiveGeneration(
         threading.Event(), thread_id = thread_id, run_id = "run-1"
@@ -2388,7 +2397,8 @@ def test_a_fork_keeps_the_managed_files_a_switch_left_behind(
     # The fork is not one of the ids this delete removes, so its reference is the
     # only thing standing between those files and the rmtree.
     monkeypatch.setattr(
-        studio_db, "sandbox_is_referenced_elsewhere",
+        studio_db,
+        "sandbox_is_referenced_elsewhere",
         lambda item, *_rest: item == retired_session,
     )
     assert tools.retired_workspace_is_referenced(project["id"], str(managed_root)) is True
@@ -2404,11 +2414,12 @@ def test_a_fork_keeps_the_managed_files_a_switch_left_behind(
         monkeypatch.setattr(chat_history, "_delete_project_rag_sources", lambda pid: None)
         return asyncio.new_event_loop().run_until_complete(
             chat_history.delete_project(
-                project["id"], request = None, delete_files = True, current_subject = "t",
+                project["id"],
+                request = None,
+                delete_files = True,
+                current_subject = "t",
             )
         )
 
     run_delete()
-    assert made_while_managed.exists(), (
-        "the delete took files a fork still has cards for"
-    )
+    assert made_while_managed.exists(), "the delete took files a fork still has cards for"

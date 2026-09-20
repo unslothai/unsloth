@@ -9568,16 +9568,15 @@ def retired_workspace_is_referenced(project_id: str, root_path: "str | None") ->
             recorded = record.get("rootPath")
             if not recorded or os.path.normcase(os.path.realpath(str(recorded))) != wanted:
                 continue
-            session = str(
-                record.get("sessionId") or f"{_PROJECT_SESSION_PREFIX}{project_id}"
-            )
+            session = str(record.get("sessionId") or f"{_PROJECT_SESSION_PREFIX}{project_id}")
             if sandbox_is_referenced_elsewhere(session):
                 return True
         return False
     except Exception:
         logger.warning(
             "Could not tell whether a retired workspace of %s is referenced",
-            project_id, exc_info = True,
+            project_id,
+            exc_info = True,
         )
         return True
 
@@ -9811,8 +9810,7 @@ def adopt_orphaned_workspace_when_idle(workspace: str, update):
             if any(sandbox_is_referenced_elsewhere(session) for session in sessions):
                 return False, None
         except Exception:
-            logger.warning("Could not tell whether %s is still referenced", sessions,
-                           exc_info = True)
+            logger.warning("Could not tell whether %s is still referenced", sessions, exc_info = True)
             return False, None
         with _sessions_free:
             if any(key in _removing_sessions or _active_sessions.get(key, 0) for key in keys):
@@ -11444,9 +11442,7 @@ def _project_generation_in_flight(project_id: str) -> bool:
             return False
         return any(thread_id in running for thread_id in project_thread_ids(project_id))
     except Exception:
-        logger.warning(
-            "Could not tell whether project %s is generating", project_id, exc_info = True
-        )
+        logger.warning("Could not tell whether project %s is generating", project_id, exc_info = True)
         return True
 
 
