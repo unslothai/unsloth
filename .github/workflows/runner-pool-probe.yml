@@ -20,15 +20,21 @@ on:
 # exists to protect, and the reason macOS queue waits here are measured in hours rather
 # than minutes.
 #
-# The cost is the QUEUE, not occupancy. A cell that reaches a runner holds it for about
-# five seconds, because the whole job is one echo: measured over the 16 macOS cells of the
-# last four successful dispatches, median 4s and longest 6s. `timeout-minutes: 10` below is
-# the cutoff for a cell that HANGS and nothing else; reading it as what a superseded matrix
-# holds overstates the normal case by two orders of magnitude. What a superseded matrix
-# really does is sit in the account-wide macOS queue ahead of work that matters, and the
-# queue is where the time goes: those same 16 cells waited a median of 15 minutes to start,
-# and one waited just over 3 hours. The superseded dispatch that prompted this sat there
-# 5 minutes 9 seconds before the newer push cleared it.
+# What cancelling saves is SMALL, and that is worth stating rather than inflating. A cell
+# that reaches a runner holds it for about five seconds, because the whole job is one echo:
+# measured over the 16 macOS cells of the last four successful dispatches, median 4s and
+# longest 6s. `timeout-minutes: 10` below is the cutoff for a cell that HANGS and nothing
+# else; reading it as what a superseded matrix holds overstates the normal case by two
+# orders of magnitude. A queued cell holds no slot at all, so a superseded matrix that is
+# still waiting costs nothing until it is dispatched, and what it then takes from the job
+# behind it is those few seconds, four times over.
+#
+# The reason to cancel anyway is that the saving is free and the pool is genuinely
+# contended. Those same 16 cells waited a median of 15 minutes to reach a runner and one
+# waited just over 3 hours; the superseded dispatch that prompted this waited 5 minutes
+# 9 seconds before the newer push cleared it. Those are the probe's OWN waits, evidence
+# that macOS capacity is scarce, and deliberately not offered as delay it imposed on
+# anyone else: the two were conflated here once already.
 #
 # Superseding does not weaken the measurement. The probe compares labels WITHIN one
 # dispatch -- the ten cells leave the queue in the same second, and that is the only

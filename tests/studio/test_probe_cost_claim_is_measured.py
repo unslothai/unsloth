@@ -77,8 +77,9 @@ _HOLD_CLAIM = re.compile(
     r"\b(?:hold\w*|held|occup\w*|tie[sd]?\s+up)\b[^.;]{0,80}?\bfor\s+"
     r"(?:about\s+|roughly\s+|around\s+|nearly\s+|almost\s+|approximately\s+|"
     r"up\s+to\s+|at\s+least\s+|at\s+most\s+|no\s+more\s+than\s+|over\s+|under\s+|"
+    r"the\s+|full\s+|entire\s+|whole\s+|"
     r"as\s+(?:much|long)\s+as\s+|~\s*)*"
-    r"(?P<value>[\w-]+)\s*"
+    r"(?P<value>[\w-]+(?:\s+[\w-]+){0,2}?)\s*"
     r"(?P<unit>seconds?|s\b|minutes?|mins?\b|hours?|hrs?\b)",
     re.I,
 )
@@ -119,11 +120,29 @@ _AS_A_NUMBER = {
 }
 
 
+# "six hundred seconds" is one number in three words, and a value matched as a single
+# token produced no claim at all rather than the unreadable-value failure the guard
+# promises. So the value is several tokens and they are summed here.
+_MULTIPLIERS = {"hundred": 100, "thousand": 1000}
+
+
 def _value(text: str) -> int | None:
     """None where the number cannot be read, which every caller treats as a failure."""
-    if text.isdigit():
-        return int(text)
-    return _AS_A_NUMBER.get(text.lower().replace("-", ""))
+    total = 0
+    read = False
+    for token in re.split(r"[\s-]+", text.strip().lower()):
+        if not token:
+            continue
+        if token.isdigit():
+            total += int(token)
+        elif token in _AS_A_NUMBER:
+            total += _AS_A_NUMBER[token]
+        elif token in _MULTIPLIERS:
+            total = (total or 1) * _MULTIPLIERS[token]
+        else:
+            return None
+        read = True
+    return total if read else None
 
 
 def _clause_before(text: str, position: int) -> str:
