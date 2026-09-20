@@ -41,9 +41,9 @@ env:
     **macOS**: Download `Unsloth-Desktop-MacOS.dmg` (Apple Silicon).
     **Windows**: Download `Unsloth-Desktop-Windows.exe`, or `Unsloth-Desktop-Windows-ARM64.exe` on a Windows on ARM machine.
     **Linux x64**: Download `Unsloth-Desktop-Ubuntu.deb` for Ubuntu/Debian. `.AppImage` is experimental.
-    **Linux ARM64**: Download `Unsloth-Desktop-Ubuntu-ARM64.deb` for Ubuntu 24.04 or newer. `Unsloth-Desktop-ARM64.app.tar.gz` is macOS-only.
+    **Linux ARM64**: Download `Unsloth-Desktop-Ubuntu-ARM64.deb` for Ubuntu 24.04 or newer on aarch64, such as a DGX Spark. `Unsloth-Desktop-ARM64.app.tar.gz` is macOS-only.
 
-    > Linux in-app updates are AppImage-oriented. Package installs should update by downloading a new package.
+    > Linux in-app updates cover `.deb` and AppImage installs. A `.deb` installed before in-app updates shipped needs one manual update first.
     > Linux AppImage can show a blank window on some Tauri/WebKitGTK + Wayland/Mesa stacks; use `.deb` when available.
     > Linux AppImage on Ubuntu 24.04+ may require: `sudo apt install libfuse2t64`
     > First-run system dependency elevation is supported on Ubuntu/Debian. Other Linux distributions should install system packages manually.
@@ -1677,10 +1677,14 @@ jobs:
               if os.environ.get('MATRIX_ARTIFACT') == 'windows-arm64'
               else f'{base_name}-Windows'
           )
-          deb_name = (
-              f'{base_name}-Ubuntu-ARM64.deb'
+          # Both Linux legs bundle a deb and, since in-app Debian updates, its updater
+          # signature. publish-release merges every leg's artifact into one directory, so
+          # staging the arm64 pair under the x64 names would silently overwrite one with
+          # the other and hand x64 users the wrong signature.
+          deb_base = (
+              f'{base_name}-Ubuntu-ARM64'
               if os.environ.get('MATRIX_ARTIFACT') == 'linux-arm64'
-              else f'{base_name}-Ubuntu.deb'
+              else f'{base_name}-Ubuntu'
           )
           suffix_names = (
               ('.app.tar.gz.sig', f'{base_name}-ARM64.app.tar.gz.sig'),
@@ -1690,7 +1694,8 @@ jobs:
               ('-setup.exe.sig', f'{windows_name}.exe.sig'),
               ('-setup.exe', f'{windows_name}.exe'),
               ('.dmg', f'{base_name}-MacOS.dmg'),
-              ('.deb', deb_name),
+              ('.deb.sig', f'{deb_base}.deb.sig'),
+              ('.deb', f'{deb_base}.deb'),
           )
           staged = []
           for raw_path in artifact_paths:
@@ -1859,7 +1864,9 @@ jobs:
               f'{base_name}-Linux.AppImage',
               f'{base_name}-Linux.AppImage.sig',
               f'{base_name}-Ubuntu.deb',
+              f'{base_name}-Ubuntu.deb.sig',
               f'{base_name}-Ubuntu-ARM64.deb',
+              f'{base_name}-Ubuntu-ARM64.deb.sig',
               f'{base_name}-Windows.exe',
               f'{base_name}-Windows.exe.sig',
               f'{base_name}-Windows-ARM64.exe',
@@ -1979,6 +1986,10 @@ jobs:
 
           darwin = entry('.app.tar.gz.sig')
           linux = entry('.AppImage.sig')
+          # Same full-name rule as the Windows pair below: both debs end in .deb.sig, and
+          # -Ubuntu.deb.sig does not match -Ubuntu-ARM64.deb.sig under endswith.
+          debian = entry('-Ubuntu.deb.sig')
+          debian_arm64 = entry('-Ubuntu-ARM64.deb.sig')
           # Both Windows bundles end in .exe.sig, and exactly_one() refuses an ambiguous
           # match, so name them in full. -Windows.exe.sig does not match -Windows-ARM64.exe.sig
           # under endswith, which is what keeps the two entries distinct.
@@ -1996,6 +2007,12 @@ jobs:
                   'darwin-aarch64-app': darwin,
                   'linux-x86_64': linux,
                   'linux-x86_64-appimage': linux,
+                  'linux-x86_64-deb': debian,
+                  # Same reason as the Windows ARM64 pair: without these an arm64 deb
+                  # install finds no entry and never updates, or matches the x86_64 one
+                  # and installs an amd64 package over a native install.
+                  'linux-aarch64': debian_arm64,
+                  'linux-aarch64-deb': debian_arm64,
                   'windows-x86_64': windows,
                   'windows-x86_64-nsis': windows,
                   # Tauri asks for {os}-{arch}; without these an ARM64 install either
@@ -2093,6 +2110,7 @@ jobs:
           required_families = {
               'darwin-aarch64': False,
               'linux-x86_64': False,
+              'linux-aarch64': False,
               'windows-x86_64': False,
               'windows-aarch64': False,
           }
