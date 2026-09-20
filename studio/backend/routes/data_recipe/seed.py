@@ -173,7 +173,9 @@ def _resolve_seed_hf_path(
         if stem_lower.startswith((f"{split_lower}-", f"{split_lower}_", f"{split_lower}.")):
             return f"{base}/{stem[: len(split_lower) + 1]}*{suffix}"
         if stem_lower == split_lower or stem_lower.endswith((f"_{split_lower}", f"-{split_lower}")):
-            return f"{base}/{name}"
+            # Keep the trailing star: the split may still be sharded as train.jsonl,
+            # train_2.jsonl, so an exact file name would read only the first shard.
+            return f"{base}/{stem}*{suffix}"
     return f"{base}/**/*{ext}"
 
 

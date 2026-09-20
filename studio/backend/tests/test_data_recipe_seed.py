@@ -453,13 +453,27 @@ _GSM8K_FILES = [
             "default",
             "datasets/org/repo/data/train-*.parquet",
         ),
-        (["test.csv", "train.csv"], "train", None, "datasets/org/repo/train.csv"),
+        (["test.csv", "train.csv"], "train", None, "datasets/org/repo/train*.csv"),
         (["Train_0.jsonl", "Test_0.jsonl"], "train", None, "datasets/org/repo/Train_*.jsonl"),
         (
             ["raw/gsm_test.jsonl", "raw/gsm_train.jsonl"],
             "train",
             None,
-            "datasets/org/repo/raw/gsm_train.jsonl",
+            "datasets/org/repo/raw/gsm_train*.jsonl",
+        ),
+        # A split named by the file itself can still be sharded, so the pattern has
+        # to reach the siblings instead of pinning the first shard.
+        (
+            ["train.jsonl", "train_2.jsonl", "test.jsonl"],
+            "train",
+            None,
+            "datasets/org/repo/train*.jsonl",
+        ),
+        (
+            ["raw/gsm_test.jsonl", "raw/gsm_train.jsonl", "raw/gsm_train_2.jsonl"],
+            "train",
+            None,
+            "datasets/org/repo/raw/gsm_train*.jsonl",
         ),
         (
             ["en/test/0000.parquet", "en/train/0000.parquet", "fr/train/0000.parquet"],
@@ -494,6 +508,9 @@ def test_seed_preview_file_comes_from_the_chosen_subset(monkeypatch, tmp_path):
             ["data/test/0.parquet", "data/train/0.parquet"],
             "datasets/org/repo/data/train/**/*.parquet",
         ),
+        # Split folders at the repo root: the shorter "test" path used to win on
+        # length alone, so a train recipe was served the test split.
+        (["test/0.parquet", "train/0.parquet"], "datasets/org/repo/train/**/*.parquet"),
     ],
 )
 def test_seed_hf_path_still_globs_the_directory_without_a_split_in_the_name(
