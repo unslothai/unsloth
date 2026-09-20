@@ -1027,3 +1027,80 @@ def test_a_registered_model_folder_is_granted_on_windows(plan, tmp_path, monkeyp
 
     assert os.path.normcase(str(library)) in granted
     assert str(library) not in policy["filesystem"]["readwritePaths"]
+
+
+def test_an_interpreter_outside_git_does_not_grant_its_grandparent(monkeypatch, tmp_path):
+    """readonlyPaths are recursive, so the grandparent of
+    C:\\Python313\\python.exe is C:\\ and the grant was the whole system drive."""
+    from core.inference import sandbox_windows
+
+    drive = tmp_path / "drive"
+    python_dir = drive / "Python313"
+    python_dir.mkdir(parents = True)
+    interpreter = python_dir / "python.exe"
+    interpreter.write_bytes(b"")
+
+    plan = ToolLaunchPlan(
+        argv = (str(interpreter),), workdir = str(tmp_path / "work"), env = {"PATH": ""}
+    )
+    roots = [os.path.normcase(root) for root in sandbox_windows._launch_program_roots(plan)]
+
+    assert os.path.normcase(str(python_dir)) in roots, "the interpreter's own directory is needed"
+    assert os.path.normcase(str(drive)) not in roots, "the grandparent was granted recursively"
+
+
+def test_git_for_windows_bash_still_gets_its_install_root(monkeypatch, tmp_path):
+    """The grandparent grant exists for one layout and must keep working:
+    bash.exe in <git>\\bin cannot run without <git>\\usr\\bin."""
+    from core.inference import sandbox_windows
+
+    git_root = tmp_path / "Git"
+    (git_root / "bin").mkdir(parents = True)
+    (git_root / "usr" / "bin").mkdir(parents = True)
+    bash = git_root / "bin" / "bash.exe"
+    bash.write_bytes(b"")
+
+    plan = ToolLaunchPlan(argv = (str(bash),), workdir = str(tmp_path / "work"), env = {"PATH": ""})
+    roots = [os.path.normcase(root) for root in sandbox_windows._launch_program_roots(plan)]
+
+    assert os.path.normcase(str(git_root)) in roots, "bash lost its userland"
+
+
+def test_a_path_entry_that_is_a_filesystem_root_or_a_home_is_dropped(monkeypatch, tmp_path):
+    """PATH is built by _build_safe_env, but a root or a home reaching the
+    recursive grant would undo the profile whatever put it there."""
+    from core.inference import sandbox_windows
+
+    home = tmp_path / "Users" / "someone"
+    home.mkdir(parents = True)
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setattr(os.path, "expanduser", lambda path: str(home) if path == "~" else path)
+
+    assert sandbox_windows._too_broad_to_grant(str(home))
+    assert sandbox_windows._too_broad_to_grant(str(home.parent))
+    assert sandbox_windows._too_broad_to_grant(os.path.abspath(os.sep))
+    assert not sandbox_windows._too_broad_to_grant(str(tmp_path / "Users" / "someone" / "models"))
+
+
+def test_the_read_grant_drops_a_root_that_is_too_broad(monkeypatch, tmp_path):
+    """The filter has to be applied where the grants are assembled, not only
+    available as a helper."""
+    from core.inference import sandbox_windows
+
+    home = tmp_path / "Users" / "someone"
+    (home / "bin").mkdir(parents = True)
+    monkeypatch.setattr(os.path, "expanduser", lambda path: str(home) if path == "~" else path)
+    monkeypatch.setattr(sandbox_windows, "_system_roots", lambda: [])
+    monkeypatch.setattr(sandbox_windows, "_runtime_roots", lambda: [])
+    monkeypatch.setattr(sandbox_windows, "editable_source_roots", lambda: ())
+    monkeypatch.setattr(sandbox_windows, "model_library_roots", lambda: ())
+
+    workdir = tmp_path / "work"
+    workdir.mkdir()
+    plan = ToolLaunchPlan(
+        argv = (), workdir = str(workdir), env = {"PATH": os.pathsep.join([str(home), str(home / "bin")])}
+    )
+    roots = [os.path.normcase(root) for root in sandbox_windows._readonly_roots(plan, str(workdir))]
+
+    assert os.path.normcase(str(home)) not in roots, "the home directory was granted recursively"
+    assert os.path.normcase(str(home / "bin")) in roots, "an ordinary PATH entry was dropped too"

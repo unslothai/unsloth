@@ -47,6 +47,7 @@ from .os_sandbox import (
     SandboxBuildError,
     SandboxUnavailableError,
     ToolLaunchPlan,
+    _is_filesystem_root,
     editable_source_roots,
     model_library_roots,
     scan_workdir_for_host_channels,
@@ -301,13 +302,47 @@ def _launch_program_roots(plan: ToolLaunchPlan) -> list[str]:
         resolved = os.path.realpath(program)
         roots.append(os.path.dirname(resolved))
         # bash.exe lives in <git>\bin and its userland in <git>\usr\bin, so the
-        # install root covers both without guessing at either layout.
-        roots.append(os.path.dirname(os.path.dirname(resolved)))
+        # install root covers both without guessing at either layout. ONLY for
+        # that shell: readonlyPaths are recursive, so for an interpreter
+        # installed at C:\Python313\python.exe the same line granted C:\, and
+        # with it every user profile on the machine, to model-authored code
+        # that also has unrestricted network access.
+        if _is_git_for_windows_bash(resolved):
+            roots.append(os.path.dirname(os.path.dirname(resolved)))
     for entry in (plan.env.get("PATH") or "").split(os.pathsep):
         entry = entry.strip()
         if entry:
             roots.append(entry)
     return roots
+
+
+def _is_git_for_windows_bash(resolved: str) -> bool:
+    """Whether this is the Git for Windows bash whose userland sits one level up.
+
+    Both halves of the layout, not just the name: <git>\bin\bash.exe. tools.py
+    has already trust-checked the shell it picked; this only decides whether
+    the install root is the right grant for it.
+    """
+    return (
+        os.path.basename(resolved).lower() == "bash.exe"
+        and os.path.basename(os.path.dirname(resolved)).lower() == "bin"
+    )
+
+
+def _too_broad_to_grant(path: str) -> bool:
+    """Whether a read grant for this directory would hand over far more than the launch needs.
+
+    A filesystem root, the user's home, or the directory every home lives in.
+    The Windows system directories are deliberately NOT here: System32 is on
+    the PATH of every launch and the container cannot start without it.
+    """
+    if _is_filesystem_root(path):
+        return True
+    try:
+        home = os.path.normcase(os.path.realpath(os.path.expanduser("~")))
+    except OSError:
+        return False
+    return os.path.normcase(os.path.realpath(path)) in (home, os.path.dirname(home))
 
 
 def _readonly_roots(plan: ToolLaunchPlan, workdir: str) -> list[str]:
@@ -344,6 +379,9 @@ def _readonly_roots(plan: ToolLaunchPlan, workdir: str) -> list[str]:
         if not path or os.path.normcase(path) in seen or not os.path.isdir(path):
             continue
         if _within(path, workdir):
+            continue
+        if _too_broad_to_grant(path):
+            logger.warning("Not granting %s to the sandbox: it is too broad to be a launch root", path)
             continue
         seen.add(os.path.normcase(path))
         roots.append(path)
