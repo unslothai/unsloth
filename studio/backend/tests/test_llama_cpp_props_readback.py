@@ -741,3 +741,57 @@ def test_a_stringified_n_ctx_is_still_read(monkeypatch):
     for bad in ("8k", "8192.5", "", "-1"):
         _stub_props(monkeypatch, body = {"default_generation_settings": {"n_ctx": bad}})
         assert _make_backend()._query_server_n_ctx() is None, bad
+
+
+def test_an_inherited_ctx_size_is_the_launch_total_when_argv_names_none(monkeypatch):
+    """Manual + Auto omits -c on purpose and sets LLAMA_ARG_CTX_SIZE instead, which
+    llama.cpp reads before argv (test_a_positive_inherited_context_is_kept).
+    Reading argv alone reported no launch total, so no reduction was reported and a
+    same-model reload fell back to one slot's share and shrank the server again.
+
+    Verified on llama-server b11057: no -c, LLAMA_ARG_CTX_SIZE=8192,
+    --parallel 4 --no-kv-unified -> n_ctx_slot 2048, so 8192 really is the total."""
+    _stub_endpoints(
+        monkeypatch,
+        props = _FakeResponse(200, {"default_generation_settings": {"n_ctx": 2048}}),
+    )
+    inst = _make_backend(effective_ctx = 2048)
+    inst._effective_parallel_slots = 4
+    inst._reconcile_effective_ctx_with_server(
+        0,
+        launch_cmd = ["llama-server", "-m", "x.gguf", "--parallel", "4"],
+        launch_env = {"LLAMA_ARG_CTX_SIZE": "8192"},
+    )
+    assert inst.launch_context_length == 8192
+    # 8192 over 4 slots is 2048 exactly, so the split explains it and nothing was fitted.
+    assert inst.pre_fit_context_length is None
+
+
+def test_an_explicit_ctx_flag_outranks_the_inherited_one(monkeypatch):
+    """llama.cpp parses argv after the environment, so the flag wins."""
+    _stub_endpoints(
+        monkeypatch,
+        props = _FakeResponse(200, {"default_generation_settings": {"n_ctx": 4096}}),
+    )
+    inst = _make_backend(effective_ctx = 4096)
+    inst._reconcile_effective_ctx_with_server(
+        0,
+        launch_cmd = ["llama-server", "-c", "4096"],
+        launch_env = {"LLAMA_ARG_CTX_SIZE": "8192"},
+    )
+    assert inst.launch_context_length == 4096
+
+
+def test_an_inherited_zero_or_junk_names_no_launch_total(monkeypatch):
+    """LLAMA_ARG_CTX_SIZE=0 is llama.cpp's "pick one for me", the same as -c 0, and
+    must not be reported as a total any more than a malformed value is."""
+    for bad in ("0", "", "auto", "-1", "8k"):
+        _stub_endpoints(
+            monkeypatch,
+            props = _FakeResponse(200, {"default_generation_settings": {"n_ctx": 2048}}),
+        )
+        inst = _make_backend(effective_ctx = 2048)
+        inst._reconcile_effective_ctx_with_server(
+            0, launch_cmd = ["llama-server"], launch_env = {"LLAMA_ARG_CTX_SIZE": bad}
+        )
+        assert inst.launch_context_length is None, bad

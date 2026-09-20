@@ -3938,17 +3938,32 @@ def _positive_int_n_ctx(value: object) -> Optional[int]:
     return value if value > 0 else None
 
 
-def _launch_ctx_from_args(args: Optional[Iterable[str]]) -> Optional[int]:
-    """Total ``-c`` on the argv that actually spawned, or None when there is none.
+def _launch_ctx_from_args(
+    args: Optional[Iterable[str]], env: Optional[Mapping[str, str]] = None
+) -> Optional[int]:
+    """Total context the child really launched with, or None when nothing names one.
 
     Read off the argv, not Studio's estimate, so a pass-through ``--ctx-size``
     last-wins. ``-c 0`` names no total, so it returns None like a malformed flag.
+
+    Falls back to ``LLAMA_ARG_CTX_SIZE`` when argv carries no context flag at all,
+    because llama.cpp reads its environment before argv and Manual + Auto omits
+    ``-c`` on purpose: the env var is then the only thing naming the total
+    (test_a_positive_inherited_context_is_kept). Argv-only, an Auto-layers launch
+    reported no launch total, so no --fit reduction was reported and a same-model
+    reload fell back to one slot's share and shrank the server again -- the exact
+    defect this reporting exists to prevent. Checked on b11057: no ``-c`` with
+    LLAMA_ARG_CTX_SIZE=8192 and ``--parallel 4 --no-kv-unified`` allocates
+    n_ctx_slot 2048, so the 8192 is a real total and not a per-slot value.
     """
     try:
         override = parse_ctx_override(args)
     except ValueError:
         return None
-    return override if override and override > 0 else None
+    if override:
+        return override if override > 0 else None
+    # Only when argv named nothing: an explicit flag outranks the environment.
+    return _positive_int_n_ctx(((env or {}).get("LLAMA_ARG_CTX_SIZE") or "").strip())
 
 
 def _env_main_cache_type_for_budget(env: Optional[Mapping[str, str]] = None) -> Optional[str]:
@@ -29594,6 +29609,7 @@ class LlamaCppBackend:
                 self._reconcile_effective_ctx_with_server(
                     ctx_override or 0,
                     launch_cmd = _last_spawn_cmd,
+                    launch_env = env,
                 )
                 if self._kv_cache_context_total is not None:
                     self._n_ubatch = min(
@@ -32696,7 +32712,10 @@ class LlamaCppBackend:
         return _positive_int_n_ctx(settings.get("n_ctx"))
 
     def _record_launch_vs_per_slot_ctx(
-        self, launch_cmd: Optional[Iterable[str]], actual_n_ctx: Optional[int]
+        self,
+        launch_cmd: Optional[Iterable[str]],
+        actual_n_ctx: Optional[int],
+        launch_env: Optional[Mapping[str, str]] = None,
     ) -> None:
         """Record the launch total, and the --fit reduction the probe just revealed.
 
@@ -32706,7 +32725,7 @@ class LlamaCppBackend:
         answers what was launched, so that half survives an empty probe. Both
         fields are rewritten every reconciliation so a reload inherits nothing.
         """
-        self._launch_context_length = _launch_ctx_from_args(launch_cmd)
+        self._launch_context_length = _launch_ctx_from_args(launch_cmd, launch_env)
         self._pre_fit_context_length = None
         launch_n_ctx = self._launch_context_length
         if not launch_n_ctx or not actual_n_ctx:
@@ -32723,6 +32742,7 @@ class LlamaCppBackend:
         self,
         requested_n_ctx: int = 0,
         launch_cmd: Optional[Iterable[str]] = None,
+        launch_env: Optional[Mapping[str, str]] = None,
     ) -> None:
         """Adopt the server's real ``n_ctx`` within an explicit requested ceiling.
 
@@ -32749,7 +32769,7 @@ class LlamaCppBackend:
         actual_n_ctx = self._query_server_n_ctx()
         # Before the bail-out: an empty probe leaves the argv readable, and a stale
         # total would report a window this server never had.
-        self._record_launch_vs_per_slot_ctx(launch_cmd, actual_n_ctx)
+        self._record_launch_vs_per_slot_ctx(launch_cmd, actual_n_ctx, launch_env)
         if not actual_n_ctx or actual_n_ctx <= 0:
             return
         slots = 1 if self._kv_cache_unified else self.effective_parallel_slots
