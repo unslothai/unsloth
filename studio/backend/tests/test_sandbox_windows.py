@@ -215,7 +215,14 @@ def test_the_windows_system_roots_are_granted_read_only(monkeypatch, tmp_path):
     monkeypatch.setenv("SystemRoot", str(tmp_path))
     (tmp_path / "System32").mkdir()
 
-    roots = sandbox_windows._readonly_roots(str(tmp_path / "workdir"))
+    launch = ToolLaunchPlan(
+        argv = ("python.exe", "-c", "print(1)"),
+        workdir = str(tmp_path / "workdir"),
+        env = {},
+        requested_mode = "required",
+        timeout_seconds = 30,
+    )
+    roots = sandbox_windows._readonly_roots(launch, str(tmp_path / "workdir"))
 
     assert str(tmp_path) in roots, "the Windows system root is not granted"
     assert str(tmp_path / "System32") in roots, "System32 is not granted"
@@ -437,3 +444,67 @@ def test_the_pinned_digests_are_recorded_for_both_architectures():
     assert len(installer.TARBALL_SHA256) == 64
     for value in installer.EXECUTOR_SHA256.values():
         assert len(value) == 64
+
+
+def test_the_interpreters_library_roots_are_granted(plan, tmp_path):
+    """Studio's managed Windows virtualenv puts python.exe in Scripts.
+
+    The packages are in the sibling Lib\\site-packages and the standard library
+    comes from sys.base_prefix\\Lib, so granting only the executable's own
+    directory leaves an isolated call unable to import its runtime. The Windows
+    CI job cannot catch this: it runs from an actions/setup-python install,
+    where everything happens to sit under one root.
+    """
+    import sysconfig
+
+    policy = sandbox_windows.build_policy(plan, str(tmp_path), "unsloth-test")
+    granted = {os.path.normcase(path) for path in policy["filesystem"]["readonlyPaths"]}
+
+    for name in ("stdlib", "purelib"):
+        path = sysconfig.get_path(name)
+        if path and os.path.isdir(path):
+            assert os.path.normcase(path) in granted, f"{name} was not granted"
+
+
+def test_the_shell_and_its_userland_are_granted(tmp_path):
+    """_get_shell_cmd picks Git for Windows' bash whenever the host has one.
+
+    Granting only the system directories and the interpreter leaves bash.exe
+    unrunnable and its usr\\bin userland unreadable, so the Terminal tool fails
+    on the ordinary Windows path.
+    """
+    git = tmp_path / "Git"
+    (git / "bin").mkdir(parents = True)
+    (git / "usr" / "bin").mkdir(parents = True)
+    bash = git / "bin" / "bash.exe"
+    bash.write_text("")
+    workdir = tmp_path / "work"
+    workdir.mkdir()
+
+    launch = ToolLaunchPlan(
+        argv = (str(bash), "-c", "echo hi"),
+        workdir = str(workdir),
+        env = {"PATH": os.pathsep.join([str(git / "bin"), str(git / "usr" / "bin")])},
+        requested_mode = "required",
+        timeout_seconds = 30,
+    )
+
+    policy = sandbox_windows.build_policy(launch, str(workdir), "unsloth-test")
+    granted = {os.path.normcase(path) for path in policy["filesystem"]["readonlyPaths"]}
+
+    assert os.path.normcase(str(git / "bin")) in granted, "bash.exe itself is unreachable"
+    assert os.path.normcase(str(git / "usr" / "bin")) in granted, "the bash userland is unreachable"
+
+
+def test_the_installer_destination_override_is_honoured(tmp_path, monkeypatch):
+    """Setup installing into UNSLOTH_MXC_DIR must not leave the backend looking
+    somewhere else and reporting the executor as missing."""
+    dest = tmp_path / "custom-mxc"
+    dest.mkdir()
+    (dest / "wxc-exec.exe").write_text("")
+
+    monkeypatch.setenv("UNSLOTH_MXC_DIR", str(dest))
+
+    assert sandbox_windows.managed_mxc_dir() == str(dest)
+    monkeypatch.delenv("UNSLOTH_MXC_EXEC", raising = False)
+    assert sandbox_windows.executable_path() == str(dest / "wxc-exec.exe")

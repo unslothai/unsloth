@@ -29,8 +29,10 @@ from __future__ import annotations
 import base64
 import json
 import os
+import site
 import subprocess
 import sys
+import sysconfig
 import tempfile
 import uuid
 
@@ -61,6 +63,9 @@ SCHEMA_VERSION = "0.8.0-alpha"
 
 # The executor is fetched at Studio setup time, never during a tool call.
 _EXECUTABLE_ENV = "UNSLOTH_MXC_EXEC"
+# install_mxc_runtime.py's --dest override, read here too so the two sides
+# cannot disagree about where the executor was installed.
+_DIRECTORY_ENV = "UNSLOTH_MXC_DIR"
 _EXECUTABLE_NAME = "wxc-exec.exe"
 
 LIMITATIONS = (
@@ -122,6 +127,12 @@ def managed_mxc_dir() -> str:
     host where ``utils.paths`` cannot be loaded still gets a path back rather
     than raising into the launch planner.
     """
+    # The same override the installer takes, so a setup run that reported
+    # success into a custom directory is not followed by every tool call
+    # saying the executor is not installed.
+    override = (os.environ.get(_DIRECTORY_ENV) or "").strip()
+    if override:
+        return os.path.expanduser(override)
     legacy = os.path.join(os.path.expanduser("~"), ".unsloth", "mxc")
     try:
         from utils.paths.storage_roots import studio_root
@@ -210,24 +221,89 @@ def _within(path: str, root: str) -> bool:
     return os.path.normcase(common) == os.path.normcase(root)
 
 
-def _readonly_roots(workdir: str) -> list[str]:
-    """What the interpreter needs to start, and nothing else.
+def _runtime_roots() -> list[str]:
+    """The interpreter's own trees.
+
+    ``sys.executable`` under the managed Windows virtualenv is
+    ``unsloth_studio\\Scripts\\python.exe``, while the packages are in the
+    sibling ``Lib\\site-packages`` and the standard library comes from
+    ``sys.base_prefix\\Lib``. Granting only the executable's directory leaves
+    both outside the policy, so an isolated call cannot import its own runtime.
+    The Windows CI job does not catch this because it runs from an
+    actions/setup-python installation rather than from Studio's virtualenv.
+    """
+    roots = [os.path.dirname(os.path.realpath(sys.executable)), sys.prefix, sys.base_prefix]
+    for name in ("stdlib", "platstdlib", "purelib", "platlib"):
+        try:
+            roots.append(sysconfig.get_path(name))
+        except (KeyError, OSError):
+            continue
+    try:
+        roots.extend(site.getsitepackages())
+    except AttributeError:  # pragma: no cover - only absent in odd embeddings
+        pass
+    user_site = getattr(site, "getusersitepackages", None)
+    if user_site is not None:
+        try:
+            roots.append(user_site())
+        except Exception:  # noqa: BLE001 - never fail a launch over this
+            pass
+    return [path for path in roots if path]
+
+
+def _launch_program_roots(plan: ToolLaunchPlan) -> list[str]:
+    """Where the program this launch actually runs lives.
+
+    The Terminal tool does not run cmd on a normal Windows host: _get_shell_cmd
+    picks ``C:\\Program Files\\Git\\bin\\bash.exe`` whenever the host has a
+    trusted Git for Windows, and bash needs its own ``usr\\bin`` userland to do
+    anything. Both are taken from what tools.py already resolved and trust
+    checked, rather than re-derived here, so the policy cannot drift away from
+    the launch it is supposed to describe. Neither argv[0] nor this PATH is
+    model authored: _build_safe_env constructs the PATH and _get_shell_cmd
+    picks the shell.
+    """
+    roots: list[str] = []
+    program = plan.argv[0] if plan.argv else ""
+    if program and os.path.isabs(program):
+        resolved = os.path.realpath(program)
+        roots.append(os.path.dirname(resolved))
+        # bash.exe lives in <git>\bin and its userland in <git>\usr\bin, so the
+        # install root covers both without guessing at either layout.
+        roots.append(os.path.dirname(os.path.dirname(resolved)))
+    for entry in (plan.env.get("PATH") or "").split(os.pathsep):
+        entry = entry.strip()
+        if entry:
+            roots.append(entry)
+    return roots
+
+
+def _readonly_roots(plan: ToolLaunchPlan, workdir: str) -> list[str]:
+    """What the launch needs to start, and nothing else.
 
     Reuses the same resolvers the Linux and macOS backends use, so an editable
     install that works there works here.
     """
     roots: list[str] = _system_roots() if sys.platform == "win32" else []
-    for path in (*editable_source_roots(), *editable_import_roots()):
+    candidates = (
+        *editable_source_roots(),
+        *editable_import_roots(),
+        *_runtime_roots(),
+        *_launch_program_roots(plan),
+    )
+    # Case-insensitively, because PATH entries and sysconfig paths routinely
+    # spell the same Windows directory differently and MXC would be handed the
+    # same grant twice.
+    seen = {os.path.normcase(path) for path in roots}
+    for path in candidates:
         # An editable install living inside the workdir is already writable
         # there; granting it again read-only would be contradictory.
-        if not path or not os.path.isdir(path) or path in roots:
+        if not path or os.path.normcase(path) in seen or not os.path.isdir(path):
             continue
         if _within(path, workdir):
             continue
+        seen.add(os.path.normcase(path))
         roots.append(path)
-    interpreter = os.path.dirname(os.path.realpath(sys.executable))
-    if interpreter not in roots:
-        roots.append(interpreter)
     return roots
 
 
@@ -286,7 +362,7 @@ def build_policy(plan: ToolLaunchPlan, workdir: str, container_id: str) -> dict:
         },
         "filesystem": {
             "readwritePaths": [workdir, packages],
-            "readonlyPaths": _readonly_roots(workdir),
+            "readonlyPaths": _readonly_roots(plan, workdir),
         },
         # Job-object UI restrictions; the workload is never interactive.
         "ui": {"disable": True},
