@@ -222,6 +222,10 @@ def _is_coproc_name(tokens: "list[str]", index: int) -> bool:
         and tokens[index - 1] == "coproc"
         and index + 1 < len(tokens)
         and tokens[index + 1] in _COPROC_COMPOUND_STARTERS
+        # shlex hands back the same token for a real `{` and a quoted `'{'`, and quoting it makes the lookahead a
+        # lie: `coproc rm '{' -f victim` is the SIMPLE form and deletes. A blocked word is therefore never read as
+        # a name, which costs only the absurd `coproc rm { echo hi; }` naming a coprocess after the command.
+        and tokens[index].lower() not in _BLOCKED_COMMANDS
         and _COPROC_NAME_RE.match(tokens[index]) is not None
     )
 

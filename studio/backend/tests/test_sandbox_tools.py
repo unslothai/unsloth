@@ -1150,6 +1150,13 @@ class TestBashBlocklistPosition:
                 "FOO=bar coproc JOB if rm -f victim; then :; fi",
                 id = "coproc_named_after_assign_blocked",
             ),
+            # Quoting the lookahead makes it a lie: shlex hands back the same token for `{` and `'{'`, but bash
+            # reads the SIMPLE form and `coproc rm '{' -f victim` deletes. A blocked word is never a name.
+            pytest.param("rm", "coproc rm '{' -f victim", id = "coproc_quoted_brace_blocked"),
+            pytest.param("rm", "coproc rm 'if' -f victim", id = "coproc_quoted_keyword_blocked"),
+            pytest.param(
+                "pkill", "coproc pkill '{' -f unsloth", id = "coproc_quoted_brace_pkill_blocked"
+            ),
             # `time` is a reserved word taking a pipeline, so it prefixes a coprocess and bash runs it (5.2.21);
             # an external wrapper cannot, `env coproc JOB if ...` being a syntax error.
             pytest.param("rm", "time coproc rm -f victim", id = "timed_coproc_blocked"),
