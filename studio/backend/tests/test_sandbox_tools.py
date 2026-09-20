@@ -5065,3 +5065,49 @@ class TestShadowedReaderBuiltins:
             'from os import getenv\nimport requests\nrequests.get(getenv("T"))',
             expect_phrase = "Blocked: request target is read",
         )
+
+
+class TestConditionalsBehindABinding:
+    """A name holding `a if flag else b` still holds two targets."""
+
+    def test_a_blocked_arm_behind_a_binding_is_refused(self):
+        _blocked(
+            f'import requests\nu = "{_METADATA_URL}" if flag else "https://huggingface.co"\n'
+            "requests.get(u)",
+            expect_phrase = "Blocked: cloud-metadata host",
+        )
+
+    def test_two_allowed_arms_behind_a_binding_keep_working_ok(self):
+        _ok(
+            "import requests\n"
+            'u = "https://huggingface.co/a" if flag else "https://huggingface.co/b"\n'
+            "requests.get(u)"
+        )
+
+
+class TestApiSubmodules:
+    """`requests.api` holds the public API of `requests`, so a call resolved into it is the same
+    call the prefixes already know about."""
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            pytest.param(f'from requests import api as r\nr.get("{_METADATA_URL}")', id = "aliased"),
+            pytest.param(
+                f'import requests.api\nrequests.api.get("{_METADATA_URL}")', id = "written_out"
+            ),
+            pytest.param(
+                f'from requests import api as requests\nrequests.get("{_METADATA_URL}")',
+                id = "aliased_to_the_package_name",
+            ),
+            pytest.param(
+                f'from requests import sessions\nsessions.Session().get("{_METADATA_URL}")',
+                id = "sessions_submodule",
+            ),
+        ],
+    )
+    def test_a_call_through_an_api_submodule_is_policed(self, code):
+        _blocked(code, expect_phrase = "Blocked: cloud-metadata host")
+
+    def test_an_allowed_host_through_a_submodule_keeps_working_ok(self):
+        _ok('from requests import api as r\nr.get("https://huggingface.co/api/models")')

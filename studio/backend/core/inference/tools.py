@@ -16298,7 +16298,29 @@ def _check_signal_escape_patterns(code: str):
                 if target is not None:
                     resolved = ".".join([target] + parts[1:])
                     break
-        return [written] if resolved is None or resolved == written else [resolved, written]
+        names = [written] if resolved is None or resolved == written else [resolved, written]
+        for name in list(names):
+            names.extend(
+                variant for variant in _api_submodule_variants(name) if variant not in names
+            )
+        return names
+
+    # Submodules that hold the public API of a network package. A call resolved into one of them
+    # is the same call as the one spelled on the package, which is what the prefixes know about.
+    _API_SUBMODULES = {
+        "requests.api": "requests",
+        "requests.sessions": "requests",
+        "httpx._api": "httpx",
+        "httpx._client": "httpx",
+        "urllib3._request_methods": "urllib3",
+    }
+
+    def _api_submodule_variants(name: str) -> "list[str]":
+        """The same call spelled on the package the submodule belongs to, if it is one."""
+        for submodule, package in _API_SUBMODULES.items():
+            if name.startswith(submodule + "."):
+                return [package + name[len(submodule) :]]
+        return []
 
     def _canonical_fq(func_node, bindings) -> str:
         """The resolved name when there is one, else the name as written."""
@@ -17848,11 +17870,17 @@ def _check_signal_escape_patterns(code: str):
         if not isinstance(url_node, ast.Name):
             return []
         values = _bindings.possible_values(url_node.id, url_node)
-        if len(values) < 2:
-            # One value can hold, so the ordinary resolution already answered for it.
+        if len(values) < 2 and not any(isinstance(value, ast.IfExp) for value in values):
+            # One value can hold and it names one target, so the ordinary resolution answered it.
             return []
         out: list = []
         for value in values:
+            if isinstance(value, ast.IfExp):
+                # The name holds a conditional, so both of its arms are targets.
+                out.extend(
+                    host for host in _other_possible_hosts(value, bare_hosts) if host not in out
+                )
+                continue
             host, _resolved = _host_from_url_node(value, _bindings)
             if host is None and bare_hosts:
                 # A pool takes a bare host rather than a URL, so a fully known string is one.
