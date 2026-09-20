@@ -2750,9 +2750,7 @@ def _run_mlx_training(event_queue, stop_queue, config):
                 dataset = info.get("dataset", dataset)
             else:
                 errors = info.get("errors", [])
-                raise ValueError(
-                    f"Dataset format conversion failed: {'; '.join(errors)}"
-                )
+                raise ValueError(f"Dataset format conversion failed: {'; '.join(errors)}")
             if info.get("dropped_rows_warning"):
                 _send("warning", message = info["dropped_rows_warning"])
             dataset_final_format = str(info.get("final_format", "") or "").lower()

@@ -29,15 +29,18 @@ def _format_block():
     raise AssertionError("could not locate the `elif format_type:` block")
 
 
-def _run(train_success = True, train_warning = None, eval_success = True, eval_warning = None):
+def _run(
+    train_success = True,
+    train_warning = None,
+    eval_success = True,
+    eval_warning = None,
+):
     """Execute the real block from _run_mlx_training and report what it did.
 
     _run_mlx_training only runs on Apple Silicon, so the block is lifted out and executed
     directly, the same technique test_mlx_training_worker_config.py uses.
     """
-    block = compile(
-        ast.Module(body = _format_block().body, type_ignores = []), "<fmt>", "exec"
-    )
+    block = compile(ast.Module(body = _format_block().body, type_ignores = []), "<fmt>", "exec")
     events = []
     calls = {"n": 0}
 
@@ -52,18 +55,20 @@ def _run(train_success = True, train_warning = None, eval_success = True, eval_w
         }
 
     namespace = dict(vars(_worker))
-    namespace.update({
-        "format_type": "chatml_messages",
-        "dataset": "RAW_TRAIN",
-        "eval_dataset": "RAW_EVAL",
-        "model_name": "org/model",
-        "tokenizer": object(),
-        "hf_dataset": "local",
-        "custom_format_mapping": None,
-        "_fmt_progress": lambda **_kw: None,
-        "_send": lambda kind, **kw: events.append((kind, kw)),
-        "format_and_template_dataset": _fake_format,
-    })
+    namespace.update(
+        {
+            "format_type": "chatml_messages",
+            "dataset": "RAW_TRAIN",
+            "eval_dataset": "RAW_EVAL",
+            "model_name": "org/model",
+            "tokenizer": object(),
+            "hf_dataset": "local",
+            "custom_format_mapping": None,
+            "_fmt_progress": lambda **_kw: None,
+            "_send": lambda kind, **kw: events.append((kind, kw)),
+            "format_and_template_dataset": _fake_format,
+        }
+    )
 
     error = None
     try:

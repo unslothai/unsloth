@@ -118,9 +118,7 @@ def test_a_column_named_like_the_marker_is_not_clobbered():
     formatted = result["dataset"]
     assert len(formatted) == 5
     assert sorted(formatted.column_names) == ["__chat_template_error", "messages", "text"]
-    assert formatted["__chat_template_error"] == [
-        f"user-data-{i}" for i in (0, 2, 3, 6, 7)
-    ]
+    assert formatted["__chat_template_error"] == [f"user-data-{i}" for i in (0, 2, 3, 6, 7)]
 
 
 def test_all_rows_failing_still_returns_the_dropped_rows_key():
