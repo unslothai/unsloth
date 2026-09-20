@@ -42,6 +42,11 @@ NEEDS_POSIX_BASH = pytest.mark.skipif(
 )
 
 
+def _ps_quote(value: str) -> str:
+    """A PowerShell single-quoted literal: only the quote itself needs escaping."""
+    return "'" + value.replace("'", "''") + "'"
+
+
 def _slice(src: str, start: str, end: str) -> str:
     begin = src.index(start)
     return src[begin : src.index(end, begin)]
@@ -1357,3 +1362,67 @@ def test_the_windows_note_gate_holds_the_same_two_rules():
     assert "Test-MasterRootNoteIsHonoured -Root $UnslothHome -StudioRoot $StudioHome" in ps
     sweep = _slice(ps, "$staleNote = Join-Path", "} catch {")
     assert "Remove-Item -LiteralPath $staleNote" in sweep
+
+
+def test_the_windows_note_writer_is_a_no_op_when_the_note_already_says_this():
+    """Move-Item -Force is not an atomic replace: PowerShell's provider deletes the destination
+    and then moves the source, so an interruption in between leaves NO note, and a backend that
+    looks next caches "no master root" from it. Re-entering that window on every update to
+    rewrite bytes that are already there is the avoidable half, and the staging file has to go
+    whether the move threw or not.
+
+    Run under pwsh rather than asserted from source text: the comparison is the point, and a
+    structural check would pass on a version that compares the wrong two things.
+    """
+    ps = SETUP_PS1.read_text(encoding = "utf-8")
+    block = _slice(ps, "        $notePath = Join-Path $noteDir \".unsloth-master-root\"",
+                   "\n    } catch {")
+    assert "Remove-Item -LiteralPath $noteTmp" in block, "the staging file is never cleaned up"
+    assert "$noteSame" in block, "the note is rewritten even when it already says this"
+
+
+@pytest.mark.skipif(PWSH is None, reason = "needs pwsh")
+def test_the_windows_note_writer_rewrites_only_when_the_value_changed(tmp_path):
+    """The behaviour, measured: same value twice leaves the file untouched; a different value
+    replaces it; and no staging file survives either way."""
+    ps = SETUP_PS1.read_text(encoding = "utf-8")
+    block = _slice(ps, "        $notePath = Join-Path $noteDir \".unsloth-master-root\"",
+                   "\n    } catch {")
+    note_dir = tmp_path / "share"
+    note_dir.mkdir()
+    script = tmp_path / "write_note.ps1"
+    script.write_text(
+        f"$noteDir = {_ps_quote(str(note_dir))}\n"
+        f"$UnslothHome = {_ps_quote(str(tmp_path / 'master'))}\n"
+        + block +
+        "\n$final = Join-Path $noteDir '.unsloth-master-root'\n"
+        "$stamp = (Get-Item -LiteralPath $final).LastWriteTimeUtc.Ticks\n"
+        "Write-Output ((Get-Content -LiteralPath $final -Raw) + '|' + $stamp)\n",
+        encoding = "utf-8",
+    )
+    argv = [PWSH, "-NoProfile", "-File", str(script)]
+    first = run_pwsh(argv, capture_output = True, text = True, check = True)
+    note = note_dir / ".unsloth-master-root"
+
+    # Back-date the note far enough that any rewrite is unmistakable. Two runs a millisecond
+    # apart can land on one filesystem timestamp tick, so the first version of this test passed
+    # against the unfixed writer: a control that cannot fail is worse than no control.
+    old_stamp = 1_000_000_000
+    os.utime(note, (old_stamp, old_stamp))
+
+    second = run_pwsh(argv, capture_output = True, text = True, check = True)
+
+    body_1, _ = first.stdout.strip().rsplit("|", 1)
+    body_2, _ = second.stdout.strip().rsplit("|", 1)
+    assert body_1 == body_2 == str(tmp_path / "master") + "\n"
+    assert int(note.stat().st_mtime) == old_stamp, \
+        "an unchanged note was rewritten, re-entering the delete-then-move window"
+    leftovers = [p.name for p in note_dir.iterdir() if p.name != ".unsloth-master-root"]
+    assert leftovers == [], leftovers
+
+    # And a CHANGED value must still be written, or the check above passes by doing nothing.
+    script.write_text(script.read_text(encoding = "utf-8").replace(
+        _ps_quote(str(tmp_path / "master")), _ps_quote(str(tmp_path / "moved"))), encoding = "utf-8")
+    run_pwsh(argv, capture_output = True, text = True, check = True)
+    assert note.read_text(encoding = "utf-8").strip() == str(tmp_path / "moved")
+    assert int(note.stat().st_mtime) != old_stamp

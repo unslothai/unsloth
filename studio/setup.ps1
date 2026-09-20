@@ -2887,26 +2887,54 @@ if ((Get-MasterRootOverride) -and -not $StageRoot -and
         # Staged then renamed: a reader that caught a half-written note would name a truncated
         # path, and this note licenses deletions.
         $notePath = Join-Path $noteDir ".unsloth-master-root"
-        # An unpredictable name opened CreateNew, not "$notePath.$PID" written through
-        # WriteAllText: the predictable pair lets anyone who can write share/ precreate that name
-        # and have this write land on whatever it points at. CreateNew fails on an existing entry
-        # instead of opening it, and Move-Item -Force below replaces a link at the final path.
-        $noteTmp = Join-Path $noteDir (".unsloth-master-root." + [System.IO.Path]::GetRandomFileName())
-        $noteStream = [System.IO.File]::Open(
-            $noteTmp,
-            [System.IO.FileMode]::CreateNew,
-            [System.IO.FileAccess]::Write,
-            [System.IO.FileShare]::None
-        )
+        $noteBytes = [System.Text.Encoding]::UTF8.GetBytes($UnslothHome + [Environment]::NewLine)
+        # Nothing to do when the note already says this, which is every run after the first.
+        # Move-Item -Force is NOT an atomic replace: PowerShell's filesystem provider deletes the
+        # destination and then moves the source, so an interruption in between leaves NO note at
+        # all, and a backend that looks next caches "no master root" from it. Re-entering that
+        # window on every update, to rewrite bytes that are already there, is the avoidable half.
+        $noteCurrent = $null
         try {
-            $noteBytes = [System.Text.Encoding]::UTF8.GetBytes($UnslothHome + [Environment]::NewLine)
-            $noteStream.Write($noteBytes, 0, $noteBytes.Length)
-        } finally {
-            $noteStream.Dispose()
+            if (Test-Path -LiteralPath $notePath -PathType Leaf) {
+                $noteCurrent = [System.IO.File]::ReadAllBytes($notePath)
+            }
+        } catch { $noteCurrent = $null }
+        $noteSame = $false
+        if ($null -ne $noteCurrent -and $noteCurrent.Length -eq $noteBytes.Length) {
+            $noteSame = $true
+            for ($i = 0; $i -lt $noteBytes.Length; $i++) {
+                if ($noteCurrent[$i] -ne $noteBytes[$i]) { $noteSame = $false; break }
+            }
         }
-        # Move-Item -Force, not [IO.File]::Move with an overwrite flag: that overload is .NET
-        # Core only and setup.ps1 still runs under Windows PowerShell 5.1.
-        Move-Item -LiteralPath $noteTmp -Destination $notePath -Force
+        if (-not $noteSame) {
+            # An unpredictable name opened CreateNew, not "$notePath.$PID" written through
+            # WriteAllText: the predictable pair lets anyone who can write share/ precreate that
+            # name and have this write land on whatever it points at. CreateNew fails on an
+            # existing entry instead of opening it, and Move-Item -Force below replaces a link at
+            # the final path.
+            $noteTmp = Join-Path $noteDir (".unsloth-master-root." + [System.IO.Path]::GetRandomFileName())
+            try {
+                $noteStream = [System.IO.File]::Open(
+                    $noteTmp,
+                    [System.IO.FileMode]::CreateNew,
+                    [System.IO.FileAccess]::Write,
+                    [System.IO.FileShare]::None
+                )
+                try {
+                    $noteStream.Write($noteBytes, 0, $noteBytes.Length)
+                } finally {
+                    $noteStream.Dispose()
+                }
+                # Move-Item -Force, not [IO.File]::Move with an overwrite flag: that overload is
+                # .NET Core only and setup.ps1 still runs under Windows PowerShell 5.1.
+                Move-Item -LiteralPath $noteTmp -Destination $notePath -Force
+                $noteTmp = $null
+            } finally {
+                # The staging file is unreadable to every reader but still occupies share/, and
+                # nothing else ever removes it. Cleared whether the move threw or not.
+                if ($noteTmp) { Remove-Item -LiteralPath $noteTmp -Force -ErrorAction SilentlyContinue }
+            }
+        }
     } catch {
         Write-StudioLine "  note: could not record the master root for uninstall: $($_.Exception.Message)" -ForegroundColor DarkGray
     }
