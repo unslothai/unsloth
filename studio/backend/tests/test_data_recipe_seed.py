@@ -461,3 +461,36 @@ def test_validate_resolves_the_hf_seed_endpoint_like_jobs(monkeypatch):
 
     assert response.valid is True
     assert seen["seed_config"]["source"]["endpoint"] == "http://127.0.0.1:9700"
+
+
+def test_validate_answers_when_the_error_collector_cannot_read_the_seed(monkeypatch):
+    pytest.importorskip("fastapi")
+    backend_root = Path(__file__).resolve().parent.parent
+    monkeypatch.syspath_prepend(str(backend_root))
+
+    from models.data_recipe import RecipePayload
+    from routes.data_recipe import validate as validate_module
+
+    def unreadable_seed(recipe):
+        raise OSError("repository not found")
+
+    monkeypatch.setattr(validate_module, "validate_recipe", unreadable_seed)
+    monkeypatch.setattr(validate_module, "_collect_validation_errors", unreadable_seed)
+
+    response = validate_module.validate(
+        RecipePayload(
+            recipe = {
+                "seed_config": {
+                    "source": {
+                        "seed_type": "hf",
+                        "path": "datasets/nope/nope/**/*.parquet",
+                        "endpoint": None,
+                    }
+                },
+                "columns": [{"column_type": "expression", "name": "x", "expr": "hello"}],
+            }
+        )
+    )
+
+    assert response.valid is False
+    assert "repository not found" in (response.raw_detail or "")

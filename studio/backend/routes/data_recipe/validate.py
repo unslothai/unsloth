@@ -200,7 +200,13 @@ def validate(payload: RecipePayload, via_api_key: ViaApiKey = False) -> Validate
             exc_info = True,
         )
         detail = safe_curated_detail(exc, fallback = "Validation failed.")
-        parsed_errors = _collect_validation_errors(recipe)
+        try:
+            parsed_errors = _collect_validation_errors(recipe)
+        except Exception:
+            # Best-effort enrichment: it rebuilds the config and re-reads the seed, so a seed
+            # the backend cannot read raises here too. Letting that escape turns an answerable
+            # "this recipe is wrong" into a 500.
+            parsed_errors = []
         return ValidateResponse(
             valid = False,
             errors = parsed_errors or [ValidateError(message = detail)],
