@@ -5132,3 +5132,57 @@ class TestApiSubmoduleImports:
 
     def test_an_allowed_host_through_the_submodule_keeps_working_ok(self):
         _ok('import requests.api as r\nr.get("https://huggingface.co/api/models")')
+
+
+class TestSelfPreservingRebindings:
+    """`os = os` hands the name back what it already held, so the module is still the module."""
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            pytest.param(
+                'import os, requests\nos = os\nrequests.get(os.environ["TARGET"])',
+                id = "self_assignment",
+            ),
+            pytest.param(
+                'import os, requests\ntmp = os\nos = tmp\nrequests.get(os.getenv("TARGET"))',
+                id = "round_trip_through_a_name",
+            ),
+            pytest.param(
+                "import sys, requests\nsys = sys\nrequests.get(sys.argv[1])",
+                id = "sys_self_assignment",
+            ),
+        ],
+    )
+    def test_a_self_rebinding_still_reads_as_the_module(self, code):
+        _blocked(code, expect_phrase = "Blocked: request target is read")
+
+    def test_the_hf_upload_guard_survives_a_self_rebinding(self):
+        _blocked(
+            "import os\nfrom huggingface_hub import HfApi\nos = os\n"
+            "HfApi().upload_folder(folder_path = '.', repo_id = 'a/b', "
+            "commit_message = os.getenv('SECRET'))",
+            expect_phrase = "Blocked: HF upload",
+        )
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            pytest.param(
+                'import requests\nos = object()\nrequests.get(os.environ["TARGET"])',
+                id = "replaced_by_a_call",
+            ),
+            pytest.param(
+                "import requests\nclass os:\n"
+                '    environ = {"TARGET": "https://huggingface.co/api/models"}\n'
+                'requests.get(os.environ["TARGET"])',
+                id = "replaced_by_a_class",
+            ),
+            pytest.param(
+                'import requests\nfake = object()\nos = fake\nrequests.get(os.environ["T"])',
+                id = "round_trip_through_a_stand_in",
+            ),
+        ],
+    )
+    def test_a_genuine_shadow_is_still_a_shadow_ok(self, code):
+        _ok(code)

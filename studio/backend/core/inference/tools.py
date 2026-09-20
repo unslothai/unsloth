@@ -16647,10 +16647,45 @@ def _check_signal_escape_patterns(code: str):
                     # already have happened. Reading it as the real module is the safe answer.
                     return False
                 before = [entry for entry in positions if entry[0] <= where]
-                if not before:
-                    return False
-                return not max(before)[1]
+                while before:
+                    position, is_alias = max(before)
+                    if is_alias:
+                        return False
+                    if not self._preserves_the_name(key, position):
+                        return True
+                    # `os = os` gives the name back what it already held, so the import above it
+                    # is still the meaning in force. Keep looking further up.
+                    before = [entry for entry in before if entry[0] != position]
+                return False
             return False
+
+        def _preserves_the_name(self, key, position) -> bool:
+            """Whether the binding recorded at *position* rebinds the name to what it already
+            held. Python evaluates the right side first, so `os = os` leaves `os` denoting the
+            imported module, and so does a round trip through another name."""
+            values = [
+                value for where, value in self._value_positions.get(key, ()) if where == position
+            ]
+            if not values:
+                return False
+            return all(self._reads_back_as(value, key, position, 0) for value in values)
+
+        def _reads_back_as(self, value, key, position, depth: int) -> bool:
+            if depth > _MAX_RESOLVE_DEPTH or not isinstance(value, ast.Name):
+                return False
+            scope, name = key
+            if value.id == name:
+                return True
+            earlier = [
+                entry
+                for entry in self._value_positions.get((scope, value.id), ())
+                if entry[0] < position
+            ]
+            if not earlier:
+                return False
+            return all(
+                self._reads_back_as(held, key, held_at, depth + 1) for held_at, held in earlier
+            )
 
         def may_be_bound(self, name: str, node) -> bool:
             """Whether the source could have given this name a meaning of its own by the time
@@ -16661,7 +16696,10 @@ def _check_signal_escape_patterns(code: str):
             reader keeps being policed, while an unrecognised connector loses its exemption."""
             for scope in self._chain(node):
                 key = (scope, name)
-                if any(not is_alias for _position, is_alias in self._bind_positions.get(key, [])):
+                if any(
+                    not is_alias and not self._preserves_the_name(key, position)
+                    for position, is_alias in self._bind_positions.get(key, [])
+                ):
                     return True
             return False
 
