@@ -3041,8 +3041,10 @@ def _runtime_gfx_target(
         # override names a DIFFERENT arch: naming the arch you spoofed TO is deliberate.
         _spoofed = _explicit_gfx if _hsa_spoof_contradicts(_explicit_gfx) else None
         # The arch names what to BUILD for; whether the runtime exposes a device to build it for is
-        # separate. Only when a mask is set, so the ordinary declared-arch host costs no probe.
-        if _visible_devices_pinned():
+        # separate. Only for a host that ASKED, and only when a mask is set: the two flags below are
+        # read by the forced route alone, while the probes cost up to 15s each, so collecting them
+        # for every declared-arch host put a minute of timeouts into an ordinary `studio update`.
+        if _rocm_torch_explicitly_requested() and _visible_devices_pinned():
             # KFD node order IS the order HIP and ROCr index, and answers on runtime-less hosts.
             # ignore_visible_masks because the ordinals below index the list BEFORE the ROCr mask.
             _mask_devices = _kfd_gfx_targets() or _detect_amd_gfx_codes(
@@ -5865,8 +5867,12 @@ def _ensure_rocm_torch() -> None:
             # misses and installs unpinned torch, losing this dict's ABI bound. _hsa_spoof_contradicts
             # likewise reads a same-card HSA override as a spoof unless asked in bare form.
             _bare_gfx = (_inferred_linux_gfx or "").strip().lower().split(":")[0]
+            # Falling back UNBOUNDED was the rest of that same defect: a suffixed arch reaching this
+            # branch for the first time skipped the bounds the reroute applies to every other
+            # arch-index install, so the newly opened route installed a companion set nothing
+            # constrained. Same tuple that path uses, so the two cannot drift.
             _torch_pkg, _vision_pkg, _audio_pkg = _WINDOWS_ROCM_TORCH_PKG_SPECS.get(
-                _bare_gfx, ("torch", "torchvision", "torchaudio")
+                _bare_gfx, _ROCM_ARCH_INDEX_TORCH_PKG_SPEC
             )
             _safe_print(
                 f"   {_inferred_linux_gfx} inferred (ROCm runtime not visible) -- "

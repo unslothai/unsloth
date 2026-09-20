@@ -2539,6 +2539,57 @@ def test_the_suffixed_arch_reaches_that_branch_at_all(stack, monkeypatch):
     assert _inferred_install_args(stack, monkeypatch, "gfx1151:xnack-")
 
 
+@pytest.mark.parametrize("arch", ["gfx1102:xnack-", "gfx1030:sramecc-"])
+def test_an_arch_outside_the_pin_table_is_still_bounded(stack, monkeypatch, arch):
+    """The suffix strip opens this branch for archs the pin table does not name, and the fallback
+    was three bare package names: those hosts reached an arch-index install with no companion
+    bound at all, where every other arch-index install carries one."""
+    assert _inferred_install_args(stack, monkeypatch, arch) == list(
+        stack._ROCM_ARCH_INDEX_TORCH_PKG_SPEC
+    )
+
+
+def test_an_arch_inside_the_pin_table_keeps_its_own_pins(stack, monkeypatch):
+    """The control: the fallback must not displace the table's tighter, per-arch bound."""
+    assert _inferred_install_args(stack, monkeypatch, "gfx1151") == list(
+        stack._WINDOWS_ROCM_TORCH_PKG_SPECS["gfx1151"]
+    )
+
+
+def _mask_probe_count(stack, monkeypatch, requested):
+    """How many device probes _runtime_gfx_target runs for a DECLARED arch under a set mask."""
+    probes = {"n": 0}
+
+    def _counted(*a, **k):
+        probes["n"] += 1
+        return []
+
+    monkeypatch.setenv("UNSLOTH_ROCM_GFX_ARCH", "gfx1100")
+    monkeypatch.setenv("HIP_VISIBLE_DEVICES", "0")
+    if requested:
+        monkeypatch.setenv("UNSLOTH_FORCE_ROCM_TORCH", "1")
+    else:
+        monkeypatch.delenv("UNSLOTH_FORCE_ROCM_TORCH", raising = False)
+    monkeypatch.setattr(stack, "_kfd_gfx_targets", _counted)
+    monkeypatch.setattr(stack, "_detect_amd_gfx_codes", _counted)
+    target = stack._runtime_gfx_target(None)[0]
+    assert target == "gfx1100", target
+    return probes["n"]
+
+
+def test_a_declared_arch_under_a_mask_costs_no_probe_unless_asked(stack, monkeypatch):
+    """Those probes only fill the two mask-provenance flags, which only the forced route reads,
+    and each one can spend its 15s timeout. Running them for every declared-arch host put that
+    cost into an ordinary `studio update` that had asked for nothing."""
+    assert _mask_probe_count(stack, monkeypatch, requested = False) == 0
+
+
+def test_the_host_that_did_ask_still_resolves_its_mask(stack, monkeypatch):
+    """The control: the flags are load-bearing for the route that reads them, so the request must
+    still pay for them."""
+    assert _mask_probe_count(stack, monkeypatch, requested = True) > 0
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # The two halves must read one mask string the same way.
 
