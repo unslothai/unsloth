@@ -160,9 +160,13 @@ def _patterns_for_split(data_files: Any, split_lower: str) -> list[str]:
         bare = [entry for entry in data_files if isinstance(entry, str)]
         if bare and split_lower == DEFAULT_SPLIT:
             return bare
+        # A split may be declared more than once; taking the first entry would
+        # leave the rest of it out of both the preview and the recipe.
+        patterns: list[str] = []
         for entry in data_files:
             if isinstance(entry, dict) and str(entry.get("split") or "").lower() == split_lower:
-                return _as_pattern_list(entry.get("path"))
+                patterns.extend(_as_pattern_list(entry.get("path")))
+        return patterns
     return []
 
 
@@ -210,8 +214,13 @@ def _glob_to_regex(pattern: str) -> re.Pattern[str]:
     while i < len(pattern):
         char = pattern[i]
         if char == "*" and pattern[i + 1 : i + 2] == "*":
-            parts.append(".*")
-            i += 3 if pattern[i + 2 : i + 3] == "/" else 2
+            if pattern[i + 2 : i + 3] == "/":
+                # Whole folders, or none: `data/**/train.*` is not `data/nottrain.x`.
+                parts.append("(?:[^/]+/)*")
+                i += 3
+            else:
+                parts.append(".*")
+                i += 2
             continue
         if char == "*":
             parts.append("[^/]*")
@@ -276,6 +285,30 @@ def _split_rank(path: str, split_lower: str) -> int:
     return 2
 
 
+def _in_subset(data_files: list[str], subset: str | None, split_lower: str) -> list[str]:
+    """The files carrying this config label, as a folder or in the file name.
+
+    A repo may encode its configs in the names instead of the layout, as
+    main-train.parquet beside socratic-train.parquet. A label that lands on
+    nothing belonging to the split is a coincidence, not the config, so it is
+    dropped rather than allowed to decide the answer.
+    """
+    if not subset:
+        return data_files
+    subset_lower = subset.lower()
+    hits = [
+        f
+        for f in data_files
+        if subset_lower in f.lower().split("/")[:-1]
+        or subset_lower in _NAME_SEPARATORS.split(Path(f.lower()).stem)
+    ]
+    if any(_split_rank(f, split_lower) <= 1 for f in hits):
+        return hits
+    if any(_split_rank(f, split_lower) <= 1 for f in data_files):
+        return data_files
+    return hits or data_files
+
+
 def _select_best_file(
     data_files: list[str],
     split: str = DEFAULT_SPLIT,
@@ -284,12 +317,9 @@ def _select_best_file(
     if not data_files:
         return None
     split_lower = split.lower()
-    if subset:
-        subset_lower = subset.lower()
-        in_subset = [f for f in data_files if subset_lower in f.lower().split("/")[:-1]]
-        data_files = in_subset or data_files
-
-    return sorted(data_files, key = lambda p: (_split_rank(p, split_lower), len(p)))[0]
+    return sorted(
+        _in_subset(data_files, subset, split_lower), key = lambda p: (_split_rank(p, split_lower), len(p))
+    )[0]
 
 
 def _pattern_fits_the_split(
@@ -336,6 +366,25 @@ def _with_data_extension(pattern: str, suffix: str) -> str:
     return f"{pattern}{suffix}"
 
 
+def _widened_declared_pattern(
+    declared_files: list[str], data_files: list[str], split_lower: str, suffix: str
+) -> str:
+    """One glob covering several declared ones, keeping the split out of it if it can.
+
+    The folder holding them all may hold the other splits too, which is what the
+    split-named form avoids; it is only used when it takes the declared files
+    and nothing else.
+    """
+    parent = _common_parent(declared_files)
+    base = f"{parent}/**" if parent else "**"
+    scoped = f"{base}/*{split_lower}*{suffix}"
+    if set(_files_under_patterns([scoped], data_files)) == set(declared_files):
+        return scoped
+    # Nothing narrower fits, so cover the folder: reading a neighbour is
+    # recoverable, dropping half the split is not.
+    return f"{base}/*{suffix}"
+
+
 def _resolve_seed_hf_path(
     dataset_name: str,
     data_files: list[str],
@@ -354,16 +403,17 @@ def _resolve_seed_hf_path(
             pattern = _with_data_extension(declared[0], suffix)
         # A split spread over several declared globs cannot be written as one, and
         # neither can a rewritten pattern that no longer takes what it declared.
-        # Cover the folder holding them all: reading a neighbour is recoverable,
-        # dropping half the split is not.
         if not pattern or not set(declared_files) <= set(
             _files_under_patterns([pattern], data_files)
         ):
-            parent = _common_parent(declared_files)
-            pattern = f"{parent}/**/*{suffix}" if parent else f"**/*{suffix}"
+            pattern = _widened_declared_pattern(declared_files, data_files, split.lower(), suffix)
         return f"datasets/{dataset_name}/{pattern}"
 
-    selected = _select_best_file(declared_files or data_files, split, subset)
+    # Without a card mapping the subset is only a label on the files. Narrow to
+    # the ones carrying it first, so the pattern is checked against those alone
+    # and cannot be widened back over another config.
+    scoped = _in_subset(data_files, subset, split.lower())
+    selected = _select_best_file(scoped, split)
     if not selected:
         return None
 
@@ -381,7 +431,7 @@ def _resolve_seed_hf_path(
     if f"/{split_lower}/" not in f"/{selected.lower()}":
         stem = Path(selected).name[: -len(suffix)]
         for candidate in _candidate_patterns(stem, suffix, split_lower):
-            if _pattern_fits_the_split(data_files, parent, candidate, split_lower):
+            if _pattern_fits_the_split(scoped, parent, candidate, split_lower):
                 return f"{base}/{candidate}"
     return f"{base}/**/*{ext}"
 

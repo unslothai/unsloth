@@ -611,11 +611,80 @@ def test_seed_hf_path_covers_a_split_declared_across_two_folders(monkeypatch, tm
         }
     ]
     # One glob cannot name two folders, so cover the folder holding both rather
-    # than dropping one of them.
+    # than dropping one of them, keeping the split in the pattern.
     assert (
         seed_route._resolve_seed_hf_path("org/repo", files, "train", None, configs)
-        == "datasets/org/repo/sets/**/*.parquet"
+        == "datasets/org/repo/sets/**/*train*.parquet"
     )
+
+
+_LABELLED_FILES = [
+    "main-train.parquet",
+    "main-test.parquet",
+    "socratic-train.parquet",
+    "socratic-test.parquet",
+]
+
+
+@pytest.mark.parametrize(
+    ("subset", "expected"),
+    [
+        ("socratic", "datasets/org/repo/socratic-train*.parquet"),
+        ("main", "datasets/org/repo/main-train*.parquet"),
+    ],
+)
+def test_seed_hf_path_reads_a_subset_labelled_in_the_file_name(
+    monkeypatch, tmp_path, subset, expected
+):
+    seed_route = _load_seed_route(monkeypatch, tmp_path)
+    resolved = seed_route._resolve_seed_hf_path("org/repo", _LABELLED_FILES, "train", subset)
+    assert resolved == expected
+
+
+def test_seed_hf_path_ignores_a_subset_label_that_is_not_the_config(monkeypatch, tmp_path):
+    seed_route = _load_seed_route(monkeypatch, tmp_path)
+    # x/main.parquet carries the label but nothing of the split, so it is a name
+    # collision rather than the config.
+    files = ["x/main.parquet", "y/train-0.parquet"]
+    assert (
+        seed_route._resolve_seed_hf_path("org/repo", files, "train", "main")
+        == "datasets/org/repo/y/train-*.parquet"
+    )
+
+
+def test_seed_hf_path_keeps_the_split_when_widening_several_declared_globs(
+    monkeypatch, tmp_path
+):
+    seed_route = _load_seed_route(monkeypatch, tmp_path)
+    files = ["sets/a/train-0.parquet", "sets/b/train-0.parquet", "sets/a/test-0.parquet"]
+    configs = [
+        {
+            "config_name": "default",
+            "data_files": [
+                # Declared twice for the same split, which must not lose the second.
+                {"split": "train", "path": "sets/a/train-*"},
+                {"split": "train", "path": "sets/b/train-*"},
+            ],
+        }
+    ]
+    assert seed_route._declared_split_patterns(configs, "train") == [
+        "sets/a/train-*",
+        "sets/b/train-*",
+    ]
+    # sets/**/*.parquet would take the test file back; the split-named form does not.
+    assert (
+        seed_route._resolve_seed_hf_path("org/repo", files, "train", None, configs)
+        == "datasets/org/repo/sets/**/*train*.parquet"
+    )
+
+
+def test_seed_globstar_keeps_the_folder_boundary(monkeypatch, tmp_path):
+    seed_route = _load_seed_route(monkeypatch, tmp_path)
+    files = ["data/train.csv", "data/z/train.csv", "data/nottrain.parquet"]
+    assert seed_route._files_under_patterns(["data/**/train.*"], files) == [
+        "data/train.csv",
+        "data/z/train.csv",
+    ]
 
 
 def test_seed_declared_files_match_the_glob_not_its_prefix(monkeypatch, tmp_path):
