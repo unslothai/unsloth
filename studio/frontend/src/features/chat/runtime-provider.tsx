@@ -54,6 +54,7 @@ import {
   ChatGenerationStalledError,
   followChatGenerationRun,
   isTerminalChatGenerationRun,
+  toolApprovalIsPending,
 } from "./api/chat-generation-api";
 import {
   TEXT_ATTACHMENT_ACCEPT,
@@ -1068,7 +1069,16 @@ function scheduleGenerationRecovery(
             // coming to disarm the card, so arming from the seed would leave permanent Approve/Deny
             // buttons whose confirm can only 404.
             if (!isTerminalChatGenerationRun(update.run)) {
-              toolRecovery.armSeededApprovals(update.run.requestPayload?.session_id);
+              await toolRecovery.armSeededApprovals(
+              update.run.requestPayload?.session_id,
+              (approvalId) =>
+                toolApprovalIsPending(
+                  approvalId,
+                  typeof update.run.requestPayload?.session_id === "string"
+                    ? update.run.requestPayload.session_id
+                    : "",
+                ),
+            );
             }
             identityValidated = true;
           }

@@ -104,6 +104,28 @@ def wait_tool_decision(
                 _pending.pop(approval_id, None)
 
 
+def tool_decision_is_pending(approval_id, session_id = None) -> bool:
+    """True while `approval_id` is still waiting on a human.
+
+    A reopened tab cannot otherwise tell a parked call from one the user already answered: both are
+    saved as a card with no result and an approval id, because the result only lands with tool_end.
+    Re-arming the answered one puts Approve/Deny over a call that is already executing, and every
+    press 404s. So the state is asked for rather than inferred.
+
+    Scoped like resolve_tool_decision, and a set event counts as decided rather than pending, so the
+    window between the decision and the waiter popping its own slot does not read as still-parked.
+    """
+    if not approval_id:
+        return False
+    with _lock:
+        slot = _pending.get(approval_id)
+        if not slot:
+            return False
+        if session_id is not None and slot["session"] != (session_id or ""):
+            return False
+        return not slot["event"].is_set()
+
+
 def abort_tool_decision(slot, approval_id) -> None:
     """Remove a slot that was announced but never entered ``wait_tool_decision``. Streaming wrappers may stop after ``tool_start`` is yielded and before the loop resumes into ``wait_tool_decision``, leaving no waiter to run the normal cleanup path, so the generator close path calls this explicitly."""
     with _lock:

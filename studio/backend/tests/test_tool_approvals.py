@@ -387,3 +387,31 @@ def test_a_returning_session_past_the_ceiling_cannot_resolve_its_own_approval(mo
     w = _Waiter("sess", aid, cancel_event = cancel).start()
     assert w.join(timeout = 3.0) == "deny"
     assert resolve_tool_decision(aid, "allow", session_id = "sess") is False
+
+
+def test_a_pending_approval_reports_pending_and_a_decided_one_does_not():
+    """A reopened tab cannot tell a parked call from one the user already answered: both are saved
+    as a card with no result and an approval id, because the result only lands with tool_end. This
+    is the durable signal that separates them."""
+    approval_id = tool_approvals.new_approval_id()
+    slot = tool_approvals.begin_tool_decision("sess-a", approval_id)
+    assert tool_approvals.tool_decision_is_pending(approval_id, "sess-a") is True
+
+    assert tool_approvals.resolve_tool_decision(approval_id, "allow", session_id = "sess-a") is True
+    # Decided but not yet collected by the waiter: the window that would otherwise read as parked.
+    assert tool_approvals.tool_decision_is_pending(approval_id, "sess-a") is False
+
+    assert tool_approvals.wait_tool_decision(slot, approval_id, timeout = 30) == "allow"
+    # And gone once the waiter has popped its own slot.
+    assert tool_approvals.tool_decision_is_pending(approval_id, "sess-a") is False
+
+
+def test_the_pending_check_is_session_scoped_and_unguessable():
+    approval_id = tool_approvals.new_approval_id()
+    tool_approvals.begin_tool_decision("sess-a", approval_id)
+    assert tool_approvals.tool_decision_is_pending(approval_id, "sess-b") is False
+    assert tool_approvals.tool_decision_is_pending(approval_id, "sess-a") is True
+    # No id, no answer: this must never be a way to ask "is anything pending".
+    assert tool_approvals.tool_decision_is_pending("", "sess-a") is False
+    assert tool_approvals.tool_decision_is_pending(None, "sess-a") is False
+    assert tool_approvals.tool_decision_is_pending("not-a-real-id", "sess-a") is False

@@ -266,6 +266,30 @@ export async function getActiveChatGenerationRuns(
   return (await json<{ runs: ChatGenerationRun[] }>(response)).runs ?? [];
 }
 
+/** Whether a parked approval is still waiting on a human.
+ *
+ *  A reopened tab cannot tell this from the saved card: a call the user already answered looks
+ *  exactly like one still parked, since the result only arrives with tool_end. Answering from the
+ *  server is the only way to avoid restoring Approve/Deny over a call that is already executing.
+ *
+ *  An older backend has no such route, so a 404 or 405 means "cannot tell" rather than "answered",
+ *  and the caller keeps its previous arm-everything behaviour instead of silently dropping buttons.
+ */
+export async function toolApprovalIsPending(
+  approvalId: string,
+  sessionId: string,
+  signal?: AbortSignal,
+): Promise<boolean> {
+  const response = await authFetch("/api/inference/tool-approval-status", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ approval_id: approvalId, session_id: sessionId }),
+    signal,
+  });
+  if (response.status === 404 || response.status === 405) return true;
+  return (await json<{ pending?: boolean }>(response)).pending !== false;
+}
+
 export async function createChatGenerationRun(
   input: CreateChatGenerationRunInput,
 ): Promise<ChatGenerationRun> {

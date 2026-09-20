@@ -235,14 +235,32 @@ export function createGenerationToolRecovery(
    *  construction, because the decision is resolved against that session. A call whose `tool_start`
    *  lands above the cursor arms itself as the frame folds; `register` is idempotent, so both paths
    *  can name the same pair without raising two cards. */
-  const armSeededApprovals = (sessionId: unknown) => {
+  /*  `stillPending` is what keeps this from arming a call the user ALREADY answered. A saved card
+   *  looks the same either way: no result, approval id intact, because the result only lands with
+   *  tool_end. So a tab closed between the click and the tool finishing would otherwise reopen
+   *  with Approve/Deny over a call that is already executing, and every press 404s. Optional, and
+   *  when it is absent the old arm-everything behaviour stands, so a caller with no way to ask is
+   *  no worse off than before. */
+  const armSeededApprovals = async (
+    sessionId: unknown,
+    stillPending?: (approvalId: string) => Promise<boolean>,
+  ) => {
     if (!toolConfirmations) return;
+    const session = typeof sessionId === "string" ? sessionId : "";
     for (const entry of savedPending) {
-      armApproval(
-        entry,
-        record(entry.part)?.toolApprovalId,
-        typeof sessionId === "string" ? sessionId : "",
-      );
+      const approvalId = record(entry.part)?.toolApprovalId;
+      if (stillPending && typeof approvalId === "string" && approvalId) {
+        // A check that throws (offline, server gone) must not cost the user their buttons on a
+        // call that really is parked, so an unanswerable question falls back to arming.
+        let pending = true;
+        try {
+          pending = await stillPending(approvalId);
+        } catch {
+          pending = true;
+        }
+        if (!pending) continue;
+      }
+      armApproval(entry, approvalId, session);
     }
   };
   const replayFrom = savedPending.some(

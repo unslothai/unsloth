@@ -53,7 +53,7 @@ const parkedStart = (approvalId: string) => ({
   },
 });
 
-test("a call that parks after the tab reattaches arms its own card", () => {
+test("a call that parks after the tab reattaches arms its own card", async () => {
   const spy = spyConfirmations();
   const carried: { at: number; part: unknown }[] = [];
   const recovery = createGenerationToolRecovery(carried, "run-1", 0, spy.hooks);
@@ -69,7 +69,7 @@ test("a call that parks after the tab reattaches arms its own card", () => {
   });
 });
 
-test("a call that parked BEFORE the tab closed is re-raised from the seed", () => {
+test("a call that parked BEFORE the tab closed is re-raised from the seed", async () => {
   // The saved card is all that is left of it: its tool_start sits at or below the cursor, so no
   // frame re-folds it. This is the case that made a reopened tab show a spinner with no buttons.
   const spy = spyConfirmations();
@@ -89,13 +89,13 @@ test("a call that parked BEFORE the tab closed is re-raised from the seed", () =
   const recovery = createGenerationToolRecovery(carried, "run-1", 40, spy.hooks);
 
   assert.deepEqual(spy.registered, [], "nothing is armed before the session is known");
-  recovery.armSeededApprovals("sess-1");
+  await recovery.armSeededApprovals("sess-1");
   assert.deepEqual(spy.registered, [
     { partId: "sess-1:thread-1:appr-7", approvalId: "appr-7", sessionId: "sess-1" },
   ]);
 });
 
-test("a finished card is never re-armed from the seed", () => {
+test("a finished card is never re-armed from the seed", async () => {
   const spy = spyConfirmations();
   const carried = [
     {
@@ -109,11 +109,11 @@ test("a finished card is never re-armed from the seed", () => {
       },
     },
   ];
-  createGenerationToolRecovery(carried, "run-1", 40, spy.hooks).armSeededApprovals("sess-1");
+  await createGenerationToolRecovery(carried, "run-1", 40, spy.hooks).armSeededApprovals("sess-1");
   assert.deepEqual(spy.registered, [], "an answered call has a result; it is not waiting on anyone");
 });
 
-test("the seed and the frame can name the same call without raising two cards", () => {
+test("the seed and the frame can name the same call without raising two cards", async () => {
   const spy = spyConfirmations();
   const carried = [
     {
@@ -128,7 +128,7 @@ test("the seed and the frame can name the same call without raising two cards", 
     },
   ];
   const recovery = createGenerationToolRecovery(carried, "run-1", 0, spy.hooks);
-  recovery.armSeededApprovals("sess-1");
+  await recovery.armSeededApprovals("sess-1");
   recovery.apply(parkedStart("appr-1"), 5, 9, "sess-1");
 
   assert.equal(spy.live.size, 1, "one card, however many times it was named");
@@ -136,7 +136,7 @@ test("the seed and the frame can name the same call without raising two cards", 
   assert.equal(spy.live.get("sess-1:thread-1:appr-1")?.approvalId, "appr-1");
 });
 
-test("the decision goes away when the call gets a result", () => {
+test("the decision goes away when the call gets a result", async () => {
   const spy = spyConfirmations();
   const carried: { at: number; part: unknown }[] = [];
   const recovery = createGenerationToolRecovery(carried, "run-1", 0, spy.hooks);
@@ -162,7 +162,7 @@ test("the decision goes away when the call gets a result", () => {
   assert.equal(spy.live.size, 0, "no Approve/Deny over a finished result");
 });
 
-test("a call that never needed a decision arms nothing", () => {
+test("a call that never needed a decision arms nothing", async () => {
   const spy = spyConfirmations();
   const carried: { at: number; part: unknown }[] = [];
   createGenerationToolRecovery(carried, "run-1", 0, spy.hooks).apply(
@@ -181,12 +181,12 @@ test("a call that never needed a decision arms nothing", () => {
   assert.deepEqual(spy.registered, []);
 });
 
-test("recovery still works for a caller that passes no confirmation hooks", () => {
+test("recovery still works for a caller that passes no confirmation hooks", async () => {
   // The hooks are optional: every other caller of this module keeps its old shape.
   const carried: { at: number; part: unknown }[] = [];
   const recovery = createGenerationToolRecovery(carried, "run-1", 0);
   recovery.apply(parkedStart("appr-1"), 0, 1, "sess-1");
-  recovery.armSeededApprovals("sess-1");
+  await recovery.armSeededApprovals("sess-1");
   assert.equal(carried.length, 1);
   assert.equal(
     (carried[0].part as Record<string, unknown>).toolApprovalId,
@@ -209,7 +209,7 @@ const seededParkedCard = () => [
   },
 ];
 
-test("a run that ends without a tool_end still takes its cards down", () => {
+test("a run that ends without a tool_end still takes its cards down", async () => {
   // The backend failed or restarted while the call was parked, so no tool_end is ever emitted and
   // the per-call disarm never runs. Without a run-level sweep the card outlives its own run:
   // buttons on screen over a dead run, and a decision that can only 404 because the pending slot
@@ -218,7 +218,7 @@ test("a run that ends without a tool_end still takes its cards down", () => {
   const spy = spyConfirmations();
   const recovery = createGenerationToolRecovery(seededParkedCard(), "run-1", 40, spy.hooks);
 
-  recovery.armSeededApprovals("sess-1");
+  await recovery.armSeededApprovals("sess-1");
   assert.equal(spy.registered.length, 1);
   assert.equal(spy.live.size, 1, "the card is live before the run ends");
 
@@ -232,7 +232,7 @@ test("a run that ends without a tool_end still takes its cards down", () => {
   assert.deepEqual(spy.resolved, ["sess-1:thread-1:appr-9"]);
 });
 
-test("the run-level sweep only takes down cards this recovery armed", () => {
+test("the run-level sweep only takes down cards this recovery armed", async () => {
   // Same scoping rule as the per-call disarm: a recovery shares the store with whatever else is on
   // screen, so a card it never raised is not its business to resolve.
   const spy = spyConfirmations();
@@ -240,4 +240,41 @@ test("the run-level sweep only takes down cards this recovery armed", () => {
 
   recovery.disarmAll();                       // armed nothing, so it resolves nothing
   assert.deepEqual(spy.resolved, []);
+});
+
+test("a call the user already answered is not re-armed on reopen", async () => {
+  // The third way a reopened tab ended up with buttons that cannot work. Approve a slow tool, close
+  // the tab before tool_end, reopen: the saved card still has no result and still carries its
+  // approval id, because the result only arrives with tool_end. Arming it puts Approve/Deny over a
+  // call that is already executing, and every press 404s. The card's shape cannot tell the two
+  // apart, so the server is asked.
+  const spy = spyConfirmations();
+  const recovery = createGenerationToolRecovery(seededParkedCard(), "run-1", 40, spy.hooks);
+
+  await recovery.armSeededApprovals("sess-1", async () => false);
+  assert.deepEqual(spy.registered, [], "an answered call must not get its buttons back");
+  assert.equal(spy.live.size, 0);
+});
+
+test("a call that really is still parked is armed as before", async () => {
+  // The control for the test above. If the check were wired the wrong way round, the feature would
+  // stop working entirely and the negative test alone would still pass.
+  const spy = spyConfirmations();
+  const recovery = createGenerationToolRecovery(seededParkedCard(), "run-1", 40, spy.hooks);
+
+  await recovery.armSeededApprovals("sess-1", async () => true);
+  assert.equal(spy.registered.length, 1);
+  assert.equal(spy.live.size, 1);
+});
+
+test("a check that cannot be answered still arms the card", async () => {
+  // Offline, or a backend too old to have the route. Losing the buttons on a call that really is
+  // parked is the worse failure, so an unanswerable question falls back to the old behaviour.
+  const spy = spyConfirmations();
+  const recovery = createGenerationToolRecovery(seededParkedCard(), "run-1", 40, spy.hooks);
+
+  await recovery.armSeededApprovals("sess-1", async () => {
+    throw new Error("network down");
+  });
+  assert.equal(spy.registered.length, 1, "a failed check must not cost a parked call its buttons");
 });
