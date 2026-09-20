@@ -1669,3 +1669,48 @@ def test_a_failed_launch_drops_every_cache_verdict(tmp_path, monkeypatch):
     sandbox_linux._cache_hazard_within_deadline("hub", str(component))
 
     assert len(calls) > before, "reset_cache_verdicts did not invalidate the memo"
+
+
+def test_the_studio_state_directory_is_never_a_system_bind(monkeypatch, tmp_path):
+    """/opt is a system root and the Docker layout puts Studio's state in it.
+
+    docker/run.sh mounts the Studio volume at /opt/unsloth-studio and
+    studio_launch.sh exports UNSLOTH_STUDIO_HOME to match, so binding /opt
+    whole hands auth/auth.db to model-authored code read-only. That database
+    holds the HS256 jwt_secret, and tools.py's literal-path guard is bypassed
+    by building the path dynamically, so the disclosure survives `required`
+    mode. Everything else under the root must still be readable.
+    """
+    from core.inference import sandbox_linux
+
+    opt = tmp_path / "opt"
+    state = opt / "unsloth-studio"
+    (state / "auth").mkdir(parents = True)
+    (state / "auth" / "auth.db").write_text("secret")
+    toolchain = opt / "some-toolchain"
+    toolchain.mkdir()
+
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(state))
+
+    kept = sandbox_linux._without_studio_state((str(opt),))
+
+    assert str(state) not in kept
+    assert not any(sandbox_linux._within(str(state), path) for path in kept), (
+        "a bind source still contains the Studio auth database"
+    )
+    assert str(toolchain) in kept, "unrelated /opt software stopped being readable"
+
+
+def test_a_system_root_without_studio_state_is_still_bound_whole(monkeypatch, tmp_path):
+    """The descent must only happen where it is needed, or every launch pays
+    a listdir of /usr and binds hundreds of paths."""
+    from core.inference import sandbox_linux
+
+    opt = tmp_path / "opt"
+    (opt / "some-toolchain").mkdir(parents = True)
+    elsewhere = tmp_path / "home" / "studio"
+    elsewhere.mkdir(parents = True)
+
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(elsewhere))
+
+    assert sandbox_linux._without_studio_state((str(opt),)) == (str(opt),)
