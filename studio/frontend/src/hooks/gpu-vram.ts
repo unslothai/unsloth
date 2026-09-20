@@ -14,11 +14,8 @@ export interface MemoryTotalDevice {
   shared_memory?: boolean;
   /** host-backed portion of the shared pool; the rest is reserved GPU memory. */
   shared_memory_host_backed_gb?: number | null;
-  /** The backend's per-device `unified_memory`, for a ROCm APU. Read here for the
-   *  same reason `MemoryCapacityDevice` reads it: `hardware.py` sets `shared_memory`
-   *  only on Windows, so on Linux the very same APU arrives as
-   *  `unified_memory: true, shared_memory: false`, and splitting on `shared_memory`
-   *  alone counted its GTT window as dedicated VRAM standing BESIDE system RAM. */
+  /** `hardware.py` sets `shared_memory` only on Windows, so a Linux ROCm APU arrives
+   *  as `unified_memory: true, shared_memory: false` (as `MemoryCapacityDevice`). */
   unified_memory?: boolean;
 }
 
@@ -35,9 +32,8 @@ export interface VramReportingGpu {
   vram_used_gb_aggregate?: number | null;
 }
 
-/** Whether this device's memory is a view into host RAM, in the wire shape the totals
- *  above are given. The same question `sharesHostMemory` answers for the capacity
- *  resolver, asked of a `MemoryTotalDevice` so the two cannot drift apart. */
+/** `sharesHostMemory` in the wire shape, so the totals and the capacity resolver
+ *  cannot drift apart. */
 function sharesHostMemoryDevice(device: MemoryTotalDevice): boolean {
   return sharesHostMemory({
     sharedMemory: device.shared_memory === true,
@@ -61,13 +57,8 @@ export function gpuMemoryTotalsGb(
     const total = device.memory_total_gb ?? 0;
     return Number.isFinite(total) && total > 0 ? total : 0;
   };
-  // `sharesHostMemory`, not `shared_memory` alone. The two flags mean the same thing
-  // for capacity and the backend simply reports them differently per platform, which
-  // is what that helper exists to fold. Every caller that had learned this folded on
-  // its own way in (use-gpu-info's RAM subtraction, memory-fit's independent total,
-  // resolveMemoryCapacityGb below); folding here instead fixes the ones that had not,
-  // and is a no-op for the ones that had, since folding an already-folded flag
-  // returns it unchanged.
+  // Folding the two flags here fixes the callers that never learned to, and is a
+  // no-op for the ones that fold on their way in (use-gpu-info, memory-fit).
   const dedicatedDevices = roundToDevicePrecision(
     devices
       .filter((device) => !sharesHostMemoryDevice(device))
@@ -86,14 +77,10 @@ export function gpuMemoryTotalsGb(
           ? Math.min(total, hostBackedReported as number)
           : total;
         return {
-          // `shared_memory` is the flag that means "this budget IS the host's own
-          // pool", so several of them are views of one thing and the largest is it.
-          // `unified_memory` alone says only that a device shares memory with its
-          // OWN cpu, which on a multi-socket unified host (MI300A) is one pool per
-          // socket, not one pool for the machine. Collapsing those would report a
-          // four-socket node as a single card, so they stay additive, which is also
-          // exactly how they were counted before they were classified as shared at
-          // all. No inventory loses capacity by being read correctly.
+          // `shared_memory` means "this budget IS the host pool", so several are views
+          // of one thing and the largest is it. `unified_memory` alone means only that
+          // a device shares memory with its OWN cpu, which on a multi-socket node
+          // (MI300A) is a pool per socket: collapsing those reports it as one card.
           hostBacked:
             device.shared_memory === true
               ? Math.max(totals.hostBacked, hostBacked)
