@@ -203,32 +203,24 @@ def test_explicit_max_length_resolves_the_same_on_every_trl(tmp_path, trl_has_gu
 
 
 def _trl_default_max_length():
-    """The `max_length` a caller who never named one ends up carrying."""
     import dataclasses
-
     for field in dataclasses.fields(_pristine_sft_config_cls()):
         if field.name == "max_length":
             return field.default
     return None
 
 
-# 1025 is one token past TRL's 1024 default, which is where the regression starts;
-# 2048 is what `FastLanguageModel.from_pretrained` itself defaults to.
+# 1025 is the first cap above TRL's 1024 default; 2048 is from_pretrained's own default.
 @pytest.mark.parametrize("model_cap", [1025, 2048, 8192])
 def test_an_untouched_max_length_default_does_not_cap_the_model_context(
     tmp_path, trl_has_guard, model_cap
 ):
     """Honouring a limit the caller never set is the same bug in the other direction.
 
-    `SFTConfig.max_length` is not `None` on any TRL from 0.22 onwards -- it defaults
-    to 1024 -- so a cap keyed on "is this positive" reads every default config as a
-    request for 1024 and silently truncates a `from_pretrained(max_seq_length = 4096)`
-    run to a quarter of what it asked for. The only length named here is the model's,
-    so the model's is what must be enforced.
-
-    Parameterised across the boundary on purpose: the module's own
-    `_MODEL_MAX_SEQ_LENGTH = 128` sits BELOW the default, where `min(128, 1024)` is
-    128 either way, so the default-construction test above cannot see this at all.
+    `SFTConfig.max_length` defaults to 1024 on every TRL from 0.22 onwards, so a cap
+    keyed on "is this positive" reads every default config as a request for 1024.
+    `_MODEL_MAX_SEQ_LENGTH = 128` sits below that default, where `min(128, 1024)` is 128
+    either way, which is why the default-construction test above cannot see this.
     """
     from datasets import Dataset
 
@@ -256,15 +248,13 @@ def test_an_untouched_max_length_default_does_not_cap_the_model_context(
 
 
 def test_the_cap_reads_an_explicit_max_length_not_a_positive_one():
-    """Version-independent: the behavioural test above needs a TRL whose default is
-    positive, so pin the predicate in the emitted source too."""
+    """The behavioural test above needs a TRL whose default is positive; this one does not."""
     from unsloth.models import rl
 
     source = inspect.getsource(rl)
     assert "_unsloth_explicit_max_length" in source
-    # The dataclass default is what "explicit" is measured against.
     assert "_unsloth_default_max_length" in source
-    # And not a bare truthiness test on the value itself, which every default passes.
+    # Not a bare truthiness test on the value, which every default passes.
     assert (
         "min(model.max_seq_length, args.max_length) "
         "if (getattr(args, 'max_length', None) or 0) > 0" not in source

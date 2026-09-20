@@ -1967,17 +1967,15 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
         model_length_default = "model.max_seq_length"
         explicit_max_length = ""
         if trainer_file == "sft_trainer":
-            # A model limit must not widen a truncation limit the CALLER asked for. Only a
-            # caller-supplied one: `SFTConfig.max_length` carries a dataclass default of 1024 on
-            # every TRL from 0.22 to 1.x, so capping on "positive" instead caps every run that
-            # never named a length down to 1024, model context and all.
+            # A model limit must not widen a limit the CALLER asked for, and `SFTConfig.max_length`
+            # defaults to 1024 on every TRL from 0.22 to 1.x, so capping on "positive" instead
+            # would cap every run that named no length at all down to 1024.
             explicit_max_length = (
                 "_unsloth_explicit_max_length = None\n"
                 "try:\n"
                 "    import dataclasses as _unsloth_dc\n"
                 "    _unsloth_cfg_cls = type(args)\n"
-                # Walk back off Unsloth's generated subclass to TRL's own dataclass, which is where
-                # the untouched default lives.
+                # Back off the generated subclass to TRL's own dataclass, where the default lives.
                 "    while '_unsloth_patched_rl_config' in _unsloth_cfg_cls.__dict__ or _unsloth_cfg_cls.__name__.startswith('Unsloth'):\n"
                 "        _unsloth_cfg_cls = _unsloth_cfg_cls.__bases__[0]\n"
                 "    _unsloth_default_max_length = None\n"
