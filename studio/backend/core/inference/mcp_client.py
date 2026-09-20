@@ -1805,9 +1805,7 @@ def _flatten_result(result: Any) -> str:
     # the filesystem server mirrors binary blocks in structured_content; keep everything else
     structured = None if has_text else getattr(result, "structured_content", None)
     if not images:
-        images = _structured_images(
-            getattr(result, "structured_content", None), budget, payloads
-        )
+        images = _structured_images(getattr(result, "structured_content", None), budget, payloads)
     if structured is not None and payloads:
         structured = _strip_payloads(structured, payloads)
     if structured is not None and structured is not _MIRRORED:
