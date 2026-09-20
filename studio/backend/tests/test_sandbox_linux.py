@@ -1949,3 +1949,45 @@ def test_auto_still_launches_on_the_same_workdir(monkeypatch, tmp_path):
         assert os_sandbox.WORKDIR_SCAN_INCOMPLETE in prepared.execution_record.limitations
     finally:
         prepared.cleanup()
+
+
+def test_a_registered_model_folder_is_bound_read_only(monkeypatch, tmp_path):
+    """The same disagreement on Linux: silent at the approval gate, absent from
+    the binds, so the read fails inside the jail."""
+    from core.inference import os_sandbox
+
+    # Outside the workdir on purpose: a folder inside it is already writable,
+    # and the grant would be about nothing.
+    library = tmp_path / "library" / "models"
+    library.mkdir(parents = True)
+    workdir = tmp_path / "work"
+    workdir.mkdir()
+    monkeypatch.setattr(os_sandbox, "model_library_roots", lambda: (str(library),))
+
+    from core.inference import sandbox_linux
+
+    if sandbox_linux.shutil.which("bwrap") is None:
+        pytest.skip("bubblewrap is not installed on this host")
+    monkeypatch.setattr(sandbox_linux, "model_library_roots", lambda: (str(library),))
+
+    launch = sandbox_linux.prepare(_plan(workdir))
+    try:
+        pairs = _pairs(launch.argv, "--ro-bind-try")
+    finally:
+        launch.cleanup()
+
+    assert (str(library), str(library)) in pairs, "the registered model folder was not bound"
+
+
+def test_a_model_folder_that_is_a_system_directory_is_refused(monkeypatch):
+    """A registered folder that is really /etc or a home is a misconfiguration,
+    and binding it would undo the rest of the profile."""
+    from core.inference import os_sandbox, tool_path_approval
+
+    monkeypatch.setattr(tool_path_approval, "_scan_folder_roots", lambda: ("/etc", "/"))
+    monkeypatch.setattr(
+        "utils.paths.storage_roots.well_known_model_dirs",
+        lambda: (os.path.expanduser("~"),), raising = False,
+    )
+
+    assert os_sandbox.model_library_roots() == ()
