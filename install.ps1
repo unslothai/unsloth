@@ -1933,6 +1933,9 @@ function Install-UnslothStudio {
     # notice runs and would therefore clear it. Under `irm | iex` the script scope IS the caller's
     # session, so a stale value from a previous run has to be cleared somewhere.
     $script:StudioRollbackCostsFullSize = $false
+    # Set by the --no-rollback discard when the environment it is about to delete reports XPU,
+    # read by the Intel scan once that tree is gone.
+    $script:StudioPreservedXpuVerdict = $false
     $ShortcutsOnly = $false
     $WithLlamaCppDir = ""
     $argList = $args
@@ -7126,6 +7129,47 @@ exit 0
         Write-StudioLine "       The install continues. If it runs out of space, re-run with --no-rollback (or UNSLOTH_INSTALL_NO_ROLLBACK=1) to discard the old environment instead of keeping it." -ForegroundColor Yellow
     }
 
+    # ── Bounded "ask the venv python" probe ──
+    # A wedged torch import or a hanging Intel driver init -- what the XPU probes below exist to
+    # detect -- would block a bare `& python -c ...` forever. ProcessStartInfo, not &, so stderr
+    # cannot trip $ErrorActionPreference; BOTH streams drain async so a noisy import cannot
+    # deadlock on a full pipe; WaitForExit bounds the wait and kills the child. Every failure
+    # (timeout, crash, exception) reads as .Ok = $false; .Error carries WHICH one, since stderr
+    # used to be drained and discarded, leaving a driver-level DLL load error and a missing torch
+    # indistinguishable. Defined above the Intel scan: PowerShell binds a function when it runs.
+    function Invoke-BoundedPythonProbe {
+        param([string]$PythonExe, [string]$Code, [int]$TimeoutSec = 30)
+        $result = [pscustomobject]@{ Ok = $false; Output = ""; Error = "" }
+        if (-not $PythonExe -or -not $Code) { return $result }
+        try {
+            $psi = New-Object System.Diagnostics.ProcessStartInfo
+            $psi.FileName = $PythonExe
+            $psi.Arguments = "-c `"$Code`""
+            $psi.RedirectStandardOutput = $true
+            $psi.RedirectStandardError = $true
+            $psi.UseShellExecute = $false
+            $psi.CreateNoWindow = $true
+            $proc = [System.Diagnostics.Process]::Start($psi)
+            $outTask = $proc.StandardOutput.ReadToEndAsync()
+            $errTask = $proc.StandardError.ReadToEndAsync()
+            if (-not $proc.WaitForExit($TimeoutSec * 1000)) {
+                try { $proc.Kill() } catch {}
+                # Synthesised, not read back: waiting on the reader tasks of a wedged child
+                # would reintroduce the hang this helper exists to bound.
+                $result.Error = "python did not answer within $TimeoutSec seconds"
+                return $result
+            }
+            $result.Output = $outTask.GetAwaiter().GetResult()
+            # Kept, not discarded: the only place a failed probe's OSError / WinError text exists.
+            $result.Error = $errTask.GetAwaiter().GetResult()
+            $result.Ok = ($proc.ExitCode -eq 0)
+            return $result
+        } catch {
+            $result.Error = $_.Exception.Message
+            return $result
+        }
+    }
+
     function Start-StudioVenvRollback {
         param([Parameter(Mandatory = $true)][string]$ExistingDir)
         $stamp = Get-Date -Format "yyyyMMddHHmmss"
@@ -7195,6 +7239,23 @@ exit 0
         # commit path does too: an interrupt must not restore a half-deleted backup.
         if ($script:StudioNoRollback) {
             $discard = $script:StudioVenvRollbackDir
+            # The Intel scan later rescues an adapter WMI cannot classify by asking the PREVIOUS
+            # environment's torch whether XPU works, because the replacement has no torch yet.
+            # Deleting that tree here would take the only interpreter that can answer with it,
+            # and the machine would be routed to CPU wheels for having opted out of a rollback
+            # copy. Opting out must cost disk, never hardware, so the verdict is taken first and
+            # the scan reads it instead. Wrapped: this runs under the installer's "Stop", and a
+            # probe that cannot run must not cost the rename.
+            try {
+                $_discardPy = Join-Path $discard "Scripts\python.exe"
+                if (Test-Path -LiteralPath $_discardPy -ErrorAction SilentlyContinue) {
+                    $_discardXpu = Invoke-BoundedPythonProbe -PythonExe $_discardPy `
+                        -Code 'import torch; print(torch.xpu.is_available())'
+                    if ($_discardXpu.Ok -and $_discardXpu.Output -match '(?m)^\s*True\s*$') {
+                        $script:StudioPreservedXpuVerdict = $true
+                    }
+                }
+            } catch { }
             $script:StudioVenvRollbackActive = $false
             $script:StudioVenvRollbackDir = $null
             # Distinct from "never started". Inactive alone cannot tell the two apart, and the
@@ -8831,47 +8892,6 @@ exit 0
     # true on unmapped arches too, and those install CPU torch.
     $AmdHasGpuWheels = [bool]($ROCmGfxArch -and $archFamilyMap.ContainsKey($ROCmGfxArch))
 
-    # ── Bounded "ask the venv python" probe ──
-    # A wedged torch import or a hanging Intel driver init -- what the XPU probes below exist to
-    # detect -- would block a bare `& python -c ...` forever. ProcessStartInfo, not &, so stderr
-    # cannot trip $ErrorActionPreference; BOTH streams drain async so a noisy import cannot
-    # deadlock on a full pipe; WaitForExit bounds the wait and kills the child. Every failure
-    # (timeout, crash, exception) reads as .Ok = $false; .Error carries WHICH one, since stderr
-    # used to be drained and discarded, leaving a driver-level DLL load error and a missing torch
-    # indistinguishable. Defined above the Intel scan: PowerShell binds a function when it runs.
-    function Invoke-BoundedPythonProbe {
-        param([string]$PythonExe, [string]$Code, [int]$TimeoutSec = 30)
-        $result = [pscustomobject]@{ Ok = $false; Output = ""; Error = "" }
-        if (-not $PythonExe -or -not $Code) { return $result }
-        try {
-            $psi = New-Object System.Diagnostics.ProcessStartInfo
-            $psi.FileName = $PythonExe
-            $psi.Arguments = "-c `"$Code`""
-            $psi.RedirectStandardOutput = $true
-            $psi.RedirectStandardError = $true
-            $psi.UseShellExecute = $false
-            $psi.CreateNoWindow = $true
-            $proc = [System.Diagnostics.Process]::Start($psi)
-            $outTask = $proc.StandardOutput.ReadToEndAsync()
-            $errTask = $proc.StandardError.ReadToEndAsync()
-            if (-not $proc.WaitForExit($TimeoutSec * 1000)) {
-                try { $proc.Kill() } catch {}
-                # Synthesised, not read back: waiting on the reader tasks of a wedged child
-                # would reintroduce the hang this helper exists to bound.
-                $result.Error = "python did not answer within $TimeoutSec seconds"
-                return $result
-            }
-            $result.Output = $outTask.GetAwaiter().GetResult()
-            # Kept, not discarded: the only place a failed probe's OSError / WinError text exists.
-            $result.Error = $errTask.GetAwaiter().GetResult()
-            $result.Ok = ($proc.ExitCode -eq 0)
-            return $result
-        } catch {
-            $result.Error = $_.Exception.Message
-            return $result
-        }
-    }
-
     # Bounded Win32_VideoController scan: the query can block forever on a degraded WMI
     # repository, -ErrorAction only suppresses reported errors, and -OperationTimeoutSec is not
     # enforced for the local COM session this uses, so out of process with a wall-clock kill is
@@ -8986,6 +9006,13 @@ exit 0
         # A rerun has already moved the old venv to $script:StudioVenvRollbackDir and put an
         # empty one in its place, so probing $VenvPython would ask an interpreter with no torch.
         # Ask the preserved environment instead -- that is the migrated runtime this rescues.
+        # --no-rollback deleted that environment, so the answer was taken before it went. Same
+        # verdict, same effect: opting out of the rollback copy must not narrow the device set.
+        if ($script:StudioPreservedXpuVerdict) {
+            $HasIntelGpu = $true
+            $script:IsIntelXpu = $true
+            if (-not $IntelGpuLabel) { $IntelGpuLabel = "Intel GPU (detected by PyTorch XPU)" }
+        }
         $_xpuProbePy = $VenvPython
         if ($script:StudioVenvRollbackDir) {
             $_rollbackPy = Join-Path $script:StudioVenvRollbackDir "Scripts\python.exe"

@@ -1702,3 +1702,35 @@ class TestVolumeLookupsResolveLinks:
         assert "GetFullPath($queryPath)" in helper, (
             "the DriveInfo fallback still measures the unresolved path"
         )
+
+
+class TestNoRollbackDoesNotNarrowDeviceDetection:
+    """Opting out of the rollback copy must cost disk, never hardware. The Intel scan rescues an
+    adapter WMI cannot classify by asking the PREVIOUS environment's torch whether XPU works,
+    because the replacement venv has no torch yet; discarding that tree without taking the
+    verdict first routes an Arc machine to CPU wheels (#11313)."""
+
+    def test_the_verdict_is_taken_before_the_tree_is_deleted(self):
+        text = INSTALL_PS1.read_text(encoding = "utf-8")
+        discard = text.split("if ($script:StudioNoRollback) {", 1)[1].split(
+            "substep \"previous environment discarded", 1
+        )[0]
+        probe = discard.index("Invoke-BoundedPythonProbe")
+        removal = discard.index("Remove-StudioVenvTreeWithRetry")
+        assert probe < removal, "the tree is deleted before its XPU verdict is taken"
+
+    def test_the_scan_reads_the_preserved_verdict(self):
+        text = INSTALL_PS1.read_text(encoding = "utf-8")
+        assert "$script:StudioPreservedXpuVerdict" in text
+        scan = text.split("$_xpuProbePy = $VenvPython", 1)[0][-900:]
+        assert "$script:StudioPreservedXpuVerdict" in scan, (
+            "the Intel scan never consults the verdict taken before the discard"
+        )
+
+    def test_the_probe_is_defined_before_the_rollback_that_calls_it(self):
+        # PowerShell binds a function when the statement defining it runs, so a helper defined
+        # after its caller is CommandNotFoundException at the call.
+        text = INSTALL_PS1.read_text(encoding = "utf-8")
+        assert text.index("function Invoke-BoundedPythonProbe") < text.index(
+            "function Start-StudioVenvRollback"
+        ), "Invoke-BoundedPythonProbe is defined after the function that calls it"

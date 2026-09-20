@@ -366,6 +366,44 @@ try {
             Check "$($case.Label): names the opt-out" ($joined -match 'UNSLOTH_INSTALL_NO_ROLLBACK=1')
         }
     }
+    Write-Host "--no-rollback costs disk, never hardware (#11313)"
+    # The Intel scan rescues an adapter WMI cannot classify by asking the PREVIOUS environment's
+    # torch whether XPU works; the replacement has no torch yet. Discarding that tree without
+    # taking the verdict first routes an Arc machine to CPU wheels for having opted out of a
+    # rollback copy, which is a narrower device set than the same install without the flag.
+    [System.IO.Directory]::CreateDirectory($VenvDir) | Out-Null
+    [System.IO.Directory]::CreateDirectory((Join-Path $VenvDir "Scripts")) | Out-Null
+    # Stands in for the interpreter: the probe is bounded and reads stdout, so what it runs only
+    # has to print True the way torch.xpu.is_available() would on an Arc machine.
+    $fakePy = Join-Path (Join-Path $VenvDir "Scripts") "python.exe"
+    if ($IsWindows -or $env:OS -eq "Windows_NT") {
+        Set-Content -LiteralPath $fakePy -Value "@echo True"
+    } else {
+        Set-Content -LiteralPath $fakePy -Value "#!/bin/sh`necho True"
+        & chmod +x $fakePy
+    }
+    Reset-RollbackState $VenvDir
+    $script:StudioPreservedXpuVerdict = $false
+    $script:StudioNoRollback = $true
+    $script:StudioRollbackCostsFullSize = $true
+    $xpuThrew = $false
+    try { Start-StudioVenvRollback -ExistingDir $VenvDir } catch { $xpuThrew = $true }
+    Check "taking the XPU verdict never costs the discard" (-not $xpuThrew)
+    if ($IsWindows -or $env:OS -eq "Windows_NT") {
+        # A .exe that is really a batch file will not start on Windows, so only the POSIX arm
+        # can drive the probe end to end; here the assertion is that it is attempted and safe.
+        Write-Host "  SKIP  the stand-in interpreter cannot be executed on this platform"
+    } else {
+        Check "the XPU verdict survives the environment being discarded" (
+            $script:StudioPreservedXpuVerdict)
+    }
+    Check "and the environment really was discarded" (-not (Test-Path -LiteralPath $VenvDir))
+    $script:StudioPreservedXpuVerdict = $false
+    $script:StudioNoRollback = $false
+    foreach ($c in @(Get-ChildItem -LiteralPath $StudioHome -Directory -Filter "unsloth_studio.rollback.*" -ErrorAction SilentlyContinue)) {
+        Microsoft.PowerShell.Management\Remove-Item -LiteralPath $c.FullName -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
     Write-Host "the warning and the discard message both tell the truth under --no-rollback"
     # Two things Start-StudioVenvRollback gets wrong if it is written without them, and install.sh
     # is gated identically: the warning's payload is the name of the opt-out, so printing it to
