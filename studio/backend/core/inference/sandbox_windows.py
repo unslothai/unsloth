@@ -214,7 +214,6 @@ def prepare(plan: ToolLaunchPlan) -> PreparedSandboxLaunch:
     workdir = os.path.abspath(plan.workdir)
     if not os.path.isdir(workdir):
         from .os_sandbox import WorkdirUnsafeError
-
         raise WorkdirUnsafeError(f"the session workdir does not exist: {workdir}")
     workdir_limitations = scan_workdir_for_host_channels(workdir)
 
@@ -250,9 +249,7 @@ def prepare(plan: ToolLaunchPlan) -> PreparedSandboxLaunch:
     )
     # A hard kill skips the executor's own ACE revert, so reconcile on the way
     # out whether or not it exited cleanly.
-    prepared.cleanup_callbacks.append(
-        lambda: _reconcile_container(executor, container_id)
-    )
+    prepared.cleanup_callbacks.append(lambda: _reconcile_container(executor, container_id))
     return prepared
 
 

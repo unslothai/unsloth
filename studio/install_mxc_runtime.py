@@ -59,7 +59,6 @@ def default_dest() -> str:
     try:
         sys.path.insert(0, os.path.join(os.path.dirname(__file__), "backend"))
         from utils.studio_paths import studio_home
-
         return os.path.join(str(studio_home()), "mxc")
     except Exception:  # noqa: BLE001 - setup can run before the backend imports
         return os.path.join(os.path.expanduser("~"), ".unsloth", "mxc")
@@ -134,19 +133,25 @@ def install(dest: str) -> dict:
 def main() -> int:
     parser = argparse.ArgumentParser(description = __doc__)
     parser.add_argument("--dest", default = None, help = "where to install (default: Studio home)")
-    parser.add_argument("--verify-only", action = "store_true",
-                        help = "report an existing install without downloading")
+    parser.add_argument(
+        "--verify-only", action = "store_true", help = "report an existing install without downloading"
+    )
     args = parser.parse_args()
 
     dest = args.dest or default_dest()
     if args.verify_only:
         executor = os.path.join(dest, "wxc-exec.exe")
         present = os.path.isfile(executor)
-        print(json.dumps({
-            "present": present,
-            "executor": executor,
-            "executor_sha256": digest(executor) if present else None,
-        }, indent = 2))
+        print(
+            json.dumps(
+                {
+                    "present": present,
+                    "executor": executor,
+                    "executor_sha256": digest(executor) if present else None,
+                },
+                indent = 2,
+            )
+        )
         return 0 if present else 1
 
     print(json.dumps(install(dest), indent = 2))

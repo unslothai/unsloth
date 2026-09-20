@@ -149,6 +149,7 @@ def test_every_launch_gets_its_own_container_id(monkeypatch, plan, tmp_path):
         prepared = sandbox_windows.prepare(plan)
         encoded = prepared.argv[2]
         import base64
+
         seen.add(json.loads(base64.b64decode(encoded))["containerId"])
     assert len(seen) == 5
 
@@ -177,7 +178,8 @@ def test_cleanup_reconciles_the_container(monkeypatch, plan):
     monkeypatch.setattr(sandbox_windows, "executable_path", lambda: sys.executable)
     called = []
     monkeypatch.setattr(
-        sandbox_windows, "_reconcile_container",
+        sandbox_windows,
+        "_reconcile_container",
         lambda executor, container_id: called.append(container_id),
     )
     prepared = sandbox_windows.prepare(plan)

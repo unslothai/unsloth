@@ -54,7 +54,7 @@ else:
     }
 
 
-PAYLOAD = r'''
+PAYLOAD = r"""
 import json, os, sys
 results = {}
 
@@ -86,7 +86,7 @@ if sys.platform == "linux":
     attempt("host_pids", lambda: len([p for p in os.listdir("/proc") if p.isdigit()]))
 
 print("ENFORCEMENT_JSON:" + json.dumps(results))
-'''
+"""
 
 
 def seed_canaries(home):
@@ -128,23 +128,31 @@ def main():
 
     positives = seed_canaries(home)
     if not all(positives.values()):
-        print(json.dumps({"verdict": "VOID", "why": "host positive controls failed",
-                          "positives": positives}, indent = 2))
+        print(
+            json.dumps(
+                {"verdict": "VOID", "why": "host positive controls failed", "positives": positives},
+                indent = 2,
+            )
+        )
         return VOID_NO_POSITIVE_CONTROLS
 
     # Which system writes are meaningful on THIS host, decided before the run.
-    meaningful = {name: path for name, path in SYSTEM_WRITE_TARGETS.items()
-                  if host_can_write(path)}
+    meaningful = {name: path for name, path in SYSTEM_WRITE_TARGETS.items() if host_can_write(path)}
 
     capability = os_sandbox.capability_snapshot(force = True)
     if not capability.available:
-        print(json.dumps({
-            "verdict": "VOID",
-            "why": "no OS sandbox on this host, so confinement is unmeasurable here",
-            "platform": sys.platform,
-            "reason": capability.reason,
-            "remediation": capability.remediation,
-        }, indent = 2))
+        print(
+            json.dumps(
+                {
+                    "verdict": "VOID",
+                    "why": "no OS sandbox on this host, so confinement is unmeasurable here",
+                    "platform": sys.platform,
+                    "reason": capability.reason,
+                    "remediation": capability.remediation,
+                },
+                indent = 2,
+            )
+        )
         return VOID_NO_SANDBOX
 
     workdir = tempfile.mkdtemp(prefix = "us-enforce-work-")
@@ -156,7 +164,8 @@ def main():
             "HOME": home,
             "SYSTEMROOT": os.environ.get("SYSTEMROOT", ""),
             "CANARY_PATHS": json.dumps(
-                {n: os.path.join(home, r) for n, (r, _) in CANARIES.items()}),
+                {n: os.path.join(home, r) for n, (r, _) in CANARIES.items()}
+            ),
             "SYSTEM_TARGETS": json.dumps(SYSTEM_WRITE_TARGETS),
             "OUTSIDE_TARGET": outside_target,
         },
@@ -182,7 +191,7 @@ def main():
     inside = {}
     for line in out.decode(errors = "replace").splitlines():
         if line.startswith("ENFORCEMENT_JSON:"):
-            inside = json.loads(line[len("ENFORCEMENT_JSON:"):])
+            inside = json.loads(line[len("ENFORCEMENT_JSON:") :])
 
     # Decided on the HOST and BEFORE cleanup: a private tmpfs makes the write
     # succeed inside while nothing ever arrives, and cleanup would erase the
@@ -194,33 +203,37 @@ def main():
 
     checks = {}
     for name in CANARIES:
-        checks[f"{name} credential unreadable"] = not inside.get(
-            "read_" + name, {}).get("ok", True)
+        checks[f"{name} credential unreadable"] = not inside.get("read_" + name, {}).get("ok", True)
     for name in meaningful:
-        checks[f"write to {name} refused"] = not inside.get(
-            "write_" + name, {}).get("ok", True)
+        checks[f"write to {name} refused"] = not inside.get("write_" + name, {}).get("ok", True)
     checks["host file outside the workdir unmodified"] = outside_after == "original"
     checks["workdir writable (positive)"] = inside.get("write_workdir", {}).get("ok") is True
     checks["workdir readable (positive)"] = inside.get("read_workdir", {}).get("value") == "in"
     checks["stdlib importable (positive)"] = inside.get("import_json", {}).get("ok") is True
-    checks["child process spawns (positive)"] = inside.get(
-        "spawn_child", {}).get("value") == "42"
+    checks["child process spawns (positive)"] = inside.get("spawn_child", {}).get("value") == "42"
     if sys.platform == "linux":
         checks["host processes hidden"] = (inside.get("host_pids", {}).get("value") or 999) < 10
 
     verdict = "PASS" if all(checks.values()) else "FAIL"
-    print(json.dumps({
-        "verdict": verdict,
-        "platform": sys.platform,
-        "backend": prepared.backend,
-        "record": prepared.execution_record.as_dict() if prepared.execution_record else None,
-        "system_targets_the_host_itself_can_write": sorted(meaningful),
-        "checks": checks,
-        "exit": proc.returncode,
-        "inside": inside,
-        "stderr": err.decode(errors = "replace")[:1000],
-        "cleanup_diagnostics": prepared.cleanup_diagnostics,
-    }, indent = 2))
+    print(
+        json.dumps(
+            {
+                "verdict": verdict,
+                "platform": sys.platform,
+                "backend": prepared.backend,
+                "record": prepared.execution_record.as_dict()
+                if prepared.execution_record
+                else None,
+                "system_targets_the_host_itself_can_write": sorted(meaningful),
+                "checks": checks,
+                "exit": proc.returncode,
+                "inside": inside,
+                "stderr": err.decode(errors = "replace")[:1000],
+                "cleanup_diagnostics": prepared.cleanup_diagnostics,
+            },
+            indent = 2,
+        )
+    )
     return 0 if verdict == "PASS" else 1
 
 
