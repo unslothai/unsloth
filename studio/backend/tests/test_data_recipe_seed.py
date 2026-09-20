@@ -1168,6 +1168,17 @@ def test_seed_hf_path_leaves_loader_ignored_metadata_out_of_a_card_glob(monkeypa
     assert matched == ["train.jsonl"]
 
 
+@pytest.mark.parametrize(
+    ("pattern", "expected"),
+    [("[^a].parquet", ["a.parquet"]), ("[!a].parquet", ["b.parquet"])],
+)
+def test_seed_glob_reads_a_caret_in_a_class_literally(monkeypatch, tmp_path, pattern, expected):
+    """fsspec negates on ! alone, so [^a] is the two characters ^ and a."""
+    seed_route = _load_seed_route(monkeypatch, tmp_path)
+
+    assert seed_route._files_under_patterns([pattern], ["a.parquet", "b.parquet"]) == expected
+
+
 def test_seed_hf_path_unions_an_exact_and_a_qualified_split_folder(monkeypatch, tmp_path):
     seed_route = _load_seed_route(monkeypatch, tmp_path)
     files = ["train/0.parquet", "sets/train_a/1.parquet", "sets/test_b/2.parquet"]

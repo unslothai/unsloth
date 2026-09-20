@@ -308,7 +308,13 @@ def _glob_to_regex(pattern: str) -> re.Pattern[str]:
                 parts.append(r"\[")
             else:
                 body = pattern[i + 1 : end].replace("\\", "\\\\")
-                parts.append(f"[{'^' + body[1:] if body[:1] == '!' else body}]")
+                # Only `!` negates a glob class. A leading `^` is just a
+                # character, so it is escaped rather than read as a regex.
+                if body[:1] == "!":
+                    body = f"^{body[1:]}"
+                elif body[:1] == "^":
+                    body = f"\\^{body[1:]}"
+                parts.append(f"[{body}]")
                 i = end
         else:
             parts.append(re.escape(char))
