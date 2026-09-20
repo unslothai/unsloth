@@ -463,7 +463,11 @@ def _in_subset(data_files: list[str], subset: str | None, split_lower: str) -> l
     if not subset:
         return data_files
     subset_lower = subset.lower()
-    in_folder = [f for f in data_files if subset_lower in f.lower().split("/")[:-1]]
+    # Exactly first: a repo may hold Foo/ beside foo/, and folding the two
+    # together would read both configs as one.
+    in_folder = [f for f in data_files if subset in f.split("/")[:-1]] or [
+        f for f in data_files if subset_lower in f.lower().split("/")[:-1]
+    ]
     if in_folder:
         return in_folder
     named = [f for f in data_files if _label_in_name(Path(f.lower()).stem, subset_lower)]

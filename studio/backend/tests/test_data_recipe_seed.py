@@ -1213,6 +1213,22 @@ def test_seed_hf_path_ignores_an_extension_collision_out_of_reach(monkeypatch, t
     assert resolved == "datasets/org/repo/data/*.json*"
 
 
+@pytest.mark.parametrize(
+    ("subset", "expected"),
+    [
+        ("Foo", "datasets/org/repo/Foo/train*.parquet"),
+        ("foo", "datasets/org/repo/foo/train*.parquet"),
+    ],
+)
+def test_seed_hf_path_narrows_to_the_subset_folder_by_its_own_case(
+    monkeypatch, tmp_path, subset, expected
+):
+    seed_route = _load_seed_route(monkeypatch, tmp_path)
+    files = ["Foo/train.parquet", "foo/train.parquet"]
+
+    assert seed_route._resolve_seed_hf_path("org/repo", files, "train", subset) == expected
+
+
 def test_seed_hf_path_unions_an_exact_and_a_qualified_split_folder(monkeypatch, tmp_path):
     seed_route = _load_seed_route(monkeypatch, tmp_path)
     files = ["train/0.parquet", "sets/train_a/1.parquet", "sets/test_b/2.parquet"]
