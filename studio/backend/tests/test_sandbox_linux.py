@@ -1814,3 +1814,46 @@ def test_the_cache_bind_itself_drops_a_component_holding_studio_state(monkeypatc
     assert "hub" not in binds, "the Studio root was shared into the sandbox as the hub cache"
     # The unrelated components are untouched: this is a targeted refusal.
     assert binds.get("xet") == str(elsewhere / "xet")
+
+
+def test_a_cache_configured_as_a_home_directory_is_not_shared(monkeypatch, tmp_path):
+    """HF_HUB_CACHE pointed at a home is a misconfiguration; the consequence
+    is not. The component is mounted WRITABLE and the host-channel scan passes
+    it, because ordinary credential files are not host channels, so a tool call
+    in `required` mode could read, change or delete the user's home."""
+    import types
+
+    from core.inference import sandbox_linux
+
+    home = tmp_path / "home" / "alice"
+    (home / ".ssh").mkdir(parents = True)
+    (home / ".ssh" / "id_ed25519").write_text("private")
+    models = tmp_path / "models"
+    for name in ("xet", "datasets", "assets"):
+        (models / name).mkdir(parents = True, exist_ok = True)
+
+    monkeypatch.setenv("HOME", str(home))
+    settings = types.ModuleType("utils.hf_cache_settings")
+    settings.get_hf_cache_paths = lambda: types.SimpleNamespace(
+        cache_home = str(models),
+        hub_cache = str(home),          # the home itself
+        xet_cache = str(models / "xet"),
+    )
+    monkeypatch.setitem(sys.modules, "utils.hf_cache_settings", settings)
+    monkeypatch.setattr(sandbox_linux, "_cache_hazard_within_deadline", lambda name, path: None)
+
+    binds = sandbox_linux._model_cache_binds(str(tmp_path / "work"))
+
+    assert "hub" not in binds, "the user's home was shared into the sandbox writable"
+    assert binds.get("xet") == str(models / "xet"), "an ordinary cache stopped working"
+
+
+def test_a_filesystem_root_is_never_a_cache(monkeypatch, tmp_path):
+    """Cheap, and the worst case of the same mistake."""
+    from core.inference import sandbox_linux
+
+    monkeypatch.setenv("HOME", str(tmp_path / "somewhere-else"))
+
+    assert sandbox_linux._too_broad_for_a_cache("/") is True
+    assert sandbox_linux._too_broad_for_a_cache("/home") is True
+    assert sandbox_linux._too_broad_for_a_cache(str(tmp_path / "models" / "hub")) is False
