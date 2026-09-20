@@ -128,7 +128,6 @@ def _project_of(thread_id: Optional[str]) -> Optional[str]:
         return None
     try:
         from storage.studio_db import get_chat_thread
-
         thread = get_chat_thread(thread_id)
     except Exception:
         return None

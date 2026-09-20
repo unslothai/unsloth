@@ -2448,25 +2448,42 @@ def test_moving_a_generating_chat_out_does_not_unlock_the_folder_change(
 
     project = studio_db.upsert_chat_project(_project(), external_workspace_path = str(first))
     thread_id = f"thread-of-{project['id']}"
-    studio_db.upsert_chat_thread({
-        "id": thread_id, "title": "t", "modelType": "gguf", "modelId": "m",
-        "projectId": project["id"], "archived": 0, "createdAt": 1, "updatedAt": 1,
-    })
+    studio_db.upsert_chat_thread(
+        {
+            "id": thread_id,
+            "title": "t",
+            "modelType": "gguf",
+            "modelId": "m",
+            "projectId": project["id"],
+            "archived": 0,
+            "createdAt": 1,
+            "updatedAt": 1,
+        }
+    )
 
     with active_generations.ActiveGeneration(
         threading.Event(), thread_id = thread_id, run_id = "run-1"
     ):
         # The user drags the generating chat out to Recents.
-        studio_db.upsert_chat_thread({
-            "id": thread_id, "title": "t", "modelType": "gguf", "modelId": "m",
-            "projectId": None, "archived": 0, "createdAt": 1, "updatedAt": 2,
-        })
+        studio_db.upsert_chat_thread(
+            {
+                "id": thread_id,
+                "title": "t",
+                "modelType": "gguf",
+                "modelId": "m",
+                "projectId": None,
+                "archived": 0,
+                "createdAt": 1,
+                "updatedAt": 2,
+            }
+        )
         assert studio_db.project_thread_ids(project["id"]) == [], "the move did not take"
 
         changed, _ = tools.update_project_workspace_when_idle(
             project["id"],
             lambda: studio_db.set_chat_project_workspace(
-                project["id"], external_workspace_path = str(second)),
+                project["id"], external_workspace_path = str(second)
+            ),
         )
         assert not changed, "the move let the folder change rotate under a running generation"
 
@@ -2474,6 +2491,7 @@ def test_moving_a_generating_chat_out_does_not_unlock_the_folder_change(
     changed, _ = tools.update_project_workspace_when_idle(
         project["id"],
         lambda: studio_db.set_chat_project_workspace(
-            project["id"], external_workspace_path = str(second)),
+            project["id"], external_workspace_path = str(second)
+        ),
     )
     assert changed
