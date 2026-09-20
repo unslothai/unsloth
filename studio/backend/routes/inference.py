@@ -38658,13 +38658,19 @@ async def load_diffusion_model_gated(
         request = request.model_copy(
             update = {"hf_token": account_access.account_hf_token(request.hf_token)}
         )
-    # Same as the text load, but decided at ENTRY because `begin_load` returns before the worker
-    # moves a byte. So the test is the one fact available that early: a repo ALREADY in the cache
-    # is not one this load will fetch. That errs toward recording, which is the safe direction.
-    _media_repos = [ref for ref in (request.model_path, request.base_repo) if ref]
-    for _ref in _media_repos:
-        if _repo_is_in_the_hub_cache(_ref) is not True:
-            _note_load_fetched_with_a_request_token(_ref, request.hf_token)
+    # Same as the text load, but the TEST has to be made at ENTRY because `begin_load` returns
+    # before the worker moves a byte, and the one fact available that early is that a repo ALREADY
+    # in the cache is not one this load will fetch. That errs toward recording, which is the safe
+    # direction. The WRITE is deferred to the launch below: the record is permanent and never
+    # cleared, and the cheap validation between here and there answers 400 on an unusable
+    # `model_kind`, GGUF filename, family or precision, none of which starts a worker or moves a
+    # byte. Recording those would withhold the repo from a later tokenless offline read of a copy
+    # that was in fact fetched anonymously. Still before the launch, so nothing is fetched unrecorded.
+    _media_repos_to_record = [
+        ref
+        for ref in (request.model_path, request.base_repo)
+        if ref and _repo_is_in_the_hub_cache(ref) is not True
+    ]
     from core.inference.diffusion import (
         get_diffusion_backend,
         resolve_local_single_file,
@@ -38868,6 +38874,10 @@ async def load_diffusion_model_gated(
                 ),
             )
 
+        # The provenance the entry decided, written now that nothing cheap can refuse this load
+        # any more, and still before the worker is handed the credential.
+        for _ref in _media_repos_to_record:
+            _note_load_fetched_with_a_request_token(_ref, request.hf_token)
         if needs_gpu:
             # Register the in-flight load UNDER the arbiter lock: otherwise a competing acquire in that gap evicts DIFFUSION before
             # the load is marked, finds nothing to cancel, and both allocate at once. The training admission wraps the same span.

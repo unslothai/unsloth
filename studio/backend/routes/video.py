@@ -279,16 +279,20 @@ async def load_video_model_gated(
         request = request.model_copy(
             update = {"hf_token": account_access.account_hf_token(request.hf_token)}
         )
-    # Same as the image load, and decided at entry for the same reason: `begin_load` returns
-    # before the worker has moved a byte, so this request has nothing to compare against.
+    # Same as the image load, tested at entry for the same reason -- `begin_load` returns before
+    # the worker has moved a byte, so this request has nothing to compare against -- and written
+    # at the launch below for the same reason: the validation in between answers 400 without
+    # starting a worker, and the record it would leave is permanent.
     from routes.inference import (
         _note_load_fetched_with_a_request_token,
         _repo_is_in_the_hub_cache,
     )
 
-    for _ref in (request.model_path, request.base_repo):
-        if _ref and _repo_is_in_the_hub_cache(_ref) is not True:
-            _note_load_fetched_with_a_request_token(_ref, request.hf_token)
+    _media_repos_to_record = [
+        ref
+        for ref in (request.model_path, request.base_repo)
+        if ref and _repo_is_in_the_hub_cache(ref) is not True
+    ]
     from core.inference.diffusion import resolve_local_single_file
     from core.inference.diffusion_device import (
         resolve_diffusion_device_target,
@@ -398,6 +402,10 @@ async def load_video_model_gated(
         def _begin_load():
             return account_access.admit_media_load("video", _start_load, request.model_path)
 
+        # The provenance the entry decided, written now that nothing cheap can refuse this load
+        # any more, and still before the worker is handed the credential.
+        for _ref in _media_repos_to_record:
+            _note_load_fetched_with_a_request_token(_ref, request.hf_token)
         # begin_load signals whatever generation is running, so guard on every device.
         require_no_foreign_generations()
         if device != "cpu":

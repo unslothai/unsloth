@@ -387,17 +387,26 @@ def test_every_route_that_can_fetch_with_a_one_off_token_records_it():
     assert text_load.rindex("finally:") < text_load.index("_note_load_fetched_with_a_request_token")
     assert "_load_fetched_bytes(" in text_load
 
-    # The media loads decide at ENTRY: `begin_load` returns before the worker moves a byte, so a
-    # before/after comparison in the route would record nothing.
+    # The media loads TEST at entry: `begin_load` returns before the worker moves a byte, so a
+    # before/after comparison in the route would record nothing. They WRITE at the launch, after
+    # the cheap validation, because that validation answers 400 without starting a worker and the
+    # record it would otherwise leave is permanent.
     for media_load in (
         inspect.getsource(inference_routes.load_diffusion_model_gated),
         inspect.getsource(video_routes.load_video_model_gated),
     ):
-        assert "_repo_is_in_the_hub_cache(_ref) is not True" in media_load
+        assert "_repo_is_in_the_hub_cache(ref) is not True" in media_load
         assert "_note_load_fetched_with_a_request_token(_ref" in media_load
         assert (
             "_load_fetched_bytes" not in media_load
         ), "a media route cannot compare before and after: its fetch has not happened yet"
+        tested_at = media_load.index("_repo_is_in_the_hub_cache(ref) is not True")
+        validated_at = media_load.index("validate_load_request")
+        written_at = media_load.index("_note_load_fetched_with_a_request_token(_ref")
+        launched_at = media_load.index("status_dict = await asyncio.to_thread(")
+        assert tested_at < validated_at, "the cache test has to precede anything that can fetch"
+        assert validated_at < written_at, "a 400 from validation must leave no record behind"
+        assert written_at < launched_at, "nothing may be fetched unrecorded"
 
     assert "_note_load_fetched_with_a_request_token" not in inspect.getsource(
         inference_routes.load_model_gated
@@ -1077,6 +1086,50 @@ def test_only_a_repo_this_load_actually_pulled_is_recorded(recorded_fetches):
     assert _record(True, True) == [], "a repo that was already cached was recorded as fetched"
     assert _record(False, False) == [], "a load that fetched nothing recorded a fetch"
     assert _record(None, True) == [], "an unanswerable reading recorded a fetch"
+
+
+@pytest.mark.parametrize("route", ("image", "video"))
+def test_a_media_load_refused_by_validation_records_no_fetch(monkeypatch, recorded_fetches, route):
+    """A 400 from the cheap validation must leave no provenance behind.
+
+    Nothing has been fetched at that point -- no worker was started and the credential was never
+    handed to one -- and the record is permanent, so recording it would withhold the repo from a
+    later tokenless offline read of a copy that was in fact downloaded anonymously.
+    """
+    import asyncio
+
+    from fastapi import HTTPException
+
+    from hub.services.models import account_access
+
+    monkeypatch.setattr(account_access, "managed_account", lambda: False)
+    monkeypatch.setattr(account_access, "require_idle_other_accounts", lambda: None)
+    monkeypatch.setattr(inference_routes, "_repo_is_in_the_hub_cache", lambda ref: False)
+
+    def _refuse(*_a, **_k):
+        raise ValueError("unsupported model_kind")
+
+    if route == "image":
+        from core.inference import diffusion as _diffusion
+        from models.inference import DiffusionLoadRequest
+
+        monkeypatch.setattr(_diffusion, "resolve_model_kind", _refuse)
+        request = DiffusionLoadRequest(model_path = "acme/private-image")
+        load = inference_routes.load_diffusion_model_gated
+    else:
+        from core.inference import video as _video
+        from models.inference import VideoLoadRequest
+        from routes import video as video_routes
+
+        monkeypatch.setattr(_video, "resolve_video_model_kind", _refuse)
+        request = VideoLoadRequest(model_path = "acme/private-video")
+        load = video_routes.load_video_model_gated
+
+    request.hf_token = "hf_a_one_off_request_token"
+    with pytest.raises(HTTPException) as refusal:
+        asyncio.run(load(request, "owner", user_initiated = True))
+    assert refusal.value.status_code == 400
+    assert recorded_fetches == [], "a load refused before any worker started recorded a fetch"
 
 
 def test_the_presence_probe_answers_none_for_anything_that_is_not_a_repo(monkeypatch):

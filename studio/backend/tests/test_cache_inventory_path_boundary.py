@@ -972,6 +972,35 @@ def test_a_request_that_named_a_path_directly_is_answered_with_that_path():
     assert host_paths.restore_inventory_handles(answer) == answer
 
 
+def test_a_sibling_that_merely_starts_with_the_resolved_path_is_not_a_handle():
+    """A response carries paths this caller never named -- the model that was resident BEFORE
+    this load, most of all -- and a sibling under the same directory starts with the same text.
+    A substring swap turned `<root>/models/Llama-3.2-1B-private` into `ref:<digest>-private`: a
+    handle that resolves to nothing, and a value the redactor no longer reads as a path, so the
+    rest of the layout rode out in it. Left alone it is still an absolute path, which the
+    redaction below removes for the caller class that may not see it.
+    """
+    path = f"{HOST_ROOT}/models/Llama-3.2-1B"
+    sibling = f"{path}-private"
+    reference = host_paths.cache_reference(path)
+
+    token = host_paths._request_handles.set({path: reference})
+    try:
+        restored = host_paths.restore_inventory_handles(
+            {"active_model": sibling, "model_name": path, "detail": f"{sibling} is not loaded"}
+        )
+        assert restored["model_name"] == reference, "the path that WAS resolved still comes back"
+        assert restored["active_model"] == sibling, restored
+        assert restored["detail"] == f"{sibling} is not loaded", restored
+        assert host_paths.resolve_host_path_reference(restored["active_model"]) is None
+
+        answered = host_paths.redact_host_paths(restored, via_api_key = True)
+        assert response_leaks_host_path(answered, [HOST_ROOT]) is None, answered
+        assert host_paths.redact_host_paths(restored, via_api_key = False) == restored
+    finally:
+        host_paths._request_handles.reset(token)
+
+
 def test_the_load_and_validate_answers_go_through_the_restoration():
     import inspect
     import re

@@ -18,6 +18,7 @@ import threading
 import time
 from collections import OrderedDict
 from contextvars import ContextVar
+from functools import lru_cache
 from hashlib import sha256
 from typing import Any, Iterable, Mapping, Optional
 
@@ -236,9 +237,40 @@ def _restore(payload: Any, known: "dict[str, str]") -> Any:
         # Longest first, so a path that is a prefix of another does not claim its text.
         for path in sorted(known, key = len, reverse = True):
             if path in text:
-                text = text.replace(path, known[path])
+                text = _swap_at_boundaries(text, path, known[path])
         return text
     return payload
+
+
+# A resolved path may only be swapped where the surrounding text is not still spelling a path.
+# `str.replace` is a substring swap, and a response carries paths the caller never named -- the
+# model that was resident BEFORE this load, most of all -- so a sibling under the same directory
+# (`/srv/models/foo` resolved, `/srv/models/foo-private` answered) became `ref:<digest>-private`:
+# a handle that resolves to nothing, and a value the redactor below no longer reads as a path, so
+# the rest of the host's layout rode out in it.
+#
+# Left: the terminators `_ABSOLUTE_PATH_RE` uses, minus the space, since a path in a sentence is
+# ordinarily preceded by one. Right: the component must END there, so the next character has to
+# be a separator or one of the same terminators -- a letter, digit, `-`, `_`, `.` or space all
+# continue the name and mean this is a DIFFERENT path. Declining is safe: an unswapped path is
+# still an absolute path, which `redact_host_paths` removes on its way out for exactly the caller
+# class that may not see it.
+_HANDLE_LEFT_BOUNDARY = r"(?<![\w:/.\\])"
+_HANDLE_RIGHT_BOUNDARY = r"(?![^\s\\/\n\":;,=])"
+
+
+@lru_cache(maxsize = 4096)
+def _boundary_pattern(path: str) -> "re.Pattern[str]":
+    return re.compile(_HANDLE_LEFT_BOUNDARY + re.escape(path) + _HANDLE_RIGHT_BOUNDARY)
+
+
+def _swap_at_boundaries(text: str, path: str, handle: str) -> str:
+    """*text* with every whole-path occurrence of *path* replaced by *handle*."""
+    try:
+        pattern = _boundary_pattern(path)
+    except Exception:  # noqa: BLE001 -- an uncompilable path must not fail the response
+        return text
+    return pattern.sub(lambda _match: handle, text)
 
 
 def resolve_host_path_reference(value: Any) -> Optional[str]:
