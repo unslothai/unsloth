@@ -257,18 +257,21 @@ def _common_parent(paths: list[str]) -> str:
     return "/".join(shared)
 
 
+_NAME_SEPARATORS = re.compile(r"[-._ ]+")
+
+
 def _split_rank(path: str, split_lower: str) -> int:
-    """0 the split is a folder, 1 the file name carries it, 2 neither."""
-    name = f"/{path.lower()}"
-    if f"/{split_lower}/" in name:
+    """0 the split is a folder, 1 the file name carries it, 2 neither.
+
+    The name is read as separated words rather than by where the split sits in
+    it, so a shard called questions_train_000.jsonl counts as train while
+    training.jsonl does not.
+    """
+    lowered = path.lower()
+    if f"/{split_lower}/" in f"/{lowered}":
         return 0
-    if (
-        f"_{split_lower}." in name
-        or f"-{split_lower}." in name
-        or f"/{split_lower}." in name
-        or f"/{split_lower}_" in name
-        or f"/{split_lower}-" in name
-    ):
+    stem = Path(lowered).name.split(".", 1)[0]
+    if split_lower in _NAME_SEPARATORS.split(stem):
         return 1
     return 2
 
@@ -289,22 +292,48 @@ def _select_best_file(
     return sorted(data_files, key = lambda p: (_split_rank(p, split_lower), len(p)))[0]
 
 
-def _covers_the_split(
-    data_files: list[str], parent: str, prefix: str, suffix: str, split_lower: str
+def _pattern_fits_the_split(
+    data_files: list[str], parent: str, pattern: str, split_lower: str
 ) -> bool:
-    """True when every file of this split in this folder starts with the same prefix.
+    """The pattern must take every file of this split in the folder, and no other.
 
     A folder may name one split several ways at once (train-part.parquet beside
-    questions_train.parquet), and a glob built from whichever file was picked
-    would silently drop the others.
+    questions_train.parquet), so a glob built from whichever file was picked can
+    drop the rest; a loose glob can just as easily swallow a neighbouring split.
     """
+    matcher = _glob_to_regex(pattern)
     for path in data_files:
-        if Path(path).parent.as_posix() != parent or _split_rank(path, split_lower) > 1:
+        if Path(path).parent.as_posix() != parent:
             continue
-        name = Path(path).name
-        if not (name.startswith(prefix) and name.endswith(suffix)):
+        if bool(matcher.match(Path(path).name)) != (_split_rank(path, split_lower) <= 1):
             return False
     return True
+
+
+def _candidate_patterns(stem: str, suffix: str, split_lower: str) -> list[str]:
+    """Globs for this split's files in one folder, narrowest first."""
+    stem_lower = stem.lower()
+    candidates: list[str] = []
+    if stem_lower.startswith((f"{split_lower}-", f"{split_lower}_", f"{split_lower}.")):
+        candidates.append(f"{stem[: len(split_lower) + 1]}*{suffix}")
+    if stem_lower == split_lower or stem_lower.endswith((f"_{split_lower}", f"-{split_lower}")):
+        # Keep the trailing star: the split may still be sharded as train.jsonl
+        # beside train_2.jsonl, so an exact name would read only the first shard.
+        candidates.append(f"{stem}*{suffix}")
+    at = stem_lower.find(split_lower)
+    if at >= 0:
+        candidates.append(f"*{stem[at : at + len(split_lower)]}*{suffix}")
+    return candidates
+
+
+def _with_data_extension(pattern: str, suffix: str) -> str:
+    """A card glob ends where the file name does; the reader picks by extension."""
+    current = Path(pattern).suffix
+    if current.lower() in DATA_EXTS:
+        return pattern
+    if current and any(char in current for char in "*?["):
+        pattern = pattern[: -len(current)]
+    return f"{pattern}{suffix}"
 
 
 def _resolve_seed_hf_path(
@@ -320,14 +349,16 @@ def _resolve_seed_hf_path(
     # resolves to files that are really there.
     if declared_files:
         suffix = Path(sorted(declared_files)[0]).suffix
+        pattern = ""
         if len(declared) == 1:
-            pattern = declared[0]
-            if Path(pattern).suffix.lower() not in DATA_EXTS:
-                pattern = f"{pattern}{suffix}"
-        else:
-            # A split spread over several declared globs cannot be written as one
-            # glob. Cover the folder holding all of them: reading a neighbour is
-            # recoverable, dropping half the split is not.
+            pattern = _with_data_extension(declared[0], suffix)
+        # A split spread over several declared globs cannot be written as one, and
+        # neither can a rewritten pattern that no longer takes what it declared.
+        # Cover the folder holding them all: reading a neighbour is recoverable,
+        # dropping half the split is not.
+        if not pattern or not set(declared_files) <= set(
+            _files_under_patterns([pattern], data_files)
+        ):
             parent = _common_parent(declared_files)
             pattern = f"{parent}/**/*{suffix}" if parent else f"**/*{suffix}"
         return f"datasets/{dataset_name}/{pattern}"
@@ -348,20 +379,10 @@ def _resolve_seed_hf_path(
 
     split_lower = split.lower()
     if f"/{split_lower}/" not in f"/{selected.lower()}":
-        name = Path(selected).name
-        stem = name[: -len(suffix)]
-        stem_lower = stem.lower()
-        prefix = None
-        if stem_lower.startswith((f"{split_lower}-", f"{split_lower}_", f"{split_lower}.")):
-            prefix = stem[: len(split_lower) + 1]
-        elif stem_lower == split_lower or stem_lower.endswith(
-            (f"_{split_lower}", f"-{split_lower}")
-        ):
-            # Keep the trailing star: the split may still be sharded as train.jsonl,
-            # train_2.jsonl, so an exact file name would read only the first shard.
-            prefix = stem
-        if prefix and _covers_the_split(data_files, parent, prefix, suffix, split_lower):
-            return f"{base}/{prefix}*{suffix}"
+        stem = Path(selected).name[: -len(suffix)]
+        for candidate in _candidate_patterns(stem, suffix, split_lower):
+            if _pattern_fits_the_split(data_files, parent, candidate, split_lower):
+                return f"{base}/{candidate}"
     return f"{base}/**/*{ext}"
 
 

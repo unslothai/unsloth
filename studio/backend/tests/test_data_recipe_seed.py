@@ -630,18 +630,51 @@ def test_seed_declared_files_match_the_glob_not_its_prefix(monkeypatch, tmp_path
     ]
 
 
-def test_seed_hf_path_widens_when_one_split_uses_several_name_forms(monkeypatch, tmp_path):
+@pytest.mark.parametrize(
+    ("files", "expected"),
+    [
+        # train-part.parquet wins on length, but questions_train.parquet is train
+        # too, so the pattern has to reach both without taking test-part.
+        (
+            ["data/train-part.parquet", "data/questions_train.parquet", "data/test-part.parquet"],
+            "datasets/org/repo/data/*train*.parquet",
+        ),
+        # A split named mid-name, the conventional sharded form.
+        (
+            ["data/questions_train_000.jsonl", "data/questions_test_000.jsonl"],
+            "datasets/org/repo/data/*train*.jsonl",
+        ),
+        # "training" is not the train split, so the narrow prefix still wins.
+        (
+            ["data/train-0.parquet", "data/training-0.parquet", "data/test-0.parquet"],
+            "datasets/org/repo/data/train-*.parquet",
+        ),
+    ],
+)
+def test_seed_hf_path_reaches_every_file_of_the_split_and_no_other(
+    monkeypatch, tmp_path, files, expected
+):
     seed_route = _load_seed_route(monkeypatch, tmp_path)
-    files = [
-        "data/train-part.parquet",
-        "data/questions_train.parquet",
-        "data/test-part.parquet",
-    ]
-    # train-part.parquet wins on length, but questions_train.parquet is train too,
-    # so the narrow glob would drop it.
+    assert seed_route._resolve_seed_hf_path("org/repo", files, "train") == expected
+
+
+@pytest.mark.parametrize(
+    ("declared", "expected"),
+    [
+        ("data/train.*", "datasets/org/repo/data/train.parquet"),
+        ("data/train-*.*", "datasets/org/repo/data/train-*.parquet"),
+        ("data/train-*", "datasets/org/repo/data/train-*.parquet"),
+        ("data/train-0.parquet", "datasets/org/repo/data/train-0.parquet"),
+    ],
+)
+def test_seed_hf_path_gives_a_card_glob_a_readable_extension(
+    monkeypatch, tmp_path, declared, expected
+):
+    seed_route = _load_seed_route(monkeypatch, tmp_path)
+    files = ["data/train.parquet", "data/train-0.parquet", "data/test-0.parquet"]
+    configs = [{"config_name": "default", "data_files": [{"split": "train", "path": declared}]}]
     assert (
-        seed_route._resolve_seed_hf_path("org/repo", files, "train")
-        == "datasets/org/repo/data/**/*.parquet"
+        seed_route._resolve_seed_hf_path("org/repo", files, "train", None, configs) == expected
     )
 
 
