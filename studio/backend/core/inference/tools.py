@@ -16667,6 +16667,21 @@ def _check_signal_escape_patterns(code: str):
         return None, False
 
     _SOCKET_FACTORY_FQ = ("socket.socket", "socket.create_connection", "socket.socketpair")
+    # A `connect` that opens a local resource rather than a host. Everything else spelling
+    # `connect` is treated as a network client, which is what ftplib, smtplib, imaplib,
+    # socketio and friends are.
+    _LOCAL_CONNECT_OWNERS = frozenset(
+        {
+            "sqlite3",
+            "apsw",
+            "duckdb",
+            "psycopg",
+            "psycopg2",
+            "pyodbc",
+            "sqlalchemy",
+            "mysql",
+        }
+    )
 
     def _is_a_socket_receiver(node) -> bool:
         """Whether *node* evaluates to a socket: `socket.socket(...)` inline, or a name bound to
@@ -16985,21 +17000,30 @@ def _check_signal_escape_patterns(code: str):
                         }
                     )
 
-            # Direct sock.connect((host, port)) bypasses the FQ-prefix branch. Only a socket
-            # receiver: `sqlite3.connect("state.db")` and every other API that happens to spell a
-            # method `connect` opens no host, and reading its first argument as one refuses it.
+            # Direct sock.connect((host, port)) bypasses the FQ-prefix branch, and so do the
+            # scalar-host clients (ftplib, smtplib, socketio). Only the APIs whose `connect` opens
+            # a local resource are left alone: reading a database path as a host refuses it.
             if (
                 isinstance(node.func, ast.Attribute)
                 and node.func.attr == "connect"
                 and node.args
-                and (isinstance(node.args[0], ast.Tuple) or _is_a_socket_receiver(node.func.value))
+                and (
+                    isinstance(node.args[0], ast.Tuple)
+                    or _is_a_socket_receiver(node.func.value)
+                    or _written_fq(node.func).split(".")[0] not in _LOCAL_CONNECT_OWNERS
+                )
             ):
                 a0 = node.args[0]
                 host_lit = None
                 host_node = a0.elts[0] if isinstance(a0, ast.Tuple) and a0.elts else a0
                 text, complete = _static_str_prefix(host_node, _bindings)
                 if complete and text:
-                    host_lit = text
+                    # socketio and friends take a whole URL where a socket takes a bare host, so a
+                    # target that carries a scheme is read as one rather than screened as a name.
+                    if "://" in text:
+                        host_lit = _host_from_url_node(host_node, _bindings)[0]
+                    else:
+                        host_lit = text
                 if host_lit:
                     if _is_metadata_host(host_lit):
                         network_calls.append(

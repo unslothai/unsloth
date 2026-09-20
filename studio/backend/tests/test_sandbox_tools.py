@@ -3292,3 +3292,58 @@ class TestInlineAndLowercaseSessionFactories:
     )
     def test_an_inline_client_that_is_fine_keeps_working_ok(self, code):
         _ok(code)
+
+
+class TestScalarHostConnectMethods:
+    """`connect` with a plain host string still reaches a host: only the local-resource clients
+    are exempt, and their first argument is a path or a DSN rather than something to screen."""
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            pytest.param(
+                'import ftplib\nftplib.FTP().connect("169.254.169.254", 80)',
+                id = "ftplib",
+            ),
+            pytest.param(
+                'import socketio\nsocketio.Client().connect("http://169.254.169.254/latest/")',
+                id = "socketio",
+            ),
+        ],
+    )
+    def test_a_scalar_host_connect_is_screened_blocked(self, code):
+        _blocked(code, expect_phrase = "Blocked: cloud-metadata host")
+
+    def test_an_untrusted_scalar_host_connect_is_refused(self):
+        _blocked(
+            'import smtplib\nsmtplib.SMTP().connect("evil.example", 25)',
+            expect_phrase = "Blocked: host not in sandbox allowlist",
+        )
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            pytest.param('import sqlite3\nsqlite3.connect("state.db")', id = "literal_path"),
+            pytest.param(
+                'import sqlite3\npath = "state.db"\nsqlite3.connect(path)',
+                id = "bound_path",
+            ),
+            pytest.param(
+                'import sqlite3\nwith sqlite3.connect("state.db") as db:\n    pass',
+                id = "context_manager",
+            ),
+            pytest.param(
+                'import psycopg2\npsycopg2.connect("dbname = app user = app")',
+                id = "dsn",
+            ),
+            pytest.param('import duckdb\nduckdb.connect("warehouse.duckdb")', id = "duckdb"),
+        ],
+    )
+    def test_a_local_resource_connect_is_left_alone_ok(self, code):
+        _ok(code)
+
+    def test_a_socket_receiver_is_still_screened(self):
+        _blocked(
+            'import socket\ns = socket.socket()\ns.connect(("169.254.169.254", 80))',
+            expect_phrase = "Blocked: cloud-metadata host",
+        )
