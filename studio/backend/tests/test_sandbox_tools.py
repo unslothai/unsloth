@@ -3599,7 +3599,7 @@ class TestHostsConfiguredOnTheClient:
                 id = "allowed_pool_host",
             ),
             pytest.param(
-                'import httpx\nc = httpx.Client(timeout = 5)\n'
+                "import httpx\nc = httpx.Client(timeout = 5)\n"
                 'c.get("https://huggingface.co/api/models")',
                 id = "no_host_configured",
             ),

@@ -16113,6 +16113,7 @@ def _check_signal_escape_patterns(code: str):
         if method in _POOL_SENDING_METHODS and owner.split(".")[0] == "urllib3":
             return _POOL_SENDING_METHODS[method]
         return None
+
     _SESSION_PREFIXES = (
         "requests.Session",
         "httpx.Client",
@@ -16498,7 +16499,13 @@ def _check_signal_escape_patterns(code: str):
                 candidate = self._scope_parent.get(candidate)
             return self._scope_parent.get(scope)
 
-        def _record_alias(self, table: dict, key: tuple, target: str, node = None) -> None:
+        def _record_alias(
+            self,
+            table: dict,
+            key: tuple,
+            target: str,
+            node = None,
+        ) -> None:
             if key in table and table[key] != target:
                 self._ambiguous_aliases.add(key)
             table[key] = target
@@ -16629,7 +16636,9 @@ def _check_signal_escape_patterns(code: str):
                         )
                         # Without `as`, the bound name is already the canonical head of the FQ name.
                         if alias.asname and alias.name in _ALIASED_MODULES:
-                            self._record_alias(self.modules, (scope, alias.asname), alias.name, node)
+                            self._record_alias(
+                                self.modules, (scope, alias.asname), alias.name, node
+                            )
                 elif isinstance(node, ast.ImportFrom):
                     for alias in node.names:
                         local = alias.asname or alias.name
@@ -16791,6 +16800,7 @@ def _check_signal_escape_patterns(code: str):
         return None, False
 
     _SOCKET_FACTORY_FQ = ("socket.socket", "socket.create_connection", "socket.socketpair")
+
     def _is_a_socket_receiver(node) -> bool:
         """Whether *node* evaluates to a socket: `socket.socket(...)` inline, or a name bound to
         one. A tuple argument looks socket-shaped too, but the receiver is what settles it."""
