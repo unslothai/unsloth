@@ -4,10 +4,12 @@
 import base64
 import json
 import os
+import pathlib
 import sqlite3
 import struct
 import sys
 import time
+import zipfile
 
 import pytest
 from fastapi import HTTPException
@@ -584,9 +586,10 @@ def test_previews_stop_at_their_budgets(tmp_path, monkeypatch):
     # Nested elements repeat their descendants' text, so the budget bounds what is built at all.
     nested = ("<p>" * 2000) + ("body " * 100) + ("</p>" * 2000)
     root = ElementTree.fromstring(f"<o>{nested}</o>")
-    assert len(previews._xml_text(root, {"p"}, 50)) <= 50
     siblings = ElementTree.fromstring("<o>" + "<p>ten chars</p>" * 50 + "</o>")
-    assert len(previews._xml_text(siblings, {"p"}, 50)) <= 50
+    for built in (previews._xml_text(root, {"p"}, 50), previews._xml_text(siblings, {"p"}, 50)):
+        # The marker sits past the budget, as every truncation marker in this module does.
+        assert 40 <= len(built.split("\n[Truncated")[0]) <= 50 and built.endswith("shows]")
     two = '<o xmlns:d="urn:d"><d:page><p>{}</p></d:page><d:page><p>{}</p></d:page></o>'
     with zipfile.ZipFile(tmp_path / "two.odp", "w") as archive:
         archive.writestr("content.xml", two.format("a" * 50, "b" * 50))
@@ -1261,3 +1264,114 @@ def test_png_data_url_keeps_its_media_type(tmp_path, monkeypatch):
     image_id = _content_part_id_for("msg-cmp", "image")
     response = chat_history.get_attachment_file("msg-cmp", image_id, current_subject = "unsloth")
     assert response.media_type == "image/png"
+
+
+def _models(tmp_path):
+    import matplotlib
+
+    database = sqlite3.connect(tmp_path / "shelf.sqlite")
+    database.executescript(  # the view is a query no preview may run: it counts to 200 million
+        'create table "my books" (id integer, title text);'
+        "insert into \"my books\" values (1, 'Solaris'), (2, 'Ubik');"
+        "create view slow as with recursive c(x) as (select 1 union all select x + 1 from c "
+        "where x < 200000000) select count(*) from c"
+    )
+    database.close()
+    (tmp_path / "b.stl").write_bytes(b"solid".ljust(80, b"\0") + struct.pack("<I", 2) + bytes(100))
+    (tmp_path / "b.ply").write_bytes(
+        b"ply\ncomment end_header?\nelement vertex 8\nend_header\n" + b"1 2 3\n" * 400
+    )
+    meshes = ", ".join('{"name": "m%d"}' % index for index in range(13))
+    scene = ('{"asset": {"generator": "mk"}, "scenes": {"n": 0}, "meshes": [%s]}' % meshes).encode()
+    head = struct.pack("<4sII", b"glTF", 2, 0) + struct.pack("<I4s", len(scene), b"JSON")
+    (tmp_path / "c.glb").write_bytes(head + scene)
+    padded = "<model><metadata>Plate</metadata><object/><!--" + "p" * 1500 + "--></model>"
+    rels = '<R><Relationship Type="t/thumbnail" Target="/3D/3dmodel.model"/><Relationship '
+    rels += 'Type="t/3dmodel" Target="/3D/p.model"/><!--' + "r" * 1500 + "--></R>"
+    # One archive answers for both container formats, so its listing carries members of each.
+    with zipfile.ZipFile(tmp_path / "p.3mf", "w") as archive:
+        archive.writestr("_rels/.rels", rels)
+        archive.writestr("3D/3dmodel.model", padded.replace("Plate", "Decoy"))
+        archive.writestr("3D/p.model", padded)
+        kml = padded.replace("model>", "kml>")
+        archive.writestr("a.kml", kml.replace("Plate", "Decoy"))
+        archive.writestr("doc.kml", kml.replace("Plate", "Trail"))
+    font = pathlib.Path(matplotlib.get_data_path()) / "fonts/ttf/DejaVuSansMono.ttf"
+    (tmp_path / "s.ttf").write_bytes(font.read_bytes())
+
+
+def test_previews_outline_databases_models_and_fonts(tmp_path):
+    from core import chat_attachment_preview as previews
+    from core.chat_attachment_preview import build_preview
+
+    _models(tmp_path)
+    expected = {
+        "shelf.sqlite": "1 tables:\n  my books\nmy books (2 rows): id INTEGER, title TEXT"
+        "\n  1\tSolaris\n  2\tUbik",
+        "b.stl": "binary STL, 2 triangles, header 'solid'",
+        "b.ply": "PLY header:\nply\ncomment end_header?\nelement vertex 8\nend_header",
+        "c.glb": "glTF 2 binary, 13 meshes\ngenerator: mk\nmeshes: "
+        "m0, m1, m2, m3, m4, m5, m6, m7, m8, m9, m10, m11, ... 1 more",
+        "p.3mf": "3D/p.model: 1 model, 1 metadata, 1 object\nnamed: Plate\n5 entries:"
+        "\n  _rels/.rels (1628 bytes)\n  3D/3dmodel.model (1557 bytes)\n  3D/p.model (1557 bytes)"
+        "\n  a.kml (1553 bytes)\n  doc.kml (1553 bytes)",
+        "s.ttf": "DejaVu Sans Mono Book, 3369 glyphs, 340240 bytes, monospaced",
+    }
+    if not previews.SQLITE_MEASURES_UNREAD:  # an older SQLite reads no rows to sample them
+        expected.pop("shelf.sqlite")
+    for index, (name, text) in enumerate(expected.items()):
+        stored = tmp_path / f"9e4{index}"
+        stored.write_bytes((tmp_path / name).read_bytes())
+        assert build_preview(stored, name)["text"] == text, name
+
+
+def test_model_previews_stop_at_their_budgets(tmp_path, monkeypatch):
+    from core import chat_attachment_preview as previews
+
+    def preview(name):
+        return previews.build_preview(tmp_path / name, name)["text"]
+
+    _models(tmp_path)
+    database = sqlite3.connect(tmp_path / "shelf.sqlite")
+    rows = "(3, '%s'), (4, 'x'), (5, 'x'), (6, 'x')" % ("\u00e9" * 751)
+    database.executescript(
+        "create virtual table notes using fts5(body);" 'insert into "my books" values ' + rows
+    )
+    database.close()
+    (tmp_path / "claim.stl").write_bytes(b"solid".ljust(80, b"\0") + struct.pack("<I", 100_000_000))
+    (tmp_path / "up.stl").write_bytes(b"SOLID " + b"x" * 100 + b"\nfacet normal 0 0 1\n" * 200)
+    bomb = struct.pack("<4sII", b"glTF", 2, 12) + struct.pack("<I4s", 3 << 30, b"JSON")
+    (tmp_path / "bomb.glb").write_bytes(bomb)
+    # octet_length measures from the record: 751 two-byte characters are 1502 bytes.
+    if previews.SQLITE_MEASURES_UNREAD:
+        sampled = preview("shelf.sqlite")
+        assert "\n  3\t<text of 1502 bytes>" in sampled and "\n  6\t" not in sampled
+        assert "\nnotes: a virtual table, not read" in sampled
+    # 100 million triangles are not 84 bytes, and a GLB states the size of the scene it opens with.
+    assert preview("claim.stl") == "STL of 84 bytes, in neither layout"
+    assert preview("up.stl") == "ASCII STL, 'SOLID %s'" % ("x" * 100)
+    assert preview("bomb.glb") == "glTF 2 binary, scene of 3221225472 bytes, too large to read"
+    # A KMZ declares no start part, so the conventional name answers for it.
+    assert previews.build_preview(tmp_path / "p.3mf", "t.kmz")["text"].startswith("doc.kml: 1 kml")
+    monkeypatch.setattr(previews, "MAX_XML_BYTES", 10)
+    assert preview("p.3mf").startswith("[_rels/.rels not read: 1628 bytes of XML]\n[3D/3dmodel")
+    # Without octet_length, sizing a cell would read it, so no row is read at all.
+    monkeypatch.setattr(previews, "SQLITE_MEASURES_UNREAD", False)
+    assert "[First rows not read: SQLite " in preview("shelf.sqlite")
+    monkeypatch.setattr(previews, "MAX_OUTLINE_CHARS", 270)
+    assert preview("shelf.sqlite").endswith("\n... 5 more tables, not detailed")
+    monkeypatch.setattr(previews, "MAX_SAMPLED_BYTES", 10)
+    assert preview("s.ttf") == "font of 340240 bytes, too large to read"
+    assert preview("shelf.sqlite").endswith("nothing here bounds what its schema costs")
+    with zipfile.ZipFile(tmp_path / "bad.3mf", "w") as archive:
+        archive.writestr("_rels/.rels", "<Relations/>")
+        archive.writestr("3D/3dmodel.model", "<not-xml")
+    assert preview("bad.3mf").startswith("[_rels/.rels not read: 12 bytes of XML]")
+    (tmp_path / "pad.ply").write_bytes(b"ply\ncomment " + b" " * 2100 + b"\nend_header\n")
+    (tmp_path / "pad.stl").write_bytes(b"solid part" + b" " * 2100 + b"name\nfacet\n")
+    assert preview("pad.ply").endswith("[Truncated: the header runs past what an outline shows]")
+    assert preview("pad.stl").endswith("[Truncated: the name runs past what an outline shows]")
+    big = "create table t (v text default '%s')" % ("x" * (20 << 20))
+    sqlite3.connect(tmp_path / "big.sqlite").executescript(big).connection.close()
+    spawned = previews.preview_attachment(tmp_path / "big.sqlite", "b.sqlite")["text"]
+    assert spawned.endswith(f"more than {previews.MAX_SQLITE_BYTES} bytes to read")

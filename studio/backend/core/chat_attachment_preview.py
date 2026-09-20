@@ -18,9 +18,12 @@ import lzma
 import mmap
 import multiprocessing as mp
 import re
+import sqlite3
 import struct
 import tarfile
 import zipfile
+from collections import Counter
+from contextlib import closing
 from pathlib import Path
 from typing import BinaryIO, Callable, Iterable
 from xml.etree import ElementTree
@@ -41,6 +44,7 @@ SAMPLE_ROWS = 5
 SCANNED_MEMBERS = 1000
 SMALL_MEMBER_BYTES = 1500
 MEMBER_TEXT_CHARS = 1200
+PAST_OUTLINE = "runs past what an outline shows"
 # Reaching a tar member means decompressing everything before it.
 MAX_SCANNED_BYTES = 64 * 1024 * 1024
 # What sampling materialises: a whole stripe, batch, array, row group or long-string table.
@@ -61,6 +65,10 @@ _SAS_MAGIC = (
 )
 # ZipFile parses the whole central directory; real archives use about 80-170 bytes an entry.
 MAX_ZIP_DIRECTORY_BYTES = 4 * 1024 * 1024
+# octet_length measures a cell from the record header; older builds have only length(), for blobs.
+SQLITE_MEASURES_UNREAD = sqlite3.sqlite_version_info >= (3, 43)
+# What SQLite may allocate for one preview, which is the only bound on parsing a schema.
+MAX_SQLITE_BYTES = 64 * 1024 * 1024
 # MuPDF lays out one long paragraph in quadratic time: 128k characters take 18 s.
 PREVIEW_TIMEOUT_SECONDS = 10.0
 IMAGE_EXTS = set(
@@ -117,11 +125,14 @@ def preview_attachment(path: Path, filename: str) -> dict | None:
 
 
 def _send_preview(send, path: Path, filename: str) -> None:
+    # The limit can be lowered but never lifted, so it belongs here, not to the reader.
+    with closing(sqlite3.connect(":memory:")) as database:
+        database.execute(f"pragma hard_heap_limit = {MAX_SQLITE_BYTES}")
     send.send(build_preview(path, filename))
 
 
 def build_preview(path: Path, filename: str) -> dict | None:
-    """``preview_attachment`` in this process, with no deadline."""
+    """``preview_attachment`` in this process, with no deadline and no limit on SQLite."""
     name = filename.lower()
     ext = Path(name).suffix
     try:
@@ -315,15 +326,17 @@ def _zip_xml(
 
 def _xml_text(root: ElementTree.Element, tags: set[str], budget: int) -> str:
     # A matching element nested in another repeats its text, so the budget bounds what is built.
-    texts = []
+    texts, cut = [], False
     for element in root.iter():
-        if budget <= 0:
-            break
         if element.tag.rsplit("}", 1)[-1] in tags and (text := "".join(element.itertext()).strip()):
+            if budget <= 0:
+                cut = True
+                break
             texts.append(text[:budget])
+            cut = cut or len(text) > budget
             # The separator it will be joined with counts too.
             budget -= len(texts[-1]) + 1
-    return "\n".join(texts)
+    return "\n".join(texts + [f"[Truncated: the text {PAST_OUTLINE}]"] * cut)
 
 
 def _drawing_text(path: Path, ext: str) -> str:
@@ -721,10 +734,224 @@ def _count(shape: Iterable[int]) -> int:
     return total
 
 
+def _sqlite(path: Path) -> str:
+    # Immutable: a hash-named copy nothing else writes, and one given no journal or lock files.
+    uri = f"{path.resolve().as_uri()}?mode=ro&immutable=1"
+    size = path.stat().st_size
+    with closing(sqlite3.connect(uri, uri = True)) as database:
+        # Opening one table parses every CREATE first, at a cost nothing in the file states and only
+        # the preview process's limit bounds. An older SQLite reports none, leaving the file's size.
+        row = database.execute("pragma hard_heap_limit").fetchone()
+        bounded = row[0] if row else 0
+        if not bounded and size > MAX_SAMPLED_BYTES:
+            return f"database of {size} bytes, not read: nothing here bounds what its schema costs"
+        try:
+            return _sqlite_outline(database)
+        except MemoryError:
+            return f"database of {size} bytes, more than {bounded} bytes to read"
+
+
+def _sqlite_outline(database: sqlite3.Connection) -> str:
+    # Views and virtual tables compute their rows at an unstated cost. rootpage says which a table
+    # is, having no b-tree of its own, unlike the schema text beside it, which can declare anything.
+    tables = database.execute(
+        "select name, rootpage = 0 from sqlite_master where type = 'table' order by name"
+    ).fetchall()
+    names = [name for name, _ in tables]
+    lines = [f"{len(names)} tables:"] + [f"  {name}" for name in names[:LISTED_MEMBERS]]
+    if len(names) > LISTED_MEMBERS:
+        lines.append(f"  ... {len(names) - LISTED_MEMBERS} more")
+    # The undetailed line is part of the outline, so without room for it a detail can end exactly
+    # on the outline cap, leaving the cap's own marker silent.
+    undetailed = "... %d more tables, not detailed"
+    room = sum(len(line) + 1 for line in lines) + len(undetailed % len(tables)) + 1
+    budget = MAX_OUTLINE_CHARS - room
+    for detailed, (name, computed) in enumerate(tables):
+        if budget <= 0:
+            lines.append(undetailed % (len(tables) - detailed))
+            break
+        if computed:
+            lines.append(f"{name}: a virtual table, not read")
+        else:
+            lines.append(_sqlite_table(database, name))
+        budget -= len(lines[-1]) + 1
+    return "\n".join(lines)
+
+
+def _sqlite_table(database: sqlite3.Connection, name: str) -> str:
+    quoted = _quoted(name)
+    columns = [(row[1], row[2]) for row in database.execute(f"pragma table_info({quoted})")]
+    (rows,) = database.execute(f"select count(*) from {quoted}").fetchone()
+    lines = [f"{name} ({rows} rows): " + ", ".join(f"{column} {kind}" for column, kind in columns)]
+    if not SQLITE_MEASURES_UNREAD:
+        version = sqlite3.sqlite_version
+        return lines[0] + f"\n  [First rows not read: SQLite {version} reads a cell to size it]"
+    # A select loads every value whole, so one longer than a cell shows is described instead.
+    sampled = ", ".join(
+        f"case when octet_length({column}) > {SMALL_MEMBER_BYTES} then "
+        f"'<' || typeof({column}) || ' of ' || octet_length({column}) || ' bytes>' else {column} end"
+        for column in (_quoted(column) for column, _ in columns)
+    )
+    if sampled:
+        lines += [
+            "  " + "\t".join(map(_cell, row))
+            for row in database.execute(f"select {sampled} from {quoted} limit {SAMPLE_ROWS}")
+        ]
+    return "\n".join(lines)
+
+
+def _listed(items: list[str], total: int) -> str:
+    """What fits on one line, and how many it leaves out."""
+    return ", ".join(items) + (f", ... {total - len(items)} more" if total > len(items) else "")
+
+
+def _quoted(name: str) -> str:
+    return '"' + name.replace('"', '""') + '"'
+
+
+def _model_member(
+    archive: zipfile.ZipFile, member: str, main: str, relation: str
+) -> tuple[str | None, str]:
+    """The part the package declares it starts at - a 3MF in its relationships, a KMZ, having none,
+    by the conventional name - or anything carrying the extension, and what went unread deciding."""
+    names, note = archive.namelist(), ""
+    if relation and "_rels/.rels" in names:
+        stated = archive.getinfo("_rels/.rels").file_size
+        if stated > MAX_XML_BYTES:
+            note = f"[_rels/.rels not read: {stated} bytes of XML]\n"
+        else:
+            for related in _zip_xml(archive, "_rels/.rels"):
+                target = related.get("Target", "").lstrip("/")
+                if related.get("Type", "").endswith(relation) and target in names:
+                    return target, note
+    named = next((n for n in names if n.lower().endswith(member)), None)
+    return (main if main in names else named), note
+
+
+def _zip_model(
+    path: Path,
+    member: str,
+    main: str,
+    relation: str = "",
+) -> str:
+    """What the model or map inside a 3MF or KMZ states, over the listing of the container."""
+    listing = _zip_members(path)
+    try:
+        archive = _open_zip(path)
+    except _DirectoryTooLarge:
+        return listing
+    note = ""
+    with archive:
+        try:
+            found, note = _model_member(archive, member, main, relation)
+            if found is None:
+                return note + listing
+            # The member is parsed whole, so what it costs is the size the directory states for it.
+            stated = archive.getinfo(found).file_size
+            if stated > MAX_XML_BYTES:
+                return f"{note}[{found} not read: {stated} bytes of XML]\n{listing}"
+            root = _zip_xml(archive, found)
+        except (ValueError, ElementTree.ParseError):
+            return note + listing
+    counts = Counter(element.tag.rsplit("}", 1)[-1] for element in root.iter())
+    tags = [f"{count} {tag}" for tag, count in counts.most_common(LISTED_VALUES)]
+    listed = _listed(tags, len(counts))
+    # A 3MF titles itself in metadata elements, a KML names its places.
+    names = _xml_text(root, {"metadata", "name"}, MEMBER_TEXT_CHARS).replace("\n", ", ")
+    return f"{note}{found}: {listed}\n" + (f"named: {names}\n" if names else "") + listing
+
+
+def _stl(path: Path) -> str:
+    size = path.stat().st_size
+    with path.open("rb") as handle:
+        window = handle.read(MAX_OUTLINE_CHARS)
+    header = window[:84]
+    triangles = struct.unpack_from("<I", header, 80)[0] if len(header) == 84 else 0
+    # Both layouts can open with "solid"; the binary count's 50-byte triangles fill the file.
+    if size == 84 + 50 * triangles:
+        # The 80-byte header holds a name padded out with nulls or spaces, which are not its text.
+        described = (_as_text(header[:80].strip(b"\0 \t\r\n"), complete = True) or "").strip()
+        return f"binary STL, {triangles} triangles" + (
+            f", header {described!r}" if described else ""
+        )
+    # A binary header is 80 bytes of anything; only a wholly textual first line proves ASCII.
+    text = _as_text(window, complete = True)
+    first = text.splitlines()[0].strip() if text else ""
+    if window[:5].lower() == b"solid" and first and first.isprintable():
+        # A name that strips down short leaves the outline under the cap that would report the cut.
+        cut = (
+            ""
+            if b"\n" in window or size <= len(window)
+            else f"\n[Truncated: the name {PAST_OUTLINE}]"
+        )
+        return f"ASCII STL, {first!r}" + cut
+    return f"STL of {size} bytes, in neither layout"
+
+
+def _ply(path: Path) -> str:
+    size = path.stat().st_size
+    with path.open("rb") as handle:
+        header = handle.read(MAX_OUTLINE_CHARS)
+    # A PLY states its elements in the text header. The terminator is a line of its own; the same
+    # words inside a comment end nothing.
+    end = re.search(rb"(?m)^end_header\b", header)
+    text = _as_text(header[: end.end() if end else len(header)], complete = True)
+    if text is None:
+        return f"PLY of {size} bytes, header not text"
+    # Decoding and stripping both shorten what is shown, so the cap may never report the cut.
+    cut = "" if end or size <= len(header) else f"\n[Truncated: the header {PAST_OUTLINE}]"
+    return "PLY header:\n" + text.strip() + cut
+
+
+def _glb(path: Path) -> str:
+    with path.open("rb") as handle:
+        magic, version, _ = struct.unpack("<4sII", handle.read(12))
+        length, kind = struct.unpack("<I4s", handle.read(8))
+        # The spec puts the scene first, as JSON, and the buffers it describes in the chunk behind.
+        if magic != b"glTF" or kind != b"JSON":
+            return f"GLB of {path.stat().st_size} bytes, in no glTF layout"
+        if length > MAX_SAMPLED_BYTES:
+            return f"glTF {version} binary, scene of {length} bytes, too large to read"
+        scene = json.loads(handle.read(length))
+    if not isinstance(scene, dict):
+        return f"glTF {version} binary, a scene that is no glTF object"
+    # Only what the spec has as a list is counted, and only what it has as an object is named.
+    counted = ("scenes", "nodes", "meshes", "materials", "textures", "images", "animations")
+    listed = [key for key in counted if isinstance(scene.get(key), list) and scene[key]]
+    counts = ", ".join(f"{len(scene[key])} {key}" for key in listed)
+    lines = [f"glTF {version} binary" + (f", {counts}" if counts else "")]
+    asset = scene.get("asset")
+    if isinstance(asset, dict) and (generator := asset.get("generator")):
+        lines.append(f"generator: {generator}")
+    meshes = scene["meshes"] if "meshes" in listed else []
+    named = [mesh["name"] for mesh in meshes if isinstance(mesh, dict) and mesh.get("name")]
+    if named:
+        lines.append("meshes: " + _listed(named[:LISTED_VALUES], len(named)))
+    return "\n".join(lines)
+
+
+def _font(path: Path) -> str:
+    import fitz
+
+    size = path.stat().st_size
+    # FreeType reads the whole font in, so the file's own size is what loading it costs.
+    if size > MAX_SAMPLED_BYTES:
+        return f"font of {size} bytes, too large to read"
+    font = fitz.Font(fontfile = str(path))
+    # Fixed pitch is the one trait MuPDF reads from the font's tables; it guesses the rest.
+    pitch = ", monospaced" if font.flags.get("mono") else ""
+    with path.open("rb") as handle:
+        # MuPDF loads one face, so a collection is reported as the font it opens.
+        collected = ", first font of a collection" if handle.read(4) == b"ttcf" else ""
+    return f"{font.name}, {font.glyph_count} glyphs, {size} bytes{pitch}{collected}"
+
+
 _OUTLINES: dict[str, Callable[[Path], str]] = {
     ext: builder
     for exts, builder in (
         (".zip .jar .whl .apk", _zip_members),
+        (".3mf", lambda path: _zip_model(path, ".model", "3D/3dmodel.model", "3dmodel")),
+        (".kmz", lambda path: _zip_model(path, ".kml", "doc.kml")),
         (".parquet", _parquet),
         (".feather .arrow", _arrow),
         (".orc", lambda path: _table(path, "orc")),
@@ -734,6 +961,11 @@ _OUTLINES: dict[str, Callable[[Path], str]] = {
         (".npy", _npy),
         (".npz", _npz),
         (".safetensors", _safetensors),
+        (".sqlite .sqlite3 .db .gpkg .mbtiles", _sqlite),
+        (".stl", _stl),
+        (".ply", _ply),
+        (".glb", _glb),
+        (".ttf .otf .ttc", _font),
     )
     for ext in exts.split()
 }
