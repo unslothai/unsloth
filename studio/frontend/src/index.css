@@ -1485,9 +1485,10 @@ html[data-chat-font] .aui-root {
 	   use. Height and width stay with the caller, since an inline select
 	   is 32px and a full-width one 36px. */
 	/* Inline field on the panel: the filled box a row's value is typed
-	   into. Width and height stay with the caller. */
+	   into. These share one width, so a left-aligned value puts them all
+	   on a single edge. Width and height stay with the caller. */
 	.panel-field {
-		@apply rounded-full border-transparent bg-[var(--panel-input-surface)] px-3.5 py-0 text-center text-ui-13 font-medium text-nav-fg outline-none hover:bg-[var(--panel-input-surface-hover)] focus-visible:ring-0;
+		@apply rounded-full border-transparent bg-[var(--panel-input-surface)] px-3.5 py-0 text-left text-ui-13 font-medium text-nav-fg outline-none hover:bg-[var(--panel-input-surface-hover)] focus-visible:ring-0;
 	}
 
 	/* Important like .panel-input-group: these all override a base
