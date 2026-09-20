@@ -2821,8 +2821,14 @@ exit 1
     # would wedge an install that had nothing wrong with it. Cached because the answer cannot
     # change during one install and every volume question below consults it; a timeout caches the
     # empty answer too, so a broken repository is paid for once rather than once per question.
+    # -Fresh for the callers that want the NUMBER. FreeSpace in a cached row is a snapshot, and
+    # the failure handler asks after setup has consumed the disk: served from a list populated
+    # before the environment was built, a volume that has since fallen under the threshold reads
+    # as having room and misses the disk-full diagnosis this PR exists to add. Identity and mount
+    # paths do not move during an install, so those callers keep the cache.
     function Get-StudioVolumeList {
-        if ($null -ne $script:StudioVolumeList) { return $script:StudioVolumeList }
+        param([switch]$Fresh)
+        if (-not $Fresh -and $null -ne $script:StudioVolumeList) { return $script:StudioVolumeList }
         $script:StudioVolumeList = @()
         $job = $null
         try {
@@ -2844,12 +2850,13 @@ exit 1
     }
 
     function Get-StudioMountedVolume {
-        param([Parameter(Mandatory = $true)][AllowEmptyString()][string]$Path)
+        param([Parameter(Mandatory = $true)][AllowEmptyString()][string]$Path,
+              [switch]$Fresh)
         if ([string]::IsNullOrWhiteSpace($Path)) { return $null }
         if (-not ($IsWindows -or $env:OS -eq "Windows_NT")) { return $null }
         try {
             return (Select-StudioVolumeForPath -Path (Resolve-StudioVolumeQueryPath -Path $Path) `
-                -Volumes (Get-StudioVolumeList))
+                -Volumes (Get-StudioVolumeList -Fresh:$Fresh))
         } catch { return $null }
     }
 
@@ -2858,7 +2865,8 @@ exit 1
         param([Parameter(Mandatory = $true)][AllowEmptyString()][string]$Path)
         if ([string]::IsNullOrWhiteSpace($Path)) { return $null }
         $queryPath = Resolve-StudioVolumeQueryPath -Path $Path
-        $mounted = Get-StudioMountedVolume -Path $queryPath
+        # -Fresh: this is the caller that wants a number, and a stale one is worse than none.
+        $mounted = Get-StudioMountedVolume -Path $queryPath -Fresh
         if ($mounted -and $null -ne $mounted.FreeSpace) { return [int64]$mounted.FreeSpace }
         try {
             # The fallback needs the resolved path too: DriveInfo on the lexical one answers for

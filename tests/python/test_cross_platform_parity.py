@@ -1767,3 +1767,25 @@ class TestTheVolumeQueryIsBounded:
         assert "$script:StudioVolumeList = $null" in text, (
             "the cached volume list is never reset, so `irm | iex` reuses a previous run's answer"
         )
+
+
+class TestFreeSpaceIsNeverServedFromTheCache:
+    """The volume list is cached so a degraded WMI repository is paid for once, but FreeSpace in
+    a cached row is a snapshot. The failure handler asks after setup has consumed the disk, so a
+    number taken before the environment was built reports room that is gone and misses the
+    disk-full diagnosis this change exists to add (#11313)."""
+
+    def test_the_free_space_caller_asks_for_a_fresh_answer(self):
+        text = INSTALL_PS1.read_text(encoding = "utf-8")
+        helper = text.split("function Get-StudioFreeSpaceBytes", 1)[1].split(
+            "function Get-StudioTreeSizeBytes", 1
+        )[0]
+        assert "-Fresh" in helper, "free space is served from a snapshot taken earlier in the run"
+
+    def test_the_identity_callers_do_not(self):
+        # Mount paths and volume GUIDs do not move during an install, so those keep the cache.
+        text = INSTALL_PS1.read_text(encoding = "utf-8")
+        helper = text.split("function Test-StudioSameVolume", 1)[1].split("\n    }", 1)[0]
+        assert "-Fresh" not in helper, (
+            "the identity comparison re-queries WMI, which the cache exists to avoid"
+        )

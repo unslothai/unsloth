@@ -298,6 +298,16 @@ try {
     Check "and is answered from the cache the second time" ($t0.ElapsedMilliseconds -lt $firstMs + 50)
     Check "a query that answered nothing still caches an answer" (
         $null -ne $script:StudioVolumeList)
+    # The cache holds identity, which does not move during an install. It must NOT answer the
+    # free-space question: the failure handler asks after setup has eaten the disk, and a number
+    # snapshotted before the environment was built reports room that is gone.
+    $script:StudioVolumeList = @([pscustomobject]@{ Name = "sentinel"; DeviceID = "sentinel"; FreeSpace = 1 })
+    $null = Get-StudioVolumeList
+    Check "the cached list is reused when only identity is wanted" (
+        @(Get-StudioVolumeList)[0].DeviceID -eq "sentinel")
+    $null = Get-StudioVolumeList -Fresh
+    Check "asking for a fresh answer replaces the cached one" (
+        @($script:StudioVolumeList | Where-Object { $_.DeviceID -eq "sentinel" }).Count -eq 0)
     $script:StudioVolumeList = $null
     # A link must be measured as the volume it points at, not the one it lives on. On one
     # filesystem the two numbers agree either way, so what this proves is that the resolution
