@@ -26,6 +26,10 @@ class MxcAdapterError(RuntimeError):
         self.may_have_started = may_have_started
 
 
+class MxcLaunchCancelled(MxcAdapterError):
+    """The caller cancelled before WXC dispatch, so host replay is forbidden."""
+
+
 def _control_environment() -> dict[str, str]:
     allowed = {"SYSTEMROOT", "WINDIR", "PATH", "TEMP", "TMP", "PROGRAMDATA"}
     return {key: value for key, value in os.environ.items() if key.upper() in allowed}
@@ -39,7 +43,7 @@ def spawn(
 ):
     """Verify the request and start the approved WXC executable directly."""
     if cancel_event is not None and cancel_event.is_set():
-        raise MxcAdapterError(
+        raise MxcLaunchCancelled(
             "MXC launch cancelled before dispatch",
             stage = "startup",
         )
@@ -70,7 +74,7 @@ def spawn(
         runtime_lease = mxc_runtime.acquire_runtime()
         mxc_policy.verify_launch_identities(request)
         if cancel_event is not None and cancel_event.is_set():
-            raise MxcAdapterError(
+            raise MxcLaunchCancelled(
                 "MXC launch cancelled before dispatch",
                 stage = "startup",
             )

@@ -138,7 +138,8 @@ def prepare(plan, capability):
             proc = mxc_adapter.spawn(request, cancel_event = plan.cancel_event, popen_kwargs = kwargs)
         except Exception as exc:
             may_have_started = bool(getattr(exc, "may_have_started", False))
-            if plan.requested_mode == "auto" and not may_have_started:
+            cancelled = isinstance(exc, mxc_adapter.MxcLaunchCancelled)
+            if plan.requested_mode == "auto" and not may_have_started and not cancelled:
                 try:
                     proc = subprocess.Popen(plan.argv, **kwargs)
                 except OSError as fallback_exc:
@@ -172,10 +173,13 @@ def prepare(plan, capability):
             prepared.execution_record = replace(
                 prepared.execution_record,
                 execution_status = "unknown_start" if may_have_started else "not_started",
-                completion_status = "uncertain" if may_have_started else "not_started",
+                completion_status = (
+                    "uncertain" if may_have_started else ("cancelled" if cancelled else "not_started")
+                ),
                 cleanup_status = "uncertain" if may_have_started else "complete",
             )
-            mxc_probe.invalidate_cache()
+            if not cancelled:
+                mxc_probe.invalidate_cache()
             raise SandboxBuildError(
                 f"Windows MXC launch failed without host replay: {exc}"
             ) from exc

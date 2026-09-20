@@ -7,8 +7,10 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
 
 import pytest
 
@@ -475,6 +477,43 @@ def test_auto_spawn_failure_before_dispatch_uses_software_safeguards(monkeypatch
     assert calls == [plan.argv]
     assert prepared.backend == "software-safeguards"
     assert prepared.execution_record.effective_mode == "software_safeguards"
+
+
+def test_auto_cancellation_before_dispatch_never_replays_on_host(monkeypatch, tmp_path):
+    from core.inference import sandbox_windows_mxc
+
+    cancel = threading.Event()
+    plan = replace(_plan(tmp_path, "auto"), cancel_event = cancel)
+    identity = "qualified-wxc"
+    capability = os_sandbox.SandboxCapability(
+        backend = "mxc-processcontainer",
+        available = True,
+        reason = "qualified",
+        environment = "win32",
+        profile_id = mxc_runtime.PROFILE_ID,
+        environment_fingerprint = sandbox_windows_mxc._capability_fingerprint(
+            identity, "python", plan.argv[0]
+        ),
+    )
+    monkeypatch.setattr(sandbox_windows_mxc.mxc_runtime, "installation_identity", lambda: identity)
+    monkeypatch.setattr(
+        sandbox_windows_mxc.mxc_policy,
+        "build_launch_request",
+        lambda _plan: {"policyHash": "sha256:controlled"},
+    )
+    monkeypatch.setattr(
+        sandbox_windows_mxc.subprocess,
+        "Popen",
+        lambda *_args, **_kwargs: pytest.fail("cancelled command was replayed on the host"),
+    )
+
+    prepared = sandbox_windows_mxc.prepare(plan, capability)
+    cancel.set()
+    with pytest.raises(os_sandbox.SandboxBuildError, match = "without host replay"):
+        os_sandbox.spawn_prepared_launch(prepared)
+    assert prepared.execution_record.execution_status == "not_started"
+    assert prepared.execution_record.completion_status == "cancelled"
+    assert prepared.execution_record.cleanup_status == "complete"
 
 
 def test_auto_failure_after_possible_dispatch_never_replays_on_host(monkeypatch, tmp_path):
