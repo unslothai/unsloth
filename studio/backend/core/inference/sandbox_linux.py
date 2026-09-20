@@ -157,8 +157,14 @@ def _within(path: str, root: str) -> bool:
 # model-authored code in `required` mode could read, change or delete the
 # user's home.
 _CACHE_FORBIDDEN_CHILDREN = (
-    ".ssh", ".aws", ".config/gcloud", ".kube", ".docker", ".gnupg",
-    ".netrc", ".git-credentials",
+    ".ssh",
+    ".aws",
+    ".config/gcloud",
+    ".kube",
+    ".docker",
+    ".gnupg",
+    ".netrc",
+    ".git-credentials",
 )
 
 
@@ -166,17 +172,15 @@ def _too_broad_for_a_cache(path: str) -> bool:
     """Whether ``path`` is a home or system directory rather than a cache."""
     real = os.path.realpath(path)
     if real == os.sep or os.path.dirname(real) == real:
-        return True                       # a filesystem root
+        return True  # a filesystem root
     home = os.path.realpath(os.path.expanduser("~"))
     if home and home != os.sep and (_within(home, real) or real == home):
-        return True                       # the user's home, or an ancestor of it
+        return True  # the user's home, or an ancestor of it
     if real in ("/home", "/Users", "/root", "/etc", "/var", "/usr", "/opt", "/tmp"):
         return True
     # A directory that already holds credentials is not a cache directory,
     # whatever it is called.
-    return any(
-        os.path.exists(os.path.join(real, child)) for child in _CACHE_FORBIDDEN_CHILDREN
-    )
+    return any(os.path.exists(os.path.join(real, child)) for child in _CACHE_FORBIDDEN_CHILDREN)
 
 
 def _holds_studio_state(path: str) -> bool:
@@ -603,7 +607,9 @@ def _model_cache_binds(workdir: str) -> dict[str, str]:
         if _too_broad_for_a_cache(path):
             logger.warning(
                 "Not sharing the %s cache into the sandbox: %s is a home or "
-                "system directory rather than a cache", name, path,
+                "system directory rather than a cache",
+                name,
+                path,
             )
             continue
         if _holds_studio_state(path):
