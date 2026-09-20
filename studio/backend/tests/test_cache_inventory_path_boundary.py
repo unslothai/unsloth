@@ -2,8 +2,8 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 """An API key gets the local inventory listing but not the host paths; a browser session still
-gets them. Assertions are on the serialised response body, since a unit test on the helper alone
-would pass with the helper wired to nothing.
+gets them. Assertions are on the SERIALISED body: a unit test on the helper alone would pass
+with the helper wired to nothing.
 """
 
 import ast
@@ -45,10 +45,8 @@ LOAD_HANDLE: "tuple[str, ...]" = ()
 
 # A root that cannot exist by accident, so finding it in a body is proof and not a coincidence.
 HOST_ROOT = "/home/operator-7f3c/.cache/huggingface/hub"
-# The same root as this PLATFORM spells it. A row built by joining `Path(HOST_ROOT)` comes back
-# from the route with backslashes on Windows, so a POSIX literal is both a false red (an
-# assertion that can never hold) and a false green (a leak check that can never fire). Every
-# comparison against a path the test itself constructed goes through this one.
+# A constructed path comes back with backslashes on Windows, so a POSIX literal is a leak
+# check that can never fire.
 HOST_ROOT_NATIVE = str(Path(HOST_ROOT))
 REPO_DIR = f"{HOST_ROOT}/models--unsloth--Llama-3.2-1B-Instruct"
 
@@ -122,9 +120,7 @@ def test_redaction_keeps_every_non_path_field():
     assert row["cache_ref"] == cache_reference(REPO_DIR)
 
 
-# `cache_ref` is written exactly when the row HAD a path and omitted when it did not; it is the
-# "is this cached" discriminator that a truthiness test on `cache_path` can no longer be. A null
-# path stays null, so the discriminator survives.
+# `cache_ref` is the "is this cached" discriminator `cache_path` truthiness no longer can be.
 
 
 def test_a_redacted_row_is_still_distinguishable_from_one_with_no_path_at_all():
@@ -155,8 +151,7 @@ def test_scan_root_lists_are_emptied_not_referenced():
     assert out["exact_paths"] == []
 
 
-# An adapter row whose `base_model` is a host path for one source and a Hub repo id for the
-# next; the `base_model_source` sibling is what decides which.
+# `base_model` is a host path for one source and a repo id for the next; the sibling decides.
 def _adapter(identifier, base_model, source) -> dict:
     return {
         "models": [
@@ -168,9 +163,7 @@ def _adapter(identifier, base_model, source) -> dict:
 _LOCAL_ADAPTER = _adapter("my-lora", "/home/op/models/Llama-3.1-8B", "local")
 _HUB_ADAPTER = _adapter("other-lora", "meta-llama/Llama-3.1-8B", "huggingface")
 
-# The leak detector is what every route test below trusts, so it is pinned on both answers: it
-# finds a path wherever one can hide (a row, a message, a `base_model` the sibling field says is
-# local, a path-valued identity) and stays quiet on a redacted body and on Hub repo ids.
+# Every route test below trusts the leak detector, so it is pinned on both answers.
 _DEFAULT_ROOTS = object()
 
 
@@ -208,10 +201,8 @@ def test_the_leak_detector_finds_what_it_is_for(payload, roots, leaks):
             "ratio 3/4 and https://huggingface.co/api/models",
         ),
         ("nothing to see", "nothing to see"),
-        # An exception, not only a string.
         (OSError(f"cannot open {REPO_DIR}/blobs/abc"), "cannot open .../blobs/abc"),
         (None, ""),
-        # A Windows network share is shortened like any other path.
         (
             r"Skipping \\fileserver\models\hub\models--acme--x: denied",
             "Skipping .../hub/models--acme--x: denied",
@@ -219,20 +210,17 @@ def test_the_leak_detector_finds_what_it_is_for(payload, roots, leaks):
         (r"open \\srv\share\acme\config.json failed", "open .../acme/config.json failed"),
         ("ratio 3/4", "ratio 3/4"),
         ("https://huggingface.co/api/models/a/b", "https://huggingface.co/api/models/a/b"),
-        # A relative path in a log line is left as written.
         ("Skipping ./models/repo: denied", "Skipping ./models/repo: denied"),
         ("Skipping ../models/repo: denied", "Skipping ../models/repo: denied"),
         ("Skipping ../../a/b/c: denied", "Skipping ../../a/b/c: denied"),
         ("Skipping models/team/repo: denied", "Skipping models/team/repo: denied"),
-        # A two-component absolute path keeps its root: rebuilding turned `/srv/cache` into
-        # `srv/cache`, which reads relative.
+        # A two-component path keeps its root: rebuilding turned `/srv/cache` into `srv/cache`.
         ("cache root /srv/cache is unreadable", "cache root /srv/cache is unreadable"),
         (
             "Failed /home/op/.cache/huggingface/hub/models--acme--x: EACCES",
             "Failed .../hub/models--acme--x: EACCES",
         ),
-        # A path run stops at the end of the path: the label between the two paths is not
-        # swallowed, and the stop does not break on punctuation or a space inside a directory.
+        # The label between two paths is not swallowed, nor does a space break the run.
         (
             "Scan folder rejected: /home/jane.doe/.cache/huggingface/hub (path=/home/jane.doe/x)",
             "Scan folder rejected: .../huggingface/hub (path=.../jane.doe/x)",
@@ -274,11 +262,8 @@ def test_the_text_passes_stay_linear(scrub, text):
     assert time.monotonic() - started < 1.0
 
 
-# `redact_paths_in_text` removes the directory name WHOLE: a name may contain punctuation, a
-# space, a comma, a semicolon or an `=`, and stopping the run at one of those publishes the
-# remainder of the layout. `_PATH_COMPONENT` ends the run at `=`, so the tail rule has to treat
-# `=` as a continuation the same way it treats `:`, `;` and `,`. The trailing prose goes with it,
-# since a directory name may contain spaces.
+# The directory name goes WHOLE: stopping the run at punctuation inside it publishes the rest
+# of the layout. `_PATH_COMPONENT` ends at `=`, so the tail rule treats `=` like `:`, `;`, `,`.
 
 
 @pytest.mark.parametrize(
@@ -298,8 +283,7 @@ def test_the_text_passes_stay_linear(scrub, text):
         ('opened "/a/b" already', 'opened "<path>" already'),
         ("tried /a/b, /c/d", "tried <path>, <path>"),
         ("Skipping /a/b: denied, see /etc/fstab", "Skipping <path>: denied, see <path>"),
-        # BOUNDARY: ordinary prose is not read as a path, an `=` outside a path is ordinary
-        # prose, and a URL is not a host path.
+        # BOUNDARY: prose, an `=` outside a path, and a URL are not host paths.
         ("3/4 of the shards", "3/4 of the shards"),
         ("and/or the projector", "and/or the projector"),
         ("no paths here", "no paths here"),
@@ -339,8 +323,7 @@ def _cached_inventory(monkeypatch):
     monkeypatch.setattr(models_routes, "cached_gguf_rows", lambda *a, **k: [_cached_row()])
 
 
-# /api/models is the OpenAI-compatible mirror of /api/hub, reachable with the same key, so the
-# boundary has to be drawn on both routers.
+# /api/models is the OpenAI-compatible mirror of /api/hub, reachable with the same key.
 
 
 @pytest.mark.parametrize(
@@ -357,7 +340,6 @@ def test_an_api_key_enumerates_the_cache_without_its_paths(_cached_inventory, ro
         assert row["cache_path"] == ""
         assert row["cache_ref"].startswith("ref:")
         assert HOST_ROOT not in json.dumps(row), row
-        # A cached row keeps the repo id it is named by; only the path becomes a reference.
         assert not row["repo_id"].startswith("ref:")
 
 
@@ -409,8 +391,7 @@ def test_a_rejected_scan_folder_does_not_disclose_where_it_resolved(monkeypatch)
     assert REPO_DIR in ui.json()["detail"]
 
 
-# A raised detail is walked the same way a payload is: the message survives, the layout does
-# not, whether the detail is a string, a structure, or a root with a single component.
+# A raised detail is walked like a payload: the message survives, the layout does not.
 
 
 @pytest.mark.parametrize(
@@ -423,7 +404,6 @@ def test_a_rejected_scan_folder_does_not_disclose_where_it_resolved(monkeypatch)
             None,
             True,
         ),
-        # A root with one component is redacted too.
         *[
             (f"Models folder path is not a directory: {root}", root, ("not a directory",), None, False)
             for root in ("/tmp", "/cache", "C:\\cache")
@@ -524,8 +504,8 @@ def test_orphan_companions_keep_their_repo_ids(monkeypatch):
 def test_download_progress_hides_the_cache_dir_it_measured(
     monkeypatch, client, route, reader, answers_with_a_reference
 ):
-    """The measurement is taken FROM the cache directory, so every route that reports it -- the
-    current one and both compat aliases -- has to drop the path on the way out."""
+    """The measurement is taken FROM the cache directory, so both compat aliases must drop it
+    on the way out too."""
 
     async def _progress(repo_id, **_kwargs):
         return {
@@ -560,8 +540,7 @@ _ROUTES_WITHOUT_HOST_PATHS = {
 
 
 def _route_arguments(module, *, router_decorated = False) -> dict:
-    """Every function in a route module, by name, with the argument names it takes. With
-    `router_decorated`, only the top-level functions carrying a `@router.<method>(...)`."""
+    """With `router_decorated`, only top-level functions carrying a `@router.<method>(...)`."""
     tree = ast.parse(Path(module.__file__).read_text(encoding = "utf-8"))
     found = {}
     for node in tree.body if router_decorated else ast.walk(tree):
@@ -724,7 +703,6 @@ def test_a_filesystem_backed_row_is_not_named_by_its_path(_local_inventory):
     assert row["id"].startswith("ref:"), row["id"]
     assert row["load_id"].startswith("ref:"), row["load_id"]
     assert row["inventory_id"].startswith("models_dir:safetensors:"), row["inventory_id"]
-    # The scan roots the listing was taken from are emptied, not referenced.
     assert payload["lmstudio_dirs"] == []
     assert HOST_ROOT not in json.dumps(payload), payload
     # Both spellings, or the leak check is vacuous wherever the row carries the other one.
@@ -732,12 +710,11 @@ def test_a_filesystem_backed_row_is_not_named_by_its_path(_local_inventory):
     assert "my%20models" not in json.dumps(payload), payload
     assert response_leaks_host_path(payload, [HOST_ROOT, HOST_ROOT_NATIVE]) is None
 
-    # The referenced row is still loadable: the handle resolves back on the load request.
     assert LoadRequest(model_path = row["load_id"]).model_path == str(
         Path(HOST_ROOT) / "my models" / "Llama-3.2-1B"
     )
 
-    # BOUNDARY: the operator's own session is still shown its own machine.
+    # BOUNDARY.
     ui = _hub(via_api_key = False).get("/api/hub/local").json()
     assert ui["models"][0]["load_id"].startswith(HOST_ROOT_NATIVE)
     assert ui["hf_cache_dir"] == HOST_ROOT
@@ -761,8 +738,7 @@ def test_a_local_scan_failure_is_redacted_like_its_payload(monkeypatch):
 def test_a_reference_table_that_fills_up_drops_the_oldest(monkeypatch):
     """Evicted by AGE, not by count, or a listing longer than the table breaks its own rows."""
     clock = {"now": 0.0}
-    # The table is process-global; other tests' entries carry real timestamps this fake clock
-    # cannot age out.
+    # Process-global: other tests' entries carry real timestamps this fake clock cannot age out.
     host_paths._reference_paths.clear()
     monkeypatch.setattr(host_paths.time, "monotonic", lambda: clock["now"])
     monkeypatch.setattr(host_paths, "_REFERENCE_LIMIT", 4)
@@ -791,9 +767,7 @@ def _request_model(name: str):
         ("ValidateModelRequest", ("model_path",), {}),
         ("DiffusionLoadRequest", ("model_path",), {}),
         ("VideoLoadRequest", ("model_path",), {}),
-        # The reference that loaded a model can unload it.
         ("UnloadRequest", ("model_path",), {}),
-        # Preflight schemas resolve a handle too, or the estimate is taken of nothing.
         ("EstimateMemoryRequest", ("model_path",), {}),
         (
             "TransformersUpgradeCheckRequest",
@@ -805,7 +779,6 @@ def _request_model(name: str):
             ),
             {},
         ),
-        # A run is started, and resumed, by the handle the listing answered with.
         (
             "TrainingStartRequest",
             ("model_name", "resume_from_checkpoint"),
@@ -829,8 +802,7 @@ def test_every_request_that_consumes_an_inventory_identity_resolves_the_handle(
     for field in fields:
         assert getattr(resolved, field) == path, (model_name, field)
 
-    # A repo id is not a handle, and an unissued reference is left as written, so it fails like
-    # an unknown model rather than resolving to somebody else's row.
+    # An unissued reference is left as written, so it fails like an unknown model.
     for written in ("unsloth/Llama-3.2-1B", "ref:" + "0" * 32):
         echoed = request_model(**{field: written for field in fields}, **extra)
         for field in fields:
@@ -866,12 +838,11 @@ def test_a_cache_reference_can_delete_the_copy_it_names(monkeypatch, client, rou
     assert answered.json()["status"] == "deleted"
     assert seen["cache_path"] == REPO_DIR
 
-    # An API key can still delete by repo id alone, without ever having seen a path: an absent
-    # `cache_path` reaches the service as None, not as some resolved root.
+    # An absent `cache_path` reaches the service as None, not as some resolved root.
     _sent(True, {"repo_id": "unsloth/Llama-3.2-1B-Instruct", "variant": None})
     assert seen["cache_path"] is None
 
-    # BOUNDARY: a browser session names the path itself, and it arrives as written.
+    # BOUNDARY. A browser session names the path itself, and it arrives as written.
     _sent(False, {"repo_id": "unsloth/Llama-3.2-1B", "cache_path": REPO_DIR})
     assert seen["cache_path"] == REPO_DIR
 
@@ -934,17 +905,14 @@ def test_the_handle_a_caller_sent_is_the_handle_it_gets_back():
     assert restored["warnings"] == [f"could not read {reference}/config.json"]
     assert restored["unrelated"] == "unsloth/Llama-3.2-1B"
 
-    # A request that named a path DIRECTLY is answered with that path: there is no handle of
-    # the caller's to give back.
+    # A request that named a path DIRECTLY has no handle of the caller's to give back.
     named = {"model": f"{HOST_ROOT}/models/Llama-3.2-1B"}
     assert host_paths.restore_inventory_handles(named) == named
 
 
 def test_a_tuple_keeps_its_shape_through_both_walks():
-    """Both walks rebuild a tuple, and the two kinds take their arguments differently: a
-    NamedTuple field by field, a plain tuple the iterable. Deciding that by try/except looked
-    equivalent and was not, because `tuple(*["abc"])` raises nothing and spells the string out.
-    """
+    """A NamedTuple is rebuilt field by field, a plain tuple from the iterable. Deciding that by
+    try/except is WRONG: `tuple(*["abc"])` raises nothing and spells the string out."""
     from collections import namedtuple
 
     Row = namedtuple("Row", "first second")
@@ -961,8 +929,8 @@ def test_a_tuple_keeps_its_shape_through_both_walks():
     finally:
         host_paths._request_handles.reset(token)
 
-    # The raised-detail walk runs while a route is already raising, so a TypeError there is a
-    # 500 in place of the refusal the caller was being told about.
+    # This walk runs while a route is already raising: a TypeError here replaces the refusal
+    # the caller was being told about with a 500.
     detail = host_paths.raised_inventory_detail(
         Row(f"{HOST_ROOT}/a", f"{HOST_ROOT}/b"), via_api_key = True
     )
@@ -979,13 +947,9 @@ def test_a_tuple_keeps_its_shape_through_both_walks():
 
 
 def test_a_sibling_that_merely_starts_with_the_resolved_path_is_not_a_handle():
-    """A response carries paths this caller never named -- the model that was resident BEFORE
-    this load, most of all -- and a sibling under the same directory starts with the same text.
-    A substring swap turned `<root>/models/Llama-3.2-1B-private` into `ref:<digest>-private`: a
-    handle that resolves to nothing, and a value the redactor no longer reads as a path, so the
-    rest of the layout rode out in it. Left alone it is still an absolute path, which the
-    redaction below removes for the caller class that may not see it.
-    """
+    """A substring swap turned `<root>/models/Llama-3.2-1B-private` into `ref:<digest>-private`:
+    a handle resolving to nothing, and a value the redactor no longer reads as a path, so the
+    rest of the layout rode out in it."""
     path = f"{HOST_ROOT}/models/Llama-3.2-1B"
     sibling = f"{path}-private"
     reference = host_paths.cache_reference(path)
@@ -1008,7 +972,6 @@ def test_a_sibling_that_merely_starts_with_the_resolved_path_is_not_a_handle():
 
 
 def _source(target: str) -> str:
-    """The source of a module or of one function in it, by name."""
     from routes import inference as inference_routes
     from routes import training_history as training_routes
     from routes import video as video_routes
@@ -1023,13 +986,9 @@ def _source(target: str) -> str:
     return inspect.getsource(getattr(holder, attribute) if attribute else holder)
 
 
-# Wiring, not behaviour, and invisible in a payload test because the payload is never built: a
-# load whose restore+redact wrappers never run because it RAISED, two progress routes that took
-# no caller class at all, and the long-lived routes that answer from a PERSISTED record written
-# before this request existed. A target marked `squeeze` is matched whitespace-insensitively: a
-# re-wrap by the formatting bot must not read as a removal.
+# Wiring, invisible in a payload test because the payload is never built. A target marked
+# `squeeze` is matched whitespace-insensitively, so a re-wrap is not read as a removal.
 _WIRING = {
-    # The load and validate answers go through the restoration.
     ("inference", "squeeze"): (
         "restore_inventory_handles(task.result())",
         "_handle_restored_http_exception(exc)",
@@ -1040,8 +999,6 @@ _WIRING = {
         "raise _handle_restored_http_exception(http_error) from http_error",
         "detail = restore_inventory_handles(str(e))",
     ),
-    # The long-lived routes redact what they persisted, and the upgrade check answers with the
-    # handle it was sent.
     ("inference", "exact"): (
         "model_name = restore_inventory_handles(model_name),",
         "redact_host_paths(DiffusionStatusResponse(",
@@ -1052,8 +1009,6 @@ _WIRING = {
         'TrainingRunListResponse(runs = runs, total = result["total"]),',
         "authenticated_via_api_key",
     ),
-    # The model details route takes the caller class, resolves the handle it was sent, and
-    # passes the caller's own identifier as `echo`.
     ("models.get_model_config", "exact"): (
         "via_api_key: bool = Depends(authenticated_via_api_key)",
         "redact_host_paths(",
@@ -1065,7 +1020,6 @@ _WIRING = {
         "resolve_inventory_handle(",
         "restore_inventory_handles(",
     ),
-    # Every media route that can answer a resolved path redacts it.
     ("inference.load_diffusion_model", "exact"): ("except HTTPException", "raised_inventory_detail"),
     ("video.load_video_model", "exact"): ("except HTTPException", "raised_inventory_detail"),
     ("inference.diffusion_load_progress", "exact"): (
@@ -1102,10 +1056,8 @@ def test_a_refusal_names_the_handle_the_caller_sent(monkeypatch):
     assert inference_routes._handle_restored_http_exception(untouched) is untouched
 
 
-# A path that outlives the request it was resolved in is still REFERENCED rather than blanked,
-# because nothing else in these answers names the model; a Hub repo id is not a path and is left
-# exactly as the caller asked for it. `<REF>` below means "resolves back to the path in the row",
-# `<KEPT>` means "came back unchanged", `<BLANK>` means the empty string.
+# Referenced rather than blanked, because nothing else in these answers names the model.
+# REF means "resolves back to the row's path", KEPT "came back as it was".
 REF = object()
 KEPT = object()
 
@@ -1128,7 +1080,7 @@ def _assert_redacted(row, expect, *, inventory = False, kept_text = (), roots = 
             assert redacted[field] == want, field
     for fragment in kept_text:
         assert fragment in body, redacted
-    # BOUNDARY: the operator's own session is handed the row it gave, untouched.
+    # BOUNDARY.
     assert redact(row, via_api_key = False) is row
     return redacted
 
@@ -1136,7 +1088,6 @@ def _assert_redacted(row, expect, *, inventory = False, kept_text = (), roots = 
 @pytest.mark.parametrize(
     ("row", "expect", "kwargs"),
     [
-        # A loaded-model status and a training run both outlive the request that resolved them.
         (
             {"loaded": True, "repo_id": _MODEL_PATH, "device": "cuda"},
             {"repo_id": REF, "device": KEPT}, {},
@@ -1149,14 +1100,11 @@ def _assert_redacted(row, expect, *, inventory = False, kept_text = (), roots = 
             {"repo_id": "unsloth/Llama-3.2-1B", "model_name": "unsloth/Llama-3.2-1B"},
             {"repo_id": KEPT, "model_name": KEPT}, {},
         ),
-        # A LoRA base model path is referenced, not blanked: nothing else in this answer names
-        # the base. The ordinary Hub base is not a path and is left alone.
         (
             {"id": "ref:whatever", "is_lora": True, "base_model": _MODEL_PATH},
             {"base_model": REF, "is_lora": KEPT}, {},
         ),
         ({"base_model": "unsloth/Llama-3.2-1B"}, {"base_model": KEPT}, {}),
-        # A run's persisted dataset name is redacted like the list it came from.
         (
             {
                 "id": "run-1",
@@ -1167,7 +1115,6 @@ def _assert_redacted(row, expect, *, inventory = False, kept_text = (), roots = 
             {"dataset_name": REF, "model_name": KEPT}, {"roots": ("/home/operator",)},
         ),
         ({"id": "run-2", "dataset_name": "unsloth/Radiology-mini"}, {"dataset_name": KEPT}, {}),
-        # A persisted failure message keeps its reason and loses the path.
         (
             {
                 "error_message": f"FileNotFoundError: no such file: {HOST_ROOT}/data/train.jsonl",
@@ -1175,7 +1122,6 @@ def _assert_redacted(row, expect, *, inventory = False, kept_text = (), roots = 
             },
             {"status": KEPT}, {"kept_text": ("FileNotFoundError",)},
         ),
-        # A local row keeps a repo id that is not a path, on the inventory walk.
         (
             {
                 "source": "models_dir",
@@ -1231,7 +1177,7 @@ def test_a_second_load_does_not_hand_back_the_resident_path(monkeypatch):
     assert resident_reference in body, body
     assert host_paths.resolve_host_path_reference(resident_reference) == resident
 
-    # BOUNDARY: the operator's own session is shown the model that was already resident.
+    # BOUNDARY.
     assert resident in _loaded("browser", False)
 
 
@@ -1480,7 +1426,6 @@ def test_a_resumable_run_can_still_be_resumed_by_an_api_key_caller():
     assert handle.startswith("ref:"), detail
     assert HOST_ROOT not in json.dumps(detail), detail
     assert all(entry.startswith("ref:") for entry in detail["local_datasets"])
-    # A Hub dataset id beside a local one is not a path and is not referenced.
     assert detail["local_eval_datasets"][1] == "acme/hub-eval"
 
     replayed = TrainingStartRequest(
@@ -1495,8 +1440,7 @@ def test_a_resumable_run_can_still_be_resumed_by_an_api_key_caller():
     assert replayed.local_datasets == [f"{HOST_ROOT}/datasets/train.jsonl"]
     assert replayed.local_eval_datasets == [f"{HOST_ROOT}/datasets/eval.jsonl", "acme/hub-eval"]
 
-    # A handle that was never issued resolves to nothing rather than to somebody else's data,
-    # and a run with no checkpoint gains no identifier.
+    # A handle that was never issued resolves to nothing rather than somebody else's data.
     forged = "ref:" + "0" * 32
     unresumable = TrainingStartRequest(
         model_name = "unsloth/Llama-3.2-1B",
@@ -1582,11 +1526,8 @@ def test_a_caller_named_path_is_echoed_not_referenced():
     assert response_leaks_host_path(out, [HOST_ROOT]) is None
 
 
-# ---------------------------------------------------------------------------------------
-# The companion base a media load resolved. `base_repo` is usually a Hub id, but the local
-# form is a host path, and the diffusion and video STATUS routes answer it to whoever polls
-# them rather than to the caller who supplied it.
-# ---------------------------------------------------------------------------------------
+# `base_repo` is usually a Hub id, but the local form is a host path, and the STATUS routes
+# answer it to whoever polls rather than to the caller who supplied it.
 
 BASE_DIR = f"{HOST_ROOT}/flux-base"
 
@@ -1602,10 +1543,8 @@ def _base_repo(answer):
 
 @pytest.mark.parametrize("kind", ["diffusion", "video"])
 def test_a_local_companion_base_is_referenced_not_returned(kind):
-    """The operator's own session still sees the companion base -- same rule as every other
-    path on these routes: the UI renders it. And a row advertised as actionable has to be
-    actionable: the handle the status route hands out must resolve back to the path on the load
-    request that takes it."""
+    """A row advertised as actionable has to be actionable: the handle the status route hands
+    out must resolve back to the path on the load request that takes it."""
     from models.inference import DiffusionLoadRequest, VideoLoadRequest
 
     response = _media_status(kind)(loaded = True, repo_id = "unsloth/x", base_repo = BASE_DIR)
@@ -1624,8 +1563,8 @@ def test_a_local_companion_base_is_referenced_not_returned(kind):
 
 @pytest.mark.parametrize("kind", ["diffusion", "video"])
 def test_a_hub_companion_base_is_not_a_path_and_is_left_alone(kind):
-    """BOUNDARY, and the reason this field is decided by VALUE. The ordinary base is a repo
-    id; referencing it would make the field useless to every caller for nothing."""
+    """BOUNDARY, and the reason this field is decided by VALUE: referencing the ordinary repo
+    id would make the field useless to every caller for nothing."""
     response = _media_status(kind)(
         loaded = True, repo_id = "unsloth/x", base_repo = "black-forest-labs/FLUX.2-klein-4B"
     )
@@ -1635,8 +1574,8 @@ def test_a_hub_companion_base_is_not_a_path_and_is_left_alone(kind):
 
 
 def test_a_media_load_that_raises_redacts_the_path_it_resolved():
-    """A load that RAISES skips the route's restore+redact wrappers entirely, and the inner
-    loader only redacted NATIVE paths, which do not know inventory handles."""
+    """A load that RAISES skips the route's restore+redact wrappers, and the inner loader only
+    redacted NATIVE paths, which do not know inventory handles."""
     from hub.utils.host_paths import raised_inventory_detail
 
     detail = f"[Errno 2] No such file or directory: '{REPO_DIR}/model.safetensors'"
@@ -1648,7 +1587,7 @@ def test_a_media_load_that_raises_redacts_the_path_it_resolved():
         )
         is None
     )
-    # BOUNDARY: the operator's own session still gets the real message.
+    # BOUNDARY.
     assert raised_inventory_detail(detail, via_api_key = False) == detail
 
 
@@ -1662,6 +1601,6 @@ def test_a_media_load_progress_error_does_not_publish_the_resolved_path():
     redacted = redact_load_progress(progress, via_api_key = True)
     assert response_leaks_host_path(redacted, [HOST_ROOT, HOST_ROOT_NATIVE]) is None
     assert redacted["phase"] == "error", "the phase the client polls for was dropped"
-    # BOUNDARY: the operator sees it, and a reading with no error is untouched.
+    # BOUNDARY.
     assert redact_load_progress(progress, via_api_key = False) == progress
     assert redact_load_progress({"phase": "ready"}, via_api_key = True) == {"phase": "ready"}

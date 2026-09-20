@@ -2,11 +2,9 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 /**
- * Telling "loading a cached model" apart from "downloading it again" (#9094).
- *
- * Only a count that GREW between two readings is a transfer. Below the expected total proves
- * nothing (that is an ordinary partial revision), a complete reading resets the watch, and an
- * unmeasurable cache leaves the watch alone rather than forfeiting the comparison.
+ * Telling "loading a cached model" apart from "downloading it again" (#9094). Only a count that
+ * GREW between two readings is a transfer: below the expected total is an ordinary partial
+ * revision, and an unmeasurable cache leaves the watch alone rather than forfeiting it.
  */
 
 /** Previous reading's bytes; null when there is nothing to compare against. */
@@ -23,14 +21,13 @@ export interface CacheMissReading {
 
 export const EMPTY_CACHE_MISS_WATCH: CacheMissWatch = { bytes: null };
 
-/** What the load toast says once a cached load is seen to be downloading after all. */
 export const CACHE_MISS_DOWNLOAD_DESCRIPTION =
   "The cached copy is incomplete, so the missing files are downloading from Hugging Face.";
 
 export interface CacheMissVerdict {
   readonly started: boolean;
   readonly watch: CacheMissWatch;
-  /** Whole percent, or null when the total is unknown and only bytes are countable. */
+  /** Whole percent, or null when the total is unknown. */
   readonly percent: number | null;
 }
 

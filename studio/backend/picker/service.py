@@ -449,8 +449,7 @@ def read_default_chat_template(
             if not _remote_worth_downloading(rel):
                 return None
             try:
-                # Same provenance rule as every other credentialed fetch: this lands files in the
-                # hub cache under a token that may be a one-off the host stores nowhere.
+                # Lands files in the hub cache under what may be a one-off token.
                 note_repo_fetched_with_a_request_token(hf_token, resolved, "model")
                 path = hf_hub_download(
                     resolved,

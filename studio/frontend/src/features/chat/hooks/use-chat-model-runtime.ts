@@ -2400,10 +2400,9 @@ export function useChatModelRuntime() {
 
         let downloadComplete = isDownloaded || isCachedLora;
 
-  // A load that begins believing the weights are cached can still turn into a download (#9094):
-  // the backend re-fetches a blob it judged unsafe to resume. MOVEMENT is the only proof
-  // accepted, since a byte count below the expected total is the ordinary state of a partially
-  // fetched revision. Local paths, Ollama manifests and cached LoRAs are never watched.
+  // A load that believes the weights are cached can still turn into a download (#9094): the
+  // backend re-fetches a blob it judged unsafe to resume. MOVEMENT is the only proof accepted,
+  // since bytes below the expected total is the ordinary state of a partial revision.
         const watchForCacheMiss =
           isDownloaded && !isLocal && nativePathToken == null && !isOllamaModelId(modelId);
         const cacheMissDescription = [
@@ -2486,9 +2485,8 @@ export function useChatModelRuntime() {
                   phase: "downloading",
                 });
               } else {
-                // The toast is UP, and without this it keeps saying "Loading cached
-                // model into memory" for the whole download. A missing total is a
-                // supported answer, not an error.
+                // The toast is UP and would otherwise say "Loading cached model into
+                // memory" for the whole download. A missing total is supported, not an error.
                 toast(null, {
                   id: toastId,
                   ...modelLoadToastOptions(
@@ -2585,17 +2583,15 @@ export function useChatModelRuntime() {
         const cacheMissDownloadStarted = async (): Promise<boolean> => {
           try {
             const reading = await getDownloadProgress(modelId, hfToken);
-              // Re-read AFTER the await, as pollDownload does: the load can finish or
-              // be cancelled while this request is in flight, and `finally` then calls
-              // resetLoadingUi().
+              // Re-read AFTER the await, as pollDownload does: the load can finish or be
+              // cancelled in flight, and `finally` then calls resetLoadingUi().
             if (abortCtrl.signal.aborted || !loadingModelRef.current) return false;
             const verdict = watchCacheMissDownload(cacheMissWatch, reading);
             cacheMissWatch = verdict.watch;
             if (!verdict.started) return false;
             cacheMissDownload = true;
-              // Detection IS movement observed, so the flag has to be set: pollDownload's
-              // completion branch is gated on it, and leaving it false left
-              // `downloadComplete` false forever with later progress suppressed.
+              // pollDownload's completion branch is gated on it; leaving it false leaves
+              // `downloadComplete` false forever and suppresses later progress.
             hasShownProgress = true;
             downloadComplete = false;
             activeLoadingDescription = cacheMissDescription;

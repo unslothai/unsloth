@@ -236,10 +236,9 @@ async def load_video_model(
     current_subject: str = Depends(get_current_subject),
     via_api_key: bool = Depends(authenticated_via_api_key),
 ):
-    # The status this answers with describes whatever is resident, which on a second load is the
-    # PREVIOUS model, whose path an earlier request resolved and which this context has no handle
-    # for. Restore first, then redact. Done in the route rather than the gated body below,
-    # because that body's internal callers are not serving an API-key request.
+    # The status describes whatever is resident, which on a second load is the PREVIOUS model,
+    # resolved by an earlier request this context has no handle for. In the route rather than the
+    # gated body, whose internal callers serve no API-key request.
     from hub.utils.host_paths import (
         raised_inventory_detail,
         redact_host_paths,
@@ -248,8 +247,8 @@ async def load_video_model(
     try:
         loaded = await load_video_model_gated(request, current_subject, user_initiated = True)
     except HTTPException as exc:
-        # A load that RAISES skips both wrappers below, and the inner loader redacted only native
-        # paths, which do not know inventory handles.
+        # A load that RAISES skips both wrappers below, and the inner loader redacted only
+        # native paths, which do not know inventory handles.
         exc.detail = raised_inventory_detail(exc.detail, via_api_key = via_api_key)
         raise
     return redact_host_paths(
@@ -279,10 +278,9 @@ async def load_video_model_gated(
         request = request.model_copy(
             update = {"hf_token": account_access.account_hf_token(request.hf_token)}
         )
-    # Same as the image load, tested at entry for the same reason -- `begin_load` returns before
-    # the worker has moved a byte, so this request has nothing to compare against -- and written
-    # at the launch below for the same reason: the validation in between answers 400 without
-    # starting a worker, and the record it would leave is permanent.
+    # Same as the image load: tested at entry, because `begin_load` returns before the worker
+    # moves a byte, and written at the launch below, because the validation in between 400s
+    # without starting one and the record would be permanent.
     from routes.inference import (
         _note_load_fetched_with_a_request_token,
         _repo_is_in_the_hub_cache,
@@ -402,8 +400,8 @@ async def load_video_model_gated(
         def _begin_load():
             return account_access.admit_media_load("video", _start_load, request.model_path)
 
-        # The provenance the entry decided, written now that nothing cheap can refuse this load
-        # any more, and still before the worker is handed the credential.
+        # Written now that nothing cheap can refuse this load, and still before the worker is
+        # handed the credential.
         for _ref in _media_repos_to_record:
             _note_load_fetched_with_a_request_token(_ref, request.hf_token)
         # begin_load signals whatever generation is running, so guard on every device.
@@ -734,8 +732,8 @@ async def video_status(
     status_dict = get_video_backend().status()
     if account_access.resident_hidden("video", status_dict.get("repo_id")):
         return account_access.hidden_resident_response()
-    # A load started from an inventory reference records the resolved path, and this route
-    # answers long after that request ended, so there is no handle in context to put back.
+    # This route answers long after the request that resolved the reference ended, so there is
+    # no handle in context to put back.
     return redact_host_paths(VideoStatusResponse(**status_dict), via_api_key = via_api_key)
 
 
@@ -763,8 +761,7 @@ async def unload_video_model(
         VIDEO,
         lambda: not backend.loading_repo_ids() and not backend.status()["loaded"],
     )
-    # An unload answers with the state it left behind, which still names the model it just
-    # dropped, so it is the same disclosure the load route has.
+    # An unload answers with the state it left behind, which still names the model it dropped.
     from hub.utils.host_paths import redact_host_paths, restore_inventory_handles
 
     return redact_host_paths(

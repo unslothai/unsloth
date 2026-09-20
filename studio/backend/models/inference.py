@@ -35,12 +35,8 @@ from utils.reasoning_budget import validate_reasoning_budget_message
 
 
 def resolve_inventory_handle(value: str) -> str:
-    """Turn a `ref:...` identity from an inventory listing back into the path it stands for.
-
-    Every request model that consumes an inventory identity resolves it, or the row is advertised
-    as actionable and is not. A reference this process did not issue is left as it arrived.
-    Nothing about authorization is decided here.
-    """
+    """Turn a `ref:...` inventory identity back into the path it stands for. A reference this
+    process did not issue is left as it arrived. Decides nothing about authorization."""
     if not isinstance(value, str) or not value.startswith("ref:"):
         return value
     try:
@@ -50,8 +46,7 @@ def resolve_inventory_handle(value: str) -> str:
     resolved = resolve_host_path_reference(value)
     if not resolved:
         return value
-    # Remembered for the length of this request so the ANSWER carries the handle rather than the
-    # path it stood for: the responses are built from what was asked for.
+    # Remembered for this request so the ANSWER carries the handle, not the path.
     note_resolved_handle(value, resolved)
     return resolved
 
@@ -436,8 +431,8 @@ class UnloadRequest(BaseModel):
             "unload takes away the llama-server they are decoding on."
         ),
     )
-    # The reverse of the load side: the resident model is keyed on the path, so without this
-    # the unload matches nothing and reports success while the model keeps its GPU.
+    # The resident model is keyed on the path, so an unresolved handle matches nothing and
+    # reports success while the model keeps its GPU.
     _resolve_the_handle = field_validator("model_path")(resolve_inventory_handle)
 
 
@@ -702,8 +697,8 @@ class TransformersUpgradeCheckRequest(BaseModel):
         "installing would strand that checkpoint's exact 4-bit resume.",
     )
 
-    # A preflight is where the reference arrives first, and this route SWALLOWS a failed lookup
-    # and answers "no upgrade needed", so training starts and dies at model load in the worker.
+    # This route SWALLOWS a failed lookup and answers "no upgrade needed", so training starts
+    # and dies at model load in the worker.
     _resolve_the_handle = field_validator(
         "model_name", "model_local_path", "model_snapshot_path", "model_snapshot_repo_id"
     )(resolve_inventory_handle)
@@ -908,8 +903,8 @@ class EstimateMemoryRequest(BaseModel):
     _no_booleans = field_validator(
         "n_batch", "n_ubatch", "ctx_checkpoints", "n_ctx", mode = "before"
     )(LoadRequest._no_booleans.__func__)
-    # Every field here mirrors the load request it previews, so an unresolved reference is read
-    # as a Hub id and the panel is told the estimate is unavailable for a row it was offered.
+    # Unresolved, the reference reads as a Hub id and the panel is told the estimate is
+    # unavailable for a row it was offered.
     _resolve_the_handle = field_validator("model_path")(resolve_inventory_handle)
 
 
@@ -3732,8 +3727,7 @@ class DiffusionLoadRequest(BaseModel):
     base_repo: Optional[str] = Field(
         None, description = "Companion diffusers repo for VAE/text-encoders (default: family base)"
     )
-    # Referenced on the way out, so it has to resolve on the way back in, or a caller handed a
-    # `ref:` base can see the row and cannot load it.
+    # Referenced out, so resolved back in, or a caller handed a `ref:` base cannot load it.
     _resolve_the_base_handle = field_validator("base_repo")(resolve_inventory_handle)
     family_override: Optional[str] = Field(
         None, description = "Force a family when it can't be inferred from the repo id"

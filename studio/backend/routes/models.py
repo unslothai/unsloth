@@ -202,15 +202,13 @@ from hub.utils.host_paths import (
 from utils.utils import anonymous_and_offline
 
 
-# Says both halves: the credential could not be established AND the repo is not on this disk.
-# The earlier wording sent operators looking for a credential problem that was not there.
+# Says both halves, or operators go looking for a credential problem that is not there.
 _UNAUTHORIZED_OFFLINE = (
     "This request cannot be authorized without network access, and this repository is not in "
     "the local cache."
 )
 
-# Says which of the two it is: "unauthorized" alone reads as a broken credential, and the
-# repository refusing this caller is not the same as the caller having sent the wrong token.
+# "unauthorized" alone reads as a broken credential, which a repo refusing this caller is not.
 _UNAUTHORIZED_CACHED_MODEL = (
     "This model is cached on this host, but this repository does not authorize this caller to "
     "read it."
@@ -1167,9 +1165,8 @@ async def list_local_models(
 ):
     """List local model candidates from the models dir, HF caches, LM Studio, Hermes, Ollama.
 
-    Redacted for an API-key caller exactly as ``/api/hub/local`` is. This router is the
-    compatibility mirror of that one and answers the same scan roots, so leaving it alone
-    would let a caller recover from here the layout the other route hides.
+    Redacted as ``/api/hub/local`` is: this router mirrors it over the same scan roots, so
+    leaving it alone recovers the layout that route hides.
     """
     # Resolve all scan directories up front.
     sources = _compat_local_inventory_sources()
@@ -1252,9 +1249,8 @@ async def add_scan_folder_endpoint(
 ):
     """Register a new directory to scan for local models. Redacted like the GET above.
 
-    The listing routes hide the normalized absolute path, and this one handed it straight
-    back: submitting a relative directory such as ``.`` and reading the answer recovered the
-    server's working directory, which is the boundary both listings enforce.
+    The listings hide the normalized absolute path; submitting ``.`` here and reading the answer
+    recovered the server's working directory.
     """
     if account_access.managed_account():
         body = body.model_copy(update = {"path": account_access.private_directory(body.path, "")})
@@ -2244,9 +2240,8 @@ async def get_model_config(
     via_api_key: bool = Depends(authenticated_via_api_key),
 ):
     """Get configuration for a specific model (wraps load_model_defaults)."""
-    # An API-key caller is shown a filesystem-backed row under an opaque `ref:` handle and
-    # hands it back here, where without this it reads as a Hugging Face id. Same helper the
-    # load and train schemas use, so the resolved path takes every check below.
+    # An API-key caller is shown a filesystem-backed row under an opaque `ref:` handle and hands
+    # it back here, where it would otherwise read as a Hugging Face id.
     from models.inference import resolve_inventory_handle
 
     model_name = resolve_inventory_handle(model_name)
@@ -2382,11 +2377,9 @@ async def get_model_config(
 
     try:
         # Off the loop: the guard blocks on DNS + HEAD + TCP, stalling every other request.
-        # Restored first, then redacted: the restoration puts back the handle the CALLER
-        # sent, the redaction covers a second path they never named (a LoRA's
-        # `base_model_name_or_path`, reported verbatim). `echo` is the caller's own
-        # identifier: referencing it would make this route an online oracle confirming every
-        # other reference they hold.
+        # Restore puts back the handle the CALLER sent; redaction covers a second path they
+        # never named (a LoRA's `base_model_name_or_path`). Referencing `echo`, the caller's own
+        # identifier, would make this route an oracle confirming their other references.
         from hub.utils.host_paths import redact_host_paths, restore_inventory_handles
         return redact_host_paths(
             restore_inventory_handles(await asyncio.to_thread(_resolve, model_name)),
@@ -2439,8 +2432,7 @@ async def scan_model_remote_code(
     POST (not GET) so the ``hf_token`` for gated repos travels in the body and
     never lands in a URL, browser history, or access log.
     """
-    # Same resolution as the config route: a local model needing remote-code review cannot be
-    # approved if the scan cannot see it. Before the access checks, so they run on the path.
+    # Before the access checks, so they run on the resolved path.
     from models.inference import resolve_inventory_handle
 
     model_name = resolve_inventory_handle(model_name)
@@ -2705,8 +2697,7 @@ async def scan_model_remote_code(
             payload["approvable"] = False
             payload["requires_trust_remote_code"] = True
             payload["error_kind"] = "malware_blocked"
-        # The findings quote paths inside the model directory, so the answer goes back
-        # through the request's handle table.
+        # The findings quote paths inside the model directory.
         from hub.utils.host_paths import restore_inventory_handles
 
         return restore_inventory_handles(payload)
@@ -4589,11 +4580,8 @@ async def get_download_progress(
     current_subject: str = Depends(get_current_subject),
     via_api_key: bool = Depends(authenticated_via_api_key),
 ):
-    """Compatibility route backed by the shared multi-cache progress service.
-
-    The progress payload names the cache directory it measured, so it takes the caller class
-    like its ``/api/hub`` twin.
-    """
+    """Compatibility route backed by the shared multi-cache progress service. The payload names
+    the cache directory it measured, so it takes the caller class like its ``/api/hub`` twin."""
     from hub.services.models import downloads
     return redact_host_paths(
         await downloads.get_download_progress_response(repo_id, hf_token = hf_token),
@@ -5333,8 +5321,8 @@ async def delete_cached_model(
     account_access.require_installation_owner()
     from hub.services.models import deletion
 
-    # Same resolution as the hub route this aliases: the reference is the only identifier an
-    # API-key caller has for one copy, and omitting it acts on the active root instead.
+    # The reference is the only identifier an API-key caller has for one copy; omitting it acts
+    # on the active root instead.
     return await deletion.delete_cached_model_response(
         repo_id, variant, hf_token, resolve_host_path_reference(cache_path) or cache_path
     )

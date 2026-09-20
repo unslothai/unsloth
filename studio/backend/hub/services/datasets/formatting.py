@@ -430,9 +430,8 @@ def check_format_response(
         else:
             from datasets import Dataset, load_dataset
 
-            # A preview materialises rows of the dataset in the datasets cache, and the credential
-            # doing it can be a one-off request token that is saved nowhere. Unrecorded, a later
-            # tokenless caller on a host holding no credential reads "nothing here needed one".
+            # A preview materialises rows in the datasets cache, possibly under a one-off token
+            # saved nowhere; unrecorded, a later tokenless caller reads "none needed one".
             note_repo_fetched_with_a_request_token(hf_token, request.dataset_name, "dataset")
 
             # Tier 1: list_repo_files → load only the first data file

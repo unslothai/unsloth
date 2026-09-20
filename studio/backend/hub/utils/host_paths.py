@@ -1,11 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Keep the host's filesystem layout inside the host.
-
-For an ``sk-unsloth`` API key every host path in an inventory payload is replaced by an opaque
-reference, stable for the life of the server so a client can still group and de-duplicate rows.
-Not an authorization decision: output encoding for one caller class.
+"""Keep the host's filesystem layout inside the host. For an ``sk-unsloth`` API key every host
+path in an inventory payload is replaced by an opaque reference, stable for the life of the
+server so a client can still group rows. Output encoding, not an authorization decision.
 """
 
 from __future__ import annotations
@@ -22,7 +20,7 @@ from functools import lru_cache
 from hashlib import sha256
 from typing import Any, Iterable, Mapping, Optional
 
-# One list, so a new route cannot quietly introduce a path field the drift test misses.
+# One list, so a new route cannot introduce a path field the drift test misses.
 HOST_PATH_SCALAR_FIELDS = frozenset(
     {
         "cache_path",
@@ -32,13 +30,11 @@ HOST_PATH_SCALAR_FIELDS = frozenset(
         "repo_path",
         "snapshot_path",
         "local_path",
-        # The training half: a run persists where it wrote, and the history routes answer with it.
         "model_local_path",
         "model_snapshot_path",
         "dataset_local_path",
         "dataset_snapshot_path",
         "dataset_path",
-        # Read off TrainingStartRequest rather than guessed: the UI copies these into config_json.
         "tensorboard_dir",
     }
 )
@@ -46,7 +42,7 @@ HOST_PATH_SCALAR_FIELDS = frozenset(
 # Referenced, not blanked: blanking left `can_resume` true beside nothing to resume with.
 HOST_PATH_HANDLE_FIELDS = frozenset({"output_dir", "checkpoint_path", "resume_from_checkpoint"})
 
-# Error text: scrubbed, not blanked, being the only account of WHY a run failed.
+# Scrubbed, not blanked: the only account of WHY a run failed.
 HOST_PATH_TEXT_FIELDS = frozenset({"error_message", "error", "detail", "message"})
 
 # Emptied, not referenced: scan ROOTS carry layout and nothing actionable.
@@ -57,22 +53,18 @@ HOST_PATH_LIST_FIELDS = frozenset(
         "ollama_dirs",
         "hermes_dirs",
         "scanned_dirs",
-        # The list-valued training equivalents, emptied for the same reason.
         "output_dirs",
         "dataset_paths",
     }
 )
 
-# Referenced entry by entry: emptying these leaves the replay with a resumable checkpoint and
-# no dataset to resume it against.
+# Referenced entry by entry: emptying leaves a resumable checkpoint with no dataset to resume on.
 HOST_PATH_HANDLE_LIST_FIELDS = frozenset({"local_datasets", "local_eval_datasets"})
 
-# ``path`` is a path on the inventory objects and a repo id elsewhere, so it is only redacted
-# inside the models the routes name here, never by field name alone.
+# A path on the inventory objects and a repo id elsewhere, so never redacted by field name alone.
 HOST_PATH_AMBIGUOUS_FIELD = "path"
 
-# Decided by a SIBLING: ``base_model`` carries ``base_model_name_or_path`` verbatim, a repo id
-# for most adapters and a path for one trained locally, so field-name blanking costs every row.
+# Decided by a SIBLING: a repo id for most adapters, a path for a locally trained one.
 HOST_PATH_CONDITIONAL_FIELD = "base_model"
 HOST_PATH_CONDITIONAL_SOURCE_FIELD = "base_model_source"
 HOST_PATH_CONDITIONAL_SOURCE_LOCAL = "local"
@@ -83,11 +75,7 @@ def _conditional_path_is_local(payload: Mapping) -> bool:
 
 
 # A row whose IDENTITY is a path: blanking `path` hides nothing while `id`, `load_id` and
-# `inventory_id` still spell it out, and a row with no identity cannot be told from the next.
-#
-# `repo_id`, `model_name`, `active_model`, `model_identifier` and `dataset_name` are decided by
-# VALUE, not field name: a path exactly when a load or run PERSISTED what it resolved, which the
-# status routes then answer with long after the resolving request ended.
+# `inventory_id` spell it out. The rest are decided by VALUE, not field name.
 HOST_PATH_IDENTITY_FIELDS = (
     "id",
     "load_id",
@@ -96,18 +84,14 @@ HOST_PATH_IDENTITY_FIELDS = (
     "active_model",
     "model_identifier",
     "dataset_name",
-    # The companion base a media load resolved: a Hub id passes through, the local form is a
-    # host path the status routes answer to whoever polls them, not to whoever supplied it.
     "base_repo",
 )
-# The same identities, published as lists. Each ENTRY is decided on its own value.
 HOST_PATH_IDENTITY_LIST_FIELDS = ("loaded", "loading")
-# The subset a LOCAL row is named by, referenced on the row's source alone; the others only
-# when the value itself is a path.
+# The subset a LOCAL row is named by, referenced on source alone; the others only on value.
 HOST_PATH_ROW_IDENTITY_FIELDS = ("id", "load_id")
 HOST_PATH_ENCODED_IDENTITY_FIELD = "inventory_id"
 HOST_PATH_ROW_SOURCE_FIELD = "source"
-# `hf_cache` is absent: those rows are named by repo id, and where they are not, value decides.
+# `hf_cache` is absent: those rows are named by repo id, and otherwise value decides.
 HOST_PATH_LOCAL_SOURCES = frozenset({"models_dir", "lmstudio", "ollama", "hermes", "custom"})
 
 
@@ -116,8 +100,7 @@ def _row_identity_is_a_path(payload: Mapping) -> bool:
 
 
 def _identity_value_is_a_path(value: Any) -> bool:
-    """Whether THIS identity spells out a host path, whatever its row's source says: a copy
-    outside the active cache pins a cache row to an absolute snapshot path."""
+    """Whatever the row's source says: a copy outside the active cache pins a row to a path."""
     return isinstance(value, str) and bool(value) and _looks_absolute(value)
 
 
@@ -128,8 +111,7 @@ def _referenced_identity(value: Any) -> Any:
 
 
 def _referenced_inventory_id(value: Any) -> Any:
-    """`<source>:<format>:<url-encoded identity>[:<variant>]` with the identity referenced. The
-    shape is kept because clients split on it."""
+    """`<source>:<format>:<identity>[:<variant>]`; the shape is kept because clients split on it."""
     if not isinstance(value, str) or not value:
         return value
     parts = value.split(":")
@@ -149,20 +131,15 @@ _REFERENCE_KEY = secrets.token_bytes(32)
 
 
 def host_paths_visible(via_api_key: Any) -> bool:
-    """Whether this caller class may see host paths. Anything other than a bool means there was
-    no HTTP request to classify: an in-process call receives its unresolved ``Depends`` marker,
-    which is truthy and would read as "an API key asked"."""
+    """Non-bool means no HTTP request: an in-process call gets a truthy unresolved ``Depends``."""
     if not isinstance(via_api_key, bool):
         return True
     return not via_api_key
 
 
-# References this process has handed out, so a caller can ACT on a row without being told where
-# the file is. Per-process key, so one can never be forged or carried in from elsewhere.
 _REFERENCE_LIMIT = 8192
-# Evicted by AGE, not count: one row costs several entries and the inventory has no row limit,
-# so count-based eviction drops entries of the response being built RIGHT NOW. The hard ceiling
-# bounds the table: past it the oldest goes whatever its age.
+# Evicted by AGE: with no row limit, count-based eviction drops entries of the response being
+# built RIGHT NOW. The ceiling still bounds the table.
 _REFERENCE_PIN_SECONDS = 120.0
 _REFERENCE_CEILING = 65536
 _reference_paths: "OrderedDict[str, tuple[str, float]]" = OrderedDict()
@@ -190,8 +167,7 @@ def cache_reference(value: Any) -> Optional[str]:
     return reference
 
 
-# Resolved path -> the reference the caller sent, for THIS request only, so one caller's
-# substitutions cannot reach another's response. What goes out must be the string that came in.
+# Per REQUEST, so one caller's substitutions cannot reach another's response.
 _request_handles: "ContextVar[Optional[dict[str, str]]]" = ContextVar(
     "unsloth_request_inventory_handles", default = None
 )
@@ -210,8 +186,7 @@ def note_resolved_handle(handle: str, path: str) -> None:
 
 
 def restore_inventory_handles(payload: Any) -> Any:
-    """Put every handle back where its resolved path ended up in *payload*. A substring swap, not
-    a field list, because the path also appears in labels and error details."""
+    """A substring swap, not a field list: the path also appears in labels and error details."""
     known = _request_handles.get()
     if not known:
         return payload
@@ -228,11 +203,8 @@ def _restore(payload: Any, known: "dict[str, str]") -> Any:
         restored = [_restore(item, known) for item in payload]
         if not isinstance(payload, tuple):
             return restored
-        # The same discriminator the redaction walk uses, and for the same reason. Deciding by
-        # try/except instead looked equivalent and was not: a NamedTuple takes its fields one by
-        # one and a plain tuple takes the iterable, so `type(payload)(*restored)` on a ONE-element
-        # plain tuple of a string raises nothing and quietly spells it out, `("abc",)` coming back
-        # as `("a", "b", "c")`.
+        # A NamedTuple takes its fields one by one and a plain tuple the iterable; deciding by
+        # try/except turns the plain `("abc",)` into `("a", "b", "c")` without raising.
         if hasattr(payload, "_fields"):
             try:
                 return type(payload)(*restored)
@@ -252,19 +224,11 @@ def _restore(payload: Any, known: "dict[str, str]") -> Any:
     return payload
 
 
-# A resolved path may only be swapped where the surrounding text is not still spelling a path.
-# `str.replace` is a substring swap, and a response carries paths the caller never named -- the
-# model that was resident BEFORE this load, most of all -- so a sibling under the same directory
-# (`/srv/models/foo` resolved, `/srv/models/foo-private` answered) became `ref:<digest>-private`:
-# a handle that resolves to nothing, and a value the redactor below no longer reads as a path, so
-# the rest of the host's layout rode out in it.
-#
-# Left: the terminators `_ABSOLUTE_PATH_RE` uses, minus the space, since a path in a sentence is
-# ordinarily preceded by one. Right: the component must END there, so the next character has to
-# be a separator or one of the same terminators -- a letter, digit, `-`, `_`, `.` or space all
-# continue the name and mean this is a DIFFERENT path. Declining is safe: an unswapped path is
-# still an absolute path, which `redact_host_paths` removes on its way out for exactly the caller
-# class that may not see it.
+# A plain substring swap turns a sibling (`/srv/models/foo-private` beside a resolved
+# `/srv/models/foo`) into `ref:<digest>-private`, which resolves to nothing and no longer reads
+# as a path, so the layout rides out in it. The component must END at the boundary, so a letter,
+# digit, `-`, `_`, `.` or space means a DIFFERENT path; declining is safe, since an unswapped
+# path is still removed on the way out.
 _HANDLE_LEFT_BOUNDARY = r"(?<![\w:/.\\])"
 _HANDLE_RIGHT_BOUNDARY = r"(?![^\s\\/\n\":;,=])"
 
@@ -275,7 +239,6 @@ def _boundary_pattern(path: str) -> "re.Pattern[str]":
 
 
 def _swap_at_boundaries(text: str, path: str, handle: str) -> str:
-    """*text* with every whole-path occurrence of *path* replaced by *handle*."""
     try:
         pattern = _boundary_pattern(path)
     except Exception:  # noqa: BLE001 -- an uncompilable path must not fail the response
@@ -284,8 +247,7 @@ def _swap_at_boundaries(text: str, path: str, handle: str) -> str:
 
 
 def resolve_host_path_reference(value: Any) -> Optional[str]:
-    """The path a reference stands for, or None. Not an authorization decision: callers stay
-    subject to the checks a directly named path gets."""
+    """Not an authorization decision: callers stay subject to the checks a named path gets."""
     text = _as_text(value)
     if not text or not text.startswith(_REFERENCE_PREFIX):
         return None
@@ -300,9 +262,7 @@ def redact_host_paths(
     via_api_key: bool,
     echo: Iterable[Any] = (),
 ) -> Any:
-    """Return *payload* with every host path removed, if this caller may not see them. Returns the
-    identical object otherwise, so a browser session pays nothing. ``echo`` holds the values THIS
-    CALLER supplied, returned as written; see ``_echoed``."""
+    """``echo`` holds values THIS CALLER supplied, returned as written; see ``_echoed``."""
     if host_paths_visible(via_api_key):
         return payload
     return _redact(payload, redact_ambiguous_path = False, echo = _echo_set(echo))
@@ -314,8 +274,6 @@ def redact_inventory_host_paths(
     via_api_key: bool,
     echo: Iterable[Any] = (),
 ) -> Any:
-    """``redact_host_paths`` plus the ambiguous ``path`` field, for the routes whose ``path`` is a
-    directory on this host."""
     if host_paths_visible(via_api_key):
         return payload
     return _redact(payload, redact_ambiguous_path = True, echo = _echo_set(echo))
@@ -331,17 +289,14 @@ def response_leaks_host_path(
     *,
     ignore: Iterable[str] = (),
 ) -> Optional[str]:
-    """The first host path found in *payload*, or ``None``. For tests and the drift gate.
-    ``ignore`` exists so keeping a path is written down at each call rather than by loosening
-    this function."""
+    """For tests and the drift gate. ``ignore`` makes keeping a path explicit at each call."""
     needles = [text for text in (_as_text(root) for root in roots) if text]
     return _find_leak(payload, needles, ambiguous_is_path = True, ignore = frozenset(ignore))
 
 
 def _echoed(value: Any, echo: frozenset) -> bool:
-    """Whether *value* is one this caller just sent, and so is theirs to be handed back. A
-    reference cannot stand in for a path the caller NAMED: it is one stable HMAC for the life of
-    the process, so referencing caller-chosen input is an online confirmation oracle."""
+    """A reference cannot stand in for a path the caller NAMED: the HMAC is process-stable, so
+    referencing caller-chosen input is a confirmation oracle."""
     text = _as_text(value)
     return bool(text) and text in echo
 
@@ -384,7 +339,6 @@ def _redact(
                 and not base_model_is_local
                 and _identity_value_is_a_path(value)
             ):
-                # Referenced, not blanked: nothing else here names the base.
                 out[key] = value if _echoed(value, echo) else _referenced_identity(value)
                 continue
             if key in HOST_PATH_HANDLE_FIELDS:
@@ -400,8 +354,7 @@ def _redact(
                 or (redact_ambiguous_path and key == HOST_PATH_AMBIGUOUS_FIELD)
                 or (base_model_is_local and key == HOST_PATH_CONDITIONAL_FIELD)
             ):
-                # Only the row-level cache dir earns a reference: one per scan root would say
-                # "these two rows share a root", which is layout again.
+                # Only the row-level cache dir: one per scan root is layout again.
                 if (
                     key in {"cache_path", "repo_path"}
                     and reference is None
@@ -422,12 +375,10 @@ def _redact(
                 out[key] = []
                 continue
             if key in HOST_PATH_TEXT_FIELDS and isinstance(value, str):
-                # Scrubbed, not blanked: the only account of why a run ended.
                 out[key] = redact_paths_in_text(value)
                 continue
             out[key] = _redact(value, redact_ambiguous_path = redact_ambiguous_path, echo = echo)
-        # After the walk: the field is declared on the response models, so a dump carries it as None
-        # and writing it inside the loop let that None win.
+        # After the walk: the field is declared on the models, so the dump's None would win.
         if reference is not None and not out.get(CACHE_REFERENCE_FIELD):
             out[CACHE_REFERENCE_FIELD] = reference
         return out
@@ -472,7 +423,6 @@ def _find_leak(
             )
             if is_path_field and text and _looks_absolute(text):
                 return f"{key}={text}"
-            # An identity field is a repo id most of the time, so the VALUE decides.
             if key in HOST_PATH_IDENTITY_FIELDS and _identity_value_is_a_path(text):
                 return f"{key}={text}"
             if (key in HOST_PATH_LIST_FIELDS or key in HOST_PATH_HANDLE_LIST_FIELDS) and isinstance(
@@ -509,36 +459,30 @@ def short_path_for_log(value: Any) -> str:
         return text
     parts = [part for part in text.replace("\\", "/").split("/") if part]
     if len(parts) <= 2:
-        # Already the two components this keeps, and rebuilding turned `/srv/cache` into `srv/cache`.
+        # Rebuilding turned `/srv/cache` into `srv/cache`.
         return text
     return ".../" + "/".join(parts[-2:])
 
 
 def _is_absolute_for_log(text: str) -> bool:
-    """The three spellings of absolute, judged as WRITTEN rather than against this host's OS: a
-    Windows path logged on Windows is still one when the line is read on Linux."""
+    """Judged as WRITTEN, not against this host's OS: a Windows path read on Linux is still one."""
     return bool(text.startswith(("/", "\\")) or re.match(r"^[A-Za-z]:[\\/]", text))
 
 
-# An absolute POSIX or Windows drive path. Quotes, whitespace, sentence punctuation and `=`
-# terminate the run, so a ratio or a URL is left alone and a two-path line is not swallowed
-# whole; spaces are allowed INSIDE a component (`Program Files`).
+# Quotes, whitespace, punctuation and `=` terminate the run, so a two-path line is not swallowed
+# whole. Spaces are allowed INSIDE a component.
 _PATH_COMPONENT = r"[^\s\\/\n\":;,=](?:[^\\/\n\":;,=]*[^\s\\/\n\":;,=])?"
 
 _ABSOLUTE_PATH_RE = re.compile(
-    # Not preceded by a word character, colon or slash, so a URL and a ratio like "3/4" survive. UNC
-    # is the third spelling of absolute on Windows. The trailing group is `*`, not `+`: `/tmp` is as
-    # absolute as a deep path. The component set is a DENYLIST of terminators, not an allowlist, or
-    # `client(acme)` stops the run at the punctuation. A DOT terminates, so `./models/repo` keeps its
-    # leading separator.
+    # Not preceded by a word character, colon or slash, so a URL and a ratio like "3/4" survive.
+    # Components are a DENYLIST of terminators, or `client(acme)` stops the run at the `(`.
     r"(?<![\w:/.])(?:\\\\[^\\/\s]+[\\/]|[A-Za-z]:[\\/]|/)"
     r"(?:" + _PATH_COMPONENT + r"[\\/])*" + _PATH_COMPONENT
 )
 
 
 def scrub_paths(text: Any) -> str:
-    """Shorten every absolute path inside a log message. Pairs with
-    ``download_registry.scrub_secrets``. Not a security control, since the log is local."""
+    """Shorten every absolute path inside a log message. Not a security control: the log is local."""
     # str(), not _as_text: the usual argument is an exception, whose message is the whole point.
     message = text if isinstance(text, str) else ("" if text is None else str(text))
     if not message:
@@ -548,12 +492,10 @@ def scrub_paths(text: Any) -> str:
 
 _REDACTED_PATH = "<path>"
 
-# What is left over when a directory name contains a terminator: `Acme, Inc` ends the run early.
-# So a tail that continues the path -- a terminator then text carrying at least one more
-# separator -- is replaced too, and that last condition is what keeps the terminators
-# terminating. The cost is over-removing prose, the safe direction for text that leaves the host.
-# The terminator set must match `_PATH_COMPONENT`'s, `=` included: `/srv/cache/foo=bar/config.json`
-# ends the run at the `=`, so leaving `=` out here published `<path>=bar/config.json`.
+# The leftover when a directory name contains a terminator (`Acme, Inc` ends the run early): a
+# terminator plus text carrying one more separator is replaced too, that last condition being
+# what keeps the terminators terminating. The set must match `_PATH_COMPONENT`'s, `=` included,
+# or `/srv/cache/foo=bar/config.json` publishes `<path>=bar/config.json`.
 _REDACTED_TAIL_TEXT = r"[^\s\\/\":;,=][^\\/\":;,=]*"
 _REDACTED_TAIL_RE = re.compile(
     re.escape(_REDACTED_PATH)
@@ -567,9 +509,7 @@ _REDACTED_TAIL_RE = re.compile(
 
 
 def redact_paths_in_text(text: Any) -> str:
-    """Remove every absolute path from a message, rather than shortening it. ``scrub_paths`` keeps
-    the last component because a local log is read by the person who owns the filesystem; for text
-    that LEAVES the host that component is still their layout."""
+    """Removed, not shortened: the component ``scrub_paths`` keeps is layout once text leaves."""
     message = text if isinstance(text, str) else ("" if text is None else str(text))
     if not message:
         return ""
@@ -577,9 +517,7 @@ def redact_paths_in_text(text: Any) -> str:
 
 
 def redact_inventory_error_detail(detail: Any, *, via_api_key: bool) -> Any:
-    """An error detail with host paths removed for a caller that may not see them: the response
-    redactors only see a payload that was BUILT, so a route that raises hands over the exception
-    instead. Structured details are walked too."""
+    """The response redactors only see a payload that was BUILT; a raising route comes here."""
     if host_paths_visible(via_api_key):
         return detail
     if isinstance(detail, str):
@@ -595,9 +533,8 @@ def redact_inventory_error_detail(detail: Any, *, via_api_key: bool) -> Any:
         ]
         if not isinstance(detail, tuple):
             return redacted
-        # A NamedTuple detail takes its fields one by one; handing it the list raises TypeError,
-        # and this runs while a route is already raising, so the caller would get a 500 in place
-        # of the refusal it was being told about.
+        # A NamedTuple takes its fields one by one; handing it the list raises TypeError, and
+        # this runs while a route is already raising, so the caller gets a 500 not the refusal.
         if hasattr(detail, "_fields"):
             try:
                 return type(detail)(*redacted)
@@ -611,13 +548,8 @@ def redact_inventory_error_detail(detail: Any, *, via_api_key: bool) -> Any:
 
 
 def redact_load_progress(progress: Any, *, via_api_key: bool) -> Any:
-    """Remove the host path from a media load-progress reading.
-
-    A load that fails on the worker thread stores ``str(exc)``, which for a ``ref:`` load names the
-    path the handle resolved to, and the progress routes answer with it on a LATER request. The
-    handle map is per-request and that request is over, so the path is removed rather than turned
-    back into the handle the caller would recognise.
-    """
+    """A worker-thread failure stores ``str(exc)``, naming the path a ``ref:`` load resolved to,
+    answered on a LATER request whose handle map is empty."""
     if not isinstance(progress, Mapping):
         return progress
     if host_paths_visible(via_api_key) or not progress.get("error"):
@@ -626,19 +558,13 @@ def redact_load_progress(progress: Any, *, via_api_key: bool) -> Any:
 
 
 def raised_inventory_detail(detail: Any, *, via_api_key: bool) -> Any:
-    """The same treatment a RETURNED payload gets, for one that was raised instead.
-
-    A route wraps its body in ``redact_host_paths(restore_inventory_handles(...))``, and neither
-    runs when the body raises: the detail then carries whatever the loader saw, which for a
-    ``ref:`` load is the path the handle resolved to. Restore first so a path the caller does own
-    comes back as its handle, then redact whatever is left.
-    """
+    """For a payload that was RAISED, since the route's wrappers never run. Restore first so a
+    path the caller owns comes back as its handle, then redact what is left."""
     return redact_inventory_error_detail(restore_inventory_handles(detail), via_api_key = via_api_key)
 
 
 def _dump_model(payload: Any) -> Optional[dict]:
-    """A pydantic response object as a plain dict, or ``None``. Duck-typed, since this module is
-    imported beneath the routes."""
+    """A pydantic response object as a plain dict, or ``None``. Duck-typed: imported beneath."""
     dump = getattr(payload, "model_dump", None)
     if dump is None or isinstance(payload, type) or isinstance(payload, Mapping):
         return None

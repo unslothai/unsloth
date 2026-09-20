@@ -2937,8 +2937,7 @@ def _deferred_error_body(status_code: int, detail) -> bytes:
 
 
 def _handle_restored_http_exception(exc: HTTPException) -> HTTPException:
-    """The same refusal with every resolved inventory path put back as the caller's handle. A new
-    exception rather than a mutated one, so the status code and headers stay as raised."""
+    """A new exception rather than a mutated one, so status code and headers stay as raised."""
     from hub.utils.host_paths import restore_inventory_handles
 
     detail = restore_inventory_handles(exc.detail)
@@ -2968,12 +2967,10 @@ async def _tunnel_safe_json(coro, *, label: str):
     task.add_done_callback(lambda t: t.cancelled() or t.exception())
     done, _ = await asyncio.wait({task}, timeout = _TUNNEL_KEEPALIVE_AFTER_S)
     if done:
-        # Here rather than at each `return LoadResponse`: the one funnel every tunnelled answer
-        # passes through, padded body included.
+        # Here rather than at each `return LoadResponse`: the one funnel every answer passes.
         try:
             return restore_inventory_handles(task.result())
         except HTTPException as exc:
-            # The failures too: `Invalid model identifier: <path>` names what was asked for.
             raise _handle_restored_http_exception(exc) from None
 
     logger.info(
@@ -2994,8 +2991,8 @@ async def _tunnel_safe_json(coro, *, label: str):
                 yield _deferred_error_body(exc.status_code, restore_inventory_handles(exc.detail))
             except Exception as exc:
                 logger.exception(f"{label} failed after the response was committed")
-                # A filesystem failure quotes the path it failed on, which for a load started
-                # from an inventory reference this caller was never shown.
+                # A filesystem failure quotes the path it failed on, never shown to a caller
+                # that started from an inventory reference.
                 yield _deferred_error_body(
                     500, restore_inventory_handles(f"{type(exc).__name__}: {exc}")
                 )
@@ -15474,8 +15471,7 @@ async def load_model(
 
 
 def _repo_is_in_the_hub_cache(model_ref) -> Optional[bool]:
-    """Whether *model_ref* already has usable bytes in one of this host's caches. ``None`` when
-    the question does not arise or cannot be answered."""
+    """``None`` when the question does not arise or cannot be answered."""
     try:
         from hub.utils import hf_tokens as _hf_tokens
 
@@ -15488,10 +15484,7 @@ def _repo_is_in_the_hub_cache(model_ref) -> Optional[bool]:
 
 
 def _hub_cache_footprint(model_ref) -> Optional[tuple]:
-    """``(blob count, total blob bytes)`` for *model_ref*; ``None`` when it cannot be read.
-    Absent-to-present is not the only fetch: an existing snapshot still takes the blobs it is
-    missing. Only ``blobs/`` is counted, because ``refs/`` and ``.no_exist`` are written by the
-    metadata round trip a cache hit also makes."""
+    """Only ``blobs/`` counts: ``refs/`` and ``.no_exist`` are written by a cache HIT too."""
     try:
         from hub.utils.hf_cache_state import iter_repo_cache_dirs
 
@@ -15515,13 +15508,9 @@ def _hub_cache_footprint(model_ref) -> Optional[tuple]:
 
 
 def _load_fetched_bytes(model_ref, cached_before, footprint_before) -> bool:
-    """Whether this load brought *model_ref*'s bytes onto the host, or added to them. Only usable
-    where the caller AWAITED the fetch; the media loads decide at entry instead.
-
-    Two shapes count: the repo arrived, and the repo was already here and GREW. A wrong record
-    withholds a public cached copy permanently, so a reading that could not be taken is not
-    evidence and GROWTH is the test rather than difference (a cache that SHRANK was pruned).
-    """
+    """Only usable where the caller AWAITED the fetch; the media loads decide at entry instead.
+    A wrong record withholds a public cached copy permanently, so a reading that could not be
+    taken is not evidence, and GROWTH is the test, not difference (a SHRUNK cache was pruned)."""
     if cached_before is False and _repo_is_in_the_hub_cache(model_ref):
         return True
     if cached_before is not True or footprint_before is None:
@@ -15529,14 +15518,12 @@ def _load_fetched_bytes(model_ref, cached_before, footprint_before) -> bool:
     footprint_after = _hub_cache_footprint(model_ref)
     if footprint_after is None:
         return False
-    # Either component growing is a fetch: a new blob moves the count, an appended partial moves
-    # only the bytes. Per component, so a prune racing an arrival is still read as a fetch.
+    # Per component, so a prune racing an arrival still reads as a fetch.
     return any(after > before for after, before in zip(footprint_after, footprint_before))
 
 
 def _lora_base_already_in_the_hub_cache(model_ref) -> Optional[str]:
-    """The adapter's base repo id when the base was on this host BEFORE the load ran. Resolvable
-    only once the adapter itself is cached; otherwise this load brings both in."""
+    """Resolvable only once the adapter itself is cached; otherwise this load brings both in."""
     try:
         from utils.transformers_version import _adapter_base_from_hf_cache
         base = _adapter_base_from_hf_cache(model_ref) if model_ref else None
@@ -15550,23 +15537,19 @@ def _note_lora_base_fetched_with_a_request_token(
     hf_token,
     already_cached = None,
 ) -> None:
-    """The same record for the BASE a LoRA load pulls in under the same one-off credential. Read
-    from the hub cache, not the network: an unresolvable base has no record, which REFUSES."""
+    """Read from the hub cache, not the network: an unresolvable base has no record, so REFUSES."""
     try:
         from utils.transformers_version import _adapter_base_from_hf_cache
         base = _adapter_base_from_hf_cache(model_ref) if model_ref else None
     except Exception:  # noqa: BLE001 -- a load never fails on its own bookkeeping
         return
-    # A base ALREADY here before the load was not fetched by it, and recording it would withhold
-    # an ordinary public model from every tokenless offline caller.
+    # A base ALREADY here was not fetched by this load; recording it withholds a public model.
     if base and base != model_ref and base != already_cached and _repo_is_in_the_hub_cache(base):
         _note_load_fetched_with_a_request_token(base, hf_token)
 
 
 def _note_load_fetched_with_a_request_token(model_ref, hf_token) -> None:
-    """Record a LOAD that may fetch *model_ref* under a credential this host does not hold: a
-    load auto-downloads through its own loader, not the download lifecycle, so the record has to
-    be made where the request is. Never for a local path."""
+    """A load auto-downloads through its own loader, not the download lifecycle. Never local."""
     try:
         from hub.utils import hf_tokens as _hf_tokens
 
@@ -15703,9 +15686,8 @@ async def _load_model_impl(
             update = {"hf_token": account_access.account_hf_token(request.hf_token)}
         )
     # A one-off `X-Unsloth-HF-Token` on a LOAD pulls the repo into the same cache and is kept
-    # nowhere, so provenance is recorded here. The record is a claim that a fetch HAPPENED, so it
-    # is written in the finally below and only for a repo this load brought in or added to:
-    # presence alone is not the test, since an existing repo can still have blobs pulled.
+    # nowhere, so provenance is recorded in the finally below. Presence alone is not the test:
+    # an existing repo can still have blobs pulled.
     _cached_before_this_load = _repo_is_in_the_hub_cache(request.model_path)
     _cache_footprint_before = _hub_cache_footprint(request.model_path)
     _lora_base_before_this_load = _lora_base_already_in_the_hub_cache(request.model_path)
@@ -16871,7 +16853,7 @@ async def _load_model_impl(
             request.model_path, _cached_before_this_load, _cache_footprint_before
         ):
             _note_load_fetched_with_a_request_token(request.model_path, request.hf_token)
-        # The LoRA base, once the adapter's config is on disk; before the fetch it is unknown.
+        # The LoRA base, unknown until the adapter's config is on disk.
         _note_lora_base_fetched_with_a_request_token(
             request.model_path, request.hf_token, already_cached = _lora_base_before_this_load
         )
@@ -17390,8 +17372,7 @@ async def validate_model(
         )
 
     except HTTPException as http_error:
-        # Restored, not re-raised untouched: the `model_log_label` in the detail is the RESOLVED
-        # path, because the request validator turned the caller's reference into one.
+        # The `model_log_label` in the detail is the RESOLVED path.
         raise _handle_restored_http_exception(http_error) from http_error
     except LlamaServerNotFoundError as e:
         # Missing GGUF runtime: 400 with the install message, not a generic "Invalid model".
@@ -17657,8 +17638,6 @@ async def check_transformers_upgrade_route(
         install_breaks_exact_resume = await asyncio.to_thread(
             _install_breaks_exact_resume, request.resume_run_id
         )
-    # The handle goes back out as the handle: the validator resolved it so the preflight
-    # could read the checkpoint, and this response echoes what it was given.
     from hub.utils.host_paths import restore_inventory_handles
 
     return TransformersUpgradeCheckResponse(
@@ -38614,9 +38593,9 @@ async def load_diffusion_model(
     current_subject: str = Depends(get_current_subject),
     via_api_key: bool = Depends(authenticated_via_api_key),
 ):
-    # The status this answers with describes whatever is resident, which on a second load is the
-    # PREVIOUS model, whose path an earlier request resolved and this context has no handle for.
-    # In the route rather than the gated body, whose internal callers serve no API-key request.
+    # The status describes whatever is resident, which on a second load is the PREVIOUS model,
+    # resolved by an earlier request this context has no handle for. In the route, not the gated
+    # body, whose internal callers serve no API-key request.
     from hub.utils.host_paths import (
         raised_inventory_detail,
         redact_host_paths,
@@ -38625,8 +38604,8 @@ async def load_diffusion_model(
     try:
         loaded = await load_diffusion_model_gated(request, current_subject, user_initiated = True)
     except HTTPException as exc:
-        # A load that RAISES skips both wrappers below, and the inner loader redacted only native
-        # paths, which do not know inventory handles.
+        # A load that RAISES skips both wrappers, and the inner loader redacted native paths
+        # only, which do not know inventory handles.
         exc.detail = raised_inventory_detail(exc.detail, via_api_key = via_api_key)
         raise
     return redact_host_paths(
@@ -38658,14 +38637,9 @@ async def load_diffusion_model_gated(
         request = request.model_copy(
             update = {"hf_token": account_access.account_hf_token(request.hf_token)}
         )
-    # Same as the text load, but the TEST has to be made at ENTRY because `begin_load` returns
-    # before the worker moves a byte, and the one fact available that early is that a repo ALREADY
-    # in the cache is not one this load will fetch. That errs toward recording, which is the safe
-    # direction. The WRITE is deferred to the launch below: the record is permanent and never
-    # cleared, and the cheap validation between here and there answers 400 on an unusable
-    # `model_kind`, GGUF filename, family or precision, none of which starts a worker or moves a
-    # byte. Recording those would withhold the repo from a later tokenless offline read of a copy
-    # that was in fact fetched anonymously. Still before the launch, so nothing is fetched unrecorded.
+    # Tested at ENTRY because `begin_load` returns before the worker moves a byte, so the only
+    # fact available is that a repo ALREADY cached is not one this load will fetch. The WRITE is
+    # deferred to the launch below, since the validation in between 400s without moving a byte.
     _media_repos_to_record = [
         ref
         for ref in (request.model_path, request.base_repo)
@@ -38874,8 +38848,7 @@ async def load_diffusion_model_gated(
                 ),
             )
 
-        # The provenance the entry decided, written now that nothing cheap can refuse this load
-        # any more, and still before the worker is handed the credential.
+        # Nothing cheap can refuse the load now, and the worker has not been handed the token.
         for _ref in _media_repos_to_record:
             _note_load_fetched_with_a_request_token(_ref, request.hf_token)
         if needs_gpu:
@@ -39495,8 +39468,7 @@ async def diffusion_status(
     status_dict = active_status()
     if account_access.resident_hidden("diffusion", status_dict.get("repo_id")):
         return account_access.hidden_resident_response()
-    # A load started from an inventory reference records the resolved path, and this route
-    # answers long after that request ended, so there is no handle in context to put back.
+    # Answered long after the resolving request ended, so no handle is in context.
     return redact_host_paths(DiffusionStatusResponse(**status_dict), via_api_key = via_api_key)
 
 

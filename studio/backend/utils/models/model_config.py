@@ -566,17 +566,10 @@ def load_model_config(
         # Passed as the sentinel rather than via without_hf_auth(), which mutates HF_TOKEN
         # process-wide and would strip a concurrent download's credential.
         # token=False denies auth, not the cache: AutoConfig resolves a cached config.json
-        # without ever consulting the credential, so the read has to be gated here. The
-        # shared rule refuses only what disk could answer AND this caller may not read.
-        #
-        # The second clause is what keeps that from being wider than the hole it closes. The
-        # hole is an ONLINE read: the Hub says this caller may not reach the repo and the
-        # cached config.json was served anyway. Silence is not that answer, and treating it as
-        # one refused a PUBLIC repo already on the disk whenever the probe merely failed --
-        # a DNS blip, a proxy, a 5xx, a mirror without the route -- on any host holding a
-        # credential, which is a caller who never hit the bug this file is fixing being newly
-        # told no. So: offline or cache-only, the narrow provenance rule decides, which is the
-        # fix; online, only an ANSWERED refusal refuses, which is the hole.
+        # without ever consulting the credential, so the read is gated here. The second clause
+        # keeps that narrow: offline or cache-only, the provenance rule decides; online, only an
+        # ANSWERED refusal refuses, since treating a failed probe as one denies a PUBLIC repo
+        # already on disk.
         if (
             not is_local_path(model_name)
             and cached_read_refused(
@@ -621,8 +614,8 @@ def load_model_config(
         raise OSError(f"config.json for {model_name} is not available to an unauthorized caller")
 
     if token:
-        # config.json lands in the hub cache under this credential, which may be a one-off the
-        # host stores nowhere; unrecorded it reads later as "nothing here needed one".
+        # config.json lands in the hub cache under what may be a one-off token; unrecorded it
+        # reads later as "nothing here needed one".
         if not local_files_only:
             note_repo_fetched_with_a_request_token(token, model_name, "model")
         return AutoConfig.from_pretrained(

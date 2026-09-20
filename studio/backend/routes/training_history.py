@@ -285,8 +285,8 @@ async def list_training_runs(
         result["runs"],
         sharing_on,
     )
-    # A run started from an inventory reference persists the resolved path as its
-    # `model_name`, and this route answers days later, with no handle left in context.
+    # A run persists the resolved path as `model_name`, and this route answers days later with
+    # no handle left in context.
     from hub.utils.host_paths import redact_host_paths
 
     return redact_host_paths(
@@ -321,8 +321,8 @@ async def get_training_run_detail(
         run,
         get_preview_sharing_enabled() and not no_credential,
     )
-    # The same persisted path, reachable one run at a time. It is in the summary as
-    # `model_name` and again inside `config_json`, so the WHOLE response goes through.
+    # The same persisted path, in the summary as `model_name` and again inside `config_json`,
+    # so the WHOLE response goes through.
     from hub.utils.host_paths import redact_host_paths
 
     return redact_host_paths(
@@ -362,8 +362,7 @@ async def update_training_run(
         refreshed,
         get_preview_sharing_enabled() and not no_credential,
     )
-    # Renaming a run answers with the run, so without this the path is recoverable by
-    # sending a no-op PATCH.
+    # Renaming answers with the run, so a no-op PATCH would recover the path.
     from hub.utils.host_paths import redact_host_paths
 
     return redact_host_paths(summary, via_api_key = via_api_key)

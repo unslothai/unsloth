@@ -68,7 +68,7 @@ async def list_local_models(
     via_api_key: bool = Depends(authenticated_via_api_key),
 ):
     # Inside the try: an exception raised while evaluating an argument never reaches the
-    # function it was being passed to, so its detail went out unredacted.
+    # function it was being passed to, so its detail goes out unredacted.
     try:
         payload = await local_inventory.list_local_models_response(models_dir)
     except HTTPException as error:
@@ -104,12 +104,9 @@ def add_scan_folder_endpoint(
     current_subject: str = Depends(get_current_subject),
     via_api_key: bool = Depends(authenticated_via_api_key),
 ):
-    # The caller named this path, so echoing it back discloses nothing it did not send. Redacted
-    # anyway, so one rule covers the whole family and a NORMALISED path (symlinks resolved, a
-    # relative path anchored) cannot answer for the host.
-    #
-    # Inside the try: an exception raised while evaluating an argument never reaches the function
-    # it was being passed to, and "Path is not readable: <errno>" carries the normalised path.
+    # Redacted even though the caller named this path, so a NORMALISED path (symlinks resolved,
+    # a relative one anchored) cannot answer for the host. Inside the try, since an exception
+    # raised while evaluating an argument never reaches the function it was passed to.
     try:
         payload = local_inventory.add_scan_folder_response(body.path)
     except HTTPException as error:
@@ -133,9 +130,8 @@ def get_models_folder(
     current_subject: str = Depends(get_current_subject),
     via_api_key: bool = Depends(authenticated_via_api_key),
 ):
-    # Inside the try, not inside the redactor's argument list: this route RAISES with the
-    # cache path in the detail, and an exception raised while evaluating an argument never
-    # reaches the function it was being passed to.
+    # Inside the try, not the redactor's argument list: this route RAISES with the cache path
+    # in the detail.
     try:
         payload = local_inventory.get_models_folder_response()
     except HTTPException as error:
@@ -195,8 +191,8 @@ async def get_download_status(
     current_subject: str = Depends(get_current_subject),
     via_api_key: bool = Depends(authenticated_via_api_key),
 ):
-    # `error` is the worker's own stderr, kept after `scrub_secrets` only, so polling a
-    # failed download read the host layout from a route with no path field at all.
+    # `error` is the worker's own stderr, kept after `scrub_secrets` only, so polling a failed
+    # download reads the host layout from a route with no path field at all.
     return redact_host_paths(
         await downloads.get_download_status_response(repo_id, gguf_variant),
         via_api_key = via_api_key,
@@ -349,8 +345,8 @@ async def delete_cached_model(
     hf_token: HfTokenArg = Depends(get_request_hf_token),
     current_subject: str = Depends(get_current_subject),
 ):
-    # The listing answers an API-key caller with `cache_ref`, so that reference is the only
-    # identifier it HAS for a specific copy; omitting it silently acted on the active root.
+    # `cache_ref` is the only identifier an API-key caller HAS for a specific copy; omitting it
+    # silently acts on the active root.
     return await deletion.delete_cached_model_response(
         repo_id,
         variant,

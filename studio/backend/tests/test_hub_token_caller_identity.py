@@ -2658,7 +2658,7 @@ def test_a_slow_denial_is_still_a_denial(monkeypatch):
     # neither, so the probe honestly reports "could not ask" and `_resolve_unaskable` is what
     # refuses. The caller-visible answer is the same no it always was. The remembering itself is
     # pinned, for the case where it is load-bearing, by
-    # test_offline_local_cache_discovery.py::test_a_denial_that_could_be_overturned_is_still_remembered.
+    # test_offline_local_cache_discovery.py::test_nothing_but_the_hub_overturns_a_hub_that_answered_no.
     hf_tokens._repo_access_cache.clear()
     _counting_probe(monkeypatch, None, offline = False)
     assert hf_tokens.cache_reads_authorized("hf_revoked", repo_id = "org/private") is False

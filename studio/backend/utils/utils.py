@@ -42,24 +42,21 @@ def anonymous_and_offline(hf_token, *, repo_id: Optional[str] = None) -> bool:
 
     ``token=False`` denies authentication, not the cache: offline, huggingface_hub and datasets
     both resolve a previously downloaded private repo without ever authorizing. Guarded at the
-    route entry because the per-call-site version was fixed six times and each fix only moved the
-    boundary to the next reader.
-
-    Given the repo the caller named, the shared cached-read rule applies rather than a blanket
-    refusal: a PUBLIC repo was always readable, and a repo not on the disk has nothing to leak.
+    route entry, since each per-call-site fix only moved the boundary to the next reader. Given
+    a repo id the shared cached-read rule applies rather than a blanket refusal: a PUBLIC repo
+    was always readable, and one not on the disk has nothing to leak.
     """
     from hub.utils.hf_tokens import cached_read_refused, is_anonymous
 
     if not is_anonymous(hf_token):
         return False
     if not hf_env_offline():
-        # Online behaviour is left exactly as it was: this guard has always been the offline
-        # precondition, and the per-reader gates answer the online question.
+        # The per-reader gates answer the online question; this guard is the offline one.
         return False
     if repo_id is None:
         return True
-    # is_cached is True because these routes read whatever the cache holds: the question left is
-    # authorization, and offline that resolves against the disk rather than the Hub.
+    # is_cached is True because these routes read whatever the cache holds; only authorization
+    # is left, and offline that resolves against the disk.
     return cached_read_refused(
         hf_token,
         repo_id = repo_id,
