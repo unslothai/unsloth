@@ -16785,6 +16785,43 @@ def _check_signal_escape_patterns(code: str):
                 return _canonical_fq(bound.func, _bindings) in _SOCKET_FACTORY_FQ
         return False
 
+    # `host = ` in a libpq DSN, `SERVER = ` in an ODBC one. The value runs to the next separator.
+    _DSN_HOST_RE = re.compile(r"(?:^|[;\s])(?:host|server)\s*=\s*([^;\s,]+)", re.IGNORECASE)
+    # Schemes that name a file rather than a host, so `sqlite:///state.db` opens nothing remote.
+    _LOCAL_DSN_SCHEMES = ("sqlite", "duckdb", "file", "shm", "memory")
+
+    def _dsn_host(text: str) -> "str | None":
+        """The host a database connection string names, or None when it names a file or nothing.
+        `postgresql://user:pass@db.example/app` and `SERVER = db.example` both reach a host; a
+        SQLite path and a bare `dbname = app` do not."""
+        if "://" in text:
+            scheme = text.split("://", 1)[0].split("+")[0].lower()
+            if scheme in _LOCAL_DSN_SCHEMES:
+                return None
+            match = _URL_HOST_RE.match(text) or _URL_HOST_TERMINATED_RE.match(text)
+            if match:
+                return match.group(1)
+            authority = text.split("://", 1)[1]
+            return authority.split("/")[0] or None
+        match = _DSN_HOST_RE.search(text)
+        return match.group(1) if match else None
+
+    def _remote_database_host(node: ast.Call) -> "str | None":
+        """The host a `connect` on a database client names, when it names one at all."""
+        candidates = [kw.value for kw in node.keywords or [] if kw.arg in ("host", "server")]
+        candidates += list(node.args[:1])
+        for candidate in candidates:
+            text, complete = _static_str_prefix(candidate, _bindings)
+            if not (complete and text):
+                continue
+            host = _dsn_host(text) if ("://" in text or "=" in text) else None
+            if host is None and candidate is not (node.args[0] if node.args else None):
+                # A bare `host = ` keyword is the host itself, not a connection string.
+                host = text
+            if host:
+                return host
+        return None
+
     def _opens_a_local_resource(receiver) -> bool:
         """Whether a `connect` receiver is one of the local-resource clients. Judged on where the
         value came from, never on the name: `sqlite3 = smtplib.SMTP()` spells a reserved head and
@@ -16806,46 +16843,57 @@ def _check_signal_escape_patterns(code: str):
 
     _external_memo: set = set()
 
-    def _externally_sourced(
-        node,
-        bindings,
-        seen = frozenset(),
-        depth = 0,
-        memo = _external_memo,
-    ) -> bool:
+    # Following bindings is bounded by the tree itself once visited nodes are remembered, so this
+    # budget is a backstop against a pathological file rather than the real limit. Exhausting it
+    # answers "externally sourced": a guard that answers "no" when it gives up is a bypass, since
+    # laundering a value through enough assignments would be all it takes.
+    _MAX_EXTERNAL_STEPS = 200_000
+
+    def _externally_sourced(node, bindings) -> bool:
         """Whether *node* takes its value from outside the program: env, stdin, argv, a file read.
         Bindings are followed, so `u = os.environ["T"]` reads the same as the expression inline.
 
         This is what separates a target the allowlist cannot police from one it merely cannot
         read. An ordinary loop variable or function parameter is unresolvable too, but its value
-        came from the same source file; only an external one lets the host be chosen off-source."""
-        if depth > _MAX_RESOLVE_DEPTH or node is None:
+        came from the same source file; only an external one lets the host be chosen off-source.
+
+        Iterative on purpose. A recursive walk has to stop at some depth, and a chain of plain
+        assignments is exactly the shape that reaches it, so the depth limit itself would become
+        the way through."""
+        if node is None:
             return False
-        if depth == 0:
-            _resolve_budget[0] = _MAX_RESOLVE_STEPS
-            memo.clear()
-        elif _resolve_budget[0] <= 0:
-            return False
-        _resolve_budget[0] -= 1
-        if id(node) in memo:
-            # Already explored on another path; a second walk cannot find a source the first missed.
-            return False
-        memo.add(id(node))
-        if _reads_env_or_secret(node):
-            return True
-        for sub in ast.walk(node):
-            if isinstance(sub, ast.Call) and isinstance(sub.func, ast.Name):
-                if sub.func.id in ("input", "getpass"):
-                    return True
-            if isinstance(sub, ast.Attribute) and isinstance(sub.value, ast.Name):
-                if sub.value.id == "sys" and sub.attr in ("argv", "stdin"):
-                    return True
-            if _reads_an_external_source_through_an_alias(sub, bindings):
+        stack = [node]
+        seen_nodes: set = set()
+        seen_names: set = set()
+        steps = 0
+        while stack:
+            current = stack.pop()
+            if current is None or id(current) in seen_nodes:
+                continue
+            seen_nodes.add(id(current))
+            steps += 1
+            if steps > _MAX_EXTERNAL_STEPS:
                 return True
-            if isinstance(sub, ast.Name) and sub.id not in seen:
-                for bound in bindings.values_for(sub.id, sub):
-                    if _externally_sourced(bound, bindings, seen | {sub.id}, depth + 1):
+            for sub in ast.walk(current):
+                steps += 1
+                if steps > _MAX_EXTERNAL_STEPS:
+                    return True
+                if isinstance(sub, ast.Call) and isinstance(sub.func, ast.Name):
+                    if sub.func.id in ("input", "getpass"):
                         return True
+                if isinstance(sub, ast.Attribute) and isinstance(sub.value, ast.Name):
+                    if sub.value.id == "sys" and sub.attr in ("argv", "stdin"):
+                        return True
+                if _reads_env_or_secret(sub):
+                    return True
+                if _reads_an_external_source_through_an_alias(sub, bindings):
+                    return True
+                if isinstance(sub, ast.Name):
+                    key = (sub.id, id(sub))
+                    if key in seen_names:
+                        continue
+                    seen_names.add(key)
+                    stack.extend(bindings.values_for(sub.id, sub))
         return False
 
     _bindings = _NameBindings().collect(tree)
@@ -17156,22 +17204,20 @@ def _check_signal_escape_patterns(code: str):
                 }
             )
 
-    def _configured_host(node: ast.Call, fq: str) -> "str | None":
-        """The host a client was configured with. `httpx.Client(base_url = ...)` followed by
+    def _configured_host_node(node: ast.Call, fq: str):
+        """Where a client is handed its host. `httpx.Client(base_url = ...)` followed by
         `c.get("/latest")` reaches a host the request itself never names, so the constructor is
         where that host has to be read."""
         is_pool = fq in _POOL_FACTORY_FQ
         if fq not in _SESSION_FACTORY_FQ and not is_pool:
             return None
-        host_node = None
         for kw in node.keywords or []:
             if kw.arg in ("base_url", "host"):
-                host_node = kw.value
-                break
-        if host_node is None and is_pool and node.args:
-            host_node = node.args[0]
-        if host_node is None:
-            return None
+                return kw.value
+        return node.args[0] if (is_pool and node.args) else None
+
+    def _configured_host(host_node) -> "str | None":
+        """The host that constructor argument names, when it is known."""
         text, complete = _static_str_prefix(host_node, _bindings)
         if not (complete and text):
             return None
@@ -17199,6 +17245,18 @@ def _check_signal_escape_patterns(code: str):
             # Direct sock.connect((host, port)) bypasses the FQ-prefix branch, and so do the
             # scalar-host clients (ftplib, smtplib, socketio). Only the APIs whose `connect` opens
             # a local resource are left alone: reading a database path as a host refuses it.
+            # A database client is exempt from host screening only while it opens a file. Its
+            # connection string can name a remote host just as plainly as a URL does, and
+            # `postgresql://user:pass@host/db` is the usual way to write one.
+            if (
+                isinstance(node.func, ast.Attribute)
+                and node.func.attr == "connect"
+                and _opens_a_local_resource(node.func.value)
+            ):
+                database_host = _remote_database_host(node)
+                if database_host:
+                    _screen_host(database_host, node)
+
             if (
                 isinstance(node.func, ast.Attribute)
                 and node.func.attr == "connect"
@@ -17242,10 +17300,26 @@ def _check_signal_escape_patterns(code: str):
                         )
 
             for name in fq_names:
-                configured = _configured_host(node, name)
+                host_node = _configured_host_node(node, name)
+                if host_node is None:
+                    continue
+                configured = _configured_host(host_node)
                 if configured:
                     _screen_host(configured, node)
-                    break
+                elif _externally_sourced(host_node, _bindings):
+                    # The client is handed a host chosen off-source, which is the same hole as a
+                    # request target read from the environment and is refused for the same reason.
+                    network_calls.append(
+                        {
+                            "type": "opaque_url_blocked",
+                            "line": getattr(node, "lineno", -1),
+                            "description": (
+                                "Blocked: request target is read from the environment or input; "
+                                "use a literal URL on an allowed informational source"
+                            ),
+                        }
+                    )
+                break
 
             if network_fq:
                 # 1) Upload-shape check (host-independent).

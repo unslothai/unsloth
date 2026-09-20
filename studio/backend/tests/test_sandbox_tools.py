@@ -3634,3 +3634,93 @@ class TestBindingsSeenFromInsideAFunction:
             '    return r.get("https://huggingface.co/api/models")\n'
             "f()"
         )
+
+
+class TestConfiguredHostsChosenOffSource:
+    """A host handed to a constructor is refused when it is read from outside the source, for the
+    same reason a request target is."""
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            pytest.param(
+                'import os, httpx\nhttpx.Client(base_url = os.environ["TARGET"]).get("/latest")',
+                id = "base_url_from_env",
+            ),
+            pytest.param(
+                "import os, urllib3\n"
+                'urllib3.HTTPConnectionPool(os.environ["TARGET"], 80).request("GET", "/x")',
+                id = "pool_host_from_env",
+            ),
+            pytest.param(
+                'import httpx\nc = httpx.Client(base_url = input())\nc.get("/latest")',
+                id = "base_url_from_input",
+            ),
+        ],
+    )
+    def test_an_external_configured_host_is_refused(self, code):
+        _blocked(code, expect_phrase = "Blocked: request target is read")
+
+
+class TestDatabaseConnectionStrings:
+    """A database client is exempt while it opens a file. Its connection string can name a remote
+    host just as plainly as a URL does."""
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            pytest.param(
+                'import psycopg2\npsycopg2.connect("postgresql://user:pass@evil.example/db")',
+                id = "libpq_url",
+            ),
+            pytest.param(
+                'import pyodbc\npyodbc.connect("DRIVER={x};SERVER=evil.example;UID=u")',
+                id = "odbc_server",
+            ),
+            pytest.param(
+                'import mysql.connector\nmysql.connector.connect(host = "evil.example")',
+                id = "host_keyword",
+            ),
+        ],
+    )
+    def test_a_remote_database_host_is_screened(self, code):
+        _blocked(code, expect_phrase = "Blocked: host not in sandbox allowlist")
+
+    def test_a_metadata_host_in_a_dsn_is_blocked(self):
+        _blocked(
+            'import psycopg2\npsycopg2.connect("postgresql://u@169.254.169.254/db")',
+            expect_phrase = "Blocked: cloud-metadata host",
+        )
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            pytest.param(
+                'import psycopg2\npsycopg2.connect("dbname = app user = app")', id = "no_host"
+            ),
+            pytest.param('import sqlite3\nsqlite3.connect("state.db")', id = "sqlite_path"),
+            pytest.param('import duckdb\nduckdb.connect("warehouse.duckdb")', id = "duckdb_path"),
+            pytest.param(
+                'import sqlalchemy\nsqlalchemy.create_engine("sqlite:///x.db").connect()',
+                id = "sqlite_url_scheme",
+            ),
+        ],
+    )
+    def test_a_connection_that_opens_a_file_is_left_alone_ok(self, code):
+        _ok(code)
+
+
+class TestTheWorkBudgetIsNotAWayThrough:
+    """Giving up has to mean refusing. A guard that answers "not external" when it runs out of
+    budget would make a long chain of assignments the whole bypass."""
+
+    def test_a_long_chain_does_not_launder_an_environment_target(self):
+        chain = "".join(f"v{i} = v{i - 1}\n" for i in range(1, 300))
+        _blocked(
+            'import os, requests\nv0 = os.environ["TARGET"]\n' + chain + "requests.get(v299)",
+            expect_phrase = "Blocked: request target is read",
+        )
+
+    def test_a_long_chain_of_literals_still_costs_nothing_ok(self):
+        chain = "".join(f"a{i} = a{i - 1}\n" for i in range(1, 5000))
+        _ok('import requests\na0 = "https://huggingface.co"\n' + chain + "requests.get(a4999)")
