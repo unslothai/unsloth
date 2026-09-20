@@ -165,6 +165,8 @@ export const hi = {
       export: "एक्सपोर्ट",
       recents: "हाल के",
       noChatsYet: "अभी तक कोई चैट नहीं",
+      // Shown under an empty project folder in the sidebar.
+      noChats: "कोई चैट नहीं",
       showMore: "और दिखाएं",
       showLess: "कम दिखाएं",
       settings: "सेटिंग्स",

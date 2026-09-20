@@ -162,6 +162,8 @@ export const ar = {
       export: "تصدير",
       recents: "العناصر الأخيرة",
       noChatsYet: "لا توجد محادثات بعد",
+      // Shown under an empty project folder in the sidebar.
+      noChats: "لا توجد محادثات",
       showMore: "عرض المزيد",
       showLess: "عرض أقل",
       settings: "الإعدادات",

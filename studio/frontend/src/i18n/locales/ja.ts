@@ -164,6 +164,8 @@ export const ja = {
       export: "エクスポート",
       recents: "履歴",
       noChatsYet: "チャットがまだありません",
+      // Shown under an empty project folder in the sidebar.
+      noChats: "チャットなし",
       showMore: "もっと見る",
       showLess: "表示を減らす",
       settings: "設定",

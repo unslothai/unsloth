@@ -1159,10 +1159,15 @@ test("the rename chord does not land in a surface only a row can show", async ()
     APP_SIDEBAR,
     /useShortcut\("renameChat", \(\) => \{[\s\S]*?withActiveChat\(\(item\) => openRenameChat\(item, false\)\);/,
   );
-  assert.match(APP_SIDEBAR, /onSelect=\{\(\) => openRenameChat\(item\)\}/);
+  // The menu names the list its row is in, so a chat on screen twice renames in the row the
+  // user opened, not in both at once.
   assert.match(
     APP_SIDEBAR,
-    /function openRenameChat\(item: SidebarItem, inline = true\)/,
+    /onSelect=\{\(\) => openRenameChat\(item, true, list\?\.scope\)\}/,
+  );
+  assert.match(
+    APP_SIDEBAR,
+    /function openRenameChat\(item: SidebarItem, inline = true, rowScope\?: string\)/,
   );
 
   // The pill is gated on it, so a dialog rename cannot also arm a row that is
@@ -1263,7 +1268,12 @@ test("a collapsed sidebar section is not published for the chords", async () => 
     APP_SIDEBAR,
     /chatListsOnScreen && chatOpen \? sortedRecentChatItems/,
   );
-  assert.match(APP_SIDEBAR, /organizeBy !== "project" \|\| !projectsOpen/);
+  // Folders follow the section they render in: the pinned ones close with Pinned, the rest
+  // with Projects, so neither disclosure speaks for the other's rows.
+  assert.match(
+    APP_SIDEBAR,
+    /\[pinnedOpen, pinnedProjectRecords\],\n\s*\[projectsOpen, visibleProjectRecords\],/,
+  );
   // And the published lists are the filtered ones.
   assert.match(APP_SIDEBAR, /pinnedItems: visiblePinnedItems,/);
   assert.match(APP_SIDEBAR, /recentItems: visibleRecentItems,/);
@@ -1582,7 +1592,7 @@ test("the published chat lists stop where the sidebar stops", async () => {
     /const chatListsOnScreen =\n\s*!isStudioRoute &&\n\s*!showTrainingRecents &&\n\s*\(isMobile \|\| sidebarState !== "collapsed"\);/,
   );
   for (const group of [
-    /if \(!chatListsOnScreen \|\| organizeBy !== "project" \|\| !projectsOpen\)/,
+    /if \(!chatListsOnScreen \|\| organizeBy !== "project"\) return \[\];/,
     /\(chatListsOnScreen && pinnedOpen \? sortedPinnedChatItems : \[\]\)/,
     /\(chatListsOnScreen && chatOpen \? sortedRecentChatItems : \[\]\)/,
   ]) {
@@ -1658,10 +1668,19 @@ test("a selection does not outlive the rows it was made on", async () => {
     APP_SIDEBAR,
     /if \(projectAnchor && !renderedProjectIds\.has\(projectAnchor\)\) \{\n\s*projectAnchorRef\.current = null;/,
   );
-  // The three ways a folder row leaves without the sidebar going with it.
+  // The ways a folder row leaves without the sidebar going with it — including its section
+  // closing, which for a pinned folder is Pinned, not Projects.
   assert.match(
     APP_SIDEBAR,
-    /const renderedProjectIds = useMemo\(\(\) => \{\n\s*if \(!chatListsOnScreen \|\| organizeBy !== "project" \|\| !projectsOpen\) \{\n\s*return new Set<string>\(\);\n\s*\}\n\s*return new Set\(visibleProjectRecords\.map\(\(project\) => project\.id\)\);/,
+    /const renderedProjectIds = useMemo\(\(\) => \{\n\s*if \(!chatListsOnScreen \|\| organizeBy !== "project"\) \{\n\s*return new Set<string>\(\);\n\s*\}/,
+  );
+  assert.match(
+    APP_SIDEBAR,
+    /if \(pinnedOpen\) \{\n\s*for \(const project of pinnedProjectRecords\) ids\.add\(project\.id\);/,
+  );
+  assert.match(
+    APP_SIDEBAR,
+    /if \(projectsOpen\) \{\n\s*for \(const project of visibleProjectRecords\) ids\.add\(project\.id\);/,
   );
   // Both counts feed the flag, which is why both have to be pruned.
   assert.match(

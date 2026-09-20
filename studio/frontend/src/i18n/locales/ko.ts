@@ -162,6 +162,8 @@ export const ko = {
       export: "내보내기",
       recents: "최근 항목",
       noChatsYet: "아직 채팅이 없습니다",
+      // Shown under an empty project folder in the sidebar.
+      noChats: "채팅 없음",
       showMore: "더 보기",
       showLess: "간략히 보기",
       settings: "설정",
