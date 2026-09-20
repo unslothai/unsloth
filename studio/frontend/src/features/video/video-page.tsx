@@ -341,9 +341,11 @@ function genStepLabel(p: VideoGenerateProgress): string {
   return eta ? `${base} · ~${eta}` : base;
 }
 
-// The chat tab's model-load toast styling, reused verbatim so the video load toast is identical.
+// The chat tab's model-load toast styling, reused so the video load toast matches. Chat's own
+// toast also carries a Hide action; this one does not, so its single Cancel sits alone on the
+// actions row.
 const LOAD_TOAST_CLASSNAMES = {
-  toast: "chat-model-load-toast items-center gap-2.5",
+  toast: "chat-model-load-toast",
   content: "gap-0.5 flex-1 min-w-0",
   title: "leading-5",
   description: "mt-0 w-full",
@@ -4169,7 +4171,6 @@ function VideoGenerator({
               >
                 <div className="w-72 max-w-full rounded-xl bg-background/85 p-3 shadow-lg ring-1 ring-border backdrop-blur">
                   <ModelLoadDescription
-                    className="min-h-0"
                     title={null}
                     message="Starting…"
                     progressPercent={

@@ -524,9 +524,11 @@ async function settleLostGeneration(
   throw new Error("Timed out waiting for the image generation to finish.");
 }
 
-// The chat tab model-load toast styling, reused verbatim so the diffusion load toast is identical.
+// The chat tab model-load toast styling, reused so the diffusion load toast matches. Chat's own
+// toast also carries a Hide action; this one does not, so its single Cancel sits alone on the
+// actions row.
 const LOAD_TOAST_CLASSNAMES = {
-  toast: "chat-model-load-toast items-center gap-2.5",
+  toast: "chat-model-load-toast",
   content: "gap-0.5 flex-1 min-w-0",
   title: "leading-5",
   description: "mt-0 w-full",
@@ -4671,8 +4673,6 @@ export function ImagesPage({
               >
                 <div className="w-72 max-w-full rounded-xl bg-background/85 p-3 shadow-lg ring-1 ring-border backdrop-blur">
                   <ModelLoadDescription
-                    // Drop the chat min-height: this floating card has no layout to stabilise.
-                    className="min-h-0"
                     title={
                       genDone != null && count > 1
                         ? `Run ${genDone + 1}/${count}`
