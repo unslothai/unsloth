@@ -21,6 +21,14 @@ from core.inference import os_sandbox, sandbox_windows  # noqa: E402
 from core.inference.os_sandbox import ToolLaunchPlan  # noqa: E402
 
 
+
+def _pin(monkeypatch, path):
+    """Register ``path`` as the pinned executor for this architecture."""
+    from core.inference import mxc_pins
+
+    monkeypatch.setitem(mxc_pins.EXECUTOR_SHA256, mxc_pins.arch_dir(), mxc_pins.digest(path))
+
+
 @pytest.fixture
 def plan(tmp_path):
     return ToolLaunchPlan(
@@ -150,6 +158,10 @@ def test_every_launch_gets_its_own_container_id(monkeypatch, plan, tmp_path):
     monkeypatch.setattr(sys, "platform", "win32")
     monkeypatch.setattr(sandbox_windows, "available", lambda: (True, "ok"))
     monkeypatch.setattr(sandbox_windows, "executable_path", lambda: sys.executable)
+    # prepare() re-checks the digest while holding the file open, so the
+    # stand-in executor has to be pinned for that check to be about the
+    # thing this test is about.
+    _pin(monkeypatch, sys.executable)
     seen = set()
     for _ in range(5):
         prepared = sandbox_windows.prepare(plan)
@@ -170,6 +182,10 @@ def test_mxc_diagnostics_are_diverted_off_the_payload_stdout(monkeypatch, plan):
     monkeypatch.setattr(sys, "platform", "win32")
     monkeypatch.setattr(sandbox_windows, "available", lambda: (True, "ok"))
     monkeypatch.setattr(sandbox_windows, "executable_path", lambda: sys.executable)
+    # prepare() re-checks the digest while holding the file open, so the
+    # stand-in executor has to be pinned for that check to be about the
+    # thing this test is about.
+    _pin(monkeypatch, sys.executable)
     prepared = sandbox_windows.prepare(plan)
     assert "--log-file" in prepared.argv
     log_path = prepared.argv[prepared.argv.index("--log-file") + 1]
@@ -182,6 +198,10 @@ def test_the_prepared_launch_carries_no_posix_only_kwargs(monkeypatch, plan):
     monkeypatch.setattr(sys, "platform", "win32")
     monkeypatch.setattr(sandbox_windows, "available", lambda: (True, "ok"))
     monkeypatch.setattr(sandbox_windows, "executable_path", lambda: sys.executable)
+    # prepare() re-checks the digest while holding the file open, so the
+    # stand-in executor has to be pinned for that check to be about the
+    # thing this test is about.
+    _pin(monkeypatch, sys.executable)
     prepared = sandbox_windows.prepare(plan)
     assert prepared.preexec_fn is None
     assert prepared.pass_fds == ()
@@ -191,6 +211,10 @@ def test_the_argv_ends_with_the_payload_after_a_bare_separator(monkeypatch, plan
     monkeypatch.setattr(sys, "platform", "win32")
     monkeypatch.setattr(sandbox_windows, "available", lambda: (True, "ok"))
     monkeypatch.setattr(sandbox_windows, "executable_path", lambda: sys.executable)
+    # prepare() re-checks the digest while holding the file open, so the
+    # stand-in executor has to be pinned for that check to be about the
+    # thing this test is about.
+    _pin(monkeypatch, sys.executable)
     prepared = sandbox_windows.prepare(plan)
     assert prepared.argv[-4:] == ("--", "python.exe", "-c", "print('hi')")
 
@@ -200,6 +224,10 @@ def test_cleanup_reconciles_the_container(monkeypatch, plan):
     monkeypatch.setattr(sys, "platform", "win32")
     monkeypatch.setattr(sandbox_windows, "available", lambda: (True, "ok"))
     monkeypatch.setattr(sandbox_windows, "executable_path", lambda: sys.executable)
+    # prepare() re-checks the digest while holding the file open, so the
+    # stand-in executor has to be pinned for that check to be about the
+    # thing this test is about.
+    _pin(monkeypatch, sys.executable)
     called = []
     monkeypatch.setattr(
         sandbox_windows,
@@ -776,3 +804,52 @@ def test_the_elevated_helper_is_reverified_before_each_invocation(tmp_path, monk
 
     assert ran == ["prepare-system-drive"], f"the swapped helper ran elevated: {ran}"
     assert "no longer the pinned" in str(refusal.value)
+
+
+def test_an_executor_swapped_after_verification_is_refused(monkeypatch, plan, tmp_path):
+    """available() verifies the digest, then policy construction and the live
+    probe run before Popen ever sees the pathname. A same-user process, which
+    is precisely the attacker this pin exists for, can swap the file in that
+    window, and cleanup executes the same pathname again for --delete."""
+    executor = tmp_path / "wxc-exec.exe"
+    executor.write_bytes(b"the pinned executor")
+    _pin(monkeypatch, str(executor))
+
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(sandbox_windows, "available", lambda: (True, "ok"))
+    monkeypatch.setattr(sandbox_windows, "executable_path", lambda: str(executor))
+
+    executor.write_bytes(b"swapped between the check and the launch")
+
+    with pytest.raises(sandbox_windows.SandboxUnavailableError) as refusal:
+        sandbox_windows.prepare(plan)
+
+    assert "changed after it was verified" in str(refusal.value)
+
+
+def test_the_executor_hold_is_released_after_the_reconciliation(monkeypatch, plan, tmp_path):
+    """The callbacks run LIFO and the reconciliation executes the same file,
+    so the hold has to outlive it or the window reopens for the teardown."""
+    executor = tmp_path / "wxc-exec.exe"
+    executor.write_bytes(b"the pinned executor")
+    _pin(monkeypatch, str(executor))
+
+    order = []
+
+    class Hold:
+        def close(self):
+            order.append("released")
+
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(sandbox_windows, "available", lambda: (True, "ok"))
+    monkeypatch.setattr(sandbox_windows, "executable_path", lambda: str(executor))
+    monkeypatch.setattr(sandbox_windows, "_hold_executor", lambda path: Hold())
+    monkeypatch.setattr(
+        sandbox_windows, "_reconcile_container",
+        lambda executor, container_id: order.append("reconciled"),
+    )
+
+    prepared = sandbox_windows.prepare(plan)
+    prepared.cleanup()
+
+    assert order == ["reconciled", "released"], order

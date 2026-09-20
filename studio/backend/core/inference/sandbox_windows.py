@@ -437,6 +437,27 @@ def prepare(plan: ToolLaunchPlan) -> PreparedSandboxLaunch:
     if executor is None:  # pragma: no cover - available() already checked
         raise SandboxUnavailableError("the MXC sandbox executor disappeared")
 
+    # Held from here until after the cleanup that runs it again, so the bytes
+    # available() verified cannot be swapped before Popen or before --delete.
+    hold = _hold_executor(executor)
+    try:
+        return _prepare_held(plan, executor, hold)
+    except Exception:
+        if hold is not None:
+            hold.close()
+        raise
+
+
+def _prepare_held(plan: ToolLaunchPlan, executor: str,
+                  hold: "_ExecutorHold | None") -> PreparedSandboxLaunch:
+    # Re-checked WHILE held: only now is the verdict about a file that cannot
+    # change underneath the launch.
+    if not mxc_pins.matches_pin(executor, mxc_pins.EXECUTOR_SHA256):
+        raise SandboxUnavailableError(
+            "the MXC sandbox executor changed after it was verified; "
+            "refusing to launch through it"
+        )
+
     workdir = os.path.abspath(plan.workdir)
     if not os.path.isdir(workdir):
         from .os_sandbox import WorkdirUnsafeError
@@ -481,12 +502,85 @@ def prepare(plan: ToolLaunchPlan) -> PreparedSandboxLaunch:
         terminate_descendants = plan.terminate_descendants,
         launch_limitations = limitations,
     )
+    # FIRST, so it pops LAST: the callbacks run in LIFO order and the
+    # reconciliation below executes the same file, so the hold outlives it.
+    if hold is not None:
+        prepared.cleanup_callbacks.append(hold.close)
     # A file, so not cleanup_paths, which rmtree's whatever it is given.
     prepared.cleanup_callbacks.append(lambda: _remove_quietly(log_path))
     # A hard kill skips the executor's own ACE revert, so reconcile on the way
     # out whether or not it exited cleanly.
     prepared.cleanup_callbacks.append(lambda: _reconcile_container(executor, container_id))
     return prepared
+
+
+class _ExecutorHold:
+    """An open handle that denies other processes write, rename and delete.
+
+    Verifying the digest and then handing the PATHNAME to Popen leaves a
+    window: policy construction and the live probe sit between the two, and a
+    same-user process, which is exactly the attacker this check exists for,
+    can swap the file in it. Cleanup runs the same pathname again for
+    ``--delete``, widening the window to the whole call.
+
+    Windows honours a deny-write share mode at the filesystem level, so the
+    verified bytes cannot change while this is open. Released last, after the
+    reconciliation that also executes it.
+    """
+
+    def __init__(self, handle: object) -> None:
+        self._handle = handle
+
+    def close(self) -> None:
+        if self._handle is None:
+            return
+        handle, self._handle = self._handle, None
+        try:
+            import ctypes
+
+            if not hasattr(ctypes, "WinDLL"):
+                return
+            ctypes.WinDLL("kernel32", use_last_error = True).CloseHandle(handle)
+        except Exception:  # noqa: BLE001 - a released handle is not worth a failed call
+            logger.debug("could not close the MXC executor hold", exc_info = True)
+
+
+def _hold_executor(path: str) -> "_ExecutorHold | None":
+    """Open ``path`` so nothing else can modify or replace it.
+
+    None on a non-Windows host, where this backend does not launch anything
+    and the tests only exercise policy construction.
+    """
+    import ctypes
+
+    # WinDLL exists only on a real Windows interpreter. The platform check
+    # alone is not enough, because the policy tests spoof sys.platform to
+    # exercise the Windows branches from any host.
+    if sys.platform != "win32" or not hasattr(ctypes, "WinDLL"):
+        return None
+    from ctypes import wintypes
+
+    generic_read = 0x80000000
+    file_share_read = 0x00000001
+    open_existing = 3
+    invalid_handle = ctypes.c_void_p(-1).value
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error = True)
+    kernel32.CreateFileW.restype = ctypes.c_void_p
+    kernel32.CreateFileW.argtypes = (
+        wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, ctypes.c_void_p,
+        wintypes.DWORD, wintypes.DWORD, ctypes.c_void_p,
+    )
+    handle = kernel32.CreateFileW(
+        path, generic_read, file_share_read, None, open_existing, 0, None)
+    if handle == invalid_handle:
+        # Fails CLOSED: somebody else already holds it in a way that would let
+        # them write to it, which is the condition this is meant to exclude.
+        raise SandboxUnavailableError(
+            "the MXC executor could not be opened for exclusive use "
+            f"(WinError {ctypes.get_last_error()}); refusing to launch through it"
+        )
+    return _ExecutorHold(handle)
 
 
 def _remove_quietly(path: str) -> None:

@@ -29,6 +29,9 @@ on:
       - 'studio/backend/core/inference/tools.py'
       - 'studio/backend/tests/sandbox_enforcement_probe.py'
       - 'studio/install_mxc_runtime.py'
+      # The pins alone decide which MXC build is downloaded and what its
+      # digests must be, so a pin-only change has to run these jobs too.
+      - 'studio/backend/core/inference/mxc_pins.py'
       - '.github/workflows/studio-sandbox-enforcement.yml'
   workflow_dispatch:
 
