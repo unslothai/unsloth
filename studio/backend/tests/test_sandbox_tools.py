@@ -1760,6 +1760,11 @@ class TestBashBlocklistPosition:
         assert is_high_risk_tool_call(
             "terminal", {"command": "coproc JOB if git clean -fd; then :; fi"}
         ) == is_high_risk_tool_call("terminal", {"command": "git clean -fd"})
+        # ...including when the name is spelled like a wrapper, which it may be: bash cares only that it is a
+        # name, so spending the wrapper on the compound behind it demoted the real command.
+        assert is_high_risk_tool_call(
+            "terminal", {"command": "coproc env if git clean -fd; then :; fi"}
+        ) == is_high_risk_tool_call("terminal", {"command": "git clean -fd"})
         # `time` keeps command position for bash, so it must keep it for both classifiers too.
         assert self._find()(f"time coproc {command}") == self._find()(f"time {command}")
         assert is_high_risk_tool_call(
