@@ -1277,18 +1277,22 @@ def grpo_trainer__generate_and_score_completions(function_name, function):
     replacement_lines_head = """
         max_left_pad = None
         batch_size = self.args.per_device_train_batch_size if mode == "train" else self.args.per_device_eval_batch_size
+        # Which name carries "this batch has images" moved twice, and at the bottom of the
+        # declared window neither name exists: 0.20.0 through 0.23.1 bind has_images, 0.24.0
+        # and up bind images, and 0.18.2 / 0.19.1 have no vision path at all, so every batch
+        # there is text only. Probing has_images and falling back to images without a third
+        # branch made the floor raise NameError out of the except handler and killed training.
         try:
-            # TRL 0.23.1 and below path
-            if not has_images:
-                # Left pad prompt before calculation old and ref hidden states
-                left_pad_tokens_per_prompt = calculate_pad_tokens_in_prompt(prompt_completion_ids, logits_to_keep, self.processing_class.pad_token_id)
-                max_left_pad = torch.max(left_pad_tokens_per_prompt).item()
-        except:
-            # TRL 0.24.0 and below path
-            if images is None:
-                # Left pad prompt before calculation old and ref hidden states
-                left_pad_tokens_per_prompt = calculate_pad_tokens_in_prompt(prompt_completion_ids, logits_to_keep, self.processing_class.pad_token_id)
-                max_left_pad = torch.max(left_pad_tokens_per_prompt).item()
+            _unsloth_text_only = not has_images
+        except NameError:
+            try:
+                _unsloth_text_only = images is None
+            except NameError:
+                _unsloth_text_only = True
+        if _unsloth_text_only:
+            # Left pad prompt before calculation old and ref hidden states
+            left_pad_tokens_per_prompt = calculate_pad_tokens_in_prompt(prompt_completion_ids, logits_to_keep, self.processing_class.pad_token_id)
+            max_left_pad = torch.max(left_pad_tokens_per_prompt).item()
         _use_gc = self.model._unsloth_gradient_checkpointing if hasattr(self.model, '_unsloth_gradient_checkpointing') else getattr(self.args, 'gradient_checkpointing', True)
         self.model.for_training(use_gradient_checkpointing=_use_gc)"""
 
