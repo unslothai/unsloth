@@ -2494,19 +2494,45 @@ def test_begin_load_rejects_concurrent(monkeypatch):
     monkeypatch.setattr(
         DiffusionBackend, "_estimate_download_bytes", staticmethod(lambda *a, **k: (0, []))
     )
-    # Block the spawned worker so the load stays "in progress".
-    monkeypatch.setattr(
-        DiffusionBackend, "load_pipeline", lambda self, **k: __import__("time").sleep(0.2)
-    )
+    # Hold the spawned worker inside the load. It waits on an event this test owns rather
+    # than sleeping for a fixed 0.2s, because the drain below has to join it and joining a
+    # thread that has not begun running raises. threading.enumerate() lists threads that
+    # have called start() but not yet started executing (CPython holds them in _limbo), so
+    # the fire-and-forget worker can be enumerated and unjoinable at the same instant. That
+    # is what failed run 35542154102, on a commit that touched none of this:
+    #
+    #   tests/test_diffusion_backend.py:2509: in test_begin_load_rejects_concurrent
+    #       thread.join(timeout = 5)
+    #   RuntimeError: cannot join thread before it is started
+    #
+    # Waiting for the worker to signal from inside load_pipeline closes that window: a
+    # thread that has reached the target is a thread that has started. It also makes the
+    # rejection below an assertion about a load that is genuinely running, rather than one
+    # that happens to be inside a sleep that has not elapsed yet.
+    holding = threading.Event()
+    entered = threading.Event()
+
+    def held(self, **kwargs):
+        entered.set()
+        # Bounded so a mistake here cannot hang the suite. The release below is what is
+        # expected to end this wait; the timeout is only a backstop.
+        assert holding.wait(timeout = 30), "the test never released the load worker"
+
+    monkeypatch.setattr(DiffusionBackend, "load_pipeline", held)
     before = set(threading.enumerate())
     backend.begin_load("unsloth/Z-Image-Turbo-GGUF", gguf_filename = "z-image-turbo-Q4_K_S.gguf")
+    assert entered.wait(timeout = 30), "the load worker never reached load_pipeline"
     with pytest.raises(RuntimeError):
         backend.begin_load("unsloth/Z-Image-Turbo-GGUF", gguf_filename = "z-image-turbo-Q4_K_S.gguf")
-    # Drain the worker while the stubs above still make it exit in 0.2s: begin_load's thread is
-    # fire-and-forget, so left running it outlives this test and then runs the REAL load_pipeline
-    # inside whatever test is current, under that test's patches.
+    # Drain the worker: begin_load's thread is fire-and-forget, so left running it outlives
+    # this test and then runs the REAL load_pipeline inside whatever test is current, under
+    # that test's patches.
+    holding.set()
     for thread in set(threading.enumerate()) - before:
-        thread.join(timeout = 5)
+        # Anything else that happened to be in limbo when the set above was taken belongs to
+        # another test, not to this one; skipping it is right, and joining it would be wrong.
+        if thread.ident is not None:
+            thread.join(timeout = 5)
 
 
 def test_unload_cancels_in_flight_load(fake_runtime):
