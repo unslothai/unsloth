@@ -74,7 +74,7 @@ def _timeout_minutes() -> int:
 # FORM is recognised here and the number is parsed separately, and a duration that cannot
 # be parsed fails rather than going unseen.
 _HOLD_CLAIM = re.compile(
-    r"\b(?:hold\w*|occup\w*|tie[sd]?\s+up)\b[^.;]{0,80}?\bfor\s+"
+    r"\b(?:hold\w*|held|occup\w*|tie[sd]?\s+up)\b[^.;]{0,80}?\bfor\s+"
     r"(?:about\s+|roughly\s+|around\s+|nearly\s+|almost\s+|approximately\s+|"
     r"up\s+to\s+|at\s+least\s+|at\s+most\s+|no\s+more\s+than\s+|over\s+|under\s+|"
     r"as\s+(?:much|long)\s+as\s+|~\s*)*"
@@ -147,6 +147,14 @@ def _clause_before(text: str, position: int) -> str:
 _HANGS = re.compile(r"(?<![\w-])(?:hangs?|hanging|hung)(?![\w-])", re.I)
 _NEGATED = re.compile(r"(?<![\w-])(?:not|never|non|no|without)(?![\w-])|n't", re.I)
 
+# A second holder in the same subject. "One hanging cell and one working cell each hold a
+# runner for ten minutes" says the false thing about the working one, and a qualifier that
+# covers only part of a subject cannot excuse the whole claim.
+_ANOTHER_HOLDER = re.compile(
+    r"(?<![\w-])(?:and|or|each|both|either|working|healthy|normal|successful)(?![\w-])",
+    re.I,
+)
+
 
 def _about_a_hung_cell(text: str, position: int) -> bool:
     """Is the thing doing the holding a cell that hangs, said positively?"""
@@ -154,7 +162,10 @@ def _about_a_hung_cell(text: str, position: int) -> bool:
     hangs = _HANGS.search(clause)
     if not hangs:
         return False
-    return not _NEGATED.search(clause[: hangs.start()])
+    if _NEGATED.search(clause[: hangs.start()]):
+        return False
+    # The qualifier has to cover the whole subject, not one member of a list.
+    return not _ANOTHER_HOLDER.search(clause)
 
 
 def test_the_rationale_and_the_timeout_are_both_still_there():
