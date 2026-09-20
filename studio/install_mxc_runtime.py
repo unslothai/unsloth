@@ -35,6 +35,21 @@ import urllib.request
 MXC_VERSION = "0.8.0"
 REGISTRY_URL = f"https://registry.npmjs.org/@microsoft/mxc-sdk/-/mxc-sdk-{MXC_VERSION}.tgz"
 
+# wxc-exec.exe is the security boundary for every isolated Windows tool call,
+# so what gets installed is pinned by digest and a mismatch REFUSES rather than
+# warning. Without this a compromised registry response, mirror or republished
+# artifact becomes the sandbox and the install still reports success.
+#
+# Recorded from the artifact the Windows qualification job ran against, and
+# cross-checked against the registry's own integrity metadata for 0.8.0
+# (sha512-pnf5QsASwp+qtRi5uth2GDjwuyG0rHWRpxCf3RbAjQ4wDTNfBX/9l0A+RVZspU2agpF3/11uWB1JisIS7WrNYg==).
+# Bumping MXC_VERSION means recording these again from the new tarball.
+TARBALL_SHA256 = "06bb2399d7e98ab1907acf851e12a4e44748dd467b79d3e53c2f2fbf569da14e"
+EXECUTOR_SHA256 = {
+    "x64": "6049c64723af1173c3739dc6cd6b2f33f6c021bb2832c4216233cba7f71aee9a",
+    "arm64": "dde1c592270e9a659b01dccad70362da7b99fec114885fa4d625507aa775a503",
+}
+
 # What the Windows backend actually launches, plus the helpers MXC's own
 # ProcessContainer path expects to find beside it.
 REQUIRED = ("wxc-exec.exe",)
@@ -57,10 +72,14 @@ def default_dest() -> str:
     override = os.environ.get("UNSLOTH_MXC_DIR")
     if override:
         return override
+    # The same resolution the backend uses, so the installer and
+    # sandbox_windows.managed_mxc_dir never disagree about where the executor
+    # lives. Degraded rather than raising: setup can run before the backend
+    # is importable at all.
     try:
-        sys.path.insert(0, os.path.join(os.path.dirname(__file__), "backend"))
-        from utils.studio_paths import studio_home
-        return os.path.join(str(studio_home()), "mxc")
+        sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "backend"))
+        from core.inference.sandbox_windows import managed_mxc_dir
+        return managed_mxc_dir()
     except Exception:  # noqa: BLE001 - setup can run before the backend imports
         return os.path.join(os.path.expanduser("~"), ".unsloth", "mxc")
 
@@ -105,11 +124,31 @@ def extract(tarball: str, arch: str, dest: str) -> list[str]:
     return written
 
 
+def verify(path: str, expected: str, what: str) -> str:
+    """Refuse anything whose digest is not the pinned one."""
+    actual = digest(path)
+    if actual != expected:
+        raise SystemExit(
+            f"{what} does not match the pinned SHA-256 for MXC {MXC_VERSION}.\n"
+            f"  expected {expected}\n"
+            f"  got      {actual}\n"
+            "Windows tool isolation was NOT installed. This is what a tampered "
+            "mirror or a republished artifact looks like; if the version was "
+            "bumped deliberately, record the new digests in install_mxc_runtime.py."
+        )
+    return actual
+
+
 def install(dest: str) -> dict:
     arch = arch_dir()
+    expected_executor = EXECUTOR_SHA256.get(arch)
+    if expected_executor is None:
+        raise SystemExit(f"no pinned MXC executor digest for {arch}")
     with tempfile.TemporaryDirectory() as scratch:
         tarball = download(REGISTRY_URL, scratch)
-        tarball_sha = digest(tarball)
+        # Before extraction, so nothing from an unrecognised tarball is ever
+        # written into the destination.
+        tarball_sha = verify(tarball, TARBALL_SHA256, "the MXC tarball")
         written = extract(tarball, arch, dest)
 
     missing = [name for name in REQUIRED if name not in written]
@@ -120,12 +159,15 @@ def install(dest: str) -> dict:
         )
 
     executor = os.path.join(dest, "wxc-exec.exe")
+    # Checked again after extraction: the tarball digest covers what was
+    # downloaded, this covers what is now on disk and about to be run.
+    executor_sha = verify(executor, expected_executor, f"the installed {arch} wxc-exec.exe")
     return {
         "version": MXC_VERSION,
         "arch": arch,
         "dest": dest,
         "executor": executor,
-        "executor_sha256": digest(executor),
+        "executor_sha256": executor_sha,
         "tarball_sha256": tarball_sha,
         "installed": sorted(written),
     }
@@ -202,17 +244,23 @@ def main() -> int:
     if args.verify_only:
         executor = os.path.join(dest, "wxc-exec.exe")
         present = os.path.isfile(executor)
+        actual = digest(executor) if present else None
+        expected = EXECUTOR_SHA256.get(arch_dir())
         print(
             json.dumps(
                 {
                     "present": present,
                     "executor": executor,
-                    "executor_sha256": digest(executor) if present else None,
+                    "executor_sha256": actual,
+                    "expected_sha256": expected,
+                    # Presence alone is not verification: an executor replaced
+                    # after installation would still be "present".
+                    "matches_pin": present and actual == expected,
                 },
                 indent = 2,
             )
         )
-        return 0 if present else 1
+        return 0 if (present and actual == expected) else 1
 
     if args.prepare_host:
         print(json.dumps(prepare_host(dest, args.prepare_host_timeout), indent = 2))

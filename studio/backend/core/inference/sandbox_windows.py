@@ -152,8 +152,10 @@ def available() -> tuple[bool, str]:
     executor = executable_path()
     if executor is None:
         return False, (
-            "the MXC sandbox executor is not installed "
-            "(Studio setup installs it; re-run setup to repair it)"
+            "the MXC sandbox executor is not installed. Studio setup installs "
+            "it when the Windows isolation preview is enabled, so re-run setup "
+            "with UNSLOTH_WINDOWS_SANDBOX_PREVIEW=1, or install it directly "
+            "with: python studio/install_mxc_runtime.py"
         )
     try:
         probe = subprocess.run(
@@ -191,6 +193,23 @@ def _system_roots() -> list[str]:
     return roots
 
 
+def _within(path: str, root: str) -> bool:
+    """Whether ``path`` is inside ``root``, without raising on a Windows host.
+
+    ``os.path.commonpath`` raises ValueError when its arguments sit on
+    different drives, which is an ordinary Windows layout: the interpreter on
+    C: and the sandbox home or the project on D:. Left to propagate it fails
+    every policy build, and ``prepare`` turns that into SandboxBuildError, so
+    even `auto` would refuse the tool call instead of falling back. Different
+    drives simply means not inside.
+    """
+    try:
+        common = os.path.commonpath([path, root])
+    except ValueError:
+        return False
+    return os.path.normcase(common) == os.path.normcase(root)
+
+
 def _readonly_roots(workdir: str) -> list[str]:
     """What the interpreter needs to start, and nothing else.
 
@@ -203,7 +222,7 @@ def _readonly_roots(workdir: str) -> list[str]:
         # there; granting it again read-only would be contradictory.
         if not path or not os.path.isdir(path) or path in roots:
             continue
-        if os.path.normcase(os.path.commonpath([path, workdir])) == os.path.normcase(workdir):
+        if _within(path, workdir):
             continue
         roots.append(path)
     interpreter = os.path.dirname(os.path.realpath(sys.executable))

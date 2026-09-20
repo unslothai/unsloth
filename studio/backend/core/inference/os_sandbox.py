@@ -322,6 +322,38 @@ def _linux_userns_blocked_by_apparmor() -> bool:
     return probe.returncode != 0
 
 
+def _path_from_file_url(parsed, is_windows: bool | None = None) -> str:
+    """Decode a PEP 610 ``file:`` URL into a path this platform can open.
+
+    ``abspath(unquote(parsed.path))`` is right on POSIX and wrong on Windows.
+    The standard form ``file:///C:/Users/me/project`` has a path component of
+    ``/C:/Users/me/project``; that leading slash is URL syntax, and Windows
+    ``abspath`` reads it as drive-root-relative and yields
+    ``\\C:\\Users\\me\\project``. The following ``isdir`` then drops the
+    editable source root, so the sandbox policy never grants the tree the
+    PEP 660 finder needs and editable imports fail inside an isolated call.
+
+    The authority is handled separately because on Windows it is a UNC host
+    rather than part of the path at all. ``is_windows`` is a parameter so the
+    Windows decode is testable from any host; it defaults to the real one.
+    """
+    from urllib.parse import unquote
+
+    windows = (os.name == "nt") if is_windows is None else is_windows
+    host = (parsed.netloc or "").strip()
+    path = unquote(parsed.path or "")
+    if not windows:
+        if host and host.lower() != "localhost":
+            return ""     # a remote host is not a local editable source root
+        return os.path.abspath(path)
+    path = path.replace("/", "\\")
+    if host and host.lower() != "localhost":
+        return "\\\\" + host + path
+    if len(path) >= 3 and path[0] == "\\" and path[2] == ":":
+        path = path[1:]
+    return path
+
+
 @functools.lru_cache(maxsize = 1)
 def editable_source_roots() -> tuple[str, ...]:
     """Editable code outside site-packages, from PEP 610 records shared by .pth and PEP 660 installs."""
@@ -329,7 +361,7 @@ def editable_source_roots() -> tuple[str, ...]:
     try:
         from importlib import metadata
         import json
-        from urllib.parse import unquote, urlparse
+        from urllib.parse import urlparse
     except Exception:  # noqa: BLE001 - never fail a launch over this
         return ()
     try:
@@ -347,10 +379,10 @@ def editable_source_roots() -> tuple[str, ...]:
             parsed = urlparse(record.get("url", ""))
             if parsed.scheme != "file":
                 continue
-            path = os.path.abspath(unquote(parsed.path))
+            path = _path_from_file_url(parsed)
         except Exception:  # noqa: BLE001 - a malformed record is not a launch failure
             continue
-        if path in ("/", "/usr") or not os.path.isdir(path):
+        if not path or path in ("/", "/usr") or not os.path.isdir(path):
             continue
         for importable in _importable_entries(path, _declared_names(dist)):
             if importable not in roots:

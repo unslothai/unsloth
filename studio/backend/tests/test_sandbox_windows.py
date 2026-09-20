@@ -311,3 +311,126 @@ def test_the_install_directory_resolves_without_utils_paths(monkeypatch):
     directory = sandbox_windows.managed_mxc_dir()
 
     assert directory.endswith("mxc")
+
+
+def test_a_workdir_on_another_drive_does_not_break_the_policy_build():
+    """os.path.commonpath raises ValueError across Windows drives.
+
+    Left to propagate it fails every policy build for the ordinary layout of
+    the interpreter on C: and the sandbox home on D:, and prepare() turns that
+    into SandboxBuildError, so even `auto` refuses the tool call instead of
+    falling back to software safeguards. Forced here with a relative path,
+    which raises the same ValueError on every platform.
+    """
+    assert sandbox_windows._within("relative/path", os.path.abspath(os.sep)) is False
+
+
+def test_a_different_drive_counts_as_outside_the_workdir(monkeypatch):
+    """The guard must answer "outside", not swallow the question."""
+    def different_drives(paths):
+        raise ValueError("Paths don't have the same drive")
+
+    monkeypatch.setattr(os.path, "commonpath", different_drives)
+
+    assert sandbox_windows._within("D:\\project", "C:\\workdir") is False
+
+
+def test_a_windows_editable_url_decodes_to_a_drive_path():
+    """file:///C:/Users/me/project must not decode to \\C:\\Users\\me\\project.
+
+    The naive decode keeps the URL's leading slash, the isdir check then drops
+    the source root, and editable imports fail inside an isolated tool call.
+    """
+    from urllib.parse import urlparse
+
+    decoded = os_sandbox._path_from_file_url(
+        urlparse("file:///C:/Users/me/my%20project"), is_windows = True)
+
+    assert decoded == "C:\\Users\\me\\my project"
+
+
+def test_a_unc_editable_url_keeps_its_host():
+    """The authority is a UNC host on Windows, not part of the path."""
+    from urllib.parse import urlparse
+
+    decoded = os_sandbox._path_from_file_url(
+        urlparse("file://server/share/project"), is_windows = True)
+
+    assert decoded == "\\\\server\\share\\project"
+
+
+def test_posix_editable_url_decoding_is_unchanged():
+    """The Windows fix must cost Linux and macOS nothing."""
+    from urllib.parse import unquote, urlparse
+
+    url = "file:///home/me/my%20project"
+    parsed = urlparse(url)
+
+    assert os_sandbox._path_from_file_url(parsed, is_windows = False) == \
+        os.path.abspath(unquote(parsed.path))
+
+
+def test_windows_setup_installs_the_sandbox_executor():
+    """The executor must arrive through a supported setup path.
+
+    A tool call must never download its own sandbox, so setup is the only
+    route, and available() tells users to re-run setup. Without this wiring
+    that message is false and the preview always falls back.
+    """
+    setup = os.path.join(
+        os.path.dirname(__file__), "..", "..", "setup.ps1")
+    with open(setup, encoding = "utf-8") as handle:
+        body = handle.read()
+
+    assert "install_mxc_runtime.py" in body
+    assert "UNSLOTH_WINDOWS_SANDBOX_PREVIEW" in body
+
+
+def _installer_module():
+    import importlib.util
+
+    path = os.path.join(os.path.dirname(__file__), "..", "..", "install_mxc_runtime.py")
+    spec = importlib.util.spec_from_file_location("install_mxc_runtime", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_a_tampered_tarball_is_refused_before_anything_is_extracted(tmp_path, monkeypatch):
+    """wxc-exec.exe is the boundary, so an unrecognised artifact must not install.
+
+    Without the pin a compromised registry response, mirror or republished
+    artifact silently becomes the sandbox while the install reports success.
+    The refusal has to come BEFORE extraction, so nothing from it is ever
+    written into the destination.
+    """
+    installer = _installer_module()
+    dest = tmp_path / "mxc"
+    dest.mkdir()
+
+    def fake_download(url, into):
+        target = os.path.join(into, "mxc-sdk.tgz")
+        with open(target, "wb") as handle:
+            handle.write(b"not the pinned tarball")
+        return target
+
+    extracted = []
+    monkeypatch.setattr(installer, "download", fake_download)
+    monkeypatch.setattr(installer, "extract", lambda *a: extracted.append(a) or ["wxc-exec.exe"])
+
+    with pytest.raises(SystemExit) as refusal:
+        installer.install(str(dest))
+
+    assert "pinned SHA-256" in str(refusal.value)
+    assert extracted == []
+    assert list(dest.iterdir()) == []
+
+
+def test_the_pinned_digests_are_recorded_for_both_architectures():
+    """A bump that forgets one arch must fail here, not on a user's machine."""
+    installer = _installer_module()
+
+    assert set(installer.EXECUTOR_SHA256) == {"x64", "arm64"}
+    assert len(installer.TARBALL_SHA256) == 64
+    for value in installer.EXECUTOR_SHA256.values():
+        assert len(value) == 64

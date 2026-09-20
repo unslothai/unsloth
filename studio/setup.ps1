@@ -8541,6 +8541,51 @@ if ($env:WHISPER_SERVER_PATH -or $env:UNSLOTH_WHISPER_CPP_PATH) {
     }
 }
 
+# ==========================================================================
+#  PHASE 3.45: Install the MXC sandbox executor (Windows tool isolation)
+# ==========================================================================
+# Only when the user has opted into the Windows isolation preview. Off by
+# default it stays off: a 26 MB download on every Windows install would buy
+# nothing, since the backend is not selected unless the preview is enabled.
+# Never fatal, because the sandbox falls back to today's software safeguards
+# and setup completing matters more than an optional preview component.
+#
+# A tool call must never download its own sandbox executor, so this is the
+# only supported way the executor arrives, and the backend's "re-run setup"
+# message points here.
+$MxcInstaller = Join-Path $PSScriptRoot "install_mxc_runtime.py"
+$MxcPreview = ("$($env:UNSLOTH_WINDOWS_SANDBOX_PREVIEW)".Trim() -eq "1")
+if (-not $MxcPreview) {
+    if ($script:UnslothVerbose) {
+        substep "Windows tool isolation: preview not enabled; skipping the MXC executor install"
+    }
+} elseif ($env:UNSLOTH_SKIP_MXC_INSTALL -eq "1") {
+    substep "Windows tool isolation: install skipped (UNSLOTH_SKIP_MXC_INSTALL=1)"
+} elseif (-not (Test-Path -LiteralPath $MxcInstaller)) {
+    substep "Windows tool isolation: installer not found; skipping" "Yellow"
+} else {
+    substep "installing the MXC sandbox executor for Windows tool isolation..."
+    $mxcOutput = ""
+    $prevEAPMxc = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    try {
+        $mxcOutput = (& python $MxcInstaller 2>&1 | Out-String)
+        $mxcExit = $LASTEXITCODE
+    } catch {
+        $mxcOutput = "$_"
+        $mxcExit = 1
+    } finally {
+        $ErrorActionPreference = $prevEAPMxc
+    }
+    if ($mxcExit -eq 0) {
+        step "tool isolation" "MXC sandbox executor installed"
+        substep "Run 'python `"$MxcInstaller`" --prepare-host' from an elevated terminal to complete host preparation"
+    } else {
+        step "tool isolation" "MXC sandbox executor install failed; tool calls keep today's software safeguards" "Yellow"
+        if ($script:UnslothVerbose -and $mxcOutput) { Write-StudioLine $mxcOutput.Trim() -ForegroundColor DarkGray }
+    }
+}
+
 if ($StageRoot -and $NeedLlamaSourceBuild) {
     Exit-SetupFailure "Background staging cannot install system build tools for llama.cpp; retry with the foreground updater."
 }
