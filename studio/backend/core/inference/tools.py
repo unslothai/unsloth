@@ -16481,6 +16481,18 @@ def _check_signal_escape_patterns(code: str):
             for position, target in history:
                 if position == last:
                     return target
+            # The nearest binding is not an alias. If it only runs when a branch is taken, the
+            # alias above it is still a value this call can see, and resolving to it only ever
+            # adds a name the policy checks.
+            unconditional = [
+                position for position in before if position not in self._conditional_bindings
+            ]
+            newest_alias = max((position for position, _target in history), default = None)
+            if newest_alias is not None and newest_alias <= last:
+                if not unconditional or max(unconditional) <= newest_alias:
+                    for position, target in history:
+                        if position == newest_alias:
+                            return target
             return None
 
         def _class_binding_applies(self, scope, key, node) -> bool:
@@ -16521,6 +16533,14 @@ def _check_signal_escape_patterns(code: str):
                 for inner in ast.walk(statement):
                     if isinstance(inner, ast.Name) and isinstance(inner.ctx, ast.Store):
                         self._conditional_bindings.add(self._position(inner))
+
+        def is_bound(self, name: str, node) -> bool:
+            """Whether the source binds this name anywhere the use can see, which is what says a
+            builtin has been shadowed."""
+            for scope in self._chain(node):
+                if (scope, name) in self._counts:
+                    return True
+            return False
 
         def possible_values(self, name: str, node) -> list:
             """Every value the name can hold at *node*: the last unconditional assignment that
@@ -17120,7 +17140,11 @@ def _check_signal_escape_patterns(code: str):
                 if steps > _MAX_EXTERNAL_STEPS:
                     return True
                 if isinstance(sub, ast.Call) and isinstance(sub.func, ast.Name):
-                    if sub.func.id in ("input", "getpass"):
+                    if sub.func.id in ("input", "getpass") and not bindings.is_bound(
+                        sub.func.id, sub.func
+                    ):
+                        # Only the builtin reads a terminal. A local def by that name returns
+                        # whatever the source says it returns.
                         return True
                 if isinstance(sub, ast.Attribute) and isinstance(sub.value, ast.Name):
                     if sub.value.id == "sys" and sub.attr in ("argv", "stdin"):
@@ -17269,7 +17293,10 @@ def _check_signal_escape_patterns(code: str):
             if isinstance(func, ast.Name) and func.id == "open":
                 return True
             fq = _canonical_fq(func, _bindings)
-            return fq in _PATHLIB_FQ or fq.endswith(".Path") or fq == "os.fdopen"
+            if fq in _PATHLIB_FQ or fq.endswith(".Path"):
+                return True
+            # io.open, os.fdopen, Path(...).open(): whatever the owner, `open` hands back a file.
+            return fq.rpartition(".")[2] in ("open", "fdopen")
         if isinstance(node, ast.Name):
             # `f1 = f0` repeated is a chain, so it is followed rather than recursed through.
             seen: set = set()
@@ -17501,12 +17528,16 @@ def _check_signal_escape_patterns(code: str):
         assignment can hold at the call."""
         if not isinstance(url_node, ast.Name):
             return []
+        values = _bindings.possible_values(url_node.id, url_node)[:_MAX_RESOLVE_DEPTH]
+        if len(values) < 2:
+            # One value can hold, so the ordinary resolution already answered for it.
+            return []
         out: list = []
-        for value in _bindings.possible_values(url_node.id, url_node)[:_MAX_RESOLVE_DEPTH]:
+        for value in values:
             host, _resolved = _host_from_url_node(value, _bindings)
             if host and host not in out:
                 out.append(host)
-        return out if len(out) > 1 else []
+        return out
 
     def _configured_host_node(node: ast.Call, fq: str):
         """Where a client is handed its host. `httpx.Client(base_url = ...)` followed by

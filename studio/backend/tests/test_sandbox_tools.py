@@ -4296,3 +4296,74 @@ class TestFileReceiverChainsAreBounded:
             'import requests\nf0 = open("target")\n' + chain + "requests.get(f1499.read())"
         )
         assert message is not None and "request target is read" in message
+
+
+class TestKnownHostsAmongUnknownOnes:
+    """A host that is known has to be screened even when a sibling value is not."""
+
+    def test_a_known_blocked_host_beside_an_unresolvable_one_is_refused(self):
+        _blocked(
+            f'import requests\nurl = make_url()\nif flag:\n    url = "{_METADATA_URL}"\n'
+            "requests.get(url)",
+            expect_phrase = "Blocked: cloud-metadata host",
+        )
+
+    def test_a_known_allowed_host_beside_an_unresolvable_one_is_fine_ok(self):
+        _ok(
+            "import requests\nurl = make_url()\nif flag:\n"
+            '    url = "https://huggingface.co/x"\nrequests.get(url)'
+        )
+
+
+class TestAliasesAcrossConditionalRebinds:
+    """A rebind that only runs when a branch is taken does not remove the alias above it."""
+
+    def test_a_conditional_rebind_keeps_the_alias_policed(self):
+        _blocked(
+            f'import requests as r\nif flag:\n    r = stub\nr.get("{_METADATA_URL}")',
+            expect_phrase = "Blocked: cloud-metadata host",
+        )
+
+    def test_an_unconditional_rebind_still_ends_the_alias_ok(self):
+        _ok(f'import requests as r\nr = stub\nr.get("{_METADATA_URL}")')
+
+
+class TestOtherWaysOfOpeningAFile:
+    """`open` hands back a file whatever spells it."""
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            pytest.param(
+                'import io, requests\nrequests.get(io.open("target.txt").read())', id = "io_open"
+            ),
+            pytest.param(
+                "from pathlib import Path\nimport requests\n"
+                'requests.get(Path("t.txt").open().read())',
+                id = "path_open",
+            ),
+        ],
+    )
+    def test_a_handle_from_an_open_method_is_a_file_read(self, code):
+        _blocked(code, expect_phrase = "Blocked: request target is read")
+
+    def test_an_in_memory_reader_is_still_not_one_ok(self):
+        _ok('import io, requests\nrequests.get(io.StringIO("https://huggingface.co/x").read())')
+
+
+class TestShadowedInputHelpers:
+    """Only the builtin reads a terminal."""
+
+    def test_a_locally_defined_input_is_not_an_external_source_ok(self):
+        _ok(
+            "import requests\n"
+            "def input():\n"
+            '    return "https://huggingface.co/x"\n'
+            "requests.get(input())"
+        )
+
+    def test_the_real_input_is_still_refused(self):
+        _blocked(
+            "import requests\nrequests.get(input())",
+            expect_phrase = "Blocked: request target is read",
+        )
