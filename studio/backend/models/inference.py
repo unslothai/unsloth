@@ -3386,6 +3386,29 @@ def _merge_anthropic_system(system: Any, additions: list[str]) -> Any:
     return system
 
 
+_CLAUDE_STYLE_REMINDER_SUFFIX = (
+    " output style is active. Remember to follow the specific guidelines for this style."
+)
+
+
+def _is_repeated_claude_style_reminder(text: str, retained_system: list[str]) -> bool:
+    """Keep Claude's per-tool style reminder from growing an unchanged system prefix.
+
+    Only the exact standalone reminder is redundant, and only when both its style
+    heading and an identical reminder are already retained. Never deduplicate
+    arbitrary instructions or text from user/tool messages.
+    """
+    if not text.endswith(_CLAUDE_STYLE_REMINDER_SUFFIX):
+        return False
+    style = text[: -len(_CLAUDE_STYLE_REMINDER_SUFFIX)]
+    if not style or "\n" in style or "\r" in style:
+        return False
+    heading = f"# Output Style: {style}"
+    return any(heading in part.splitlines() for part in retained_system) and any(
+        text in part.split("\n\n") for part in retained_system
+    )
+
+
 class AnthropicMessage(BaseModel):
     role: Literal["user", "assistant"]
     content: Union[str, list[AnthropicContentBlock]]
@@ -3561,13 +3584,15 @@ class AnthropicMessagesRequest(BaseModel):
 
         normalized_messages: list[Any] = []
         system_additions: list[str] = []
+        retained_system = [_anthropic_content_to_system_text(data.get("system"))]
         changed = False
 
         for message in messages:
             if isinstance(message, dict) and message.get("role") == "system":
-                system_additions.append(
-                    _anthropic_content_to_system_text(message.get("content", ""))
-                )
+                text = _anthropic_content_to_system_text(message.get("content", ""))
+                if not _is_repeated_claude_style_reminder(text, retained_system):
+                    system_additions.append(text)
+                    retained_system.append(text)
                 changed = True
                 continue
             normalized_messages.append(message)

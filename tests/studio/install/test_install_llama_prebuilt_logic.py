@@ -7010,6 +7010,23 @@ def test_the_planner_records_the_newest_release_a_mac_walked_past(monkeypatch):
     assert plans[0].walk_back is None
 
 
+def test_a_late_rocm_listing_failure_keeps_the_vulkan_plan(monkeypatch):
+    module = INSTALL_LLAMA_PREBUILT
+    vulkan = release_plan([asset_choice(install_kind = "linux-vulkan")], release_checksums())
+
+    def rocm_plans():
+        yield vulkan
+        raise urllib.error.URLError("CDN down, API timed out")
+
+    monkeypatch.setattr(
+        module,
+        "resolve_simple_install_release_plans",
+        lambda *args: ("latest", module.LazyReleasePlans(rocm_plans())),
+    )
+    kept = module._with_rocm_behind_vulkan([vulkan], "latest", linux_host(), "", "")
+    assert [plan.release_tag for plan in kept] == [vulkan.release_tag]
+
+
 def test_a_reused_marker_takes_the_walk_back_this_run_made():
     """sync_marker_selection: a kept install on a Mac gains the walk-back record a
     marker written before it existed lacks (both keys), and a plan that no longer
