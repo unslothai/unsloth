@@ -21,6 +21,8 @@ export const RECENTS_ORDER_SCOPE = "recents";
 export const PINNED_ORDER_SCOPE = "pinned";
 // The project folders themselves, which drag regardless of the chat sort.
 export const PROJECT_ORDER_SCOPE = "projects";
+// Pinned folders reorder among themselves: one list's drag must not renumber the other's.
+export const PINNED_PROJECT_ORDER_SCOPE = "pinned-projects";
 
 export function projectOrderScope(projectId: string): string {
   return `project:${projectId}`;

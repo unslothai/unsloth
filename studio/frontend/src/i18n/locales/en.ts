@@ -165,6 +165,8 @@ export const en = {
       export: "Export",
       recents: "Recents",
       noChatsYet: "No chats yet",
+      // Shown under an empty project folder in the sidebar.
+      noChats: "No chats",
       showMore: "Show more",
       showLess: "Show less",
       settings: "Settings",
@@ -1256,7 +1258,11 @@ export const en = {
       },
       gpu: {
         title: "GPU devices",
-        ggufInference: "GGUF inference",
+        memory: "GPU memory",
+        sharedWithSystemRam: "Shared with system RAM",
+        estimatedAvailable: "Estimated available: {value}",
+        sharedEstimatedAvailable: "Shared system RAM: estimated {value} available",
+        ggufInference: "GGUF model memory",
         unavailable: "unavailable",
         detecting: "Checking for GPUs...",
         unreadable: "Could not read this server's hardware.",
