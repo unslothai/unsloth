@@ -2,9 +2,10 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import pytest
-from datasets import Dataset
+from datasets import Dataset, IterableDataset
 
 import utils.hardware
+from utils.datasets import chat_templates
 from utils.datasets import apply_chat_template_to_dataset, format_and_template_dataset
 
 
@@ -119,6 +120,53 @@ def test_a_column_named_like_the_marker_is_not_clobbered():
     assert len(formatted) == 5
     assert sorted(formatted.column_names) == ["__chat_template_error", "messages", "text"]
     assert formatted["__chat_template_error"] == [f"user-data-{i}" for i in (0, 2, 3, 6, 7)]
+
+
+def test_a_marker_named_column_survives_a_schema_less_stream():
+    """A generator-backed IterableDataset reports column_names AND features as None.
+
+    Taking that as "no columns" picks the plain marker name, and remove_columns then
+    deletes the user's own column from every row that survived.
+    """
+    def rows():
+        for i in range(8):
+            yield {
+                "messages": _convo(i, with_system = i in (1, 4, 5)),
+                "__chat_template_error": f"user-data-{i}",
+            }
+
+    dataset = IterableDataset.from_generator(rows)
+    assert dataset.column_names is None and dataset.features is None
+
+    result = apply_chat_template_to_dataset(_dataset_info(dataset), _StrictTokenizer())
+
+    assert result["success"] is True
+    kept = list(result["dataset"])
+    assert [row["__chat_template_error"] for row in kept] == [
+        f"user-data-{i}" for i in (0, 2, 3, 6, 7)
+    ]
+
+
+def test_failures_spread_across_scan_batches_are_all_counted(monkeypatch):
+    """The error column is scanned and filtered in batches, so a batch boundary is a seam.
+
+    Counting or first-error logic that only looked at one batch would under-report here.
+    """
+    monkeypatch.setattr(chat_templates, "_ERROR_SCAN_BATCH", 3)
+    n = 20
+    bad = {0, 4, 5, 11, 19}
+    dataset = Dataset.from_dict(
+        {"messages": [_convo(i, with_system = i in bad) for i in range(n)]}
+    )
+
+    result = apply_chat_template_to_dataset(_dataset_info(dataset), _StrictTokenizer())
+
+    assert result["success"] is True
+    assert len(result["dataset"]) == n - len(bad)
+    assert result["dropped_rows_warning"] == (
+        "Dropped 5 of 20 rows because the chat template failed: System role not supported"
+    )
+    assert result["dataset"].column_names == ["messages", "text"]
 
 
 def test_all_rows_failing_still_returns_the_dropped_rows_key():

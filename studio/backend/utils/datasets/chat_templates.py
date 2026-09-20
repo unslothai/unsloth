@@ -28,6 +28,10 @@ DEFAULT_ALPACA_TEMPLATE = """Below is an instruction that describes a task, pair
 
 _TEMPLATE_ERROR_COLUMN = "__chat_template_error"
 
+# Rows per batch when scanning or filtering the error column, so neither pass
+# materialises the whole column in Python.
+_ERROR_SCAN_BATCH = 10_000
+
 _CUSTOM_PROMPT_TEMPLATE_ERROR = (
     "custom_prompt_template is deprecated and unsupported because Unsloth Studio cannot persist a "
     "matching template for inference. Pass None to continue without a custom prompt template."
@@ -339,7 +343,11 @@ def apply_chat_template_to_dataset(
 
         # Never clobber a real column: a dataset is allowed to already carry one named
         # like our marker, and remove_columns would then delete the user's own data.
-        existing_columns = set(getattr(dataset, "column_names", None) or ())
+        # A generator-backed IterableDataset reports column_names AND features as None,
+        # so resolve_column_names' first-row probe is what sees the column there.
+        from .raw_text import resolve_column_names
+
+        existing_columns = set(resolve_column_names(dataset))
         error_column = _TEMPLATE_ERROR_COLUMN
         while error_column in existing_columns:
             error_column += "_"
@@ -429,11 +437,35 @@ def apply_chat_template_to_dataset(
                     _keep_streamed_row, input_columns = [error_column]
                 ).remove_columns(error_column)
             elif len(formatted_dataset):
-                row_errors = list(formatted_dataset[error_column])
-                failed = [row_error for row_error in row_errors if row_error]
-                if failed and len(failed) == len(row_errors):
+                # Everything here stays Arrow-side and batched. Reading the error column
+                # into a Python list, or building one index per surviving row, costs a
+                # measured 85 MB at 2M rows (70 MB of it the index list) and scales
+                # linearly, so a dataset of tens of millions of mostly valid rows could be
+                # killed during formatting.
+                n_total = len(formatted_dataset)
+                kept = formatted_dataset.filter(
+                    lambda row_errors: [not row_error for row_error in row_errors],
+                    input_columns = [error_column],
+                    batched = True,
+                    batch_size = _ERROR_SCAN_BATCH,
+                    desc = "Dropping rows whose chat template failed",
+                )
+                n_failed = n_total - len(kept)
+                if n_failed:
+                    first_error = next(
+                        (
+                            row_error
+                            for batch in formatted_dataset.select_columns(
+                                [error_column]
+                            ).iter(batch_size = _ERROR_SCAN_BATCH)
+                            for row_error in batch[error_column]
+                            if row_error
+                        ),
+                        "",
+                    )
+                if n_failed == n_total:
                     errors.append(
-                        f"Chat template failed on all {len(row_errors):,} rows: {failed[0]}"
+                        f"Chat template failed on all {n_total:,} rows: {first_error}"
                     )
                     return {
                         "dataset": dataset,
@@ -442,13 +474,11 @@ def apply_chat_template_to_dataset(
                         "errors": errors,
                         "dropped_rows_warning": None,
                     }
-                if failed:
-                    formatted_dataset = formatted_dataset.select(
-                        [i for i, row_error in enumerate(row_errors) if not row_error]
-                    )
+                if n_failed:
+                    formatted_dataset = kept
                     dropped_rows_warning = (
-                        f"Dropped {len(failed):,} of {len(row_errors):,} rows because the "
-                        f"chat template failed: {failed[0]}"
+                        f"Dropped {n_failed:,} of {n_total:,} rows because the "
+                        f"chat template failed: {first_error}"
                     )
                     warnings.append(dropped_rows_warning)
                 formatted_dataset = formatted_dataset.remove_columns(error_column)
