@@ -76,6 +76,51 @@ _SYSTEM_ROOTS = (
     "/lib",
     "/lib64",
 )
+
+
+def _trusted_bwrap_path() -> str:
+    """Resolve bubblewrap to a system-owned executable that the Studio user cannot replace."""
+    candidate = shutil.which("bwrap")
+    if candidate is None:
+        raise SandboxUnavailableError("bubblewrap (bwrap) is not installed on this host")
+    resolved = os.path.realpath(candidate)
+    try:
+        executable = os.stat(resolved, follow_symlinks = False)
+        if (
+            not stat.S_ISREG(executable.st_mode)
+            or executable.st_uid != 0
+            or executable.st_mode & (stat.S_IWGRP | stat.S_IWOTH)
+            or not os.access(resolved, os.X_OK)
+        ):
+            raise OSError("the executable is not root-owned, executable, and non-writable")
+        parent = os.path.dirname(resolved)
+        while True:
+            directory = os.stat(parent, follow_symlinks = False)
+            if (
+                not stat.S_ISDIR(directory.st_mode)
+                or directory.st_uid != 0
+                or directory.st_mode & (stat.S_IWGRP | stat.S_IWOTH)
+            ):
+                raise OSError(f"its directory is replaceable: {parent}")
+            ancestor = os.path.dirname(parent)
+            if ancestor == parent:
+                break
+            parent = ancestor
+    except OSError as exc:
+        raise SandboxUnavailableError(
+            "bubblewrap must come from a trusted system installation; install it with the "
+            f"distribution package manager ({exc})"
+        ) from exc
+    return resolved
+
+
+def bwrap_identity() -> str:
+    """Stable identity included in capability-cache keys."""
+    path = _trusted_bwrap_path()
+    info = os.stat(path, follow_symlinks = False)
+    return repr((path, info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_mode))
+
+
 # /etc is fresh in the jail; without these nothing dynamically linked starts.
 _ETC_FILES = (
     "/etc/alternatives",
@@ -577,27 +622,8 @@ def _make_cache_mountpoints(workdir: str, names: tuple[str, ...]) -> None:
                 pass
 
 
-def _untrusted_reason(path: str) -> "str | None":
-    """Why *path* or its directory could be replaced by a non-root user, or None."""
-    for target in (path, os.path.dirname(path)):
-        try:
-            info = os.stat(target)
-        except OSError as exc:
-            return f"{target} cannot be inspected: {exc}"
-        if info.st_uid != 0 or info.st_mode & (stat.S_IWGRP | stat.S_IWOTH):
-            return f"{target} is not root-owned and writable only by root"
-    return None
-
-
 def prepare(plan: ToolLaunchPlan) -> PreparedSandboxLaunch:
-    found = shutil.which("bwrap")
-    if found is None:
-        raise SandboxUnavailableError("bubblewrap (bwrap) is not installed on this host")
-    # It runs on the host, unconfined, before any isolation exists: a bwrap planted earlier on PATH would own Studio.
-    bwrap = os.path.realpath(found)
-    untrusted = _untrusted_reason(bwrap)
-    if untrusted is not None:
-        raise SandboxUnavailableError(f"refusing the bubblewrap on PATH: {untrusted}")
+    bwrap = _trusted_bwrap_path()
     if not plan.argv:
         raise SandboxUnavailableError("a sandboxed launch needs a command to run")
     workdir, workdir_limitations = _validate_workdir(plan.workdir)

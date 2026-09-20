@@ -220,6 +220,16 @@ def test_a_launch_with_no_command_is_refused_rather_than_handed_to_bwrap(tmp_pat
         sandbox_linux.prepare(_plan(tmp_path, argv = ()))
 
 
+def test_a_path_bwrap_from_a_writable_location_is_never_executed(tmp_path, monkeypatch):
+    planted = tmp_path / "bwrap"
+    planted.write_text("#!/bin/sh\nexit 0\n", encoding = "utf-8")
+    planted.chmod(0o777)
+    monkeypatch.setattr(sandbox_linux.shutil, "which", lambda _name: str(planted))
+
+    with pytest.raises(SandboxUnavailableError, match = "trusted system installation"):
+        sandbox_linux.prepare(_plan(tmp_path))
+
+
 def test_the_workdir_is_the_only_writable_bind(prepared, tmp_path):
     workdir = os.path.realpath(tmp_path)
     assert _pairs(prepared.argv, "--bind") == [(workdir, workdir)]

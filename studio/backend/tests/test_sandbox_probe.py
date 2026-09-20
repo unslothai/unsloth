@@ -360,6 +360,18 @@ def test_the_cache_is_keyed_on_the_backend_as_well_as_the_runtime():
     assert sandbox_probe.probe(passthrough)[0] is False
 
 
+def test_linux_runtime_identity_includes_the_verified_bwrap(monkeypatch):
+    from core.inference import sandbox_linux
+
+    monkeypatch.setattr(os_sandbox.sys, "platform", "linux")
+    identity = ["/usr/bin/bwrap:first"]
+    monkeypatch.setattr(sandbox_linux, "bwrap_identity", lambda: identity[0])
+    first = os_sandbox._runtime_identity()
+
+    identity[0] = "/usr/bin/bwrap:replacement"
+    assert os_sandbox._runtime_identity() != first
+
+
 def test_an_expired_verdict_is_re_probed(monkeypatch):
     """Set before the first probe: the expiry is stamped when the verdict is stored."""
     monkeypatch.setattr(sandbox_probe, "_CACHE_TTL_SECONDS", 0.0)
