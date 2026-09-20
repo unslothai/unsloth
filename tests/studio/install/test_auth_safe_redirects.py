@@ -111,7 +111,12 @@ def servers(stdlib_ssl, tls_certificate, monkeypatch):
                 body = json.dumps(payload).encode()
                 self.send_header("Content-Length", str(len(body)))
                 self.end_headers()
-                self.wfile.write(body)
+                if self.command != "HEAD":
+                    self.wfile.write(body)
+
+            # routes/training.py preflights a gated repo with method = "HEAD"; without
+            # this the stdlib answers 501 and a HEAD case would test the error path.
+            do_HEAD = do_GET
 
             def log_message(self, *args):
                 pass
@@ -294,6 +299,57 @@ def test_an_unparseable_redirect_port_stays_soft_for_every_client(client, server
     except (urllib.error.HTTPError, urllib.error.URLError, OSError) as error:
         getattr(error, "close", lambda: None)()
     assert source.seen[0] == ("/start", TOKEN)
+
+
+def test_a_downgrade_is_refused_part_way_down_a_chain(servers):
+    """The refusal has to hold on hop 3, not only on the hop the caller made.
+
+    Every other case here puts the redirect one hop from the request, so a policy that
+    only looked at the original request URL would pass them all. This one goes
+    https -> https -> http: before the shared rule, the token reached the plaintext
+    host at the end of a chain that began legitimately.
+    """
+    source = servers(payload = {"tag_name": "v1"})
+    plaintext = servers(tls = False, payload = {"tag_name": "v1"})
+    source.redirects["/start"] = source.url + "/two"
+    source.redirects["/two"] = plaintext.url + "/final"
+
+    request = urllib.request.Request(source.url + "/start", headers = {"Authorization": TOKEN})
+    with pytest.raises(urllib.error.HTTPError) as error:
+        prebuilt_core._URL_OPENER.open(request, timeout = 3)
+    error.value.close()
+    assert [path for path, _ in source.seen] == ["/start", "/two"]
+    assert plaintext.seen == []
+
+
+@pytest.mark.parametrize("method", ["GET", "HEAD"])
+@pytest.mark.parametrize("cross_origin", [False, True])
+def test_the_method_and_a_signed_query_survive_the_hop(method, cross_origin, servers):
+    """HEAD and a signed query string are both production shapes, and neither is
+    otherwise covered.
+
+    ``routes/training.py`` preflights a gated repo with ``method = "HEAD"``, and both
+    GitHub and Hugging Face redirect a download to a CDN URL whose credentials live in
+    the query string. Stripping ``Authorization`` must not disturb either: a mangled
+    query turns a working signed URL into a 403 that looks like an auth failure.
+    """
+    source = servers(payload = {"tag_name": "v1"})
+    destination = servers(payload = {"tag_name": "v1"}) if cross_origin else source
+    target = destination.url
+    if cross_origin:
+        target = target.replace("127.0.0.1", "localhost")
+    source.redirects["/start"] = f"{target}/final?sig=abc123&exp=99"
+
+    request = urllib.request.Request(
+        source.url + "/start", headers = {"Authorization": TOKEN}, method = method
+    )
+    with prebuilt_core._URL_OPENER.open(request, timeout = 3) as response:
+        assert response.status == 200
+    landed = [(path, token) for path, token in destination.seen if path.startswith("/final")]
+    assert landed, "the redirect was not followed"
+    path, token = landed[0]
+    assert path == "/final?sig=abc123&exp=99"
+    assert token == (None if cross_origin else TOKEN)
 
 
 @pytest.mark.parametrize("unredirected", [False, True])
