@@ -7299,11 +7299,16 @@ exit 0
         # install.sh answers the same question by counting blocks with st_nlink == 1, which is
         # exact; there is no per-file link count on Windows short of a P/Invoke per file, so this
         # reads the marker the previous run left behind instead.
-        $script:StudioRollbackCostsFullSize =
-            $script:StudioRollbackCostsFullSize -or (Test-StudioPreviousCacheIsGone)
-        if ((-not $script:StudioNoRollback) -and $script:StudioRollbackCostsFullSize) {
-            try { Write-StudioRollbackSpaceWarning -ExistingDir $ExistingDir } catch { }
-        }
+        # Inside the guard, not just around the warning: this whole block is a diagnostic that
+        # precedes the rename, and nothing it can raise is worth failing an install that would
+        # otherwise have proceeded.
+        try {
+            $script:StudioRollbackCostsFullSize =
+                $script:StudioRollbackCostsFullSize -or (Test-StudioPreviousCacheIsGone)
+            if ((-not $script:StudioNoRollback) -and $script:StudioRollbackCostsFullSize) {
+                Write-StudioRollbackSpaceWarning -ExistingDir $ExistingDir
+            }
+        } catch { }
         # Publish the rollback state before the atomic rename so interruption
         # cannot land after Move-Item but before cleanup knows where the old venv went.
         try {
