@@ -1372,15 +1372,12 @@ _LLM_COMPRESSOR_SPEC = "llmcompressor>=0.6.0,<=0.12.0"
 def _llm_compressor_version_is_supported():
     """Whether the INSTALLED llmcompressor is one _LLM_COMPRESSOR_SPEC would have installed.
 
-    A version outside the pinned range is exactly what the spec exists to correct, so it must
-    not be accepted from either direction: not from the metadata short-circuit below, and not
-    from a successful in-process import either, which would quantize against a release this
-    package explicitly does not support.
+    An out-of-range version is what the spec exists to correct, so neither the metadata
+    short-circuit nor a successful in-process import may accept it.
 
-    Unknown counts as supported, which keeps two working setups working. No metadata at all
-    but importable is a source checkout on sys.path, and a missing `packaging` or an
-    unparseable spec says nothing about the install; in both cases the alternative is forcing
-    the destructive pip re-resolve this guard exists to avoid.
+    Unknown counts as supported: no metadata but importable is a source checkout, and a
+    missing `packaging` says nothing about the install, while the alternative in both cases
+    is the destructive pip re-resolve this guard avoids.
     """
     try:
         from importlib.metadata import version as _iv
@@ -1399,18 +1396,16 @@ def _llm_compressor_version_is_supported():
 def _llm_compressor_imports_cleanly():
     """Does llm-compressor import in the conditions the compressed export actually runs in?
 
-    An in-process import failure has two very different causes, and metadata cannot tell them
-    apart. Either Unsloth's transformers patches broke it -- harmless, since the export
-    quantizes in an unpatched subprocess that re-imports fine -- or the distribution is
-    incomplete (a missing dependency such as compressed-tensors, a truncated install), which
-    pip is what fixes. Skipping the install on the second case turns an immediate, fixable
-    failure into one raised after the whole model merge, inside _compressed_quantize.py.
+    An in-process failure has two causes metadata cannot tell apart: Unsloth's transformers
+    patches, which are harmless because the export quantizes in an unpatched subprocess, or
+    an incomplete distribution (compressed-tensors missing, a truncated install), which pip
+    is what fixes. Skipping the install on the second defers a fixable failure past the whole
+    model merge to _compressed_quantize.py's own import.
 
-    So ask the subprocess. _compressed_quantize.py is launched as `sys.executable <runner>`
-    with the ambient environment and imports exactly these two symbols, and `-c` never imports
-    unsloth, so this reproduces the runner's import conditions rather than approximating them.
-    Unknown answers (timeout, a python that will not spawn) count as importable: falling
-    through would trigger the destructive pip re-resolve this guard exists to avoid.
+    So ask the subprocess. The runner is launched as `sys.executable <runner>` and imports
+    exactly these two symbols, and `-c` never imports unsloth, so this reproduces its import
+    conditions. Unknown answers (timeout, a python that will not spawn) count as importable,
+    since falling through triggers the re-resolve this guard avoids.
     """
     probe = (
         "from llmcompressor import oneshot\n"
@@ -1421,9 +1416,8 @@ def _llm_compressor_imports_cleanly():
             [sys.executable, "-c", probe],
             stdout = subprocess.DEVNULL,
             stderr = subprocess.DEVNULL,
-            # Generous: the import pulls in torch and transformers on a cold page cache. Only
-            # ever paid once, on a path where the in-process import has already failed and a
-            # multi-minute merge is next.
+            # The import pulls in torch and transformers on a cold cache. Paid once, on a
+            # path where the in-process import already failed and a long merge is next.
             timeout = 600,
         )
     except Exception:
@@ -1438,9 +1432,8 @@ def install_llm_compressor():
     not upgrade them. Set UNSLOTH_DISABLE_LLM_COMPRESSOR_AUTOINSTALL=1 to forbid the auto-install.
     Returns (oneshot, QuantizationModifier).
     """
-    # Gated on the version, not just on importability: an out-of-range release that happens
-    # to import would otherwise be accepted here and never reach the check below, leaving the
-    # pin decorative for exactly the installs it was written for.
+    # Gated on the version, not just importability: an out-of-range release that imports
+    # would be accepted here and never reach the check below, leaving the pin decorative.
     if _llm_compressor_version_is_supported():
         try:
             from llmcompressor import oneshot
@@ -1549,11 +1542,9 @@ def install_llm_compressor():
         from llmcompressor import oneshot
         from llmcompressor.modifiers.quantization import QuantizationModifier
     except Exception as e:
-        # Same two causes as before the install, and the same way of telling them apart. A
-        # good install can still fail to import HERE, because Unsloth's transformers patches
-        # are in this process and not in the subprocess that does the quantizing; raising on
-        # that would kill an export that was about to work. Only a clean subprocess that
-        # also cannot import it means the install is genuinely unusable.
+        # Same two causes as before the install, told apart the same way. A good install can
+        # still fail to import HERE, since the patches are in this process and not in the
+        # subprocess that quantizes, and raising would kill an export about to work.
         if _llm_compressor_imports_cleanly():
             return None, None
         raise RuntimeError(
