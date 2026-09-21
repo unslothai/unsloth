@@ -195,9 +195,71 @@ Check "an unknown action is refused rather than guessed" {
     try { Write-CodeIntegrityTorchNotice -Reason "x" -Action "wipe" } catch { $refused = $true }
     $refused
 }
-Check "the rebuild call site passes rebuild, and the CUDA arm decides before it speaks" {
-    $setupText.Contains('Write-CodeIntegrityTorchNotice -Reason $_rebuildBlockReason -Action "rebuild"') -and
+Check "the CUDA arm decides before it speaks" {
     $setupText.Contains('Write-CodeIntegrityTorchNotice -Reason $_probeBlockReason -Action $_blockAction')
+}
+Check "the rebuild notice is chosen after the guards that cancel the rebuild" {
+    # Those guards turn the rebuild into an in-place reinstall on every installer-managed run
+    # and every direct update, so a notice above them describes a path setup does not take.
+    $notice = $setupText.IndexOf('Write-CodeIntegrityTorchNotice -Reason $_rebuildBlockReason -Action $_rebuildAction')
+    $lastGuard = $setupText.LastIndexOf('$script:PinChangedForceReinstall = $true')
+    ($notice -gt 0) -and ($lastGuard -gt 0) -and ($notice -gt $lastGuard)
+}
+Check "the rebuild notice says reinstall when the rebuild was cancelled" {
+    $setupText.Contains('$_rebuildAction = "reinstall"') -and
+    $setupText.Contains('if ($shouldRebuild) { $_rebuildAction = "rebuild" }')
+}
+
+# An exit code is the only thing a fail-fast leaves behind, so the classifier has to be fed it.
+. ([scriptblock]::Create((Get-FunctionText -Path $setup -Name "Get-ProbeFailureText")))
+
+Check "a probe killed with a code integrity NTSTATUS and no stderr is still classified" {
+    # 0xC0000602 as Windows hands it back through Process.ExitCode.
+    $probe = [pscustomobject]@{ Ok = $false; Output = ""; Error = ""; TimedOut = $false; ExitCode = -1073740286 }
+    (Get-CodeIntegrityBlockReason -Text (Get-ProbeFailureText -Probe $probe)) -eq
+        "the image was refused by a code integrity fail-fast"
+}
+Check "the stderr text survives beside the exit code" {
+    $probe = [pscustomobject]@{ Ok = $false; Output = ""; Error = "[WinError 4551] blocked"; TimedOut = $false; ExitCode = -1073740286 }
+    $text = Get-ProbeFailureText -Probe $probe
+    $text.Contains("WinError 4551") -and $text.Contains("0xc0000602")
+}
+Check "an ordinary python failure is not dressed up as a status" {
+    # exit 1 with a real traceback: nothing here is a block, and 0x00000001 must not appear.
+    $probe = [pscustomobject]@{ Ok = $false; Output = ""; Error = "ModuleNotFoundError: No module named 'torch'"; TimedOut = $false; ExitCode = 1 }
+    $text = Get-ProbeFailureText -Probe $probe
+    (-not $text.Contains("0x")) -and ($null -eq (Get-CodeIntegrityBlockReason -Text $text))
+}
+Check "a timeout's exit code says nothing about the installation" {
+    # Kill() leaves an arbitrary code behind, and "never answered" is the caller's own case.
+    $probe = [pscustomobject]@{ Ok = $false; Output = ""; Error = "python did not answer within 30 seconds"; TimedOut = $true; ExitCode = -1073740286 }
+    -not (Get-ProbeFailureText -Probe $probe).Contains("0x")
+}
+Check "a probe that never ran is answered, not thrown at" {
+    (Get-ProbeFailureText -Probe $null) -eq "" -and
+    (Get-ProbeFailureText -Probe ([pscustomobject]@{ Ok = $false; Output = ""; Error = ""; TimedOut = $false; ExitCode = $null })) -eq ""
+}
+Check "the probe helper keeps the exit code instead of only reducing it to Ok" {
+    $helper = Get-FunctionText -Path $setup -Name "Invoke-BoundedPythonProbe"
+    $helper.Contains('ExitCode = $null') -and $helper.Contains('$result.ExitCode = $proc.ExitCode')
+}
+Check "both probe call sites classify the exit code, not stderr alone" {
+    ([regex]::Matches($setupText, [regex]::Escape('Get-CodeIntegrityBlockReason -Text (Get-ProbeFailureText -Probe $_verProbe)'))).Count -eq 2
+}
+
+# The XPU and ROCm arms: ambiguous means a reinstall may clear it, and the notice says so, so
+# they have to actually do it rather than print the promise and keep a damaged venv.
+Check "an ambiguous block repairs the XPU and ROCm venvs too" {
+    $setupText.Contains('$_ambiguousBlockRepair = [bool]($_probeBlockReason -and $_willForceReinstall)') -and
+    ([regex]::Matches($setupText, [regex]::Escape('Write-CodeIntegrityTorchNotice -Reason $_probeBlockReason -Action $_ambiguousBlockAction'))).Count -eq 2 -and
+    # Three arms set the flag now: CUDA on any non-timeout failure, XPU and ROCm on an
+    # ambiguous block. The flag is what makes the install pass use --force-reinstall.
+    ([regex]::Matches($setupText, [regex]::Escape('$script:TorchImportDefinitivelyFailed = $true'))).Count -eq 3
+}
+Check "a driver fault with no block reason still keeps those venvs as they are" {
+    # #8335 / #7275: these arms exist to stop a faulted driver costing a whole install, so the
+    # repair is gated on a block reason, not on any failed import.
+    $setupText.Contains('$_ambiguousBlockAction = "kept"')
 }
 Check "no PowerShell 7 only if-expression reached the argument" {
     # 5.1 cannot parse `-Action (if ...)`, and this file runs on both engines.
