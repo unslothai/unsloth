@@ -2625,6 +2625,20 @@ def _pick_rocm_gfx_target(out: str) -> str | None:
     A bare first-match picked the wrong device on mixed APU + dGPU hosts (Strix Halo gfx1151
     + RX 7900 gfx1100), so honour HIP_VISIBLE_DEVICES / ROCR_VISIBLE_DEVICES /
     CUDA_VISIBLE_DEVICES; no env var means the first GPU, empty / "-1" means none (None).
+
+    With no mask the first GPU is still the wrong one whenever an integrated GPU leads
+    enumeration (#7776, #11143: a Raphael gfx1036 driving the desktop ahead of an RX 9060 XT
+    gfx1200), because one arch picks the bundle for the whole host, so letting the APU decide
+    strands the discrete card. So prefer the first arch that is neither in
+    SHADOWING_INTEGRATED_GFX nor gfx906 -- the same rule, the same table and the same gfx906
+    exclusion as _amd_prefer_discrete_gfx in install.sh / studio/setup.sh, which skips gfx906
+    because naming it on a mixed host strands BOTH cards. An all-integrated host has nothing
+    to prefer and keeps its own arch.
+
+    A mask is never second-guessed, at any value: the user who set it chose the device, and
+    HIP_VISIBLE_DEVICES=N is the documented workaround for #7624 / #7669. That covers a mask
+    this function cannot resolve (UUID-style, out of range) too, which still falls back to the
+    first device exactly as before rather than to the discrete preference.
     """
     _tokens = _list_rocm_gfx_targets(out)
     if not _tokens:
@@ -2649,7 +2663,18 @@ def _pick_rocm_gfx_target(out: str) -> str | None:
                 return _tokens[_idx]
         except ValueError:
             pass
-    return _tokens[0]
+        # An explicit selection this function cannot resolve: device 0, as before.
+        return _tokens[0]
+
+    _pick = _tokens[0]
+    if _pick not in SHADOWING_INTEGRATED_GFX:
+        return _pick
+    for _candidate in _tokens:
+        if _candidate in SHADOWING_INTEGRATED_GFX or _candidate == "gfx906":
+            continue
+        return _candidate
+    # Every device is an integrated arch (or gfx906): keep the leading one, never None.
+    return _pick
 
 
 # Display-adapter device class: one NNNN subkey per installed display driver
@@ -3119,9 +3144,11 @@ def _apply_host_overrides(
         )
     gfx = _normalize_forwarded_gfx(override_rocm_gfx)
     if gfx:
-        # setup.ps1 resolves all three masks via Resolve-VisibleGpuIndex, but also applies the
-        # shadowing-iGPU preference (#7776) that _pick_rocm_gfx_target() does not, so the two
-        # can name different GPUs on a mixed APU + dGPU host.
+        # setup.ps1 resolves all three masks via Resolve-VisibleGpuIndex and applies the
+        # shadowing-iGPU preference (#7776); _pick_rocm_gfx_target() applies it too now, but
+        # the two can still name different GPUs on a mixed APU + dGPU host, since the shells
+        # also require the repicked arch to have a wheel/bundle route and the probe here does
+        # not (and an older setup may forward a pick made without the preference at all).
         # So keep a probed active arch when the forward is only advisory, else
         # _should_auto_vulkan_for_amd_windows() reads a HIP-supported GPU the user masked
         # off and installs an unusable HIP bundle instead of Vulkan. Advisory means:
@@ -3137,9 +3164,10 @@ def _apply_host_overrides(
         _active = _active_rocm_gfx_target(host)
         _advisory = gfx in _physical or gfx in WINDOWS_ROCM_FAMILY_GFX_LABELS
         # Except when setup deliberately skipped a shadowing APU for the discrete card (#7776):
-        # unmasked, _pick_rocm_gfx_target() still reads that APU as device 0, so discarding the
-        # forward would give torch the dGPU and llama.cpp the iGPU bundle. Unmasked only, since
-        # the repick must never override a pin.
+        # if the probe here read that APU as the active device anyway -- it no longer does when
+        # it can see the discrete arch itself, but it still can when only the iGPU enumerates
+        # under HIP -- discarding the forward would give torch the dGPU and llama.cpp the iGPU
+        # bundle. Unmasked only, since the repick must never override a pin.
         if (
             _advisory
             and _active in SHADOWING_INTEGRATED_GFX
@@ -7116,20 +7144,50 @@ def persisted_llama_backend(llama_backend: str | None, choice: AssetChoice) -> s
 def persisted_marker_backend_request(backend_request: str | None, choice: AssetChoice) -> str:
     """The backend choice to record for an install that landed ``choice``.
 
-    Same rule as persisted_llama_backend, generalized: record the request only when
-    the install actually honours it. A request that ended somewhere else -- cpu or
-    vulkan on macOS, where the universal Metal bundle is the only build -- is stored
-    as automatic, so the next update re-detects instead of re-asserting a choice
-    this host never applied. "auto" is stored explicitly rather than omitted: absent
-    means "written before this field existed", which reads back as the derived
-    legacy choice, not as detection.
+    The request VERBATIM, "auto" only when that is what was asked. "auto" is stored
+    explicitly rather than omitted: absent means "written before this field existed",
+    which reads back as the derived legacy choice, not as detection.
+
+    It used to store "auto" whenever the request and the bundle disagreed -- cpu or
+    vulkan on macOS, where the universal Metal bundle is the only build, and the
+    BackendUnavailable -> re-detect fallback, which on an AMD box means ROCm. That
+    erased the choice permanently: every later update then re-detected, so a user who
+    had configured Vulkan kept getting ROCm back and Settings kept showing
+    "automatic" (#11143). The request is a record of what was ASKED, so it is kept and
+    the miss recorded alongside it by marker_backend_request_was_satisfied, whose
+    readers are the ones that must not treat it as the installed backend.
     """
-    effective = backend_for_install_kind(choice.install_kind)
     if backend_request in (None, "auto"):
         return "auto"
-    if effective is not None and effective != backend_request:
-        return "auto"
     return backend_request
+
+
+def marker_backend_request_was_satisfied(backend_request: str | None, choice: AssetChoice) -> bool:
+    """Whether the request this marker records is the backend that actually landed.
+
+    False only for a concrete request the install could not honour, which is what
+    ``backend_request_unsatisfied`` records. A bundle whose kind maps to no backend
+    cannot contradict the request, so it counts as satisfied -- the same "None cannot
+    disagree" rule the erasing version used.
+    """
+    if backend_request in (None, "auto"):
+        return True
+    effective = backend_for_install_kind(choice.install_kind)
+    return effective is None or effective == backend_request
+
+
+# Marker field: the recorded backend_request is NOT the backend that landed, so the request
+# is a choice still owed rather than a description of the install. Absent means satisfied,
+# which is exactly how every marker written before this field must read (back-compat), and
+# is why the erasing rule above could be dropped without changing any existing install.
+MARKER_BACKEND_REQUEST_UNSATISFIED = "backend_request_unsatisfied"
+
+
+def marker_records_unsatisfied_backend_request(marker: "dict[str, Any] | None") -> bool:
+    """Whether ``marker`` says its recorded request was not the backend installed."""
+    if not marker:
+        return False
+    return bool(marker.get(MARKER_BACKEND_REQUEST_UNSATISFIED))
 
 
 def host_profile(host: HostInfo) -> dict[str, Any]:
@@ -7259,6 +7317,13 @@ def write_prebuilt_metadata(
         "backend": backend_for_install_kind(choice.install_kind),
         # What future updates should preserve. "auto" re-detects.
         "backend_request": persisted_marker_backend_request(backend_request, choice),
+        # Present only when that request is NOT what landed, so an old marker (and every
+        # install that honoured its request) reads as satisfied by absence.
+        **(
+            {}
+            if marker_backend_request_was_satisfied(backend_request, choice)
+            else {MARKER_BACKEND_REQUEST_UNSATISFIED: True}
+        ),
         # The AMD gfx an AUTOMATIC route was decided on. A Vulkan asset name carries
         # no arch, and the Windows driver-only hosts that reach Vulkan automatically
         # have no probe (hipinfo/amd-smi absent), so the updater would re-detect a
@@ -7434,6 +7499,12 @@ def _marker_selection_patch(
     recorded_request = persisted_marker_backend_request(backend_request, choice)
     if marker.get("backend_request") != recorded_request:
         patch["backend_request"] = recorded_request
+    # Travels with the request: reusing a bundle that honours a request the previous run
+    # could not clears the flag (None pops the key, keeping "absent means satisfied" the
+    # only spelling), and reusing one that still misses it re-asserts the flag.
+    unsatisfied = not marker_backend_request_was_satisfied(backend_request, choice)
+    if bool(marker.get(MARKER_BACKEND_REQUEST_UNSATISFIED)) != unsatisfied:
+        patch[MARKER_BACKEND_REQUEST_UNSATISFIED] = True if unsatisfied else None
     # Unlike the fields above, None here means "this release declares none"
     # (upstream ggml-org tags), not "clear it".
     if ggml_tree and marker.get("ggml_tree") != ggml_tree:
@@ -7541,7 +7612,11 @@ def sync_marker_selection(
     if not patch:
         return
     for key, value in patch.items():
-        if value is None and key in ("llama_backend", *_core.WALK_BACK_KEYS):
+        if value is None and key in (
+            "llama_backend",
+            MARKER_BACKEND_REQUEST_UNSATISFIED,
+            *_core.WALK_BACK_KEYS,
+        ):
             marker.pop(key, None)
         else:
             marker[key] = value
@@ -8475,11 +8550,12 @@ def _marker_backend_fits_host(marker: "dict[str, Any]", host: HostInfo) -> bool:
 
     Two assertions, both cheap and both about the MARKER rather than the disk:
 
-      * self-consistency. write_prebuilt_metadata records backend_request through
-        persisted_marker_backend_request, which stores "auto" whenever the request and
-        the bundle that landed disagree. So a marker naming a concrete request must name
-        the same backend, or it was not written by this installer -- and the rest of this
-        check reads those two fields to decide it need do no work.
+      * self-consistency. A marker naming a concrete request must name the same backend,
+        or it was not written by this installer -- and the rest of this check reads those
+        two fields to decide it need do no work. The one exception is a request this
+        installer recorded as unsatisfied on purpose (a Vulkan choice that landed the ROCm
+        bundle, #11143): that disagreement IS the record, so it is self-consistent, while
+        a disagreement with no such flag is still a marker from somewhere else.
       * platform fit. backend_for_install_kind maps kinds to backends; a backend with no
         kind on this platform (a "cuda" marker on macOS, a copied install directory)
         cannot describe a bundle this run would produce, and _kept_install_payload_is_healthy
@@ -8493,6 +8569,7 @@ def _marker_backend_fits_host(marker: "dict[str, Any]", host: HostInfo) -> bool:
         isinstance(recorded_request, str)
         and recorded_request not in ("", "auto")
         and recorded_request != recorded_backend
+        and not marker_records_unsatisfied_backend_request(marker)
     ):
         return False
     platform_prefix = "windows-" if host.is_windows else "macos-" if host.is_macos else "linux-"
@@ -8512,6 +8589,7 @@ def existing_install_current_without_plan(
     override_has_rocm: bool = False,
     override_rocm_gfx: str | None = None,
     route: "BackendRoute | None" = None,
+    backend_request_mandatory: bool = False,
 ) -> bool:
     """Whether the install on disk is already the one this run would produce.
 
@@ -8536,6 +8614,10 @@ def existing_install_current_without_plan(
     compared against the profile the install recorded. A marker with no host_profile --
     every one written before this existed -- cannot answer and takes the full path.
 
+    *backend_request_mandatory* says the request was named by THIS run (--llama-backend or
+    the environment) rather than read back off the marker; it only matters for a request the
+    install could not honour, see the comment at the recorded-request check.
+
     See _expected_release_tag_without_plan for the one thing this deliberately does NOT
     close: the documented "latest" pointer lag.
     """
@@ -8551,6 +8633,27 @@ def existing_install_current_without_plan(
     recorded_request = marker.get("backend_request")
     if not isinstance(recorded_request, str) or recorded_request != backend_request:
         return False
+    # The request is preserved now even when the install could not honour it (#11143), so
+    # "recorded == requested" no longer implies the bundle runs it, and this check alone would
+    # keep such an install forever. What the choice is owed is a RETRY, and the question is
+    # when:
+    #   * named by this run (--llama-backend / UNSLOTH_LLAMA_CPP_BACKEND, or Settings, which
+    #     passes it) -- now. That is someone asking again by hand; take the full path so the
+    #     request is re-asserted and, if it still cannot be served, says so.
+    #   * read back off the marker -- only when something moved. The checks below are exactly
+    #     that test: a new release tag, new hardware, a changed routed repo or a bundle that no
+    #     longer covers the card all take the full path, where _select re-asserts the request
+    #     first and only re-detects if it is still unavailable. Retrying unconditionally instead
+    #     would pay the whole listing + manifest + re-validation cost on EVERY update of a host
+    #     that cannot serve the choice (13-63 s on macOS), forever, to reinstall what is already
+    #     there -- the thrash this fast path exists to avoid.
+    # So for the marker-read case, judge the install as the AUTOMATIC one it actually is: it
+    # came from the post-BackendUnavailable re-detect, so the auto route (below) is the route
+    # whose host profile and repo the marker holds. Routing the unsatisfied request instead
+    # would rewrite the host (a Vulkan route drops has_rocm and the AMD arch) and never match.
+    unsatisfied = marker_records_unsatisfied_backend_request(marker)
+    if unsatisfied and backend_request_mandatory:
+        return False
     if bool(marker.get("force_cpu")) != bool(force_cpu):
         return False
     # A fallback bundle is a stopgap: its marker keeps taking the full path, which retries the preferred.
@@ -8558,6 +8661,16 @@ def existing_install_current_without_plan(
         log("kept install rejected: it is a fallback bundle; the preferred one is retried")
         return False
     # (2) the hardware. Local probes only, and the caller's route, so they run once per update.
+    if unsatisfied and (route is None or route.backend != "auto"):
+        # The caller's route was computed for the request, which this install does not run.
+        route = route_backend_request(
+            backend = "auto",
+            published_repo = published_repo,
+            published_release_tag = published_release_tag,
+            override_has_rocm = override_has_rocm,
+            override_rocm_gfx = override_rocm_gfx,
+            cpu_mechanism = force_cpu,
+        )
     if route is None:
         route = route_backend_request(
             backend = backend_request,
@@ -10491,8 +10604,14 @@ def install_prebuilt(
                 backend_request = backend,
                 force_cpu = force_cpu,
                 route = initial_route,
+                # Only an explicit name re-asserts a request the last install could not
+                # honour; a request read back off the marker retries when something moves.
+                backend_request_mandatory = backend_mandatory,
             ):
                 return
+            # A request detection had to replace. Preserved so the marker can keep the CHOICE
+            # while `backend` describes what actually gets installed (#11143).
+            unhonoured_request: str | None = None
             try:
                 selection = _select(backend, initial_route)
             except BackendUnavailable:
@@ -10505,6 +10624,7 @@ def install_prebuilt(
                     f"the {backend} backend recorded by this install is not available here; "
                     "falling back to hardware detection"
                 )
+                unhonoured_request = backend
                 backend = "auto"
                 # Restore caller flags before detection chooses a replacement.
                 force_cpu, persist_force_cpu = caller_force_cpu, caller_persist_force_cpu
@@ -10516,7 +10636,12 @@ def install_prebuilt(
             release_plans = selection.release_plans
             persist_llama_backend = selection.persist_llama_backend
             persist_rocm_gfx = selection.persist_rocm_gfx
-            persist_backend_request = backend
+            # The CHOICE, not the replacement detection made for it: recording "auto" here is
+            # what destroyed a Vulkan choice permanently on AMD hosts, where every later
+            # "detect" means ROCm (#11143). marker_backend_request_was_satisfied compares it
+            # against the bundle that lands and flags the miss, so nothing reads it as the
+            # installed backend.
+            persist_backend_request = unhonoured_request or backend
 
             def _record_reused_selection(
                 plan: InstallReleasePlan, reused: AssetChoice, used_fallback: bool

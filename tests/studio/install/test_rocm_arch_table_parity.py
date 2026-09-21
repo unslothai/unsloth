@@ -838,6 +838,20 @@ class TestShadowingPreferenceIsApplied:
             "so that consumer still receives the iGPU's arch"
         )
 
+    def test_pick_rocm_gfx_target_consults_the_shadowing_table(self):
+        """install_llama_prebuilt.py holds the table; this is the function that has
+        to read it. It ended `return _tokens[0]` with no preference at all."""
+        tree = ast.parse(_PREBUILT_PY.read_text(encoding = "utf-8"))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.FunctionDef) and node.name == "_pick_rocm_gfx_target":
+                names = {n.id for n in ast.walk(node) if isinstance(n, ast.Name)}
+                assert "SHADOWING_INTEGRATED_GFX" in names, (
+                    "_pick_rocm_gfx_target does not consult SHADOWING_INTEGRATED_GFX, so a "
+                    "leading iGPU still wins on a hybrid host (#11143)"
+                )
+                return
+        raise AssertionError("_pick_rocm_gfx_target not found in install_llama_prebuilt.py")
+
     @pytest.mark.parametrize("rel", _SHELL_RESOLVERS)
     def test_an_explicit_visibility_mask_is_honoured_by_each_shell_copy(self, rel):
         """`HIP_VISIBLE_DEVICES=1` is the documented #7624 / #7669 workaround; a repick

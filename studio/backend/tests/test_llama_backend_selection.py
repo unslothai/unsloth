@@ -208,13 +208,33 @@ def test_an_unknown_environment_value_falls_through_to_the_install(monkeypatch, 
         ("cpu", "linux-cpu", "cpu"),
         ("auto", "linux-cuda", "auto"),
         (None, "linux-cuda", "auto"),
-        # macOS cannot persist requests that all resolve to its universal Metal build.
-        ("cpu", "macos-arm64", "auto"),
-        ("vulkan", "linux-cpu", "auto"),
+        # A request the install could not honour is KEPT, not erased to "auto" (#11143):
+        # macOS resolves every request to its universal Metal build, and a Vulkan request
+        # can end on the CPU bundle. The miss is recorded separately, see below.
+        ("cpu", "macos-arm64", "cpu"),
+        ("vulkan", "linux-cpu", "vulkan"),
     ],
 )
-def test_only_a_request_the_install_honours_is_recorded(request_backend, kind, expected):
+def test_the_request_is_recorded_verbatim(request_backend, kind, expected):
     assert ilp.persisted_marker_backend_request(request_backend, _choice(kind)) == expected
+
+
+@pytest.mark.parametrize(
+    "request_backend, kind, satisfied",
+    [
+        ("vulkan", "linux-vulkan", True),
+        ("cpu", "linux-cpu", True),
+        ("auto", "linux-cuda", True),
+        (None, "linux-cuda", True),
+        # Concrete requests the bundle that landed contradicts.
+        ("cpu", "macos-arm64", False),
+        ("vulkan", "linux-cpu", False),
+    ],
+)
+def test_a_request_the_install_could_not_honour_is_flagged(request_backend, kind, satisfied):
+    """The other half of the pair: the request is preserved, so something has to say it
+    is not what runs, or every reader would treat it as the installed backend."""
+    assert ilp.marker_backend_request_was_satisfied(request_backend, _choice(kind)) is satisfied
 
 
 def test_macos_backend_resolver_only_offers_automatic_metal(monkeypatch):
@@ -571,7 +591,11 @@ def test_a_recorded_choice_this_host_cannot_serve_falls_back_to_detection(monkey
 
     assert seen == ["rocm", "auto"]
     marker = json.loads((tmp_path / "UNSLOTH_PREBUILT_INFO.json").read_text())
-    assert marker["backend_request"] == "auto"
+    # The CHOICE survives the re-detect, flagged as not what landed (#11143). Erasing it to
+    # "auto" here is what made a configured Vulkan install keep coming back as ROCm: every
+    # later update then re-detected, and on an AMD host detection means ROCm.
+    assert marker["backend_request"] == "rocm"
+    assert marker["backend_request_unsatisfied"] is True
 
 
 def test_a_named_backend_this_host_cannot_serve_fails_instead(monkeypatch, tmp_path):
