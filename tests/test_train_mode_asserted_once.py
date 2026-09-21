@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
+
 """Behavioural difference between calling `model.train()` every micro-step and asserting
 train mode once, which is the only thing that can make that optimisation unsafe.
 """

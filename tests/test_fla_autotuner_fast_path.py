@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
+
 """PR #11238, commit 7b45cc8f9: `patch_fla_autotuner_fast_path` rebinds
 `fla.ops.utils.cache.CachedAutotuner.run` to launch with a latched config.
 
