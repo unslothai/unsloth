@@ -23,12 +23,12 @@ import { usePlatformStore } from "@/config/env";
 import { MLX_OPTIMIZER_OPTIONS, OPTIMIZER_OPTIONS } from "@/config/training";
 import { setTrainingCompareHandoff } from "@/features/chat";
 import {
+  getTrainingMethodLabel,
+  type TrainingViewData,
   useTrainingActions,
   useTrainingConfigStore,
   useTrainingRuntimeStore,
 } from "@/features/training";
-import type { TrainingViewData } from "@/features/training";
-import { getTrainingMethodLabel } from "@/features/training/lib/training-methods";
 import { useGpuUtilization } from "@/hooks";
 import type { GpuUtilization } from "@/hooks/use-gpu-utilization";
 import { type TranslationKey, useT } from "@/i18n";
@@ -46,13 +46,15 @@ import {
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { Link, useNavigate } from "@tanstack/react-router";
-import { type ReactElement, type ReactNode, useEffect, useState } from "react";
+import { type ReactElement, type ReactNode, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { ChartSettingsSheet } from "./charts/chart-settings-sheet";
 import {
   formatDuration,
   formatNumber,
   phaseColors,
+  sessionEtaSeconds,
+  sessionStepsPerSecond,
 } from "./progress-section-lib";
 import type { RunConfigOverride } from "./run-config-override";
 
@@ -131,14 +133,25 @@ export function ProgressSection({
       : Math.round(data.progressPercent);
 
   const elapsed = data.elapsedSeconds;
+  const sessionStartStep = data.sessionStartStep ?? 0;
   const derivedEta =
-    elapsed != null && pct > 0
-      ? Math.round((elapsed * (100 - pct)) / Math.max(pct, 1))
-      : null;
+    sessionStartStep > 0
+      ? sessionEtaSeconds(
+        data.currentStep,
+        sessionStartStep,
+        data.totalSteps,
+        elapsed,
+      )
+      : elapsed != null && pct > 0
+        ? Math.round((elapsed * (100 - pct)) / Math.max(pct, 1))
+        : null;
   const eta = data.etaSeconds ?? derivedEta;
 
-  const stepsPerSecond =
-    elapsed != null && elapsed > 0 ? data.currentStep / elapsed : null;
+  const stepsPerSecond = sessionStepsPerSecond(
+    data.currentStep,
+    sessionStartStep,
+    elapsed,
+  );
   const showHalfwayHint =
     data.phase === "training" && pct >= 50 && pct < 100;
   const showCompletedHint = data.phase === "completed";
@@ -402,14 +415,9 @@ function LiveGpuPanel({
         ? [gpuData]
         : [];
 
-  useEffect(() => {
-    if (selectedGpu > 0 && selectedGpu >= gpus.length) {
-      setSelectedGpu(0);
-    }
-  }, [gpus.length, selectedGpu]);
-
   const gpuCount = gpus.length;
-  const currentGpu: Partial<GpuUtilization> = gpus[selectedGpu] || gpus[0] || {};
+  const selectedGpuIndex = selectedGpu >= 0 && selectedGpu < gpuCount ? selectedGpu : 0;
+  const currentGpu: Partial<GpuUtilization> = gpus[selectedGpuIndex] || {};
 
   return (
     <div className="flex flex-col gap-3">
@@ -420,9 +428,11 @@ function LiveGpuPanel({
           </p>
           {gpuCount > 1 && (
             <select
-              value={selectedGpu}
+              value={selectedGpuIndex}
               onChange={(e) => setSelectedGpu(Number(e.target.value))}
-              className="h-6 cursor-pointer rounded-md border border-border bg-popover px-1.5 py-0.5 text-ui-11 text-popover-foreground outline-none hover:bg-muted focus:border-ring transition-colors font-medium appearance-none"
+              // At the 16px coarse-pointer floor a 24px box clips descenders, and a long
+              // device name widens the row past the viewport.
+              className="h-6 cursor-pointer rounded-md border border-border bg-popover px-1.5 py-0.5 text-ui-11 text-popover-foreground outline-none hover:bg-muted focus:border-ring transition-colors font-medium appearance-none pointer-coarse:h-auto pointer-coarse:min-w-0 pointer-coarse:max-w-full"
               title="Select GPU"
             >
               {gpus.map((device, index) => (

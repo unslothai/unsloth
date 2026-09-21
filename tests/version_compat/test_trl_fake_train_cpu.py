@@ -21,8 +21,8 @@ from __future__ import annotations
 
 import os
 
-# CPU-only: no torch.compile / dynamo (it reaches into the CUDA accelerator), no
-# Unsloth kernel compile, no mixed precision. Must be set before torch/unsloth.
+# CPU-only: no torch.compile / dynamo (it reaches into the CUDA accelerator), no Unsloth kernel compile, no mixed
+# precision. Must be set before torch/unsloth.
 os.environ.setdefault("UNSLOTH_COMPILE_DISABLE", "1")
 os.environ.setdefault("TORCHDYNAMO_DISABLE", "1")
 os.environ.setdefault("TORCH_COMPILE_DISABLE", "1")
@@ -36,8 +36,8 @@ from pathlib import Path
 import pytest
 
 
-# torch is needed for everything below (daily-fresh-fetch collects this dir with
-# only pytest installed); skip the whole module cleanly when it is absent.
+# torch is needed for everything below (daily-fresh-fetch collects this dir with only pytest installed); skip the whole
+# module cleanly when it is absent.
 if importlib.util.find_spec("torch") is None:
     pytest.skip(
         "torch not installed; fake CPU train needs the real runtime", allow_module_level = True
@@ -53,11 +53,10 @@ _spoof.apply()
 import torch  # noqa: E402
 
 
-# The generated GRPO trainer hard-decorates hot functions with @torch.compile,
-# which dynamo processes even under the disable env vars, reaching into
-# torch.accelerator (real CUDA) on a GPU-less box. Make torch.compile an eager
-# passthrough before unsloth generates/imports the trainer -- same logic, no
-# dynamo. (An eager CPU run is exactly what we want here.)
+# The generated GRPO trainer hard-decorates hot functions with @torch.compile, which dynamo processes even under the
+# disable env vars, reaching into torch.accelerator (real CUDA) on a GPU-less box. Make torch.compile an eager
+# passthrough before unsloth generates/imports the trainer -- same logic, no dynamo. (An eager CPU run is exactly what
+# we want here.)
 def _eager_compile(
     model = None,
     *args,
@@ -68,24 +67,6 @@ def _eager_compile(
     return lambda fn: fn
 
 
-torch.compile = _eager_compile
-
-# Belt-and-suspenders: if any @torch.compile still routes through dynamo, let it
-# fall back to eager instead of crashing, and stop its stream-capture probe from
-# reaching torch.accelerator -> real CUDA on a GPU-less box.
-try:
-    import torch._dynamo  # noqa: E402
-    torch._dynamo.config.suppress_errors = True
-except Exception:
-    pass
-if hasattr(torch, "accelerator"):
-    torch.accelerator.is_available = lambda *a, **k: False
-
-
-# Redirect any `device="cuda"` tensor allocation / `.to("cuda")` / `.cuda()` to
-# CPU. The aggressive spoof deliberately keeps real allocators, but a fake CPU
-# train needs cuda-targeted ops (e.g. inductor's init_gpu_context does
-# `torch.empty(1, device="cuda")`) to land on CPU instead of erroring.
 def _is_cuda_dev(d):
     try:
         return d is not None and torch.device(d).type == "cuda"
@@ -93,64 +74,101 @@ def _is_cuda_dev(d):
         return False
 
 
-for _name in (
-    "empty",
-    "zeros",
-    "ones",
-    "full",
-    "tensor",
-    "arange",
-    "randn",
-    "rand",
-    "randint",
-    "empty_like",
-    "zeros_like",
-    "ones_like",
-):
-    _orig = getattr(torch, _name, None)
-    if _orig is None:
-        continue
+def _fake_cpu_gpu(mp):
+    """Make this process behave like a GPU-less box, undoably.
 
-    def _redir(
-        *args,
-        _orig = _orig,
-        **kwargs,
+    Everything here is a mutation of a global that outlives the module, so it
+    goes through the caller's MonkeyPatch: applied for the duration of this
+    module's tests and reverted afterwards. Applied at import time instead, a
+    GPU test collected from anywhere else in the same session silently gets CPU
+    tensors out of `device = "cuda"` and can pass without testing anything.
+    """
+    mp.setattr(torch, "compile", _eager_compile)
+
+    # Belt-and-suspenders: if any @torch.compile still routes through dynamo, let it fall back to eager instead of
+    # crashing, and stop its stream-capture probe from reaching torch.accelerator -> real CUDA on a GPU-less box.
+    try:
+        # Aliased: a bare `import torch._dynamo` would rebind `torch` as a local.
+        import torch._dynamo as _dynamo
+        mp.setattr(_dynamo.config, "suppress_errors", True)
+    except Exception:
+        pass
+    # torch.accelerator only exists from torch 2.6 onwards.
+    if hasattr(torch, "accelerator"):
+        mp.setattr(torch.accelerator, "is_available", lambda *a, **k: False)
+
+    # Redirect any `device="cuda"` tensor allocation / `.to("cuda")` / `.cuda()` to CPU.
+    # The aggressive spoof deliberately keeps real allocators, but a fake CPU train needs cuda-targeted ops (e.g.
+    # inductor's init_gpu_context does `torch.empty(1, device="cuda")`) to land on CPU instead of erroring.
+    for _name in (
+        "empty",
+        "zeros",
+        "ones",
+        "full",
+        "tensor",
+        "arange",
+        "randn",
+        "rand",
+        "randint",
+        "empty_like",
+        "zeros_like",
+        "ones_like",
     ):
+        _orig = getattr(torch, _name, None)
+        if _orig is None:
+            continue
+
+        def _redir(
+            *args,
+            _orig = _orig,
+            **kwargs,
+        ):
+            if _is_cuda_dev(kwargs.get("device")):
+                kwargs["device"] = "cpu"
+            return _orig(*args, **kwargs)
+
+        mp.setattr(torch, _name, _redir)
+
+    _orig_to = torch.Tensor.to
+
+    def _to_cpu(self, *args, **kwargs):
+        args = tuple("cpu" if _is_cuda_dev(a) else a for a in args)
         if _is_cuda_dev(kwargs.get("device")):
             kwargs["device"] = "cpu"
-        return _orig(*args, **kwargs)
+        return _orig_to(self, *args, **kwargs)
 
-    setattr(torch, _name, _redir)
+    mp.setattr(torch.Tensor, "to", _to_cpu)
+    mp.setattr(torch.Tensor, "cuda", lambda self, *a, **k: self)
 
-_orig_to = torch.Tensor.to
+    # Extra CUDA stubs the aggressive spoof lacks, needed to walk a real train():
+    # Adam's _cuda_graph_capture_health_check() probes stream capture.
+    mp.setattr(torch.cuda, "is_current_stream_capturing", lambda *a, **k: False, raising = False)
+    try:
+        import torch.cuda.graphs as _cg
+        mp.setattr(_cg, "_cuda_isCurrentStreamCapturing", lambda *a, **k: False, raising = False)
+    except Exception:
+        pass
+
+    # A broken libmlx.so in the shared site-packages crashes transformers' Mac-only is_mlx_array probe on Linux; disable
+    # it.
+    try:
+        import transformers.utils.generic as _g
+        mp.setattr(_g, "_is_mlx_available", False, raising = False)
+    except Exception:
+        pass
 
 
-def _to_cpu(self, *args, **kwargs):
-    args = tuple("cpu" if _is_cuda_dev(a) else a for a in args)
-    if _is_cuda_dev(kwargs.get("device")):
-        kwargs["device"] = "cpu"
-    return _orig_to(self, *args, **kwargs)
+@pytest.fixture(scope = "module", autouse = True)
+def _cpu_only_torch():
+    """Hold the GPU-less spoof for this module only.
 
-
-torch.Tensor.to = _to_cpu
-torch.Tensor.cuda = lambda self, *a, **k: self
-
-# Extra CUDA stubs the aggressive spoof lacks, needed to walk a real train():
-# Adam's _cuda_graph_capture_health_check() probes stream capture.
-torch.cuda.is_current_stream_capturing = lambda *a, **k: False
-try:
-    import torch.cuda.graphs as _cg  # noqa: E402
-    _cg._cuda_isCurrentStreamCapturing = lambda *a, **k: False
-except Exception:
-    pass
-
-# A broken libmlx.so in the shared site-packages crashes transformers' Mac-only
-# is_mlx_array probe on Linux; disable it.
-try:
-    import transformers.utils.generic as _g  # noqa: E402
-    _g._is_mlx_available = False
-except Exception:
-    pass
+    Module scoped so it is in place before the per-test `_require_stack` imports
+    unsloth and before any trainer is generated, which is the whole reason the
+    patches used to sit at import time.
+    """
+    with pytest.MonkeyPatch.context() as mp:
+        _fake_cpu_gpu(mp)
+        yield mp
 
 
 # Dense (non-MoE) tiny model on purpose: MoE models route through Unsloth's
@@ -180,8 +198,7 @@ def _guard_finite_logits(model):
         logits = getattr(output, "logits", None)
         if logits is None:
             return output
-        # nan_to_num maps nan -> 0 and the infinities to large finite values;
-        # clamp then bounds everything to [-30, 30].
+        # nan_to_num maps nan -> 0 and the infinities to large finite values; clamp then bounds everything to [-30, 30].
         output.logits = torch.nan_to_num(logits).clamp(-30.0, 30.0)
         return output
 
@@ -201,9 +218,8 @@ def _load_plain():
         pytest.skip(f"could not fetch {_MODEL} (network/hub): {str(e)[:150]}")
     if tok.pad_token is None:
         tok.pad_token = tok.eos_token
-    # Unsloth's GRPO path calls model.for_training()/for_inference() (added by
-    # FastLanguageModel). A plain HF model lacks them; supply minimal train/eval
-    # equivalents so the loop proceeds without the optimized wrapper.
+    # Unsloth's GRPO path calls model.for_training()/for_inference() (added by FastLanguageModel). A plain HF model
+    # lacks them; supply minimal train/eval equivalents so the loop proceeds without the optimized wrapper.
     if not hasattr(model, "for_training"):
         model.for_training = lambda *a, **k: model.train()
     if not hasattr(model, "for_inference"):
@@ -212,23 +228,22 @@ def _load_plain():
 
 
 @pytest.fixture(autouse = True)
-def _require_stack():
+def _require_stack(_cpu_only_torch):
     global torch  # the `import torch._dynamo` below would otherwise shadow it as local
     if importlib.util.find_spec("unsloth") is None or importlib.util.find_spec("trl") is None:
         pytest.skip("unsloth or trl not installed")
     # A real import failure is a regression we want to surface, so do not guard it.
     import unsloth  # noqa: F401  -- patches TRL trainers to the Unsloth variants
 
-    # `import unsloth` reinstalls the real torch.compile (overwriting the eager
-    # passthrough set at module load), so the GRPO hot path (chunked_selective_
-    # log_softmax) would really compile -- and inductor picks the spoofed CUDA
-    # device, crashing on device props (`gcnArchName`). Re-apply the eager
-    # passthrough and flip dynamo's call-time kill switch so every @torch.compile
-    # runs eager regardless of when it was decorated. CPU eager is what we want.
-    torch.compile = _eager_compile
+    # `import unsloth` reinstalls the real torch.compile (overwriting the eager passthrough set at module load), so the
+    # GRPO hot path (chunked_selective_log_softmax) would really compile -- and inductor picks the spoofed CUDA device,
+    # crashing on device props (`gcnArchName`). Re-apply the eager passthrough and flip dynamo's call-time kill switch
+    # so every @torch.compile runs eager regardless of when it was decorated. CPU eager is what we want. Through the
+    # module's MonkeyPatch, so both are undone with the rest of it.
+    _cpu_only_torch.setattr(torch, "compile", _eager_compile)
     try:
         import torch._dynamo  # noqa: E402
-        torch._dynamo.config.disable = True
+        _cpu_only_torch.setattr(torch._dynamo.config, "disable", True)
     except Exception:
         pass
 
@@ -264,10 +279,9 @@ def test_grpo_trains_on_cpu(tmp_path):
 
     assert GRPOTrainer.__name__ == "UnslothGRPOTrainer", "GRPO patch did not apply"
     model, tok = _load_plain()
-    # GRPO is the only canary that autoregressively samples completions, so it is
-    # the only one that can hit the non-finite-logits multinomial crash. Install
-    # the guard here (not in _load_plain) so the SFT/DPO canaries keep asserting
-    # against the model's true, unclamped outputs.
+    # GRPO is the only canary that autoregressively samples completions, so it is the only one that can hit the
+    # non-finite-logits multinomial crash. Install the guard here (not in _load_plain) so the SFT/DPO canaries keep
+    # asserting against the model's true, unclamped outputs.
     _guard_finite_logits(model)
     ds = Dataset.from_list([{"prompt": "hi there"}] * 4)
     cfg = GRPOConfig(
@@ -319,3 +333,118 @@ def test_dpo_trains_on_cpu(tmp_path):
         optim = "adamw_torch",
     )
     DPOTrainer(model = model, processing_class = tok, args = cfg, train_dataset = ds).train()
+
+
+def test_grpo_trains_on_cpu_through_the_patched_batch_sampler(tmp_path):
+    """The canary above proves the GRPO trainer runs. It does NOT prove Unsloth's own
+    ``get_batch_samples`` runs, because ``_load_plain`` never goes through the loader that
+    installs it, so ``Trainer.get_batch_samples`` stays stock transformers.
+
+    That gap is not theoretical. unsloth-zoo#1217 rewrote a list-safe
+    ``"labels" in batch_samples[0]`` into ``batch_samples[0].get("labels")``, and GRPO's
+    collator is the identity, so every element of ``batch_samples`` is a list of dicts and
+    every GRPO run died at step 0 with ``AttributeError: 'list' object has no attribute
+    'get'``. It sat on main for a day, invisible to this file, and was found by accident.
+
+    So install the patch the way a real run does, assert it took, and take real steps.
+    """
+    from datasets import Dataset
+    from transformers import Trainer
+    from trl import GRPOConfig, GRPOTrainer
+
+    from unsloth.models._utils import patch_gradient_accumulation_fix
+
+    # patch_gradient_accumulation_fix mutates the Trainer CLASS, and in the grpo-fake-run
+    # workflow this file shares a pytest process with
+    # test_trl_loss_normalization_contract.py, which reads Trainer.get_batch_samples and
+    # Trainer.training_step to check what UPSTREAM transformers returns. Leaving either one
+    # patched makes that file inspect Unsloth's wrapper and call it transformers, so it can
+    # pass while the upstream shape this patcher depends on has changed, or skip because the
+    # generated source is unavailable.
+    #
+    # Snapshot the whole class dict rather than naming attributes: the patcher replaces
+    # training_step as well as get_batch_samples and wraps __init__ and compute_loss, and a
+    # hand-written list of names silently falls behind the next one it touches. monkeypatch
+    # has that same problem, since it also needs the names up front.
+    trainer_attributes_before = dict(Trainer.__dict__)
+    seen = {"calls": 0, "list_batches": 0}
+
+    # The patch call itself is inside the try: a transformers change that makes
+    # patch_gradient_accumulation_fix raise AFTER it has replaced one method would
+    # otherwise leave the base Trainer partially patched for every later file in this
+    # pytest invocation, which is the leak this whole block exists to prevent.
+    try:
+        patch_gradient_accumulation_fix(Trainer)
+        assert Trainer.get_batch_samples.__name__ == "_unsloth_get_batch_samples", (
+            "the batch sampler under test was never installed; this canary would pass "
+            "against any zoo at all"
+        )
+
+        patched = Trainer.get_batch_samples
+
+        def counting(self, epoch_iterator, num_batches, *args, **kwargs):
+            seen["calls"] += 1
+            result = patched(self, epoch_iterator, num_batches, *args, **kwargs)
+            batch_samples = result[0] if isinstance(result, tuple) else result
+            if batch_samples and isinstance(batch_samples[0], list):
+                seen["list_batches"] += 1
+            return result
+
+        Trainer.get_batch_samples = counting
+
+        model, tok = _load_plain()
+        _guard_finite_logits(model)
+        ds = Dataset.from_list([{"prompt": "hi there"}] * 4)
+        cfg = GRPOConfig(
+            output_dir = str(tmp_path / "ci_grpo_patched"),
+            per_device_train_batch_size = 2,
+            num_generations = 2,
+            max_steps = 2,
+            max_completion_length = 8,
+            logging_steps = 1,
+            report_to = "none",
+            temperature = 1.0,
+            beta = 0.0,
+            save_strategy = "no",
+            use_cpu = True,
+            use_vllm = False,
+            fp16 = False,
+            bf16 = False,
+            optim = "adamw_torch",
+        )
+        GRPOTrainer(
+            model = model,
+            processing_class = tok,
+            reward_funcs = [lambda completions, **k: [float(len(c)) for c in completions]],
+            args = cfg,
+            train_dataset = ds,
+        ).train()
+    finally:
+        for name in [n for n in Trainer.__dict__ if n not in trainer_attributes_before]:
+            delattr(Trainer, name)
+        for name, value in trainer_attributes_before.items():
+            if Trainer.__dict__.get(name) is not value:
+                setattr(Trainer, name, value)
+
+    # Prove the cleanup, rather than trusting it. `is`, not `==`: a wrapper that merely
+    # compares equal to what it replaced still counts as a leak, and `dict == dict` would
+    # not say so. Naming the attributes also keeps a failure readable; comparing the two
+    # class dicts wholesale prints several hundred entries and no verdict.
+    leaked = [n for n in Trainer.__dict__ if n not in trainer_attributes_before]
+    not_restored = [
+        n for n, v in trainer_attributes_before.items() if Trainer.__dict__.get(n) is not v
+    ]
+    assert not leaked and not not_restored, (
+        "this canary left the Trainer class patched, so any later test in the same process "
+        "that reads upstream's own methods is reading Unsloth's instead: "
+        f"added {leaked}, not restored {not_restored}"
+    )
+
+    assert seen["calls"] > 0, "the patched batch sampler was never entered"
+    # The shape that broke: TRL's GRPO collator is the identity, so a batch is a LIST of
+    # dicts, never a dict. A canary that only ever sees the SFT dict shape cannot catch a
+    # regression that assumes one.
+    assert seen["list_batches"] > 0, (
+        "no batch arrived as a list, so this canary is not exercising the GRPO collator "
+        "shape and would not have caught unsloth-zoo#1217"
+    )

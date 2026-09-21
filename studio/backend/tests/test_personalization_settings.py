@@ -9,6 +9,18 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
+
+def _shared_setup_1(monkeypatch, store):
+    monkeypatch.setattr("storage.studio_db.get_app_setting", lambda k, d = None: store.get(k, d))
+    monkeypatch.setattr("storage.studio_db.upsert_app_settings", lambda d: store.update(d))
+
+    app = FastAPI()
+    app.dependency_overrides[get_current_subject] = lambda: "unsloth"
+    app.include_router(settings_routes.router, prefix = "/api/settings")
+    client = TestClient(app)
+    return client
+
+
 _BACKEND = Path(__file__).resolve().parents[1]
 if str(_BACKEND) not in sys.path:
     sys.path.insert(0, str(_BACKEND))
@@ -42,14 +54,28 @@ def test_unknown_keys_are_ignored():
     assert p.profile.displayName == "Mike"
 
 
-def test_invalid_theme_rejected():
+@pytest.mark.parametrize(
+    "section, field, value",
+    [
+        pytest.param("appearance", "theme", "neon", id = "invalid_theme_rejected"),
+        pytest.param("appearance", "palette", "neon", id = "invalid_palette_rejected"),
+        pytest.param(
+            "profile",
+            "avatarDataUrl",
+            "http://example.com/a.png",
+            id = "avatar_must_be_image_data_url",
+        ),
+        pytest.param(
+            "profile",
+            "avatarDataUrl",
+            "/Sloth%20emojis/../secret.png",
+            id = "bundled_avatar_traversal_rejected",
+        ),
+    ],
+)
+def test_invalid_personalization_values_are_rejected(section, field, value):
     with pytest.raises(ValidationError):
-        PersonalizationPayload.model_validate({"appearance": {"theme": "neon"}})
-
-
-def test_invalid_palette_rejected():
-    with pytest.raises(ValidationError):
-        PersonalizationPayload.model_validate({"appearance": {"palette": "neon"}})
+        PersonalizationPayload.model_validate({section: {field: value}})
 
 
 def test_customization_defaults():
@@ -63,6 +89,7 @@ def test_customization_defaults():
     assert c.headingFont is None
     assert c.chatFont is None
     assert c.uiFontSize is None
+    assert c.chatWidth == "standard"
     assert [(i.id, i.visible) for i in c.sidebarMenu] == [
         ("api", True),
         ("darkMode", True),
@@ -76,6 +103,10 @@ def test_customization_defaults():
 
 
 def test_customization_invalid_values_rejected():
+    with pytest.raises(ValidationError):
+        PersonalizationPayload.model_validate(
+            {"appearance": {"customization": {"chatWidth": "invalid"}}}
+        )
     with pytest.raises(ValidationError):
         PersonalizationPayload.model_validate(
             {"appearance": {"customization": {"colors": {"light": {"accent": "red"}}}}}
@@ -157,7 +188,8 @@ FRONTEND_SHIPPED_SIDEBAR_NAV = [
     ("hub", True),
     ("projects", True),
     ("images", True),
-    ("video", False),
+    ("video", True),
+    ("audio", False),
     ("train", True),
     ("recipes", False),
     ("export", False),
@@ -197,6 +229,7 @@ def test_customization_sidebar_nav_preserves_order_and_normalizes():
         ("hub", False),
         ("projects", True),
         ("images", True),
+        ("audio", False),
         ("train", True),
         ("recipes", False),
         ("export", False),
@@ -222,6 +255,51 @@ def test_customization_sidebar_nav_rejects_pathological_length():
     huge = [{"id": "hub"} for _ in range(MAX_SIDEBAR_NAV_INPUT_ITEMS + 1)]
     with pytest.raises(ValidationError):
         PersonalizationPayload.model_validate(_sidebar_nav(huge))
+
+
+def _sidebar_nav_auto(value):
+    return {"appearance": {"customization": {"sidebarNavAuto": value}}}
+
+
+def test_customization_sidebar_nav_auto_defaults_to_none():
+    # None, not a list: the client reads it as "this record predates the field" and works the
+    # placement out from the layout. A default list would answer for a user who never chose.
+    assert PersonalizationPayload().appearance.customization.sidebarNavAuto is None
+
+
+def test_customization_sidebar_nav_auto_keeps_an_explicit_empty_list():
+    # The user decided the Projects row's placement themselves, so no rule applies to it. That
+    # is the opposite of an absent field and has to survive the round trip.
+    p = PersonalizationPayload.model_validate(_sidebar_nav_auto([]))
+    assert p.appearance.customization.sidebarNavAuto == []
+
+
+def test_customization_sidebar_nav_auto_dedupes_and_validates():
+    p = PersonalizationPayload.model_validate(_sidebar_nav_auto(["projects", "projects"]))
+    assert p.appearance.customization.sidebarNavAuto == ["projects"]
+    with pytest.raises(ValidationError):
+        PersonalizationPayload.model_validate(_sidebar_nav_auto(["chats"]))
+    with pytest.raises(ValidationError):
+        PersonalizationPayload.model_validate(
+            _sidebar_nav_auto(["hub"] * (MAX_SIDEBAR_NAV_INPUT_ITEMS + 1))
+        )
+
+
+def test_personalization_put_round_trips_sidebar_nav_auto(monkeypatch):
+    # Pinning Projects while the rule hides it leaves the layout at the shipped default, so the
+    # choice lives in this field alone. Dropping it on the way in would undo it on the next load.
+    store: dict = {}
+    client = _shared_setup_1(monkeypatch, store)
+    put = client.put(
+        "/api/settings/personalization",
+        json = _sidebar_nav_auto([]),
+    )
+    assert put.status_code == 200
+    assert put.json()["appearance"]["customization"]["sidebarNavAuto"] == []
+    stored = store[pers.PERSONALIZATION_SETTING_KEY]["appearance"]["customization"]
+    assert stored["sidebarNavAuto"] == []
+    body = client.get("/api/settings/personalization").json()
+    assert body["appearance"]["customization"]["sidebarNavAuto"] == []
 
 
 def test_customization_imported_fonts_validated():
@@ -332,13 +410,6 @@ def test_imported_fonts_total_size_capped():
     )
 
 
-def test_avatar_must_be_image_data_url():
-    with pytest.raises(ValidationError):
-        PersonalizationPayload.model_validate(
-            {"profile": {"avatarDataUrl": "http://example.com/a.png"}}
-        )
-
-
 def test_avatar_size_is_capped():
     big = "data:image/png;base64," + "A" * (pers.MAX_AVATAR_DATA_URL_BYTES + 1)
     with pytest.raises(ValidationError):
@@ -371,13 +442,6 @@ def test_bundled_avatar_subpath_allowed():
     assert "Sloth%20emojis" in p.profile.avatarDataUrl
 
 
-def test_bundled_avatar_traversal_rejected():
-    with pytest.raises(ValidationError):
-        PersonalizationPayload.model_validate(
-            {"profile": {"avatarDataUrl": "/Sloth%20emojis/../secret.png"}}
-        )
-
-
 def test_get_read_errors_propagate(monkeypatch):
     def fail(*args, **kwargs):
         raise RuntimeError("read failed")
@@ -406,13 +470,7 @@ def test_get_set_roundtrip(monkeypatch):
 
 def test_personalization_route_roundtrip_real_shape(monkeypatch):
     store: dict = {}
-    monkeypatch.setattr("storage.studio_db.get_app_setting", lambda k, d = None: store.get(k, d))
-    monkeypatch.setattr("storage.studio_db.upsert_app_settings", lambda d: store.update(d))
-
-    app = FastAPI()
-    app.dependency_overrides[get_current_subject] = lambda: "unsloth"
-    app.include_router(settings_routes.router, prefix = "/api/settings")
-    client = TestClient(app)
+    client = _shared_setup_1(monkeypatch, store)
 
     initial = client.get("/api/settings/personalization")
     assert initial.status_code == 200
@@ -439,6 +497,7 @@ def test_personalization_route_roundtrip_real_shape(monkeypatch):
                 "uiFont": "SF Pro Text",
                 "headingFont": "Avenir Next",
                 "chatFont": "Georgia",
+                "chatWidth": "full",
                 "codeFont": None,
                 "importedFonts": [
                     {"name": "SF Pro Text", "dataUrl": "data:font/woff2;base64,AAAA"}
@@ -463,6 +522,7 @@ def test_personalization_route_roundtrip_real_shape(monkeypatch):
                 "sidebarNav": [
                     {"id": "images", "pinned": True},
                     {"id": "video", "pinned": True},
+                    {"id": "audio", "pinned": False},
                     {"id": "hub", "pinned": True},
                     {"id": "train", "pinned": True},
                     {"id": "projects", "pinned": False},
@@ -470,6 +530,8 @@ def test_personalization_route_roundtrip_real_shape(monkeypatch):
                     {"id": "export", "pinned": False},
                     {"id": "api", "pinned": False},
                 ],
+                # This layout was arranged by hand, so no row is left on a rule.
+                "sidebarNavAuto": [],
             },
         },
     }
@@ -509,17 +571,60 @@ def test_personalization_get_flags_legacy_fields(monkeypatch):
     assert body["greetingSlothSaved"] is False
 
 
+def test_personalization_legacy_chat_width_presence(monkeypatch):
+    store = {
+        pers.PERSONALIZATION_SETTING_KEY: {
+            "appearance": {"customization": {"uiFont": "Georgia"}},
+        }
+    }
+    client = _shared_setup_1(monkeypatch, store)
+    body = client.get("/api/settings/personalization").json()
+    assert body["customizationSaved"] is True
+    assert body["chatWidthSaved"] is False
+    assert body["appearance"]["customization"]["chatWidth"] == "standard"
+
+    put = client.put(
+        "/api/settings/personalization",
+        json = {"appearance": {"customization": {"uiFont": "Arial"}}},
+    )
+    assert put.status_code == 200
+    assert client.get("/api/settings/personalization").json()["chatWidthSaved"] is False
+    assert "chatWidth" not in store[pers.PERSONALIZATION_SETTING_KEY]["appearance"]["customization"]
+
+    put = client.put(
+        "/api/settings/personalization",
+        json = {"appearance": {"customization": {"chatWidth": "full"}}},
+    )
+    assert put.status_code == 200
+    body = client.get("/api/settings/personalization").json()
+    assert body["chatWidthSaved"] is True
+    assert body["appearance"]["customization"]["chatWidth"] == "full"
+    assert body["appearance"]["customization"]["uiFont"] == "Arial"
+
+
+@pytest.mark.parametrize("width", ["standard", "wide", "full"])
+def test_personalization_saved_chat_width_survives_stale_write(monkeypatch, width):
+    store = {
+        pers.PERSONALIZATION_SETTING_KEY: {
+            "appearance": {"customization": {"chatWidth": width}},
+        }
+    }
+    client = _shared_setup_1(monkeypatch, store)
+    put = client.put(
+        "/api/settings/personalization",
+        json = {"appearance": {"customization": {"uiFont": "Georgia"}}},
+    )
+    assert put.status_code == 200
+    body = client.get("/api/settings/personalization").json()
+    assert body["chatWidthSaved"] is True
+    assert body["appearance"]["customization"]["chatWidth"] == width
+
+
 def test_personalization_put_preserves_absent_fields(monkeypatch):
     # A stale client that omits palette/customization must not materialize them,
     # so the record stays legacy and GET keeps reporting those fields unsaved.
     store: dict = {}
-    monkeypatch.setattr("storage.studio_db.get_app_setting", lambda k, d = None: store.get(k, d))
-    monkeypatch.setattr("storage.studio_db.upsert_app_settings", lambda d: store.update(d))
-
-    app = FastAPI()
-    app.dependency_overrides[get_current_subject] = lambda: "unsloth"
-    app.include_router(settings_routes.router, prefix = "/api/settings")
-    client = TestClient(app)
+    client = _shared_setup_1(monkeypatch, store)
 
     put = client.put(
         "/api/settings/personalization",
@@ -556,13 +661,7 @@ def test_personalization_put_preserves_existing_fields_on_stale_write(monkeypatc
             },
         }
     }
-    monkeypatch.setattr("storage.studio_db.get_app_setting", lambda k, d = None: store.get(k, d))
-    monkeypatch.setattr("storage.studio_db.upsert_app_settings", lambda d: store.update(d))
-
-    app = FastAPI()
-    app.dependency_overrides[get_current_subject] = lambda: "unsloth"
-    app.include_router(settings_routes.router, prefix = "/api/settings")
-    client = TestClient(app)
+    client = _shared_setup_1(monkeypatch, store)
 
     put = client.put(
         "/api/settings/personalization",

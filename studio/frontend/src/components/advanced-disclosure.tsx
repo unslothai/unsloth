@@ -15,10 +15,17 @@ import { cn } from "@/lib/utils";
 export function AdvancedDisclosure({
   open,
   onOpenChange,
+  description = (
+    <>
+      Load-time tuning. Changes apply on the next load; Reapply reloads the
+      current model.
+    </>
+  ),
   children,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  description?: ReactNode;
   children: ReactNode;
 }) {
   return (
@@ -48,8 +55,7 @@ export function AdvancedDisclosure({
       {open && (
         <div className="flex flex-col gap-3">
           <p className="text-ui-11 leading-snug text-muted-foreground">
-            Load-time tuning. Changes apply on the next load; Reapply reloads
-            the current model.
+            {description}
           </p>
           {children}
         </div>

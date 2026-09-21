@@ -1,11 +1,17 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { useHfEndpoint } from "@/lib/hf-endpoint";
 import { Spinner } from "@/components/ui/spinner";
 import { useOnlineStatus } from "@/features/hub/hooks/use-online-status";
 import { LruMap } from "@/features/hub/lib/lru-map";
 import { isHuggingFaceOffline } from "@/features/hub/lib/network";
 import { fingerprintToken } from "@/features/hub/lib/token-fingerprint";
+import {
+  type MarkdownPluginNeeds,
+  markdownPluginNeeds,
+} from "@/lib/markdown-plugins";
+import { scheduleIdleTask } from "@/lib/schedule-idle-task";
 import { cn } from "@/lib/utils";
 import { confirmExternalLink } from "../stores/external-link-confirm";
 import { useHfTokenStore } from "@/features/hub/stores/hf-token-store";
@@ -63,8 +69,6 @@ const README_ALLOWED_TAGS: NonNullable<
   track: ["src", "kind", "srclang", "label", "default"],
 };
 
-const READMEX_NEEDS_MATH = /\$\$|\\\(|\\\[/;
-const READMEX_NEEDS_MERMAID = /```mermaid\b/;
 const README_RENDER_CHAR_LIMIT = 120_000;
 const README_CACHE_TTL_MS = 60_000;
 const README_TRUNCATED_NOTICE =
@@ -254,39 +258,6 @@ function isMissingReadmeError(error: string): boolean {
   return /^No (dataset|model) card available\.$/.test(error);
 }
 
-function scheduleIdleTask(callback: () => void, timeout = 250): () => void {
-  let canceled = false;
-  const run = () => {
-    if (!canceled) callback();
-  };
-
-  if (typeof window === "undefined") {
-    run();
-    return () => {
-      canceled = true;
-    };
-  }
-
-  const idleWindow = window as Window & {
-    requestIdleCallback?: Window["requestIdleCallback"];
-    cancelIdleCallback?: Window["cancelIdleCallback"];
-  };
-
-  if (idleWindow.requestIdleCallback && idleWindow.cancelIdleCallback) {
-    const handle = idleWindow.requestIdleCallback(run, { timeout });
-    return () => {
-      canceled = true;
-      idleWindow.cancelIdleCallback?.(handle);
-    };
-  }
-
-  const handle = globalThis.setTimeout(run, Math.min(timeout, 120));
-  return () => {
-    canceled = true;
-    globalThis.clearTimeout(handle);
-  };
-}
-
 function ReadmePlaceholder({
   kind,
   message,
@@ -366,10 +337,7 @@ async function loadReadmeFromCache({
   }
 }
 
-function loadPlugins(needs: {
-  math: boolean;
-  mermaid: boolean;
-}): ReadmePlugins {
+function loadPlugins(needs: MarkdownPluginNeeds): ReadmePlugins {
   const plugins: ReadmePlugins = { code: streamdownCode };
   if (needs.math) plugins.math = streamdownMath;
   if (needs.mermaid) plugins.mermaid = streamdownMermaid;
@@ -388,9 +356,10 @@ export function ModelReadme({
   const hfToken = useHfTokenStore((s) => s.token);
   const online = useOnlineStatus();
   const tokenFingerprint = useMemo(() => fingerprintToken(hfToken), [hfToken]);
+  const hfEndpoint = useHfEndpoint();
   const stateKey = useMemo(
-    () => `${kind}::${repoId}::${tokenFingerprint}`,
-    [kind, repoId, tokenFingerprint],
+    () => `${hfEndpoint}::${kind}::${repoId}::${tokenFingerprint}`,
+    [hfEndpoint, kind, repoId, tokenFingerprint],
   );
   const [state, setState] = useState<ReadmeState>(() => {
     const cached = readResolvedReadmeCache(stateKey);
@@ -507,12 +476,7 @@ export function ModelReadme({
       });
     };
     const cancelIdle = scheduleIdleTask(() => {
-      applyPlugins(
-        loadPlugins({
-          math: READMEX_NEEDS_MATH.test(body),
-          mermaid: READMEX_NEEDS_MERMAID.test(body),
-        }),
-      );
+      applyPlugins(loadPlugins(markdownPluginNeeds(body)));
     }, 400);
     return () => {
       canceled = true;

@@ -26,7 +26,7 @@ PNG_DATA_URL = "data:image/png;base64," + base64.b64encode(PNG_BYTES).decode("as
 def _reset_studio_db(tmp_path, monkeypatch):
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
     monkeypatch.setenv("UNSLOTH_STUDIO_PROJECTS_HOME", str(tmp_path / "Projects"))
-    monkeypatch.setattr(studio_db, "_schema_ready", False)
+    monkeypatch.setattr(studio_db, "_schema_ready", set())
 
 
 def _thread(

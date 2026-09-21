@@ -9,11 +9,20 @@ import {
   resolveComparePlacement,
   recoverDroppedDiffusionSplit,
   resolveStagedDiffusionClassification,
+  shouldHydrateGpuPlacementControls,
   shouldPinDiffusionPlacement,
 } from "../src/features/chat/lib/gpu-placement.ts";
 
 // The Send-time snapshot: Manual with 12 of another chat GGUF's layers on GPU.
 const shared = { gpuMemoryMode: "manual" as const, gpuLayers: 12 };
+
+test("a Vulkan CPU fallback does not replace the standing GPU intent", () => {
+  assert.equal(
+    shouldHydrateGpuPlacementControls("vulkan_startup_crash"),
+    false,
+  );
+  assert.equal(shouldHydrateGpuPlacementControls(null), true);
+});
 
 test("a diffusion pane never inherits another model's layer split", () => {
   // An unremembered pane carries neither key, so `??` would fall through to shared.

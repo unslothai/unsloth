@@ -8,6 +8,12 @@ export interface PickerDeviceInventoryState {
   isDeviceInventorySettled: boolean;
 }
 
+export function shouldRefreshPickerInventoryOnMount(
+  readyAtMount: boolean,
+): boolean {
+  return readyAtMount;
+}
+
 export type PickerDeviceListState =
   | "empty"
   | "error"

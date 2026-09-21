@@ -17,7 +17,7 @@ training:
   random_seed: 3407
   packing: false
   train_on_completions: true
-  gradient_checkpointing: true
+  gradient_checkpointing: "unsloth"
   optim: "adamw_torch_fused"
   lr_scheduler_type: "cosine"
 

@@ -3,7 +3,15 @@
 
 """Static contracts for focused packaged-desktop reliability behavior."""
 
+import re
 from pathlib import Path
+from tests.studio._js_source import (
+    attribute_expressions,
+    binding_joining,
+    boolean_table,
+    expand_bindings,
+    gates_the_markup,
+)
 
 
 REPO = Path(__file__).resolve().parents[2]
@@ -21,6 +29,11 @@ THREAD = FRONTEND / "components/assistant-ui/thread.tsx"
 THREAD_SIDEBAR = FRONTEND / "features/chat/thread-sidebar.tsx"
 SHARED_COMPOSER = FRONTEND / "features/chat/shared-composer.tsx"
 TITLEBAR = FRONTEND / "components/tauri/window-titlebar.tsx"
+SHEET = FRONTEND / "components/ui/sheet.tsx"
+RESEARCH_ACTIVITY_PANEL = FRONTEND / "features/chat/components/research-activity-panel.tsx"
+RESPONSE_DETAILS_SHEET = FRONTEND / "components/assistant-ui/message-response-details-sheet.tsx"
+DOCUMENT_PREVIEW_SHEET = FRONTEND / "features/rag/components/document-preview-sheet.tsx"
+INTERFACE_SCALE_RUNTIME = FRONTEND / "features/settings/lib/interface-scale-runtime.ts"
 NATIVE_DIALOGS = REPO / "studio/src-tauri/src/native_file_dialogs.rs"
 NATIVE_CLIPBOARD = REPO / "studio/src-tauri/src/native_clipboard.rs"
 TAURI_MAIN = REPO / "studio/src-tauri/src/main.rs"
@@ -36,19 +49,101 @@ DESKTOP_UPDATE_POLICY = REPO / "studio/src-tauri/src/desktop_update_policy.rs"
 APP_PROVIDER = FRONTEND / "app/provider.tsx"
 ROOT_ROUTE = FRONTEND / "app/routes/__root.tsx"
 IMAGES_PAGE = FRONTEND / "features/images/images-page.tsx"
+AUDIO_PAGE = FRONTEND / "features/audio/audio-page.tsx"
+
+DIFFUSION_TRAIN_PANEL = FRONTEND / "features/images/train/diffusion-train-panel.tsx"
+MEDIA_PAGE_LINK = FRONTEND / "components/media-page-link.tsx"
 VIDEO_PAGE = FRONTEND / "features/video/video-page.tsx"
+VIDEO_API = FRONTEND / "features/video/api.ts"
+RAG_API = FRONTEND / "features/rag/api/rag-api.ts"
 
 REMOTE_ACCESS_SECTION = FRONTEND / "features/settings/components/remote-access-section.tsx"
 PASSWORD_DIALOG = FRONTEND / "features/settings/components/change-password-dialog.tsx"
 GENERAL_TAB = FRONTEND / "features/settings/tabs/general-tab.tsx"
 
 CLIPBOARD_FILES = FRONTEND / "features/chat/utils/clipboard-files.ts"
+# The DataTransfer reading half moved here when long pastes became attachments
+# (#8472). Both halves are still one contract, so read them as one.
+CLIPBOARD_PAYLOAD = FRONTEND / "features/chat/utils/clipboard-payload.ts"
 TAURI_CAPABILITIES = REPO / "studio/src-tauri/capabilities/default.json"
 CHAT_PAGE = FRONTEND / "features/chat/chat-page.tsx"
 TRAINING_CONFIG_ACTIONS = FRONTEND / "features/studio/wizard/config-actions.tsx"
 MARKDOWN_TEXT = FRONTEND / "components/assistant-ui/markdown-text.tsx"
 IMAGE = FRONTEND / "components/assistant-ui/image.tsx"
 AUDIO_PLAYER = FRONTEND / "components/assistant-ui/audio-player.tsx"
+
+
+def _scale_constants() -> dict[str, str]:
+    """The mac chrome constants, resolved to the strings provider.tsx puts in a style block.
+
+    ``NATIVE_MAC_TITLEBAR_HEIGHT_VAR`` is ``var(--studio-native-titlebar-height, 34px)``
+    built from ``NATIVE_MAC_TITLEBAR_HEIGHT_PX``. The runtime divides by the interface zoom
+    and provider.tsx uses the same constant as the CSS fallback, which is what keeps a
+    single 34 in the codebase, so read it from there rather than repeating it here.
+    """
+    source = INTERFACE_SCALE_RUNTIME.read_text(encoding = "utf-8")
+    numbers = dict(re.findall(r"export const (\w+_PX) = (\d+);", source))
+    return {
+        name: re.sub(r"\$\{(\w+)\}", lambda m: numbers.get(m.group(1), m.group(0)), body)
+        for name, body in re.findall(r"export const (\w+_VAR) = `([^`]+)`;", source)
+    }
+
+
+def _chrome_style_blocks(source: str) -> dict[str, dict[str, str]]:
+    """Each ``const <NAME>_STYLE = { ... } as CSSProperties`` block as a var -> value map.
+
+    Per block, so a value is only ever compared against the others that ship with it.
+
+    A value may be a string, a template, or one of the imported constants above. Before the
+    interface-scale setting they were all plain px strings; resolving the other two is what
+    keeps these contracts checking the same arithmetic instead of silently reading absent.
+    """
+    constants = _scale_constants()
+
+    def resolve(raw: str) -> str:
+        raw = raw.strip()
+        if raw[:1] in ('"', "`"):
+            raw = raw[1:-1]
+        return re.sub(
+            r"\$\{(\w+)\}", lambda m: constants.get(m.group(1), m.group(0)), constants.get(raw, raw)
+        )
+
+    return {
+        name: {
+            var: resolve(value)
+            for var, value in re.findall(r'"(--[\w-]+)":\s*(`[^`]*`|"[^"]*"|\w+)', body)
+        }
+        for name, body in re.findall(
+            r"const (\w+_STYLE) = \{(.*?)\} as CSSProperties;", source, re.S
+        )
+    }
+
+
+def _titlebar_nav_button_px(source: str) -> int | None:
+    """The navigation button's box, read off the class string that sizes it."""
+    match = re.search(r"const buttonClass =\s*\n?\s*\"[^\"]*?size-\[(\d+)px\]", source, re.S)
+    return int(match.group(1)) if match else None
+
+
+def _px(value: str | None) -> int | None:
+    """*value* as whole pixels at 100% interface scale, or None if it is not pixel-valued.
+
+    **At 100%, and only there.** The mac chrome vars carry their own px fallback and the
+    runtime divides that number by the webview zoom, because macOS draws the titlebar and
+    traffic lights at a size zoom does not touch. So every sum below is the arithmetic as
+    it ships at 100%, which is the scale these contracts were written against and the only
+    one a static read of the source can see.
+    """
+    text = (value or "").strip()
+    for pattern in (
+        r"(\d+)px",
+        r"var\(--[\w-]+,\s*(\d+)px\)",
+    ):
+        match = re.fullmatch(pattern, text)
+        if match:
+            return int(match.group(1))
+    match = re.fullmatch(r"calc\((\d+)px\s*\+\s*var\(--[\w-]+,\s*(\d+)px\)\)", text)
+    return int(match.group(1)) + int(match.group(2)) if match else None
 
 
 def test_desktop_update_offer_remains_actionable_from_settings():
@@ -102,7 +197,7 @@ def test_desktop_update_keeps_the_in_app_path_on_a_guessed_policy():
     give_up = manual_branch.split("checkDesktopUpdate()", 1)[0]
     # Only a resolved policy may end the check without the in-app updater.
     assert "if (resolved) {" in give_up
-    assert 'setStatus("idle");' in give_up
+    assert 'updateStatus("idle");' in give_up
     assert "await checkDesktopUpdate();" in manual_branch
     # The Rust command self-gates on the real OS, so it is safe to consult first.
     manual_cmd = policy.split("async fn check_desktop_manual_update", 1)[1]
@@ -164,15 +259,45 @@ def test_file_actions_route_through_native_commands_only_in_tauri():
     assert "if (!isTauri)" in projects
     # Browser builds retain the existing hidden-input route.
     assert 'type="file"' in data_tab
-    assert 'accept=".jsonl,.ndjson,.csv"' in data_tab
+    # Open WebUI exports are .json arrays, so the picker takes that too.
+    assert 'accept=".json,.jsonl,.ndjson,.csv"' in data_tab
 
     native_dialogs = NATIVE_DIALOGS.read_text(encoding = "utf-8")
-    assert 'CHAT_IMPORT_EXTENSIONS: &[&str] = &["jsonl", "ndjson", "csv"]' in native_dialogs
+    assert 'CHAT_IMPORT_EXTENSIONS: &[&str] = &["json", "jsonl", "ndjson", "csv"]' in native_dialogs
     assert "InvokeBody::Raw" in native_dialogs
 
     assert ".tempfile_in(parent)" in native_dialogs
     assert ".persist(&path)" in native_dialogs
     assert "fs::write(&path, content)" not in native_dialogs
+
+
+def test_media_galleries_save_natively_with_feedback():
+    images_page = IMAGES_PAGE.read_text(encoding = "utf-8")
+    video_page = VIDEO_PAGE.read_text(encoding = "utf-8")
+    reencode = images_page.split("async function reencodeImage(", 1)[1].split(
+        "\n}\n\nasync function downloadImage", 1
+    )[0]
+    download = images_page.split("async function downloadImage(", 1)[1].split(
+        "\n}\n\nfunction formatTimestamp", 1
+    )[0]
+    video_download = video_page.split("const handleDownload = useCallback(", 1)[1].split(
+        "\n\n  const handleDelete", 1
+    )[0]
+
+    assert "await downloadUrl(src, filename);" in download
+    assert "await downloadFile(outputBlob, filename, outputBlob.type);" in download
+    assert "const originalBlob = await fetchGalleryBlob(image.url);" in download
+    assert "await downloadFile(originalBlob, filename, originalBlob.type);" in download
+    assert "blob.type !== `image/${format}`" in reencode
+    assert "isDownloadCancelled(error)" in download
+    assert "if (isTauri)" in download
+    assert 'toast.success("Image saved", { description: filename });' in download
+    assert 'document.createElement("a")' not in download
+
+    assert "await downloadFile(blob, exportFilename(video, format), blob.type);" in video_page
+    assert "if (isTauri)" in video_download
+    assert 'toast.success("Video saved"' in video_download
+    assert "function saveLink(" not in video_page
 
 
 def test_chat_exports_await_native_saves_and_markdown_uses_shared_helper():
@@ -225,7 +350,8 @@ def test_generated_download_buttons_use_the_native_save_boundary():
     assert 'rust: "rs"' in markdown
     assert "downloadUrl(part.image, filename)" in image
     assert "urlToBlob(part.image)" in image
-    assert 'downloadUrl(src, "generated-audio.wav")' in audio
+    assert "downloadUrl(src, filename)" in audio
+    assert 'filename = "generated-audio.wav"' in audio
 
     tauri_config = (REPO / "studio/src-tauri/tauri.conf.json").read_text(encoding = "utf-8")
     assert "connect-src 'self' ipc: http://ipc.localhost" in tauri_config
@@ -235,8 +361,67 @@ def test_generated_download_buttons_use_the_native_save_boundary():
         assert "isDownloadCancelled(error)" in source
 
 
+def test_gallery_video_links_are_absolute_and_saved_natively():
+    video_api = VIDEO_API.read_text(encoding = "utf-8")
+    video_page = VIDEO_PAGE.read_text(encoding = "utf-8")
+    rag_api = RAG_API.read_text(encoding = "utf-8")
+
+    # The backend mints this link relative so a proxy can serve it. Its consumers are
+    # <video src> and the download, none of which go through authFetch, so a relative
+    # path under Tauri resolves against the webview and yields the SPA shell.
+    assert "return apiUrl(body.url);" in video_api
+    assert 'from "@/lib/api-base"' in video_api
+    # The same fix the RAG document preview already carries.
+    assert "return apiUrl(data.url);" in rag_api
+
+    # An absolute link is cross-origin, where the download attribute stops saving, so the
+    # MP4 goes native. Streaming, not downloadUrl: a clip is capped at 2048x2048 x 1024
+    # frames, too big to buffer for IPC, and the chooser must not wait on the body.
+    helper = NATIVE_FILES.read_text(encoding = "utf-8")
+    assert "downloadUrlStreaming(src, exportFilename(video, format))" in video_page
+    assert '"save_native_file_from_url"' in helper
+    assert "isDownloadCancelled(err)" in video_page
+    # Converted exports cross the same native boundary after the backend returns their blob.
+    assert "await downloadFile(blob, exportFilename(video, format), blob.type);" in video_page
+    assert "URL.createObjectURL(blob)" not in video_page
+
+    # media-src, not just connect-src: the signed link is played by an element.
+    tauri_config = (REPO / "studio/src-tauri/tauri.conf.json").read_text(encoding = "utf-8")
+    assert (
+        "media-src 'self' data: blob: https: http://localhost:* http://127.0.0.1:*" in tauri_config
+    )
+
+    # The save dialog now offers these to video, not just to the audio player, and the
+    # streaming command is registered and pinned to the local backend.
+    dialogs = NATIVE_DIALOGS.read_text(encoding = "utf-8")
+    assert '("MPEG-4 video or audio", filter_extensions(["m4a", "mp4"]))' in dialogs
+    assert '("WebM video or audio", filter_extensions(["webm"]))' in dialogs
+    assert "async fn stream_url_to_path" in dialogs
+    # Parsed, not sliced: in http://127.0.0.1:8888@evil.test the loopback part is userinfo.
+    assert "reqwest::Url::parse(url)" in dialogs
+    assert "parsed.username().is_empty()" in dialogs
+    assert "parsed.password().is_some()" in dialogs
+    # The chooser has to come first, or the user waits on the body before being asked where.
+    streaming = dialogs[dialogs.index("pub async fn save_native_file_from_url") :]
+    assert streaming.index(".save_file(") < streaming.index("stream_url_to_path(&url")
+    # No proxy (the signed URL must not reach one) and no redirects (they would leave loopback
+    # after the check). read_timeout, not timeout: it bounds each chunk, so a backend that goes
+    # quiet cannot hang the save while a legitimately large clip still finishes.
+    loopback = (REPO / "studio/src-tauri/src/loopback_http.rs").read_text(encoding = "utf-8")
+    assert "fn streaming_client" in loopback
+    assert "redirect(reqwest::redirect::Policy::none())" in loopback
+    assert ".read_timeout(read_timeout)" in loopback
+    assert ".timeout(" not in loopback.split("fn streaming_client")[1]
+    assert loopback.count(".no_proxy()") == 2
+    assert "loopback_http::streaming_client" in dialogs
+    main_rs = (REPO / "studio/src-tauri/src/main.rs").read_text(encoding = "utf-8")
+    assert "native_file_dialogs::save_native_file_from_url," in main_rs
+
+
 def test_clipboard_file_paste_is_bounded_and_wired_to_both_composers():
-    helper = CLIPBOARD_FILES.read_text(encoding = "utf-8")
+    helper = CLIPBOARD_FILES.read_text(encoding = "utf-8") + CLIPBOARD_PAYLOAD.read_text(
+        encoding = "utf-8"
+    )
     thread = THREAD.read_text(encoding = "utf-8")
     shared_composer = SHARED_COMPOSER.read_text(encoding = "utf-8")
     capabilities = TAURI_CAPABILITIES.read_text(encoding = "utf-8")
@@ -315,6 +500,16 @@ def test_mac_dock_reopens_hidden_main_window():
     assert "show_main_window(app)" in reopen_handler
 
 
+def test_windows_browser_guard_runs_only_in_release_builds():
+    # WebView2 is not reachable from Python, so pin the release-only call that
+    # keeps refresh controls available during development.
+    source = TAURI_MAIN.read_text(encoding = "utf-8")
+
+    assert "fn setup_windows_browser_guards" in source
+    before_call = source.split("setup_windows_browser_guards(app)?;", 1)[0]
+    assert before_call.rstrip().endswith("#[cfg(all(windows, not(debug_assertions)))]")
+
+
 def test_desktop_manages_the_remote_password_through_the_account_dialog():
     section = REMOTE_ACCESS_SECTION.read_text(encoding = "utf-8")
     dialog = PASSWORD_DIALOG.read_text(encoding = "utf-8")
@@ -325,7 +520,7 @@ def test_desktop_manages_the_remote_password_through_the_account_dialog():
     assert "if (!(isTauri && status)) {" in row
     assert "initial={status.passwordPending}" in row
     assert "<RemotePasswordRow status={status} onDone={refreshStatus} />" in section
-    assert "{isTauri ? null : (" in GENERAL_TAB.read_text(encoding = "utf-8")
+    assert "{isTauri && isOwner ? null : (" in GENERAL_TAB.read_text(encoding = "utf-8")
     # A password change rotates credentials outside the polling requests.
     refresh = section.split("const refreshStatus = useCallback(", 1)[1].split("}, []);", 1)[0]
     assert "mutationEpoch.current += 1;" in refresh
@@ -349,7 +544,14 @@ def test_desktop_manages_the_remote_password_through_the_account_dialog():
 def test_desktop_startup_waits_for_auth_without_intermediate_handoff():
     source = APP_PROVIDER.read_text(encoding = "utf-8")
 
-    assert 'const showApp = status === "running" && desktopAuthReady;' in source
+    # The gate has been renamed once already (showApp -> canMountApp) and gained a second
+    # clause, so pin the CONDITION that makes the app wait for auth, not the name in front
+    # of it. A rename or a rewrap is a refactor; dropping desktopAuthReady is the regression.
+    gate = binding_joining(source, "&&", {'status === "running"', "desktopAuthReady"})
+    assert gate, "no binding requires both a running status and desktopAuthReady"
+    assert gates_the_markup(
+        source, gate
+    ), f"{gate} is computed but does not condition the mount in the markup"
     assert "Preparing Unsloth" not in source
     assert "Signing in to desktop session" not in source
     assert "desktopBooting" not in source
@@ -363,28 +565,40 @@ def test_full_app_layout_uses_its_own_initialized_marker():
 
     assert 'invoke<boolean>("has_initialized_app_window_layout")' in source
     setup_layout = source.split("async function showSetupWindow", 1)[1].split(
-        "async function enforceMinimumWindowSize", 1
+        "async function enforceWindowSizeBounds", 1
     )[0]
     reset_call = 'invoke("reset_app_window_layout_initialized")'
     assert reset_call in setup_layout
-    assert setup_layout.index(reset_call) < setup_layout.index("win.setSize")
+    assert setup_layout.index(reset_call) < setup_layout.index("placeWindow(")
     assert 'invoke("mark_app_window_layout_initialized")' in source
     assert "hasInitializedAppLayout && hasSavedState" in source
 
 
 def test_first_app_layout_survives_a_stale_setup_window_size():
     source = APP_PROVIDER.read_text(encoding = "utf-8")
-    minimum_helper = source.split("async function enforceMinimumWindowSize", 1)[1].split(
+    bounds_helper = source.split("async function enforceWindowSizeBounds", 1)[1].split(
         "async function applyAppWindowLayout", 1
     )[0]
     app_layout = source.split("async function applyAppWindowLayout", 1)[1].split(
         "async function showWindowFallback", 1
     )[0]
 
-    assert "requestedSize.width" in minimum_helper
-    assert "requestedSize.height" in minimum_helper
-    assert "requestedSize = { width: finalW, height: finalH };" in app_layout
-    assert "enforceMinimumWindowSize(win, LogicalSize, isCurrent, requestedSize)" in app_layout
+    assert "requestedSize: LogicalWindowSize = bounds.minimum" in bounds_helper
+    assert "constrainWindowSize(currentSize, requestedSize, bounds)" in bounds_helper
+    assert "const cssSafeLogicalWidth = measured.monitor" in app_layout
+    first_size_call = app_layout.split("requestedSize = calculateFirstAppWindowSize(", 1)[1].split(
+        ");", 1
+    )[0]
+    assert "measured.bounds," in first_size_call
+    assert "cssSafeLogicalWidth," in first_size_call
+    assert "finalizeAppWindowLayout({" in app_layout
+    assert "enforceWindowSizeBounds(" in app_layout
+    finalize_call = app_layout.split("finalizeAppWindowLayout({", 1)[1].split("});", 1)[0]
+    assert "measured," in finalize_call
+    # Limit the check to this call's arguments.
+    bounds_call = app_layout.split("enforceWindowSizeBounds(", 1)[1].split(");", 1)[0]
+    assert "bounds," in bounds_call
+    assert "requestedSize," in bounds_call
 
 
 def test_expanded_titlebar_button_and_corner_match_sidebar_edge():
@@ -396,15 +610,22 @@ def test_expanded_titlebar_button_and_corner_match_sidebar_edge():
     assert "<DesktopTitlebarNavigation" in source
     assert "const contentBorderLeft = pinned" in source
     assert ': "0px";' in source
-    # The curved transition and sidebar-colored backing are expanded-only.
-    assert source.count("{showSidebarSurface && pinned && (") == 2
+
+    # Keep the decoration below z-50 modals and outside the z-[70] header.
+    assert 'data-slot="window-titlebar-decoration"' in source
+    decoration = source.split('data-slot="window-titlebar-decoration"', 1)[1].split("<header", 1)[0]
     assert (
-        'className="pointer-events-none absolute top-full size-3 -translate-x-px bg-sidebar"'
-        in source
+        'className="pointer-events-none absolute inset-x-0 '
+        'top-[var(--studio-custom-titlebar-height)] z-[45] h-3"' in decoration
     )
+    # The border is always visible.
+    assert 'className="absolute top-0 h-px bg-sidebar-border"' in decoration
+    # The backing and corner only appear when pinned.
+    assert decoration.count("{pinned && (") == 2
+    assert 'className="absolute top-0 size-3 -translate-x-px bg-sidebar"' in decoration
     assert (
-        'className="pointer-events-none absolute top-full size-3 -translate-x-px rounded-tl-[12px] border-l border-t border-sidebar-border bg-background"'
-        in source
+        'className="absolute top-0 size-3 -translate-x-px rounded-tl-[12px] border-l border-t border-sidebar-border bg-background"'
+        in decoration
     )
 
 
@@ -413,7 +634,12 @@ def test_desktop_titlebar_separates_navigation_from_sidebar_brand():
     sidebar = APP_SIDEBAR.read_text(encoding = "utf-8")
     header = sidebar.split("<SidebarHeader", 1)[1].split("</SidebarHeader>", 1)[0]
 
-    assert 'import { ArrowLeft, ArrowRight } from "lucide-react";' in titlebar
+    # The names, not the whole import list: #8025 added Minus/Square/X to the
+    # same line for the window controls and this went red on every open PR.
+    lucide = re.search(r"import \{([^}]*)\} from \"lucide-react\";", titlebar)
+    assert lucide is not None, "titlebar no longer imports from lucide-react"
+    icons = {name.strip() for name in lucide.group(1).split(",")}
+    assert {"ArrowLeft", "ArrowRight"} <= icons, icons
     assert "<ArrowLeft" in titlebar
     assert "<ArrowRight" in titlebar
     assert "window.history.back()" in titlebar
@@ -442,13 +668,28 @@ def test_collapsed_tauri_keeps_history_arrows_and_adds_new_chat_by_model_picker(
     assert "window.setTimeout(() =>" in titlebar
     assert "scheduleMaximizedRefresh();" in titlebar
 
-    assert '"pl-3"' in titlebar
+    # The navigation box's left inset is deliberately not asserted here. Whether that
+    # element ends up with one is a computed style: it depends on the tailwind-merge
+    # cascade, the important modifier, whether an arbitrary value is valid CSS, whether
+    # the class is hoisted into a const or interpolated into a template hole, and
+    # whether DesktopTitlebarNavigation applies it from its own className prop. None of
+    # that is decidable from this file, and the exact-value form this replaces failed
+    # #10321 for retuning 12px to 16px, which is what an alignment pass is for. A
+    # computed-style check belongs in a driver that renders the titlebar.
     assert 'isTauri && !isMobile && !pinned && view.mode !== "compare"' in chat_page
 
     assert "pl-[var(--studio-collapsed-chat-controls-inset,0.75rem)]" in chat_page
-    assert '"--studio-collapsed-chat-controls-inset": "188px"' in APP_PROVIDER.read_text(
-        encoding = "utf-8"
-    )
+    # 188 is the number, not the spelling. It ships as `calc(110px + var(...78px))` so the
+    # traffic-light half can be divided by the interface zoom while the content half is
+    # not, and asserting the literal string is what broke when that landed. The custom
+    # titlebar sets the same var to its own much smaller inset, hence the mac-only filter.
+    insets = {
+        name: _px(values["--studio-collapsed-chat-controls-inset"])
+        for name, values in _chrome_style_blocks(APP_PROVIDER.read_text(encoding = "utf-8")).items()
+        if "--studio-mac-traffic-light-inset" in values
+    }
+    assert insets, "no style block sets both the traffic-light and collapsed-controls insets"
+    assert set(insets.values()) == {188}, insets
     assert 'className="!size-[30px] rounded-[10px] text-muted-foreground"' in chat_page
     assert 'aria-label="New chat"' in chat_page
     new_chat_click = chat_page.index("onClick={handleDesktopNewChat}")
@@ -456,6 +697,7 @@ def test_collapsed_tauri_keeps_history_arrows_and_adds_new_chat_by_model_picker(
 
 
 def test_tauri_collapse_removes_the_icon_rail_but_web_keeps_it():
+    titlebar = TITLEBAR.read_text(encoding = "utf-8")
     app_sidebar = APP_SIDEBAR.read_text(encoding = "utf-8")
     primitive = SIDEBAR_PRIMITIVE.read_text(encoding = "utf-8")
     navbar = NAVBAR.read_text(encoding = "utf-8")
@@ -474,11 +716,81 @@ def test_tauri_collapse_removes_the_icon_rail_but_web_keeps_it():
     assert "translate-y-[var(--studio-titlebar-navigation-offset-y,0px)]" in TITLEBAR.read_text(
         encoding = "utf-8"
     )
-    assert '"--studio-titlebar-navigation-offset-y": "2px"' in APP_PROVIDER.read_text(
-        encoding = "utf-8"
-    )
-    assert "aria-hidden={(hasPinMode && !pinned && collapseToZero) || undefined}" in primitive
-    assert "inert={(hasPinMode && !pinned && collapseToZero) || undefined}" in primitive
+    # The nudge has to move the navigation without pushing it out of the titlebar it sits
+    # in, so the button box travels with it. The mac-only margin is deliberately not in the
+    # sum: translate-y is visual, and the margin already seats the box in the native row.
+    navigation = titlebar.split("export function DesktopTitlebarNavigation", 1)[1].split(
+        "export function WindowTitlebar", 1
+    )[0]
+    assert "mt-1" not in navigation
+    assert "mt-[var(--studio-titlebar-navigation-margin-top,0px)]" in navigation
+    button = _titlebar_nav_button_px(titlebar)
+    assert button is not None, "navigation button size no longer readable from buttonClass"
+    blocks = _chrome_style_blocks(APP_PROVIDER.read_text(encoding = "utf-8"))
+    nudged = {
+        name: values
+        for name, values in blocks.items()
+        if "--studio-titlebar-navigation-offset-y" in values
+    }
+    assert nudged, blocks.keys()
+    for name, values in nudged.items():
+        offset = _px(values["--studio-titlebar-navigation-offset-y"])
+        titlebar = _px(values.get("--studio-desktop-titlebar-height"))
+        assert offset is not None and offset > 0, (name, values)
+        assert titlebar is not None, (name, values)
+        assert offset + button <= titlebar, (name, offset, button, titlebar)
+    # Read the CONDITION, not the text that spells it. The exact-string form this replaces
+    # pinned the inlined expression, so #10706 broke it by hoisting that expression into a
+    # named const and giving it a peek exception: a refactor that changed nothing this
+    # contract protects, and it left main and every open PR red for a day. What must hold is
+    # that a sidebar collapsing to nothing leaves the accessibility tree, and that it goes
+    # inert on exactly the same condition, since hidden-but-focusable is the actual bug.
+    hidden = attribute_expressions(primitive, "aria-hidden")
+    inert = attribute_expressions(primitive, "inert")
+    assert len(hidden) == 1 and len(inert) == 1, (hidden, inert)
+    assert hidden == inert, (hidden, inert)
+    # Asking only that the held-out condition still appears would accept dropping the peek
+    # exception with it, and a peeked sidebar is on screen: aria-hidden on a visible panel
+    # is the same defect this guards, pointing the other way. So state WHEN the panel leaves
+    # the accessibility tree, over every combination of the four inputs, and let any
+    # spelling that admits exactly those states pass.
+    inputs = ("hasPinMode", "pinned", "collapseToZero", "peeking")
+    table = boolean_table(expand_bindings(primitive, hidden[0], stop = inputs), inputs)
+    for combination, removed in table.items():
+        has_pin_mode, is_pinned, collapses_to_zero, is_peeking = combination
+        assert removed == (
+            has_pin_mode and not is_pinned and collapses_to_zero and not is_peeking
+        ), (combination, hidden[0])
+
+
+def test_fixed_sheets_start_below_the_custom_titlebar():
+    provider = APP_PROVIDER.read_text(encoding = "utf-8")
+    sheet = SHEET.read_text(encoding = "utf-8")
+
+    # Portalled sheets read the height off <html>, so the mirror has to stay.
+    assert 'set("--studio-custom-titlebar-height", usesCustomTitlebar ? "34px" : null)' in provider
+
+    # Only viewport-fixed sheets clear the titlebar; the absolute recipe block
+    # sheet sits in its own container and keeps a plain top edge.
+    assert 'position === "fixed" ? VIEWPORT_TOP_EDGE : CONTAINED_TOP_EDGE' in sheet
+    for side in ("left", "right", "top"):
+        assert f"data-[side={side}]:top-[var(--studio-custom-titlebar-height,0px)]" in sheet
+        assert f"data-[side={side}]:top-0" in sheet
+
+    # Anchor both edges so the inset shrinks the sheet; h-full would instead
+    # push its bottom past the viewport.
+    for side in ("left", "right"):
+        assert f"data-[side={side}]:bottom-0" in sheet
+        assert f"data-[side={side}]:h-full" not in sheet
+
+    # The shared class is the only sheet offset; a local one would double up.
+    # Dialogs still read --studio-window-chrome-top (DesktopChromeVarsEffect).
+    for portalled in (
+        RESEARCH_ACTIVITY_PANEL,
+        RESPONSE_DETAILS_SHEET,
+        DOCUMENT_PREVIEW_SHEET,
+    ):
+        assert "studio-custom-titlebar-height" not in portalled.read_text(encoding = "utf-8")
 
 
 def test_visible_mac_sidebar_header_is_a_drag_region():
@@ -497,7 +809,22 @@ def test_mac_chat_header_controls_share_the_titlebar_row():
     assert "shouldUseNativeMacWindowTitlebar" not in source
     assert "[--studio-content-top-inset:var(--studio-mac-titlebar-height" not in source
     assert source.count("var(--studio-mac-traffic-light-inset") == 2
-    assert '"--studio-chat-header-padding-top": "7px"' in provider
+    # Sharing the row is the contract: the padding must leave the control room inside the
+    # header, so a retune to a large value fails here rather than shipping a clipped row.
+    blocks = _chrome_style_blocks(provider)
+    padded = {
+        name: values
+        for name, values in blocks.items()
+        if "--studio-chat-header-padding-top" in values
+    }
+    assert padded, blocks.keys()
+    for name, values in padded.items():
+        padding = _px(values["--studio-chat-header-padding-top"])
+        header = _px(values.get("--studio-chat-header-height"))
+        control = _px(values.get("--studio-chat-control-height"))
+        assert padding is not None and padding > 0, (name, values)
+        assert header is not None and control is not None, (name, values)
+        assert padding + control <= header, (name, padding, control, header)
     assert "pt-[var(--studio-content-top-inset,0px)] md:flex-row" in source
     assert "absolute top-[var(--studio-content-top-inset,0px)]" in source
 
@@ -552,10 +879,161 @@ def test_media_pages_clear_the_custom_titlebar():
     """The chat-style layout gives the media pages no outer inset, so each applies its own."""
     root = ROOT_ROUTE.read_text(encoding = "utf-8")
 
-    assert "const isChatLike = isChatRoute || isImagesRoute || isVideoRoute;" in root
+    assert re.search(
+        r"const isChatLike =\s*isChatRoute \|\| isImagesRoute \|\| isVideoRoute \|\| isAudioRoute;",
+        root,
+    )
     for page in (IMAGES_PAGE, VIDEO_PAGE):
         shell = page.read_text(encoding = "utf-8").split('"diffusion-surface', 1)[1].split(">", 1)[0]
         assert "pt-[var(--studio-content-top-inset,0px)]" in shell, page.name
+
+
+def test_image_page_structural_panes_share_the_container_breakpoint():
+    source = IMAGES_PAGE.read_text(encoding = "utf-8")
+    shell = source.split('className="diffusion-surface', 1)[1].split(">", 1)[0]
+    section = source.split("Settings column + preview canvas", 1)[1]
+
+    assert "@container" in shell
+    assert "@[50rem]:flex-row @[50rem]:overflow-hidden" in section
+    assert "@[50rem]:w-[408px]" in section
+    assert "md:flex-row" not in section
+    # pb-6, not the old pb-20: the action is an in-flow footer now, so the rail no longer
+    # reserves 80px for an overlay to sit in. The crossfade into that footer is the
+    # -action mask, which is why the two are asserted together -- the small padding is
+    # only correct while the fade is there to dissolve the last control into the footer.
+    assert "panel-scroll-fade-action" in section
+    assert "gap-4 px-10 pt-9 pb-6 @[50rem]:overflow-y-auto" in section
+    assert "p-6 px-10 @[50rem]:pt-[60px]" in section
+    assert "border-t border-foreground/10 px-10 py-3" in section
+
+
+def test_audio_page_matches_the_image_rail_header_and_action_footer():
+    source = AUDIO_PAGE.read_text(encoding = "utf-8")
+    before, marker, after = source.partition("h-[48px] shrink-0")
+    assert marker
+    header_opening = before.rsplit('<div className="', 1)[1] + marker + after.split(">", 1)[0]
+    header = header_opening + after.split("Below 50rem", 1)[0]
+    layout = source.split("Below 50rem", 1)[1]
+
+    assert "grid-cols-[minmax(0,408px)_minmax(13rem,1fr)]" in header_opening
+    assert "pointer-events-none" in header_opening
+    assert "relative" in header_opening
+    assert "z-40" in header_opening
+    assert "@[50rem]:border-r" in header
+    assert (
+        'className="!h-[34px] max-w-full gap-1 overflow-hidden pl-3 pr-1 '
+        '@[68rem]:gap-2 @[68rem]:pl-4 @[68rem]:pr-2"' in header
+    )
+    assert 'triggerLabelClassName="text-ui-14 @[68rem]:text-ui-16"' in header
+    assert "grid h-full min-w-0 grid-cols-[1fr_auto]" in header
+    assert "@[50rem]:grid-cols-[1fr_auto_1fr]" in header
+    assert "col-start-2 justify-self-end pr-3" in header
+    assert "@[50rem]:justify-self-center @[50rem]:pr-0" in header
+    assert "absolute" not in header.split("<PillTabs", 1)[0]
+
+    assert "@[50rem]:flex-row @[50rem]:overflow-hidden" in layout
+    assert "@[50rem]:w-[408px]" in layout
+    assert "@[50rem]:border-r @[50rem]:border-b-0" in layout
+    assert "gap-4 px-10 pt-9 pb-6 @[50rem]:overflow-y-auto" in layout
+    assert 'mode === "speak"' in layout
+    assert '"panel-scroll-fade-action"' in layout
+    assert '"panel-scroll-fade"' in layout
+    assert "relative z-10 flex shrink-0 justify-center px-10 pt-0.5 pb-4" in layout
+    assert "btn-float-action" not in layout
+    assert "absolute inset-x-0 bottom-0" not in layout
+    assert layout.count("p-6 px-10 @[50rem]:pt-[60px]") == 2
+
+
+def test_image_train_rail_matches_create_and_header():
+    source = DIFFUSION_TRAIN_PANEL.read_text(encoding = "utf-8")
+    layout = source.split("overflow-x-hidden: an unset overflow-x", 1)[1]
+
+    assert "@[50rem]:flex-row @[50rem]:overflow-hidden" in layout
+    assert "pl-10 @[50rem]:w-[408px]" in layout
+    assert "@[50rem]:border-r @[50rem]:border-b-0" in layout
+    assert "@container hover-scrollbar" in layout
+    assert "@[50rem]:pt-[42px]" in layout
+    assert "md:w-[416px]" not in layout
+
+
+def test_compact_media_link_keeps_accessible_name_and_truncation():
+    source = MEDIA_PAGE_LINK.read_text(encoding = "utf-8")
+    button = source.split("<button", 1)[1].split("</button>", 1)[0]
+
+    assert "aria-label={label}" in button
+    assert 'cn("min-w-0 truncate", labelClassName)' in button
+    assert "arrowClassName" in button
+
+
+def test_media_page_link_tooltip_drops_below_titlebar_controls():
+    """unslothai/unsloth#10226: Images/Video park this link in the top-right header beside
+    Windows controls; a top tooltip blocks minimize/maximize/close."""
+    source = MEDIA_PAGE_LINK.read_text(encoding = "utf-8")
+    tooltip = source.split("<TooltipContent", 1)[1].split("</TooltipContent>", 1)[0]
+
+    assert 'side="bottom"' in tooltip
+    assert "sideOffset={6}" in tooltip
+
+
+def test_media_page_headers_out_stack_the_mac_drag_region():
+    """macOS insets the media pages 0px, so their 48px header overlaps the navbar's 34px drag
+    strip: the band must out-stack it yet stay click-through (controls click, gaps drag)."""
+    navbar = NAVBAR.read_text(encoding = "utf-8")
+
+    # The strip to beat: same z-40, but earlier in DOM order.
+    assert "pointer-events-none absolute inset-x-0 top-0 z-40 h-[48px]" in navbar
+    assert "data-tauri-drag-region" in navbar
+
+    # (page, end of the header band, clickable control groups expected inside it)
+    for page, band_end, min_groups in (
+        (IMAGES_PAGE, "MediaPageLink", 3),
+        (VIDEO_PAGE, "MediaPageLink", 2),
+        (AUDIO_PAGE, "PillTabs", 2),
+    ):
+        source = page.read_text(encoding = "utf-8")
+        # matched on the band's size alone: Images lays its header out as a grid and Video as a
+        # flex row, so the stacking contract below is what this pins, not one layout's utilities.
+        before, marker, band = source.partition("h-[48px] shrink-0")
+        assert marker, page.name
+        opening = before.rsplit('<div className="', 1)[1]
+        for token in ("pointer-events-none", "relative", "z-40"):
+            assert token in opening, (page.name, token)
+
+        band = band.split(band_end, 1)[0]
+        # every control group in the band has to opt back in, whatever utilities lay it out:
+        # Audio and Images seat their mode pills in a grid cell, Video in a flex row, so
+        # matching on the opt-in alone is what keeps this honest across all three.
+        groups = re.findall(r'"([^"]*pointer-events-auto[^"]*)"', band)
+        assert len(groups) >= min_groups, (page.name, groups)
+
+
+def test_images_header_tracks_preview_and_preserves_titlebar_controls():
+    source = IMAGES_PAGE.read_text(encoding = "utf-8")
+    before, marker, after = source.partition("h-[48px] shrink-0")
+    assert marker
+    opening = before.rsplit("<div", 1)[1] + marker + after.split(">", 1)[0]
+    header = (
+        opening + after.split('      {pageMode === "train" ? (\n        <DiffusionTrainPanel', 1)[0]
+    )
+
+    assert "const { isMobile, pinned } = useSidebar();" in source
+    assert "grid-cols-[minmax(0,408px)_minmax(13rem,1fr)]" in opening
+    assert "@[50rem]:border-r" in header
+    assert "isMobile" in header and "pl-12" in header
+    assert "!pinned && isTauri" in header
+    assert "pl-[var(--studio-collapsed-chat-controls-inset,0.75rem)]" in header
+    assert (
+        'className="!h-[34px] max-w-full gap-1 overflow-hidden pl-3 pr-1 '
+        '@[68rem]:gap-2 @[68rem]:pl-4 @[68rem]:pr-2"' in header
+    )
+    assert 'triggerLabelClassName="text-ui-14 @[68rem]:text-ui-16"' in header
+    assert "grid h-full min-w-0 grid-cols-[1fr_auto_auto] gap-2" in header
+    assert "@[50rem]:grid-cols-[1fr_auto_1fr] @[50rem]:gap-0" in header
+    assert "col-start-2" in header
+    assert "col-start-3" in header
+    assert 'labelClassName="hidden @[50rem]:inline"' in header
+    assert 'arrowClassName="hidden @[50rem]:block"' in header
+    assert "absolute" not in header.split("<PillTabs", 1)[0]
 
 
 def test_a_stopped_repair_update_is_recorded_as_canceled_not_failed():

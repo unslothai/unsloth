@@ -46,7 +46,7 @@ from utils.hidden_models import is_hidden_model
 
 @pytest.fixture(autouse = True)
 def _pin_default_embedder(monkeypatch):
-    """Pin the effective embedder to Studio's static default so hiding is
+    """Pin the effective embedder to Unsloth's static default so hiding is
     deterministic and cannot depend on ambient RAG config / env."""
     default = "unsloth/bge-small-en-v1.5"
     monkeypatch.setattr(rag_config, "EMBEDDING_MODEL", default, raising = False)

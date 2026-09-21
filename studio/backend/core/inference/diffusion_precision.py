@@ -25,20 +25,34 @@ the quality cost with scripts/diffusion_quality.py. torch / diffusers / torchao 
 
 from __future__ import annotations
 
-from typing import Any, Optional
+from typing import Any, NamedTuple, Optional
+
+from .diffusion_auto_policy import (
+    RESOLVED_APPLIED,
+    RESOLVED_FELL_BACK,
+    RESOLVED_UNSUPPORTED,
+)
+
+# stdlib-only module (no torch), so this stays inside the "imported lazily" promise above.
+from functools import lru_cache
+
+from core._torchao_stub import is_stubbed, torch_is_rocm
 
 TE_QUANT_FP8 = "fp8"
 TE_QUANT_NVFP4 = "nvfp4"
 TE_QUANT_INT8 = "int8"
 TE_QUANT_FP8_DYNAMIC = "fp8_dynamic"
 TE_QUANT_MODES = (TE_QUANT_FP8, TE_QUANT_NVFP4, TE_QUANT_INT8, TE_QUANT_FP8_DYNAMIC)
+# The modes that go through torchao; plain fp8 is a layerwise torch cast and needs none.
+_TE_TORCHAO_MODES = frozenset({TE_QUANT_INT8, TE_QUANT_FP8_DYNAMIC, TE_QUANT_NVFP4})
 
 # Pipeline attributes that hold a text encoder, in order.
 _TEXT_ENCODER_ATTRS = ("text_encoder", "text_encoder_2", "text_encoder_3")
 
-# int8 degrades on large text encoders unless the quant-sensitive decoder blocks stay bf16. Per-family (skip_first, skip_last) blocks to keep
-# dense, from measured hidden-state fidelity; absent families have no schedule clearing the bar, so int8 falls back to fp8. qwen-image
-# (Qwen2.5-VL-7B): first+last 6 gives ~0.997 cosine; flux.2-dev (Mistral-Small-24B): first 3 gives ~0.98 (early-layer seeding).
+# int8 degrades on large text encoders unless the quant-sensitive decoder blocks stay bf16. Per-family (skip_first,
+# skip_last) blocks to keep dense, from measured hidden-state fidelity; absent families have no schedule clearing the
+# bar, so int8 falls back to fp8. qwen-image (Qwen2.5-VL-7B): first+last 6 gives ~0.997 cosine; flux.2-dev
+# (Mistral-Small-24B): first 3 gives ~0.98 (early-layer seeding).
 _TE_INT8_SKIP: dict[str, tuple[int, int]] = {
     "qwen-image": (6, 6),
     "qwen-image-edit": (6, 6),
@@ -47,13 +61,19 @@ _TE_INT8_SKIP: dict[str, tuple[int, int]] = {
 
 
 def normalize_te_quant(value: Optional[str]) -> Optional[str]:
-    """Lower/strip a requested text-encoder quant; None / "" / "none" -> None.
+    """Lower/strip a requested text-encoder quant; None / "" / "none" / "off" / "auto" -> None.
+
+    The three no-scheme spellings collapse here because no family quantises its encoder without
+    a named scheme. They stay distinct to the caller that cares: MiniMax-H3 reads the RAW request
+    as a tri-state (unset picks the hosted conditioner, "none"/"off" pin the released bf16 one)
+    BEFORE normalising, so folding them is what lets an opt-out reach that branch at all instead
+    of being rejected here.
 
     Raises ValueError for an unsupported value so a bad request is rejected cheaply."""
     if value is None:
         return None
     normalized = str(value).strip().lower().replace("-", "_")
-    if not normalized or normalized == "none":
+    if not normalized or normalized in ("none", "off", "auto"):
         return None
     if normalized not in TE_QUANT_MODES:
         raise ValueError(
@@ -62,11 +82,58 @@ def normalize_te_quant(value: Optional[str]) -> Optional[str]:
     return normalized
 
 
+def effective_te_quant(mode: Optional[str], family: Optional[str]) -> Optional[str]:
+    """The text-encoder mode ``quantize_text_encoders`` will ACTUALLY attempt for ``family``.
+
+    An explicit int8 on a family with no keep-bf16 schedule is rewritten to layerwise fp8
+    before support is ever consulted -- a documented downgrade that reports ``fell_back`` and
+    needs no torchao. A caller that asks ``te_quant_supported`` about the raw request therefore
+    refuses loads the runtime would run: on Windows ROCm the torchao stub makes int8
+    unsupported while fp8 still works.
+    """
+    normalized = normalize_te_quant(mode)
+    if normalized == TE_QUANT_INT8 and _TE_INT8_SKIP.get((family or "").lower()) is None:
+        return TE_QUANT_FP8
+    return normalized
+
+
+def te_quant_needs_resident_weights(mode: Optional[str]) -> bool:
+    """Whether ``mode`` is a torchao text-encoder cast, which CPU offload rules out.
+
+    Offload hooks move modules with ``Module.to()``, which torchao's tensor subclasses do not
+    survive, so ``quantize_text_encoders`` reports those modes unsupported once offload is
+    active. Plain layerwise fp8 is a dtype cast and is unaffected.
+    """
+    return mode in _TE_TORCHAO_MODES
+
+
+@lru_cache(maxsize = 1)
+def torchao_quantize_importable() -> bool:
+    """Whether ``torchao.quantization.quantize_`` is really there and really torchao's.
+
+    The casters import it only after the pipeline has been downloaded and built, so a broken or
+    absent install failed through load-progress rather than the pre-load 409 the strict contract
+    promises. The pre-handoff gates ask this so the refusal arrives before the download.
+    ``is_stubbed`` covers the Windows-ROCm stub, whose quantize_ is a no-op that would otherwise
+    report the mode applied against an untouched bf16 encoder. Cached: the answer cannot change
+    inside a process, and the gate runs on every load.
+    """
+    try:
+        from torchao.quantization import quantize_  # noqa: F401
+    except Exception:  # noqa: BLE001 -- absent, broken build, missing native symbol
+        return False
+    return not is_stubbed("torchao")
+
+
 def te_quant_supported(target: Any, mode: str) -> bool:
     """Whether ``mode`` is usable for ``target``: a CUDA bf16 device plus the tensor-core class
     each backend needs -- fp8 dtype (fp8), fp8 GEMM sm_89+ (fp8_dynamic), int8 sm_80+ (int8),
     Blackwell sm_100+ (nvfp4)."""
     if getattr(target, "device", None) != "cuda":
+        return False
+    # Torchao modes cannot use the Windows stub or ROCm's non-SM capability values. Plain fp8 is only a dtype cast and
+    # remains supported.
+    if mode in _TE_TORCHAO_MODES and (is_stubbed("torchao") or torch_is_rocm()):
         return False
     try:
         import torch
@@ -87,6 +154,26 @@ def te_quant_supported(target: Any, mode: str) -> bool:
     return False
 
 
+class TEQuantOutcome(NamedTuple):
+    """What the text-encoder pass actually did, so status can report it instead of guessing.
+
+    ``mode`` is the quantisation APPLIED (None = the encoders stayed dense bf16), ``reason`` is
+    the short human-readable why when that differs from the request, and ``status`` is one of the
+    ``RESOLVED_*`` constants. Every early return below used to be a bare ``None``: an int8 request
+    silently became fp8, an offloaded load silently kept a dense encoder, and an unsupported GPU
+    returned without so much as a log line.
+
+    ``partial`` is True when SOME encoder took the cast and another did not. The mode did engage,
+    so ``mode`` is not None, but a pipeline conditioning off a mixture of quantised and dense
+    encoders is not the build that was asked for and the loaders refuse it like any other declined
+    explicit precision."""
+
+    mode: Optional[str]
+    reason: str = ""
+    status: str = RESOLVED_APPLIED
+    partial: bool = False
+
+
 def quantize_text_encoders(
     pipe: Any,
     target: Any,
@@ -95,31 +182,50 @@ def quantize_text_encoders(
     family: Optional[str] = None,
     offload_active: bool = False,
     logger: Any = None,
-) -> Optional[str]:
-    """Quantise each present text encoder in place with ``mode``. Returns the mode applied, or
-    None when disabled, unsupported, or nothing was cast. ``int8`` needs a per-family schedule
-    (``_TE_INT8_SKIP``); without one it falls back to ``fp8``. Under ``offload_active`` the torchao
-    modes are skipped (their subclasses reject ``Module.to()``); layerwise ``fp8`` still engages.
-    Best-effort: any failure leaves the encoder dense."""
+) -> TEQuantOutcome:
+    """Quantise each present text encoder in place with ``mode``. Returns a ``TEQuantOutcome``
+    carrying the mode applied (None when disabled, unsupported, or nothing was cast) plus WHY it
+    differs from the request. ``int8`` needs a per-family schedule (``_TE_INT8_SKIP``); without one
+    it falls back to ``fp8``. Under ``offload_active`` the torchao modes are skipped (their
+    subclasses reject ``Module.to()``); layerwise ``fp8`` still engages. Best-effort: any failure
+    leaves the encoder dense."""
     mode = normalize_te_quant(mode)
     if mode is None:
-        return None
+        return TEQuantOutcome(None)
+    downgrade_reason = ""
     skip: Optional[tuple[int, int]] = None
     if mode == TE_QUANT_INT8:
         skip = _TE_INT8_SKIP.get((family or "").lower())
         if skip is None:
             _note(logger, f"int8 has no keep-bf16 schedule for family '{family}'; using fp8")
             mode = TE_QUANT_FP8
-    # torchao modes produce subclasses that reject Module.to(), which an offload placement uses. Layerwise fp8 streams fine.
+            downgrade_reason = (
+                f"int8 has no measured keep-bf16 schedule for family '{family}' "
+                "(it degrades large encoders without one), so fp8 was used instead"
+            )
+    # torchao modes produce subclasses that reject Module.to(), which an offload placement uses. Layerwise fp8 streams
+    # fine.
     if offload_active and mode in (TE_QUANT_INT8, TE_QUANT_FP8_DYNAMIC, TE_QUANT_NVFP4):
         _note(
             logger,
             f"text-encoder '{mode}' skipped under offload (torchao tensors reject Module.to()); "
             "pin a resident memory mode or use fp8",
         )
-        return None
+        return TEQuantOutcome(
+            None,
+            f"text-encoder '{mode}' cannot run under offload (torchao tensors reject "
+            "Module.to()); pin a resident memory mode, or use fp8",
+            RESOLVED_UNSUPPORTED,
+        )
     if not te_quant_supported(target, mode):
-        return None
+        # Previously a silent return: the only decline site in the loader with no log at all.
+        _note(logger, f"text-encoder '{mode}' is not supported on this device; left dense")
+        return TEQuantOutcome(
+            None,
+            f"this device cannot run text-encoder '{mode}' (it needs a CUDA GPU in bf16 with the "
+            "tensor cores that backend requires), so the dense bf16 encoder was kept",
+            RESOLVED_UNSUPPORTED,
+        )
     if mode == TE_QUANT_INT8:
         first, last = skip  # type: ignore[misc]
 
@@ -132,6 +238,7 @@ def quantize_text_encoders(
     else:
         caster = _cast_fp8
     cast: list[str] = []
+    failed: list[str] = []
     for attr in _TEXT_ENCODER_ATTRS:
         encoder = getattr(pipe, attr, None)
         if encoder is None:
@@ -139,9 +246,29 @@ def quantize_text_encoders(
         try:
             caster(encoder, target)
             cast.append(attr)
-        except Exception as exc:  # noqa: BLE001 — leave this encoder dense
+        except Exception as exc:  # noqa: BLE001 - leave this encoder dense
+            failed.append(attr)
             _warn(logger, f"{mode}:{attr}", exc)
-    return mode if cast else None
+    if not cast:
+        return TEQuantOutcome(
+            None,
+            f"no text encoder on this pipeline could be cast to '{mode}' (see the server log)",
+            RESOLVED_FELL_BACK,
+        )
+    if failed:
+        # A sibling took the cast, so `mode` DID engage -- but the encoders that did not are still dense bf16 and the
+        # prompt is conditioned by both. Reporting "applied" here was the one path where an engaged mode could still be
+        # a lie about the build that ran.
+        return TEQuantOutcome(
+            mode,
+            f"'{mode}' engaged on {', '.join(cast)} but {', '.join(failed)} could not be cast and "
+            "stayed dense bf16 (see the server log), so conditioning is a mixture",
+            RESOLVED_FELL_BACK,
+            True,
+        )
+    if downgrade_reason:
+        return TEQuantOutcome(mode, downgrade_reason, RESOLVED_FELL_BACK)
+    return TEQuantOutcome(mode, "dense text encoder(s) quantised in place", RESOLVED_APPLIED)
 
 
 def _te_exclude_tokens(encoder: Any) -> tuple[str, ...]:
@@ -170,7 +297,8 @@ def _keep_bf16_block_fqns(encoder: Any, skip_first: int, skip_last: int) -> set[
 
 
 def _cast_int8_selective(encoder: Any, target: Any, skip_first: int, skip_last: int) -> None:
-    # torchao dynamic int8 on the FLOP-heavy Linears, keeping the first/last decoder blocks (and vision tower / lm_head / T5 wo) bf16. Reuses the transformer-quant factory so config cannot drift.
+    # torchao dynamic int8 on the FLOP-heavy Linears, keeping the first/last decoder blocks (and vision tower / lm_head
+    # / T5 wo) bf16. Reuses the transformer-quant factory so config cannot drift.
     from torchao.quantization import quantize_
     from .diffusion_transformer_quant import (
         TQ_INT8,
@@ -210,7 +338,8 @@ def _weight_has_zero_output_row(module: Any) -> bool:
 
 
 def _cast_fp8_dynamic(encoder: Any, target: Any) -> None:
-    # torchao dynamic fp8 COMPUTE, per-row (torch._scaled_mm on the fp8 cores). Unlike layerwise `fp8` the matmul stays in fp8, and it is robust across encoder sizes, so only the vision tower / lm_head / T5 wo are excluded.
+    # torchao dynamic fp8 COMPUTE, per-row (torch._scaled_mm on the fp8 cores). Unlike layerwise `fp8` the matmul stays
+    # in fp8, and it is robust across encoder sizes, so only the vision tower / lm_head / T5 wo are excluded.
     from torchao.quantization import quantize_
     from .diffusion_transformer_quant import (
         TQ_FP8,
@@ -224,7 +353,6 @@ def _cast_fp8_dynamic(encoder: Any, target: Any) -> None:
         DEFAULT_MIN_LINEAR_FEATURES, _te_exclude_tokens(encoder), require_bf16 = True
     )
 
-    # An all-zero output row NaNs under per-row scaling (scale 0 -> 0/0); keep those dense.
     def filter_fn(module: Any, fqn: str = "") -> bool:
         return base(module, fqn) and not _weight_has_zero_output_row(module)
 
@@ -237,17 +365,22 @@ def _cast_fp8(encoder: Any, target: Any) -> None:
     from diffusers.hooks import apply_layerwise_casting
     from diffusers.hooks.layerwise_casting import DEFAULT_SKIP_MODULES_PATTERN
 
-    # Idempotent: a pre-cast encoder arrives with the layerwise hooks installed and re-registering a hook name raises, which would report an engaged cast as failed. Keyed on the completion marker, NOT hook presence, so a mid-pass failure still fails closed.
+    # Idempotent: a pre-cast encoder arrives with the layerwise hooks installed and re-registering a hook name raises,
+    # which would report an engaged cast as failed. Keyed on the completion marker, NOT hook presence, so a mid-pass
+    # failure still fails closed.
     if getattr(encoder, "_unsloth_te_cast_complete", False) and _has_layerwise_hooks(encoder):
         return
 
-    # Layerwise casting stores each leaf's weights in fp8 and upcasts per forward. Two things on a transformers encoder push an fp8 weight/activation into an op that cannot handle it, both crashing only at generation, so skip them:
+    # Layerwise casting stores each leaf's weights in fp8 and upcasts per forward. Two things on a transformers encoder
+    # push an fp8 weight/activation into an op that cannot handle it, both crashing only at generation, so skip them:
     skip = tuple(DEFAULT_SKIP_MODULES_PATTERN)
 
-    # (1) dtype-sensitive modules the encoder flags. T5 keeps "wo" in fp32: its gated FF reads self.wo.weight.dtype and casts activations to match BEFORE calling wo (transformers#20287), racing the upcast hook. Literal substrings.
+    # (1) dtype-sensitive modules the encoder flags. T5 keeps "wo" in fp32: its gated FF reads self.wo.weight.dtype and
+    # casts activations to match BEFORE calling wo (transformers#20287), racing the upcast hook. Literal substrings.
     skip += tuple(re.escape(m) for m in (getattr(encoder, "_keep_in_fp32_modules", None) or ()))
 
-    # (2) an output projection tied to the input embedding. FLUX.2's Qwen3 ties lm_head.weight to embed_tokens.weight, so casting lm_head drags the shared embedding to fp8 and the first RMSNorm crashes. lm_head is unused here anyway.
+    # (2) an output projection tied to the input embedding. FLUX.2's Qwen3 ties lm_head.weight to embed_tokens.weight,
+    # so casting lm_head drags the shared embedding to fp8 and the first RMSNorm crashes. lm_head is unused here anyway.
     get_out, get_in = (
         getattr(encoder, "get_output_embeddings", None),
         getattr(encoder, "get_input_embeddings", None),
@@ -264,20 +397,23 @@ def _cast_fp8(encoder: Any, target: Any) -> None:
         storage_dtype = torch.float8_e4m3fn,
         compute_dtype = target.dtype,
         skip_modules_pattern = skip,
-        # Keep token-embedding tables full precision: the diffusers default only skips vision pos/patch embeds, and fp8-ing nn.Embedding puts every prompt token on the coarse fp8 grid.
+        # Keep token-embedding tables full precision: the diffusers default only skips vision pos/patch embeds, and
+        # fp8-ing nn.Embedding puts every prompt token on the coarse fp8 grid.
         skip_modules_classes = (torch.nn.Embedding,),
     )
 
-    # Module.dtype reports the first floating parameter, now fp8 STORAGE, but pipelines derive tensor dtypes from it (Flux2
-    # feeds it to randn_tensor, which has no fp8 kernel). Report the compute dtype via a property shadowed on the ORIGINAL class reading a per-instance override; a dynamic __class__ swap breaks transformers' output recording.
+    # Module.dtype reports the first floating parameter, now fp8 STORAGE, but pipelines derive tensor dtypes from it
+    # (Flux2 feeds it to randn_tensor, which has no fp8 kernel). Report the compute dtype via a property shadowed on the
+    # ORIGINAL class reading a per-instance override; a dynamic __class__ swap breaks transformers' output recording.
     compute_dtype = getattr(target, "dtype", None)
     try:
         if compute_dtype is not None:
             _install_dtype_override(type(encoder))
             encoder._unsloth_te_compute_dtype = compute_dtype
-        # Marks the cast COMPLETE (hooks fully installed) for the idempotent early return above. Best-effort: a non-Module double without settable attributes just re-casts.
+        # Marks the cast COMPLETE (hooks fully installed) for the idempotent early return above. Best-effort: a
+        # non-Module double without settable attributes just re-casts.
         encoder._unsloth_te_cast_complete = True
-    except Exception:  # noqa: BLE001 — real HF encoders are heap-type nn.Modules; only doubles fail
+    except Exception:  # noqa: BLE001 - real HF encoders are heap-type nn.Modules; only doubles fail
         pass
 
 
@@ -317,15 +453,21 @@ def _has_layerwise_hooks(encoder: Any) -> bool:
 
 
 def _cast_nvfp4(encoder: Any, target: Any) -> None:
-    # Weight-only NVFP4: linear weights become 4-bit NVFP4 on Blackwell FP4 cores, norms / embeddings untouched. Same exclusions as the int8/fp8 TE modes; require_bf16 skips non-bf16 Linears so the cast engages instead of aborting.
+    # Weight-only NVFP4: linear weights become 4-bit NVFP4 on Blackwell FP4 cores, norms / embeddings untouched. Same
+    # exclusions as the int8/fp8 TE modes; require_bf16 skips non-bf16 Linears so the cast engages instead of aborting.
     from torchao.quantization import quantize_
     from torchao.prototype.mx_formats import NVFP4WeightOnlyConfig
-    from .diffusion_transformer_quant import DEFAULT_MIN_LINEAR_FEATURES, make_filter_fn
+    from .diffusion_transformer_quant import (
+        DEFAULT_MIN_LINEAR_FEATURES,
+        _quiet_config,
+        make_filter_fn,
+    )
 
     filter_fn = make_filter_fn(
         DEFAULT_MIN_LINEAR_FEATURES, _te_exclude_tokens(encoder), require_bf16 = True
     )
-    quantize_(encoder, NVFP4WeightOnlyConfig(), filter_fn = filter_fn)
+    # No-op today (the prototype config has no set_inductor_config knob), but no torchao config is built bare.
+    quantize_(encoder, _quiet_config(NVFP4WeightOnlyConfig), filter_fn = filter_fn)
 
 
 def _warn(logger: Any, what: str, exc: Exception) -> None:

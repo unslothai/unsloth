@@ -30,9 +30,8 @@ FUNC_NAME = "_fast_prepare_inputs_for_generation"
 # Layer 1: AST structural guard (stdlib only, no unsloth import)
 # --------------------------------------------------------------------------
 
-# Model files that call fix_prepare_inputs_for_generation(...) and share the
-# guarded function. glm4_moe (MLA attention, different path) and falcon_h1
-# (its own variant) are intentionally absent.
+# Model files that call fix_prepare_inputs_for_generation(...) and share the guarded function.
+# glm4_moe (MLA attention, different path) and falcon_h1 (its own variant) are intentionally absent.
 WIRED_MODEL_FILES = [
     "mistral.py",
     "gemma.py",
@@ -149,8 +148,8 @@ def test_cache_position_only_used_as_fallback_for_position_ids():
         if not any(_is_kwargs_position_ids_target(t) for t in node.targets):
             continue
         value_names = _names_in(node.value)
-        # Direct use of cache_position, or the local alias `cp` the current
-        # implementation builds from it inside the fallback branch.
+        # Direct use of cache_position, or the local alias `cp` the current implementation builds from it inside the
+        # fallback branch.
         derives_from_cache_position = any("cache_position" in n for n in value_names) or bool(
             value_names & {"cp"}
         )
@@ -318,9 +317,8 @@ def test_prefill_position_ids_derived_from_left_padded_mask():
 
 @pytest.mark.parametrize("pass_cache_position", [True, False])
 def test_cached_decode_position_ids_ignore_left_padding(pass_cache_position):
-    # Decode step: PAST_LEN tokens cached, current token is the mask's last
-    # column. Row 0 has 2 pads, so its current token sits at logical position 2,
-    # NOT at cache_position == PAST_LEN. This is exactly issue #3699.
+    # Decode step: PAST_LEN tokens cached, current token is the mask's last column. Row 0 has 2 pads, so its current
+    # token sits at logical position 2, NOT at cache_position == PAST_LEN. This is exactly issue #3699.
     input_ids = torch.arange(BS * SEQ).reshape(BS, SEQ)
     kwargs = {"past_key_values": FakeDynamicCache(PAST_LEN)}
     if pass_cache_position:
@@ -385,7 +383,8 @@ def test_caller_supplied_position_ids_are_passed_through():
 
 
 def test_legacy_tuple_cache_still_takes_cached_decode_path():
-    # Legacy cache format: tuple of (K, V) per layer; past length from K.shape[-2].
+    # Legacy cache format: tuple of (K, V) per layer;
+    # past length from K.shape[-2].
     k = torch.zeros((BS, 1, PAST_LEN, 8))
     legacy_cache = ((k, k.clone()),)
     input_ids = torch.arange(BS * SEQ).reshape(BS, SEQ)

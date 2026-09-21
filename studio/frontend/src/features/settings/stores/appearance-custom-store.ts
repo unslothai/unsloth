@@ -37,6 +37,7 @@ const guardedLocalStorage: StateStorage = {
 };
 
 export type ReduceMotionSetting = "system" | "on" | "off";
+export type ChatWidthSetting = "standard" | "wide" | "full";
 
 export type CustomModeColors = {
   accent: string | null;
@@ -92,8 +93,9 @@ export const SIDEBAR_NAV_ITEM_IDS = [
   "hub",
   "projects",
   "images",
-  // Video sits directly under Images: the two media tabs read as one pair.
+  // Video and Audio sit directly under Images: the media tabs read as one group.
   "video",
+  "audio",
   "train",
   "recipes",
   "export",
@@ -108,13 +110,40 @@ export type SidebarNavItemPref = {
   pinned: boolean;
 };
 
+/** Rows whose placement follows the sidebar's own state until the user decides for them. */
+export const SIDEBAR_NAV_AUTO_ITEM_IDS = ["projects"] as const satisfies
+  readonly SidebarNavItemId[];
+
+/** Where a nav row goes. Projects repeats the Projects section, so while that section lists the
+ *  folders the row steps aside into "More". A toggle in Customize sidebar drops it from `auto`
+ *  and wins from then on. */
+export function sidebarNavRowPinned(
+  item: SidebarNavItemPref,
+  auto: readonly SidebarNavItemId[],
+  context: { projectsSectionShowing: boolean },
+): boolean {
+  if (item.id === "projects" && auto.includes("projects")) {
+    return !context.projectsSectionShowing;
+  }
+  return item.pinned;
+}
+
+/** The list after the user has decided a row's placement themselves. */
+export function sidebarNavAutoAfterChoice(
+  auto: readonly SidebarNavItemId[],
+  id: SidebarNavItemId,
+): SidebarNavItemId[] {
+  return auto.filter((entry) => entry !== id);
+}
+
 // Matches the shipped layout, so an untouched install looks unchanged.
 export const SIDEBAR_NAV_DEFAULT_PINNED: Record<SidebarNavItemId, boolean> = {
   hub: true,
   projects: true,
   images: true,
+  video: true,
   // Under "More" until a user pins it.
-  video: false,
+  audio: false,
   train: true,
   recipes: false,
   export: false,
@@ -123,7 +152,8 @@ export const SIDEBAR_NAV_DEFAULT_PINNED: Record<SidebarNavItemId, boolean> = {
 
 /** Every previously shipped layout, so a migration can tell an untouched install from one the
  *  user arranged themselves. v3 pinned Video under Images; v4 moved Model hub above Projects;
- *  v5 put Video back under "More". */
+ *  v5 put Video back under "More" and later added API before Audio shipped; v6 added Audio;
+ *  v7 pins Video under Images again. */
 const SHIPPED_SIDEBAR_NAV_DEFAULTS: SidebarNavItemPref[][] = [
   [
     { id: "projects", pinned: true },
@@ -152,6 +182,27 @@ const SHIPPED_SIDEBAR_NAV_DEFAULTS: SidebarNavItemPref[][] = [
     { id: "recipes", pinned: false },
     { id: "export", pinned: false },
   ],
+  [
+    { id: "hub", pinned: true },
+    { id: "projects", pinned: true },
+    { id: "images", pinned: true },
+    { id: "video", pinned: false },
+    { id: "train", pinned: true },
+    { id: "recipes", pinned: false },
+    { id: "export", pinned: false },
+    { id: "api", pinned: false },
+  ],
+  [
+    { id: "hub", pinned: true },
+    { id: "projects", pinned: true },
+    { id: "images", pinned: true },
+    { id: "video", pinned: false },
+    { id: "audio", pinned: false },
+    { id: "train", pinned: true },
+    { id: "recipes", pinned: false },
+    { id: "export", pinned: false },
+    { id: "api", pinned: false },
+  ],
 ];
 
 export const MAX_IMPORTED_FONTS = 3;
@@ -171,6 +222,7 @@ export type AppearanceCustomization = {
   uiFont: string | null;
   headingFont: string | null;
   chatFont: string | null;
+  chatWidth: ChatWidthSetting;
   codeFont: string | null;
   importedFonts: ImportedFont[];
   /** UI font size in px. null = app default (15). */
@@ -187,6 +239,9 @@ export type AppearanceCustomization = {
   sidebarMenu: SidebarMenuItemPref[];
   /** Order of the sidebar nav rows, and which are pinned vs. under "More". */
   sidebarNav: SidebarNavItemPref[];
+  /** Rows still following their automatic rule instead of a choice made in Customize sidebar.
+   *  Only Projects has one. */
+  sidebarNavAuto: SidebarNavItemId[];
 };
 
 const EMPTY_MODE_COLORS: CustomModeColors = {
@@ -200,6 +255,7 @@ export const DEFAULT_CUSTOMIZATION: AppearanceCustomization = {
   uiFont: null,
   headingFont: null,
   chatFont: null,
+  chatWidth: "standard",
   codeFont: null,
   importedFonts: [],
   uiFontSize: null,
@@ -216,6 +272,7 @@ export const DEFAULT_CUSTOMIZATION: AppearanceCustomization = {
     id,
     pinned: SIDEBAR_NAV_DEFAULT_PINNED[id],
   })),
+  sidebarNavAuto: [...SIDEBAR_NAV_AUTO_ITEM_IDS],
 };
 
 export const UI_FONT_SIZE_RANGE = { min: 12, max: 20, default: 15 } as const;
@@ -323,6 +380,28 @@ function sanitizeSidebarNav(value: unknown): SidebarNavItemPref[] {
   return items;
 }
 
+/** `undefined` is a payload written before this field. Only an untouched layout never chose a
+ *  placement for Projects, so an arranged one keeps the pin it already carries. */
+function sanitizeSidebarNavAuto(
+  value: unknown,
+  nav: SidebarNavItemPref[],
+): SidebarNavItemId[] {
+  if (value === undefined || value === null) {
+    return isUntouchedSidebarNav(nav) ? [...SIDEBAR_NAV_AUTO_ITEM_IDS] : [];
+  }
+  const seen = new Set<SidebarNavItemId>();
+  for (const entry of Array.isArray(value) ? value : []) {
+    // Only rows that have a rule: anything else would silently pin itself.
+    if (
+      isSidebarNavItemId(entry) &&
+      (SIDEBAR_NAV_AUTO_ITEM_IDS as readonly string[]).includes(entry)
+    ) {
+      seen.add(entry);
+    }
+  }
+  return [...seen];
+}
+
 function sanitizeSidebarMenu(value: unknown): SidebarMenuItemPref[] {
   const items: SidebarMenuItemPref[] = [];
   const seen = new Set<SidebarMenuItemId>();
@@ -332,8 +411,7 @@ function sanitizeSidebarMenu(value: unknown): SidebarMenuItemPref[] {
     seen.add(source.id);
     items.push({ id: source.id, visible: source.visible !== false });
   }
-  // Ids added after the payload was written land at the end with their
-  // default visibility.
+  // Ids added after the payload was written land at the end with their default visibility.
   for (const id of SIDEBAR_MENU_ITEM_IDS) {
     if (!seen.has(id))
       items.push({ id, visible: SIDEBAR_MENU_DEFAULT_VISIBLE[id] });
@@ -354,6 +432,7 @@ export function sanitizeCustomization(value: unknown): AppearanceCustomization {
     typeof source.contrast === "number" && Number.isFinite(source.contrast)
       ? Math.min(100, Math.max(0, Math.round(source.contrast)))
       : DEFAULT_CUSTOMIZATION.contrast;
+  const sidebarNav = sanitizeSidebarNav(source.sidebarNav);
   return {
     colors: {
       light: sanitizeModeColors(source.colors?.light),
@@ -362,6 +441,10 @@ export function sanitizeCustomization(value: unknown): AppearanceCustomization {
     uiFont: sanitizeFont(source.uiFont),
     headingFont: sanitizeFont(source.headingFont),
     chatFont: sanitizeFont(source.chatFont),
+    chatWidth:
+      source.chatWidth === "wide" || source.chatWidth === "full"
+        ? source.chatWidth
+        : "standard",
     codeFont: sanitizeFont(source.codeFont),
     importedFonts: sanitizeImportedFonts(source.importedFonts),
     uiFontSize: sanitizeSize(source.uiFontSize, UI_FONT_SIZE_RANGE),
@@ -374,8 +457,20 @@ export function sanitizeCustomization(value: unknown): AppearanceCustomization {
         : "system",
     fontSmoothing: source.fontSmoothing !== false,
     sidebarMenu: sanitizeSidebarMenu(source.sidebarMenu),
-    sidebarNav: sanitizeSidebarNav(source.sidebarNav),
+    sidebarNav,
+    sidebarNavAuto: sanitizeSidebarNavAuto(source.sidebarNavAuto, sidebarNav),
   };
+}
+
+/** Whether a nav layout is still one we shipped, rather than one the user arranged. */
+function isUntouchedSidebarNav(nav: SidebarNavItemPref[]): boolean {
+  const stored = JSON.stringify(nav);
+  if (stored === JSON.stringify(DEFAULT_CUSTOMIZATION.sidebarNav)) return true;
+  // Sanitize each layout too: the stored one has since gained any ids added after it was
+  // written, so a raw compare would never match.
+  return SHIPPED_SIDEBAR_NAV_DEFAULTS.some(
+    (layout) => JSON.stringify(sanitizeSidebarNav(layout)) === stored,
+  );
 }
 
 /** Adopt the latest default only when the sidebar still matches one we shipped. */
@@ -387,13 +482,7 @@ export function migrateShippedSidebarNavDefault(
   // Once this migration version has been persisted, the same layout may be a
   // deliberate user choice and must never be adopted again.
   if (storedVersion >= migrationVersion) return customization;
-  const stored = JSON.stringify(customization.sidebarNav);
-  // Sanitize each layout too: the stored one has since gained any ids added
-  // after it was written, so a raw compare would never match.
-  const untouched = SHIPPED_SIDEBAR_NAV_DEFAULTS.some(
-    (layout) => JSON.stringify(sanitizeSidebarNav(layout)) === stored,
-  );
-  return untouched
+  return isUntouchedSidebarNav(customization.sidebarNav)
     ? {
         ...customization,
         sidebarNav: [...DEFAULT_CUSTOMIZATION.sidebarNav],
@@ -475,14 +564,14 @@ export const useAppearanceCustomStore = create<AppearanceCustomState>()(
     }),
     {
       name: "unsloth_appearance_customization",
-      version: 5,
+      version: 7,
       storage: createJSONStorage(() => guardedLocalStorage),
       migrate: (persisted, version) => {
         const state = (persisted ?? {}) as Partial<AppearanceCustomState>;
         const customization = migrateShippedSidebarNavDefault(
           sanitizeCustomization(state.customization),
           version,
-          5,
+          7,
         );
         return { customization } as AppearanceCustomState;
       },
@@ -679,9 +768,8 @@ function syncImportedFonts(fonts: ImportedFont[]): void {
   const wanted = new Map(
     (Array.isArray(fonts) ? fonts : []).map((f) => [f.name, f.dataUrl]),
   );
-  // Drop faces whose name is gone OR whose bytes changed: document.fonts is a
-  // set of FontFace objects, not keyed by family, so a stale face must be
-  // deleted before the new bytes are added.
+  // Drop faces whose name is gone OR whose bytes changed: document.fonts is a set of FontFace
+  // objects, not keyed by family, so a stale face must be deleted before the new bytes are added.
   for (const [name, entry] of registeredFontFaces) {
     if (wanted.get(name) !== entry.dataUrl) {
       document.fonts.delete(entry.face);
@@ -759,6 +847,25 @@ export function applyCustomizationToDocument(
   }
   setVar("--background", colors.background);
   setVar("--foreground", colors.foreground);
+  // keep the full-width inset from making narrow panes smaller than wide.
+  setVar(
+    "--custom-chat-max-width",
+    c.chatWidth === "full"
+      ? "max(72rem, calc(100% - 6rem))"
+      : c.chatWidth === "wide"
+        ? "72rem"
+        : null,
+  );
+  // The composer shell fills whatever its parent was capped to, so the cap is
+  // never applied twice. Same result as before at every width.
+  setVar(
+    "--custom-chat-shell-max-width",
+    c.chatWidth === "standard" ? null : "100%",
+  );
+  setVar(
+    "--custom-chat-welcome-padding",
+    c.chatWidth === "standard" ? null : "0px",
+  );
 
   syncImportedFonts(c.importedFonts);
 
@@ -799,10 +906,9 @@ export function applyCustomizationToDocument(
     setVar("--custom-chat-font", null);
   }
 
-  // The UI font size drives a typography scale factor, never the root font
-  // size: rem-based layout geometry must not move with the preference. The
-  // scale reaches text through the --text-* / --text-ui-* / --leading-*
-  // tokens in index.css.
+  // The UI font size drives a typography scale factor, never the root font size: rem-based layout
+  // geometry must not move with the preference. The scale reaches text through the --text-* /
+  // --text-ui-* / --leading-* tokens in index.css.
   const effectiveUiFontSize = c.uiFontSize ?? UI_FONT_SIZE_RANGE.default;
   if (effectiveUiFontSize !== UI_FONT_SIZE_RANGE.default) {
     setVar(

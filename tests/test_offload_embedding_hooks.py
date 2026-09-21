@@ -82,7 +82,6 @@ def test_live_decoder_over_stale_fallback():
         print("[SKIP] CUDA not available")
         return
     # P2: fallback captured as cpu (model loaded on cpu), but the decoder later lives on cuda.
-    # The output must follow the live lm_head device, not the stale cpu fallback.
     emb = _emb().to("cpu")
     install(emb, _lm_head("cuda"), CPU)
     out = emb(torch.randint(0, 32, (2, 5), device = "cuda"))
@@ -90,8 +89,8 @@ def test_live_decoder_over_stale_fallback():
 
 
 def test_meta_lm_head_falls_back():
-    # A disk-offloaded (meta) lm_head must not be used as the return device: moving hidden
-    # states to meta is unrecoverable, so fall back to the captured device. No GPU needed.
+    # A disk-offloaded (meta) lm_head must not be used as the return device: moving hidden states to meta is
+    # unrecoverable, so fall back to the captured device. No GPU needed.
     emb = _emb().to("cpu")
     lm = _lm_head(CPU)
     lm.weight = nn.Parameter(lm.weight.to("meta"))

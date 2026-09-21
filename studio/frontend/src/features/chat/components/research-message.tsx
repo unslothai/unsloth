@@ -18,12 +18,15 @@ import { type ReactElement, useEffect } from "react";
 import {
   ensureResearchRunFollowed,
   ingestResearchUpdate,
+  openResearchRun,
+  runningResearchActivityTitle,
   useResearchRunStore,
 } from "../stores/research-run-store";
 import type { ResearchMessageMetadata } from "../types/research";
+import { researchReplyOwnsRun } from "../utils/research-run-binding";
 import { researchStatusLabel } from "./research-activity-panel";
 
-export function ResearchMessage(): ReactElement {
+export function ResearchMessage(): ReactElement | null {
   const metadata = useAuiState(
     ({ message }) =>
       (message.metadata as { custom?: ResearchMessageMetadata } | undefined)
@@ -35,13 +38,17 @@ export function ResearchMessage(): ReactElement {
       .map((part) => part.text)
       .join("\n"),
   );
+  const messageId = useAuiState(({ message }) => message.id);
   const runId = metadata.researchRunId ?? metadata.researchRun?.id ?? "";
   const session = useResearchRunStore((state) => state.sessions[runId]);
-  const openPanel = useResearchRunStore((state) => state.openPanel);
   const initialRun = metadata.researchRun;
+  const ownsRun = researchReplyOwnsRun(
+    session?.run?.assistantMessageId,
+    messageId,
+  );
 
   useEffect(() => {
-    if (!runId) {
+    if (!runId || !ownsRun) {
       return;
     }
     if (initialRun) {
@@ -50,9 +57,9 @@ export function ResearchMessage(): ReactElement {
     if (!session?.following) {
       ensureResearchRunFollowed(runId, initialRun);
     }
-  }, [runId, initialRun, session?.following]);
+  }, [runId, initialRun, ownsRun, session?.following]);
 
-  const run = session?.run ?? metadata.researchRun;
+  const run = ownsRun ? (session?.run ?? metadata.researchRun) : undefined;
   if (!run) {
     if (fallbackText.trim()) {
       return (
@@ -62,6 +69,9 @@ export function ResearchMessage(): ReactElement {
         />
       );
     }
+    if (!ownsRun) {
+      return null;
+    }
     return (
       <div className="flex items-center gap-2 text-sm text-muted-foreground">
         <Spinner /> Loading research…
@@ -69,7 +79,9 @@ export function ResearchMessage(): ReactElement {
     );
   }
 
-  if (run.status === "completed" && run.report) {
+  // A failed run's report opens with its own notice, so nothing here repeats it.
+  if ((run.status === "completed" || run.status === "failed") && run.report) {
+    const failed = run.status === "failed";
     const sources: SourceData[] = run.sources.map((source) => ({
       id: String(source.id ?? source.url),
       url: source.url,
@@ -95,18 +107,27 @@ export function ResearchMessage(): ReactElement {
       <div className="min-w-0">
         <button
           type="button"
-          onClick={() => openPanel(run.id)}
+          onClick={() => openResearchRun(run)}
           className="mb-3 flex items-center gap-2 rounded-full text-sm text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
         >
           <span className="flex size-5 items-center justify-center rounded-full bg-primary/10 text-primary">
-            <Check className="size-3" />
+            {failed ? (
+              <TriangleAlert className="size-3" />
+            ) : (
+              <Check className="size-3" />
+            )}
           </span>
-          <span>Deep research completed · {sourceCount} sources</span>
+          <span>
+            {failed
+              ? `Deep research failed · ${sourceCount} sources`
+              : `Deep research completed · ${sourceCount} sources`}
+          </span>
           <span className="text-primary">View activity</span>
         </button>
         <MarkdownPreview
           markdown={run.report}
           className="max-h-none overflow-visible border-0 bg-transparent p-0 text-ui-15p5"
+          defer={true}
         />
         <SourcesGroup sources={sources} allowRemoteIcons={false} />
         <DocumentSourcesGroup sources={documentSources} />
@@ -117,6 +138,11 @@ export function ResearchMessage(): ReactElement {
   const failed = run.status === "failed";
   const cancelled = run.status === "cancelled";
   const needsApproval = run.status === "awaiting_approval";
+  // Name the current model call, so the long silent phases read as work rather than a stall.
+  const liveDetail =
+    runningResearchActivityTitle(session?.activities) ??
+    run.plan?.title ??
+    "Building a rigorous research plan…";
   return (
     <div
       className={cn(
@@ -159,13 +185,13 @@ export function ResearchMessage(): ReactElement {
                   ? "Review the approach before the agent starts gathering evidence."
                   : cancelled
                     ? "The activity gathered so far is still available."
-                    : (run.plan?.title ?? "Building a rigorous research plan…")}
+                    : liveDetail}
           </p>
           <Button
             size="sm"
             variant={needsApproval ? "default" : "outline"}
             className="mt-3"
-            onClick={() => openPanel(run.id)}
+            onClick={() => openResearchRun(run)}
           >
             {needsApproval ? "Review plan" : "View activity"}
           </Button>

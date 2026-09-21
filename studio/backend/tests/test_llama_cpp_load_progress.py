@@ -70,9 +70,18 @@ _httpx_stub.Client = type(
         "__exit__": lambda self, *a: None,
     },
 )
-sys.modules.setdefault("httpx", _httpx_stub)
+# Only when the real library is absent. sys.modules holds what has been IMPORTED, not
+# what is installed, so setdefault does not defer to a real httpx that nothing in this
+# process has touched yet: the stub wins and shadows it for the whole session. This stub
+# has no Response, and starlette.testclient reads httpx.Response at import, so every
+# module collected afterwards that reaches fastapi.testclient or routes.inference dies.
+try:
+    import httpx  # noqa: F401
+except ImportError:
+    sys.modules.setdefault("httpx", _httpx_stub)
 
 from core.inference.llama_cpp import LlamaCppBackend
+import io
 
 
 # ---------------------------------------------------------------------------
@@ -132,7 +141,6 @@ class TestLoadProgressSingleShard:
         # Patch /proc read to claim 10 GB RSS.
         def fake_open(path, *args, **kwargs):
             if str(path).startswith("/proc/"):
-                import io
                 return io.StringIO(f"Name:\ttest\nVmRSS:\t{10 * 1024 ** 2}\tkB\n")
             return open(path, *args, **kwargs)  # fall through
 
@@ -156,7 +164,6 @@ class TestLoadProgressSingleShard:
 
         def fake_open(path, *args, **kwargs):
             if str(path).startswith("/proc/"):
-                import io
                 return io.StringIO(f"VmRSS:\t{8 * 1024 ** 2}\tkB\n")
             return open(path, *args, **kwargs)
 
@@ -190,7 +197,6 @@ class TestLoadProgressMultiShard:
 
         def fake_open(path, *args, **kwargs):
             if str(path).startswith("/proc/"):
-                import io
                 return io.StringIO("VmRSS:\t0\tkB\n")
             return open(path, *args, **kwargs)
 
@@ -212,7 +218,6 @@ class TestLoadProgressDegradation:
 
         def fake_open(path, *args, **kwargs):
             if str(path).startswith("/proc/"):
-                import io
                 return io.StringIO("VmRSS:\t1024\tkB\n")
             return open(path, *args, **kwargs)
 

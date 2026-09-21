@@ -15,6 +15,7 @@ export const SPECULATIVE_TYPES = [
   "auto",
   "mtp",
   "dspark",
+  "dflash",
   "ngram",
   "mtp+ngram",
   "off",
@@ -23,11 +24,27 @@ export const SPECULATIVE_TYPES = [
 /**
  * The modes that consume spec_draft_n_max, i.e. the ones that launch a drafter
  * with a configurable depth. Named for the setting rather than for MTP: DSpark
- * is in here too. Mirrors DRAFT_N_MAX_SPEC_TYPES in
+ * and DFlash are in here too. Mirrors DRAFT_N_MAX_SPEC_TYPES in
  * studio/backend/utils/openai_auto_switch_settings.py.
  */
 export const DRAFT_N_MAX_SPEC_TYPES: ReadonlySet<string> = new Set([
   "mtp",
   "mtp+ngram",
   "dspark",
+  "dflash",
+]);
+
+/**
+ * The modes that always launch a SEPARATE draft model, and so a second context
+ * with its own KV cache for the draft cache dtype to apply to.
+ *
+ * MTP is left out: whether it loads a drafter file (Gemma) or reads baked-in
+ * heads out of the target GGUF (Qwen) is a property of the model, known only once
+ * the loader has read its metadata. The backend emits the draft cache flags
+ * wherever it emits --model-draft, so a stored setting still reaches an MTP load
+ * that does attach one.
+ */
+export const SEPARATE_DRAFT_MODEL_SPEC_TYPES: ReadonlySet<string> = new Set([
+  "dspark",
+  "dflash",
 ]);

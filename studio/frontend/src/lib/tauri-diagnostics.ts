@@ -3,6 +3,7 @@
 
 import { isTauri } from "@/lib/api-base";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
+import { stripAnsi } from "@/lib/strip-ansi";
 
 export interface FrontendSupportSnapshot {
   status?: string | null;
@@ -24,15 +25,6 @@ export interface CopySupportDiagnosticsResult {
 }
 
 const FALLBACK_LOG_LINE_LIMIT = 200;
-
-const ANSI_ESCAPE_PATTERN = new RegExp(
-  `${String.fromCharCode(27)}(?:[@-Z\\-_]|\\[[0-?]*[ -/]*[@-~])`,
-  "g",
-);
-
-function stripAnsi(text: string): string {
-  return text.replace(ANSI_ESCAPE_PATTERN, "");
-}
 
 export function redactDiagnosticsText(text: string): string {
   let redacted = stripAnsi(text);
@@ -68,11 +60,11 @@ export function redactDiagnosticsText(text: string): string {
     "<studio_home>",
   );
   redacted = redacted.replace(
-    /[A-Z]:\\Users\\[^\s\\]+\\\.unsloth\\studio/gi,
+    /[A-Z]:\\Users\\[^\s\\:]+\\\.unsloth\\studio/gi,
     "<studio_home>",
   );
   redacted = redacted.replace(/(?:\/Users|\/home)\/[^\s/]+/gi, "$HOME");
-  redacted = redacted.replace(/[A-Z]:\\Users\\[^\s\\]+/gi, "%USERPROFILE%");
+  redacted = redacted.replace(/[A-Z]:\\Users\\[^\s\\:]+/gi, "%USERPROFILE%");
   redacted = redacted.replace(
     /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi,
     "<redacted-email>",
@@ -142,26 +134,10 @@ async function collectDiagnosticsReport(
   }
 }
 
-async function copyWithTauriClipboard(text: string): Promise<boolean> {
-  if (!isTauri) return false;
-  try {
-    const { writeText } = await import("@tauri-apps/plugin-clipboard-manager");
-    await writeText(text);
-    return true;
-  } catch (error) {
-    console.warn("Tauri clipboard-manager writeText failed", error);
-    return false;
-  }
-}
-
 export async function copySupportDiagnostics(
   snapshot: FrontendSupportSnapshot,
 ): Promise<CopySupportDiagnosticsResult> {
   const { report, source } = await collectDiagnosticsReport(snapshot);
-
-  if (await copyWithTauriClipboard(report)) {
-    return { ok: true, report, source };
-  }
 
   if (await copyToClipboard(report)) {
     return { ok: true, report, source };

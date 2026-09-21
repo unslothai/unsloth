@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { AppPortalGate } from "@/components/app-readiness";
 import { Dialog as SheetPrimitive } from "radix-ui";
 import type * as React from "react";
 import { useState } from "react";
@@ -10,6 +11,16 @@ import { DialogPortalContainerContext } from "@/components/ui/dialog";
 import { cn } from "@/lib/utils";
 import { Cancel01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
+
+// Windows/Linux custom titlebar paints over the viewport at z-70, so a fixed
+// sheet must start below it. DesktopChromeVarsEffect mirrors the height onto
+// <html> since sheets portal to document.body; unset in browser/macOS (0px).
+const VIEWPORT_TOP_EDGE =
+  "data-[side=left]:top-[var(--studio-custom-titlebar-height,0px)] data-[side=right]:top-[var(--studio-custom-titlebar-height,0px)] data-[side=top]:top-[var(--studio-custom-titlebar-height,0px)]";
+
+// A contained sheet follows its container's top edge; no chrome sits over it.
+const CONTAINED_TOP_EDGE =
+  "data-[side=left]:top-0 data-[side=right]:top-0 data-[side=top]:top-0";
 
 function Sheet({ ...props }: React.ComponentProps<typeof SheetPrimitive.Root>) {
   return <SheetPrimitive.Root data-slot="sheet" {...props} />;
@@ -41,7 +52,11 @@ function SheetCloseButton({ className }: { className?: string }) {
 function SheetPortal({
   ...props
 }: React.ComponentProps<typeof SheetPrimitive.Portal>) {
-  return <SheetPrimitive.Portal data-slot="sheet-portal" {...props} />;
+  return (
+    <AppPortalGate>
+      <SheetPrimitive.Portal data-slot="sheet-portal" {...props} />
+    </AppPortalGate>
+  );
 }
 
 function SheetOverlay({
@@ -94,8 +109,9 @@ function SheetContent({
         data-slot="sheet-content"
         data-side={side}
         className={cn(
-          "bg-background data-open:animate-in data-closed:animate-out data-[side=right]:data-closed:slide-out-to-right-10 data-[side=right]:data-open:slide-in-from-right-10 data-[side=left]:data-closed:slide-out-to-left-10 data-[side=left]:data-open:slide-in-from-left-10 data-[side=top]:data-closed:slide-out-to-top-10 data-[side=top]:data-open:slide-in-from-top-10 data-closed:fade-out-0 data-open:fade-in-0 data-[side=bottom]:data-closed:slide-out-to-bottom-10 data-[side=bottom]:data-open:slide-in-from-bottom-10 z-50 flex flex-col bg-clip-padding text-sm shadow-lg transition duration-200 ease-in-out data-[side=bottom]:inset-x-0 data-[side=bottom]:bottom-0 data-[side=bottom]:h-auto data-[side=bottom]:border-t data-[side=left]:inset-y-0 data-[side=left]:left-0 data-[side=left]:h-full data-[side=left]:w-3/4 data-[side=left]:border-r data-[side=right]:inset-y-0 data-[side=right]:right-0 data-[side=right]:h-full data-[side=right]:w-3/4 data-[side=right]:border-l data-[side=top]:inset-x-0 data-[side=top]:top-0 data-[side=top]:h-auto data-[side=top]:border-b data-[side=left]:sm:max-w-sm data-[side=right]:sm:max-w-sm data-[side=bottom]:max-h-[85dvh] data-[side=top]:max-h-[85dvh] data-[side=bottom]:overflow-y-auto data-[side=top]:overflow-y-auto",
+          "bg-background data-open:animate-in data-closed:animate-out data-[side=right]:data-closed:slide-out-to-right-10 data-[side=right]:data-open:slide-in-from-right-10 data-[side=left]:data-closed:slide-out-to-left-10 data-[side=left]:data-open:slide-in-from-left-10 data-[side=top]:data-closed:slide-out-to-top-10 data-[side=top]:data-open:slide-in-from-top-10 data-closed:fade-out-0 data-open:fade-in-0 data-[side=bottom]:data-closed:slide-out-to-bottom-10 data-[side=bottom]:data-open:slide-in-from-bottom-10 z-50 flex flex-col bg-clip-padding text-sm shadow-lg transition duration-200 ease-in-out data-[side=bottom]:inset-x-0 data-[side=bottom]:bottom-0 data-[side=bottom]:h-auto data-[side=bottom]:border-t data-[side=left]:left-0 data-[side=left]:bottom-0 data-[side=left]:w-3/4 data-[side=left]:border-r data-[side=right]:right-0 data-[side=right]:bottom-0 data-[side=right]:w-3/4 data-[side=right]:border-l data-[side=top]:inset-x-0 data-[side=top]:h-auto data-[side=top]:border-b data-[side=left]:sm:max-w-sm data-[side=right]:sm:max-w-sm data-[side=bottom]:max-h-[85dvh] data-[side=top]:max-h-[85dvh] data-[side=bottom]:overflow-y-auto data-[side=top]:overflow-y-auto",
           position === "fixed" ? "fixed" : "absolute",
+          position === "fixed" ? VIEWPORT_TOP_EDGE : CONTAINED_TOP_EDGE,
           className,
         )}
         {...props}

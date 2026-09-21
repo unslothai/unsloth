@@ -1,18 +1,30 @@
 import { usePromptQueueUI } from "../stores/prompt-queue-ui-store";
+import {
+  PROMPT_QUEUE_RUN_FAILED_EVENT,
+  PROMPT_QUEUE_STOP_EVENT,
+} from "./prompt-queue-events";
 import { localPromptQueueModelBoundary } from "./prompt-queue-model-boundary";
+import {
+  chatModelLifecycleGate,
+  type ModelLifecycleLease,
+} from "./model-lifecycle-gate";
 
-export const PROMPT_QUEUE_STOP_EVENT = "unsloth:prompt-queue-stop";
-export const PROMPT_QUEUE_RUN_FAILED_EVENT = "unsloth:prompt-queue-run-failed";
+// Re-exported so existing importers and the barrel keep their paths. Module scope readers should
+// use ./prompt-queue-events directly: this module has dependencies, so the cycle can catch it
+// mid-initialization.
+export {
+  PROMPT_QUEUE_RUN_FAILED_EVENT,
+  PROMPT_QUEUE_STOP_EVENT,
+} from "./prompt-queue-events";
+export type {
+  PromptQueueRunFailedEventDetail,
+  PromptQueueStopEventDetail,
+} from "./prompt-queue-events";
 
-export type PromptQueueStopEventDetail = {
-  threadIds?: string[];
-  temporaryOnly?: boolean;
-  localOnly?: boolean;
-};
-
-export type PromptQueueRunFailedEventDetail = {
-  threadId?: string | null;
-};
+import type {
+  PromptQueueRunFailedEventDetail,
+  PromptQueueStopEventDetail,
+} from "./prompt-queue-events";
 
 export function requestPromptQueueStop(threadIds?: string[]) {
   if (
@@ -28,10 +40,8 @@ export function requestPromptQueueStop(threadIds?: string[]) {
   );
 }
 
-/**
- * Stop every materialized local queue and invalidate local queue factories
- * that are still waiting for settings hydration.
- */
+/** Stop every materialized local queue and invalidate local queue factories that are still waiting
+ *  for settings hydration. */
 export function requestLocalPromptQueueStop(
   additionalThreadIds: string[] = [],
 ) {
@@ -79,6 +89,22 @@ export function notifyPromptQueueRunFailed(threadId?: string | null) {
     new CustomEvent<PromptQueueRunFailedEventDetail>(
       PROMPT_QUEUE_RUN_FAILED_EVENT,
       { detail: { threadId } },
+    ),
+  );
+}
+
+export function notifyLocalPromptQueueLoadFailed(
+  lease: ModelLifecycleLease | null,
+) {
+  if (lease === null || !chatModelLifecycleGate.markFailed(lease)) return;
+  localPromptQueueModelBoundary.advance();
+  if (typeof window === "undefined") return;
+  window.dispatchEvent(
+    new CustomEvent<PromptQueueRunFailedEventDetail>(
+      PROMPT_QUEUE_RUN_FAILED_EVENT,
+      {
+        detail: { localOnly: true },
+      },
     ),
   );
 }

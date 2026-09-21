@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { apiUrl } from "@/lib/api-base";
+import { setHfEndpoints } from "@/lib/hf-endpoint";
 import {
   isDetectionDeferred,
   isProvisionalVerdict,
@@ -22,11 +23,20 @@ export type DeviceType = "mac" | "windows" | "linux" | string;
 
 interface PlatformState {
   deviceType: DeviceType;
+  // Unified memory: GPU and system draw on one pool, so an over-committed load has
+  // nowhere to spill and takes the machine down rather than failing. Narrower than
+  // deviceType === "mac", which includes Intel Macs with a discrete GPU, where spilling
+  // to system RAM is exactly what happens. Mirrors the backend's is_apple_silicon gate.
+  appleSilicon: boolean;
   chatOnly: boolean;
   // Why chatOnly is set (null when training is enabled), from /api/health.
   // e.g. "mlx_unavailable" on Apple Silicon -> the UI explains the greyed-out
   // Train/Export instead of silently disabling them.
   chatOnlyReason: string | null;
+  // What specifically blocked that reason, when the backend can name it. Today only the
+  // MLX gate does: it is all-or-nothing across mlx, mlx-lm and mlx-vlm, so without this
+  // the greyed-out Train row can only repeat "run `unsloth studio update`".
+  chatOnlyDetail: string | null;
   // From /api/health (authed): live tunnel URL, direct (non-tunnel) base, and
   // whether the server was launched with --secure.
   cloudflareUrl: string | null;
@@ -37,6 +47,11 @@ interface PlatformState {
   // until a first-use operation detects, so the sidebar polls on this.
   detectionDeferred: boolean;
   isChatOnly: () => boolean;
+  // True until /api/health has answered with a server-measured verdict. Before that `chatOnly`
+  // is the browser-platform seed below, not an answer, so anything that would gray a
+  // capability out has to treat it as unknown: rendering the guess blacks out Train and Video
+  // on every Mac from first paint, visually identical to a measured "unsupported".
+  capabilitiesUnknown: () => boolean;
 }
 
 // Client-side fallback when backend isn't ready yet.
@@ -53,23 +68,35 @@ const localDeviceType = detectLocalPlatform();
 
 export const usePlatformStore = create<PlatformState>()((_, get) => ({
   deviceType: localDeviceType,
+  appleSilicon: false,
+  // A guess from the user agent, kept only as the pre-measurement fallback for the redirects
+  // that must decide something before /api/health answers. Capability gating must read
+  // capabilitiesUnknown() first and hold, not gray a tab out on this.
   chatOnly: localDeviceType === "mac",
   chatOnlyReason: null,
+  chatOnlyDetail: null,
   cloudflareUrl: null,
   serverUrl: null,
   secure: false,
   fetched: false,
   detectionDeferred: false,
   isChatOnly: () => get().chatOnly,
+  // `fetched` already means "a server-reported verdict is stored" (see fetchDeviceType), so it
+  // is the unknown/known line; no second flag to keep in step with it. A deferred reply counts
+  // as settled even though it carries no device_type: under the torch-warm kill switch nothing
+  // else is coming this session, so treating it as unknown would spin the tabs forever.
+  capabilitiesUnknown: () => {
+    const state = get();
+    return !state.fetched && !state.detectionDeferred;
+  },
 }));
 
-// Once an authoritative (server-reported) platform has been fetched, a
-// non-forced response must not overwrite it. The post-render fetchDeviceType()
-// in main.tsx runs before auth is ready and can resolve after the authed
-// root-route/provider fetches; such a late write would reset deviceType,
-// cloudflareUrl/serverUrl/secure, and fetched, whether it is a browser fallback
-// (unauthenticated) or an earlier authenticated request that landed after a
-// later forced refresh. Forced refreshes are explicit re-reads, so they still write.
+// Once an authoritative (server-reported) platform has been fetched, a non-forced response must not
+// overwrite it. The post-render fetchDeviceType() in main.tsx runs before auth is ready and can
+// resolve after the authed root-route/provider fetches; such a late write would reset deviceType,
+// cloudflareUrl/serverUrl/secure, and fetched, whether it is a browser fallback (unauthenticated)
+// or an earlier authenticated request that landed after a later forced refresh. Forced refreshes
+// are explicit re-reads, so they still write.
 function shouldKeepAuthoritativePlatform(force?: boolean): boolean {
   return !force && usePlatformStore.getState().fetched;
 }
@@ -132,19 +159,25 @@ export async function fetchDeviceType(options?: {
     if (res.ok) {
       const data = (await res.json()) as {
         device_type?: string;
+        apple_silicon?: boolean;
         chat_only?: boolean;
         chat_only_reason?: string | null;
         hardware_detecting?: boolean;
         cloudflare_url?: string | null;
         server_url?: string | null;
         secure?: boolean;
+        hf_endpoint?: string;
+        hf_datasets_server?: string;
       };
-      // Once the store holds an authoritative (server-reported) platform, a
-      // non-forced response must not overwrite it. It may be an unauthenticated
-      // fallback, or an earlier authenticated request that resolved after a
-      // later forced refresh already picked up device_type and the tunnel
-      // fields; writing either would reset device type or null the tunnel
-      // fields. Forced refreshes are explicit re-reads, so they still write.
+      // Once the store holds an authoritative (server-reported) platform, a non-forced response
+      // must not overwrite it. It may be an unauthenticated fallback, or an earlier authenticated
+      // request that resolved after a later forced refresh already picked up device_type and the
+      // tunnel fields; writing either would reset device type or null the tunnel fields. Forced
+      // refreshes are explicit re-reads, so they still write.
+      // Before the authoritative-platform guard below: unauthenticated and
+      // idempotent, and a mirror whose first authoritative reply already landed
+      // would otherwise never route its Hub calls.
+      setHfEndpoints(data.hf_endpoint, data.hf_datasets_server);
       if (shouldKeepAuthoritativePlatform(options?.force)) {
         return usePlatformStore.getState().deviceType;
       }
@@ -155,15 +188,26 @@ export async function fetchDeviceType(options?: {
       const keepPlatform = data.device_type === undefined && previous.fetched;
       const deviceType =
         data.device_type ?? (keepPlatform ? previous.deviceType : detectLocalPlatform());
+      // Rides with device_type and is kept on the same terms: a provisional or
+      // unauthenticated reply carries neither, and a browser guess cannot tell Apple
+      // Silicon from Intel. Absent means false, the pre-Apple-Silicon wording -- correct
+      // on an Intel Mac, and on a Mac browser pointed at a Linux host.
+      const appleSilicon =
+        data.apple_silicon ?? (keepPlatform ? previous.appleSilicon : false);
       // A still-provisional reply keeps the stored verdict: see resolveVerdict.
-      const { chatOnly, chatOnlyReason } = resolveVerdict(data, previous);
+      const { chatOnly, chatOnlyReason, chatOnlyDetail } = resolveVerdict(
+        data,
+        previous,
+      );
       // Cache only a server-reported platform. Unauthenticated responses fall
       // back to the browser platform, which can differ from the host (WSL,
       // SSH); keeping fetched=false retries once a token exists.
       usePlatformStore.setState({
         deviceType,
+        appleSilicon,
         chatOnly,
         chatOnlyReason,
+        chatOnlyDetail,
         cloudflareUrl: data.cloudflare_url ?? null,
         serverUrl: data.server_url ?? null,
         secure: data.secure ?? false,
@@ -173,10 +217,9 @@ export async function fetchDeviceType(options?: {
       return deviceType;
     }
   } catch {
-    // Backend not ready: use client-side detection so chat-only guard works
-    // on initial load (important for macOS). Keep fetched=false so a later
-    // call retries against the backend. But a late non-forced failure must not
-    // wipe an authoritative platform that already resolved.
+    // Backend not ready: use client-side detection so chat-only guard works on initial load
+    // (important for macOS). Keep fetched=false so a later call retries against the backend. But a
+    // late non-forced failure must not wipe an authoritative platform that already resolved.
     if (shouldKeepAuthoritativePlatform(options?.force)) {
       return usePlatformStore.getState().deviceType;
     }

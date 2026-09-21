@@ -13,6 +13,7 @@ import {
   useTrainingConfigStore,
   useTrainingReadiness,
   useTrainingResourceNotices,
+  useTrainingTransformersUpgradeNotice,
 } from "@/features/training";
 import { useGpuInfo } from "@/hooks";
 import { type TranslationKey, useLocale, useT } from "@/i18n";
@@ -158,6 +159,43 @@ function ResourceNoticeList({
           description={t(resourceNoticeDescriptionKey(notice))}
         />
       ))}
+    </section>
+  );
+}
+
+/** What the run will really do about transformers and precision.
+ *
+ * The method row above is what the user picked, not what the backend will run: a model
+ * routed to the latest-transformers sidecar always loads 16-bit, so "QLoRA · 4-bit" for
+ * one of those is a VRAM promise the run cannot keep. Stated here, before Start. When
+ * the model also ships its own code the dialog offers both ways in and only one keeps
+ * 4-bit, so the precision line names the action rather than asserting one answer. */
+function TransformersUpgradeNotice(): ReactElement | null {
+  const t = useT();
+  const { installVersion, fourBitUnavailable, installSwitchesTo16Bit } =
+    useTrainingTransformersUpgradeNotice();
+  if (!(installVersion || fourBitUnavailable || installSwitchesTo16Bit)) {
+    return null;
+  }
+  return (
+    <section className="flex flex-col gap-2 rounded-lg border border-amber-500/25 bg-amber-500/[0.06] px-3 py-2.5">
+      {installVersion ? (
+        <p className="text-ui-10p5 leading-relaxed text-foreground/80">
+          {t("studio.preview.noticeTransformersUpgrade", {
+            version: installVersion,
+          })}
+        </p>
+      ) : null}
+      {fourBitUnavailable ? (
+        <p className="text-ui-10p5 leading-relaxed text-foreground/80">
+          {t("studio.preview.noticeSixteenBitOnly")}
+        </p>
+      ) : null}
+      {installSwitchesTo16Bit ? (
+        <p className="text-ui-10p5 leading-relaxed text-foreground/80">
+          {t("studio.preview.noticeInstallSwitchesSixteenBit")}
+        </p>
+      ) : null}
     </section>
   );
 }
@@ -380,6 +418,7 @@ export function RunPreviewCard({
 
   return (
     <aside
+      data-tour="studio-run-preview"
       className={cn(
         "elevated-card elevated-card-dark-border flex flex-col gap-7 bg-foreground/[0.012] p-6",
         "dark:bg-white/[0.018]",
@@ -474,7 +513,7 @@ export function RunPreviewCard({
           label={t("studio.preview.hardware")}
           value={
             gpu.available
-              ? `${gpu.name} · ${gpu.memoryTotalGb} GB`
+              ? `${gpu.name} · ${gpu.memoryTotalGb} GiB`
               : t("studio.preview.noGpu")
           }
         />
@@ -487,6 +526,8 @@ export function RunPreviewCard({
       </section>
 
       <ResourceNoticeList notices={resourceNotices} />
+
+      <TransformersUpgradeNotice />
 
       <div className="-mx-6 h-px bg-foreground/[0.07] dark:bg-white/[0.06]" />
 

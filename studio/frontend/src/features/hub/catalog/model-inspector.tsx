@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { useHfEndpoint } from "@/lib/hf-endpoint";
 import {
   Tooltip,
   TooltipContent,
@@ -18,6 +19,7 @@ import {
   formatShortDate,
 } from "@/features/hub/lib/format";
 import { useHfTokenStore } from "@/features/hub/stores/hf-token-store";
+import { taskForMediaPick } from "@/features/model-picker/components/model-selector/audio-picker-policy";
 import { Tick02Icon } from "@/lib/tick-icon";
 import { cn, formatCompact } from "@/lib/utils";
 import {
@@ -44,6 +46,11 @@ import { selectActiveJob, useDownloadManagerStore } from "../download-manager";
 import { useCopyFeedback } from "../hooks/use-copy-feedback";
 import { useDatasetSize } from "../hooks/use-dataset-size";
 import {
+  type HubModelRunSelection,
+  isHubModelRunEligible,
+} from "../lib/model-run-selection";
+import { studioPageForTask } from "../lib/unsloth-support";
+import {
   formatLibrary,
   formatLocalUpdated,
   formatPipelineTag,
@@ -55,16 +62,10 @@ import { DatasetDownloadSection } from "./dataset-download-section";
 import { DownloadSection } from "./download-section";
 import { LocalDatasetCard } from "./local-dataset-card";
 import { LocalOnDeviceCard } from "./local-on-device-card";
+import { modelDownloadState } from "./model-download-state";
 import { ModelReadme } from "./model-readme";
 import { OwnerAvatar } from "./owner-avatar";
 import { AccessChip, CapabilityPill } from "./shared";
-
-// HF pipeline_tag values authoritative for embedding-only repos; capability
-// labels (code/vision/audio) can leak onto them via name or tags.
-const EMBEDDING_PIPELINE_TAGS: ReadonlySet<string> = new Set([
-  "feature-extraction",
-  "sentence-similarity",
-]);
 
 function ViewRepositoryButton({
   repoId,
@@ -74,7 +75,8 @@ function ViewRepositoryButton({
   isDataset: boolean;
 }) {
   const online = useOnlineStatus();
-  const url = `https://huggingface.co/${isDataset ? "datasets/" : ""}${repoId}`;
+  const hfEndpoint = useHfEndpoint();
+  const url = `${hfEndpoint}/${isDataset ? "datasets/" : ""}${repoId}`;
   const baseClass =
     "inline-flex size-6 shrink-0 items-center justify-center rounded-full text-muted-foreground transition-colors";
   const icon = (
@@ -386,29 +388,25 @@ export type ModelInspectorRuntime = {
   isActive: boolean;
   activeGgufVariant: string | null;
   isLoadingThisModel: boolean;
-  loadingPhase?: "downloading" | "starting";
   minMemory: string | null;
   vramInfo: {
     est: number;
     status: "fits" | "tight" | "exceeds";
   } | null;
   gpuGb?: number;
+  /** GPUs gpuGb sums, for the loader's per-card VRAM reserve. */
+  gpuCount?: number;
   systemRamGb?: number;
 };
 
 export type ModelInspectorActions = {
-  onLoad: (opts: { ggufVariant?: string; expectedBytes?: number }) => void;
-  onLoadLocal: (opts?: {
-    ggufVariant?: string;
-    expectedBytes?: number;
-  }) => void;
-  onUseInChat: () => void;
-  onEject?: () => void;
-  onTrain?: () => void;
   onInventoryChange?: () => void;
   onSearchHub?: (query: string) => void;
-  /** Open settings with the quant the card resolved. */
-  onOpenSettings?: (ggufVariant: string | null) => void;
+  onRun?: (
+    selection: HubModelRunSelection,
+    mediaPage: ReturnType<typeof studioPageForTask>,
+  ) => void;
+  runConfigPending?: boolean;
 };
 
 export const ModelInspector = memo(function ModelInspector({
@@ -427,7 +425,6 @@ export const ModelInspector = memo(function ModelInspector({
   metadataUnavailable?: boolean;
   selectionHiddenByFilters?: boolean;
   preferredGgufFile?: string | null;
-
   preferredGgufFileIntent?: number;
   runtime: ModelInspectorRuntime;
   actions: ModelInspectorActions;
@@ -436,24 +433,23 @@ export const ModelInspector = memo(function ModelInspector({
     isActive,
     activeGgufVariant,
     isLoadingThisModel,
-    loadingPhase,
     minMemory,
     vramInfo,
     gpuGb,
+    gpuCount,
     systemRamGb,
   } = runtime;
   const {
-    onLoad,
-    onLoadLocal,
-    onUseInChat,
-    onEject,
-    onTrain,
     onInventoryChange,
     onSearchHub,
-    onOpenSettings,
+    onRun,
+    runConfigPending = false,
   } = actions;
   const deviceType = usePlatformStore((s) => s.deviceType);
   const chatOnly = usePlatformStore((s) => s.isChatOnly());
+  const chatOnlyMeasured = usePlatformStore(
+    (s) => s.isChatOnly() && !s.capabilitiesUnknown(),
+  );
   const hfToken = useHfTokenStore((s) => s.token);
   const datasetRepoId = isDataset && model?.hubRepoId ? model.hubRepoId : null;
   const datasetSize = useDatasetSize(datasetRepoId, {
@@ -521,13 +517,14 @@ export const ModelInspector = memo(function ModelInspector({
           <p className="max-w-sm text-ui-12p5 leading-5 text-muted-foreground">
             {isDataset
               ? "Choose a dataset from the catalog to inspect its download state and details."
-              : "Choose an item from the catalog to inspect its runtime fit, download state, and model card."}
+              : "Choose an item from the catalog to inspect its hardware fit, download state, and model card."}
           </p>
         </div>
       </div>
     );
   }
 
+  const downloadState = modelDownloadState(model);
   const updatedRaw = model.updatedAt
     ? formatRelativeShort(model.updatedAt)
     : formatLocalUpdated(model.localUpdatedAt);
@@ -554,35 +551,23 @@ export const ModelInspector = memo(function ModelInspector({
   const paramsLabel = model.totalParams
     ? formatCompact(model.totalParams)
     : "N/A";
-  const unslothSupported = unslothSupport.status !== "unsupported";
-  // Embedding-only non-GGUF repos have no generative head, so keep them out of
-  // the Run gate. Prefer the pipeline tag, else the capability heuristic.
-  const isEmbeddingOnly =
-    !model.isGguf &&
-    model.capabilities.some((c) => c.key === "embedding") &&
-    (EMBEDDING_PIPELINE_TAGS.has(model.pipelineTag?.toLowerCase() ?? "") ||
-      !model.capabilities.some(
-        (c) =>
-          c.key === "conversational" ||
-          c.key === "tools" ||
-          c.key === "reasoning" ||
-          c.key === "code" ||
-          c.key === "vision" ||
-          c.key === "audio",
-      ));
-  // Chat-only hosts (no supported GPU / usable MLX) run inference only through
-  // llama.cpp, so only GGUF is loadable.
-  const canRunModel =
-    !isDataset &&
-    (model.runtimeCapabilities?.canChat ?? true) &&
-    !isEmbeddingOnly &&
-    (model.isGguf || (!chatOnly && unslothSupported));
-  const canTrainModel =
-    !isDataset &&
-    (model.runtimeCapabilities?.canTrain ?? false) &&
-    model.modelFormat !== "gguf" &&
-    model.modelFormat !== "adapter" &&
-    unslothSupported;
+  // Media models use a separate runtime, so the llama.cpp memory estimate does
+  // not describe their load.
+  const mediaPage = studioPageForTask(
+    taskForMediaPick(model.pipelineTag, model.task) ?? undefined,
+  );
+  const runsOnMediaRuntime = mediaPage !== undefined;
+  const runEligible = isHubModelRunEligible({
+    model,
+    isDataset,
+    mediaRuntime: runsOnMediaRuntime,
+    nonGgufRuntimeAvailable:
+      !chatOnlyMeasured && unslothSupport.status !== "unsupported",
+  });
+  const runAction =
+    runEligible && onRun
+      ? (selection: HubModelRunSelection) => onRun(selection, mediaPage)
+      : undefined;
 
   const languages = parseLanguageTags(model.tags);
   const datasetSizeBytes =
@@ -661,12 +646,9 @@ export const ModelInspector = memo(function ModelInspector({
           <InspectorDownloadSlot>
             <DatasetDownloadSection
               repoId={model.hubRepoId}
-              isDownloaded={model.isDownloaded}
-              isPartial={model.isPartial ?? false}
-              partialTransport={model.partialTransport ?? null}
+              {...downloadState}
               cachePath={model.path}
               knownBytes={model.cachedBytes}
-              onTrain={onTrain}
               onChange={onInventoryChange}
             />
           </InspectorDownloadSlot>
@@ -677,7 +659,6 @@ export const ModelInspector = memo(function ModelInspector({
             sourceLabel={model.sourceLabel}
             source={model.localSource ?? "custom"}
             path={model.path}
-            onTrain={onTrain}
           />
         </InspectorDownloadSlot>
       )}
@@ -685,7 +666,9 @@ export const ModelInspector = memo(function ModelInspector({
         <InspectorDownloadSlot>
           {model.isLocal && !hasActiveHubDownload ? (
             <LocalOnDeviceCard
+              showMemoryBar={!runsOnMediaRuntime}
               modelId={model.id}
+              displayName={model.title}
               repoId={model.hubRepoId}
               sourceLabel={model.sourceLabel}
               source={model.localSource ?? "custom"}
@@ -699,55 +682,44 @@ export const ModelInspector = memo(function ModelInspector({
               baseModelSummary={model.baseModelSummary}
               adapterType={model.adapterType}
               trainingMethod={model.trainingMethod}
-              canRun={canRunModel}
               isActive={isActive}
               activeGgufVariant={activeGgufVariant}
               isLoading={isLoadingThisModel}
-              loadingPhase={loadingPhase}
               gpuGb={gpuGb}
+              gpuCount={gpuCount}
               systemRamGb={systemRamGb}
-
               preferredFile={preferredGgufFile}
               preferredFileIntent={preferredGgufFileIntent}
               unsupportedReason={
-                unslothSupport.status === "unsupported" && !unslothSupport.supportedIn
+                unslothSupport.status === "unsupported" &&
+                !unslothSupport.supportedIn
                   ? (unslothSupport.reason ?? "Unsupported format")
                   : null
               }
-              onLoad={onLoadLocal}
-              onUseInChat={onUseInChat}
-              onEject={onEject}
-              onTrain={
-                model.isDownloaded && canTrainModel ? onTrain : undefined
-              }
+              onRun={runAction}
+              runPending={runConfigPending}
               onChange={onInventoryChange}
-              onOpenSettings={onOpenSettings}
             />
           ) : (
             <DownloadSection
+              showMemoryBar={!runsOnMediaRuntime}
+              mediaRuntime={runsOnMediaRuntime}
               repoId={model.isLocal ? (model.hubRepoId ?? model.id) : model.id}
               isGguf={model.isGguf}
-              isDownloaded={model.isDownloaded}
-              isPartial={model.isPartial ?? false}
-              partialTransport={model.partialTransport ?? null}
+              {...downloadState}
               modelFormat={model.modelFormat}
-              canRun={canRunModel}
               isActive={isActive}
               activeQuant={isActive ? (activeGgufVariant ?? null) : null}
               preferredGgufFile={preferredGgufFile}
-
               preferredGgufFileIntent={preferredGgufFileIntent}
               isLoadingThisModel={isLoadingThisModel}
               gpuGb={gpuGb}
+              gpuCount={gpuCount}
               systemRamGb={systemRamGb}
               cachePath={model.path}
               knownBytes={model.cachedBytes}
-              onLoad={model.isLocal ? onLoadLocal : onLoad}
-              onUseInChat={onUseInChat}
-              onEject={onEject}
-              onTrain={
-                model.isDownloaded && canTrainModel ? onTrain : undefined
-              }
+              onRun={runAction}
+              runPending={runConfigPending}
               onChange={onInventoryChange}
             />
           )}

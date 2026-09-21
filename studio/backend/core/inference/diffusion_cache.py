@@ -27,11 +27,13 @@ TC_AUTO = "auto"
 TC_FBCACHE = "fbcache"
 TC_MODES = (TC_FBCACHE,)
 
-# FBCache residual thresholds: higher skips more steps (faster, lower quality). Quantised transformers shift the residual distribution, so they need a higher threshold.
+# FBCache residual thresholds: higher skips more steps (faster, lower quality). Quantised transformers shift the
+# residual distribution, so they need a higher threshold.
 DEFAULT_FBCACHE_THRESHOLD = 0.08
 QUANT_FBCACHE_THRESHOLD = 0.12
 
-# Auto step-count bar: FBCache's win scales with step count, so auto engages only at 20+ steps ("dev" schedules qualify, distilled turbo never does).
+# Auto step-count bar: FBCache's win scales with step count, so auto engages only at 20+ steps ("dev" schedules
+# qualify, distilled turbo never does).
 FBCACHE_MIN_STEPS = 20
 
 
@@ -69,7 +71,8 @@ def _invalidate_child_registry_cache(transformer: Any) -> None:
             pass
 
 
-# diffusers cache hook names whose compute branch we re-point at a compiled inner forward (leader = measuring first block, block = the rest); both share the fn_ref layout.
+# diffusers cache hook names whose compute branch we re-point at a compiled inner forward (leader = measuring first
+# block, block = the rest); both share the fn_ref layout.
 _CACHE_HOOK_NAMES = (
     "mag_cache_leader_block_hook",
     "mag_cache_block_hook",
@@ -115,7 +118,8 @@ def _compile_hooked_block_inners(transformer: Any, logger: Any = None) -> int:
                     continue
                 if getattr(orig, "__self__", None) is None:
                     continue  # not a plain bound method; arming would miss the block
-                # fullgraph=False / dynamic=True: a cache is active (its decision graph-breaks) and this matches the default tier. Dynamo caches per code object, so re-arming after a toggle is ~free.
+                # fullgraph=False / dynamic=True: a cache is active (its decision graph-breaks) and this matches the
+                # default tier. Dynamo caches per code object, so re-arming after a toggle is ~free.
                 fn_ref.original_forward = torch.compile(orig, fullgraph = False, dynamic = True)
                 hook._unsloth_orig_inner = orig
                 armed += 1
@@ -128,6 +132,57 @@ def _compile_hooked_block_inners(transformer: Any, logger: Any = None) -> int:
             armed,
         )
     return armed
+
+
+def _unhook_first_block_cache(transformer: Any) -> bool:
+    """Take the First-Block-Cache hooks off directly, and say whether they are KNOWN to be gone.
+
+    diffusers cannot be asked: ``enable_cache`` sets ``_cache_config`` only after
+    ``apply_first_block_cache`` returns and ``disable_cache`` warns and returns when it is None, so a
+    raise part-way through hooking leaves hooks live behind ``is_cache_enabled is False``.
+    ``remove_hook`` skips unregistered names and recurses, so it is safe whatever got installed.
+    False means only "cannot verify": the caller must keep the marker, not assume uncached.
+    """
+    # `_cache_config` is generic across every cache CacheMixin supports, so a live MagCache / PAB
+    # reaches here looking like a broken FBC one; tearing it down is not ours to do. Matched by name
+    # because the config class is exported from two modules depending on the diffusers version.
+    config = getattr(transformer, "_cache_config", None)
+    if config is not None and type(config).__name__ != "FirstBlockCacheConfig":
+        return False
+    try:
+        from diffusers.hooks import HookRegistry
+        from diffusers.hooks.first_block_cache import _FBC_BLOCK_HOOK, _FBC_LEADER_BLOCK_HOOK
+    except Exception:  # noqa: BLE001 - private names; an unknown layout means we cannot verify
+        return False
+    try:
+        registry = HookRegistry.check_if_exists_or_initialize(transformer)
+        registry.remove_hook(_FBC_LEADER_BLOCK_HOOK, recurse = True)
+        registry.remove_hook(_FBC_BLOCK_HOOK, recurse = True)
+        # Left dangling by a partial engage, and it is what diffusers keys every later call on.
+        transformer._cache_config = None
+    except Exception:  # noqa: BLE001
+        return False
+    return True
+
+
+def _first_block_cache_is_hooked(transformer: Any) -> bool:
+    """Whether FBCache's hook names are registered ANYWHERE under *transformer* right now.
+
+    Asked BEFORE an engage, so a failure afterwards can tell our own half-finished install from
+    someone else's working cache: the public ``apply_first_block_cache`` hooks without setting
+    ``_cache_config``, so our ``enable_cache`` raises on the duplicate name having changed nothing.
+    """
+    try:
+        from diffusers.hooks.first_block_cache import _FBC_BLOCK_HOOK, _FBC_LEADER_BLOCK_HOOK
+        names = (_FBC_LEADER_BLOCK_HOOK, _FBC_BLOCK_HOOK)
+        for module in transformer.modules():
+            registry = getattr(module, "_diffusers_hook", None)
+            hooks = getattr(registry, "hooks", None) or {} if registry is not None else {}
+            if any(name in hooks for name in names):
+                return True
+    except Exception:  # noqa: BLE001 - private names, or not a torch module: cannot tell
+        return False
+    return False
 
 
 def _restore_hooked_block_inners(transformer: Any) -> None:
@@ -197,17 +252,60 @@ def apply_step_cache(
         if threshold is not None
         else (QUANT_FBCACHE_THRESHOLD if quant_active else DEFAULT_FBCACHE_THRESHOLD)
     )
-    # Engage only via the native enable_cache (CacheMixin path): the lower-level apply_first_block_cache hook would also install on a non-CacheMixin transformer whose pipeline opens no cache_context, and crash generation.
+    # Engage only via the native enable_cache (CacheMixin path): the lower-level apply_first_block_cache hook would
+    # also install on a non-CacheMixin transformer whose pipeline opens no cache_context, and crash generation.
     enable_cache = getattr(transformer, "enable_cache", None)
     if not callable(enable_cache):
         _warn(logger, mode, RuntimeError("transformer has no cache_context (not a CacheMixin)"))
         return None
-    # A CacheMixin transformer is necessary but not sufficient: the hook raises "No context is set" unless the PIPELINE wraps its denoise loop in cache_context(...). Flux Kontext / img2img / inpaint / controlnet open none, so run uncached.
+    # CacheMixin is necessary but not sufficient: the hook raises "No context is set" unless the
+    # PIPELINE opens cache_context(...). Flux Kontext / img2img / inpaint / controlnet open none.
     if not _pipeline_opens_cache_context(pipe):
         _warn(
             logger, mode, RuntimeError("pipeline __call__ opens no cache_context; running uncached")
         )
         return None
+    # enable_cache RAISES when is_cache_enabled, so without this a redundant call lands in the
+    # recovery branch below and loses the cache. Different settings must disable first.
+    if getattr(transformer, "is_cache_enabled", False):
+        prior = getattr(transformer, "_unsloth_step_cache", None)
+        live = getattr(transformer, "_cache_config", None)
+        # ONLY the live config authorises the no-op, never the marker: a transformer reconfigured
+        # elsewhere keeps whatever marker we last wrote, so honouring it would report settings the
+        # model is not running.
+        if (
+            type(live).__name__ == "FirstBlockCacheConfig"
+            and getattr(live, "threshold", None) == thr
+        ):
+            # May not be a cache we installed, so the post-enable integration cannot be assumed
+            # done. Both idempotent; skipping the first strands the child-registry list.
+            _invalidate_child_registry_cache(transformer)
+            _compile_hooked_block_inners(transformer, logger)
+            try:
+                transformer._unsloth_step_cache = f"{mode}@{thr}"
+            except Exception:  # noqa: BLE001 - marker is best-effort
+                pass
+            return mode
+        try:
+            _restore_hooked_block_inners(transformer)
+            transformer.disable_cache()
+        except Exception as exc:  # noqa: BLE001 - cannot re-configure -> finish the teardown ourselves
+            # disable_cache removes leader and block hooks in SEPARATE calls and clears
+            # _cache_config only after both, so a raise between them leaves block hooks with no
+            # leader while is_cache_enabled still reads True. Finish the removal by name.
+            removed = _unhook_first_block_cache(transformer)
+            if not removed:
+                # Cannot verify, so report what was last known engaged and leave the marker alone.
+                _warn(logger, mode, exc)
+                return prior.split("@")[0] if isinstance(prior, str) else None
+            # Fully unhooked, so drop the stale marker and engage at the new settings.
+            try:
+                transformer._unsloth_step_cache = None
+            except Exception:  # noqa: BLE001 - marker is best-effort
+                pass
+    # Asked BEFORE the engage: afterwards our own partial install and someone else's finished one
+    # look identical. Outside the try so the recovery below can always read it.
+    hooked_before = _first_block_cache_is_hooked(transformer)
     try:
         try:
             from diffusers import FirstBlockCacheConfig
@@ -216,24 +314,52 @@ def apply_step_cache(
 
         config = FirstBlockCacheConfig(threshold = thr)
         enable_cache(config)
-        # enable_cache after the pipe ran leaves a stale cached child-registry list, so the new block hooks would never receive the cache context. Must follow every enable_cache.
+        # enable_cache after the pipe ran leaves a stale cached child-registry list, so the new block hooks would never
+        # receive the cache context. Must follow every enable_cache.
         _invalidate_child_registry_cache(transformer)
-        # If blocks are already regionally compiled (toggle path), re-point the fresh hooks' compute branch at compiled inners; the load path is armed by _compile_repeated_blocks.
+        # If blocks are already regionally compiled (toggle path), re-point the fresh hooks' compute branch at
+        # compiled inners; the load path is armed by _compile_repeated_blocks.
         _compile_hooked_block_inners(transformer, logger)
         try:
             transformer._unsloth_step_cache = f"{mode}@{thr}"
-        except Exception:  # noqa: BLE001 — marker is best-effort
+        except Exception:  # noqa: BLE001 - marker is best-effort
             pass
         if logger is not None:
             logger.info("diffusion.cache: %s engaged (threshold=%s)", mode, thr)
         return mode
-    except Exception as exc:  # noqa: BLE001 — incompatible model -> run uncached
-        # enable_cache can fail after hooking some blocks; drop partial hooks so the reported-uncached model is not half-cached. Restore armed compiled inners FIRST (remove_hook splices original_forward back).
+    except Exception as exc:  # noqa: BLE001 - incompatible model -> run uncached
+        if hooked_before:
+            # FBCache installed through the low-level apply_first_block_cache, which is why
+            # _cache_config was None. register_hook refuses a duplicate name BEFORE changing
+            # anything, so those hooks are intact and tearing them down would cost a healthy cache.
+            _invalidate_child_registry_cache(transformer)
+            _compile_hooked_block_inners(transformer, logger)
+            # The marker MUST be set before reporting success: it is what keeps the CUDA graph
+            # wrapper eager over these live hooks. Mode only; the threshold is its installer's.
+            try:
+                transformer._unsloth_step_cache = mode
+            except Exception:  # noqa: BLE001 - marker is best-effort
+                pass
+            _warn(logger, mode, exc)
+            return mode
+        # enable_cache can fail part-hooked; restore armed compiled inners FIRST
         _restore_hooked_block_inners(transformer)
+        disabled = True
         try:
             transformer.disable_cache()
-        except Exception:  # noqa: BLE001
-            pass
+        except Exception:  # noqa: BLE001 - _unhook_first_block_cache below is what actually decides
+            disabled = False
+        # Neither `disabled` nor is_cache_enabled can be trusted here: enable_cache assigns
+        # _cache_config LAST, so a raise part-way through hooking has both say "not caching".
+        del disabled
+        removed = _unhook_first_block_cache(transformer)
+        # The marker tracks the HOOKS, not intent, so it comes off only once they are KNOWN gone:
+        # left set it only forces eager, cleared over live hooks it permits a captured graph.
+        if removed:
+            try:
+                transformer._unsloth_step_cache = None
+            except Exception:  # noqa: BLE001 - marker is best-effort
+                pass
         _warn(logger, mode, exc)
         return None
 
@@ -300,10 +426,33 @@ def maybe_toggle_step_cache(
     if not want and engaged:
         disable_cache = getattr(transformer, "disable_cache", None)
         if callable(disable_cache):
+            # Read BEFORE the teardown: it is what says whether diffusers' own disable_cache can
+            # do the removal, and disable_cache clears it.
+            ours = (
+                type(getattr(transformer, "_cache_config", None)).__name__
+                == "FirstBlockCacheConfig"
+            )
             try:
-                # Restore before remove_hook splices original_forward back, so compiled wrappers do not leak onto the uncached path.
+                # Restore before remove_hook splices original_forward back, so compiled wrappers do not leak onto the
+                # uncached path.
                 _restore_hooked_block_inners(transformer)
                 disable_cache()
+                # disable_cache removes nothing when _cache_config is None, which is exactly an
+                # adopted low-level cache, so trusting it would clear the marker over live hooks.
+                # THAT is the case the verification exists for, so it only gets a veto there. A
+                # live FirstBlockCacheConfig means diffusers just removed both hooks and cleared
+                # the config itself, and disable_cache returning without raising is the evidence;
+                # demanding the private-name sweep succeed on top of it makes every disengage
+                # depend on `diffusers.hooks.first_block_cache` staying importable, and when it is
+                # not, FBCache stays engaged on short trajectories forever -- the exact quality
+                # regression the auto policy exists to avoid.
+                if not _unhook_first_block_cache(transformer) and not ours:
+                    _warn(
+                        logger,
+                        "fbcache disable",
+                        RuntimeError("cache hooks could not be verified removed"),
+                    )
+                    return TC_FBCACHE
                 transformer._unsloth_step_cache = None
                 if logger is not None:
                     logger.info(
@@ -312,7 +461,7 @@ def maybe_toggle_step_cache(
                         FBCACHE_MIN_STEPS,
                     )
                 return None
-            except Exception as exc:  # noqa: BLE001 — keep the cache rather than crash
+            except Exception as exc:  # noqa: BLE001 - keep the cache rather than crash
                 _warn(logger, "fbcache disable", exc)
         return TC_FBCACHE
     return TC_FBCACHE if engaged else None

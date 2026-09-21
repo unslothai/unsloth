@@ -2,9 +2,10 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import {
+  AudioWave01Icon,
   ChefHatIcon,
   DashboardCircleIcon,
-  DownloadSquare01Icon,
+  Download01Icon,
   DragDropVerticalIcon,
   FlimSlateIcon,
   Folder01Icon,
@@ -21,7 +22,13 @@ import { useT } from "@/i18n";
 import type { TranslationKey } from "@/i18n";
 import type { IconSvgElement } from "@hugeicons/react";
 import type { SidebarNavItemPref } from "../stores/appearance-custom-store";
-import { useAppearanceCustomStore } from "../stores/appearance-custom-store";
+import {
+  sidebarNavAutoAfterChoice,
+  sidebarNavRowPinned,
+  useAppearanceCustomStore,
+} from "../stores/appearance-custom-store";
+import { useChatProjects } from "@/features/chat";
+import { useSidebarOrganizationStore } from "@/features/chat";
 
 const ITEM_META: Record<
   SidebarNavItemPref["id"],
@@ -32,8 +39,9 @@ const ITEM_META: Record<
   images: { icon: Image03Icon, labelKey: "shell.navigation.images" },
   train: { icon: TestTubeOutlineIcon, labelKey: "shell.navigation.train" },
   video: { icon: FlimSlateIcon, labelKey: "shell.navigation.video" },
+  audio: { icon: AudioWave01Icon, labelKey: "shell.navigation.audio" },
   recipes: { icon: ChefHatIcon, labelKey: "shell.navigation.recipes" },
-  export: { icon: DownloadSquare01Icon, labelKey: "shell.navigation.export" },
+  export: { icon: Download01Icon, labelKey: "shell.navigation.export" },
   api: { icon: Globe02Icon, labelKey: "shell.navigation.api" },
 };
 
@@ -48,12 +56,26 @@ function FixedRow({ icon, label }: { icon: IconSvgElement; label: string }) {
   );
 }
 
-function MovableRow({ item }: { item: SidebarNavItemPref }) {
+function MovableRow({
+  item,
+  projectsSectionShowing,
+}: {
+  item: SidebarNavItemPref;
+  projectsSectionShowing: boolean;
+}) {
   const t = useT();
   const controls = useDragControls();
   const patch = useAppearanceCustomStore((s) => s.patch);
   const sidebarNav = useAppearanceCustomStore((s) => s.customization.sidebarNav);
+  const sidebarNavAuto = useAppearanceCustomStore(
+    (s) => s.customization.sidebarNavAuto,
+  );
   const meta = ITEM_META[item.id];
+  // What the sidebar is doing now, which for a row on its rule is not what `pinned` says.
+  // Flipping the switch is a decision, so the rule is dropped.
+  const pinned = sidebarNavRowPinned(item, sidebarNavAuto, {
+    projectsSectionShowing,
+  });
   return (
     <Reorder.Item
       value={item.id}
@@ -94,12 +116,13 @@ function MovableRow({ item }: { item: SidebarNavItemPref }) {
         aria-label={t("settings.appearance.sidebarNav.pinToSidebar", {
           name: t(meta.labelKey),
         })}
-        checked={item.pinned}
-        onCheckedChange={(pinned) =>
+        checked={pinned}
+        onCheckedChange={(next) =>
           patch({
             sidebarNav: sidebarNav.map((entry) =>
-              entry.id === item.id ? { ...entry, pinned } : entry,
+              entry.id === item.id ? { ...entry, pinned: next } : entry,
             ),
+            sidebarNavAuto: sidebarNavAutoAfterChoice(sidebarNavAuto, item.id),
           })
         }
       />
@@ -111,8 +134,19 @@ function MovableRow({ item }: { item: SidebarNavItemPref }) {
 export function SidebarNavCustomizer() {
   const t = useT();
   const sidebarNav = useAppearanceCustomStore((s) => s.customization.sidebarNav);
+  const sidebarNavAuto = useAppearanceCustomStore(
+    (s) => s.customization.sidebarNavAuto,
+  );
   const patch = useAppearanceCustomStore((s) => s.patch);
-  const unpinnedCount = sidebarNav.filter((item) => !item.pinned).length;
+  // The sidebar's inputs minus the route: this panel describes the sidebar in general.
+  const organizeBy = useSidebarOrganizationStore((s) => s.organizeBy);
+  const { projects } = useChatProjects();
+  const projectsSectionShowing =
+    organizeBy === "project" && projects.length > 0;
+  const unpinnedCount = sidebarNav.filter(
+    (item) =>
+      !sidebarNavRowPinned(item, sidebarNavAuto, { projectsSectionShowing }),
+  ).length;
   return (
     <div className="flex flex-col rounded-xl border border-border/70 p-1.5">
       <FixedRow icon={PencilEdit02Icon} label={t("shell.navigation.newChat")} />
@@ -129,7 +163,11 @@ export function SidebarNavCustomizer() {
         className="flex flex-col"
       >
         {sidebarNav.map((item) => (
-          <MovableRow key={item.id} item={item} />
+          <MovableRow
+            key={item.id}
+            item={item}
+            projectsSectionShowing={projectsSectionShowing}
+          />
         ))}
       </Reorder.Group>
       {/* Mirrors the sidebar: More only exists at two or more. */}

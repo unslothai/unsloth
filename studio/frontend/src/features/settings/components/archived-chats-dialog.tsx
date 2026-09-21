@@ -11,40 +11,67 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
+import { Button } from "@/components/ui/button";
 import {
   type SidebarItem,
+  type ProjectRecord,
+  listStoredChatProjects,
+  DeleteChatFilesSwitch,
   deleteChatItem,
   unarchiveChatItem,
   useChatPreferencesStore,
+  useChatProjects,
   useChatRuntimeStore,
   useChatSidebarItems,
 } from "@/features/chat";
+import { translate, useLocale, useT } from "@/i18n";
 import { toast } from "@/lib/toast";
-import { ArchiveRestoreIcon, Delete02Icon } from "@hugeicons/core-free-icons";
+import { Delete02Icon } from "@hugeicons/core-free-icons";
+import { MessageCircleIcon } from "@/lib/hugeicons-derived";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { Button } from "@/components/ui/button";
 import { useNavigate, useRouterState } from "@tanstack/react-router";
-import { useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useSettingsDialogStore } from "../stores/settings-dialog-store";
+import { useLibraryProjectLabels } from "./use-library-project-labels";
+import {
+  DEFAULT_LIBRARY_FILTERS,
+  filterLibraryItems,
+  type LibraryFilters,
+} from "./data-library";
+import {
+  ChatLibraryGroups,
+  LibraryRow,
+  LibraryToolbar,
+} from "./data-library-controls";
 
-/** Archived chats shown per page; "Show more" reveals the next page. */
 const ARCHIVED_PAGE_SIZE = 20;
 
-function formatCreatedAt(ms: number): string {
-  return new Date(ms).toLocaleDateString(undefined, {
-    year: "numeric",
-    month: "long",
-    day: "numeric",
-  });
-}
-
 export function ArchivedChatsView() {
+  const t = useT();
+  const locale = useLocale();
+  const labels = useLibraryProjectLabels();
   const { archivedItems } = useChatSidebarItems({ requireMessages: false });
+  const { projects: activeProjects } = useChatProjects();
+  const [projects, setProjects] = useState<ProjectRecord[]>(activeProjects);
+  useEffect(() => {
+    let cancelled = false;
+    void listStoredChatProjects({ includeArchived: true })
+      .then((all) => {
+        if (!cancelled) setProjects(all);
+      })
+      .catch((error) => {
+        if (!cancelled)
+          toast.error(translate("settings.data.library.projectsFailed"), {
+            description: error instanceof Error ? error.message : undefined,
+          });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [activeProjects]);
   const navigate = useNavigate();
   const closeSettings = useSettingsDialogStore((s) => s.closeDialog);
   const storeThreadId = useChatRuntimeStore((s) => s.activeThreadId);
-  // Open chat id from the route. Compare panes do not write the store, so the
-  // pair id only lives in the search params; mirror how the sidebar reads it.
   const openChatId = useRouterState({
     select: (s) => {
       if (!s.location.pathname.startsWith("/chat")) return undefined;
@@ -55,161 +82,281 @@ export function ArchivedChatsView() {
   const confirmDeleteChats = useChatPreferencesStore(
     (s) => s.confirmDeleteChats,
   );
-  const [confirmingDelete, setConfirmingDelete] = useState<SidebarItem | null>(
-    null,
+  const alwaysDeleteChatFiles = useChatPreferencesStore(
+    (s) => s.alwaysDeleteChatFiles,
   );
-  // Pagination: the view remounts with its settings tab, so plain state
-  // restarts from the first page on each visit.
+  const [confirmingDelete, setConfirmingDelete] = useState<SidebarItem[]>([]);
+  const [deleteFilesOnDelete, setDeleteFilesOnDelete] = useState(false);
   const [visibleCount, setVisibleCount] = useState(ARCHIVED_PAGE_SIZE);
+  const [filters, setFilters] = useState(DEFAULT_LIBRARY_FILTERS);
+  const [removed, setRemoved] = useState<ReadonlySet<string>>(new Set());
+  const [busy, setBusy] = useState(false);
+  const running = useRef(false);
+  const projectNames = useMemo(
+    () => new Map(projects.map((p) => [p.id, p.name])),
+    [projects],
+  );
+  const filtered = useMemo(
+    () =>
+      filterLibraryItems(
+        archivedItems.filter((item) => !removed.has(item.id)),
+        filters,
+        projectNames,
+        labels,
+        locale,
+      ),
+    [archivedItems, removed, filters, projectNames, labels, locale],
+  );
+  const narrowed =
+    filters.query.trim() !== "" ||
+    filters.type !== "all" ||
+    filters.project !== "all";
 
-  // Open an archived chat: leave it archived, just navigate to it.
+  function changeFilters(next: LibraryFilters) {
+    setFilters(next);
+    setVisibleCount(ARCHIVED_PAGE_SIZE);
+  }
+
   function openChat(item: SidebarItem) {
+    const project = item.projectId ? { project: item.projectId } : {};
     navigate({
       to: "/chat",
       search:
-        item.type === "single" ? { thread: item.id } : { compare: item.id },
+        item.type === "single"
+          ? { thread: item.id, ...project }
+          : { compare: item.id, ...project },
     });
     closeSettings();
   }
 
-  async function handleUnarchive(item: SidebarItem) {
-    try {
-      await unarchiveChatItem(item);
-      toast.success("Chat unarchived");
-    } catch (err) {
-      toast.error("Failed to unarchive chat", {
-        description: err instanceof Error ? err.message : undefined,
-      });
-    }
-  }
-
-  async function handleDelete(item: SidebarItem) {
-    try {
-      // Pass the open chat id (single or compare) so deleting it resets nav.
-      await deleteChatItem(item, openChatId, (view) => {
+  async function handleDelete(item: SidebarItem, deleteFiles: boolean) {
+    await deleteChatItem(
+      item,
+      openChatId,
+      (view) => {
         navigate({
           to: "/chat",
           search: item.projectId
             ? { project: item.projectId }
             : { new: view.newThreadNonce },
         });
-      });
-      toast.success("Chat deleted");
+      },
+      { deleteFiles },
+    );
+  }
+
+  async function run(
+    items: SidebarItem[],
+    action: "delete" | "restore",
+    deleteFiles = false,
+  ) {
+    if (running.current || items.length === 0) return;
+    running.current = true;
+    setBusy(true);
+    let completed = 0;
+    try {
+      for (const item of items) {
+        if (action === "delete") await handleDelete(item, deleteFiles);
+        else await unarchiveChatItem(item);
+        setRemoved((previous) => new Set([...previous, item.id]));
+        completed += 1;
+      }
+      toast.success(
+        t(
+          action === "delete"
+            ? "settings.data.library.deletedChats"
+            : "settings.data.library.restoredChats",
+          { count: completed },
+        ),
+      );
     } catch (err) {
-      toast.error("Failed to delete chat", {
-        description: err instanceof Error ? err.message : undefined,
-      });
+      toast.error(
+        t(
+          action === "delete"
+            ? "settings.data.library.deleteFailed"
+            : "settings.data.library.restoreFailed",
+        ),
+        {
+          description: err instanceof Error ? err.message : undefined,
+        },
+      );
+    } finally {
+      running.current = false;
+      setBusy(false);
     }
   }
 
-  function requestDelete(item: SidebarItem) {
-    if (confirmDeleteChats) setConfirmingDelete(item);
-    else void handleDelete(item);
+  function requestDelete(items: SidebarItem[], bulk = false) {
+    if (running.current) return;
+    if (bulk || confirmDeleteChats) {
+      setDeleteFilesOnDelete(alwaysDeleteChatFiles);
+      setConfirmingDelete([...items]);
+    } else void run(items, "delete", alwaysDeleteChatFiles);
   }
 
   return (
     <div className="flex flex-col gap-4">
-      {archivedItems.length === 0 ? (
+      <LibraryToolbar
+        filters={filters}
+        onChange={changeFilters}
+        placeholder={t("settings.data.library.searchArchivedChats")}
+        projects={projectNames}
+        disabled={busy}
+      />
+      <div className="flex flex-wrap items-center gap-2">
+        <span role="status" className="flex-1 text-xs text-muted-foreground">
+          {t(
+            filtered.length === 1
+              ? "settings.data.library.oneChat"
+              : "settings.data.library.chatCount",
+            { count: filtered.length },
+          )}
+        </span>
+        <Button
+          variant="ghost"
+          size="sm"
+          disabled={busy || filtered.length === 0}
+          onClick={() => void run([...filtered], "restore")}
+        >
+          {narrowed
+            ? t("settings.data.library.unarchiveResults")
+            : t("settings.data.library.unarchiveAll")}
+        </Button>
+        <Button
+          variant="ghost"
+          size="sm"
+          className="text-destructive hover:bg-destructive/10 hover:text-destructive"
+          disabled={busy || filtered.length === 0}
+          onClick={() => requestDelete(filtered, true)}
+        >
+          <HugeiconsIcon icon={Delete02Icon} className="mr-1.5 size-4" />
+          {narrowed
+            ? t("settings.data.library.deleteResults")
+            : t("settings.data.deleteAllAction")}
+        </Button>
+      </div>
+      {filtered.length === 0 ? (
         <p className="py-8 text-center text-sm text-muted-foreground">
-          No archived chats.
+          {narrowed
+            ? t("settings.data.library.noArchivedMatches")
+            : t("settings.data.library.noArchivedChats")}
         </p>
       ) : (
-        <div>
-          <div className="flex items-center gap-4 border-b border-border/60 px-1 pb-2 text-xs font-semibold text-foreground">
-            <span className="flex-1">Name</span>
-            <span className="w-32 shrink-0">Date created</span>
-            <span className="w-16 shrink-0" />
-          </div>
-          {archivedItems.slice(0, visibleCount).map((item) => (
-            <div
-              key={item.id}
-              className="group flex items-center gap-4 border-b border-border/40 px-1 py-2.5 text-sm last:border-0"
-            >
-              <button
-                type="button"
-                onClick={() => openChat(item)}
-                className="min-w-0 flex-1 truncate text-left text-primary hover:underline"
-                title={item.title}
-              >
-                {item.title}
-              </button>
-              <span className="w-32 shrink-0 text-muted-foreground tabular-nums">
-                {formatCreatedAt(item.createdAt)}
-              </span>
-              <span className="flex w-16 shrink-0 items-center justify-end gap-1">
-                <button
-                  type="button"
-                  onClick={() => void handleUnarchive(item)}
-                  aria-label="Unarchive chat"
-                  title="Unarchive"
-                  className="inline-flex size-7 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-                >
-                  <HugeiconsIcon
-                    icon={ArchiveRestoreIcon}
-                    strokeWidth={1.75}
-                    className="size-4"
-                  />
-                </button>
-                <button
-                  type="button"
-                  onClick={() => requestDelete(item)}
-                  aria-label="Delete chat"
-                  title="Delete"
-                  className="inline-flex size-7 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive"
-                >
-                  <HugeiconsIcon
-                    icon={Delete02Icon}
-                    strokeWidth={1.75}
-                    className="size-4"
-                  />
-                </button>
-              </span>
-            </div>
-          ))}
-          {archivedItems.length > visibleCount ? (
-            <div className="flex justify-center pt-3">
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() =>
-                  setVisibleCount(visibleCount + ARCHIVED_PAGE_SIZE)
-                }
-              >
-                Show more ({archivedItems.length - visibleCount})
-              </Button>
-            </div>
-          ) : null}
+        <ChatLibraryGroups
+          items={filtered.slice(0, visibleCount)}
+          projects={projectNames}
+        >
+          {(item) => (
+            <LibraryRow
+              title={item.title}
+              date={
+                filters.sort === "updated" ? item.updatedAt : item.createdAt
+              }
+              onOpen={() => openChat(item)}
+              leading={
+                <HugeiconsIcon
+                  icon={MessageCircleIcon}
+                  className="size-4 shrink-0 text-muted-foreground"
+                />
+              }
+              actions={
+                <>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    disabled={busy}
+                    onClick={() => requestDelete([item])}
+                    aria-label={t("settings.data.library.deleteItem", {
+                      title: item.title,
+                    })}
+                    title={t("shell.dialog.deleteChat.title")}
+                    className="text-muted-foreground hover:text-destructive"
+                  >
+                    <HugeiconsIcon icon={Delete02Icon} className="size-4" />
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    disabled={busy}
+                    onClick={() => void run([item], "restore")}
+                    aria-label={t("settings.data.library.unarchiveItem", {
+                      title: item.title,
+                    })}
+                    className="rounded-xl bg-muted/60 hover:bg-muted"
+                  >
+                    {t("settings.data.library.unarchive")}
+                  </Button>
+                </>
+              }
+            />
+          )}
+        </ChatLibraryGroups>
+      )}
+      {filtered.length > visibleCount && (
+        <div className="flex justify-center">
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() =>
+              setVisibleCount((count) => count + ARCHIVED_PAGE_SIZE)
+            }
+          >
+            {t("settings.voice.recents.showMore", {
+              count: filtered.length - visibleCount,
+            })}
+          </Button>
         </div>
       )}
-
       <AlertDialog
-        open={confirmingDelete !== null}
-        onOpenChange={(o) => {
-          if (!o) setConfirmingDelete(null);
+        open={confirmingDelete.length > 0}
+        onOpenChange={(open) => {
+          if (!open && !busy) setConfirmingDelete([]);
         }}
       >
-        <AlertDialogContent>
+        <AlertDialogContent
+          onEscapeKeyDown={(event) => {
+            if (busy) event.preventDefault();
+          }}
+        >
           <AlertDialogHeader>
-            <AlertDialogTitle>Delete chat</AlertDialogTitle>
+            <AlertDialogTitle>
+              {confirmingDelete.length === 1
+                ? t("shell.dialog.deleteChat.title")
+                : t("settings.data.library.deleteArchivedTitle", {
+                    count: confirmingDelete.length,
+                  })}
+            </AlertDialogTitle>
             <AlertDialogDescription>
-              Delete{" "}
-              <span className="font-medium text-foreground">
-                &quot;{confirmingDelete?.title}&quot;
-              </span>
-              ? This cannot be undone.
+              {confirmingDelete.length === 1 && (
+                <>{confirmingDelete[0]?.title}. </>
+              )}
+              {t("settings.data.library.deleteArchivedWarning", {
+                count: confirmingDelete.length,
+              })}
             </AlertDialogDescription>
           </AlertDialogHeader>
+          <fieldset disabled={busy}>
+            <DeleteChatFilesSwitch
+              id="archived-chat-delete-files"
+              checked={deleteFilesOnDelete}
+              onCheckedChange={setDeleteFilesOnDelete}
+            />
+          </fieldset>
           <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogCancel disabled={busy}>
+              {t("common.cancel")}
+            </AlertDialogCancel>
             <AlertDialogAction
               variant="destructive"
-              onClick={() => {
-                const item = confirmingDelete;
-                setConfirmingDelete(null);
-                if (item) void handleDelete(item);
+              disabled={busy}
+              onClick={(event) => {
+                event.preventDefault();
+                void run(confirmingDelete, "delete", deleteFilesOnDelete).then(
+                  () => setConfirmingDelete([]),
+                );
               }}
             >
-              Delete
+              {busy ? t("settings.data.library.deleting") : t("common.delete")}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

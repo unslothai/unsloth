@@ -30,6 +30,7 @@ from utils.security.remote_code_scan import (  # noqa: F401
     Finding,
     RemoteCodeUnscannable,
     ScanResult,
+    remote_code_config_paths,
     remote_code_fingerprint,
     repo_remote_code_files,
     scan_remote_code_files,
@@ -42,6 +43,7 @@ __all__ = [
     "repo_remote_code_files",
     "RemoteCodeUnscannable",
     "remote_code_fingerprint",
+    "remote_code_config_paths",
     "should_block_remote_code",
     "evaluate_remote_code_consent",
     "evaluate_remote_code_consent_for_targets",
@@ -91,6 +93,7 @@ def preflight_remote_code_consent_for_targets(
     trust_remote_code: bool = True,
     approved_fingerprint = None,
     subject = None,
+    load_subdirs_by_target = None,
 ) -> "RemoteCodeDecision":
     """Preflight consent over multiple repos (a LoRA adapter plus its base) scanned as
     one combined unit with a single pinning fingerprint. Wrapper defaulting
@@ -102,6 +105,7 @@ def preflight_remote_code_consent_for_targets(
         trust_remote_code = trust_remote_code,
         approved_fingerprint = approved_fingerprint,
         subject = subject,
+        load_subdirs_by_target = load_subdirs_by_target,
     )
 
 

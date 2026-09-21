@@ -25,8 +25,16 @@ from core.inference.diffusion_te_prequant import (
 )
 
 
-def _fam(te_prequant_repos = (), name = "ltx-2"):
-    return types.SimpleNamespace(name = name, te_prequant_repos = te_prequant_repos)
+def _fam(
+    te_prequant_repos = (),
+    name = "ltx-2",
+    base_repo = "Lightricks/LTX-2",
+):
+    return types.SimpleNamespace(
+        name = name,
+        base_repo = base_repo,
+        te_prequant_repos = te_prequant_repos,
+    )
 
 
 # ── resolution ───────────────────────────────────────────────────────────────
@@ -152,9 +160,56 @@ def test_load_missing_file_returns_none(monkeypatch, tmp_path):
     assert out is None
 
 
+def test_hosted_checkpoint_and_config_honor_cache_only_and_the_active_root(monkeypatch, tmp_path):
+    import huggingface_hub
+    import torch
+    import transformers
+    from utils import hf_cache_settings
+
+    seen: dict = {"download": {}, "config": {}}
+
+    def fake_download(**kwargs):
+        seen["download"].update(kwargs)
+        return "/cache/encoder.pt"
+
+    def fake_config(repo_id, **kwargs):
+        seen["config"] = {"repo_id": repo_id, **kwargs}
+        raise FileNotFoundError("stop after config lookup")
+
+    monkeypatch.setattr(huggingface_hub, "hf_hub_download", fake_download)
+    monkeypatch.setattr(torch, "load", lambda *_a, **_k: _good_ckpt())
+    monkeypatch.setattr(transformers.AutoConfig, "from_pretrained", fake_config)
+    monkeypatch.setattr(hf_cache_settings, "active_hf_hub_cache", lambda: str(tmp_path))
+    out = tpq.load_prequant_text_encoder(
+        "Lightricks/LTX-2",
+        "text_encoder",
+        TePrequantSource(kind = "repo", location = "org/hosted", filename = "encoder.pt"),
+        dtype = None,
+        local_files_only = True,
+    )
+    assert out is None
+    assert seen["download"]["local_files_only"] is True
+    assert seen["download"]["cache_dir"] == str(tmp_path)
+    assert seen["config"]["repo_id"] == "Lightricks/LTX-2"
+    assert seen["config"]["subfolder"] == "text_encoder"
+    assert seen["config"]["local_files_only"] is True
+    assert seen["config"]["cache_dir"] == str(tmp_path)
+
+
 # ── pipeline-assembly injection gating ───────────────────────────────────────
 def _target():
     return types.SimpleNamespace(device = "cuda", dtype = None)
+
+
+def _budget_scale(
+    fam,
+    mode = "fp8",
+    *,
+    base = None,
+):
+    return tpq.te_prequant_budget_scale(
+        fam, te_quant_mode = mode, target = _target(), base = base or fam.base_repo
+    )
 
 
 def test_pipe_kwargs_empty_when_mode_not_fp8(monkeypatch):
@@ -230,6 +285,28 @@ def test_pipe_kwargs_injects_loaded_encoder(monkeypatch):
     assert seen["source"].location == "org/hosted"
 
 
+def test_pipe_kwargs_does_not_download_a_checkpoint_for_a_custom_base(monkeypatch):
+    import core.inference.diffusion_precision as precision
+
+    fam = _fam(te_prequant_repos = (("fp8", "text_encoder", "org/hosted"),))
+    monkeypatch.setattr(precision, "te_quant_supported", lambda target, mode: True)
+
+    def unexpected_load(*_args, **_kwargs):
+        raise AssertionError("an incompatible hosted checkpoint must not be opened")
+
+    monkeypatch.setattr(tpq, "load_prequant_text_encoder", unexpected_load)
+    assert (
+        te_prequant_pipe_kwargs(
+            fam,
+            "someone/custom-ltx-2",
+            te_quant_mode = "fp8",
+            target = _target(),
+            dtype = None,
+        )
+        == {}
+    )
+
+
 def test_pipe_kwargs_empty_when_load_fails(monkeypatch):
     import core.inference.diffusion_precision as precision
 
@@ -263,7 +340,7 @@ def test_pipe_kwargs_injects_every_hosted_component(monkeypatch):
         lambda base, component, source, **kw: markers[component],
     )
     out = te_prequant_pipe_kwargs(
-        fam, "some/base", te_quant_mode = "fp8", target = _target(), dtype = None
+        fam, "Lightricks/LTX-2", te_quant_mode = "fp8", target = _target(), dtype = None
     )
     assert out == markers
 
@@ -282,9 +359,14 @@ def test_te_base_equivalent_groups():
     assert te_base_equivalent(
         "black-forest-labs/FLUX.1-Krea-dev", "black-forest-labs/FLUX.1-schnell"
     )
+    # Z-Image ships one Qwen3-4B encoder for the distilled Turbo and the undistilled base, so the
+    # Turbo-baked artifact serves both and training on the base does not re-pull it dense.
+    assert te_base_equivalent("Tongyi-MAI/Z-Image-Turbo", "Tongyi-MAI/Z-Image")
+    assert te_base_equivalent("Tongyi-MAI/Z-Image", "Tongyi-MAI/Z-Image-Turbo")
     # Unrelated bases stay refused, including across groups.
     assert not te_base_equivalent("Qwen/Qwen-Image", "black-forest-labs/FLUX.1-schnell")
     assert not te_base_equivalent("Tongyi-MAI/Z-Image-Turbo", "black-forest-labs/FLUX.2-klein-4B")
+    assert not te_base_equivalent("Tongyi-MAI/Z-Image", "Qwen/Qwen-Image")
 
 
 def test_validate_accepts_equivalent_base():
@@ -436,6 +518,7 @@ def test_hidream_te4_prefers_precast_checkpoint(monkeypatch):
         calls["component"] = component
         calls["config_subfolder"] = kwargs.get("config_subfolder")
         calls["config_overrides"] = kwargs.get("config_overrides")
+        calls["local_files_only"] = kwargs.get("local_files_only")
         return precast
 
     monkeypatch.setattr(tpq, "load_prequant_text_encoder", _fake_load)
@@ -443,13 +526,21 @@ def test_hidream_te4_prefers_precast_checkpoint(monkeypatch):
         te_prequant_repos = (("fp8", "text_encoder_4", "unsloth/HiDream-I1-Full-FP8"),),
         name = "hidream-i1",
     )
-    out = dh.hidream_te4_kwargs(None, None, fam = fam, te_quant_mode = "fp8", target = _target())
+    out = dh.hidream_te4_kwargs(
+        None,
+        None,
+        fam = fam,
+        te_quant_mode = "fp8",
+        target = _target(),
+        local_files_only = True,
+    )
     assert out["text_encoder_4"] is precast
     assert calls["base"] == "unsloth/Meta-Llama-3.1-8B-Instruct"
     assert calls["component"] == "text_encoder_4"
     # Standalone repo: config at the root, forward flags the pipeline needs applied.
     assert calls["config_subfolder"] == ""
     assert calls["config_overrides"] == {"output_hidden_states": True, "output_attentions": True}
+    assert calls["local_files_only"] is True
     # The dense Llama download never ran.
     assert ("llama_from_pretrained", "unsloth/Meta-Llama-3.1-8B-Instruct") not in recorder
 
@@ -602,3 +693,119 @@ def test_builder_metadata_survives_weights_only_load(tmp_path):
     if not isinstance(torch.__version__, str):
         with pytest.raises(Exception):
             torch.load(bad_path, weights_only = True, map_location = "cpu")
+
+
+# ── memory budgeting ─────────────────────────────────────────────────────────
+# Hosted checkpoint bytes over bf16-equivalent dense bytes, read from Hub file metadata on
+# 2026-08-07. The budget constant is a CEILING over these, so it can never under-state a
+# pre-cast encoder; PR #8213 gates a hard load refusal on the number this feeds.
+_MEASURED_FP8_RATIOS = {
+    "flux.2-dev/text_encoder": (24_683_130_873, 48_022_800_560),
+    "hidream-i1-full/text_encoder_4": (8_555_963_320, 16_060_556_376),
+    "qwen-image/text_encoder": (8_839_210_073, 16_584_414_544),
+    "ltx-2/text_encoder": (13_205_302_695, 24_374_720_836),
+    "krea-2-turbo/text_encoder": (4_831_262_424, 8_875_715_136),
+    "z-image-turbo/text_encoder": (4_411_751_967, 8_044_982_000),
+    "lumina-image-2.0/text_encoder": (3_204_501_909, 5_228_699_608),
+    "flux.1-schnell/text_encoder_2": (5_900_818_800, 9_524_648_584),
+}
+
+
+def test_budget_scale_over_states_every_measured_artifact():
+    worst = max(fp8 / dense for fp8, dense in _MEASURED_FP8_RATIOS.values())
+    # Conservative by construction: budget at or above the largest realized artifact...
+    assert tpq.TE_PREQUANT_BUDGET_SCALE >= worst
+    # ...and still below bf16, or the fix does nothing.
+    assert tpq.TE_PREQUANT_BUDGET_SCALE < 1.0
+    # fp8 storage is one byte per parameter against bf16's two, so nothing can come in under 0.5.
+    assert min(fp8 / dense for fp8, dense in _MEASURED_FP8_RATIOS.values()) > 0.5
+
+
+def test_budget_scale_applies_only_when_a_pre_cast_checkpoint_resolves(monkeypatch):
+    import core.inference.diffusion_precision as precision
+
+    monkeypatch.setattr(precision, "te_quant_supported", lambda target, mode: True)
+    hosted = _fam(te_prequant_repos = (("fp8", "text_encoder", "org/hosted"),))
+    assert _budget_scale(hosted) == tpq.TE_PREQUANT_BUDGET_SCALE
+    assert _budget_scale(hosted, base = "someone/custom-ltx-2") == 1.0
+    # No hosted checkpoint: the encoder is downloaded dense and cast in place AFTER assembly, so
+    # its peak is bf16 and the budget must stay bf16.
+    assert _budget_scale(_fam()) == 1.0
+    # Not requested, or a scheme with no hosted artifact.
+    for mode in (None, "", "off", "int8", "fp8_dynamic", "nvfp4"):
+        assert _budget_scale(hosted, mode) == 1.0
+
+
+def test_budget_scale_is_bf16_when_the_device_cannot_quantise(monkeypatch):
+    import core.inference.diffusion_precision as precision
+
+    hosted = _fam(te_prequant_repos = (("fp8", "text_encoder", "org/hosted"),))
+    monkeypatch.setattr(precision, "te_quant_supported", lambda target, mode: False)
+    assert _budget_scale(hosted) == 1.0
+
+
+def test_budget_scale_fails_open_to_bf16(monkeypatch):
+    # An unresolvable pick keeps today's (larger) budget rather than guessing small.
+    def _boom(*args, **kwargs):
+        raise RuntimeError("hub down")
+
+    monkeypatch.setattr(tpq, "te_prequant_sources", _boom)
+    assert _budget_scale(_fam()) == 1.0
+
+
+def test_shipped_video_and_image_families_resolve_the_scale(monkeypatch):
+    import core.inference.diffusion_precision as precision
+    from core.inference.diffusion_families import detect_family
+    from core.inference.video_families import detect_video_family
+
+    monkeypatch.setattr(precision, "te_quant_supported", lambda target, mode: True)
+    scale = tpq.TE_PREQUANT_BUDGET_SCALE
+    # ltx-2 hosts its Gemma3-12B encoder pre-cast; the Wan families do not.
+    for repo, expected in (
+        ("Lightricks/LTX-2", scale),
+        ("Wan-AI/Wan2.2-TI2V-5B-Diffusers", 1.0),
+        ("Wan-AI/Wan2.2-T2V-A14B-Diffusers", 1.0),
+    ):
+        fam = detect_video_family(repo)
+        assert _budget_scale(fam, base = repo) == expected, repo
+    assert _budget_scale(detect_family("Qwen/Qwen-Image"), base = "Qwen/Qwen-Image") == scale
+
+
+def test_a_sibling_release_keeps_the_pre_cast_encoder(monkeypatch):
+    """The base gate must not refuse a release that republishes the SAME encoder.
+
+    Qwen-Image-2512 and Krea-2-Raw ship their sibling's text encoder byte for byte (shard
+    LFS sha256 compared 2026-08-25), so dropping the hosted pre-cast artifact for them
+    would stage 16.6 GB / 8.9 GB of dense encoder the load never opens -- and would widen
+    the memory budget that the pre-download unified-memory guard is sized against."""
+    import core.inference.diffusion_precision as precision
+    from core.inference.diffusion_families import detect_family_for_pick
+
+    monkeypatch.setattr(precision, "te_quant_supported", lambda target, mode: True)
+    for base in (
+        "Qwen/Qwen-Image",
+        "Qwen/Qwen-Image-2512",
+        "unsloth/Qwen-Image-2512",
+        "krea/Krea-2-Turbo",
+        "krea/Krea-2-Raw",
+    ):
+        fam = detect_family_for_pick(base, None, None)
+        assert fam is not None, base
+        sources = tpq.te_prequant_sources_for_base(fam, base, te_quant_mode = "fp8", target = _target())
+        assert "text_encoder" in sources, base
+        assert _budget_scale(fam, base = base) == tpq.TE_PREQUANT_BUDGET_SCALE, base
+
+
+def test_an_unrelated_custom_base_still_loses_it(monkeypatch):
+    """The other half of the same gate: a base nobody has compared keeps the strict
+    refusal, because the hosted artifact would otherwise download before its metadata
+    could reject it."""
+    import core.inference.diffusion_precision as precision
+    from core.inference.diffusion_families import detect_family_for_pick
+
+    monkeypatch.setattr(precision, "te_quant_supported", lambda target, mode: True)
+    fam = detect_family_for_pick("Qwen/Qwen-Image", None, None)
+    for base in ("someone/my-qwen-image-finetune", "randomuser/qwen-image-merged"):
+        assert (
+            tpq.te_prequant_sources_for_base(fam, base, te_quant_mode = "fp8", target = _target()) == {}
+        ), base
