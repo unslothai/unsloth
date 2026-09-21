@@ -1148,18 +1148,23 @@ def _dir_is_not_swappable(directory: Path) -> bool:
         info = os.stat(directory)
     except (OSError, ValueError):
         return False
-    # A directory nobody else can write is enough on its own, whoever owns it. Ownership is NOT
-    # a substitute: owning a directory does not stop anyone else writing in it, the write bits
-    # do, so a world-writable one we own is as renameable by a third account as one we do not.
+    # Both halves, and neither substitutes for the other.
+    #
+    # Ownership, because a mode is not a promise. chmod is the owner's to call at any time, so a
+    # 0755 directory belonging to another ordinary account is one chmod away from being writable
+    # by it, and reading the bits we happen to see says nothing about the bits that will be there
+    # when the cache is written into. Only the current account and root are trusted, root because
+    # it can rewrite anything regardless of what we decide here.
+    if info.st_uid not in (0, os.geteuid()):
+        return False
+    # And the write bits, because owning a directory does not stop anyone else writing in it, so
+    # a world-writable one we own is as renameable by a third account as one we do not own.
     if not info.st_mode & (stat_module.S_IWGRP | stat_module.S_IWOTH):
         return True
     # Sticky narrows removal and rename of a child to the child's owner, the DIRECTORY's owner,
-    # and a privileged process. So sticky alone is not enough either: a sticky shared directory
-    # belonging to another ordinary account still lets that account swap what is inside it.
-    # /tmp passes because root owns it, which is the case this is actually for.
-    if not info.st_mode & stat_module.S_ISVTX:
-        return False
-    return info.st_uid in (0, os.geteuid())
+    # and a privileged process, so a shared directory is usable when we or root hold it. That is
+    # why /tmp passes, which is the case this is actually for.
+    return bool(info.st_mode & stat_module.S_ISVTX)
 
 
 def _holding_dir_is_safe(parent: Path) -> bool:

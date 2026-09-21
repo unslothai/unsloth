@@ -486,6 +486,49 @@ def test_the_holding_directory_decides_whether_the_fallback_can_be_swapped(
     assert ("TORCH_EXTENSIONS_DIR" in os.environ) is published
 
 
+@pytest.mark.skipif(os.name == "nt", reason = "POSIX ownership semantics")
+def test_an_ancestor_owned_by_another_account_is_refused(tmp_path):
+    """A mode is not a promise, because changing it belongs to the owner.
+
+    A holding directory at 0755 owned by another ordinary account, with the temporary root inside
+    it at 0700 owned by us, used to pass: the walk asked the outer one only what its write bits
+    said today. Its owner can open it whenever it likes, rename the root away and leave a tree
+    holding the predictable cache name, which is the same substitution the walk exists to stop.
+    So an ancestor has to be held by this account or by root as well as be closed to others.
+
+    The foreign owner is applied through os.stat, since changing it for real needs privileges
+    this test does not have; everything else about the tree is real.
+    """
+    from utils.paths import storage_roots
+
+    outer = tmp_path / "outer"
+    outer.mkdir()
+    os.chmod(outer, 0o755)
+    root = outer / "victim-tmp"
+    root.mkdir()
+    os.chmod(root, 0o700)
+
+    assert storage_roots._holding_dir_is_safe(root) is True, (
+        "the same tree, ours throughout, is what the refusal below has to be measured against"
+    )
+
+    real_stat = os.stat
+
+    def foreign_owner(path, *args, **kwargs):
+        info = real_stat(path, *args, **kwargs)
+        if str(path) != str(outer):
+            return info
+        fields = list(info)[:10]
+        fields[4] = os.geteuid() + 1
+        return os.stat_result(tuple(fields))
+
+    os.stat = foreign_owner
+    try:
+        assert storage_roots._holding_dir_is_safe(root) is False
+    finally:
+        os.stat = real_stat
+
+
 @pytest.mark.skipif(os.name == "nt", reason = "POSIX symlink and mode semantics")
 def test_a_temporary_root_reached_through_a_swappable_link_is_refused(tmp_path, monkeypatch):
     """A symlink is a name, and a name in a directory another account can write is not ours.
