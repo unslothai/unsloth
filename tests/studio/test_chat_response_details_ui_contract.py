@@ -453,7 +453,13 @@ def test_reasoning_keeps_streaming_height_cap_through_automatic_collapse():
         f"is handed survives depends on what the spread contains, which this guard cannot "
         f"resolve: {spreading!r}"
     )
-    missing = [tag for tag in holders if "retainStreamingHeight={retainStreamingHeight}" not in tag]
+    # On an attribute boundary. Both props are optional, so `data-retainStreamingHeight=`
+    # satisfies a substring search while the component falls back on its default of false.
+    missing = [
+        tag
+        for tag in holders
+        if not re.search(r"(?:^|[\s{])retainStreamingHeight=\{retainStreamingHeight\}", tag)
+    ]
     assert not missing, (
         f"the retained-height flag no longer reaches the component that renders the block, "
         f"so nothing can OR it into the streaming cap: {missing!r}"
@@ -472,7 +478,7 @@ def test_reasoning_keeps_streaming_height_cap_through_automatic_collapse():
     # The left operand has to be the component's own streaming input. `\w+` accepted any
     # identifier, so `streaming={somethingElse || retainStreamingHeight}` passed while an
     # actively streaming block went uncapped whenever the retained flag was false.
-    assert re.search(r"streaming=\{isStreaming \|\| retainStreamingHeight\}", tag), (
+    assert re.search(r"(?:^|[\s{])streaming=\{isStreaming \|\| retainStreamingHeight\}", tag), (
         f"ReasoningText's streaming prop no longer ORs in retainStreamingHeight, so the block "
         f"collapses to its idle height the moment streaming stops, which is the jump this "
         f"test exists for: {tag!r}"

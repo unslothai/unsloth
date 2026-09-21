@@ -1057,7 +1057,13 @@ def test_chat_sidebar_row_actions_visible_on_coarse_pointers():
                 builder_end = index
                 break
     assert builder_end is not None, "unbalanced `const buttonClass = cn(` in the sidebar"
-    assert re.search(r"className=\{buttonClass\}", block), (
+    # On an attribute boundary, and in code rather than in a comment: `data-className=` ends
+    # in the same text, and an assignment that survives only as a comment reads the same to a
+    # substring search while the button that renders receives none of these classes.
+    applied = "\n".join(
+        re.sub(r"(?<!:)//.*$", "", line) for line in block.splitlines()
+    )
+    assert re.search(r"(?:^|[\s{])className=\{buttonClass\}", applied), (
         "buttonClass is no longer applied to anything in renderChatSidebarItem, so checking "
         "it says nothing about the row that renders"
     )
