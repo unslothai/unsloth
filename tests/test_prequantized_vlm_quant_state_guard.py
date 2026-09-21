@@ -55,7 +55,7 @@ def _load_import_fixes():
     return module
 
 
-@pytest.fixture(scope="module")
+@pytest.fixture(scope = "module")
 def import_fixes():
     return _load_import_fixes()
 
@@ -92,7 +92,7 @@ def test_unparseable_version_never_raises(import_fixes):
 
 def test_warning_names_the_cause_and_the_remedy(import_fixes, monkeypatch, caplog):
     monkeypatch.setattr(import_fixes, "importlib_version", lambda name: "5.5.4")
-    monkeypatch.delenv("UNSLOTH_SKIP_TRANSFORMERS_QUANT_STATE_CHECK", raising=False)
+    monkeypatch.delenv("UNSLOTH_SKIP_TRANSFORMERS_QUANT_STATE_CHECK", raising = False)
     with caplog.at_level(logging.WARNING):
         import_fixes.check_transformers_prequantized_vlm_quant_state()
     text = caplog.text
@@ -105,7 +105,7 @@ def test_warning_names_the_cause_and_the_remedy(import_fixes, monkeypatch, caplo
 
 def test_warning_silent_on_a_good_version(import_fixes, monkeypatch, caplog):
     monkeypatch.setattr(import_fixes, "importlib_version", lambda name: "5.17.0")
-    monkeypatch.delenv("UNSLOTH_SKIP_TRANSFORMERS_QUANT_STATE_CHECK", raising=False)
+    monkeypatch.delenv("UNSLOTH_SKIP_TRANSFORMERS_QUANT_STATE_CHECK", raising = False)
     with caplog.at_level(logging.WARNING):
         import_fixes.check_transformers_prequantized_vlm_quant_state()
     assert "quant_state" not in caplog.text
@@ -128,7 +128,7 @@ def test_missing_transformers_never_raises(import_fixes, monkeypatch):
 
 
 def _transformers_requirements():
-    data = tomllib.loads(_PYPROJECT_PATH.read_text(encoding="utf-8"))
+    data = tomllib.loads(_PYPROJECT_PATH.read_text(encoding = "utf-8"))
     found = []
     for group in (data.get("project", {}).get("optional-dependencies", {}) or {}).values():
         for raw in group:
@@ -159,7 +159,7 @@ def test_pyproject_excludes_every_broken_release():
     assert reqs, "no transformers requirement found in pyproject.toml"
     for req in reqs:
         for version in BROKEN:
-            assert not req.specifier.contains(version, prereleases=True), (
+            assert not req.specifier.contains(version, prereleases = True), (
                 f"pyproject allows transformers {version}, which discards the bnb "
                 f"quant_state of pre-quantized composite checkpoints "
                 f"(unsloth #9867, #10010, #10017, #10276)"
@@ -172,5 +172,5 @@ def test_pyproject_still_allows_a_working_version():
     assert reqs
     for req in reqs:
         assert any(
-            req.specifier.contains(version, prereleases=True) for version in GOOD
+            req.specifier.contains(version, prereleases = True) for version in GOOD
         ), f"pyproject leaves no working transformers at all: {req}"
