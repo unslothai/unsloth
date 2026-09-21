@@ -706,6 +706,17 @@ test("alt and an arrow reorder a row without a pointer", async () => {
   assert.match(APP_SIDEBAR, /if \(resorts && !reorderSwitchesSort\) return;/);
   // A touch browser starts no drag, so its row menus keep Move up and Move down.
   assert.match(APP_SIDEBAR, /function renderMoveRowItems\(/);
+  // A pinned folder moves under Pinned's sort rule, from the keyboard and the touch menu alike:
+  // a sorted list switches to Manual, or refuses, exactly as a drop does.
+  assert.match(
+    APP_SIDEBAR,
+    /orderedIds: order\.orderedIds,\n\s*sort: order\.sort,\n\s*\}\)\}/,
+  );
+  assert.match(APP_SIDEBAR, /order\.orderedIds,\n\s*order\.sort,\n\s*\)\}/);
+  assert.match(
+    APP_SIDEBAR,
+    /selectionIds: pinnedProjectRowIds,\n\s*section: "pinned",\n\s*sort: \{ value: pinnedSort, set: setPinnedSort \},/,
+  );
   assert.match(APP_SIDEBAR, /if \(!coarsePointer\) return null;/);
   assert.match(APP_SIDEBAR, /const coarsePointer = useIsCoarsePointer\(\);/);
   // Any touch pointer counts: a laptop with a touchscreen keeps the items too.

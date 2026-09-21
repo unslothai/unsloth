@@ -1448,28 +1448,28 @@ export function AppSidebar() {
       sortedChatsByProjectId,
     ],
   );
-  const pinnedProjectChatItems = useMemo(
-    () => folderChatItems(pinnedOpen, pinnedProjectRecords),
-    [folderChatItems, pinnedOpen, pinnedProjectRecords],
-  );
   const sectionProjectChatItems = useMemo(
     () => folderChatItems(projectsOpen, visibleProjectRecords),
     [folderChatItems, projectsOpen, visibleProjectRecords],
   );
   // A collapsed section is not on screen either, so its rows are not walked or
   // selected any more than a collapsed folder's are.
-  const visiblePinnedItems = useMemo(
-    () => (chatListsOnScreen && pinnedOpen ? sortedPinnedChatItems : []),
-    [chatListsOnScreen, pinnedOpen, sortedPinnedChatItems],
-  );
   const visibleRecentItems = useMemo(
     () => (chatListsOnScreen && chatOpen ? sortedRecentChatItems : []),
     [chatListsOnScreen, chatOpen, sortedRecentChatItems],
   );
-  // Pinned draws its folders above its chats, so the section's rows read in that order.
+  // Pinned draws folders and chats in one order, so the section's chats read in that order,
+  // each open folder's chats right under its row.
   const pinnedSectionChatItems = useMemo(
-    () => [...pinnedProjectChatItems, ...visiblePinnedItems],
-    [pinnedProjectChatItems, visiblePinnedItems],
+    () =>
+      chatListsOnScreen && pinnedOpen
+        ? pinnedRows.flatMap((row) =>
+            row.kind === "project"
+              ? folderChatItems(true, [row.project])
+              : [row.item],
+          )
+        : [],
+    [chatListsOnScreen, pinnedOpen, pinnedRows, folderChatItems],
   );
   // Every chat row on screen, in draw order: Pinned, then the Projects folders, then Recents.
   // The arrays above already fold in each section's disclosure, each folder's, and the
@@ -3800,6 +3800,8 @@ export function AppSidebar() {
       section: SidebarSection;
       /** The folders alone, for shift-click ranges, where the list holds chats too. */
       selectionIds?: string[];
+      /** The list's sort, where a reorder has to switch it to Manual. */
+      sort?: RowSort;
     },
   ) {
     const projectChats =
@@ -3849,6 +3851,7 @@ export function AppSidebar() {
               projectId: null,
             },
             orderedIds: order.orderedIds,
+            sort: order.sort,
           })}
           {...dnd.dropZoneProps(
             {
@@ -3951,6 +3954,7 @@ export function AppSidebar() {
                 projectId: null,
               },
               order.orderedIds,
+              order.sort,
             )}
             <DropdownMenuSeparator />
             <DropdownMenuItem
@@ -4481,6 +4485,7 @@ export function AppSidebar() {
                             orderedIds: pinnedRowIds,
                             selectionIds: pinnedProjectRowIds,
                             section: "pinned",
+                            sort: { value: pinnedSort, set: setPinnedSort },
                           })
                         : renderChatSidebarItem(row.item, "recent", {
                             scope: PINNED_ORDER_SCOPE,

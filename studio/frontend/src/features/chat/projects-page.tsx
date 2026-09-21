@@ -186,12 +186,14 @@ export function ProjectsPage() {
       .catch(() => {
         if (loadSeqRef.current.get(projectId) !== seq) return;
         // A failed reload keeps rows already showing; anything else becomes a retryable error,
-        // including a first load this reload overtook while it was still pending.
-        setProjectChats((prev) =>
-          silent && Array.isArray(prev[projectId])
+        // including a first load this reload overtook while it was still pending, and a folder
+        // loaded as empty, which the reload may have been about to fill.
+        setProjectChats((prev) => {
+          const rows = prev[projectId];
+          return silent && Array.isArray(rows) && rows.length > 0
             ? prev
-            : { ...prev, [projectId]: "error" },
-        );
+            : { ...prev, [projectId]: "error" };
+        });
       });
   }, []);
 
