@@ -40,7 +40,6 @@ __all__ = [
     "FastQwen3MoeModel",
     "FastGraniteModel",
     "FastSentenceTransformer",
-    "FastFalconH1Model",
     "PatchDPOTrainer",
     "PatchKTOTrainer",
     "is_bfloat16_supported",
@@ -51,3 +50,5 @@ __all__ = [
     "SAOConfig",
     "SAOTrainer",
 ]
+if "FastFalconH1Model" in dir():
+    __all__.append("FastFalconH1Model")
