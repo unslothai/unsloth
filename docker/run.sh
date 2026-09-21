@@ -358,6 +358,7 @@ declare -a ENV_FORWARD=(-e HF_HUB_ENABLE_HF_TRANSFER=1)
 [[ -n "${UNSLOTH_ROCM_GFX_ARCH:-}"    ]] && ENV_FORWARD+=(-e UNSLOTH_ROCM_GFX_ARCH)
 # read by studio_launch.sh; without these it uses a random password and no sshd
 [[ -n "${JUPYTER_PASSWORD:-}"           ]] && ENV_FORWARD+=(-e JUPYTER_PASSWORD)
+[[ -n "${JUPYTER_PORT:-}"               ]] && ENV_FORWARD+=(-e JUPYTER_PORT)
 [[ -n "${UNSLOTH_STUDIO_PASSWORD:-}"    ]] && ENV_FORWARD+=(-e UNSLOTH_STUDIO_PASSWORD)
 [[ -n "${UNSLOTH_STUDIO_PORT:-}"        ]] && ENV_FORWARD+=(-e UNSLOTH_STUDIO_PORT)
 [[ -n "${UNSLOTH_STUDIO_BOOTSTRAP_TIMEOUT:-}" ]] && ENV_FORWARD+=(-e UNSLOTH_STUDIO_BOOTSTRAP_TIMEOUT)
@@ -367,6 +368,8 @@ declare -a ENV_FORWARD=(-e HF_HUB_ENABLE_HF_TRANSFER=1)
 [[ -n "${PUBLIC_KEY:-}"                 ]] && ENV_FORWARD+=(-e PUBLIC_KEY)
 [[ -n "${SSH_KEY:-}"                    ]] && ENV_FORWARD+=(-e SSH_KEY)
 [[ -n "${UNSLOTH_JUPYTER_CLOUDFLARE:-}" ]] && ENV_FORWARD+=(-e UNSLOTH_JUPYTER_CLOUDFLARE)
+[[ -n "${UNSLOTH_SKIP_NOTEBOOK_SYNC:-}"    ]] && ENV_FORWARD+=(-e UNSLOTH_SKIP_NOTEBOOK_SYNC)
+[[ -n "${UNSLOTH_SKIP_NOTEBOOK_REFRESH:-}" ]] && ENV_FORWARD+=(-e UNSLOTH_SKIP_NOTEBOOK_REFRESH)
 # Studio's two exposure modes, read by studio_run.sh inside the container. The
 # allowlist is explicit, so leaving them out made both silently inert through the
 # helper the documentation recommends.
