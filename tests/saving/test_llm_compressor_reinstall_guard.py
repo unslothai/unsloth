@@ -22,6 +22,7 @@ probe) and the one it acts on (``subprocess.check_call``).
 from __future__ import annotations
 
 import importlib.metadata as md
+import os
 import subprocess
 import sys
 
@@ -481,3 +482,61 @@ def test_a_probe_that_cannot_import_is_still_a_failed_install(monkeypatch):
     outcome = _install_outcome(monkeypatch, subprocess_import = 1)
     assert isinstance(outcome, RuntimeError), outcome
     assert "could not be imported" in str(outcome), str(outcome)
+
+
+def test_a_runtime_only_path_entry_is_not_evidence_for_the_child(tmp_path, monkeypatch):
+    """A child process does not inherit its parent's mutated sys.path.
+
+    sys.path.insert(0, "/opt/llm-compressor") makes the import work HERE, and a fresh
+    `sys.executable <runner>` sees none of it, so accepting that entry passed a checkout the
+    export cannot import and the failure landed after the whole merge.
+    """
+    from unsloth.save import _llm_compressor_module_is_usable
+
+    inserted = tmp_path / "runtime-insert" / "llmcompressor" / "__init__.py"
+    inserted.parent.mkdir(parents = True)
+    inserted.write_text("")
+    monkeypatch.delenv("PYTHONPATH", raising = False)
+    monkeypatch.setattr(sys, "path", [str(inserted.parent.parent), *sys.path])
+    assert (
+        _llm_compressor_module_is_usable(_module_at(str(inserted), None)) is False
+    ), "a runtime-only sys.path entry was taken as evidence about the child process"
+
+    # The same directory named in the environment the child DOES inherit is accepted.
+    monkeypatch.setenv("PYTHONPATH", str(inserted.parent.parent))
+    assert _llm_compressor_module_is_usable(_module_at(str(inserted), None)) is True
+
+    # And an ordinary installed module, which lives in the interpreter's own site
+    # directory, still passes without any PYTHONPATH at all.
+    import sysconfig
+
+    monkeypatch.delenv("PYTHONPATH", raising = False)
+    site_module = os.path.join(sysconfig.get_paths()["purelib"], "llmcompressor", "__init__.py")
+    assert _llm_compressor_module_is_usable(_module_at(site_module, None)) is True
+
+
+def test_a_probe_that_could_not_answer_does_not_skip_the_install(monkeypatch):
+    """With no metadata there is no evidence a distribution exists at all.
+
+    The probe answers True for its OWN failures -- a timeout, an interpreter that will not
+    spawn -- which is the right default when metadata says something IS installed, and the
+    wrong one here: an absent package skipped the install and failed in the runner after
+    the whole merge.
+    """
+    for unknown in (
+        subprocess.TimeoutExpired(cmd = ["python"], timeout = 600),
+        OSError("no such interpreter"),
+    ):
+        assert (
+            _pip_invoked_when(monkeypatch, None, subprocess_import = unknown) is True
+        ), f"an unanswerable probe skipped the install for an absent package: {unknown!r}"
+
+    # Metadata PRESENT keeps the old default, since something is installed either way.
+    assert (
+        _pip_invoked_when(
+            monkeypatch,
+            "0.12.0",
+            subprocess_import = OSError("no such interpreter"),
+        )
+        is False
+    )

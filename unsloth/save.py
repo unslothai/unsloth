@@ -1643,6 +1643,9 @@ def _llm_compressor_imports_cleanly():
     Unknown answers (timeout, a python that will not spawn, no version to read) count as
     usable, since falling through triggers the destructive re-resolve this guard avoids.
     """
+    # Cleared first: a caller reads these to tell "the probe said no" from "the probe could
+    # not answer", and a previous run's values would answer for this one.
+    _LLM_COMPRESSOR_PROBE_RESULT.update(imported = None, version = None, location = None)
     runner_dir = os.path.dirname(os.path.abspath(__file__))
     probe = (
         "import sys\n"
@@ -1706,15 +1709,31 @@ def _llm_compressor_module_is_usable(module):
     if location:
         try:
             location = os.path.abspath(location)
+            # Only what a FRESH `sys.executable <runner>` would have: the runner's own
+            # directory, PYTHONPATH, and the interpreter's site and stdlib directories. NOT
+            # this process's sys.path, which a caller can insert into at runtime -- the
+            # child does not inherit that, so accepting it passed a checkout the export
+            # cannot import and the failure landed after the whole merge.
             runner_dir = os.path.dirname(os.path.abspath(__file__))
-            cwd = os.getcwd()
             roots = [runner_dir]
             roots += [
                 entry for entry in os.environ.get("PYTHONPATH", "").split(os.pathsep) if entry
             ]
-            # Everything the runner would also have, minus the cwd-shaped entries only
-            # this process has.
-            roots += [entry for entry in sys.path if entry not in ("", ".", cwd)]
+            import sysconfig
+
+            for key in ("purelib", "platlib", "stdlib", "platstdlib"):
+                configured = sysconfig.get_paths().get(key)
+                if configured:
+                    roots.append(configured)
+            try:
+                import site
+
+                roots += list(site.getsitepackages())
+                user_site = site.getusersitepackages()
+                if isinstance(user_site, str):
+                    roots.append(user_site)
+            except Exception:
+                pass
             # The path entry the module would have to sit DIRECTLY under, since import
             # reaches a top-level package as a child of an entry, not as any descendant.
             parent = os.path.dirname(location)
@@ -1780,7 +1799,14 @@ def install_llm_compressor():
             # pip would re-resolve destructively over a checkout the export could have used.
             # The clean subprocess is the only thing that can tell the two apart, and it is
             # asked only here, where the in-process import has already failed.
-            if _llm_compressor_imports_cleanly():
+            # A CONCLUSIVE yes, not merely "not a no": with no metadata there is no
+            # evidence a distribution exists at all, and the probe answers True for its own
+            # failures (a timeout, a python that will not spawn, no temp file), so an absent
+            # package skipped the install and failed in the runner after the whole merge.
+            if (
+                _llm_compressor_imports_cleanly()
+                and _LLM_COMPRESSOR_PROBE_RESULT.get("imported") is True
+            ):
                 return None, None
     except Exception:
         pass
