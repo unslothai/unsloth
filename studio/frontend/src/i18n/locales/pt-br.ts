@@ -222,10 +222,6 @@ export const ptBR = {
       organizeChats: "Organizar conversas",
       organizeProjects: "Organizar projetos",
       sortPinnedChats: "Ordenar conversas fixadas",
-      dragDrop: "Arrastar e soltar",
-      dragHints: "Mostrar uma dica ao arrastar",
-      reorderSwitchesSort: "Reordenar muda para ordem manual",
-      dragOpensFolders: "Abrir pastas sob o ponteiro",
       moveUp: "Mover para cima",
       moveDown: "Mover para baixo",
     },
@@ -1549,11 +1545,6 @@ export const ptBR = {
         "Texto colado com {count} caracteres ou mais vira um anexo .txt. Textos menores ficam na caixa de mensagem.",
       pastedTextOffDescription:
         "Todo o texto colado fica na caixa de mensagem, independentemente do tamanho.",
-      compactionDescriptionInherit: "Segue a política de contexto do servidor.",
-      compactionDescriptionCheckpoint:
-        "Mantém a última troca de mensagens e as instruções permanentes que couberem, e arquiva o restante para consulta.",
-      compactionDescriptionRolling:
-        "Arquiva os turnos mais antigos para manter o histórico recente e o espaço extra selecionado.",
       projectsSection: "Mostrar a seção Projetos",
       projectsSectionDescription:
         "Agrupa as conversas de projeto sob um título Projetos. Desative para listá-las em Recentes.",
@@ -1601,19 +1592,6 @@ export const ptBR = {
       autoCompact: "Compactar automaticamente chats longos",
       autoCompactDescription:
         "Os turnos antigos vão para um arquivo pesquisável quando um chat enche o contexto.",
-      compactionStyle: "Quando o contexto estiver cheio",
-      compactionStyleDescription:
-        "Usar o padrão do servidor preserva UNSLOTH_CONTEXT_POLICY. Redefinir a conversa mantém o turno mais recente e as instruções permanentes que couberem. Uma janela deslizante descarta os turnos mais antigos e pode manter mais histórico recente.",
-      compactionStyleInherit: "Usar padrão do servidor",
-      compactionStyleCheckpoint: "Redefinir conversa",
-      compactionStyleRollingDefault:
-        "Arquivar turnos antigos (~25% de espaço extra)",
-      compactionStyleRolling10:
-        "Arquivar turnos antigos (~10% de espaço extra)",
-      compactionStyleRolling5:
-        "Arquivar turnos antigos (~5% de espaço extra)",
-      compactionStyleRollingNone:
-        "Arquivar turnos antigos (sem corte extra)",
       autoCompactKeywords:
         "compactação compactar automaticamente contexto janela truncar deslizante checkpoint margem arquivo recuperação busca compaction rolling headroom archive retrieval rag",
       thinking: {
