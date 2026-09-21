@@ -1496,15 +1496,15 @@ export const zhCN = {
       },
       projectAttachmentsHint: "可在各聊天的附件菜单中单独调整此设置。",
       rememberParamsPerModelHint: "关闭后，所有模型使用同一套设置。",
-      autoCompactHint: "依据你设置的上下文长度，而不是可用显存。",
+      autoCompactHint: "离开上下文的轮次会被建立索引以便检索，而不是删除。你的长期指令会原文保留，其余内容模型可以在归档中检索。依据你设置的上下文长度，而不是可用显存。",
       pastedTextShortDescription:
         "粘贴的文本达到 {count} 个字符时会转为 .txt 附件，较短的文本则保留在消息输入框中。",
       pastedTextOffDescription:
         "无论长度如何，粘贴的文本都会保留在消息输入框中。",
       compactionDescriptionInherit: "遵循服务器的上下文策略。",
-      compactionDescriptionCheckpoint: "保留最新一轮对话和持续生效的指令。",
+      compactionDescriptionCheckpoint: "保留最新一轮对话和持续生效的指令，其余内容归档以便检索。",
       compactionDescriptionRolling:
-        "移除最早的对话轮次，保留近期记录并预留所选的额外空间。",
+        "归档最早的对话轮次，保留近期记录并预留所选的额外空间。",
       projectsSection: "显示项目分区",
       projectsSectionDescription:
         "将项目对话归到「项目」标题下。关闭后改为显示在「最近」中。",
@@ -1550,18 +1550,18 @@ export const zhCN = {
         "恢复每个模型上次使用的提示词、温度等设置。",
       autoCompact: "自动压缩长聊天",
       autoCompactDescription:
-        "本地 GGUF 聊天达到上下文上限时，移除较早的轮次。",
+        "本地 GGUF 聊天填满上下文时，较早的轮次会转入可检索的归档。",
       compactionStyle: "上下文已满时",
       compactionStyleDescription:
         "使用服务器默认值会保留 UNSLOTH_CONTEXT_POLICY。重置对话会保留最新轮次和持续指令。滑动窗口会丢弃最早的轮次，并可保留更多近期历史。",
       compactionStyleInherit: "使用服务器默认值",
       compactionStyleCheckpoint: "重置对话",
-      compactionStyleRollingDefault: "丢弃最早的轮次（约 25% 额外空间）",
-      compactionStyleRolling10: "丢弃最早的轮次（约 10% 额外空间）",
-      compactionStyleRolling5: "丢弃最早的轮次（约 5% 额外空间）",
-      compactionStyleRollingNone: "丢弃最早的轮次（不额外裁剪）",
+      compactionStyleRollingDefault: "归档最早的轮次（约 25% 额外空间）",
+      compactionStyleRolling10: "归档最早的轮次（约 10% 额外空间）",
+      compactionStyleRolling5: "归档最早的轮次（约 5% 额外空间）",
+      compactionStyleRollingNone: "归档最早的轮次（不额外裁剪）",
       autoCompactKeywords:
-        "压缩 自动压缩 上下文 窗口 截断 滑动 检查点 余量 compaction rolling checkpoint headroom",
+        "压缩 自动压缩 上下文 窗口 截断 滑动 检查点 余量 归档 检索 搜索 compaction rolling checkpoint headroom archive retrieval rag",
       thinking: {
         collapseByDefault: "默认折叠思考过程",
         collapseByDefaultDescription:

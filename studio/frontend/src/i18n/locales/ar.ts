@@ -1530,16 +1530,16 @@ export const ar = {
       rememberParamsPerModelHint:
         "عند إيقافه، تستخدم جميع النماذج الإعدادات نفسها.",
       autoCompactHint:
-        "يعتمد على طول السياق الذي حددته، لا على ذاكرة VRAM المتاحة.",
+        "الأدوار التي تخرج من السياق تُفهرس للاسترجاع ولا تُحذف. تبقى تعليماتك الدائمة بنصها الحرفي، ويمكن للنموذج البحث في الأرشيف عن البقية. يعتمد على طول السياق الذي حددته، لا على ذاكرة VRAM المتاحة.",
       pastedTextShortDescription:
         "يصبح النص الملصق الذي يبلغ {count} حرفًا أو أكثر مرفقًا بصيغة .txt. يبقى النص الأقصر في مربع الرسالة.",
       pastedTextOffDescription:
         "يبقى كل النص الملصق في مربع الرسالة، مهما كان طوله.",
       compactionDescriptionInherit: "يتبع سياسة السياق المحددة على الخادم.",
       compactionDescriptionCheckpoint:
-        "يحتفظ بآخر تبادل للرسائل والتعليمات الدائمة.",
+        "يحتفظ بآخر تبادل للرسائل والتعليمات الدائمة، ويؤرشف البقية ليتسنى استرجاعها.",
       compactionDescriptionRolling:
-        "يحذف أقدم التبادلات للاحتفاظ بالسجل الحديث والمساحة الإضافية المحددة.",
+        "يؤرشف أقدم التبادلات للاحتفاظ بالسجل الحديث والمساحة الإضافية المحددة.",
       projectsSection: "إظهار قسم المشاريع",
       projectsSectionDescription:
         "يجمع محادثات المشروع تحت عنوان المشاريع. أوقف هذا الخيار لعرضها ضمن الأخيرة بدلاً من ذلك.",
@@ -1586,18 +1586,18 @@ export const ar = {
         "استعد آخر موجّه ودرجة حرارة وإعدادات أخرى استُخدمت مع كل نموذج.",
       autoCompact: "ضغط المحادثات الطويلة تلقائيًا",
       autoCompactDescription:
-        "احذف الأدوار الأقدم عندما تصل محادثة GGUF محلية إلى حد السياق.",
+        "تنتقل الأدوار الأقدم إلى أرشيف قابل للبحث عندما تمتلئ نافذة السياق في محادثة GGUF محلية.",
       compactionStyle: "عند امتلاء السياق",
       compactionStyleDescription:
         "يُبقي الخيار الافتراضي للخادم UNSLOTH_CONTEXT_POLICY. تحتفظ إعادة ضبط المحادثة بأحدث دور والتعليمات الدائمة. تحذف النافذة المنزلقة الأدوار الأقدم ويمكنها الاحتفاظ بمزيد من السجل الحديث.",
       compactionStyleInherit: "استخدام إعداد الخادم الافتراضي",
       compactionStyleCheckpoint: "إعادة ضبط المحادثة",
-      compactionStyleRollingDefault: "حذف الأدوار الأقدم (مساحة إضافية نحو 25%)",
-      compactionStyleRolling10: "حذف الأدوار الأقدم (مساحة إضافية نحو 10%)",
-      compactionStyleRolling5: "حذف الأدوار الأقدم (مساحة إضافية نحو 5%)",
-      compactionStyleRollingNone: "حذف الأدوار الأقدم (دون اقتطاع إضافي)",
+      compactionStyleRollingDefault: "أرشفة الأدوار الأقدم (مساحة إضافية نحو 25%)",
+      compactionStyleRolling10: "أرشفة الأدوار الأقدم (مساحة إضافية نحو 10%)",
+      compactionStyleRolling5: "أرشفة الأدوار الأقدم (مساحة إضافية نحو 5%)",
+      compactionStyleRollingNone: "أرشفة الأدوار الأقدم (دون اقتطاع إضافي)",
       autoCompactKeywords:
-        "ضغط تلقائي سياق نافذة اقتطاع منزلقة نقطة تحقق هامش compaction rolling checkpoint headroom",
+        "ضغط تلقائي سياق نافذة اقتطاع منزلقة نقطة تحقق هامش أرشيف استرجاع بحث compaction rolling checkpoint headroom archive retrieval rag",
       thinking: {
         collapseByDefault: "طيّ التفكير افتراضيًا",
         collapseByDefaultDescription:

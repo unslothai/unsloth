@@ -1544,16 +1544,16 @@ export const ptBR = {
         "Altere esta configuração para cada chat pelo menu de anexos.",
       rememberParamsPerModelHint:
         "Quando desativado, todos os modelos usam as mesmas configurações.",
-      autoCompactHint: "Usa o tamanho de contexto definido, não a VRAM disponível.",
+      autoCompactHint: "Os turnos que saem do contexto são indexados para consulta, não apagados. Suas instruções permanentes são mantidas palavra por palavra e o modelo pode buscar o restante no arquivo. Usa o tamanho de contexto definido, não a VRAM disponível.",
       pastedTextShortDescription:
         "Texto colado com {count} caracteres ou mais vira um anexo .txt. Textos menores ficam na caixa de mensagem.",
       pastedTextOffDescription:
         "Todo o texto colado fica na caixa de mensagem, independentemente do tamanho.",
       compactionDescriptionInherit: "Segue a política de contexto do servidor.",
       compactionDescriptionCheckpoint:
-        "Mantém a última troca de mensagens e as instruções permanentes.",
+        "Mantém a última troca de mensagens e as instruções permanentes, e arquiva o restante para consulta.",
       compactionDescriptionRolling:
-        "Remove os turnos mais antigos para manter o histórico recente e o espaço extra selecionado.",
+        "Arquiva os turnos mais antigos para manter o histórico recente e o espaço extra selecionado.",
       projectsSection: "Mostrar a seção Projetos",
       projectsSectionDescription:
         "Agrupa as conversas de projeto sob um título Projetos. Desative para listá-las em Recentes.",
@@ -1600,22 +1600,22 @@ export const ptBR = {
         "Restaura o último prompt, a temperatura e as outras configurações usadas com cada modelo.",
       autoCompact: "Compactar automaticamente chats longos",
       autoCompactDescription:
-        "Remove turnos antigos quando um chat GGUF local atinge o limite de contexto.",
+        "Os turnos antigos vão para um arquivo pesquisável quando um chat GGUF local enche.",
       compactionStyle: "Quando o contexto estiver cheio",
       compactionStyleDescription:
         "Usar o padrão do servidor preserva UNSLOTH_CONTEXT_POLICY. Redefinir a conversa mantém o turno mais recente e as instruções permanentes. Uma janela deslizante descarta os turnos mais antigos e pode manter mais histórico recente.",
       compactionStyleInherit: "Usar padrão do servidor",
       compactionStyleCheckpoint: "Redefinir conversa",
       compactionStyleRollingDefault:
-        "Descartar turnos antigos (~25% de espaço extra)",
+        "Arquivar turnos antigos (~25% de espaço extra)",
       compactionStyleRolling10:
-        "Descartar turnos antigos (~10% de espaço extra)",
+        "Arquivar turnos antigos (~10% de espaço extra)",
       compactionStyleRolling5:
-        "Descartar turnos antigos (~5% de espaço extra)",
+        "Arquivar turnos antigos (~5% de espaço extra)",
       compactionStyleRollingNone:
-        "Descartar turnos antigos (sem corte extra)",
+        "Arquivar turnos antigos (sem corte extra)",
       autoCompactKeywords:
-        "compactação compactar automaticamente contexto janela truncar deslizante checkpoint margem compaction rolling headroom",
+        "compactação compactar automaticamente contexto janela truncar deslizante checkpoint margem arquivo recuperação busca compaction rolling headroom archive retrieval rag",
       thinking: {
         collapseByDefault: "Recolher o raciocínio por padrão",
         collapseByDefaultDescription:

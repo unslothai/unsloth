@@ -1566,16 +1566,16 @@ export const de = {
       rememberParamsPerModelHint:
         "Wenn deaktiviert, verwenden alle Modelle dieselben Einstellungen.",
       autoCompactHint:
-        "Verwendet die eingestellte Kontextlänge, nicht den verfügbaren VRAM.",
+        "Runden, die den Kontext verlassen, werden für den Abruf indexiert und nicht gelöscht. Ihre dauerhaft geltenden Anweisungen bleiben wortgetreu erhalten, den Rest kann das Modell im Archiv nachschlagen. Verwendet die eingestellte Kontextlänge, nicht den verfügbaren VRAM.",
       pastedTextShortDescription:
         "Eingefügter Text ab {count} Zeichen wird als .txt-Datei angehängt. Kürzerer Text bleibt im Nachrichtenfeld.",
       pastedTextOffDescription:
         "Eingefügter Text bleibt unabhängig von seiner Länge im Nachrichtenfeld.",
       compactionDescriptionInherit: "Folgt der Kontextrichtlinie des Servers.",
       compactionDescriptionCheckpoint:
-        "Behält den letzten Austausch und die dauerhaft geltenden Anweisungen bei.",
+        "Behält den letzten Austausch und die dauerhaft geltenden Anweisungen bei und archiviert den Rest zum Nachschlagen.",
       compactionDescriptionRolling:
-        "Entfernt die ältesten Gesprächsrunden und behält neuere Inhalte mit dem gewählten zusätzlichen Freiraum.",
+        "Archiviert die ältesten Gesprächsrunden und behält neuere Inhalte mit dem gewählten zusätzlichen Freiraum.",
       projectsSection: "Projektbereich anzeigen",
       projectsSectionDescription:
         "Gruppiert Projekt-Chats unter einer Überschrift für Projekte. Deaktiviere dies, um sie stattdessen unter den zuletzt verwendeten Chats aufzulisten.",
@@ -1622,22 +1622,22 @@ export const de = {
         "Stellt den zuletzt verwendeten Prompt, die Temperatur und weitere Einstellungen pro Modell wieder her.",
       autoCompact: "Lange Chats automatisch komprimieren",
       autoCompactDescription:
-        "Entfernt ältere Gesprächsrunden, wenn ein lokaler GGUF-Chat sein Kontextlimit erreicht.",
+        "Ältere Runden wandern in ein durchsuchbares Archiv, wenn ein lokaler GGUF-Chat voll läuft.",
       compactionStyle: "Wenn der Kontext voll ist",
       compactionStyleDescription:
         "Die Servervorgabe behält UNSLOTH_CONTEXT_POLICY bei. Gespräch zurücksetzen behält die letzte Runde und dauerhafte Anweisungen. Ein gleitendes Fenster verwirft die ältesten Runden und kann mehr aktuellen Verlauf behalten.",
       compactionStyleInherit: "Servervorgabe verwenden",
       compactionStyleCheckpoint: "Gespräch zurücksetzen",
       compactionStyleRollingDefault:
-        "Älteste Runden verwerfen (~25 % zusätzlicher Platz)",
+        "Älteste Runden archivieren (~25 % zusätzlicher Platz)",
       compactionStyleRolling10:
-        "Älteste Runden verwerfen (~10 % zusätzlicher Platz)",
+        "Älteste Runden archivieren (~10 % zusätzlicher Platz)",
       compactionStyleRolling5:
-        "Älteste Runden verwerfen (~5 % zusätzlicher Platz)",
+        "Älteste Runden archivieren (~5 % zusätzlicher Platz)",
       compactionStyleRollingNone:
-        "Älteste Runden verwerfen (keine zusätzliche Kürzung)",
+        "Älteste Runden archivieren (keine zusätzliche Kürzung)",
       autoCompactKeywords:
-        "Komprimierung automatisch Kontext Fenster kürzen gleitend Prüfpunkt Reserve compaction rolling checkpoint headroom",
+        "Komprimierung automatisch Kontext Fenster kürzen gleitend Prüfpunkt Reserve Archiv Abruf Suche compaction rolling checkpoint headroom archive retrieval rag",
       thinking: {
         collapseByDefault: "Denken standardmäßig einklappen",
         collapseByDefaultDescription:

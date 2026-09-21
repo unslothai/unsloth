@@ -1527,15 +1527,15 @@ export const en = {
         "Override this setting from each chat's attachment menu.",
       rememberParamsPerModelHint:
         "When off, use the same settings for every model.",
-      autoCompactHint: "Uses the context length you set, not available VRAM.",
+      autoCompactHint: "Turns that leave the context are indexed for retrieval, not deleted. Your standing instructions carry forward word for word, and the model can search the archive for the rest. Uses the context length you set, not available VRAM.",
       pastedTextShortDescription:
         "Pastes of {count} characters or more become .txt attachments.",
       pastedTextOffDescription: "Pasted text always stays in the message box.",
       compactionDescriptionInherit: "Follow the server's context policy.",
       compactionDescriptionCheckpoint:
-        "Keep the latest turn and standing instructions.",
+        "Keep the latest turn and your standing instructions, and archive the rest for retrieval.",
       compactionDescriptionRolling:
-        "Drop the oldest turns to keep recent history and the selected amount of extra room.",
+        "Archive the oldest turns to keep recent history and the selected amount of extra room.",
       projectsSection: "Show projects section",
       projectsSectionDescription:
         "Group project chats under Projects. When off, show them in Recents.",
@@ -1581,18 +1581,18 @@ export const en = {
         "Restore each model's last-used prompt, temperature, and other settings.",
       autoCompact: "Auto-compact long chats",
       autoCompactDescription:
-        "Remove older turns when a local GGUF chat reaches its context limit.",
+        "Older turns move to a searchable archive when a local GGUF chat fills its context.",
       compactionStyle: "When context fills",
       compactionStyleDescription:
         "Use server default keeps UNSLOTH_CONTEXT_POLICY. Reset conversation keeps the latest turn and standing instructions. A sliding window drops oldest turns and can keep more recent history.",
       compactionStyleInherit: "Use server default",
       compactionStyleCheckpoint: "Reset conversation",
-      compactionStyleRollingDefault: "Drop oldest turns (~25% extra room)",
-      compactionStyleRolling10: "Drop oldest turns (~10% extra room)",
-      compactionStyleRolling5: "Drop oldest turns (~5% extra room)",
-      compactionStyleRollingNone: "Drop oldest turns (no extra trim)",
+      compactionStyleRollingDefault: "Archive oldest turns (~25% extra room)",
+      compactionStyleRolling10: "Archive oldest turns (~10% extra room)",
+      compactionStyleRolling5: "Archive oldest turns (~5% extra room)",
+      compactionStyleRollingNone: "Archive oldest turns (no extra trim)",
       autoCompactKeywords:
-        "compaction compact auto-compact context window truncate rolling checkpoint headroom",
+        "compaction compact auto-compact context window truncate rolling checkpoint headroom archive retrieval recall rag search",
       thinking: {
         collapseByDefault: "Collapse Thinking by default",
         collapseByDefaultDescription:

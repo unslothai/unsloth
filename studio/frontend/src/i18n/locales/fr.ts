@@ -1563,16 +1563,16 @@ export const fr = {
       rememberParamsPerModelHint:
         "Lorsque cette option est désactivée, tous les modèles utilisent les mêmes réglages.",
       autoCompactHint:
-        "Utilise la longueur de contexte définie, pas la VRAM disponible.",
+        "Les échanges qui quittent le contexte sont indexés pour être retrouvés, pas supprimés. Vos instructions permanentes sont conservées mot pour mot et le modèle peut rechercher le reste dans l’archive. Utilise la longueur de contexte définie, pas la VRAM disponible.",
       pastedTextShortDescription:
         "Le texte collé de {count} caractères ou plus devient une pièce jointe .txt. Le texte plus court reste dans le champ de message.",
       pastedTextOffDescription:
         "Tout le texte collé reste dans le champ de message, quelle que soit sa longueur.",
       compactionDescriptionInherit: "Suit la politique de contexte du serveur.",
       compactionDescriptionCheckpoint:
-        "Conserve le dernier échange et les instructions permanentes.",
+        "Conserve le dernier échange et les instructions permanentes, et archive le reste pour pouvoir le retrouver.",
       compactionDescriptionRolling:
-        "Supprime les échanges les plus anciens pour conserver les plus récents et la marge choisie.",
+        "Archive les échanges les plus anciens pour conserver les plus récents et la marge choisie.",
       projectsSection: "Afficher la section Projets",
       projectsSectionDescription:
         "Regroupe les discussions de projet sous un titre Projets. Désactivez cette option pour les lister dans Récents.",
@@ -1619,22 +1619,22 @@ export const fr = {
         "Restaure le dernier prompt, la température et les autres réglages utilisés pour chaque modèle.",
       autoCompact: "Compacter automatiquement les longues discussions",
       autoCompactDescription:
-        "Supprime les anciens échanges lorsqu’une discussion GGUF locale atteint sa limite de contexte.",
+        "Les anciens échanges vont dans une archive consultable quand un chat GGUF local sature.",
       compactionStyle: "Lorsque le contexte est plein",
       compactionStyleDescription:
         "La valeur par défaut du serveur conserve UNSLOTH_CONTEXT_POLICY. Réinitialiser la discussion garde le dernier tour et les instructions permanentes. Une fenêtre glissante supprime les tours les plus anciens et peut conserver davantage d’historique récent.",
       compactionStyleInherit: "Utiliser la valeur du serveur",
       compactionStyleCheckpoint: "Réinitialiser la discussion",
       compactionStyleRollingDefault:
-        "Supprimer les anciens tours (~25 % d’espace supplémentaire)",
+        "Archiver les anciens tours (~25 % d’espace supplémentaire)",
       compactionStyleRolling10:
-        "Supprimer les anciens tours (~10 % d’espace supplémentaire)",
+        "Archiver les anciens tours (~10 % d’espace supplémentaire)",
       compactionStyleRolling5:
-        "Supprimer les anciens tours (~5 % d’espace supplémentaire)",
+        "Archiver les anciens tours (~5 % d’espace supplémentaire)",
       compactionStyleRollingNone:
-        "Supprimer les anciens tours (sans réduction supplémentaire)",
+        "Archiver les anciens tours (sans réduction supplémentaire)",
       autoCompactKeywords:
-        "compaction automatique contexte fenêtre tronquer glissante point de contrôle marge compaction rolling checkpoint headroom",
+        "compaction automatique contexte fenêtre tronquer glissante point de contrôle marge archive récupération recherche rolling checkpoint headroom retrieval rag",
       thinking: {
         collapseByDefault: "Replier la réflexion par défaut",
         collapseByDefaultDescription:

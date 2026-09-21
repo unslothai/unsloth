@@ -1525,16 +1525,16 @@ export const ko = {
       projectAttachmentsHint:
         "각 채팅의 첨부 메뉴에서 이 설정을 개별적으로 변경할 수 있습니다.",
       rememberParamsPerModelHint: "끄면 모든 모델에 같은 설정을 사용합니다.",
-      autoCompactHint: "남은 VRAM이 아닌 설정한 컨텍스트 길이를 기준으로 합니다.",
+      autoCompactHint: "컨텍스트에서 빠진 턴은 삭제되지 않고 검색할 수 있도록 색인됩니다. 계속 적용되는 지침은 원문 그대로 이어지고, 나머지는 모델이 보관소에서 검색해 찾을 수 있습니다. 남은 VRAM이 아닌 설정한 컨텍스트 길이를 기준으로 합니다.",
       pastedTextShortDescription:
         "붙여넣은 텍스트가 {count}자 이상이면 .txt 첨부 파일이 됩니다. 더 짧은 텍스트는 입력창에 남습니다.",
       pastedTextOffDescription:
         "길이와 관계없이 붙여넣은 모든 텍스트가 입력창에 남습니다.",
       compactionDescriptionInherit: "서버의 컨텍스트 정책을 따릅니다.",
       compactionDescriptionCheckpoint:
-        "최신 대화 턴과 계속 적용되는 지침을 유지합니다.",
+        "최신 대화 턴과 계속 적용되는 지침을 유지하고, 나머지는 검색할 수 있도록 보관합니다.",
       compactionDescriptionRolling:
-        "가장 오래된 턴을 삭제해 최근 기록을 유지하고 선택한 만큼의 여유 공간을 확보합니다.",
+        "가장 오래된 턴을 보관소로 옮겨 최근 기록을 유지하고 선택한 만큼의 여유 공간을 확보합니다.",
       projectsSection: "프로젝트 섹션 표시",
       projectsSectionDescription:
         "프로젝트 채팅을 프로젝트 제목 아래에 모읍니다. 끄면 최근 항목에 표시됩니다.",
@@ -1581,18 +1581,18 @@ export const ko = {
         "각 모델에서 마지막으로 사용한 프롬프트, 온도 등의 설정을 복원합니다.",
       autoCompact: "긴 채팅 자동 압축",
       autoCompactDescription:
-        "로컬 GGUF 채팅이 컨텍스트 한도에 도달하면 오래된 턴을 삭제합니다.",
+        "로컬 GGUF 채팅이 컨텍스트를 모두 채우면 오래된 턴은 검색 가능한 보관소로 옮겨집니다.",
       compactionStyle: "컨텍스트가 가득 찼을 때",
       compactionStyleDescription:
         "서버 기본값을 사용하면 UNSLOTH_CONTEXT_POLICY가 유지됩니다. 대화 재설정은 최신 턴과 지속 지침을 남깁니다. 슬라이딩 윈도우는 가장 오래된 턴을 삭제하고 최근 기록을 더 많이 유지할 수 있습니다.",
       compactionStyleInherit: "서버 기본값 사용",
       compactionStyleCheckpoint: "대화 재설정",
-      compactionStyleRollingDefault: "오래된 턴 삭제(약 25% 추가 여유)",
-      compactionStyleRolling10: "오래된 턴 삭제(약 10% 추가 여유)",
-      compactionStyleRolling5: "오래된 턴 삭제(약 5% 추가 여유)",
-      compactionStyleRollingNone: "오래된 턴 삭제(추가 잘라내기 없음)",
+      compactionStyleRollingDefault: "오래된 턴 보관(약 25% 추가 여유)",
+      compactionStyleRolling10: "오래된 턴 보관(약 10% 추가 여유)",
+      compactionStyleRolling5: "오래된 턴 보관(약 5% 추가 여유)",
+      compactionStyleRollingNone: "오래된 턴 보관(추가 잘라내기 없음)",
       autoCompactKeywords:
-        "압축 자동 컨텍스트 윈도우 자르기 슬라이딩 체크포인트 여유 compaction rolling checkpoint headroom",
+        "압축 자동 컨텍스트 윈도우 자르기 슬라이딩 체크포인트 여유 보관 검색 회수 compaction rolling checkpoint headroom archive retrieval rag",
       thinking: {
         collapseByDefault: "기본적으로 사고 과정 접기",
         collapseByDefaultDescription:
