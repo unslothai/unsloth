@@ -199,6 +199,49 @@ def _cn_literals(source: str, anchor: str) -> str | None:
     return " ".join(pieces)
 
 
+def _opening_tags(source: str, marker: str) -> list[str]:
+    """Every opening JSX tag beginning at `marker`, brace-aware."""
+    tags, at = [], source.find(marker)
+    while at != -1:
+        tag = _opening_tag(source[at:], marker)
+        if tag:
+            tags.append(tag)
+        at = source.find(marker, at + len(marker))
+    return tags
+
+
+def _opening_tag(source: str, marker: str) -> str | None:
+    """The opening JSX tag beginning at `marker`, brace-aware.
+
+    `[^>]*` ends at the first `>`, and an arrow function in an earlier prop supplies one, so
+    the tag would come back truncated and the props after it invisible.
+    """
+    opens = source.find(marker)
+    if opens == -1:
+        return None
+    depth = 0
+    for index in range(opens, len(source)):
+        if source[index] == "{":
+            depth += 1
+        elif source[index] == "}":
+            depth -= 1
+        elif source[index] == ">" and depth == 0:
+            return _without_comments(source[opens : index + 1])
+    return None
+
+
+def _without_comments(tag: str) -> str:
+    """`tag` with commented-out lines removed.
+
+    A prop commented out is a prop that is not passed, and every check here is a substring
+    test, so leaving the text in place lets a disabled prop satisfy the guard that exists to
+    notice it went away. Only a `//` that begins a line counts, so a `//` inside a value is
+    left alone.
+    """
+    kept = [line for line in tag.splitlines() if not line.lstrip().startswith("//")]
+    return "\n".join(kept)
+
+
 def test_assistant_more_menu_exposes_response_details_action():
     src = THREAD_TSX.read_text(encoding = "utf-8")
     assert "MessageResponseDetailsSheet" in src
@@ -368,27 +411,30 @@ def test_reasoning_keeps_streaming_height_cap_through_automatic_collapse():
     # lives here and is handed to the child as a prop, which then ORs it with its own
     # streaming flag. Which component evaluates it is layout; that it is still ORed, and that
     # the retained flag actually reaches the evaluation, is the claim.
-    assert "retainStreamingHeight={retainStreamingHeight}" in src, (
-        "the retained-height flag no longer reaches the component that renders the block, so "
-        "nothing can OR it into the streaming cap"
+    # On the element that receives it, not anywhere in the file. The same text in a comment,
+    # or on some other element, reads identically to a file-wide search and hands nothing
+    # over; ReasoningText would then OR in its own default-false prop and the cap is lost.
+    # ReasoningBody is rendered more than once, and the one that matters is the one holding
+    # this state: it passes isStreaming={isReasoningStreaming}, the flag whose end is what
+    # the retained height is bridging. Every such call has to hand the retained flag over.
+    holders = [
+        tag
+        for tag in _opening_tags(src, "<ReasoningBody")
+        if "isStreaming={isReasoningStreaming}" in tag
+    ]
+    assert holders, (
+        "no ReasoningBody receives isReasoningStreaming any more, so this guard cannot tell "
+        "which render is the one whose collapse the retained height exists to smooth"
+    )
+    missing = [tag for tag in holders if "retainStreamingHeight={retainStreamingHeight}" not in tag]
+    assert not missing, (
+        f"the retained-height flag no longer reaches the component that renders the block, "
+        f"so nothing can OR it into the streaming cap: {missing!r}"
     )
     # On ReasoningText specifically. It is the element that writes data-streaming and so owns
     # the height cap; the same OR on a sibling reads identically here and caps nothing.
-    # The same balanced scan the class reader uses: `[^>]*` ends at the first `>`, which an
-    # arrow function in an earlier prop supplies, and the tag would come back truncated.
-    opens = src.find("<ReasoningText")
-    assert opens != -1, "ReasoningText is no longer rendered, so nothing here caps the height"
-    depth, closes = 0, None
-    for index in range(opens, len(src)):
-        if src[index] == "{":
-            depth += 1
-        elif src[index] == "}":
-            depth -= 1
-        elif src[index] == ">" and depth == 0:
-            closes = index
-            break
-    assert closes is not None, "the ReasoningText opening tag is unterminated"
-    tag = src[opens : closes + 1]
+    tag = _opening_tag(src, "<ReasoningText")
+    assert tag, "ReasoningText is no longer rendered, so nothing here caps the height"
     # The left operand has to be the component's own streaming input. `\w+` accepted any
     # identifier, so `streaming={somethingElse || retainStreamingHeight}` passed while an
     # actively streaming block went uncapped whenever the retained flag was false.

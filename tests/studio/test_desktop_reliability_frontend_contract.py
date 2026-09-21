@@ -970,6 +970,13 @@ def test_chat_sidebar_row_actions_visible_on_coarse_pointers():
                     closes = index
                     break
         assert closes is not None, f"unbalanced cn() around the {variant} row classes"
+        # And that call has to be the one the gutter is written in. rfind finds the nearest
+        # PRECEDING cn(, which may already have closed, and then the scan below would read a
+        # different element's arguments and call them this row's.
+        assert closes > anchor, (
+            f"the {variant} row's hover gutter is not inside the cn() call this guard found, "
+            f"so it would be reading another element's classes. Locate the row's own builder"
+        )
         # Exempt the OTHER variant's own row strings, identified the same way this variant's
         # were, and nothing else. Exempting any literal that merely contains a variant name
         # let `"group/recent-item [@media(pointer:coarse)]:pr-0"` through, and that zero is
