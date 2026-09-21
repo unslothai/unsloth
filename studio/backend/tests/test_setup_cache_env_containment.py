@@ -526,9 +526,9 @@ def test_a_temporary_root_reached_through_a_swappable_link_is_refused(tmp_path, 
 
     held_safely = safe / "ok-link"
     held_safely.symlink_to(private)
-    assert _holding_dir_is_safe(held_safely) is True, (
-        "a symlinked temporary root in a directory nobody else can write is still usable"
-    )
+    assert (
+        _holding_dir_is_safe(held_safely) is True
+    ), "a symlinked temporary root in a directory nobody else can write is still usable"
 
 
 @pytest.mark.skipif(os.name == "nt", reason = "POSIX rename permissions")

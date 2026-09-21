@@ -1092,7 +1092,9 @@ def test_the_refused_windows_cache_path_is_taken_away_on_upgrade():
     assert "Remove-Item -LiteralPath Env:TORCHINDUCTOR_CACHE_DIR" in code, code
     # Both clears go through the one predicate, so shape and provenance cannot drift apart.
     assert code.count("Test-UnparseableManagedTorchCache") == 2, code
-    predicate = _slice(ps, "function Test-UnparseableManagedTorchCache", "\nfunction Clear-Unparseable")
+    predicate = _slice(
+        ps, "function Test-UnparseableManagedTorchCache", "\nfunction Clear-Unparseable"
+    )
     rule = "\n".join(l for l in predicate.splitlines() if not l.lstrip().startswith("#"))
     # Shape: a path the builders can read belongs to whoever set it.
     assert "-notmatch '[\\s'']'" in rule, rule
