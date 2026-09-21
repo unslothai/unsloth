@@ -86,26 +86,15 @@ _LLAMA_CPP_SCRIPTS_WARNING_EMITTED = False
 def _llama_cpp_scripts_pin():
     """Pin convert_hf_to_gguf.py to setup.sh's llama.cpp ref for one conversion.
 
-    The pin stops the converter drifting past the pinned llama-quantize gguf API,
-    but it is Unsloth's own routing and not a judgement anyone made about those
-    bytes, so it is scoped to the conversion and marked as internal:
-
-    * UNSLOTH_LLAMA_CPP_SCRIPTS_DIR outranks UNSLOTH_LLAMA_CPP_CONVERTER_TAG, so
-      setting it unconditionally made the tag inert, and that tag is the escape
-      hatch the unsupported-architecture message tells people to set.
-    * unsloth_zoo reads trust off the variable, so a converter Studio had just
-      downloaded looked user-pinned and UNSLOTH_CONVERTER_SCAN_STRICT degraded to
-      warn-only for every export.
-
-    A pin the user set is left exactly as it is; that one carries their exemption.
+    Scoped and marked internal because UNSLOTH_LLAMA_CPP_SCRIPTS_DIR is read as the
+    user's own choice: it outranks UNSLOTH_LLAMA_CPP_CONVERTER_TAG, and it exempts the
+    converter from the UNSLOTH_CONVERTER_SCAN_STRICT refusal. A pin the user set is left
+    exactly as it is; that one carries their exemption.
     """
     global _LLAMA_CPP_SCRIPTS_WARNING_EMITTED
     if _IS_MLX:
-        # The MLX save path pins the converter itself, around the llama.cpp install it
-        # has just made, so there is nothing to add here. Entering the pin anyway would
-        # nest unsloth_zoo's own internal pin inside this one, and that pin holds a plain
-        # threading.Lock for the whole conversion, so the second entry deadlocks a Mac
-        # GGUF export for good.
+        # The MLX save path pins for itself, under a plain threading.Lock held across the
+        # conversion: entering it here too nests, and the second entry never returns.
         yield
         return
     try:
@@ -114,8 +103,7 @@ def _llama_cpp_scripts_pin():
             _resolve_local_convert_script,  # noqa: F401
         )
     except Exception:
-        # Not just ImportError: a half-built unsloth_zoo raises RuntimeError or AttributeError, and this pin
-        # is only an optimisation.
+        # Not just ImportError: a half-built unsloth_zoo raises RuntimeError or AttributeError.
         if not _LLAMA_CPP_SCRIPTS_WARNING_EMITTED:
             logger.warning(
                 "Unsloth: installed unsloth_zoo does not honor "
@@ -140,8 +128,8 @@ def _llama_cpp_scripts_pin():
         # An older unsloth_zoo has no such check, and it only ever skips the pin.
         incomplete = False
     if incomplete:
-        # Pinning an entrypoint whose conversion/ package is missing is what stops the
-        # staged resolver from fetching a co-versioned set that runs.
+        # Pinning an entrypoint with no conversion/ beside it is what stops the staged
+        # resolver from fetching a co-versioned set that runs.
         yield
         return
 
@@ -155,10 +143,8 @@ def _llama_cpp_scripts_pin():
             yield
         return
 
-    # Older unsloth_zoo, which has no internal pin: scope the variable by hand so it at
-    # least cannot leak into the rest of the process (and into the MLX export path, whose
-    # own internal pin steps aside for a variable that is already set). Strict mode still
-    # takes the exemption on those builds; upgrading unsloth_zoo is the fix for that.
+    # Older unsloth_zoo, no internal pin: scope the variable by hand so it cannot leak.
+    # Strict mode still takes the exemption there; upgrading unsloth_zoo is the fix.
     existing = os.environ.get("UNSLOTH_LLAMA_CPP_SCRIPTS_DIR")
     if existing is not None:
         yield
@@ -1427,8 +1413,8 @@ class ExportBackend:
                 # Resolve before anything can raise; the cleanup below needs it too.
                 imatrix_path = _materialized_imatrix_path(_model_tmp, imatrix_file)
                 try:
-                    # Pin convert_hf_to_gguf.py to setup.sh's llama.cpp ref so it cannot drift past the pinned llama-
-                    # quantize gguf API. Scoped to the conversion, never left in the environment.
+                    # Pinned to setup.sh's llama.cpp ref so the converter cannot drift past the pinned
+                    # llama-quantize gguf API; scoped to the conversion.
                     with _llama_cpp_scripts_pin():
                         result = self.current_model.save_pretrained_gguf(
                             _model_tmp,
