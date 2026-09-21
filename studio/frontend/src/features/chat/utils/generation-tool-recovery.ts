@@ -260,12 +260,9 @@ export function createGenerationToolRecovery(
         }
         if (!pending) continue;
       }
-      // Re-read AFTER the await. The replay now runs concurrently with this check, because
-      // runtime-provider no longer blocks the event stream on it, so `tool_end` can fold this very
-      // card while the request is in flight. disarmApproval was a no-op when that happened (nothing
-      // was armed yet), and arming here would then register an already-finished call whose entry
-      // survives until disarmAll -- long enough to make a LATER approval non-sole and silently drop
-      // its Enter/Escape chord.
+      // Re-read AFTER the await: the replay runs concurrently now, so `tool_end` can fold this card
+      // mid-request. Arming a finished call leaves an entry until disarmAll, long enough to make a
+      // LATER approval non-sole and silently drop its Enter/Escape chord.
       if (record(entry.part)?.result !== undefined) continue;
       armApproval(entry, approvalId, session);
     }

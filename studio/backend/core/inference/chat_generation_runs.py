@@ -500,10 +500,9 @@ class ChatGenerationSupervisor:
         #   1. the park ceiling itself, UNSLOTH_STUDIO_TOOL_APPROVAL_TIMEOUT_S, default 300s. The gate
         #      denies, the model is told the call timed out unanswered and adapts, and the run carries
         #      on. A user who returns after that finds the call already refused, not still waiting.
-        #      The ceiling only counts time with NOBODY WATCHING: durable means cancel_on_disconnect
-        #      is off, not that the tab is gone, and a user who is sitting there reading what the tool
-        #      wants to do must keep the full _DECISION_TIMEOUT they had before this path existed.
-        #      durable_run_id below is how the gate asks (state/run_subscribers.py).
+        #      The ceiling counts time with NOBODY WATCHING: durable means cancel_on_disconnect is
+        #      off, not that the tab is gone, so a user reading the card keeps the full
+        #      _DECISION_TIMEOUT. durable_run_id is how the gate asks (state/run_subscribers.py).
         #   2. the lease sweeper, for a producer wedged before it ever reaches the gate. Parking does
         #      not renew the progress lease, so once progress has aged past the lease timeout
         #      reconcile_runs settles the run as interrupted and supervisor.cancel() sets THIS event,
@@ -516,13 +515,12 @@ class ChatGenerationSupervisor:
         # sweeper is the only bound on a producer that stops making progress at all.
         cancel_event.durable = True
         cancel_event.durable_run_id = run_id
-        # Same scope active_generations.ActiveGeneration captures just below, and for the same
-        # reason: the id alone is not unique across accounts.
+        # Same scope ActiveGeneration captures below: the id alone is not unique across accounts.
         cancel_event.durable_account_id = current_account_id() or ""
-        # Re-arming the approval's own counter is not enough on its own: parking makes no progress,
-        # so without this the sweeper settles the run at the lease timeout (default 1200s) and
-        # cancels the wait, capping an ATTENDED deliberation at ~20 minutes. A user who is sitting
-        # there watching is not a wedged producer, which is the only thing the lease exists to reap.
+        # Re-arming the approval counter alone is not enough: parking makes no progress, so the
+        # sweeper settles the run at the lease timeout (1200s) and cancels the wait, capping an
+        # ATTENDED deliberation near 20 minutes. A watching user is not the wedged producer the
+        # lease exists to reap.
         cancel_event.renew_lease = lambda: db.touch_progress(run_id)
         activity = InferenceActivityReservation()
         activity.reserve()

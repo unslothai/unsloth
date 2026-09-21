@@ -376,9 +376,8 @@ async def chat_generation_events(
         # run_in_executor does not copy ContextVars, unlike asyncio.to_thread.
         wait_for_events = partial(run_as, current_account(), db.wait_for_events)
 
-    # One token per stream, so a tab closing clears only its OWN attendance stamp. Two tabs on the
-    # same run, or a reconnect overlapping the stream it replaces, otherwise had either one's
-    # cleanup delete the other's heartbeat.
+    # One token per stream, so a closing tab clears only its OWN stamp. Two tabs on a run, or a
+    # reconnect overlapping the stream it replaces, otherwise delete each other's heartbeat.
     follower = run_subscribers.new_follower_token()
     follower_account = current_account_id() or ""
 
@@ -393,11 +392,9 @@ async def chat_generation_events(
         if opening["status"] in db.TERMINAL_STATUSES and cursor >= int(opening["lastEventSeq"]):
             return
         while True:
-            # Someone is watching this run. A parked tool approval asks about this before it applies
-            # its park ceiling, so that the ceiling bounds an ABANDONED decision rather than a user
-            # who is still reading what the tool wants to do. Stamped before the wait, so a follower
-            # that attaches while a call is already parked counts immediately rather than only after
-            # its first keep-alive. See state/run_subscribers.py.
+            # A parked tool approval reads this before applying its ceiling, so the ceiling bounds
+            # an ABANDONED decision rather than a user still reading the card. Stamped before the
+            # wait so a follower attaching mid-park counts immediately. See state/run_subscribers.py.
             run_subscribers.mark_subscriber_seen(run_id, follower, follower_account)
             events = await loop.run_in_executor(
                 _EVENT_WAIT_EXECUTOR,
@@ -437,10 +434,8 @@ async def chat_generation_events(
     async def stream_while_attended():
         """``stream`` plus the bookend that says this follower has gone.
 
-        Wrapped rather than folded into ``stream`` as a try/finally so the loop body keeps its
-        indentation and stays diffable. The stamp expires on its own anyway (run_subscribers ages
-        entries out), so this only makes the common case prompt: a tab closed cleanly stops
-        counting as attended now rather than ~45s from now.
+        The stamp ages out on its own, so this only makes a cleanly closed tab stop counting as
+        attended now rather than ~45s from now.
         """
         try:
             async for frame in stream():

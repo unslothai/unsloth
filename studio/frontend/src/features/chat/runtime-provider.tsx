@@ -1071,14 +1071,11 @@ function scheduleGenerationRecovery(
             // coming to disarm the card, so arming from the seed would leave permanent Approve/Deny
             // buttons whose confirm can only 404.
             if (!isTerminalChatGenerationRun(update.run)) {
-              // Deliberately NOT awaited here. followChatGenerationRun yields its snapshot before
-              // opening /events, so this generator is suspended at that yield: awaiting holds the
-              // event stream closed, and /events is the only thing that marks the run attended
-              // server-side (state/run_subscribers.py). A tab returning near the park ceiling would
-              // then have its approval expire during the very request that asks whether it is still
-              // pending, and the restored buttons could only 404. Kicked off here and settled at the
-              // end of the loop instead, so the card gains its buttons a moment later and the stream
-              // opens immediately.
+              // Deliberately NOT awaited: this generator is suspended at the snapshot yield, so
+              // awaiting holds /events closed, and /events is the only thing that marks the run
+              // attended server-side (state/run_subscribers.py). A tab returning near the park
+              // ceiling would expire its approval during the very request asking whether it is
+              // still pending. Settled at the end of the loop instead.
               seededApprovals = toolRecovery.armSeededApprovals(
                 update.run.requestPayload?.session_id,
                 (approvalId) =>
@@ -1089,8 +1086,8 @@ function scheduleGenerationRecovery(
                       : "",
                   ),
               );
-              // armSeededApprovals already treats an unanswerable check as "still parked", so this
-              // only stops a rejection from surfacing unhandled before the join below reaches it.
+              // armSeededApprovals already treats an unanswerable check as "still parked"; this
+              // only stops an unhandled rejection before the join below reaches it.
               seededApprovals.catch(() => {});
             }
             identityValidated = true;
@@ -1219,15 +1216,12 @@ function scheduleGenerationRecovery(
         );
       }
     } finally {
-      // EVERY exit, not just the terminal one. A permanent follower error (another tab deletes the
-      // thread, the run row cascades, the next request 404s) throws straight past the terminal
-      // branch and is swallowed by the outer catch, so a card armed from the seed would stay in the
-      // global toolConfirmations store for the rest of the session. Nothing renders buttons over a
-      // finished part, but `soleRequest` counts entries, so a later real approval reads as non-sole
-      // and silently loses its Enter and Escape chords.
-      //
-      // The seeding is joined first because it is no longer awaited at its call site: without this
-      // a late arm lands after the disarm and leaves the card up on a run that is already over.
+      // EVERY exit, not just the terminal one: a permanent follower error (another tab deletes the
+      // thread, the run row cascades, the request 404s) throws past the terminal branch into the
+      // outer catch, leaving a seeded card in the global store for the session. `soleRequest` counts
+      // entries, so a later real approval reads as non-sole and loses its Enter/Escape chords.
+      // Joined first because the arming is no longer awaited at its call site, so without this a
+      // late arm lands after the disarm and leaves the card up on a finished run.
       if (seededApprovals) await seededApprovals.catch(() => {});
       toolRecovery.disarmAll();
       const store = useChatRuntimeStore.getState();

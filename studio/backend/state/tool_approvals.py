@@ -57,26 +57,23 @@ def _park_timeout_from_env() -> float:
 
 _PARK_TIMEOUT_S = _park_timeout_from_env()
 
-# How often an attended park renews the run's progress lease. Far under the lease timeout
-# (1200s by default), far over the 0.5s poll: one small write every half minute.
+# Far under the lease timeout (1200s), far over the 0.5s poll: one small write every half minute.
 _LEASE_RENEW_EVERY_S = 30.0
 
 # Fed to the model as the tool result when the user denies a call, so it can adapt instead of the turn ending abruptly.
 TOOL_REJECTED_MESSAGE = "The user declined to run this tool call."
 
-# The same, for a call that reached its park ceiling with nobody there to answer it. Distinct from
-# TOOL_REJECTED_MESSAGE because this one is NOT the user's decision, and both the model and the card
-# read the result verbatim: telling a returning user that they declined something they never saw is
-# false, and it is the only account of the call they get, since the buttons are gone by then.
+# The same, for a call that hit its park ceiling unanswered. Distinct from TOOL_REJECTED_MESSAGE
+# because the model and the card read the result verbatim, and by then it is the only account of the
+# call the returning user gets: telling them they declined something they never saw is false.
 TOOL_APPROVAL_EXPIRED_MESSAGE = (
     "This tool call was not run: nobody answered the approval request in time."
 )
 
-# Why wait_tool_decision returned, recorded on the slot rather than in the return value. The
-# verdict stays a bare "allow"/"deny" so the signature, the return and the patch target all keep
-# their shape: the three tool loops are monkeypatched by name in tests
+# Why wait_tool_decision returned, on the slot rather than in the return value, so the verdict stays
+# a bare "allow"/"deny": the three tool loops patch it by name in tests
 # (core.inference.llama_cpp.wait_tool_decision and friends), and a fake that knows nothing about
-# reasons simply leaves slot["reason"] as it found it, which reads as the old behaviour.
+# reasons leaves slot["reason"] untouched, which reads as the old behaviour.
 DECISION_ANSWERED = "answered"
 DECISION_CANCELLED = "cancelled"
 DECISION_EXPIRED = "expired"
@@ -156,17 +153,15 @@ def wait_tool_decision(
                     return _settle("deny", DECISION_EXPIRED)
                 continue
             # A durable park ignores the caller's timeout by design, so the attended backstop is this
-            # module's own ceiling - the same hour a browser-owned run gets - rather than `timeout`.
+            # module's own ceiling, the same hour a browser-owned run gets.
             if total >= _DECISION_TIMEOUT:
                 return _settle("deny", DECISION_EXPIRED)
             if run_subscribers.is_attended(run_id, account_id):
                 # Someone is watching, so this is deliberation, not abandonment.
                 waited = 0.0
-                # The RUN's lease has to be renewed too, not just this counter. Parking makes no
-                # progress, so the sweeper would otherwise settle the run at its lease timeout
-                # (1200s by default) and cancel the wait, capping an attended deliberation at
-                # ~20 minutes rather than the ceiling below. Throttled: this is a small write and
-                # the poll is twice a second.
+                # The RUN's lease too, not just this counter: parking makes no progress, so the
+                # sweeper would otherwise settle the run at its lease timeout (1200s) and cancel the
+                # wait, capping an attended deliberation near 20 minutes rather than the ceiling.
                 if renew_lease is not None and (
                     last_renew is None or total - last_renew >= _LEASE_RENEW_EVERY_S
                 ):
@@ -174,8 +169,8 @@ def wait_tool_decision(
                     try:
                         renew_lease()
                     except Exception:
-                        # A lease we could not renew is the sweeper's problem to discover, not a
-                        # reason to drop the decision this wait exists to collect.
+                        # A lease we could not renew is the sweeper's problem, not a reason to drop
+                        # the decision this wait exists to collect.
                         pass
             elif waited >= _PARK_TIMEOUT_S:
                 return _settle("deny", DECISION_EXPIRED)
