@@ -133,7 +133,7 @@ def test_the_main_build_is_opt_in_and_pins_a_commit():
     # Installed only through the opt-in step, and that step is gated on the flag.
     assert "diffusers-main.txt" in source
     assert "_diffusers_main_requested" in source
-    assert 'UNSLOTH_DIFFUSERS_MAIN' in source
+    assert "UNSLOTH_DIFFUSERS_MAIN" in source
     # And the CALL runs after the release pin install, or the release would overwrite it. Compared
     # on the call site, not on the filename: the helper is DEFINED earlier in the file than either
     # install, so a filename compare answers a different question and passes by accident.
