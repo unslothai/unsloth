@@ -35,6 +35,7 @@ import unsloth  # noqa: F401
 
 from unsloth.kernels.utils import matmul_lora
 
+# Only the matmul tests need an accelerator; the probe test is pure Python.
 pytestmark = pytest.mark.gpu
 
 D_IN, D_OUT, R, ROWS, S = 32, 48, 8, 16, 2.0
@@ -97,3 +98,29 @@ def test_matching_dtypes_unchanged(dtype):
     assert out.dtype == dtype
     ref = _reference(X, W, A, B)
     torch.testing.assert_close(out.float(), ref, rtol = 2e-2, atol = 2e-2)
+
+
+def test_autocast_probe_uses_the_torch_device_name():
+    """The autocast query must use the TORCH device name, and fail open if rejected.
+
+    DEVICE_TYPE is "hip" on ROCm and "mlx" on Apple Silicon, and torch's autocast
+    APIs accept neither: `torch.is_autocast_enabled("hip")` raises `unknown device
+    type for autocast`. Passing DEVICE_TYPE straight in would therefore turn the
+    mismatched-dtype case -- the one this file exists to support -- into a crash on
+    every ROCm box. DEVICE_TYPE_TORCH does that mapping; a name even it cannot
+    resolve has to fall back to "no ambient autocast", so matmul_lora reconciles
+    the dtypes itself rather than erroring on the probe.
+    """
+    from unsloth.kernels import utils as U
+
+    assert U._AUTOCAST_DEVICE in (None, U.DEVICE_TYPE_TORCH)
+    assert U._AUTOCAST_DEVICE != "hip" and U._AUTOCAST_DEVICE != "mlx"
+    # never raises, whatever the device
+    assert U.torch_is_autocast_enabled() in (True, False)
+
+    saved = U._AUTOCAST_DEVICE
+    try:
+        U._AUTOCAST_DEVICE = None
+        assert U.torch_is_autocast_enabled() is False, "unresolvable device fails open"
+    finally:
+        U._AUTOCAST_DEVICE = saved

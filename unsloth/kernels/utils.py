@@ -300,11 +300,27 @@ torch_mm = torch.mm
 torch_mv = torch.mv
 torch_matmul = torch.matmul
 torch_addmm = torch.addmm
-torch_is_autocast_enabled = torch.is_autocast_enabled
 torch_empty = torch.empty
 torch_float32 = torch.float32
 torch_float16 = torch.float16
 torch_bfloat16 = torch.bfloat16
+
+# torch's autocast APIs take the TORCH device name, so ROCm is "cuda" and mlx is "mps";
+# passing DEVICE_TYPE straight in raises `unknown device type for autocast`. Resolve the
+# name once here rather than per matmul, and if this torch still does not accept it (npu
+# on a build without the backend registered), fail OPEN to "assume no ambient autocast"
+# so matmul_lora reconciles the dtypes itself instead of erroring on the probe.
+try:
+    torch.is_autocast_enabled(DEVICE_TYPE_TORCH)
+    _AUTOCAST_DEVICE = DEVICE_TYPE_TORCH
+except Exception:
+    _AUTOCAST_DEVICE = None
+
+
+def torch_is_autocast_enabled():
+    if _AUTOCAST_DEVICE is None:
+        return False
+    return torch.is_autocast_enabled(_AUTOCAST_DEVICE)
 
 
 if importlib.util.find_spec("torchao") is not None:
@@ -1125,7 +1141,7 @@ def matmul_lora(
         # activation to the weight dtype the way a plain Linear would. Under
         # autocast the matmul is reconciled for us, and pre-casting would only
         # round X through a second dtype, so leave it alone there.
-        if X.dtype != W.dtype and not torch_is_autocast_enabled(DEVICE_TYPE):
+        if X.dtype != W.dtype and not torch_is_autocast_enabled():
             X = X.to(W.dtype)
         out = torch_matmul(X, W.t(), out = out)
     elif W.dtype == torch.float8_e4m3fn:
@@ -1133,7 +1149,7 @@ def matmul_lora(
     else:
         W = fast_dequantize(W, W_quant, use_global_buffer = True)
         # See note above: align the activation dtype to the base weight dtype.
-        if X.dtype != W.dtype and not torch_is_autocast_enabled(DEVICE_TYPE):
+        if X.dtype != W.dtype and not torch_is_autocast_enabled():
             X = X.to(W.dtype)
         out = torch_matmul(X, W.t(), out = out)
     if W_quant is not None:
