@@ -1666,9 +1666,7 @@ async def stream_with_studio_tools(
                     finally:
                         if not waiter.done():
                             waiter.cancel()
-                    verdict, decision_reason = (
-                        waiter.result() if waiter.done() else (None, None)
-                    )
+                    verdict, decision_reason = waiter.result() if waiter.done() else (None, None)
                 if verdict == "deny":
                     decision_slot = None
                     denied = True

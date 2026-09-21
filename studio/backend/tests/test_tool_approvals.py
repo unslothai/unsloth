@@ -502,9 +502,7 @@ def test_attendance_cannot_hold_an_approval_past_the_absolute_ceiling(monkeypatc
     stamper = threading.Thread(target = _stamp, daemon = True)
     stamper.start()
     try:
-        verdict, reason = tool_approvals.wait_tool_decision_detail(
-            slot, aid, cancel_event = cancel
-        )
+        verdict, reason = tool_approvals.wait_tool_decision_detail(slot, aid, cancel_event = cancel)
     finally:
         stop.set()
         stamper.join(timeout = 2.0)
