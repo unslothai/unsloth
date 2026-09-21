@@ -3308,6 +3308,35 @@ def _forget_sandbox_state(tools):
     getattr(tools, "_claimed_here", set()).clear()
 
 
+def _studio_modules(tmp_path, monkeypatch, projects_home = False):
+    """Studio home under *tmp_path*, sandbox caches cleared, both modules ready.
+
+    The cache reset is the load-bearing part: a workdir map left over from the
+    previous test resolves that test's directory in this one.
+    """
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
+    if projects_home:
+        monkeypatch.setenv("UNSLOTH_STUDIO_PROJECTS_HOME", str(tmp_path / "projects"))
+    from core.inference import tools
+    from storage import studio_db
+
+    _forget_sandbox_state(tools)
+    return tools, studio_db
+
+
+def _project_row(project_id, name = "Notes", **extra):
+    """A chat_projects row as the routes hand it to storage."""
+    return {
+        "id": project_id,
+        "name": name,
+        "instructions": "",
+        "archived": False,
+        "createdAt": 1,
+        "updatedAt": 1,
+        **extra,
+    }
+
+
 def _shared_root(tmp_path, monkeypatch):
     root = tmp_path / "shared"
     root.mkdir()
@@ -4498,13 +4527,8 @@ def test_a_kept_workspace_replaced_at_the_same_path_is_not_served(tmp_path, monk
     that existed elsewhere never collides, which is also the shape a replacement
     usually arrives in.
     """
-    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
-    monkeypatch.setenv("UNSLOTH_STUDIO_PROJECTS_HOME", str(tmp_path / "projects"))
+    tools, studio_db = _studio_modules(tmp_path, monkeypatch, projects_home = True)
 
-    from core.inference import tools
-    from storage import studio_db
-
-    _forget_sandbox_state(tools)
     project_id, session_id = "proj31415", "session31415"
     workspace = tmp_path / "chosen folder"
     workspace.mkdir(parents = True)
@@ -4538,13 +4562,8 @@ def test_a_replaced_workspace_is_not_served_through_the_kept_folder_fallback(tmp
     first checked what was at the pathname, so a folder replaced there was refused and
     then handed straight back, and the tool call ran in a directory nobody chose.
     """
-    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
-    monkeypatch.setenv("UNSLOTH_STUDIO_PROJECTS_HOME", str(tmp_path / "projects"))
+    tools, studio_db = _studio_modules(tmp_path, monkeypatch, projects_home = True)
 
-    from core.inference import tools
-    from storage import studio_db
-
-    _forget_sandbox_state(tools)
     project_id, session_id = "proj16180", "project-workspace-c2lk-16180"
     workspace = tmp_path / "chosen folder"
     workspace.mkdir(parents = True)
@@ -4577,15 +4596,9 @@ def test_a_kept_workspace_recorded_before_identity_still_resolves(tmp_path, monk
     """Records written before identity was stored are all managed workspaces under
     Studio's own root. Requiring an identity they never had would make every one of
     them unreachable on upgrade, so a record without one keeps the old behaviour."""
+    tools, studio_db = _studio_modules(tmp_path, monkeypatch, projects_home = True)
     import json
 
-    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
-    monkeypatch.setenv("UNSLOTH_STUDIO_PROJECTS_HOME", str(tmp_path / "projects"))
-
-    from core.inference import tools
-    from storage import studio_db
-
-    _forget_sandbox_state(tools)
     project_id, session_id = "proj27182", "session27182"
     workspace = tmp_path / "legacy"
     workspace.mkdir(parents = True)
@@ -5002,15 +5015,10 @@ def test_a_workspace_delete_that_declined_can_still_be_retried(tmp_path, monkeyp
 
 
 def test_external_project_delete_cleans_only_its_old_managed_workspace(tmp_path, monkeypatch):
+    tools, studio_db = _studio_modules(tmp_path, monkeypatch)
     import asyncio
-
-    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
-
-    from core.inference import tools
     from routes import chat_history
-    from storage import studio_db
 
-    _forget_sandbox_state(tools)
     project_id = "external1"
     managed_root = tmp_path / "Notes-external"
     (managed_root / "sandbox").mkdir(parents = True)
@@ -5060,15 +5068,10 @@ def test_external_project_delete_cleans_only_its_old_managed_workspace(tmp_path,
 
 
 def test_external_project_failed_managed_cleanup_stays_pending(tmp_path, monkeypatch):
+    tools, studio_db = _studio_modules(tmp_path, monkeypatch)
     import asyncio
-
-    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
-
-    from core.inference import tools
     from routes import chat_history
-    from storage import studio_db
 
-    _forget_sandbox_state(tools)
     project_id = "external-pending"
     managed_root = tmp_path / "Notes-external"
     managed_sandbox = managed_root / "sandbox"
@@ -5171,10 +5174,9 @@ def test_external_project_delete_keeps_its_current_session_reachable(tmp_path, m
 
 def test_reused_project_id_keeps_each_workspace_session_record(tmp_path, monkeypatch):
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
-
     from core.inference import tools
-
     _forget_sandbox_state(tools)
+
     first = tmp_path / "first"
     second = tmp_path / "second"
     first.mkdir()
@@ -5189,11 +5191,7 @@ def test_reused_project_id_keeps_each_workspace_session_record(tmp_path, monkeyp
 
 
 def test_pre_upgrade_orphan_forces_a_new_session_on_recreate(tmp_path, monkeypatch):
-    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
-    monkeypatch.setenv("UNSLOTH_STUDIO_PROJECTS_HOME", str(tmp_path / "projects"))
-
-    from core.inference import tools
-    from storage import studio_db
+    tools, studio_db = _studio_modules(tmp_path, monkeypatch, projects_home = True)
 
     studio_db._schema_ready.clear()
     _forget_sandbox_state(tools)
@@ -5229,11 +5227,7 @@ def test_pre_upgrade_orphan_forces_a_new_session_on_recreate(tmp_path, monkeypat
 
 
 def test_default_session_orphan_survives_database_recovery(tmp_path, monkeypatch):
-    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
-    monkeypatch.setenv("UNSLOTH_STUDIO_PROJECTS_HOME", str(tmp_path / "projects"))
-
-    from core.inference import tools
-    from storage import studio_db
+    tools, studio_db = _studio_modules(tmp_path, monkeypatch, projects_home = True)
 
     studio_db._schema_ready.clear()
     _forget_sandbox_state(tools)
@@ -5272,8 +5266,8 @@ def test_default_session_orphan_survives_database_recovery(tmp_path, monkeypatch
 def test_invalid_default_session_orphan_metadata_forces_a_new_session(tmp_path, monkeypatch):
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
     monkeypatch.setenv("UNSLOTH_STUDIO_PROJECTS_HOME", str(tmp_path / "projects"))
-
     from storage import studio_db
+
     from utils.paths import studio_root
 
     studio_db._schema_ready.clear()
@@ -5297,11 +5291,7 @@ def test_invalid_default_session_orphan_metadata_forces_a_new_session(tmp_path, 
 
 
 def test_recreated_project_uses_a_new_managed_folder(tmp_path, monkeypatch):
-    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
-    monkeypatch.setenv("UNSLOTH_STUDIO_PROJECTS_HOME", str(tmp_path / "projects"))
-
-    from core.inference import tools
-    from storage import studio_db
+    tools, studio_db = _studio_modules(tmp_path, monkeypatch, projects_home = True)
 
     studio_db._schema_ready.clear()
     _forget_sandbox_state(tools)
@@ -5346,12 +5336,8 @@ def test_recreated_project_uses_a_new_managed_folder(tmp_path, monkeypatch):
 
 
 def test_orphan_collection_checks_every_session_sharing_a_workspace(tmp_path, monkeypatch):
-    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
+    tools, studio_db = _studio_modules(tmp_path, monkeypatch)
 
-    from core.inference import tools
-    from storage import studio_db
-
-    _forget_sandbox_state(tools)
     workspace = tmp_path / "shared"
     workspace.mkdir()
     first_session = "project-workspace-c2FtZS1pZA-0123456789abcdef0123456789abcdef"
@@ -5376,10 +5362,9 @@ def test_orphan_collection_checks_every_session_sharing_a_workspace(tmp_path, mo
 
 def test_forgetting_one_project_session_keeps_other_incarnations(tmp_path, monkeypatch):
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
-
     from core.inference import tools
-
     _forget_sandbox_state(tools)
+
     first = tmp_path / "first"
     second = tmp_path / "second"
     first.mkdir()
@@ -5397,10 +5382,9 @@ def test_forgetting_one_project_session_keeps_other_incarnations(tmp_path, monke
 
 def test_project_id_cannot_overwrite_another_projects_session_record(tmp_path, monkeypatch):
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
-
     from core.inference import tools
-
     _forget_sandbox_state(tools)
+
     first = tmp_path / "first"
     second = tmp_path / "second"
     first.mkdir()
@@ -5419,10 +5403,9 @@ def test_project_id_cannot_overwrite_another_projects_session_record(tmp_path, m
 
 def test_version_shaped_legacy_project_session_resolves_its_orphan(tmp_path, monkeypatch):
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
-
     from core.inference import tools
-
     _forget_sandbox_state(tools)
+
     workspace = tmp_path / "legacy-workspace"
     workspace.mkdir()
     project_id = "workspace-Zm9v-0123456789abcdef0123456789abcdef"
@@ -5435,7 +5418,6 @@ def test_version_shaped_legacy_project_session_resolves_its_orphan(tmp_path, mon
 def test_version_shaped_project_id_gets_an_unambiguous_live_session(tmp_path, monkeypatch):
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
     monkeypatch.setenv("UNSLOTH_STUDIO_PROJECTS_HOME", str(tmp_path / "projects"))
-
     from storage import studio_db
 
     studio_db._schema_ready.clear()
@@ -5468,6 +5450,7 @@ def test_a_chat_sandbox_cannot_be_adopted_as_a_project_workspace(tmp_path, monke
     project's, so one directory reached through both is two locks and one folder."""
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
     monkeypatch.setenv("UNSLOTH_STUDIO_PROJECTS_HOME", str(tmp_path / "projects"))
+
     # The only way to reach this: the override can put the sandboxes anywhere,
     # including a folder the picker will offer.
     monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(tmp_path / "shared"))
@@ -5505,7 +5488,6 @@ def test_a_reserved_managed_root_is_not_adopted_from_a_stranger(tmp_path, monkey
     creating it, so anything can be sitting there when the user switches back."""
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
     monkeypatch.setenv("UNSLOTH_STUDIO_PROJECTS_HOME", str(tmp_path / "projects"))
-
     from storage import studio_db
 
     studio_db._schema_ready.clear()
@@ -5532,7 +5514,6 @@ def test_switching_back_to_managed_reuses_the_projects_own_root(tmp_path, monkey
     """The check above must not cost a project the root it actually filled."""
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
     monkeypatch.setenv("UNSLOTH_STUDIO_PROJECTS_HOME", str(tmp_path / "projects"))
-
     from storage import studio_db
 
     studio_db._schema_ready.clear()
@@ -5559,7 +5540,6 @@ def test_resolving_a_workspace_does_not_write_in_it(tmp_path, monkeypatch):
     client, so the real write probe stays on accepting and changing a folder."""
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
     monkeypatch.setenv("UNSLOTH_STUDIO_PROJECTS_HOME", str(tmp_path / "projects"))
-
     from storage import studio_db
 
     studio_db._schema_ready.clear()
@@ -5612,7 +5592,6 @@ def test_the_chat_sandbox_check_scans_descendants(tmp_path, monkeypatch):
     """A bind mount inside the picked folder is an ordinary directory carrying the
     sandbox root's identity, so only the identity scan can see it."""
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
-
     from storage import studio_db
 
     asked = []
@@ -5633,13 +5612,8 @@ def test_the_chat_sandbox_check_scans_descendants(tmp_path, monkeypatch):
 def test_changing_a_working_directory_records_the_folder_it_retires(tmp_path, monkeypatch):
     """The session id is the only key back to the old folder and the row is about
     to stop carrying it, so a later delete could neither offer nor collect it."""
-    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
-    monkeypatch.setenv("UNSLOTH_STUDIO_PROJECTS_HOME", str(tmp_path / "projects"))
+    tools, studio_db = _studio_modules(tmp_path, monkeypatch, projects_home = True)
 
-    from core.inference import tools
-    from storage import studio_db
-
-    _forget_sandbox_state(tools)
     studio_db._schema_ready.clear()
     first = tmp_path / "first"
     second = tmp_path / "second"
@@ -5674,15 +5648,10 @@ def test_changing_a_working_directory_records_the_folder_it_retires(tmp_path, mo
 
 
 def test_corrupt_workspace_overlap_is_never_deleted(tmp_path, monkeypatch):
+    tools, studio_db = _studio_modules(tmp_path, monkeypatch)
     import asyncio
-
-    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
-
-    from core.inference import tools
     from routes import chat_history
-    from storage import studio_db
 
-    _forget_sandbox_state(tools)
     project_id = "overlap1"
     selected = tmp_path / "selected"
     (selected / "sandbox").mkdir(parents = True)
@@ -5722,15 +5691,10 @@ def test_corrupt_workspace_overlap_is_never_deleted(tmp_path, monkeypatch):
 def test_a_retired_managed_workspace_is_recorded_when_files_are_kept(tmp_path, monkeypatch):
     """A project that started managed and switched folders left the one it filled
     before the switch on disk, and the row that knew where it was is gone."""
+    tools, studio_db = _studio_modules(tmp_path, monkeypatch)
     import asyncio
-
-    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
-
-    from core.inference import tools
     from routes import chat_history
-    from storage import studio_db
 
-    _forget_sandbox_state(tools)
     project_id = "retired1"
     managed_root = tmp_path / "Notes-retired1"
     managed_sandbox = managed_root / "sandbox"
@@ -6438,12 +6402,8 @@ def test_external_project_workspace_is_the_exact_tool_workdir_and_tracks_changes
 
 
 def test_unavailable_external_workspace_never_falls_back_to_a_sandbox(tmp_path, monkeypatch):
-    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
+    tools, studio_db = _studio_modules(tmp_path, monkeypatch)
 
-    from core.inference import tools
-    from storage import studio_db
-
-    _forget_sandbox_state(tools)
     external = tmp_path / "external-project"
     external.mkdir()
     available = True
@@ -6537,11 +6497,7 @@ def test_session_update_fence_blocks_new_tool_calls():
 
 
 def test_old_project_file_session_cannot_resolve_after_workspace_change(tmp_path, monkeypatch):
-    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
-    monkeypatch.setenv("UNSLOTH_STUDIO_PROJECTS_HOME", str(tmp_path / "projects"))
-
-    from core.inference import tools
-    from storage import studio_db
+    tools, studio_db = _studio_modules(tmp_path, monkeypatch, projects_home = True)
 
     studio_db._schema_ready.clear()
     _forget_sandbox_state(tools)
@@ -6609,13 +6565,9 @@ def test_a_project_recreated_under_the_same_id_keeps_its_workspace(tmp_path, mon
 
 
 def test_a_project_recreated_elsewhere_does_not_strand_the_old_workspace(tmp_path, monkeypatch):
-    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
-
-    from core.inference import tools
+    tools, studio_db = _studio_modules(tmp_path, monkeypatch)
     from routes import chat_history
-    from storage import studio_db
 
-    _forget_sandbox_state(tools)
     project_id = "projmoved2"
     workspace = tmp_path / "Notes-projmove"
     (workspace / "sandbox").mkdir(parents = True)
@@ -6634,12 +6586,8 @@ def test_a_project_recreated_elsewhere_does_not_strand_the_old_workspace(tmp_pat
 
 
 def test_live_external_owner_retires_stale_pending_cleanup(tmp_path, monkeypatch):
-    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
+    tools, studio_db = _studio_modules(tmp_path, monkeypatch)
 
-    from core.inference import tools
-    from storage import studio_db
-
-    _forget_sandbox_state(tools)
     orphan_project_id = "projorphan"
     old_workspace = tmp_path / "old-workspace"
     old_workspace.mkdir()
@@ -6674,13 +6622,8 @@ def test_live_external_owner_retires_stale_pending_cleanup(tmp_path, monkeypatch
 
 
 def test_external_adoption_invalidates_kept_workspace_sessions(tmp_path, monkeypatch):
-    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
-    monkeypatch.setenv("UNSLOTH_STUDIO_PROJECTS_HOME", str(tmp_path / "projects"))
+    tools, studio_db = _studio_modules(tmp_path, monkeypatch, projects_home = True)
 
-    from core.inference import tools
-    from storage import studio_db
-
-    _forget_sandbox_state(tools)
     workspace = tmp_path / "adopted-workspace"
     workspace.mkdir()
     tools.record_orphaned_project(
@@ -6708,11 +6651,7 @@ def test_external_adoption_invalidates_kept_workspace_sessions(tmp_path, monkeyp
 
 
 def test_deleted_project_record_is_not_restored_over_a_live_workspace(tmp_path, monkeypatch):
-    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
-    monkeypatch.setenv("UNSLOTH_STUDIO_PROJECTS_HOME", str(tmp_path / "projects"))
-
-    from core.inference import tools
-    from storage import studio_db
+    tools, studio_db = _studio_modules(tmp_path, monkeypatch, projects_home = True)
 
     studio_db._schema_ready.clear()
     _forget_sandbox_state(tools)
@@ -6742,10 +6681,9 @@ def test_deleted_project_record_is_not_restored_over_a_live_workspace(tmp_path, 
 
 def test_external_adoption_fails_closed_when_orphan_scan_is_truncated(tmp_path, monkeypatch):
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
-
     from core.inference import tools
-
     _forget_sandbox_state(tools)
+
     first = tmp_path / "first"
     second = tmp_path / "second"
     first.mkdir()
@@ -6767,12 +6705,8 @@ def test_external_adoption_fails_closed_when_orphan_scan_is_truncated(tmp_path, 
 
 def test_an_unfinished_orphan_scan_is_not_an_adoption_match(tmp_path, monkeypatch):
     """Records for other kept folders survive picking a folder too big to walk."""
-    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
+    tools, studio_db = _studio_modules(tmp_path, monkeypatch)
 
-    from core.inference import tools
-    from storage import studio_db
-
-    _forget_sandbox_state(tools)
     first = tmp_path / "first"
     second = tmp_path / "second"
     picked = tmp_path / "picked"
@@ -6792,10 +6726,7 @@ def test_an_unfinished_orphan_scan_is_not_an_adoption_match(tmp_path, monkeypatc
 
 
 def test_missing_project_does_not_adopt_an_orphaned_workspace(tmp_path, monkeypatch):
-    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
-
-    from core.inference import tools
-    from storage import studio_db
+    tools, studio_db = _studio_modules(tmp_path, monkeypatch)
 
     studio_db._schema_ready.clear()
     _forget_sandbox_state(tools)
@@ -6810,13 +6741,8 @@ def test_missing_project_does_not_adopt_an_orphaned_workspace(tmp_path, monkeypa
 
 
 def test_external_adoption_waits_for_a_deleted_projects_active_session(tmp_path, monkeypatch):
-    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
-    monkeypatch.setenv("UNSLOTH_STUDIO_PROJECTS_HOME", str(tmp_path / "projects"))
+    tools, studio_db = _studio_modules(tmp_path, monkeypatch, projects_home = True)
 
-    from core.inference import tools
-    from storage import studio_db
-
-    _forget_sandbox_state(tools)
     old_project = studio_db.upsert_chat_project(
         {
             "id": "old-project",
@@ -6858,12 +6784,8 @@ def test_external_adoption_waits_for_a_deleted_projects_active_session(tmp_path,
 
 
 def test_unknown_recreated_project_ownership_keeps_a_pending_record(tmp_path, monkeypatch):
-    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
+    tools, studio_db = _studio_modules(tmp_path, monkeypatch)
 
-    from core.inference import tools
-    from storage import studio_db
-
-    _forget_sandbox_state(tools)
     project_id = "projunknown"
     workspace = tmp_path / "Notes-projunkn"
     (workspace / "sandbox").mkdir(parents = True)
@@ -6884,13 +6806,9 @@ def test_unknown_recreated_project_ownership_keeps_a_pending_record(tmp_path, mo
 
 
 def test_unknown_second_ownership_check_keeps_the_pending_record(tmp_path, monkeypatch):
-    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
-
-    from core.inference import tools
+    tools, studio_db = _studio_modules(tmp_path, monkeypatch)
     from routes import chat_history
-    from storage import studio_db
 
-    _forget_sandbox_state(tools)
     project_id = "projsecond"
     workspace = tmp_path / "Notes-projseco"
     (workspace / "sandbox").mkdir(parents = True)
