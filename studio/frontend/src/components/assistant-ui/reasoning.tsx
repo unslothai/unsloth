@@ -765,12 +765,14 @@ const ReasoningGroupImpl: ReasoningGroupComponent = (props) => {
 
 // A thin line closing the trace when the answer comes right after it, so the two do not read
 // as one text. Rendered inside whatever is last under the header, so it hides with it.
+// Full --border, not 60% of it: at 60% the line was 14/255 off the dark background and
+// 19/255 off the light one, which is under the rule rather than a quiet version of it.
 function ReasoningEndRule() {
   return (
     <div
       data-slot="reasoning-end-rule"
       aria-hidden={true}
-      className="mt-4 border-border/60 border-t"
+      className="mt-4 border-border border-t"
     />
   );
 }
