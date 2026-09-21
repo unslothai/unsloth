@@ -14,6 +14,7 @@ import {
   planSidebarDrop,
   rowKey,
   sectionRingKey,
+  STAY,
   type SidebarDragItem,
   type SidebarDropContext,
   type SidebarDropZone,
@@ -147,8 +148,9 @@ test("a reorder in a sorted list switches it to Manual order, or is refused", ()
   );
 });
 
-// An edge the row is already on is not a move, and a line there would promise one.
-test("an edge that moves nothing is no drop", () => {
+// An edge the row is already on is not a move, and a line there would promise one. The spot
+// still answers, with STAY, so the section around it does not offer its last slot instead.
+test("an edge that moves nothing stays, and still claims the drag", () => {
   const ctx = context({ chatSort: "manual" });
   assert.equal(
     planSidebarDrop(
@@ -157,7 +159,7 @@ test("an edge that moves nothing is no drop", () => {
       "top",
       ctx,
     ),
-    null,
+    STAY,
   );
   assert.equal(
     planSidebarDrop(
@@ -166,7 +168,26 @@ test("an edge that moves nothing is no drop", () => {
       "bottom",
       ctx,
     ),
-    null,
+    STAY,
+  );
+  // A pinned row over its own row, or a folder over its own block, is where it already is.
+  assert.equal(
+    planSidebarDrop(
+      chat("p1", "pinned", PINNED_ORDER_SCOPE, null),
+      chatRow("pinned", PINNED_ORDER_SCOPE, "p1"),
+      "top",
+      ctx,
+    ),
+    STAY,
+  );
+  assert.equal(
+    planSidebarDrop(
+      folder("work", "pinned", PINNED_ORDER_SCOPE),
+      folderRow("pinned", PINNED_ORDER_SCOPE, "work"),
+      "bottom",
+      ctx,
+    ),
+    STAY,
   );
 });
 
@@ -201,7 +222,7 @@ test("a chat dropped on a folder, its chats or its empty line is filed there", (
       "top",
       context(),
     ),
-    null,
+    STAY,
   );
 });
 
@@ -314,7 +335,7 @@ test("a chat dropped into Pinned is pinned where it lands", () => {
       ?.effects.switchSort,
     "pinned",
   );
-  // A chat already pinned is not pinned again: it reorders.
+  // A chat already pinned is not pinned again: it reorders, and the last row stays last.
   assert.equal(
     planSidebarDrop(
       chat("p1", "pinned", PINNED_ORDER_SCOPE, null),
@@ -322,7 +343,7 @@ test("a chat dropped into Pinned is pinned where it lands", () => {
       "bottom",
       context(),
     ),
-    null,
+    STAY,
   );
 });
 
@@ -412,7 +433,7 @@ test("a folder reorders among its own list, and the block under it aims at it", 
   assert.deepEqual(belowChat?.effects.orders, [
     { scope: PINNED_ORDER_SCOPE, ids: ["p1", "work", "play"] },
   ]);
-  // Its own block is never a target, and neither is Recents.
+  // Its own block keeps it where it is, and Recents is no target at all.
   assert.equal(
     planSidebarDrop(
       folder("work", "pinned", PINNED_ORDER_SCOPE),
@@ -420,7 +441,7 @@ test("a folder reorders among its own list, and the block under it aims at it", 
       "top",
       ctx,
     ),
-    null,
+    STAY,
   );
   assert.equal(
     planSidebarDrop(
@@ -614,6 +635,16 @@ test("a cue over nothing is cleared without trusting dragleave", () => {
   assert.match(HOOK, /if \(!next\) return;\n\s*event\.preventDefault\(\);\n\s*lastHandledEvent = event\.nativeEvent;/);
   assert.ok(!HOOK.includes("event.stopPropagation();\n          lastHandledEvent"));
   assert.match(HOOK, /if \(!dragged \|\| lastHandledEvent === event\.nativeEvent\) return;/);
+});
+
+// Over its own row a lifted row is already home. The row claims the drag and paints nothing,
+// so the section body never gets to offer its last slot for it.
+test("a row over itself claims the drag and paints nothing", () => {
+  assert.match(
+    HOOK,
+    /if \(next === STAY\) \{\n\s*\/\/[^\n]*\n\s*cancelSpring\(\);\n\s*showPlan\(null\);\n\s*return;\n\s*\}/,
+  );
+  assert.match(HOOK, /if \(next !== STAY\) optionsRef\.current\.onDrop\(next, dragged\);/);
 });
 
 // A section's collapsible clips its overflow, so cues stay inside the row.

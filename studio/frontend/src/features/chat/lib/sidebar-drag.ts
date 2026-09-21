@@ -98,6 +98,12 @@ export interface SidebarDropPlan {
   effects: SidebarDropEffects;
 }
 
+/** The row is already in the slot under the pointer: its own row, or the edge it sits on.
+ *  Nothing is painted and a drop does nothing, but the spot still claims the drag, so the
+ *  section around it does not answer with its last slot instead. */
+export const STAY = "stay";
+export type SidebarDropOutcome = SidebarDropPlan | typeof STAY | null;
+
 export const rowKey = (scope: string, id: string): string => `${scope}:${id}`;
 export const sectionRingKey = (section: SidebarSection): string =>
   `section:${section}`;
@@ -111,13 +117,14 @@ const ring = (key: string): SidebarDropCue => ({ ring: key });
 
 export { dropEdgeAt };
 
-/** The plan for dropping `drag` on `zone`, or null when the drop would do nothing. */
+/** The plan for dropping `drag` on `zone`, STAY when the row is already there, or null when
+ *  this spot has no answer and the zone around it may. */
 export function planSidebarDrop(
   drag: SidebarDragItem,
   zone: SidebarDropZone,
   edge: DropEdge,
   ctx: SidebarDropContext,
-): SidebarDropPlan | null {
+): SidebarDropOutcome {
   if (zone.header) {
     // Pinned holds both kinds in one order; the other sections hold one each.
     const first =
@@ -159,8 +166,8 @@ function planPinnedDrop(
   zone: SidebarDropZone,
   edge: DropEdge,
   ctx: SidebarDropContext,
-): SidebarDropPlan | null {
-  if (zone.folderId === drag.id) return null;
+): SidebarDropOutcome {
+  if (zone.folderId === drag.id) return STAY;
   if (
     drag.kind === "chat" &&
     zone.folderId &&
@@ -185,13 +192,14 @@ function planPinnedDrop(
     // The section's own space: last.
     target = { id: ids[ids.length - 1], edge: "bottom" };
   }
-  if (!target || target.id === drag.id) return null;
+  if (!target) return null;
+  if (target.id === drag.id) return STAY;
   const resorts = ctx.pinnedSort !== "manual";
   if (inList && resorts && !ctx.reorderSwitchesSort) return null;
   const next = inList
     ? insertIdAt(ids, drag.id, target.id, target.edge)
     : placeIdAt(ids, drag.id, target.id, target.edge);
-  if (next === ids) return null;
+  if (next === ids) return STAY;
   const cue =
     zone.folderId && target.id === zone.folderId
       ? folderLine(PINNED_ORDER_SCOPE, target.id, target.edge, zone)
@@ -213,9 +221,9 @@ function planFolderDrop(
   zone: SidebarDropZone,
   edge: DropEdge,
   ctx: SidebarDropContext,
-): SidebarDropPlan | null {
+): SidebarDropOutcome {
   if (zone.section === "recents") return null;
-  if (zone.folderId === drag.id) return null;
+  if (zone.folderId === drag.id) return STAY;
   const ids = ctx.orders.projects;
   let target: { id: string; edge: DropEdge } | null = null;
   if (zone.folderId) {
@@ -228,7 +236,7 @@ function planFolderDrop(
     // Same list: only a folder is a slot to land against.
     if (!target) return null;
     const next = insertIdAt(ids, drag.id, target.id, target.edge);
-    if (next === ids) return null;
+    if (next === ids) return STAY;
     return {
       action: { kind: "reorder" },
       cue: folderLine(PROJECT_ORDER_SCOPE, target.id, target.edge, zone),
@@ -261,7 +269,7 @@ function planChatDrop(
   zone: SidebarDropZone,
   edge: DropEdge,
   ctx: SidebarDropContext,
-): SidebarDropPlan | null {
+): SidebarDropOutcome {
   const pinned = ctx.pinnedChatIds.has(drag.id);
   // Picked up from the Pinned list itself, not from inside a pinned folder.
   const fromPinnedList = drag.scope === PINNED_ORDER_SCOPE;
@@ -272,7 +280,7 @@ function planChatDrop(
     if (fromPinnedList) {
       // A pinned folder keeps the pin; a folder under Projects takes it away.
       if (zone.section === "pinned") {
-        return sameFolder ? null : moveChat(drag, zone, edge, ctx, folderId, false);
+        return sameFolder ? STAY : moveChat(drag, zone, edge, ctx, folderId, false);
       }
       if (!sameFolder) return moveChat(drag, zone, edge, ctx, folderId, true);
       const landing = landingIn(
@@ -293,7 +301,8 @@ function planChatDrop(
       };
     }
     if (!sameFolder) return moveChat(drag, zone, edge, ctx, folderId, false);
-    if (zone.row?.kind !== "chat") return null;
+    // Its own folder's row: already filed here.
+    if (zone.row?.kind !== "chat") return STAY;
     return reorder(
       drag,
       projectOrderScope(folderId),
@@ -402,11 +411,11 @@ function reorder(
   edge: DropEdge,
   sortKey: "chats" | "pinned",
   ctx: SidebarDropContext,
-): SidebarDropPlan | null {
+): SidebarDropOutcome {
   const sort = sortKey === "pinned" ? ctx.pinnedSort : ctx.chatSort;
   if (sort !== "manual" && !ctx.reorderSwitchesSort) return null;
   const next = insertIdAt(ids, drag.id, targetId, edge);
-  if (next === ids) return null;
+  if (next === ids) return STAY;
   return {
     action: { kind: "reorder" },
     cue: line(scope, targetId, edge),

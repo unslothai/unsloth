@@ -11,6 +11,7 @@ import {
   planKey,
   planSidebarDrop,
   rowKey,
+  STAY,
   type DropEdge,
   type SidebarDragItem,
   type SidebarDropContext,
@@ -168,6 +169,12 @@ export function useSidebarDrag(options: UseSidebarDragOptions): SidebarDragApi {
           event.preventDefault();
           lastHandledEvent = event.nativeEvent;
           event.dataTransfer.dropEffect = "move";
+          if (next === STAY) {
+            // Already here: nothing to paint, and nothing for the outer zones to add.
+            cancelSpring();
+            showPlan(null);
+            return;
+          }
           showPlan(next);
           if (zoneOptions?.closed && optionsRef.current.springOpen) {
             if (spring.current?.key !== springKey) {
@@ -197,7 +204,7 @@ export function useSidebarDrag(options: UseSidebarDragOptions): SidebarDragApi {
           event.preventDefault();
           lastHandledEvent = event.nativeEvent;
           clear();
-          optionsRef.current.onDrop(next, dragged);
+          if (next !== STAY) optionsRef.current.onDrop(next, dragged);
         },
       };
     },
