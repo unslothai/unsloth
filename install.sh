@@ -278,6 +278,7 @@ _carry_pip_policy_into_uv() {
 # occurrence adding to the set and `:none:` emptying it, so the file rows are replayed in
 # load order and the environment appended rather than one of them winning.
 _PM_ONLY_BINARY_ARGS=""
+_PM_INDEX_POLICY_ARGS=""
 _resolve_only_binary_policy() {
     _pm_set=""
     for _pm_raw in $(printf '%s\n' "$_PM_PIP_CONFIG_LISTING" \
@@ -301,23 +302,90 @@ _resolve_only_binary_policy() {
     unset _pm_set _pm_raw _pm_one
 }
 
+# uv spells this --no-index and gives it NO environment binding (uv 0.10.7), unlike
+# --find-links which reads UV_FIND_LINKS. So keeping PIP_NO_INDEX in the environment, which
+# is what the opt-out does, left uv reaching the registry anyway. find-links is carried as
+# the environment variable uv does read, because --no-index without it leaves uv nowhere to
+# look: the operator's wheelhouse is the source their no-index policy presupposes.
+_resolve_index_policy() {
+    _pm_ni="${PIP_NO_INDEX:-}"
+    if [ -z "$_pm_ni" ]; then
+        for _pm_row in $(printf '%s\n' "$_PM_PIP_CONFIG_LISTING" \
+            | sed -n "s/^\\(global\\|install\\)\\.no[-_]index=//p" \
+            | tr -d "'\"" | tr '[:upper:]' '[:lower:]'); do
+            _pm_ni="$_pm_row"
+        done
+    fi
+    case "$(printf '%s' "$_pm_ni" | tr '[:upper:]' '[:lower:]')" in
+        ""|0|false|no|off|n|f) ;;
+        *) _PM_INDEX_POLICY_ARGS="--no-index" ;;
+    esac
+    if [ -z "${UV_FIND_LINKS:-}" ]; then
+        _pm_fl="${PIP_FIND_LINKS:-}"
+        if [ -z "$_pm_fl" ]; then
+            for _pm_row in $(printf '%s\n' "$_PM_PIP_CONFIG_LISTING" \
+                | sed -n "s/^\\(global\\|install\\)\\.find[-_]links=//p" \
+                | tr -d "'\""); do
+                _pm_fl="$_pm_row"
+            done
+        fi
+        if [ -n "$_pm_fl" ]; then
+            UV_FIND_LINKS="$_pm_fl"
+            export UV_FIND_LINKS
+        fi
+    fi
+    unset _pm_ni _pm_fl _pm_row
+}
+
 if _respect_pm_policy; then
     _load_pip_config_listing
     _carry_pip_policy_into_uv
     _resolve_only_binary_policy
+    _resolve_index_policy
 fi
 
 # Policy that binds uv and that pip cannot be told about. The Python twin is
 # _uv_only_policy_active(); a uv configuration file counts by PRESENCE, unparsed, because
 # whatever restriction it holds is precisely what a pip command will not see.
+# uv's own boolish spellings, so a control the operator explicitly DISABLED does not read
+# as an active policy. The Python twin goes through _uv_env_flag(); testing for a non-empty
+# value made UV_OFFLINE=0 skip the ROCm bitsandbytes install and warn about a policy uv
+# itself considers off.
+_uv_flag_on() {
+    case "$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')" in
+        1|t|true|y|yes|on) return 0 ;;
+    esac
+    return 1
+}
+
+# Policy that binds uv and that pip cannot be told about. The Python twin is
+# _uv_only_policy_active(); a uv configuration file counts by PRESENCE, unparsed, because
+# whatever restriction it holds is precisely what a pip command will not see.
 _uv_only_policy_active() {
-    [ -n "${UV_REQUIRE_HASHES:-}" ] && return 0
-    [ -n "${UV_OFFLINE:-}" ] && return 0
+    _uv_flag_on "${UV_REQUIRE_HASHES:-}" && return 0
+    _uv_flag_on "${UV_OFFLINE:-}" && return 0
+    # A timestamp and a path, not booleans: any value is a setting.
     [ -n "${UV_EXCLUDE_NEWER:-}" ] && return 0
     [ -n "${UV_CONFIG_FILE:-}" ] && return 0
-    [ -f uv.toml ] && return 0
-    [ -f pyproject.toml ] && grep -q '\[tool\.uv\]' pyproject.toml 2>/dev/null && return 0
+    # UV_NO_CONFIG means uv discovers nothing, so there is no hidden file to respect.
+    _uv_flag_on "${UV_NO_CONFIG:-}" && return 1
+    # uv discovers uv.toml in the current directory, any PARENT, then the user file, then
+    # the system file. Walking up matters more than the corner cases: a policy at the root
+    # of a checkout binds an installer run from a subdirectory.
+    _pm_dir=$(pwd)
+    while :; do
+        [ -f "$_pm_dir/uv.toml" ] && { unset _pm_dir; return 0; }
+        if [ -f "$_pm_dir/pyproject.toml" ] && grep -q '\[tool\.uv[].]' "$_pm_dir/pyproject.toml" 2>/dev/null; then
+            unset _pm_dir
+            return 0
+        fi
+        [ "$_pm_dir" = "/" ] && break
+        _pm_dir=$(dirname "$_pm_dir")
+    done
+    unset _pm_dir
     [ -f "${XDG_CONFIG_HOME:-$HOME/.config}/uv/uv.toml" ] && return 0
+    # The system file a managed fleet is likeliest to use.
+    [ -f /etc/uv/uv.toml ] && return 0
     return 1
 }
 
@@ -325,13 +393,13 @@ run_install_cmd() {
     _label="$1"
     shift
     # Before the index scrub below, which may prepend `env ...` and move uv out of $1.
-    if [ -n "${_PM_ONLY_BINARY_ARGS:-}" ] && [ "$1" = "uv" ] && [ "$2" = "pip" ] \
+    if [ -n "${_PM_ONLY_BINARY_ARGS:-}${_PM_INDEX_POLICY_ARGS:-}" ] && [ "$1" = "uv" ] && [ "$2" = "pip" ] \
         && { [ "$3" = "install" ] || [ "$3" = "sync" ]; }; then
         _pm_verb="$3"
         shift 3
         # Immediately after the subcommand, never appended: several call sites end with
         # `-- <package>`, where a trailing flag would be read as another package name.
-        set -- uv pip "$_pm_verb" $_PM_ONLY_BINARY_ARGS "$@"
+        set -- uv pip "$_pm_verb" $_PM_ONLY_BINARY_ARGS $_PM_INDEX_POLICY_ARGS "$@"
         unset _pm_verb
     fi
     # For --default-index, clear inherited uv index vars so a uv.toml cannot outrank the CLI pin.

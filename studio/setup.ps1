@@ -7104,9 +7104,35 @@ function Get-PipPolicyOnlyBinary {
     return @($targets | ForEach-Object { '--only-binary'; $_ })
 }
 
+# uv spells this --no-index and gives it NO environment binding (uv 0.10.7), unlike
+# --find-links which reads UV_FIND_LINKS. So keeping PIP_NO_INDEX in the environment left uv
+# reaching the registry anyway. find-links is carried as the variable uv does read, because
+# --no-index without it leaves uv nowhere to look: the operator's wheelhouse is the source
+# their no-index policy presupposes.
+function Get-PipPolicyIndexArgs {
+    $off = @('', '0', 'false', 'no', 'off', 'n', 'f')
+    $noIndex = "$env:PIP_NO_INDEX".Trim()
+    $links = "$env:PIP_FIND_LINKS".Trim()
+    foreach ($line in (Get-PmPipConfigListing)) {
+        # Only when the environment is silent: pip ranks PIP_* above its files.
+        if (-not $noIndex -and "$line" -match "^(global|install)\.no[-_]index\s*=\s*'?([^']*)'?\s*$") {
+            $fileNoIndex = $Matches[2].Trim()
+        }
+        if (-not $links -and "$line" -match "^(global|install)\.find[-_]links\s*=\s*'?([^']*)'?\s*$") {
+            $links = $Matches[2].Trim()
+        }
+    }
+    if (-not $noIndex) { $noIndex = "$fileNoIndex" }
+    if ($links -and -not "$env:UV_FIND_LINKS".Trim()) { $env:UV_FIND_LINKS = $links }
+    if ($off -contains $noIndex.ToLowerInvariant()) { return @() }
+    return @('--no-index')
+}
+
 # Empty by default, so every splat below is a no-op on the default path.
-$script:PmOnlyBinaryArgs = @()
-if (Test-RespectPmPolicy) { $script:PmOnlyBinaryArgs = Get-PipPolicyOnlyBinary }
+$script:PmPolicyArgs = @()
+if (Test-RespectPmPolicy) {
+    $script:PmPolicyArgs = @(Get-PipPolicyOnlyBinary) + @(Get-PipPolicyIndexArgs)
+}
 
 if ((Test-RespectPmPolicy) -and -not "$env:UV_REQUIRE_HASHES".Trim() -and (Test-PipPolicyRequiresHashes)) {
     $env:UV_REQUIRE_HASHES = '1'
@@ -7155,7 +7181,7 @@ function Fast-Install {
                 $env:UV_REQUIRE_HASHES = '1'
             }
             $VenvPy = (Get-Command python).Source
-            $result = & uv pip install --python $VenvPy @script:PmOnlyBinaryArgs @Args_ 2>&1
+            $result = & uv pip install --python $VenvPy @script:PmPolicyArgs @Args_ 2>&1
             if ($LASTEXITCODE -eq 0) { return }
             # Same hand-off as pip_install(): pip reads neither uv.toml nor any UV_ variable,
             # so under the opt-out a uv refusal must not become a pip success. No translation

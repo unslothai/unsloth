@@ -65,6 +65,11 @@ def _shared_setup_5(tmp_path):
 
 STUDIO_DIR = Path(__file__).resolve().parents[2] / "studio"
 INSTALL_SH = Path(__file__).resolve().parents[2] / "install.sh"
+# Windows has no /bin/sh, and the two tests below execute install.sh's real functions
+# rather than restating them, so there is nothing to run there. Skipped rather than
+# silently passing, which is what the dedicated shell parity suite does too.
+HAVE_SH = Path("/bin/sh").exists()
+requires_sh = pytest.mark.skipif(not HAVE_SH, reason = "needs a POSIX /bin/sh")
 
 
 def _shell_function_source(name: str) -> str:
@@ -1330,25 +1335,35 @@ class TestPackageManagerPolicyOptOut:
         assert env["UV_NO_CONFIG"] == "1"
         assert env["PIP_CONFIG_FILE"] == os.devnull
 
-    def test_the_pip_config_is_never_read_back_on_the_opt_out_arm(self):
+    def test_the_pip_config_is_never_re_asserted_on_the_opt_out_arm(self):
         """_pinned_pip_config_overrides exists to put back what PIP_CONFIG_FILE=devnull
         removed. The opt-out never sets devnull, so pip reads the real file itself and
         re-asserting would apply the same keys twice -- and only-binary ACCUMULATES, so
-        `:all:` would come back as `:all:,:all:`."""
-        calls = []
+        `:all:` would come back as `:all:,:all:`.
 
-        def recorder(*args, **kwargs):
-            calls.append((args, kwargs))
-            return {"PIP_ONLY_BINARY": ":all:"}
+        Re-asserted, not read. The translation added later reads the same listing on
+        purpose, because a policy uv cannot see has to be restated for it, and that call
+        exists only to populate the memo the reader shares. What must not happen is the
+        RESULT landing in the child's environment, so that is what this asserts -- the
+        earlier spelling of this test forbade the read itself and would have made the
+        translation impossible to write without appearing to break an invariant.
+        """
+        supplied = {"PIP_ONLY_BINARY": ":all:", "PIP_CERT": "/etc/ca.pem"}
 
-        with mock.patch.object(ips, "_pinned_pip_config_overrides", recorder):
+        with mock.patch.object(ips, "_pinned_pip_config_overrides", lambda *a, **k: supplied):
             with self._environment(self.HOSTILE, opt_out = "1"):
-                ips._install_env_for_cmd(self.PINNED)
-            assert calls == [], "the opt-out arm read a pip.conf it never switched off"
-            # The recorder is wired to the name the code calls: the default arm reaches it.
+                env = ips._install_env_for_cmd(self.PINNED) or {}
+                baseline = ips._install_env_for_cmd(self.UNPINNED) or {}
             with self._environment(self.HOSTILE):
-                ips._install_env_for_cmd(self.PINNED)
-            assert calls, "the recorder is not wired up, so the assertion above proves nothing"
+                default = ips._install_env_for_cmd(self.PINNED) or {}
+
+        assert (
+            env.get("PIP_CERT") != "/etc/ca.pem"
+        ), "the opt-out arm re-asserted a pip.conf key it never switched off"
+        assert baseline.get("PIP_CERT") != "/etc/ca.pem"
+        # The same mock on the DEFAULT arm does land, which is what makes the two
+        # assertions above a real difference rather than a mock that never fires.
+        assert default.get("PIP_CERT") == "/etc/ca.pem"
 
     def test_the_parent_environment_is_never_mutated(self):
         """As the relaxation itself: these are child-env decisions. Leaking either way
@@ -1760,6 +1775,7 @@ class TestPackageManagerPolicyOptOut:
             (tmp_path / "uv.toml").unlink()
             assert ips._uv_config_file_present() is False
 
+    @requires_sh
     @pytest.mark.parametrize(
         ("listing", "variable", "expected"),
         [
@@ -1798,6 +1814,7 @@ class TestPackageManagerPolicyOptOut:
         assert result.returncode == 0, result.stderr
         assert result.stdout == expected
 
+    @requires_sh
     @pytest.mark.parametrize(
         ("listing", "variable", "expected"),
         [
@@ -1850,7 +1867,7 @@ class TestPackageManagerPolicyOptOut:
         assert injection < body.index(
             "--default-index"
         ), "the index scrub prepends `env ...`, which moves uv out of $1"
-        assert 'set -- uv pip "$_pm_verb" $_PM_ONLY_BINARY_ARGS "$@"' in body
+        assert 'set -- uv pip "$_pm_verb" $_PM_ONLY_BINARY_ARGS $_PM_INDEX_POLICY_ARGS "$@"' in body
 
     def test_every_install_ps1_uv_install_carries_the_policy(self):
         """33 call sites and no chokepoint: Invoke-InstallCommand takes a ScriptBlock.
@@ -1862,8 +1879,73 @@ class TestPackageManagerPolicyOptOut:
         sites = re.findall(r"\$script:UvExe pip install (\S+)", text)
         assert len(sites) >= 30, f"the call sites moved; found {len(sites)}"
         assert set(sites) == {
-            "@script:PmOnlyBinaryArgs"
+            "@script:PmPolicyArgs"
         }, "every uv install must splat the resolved only-binary policy"
+
+    @pytest.mark.reads_real_pip_config
+    @pytest.mark.parametrize(
+        ("environment", "listing", "expected"),
+        [
+            ({"PIP_NO_INDEX": "1"}, b"", ["--no-index"]),
+            ({}, b"global.no-index='true'\n", ["--no-index"]),
+            ({}, b"install.no-index='true'\n", ["--no-index"]),
+            ({"PIP_NO_INDEX": "0"}, b"global.no-index='true'\n", []),  # environment first
+            ({}, b"global.no-index='true'\ninstall.no-index='false'\n", []),  # last wins
+            ({}, b"", []),
+        ],
+    )
+    def test_a_no_index_policy_reaches_uv_as_an_argument(
+        self, environment, listing, expected, monkeypatch
+    ):
+        """uv gives --no-index no environment binding, so keeping PIP_NO_INDEX did nothing.
+
+        Measured on uv 0.10.7: `uv pip install --help` binds --find-links to UV_FIND_LINKS
+        and leaves --no-index argument-only. The opt-out kept PIP_NO_INDEX in the child's
+        environment and uv went to the registry regardless, which is the opposite of an
+        air-gapped operator's intent.
+        """
+        monkeypatch.setattr(ips, "_PINNED_PIP_CONFIG_LISTING", listing)
+        monkeypatch.setattr(ips, "_pinned_pip_config_overrides", lambda *a, **k: {})
+        with self._environment(environment, opt_out = "1"):
+            assert ips._pm_index_policy_uv_args(self.PINNED) == expected
+            assert ips._pm_index_policy_uv_args(["uv", "pip", "install", "x"]) == expected
+            # pip reads its own settings, so a pip command must not be given this twice.
+            assert ips._pm_index_policy_uv_args(self.UNPINNED) == []
+        with self._environment(environment):
+            assert (
+                ips._pm_index_policy_uv_args(self.PINNED) == []
+            ), "the default path must not gain arguments it did not have before"
+
+    @pytest.mark.reads_real_pip_config
+    def test_find_links_is_carried_because_no_index_leaves_uv_nowhere_to_look(self, monkeypatch):
+        """--no-index without find-links is not a policy, it is an unusable installer.
+
+        UV_FIND_LINKS is the one index setting uv does read from the environment, and the
+        operator's wheelhouse is the source their no-index policy presupposes.
+        """
+        monkeypatch.setattr(ips, "_PINNED_PIP_CONFIG_LISTING", b"global.find-links='/opt/wheels'\n")
+        monkeypatch.setattr(ips, "_pinned_pip_config_overrides", lambda *a, **k: {})
+        with self._environment({}, opt_out = "1"):
+            assert ips._pip_policy_as_uv_env().get("UV_FIND_LINKS") == "/opt/wheels"
+        # Never over a uv value the operator set themselves.
+        with self._environment({"UV_FIND_LINKS": "/their/wheels"}, opt_out = "1"):
+            assert "UV_FIND_LINKS" not in ips._pip_policy_as_uv_env()
+        with self._environment({"PIP_FIND_LINKS": "/env/wheels"}, opt_out = "1"):
+            assert ips._pip_policy_as_uv_env().get("UV_FIND_LINKS") == "/env/wheels"
+
+    def test_the_uv_discovery_check_is_the_modules_own(self):
+        """Duplicating uv's discovery is how the two answers drifted apart.
+
+        _uv_config_files() already covers the parent walk and the SYSTEM files
+        (/etc/uv/uv.toml, %PROGRAMDATA%) that a managed fleet is likeliest to use, which a
+        hand-rolled check in this feature had missed.
+        """
+        source = inspect.getsource(ips._uv_config_file_present)
+        assert "_uv_config_files()" in source, "the presence check must not re-derive discovery"
+        # The prose may name the system paths; the CODE must not go looking for them itself.
+        body = source[source.index('"""', source.index('"""') + 3) :]
+        assert "/etc/uv" not in body, "system paths belong to _uv_config_files(), not here"
+        assert "PROGRAMDATA" not in body
 
     def test_the_shell_declines_the_forced_pip_amd_wheel_too(self):
         """install.sh runs the same direct-URL install through pip, for the same reason.

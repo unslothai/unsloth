@@ -8745,7 +8745,7 @@ def _pinned_cmd_and_env(cmd: "list[str]") -> "tuple[list[str], dict[str, str] | 
     the environment but not the argv that carries it (uv) or exempts from it (both).
     """
     env = _install_env_for_cmd(cmd)
-    return cmd + _pinned_binary_policy_args(cmd, env), env
+    return cmd + _pinned_binary_policy_args(cmd, env) + _pm_index_policy_uv_args(cmd), env
 
 
 # Wheel-less dependencies of AMD's per-arch (gfx*) indexes: every torch there requires
@@ -9014,43 +9014,51 @@ def _pip_policy_only_binary(subcommand: str = "install") -> "list[str]":
 def _uv_config_file_present() -> bool:
     """Could uv be reading policy from a configuration file on this host?
 
-    Presence only -- the file is never parsed, which is the unbounded surface this change
-    keeps out. It answers the one question a forced-pip step needs: is there somewhere a
-    hash, offline or index restriction could be hiding that pip will not see? If yes, the
-    honest answer is that the substitution cannot be shown to be safe.
+    Delegates to _uv_config_files(), which is the module's existing answer to "what would uv
+    discover here" and already covers what a hand-rolled check kept missing: the walk up
+    through parent directories, and the SYSTEM files (/etc/uv/uv.toml,
+    %PROGRAMDATA%\\uv\\uv.toml) that a managed fleet is likeliest to use. Duplicating
+    discovery is how the two answers drifted apart in the first place.
 
-    Cheap by construction: at most three stat calls and one small read, and only reached
-    once the opt-out is already on.
+    Presence only -- no file is parsed, which is the unbounded surface this change keeps out.
+    It answers the one question a forced-pip step needs: is there somewhere a hash, offline
+    or artifact restriction could be hiding that pip will not see? If yes, the substitution
+    cannot be shown to be safe.
+
+    UV_CONFIG_FILE names a file explicitly and UV_NO_CONFIG discovers nothing; both are the
+    operator being explicit, and _uv_config_files() already reflects each.
     """
     try:
-        if os.environ.get("UV_CONFIG_FILE", "").strip():
-            return True
-        # uv help pip install: "configuration files are discovered in the current directory,
-        # parent directories, or user configuration directories". Checking the current
-        # directory alone missed the ordinary case of a policy at the root of a checkout
-        # while the installer runs from a subdirectory.
-        here = Path.cwd().resolve()
-        for directory in (here, *here.parents):
-            if (directory / "uv.toml").is_file():
-                return True
-            pyproject = directory / "pyproject.toml"
-            if pyproject.is_file():
-                # A substring, not a TOML parse: `[tool.uv]` cannot appear by accident, and
-                # a malformed file should not decide a security question by raising.
-                if "[tool.uv]" in pyproject.read_text(encoding = "utf-8", errors = "replace"):
-                    return True
-        if IS_WINDOWS:
-            base = os.environ.get("APPDATA", "")
-            user = Path(base) / "uv" / "uv.toml" if base else None
-        else:
-            base = os.environ.get("XDG_CONFIG_HOME", "") or os.path.expanduser("~/.config")
-            user = Path(base) / "uv" / "uv.toml"
-        if user is not None and user.is_file():
-            return True
+        return bool(os.environ.get("UV_CONFIG_FILE", "").strip()) or bool(_uv_config_files())
     except OSError:
         # An unreadable candidate is not evidence of absence.
         return True
-    return False
+
+
+def _pip_policy_no_index() -> bool:
+    """Has the operator told pip to ignore the registry indexes?
+
+    uv spells this --no-index and, on uv 0.10.7, gives it NO environment binding -- unlike
+    --find-links, which reads UV_FIND_LINKS. So keeping PIP_NO_INDEX in the child's
+    environment, which is what the opt-out arm did, left uv reaching pypi.org regardless.
+    """
+    value = _effective_pip_policy("PIP_NO_INDEX", "no-index")
+    if value is None:
+        return False
+    return value.strip().lower() not in ("", "0", "false", "no", "off", "n", "f")
+
+
+def _pm_index_policy_uv_args(cmd: "list[str]") -> "list[str]":
+    """--no-index for a uv command, when pip has been told to ignore the indexes.
+
+    Restrictive rather than additive, so it is safe on a pinned command too: it can only
+    narrow where uv is allowed to look, never redirect it, which is the #6898 hazard the
+    pinned arm exists to prevent. The permitted sources still come from find-links, which
+    uv does read from the environment and which the opt-out already leaves in place.
+    """
+    if not (_respect_pm_policy() and cmd[:1] == ["uv"]):
+        return []
+    return ["--no-index"] if _pip_policy_no_index() else []
 
 
 def _pip_policy_as_uv_env() -> "dict[str, str]":
@@ -9061,6 +9069,13 @@ def _pip_policy_as_uv_env() -> "dict[str, str]":
             continue  # an explicit uv value the operator set outranks a translation
         if _pip_policy_requires_hashes():
             carried[uv_name] = "1"
+    # --find-links is the one index setting uv DOES read from the environment (UV_FIND_LINKS,
+    # uv 0.10.7). It matters here because --no-index without it leaves uv with nowhere to
+    # look: the operator's wheelhouse is the source their no-index policy presupposes.
+    if not os.environ.get("UV_FIND_LINKS", "").strip():
+        links = _effective_pip_policy("PIP_FIND_LINKS", "find-links")
+        if links:
+            carried["UV_FIND_LINKS"] = links
     return carried
 
 
