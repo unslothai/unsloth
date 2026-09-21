@@ -15801,8 +15801,9 @@ def _check_signal_escape_patterns(code: str):
     if visitor.imports_signal and not signal_tampering:
         warnings.append("Code imports 'signal' module - review manually for safety")
 
-    # Static host policy: block metadata hosts and any literal host outside the trusted allowlist; uploads blocked
-    # regardless of host. Dynamic hosts are caught by the bash blocklist.
+    # Static host policy: block metadata hosts and any host outside the trusted allowlist; uploads blocked regardless
+    # of host. A host this screen cannot read is treated as untrusted, since nothing downstream screens python-tool
+    # code again.
     network_calls: list[dict] = []
     sensitive_file_reads: list[dict] = []
     _NETWORK_FQ_PREFIXES = (
@@ -15831,6 +15832,42 @@ def _check_signal_escape_patterns(code: str):
         "httpx.Client",
         "httpx.AsyncClient",
         "aiohttp.ClientSession",
+    )
+    # The modules an alias is resolved back to, so `import urllib.request as u` and `from urllib.request import
+    # urlopen` reach the prefixes above exactly as the spelled-out call does.
+    _NETWORK_MODULES = frozenset(
+        {
+            "socket",
+            "urllib.request",
+            "urllib3",
+            "http.client",
+            "requests",
+            "httpx",
+            "aiohttp",
+        }
+    )
+    # Calls whose FIRST positional argument is the host or the URL. `socket.socket(AF_INET, ...)` and the
+    # session/client constructors take neither, so an unreadable first argument says nothing about them.
+    _NETWORK_URL_ARG0_FQ = frozenset(
+        {
+            "socket.create_connection",
+            "socket.getaddrinfo",
+            "urllib.request.urlopen",
+            "urllib.request.urlretrieve",
+            "requests.get",
+            "requests.post",
+            "requests.put",
+            "requests.delete",
+            "requests.patch",
+            "requests.head",
+            "http.client.HTTPConnection",
+            "http.client.HTTPSConnection",
+            "httpx.get",
+            "httpx.post",
+            "httpx.put",
+            "httpx.patch",
+            "httpx.delete",
+        }
     )
     _UPLOAD_HTTP_METHODS = (
         "requests.post",
@@ -16275,7 +16312,88 @@ def _check_signal_escape_patterns(code: str):
             return _HF_UPLOAD_PATH_VIOLATION
         return None
 
+    def _literal_str_prefix(node, names: "dict[str, str | None]") -> "tuple[str, bool]":
+        """The text a string expression is statically known to START with, and whether that is the
+        whole value. The head is what decides the destination: a URL's scheme and host sit in front
+        of whatever a concatenation or an f-string appends at runtime."""
+        if isinstance(node, ast.Constant):
+            return (node.value, True) if isinstance(node.value, str) else ("", False)
+        if isinstance(node, ast.Name):
+            bound = names.get(node.id)
+            return (bound, True) if isinstance(bound, str) else ("", False)
+        if isinstance(node, ast.JoinedStr):
+            text = ""
+            for part in node.values:
+                if isinstance(part, ast.Constant) and isinstance(part.value, str):
+                    text += part.value
+                    continue
+                return text, False
+            return text, True
+        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+            left, left_whole = _literal_str_prefix(node.left, names)
+            if not left_whole:
+                return left, False
+            right, right_whole = _literal_str_prefix(node.right, names)
+            return left + right, right_whole
+        return "", False
+
+    def _unwrapped_url_arg(node: ast.AST) -> ast.AST:
+        """`urlopen(Request(url))` carries the destination one call further in, so read it there."""
+        if isinstance(node, ast.Call) and node.args:
+            f = node.func
+            name = f.attr if isinstance(f, ast.Attribute) else getattr(f, "id", "")
+            if name == "Request":
+                return node.args[0]
+        return node
+
     class NetworkAndIoVisitor(ast.NodeVisitor):
+        def __init__(self):
+            # Alias -> the module it binds, and bare name -> the network function it binds. The shell-exec half of
+            # this analyzer already resolves both; without them `import urllib.request as u; u.urlopen(...)` matched
+            # no prefix and a hardcoded attacker host passed the screen untouched.
+            self.module_aliases: dict[str, str] = {}
+            self.func_aliases: dict[str, str] = {}
+            # Name -> the string literal it holds, None once it holds anything else. `url =
+            # "https://huggingface.co/x"; requests.get(url)` is still a host this screen can read.
+            self.literal_names: dict[str, "str | None"] = {}
+
+        def visit_Import(self, node):
+            for alias in node.names:
+                if alias.asname and alias.name in _NETWORK_MODULES:
+                    self.module_aliases[alias.asname] = alias.name
+            self.generic_visit(node)
+
+        def visit_ImportFrom(self, node):
+            module = node.module or ""
+            for alias in node.names:
+                bound = alias.asname or alias.name
+                fq = f"{module}.{alias.name}"
+                if fq in _NETWORK_MODULES:
+                    self.module_aliases[bound] = fq  # from urllib import request
+                elif module in _NETWORK_MODULES:
+                    self.func_aliases[bound] = fq  # from urllib.request import urlopen
+            self.generic_visit(node)
+
+        def _bind_literal(self, name: str, value: "str | None") -> None:
+            if name in self.literal_names and self.literal_names[name] != value:
+                self.literal_names[name] = None  # rebound to something else: no longer readable
+            else:
+                self.literal_names[name] = value
+
+        def visit_Assign(self, node):
+            value = node.value
+            literal = value.value if isinstance(value, ast.Constant) else None
+            for target in node.targets:
+                if isinstance(target, ast.Name):
+                    self._bind_literal(target.id, literal if isinstance(literal, str) else None)
+            self.generic_visit(node)
+
+        def visit_AugAssign(self, node):
+            # `url += host` appends at runtime, so whatever the name held is no longer the value.
+            if isinstance(node.target, ast.Name):
+                self.literal_names[node.target.id] = None
+            self.generic_visit(node)
+
         def visit_Call(self, node):
             parts: list[str] = []
             cur = node.func
@@ -16285,6 +16403,10 @@ def _check_signal_escape_patterns(code: str):
             if isinstance(cur, ast.Name):
                 parts.insert(0, cur.id)
             fq = ".".join(parts) if parts else ""
+            if len(parts) > 1 and parts[0] in self.module_aliases:
+                fq = ".".join([self.module_aliases[parts[0]]] + parts[1:])
+            elif len(parts) == 1 and parts[0] in self.func_aliases:
+                fq = self.func_aliases[parts[0]]
 
             hf_upload_name = _method_call_hf_upload_name(node)
             if hf_upload_name is not None:
@@ -16340,23 +16462,42 @@ def _check_signal_escape_patterns(code: str):
                         }
                     )
 
-                # 2) Extract literal host (URL string or (host, port) tuple).
+                # 2) Extract the host (URL string or (host, port) tuple) from the first argument.
                 host_arg = None
-                url_arg = None
+                whole = False
                 if node.args:
-                    a0 = node.args[0]
-                    if isinstance(a0, ast.Constant) and isinstance(a0.value, str):
-                        url_arg = a0.value
-                    elif isinstance(a0, ast.Tuple) and a0.elts:
-                        e0 = a0.elts[0]
-                        if isinstance(e0, ast.Constant) and isinstance(e0.value, str):
-                            host_arg = e0.value
-                if url_arg and host_arg is None:
-                    m = re.match(r"^\w+://([^/?#]+)", url_arg)
-                    if m:
-                        host_arg = m.group(1)
+                    a0 = _unwrapped_url_arg(node.args[0])
+                    if isinstance(a0, ast.Tuple):
+                        head, whole = (
+                            _literal_str_prefix(a0.elts[0], self.literal_names)
+                            if a0.elts
+                            else ("", False)
+                        )
+                        if whole and head:
+                            host_arg = head
+                    else:
+                        head, whole = _literal_str_prefix(a0, self.literal_names)
+                        m = re.match(r"^\w+://([^/?#]+)", head)
+                        # The host ends at the first `/?#`, so a literal truncated past that point still
+                        # names it in full; one truncated inside it does not (`"http://evil." + tld`).
+                        if m and (whole or head[m.end(1) :]):
+                            host_arg = m.group(1)
 
-                if host_arg:
+                # 3) A recognised egress call whose host cannot be read is untrusted, not absent.
+                # `urlopen("http://" + h)` reaches the attacker's host exactly as the spelled-out literal
+                # does, and no later screen sees python-tool code.
+                if host_arg is None and not whole and node.args and fq in _NETWORK_URL_ARG0_FQ:
+                    network_calls.append(
+                        {
+                            "type": "unreadable_host_blocked",
+                            "line": getattr(node, "lineno", -1),
+                            "description": (
+                                "Blocked: network destination is not a literal the sandbox "
+                                "can check; write the allowed host out in full"
+                            ),
+                        }
+                    )
+                elif host_arg:
                     if _is_metadata_host(host_arg):
                         network_calls.append(
                             {

@@ -135,9 +135,137 @@ class TestUntrustedHostBlock:
     def test_untrusted_host_block_blocked(self, code):
         _blocked(code, expect_phrase = "Blocked: host not in sandbox allowlist")
 
-    def test_dynamic_url_not_statically_blocked(self):
-        # Static AST can't resolve runtime URLs; bash blocklist is the fallback.
-        _ok('import requests; url = "https://example.com/"; requests.get(url)')
+    def test_untrusted_host_behind_a_name_blocked(self):
+        # A name holding a literal is still a host this screen reads, so it gets the same verdict
+        # as the spelled-out call. Nothing screens python-tool code again after this.
+        _blocked(
+            'import requests; url = "https://example.com/"; requests.get(url)',
+            expect_phrase = "Blocked: host not in sandbox allowlist",
+        )
+
+
+class TestNetworkImportAliases:
+    """The screen resolves the callee through import aliases, as the shell-exec half of the same
+    analyzer already does. `import urllib.request as u; u.urlopen("http://attacker/")` matched no
+    network prefix, so a hardcoded attacker host was neither refused nor raised for approval."""
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            pytest.param(
+                'import urllib.request as u\nu.urlopen("http://evil.example.com/x")',
+                id = "module_alias_urlopen_blocked",
+            ),
+            pytest.param(
+                'from urllib.request import urlopen\nurlopen("http://evil.example.com/x")',
+                id = "from_import_urlopen_blocked",
+            ),
+            pytest.param(
+                'from urllib import request\nrequest.urlopen("http://evil.example.com/x")',
+                id = "from_import_submodule_blocked",
+            ),
+            pytest.param(
+                'from urllib.request import urlopen as fetch\nfetch("http://evil.example.com/x")',
+                id = "renamed_from_import_blocked",
+            ),
+            pytest.param(
+                'import requests as r\nr.get("https://evil.example.com/x")',
+                id = "requests_alias_blocked",
+            ),
+            pytest.param(
+                'from socket import create_connection\ncreate_connection(("evil.example", 80))',
+                id = "from_import_create_connection_blocked",
+            ),
+            pytest.param(
+                'import urllib.request\n'
+                'urllib.request.urlopen(urllib.request.Request("http://evil.example.com/x"))',
+                id = "request_object_blocked",
+            ),
+        ],
+    )
+    def test_aliased_network_call_blocked(self, code):
+        _blocked(code, expect_phrase = "Blocked: host not in sandbox allowlist")
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            pytest.param(
+                'import urllib.request as u\nu.urlopen("https://arxiv.org/abs/2401.12345")',
+                id = "module_alias_trusted_host_allowed",
+            ),
+            pytest.param(
+                'from urllib.request import urlopen\nurlopen("https://huggingface.co/unsloth")',
+                id = "from_import_trusted_host_allowed",
+            ),
+            pytest.param(
+                'import requests as r\nr.get("https://docs.python.org/3/")',
+                id = "requests_alias_trusted_host_allowed",
+            ),
+        ],
+    )
+    def test_aliased_trusted_host_allowed(self, code):
+        _ok(code)
+
+
+class TestUnreadableNetworkHost:
+    """A host this screen cannot resolve is treated as untrusted. It reaches the same places a
+    literal does, and the python tool is not screened again anywhere downstream."""
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            pytest.param(
+                'import urllib.request\nh = get_host()\nurllib.request.urlopen("http://" + h + "/x")',
+                id = "concatenated_host_blocked",
+            ),
+            pytest.param(
+                "import requests\nrequests.get(f\"http://{host}/collect\")",
+                id = "f_string_host_blocked",
+            ),
+            pytest.param(
+                'import requests\nrequests.get("http://%s/x" % host)',
+                id = "percent_formatted_host_blocked",
+            ),
+            pytest.param(
+                "import socket\nsocket.create_connection((host, 4444))",
+                id = "socket_tuple_name_blocked",
+            ),
+            pytest.param(
+                'import requests\nurl = "https://huggingface.co"\nurl += suffix\nrequests.get(url)',
+                id = "appended_to_allowlisted_head_blocked",
+            ),
+            pytest.param(
+                'import requests\nrequests.get("http://evil." + tld)',
+                id = "host_truncated_mid_label_blocked",
+            ),
+        ],
+    )
+    def test_unreadable_host_blocked(self, code):
+        _blocked(code, expect_phrase = "Blocked: network destination is not a literal")
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            # The scheme and host are literal; only the path is built at runtime.
+            pytest.param(
+                'import requests\nrepo = "unsloth"\nrequests.get(f"https://huggingface.co/{repo}")',
+                id = "f_string_path_on_trusted_host_allowed",
+            ),
+            pytest.param(
+                'import requests\nrequests.get("https://huggingface.co/api/models/" + name)',
+                id = "concatenated_path_on_trusted_host_allowed",
+            ),
+            # Neither of these takes a host at all, so their first argument decides nothing.
+            pytest.param(
+                "import socket\ns = socket.socket(socket.AF_INET, socket.SOCK_STREAM)",
+                id = "socket_constructor_allowed",
+            ),
+            pytest.param("import requests\ns = requests.Session()", id = "session_allowed"),
+            pytest.param("import httpx\nc = httpx.Client()", id = "httpx_client_allowed"),
+        ],
+    )
+    def test_readable_or_hostless_call_allowed(self, code):
+        _ok(code)
 
 
 class TestHostNormalization:
