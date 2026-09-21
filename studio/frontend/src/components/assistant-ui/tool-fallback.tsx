@@ -49,6 +49,8 @@ import {
   toolFallbackLabel,
 } from "./tool-arg-text";
 import { syncToolActivityPreference } from "./tool-activity-open-state";
+// eslint-disable-next-line no-restricted-imports -- this file is in the startup cycle; the chat barrel closes it.
+import { defaultOpenFor } from "@/features/chat/utils/display-visibility";
 
 const ANIMATION_DURATION = 200;
 
@@ -77,18 +79,14 @@ function ToolFallbackRoot({
   ...props
 }: ToolFallbackRootProps) {
   const collapsibleRef = useRef<HTMLDivElement>(null);
-  const collapseByDefault = useChatPreferencesStore(
-    (state) => state.collapseToolActivityByDefault,
-  );
-  const [uncontrolledState, setUncontrolledState] = useState(
-    () => ({
-      collapseByDefault,
-      open: defaultOpen && !collapseByDefault,
-    }),
-  );
+  const visibility = useChatPreferencesStore((state) => state.toolVisibility);
+  const [uncontrolledState, setUncontrolledState] = useState(() => ({
+    visibility,
+    open: defaultOpenFor(visibility, defaultOpen),
+  }));
   const syncedUncontrolledState = syncToolActivityPreference(
     uncontrolledState,
-    collapseByDefault,
+    visibility,
     defaultOpen,
   );
   if (syncedUncontrolledState !== uncontrolledState) {
@@ -115,14 +113,14 @@ function ToolFallbackRoot({
       }
       if (!isControlled) {
         setUncontrolledState({
-          collapseByDefault,
+          visibility,
           open,
         });
       }
       controlledOnOpenChange?.(open);
     },
     [
-      collapseByDefault,
+      visibility,
       lockScroll,
       isControlled,
       controlledOnOpenChange,

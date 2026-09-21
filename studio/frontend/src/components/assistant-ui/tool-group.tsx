@@ -38,6 +38,11 @@ import { cn } from "@/lib/utils";
 import { Spinner } from "@/components/ui/spinner";
 import { awaitsConfirmation, holdsOwnOutput } from "./tool-fold-exemptions";
 import { syncToolActivityPreference } from "./tool-activity-open-state";
+// eslint-disable-next-line no-restricted-imports -- this file is in the startup cycle; the chat barrel closes it.
+import {
+  defaultOpenFor,
+  foldIsActive,
+} from "@/features/chat/utils/display-visibility";
 
 const ANIMATION_DURATION = 200;
 
@@ -76,16 +81,14 @@ function ToolGroupRoot({
   // Same treatment as ToolFallbackRoot. ToolGroupImpl passes `undefined` whenever it is not forcing
   // the group open, so this uncontrolled state is what is on screen for most of a group's life --
   // without the sync, a group expanded by hand stays open while every card inside it closes.
-  const collapseByDefault = useChatPreferencesStore(
-    (state) => state.collapseToolActivityByDefault,
-  );
+  const visibility = useChatPreferencesStore((state) => state.toolVisibility);
   const [uncontrolledState, setUncontrolledState] = useState(() => ({
-    collapseByDefault,
-    open: defaultOpen && !collapseByDefault,
+    visibility,
+    open: defaultOpenFor(visibility, defaultOpen),
   }));
   const syncedUncontrolledState = syncToolActivityPreference(
     uncontrolledState,
-    collapseByDefault,
+    visibility,
     defaultOpen,
   );
   if (syncedUncontrolledState !== uncontrolledState) {
@@ -109,12 +112,12 @@ function ToolGroupRoot({
         detachFromBottom();
       }
       if (!isControlled) {
-        setUncontrolledState({ collapseByDefault, open });
+        setUncontrolledState({ visibility, open });
       }
       controlledOnOpenChange?.(open);
     },
     [
-      collapseByDefault,
+      visibility,
       lockScroll,
       isControlled,
       controlledOnOpenChange,
@@ -273,8 +276,9 @@ const ToolGroupImpl: FC<
   const messageRunning = useAuiState(
     ({ message }) => message.status?.type === "running",
   );
+  // Only collapsed suppresses the forced opens below. Auto and expanded want it open anyway.
   const collapseByDefault = useChatPreferencesStore(
-    (state) => state.collapseToolActivityByDefault,
+    (state) => state.toolVisibility === "collapsed",
   );
   // Force the group open when any call is receiving tool_output events.
   const toolLiveOutput = useChatRuntimeStore((s) => s.toolLiveOutput);
@@ -312,11 +316,11 @@ const ToolGroupImpl: FC<
       ((hasLiveOutput && messageRunning) ||
         (forcedOpenRef.current && messageRunning)));
 
-  // With the fold preference on, this run of calls belongs to the turn's first thinking block
-  // and shows only while that block is open. Calls that hold their own output, and any awaiting
-  // an allow or deny, are never folded away.
-  const foldToolActivity = useChatPreferencesStore(
-    (state) => state.foldToolActivityIntoThinking,
+  // With the fold preference on, this run belongs to the turn's first thinking block and shows
+  // only while it is open. Calls holding their own output, and any awaiting an allow or deny, are
+  // never folded away. Nor is anything while tool calls are always expanded (see foldIsActive).
+  const foldToolActivity = useChatPreferencesStore((state) =>
+    foldIsActive(state.foldToolActivityIntoThinking, state.toolVisibility),
   );
   const roundKey = useAuiState(({ message }) => {
     const reasoningEnd = governingReasoningEnd(message.parts, startIndex);

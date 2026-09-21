@@ -1638,10 +1638,17 @@ export const de = {
         "Älteste Runden archivieren (keine zusätzliche Kürzung)",
       autoCompactKeywords:
         "Komprimierung automatisch Kontext Fenster kürzen gleitend Prüfpunkt Reserve Archiv Abruf Suche compaction rolling checkpoint headroom archive retrieval rag",
+      visibility: {
+        collapsed: "Eingeklappt",
+        expanded: "Immer ausgeklappt",
+      },
+      visibilityKeywords:
+        "einklappen eingeklappt ausklappen ausgeklappt offen geschlossen Denken Reasoning Tool-Aufrufe Tool-Aktivität gruppieren Streaming",
       thinking: {
-        collapseByDefault: "Denken standardmäßig einklappen",
-        collapseByDefaultDescription:
-          "Das Denken bleibt eingeklappt, während das Modell denkt, statt automatisch aufzuklappen. Zum Lesen einen Block ausklappen.",
+        visibility: "Denken",
+        visibilityDescription:
+          "Wie das Denken geöffnet wird. Einzelne Blöcke lassen sich weiterhin selbst aus- und einklappen.",
+        visibilityAuto: "Beim Streamen ausklappen",
       },
       currentDate: {
         label: "Dem Modell das heutige Datum mitteilen",
@@ -1651,12 +1658,15 @@ export const de = {
         saveError: "Einstellungen zum aktuellen Datum konnten nicht aktualisiert werden",
       },
       tools: {
-        collapseByDefault: "Tool-Aktivität standardmäßig einklappen",
-        collapseByDefaultDescription:
-          "Tool-Eingaben und -Ausgaben bleiben während der Ausführung eingeklappt. Zum Prüfen eine Tool-Zeile ausklappen.",
-        foldIntoThinking: "Tool-Aufrufe ins Denken einklappen",
+        visibility: "Tool-Aufrufe",
+        visibilityDescription:
+          "Wie die Tool-Aktivität geöffnet wird. Einzelne Aufrufe lassen sich weiterhin selbst aus- und einklappen.",
+        visibilityAuto: "Während der Ausführung ausklappen",
+        foldIntoThinking: "Tool-Aufrufe unter Denken gruppieren",
         foldIntoThinkingDescription:
-          "Tool-Aufrufe eines Zuges ausblenden, bis der Denken-Block geöffnet wird.",
+          "Die Tool-Aufrufe eines Zuges im Denken-Block statt in eigenen Zeilen anzeigen.",
+        foldIntoThinkingBlocked:
+          "Nicht verfügbar, solange Tool-Aufrufe auf „Immer ausgeklappt“ stehen, dann bleiben sie in eigenen Zeilen.",
       },
       webSearch: {
         title: "Websuche",

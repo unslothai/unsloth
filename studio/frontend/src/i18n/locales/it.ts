@@ -1603,10 +1603,17 @@ export const it = {
         "Archivia i turni precedenti (nessun taglio aggiuntivo)",
       autoCompactKeywords:
         "compattazione automatica contesto finestra troncare scorrevole checkpoint margine archivio recupero ricerca compaction rolling headroom archive retrieval rag",
+      visibility: {
+        collapsed: "Compresso",
+        expanded: "Sempre espanso",
+      },
+      visibilityKeywords:
+        "comprimi compresso espandi espanso aperto chiuso ragionamento chiamate agli strumenti attività raggruppa streaming",
       thinking: {
-        collapseByDefault: "Comprimi il ragionamento per impostazione predefinita",
-        collapseByDefaultDescription:
-          "Mantieni il ragionamento compresso mentre il modello pensa, invece di aprirlo automaticamente. Espandi un blocco per leggerlo.",
+        visibility: "Ragionamento",
+        visibilityDescription:
+          "Come si apre il ragionamento. Puoi comunque espandere o comprimere ogni blocco a mano.",
+        visibilityAuto: "Espandi durante lo streaming",
       },
       currentDate: {
         label: "Comunica al modello la data di oggi",
@@ -1616,12 +1623,15 @@ export const it = {
         saveError: "Impossibile aggiornare le impostazioni della data corrente",
       },
       tools: {
-        collapseByDefault: "Comprimi l’attività degli strumenti per impostazione predefinita",
-        collapseByDefaultDescription:
-          "Mantieni compressi input e output degli strumenti durante l’esecuzione. Espandi una riga per esaminarla.",
-        foldIntoThinking: "Comprimi le chiamate agli strumenti nel Ragionamento",
+        visibility: "Chiamate agli strumenti",
+        visibilityDescription:
+          "Come si apre l’attività degli strumenti. Puoi comunque espandere o comprimere ogni chiamata a mano.",
+        visibilityAuto: "Espandi durante l’esecuzione",
+        foldIntoThinking: "Raggruppa le chiamate agli strumenti nel Ragionamento",
         foldIntoThinkingDescription:
-          "Nasconde le chiamate agli strumenti di un turno finché non si apre il blocco Ragionamento.",
+          "Mostra le chiamate agli strumenti di un turno nel blocco Ragionamento invece che su righe proprie.",
+        foldIntoThinkingBlocked:
+          "Non disponibile finché le chiamate agli strumenti sono su «Sempre espanso», che le tiene su righe proprie.",
       },
       webSearch: {
         title: "Ricerca web",

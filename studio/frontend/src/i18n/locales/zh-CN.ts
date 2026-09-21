@@ -1562,10 +1562,17 @@ export const zhCN = {
       compactionStyleRollingNone: "归档最早的轮次（不额外裁剪）",
       autoCompactKeywords:
         "压缩 自动压缩 上下文 窗口 截断 滑动 检查点 余量 归档 检索 搜索 compaction rolling checkpoint headroom archive retrieval rag",
+      visibility: {
+        collapsed: "折叠",
+        expanded: "始终展开",
+      },
+      visibilityKeywords:
+        "折叠 展开 打开 关闭 思考 推理 工具调用 工具活动 分组 流式",
       thinking: {
-        collapseByDefault: "默认折叠思考过程",
-        collapseByDefaultDescription:
-          "模型思考时保持折叠，而不是自动展开。需要阅读时展开对应区块。",
+        visibility: "思考过程",
+        visibilityDescription:
+          "思考过程如何展开。你仍可自行展开或折叠任意区块。",
+        visibilityAuto: "流式输出时展开",
       },
       currentDate: {
         label: "告诉模型今天的日期",
@@ -1575,12 +1582,15 @@ export const zhCN = {
         saveError: "无法更新当前日期设置",
       },
       tools: {
-        collapseByDefault: "默认折叠工具活动",
-        collapseByDefaultDescription:
-          "工具运行时保持输入和输出折叠。需要检查时展开对应工具行。",
-        foldIntoThinking: "将工具调用折叠进思考",
+        visibility: "工具调用",
+        visibilityDescription:
+          "工具活动如何展开。你仍可自行展开或折叠任意调用。",
+        visibilityAuto: "运行时展开",
+        foldIntoThinking: "将工具调用归入思考过程",
         foldIntoThinkingDescription:
-          "在展开思考块之前隐藏该轮的工具调用。",
+          "把该轮的工具调用显示在思考区块内，而不是各自独立成行。",
+        foldIntoThinkingBlocked:
+          "当工具调用设置为“始终展开”时不可用，该设置会让它们保持独立成行。",
       },
       webSearch: {
         title: "网页搜索",

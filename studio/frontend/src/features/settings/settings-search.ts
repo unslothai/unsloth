@@ -112,8 +112,8 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "settings.chat.autoCompact",
     "settings.chat.compactionStyle",
     "settings.profile.greetingSloth",
-    "settings.chat.thinking.collapseByDefault",
-    "settings.chat.tools.collapseByDefault",
+    "settings.chat.thinking.visibility",
+    "settings.chat.tools.visibility",
     "settings.chat.tools.foldIntoThinking",
     "settings.chat.artifacts.title",
     "settings.chat.artifacts.collapseHtmlBlocks",
@@ -316,4 +316,8 @@ export const SETTINGS_SEARCH_KEYWORDS: Partial<
     "settings.resources.modelMemory.modelMemoryKeywords",
   "settings.chat.autoCompact": "settings.chat.autoCompactKeywords",
   "settings.chat.compactionStyle": "settings.chat.autoCompactKeywords",
+  // These rows are labelled with what they are, so the verbs people search for live here.
+  "settings.chat.thinking.visibility": "settings.chat.visibilityKeywords",
+  "settings.chat.tools.visibility": "settings.chat.visibilityKeywords",
+  "settings.chat.tools.foldIntoThinking": "settings.chat.visibilityKeywords",
 };

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The transition table for the collapse-tool-activity preference, the store's
+// The transition table for the tool-call visibility setting, the store's
 // compatibility promise, and the JSX wiring that carries both.
 //
 // The reducers and the store are plain .ts, so those claims run the code. The
@@ -49,6 +49,9 @@ const { useChatPreferencesStore } = await import(
 const { resolveToolActivityOpen, syncToolActivityPreference } = await import(
   "../src/components/assistant-ui/tool-activity-open-state.ts"
 );
+const { foldIsActive } = await import(
+  "../src/features/chat/utils/display-visibility.ts"
+);
 
 /** Write `state` as a persisted record and hydrate the live store from it. */
 async function rehydrateFrom(state: unknown): Promise<void> {
@@ -60,26 +63,58 @@ async function rehydrateFrom(state: unknown): Promise<void> {
 // The store's compatibility promise, made against a real hydrate.
 // ---------------------------------------------------------------------------
 
-test("tool activity is collapsed by default", () => {
-  assert.equal(
-    useChatPreferencesStore.getInitialState().collapseToolActivityByDefault,
-    true,
-  );
+test("tool calls are collapsed by default and thinking follows its stream", () => {
+  const initial = useChatPreferencesStore.getInitialState();
+  assert.equal(initial.toolVisibility, "collapsed");
+  assert.equal(initial.thinkingVisibility, "auto");
 });
 
 test("a record written before the setting existed inherits the collapsed default", () => {
-  // This is not an opt-in: `?? true` in merge() means an install that never
-  // saw this setting starts collapsing tool activity the moment it upgrades.
-  // Asserted against a real hydrate of a real legacy record so that the day
-  // someone reconsiders that call, the test says so out loud instead of
-  // quietly agreeing.
-  assert.equal(
-    useChatPreferencesStore.getState().collapseToolActivityByDefault,
-    true,
-  );
+  // Not an opt-in: an install that never saw this setting starts collapsing tool activity the
+  // moment it upgrades. Asserted against a real hydrate so reconsidering that call is loud.
+  assert.equal(useChatPreferencesStore.getState().toolVisibility, "collapsed");
 });
 
-test("hydrating the new key leaves the older preferences alone", () => {
+test("the old pair of switches carries over to the three-state settings", () => {
+  // LEGACY_STATE has collapseThinkingByDefault: true and no tool key, so this covers both
+  // halves: an explicit collapse survives the rename, an absent key lands on the new default.
+  const state = useChatPreferencesStore.getState();
+  assert.equal(state.thinkingVisibility, "collapsed");
+  assert.equal(state.toolVisibility, "collapsed");
+});
+
+test("a legacy `off` becomes auto rather than always expanded", async () => {
+  // The old `false` meant "open while running, close after", which is auto. Reading it as
+  // expanded would leave every upgrading user with permanently open tool cards.
+  await rehydrateFrom({
+    ...LEGACY_STATE,
+    collapseThinkingByDefault: false,
+    collapseToolActivityByDefault: false,
+  });
+  const state = useChatPreferencesStore.getState();
+  assert.equal(state.thinkingVisibility, "auto");
+  assert.equal(state.toolVisibility, "auto");
+  await rehydrateFrom(LEGACY_STATE);
+});
+
+test("a stored visibility wins over the legacy boolean beside it", async () => {
+  // Both keys can coexist for one upgrade, and the new one is the one the user last set.
+  await rehydrateFrom({
+    ...LEGACY_STATE,
+    collapseToolActivityByDefault: true,
+    toolVisibility: "expanded",
+  });
+  assert.equal(useChatPreferencesStore.getState().toolVisibility, "expanded");
+  await rehydrateFrom(LEGACY_STATE);
+});
+
+test("a value from a newer build falls back instead of blanking the row", async () => {
+  await rehydrateFrom({ ...LEGACY_STATE, toolVisibility: "peek" });
+  assert.equal(useChatPreferencesStore.getState().toolVisibility, "collapsed");
+  await rehydrateFrom(LEGACY_STATE);
+});
+
+test("hydrating the new keys leaves the older preferences alone", () => {
   // merge() is a hand-maintained allowlist, so adding a field to it is exactly
   // when one of the others goes missing.
   const state = useChatPreferencesStore.getState();
@@ -87,32 +122,35 @@ test("hydrating the new key leaves the older preferences alone", () => {
   assert.equal(state.alwaysDeleteChatFiles, true);
   assert.equal(state.showModelDisclaimer, true);
   assert.equal(state.showResponseModel, true);
-  assert.equal(state.collapseThinkingByDefault, true);
   assert.equal(state.pastedTextMinChars, 8000);
   // The setters have to survive too: a merge returning only the saved fields
   // would leave a store with no way to write to it.
-  assert.equal(typeof state.setCollapseToolActivityByDefault, "function");
+  assert.equal(typeof state.setToolVisibility, "function");
+  assert.equal(typeof state.setThinkingVisibility, "function");
 });
 
-test("turning the preference off round-trips through storage", async () => {
-  // The direction that matters now that the default is on: a user who wants
-  // their tool output back has to be able to keep it across a reload.
-  await rehydrateFrom({
-    ...LEGACY_STATE,
-    collapseToolActivityByDefault: false,
-  });
-  assert.equal(
-    useChatPreferencesStore.getState().collapseToolActivityByDefault,
-    false,
-    "an explicit off is being overridden by the new default",
-  );
-  useChatPreferencesStore.getState().setCollapseToolActivityByDefault(true);
-  assert.equal(
-    JSON.parse(store.get(PREFERENCES_KEY) ?? "{}").state
-      .collapseToolActivityByDefault,
-    true,
-    "the preference is not persisted, so it would not survive a reload",
-  );
+test("each visibility round-trips through storage", async () => {
+  for (const visibility of ["auto", "expanded", "collapsed"] as const) {
+    useChatPreferencesStore.getState().setToolVisibility(visibility);
+    useChatPreferencesStore.getState().setThinkingVisibility(visibility);
+    const saved = JSON.parse(store.get(PREFERENCES_KEY) ?? "{}").state;
+    assert.equal(
+      saved.toolVisibility,
+      visibility,
+      "the tool setting is not persisted, so it would not survive a reload",
+    );
+    assert.equal(
+      saved.thinkingVisibility,
+      visibility,
+      "the thinking setting is not persisted, so it would not survive a reload",
+    );
+    await useChatPreferencesStore.persist.rehydrate();
+    assert.equal(useChatPreferencesStore.getState().toolVisibility, visibility);
+    assert.equal(
+      useChatPreferencesStore.getState().thinkingVisibility,
+      visibility,
+    );
+  }
   await rehydrateFrom(LEGACY_STATE);
 });
 
@@ -122,8 +160,43 @@ test("an unreadable record leaves every default in place", async () => {
     await useChatPreferencesStore.persist.rehydrate();
   });
   const state = useChatPreferencesStore.getState();
-  assert.equal(state.collapseToolActivityByDefault, true);
-  assert.equal(typeof state.setCollapseToolActivityByDefault, "function");
+  assert.equal(state.toolVisibility, "collapsed");
+  assert.equal(typeof state.setToolVisibility, "function");
+  assert.equal(typeof state.setThinkingVisibility, "function");
+  await rehydrateFrom(LEGACY_STATE);
+});
+
+// ---------------------------------------------------------------------------
+// Fold, and the one setting it cannot coexist with.
+// ---------------------------------------------------------------------------
+
+test("folding tool calls into Thinking gives way to always expanded", () => {
+  // Honouring both would pin the calls open inside something closed, so the fold stands down.
+  assert.equal(foldIsActive(true, "collapsed"), true);
+  assert.equal(foldIsActive(true, "auto"), true);
+  assert.equal(foldIsActive(true, "expanded"), false);
+  assert.equal(foldIsActive(false, "collapsed"), false);
+  assert.equal(foldIsActive(false, "expanded"), false);
+});
+
+test("the fold preference is only suspended, not cleared", async () => {
+  // Settings disables the row while it cannot apply, but the stored value has to survive.
+  await rehydrateFrom({
+    ...LEGACY_STATE,
+    foldToolActivityIntoThinking: true,
+    toolVisibility: "expanded",
+  });
+  const state = useChatPreferencesStore.getState();
+  assert.equal(state.foldToolActivityIntoThinking, true);
+  assert.equal(foldIsActive(state.foldToolActivityIntoThinking, "expanded"), false);
+  state.setToolVisibility("collapsed");
+  assert.equal(
+    foldIsActive(
+      useChatPreferencesStore.getState().foldToolActivityIntoThinking,
+      "collapsed",
+    ),
+    true,
+  );
   await rehydrateFrom(LEGACY_STATE);
 });
 
@@ -135,8 +208,8 @@ test("manual expansion survives updates while activity is collapsed", () => {
   assert.equal(
     resolveToolActivityOpen({
       currentOpen: true,
-      collapseByDefault: true,
-      previousCollapseByDefault: true,
+      visibility: "collapsed",
+      previousVisibility: "collapsed",
       isRunning: false,
       hasText: true,
     }),
@@ -144,25 +217,59 @@ test("manual expansion survives updates while activity is collapsed", () => {
   );
 });
 
-test("enabling collapsed activity closes an already open card", () => {
-  assert.equal(
-    resolveToolActivityOpen({
-      currentOpen: true,
-      collapseByDefault: true,
-      previousCollapseByDefault: false,
-      isRunning: true,
-      hasText: false,
-    }),
-    false,
-  );
+test("always expanded keeps a card open through running, finished and answered", () => {
+  for (const [isRunning, hasText] of [
+    [true, false],
+    [false, false],
+    [false, true],
+  ] as const) {
+    assert.equal(
+      resolveToolActivityOpen({
+        currentOpen: true,
+        visibility: "expanded",
+        previousVisibility: "expanded",
+        isRunning,
+        hasText,
+      }),
+      true,
+      `closed itself at running=${isRunning} hasText=${hasText}`,
+    );
+  }
 });
 
-test("disabling collapsed activity restores automatic visibility", () => {
+test("a card closed by hand stays closed under always expanded", () => {
+  // The setting says where a card starts, not where it stays.
   assert.equal(
     resolveToolActivityOpen({
       currentOpen: false,
-      collapseByDefault: false,
-      previousCollapseByDefault: true,
+      visibility: "expanded",
+      previousVisibility: "expanded",
+      isRunning: false,
+      hasText: true,
+    }),
+    false,
+  );
+});
+
+test("switching to collapsed closes an already open card", () => {
+  assert.equal(
+    resolveToolActivityOpen({
+      currentOpen: true,
+      visibility: "collapsed",
+      previousVisibility: "auto",
+      isRunning: true,
+      hasText: false,
+    }),
+    false,
+  );
+});
+
+test("switching to auto restores automatic visibility", () => {
+  assert.equal(
+    resolveToolActivityOpen({
+      currentOpen: false,
+      visibility: "auto",
+      previousVisibility: "collapsed",
       isRunning: true,
       hasText: false,
     }),
@@ -171,8 +278,8 @@ test("disabling collapsed activity restores automatic visibility", () => {
   assert.equal(
     resolveToolActivityOpen({
       currentOpen: true,
-      collapseByDefault: false,
-      previousCollapseByDefault: false,
+      visibility: "auto",
+      previousVisibility: "auto",
       isRunning: false,
       hasText: true,
     }),
@@ -180,16 +287,28 @@ test("disabling collapsed activity restores automatic visibility", () => {
   );
 });
 
-test("turning the preference off hands the card back to the automatic rules", () => {
-  // Documented rather than accidental: a preference change is an explicit user
-  // action, so it resets to whatever the automatic policy says rather than
-  // preserving a manual expansion made under the old preference. The reverse
-  // direction is the one that preserves manual state (first test above).
+test("switching to always expanded opens a card that was collapsed and finished", () => {
+  // A call that already ran, on a message already on screen, opening because the setting did.
+  assert.equal(
+    resolveToolActivityOpen({
+      currentOpen: false,
+      visibility: "expanded",
+      previousVisibility: "collapsed",
+      isRunning: false,
+      hasText: true,
+    }),
+    true,
+  );
+});
+
+test("changing the setting hands the card back to the automatic rules", () => {
+  // Deliberate: a setting change is an explicit action, so it resets rather than preserving a
+  // manual expansion made under the old setting. Between changes manual state is preserved.
   assert.equal(
     resolveToolActivityOpen({
       currentOpen: true,
-      collapseByDefault: false,
-      previousCollapseByDefault: true,
+      visibility: "auto",
+      previousVisibility: "collapsed",
       isRunning: false,
       hasText: true,
     }),
@@ -198,43 +317,44 @@ test("turning the preference off hands the card back to the automatic rules", ()
 });
 
 test("fallback cards react to live preference changes", () => {
-  const manuallyOpen = {
-    collapseByDefault: false,
+  const manuallyOpen = { visibility: "auto" as const, open: true };
+  const collapsed = syncToolActivityPreference(manuallyOpen, "collapsed", true);
+  assert.deepEqual(collapsed, { visibility: "collapsed", open: false });
+  assert.deepEqual(syncToolActivityPreference(collapsed, "auto", true), {
+    visibility: "auto",
     open: true,
-  };
-  const collapsed = syncToolActivityPreference(manuallyOpen, true, true);
-  assert.deepEqual(collapsed, {
-    collapseByDefault: true,
-    open: false,
   });
-  assert.deepEqual(syncToolActivityPreference(collapsed, false, true), {
-    collapseByDefault: false,
+  // Always expanded ignores the card's own default and opens it regardless.
+  assert.deepEqual(syncToolActivityPreference(collapsed, "expanded", false), {
+    visibility: "expanded",
     open: true,
   });
 });
 
 test("fallback cards preserve manual state until the preference changes", () => {
-  const manuallyOpen = {
-    collapseByDefault: true,
-    open: true,
-  };
+  const manuallyOpen = { visibility: "collapsed" as const, open: true };
   // Reference identity, not deep equality: the render-phase `if (synced !==
   // state) setState(...)` in ToolFallbackRoot and ToolGroupRoot terminates only
   // because an unchanged preference returns the very same object.
   assert.equal(
-    syncToolActivityPreference(manuallyOpen, true, true),
+    syncToolActivityPreference(manuallyOpen, "collapsed", true),
     manuallyOpen,
+  );
+  const manuallyClosed = { visibility: "expanded" as const, open: false };
+  assert.equal(
+    syncToolActivityPreference(manuallyClosed, "expanded", true),
+    manuallyClosed,
   );
 });
 
-test("disabling collapsed activity respects a closed fallback default", () => {
+test("switching to auto respects a closed fallback default", () => {
   assert.deepEqual(
     syncToolActivityPreference(
-      { collapseByDefault: true, open: false },
-      false,
+      { visibility: "collapsed", open: false },
+      "auto",
       false,
     ),
-    { collapseByDefault: false, open: false },
+    { visibility: "auto", open: false },
   );
 });
 
@@ -287,24 +407,27 @@ function identifiersIn(node: ts.Node): Set<string> {
 }
 
 /**
- * The local name a file binds the preference to, resolved through the store
- * selector rather than assumed. Hard-coding "collapseByDefault" would make
- * these assertions fail on a rename that changes nothing.
+ * The local name a file binds the setting to, resolved through the store
+ * selector rather than assumed. Hard-coding "visibility" would make these
+ * assertions fail on a rename that changes nothing.
  */
-function preferenceBinding(root: ts.SourceFile): string {
-  const declaration = find(root, (node) => {
+function preferenceBinding(
+  root: ts.SourceFile,
+  scope: ts.Node = root,
+): string {
+  const declaration = find(scope, (node) => {
     if (!ts.isVariableDeclaration(node) || !node.initializer) return false;
     const init = node.initializer;
     return (
       ts.isCallExpression(init) &&
       ts.isIdentifier(init.expression) &&
       init.expression.text === "useChatPreferencesStore" &&
-      identifiersIn(init).has("collapseToolActivityByDefault")
+      identifiersIn(init).has("toolVisibility")
     );
   })[0] as ts.VariableDeclaration | undefined;
   assert.ok(
     declaration && ts.isIdentifier(declaration.name),
-    `${root.fileName} never reads collapseToolActivityByDefault off the store`,
+    `${root.fileName} never reads toolVisibility off the store`,
   );
   return declaration.name.text;
 }
@@ -350,8 +473,8 @@ test("the shared hook resolves through the preference and the shared policy", as
   )[0];
   assert.ok(selector, "the hook does not subscribe to the preference store");
   assert.ok(
-    identifiersIn(selector).has("collapseToolActivityByDefault"),
-    "the hook subscribes to the store but not to this preference",
+    identifiersIn(selector).has("toolVisibility"),
+    "the hook subscribes to the store but not to this setting",
   );
   const resolve = find(
     source,
@@ -364,8 +487,8 @@ test("the shared hook resolves through the preference and the shared policy", as
   const passed = identifiersIn(resolve.arguments[0] ?? resolve);
   for (const field of [
     "currentOpen",
-    "collapseByDefault",
-    "previousCollapseByDefault",
+    "visibility",
+    "previousVisibility",
     "isRunning",
     "hasText",
   ]) {
@@ -468,7 +591,7 @@ test("a card awaiting approval opens above the preference", async () => {
   assert.equal(
     identifiersIn(isOpen.left).has(preferenceBinding(source)),
     false,
-    "the collapse preference can suppress an approval prompt's context",
+    "the visibility setting can suppress an approval prompt's context",
   );
 
   // Every card that (a) is wrapped in withToolConfirmation and (b) can be closed by
@@ -506,7 +629,12 @@ test("a pending approval forces a group open regardless of the preference", asyn
   const source = await sourceOf(
     "../src/components/assistant-ui/tool-group.tsx",
   );
-  const preference = preferenceBinding(source);
+  // Scoped to ToolGroupImpl: ToolGroupRoot reads the same setting above, for its own
+  // uncontrolled state, and resolving to that binding would test the wrong component.
+  const preference = preferenceBinding(
+    source,
+    initializerOf(source, "ToolGroupImpl"),
+  );
   const forceOpen = initializerOf(source, "forceOpen");
   assert.ok(
     ts.isBinaryExpression(forceOpen) &&
@@ -553,7 +681,13 @@ test("a mounted group follows the preference like a mounted card", async () => {
   const source = await sourceOf(
     "../src/components/assistant-ui/tool-group.tsx",
   );
-  const preference = preferenceBinding(source);
+  const root = find(
+    source,
+    (node) =>
+      ts.isFunctionDeclaration(node) && node.name?.text === "ToolGroupRoot",
+  )[0];
+  assert.ok(root, "ToolGroupRoot is gone");
+  const preference = preferenceBinding(source, root);
   const synced = find(
     source,
     (node) =>
@@ -578,7 +712,7 @@ test("a mounted group follows the preference like a mounted card", async () => {
   );
 });
 
-test("the Python script cell moves inside the collapsible when collapsing is on", async () => {
+test("the Python script cell moves inside the collapsible when tool calls are collapsed", async () => {
   // Two renders of one cell, each guarded by the opposite value: outside the
   // collapsible so a reopened chat still shows the script (#7165), inside it
   // when the user asked for quiet. Two copies of the same guard would render

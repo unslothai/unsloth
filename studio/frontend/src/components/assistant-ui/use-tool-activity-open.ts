@@ -3,29 +3,31 @@
 
 // eslint-disable-next-line no-restricted-imports -- the feature barrel imports consumers of this hook
 import { useChatPreferencesStore } from "@/features/chat/stores/chat-preferences-store";
+// eslint-disable-next-line no-restricted-imports -- this file is in the startup cycle; the chat barrel closes it.
+import { defaultOpenFor } from "@/features/chat/utils/display-visibility";
 import { useEffect, useRef, useState } from "react";
 import { resolveToolActivityOpen } from "./tool-activity-open-state";
 
 export function useToolActivityOpen(isRunning: boolean, hasText: boolean) {
-  const collapseByDefault = useChatPreferencesStore(
-    (state) => state.collapseToolActivityByDefault,
+  const visibility = useChatPreferencesStore((state) => state.toolVisibility);
+  const [open, setOpen] = useState(() =>
+    defaultOpenFor(visibility, isRunning && !hasText),
   );
-  const [open, setOpen] = useState(isRunning && !collapseByDefault);
-  const previousCollapseByDefault = useRef(collapseByDefault);
+  const previousVisibility = useRef(visibility);
 
   useEffect(() => {
-    const previousPreference = previousCollapseByDefault.current;
-    previousCollapseByDefault.current = collapseByDefault;
+    const previous = previousVisibility.current;
+    previousVisibility.current = visibility;
     setOpen((currentOpen) =>
       resolveToolActivityOpen({
         currentOpen,
-        collapseByDefault,
-        previousCollapseByDefault: previousPreference,
+        visibility,
+        previousVisibility: previous,
         isRunning,
         hasText,
       }),
     );
-  }, [isRunning, hasText, collapseByDefault]);
+  }, [isRunning, hasText, visibility]);
 
   return [open, setOpen] as const;
 }
