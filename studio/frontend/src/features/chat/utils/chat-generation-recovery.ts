@@ -2,7 +2,11 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import type { ChatGenerationStatus } from "../api/chat-generation-api";
-import { extractDeltaText } from "./parse-assistant-content";
+import {
+  createThinkTagTracker,
+  extractDeltaText,
+  parseAssistantContent,
+} from "./parse-assistant-content";
 
 export type StoredGenerationStatus = ChatGenerationStatus;
 
@@ -95,14 +99,12 @@ export async function loadGenerationOverlaySnapshot<TMessage, TRun>(
 ): Promise<{
   messages: TMessage[];
   activeRuns: TRun[];
-  /**
-   * False when the active-run read failed, so its empty list is "unknown", not "none".
-   * A caller that decides a reply is dead from an absent run has to tell the two apart.
-   */
+  /** False when the active-run read failed, so its empty list is "unknown", not "none". A caller
+   *  deciding a reply is dead from an absent run has to tell the two apart. */
   activeRunsLoaded: boolean;
 }> {
-  // Runs first closes the create-between-snapshots gap. If a run commits after
-  // this read, the later message snapshot already carries its durable metadata.
+  // Runs first closes the create-between-snapshots gap. If a run commits after this read, the
+  // later message snapshot already carries its durable metadata.
   let activeRunsLoaded = true;
   const activeRuns = await listActiveRuns(threadId).catch(() => {
     activeRunsLoaded = false;
@@ -140,6 +142,7 @@ export function recoveredGenerationFinalMetadata(options: {
   timings?: RecoveryTimings;
   firstChunkAt?: number;
   totalChunks: number;
+  toolCalls?: string[];
 }): Record<string, unknown> {
   const { current, run, usage, timings, firstChunkAt, totalChunks } = options;
   const modelId =
@@ -199,7 +202,7 @@ export function recoveredGenerationFinalMetadata(options: {
       finishedAt,
       durationMs: Math.max(0, finishedAt - startedAt),
       cancelId: run.id,
-      toolCalls: [],
+      toolCalls: options.toolCalls ?? [],
     };
   }
   if (next.timing === undefined) {
@@ -211,72 +214,311 @@ export function recoveredGenerationFinalMetadata(options: {
       tokenCount: completionTokens,
       tokensPerSecond,
       totalChunks,
-      toolCallCount: 0,
+      toolCallCount: options.toolCalls?.length ?? 0,
     };
   }
   return next;
 }
 
-/**
- * The reply as one string, with reasoning back inside `<think>` tags.
- *
- * The recovery follows a run by replaying its chunk events, so it keeps the
- * reply as the text those chunks carried rather than as parts. This is the
- * inverse of `parseAssistantContent`, and it is what lets a body that arrived
- * as parts be compared against one that arrived as deltas.
- */
+// Keep offsets aligned with parseAssistantContent's tags.
+const THINK_OPEN = "<think>";
+const THINK_CLOSE = "</think>";
+
+/** A part the raw projection cannot express, kept with the offset it sat at. */
+export type CarriedPart = { at: number; part: unknown };
+
 export function generationRawContent(content: unknown): {
   raw: string;
   reasoningOpen: boolean;
+  carried: CarriedPart[];
 } {
   if (typeof content === "string") {
-    return { raw: content, reasoningOpen: false };
+    return { raw: content, reasoningOpen: false, carried: [] };
   }
-  if (!Array.isArray(content)) return { raw: "", reasoningOpen: false };
+  if (!Array.isArray(content)) {
+    return { raw: "", reasoningOpen: false, carried: [] };
+  }
   let raw = "";
   let reasoningOpen = false;
+  const carried: CarriedPart[] = [];
   for (const part of content) {
     if (!part || typeof part !== "object") continue;
     const record = part as { type?: string; text?: unknown };
     const text = typeof record.text === "string" ? record.text : "";
     if (record.type === "reasoning") {
       if (reasoningOpen) raw += text;
-      else raw += `<think>${text}`;
+      else raw += `${THINK_OPEN}${text}`;
       reasoningOpen = true;
     } else if (record.type === "text") {
-      if (reasoningOpen) raw += "</think>";
+      if (reasoningOpen) raw += THINK_CLOSE;
       raw += text;
       reasoningOpen = false;
+    } else {
+      carried.push({ at: raw.length, part });
     }
   }
-  return { raw, reasoningOpen };
+  return { raw, reasoningOpen, carried };
 }
 
-/**
- * Which body a recovery publish should put in front of the reader.
- *
- * A recovery replays the run's events from the cursor the last save recorded,
- * one publish per event, each publish paying a write to storage before the
- * next event is read. When the run being replayed is the one this tab is also
- * streaming, that walk is orders of magnitude behind the live stream, so its
- * body is a PREFIX of what the reader is already looking at. Importing it
- * rewinds the reply to its opening lines until the adapter's next yield
- * restores it, which is the reasoning pane collapsing and recovering about
- * twice a second.
- *
- * Prefix, not length: a body that genuinely disagrees with the view is the
- * server's and still wins, because storage is authoritative for everything a
- * recovery exists to repair. Only a body that carries nothing the view is not
- * already showing is refused.
- */
+export function restoreCarriedParts<TPart>(
+  parts: readonly TPart[],
+  carried: readonly CarriedPart[],
+): TPart[] {
+  if (carried.length === 0) return [...parts];
+  const pending = [...carried].sort((a, b) => a.at - b.at);
+  const out: TPart[] = [];
+  let next = 0;
+  let offset = 0;
+  let reasoningOpen = false;
+  const flushUpTo = (limit: number) => {
+    while (next < pending.length && pending[next].at <= limit) {
+      out.push(pending[next].part as TPart);
+      next += 1;
+    }
+  };
+  for (const part of parts) {
+    const record = part as { type?: string; text?: unknown };
+    const text = typeof record.text === "string" ? record.text : "";
+    flushUpTo(offset);
+    if (record.type === "reasoning") {
+      if (!reasoningOpen) offset += THINK_OPEN.length;
+      reasoningOpen = true;
+    } else if (record.type === "text") {
+      if (reasoningOpen) offset += THINK_CLOSE.length;
+      reasoningOpen = false;
+    } else {
+      out.push(part);
+      continue;
+    }
+    flushUpTo(offset);
+    let cut = 0;
+    while (next < pending.length && pending[next].at < offset + text.length) {
+      const at = pending[next].at - offset;
+      if (at > cut) out.push({ ...record, text: text.slice(cut, at) } as TPart);
+      out.push(pending[next].part as TPart);
+      cut = at;
+      next += 1;
+    }
+    if (cut === 0) out.push(part);
+    else if (cut < text.length) {
+      out.push({ ...record, text: text.slice(cut) } as TPart);
+    }
+    offset += text.length;
+  }
+  while (next < pending.length) {
+    out.push(pending[next].part as TPart);
+    next += 1;
+  }
+  return out;
+}
+
+/** A card offset is the raw length at a chunk boundary, and a think tag can arrive split
+ *  across two chunks, so an offset can land inside one. Cutting there leaves the tag's halves
+ *  as text AND lets the tracker reopen the block, so the reply projects back with the tag
+ *  twice. A tag is atomic: put the card past it. */
+function pastThinkTag(raw: string, at: number): number {
+  for (const tag of [THINK_OPEN, THINK_CLOSE]) {
+    const start = raw.lastIndexOf(tag, at);
+    if (start !== -1 && at > start && at < start + tag.length) {
+      return start + tag.length;
+    }
+  }
+  return at;
+}
+
+/** Split raw replay before parsing, since parsing can coalesce separate think blocks. */
+export function restoreCarriedPartsFromRaw(
+  raw: string,
+  carried: readonly CarriedPart[],
+): ReturnType<typeof parseAssistantContent> {
+  if (carried.length === 0) return parseAssistantContent(raw);
+  const out: ReturnType<typeof parseAssistantContent> = [];
+  const tracker = createThinkTagTracker();
+  let cursor = 0;
+  const appendUntil = (end: number) => {
+    const text = raw.slice(cursor, end);
+    out.push(
+      ...parseAssistantContent(
+        tracker.endsInsideThink() ? `${THINK_OPEN}${text}` : text,
+      ),
+    );
+    tracker.append(text);
+    cursor = end;
+  };
+  for (const entry of [...carried].sort((a, b) => a.at - b.at)) {
+    appendUntil(
+      Math.max(cursor, pastThinkTag(raw, Math.min(entry.at, raw.length))),
+    );
+    out.push(entry.part as (typeof out)[number]);
+  }
+  appendUntil(raw.length);
+  return out;
+}
+
+function carriedPartKey({ at, part }: CarriedPart): string {
+  const record = part as { type?: string; toolCallId?: string; id?: string };
+  const id = record.toolCallId ?? record.id;
+  return id === undefined
+    ? JSON.stringify([at, part])
+    : JSON.stringify([record.type, id]);
+}
+
+type ToolIdentity = {
+  type?: string;
+  toolCallId?: string;
+  toolName?: string;
+  backendToolCallId?: string;
+  generationToolCallId?: string;
+  toolApprovalId?: string;
+};
+
+function followingCarriedMatches(matches: (number | undefined)[]) {
+  let next: number | undefined;
+  const following = matches.map(() => undefined as number | undefined);
+  for (let i = matches.length - 1; i >= 0; i--) {
+    following[i] = next;
+    next = matches[i] ?? next;
+  }
+  return following;
+}
+
+function carriedPartMatches(view: CarriedPart[], recovered: CarriedPart[]) {
+  // Every occurrence, not the last: sources are not deduplicated, so a repeated url needs a slot each.
+  const byId = new Map<string, number[]>();
+  recovered.forEach((entry, i) => {
+    const key = carriedPartKey(entry);
+    const seen = byId.get(key);
+    if (seen) seen.push(i);
+    else byId.set(key, [i]);
+  });
+  const byGeneration = new Map<string, number>();
+  recovered.forEach(({ part }, i) => {
+    const id = (part as ToolIdentity).generationToolCallId;
+    if (id) byGeneration.set(id, i);
+  });
+  const used = new Set<number>();
+  const matches = view.map((entry) => {
+    const id = (entry.part as ToolIdentity).generationToolCallId;
+    const index =
+      byId.get(carriedPartKey(entry))?.shift() ??
+      (id ? byGeneration.get(id) : undefined);
+    if (index === undefined || used.has(index)) return undefined;
+    used.add(index);
+    return index;
+  });
+  // Legacy cards lack replay ids. Pair occurrences at the same position one to one.
+  const following = followingCarriedMatches(matches);
+  let previous: number | undefined;
+  view.forEach((entry, i) => {
+    const live = entry.part as ToolIdentity;
+    if (matches[i] !== undefined) {
+      previous = matches[i];
+      return;
+    }
+    if (live.type !== "tool-call" || live.generationToolCallId) return;
+    const next = following[i];
+    const index = recovered.findIndex((candidate, j) => {
+      const saved = candidate.part as ToolIdentity;
+      if (
+        used.has(j) ||
+        (previous !== undefined && j <= previous) ||
+        (next !== undefined && j >= next) ||
+        candidate.at !== entry.at ||
+        saved.type !== "tool-call" ||
+        !saved.generationToolCallId ||
+        saved.toolName !== live.toolName
+      )
+        return false;
+      if (
+        saved.toolApprovalId &&
+        (live.toolApprovalId === saved.toolApprovalId ||
+          live.toolCallId === saved.toolApprovalId ||
+          live.toolCallId?.endsWith(`:${saved.toolApprovalId}`))
+      )
+        return true;
+      if (saved.toolApprovalId && live.toolApprovalId) return false;
+      const backendId = saved.backendToolCallId;
+      return (
+        Boolean(backendId) &&
+        (live.backendToolCallId !== undefined
+          ? live.backendToolCallId === backendId
+          : live.toolCallId === backendId ||
+            live.toolCallId?.startsWith(`${backendId}:`))
+      );
+    });
+    if (index < 0) return;
+    matches[i] = index;
+    previous = index;
+    used.add(index);
+  });
+  return matches;
+}
+
+function mergeCarriedParts(
+  view: CarriedPart[],
+  recovered: CarriedPart[],
+  matches: (number | undefined)[],
+): CarriedPart[] {
+  const before = new Map<number, CarriedPart[]>();
+  const after = new Map<number, CarriedPart[]>();
+  let previous: number | undefined;
+  const following = followingCarriedMatches(matches);
+  view.forEach((entry, i) => {
+    const match = matches[i];
+    if (match !== undefined) {
+      previous = match;
+      return;
+    }
+    const buckets = previous === undefined ? before : after;
+    const anchor = previous ?? following[i] ?? 0;
+    const bucket = buckets.get(anchor) ?? [];
+    bucket.push(entry);
+    buckets.set(anchor, bucket);
+  });
+  if (recovered.length === 0) return view;
+  return recovered.flatMap((entry, i) => [
+    ...(before.get(i) ?? []),
+    entry,
+    ...(after.get(i) ?? []),
+  ]);
+}
+
 export function recoveredContentToImport<TContent>(
   viewContent: TContent,
   recoveredContent: TContent,
 ): TContent {
-  const view = generationRawContent(viewContent).raw;
-  const recovered = generationRawContent(recoveredContent).raw;
-  if (recovered.length < view.length && view.startsWith(recovered)) {
+  const view = generationRawContent(viewContent);
+  const recovered = generationRawContent(recoveredContent);
+  if (
+    recovered.raw.length < view.raw.length &&
+    view.raw.startsWith(recovered.raw)
+  ) {
     return viewContent;
+  }
+  if (
+    view.carried.length > 0 &&
+    recovered.raw.startsWith(view.raw) &&
+    Array.isArray(recoveredContent)
+  ) {
+    const matches = carriedPartMatches(view.carried, recovered.carried);
+    if (matches.every((index) => index !== undefined)) {
+      return recoveredContent;
+    }
+    // Only a recovered reply that HAS text disagrees: an empty projection is a prefix of every
+    // reply, and with both text-free an unmatched view card is as likely a call replay has not
+    // reached as a stale one.
+    if (!view.raw && recovered.raw) {
+      return recoveredContent;
+    }
+    const spoken = recoveredContent.filter(
+      (part) =>
+        (part as { type?: string })?.type === "text" ||
+        (part as { type?: string })?.type === "reasoning",
+    );
+    return restoreCarriedParts(
+      spoken,
+      mergeCarriedParts(view.carried, recovered.carried, matches),
+    ) as TContent;
   }
   return recoveredContent;
 }
@@ -285,13 +527,11 @@ export function generationNeedsRecovery(
   metadata: Record<string, unknown>,
 ): boolean {
   const status = String(metadata.generationStatus) as StoredGenerationStatus;
-  // Stamped by a follower that hit its no-progress deadline. Re-following on every
-  // recovery trigger is what turned one stuck run into a permanently blocked composer;
-  // history.load clears the marker if /chat-runs/active still names the run.
-  //
-  // Non-terminal only: a run the backend finished is stored completed and unsettled, and
-  // /chat-runs/active excludes completed runs, so honouring the marker there would leave
-  // that reply running forever with its event tail never imported.
+  // Stamped by a follower that hit its no-progress deadline. Re-following on every recovery
+  // trigger turned one stuck run into a permanently blocked composer; history.load clears the
+  // marker if /chat-runs/active still names the run. Non-terminal only: a run the backend
+  // finished is stored completed, and /chat-runs/active excludes completed runs, so honouring
+  // the marker there would leave that reply running forever.
   if (metadata.generationLocallyInterrupted === true && !TERMINAL.has(status)) {
     return false;
   }
@@ -351,9 +591,9 @@ export function generationRecoveryMetadata(options: {
   if (totalChunks !== undefined) {
     next.generationChunkCount = totalChunks;
   }
-  // Carried with the cursor for the same reason the two above are: the usage chunk arrives
-  // before the terminal event, so a cursor published past it and then reloaded would resume
-  // after it and lose the token counts and server timings for good.
+  // Carried with the cursor for the same reason as the two above: the usage chunk arrives before
+  // the terminal event, so a cursor published past it and reloaded would resume after it and
+  // lose the token counts and server timings for good.
   if (usage !== undefined) {
     next.generationRecoveryUsage = usage;
   }
@@ -413,38 +653,23 @@ export function subscribeGenerationRecoveryTriggers(
   };
 }
 
-/**
- * Runs this tab is streaming itself, so a recovery never follows one of them.
- *
- * A durable run otherwise gets TWO readers in the tab that started it. The adapter streams
- * it, and `scheduleGenerationRecovery` also replays it from storage, because its only gate
- * is `generationNeedsRecovery(metadata)` and `history.load()` force-writes
- * `generationSettled: false` onto any message matching an active run. Nothing asks whether
- * this tab is already the producer.
- *
- * That second reader is expensive, not merely redundant. It publishes on EVERY chunk event,
- * and each publish re-parses the whole reply and awaits a PUT of the entire message, so a
- * reply of N chunks costs N round trips and N full parses whose payload grows with the
- * reply: quadratic in the length of the answer, on the main thread, against the same backend
- * the model is saturating.
- *
- * Module state, deliberately. A reload is exactly the case where this tab has STOPPED being
- * the producer and a recovery should run, and a reload clears this by construction. Nothing
- * needs to expire it.
- */
+/** Runs this tab is streaming itself, so a recovery never follows one. A durable run otherwise
+ *  gets TWO readers in the tab that started it: the adapter streams it and
+ *  scheduleGenerationRecovery replays it from storage, since its only gate is
+ *  generationNeedsRecovery and history.load force-writes generationSettled false. That
+ *  second reader publishes on EVERY chunk, each publish re-parsing the whole reply and
+ *  awaiting a PUT of the entire message: quadratic in the answer length, on the main thread.
+ *  Module state deliberately: a reload is exactly when this tab has stopped being the
+ *  producer, and a reload clears this by construction. */
 const liveGenerationRuns = new Set<string>();
-// runId -> owning thread. The Set above answers "is this run live"; the checkpoint
-// scheduler needs the inverse, "does this thread have a durable run at all".
+// runId -> owning thread. The Set above answers "is this run live"; the checkpoint scheduler
+// needs the inverse, "does this thread have a durable run at all".
 const liveGenerationThreads = new Map<string, string>();
 
-/**
- * Runs claimed before the server admitted them.
- *
- * The early claim stops a recovery trigger starting a second follower during that await.
- * Boundedness is separate: until the POST lands the thread's checkpoints are its only
- * persistence, and createChatGenerationRun retries until aborted, so the await can outlast
- * the cap.
- */
+/** Runs claimed before the server admitted them. The early claim stops a recovery trigger
+ *  starting a second follower during that await. Boundedness is separate: until the POST
+ *  lands the thread's checkpoints are its only persistence, and the create retries until
+ *  aborted, so the await can outlast the cap. */
 const provisionalGenerationRuns = new Set<string>();
 
 /** Claim a run as streamed by this tab. Pair with `releaseLiveGenerationRun` in a finally. */
@@ -463,12 +688,8 @@ export function claimLiveGenerationRun(
   }
 }
 
-/**
- * Release a run this tab was streaming.
- *
- * Must be unconditional, in a finally: a run left claimed after its stream died is a run this
- * tab will never recover, which is the failure this registry could introduce if it leaked.
- */
+/** Release a run this tab was streaming. Must be unconditional, in a finally: a run left
+ *  claimed after its stream died is one this tab will never recover. */
 export function releaseLiveGenerationRun(runId: string): void {
   liveGenerationRuns.delete(runId);
   liveGenerationThreads.delete(runId);
@@ -480,10 +701,8 @@ export function isLiveGenerationRun(runId: string): boolean {
   return liveGenerationRuns.has(runId);
 }
 
-/**
- * Whether `threadId` has a durable run, either streaming here or named by the server. A
- * subscriber-owned stream has none, and its periodic checkpoint is its ONLY persistence.
- */
+/** Whether `threadId` has a durable run, streaming here or named by the server. A
+ *  subscriber-owned stream has none, and its periodic checkpoint is its ONLY persistence. */
 export function threadHasDurableGenerationRun(threadId: string): boolean {
   for (const [runId, owner] of liveGenerationThreads.entries()) {
     if (owner === threadId && !provisionalGenerationRuns.has(runId)) return true;
@@ -494,21 +713,15 @@ export function threadHasDurableGenerationRun(threadId: string): boolean {
   return false;
 }
 
-/**
- * Runs the server has named as still going, keyed by the thread whose load asked.
- *
- * Persisted metadata is not evidence of a live run: a run that never terminalises leaves
- * `generationStatus: "running"` in storage for good, and a reload rebuilds a running
- * message straight back out of it. Only `/api/inference/chat-runs/active` can say a run
- * is still going. Module state, so a reload drops the previous session's word for it.
- */
+/** Runs the server has named as still going, keyed by the thread whose load asked. Persisted
+ *  metadata is not evidence of a live run: a run that never terminalises leaves
+ *  `generationStatus: "running"` in storage for good. Only /chat-runs/active can say a run
+ *  is still going. Module state, so a reload drops the previous session's word for it. */
 const serverActiveGenerationRuns = new Map<string, string>();
 
-/**
- * Replace what the server last said about `threadId`. Call only after a SUCCESSFUL read
- * of the active-run list: a failed read is not a report of "nothing is running", and
- * treating it as one would mark a live reply interrupted.
- */
+/** Replace what the server last said about `threadId`. Call only after a SUCCESSFUL read of
+ *  the active-run list: a failed read is not a report of "nothing is running", and treating
+ *  it as one would mark a live reply interrupted. */
 export function syncServerActiveGenerationRuns(
   threadId: string,
   runIds: Iterable<string>,
@@ -520,42 +733,31 @@ export function syncServerActiveGenerationRuns(
   serverAnsweredThreads.add(threadId);
 }
 
-/**
- * Threads the server has answered the active-run question for. Per thread, not per
- * process: one global flag let A's answer turn a FAILED read for B into an empty list.
- */
+/** Threads the server has answered the active-run question for. Per thread, not per process:
+ *  one global flag let A's answer turn a FAILED read for B into an empty list. */
 const serverAnsweredThreads = new Set<string>();
 
 export function serverHasAnsweredActiveRuns(threadId: string): boolean {
   return serverAnsweredThreads.has(threadId);
 }
 
-/**
- * Forget what the server last said about `threadId`, because the newest read failed.
- *
- * The answer is a point in time, not a permanent property. Another tab can start a run
- * after a successful read, so keeping the old answer once a refresh has failed would
- * restore that genuinely running reply as interrupted.
- */
+/** Forget what the server last said about `threadId`, because the newest read failed. The
+ *  answer is a point in time, not a permanent property: another tab can start a run after a
+ *  successful read, so keeping the old answer would restore a running reply as interrupted. */
 export function markServerActiveGenerationRunsUnknown(threadId: string): void {
   serverAnsweredThreads.delete(threadId);
   // The run mappings go with it. They are the same stale answer in another shape, and
   // isServerActiveGenerationRun is consulted BEFORE the local-interruption marker, so a
-  // leftover entry restores the message as running while generationNeedsRecovery still
-  // refuses to start a follower: a blocked composer with neither recovery nor a local
-  // Stop handle, which is the wedge this PR exists to remove.
+  // leftover entry restores the message as running while generationNeedsRecovery refuses to
+  // start a follower: a blocked composer with neither recovery nor a local Stop handle.
   for (const [runId, owner] of [...serverActiveGenerationRuns]) {
     if (owner === threadId) serverActiveGenerationRuns.delete(runId);
   }
 }
 
-/**
- * Drop one run from the server-active map now that it has reached a terminal status.
- *
- * Only another successful sync would otherwise remove it, so the thread would keep
- * reading as durable and a later subscriber-owned stream on it would be capped, losing
- * the periodic saves that are that stream's only persistence.
- */
+/** Drop one run from the server-active map now that it has reached a terminal status. Only
+ *  another successful sync would otherwise remove it, so the thread would keep reading as
+ *  durable and a later subscriber-owned stream on it would be capped, losing its only saves. */
 export function forgetServerActiveGenerationRun(runId: string): void {
   serverActiveGenerationRuns.delete(runId);
 }
@@ -574,12 +776,8 @@ export function isServerActiveGenerationRun(runId: string): boolean {
   return serverActiveGenerationRuns.has(runId);
 }
 
-/**
- * Whether a restored assistant message may be shown as still generating.
- *
- * The corroboration gate: unfinished metadata says only that this reply once had a run,
- * never that the run is still alive.
- */
+/** Whether a restored assistant message may be shown as still generating. The corroboration
+ *  gate: unfinished metadata says only that this reply once had a run. */
 export function generationIsCorroboratedLive(
   metadata: Record<string, unknown>,
   threadId?: string,
@@ -587,18 +785,16 @@ export function generationIsCorroboratedLive(
   const runId = metadata.generationRunId;
   if (typeof runId !== "string") return false;
   if (isLiveGenerationRun(runId) || isServerActiveGenerationRun(runId)) return true;
-  // A follower already gave up on this run locally. Without this it keeps taking the
-  // benefit of the doubt below, so every online/pageshow/visibility trigger starts
-  // another follower that republishes the message as running and blocks the composer
-  // again. Only the server naming the run live may revive it, and the two checks above
-  // are exactly that.
+  // A follower already gave up on this run locally. Without this it keeps taking the benefit of
+  // the doubt below, so every online/pageshow/visibility trigger starts another follower that
+  // republishes the message as running. Only the server naming the run live may revive it.
   if (
     metadata.generationLocallyInterrupted === true &&
     !TERMINAL.has(String(metadata.generationStatus) as StoredGenerationStatus)
   ) {
     return false;
   }
-  // No answer for THIS thread is not a "no". Stay with the persisted status until this
-  // thread's own read has landed; the recovery follower settles it from there.
+  // No answer for THIS thread is not a "no". Stay with the persisted status until this thread's
+  // own read has landed; the recovery follower settles it from there.
   return threadId === undefined || !serverHasAnsweredActiveRuns(threadId);
 }

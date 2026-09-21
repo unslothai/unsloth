@@ -1,13 +1,22 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-# One consolidated CPU-only job that runs every test_* function the existing
-# CI does not already cover from this repo plus the full unsloth_zoo@main
-# CPU test suite plus unsloth_zoo.compiler.test_apply_fused_lm_head.
+# CPU-only coverage for every test_* function the existing CI does not already
+# cover from this repo, plus the full unsloth_zoo@main CPU test suite, plus
+# unsloth_zoo.compiler.test_apply_fused_lm_head.
+#
+# Two matrix jobs over the SAME three (transformers, TRL) combos, not one:
+# `consolidated` for this repo's own coverage and `consolidated-zoo` for the
+# unsloth_zoo suite. They were one job until the zoo suite, 418s mean over 24
+# measured jobs, was 7.6 of its 17.2 minutes and every pull request waited
+# through both halves end to end. Nothing was dropped in the split; the two
+# halves now run side by side and the pip install preamble, which is the only
+# thing they duplicate, has one definition in
+# .github/actions/core-cpu-setup.
 #
 # Why a separate workflow:
 #   - studio-backend-ci.yml's "Repo tests (CPU)" job already auto-discovers
-#     tests/ minus tests/qlora, tests/saving, tests/utils, tests/sh. The 21
+#     tests/ minus tests/qlora, tests/saving, tests/utils, tests/sh. The 24
 #     Bucket-A tests below live inside those --ignore dirs (CPU-runnable but
 #     historically excluded with their GPU siblings); pulling them out into
 #     a sibling job keeps the existing 760-passed baseline stable while we
@@ -30,6 +39,13 @@
 # things; if they regress we want a red cell, not a green-with-fail-prints
 # cell.
 
+#
+# runs-on: ubuntu-24.04, not ubuntu-latest. Same image, so the jobs are unchanged; different
+# queue, because nearly all of the org's ~871 queued runs ask for ubuntu-latest. Identical
+# no-op jobs in one matrix: ubuntu-latest still queued past 40 min, every other label under
+# 2 min (#10914). Cost: the image no longer tracks the fleet default, so bump it for 26.04.
+#
+
 name: Core
 
 on:
@@ -42,6 +58,9 @@ on:
       - 'pyproject.toml'
       - '.github/workflows/consolidated-tests-ci.yml'
       - '.github/scripts/retry-with-apt-lock.sh'
+      # Both Core jobs `uses:` this action, so a change to it must run them.
+      - '.github/actions/core-cpu-setup/**'
+      # Both Core jobs `uses:` this action, so a change to it must run them.
   push:
     branches: [main]
     paths:
@@ -52,6 +71,9 @@ on:
       - 'pyproject.toml'
       - '.github/workflows/consolidated-tests-ci.yml'
       - '.github/scripts/retry-with-apt-lock.sh'
+      # Both Core jobs `uses:` this action, so a change to it must run them.
+      - '.github/actions/core-cpu-setup/**'
+      # Both Core jobs `uses:` this action, so a change to it must run them.
   workflow_dispatch:
     inputs:
       unsloth_zoo_ref:
@@ -71,7 +93,97 @@ permissions:
   contents: read
 
 jobs:
+  resolve-zoo-ref:
+    # Both Core halves clone unsloth_zoo. Before the split they shared one checkout per
+    # matrix cell, so the compatibility checks and the suite always saw the same revision.
+    # Cloning a mutable branch twice loses that: a push to unsloth_zoo between the two clones
+    # has `consolidated` check revision A while `consolidated-zoo` runs revision B under one
+    # matrix label, and the run is then not reproducible from anything it recorded.
+    #
+    # Resolving once costs a gating job. That is affordable here and was not while Core sat on
+    # ubuntu-latest: on the pinned label a trivial job waited 11s to 162s across the runs in
+    # #10914, against the roughly seven minutes the split takes off this workflow.
+    #
+    # llama-cpp-smoke still resolves its own ref. It shares no verdict with these two, so a
+    # different revision there cannot make one cell disagree with itself.
+    name: Resolve the unsloth_zoo revision
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      sha: ${{ steps.resolve.outputs.sha }}
+    steps:
+      - name: Resolve
+        id: resolve
+        env:
+          REF: ${{ inputs.unsloth_zoo_ref || 'main' }}
+        run: |
+          set -euo pipefail
+          # A ref that is already a commit has no remote head to look up, so pass it through.
+          if printf '%s' "$REF" | grep -Eq '^[0-9a-f]{40}$'; then
+            sha="$REF"
+          else
+            # Retried like the clone in core-cpu-setup, and for the same reason: github.com
+            # occasionally 500s. This job gates both Core halves, so an unretried blip here
+            # would skip all six matrix jobs rather than fail one step.
+            # `git ls-remote` takes PATTERNS, not one ref, so a bare name can print more than
+            # one record: a name that is both a branch and a tag prints both, and an annotated
+            # tag prints the tag object and the commit it peels to. Taking every record puts a
+            # newline inside `sha`, and `sha=<a>\n<b>` makes the second line of $GITHUB_OUTPUT a
+            # bare value that GitHub rejects, failing this job and skipping all six Core cells.
+            # So ask for the exact refs and pick one, in git's own order: a branch beats a tag,
+            # and an annotated tag resolves to the commit rather than to the tag object.
+            resolve_ref() {
+              local ref="$1" out want line uniq found
+              out="$(git ls-remote https://github.com/unslothai/unsloth-zoo \
+                "refs/heads/$ref" "refs/tags/$ref^{}" "refs/tags/$ref" "$ref")" || return 1
+              for want in "refs/heads/$ref" "refs/tags/$ref^{}" "refs/tags/$ref"; do
+                line="$(printf '%s\n' "$out" | awk -v w="$want" '$2 == w { print $1; exit }')"
+                if [ -n "$line" ]; then
+                  printf '%s\n' "$line"
+                  return 0
+                fi
+              done
+              # Not a plain branch or tag name. The trailing pattern above still covers a fully
+              # qualified ref, but only one commit may answer to it.
+              uniq="$(printf '%s\n' "$out" | awk 'NF { print $1 }' | sort -u)"
+              found="$(printf '%s\n' "$uniq" | grep -c . || true)"
+              # No match is the same shape as a failed lookup and stays retryable; several
+              # matches is a statement about the remote that retrying cannot change.
+              if [ "$found" -eq 0 ]; then
+                return 1
+              fi
+              if [ "$found" -ne 1 ]; then
+                return 2
+              fi
+              printf '%s\n' "$uniq"
+            }
+            sha=""
+            for attempt in 1 2 3; do
+              if sha="$(resolve_ref "$REF")"; then
+                if [ -n "$sha" ]; then break; fi
+              elif [ "$?" -eq 2 ]; then
+                # Retrying cannot disambiguate a name several commits answer to, and warning
+                # about a network blip that did not happen would send the reader the wrong way.
+                echo "::error::unsloth_zoo ref '$REF' matches more than one commit on the remote"
+                exit 1
+              fi
+              if [ "$attempt" -eq 3 ]; then
+                break
+              fi
+              delay=$((5 * attempt))
+              echo "::warning::ls-remote failed (attempt $attempt/3), retrying in ${delay}s..."
+              sleep "$delay"
+            done
+          fi
+          if [ -z "$sha" ]; then
+            echo "::error::could not resolve unsloth_zoo ref '$REF' to a commit"
+            exit 1
+          fi
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "unsloth_zoo $REF is $sha"
+
   consolidated:
+    needs: resolve-zoo-ref
     # Matrix: three (transformers, TRL) combos cover the failure surface the
     # PR cares about:
     #   1. transformers==4.57.6 + TRL latest <1.0.0 (the just-before-5.x line)
@@ -104,7 +216,7 @@ jobs:
             transformers_spec: "__from_pyproject__"
             trl_spec: "__from_pyproject__"
     name: "Core (${{ matrix.combo.label }})"
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 35
     # No job-level or per-step `continue-on-error`. Earlier iterations
     # masked real test failures behind green check icons; that lie is
@@ -112,12 +224,11 @@ jobs:
     # the runtime check shim handles patches that legitimately cannot
     # run on a CPU-only runner (real CUDA dispatcher, runtime args).
     env:
-      UNSLOTH_ZOO_REF: ${{ inputs.unsloth_zoo_ref || 'main' }}
-      MATRIX_TRANSFORMERS_SPEC: ${{ matrix.combo.transformers_spec }}
-      MATRIX_TRL_SPEC: ${{ matrix.combo.trl_spec }}
+      UNSLOTH_ZOO_REF: ${{ needs.resolve-zoo-ref.outputs.sha }}
       MATRIX_COMBO_ID: ${{ matrix.combo.id }}
-      # Hoisted to job-level so every step (Sanity, Bucket-A, unsloth_zoo
-      # pytest, test_apply_fused_lm_head) inherits it. transformers' bundled
+      # Hoisted to job-level so every step (Sanity, Bucket-A, the static and
+      # runtime checks) inherits it, and repeated in `consolidated-zoo` for the
+      # same reason. transformers' bundled
       # *_pb2.py was generated against an older protoc; the C++ protobuf
       # 4+/5+/6 implementation rejects them with "Descriptors cannot be
       # created directly". The pure-Python parser bypasses the check; the
@@ -150,138 +261,16 @@ jobs:
             pyproject.toml
             studio/backend/requirements/*.txt
 
-      # Node 22 unblocks tests/studio/test_chat_preset_builtin_invariants.py's
-      # `node --experimental-strip-types` subprocess. Cheap to install; keeps
-      # the consolidated job self-sufficient even if studio-backend-ci.yml
-      # changes its node setup.
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
+      # node + uv + spec resolution + the ~2 GB install + the unsloth_zoo
+      # clone. Shared verbatim with the `consolidated-zoo` job below, which
+      # runs the same three combos against the same stack; see the action for
+      # why it owns these five steps and not the four above it.
+      - name: Core CPU setup
+        uses: ./.github/actions/core-cpu-setup
         with:
-          node-version: '22'
-
-      - name: Install uv (some unsloth_zoo dev tooling expects it on PATH)
-        run: pip install uv
-
-      - name: Resolve matrix specs (handle __from_pyproject__ sentinel)
-        # The pyproject cell uses a sentinel; resolve the real `transformers`
-        # and `trl` constraints from the project's pyproject.toml at job time.
-        # unsloth's pyproject puts the LLM stack pins in
-        # [project.optional-dependencies] under the `huggingfacenotorch`
-        # extra (top-level [project.dependencies] is just typer/pydantic/etc.),
-        # so we walk every optional extra and pick the first matching spec.
-        # Other cells pass their spec through unchanged.
-        run: |
-          set -euxo pipefail
-          python <<'PY' >> "$GITHUB_ENV"
-          import os, re, tomllib
-          spec_t = os.environ["MATRIX_TRANSFORMERS_SPEC"]
-          spec_r = os.environ["MATRIX_TRL_SPEC"]
-
-          def _pkg_name(spec: str) -> str:
-              m = re.match(r"\s*([A-Za-z0-9_.-]+)", spec)
-              return (m.group(1).lower() if m else "")
-
-          if spec_t == "__from_pyproject__" or spec_r == "__from_pyproject__":
-              with open("pyproject.toml", "rb") as f:
-                  doc = tomllib.load(f)
-              proj = doc.get("project", {})
-              # Try top-level deps first, then all optional extras.
-              all_deps: list[str] = list(proj.get("dependencies", []))
-              for _name, dep_list in proj.get("optional-dependencies", {}).items():
-                  all_deps.extend(dep_list)
-
-              if spec_t == "__from_pyproject__":
-                  spec_t = next((x for x in all_deps if _pkg_name(x) == "transformers"),
-                                "transformers")
-              if spec_r == "__from_pyproject__":
-                  spec_r = next((x for x in all_deps if _pkg_name(x) == "trl"),
-                                "trl")
-          print(f"RESOLVED_TRANSFORMERS_SPEC={spec_t}")
-          print(f"RESOLVED_TRL_SPEC={spec_r}")
-          PY
-          # Echo to logs so the matrix cell label maps cleanly to a spec.
-          grep RESOLVED_ "$GITHUB_ENV" || true
-
-      - name: Install runtime deps (mirrors studio-backend-ci.yml + mlx-ci.yml)
-        # The shape matches studio-backend-ci.yml's "Repo tests (CPU)" install
-        # so we inherit the same CPU-spoof harness in tests/conftest.py and
-        # the same import-chain guarantees, plus the extra deps that the
-        # tests/saving + tests/utils Bucket-A files transitively need but
-        # which Repo tests (CPU) does not require because it --ignores
-        # those directories:
-        #   - protobuf + sentencepiece: tests/saving/test_fix_sentencepiece_gguf_robustness.py
-        #     does `from transformers.utils import sentencepiece_model_pb2`,
-        #     which imports `google.protobuf`. Not pulled by transformers'
-        #     base install.
-        #   - triton: unsloth/_gpu_init.py:232 does an unconditional
-        #     `import triton`. The triton PyPI wheel installs cleanly on
-        #     Linux x86_64 even without CUDA (the import succeeds; runtime
-        #     GPU work is what would fail, which we never do here).
-        # transformers + trl are matrix-parameterized.
-        run: |
-          set -euxo pipefail
-          python -m pip install --upgrade pip
-          pip install -r studio/backend/requirements/studio.txt
-          # CPU torch FIRST, before anything that depends on torch. peft, accelerate and
-          # datasets all declare a torch dependency, so installing them first made pip
-          # resolve it from PyPI: the default CUDA build, plus 14 nvidia_* wheels and
-          # cuda-toolkit, roughly 2.3 GB, which the pinned CPU wheel below then replaced
-          # seconds later. Same end state either way; this just stops paying for the
-          # download. torchvision: unsloth_zoo.vision_utils imports it at module scope.
-          pip install --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple \
-            'torch>=2.4,<2.11' 'torchvision<0.26'
-          pip install \
-            python-multipart aiofiles sqlalchemy cryptography \
-            pyyaml jinja2 mammoth unpdf requests typer \
-            'numpy<3' pytest==9.0.3 pytest-asyncio pytest-xdist pytest-timeout httpx \
-            protobuf sentencepiece triton \
-            psutil packaging tqdm safetensors datasets \
-            'peft>=0.18,<0.20' 'accelerate>=0.34,<2' \
-            ipython
-          # transformers + trl from the matrix combo.
-          pip install "$RESOLVED_TRANSFORMERS_SPEC"
-          pip install "$RESOLVED_TRL_SPEC"
-          # bitsandbytes: hard import in unsloth/models/_utils.py. Recent
-          # versions ship a CPU build that imports cleanly on Linux.
-          pip install 'bitsandbytes>=0.45'
-          # unsloth itself, editable, no-deps so pip does not fight the
-          # explicit torch CPU-index install above.
-          pip install -e . --no-deps
-          echo "::group::Installed transformers + trl + torch + unsloth versions"
-          pip show transformers
-          pip show trl
-          pip show torch
-          pip show unsloth
-          echo "::endgroup::"
-
-      - name: Clone unsloth_zoo @ ${{ env.UNSLOTH_ZOO_REF }}
-        # We need the repository tree (the wheel does not ship tests/), so
-        # clone shallow then editable-install so unsloth_zoo.* imports
-        # resolve to the cloned tree. We use `pip show` for the location
-        # check rather than `import unsloth_zoo` because the latter calls
-        # device_type.get_device_type() at module load and raises on a
-        # GPU-less runner; pytest steps below route through the existing
-        # tests/conftest.py spoof which handles that.
-        run: |
-          set -euxo pipefail
-          # github.com occasionally 500s on the git fetch; retry so a
-          # single upstream blip does not fail CI.
-          for attempt in 1 2 3; do
-            rm -rf "$RUNNER_TEMP/unsloth-zoo"
-            if git clone --depth=1 --branch="$UNSLOTH_ZOO_REF" \
-                https://github.com/unslothai/unsloth-zoo \
-                "$RUNNER_TEMP/unsloth-zoo"; then
-              break
-            fi
-            if [ "$attempt" -eq 3 ]; then
-              echo "::error::git clone unsloth-zoo failed after 3 attempts"
-              exit 1
-            fi
-            delay=$((5 * attempt))
-            echo "::warning::clone failed (attempt $attempt/3), retrying in ${delay}s..."
-            sleep "$delay"
-          done
-          pip install -e "$RUNNER_TEMP/unsloth-zoo" --no-deps
-          pip show unsloth_zoo
+          transformers-spec: ${{ matrix.combo.transformers_spec }}
+          trl-spec: ${{ matrix.combo.trl_spec }}
+          unsloth-zoo-ref: ${{ env.UNSLOTH_ZOO_REF }}
 
       - name: Sanity — collection only (both repos)
         # Catches import-time breakage before we run the suite. Cheap; bails
@@ -302,9 +291,11 @@ jobs:
             tests/saving/test_gguf_single_pass_export.py \
             tests/saving/test_offline_gguf_vlm_tokenizer_7481.py \
             tests/saving/test_is_vlm_detection.py \
+            tests/saving/test_save_method_lora_routing.py \
             tests/utils/test_attention_masks.py \
             tests/utils/test_packing.py \
             tests/utils/test_trunc_normal_patch.py \
+            tests/utils/test_q_galore.py \
             tests/python/test_fast_language_model_text_only.py
           # Collect from the zoo checkout, not from here: this repo ships a real
           # tests/ package, so a zoo test doing "from tests.foo import bar" binds
@@ -344,6 +335,14 @@ jobs:
         # without a corresponding zoo / unsloth-side workaround.
         run: |
           python -m pytest -v --tb=short tests/test_import_fixes_drift.py
+
+      - name: triton-absent import guard (HARD GATE)
+        # PyPI ships no Windows `triton` wheel, so the unconditional module-level import
+        # in _gpu_init.py killed `import unsloth` on a CPU-only Windows install. Named
+        # here because nothing else in the repo collects this file, so a deleted guard
+        # would leave CI green.
+        run: |
+          python -m pytest -v --tb=short tests/test_triton_optional_import.py
 
       - name: public-api surface drift detectors (9 tests, HARD GATE)
         # Companion to test_import_fixes_drift.py: that file catches
@@ -407,6 +406,10 @@ jobs:
         # against simulated CPU counts and memory so the result is identical on
         # a 4-vCPU runner and a 192-core box.
         #
+        # The drift guard is named explicitly (these jobs collect paths, not
+        # trees): it is the only leg with a transformers past the `>=4.51,<5.5`
+        # pin, and the wording it exists to survive landed in 5.10.
+        #
         # The Unsloth file runs here rather than in studio-backend-ci, which
         # installs studio.txt and so has no unsloth_zoo at all. Note the policy
         # module is not on unsloth_zoo main either until the companion PR lands,
@@ -419,7 +422,8 @@ jobs:
             tests/utils/test_dataset_num_proc.py \
             tests/utils/test_train_on_responses_only_num_proc.py
           PYTHONPATH=studio/backend python -m pytest -v --tb=short \
-            studio/backend/tests/test_dataset_map_num_proc.py
+            studio/backend/tests/test_dataset_map_num_proc.py \
+            studio/backend/tests/test_compressed_tensors_signature_drift.py
 
       - name: unsloth Bucket-A — CPU tests not in Repo tests (CPU)
         # CPU tests across 6 files under tests/saving/, tests/utils/, tests/python/
@@ -438,130 +442,23 @@ jobs:
             tests/saving/test_gguf_single_pass_export.py \
             tests/saving/test_offline_gguf_vlm_tokenizer_7481.py \
             tests/saving/test_is_vlm_detection.py \
+            tests/saving/test_save_method_lora_routing.py \
             tests/utils/test_attention_masks.py \
             tests/utils/test_packing.py \
             tests/utils/test_trunc_normal_patch.py \
+            tests/utils/test_q_galore.py \
             tests/python/test_fast_language_model_text_only.py \
             tests/test_bad_mappings_redirect.py \
+            tests/test_ollama_eos_token_order.py \
             tests/test_prefetch_snapshot_scope.py \
             tests/test_gemma_2b_mapper_key.py \
             tests/test_raw_text_json_loading.py \
             tests/test_map_eos_token.py \
-            tests/test_apertus_instruct_mapping.py
+            tests/test_apertus_instruct_mapping.py \
+            tests/test_push_to_ollama_modelfile_args.py
           # test_run_attention_flash_varlen_receives_window_and_softcap was deselected
           # until attention_dispatch.py predefined flash_attn_varlen_func as None; it
           # monkeypatches that name, so it no longer needs flash_attn on this runner.
-
-      - name: unsloth_zoo @ ${{ env.UNSLOTH_ZOO_REF }} — full pytest (CPU)
-        # 106 of 111 test_* in unsloth_zoo are CPU-only. The two CUDA-skip
-        # cases below auto-skip on a GPU-less runner; deselect them
-        # explicitly so the no-CUDA outcome is "deselected", not "skipped",
-        # making intent visible in the report. Env inherited from job block.
-        #
-        # test_get_peft_model_passes_finetune_last_n_layers_through is
-        # deselected because unsloth_zoo/mlx/loader.py at line 2972 calls
-        # model.trainable_parameters() on the fake-model fixture, which
-        # the test never stubbed; this fails on every platform regardless
-        # of CUDA. Tracked upstream as an unsloth_zoo bug; deselecting
-        # here unblocks unsloth CI until the loader fixture is fixed.
-        #
-        # A test that hangs rather than fails used to consume the whole 35 minute
-        # job budget and report nothing usable: the job ended as "cancelled", with
-        # no test name, no traceback, and every later step marked skipped. That is
-        # how unsloth_zoo's gather_qmm guard walking a chain forever under the mlx
-        # shim presented. PYTEST_TIMEOUT is read by pytest-timeout on every pytest
-        # invocation in this step, so one setting covers the xdist run and each
-        # serial file below, instead of the same flag on six command lines.
-        #
-        # 5 minutes. The slowest honest test in the suite is about 48s locally
-        # (test_fla_hopper_tile.py), and CI runs roughly 1.65x slower than that
-        # box, measured on the one test long enough to compare, so call it 80s
-        # here. That leaves well over 3x headroom, while a genuine hang is now
-        # named and stack-dumped in 5 minutes rather than silently eating all 35.
-        #
-        # This only became a sane number once unsloth_zoo stopped rebuilding
-        # dir(transformers.models) on every call (unsloth-zoo#1139): before that,
-        # test_every_shipped_model_type_accepted alone ran past 600s, so any
-        # useful timeout would have failed a passing test.
-        env:
-          PYTEST_TIMEOUT: 300
-        working-directory: ${{ runner.temp }}/unsloth-zoo
-        run: |
-          # Keep tests within each file on one worker. MLX shims contaminate sys.modules,
-          # so exclude that family from xdist and run it separately below. The other
-          # ignores either leak process state or use timing assertions that need a quiet
-          # process.
-          python -m pytest -q --tb=short -n 4 --dist loadfile tests/ \
-            --ignore-glob='tests/test_mlx_*.py' \
-            --ignore=tests/test_moe_bnb4bit_per_expert_conversions.py \
-            --ignore=tests/test_hf_xet_fallback.py \
-            --ignore=tests/test_gemma3_forced_float32_boundary_dtype.py \
-            --deselect tests/test_unsloth_zoo_lora_merge.py::test_active_merge_device_returns_string_on_cuda_host \
-            --deselect tests/test_unsloth_zoo_lora_merge.py::test_merge_lora_moves_cpu_inputs_to_active_device
-
-          # Run contamination-sensitive files in separate processes. Keep collecting
-          # results after failures, and treat pytest exit 5 as a module-level skip.
-          rc=0
-          _keep() {
-            if [ "$1" = 5 ]; then
-              # Named: an expected module-level skip and a file that stopped collecting
-              # for a new reason both exit 5.
-              echo "note: ${2:-that run} collected nothing (module-level skip), not a failure"
-            else
-              rc=1
-            fi
-          }
-          python -m pytest -q --tb=short tests/test_mlx_generate.py || _keep "$?" tests/test_mlx_generate.py
-          python -m pytest -q --tb=short tests/test_moe_bnb4bit_per_expert_conversions.py || _keep "$?" tests/test_moe_bnb4bit_per_expert_conversions.py
-          python -m pytest -q --tb=short tests/test_hf_xet_fallback.py || _keep "$?" tests/test_hf_xet_fallback.py
-          python -m pytest -q --tb=short tests/test_mlx_neftune_quant_map.py || _keep "$?" tests/test_mlx_neftune_quant_map.py
-          python -m pytest -q --tb=short tests/test_mlx_gated_delta_vjp.py || _keep "$?" tests/test_mlx_gated_delta_vjp.py
-          python -m pytest -q --tb=short tests/test_gemma3_forced_float32_boundary_dtype.py || _keep "$?" tests/test_gemma3_forced_float32_boundary_dtype.py
-
-          # Run the remaining MLX files serially in alphabetical order. The three isolated
-          # above also contaminate this group, so exclude them from its file list.
-          mlx_group=$(ls tests/test_mlx_*.py |
-            grep -vE 'tests/test_mlx_(generate|neftune_quant_map|gated_delta_vjp)\.py$')
-          # Passed unquoted below to word-split into file arguments, so an empty list
-          # would pass none and pytest would collect the whole rootdir instead.
-          if [ -z "$mlx_group" ]; then
-            echo "::error::the mlx group glob matched no files"
-            exit 1
-          fi
-          python -m pytest -q --tb=short $mlx_group \
-            --deselect tests/test_mlx_finetune_last_n_layers.py::test_get_peft_model_passes_finetune_last_n_layers_through \
-            || _keep "$?" "the mlx group"
-          exit "$rc"
-
-      - name: unsloth_zoo — test_apply_fused_lm_head (lives in compiler.py)
-        # `test_apply_fused_lm_head` lives at unsloth_zoo/compiler.py:1983,
-        # not under tests/, so pytest's default discovery does not pick it up.
-        # We route it through pytest by writing a one-shot shim test file
-        # inside the unsloth checkout's tests/ — pytest then walks UP and
-        # picks up tests/conftest.py, whose GPU-spoof harness (lines 84-141)
-        # patches torch.cuda.is_available, torch.cuda.memory.mem_get_info,
-        # torch.cuda.get_device_capability, and is_bf16_supported. That full
-        # spoof is required because unsloth_zoo/temporary_patches/gpt_oss.py
-        # at module load reads torch.cuda.memory.mem_get_info(0), which
-        # bare `is_available = True` doesn't cover. Env inherited.
-        run: |
-          set -euxo pipefail
-          cat > tests/_zoo_apply_fused_lm_head_shim.py <<'PY'
-          # Auto-generated by .github/workflows/consolidated-tests-ci.yml.
-          # Wraps unsloth_zoo.compiler.test_apply_fused_lm_head so that
-          # tests/conftest.py's GPU-spoof harness applies before the import.
-          # _zoo_aggressive_cuda_spoof extends conftest's harness with deeper
-          # patches (see tests/_zoo_aggressive_cuda_spoof.py).
-          import sys, pathlib
-          sys.path.insert(0, str(pathlib.Path(__file__).parent))
-          import _zoo_aggressive_cuda_spoof as _spoof
-          _spoof.apply()
-          from unsloth_zoo.compiler import test_apply_fused_lm_head as _zoo_test
-          def test_zoo_apply_fused_lm_head_runs():
-              _zoo_test()
-          PY
-          python -m pytest -q --tb=short tests/_zoo_apply_fused_lm_head_shim.py
-          rm -f tests/_zoo_apply_fused_lm_head_shim.py
 
       - name: Static checks — unsloth/trainer.py + unsloth/models/rl.py against latest pip TRL
         # AST-only sanity: confirm both files parse and that every TRL symbol
@@ -2330,8 +2227,246 @@ jobs:
           pip show unsloth_zoo
           echo "::endgroup::"
           echo "Consolidated job done. Coverage:"
-          echo "  - 21 unsloth Bucket-A tests under tests/saving/ + tests/utils/"
+          echo "  - 24 unsloth Bucket-A tests under tests/saving/ + tests/utils/"
           echo "  - 168 dataset_num_proc worker-bound guards (#2693)"
+          echo "  - the unsloth_zoo suite + test_apply_fused_lm_head run in the"
+          echo "    sibling 'Core zoo' job, on the same three combos"
+
+      - name: Save the pip cache
+        if: always()
+        uses: ./.github/actions/pip-cache-save
+        with:
+          dir: ${{ steps.pip-cache.outputs.dir }}
+          key: ${{ steps.pip-cache.outputs.key }}
+          cache-hit: ${{ steps.pip-cache.outputs.cache-hit }}
+
+  # The unsloth_zoo suite, lifted out of the `consolidated` cell above.
+  #
+  # Measured over 24 real jobs, the "unsloth_zoo @ <ref> - full pytest (CPU)"
+  # step runs 418s mean, 341-464s range, call it 457s at the top of the band.
+  # It used to sit serially inside a cell whose total is ~17.2 min, so it was
+  # ~7.6 min of pure critical path on 100% of pull requests: Core's
+  # `on.pull_request` paths filter matches `unsloth/**`, `studio/**`,
+  # `tests/**` and `pyproject.toml`, which is every source change this repo
+  # makes.
+  #
+  # Moving it into its own job over the SAME three combos removes no work, only
+  # the ordering. Core's critical path goes from ~17.2 min to roughly 10, the
+  # longer of the two halves, and the price is three more runners that each
+  # re-pay the install preamble. That trade is the explicit objective: fewer
+  # minutes of waiting per pull request, not fewer runner-minutes.
+  #
+  # A separate WORKFLOW file was the alternative and is worse on two counts.
+  # The combo list would have to be duplicated across files rather than sitting
+  # beside the job it mirrors, and the two halves would fall into different
+  # concurrency groups, so a force-push would cancel one and leave the other
+  # running against the commit it superseded.
+  consolidated-zoo:
+    needs: resolve-zoo-ref
+    # Byte-identical to `consolidated`'s matrix, deliberately: the coverage
+    # claim for this split is that the same suite still runs under the same
+    # three (transformers, TRL) pins. GitHub Actions supports no YAML anchors
+    # and no way to share a matrix between jobs, so it is a copy, and
+    # tests/studio/test_zoo_suite_parallel_isolation.py fails if the two copies
+    # stop agreeing.
+    strategy:
+      fail-fast: false
+      matrix:
+        combo:
+          - id: t4576-trl0latest
+            label: "HF=4.57.6 + TRL<1"
+            transformers_spec: "transformers==4.57.6"
+            trl_spec: "trl>=0.18.2,<1.0.0"
+          - id: tlatest5-trl1latest
+            label: "HF=latest + TRL=latest"
+            transformers_spec: "transformers>=5,<6"
+            trl_spec: "trl>=1,<2"
+          - id: pyproject
+            label: "HF=default + TRL=default"
+            transformers_spec: "__from_pyproject__"
+            trl_spec: "__from_pyproject__"
+    name: "Core zoo (${{ matrix.combo.label }})"
+    runs-on: ubuntu-24.04
+    # 25 rather than `consolidated`'s 35. This job runs the ~7.6 min zoo suite
+    # on top of the preamble and nothing else, and the cap is what turns a hung
+    # test into a bounded failure; see PYTEST_TIMEOUT in the step below, which
+    # is the mechanism that actually names the culprit.
+    timeout-minutes: 25
+    # Same contract as `consolidated`: no job-level or per-step
+    # `continue-on-error`, so a failing test fails the cell.
+    env:
+      UNSLOTH_ZOO_REF: ${{ needs.resolve-zoo-ref.outputs.sha }}
+      MATRIX_COMBO_ID: ${{ matrix.combo.id }}
+      # Identical to `consolidated`'s env block, and asserted identical by
+      # tests/studio/test_zoo_suite_parallel_isolation.py. The reasoning for
+      # each entry lives there; repeating it here would give it two homes.
+      PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION: python
+      PYTHONPATH: ${{ github.workspace }}/studio
+      UNSLOTH_COMPILE_DISABLE: '1'
+      UNSLOTH_IS_PRESENT: '1'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+        with:
+          python-version: '3.12'
+
+      - name: Restore the pip cache
+        id: pip-cache
+        # Its own `name`, not `consolidated`'s. Two jobs sharing one is the
+        # defect tests/studio/test_pip_cache_naming.py exists to reject: the
+        # save is gated on `cache-hit != 'true'`, so whichever job finished
+        # first on main would write the entry and the other would restore it
+        # and never save its own. The key-files are the same because the
+        # install is the same, which that file also allows for explicitly.
+        #
+        # The first run on a pull request therefore misses and downloads. The
+        # entry is written by the next push to main and warm from then on, the
+        # same lifecycle every other key here has.
+        uses: ./.github/actions/pip-cache-restore
+        with:
+          name: consolidated-zoo
+          key-files: |
+            pyproject.toml
+            studio/backend/requirements/*.txt
+
+      # The identical preamble `consolidated` runs, from the one definition
+      # both share. Anything added to the install belongs in that action, not
+      # in either caller.
+      - name: Core CPU setup
+        uses: ./.github/actions/core-cpu-setup
+        with:
+          transformers-spec: ${{ matrix.combo.transformers_spec }}
+          trl-spec: ${{ matrix.combo.trl_spec }}
+          unsloth-zoo-ref: ${{ env.UNSLOTH_ZOO_REF }}
+
+      - name: unsloth_zoo @ ${{ env.UNSLOTH_ZOO_REF }} — full pytest (CPU)
+        # 106 of 111 test_* in unsloth_zoo are CPU-only. The two CUDA-skip
+        # cases below auto-skip on a GPU-less runner; deselect them
+        # explicitly so the no-CUDA outcome is "deselected", not "skipped",
+        # making intent visible in the report. Env inherited from job block.
+        #
+        # test_get_peft_model_passes_finetune_last_n_layers_through is
+        # deselected because unsloth_zoo/mlx/loader.py at line 2972 calls
+        # model.trainable_parameters() on the fake-model fixture, which
+        # the test never stubbed; this fails on every platform regardless
+        # of CUDA. Tracked upstream as an unsloth_zoo bug; deselecting
+        # here unblocks unsloth CI until the loader fixture is fixed.
+        #
+        # A test that hangs rather than fails used to consume the whole job
+        # budget and report nothing usable: the job ended as "cancelled", with
+        # no test name, no traceback, and every later step marked skipped. That is
+        # how unsloth_zoo's gather_qmm guard walking a chain forever under the mlx
+        # shim presented. PYTEST_TIMEOUT is read by pytest-timeout on every pytest
+        # invocation in this step, so one setting covers the xdist run and each
+        # serial file below, instead of the same flag on six command lines.
+        #
+        # 5 minutes. The slowest honest test in the suite is about 48s locally
+        # (test_fla_hopper_tile.py), and CI runs roughly 1.65x slower than that
+        # box, measured on the one test long enough to compare, so call it 80s
+        # here. That leaves well over 3x headroom, while a genuine hang is now
+        # named and stack-dumped in 5 minutes rather than silently eating the
+        # job's whole 25 minute cap.
+        #
+        # This only became a sane number once unsloth_zoo stopped rebuilding
+        # dir(transformers.models) on every call (unsloth-zoo#1139): before that,
+        # test_every_shipped_model_type_accepted alone ran past 600s, so any
+        # useful timeout would have failed a passing test.
+        env:
+          PYTEST_TIMEOUT: 300
+        working-directory: ${{ runner.temp }}/unsloth-zoo
+        run: |
+          # Keep tests within each file on one worker. MLX shims contaminate sys.modules,
+          # so exclude that family from xdist and run it separately below. The other
+          # ignores either leak process state or use timing assertions that need a quiet
+          # process.
+          python -m pytest -q --tb=short -n 4 --dist loadfile tests/ \
+            --ignore-glob='tests/test_mlx_*.py' \
+            --ignore=tests/test_moe_bnb4bit_per_expert_conversions.py \
+            --ignore=tests/test_hf_xet_fallback.py \
+            --ignore=tests/test_gemma3_forced_float32_boundary_dtype.py \
+            --deselect tests/test_unsloth_zoo_lora_merge.py::test_active_merge_device_returns_string_on_cuda_host \
+            --deselect tests/test_unsloth_zoo_lora_merge.py::test_merge_lora_moves_cpu_inputs_to_active_device
+
+          # Run contamination-sensitive files in separate processes. Keep collecting
+          # results after failures, and treat pytest exit 5 as a module-level skip.
+          rc=0
+          _keep() {
+            if [ "$1" = 5 ]; then
+              # Named: an expected module-level skip and a file that stopped collecting
+              # for a new reason both exit 5.
+              echo "note: ${2:-that run} collected nothing (module-level skip), not a failure"
+            else
+              rc=1
+            fi
+          }
+          python -m pytest -q --tb=short tests/test_mlx_generate.py || _keep "$?" tests/test_mlx_generate.py
+          python -m pytest -q --tb=short tests/test_moe_bnb4bit_per_expert_conversions.py || _keep "$?" tests/test_moe_bnb4bit_per_expert_conversions.py
+          python -m pytest -q --tb=short tests/test_hf_xet_fallback.py || _keep "$?" tests/test_hf_xet_fallback.py
+          python -m pytest -q --tb=short tests/test_mlx_neftune_quant_map.py || _keep "$?" tests/test_mlx_neftune_quant_map.py
+          python -m pytest -q --tb=short tests/test_mlx_gated_delta_vjp.py || _keep "$?" tests/test_mlx_gated_delta_vjp.py
+          python -m pytest -q --tb=short tests/test_gemma3_forced_float32_boundary_dtype.py || _keep "$?" tests/test_gemma3_forced_float32_boundary_dtype.py
+
+          # Run the remaining MLX files serially in alphabetical order. The three isolated
+          # above also contaminate this group, so exclude them from its file list.
+          mlx_group=$(ls tests/test_mlx_*.py |
+            grep -vE 'tests/test_mlx_(generate|neftune_quant_map|gated_delta_vjp)\.py$')
+          # Passed unquoted below to word-split into file arguments, so an empty list
+          # would pass none and pytest would collect the whole rootdir instead.
+          if [ -z "$mlx_group" ]; then
+            echo "::error::the mlx group glob matched no files"
+            exit 1
+          fi
+          python -m pytest -q --tb=short $mlx_group \
+            --deselect tests/test_mlx_finetune_last_n_layers.py::test_get_peft_model_passes_finetune_last_n_layers_through \
+            || _keep "$?" "the mlx group"
+          exit "$rc"
+
+      - name: unsloth_zoo — test_apply_fused_lm_head (lives in compiler.py)
+        # `test_apply_fused_lm_head` lives at unsloth_zoo/compiler.py:1983,
+        # not under tests/, so pytest's default discovery does not pick it up.
+        # We route it through pytest by writing a one-shot shim test file
+        # inside the unsloth checkout's tests/ — pytest then walks UP and
+        # picks up tests/conftest.py, whose GPU-spoof harness (lines 84-141)
+        # patches torch.cuda.is_available, torch.cuda.memory.mem_get_info,
+        # torch.cuda.get_device_capability, and is_bf16_supported. That full
+        # spoof is required because unsloth_zoo/temporary_patches/gpt_oss.py
+        # at module load reads torch.cuda.memory.mem_get_info(0), which
+        # bare `is_available = True` doesn't cover. Env inherited.
+        run: |
+          set -euxo pipefail
+          cat > tests/_zoo_apply_fused_lm_head_shim.py <<'PY'
+          # Auto-generated by .github/workflows/consolidated-tests-ci.yml.
+          # Wraps unsloth_zoo.compiler.test_apply_fused_lm_head so that
+          # tests/conftest.py's GPU-spoof harness applies before the import.
+          # _zoo_aggressive_cuda_spoof extends conftest's harness with deeper
+          # patches (see tests/_zoo_aggressive_cuda_spoof.py).
+          import sys, pathlib
+          sys.path.insert(0, str(pathlib.Path(__file__).parent))
+          import _zoo_aggressive_cuda_spoof as _spoof
+          _spoof.apply()
+          from unsloth_zoo.compiler import test_apply_fused_lm_head as _zoo_test
+          def test_zoo_apply_fused_lm_head_runs():
+              _zoo_test()
+          PY
+          python -m pytest -q --tb=short tests/_zoo_apply_fused_lm_head_shim.py
+          rm -f tests/_zoo_apply_fused_lm_head_shim.py
+
+      - name: Summary
+        if: always()
+        run: |
+          echo "::group::Versions"
+          python -c "import sys, platform; print(sys.version); print(platform.platform())"
+          python -c "import torch; print('torch', torch.__version__, 'cuda?', torch.cuda.is_available())"
+          python -c "import transformers; print('transformers', transformers.__version__)"
+          # `pip show` instead of `import unsloth_zoo` — its __init__ raises
+          # without an accelerator and the spoof harness only kicks in under
+          # pytest. Cheap and accurate.
+          pip show unsloth_zoo
+          echo "::endgroup::"
+          echo "Core zoo job done. Coverage:"
           echo "  - unsloth_zoo @ ${UNSLOTH_ZOO_REF} pytest tests/ (5 GPU cases deselected)"
           echo "  - unsloth_zoo.compiler.test_apply_fused_lm_head"
 
@@ -2352,7 +2487,7 @@ jobs:
     # builds the LLAMA_CPP_TARGETS list; the result is independent of the
     # HF stack version. Run once, gate the PR.
     name: llama.cpp build + smoke
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 25
     env:
       UNSLOTH_ZOO_REF: ${{ inputs.unsloth_zoo_ref || 'main' }}

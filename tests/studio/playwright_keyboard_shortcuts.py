@@ -34,8 +34,7 @@ PORT = int(os.environ.get("SMOKE_PORT", "5407"))
 ENGINES = [e for e in os.environ.get("SMOKE_ENGINES", "chromium").split(",") if e]
 URL = f"http://127.0.0.1:{PORT}/smoke-shortcuts.html"
 
-# navigator.platform, and a user agent to match. WebKit reports a Mac agent even
-# on Linux, so nothing here may be left to the engine's own default.
+# navigator.platform, and a user agent to match.
 PLATFORMS = {
     "macOS": ("MacIntel", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) SmokeUA"),
     "Windows": ("Win32", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) SmokeUA"),
@@ -143,6 +142,49 @@ def check_defaults(page, engine: str, platform: str) -> None:
         check(engine, platform, "no unreachable Ctrl default off macOS", not ctrl, str(ctrl))
 
 
+def check_every_default(page, engine: str, platform: str) -> None:
+    """Press every chord the build ships, not just the handful named below.
+
+    The harness registers the registry itself, so this is the dispatch layer end to
+    end: a default the matcher cannot match, a chord another action owns, a modifier
+    that maps differently off macOS. The app's own call sites are pinned separately,
+    by "every action has a useShortcut call site" in the node suite.
+    """
+    rows = page.evaluate(
+        """() => {
+            const r = window.__shortcutsSmoke.registry;
+            const mac = r.isMacPlatform();
+            const out = [];
+            for (const def of r.SHORTCUT_DEFS) {
+                for (const slot of r.SHORTCUT_SLOTS) {
+                    const value = r.defaultBindingFor(def, slot, mac);
+                    if (value != null) out.push({ id: def.id, slot, value });
+                }
+            }
+            return out;
+        }"""
+    )
+    recorded_as = page.evaluate("window.__shortcutsSmoke.recordedAs")
+    missed: list[str] = []
+    for row in rows:
+        reset(page)
+        # The Tab chords in this loop move focus, and a focused control keeps
+        # its own Enter, so the bare-key pair would look dead without this.
+        page.evaluate("document.activeElement && document.activeElement.blur()")
+        page.keyboard.press(to_press(row["value"], platform))
+        expected = recorded_as.get(row["id"], row["id"])
+        if expected not in actions(page):
+            missed.append(f"{row['id']}.{row['slot']} {row['value']}")
+    reset(page)
+    check(
+        engine,
+        platform,
+        f"every shipped chord fires its action ({len(rows)} slots)",
+        not missed,
+        ", ".join(missed)[:300],
+    )
+
+
 def check_dispatch(page, engine: str, platform: str) -> None:
     reset(page)
     page.keyboard.press(to_press("Mod+Comma", platform))
@@ -205,12 +247,11 @@ def check_text_fields(page, engine: str, platform: str) -> None:
         str(actions(page)),
     )
 
-    # Escape types nothing in the composer, so declining keeps working there,
-    # and Enter, which sends, does not.
     reset(page)
     page.focus("#smoke-composer")
     page.keyboard.press("Escape")
     declined = actions(page)
+    # Escape types nothing in the composer, so declining keeps working there, and Enter, which sends, does not.
     reset(page)
     page.focus("#smoke-composer")
     page.keyboard.press("Enter")
@@ -306,8 +347,7 @@ def check_repeat(page, engine: str, platform: str) -> None:
 
 
 def check_altgr(page, engine: str, platform: str) -> None:
-    # AltGr reports itself as Ctrl+Alt. Off macOS an Alt chord must stand aside
-    # so the character is typed; on macOS Option reports AltGraph and is a plain Alt.
+    # AltGr reports itself as Ctrl+Alt.
     reset(page)
     prevented = page.evaluate(
         """([mac]) => {
@@ -341,9 +381,8 @@ def check_altgr(page, engine: str, platform: str) -> None:
 
 
 def check_foreign_binding(page, engine: str, platform: str) -> None:
-    # A binding stored on a Mac must not fire on the bare key elsewhere. Before
-    # the registry grew, matchesBinding ignored the ctrl flag off macOS instead
-    # of rejecting it, and a Mac Ctrl chord fired on the unmodified key.
+    # A binding stored on a Mac must not fire on the bare key elsewhere. Before the registry grew, matchesBinding
+    # ignored the ctrl flag off macOS instead of rejecting it, and a Mac Ctrl chord fired on the unmodified key.
     reload_with(page, json.dumps({"copySessionId": {"primary": "Ctrl+KeyG"}}))
     reset(page)
     page.evaluate(
@@ -598,6 +637,7 @@ def run_engine(pw, engine: str) -> None:
             page.wait_for_selector("#smoke-ready", timeout = 120000)
             try:
                 check_defaults(page, engine, platform)
+                check_every_default(page, engine, platform)
                 check_dispatch(page, engine, platform)
                 check_text_fields(page, engine, platform)
                 check_bare_keys(page, engine, platform)

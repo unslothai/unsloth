@@ -98,3 +98,27 @@ def test_unservable_entries_are_dropped(monkeypatch):
     )
     monkeypatch.setattr(inf, "_resolves_to_resident", lambda key, **kw: False)
     assert inf._servable_catalog_rows(_catalog(3), 111.0) == []
+
+
+def test_a_managed_account_scans_the_shared_catalog_object(monkeypatch):
+    """Filtering first handed a fresh list to the scan, so every managed poll rescanned."""
+    import asyncio
+
+    from hub.services.models import account_access
+
+    catalog = _catalog(3)
+    seen = []
+
+    async def cached():
+        return catalog
+
+    monkeypatch.setattr(inf, "_cached_local_catalog", cached)
+    monkeypatch.setattr(inf, "_account_catalog_cache", lambda: {"at": 1.0})
+    monkeypatch.setattr(inf, "_openai_model_objects", lambda: [])
+    monkeypatch.setattr(inf, "_peek_inference_backend", lambda: None)
+    monkeypatch.setattr(account_access, "managed_account", lambda: True)
+    monkeypatch.setattr(account_access, "filter_model_rows", lambda rows: list(rows[:1]))
+    monkeypatch.setattr(account_access, "resident_hidden", lambda *a, **k: False)
+    monkeypatch.setattr(inf, "_servable_catalog_rows", lambda rows, at: seen.append(rows) or [])
+    asyncio.run(inf._openai_catalog_objects())
+    assert seen[0] is catalog

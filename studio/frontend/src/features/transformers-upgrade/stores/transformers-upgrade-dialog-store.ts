@@ -128,10 +128,9 @@ export const useTransformersUpgradeDialogStore =
           get().resolve(true);
           return;
         }
-        // Structured failure: the swap failed but may have already unloaded the
-        // chat model; record that so a later cancel still rolls the caller back.
-        // A version mismatch also carries the superseding release, so Retry
-        // re-requests a version that can actually succeed.
+        // Structured failure: the swap failed but may have already unloaded the chat model; record
+        // that so a later cancel still rolls the caller back. A version mismatch also carries the
+        // superseding release, so Retry re-requests a version that can actually succeed.
         const { upgrade } = get();
         set({
           phase: "error",

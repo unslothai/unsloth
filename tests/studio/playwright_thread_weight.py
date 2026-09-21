@@ -74,8 +74,8 @@ from _playwright_robust import (  # noqa: E402
 PORT = int(os.environ.get("SMOKE_PORT", "5213"))
 # Unset: start and stop our own server. Set: drive that one and leave it running.
 # Exported-but-empty counts as unset, else we skip the server and drive "" as the URL.
-# rstrip("/"): a trailing slash would make the anchored /api/ route regex below never match,
-# silently turning the stubbed fork-count fan-out back into live HTTP.
+# rstrip("/"): a trailing slash would make the anchored /api/ route regex below never match, silently turning the
+# stubbed fork-count fan-out back into live HTTP.
 _EXTERNAL = os.environ.get("SMOKE_BASE_URL", "").strip().rstrip("/")
 BASE = _EXTERNAL or f"http://127.0.0.1:{PORT}"
 OWNS_SERVER = not _EXTERNAL
@@ -83,11 +83,10 @@ LABEL = os.environ.get("SMOKE_LABEL", "tree")
 OUT = Path(os.environ.get("PW_ART_DIR", "logs/playwright-thread-weight"))
 OUT.mkdir(parents = True, exist_ok = True)
 
-# Sorted: the growth check reads the first and last entries as smallest and largest, so an
-# unsorted override would invert every ratio and report a good run as measuring nothing.
+# Sorted: the growth check reads the first and last entries as smallest and largest, so an unsorted override would
+# invert every ratio and report a good run as measuring nothing.
 SIZES = sorted(int(n) for n in os.environ.get("SMOKE_THREAD_SIZES", "10,50,200,500").split(","))
-# 6x is the Lighthouse mobile default and roughly the gap between this machine and the reported
-# one under load. Absolute ms are not comparable across machines; the curve is.
+# 6x is the Lighthouse mobile default and roughly the gap between this machine and the reported one under load.
 CPU_THROTTLE_RATE = float(os.environ.get("SMOKE_CPU_THROTTLE", "6"))
 # Keystrokes are noisy at this timescale, so type several and report the median.
 KEYSTROKES = int(os.environ.get("SMOKE_KEYSTROKES", "5"))
@@ -97,9 +96,7 @@ SCROLL_STEP_PX = int(os.environ.get("SMOKE_SCROLL_STEP_PX", "400"))
 # not a regression.
 SEED_TIMEOUT_MS = int(os.environ.get("SMOKE_SEED_TIMEOUT_MS", "180000"))
 ACTION_TIMEOUT_MS = int(os.environ.get("SMOKE_ACTION_TIMEOUT_MS", "60000"))
-# How long an in-page action waits for the DOM to reach the state it asked for. This bounds an
-# action that never happened, and nothing else: it must stay well above the slowest honest
-# measurement or the harness reports "never opened" for what is really just a very slow open.
+# How long an in-page action waits for the DOM to reach the state it asked for.
 # Measured on this tree, opening the action menu at N=500 under 6x takes around 25s.
 SETTLE_TIMEOUT_MS = int(os.environ.get("SMOKE_SETTLE_TIMEOUT_MS", "90000"))
 
@@ -152,10 +149,9 @@ def counters(before: dict[str, float], after: dict[str, float]) -> dict[str, flo
 
 
 def long_task_summary(page) -> dict[str, float]:
-    # PerformanceObserver callbacks are delivered on a later task, so the entry for the long
-    # task at the tail of an action is not in the array yet. Yield once before reading, or the
-    # worst entry is silently dropped -- flakily, and most often at large N where that tail
-    # task is longest.
+    # PerformanceObserver callbacks are delivered on a later task, so the entry for the long task at the tail of an
+    # action is not in the array yet. Yield once before reading, or the worst entry is silently dropped -- flakily, and
+    # most often at large N where that tail task is longest.
     tasks = page.evaluate(
         "async () => { await new Promise((r) => setTimeout(r, 0)); return window.__longTasks; }"
     )
@@ -166,9 +162,9 @@ def long_task_summary(page) -> dict[str, float]:
     }
 
 
-# One character through the native value setter plus an input event: what the browser leaves
-# behind after a real keypress, and what React's controlled textarea and react-textarea-autosize
-# both react to. Resolved on the second rAF, which is the frame that has painted it.
+# One character through the native value setter plus an input event: what the browser leaves behind after a real
+# keypress, and what React's controlled textarea and react-textarea-autosize both react to. Resolved on the second
+# rAF, which is the frame that has painted it.
 KEYSTROKE_JS = """
 async (count) => {
   const api = window.__threadWeight;
@@ -244,11 +240,11 @@ async ([steps, stepPx]) => {
 }
 """
 
-# Radix portals the menu to document.body and puts the body on the modal layer, which is the
-# fan-out the issue blames. bodyPointerEvents proves the open really took that path.
+# Radix portals the menu to document.body and puts the body on the modal layer, which is the fan-out the issue blames.
+# bodyPointerEvents proves the open really took that path.
 #
-# The trigger opens on `pointerdown`, not on `click`: an element.click() leaves the menu shut and
-# the whole measurement silently reads zero. Hence the pointer pair.
+# The trigger opens on `pointerdown`, not on `click`: an element.click() leaves the menu shut and the whole measurement
+# silently reads zero.
 MENU_JS = """
 async (timeoutMs) => {
   const api = window.__threadWeight;
@@ -332,10 +328,9 @@ async (timeoutMs) => {
 }
 """
 
-# The floor under every timing here: two rAFs resolve no sooner than two vsync intervals.
-# Measured at 33.3ms on this machine and unmoved by CPU throttling, so an action that never
-# happened still reports ~33ms, which reads as a plausible number rather than as a failure.
-# Recorded per N and subtracted before any growth ratio is taken.
+# The floor under every timing here: two rAFs resolve no sooner than two vsync intervals. Measured at 33.3ms on this
+# machine and unmoved by CPU throttling, so an action that never happened still reports ~33ms, which reads as a
+# plausible number rather than as a failure. Recorded per N and subtracted before any growth ratio is taken.
 PAINT_FLOOR_JS = """
 async (samples) => {
   const values = [];
@@ -369,13 +364,13 @@ def measure_one(context, cdp_throttle_rate: float, size: int) -> dict:
     """Seed a fresh page to `size` messages and run the four actions on it."""
     page = context.new_page()
     result: dict = {"messages_requested": size}
-    # A request that escapes to the server, or a warning storm, is work this harness would be
-    # charging to the app, once per message. Both are cleared after seeding, so what is asserted
-    # on is the four measured actions rather than page load.
+    # A request that escapes to the server, or a warning storm, is work this harness would be charging to the app,
+    # once per message. Both are cleared after seeding, so what is asserted on is the four measured actions rather
+    # than page load.
     #
     # startswith, not `"/api/" in url`: vite serves the app's own source modules from paths like
-    # /src/features/chat/api/chat-api.ts, and a substring match counts 45 of those as network
-    # calls. Same trap the API route regex below is anchored to avoid.
+    # /src/features/chat/api/chat-api.ts, and a substring match counts 45 of those as network calls. Same trap the API
+    # route regex below is anchored to avoid.
     api_prefix = f"{BASE}/api/"
     stray_requests: list[str] = []
     console_warnings: list[str] = []
@@ -393,11 +388,11 @@ def measure_one(context, cdp_throttle_rate: float, size: int) -> dict:
         cdp = context.new_cdp_session(page)
         cdp.send("Performance.enable")
 
-        # Seeding unthrottled: this measures interaction cost at a thread size, not the cost of
-        # constructing the thread, and 500 messages at 6x would spend minutes here.
+        # Seeding unthrottled: this measures interaction cost at a thread size, not the cost of constructing the thread,
+        # and 500 messages at 6x would spend minutes here.
         page.evaluate("(n) => window.__threadWeight.seed(n)", size)
-        # Single-selector gates. counts() walks every element in the document, so polling it
-        # per frame makes seeding superlinear in the thing being seeded.
+        # Single-selector gates. counts() walks every element in the document, so polling it per frame makes seeding
+        # superlinear in the thing being seeded.
         page.wait_for_function(
             "(n) => window.__threadWeight.messageCount() >= n",
             arg = size,
@@ -408,9 +403,9 @@ def measure_one(context, cdp_throttle_rate: float, size: int) -> dict:
             arg = size // 2,
             timeout = SEED_TIMEOUT_MS,
         )
-        # Shiki is async and per block, and a <pre> exists before it is highlighted, so counting
-        # code blocks gates nothing. Wait for the token count to stop moving instead: unfinished
-        # highlighting would otherwise land in the keystroke window, the first action measured.
+        # Shiki is async and per block, and a <pre> exists before it is highlighted, so counting code blocks gates
+        # nothing. Wait for the token count to stop moving instead: unfinished highlighting would otherwise land in
+        # the keystroke window, the first action measured.
         page.wait_for_function(
             """() => {
                 const n = window.__threadWeight.highlightedTokenCount();
@@ -433,7 +428,6 @@ def measure_one(context, cdp_throttle_rate: float, size: int) -> dict:
         # Under throttling, because that is the regime every timing below is taken in.
         result["paint_floor_ms"] = round(page.evaluate(PAINT_FLOOR_JS, 9), 2)
 
-        # 1. Keystroke.
         reset_long_tasks(page)
         before = metrics(cdp)
         typed = page.evaluate(KEYSTROKE_JS, KEYSTROKES)
@@ -448,7 +442,6 @@ def measure_one(context, cdp_throttle_rate: float, size: int) -> dict:
             **long_task_summary(page),
         }
 
-        # 2. Scroll gesture.
         reset_long_tasks(page)
         before = metrics(cdp)
         scrolled = page.evaluate(SCROLL_JS, [SCROLL_STEPS, SCROLL_STEP_PX])
@@ -456,19 +449,19 @@ def measure_one(context, cdp_throttle_rate: float, size: int) -> dict:
         result["scroll"] = {
             "wall_ms": None if scrolled is None else round(scrolled["wallMs"], 1),
             "scrolled_px": None if scrolled is None else scrolled["scrolledPx"],
-            # Long tasks need a 50ms frame; a scroll can be visibly rough well under that, so the
-            # worst single frame is the jank number and long_task_ms is the severe-case one.
+            # Long tasks need a 50ms frame;
+            # a scroll can be visibly rough well under that, so the worst single frame is the jank number and
+            # long_task_ms is the severe-case one.
             "worst_frame_ms": None if scrolled is None else round(scrolled["worstFrameMs"], 1),
             "frames": None if scrolled is None else scrolled["frames"],
             **counters(before, after),
             **long_task_summary(page),
         }
 
-        # 3. Menu open + close. The bar is hover-revealed once it is autohidden, so hover with a
-        # real pointer first; only the click-to-settled interval is timed.
-        # behavior: "instant". The viewport carries scroll-smooth, so the default animates, and
-        # at large N a fixed wait leaves that animation in flight inside the menu counters --
-        # the same trap SCROLL_JS documents.
+        # 3. Menu open + close. The bar is hover-revealed once it is autohidden, so hover with a real pointer first;
+        # only the click-to-settled interval is timed.
+        # behavior: "instant". The viewport carries scroll-smooth, so the default animates, and at large N a fixed wait
+        # leaves that animation in flight inside the menu counters -- the same trap SCROLL_JS documents.
         page.evaluate(
             """() => { const m = window.__threadWeight.lastAssistantMessage();
                 if (m) m.scrollIntoView({ block: "center", behavior: "instant" }); }"""
@@ -501,7 +494,6 @@ def measure_one(context, cdp_throttle_rate: float, size: int) -> dict:
             **long_task_summary(page),
         }
 
-        # 4. Delete.
         page.locator('[data-role="assistant"]').last.hover(timeout = ACTION_TIMEOUT_MS)
         reset_long_tasks(page)
         before = metrics(cdp)
@@ -516,8 +508,7 @@ def measure_one(context, cdp_throttle_rate: float, size: int) -> dict:
         }
 
         cdp.send("Emulation.setCPUThrottlingRate", {"rate": 1})
-        # Cumulative over seeding and all four actions: a liveness check, not attributable to
-        # any one of them.
+        # Cumulative over seeding and all four actions: a liveness check, not attributable to any one of them.
         result["raf_callbacks"] = page.evaluate("window.__rafCount")
         result["stray_api_requests"] = len(stray_requests)
         result["console_warnings"] = len(console_warnings)
@@ -552,8 +543,8 @@ def run() -> dict:
         )
         context = browser.new_context(viewport = {"width": 1440, "height": 900})
         context.add_init_script(OBSERVER_INIT)
-        # Anchored at the origin so it cannot swallow vite's own module URLs, which live under
-        # src/features/**/api/ and would otherwise match a bare "/api/" pattern.
+        # Anchored at the origin so it cannot swallow vite's own module URLs, which live under src/features/**/api/ and
+        # would otherwise match a bare "/api/" pattern.
         context.route(
             re.compile(rf"^{re.escape(BASE)}/api/"),
             lambda route: route.fulfill(status = 200, content_type = "application/json", body = "{}"),
@@ -566,9 +557,9 @@ def run() -> dict:
     return results
 
 
-# Every recorded metric appears here. That is the rule the harnesses in this directory are held
-# to: a metric that is recorded and never read is how one goes false-green, and
-# tests/studio/test_autoscroll_harness_contract.py fails if anything recorded below is missing.
+# Every recorded metric appears here.
+# That is the rule the harnesses in this directory are held to: a metric that is recorded and never read is how one goes
+# false-green, and tests/studio/test_autoscroll_harness_contract.py fails if anything recorded below is missing.
 TABLE_ROWS = (
     ("messages requested", lambda r: r["messages_requested"]),
     ("cpu throttle rate", lambda r: r["cpu_throttle_rate"]),
@@ -592,8 +583,8 @@ TABLE_ROWS = (
     ("viewport clientHeight", lambda r: r["viewport"]["clientHeight"]),
     ("keystroke median ms", lambda r: r["keystroke"]["median_ms"]),
     ("keystroke worst ms", lambda r: r["keystroke"]["worst_ms"]),
-    # Compact so the column still lines up. Worth a row of its own: the first sample is always a
-    # cold outlier, which is why the headline number is the median rather than the mean.
+    # Compact so the column still lines up. Worth a row of its own: the first sample is always a cold outlier, which
+    # is why the headline number is the median rather than the mean.
     (
         "keystroke samples ms",
         lambda r: "/".join(str(round(s)) for s in r["keystroke"]["samples_ms"]),
@@ -663,8 +654,8 @@ def print_table(results: dict) -> None:
                 cells.append("-")
         rows.append((name, cells))
     label_width = max(len(name) for name, _ in rows) + 2
-    # From the widest cell, not a constant: a fixed width silently runs the columns together on
-    # the one row that overflows it, which is the row you were reading.
+    # From the widest cell, not a constant: a fixed width silently runs the columns together on the one row that
+    # overflows it, which is the row you were reading.
     cell_width = max([len(cell) for _, cells in rows for cell in cells] + [8]) + 2
     header = "".ljust(label_width) + "".join(f"N={n}".rjust(cell_width) for n in sizes)
     info(header)
@@ -716,9 +707,9 @@ def harness_failures(results: dict) -> list[str]:
     for size in results["sizes"]:
         row = results["by_size"][str(size)]
         counts = row["counts"]
-        # A request reaching the server is a CDP round trip to another process inside a region
-        # being timed, once per assistant message. A warning storm is the same cost via the
-        # console channel. Both scale with N, so both would forge the curve.
+        # A request reaching the server is a CDP round trip to another process inside a region being timed, once per
+        # assistant message. A warning storm is the same cost via the console channel. Both scale with N, so both would
+        # forge the curve.
         if row["stray_api_requests"]:
             failures.append(
                 f"N={size} let {row['stray_api_requests']} /api/ requests reach the network "
@@ -742,10 +733,9 @@ def harness_failures(results: dict) -> list[str]:
                 f"N={size} rendered {counts['codeBlocks']} code blocks and "
                 f"{counts['katexNodes']} KaTeX nodes; the message bodies are not realistic"
             )
-        # An autohidden bar is absent at rest ON PURPOSE, so the resting census cannot be the
-        # guard any more. What must still hold is that hovering produces one: a tree that
-        # mounts no bar under the pointer either is broken, and its menu column is measuring
-        # a page that has no menu.
+        # An autohidden bar is absent at rest ON PURPOSE, so the resting census cannot be the guard any more. What must
+        # still hold is that hovering produces one: a tree that mounts no bar under the pointer either is broken, and
+        # its menu column is measuring a page that has no menu.
         hovered_triggers = row["menu"].get("triggers_while_hovered")
         if counts["actionBars"] <= 0 and not hovered_triggers:
             failures.append(
@@ -758,10 +748,9 @@ def harness_failures(results: dict) -> list[str]:
         keystroke = row["keystroke"]
         if keystroke["median_ms"] is None:
             failures.append(f"N={size} could not find the composer input")
-        # The DOM value is what the harness itself wrote, so it proves nothing on its own. Only
-        # the runtime's copy shows the keystroke reached React rather than just the textarea --
-        # and a keystroke that reached nothing still reports the ~33ms paint floor, which reads
-        # as a plausible timing.
+        # The DOM value is what the harness itself wrote, so it proves nothing on its own. Only the runtime's copy
+        # shows the keystroke reached React rather than just the textarea -- and a keystroke that reached nothing
+        # still reports the ~33ms paint floor, which reads as a plausible timing.
         elif keystroke["runtime_text"] != keystroke["dom_text"]:
             failures.append(
                 f"N={size} typed {keystroke['dom_text']!r} into the DOM but the runtime holds "
@@ -778,8 +767,7 @@ def harness_failures(results: dict) -> list[str]:
             )
         if row["scroll"]["wall_ms"] is None:
             failures.append(f"N={size} could not find the thread viewport")
-        # Equal travel at every N or the columns are not the same gesture. A short thread runs
-        # out of room, so the gesture reverses at the ends rather than stopping.
+        # Equal travel at every N or the columns are not the same gesture.
         elif row["scroll"]["scrolled_px"] < SCROLL_STEPS * SCROLL_STEP_PX * 0.9:
             failures.append(
                 f"N={size} travelled only {row['scroll']['scrolled_px']}px of the "
@@ -803,12 +791,11 @@ def harness_failures(results: dict) -> list[str]:
         elif deleted["messages_after"] >= deleted["messages_before"]:
             failures.append(f"N={size} clicked delete and the message count did not drop")
 
-    # A modal menu puts the body on the modal layer and a non-modal one does not, and the two
-    # cost wildly different amounts. Either is a legitimate tree, but a run that mixes them
-    # across N is comparing columns measured on different mechanisms, which is the quiet way
-    # this table stops meaning anything. Collected in the loop above rather than in a second
-    # one over the same sizes: that loop shadowed `size` and `row`, and every check written
-    # under it silently measured only the last N.
+    # A modal menu puts the body on the modal layer and a non-modal one does not, and the two cost wildly different
+    # amounts. Either is a legitimate tree, but a run that mixes them across N is comparing columns measured on
+    # different mechanisms, which is the quiet way this table stops meaning anything. Collected in the loop above rather
+    # than in a second one over the same sizes: that loop shadowed `size` and `row`, and every check written under it
+    # silently measured only the last N.
     if len(layers) > 1:
         failures.append(
             f"the menu put the body on {sorted(str(x) for x in layers)} across N; the columns "

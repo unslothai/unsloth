@@ -4,6 +4,7 @@
 import forge from "node-forge";
 import { authFetch } from "@/features/auth/api";
 import { formatFastApiDetail } from "@/lib/format-fastapi-error";
+import type { ModelCatalogSnapshotEntry } from "../model-catalog-snapshot";
 
 
 export type ProviderAuthKind = "api_key" | "chatgpt_oauth";
@@ -59,6 +60,26 @@ export interface ProviderModelInfo {
   owned_by?: string | null;
   /** Only the ChatGPT plan catalog reports this; the registry describes the rest. */
   vision?: boolean | null;
+}
+
+export interface ProviderModelReasoningInfo {
+  supported_efforts?: string[] | null;
+  mandatory?: boolean | null;
+  default_effort?: string | null;
+  default_enabled?: boolean | null;
+}
+
+export interface ProviderModelCapabilityInfo {
+  id: string;
+  input_modalities?: string[] | null;
+  reasoning?: ProviderModelReasoningInfo | null;
+  max_output_tokens?: number | null;
+  supported_parameters?: string[] | null;
+}
+
+export interface ModelCatalogResponse {
+  fetched_at: number;
+  providers: Record<string, Record<string, ModelCatalogSnapshotEntry>>;
 }
 
 export interface ProviderTestResult {
@@ -124,23 +145,50 @@ async function importProviderPublicKey(
   return forgeKey;
 }
 
+const ENVELOPE_VERSION = "v1";
+const ENVELOPE_AAD = "unsloth-studio-provider-key-v1";
+const AES_KEY_BYTES = 32;
+const NONCE_BYTES = 12;
+
+function randomBinaryString(byteLength: number): string {
+  const bytes = new Uint8Array(byteLength);
+  crypto.getRandomValues(bytes);
+  return String.fromCharCode(...bytes);
+}
+
+/** RSA-OAEP wraps only the 32-byte content key: wrapping the API key itself caps it at 190 bytes. */
 export async function encryptProviderApiKey(
   plaintextApiKey: string,
   forceRefresh = false,
 ): Promise<string> {
   const key = await importProviderPublicKey(forceRefresh);
-  const encrypted = key.encrypt(plaintextApiKey, "RSA-OAEP", {
+  const aesKey = randomBinaryString(AES_KEY_BYTES);
+  const nonce = randomBinaryString(NONCE_BYTES);
+
+  const cipher = forge.cipher.createCipher("AES-GCM", aesKey);
+  cipher.start({ iv: nonce, additionalData: ENVELOPE_AAD, tagLength: 128 });
+  // forge ciphers take bytes: without encodeUtf8 a non-ASCII key loses all but each low byte.
+  cipher.update(forge.util.createBuffer(forge.util.encodeUtf8(plaintextApiKey)));
+  if (!cipher.finish()) {
+    throw new Error("Failed to encrypt API key.");
+  }
+
+  const wrappedKey = key.encrypt(aesKey, "RSA-OAEP", {
     md: forge.md.sha256.create(),
     mgf1: { md: forge.md.sha256.create() },
   });
-  return forge.util.encode64(encrypted);
+  return [
+    ENVELOPE_VERSION,
+    forge.util.encode64(wrappedKey),
+    forge.util.encode64(nonce),
+    forge.util.encode64(cipher.output.getBytes() + cipher.mode.tag.getBytes()),
+  ].join(".");
 }
 
 export async function listProviderRegistry(): Promise<ProviderRegistryEntry[]> {
-  // include_hidden asks for the backend-only entries (the self-hosted presets),
-  // which carry the studio-tools capability the composer gates on. An older
-  // backend ignores the parameter and returns the visible entries, so the
-  // capability simply reads as unknown and the pills stay closed.
+  // include_hidden asks for the backend-only entries (the self-hosted presets), which carry the
+  // studio-tools capability the composer gates on. An older backend ignores the parameter and
+  // returns the visible entries, so the capability reads as unknown and the pills stay closed.
   const response = await authFetch("/api/providers/registry?include_hidden=true");
   return parseJsonOrThrow<ProviderRegistryEntry[]>(response);
 }
@@ -183,9 +231,8 @@ export async function deleteProviderConfig(providerId: string): Promise<void> {
   const response = await authFetch(`/api/providers/${providerId}`, {
     method: "DELETE",
   });
-  // Treat 404 as success: another tab already deleted this provider, so pruning
-  // the stale cache is correct. Otherwise the caller throws and the user is stuck
-  // with an entry they cannot remove from the UI.
+  // Treat 404 as success: another tab already deleted this provider, so pruning the stale cache is
+  // correct. Otherwise the caller throws and the user is stuck with an entry they cannot remove.
   if (response.status === 404) {
     return;
   }
@@ -315,14 +362,40 @@ export async function listProviderModels(payload: {
   });
 }
 
+export async function fetchModelCatalog(): Promise<ModelCatalogResponse> {
+  const response = await authFetch("/api/providers/model-catalog");
+  return parseJsonOrThrow<ModelCatalogResponse>(response);
+}
+
+export async function listProviderModelCapabilities(payload: {
+  providerType: string;
+  providerId?: string | null;
+  apiKey: string;
+  baseUrl?: string | null;
+}): Promise<ProviderModelCapabilityInfo[]> {
+  return withApiKeyEncryptionRetry(payload.apiKey, async (encryptedApiKey) => {
+    const response = await authFetch("/api/providers/model-capabilities", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        provider_type: payload.providerType,
+        provider_id: payload.providerId ?? null,
+        encrypted_api_key: encryptedApiKey,
+        base_url: payload.baseUrl ?? null,
+      }),
+    });
+    return parseJsonOrThrow<ProviderModelCapabilityInfo[]>(response);
+  });
+}
+
 
 export interface CodexSubscriptionModels {
   models: ProviderModelInfo[];
-  /** Every model the plan returned, offered or not: absent from this means the account
-   * cannot reach it, while present-but-unoffered only means it is no longer shown. */
+  /** Every model the plan returned, offered or not: absent from this means the account cannot reach
+   *  it, while present-but-unoffered only means it is no longer shown. */
   known?: ProviderModelInfo[];
-  /** "reauthorization_required" is a curated answer that also says the connection has
-   * to be reconnected: the picker must not treat it as the plan's catalog. */
+  /** "reauthorization_required" is a curated answer that also says the connection has to be
+   *  reconnected: the picker must not treat it as the plan's catalog. */
   source: "subscription" | "curated" | "reauthorization_required";
 }
 

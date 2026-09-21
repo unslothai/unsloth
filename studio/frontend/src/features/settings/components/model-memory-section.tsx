@@ -131,7 +131,10 @@ export function ModelMemorySection() {
     }
   };
 
-  // A loaded child may stay locked until reload, so show the veto only after it took effect.
+  // Both on suppresses --mlock. Say so, rather than looking like a no-op. mlockActive is read too,
+  // so a child still holding a lock from before the save is not told the veto already applies; it
+  // cannot be confused with the nothing-to-lock case, which the two notices below key on and which
+  // requires no-reserve OFF.
   const mlockVetoed =
     settings?.keepResident === true &&
     settings.noRamReserve === true &&

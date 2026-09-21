@@ -4,8 +4,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { readFileSync } from "node:fs";
-
 import {
   adoptedTransports,
   mismatchStartAction,
@@ -13,6 +11,8 @@ import {
   TRANSPORT,
   transportAfterStart,
 } from "../src/features/hub/download-manager/constants.ts";
+
+import { readSrc } from "./helpers/kit.ts";
 
 test("a start of its own keeps the transport it resolved", () => {
   assert.equal(transportAfterStart("http", null), "http");
@@ -162,13 +162,7 @@ test("a matching pair is left alone", () => {
 });
 
 test("a transport mismatch start uses the mismatch helper", () => {
-  const source = readFileSync(
-    new URL(
-      "../src/features/hub/download-manager/transport-conflict.ts",
-      import.meta.url,
-    ),
-    "utf8",
-  );
+  const source = readSrc("features/hub/download-manager/transport-conflict.ts");
   assert.match(
     source,
     /mismatchStartAction\(\s*preferred,\s*resolved,\s*last,\s*status\.resumable,\s*\)/,
@@ -181,13 +175,7 @@ test("a transport mismatch start uses the mismatch helper", () => {
 });
 
 test("staging owns cleanup while Hub resolves exact or scoped conflicts", () => {
-  const source = readFileSync(
-    new URL(
-      "../src/features/hub/download-manager/use-repo-download.ts",
-      import.meta.url,
-    ),
-    "utf8",
-  );
+  const source = readSrc("features/hub/download-manager/use-repo-download.ts");
   const exactIndex = source.indexOf(
     "const exact = state.conflicts[conflictKey]",
   );

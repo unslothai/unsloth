@@ -28,6 +28,32 @@ import time
 import types as _types
 from pathlib import Path
 
+
+def _shared_setup_1(monkeypatch):
+    b = TrainingBackend()
+    calls = _record_force_terminate(monkeypatch, b)
+
+    proc = _FakeProc(alive = True)
+    b._proc = proc
+    return b, calls, proc
+
+
+def _shared_setup_2(monkeypatch):
+    b = TrainingBackend()
+    calls = _record_force_terminate(monkeypatch, b)
+
+    b._proc = _FakeProc(alive = True)
+    return b, calls
+
+
+def _shared_setup_3(monkeypatch):
+    monkeypatch.setitem(_G, "_STOP_TIMEOUT_S", 100.0)
+    b = _running_backend()
+    b._start_stop_watchdog = TrainingBackend._start_stop_watchdog.__get__(b)
+    calls = _record_force_terminate(monkeypatch, b)
+    return b, calls
+
+
 _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
@@ -139,11 +165,7 @@ def _record_force_terminate(monkeypatch, b):
 def test_watchdog_escalates_after_grace_once_complete_seen(monkeypatch):
     monkeypatch.setitem(_G, "_STOP_GRACE_S", 0.05)
     monkeypatch.setitem(_G, "_STOP_TIMEOUT_S", 100.0)  # ensure grace, not timeout, fires
-    b = TrainingBackend()
-    calls = _record_force_terminate(monkeypatch, b)
-
-    proc = _FakeProc(alive = True)
-    b._proc = proc
+    b, calls, proc = _shared_setup_1(monkeypatch)
     b._complete_seen.set()  # worker reported "complete" -> save is done
 
     b._start_stop_watchdog(cancel = False)
@@ -160,11 +182,7 @@ def test_watchdog_does_not_kill_save_still_saving_within_window(monkeypatch):
     # save=True, no "complete" yet: a slow save must not be force-killed inside the window.
     monkeypatch.setitem(_G, "_STOP_GRACE_S", 100.0)
     monkeypatch.setitem(_G, "_STOP_TIMEOUT_S", 100.0)
-    b = TrainingBackend()
-    calls = _record_force_terminate(monkeypatch, b)
-
-    proc = _FakeProc(alive = True)
-    b._proc = proc
+    b, calls, proc = _shared_setup_1(monkeypatch)
     b._start_stop_watchdog(cancel = False)
 
     time.sleep(0.3)
@@ -179,10 +197,7 @@ def test_watchdog_backstop_fires_for_save_after_absolute_timeout(monkeypatch):
     # Past the long save=True cap with no completion: force-terminate as last resort.
     monkeypatch.setitem(_G, "_STOP_GRACE_S", 100.0)  # never trips (no complete)
     monkeypatch.setitem(_G, "_STOP_TIMEOUT_S", 0.05)
-    b = TrainingBackend()
-    calls = _record_force_terminate(monkeypatch, b)
-
-    b._proc = _FakeProc(alive = True)
+    b, calls = _shared_setup_2(monkeypatch)
     b._start_stop_watchdog(cancel = False)
     assert _wait_until(
         lambda: calls == ["force", "final"]
@@ -195,10 +210,7 @@ def test_cancel_uses_shorter_absolute_timeout(monkeypatch):
     monkeypatch.setitem(_G, "_STOP_GRACE_S", 100.0)
     monkeypatch.setitem(_G, "_STOP_TIMEOUT_S", 100.0)  # save cap would not fire
     monkeypatch.setitem(_G, "_CANCEL_TIMEOUT_S", 0.05)
-    b = TrainingBackend()
-    calls = _record_force_terminate(monkeypatch, b)
-
-    b._proc = _FakeProc(alive = True)
+    b, calls = _shared_setup_2(monkeypatch)
     b._start_stop_watchdog(cancel = True)
     assert _wait_until(
         lambda: calls == ["force", "final"]
@@ -212,11 +224,7 @@ def test_cancel_uses_shorter_absolute_timeout(monkeypatch):
 def test_watchdog_no_op_on_clean_quick_exit(monkeypatch):
     monkeypatch.setitem(_G, "_STOP_GRACE_S", 5.0)
     monkeypatch.setitem(_G, "_STOP_TIMEOUT_S", 10.0)
-    b = TrainingBackend()
-    calls = _record_force_terminate(monkeypatch, b)
-
-    proc = _FakeProc(alive = True)
-    b._proc = proc
+    b, calls, proc = _shared_setup_1(monkeypatch)
     b._complete_seen.set()  # save done; worker is about to exit on its own
 
     b._start_stop_watchdog(cancel = False)
@@ -554,10 +562,7 @@ def test_later_cancel_tightens_watchdog_timeout(monkeypatch):
     monkeypatch.setitem(_G, "_STOP_GRACE_S", 100.0)  # never trips (no complete)
     monkeypatch.setitem(_G, "_STOP_TIMEOUT_S", 100.0)  # save cap would not fire
     monkeypatch.setitem(_G, "_CANCEL_TIMEOUT_S", 0.05)
-    b = TrainingBackend()
-    calls = _record_force_terminate(monkeypatch, b)
-
-    b._proc = _FakeProc(alive = True)
+    b, calls = _shared_setup_2(monkeypatch)
     b._start_stop_watchdog(cancel = False)  # started as a save-stop with the long cap
     time.sleep(0.15)
     assert calls == [], "a save-stop must not escalate on the short cancel cap yet"
@@ -1319,10 +1324,7 @@ def test_terminal_stall_arms_the_exit_watchdog(monkeypatch):
     # An unrecoverable stall is terminal, but terminate() is only a request: without a
     # backstop a worker that ignores it holds the GPU and blocks every later start.
     monkeypatch.setitem(_G, "_COMPLETE_EXIT_GRACE_S", 0.05)
-    monkeypatch.setitem(_G, "_STOP_TIMEOUT_S", 100.0)
-    b = _running_backend()
-    b._start_stop_watchdog = TrainingBackend._start_stop_watchdog.__get__(b)
-    calls = _record_force_terminate(monkeypatch, b)
+    b, calls = _shared_setup_3(monkeypatch)
     b._in_model_load = True
     b._xet_fallback_used = True  # already on HTTP, so the stall is unrecoverable
 
@@ -1359,10 +1361,7 @@ def test_terminal_error_releases_an_in_flight_stop_watchdog(monkeypatch):
     # watchdog already watches this proc so arming no-ops; without a terminal signal it
     # would sit out the full 600s save backstop with the GPU still blocked.
     monkeypatch.setitem(_G, "_STOP_GRACE_S", 0.05)
-    monkeypatch.setitem(_G, "_STOP_TIMEOUT_S", 100.0)
-    b = _running_backend()
-    b._start_stop_watchdog = TrainingBackend._start_stop_watchdog.__get__(b)
-    calls = _record_force_terminate(monkeypatch, b)
+    b, calls = _shared_setup_3(monkeypatch)
 
     b._should_stop = True
     b._start_stop_watchdog(cancel = False)  # the stop's own watchdog, now in flight
@@ -1383,10 +1382,7 @@ def test_terminal_stall_releases_an_in_flight_stop_watchdog(monkeypatch):
     # Same shape as the error path, via an unrecoverable stall: arming again no-ops, so only
     # the terminal signal keeps the in-flight watchdog off the 600s save backstop.
     monkeypatch.setitem(_G, "_STOP_GRACE_S", 0.05)
-    monkeypatch.setitem(_G, "_STOP_TIMEOUT_S", 100.0)
-    b = _running_backend()
-    b._start_stop_watchdog = TrainingBackend._start_stop_watchdog.__get__(b)
-    calls = _record_force_terminate(monkeypatch, b)
+    b, calls = _shared_setup_3(monkeypatch)
     b._in_model_load = True
     b._xet_fallback_used = True  # already on HTTP, so the stall is unrecoverable
     b._proc.terminate = lambda: None  # worker ignores the terminate request

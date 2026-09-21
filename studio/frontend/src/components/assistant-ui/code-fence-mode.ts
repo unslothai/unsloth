@@ -3,16 +3,13 @@
 
 /*
  * WHICH FENCE MODE IS IN FORCE, decided in one pure function.
- *
  * Kept out of `code-fence-defer.tsx` because that is a `.tsx` and the frontend's tests run under
  * `node --experimental-strip-types`, which cannot load JSX. Every row below is RUN by
  * `tests/code-fence-mode.test.ts` rather than checked by regexes over the source.
- *
  *   "off"        every fence is highlighted at mount. What shipped before `defer` became default.
  *   "defer"      SHIP DEFAULT. An unreached fence is a plain shell and is never tokenized.
  *   "tokenize"   MEASUREMENT ONLY. Same plain shell, but the highlighter is still driven over the
  *                source and the result thrown away.
- *
  * `tokenize` is not a shipping mode. `defer` removes the spans AND the tokenizer work that makes
  * them, so an improvement under `defer` alone cannot say which paid for it; `tokenize` holds the
  * DOM at `defer`'s size with only the tokenizer work back, so tokenize-minus-defer is the

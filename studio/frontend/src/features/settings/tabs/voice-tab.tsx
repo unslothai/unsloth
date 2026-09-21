@@ -30,6 +30,7 @@ import {
   loadSttModel,
   releaseTtsAudioUrl,
   startSttDownload,
+  sttEngineFor,
   unloadSttModel,
   useExternalProvidersStore,
   validateSttModel,
@@ -406,6 +407,9 @@ export function VoiceTab() {
   const setDictationEngine = useVoiceSettingsStore((s) => s.setDictationEngine);
   const sttModel = useVoiceSettingsStore((s) => s.sttModel);
   const setSttModel = useVoiceSettingsStore((s) => s.setSttModel);
+  // Named apart from the `sttDevice` state below, which the sidecar reports back.
+  const sttDevicePreference = useVoiceSettingsStore((s) => s.sttDevice);
+  const setSttDevicePreference = useVoiceSettingsStore((s) => s.setSttDevice);
   const sttProviderId = useVoiceSettingsStore((s) => s.sttProviderId);
   const setSttProviderId = useVoiceSettingsStore((s) => s.setSttProviderId);
   const sttProviderModel = useVoiceSettingsStore((s) => s.sttProviderModel);
@@ -556,11 +560,10 @@ export function VoiceTab() {
       try {
         const status = await fetchSttStatus(statusNonce, sttModel);
         if (cancelled) return;
-        // A curated model prefers the GGUF (whisper.cpp) engine, but without
-        // whisper-server the backend serves it through Transformers instead of
-        // failing. Fall back to the Transformers status here too, or the model
-        // shows as unavailable and download is blocked even though it works.
-        // mtmd models run nowhere else, so they never fall back.
+        // A curated model prefers the GGUF (whisper.cpp) engine, but without whisper-server the
+        // backend serves it through Transformers instead of failing. Fall back to the Transformers
+        // status here too, or the model shows as unavailable and download is blocked even though it
+        // works. mtmd models run nowhere else, so they never fall back.
         const engineStatus = isMtmdModel
           ? status.mtmd
           : isGgufModel && status.gguf?.available
@@ -711,10 +714,9 @@ export function VoiceTab() {
     try {
       await startSttDownload(sttModel, hfApiToken(hfToken));
       trackSttDownload(sttModel);
-      // The status effect only re-polls while it can see a download. Its last
-      // read was before this one existed, and the on-demand branch schedules
-      // nothing, so without a nudge the tab shows Download for the whole
-      // transfer.
+      // The status effect only re-polls while it can see a download. Its last read was before this
+      // one existed, and the on-demand branch schedules nothing, so without a nudge the tab shows
+      // Download for the whole transfer.
       setStatusNonce((nonce) => nonce + 1);
     } catch (error) {
       toast.error(t("settings.voice.dictation.sttDownloadFailed"), {
@@ -1128,6 +1130,51 @@ export function VoiceTab() {
               description={t("settings.voice.dictation.sttModelUnsupported")}
             />
           )
+        ) : null}
+
+        {isLocalEngine && modelSttSupported ? (
+          <SettingsRow
+            label={t("settings.voice.dictation.sttDeviceLabel")}
+            description={
+              sttDevicePreference === "cpu"
+                ? t("settings.voice.dictation.sttDeviceCpuDescription")
+                : t("settings.voice.dictation.sttDeviceAutoDescription")
+            }
+          >
+            <Select
+              value={sttDevicePreference}
+              onValueChange={(value) => {
+                const next = value === "cpu" ? "cpu" : "auto";
+                if (next === sttDevicePreference) return;
+                // Scoped, so moving our placement cannot evict a model another surface
+                // swapped in. wait:false so a decoding dictation is not killed for a
+                // setting the next load applies anyway.
+                void unloadSttModel(sttEngineFor(sttModel), sttModel, {
+                  wait: false,
+                }).catch(() => {});
+                setSttPhase("on-demand");
+                setSttDevice(null);
+                setSttDevicePreference(next);
+              }}
+            >
+              <SelectTrigger
+                data-testid="stt-device-trigger"
+                aria-label={t("settings.voice.dictation.sttDeviceLabel")}
+                className="w-56"
+                size="sm"
+              >
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="auto" data-testid="stt-device-auto">
+                  {t("settings.voice.dictation.sttDeviceAuto")}
+                </SelectItem>
+                <SelectItem value="cpu" data-testid="stt-device-cpu">
+                  {t("settings.voice.dictation.sttDeviceCpu")}
+                </SelectItem>
+              </SelectContent>
+            </Select>
+          </SettingsRow>
         ) : null}
 
         <SettingsRow

@@ -17,9 +17,9 @@ export function subscribeToMcpServerMutationSettlements(
 }
 
 export function trackMcpServerMutation<T>(mutation: Promise<T>): Promise<T> {
-  // The returned operation keeps its original result/rejection for its caller.
-  // The internal settlement promise always fulfills so background waiters never
-  // create an additional unhandled rejection when a component unmounts.
+  // The returned operation keeps its original result or rejection for its caller. The internal
+  // settlement promise always fulfills so background waiters never create an additional unhandled
+  // rejection when a component unmounts.
   mcpServerMutationEpoch += 1;
   const settlement = mutation.then(
     () => undefined,
@@ -44,9 +44,8 @@ export function trackMcpServerMutation<T>(mutation: Promise<T>): Promise<T> {
 export async function readMcpServerMutationSnapshot<T>(
   read: () => Promise<T>,
 ): Promise<T> {
-  // Settlement-driven consumers need the newest stable server snapshot even
-  // if an unrelated, older mutation is still pending. Retry only when a
-  // mutation starts or settles across the read itself.
+  // Settlement-driven consumers need the newest stable server snapshot even if an unrelated, older
+  // mutation is still pending. Retry only when a mutation starts or settles across the read itself.
   while (true) {
     const epochBeforeRead = mcpServerMutationEpoch;
     try {
@@ -59,8 +58,8 @@ export async function readMcpServerMutationSnapshot<T>(
 }
 
 export async function waitForPendingMcpServerMutations(): Promise<void> {
-  // A mutation may begin while an earlier batch is settling. Re-snapshot until
-  // the module-level set is empty so an open-time refresh cannot miss it.
+  // A mutation may begin while an earlier batch is settling. Re-snapshot until the module-level set
+  // is empty so an open-time refresh cannot miss it.
   while (pendingMcpServerMutations.size > 0) {
     await Promise.all([...pendingMcpServerMutations]);
   }

@@ -2,7 +2,6 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import {
@@ -14,6 +13,7 @@ import {
   canTransitionAudioMode,
   exactGgufLoadSelector,
   expectedGgufDownloadBytes,
+  isGgufTtsTarget,
   isTtsAudioType,
   macTtsPickAction,
   mergeGalleryPage,
@@ -29,14 +29,10 @@ import {
   sttSelectionReady,
 } from "../src/features/audio/audio-page-policy.ts";
 
-const audioPageSource = readFileSync(
-  new URL("../src/features/audio/audio-page.tsx", import.meta.url),
-  "utf8",
-);
-const chatApiSource = readFileSync(
-  new URL("../src/features/chat/api/chat-api.ts", import.meta.url),
-  "utf8",
-);
+import { readSrc } from "./helpers/kit.ts";
+
+const audioPageSource = readSrc("features/audio/audio-page.tsx");
+const chatApiSource = readSrc("features/chat/api/chat-api.ts");
 
 test("mode transitions cancel generation but wait for non-cancellable work", () => {
   assert.equal(canTransitionAudioMode(null), true);
@@ -385,10 +381,10 @@ test("gallery refresh preserves fallback selection and pagination identity", () 
 });
 
 test("Audio transcription uses backend language auto-detection", () => {
-  assert.match(
-    audioPageSource,
-    /transcribeAudioBlob\(blob, \{[\s\S]*model: key,[\s\S]*engine,[\s\S]*language: ""/,
-  );
+  const api = readSrc("features/audio/api.ts");
+  const transcription = api.slice(api.indexOf("export async function transcribeWithProgress"), api.indexOf("export async function listTranscripts"));
+  assert.doesNotMatch(transcription, /dictationLanguage|language:/);
+  assert.match(transcription, /stream: "true"/);
 });
 
 test("older STT status requests cannot overwrite newer residency", () => {
@@ -563,12 +559,8 @@ test("the trained-model list applies the native-aware macOS policy", () => {
 });
 
 test("the transcript download revokes its URL only after the click is consumed", () => {
-  // Immediate revocation raced browsers that resolve a synthetic download navigation
-  // asynchronously, leaving the action with no file.
-  assert.match(
-    audioPageSource,
-    /anchor\.download = `\$\{\(transcribedName[\s\S]*?anchor\.click\(\);[\s\S]*?window\.setTimeout\(\(\) => URL\.revokeObjectURL\(url\), 0\);/,
-  );
+  assert.match(readSrc("features/audio/transcript-download.ts"), /await downloadFile\(\s*text,/);
+  assert.match(readSrc("lib/native-files.ts"), /anchor\.click\(\);[\s\S]*?window\.setTimeout\(\(\) => URL\.revokeObjectURL\(url\), 0\);/);
 });
 
 test("a complete first page drops cached rows the server no longer holds", () => {
@@ -734,4 +726,66 @@ test("a capped restore refresh invalidates a page fetched from the older cursor"
     audioPageSource,
     /const cursor = galleryCache\.nextCursor;\s*try\s*{\s*const page = await listAudioGallery\(\s*0,\s*PAGE_SIZE,\s*cursor,?\s*\);\s*if \(\s*refreshGeneration !== galleryRefreshGeneration\.current \|\|\s*cursor !== galleryCache\.nextCursor\s*\)\s*return;/,
   );
+});
+
+test("a direct .gguf pick is a GGUF target even without a variant filename", () => {
+  // Local direct rows supply neither ggufFilename nor ggufVariant, so a check on the
+  // selector alone left them on GPU offload.
+  assert.equal(
+    isGgufTtsTarget({ repoId: "/models/orpheus-3b-Q4_K_M.gguf" }),
+    true,
+  );
+  assert.equal(
+    isGgufTtsTarget({ repoId: "Orpheus TTS", loadId: "/m/x.GGUF" }),
+    true,
+  );
+  assert.equal(isGgufTtsTarget({ repoId: "unsloth/orpheus-3b-0.1-ft-GGUF" }), true);
+  assert.equal(
+    isGgufTtsTarget({ repoId: "unsloth/orpheus", ggufFilename: "x-Q4.gguf" }),
+    true,
+  );
+});
+
+test("the catalog's own answer outranks the name heuristics", () => {
+  // Invisible to every test below; only the catalog knows. Losing it dropped offload.
+  assert.equal(
+    isGgufTtsTarget({ repoId: "acme/voicebox", isGguf: true }),
+    true,
+  );
+  assert.equal(
+    isGgufTtsTarget({ repoId: "acme/voicebox-GGUF", isGguf: false }),
+    true,
+  );
+  assert.equal(
+    isGgufTtsTarget({ repoId: "acme/voicebox", isGguf: null }),
+    false,
+  );
+});
+
+test("a safetensors pick is not a GGUF target", () => {
+  assert.equal(isGgufTtsTarget({ repoId: "unsloth/orpheus-3b-0.1-ft" }), false);
+  assert.equal(isGgufTtsTarget({ repoId: "bosonai/higgs-tts-2-3b-base" }), false);
+  // "gguf" only as a bare path segment, so a name merely containing it does not match.
+  assert.equal(isGgufTtsTarget({ repoId: "acme/ggufology" }), false);
+});
+
+test("a CPU GGUF audio load declares speculation off", () => {
+  // An absent speculative_type resolves to "auto", which can attach a GPU drafter;
+  // zero_vram_chat_load then takes the arbiter and cancels an image or video job.
+  assert.match(
+    audioPageSource,
+    /gpu_memory_mode: "manual" as const,\s*gpu_layers: 0,\s*speculative_type: "off" as const,/,
+  );
+});
+
+test("selecting CPU never ejects a resident MiniMax, which cannot load on CPU", () => {
+  // The backend's refusal cannot help once ejected: recovery needs the refused load.
+  const handler = audioPageSource.slice(
+    audioPageSource.indexOf('const next = value === "cpu" ? "cpu" : "auto";'),
+  );
+  const guard = handler.indexOf('status?.audio_type === "minimax_music3"');
+  const eject = handler.indexOf("handleEject()");
+  assert.ok(guard > -1, "no MiniMax guard on the placement control");
+  assert.ok(guard < eject, "the guard must return before the eject");
+  assert.match(handler.slice(guard, eject), /return;/);
 });

@@ -80,11 +80,13 @@ def test_missing_description_symbol_keeps_igpu_detection():
     )
     lib = _types.SimpleNamespace(ggml_backend_vk_reg = _FakeCFunction(1))
 
-    flags, names, type_known = _igpu_flags_and_names(base, lib, 1)
+    flags, names, known = _igpu_flags_and_names(base, lib, 1)
 
     assert flags == [True]
     assert names == ["Legacy Vulkan iGPU"]
-    assert type_known == [True]
+    # The type WAS read, which separates a real "not integrated" from a failed query;
+    # only the former may be trusted for a DirectIO decision.
+    assert known == [True]
 
 
 def _make_vulkan_install(tmp_path: Path) -> str:
@@ -232,11 +234,12 @@ def test_failed_device_type_lookup_keeps_the_snapshot_unknown(tmp_path):
 
 
 @pytest.mark.parametrize("columns", [4, 5], ids = ["no-name", "named"])
-def test_a_legacy_row_keeps_its_own_device_type(tmp_path, columns):
-    """A probe from before the status column still asked ggml; it just did not
-    report whether the answer held. Reading its absence as unclassified made
-    _vulkan_targets_are_igpus answer True for a discrete card, so Keep Resident
-    page-locked a model-sized host copy of a launch fully offloaded to it."""
+def test_a_legacy_row_reads_unclassified_without_costing_a_page_lock(tmp_path, columns):
+    """A probe from before the status column reports no answer, so the snapshot
+    declines rather than claiming a reading it never took. The page-lock question
+    is unaffected: _vulkan_targets_are_igpus folds "no answer" into "not
+    integrated", so Keep Resident does not pin a model-sized host copy of a launch
+    fully offloaded to a discrete card, which is what #9549 reported."""
     binary = _make_vulkan_install(tmp_path)
     rows = [
         _row(
@@ -249,10 +252,10 @@ def test_a_legacy_row_keeps_its_own_device_type(tmp_path, columns):
         )
     ]
     with _mock_probe(rows):
-        assert LlamaCppBackend._run_vulkan_probe(binary)[0]["type_known"] is True
+        assert LlamaCppBackend._run_vulkan_probe(binary)[0]["type_known"] is False
     with _mock_probe(rows):
         gpus = LlamaCppBackend._get_gpu_free_memory_vulkan(binary)
-    assert gpus.known_vulkan_igpus == set()
+    assert gpus.known_vulkan_igpus is None
     with _mock_probe(rows):
         assert LlamaCppBackend._vulkan_targets_are_igpus(binary, [0]) is False
 

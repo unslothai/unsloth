@@ -37,8 +37,7 @@ _PARITY_CI = _WORKFLOWS / "cross-platform-parity-ci.yml"
 _RUN_ALL = REPO_ROOT / "tests" / "run_all.sh"
 _SH_DIR = REPO_ROOT / "tests" / "sh"
 
-# Files deliberately not run by the auto-discovered Backend CI step. Each needs
-# a reason here AND in the workflow; anything else in tests/sh must run.
+# Files deliberately not run by the auto-discovered Backend CI step.
 _EXPECTED_CI_SKIPS = {
     "test_install_rollback_lifecycle.sh": "runs on both platforms in cross-platform-parity-ci.yml",
 }
@@ -95,7 +94,6 @@ class TestBackendCiRunsEveryShellTest:
             f"Backend CI skips {sorted(unexpected)} without a reason recorded in "
             "_EXPECTED_CI_SKIPS; add one or stop skipping it"
         )
-        # Everything else in the directory is covered by the glob.
         for name in _shell_test_files():
             assert name not in skips or name in _EXPECTED_CI_SKIPS, name
 
@@ -225,7 +223,6 @@ def _workflows_running_powershell_tests():
         if not invoked:
             continue
         parsed = yaml.safe_load(text)
-        # PyYAML parses the `on:` key as the boolean True.
         triggers = parsed.get(True, parsed.get("on", {})) or {}
         paths = (triggers.get("pull_request") or {}).get("paths")
         found[workflow.name] = (invoked, paths)

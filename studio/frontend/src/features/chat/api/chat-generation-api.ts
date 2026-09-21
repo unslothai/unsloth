@@ -79,8 +79,8 @@ const TERMINAL_STATUSES = new Set<ChatGenerationStatus>([
   "failed",
 ]);
 
-/** The follower gave up on a run that stopped making progress. Distinct from the
- * caller's Stop: the backend may still be generating, so the reply is incomplete. */
+/** The follower gave up on a run that stopped making progress. Distinct from the caller's Stop:
+ *  the backend may still be generating, so the reply is incomplete. */
 export class ChatGenerationStalledError extends Error {
   constructor(runId: string) {
     super(`Chat generation run ${runId} made no progress`);
@@ -175,15 +175,12 @@ export function isTerminalChatGenerationRun(run: ChatGenerationRun): boolean {
   return TERMINAL_STATUSES.has(run.status);
 }
 
-/** Where a Stop has to be sent, given how far durable admission has got.
- *
- * Admission resolves well after the abort listener is installed: the turn first has to
- * auto-load a model, retrieve RAG, upload attachments and save history. A Stop landing
- * in that window has no run id yet and may still end up on the legacy stream, so it
- * needs the `cancel_id` POST, whose server side stashes the cancel for a generation
- * that registers afterwards. That POST is safe once the run does exist too, because the
- * durable request pins `cancel_id` to the same run id.
- */
+/** Where a Stop has to be sent, given how far durable admission has got. Admission resolves well
+ *  after the abort listener is installed: the turn first has to auto-load a model, retrieve
+ *  RAG, upload attachments and save history. A Stop landing in that window has no run id yet
+ *  and may still end up on the legacy stream, so it needs the `cancel_id` POST, whose server
+ *  side stashes the cancel for a generation that registers afterwards. That POST is safe once
+ *  the run exists too, since the durable request pins `cancel_id` to the same run id. */
 export function chatGenerationStopPlan(
   decision: "pending" | "durable" | "legacy",
   runId: string | null,
@@ -329,13 +326,10 @@ async function* streamChatGenerationEvents(
   id: string,
   after: number,
   signal?: AbortSignal,
-  /**
-   * Called for each event, and for each keep-alive with that keep-alive's progress
-   * stamp. A keep-alive is only progress if the stamp MOVED, which this generator cannot
-   * decide: it is re-invoked on every reconnect, so a per-connection memory would treat
-   * the first keep-alive after each reconnect as progress and a wedged run behind a
-   * flapping proxy would rearm the caller's deadline forever.
-   */
+  /** Called for each event, and for each keep-alive with that keep-alive's progress stamp. A
+   *  keep-alive is only progress if the stamp MOVED, which this generator cannot decide: it is
+   *  re-invoked on every reconnect, so a per-connection memory would treat the first keep-alive
+   *  after each reconnect as progress and rearm the caller's deadline forever. */
   onActivity?: (keepAliveStamp?: string) => void,
 ): AsyncGenerator<ChatGenerationEvent> {
   const response = await authFetch(
@@ -360,9 +354,8 @@ async function* streamChatGenerationEvents(
         const data: string[] = [];
         for (const line of block.split("\n")) {
           if (line.startsWith("data:")) data.push(line.slice(5).trimStart());
-          // Reported, not judged. Whether this counts as progress depends on the last
-          // stamp seen across ALL connections for this run, and this generator is
-          // re-invoked on every reconnect, so only the caller can hold that.
+          // Reported, not judged. Whether this counts as progress depends on the last stamp seen across
+          // ALL connections for this run, and this generator is re-invoked on every reconnect.
           else if (line.startsWith(KEEPALIVE_PREFIX)) {
             const stamp = line.slice(KEEPALIVE_PREFIX.length).trim();
             if (stamp !== "") onActivity?.(stamp);
@@ -385,18 +378,13 @@ async function* streamChatGenerationEvents(
   }
 }
 
-/**
- * How long a follower tolerates a run that makes no progress. Progress, not connectedness,
- * ends a follow: every event and every change to the run row resets it.
- *
- * A deadline on SILENCE rather than duration, which is what lets it stay short while the
- * backend tolerates far longer work. Preparation and admission waits emit no events, but
- * the keep-alive comments carry the run's progress stamp, which the lease renewals move,
- * so a two hour download rearms this while a wedged run does not. Bytes alone are
- * deliberately NOT progress: keep-alives keep arriving for as long as the socket holds, so
- * rearming on them would make this unreachable in exactly the case it exists for, a
- * backend whose sweeper is disabled or broken.
- */
+/** How long a follower tolerates a run that makes no progress. Progress, not connectedness, ends
+ *  a follow: every event and every change to the run row resets it. A deadline on SILENCE
+ *  rather than duration is what lets it stay short while the backend tolerates far longer
+ *  work. Preparation waits emit no events, but the keep-alive comments carry the run's
+ *  progress stamp, which the lease renewals move, so a two hour download rearms this while a
+ *  wedged run does not. Bytes alone are deliberately NOT progress: keep-alives keep arriving
+ *  for as long as the socket holds. */
 export const CHAT_GENERATION_STALL_TIMEOUT_MS = 30 * 60_000;
 
 /** Replay from the caller's applied cursor and reconnect until the run is terminal. */
@@ -413,9 +401,9 @@ export async function* followChatGenerationRun(
   const { replayFrom } = options;
   const stallTimeoutMs =
     options.stallTimeoutMs ?? CHAT_GENERATION_STALL_TIMEOUT_MS;
-  // The deadline must reach the open stream as well as the sleep between reconnects: a
-  // stream that stays open and sends nothing parks the reader just as permanently. One
-  // controller downstream of the caller's signal covers both.
+  // The deadline must reach the open stream as well as the sleep between reconnects: a stream
+  // that stays open and sends nothing parks the reader just as permanently. One controller
+  // downstream of the caller's signal covers both.
   const deadline = new AbortController();
   const callerSignal = options.signal;
   const forwardAbort = () => deadline.abort(callerSignal?.reason);
@@ -426,13 +414,12 @@ export async function* followChatGenerationRun(
   }
   const signal = deadline.signal;
   let stallTimer: ReturnType<typeof globalThis.setTimeout> | undefined;
-  // Both abort `signal` but must not end the same way: a caller abort is a clean stop,
-  // while the deadline means we walked away from a run the backend may still be working
-  // on, so it must reach the consumer as a failure rather than a complete reply.
+  // Both abort `signal` but must not end the same way: a caller abort is a clean stop, while the
+  // deadline means we walked away from a run the backend may still be working on, so it must
+  // reach the consumer as a failure rather than a complete reply.
   let stalled = false;
   let settled = false;
-  // Spans reconnects on purpose: see the onActivity contract in
-  // streamChatGenerationEvents.
+  // Spans reconnects on purpose: see the onActivity contract in streamChatGenerationEvents.
   let lastKeepAliveStamp: string | null = null;
   const noteProgress = (keepAliveStamp?: string): void => {
     if (keepAliveStamp !== undefined) {
@@ -523,10 +510,9 @@ export async function* followChatGenerationRun(
   } finally {
     if (stallTimer !== undefined) globalThis.clearTimeout(stallTimer);
     callerSignal?.removeEventListener("abort", forwardAbort);
-    // Every exit path funnels here, including the two `while (!signal.aborted)` loop
-    // conditions, so this is the one place that catches all of them. `settled` keeps a
-    // run that reached a terminal status on the same tick as the timer from being
-    // reported as stalled.
+    // Every exit path funnels here, including the two `while (!signal.aborted)` loop conditions, so
+    // this is the one place that catches all of them. `settled` keeps a run that reached a
+    // terminal status on the same tick as the timer from being reported as stalled.
     if (stalled && !settled) throw new ChatGenerationStalledError(id);
   }
 }

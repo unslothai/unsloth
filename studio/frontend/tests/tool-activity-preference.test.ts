@@ -11,13 +11,13 @@
 // Rendered behaviour lives in tests/studio/playwright_tool_activity.py.
 
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 import ts from "typescript";
 
 import {
   installLocalStorageFake,
+  readText,
   registerBundlerResolver,
 } from "./helpers/kit.ts";
 
@@ -49,8 +49,6 @@ const { useChatPreferencesStore } = await import(
 const { resolveToolActivityOpen, syncToolActivityPreference } = await import(
   "../src/components/assistant-ui/tool-activity-open-state.ts"
 );
-
-const read = (path: string) => readFile(new URL(path, import.meta.url), "utf8");
 
 /** Write `state` as a persisted record and hydrate the live store from it. */
 async function rehydrateFrom(state: unknown): Promise<void> {
@@ -247,7 +245,7 @@ test("disabling collapsed activity respects a closed fallback default", () => {
 const sourceOf = async (path: string): Promise<ts.SourceFile> =>
   ts.createSourceFile(
     path,
-    await read(path),
+    await readText(path),
     ts.ScriptTarget.Latest,
     true,
     ts.ScriptKind.TSX,
@@ -633,5 +631,90 @@ test("the Python script cell moves inside the collapsible when collapsing is on"
     outside.map((hit) => hit.negated),
     [true],
     "the always-visible script cell is no longer guarded by the preference",
+  );
+});
+
+test("created files stay outside the collapsible on Python and Terminal cards", async () => {
+  for (const file of [
+    "../src/components/assistant-ui/tool-ui-python.tsx",
+    "../src/components/assistant-ui/tool-ui-terminal.tsx",
+  ]) {
+    const source = await sourceOf(file);
+    const root = jsxElement(source, "ToolFallbackRoot");
+    const content = jsxElement(root, "ToolFallbackContent");
+    const files = find(
+      root,
+      (node) =>
+        (ts.isJsxSelfClosingElement(node) || ts.isJsxOpeningElement(node)) &&
+        ts.isIdentifier(node.tagName) &&
+        node.tagName.text === "SandboxFiles",
+    );
+    assert.equal(
+      files.length,
+      1,
+      `${file} must render SandboxFiles once under ToolFallbackRoot`,
+    );
+    const insideContent = find(content, (node) => node === files[0]);
+    assert.equal(
+      insideContent.length,
+      0,
+      `${file} hid SandboxFiles inside ToolFallbackContent`,
+    );
+    // No wrapper element: an empty one would sit in the DOM of every card that created nothing.
+    assert.equal(files[0].parent, root, `${file} wraps SandboxFiles`);
+    const cls = (files[0] as ts.JsxSelfClosingElement).attributes.properties.find(
+      (property): property is ts.JsxAttribute =>
+        ts.isJsxAttribute(property) && property.name.getText() === "className",
+    );
+    assert.match(
+      cls?.initializer?.getText() ?? "",
+      /ml-5/,
+      `${file} is missing ml-5, so the file row sits flush with the trigger`,
+    );
+  }
+});
+
+test("a call that created files keeps its group from collapsing", async () => {
+  const { hasCreatedFiles } = await import(
+    "../src/components/assistant-ui/sandbox-files.ts"
+  );
+  const wrapped = (files: unknown) => ({
+    text: "",
+    images: [],
+    sessionId: "s",
+    files,
+  });
+  assert.equal(hasCreatedFiles("terminal", wrapped([{ name: "a.txt", size: 3 }])), true);
+  assert.equal(hasCreatedFiles("python", wrapped([{ name: "a.txt", size: null }])), true);
+  assert.equal(hasCreatedFiles("terminal", wrapped([])), false);
+  assert.equal(hasCreatedFiles("terminal", wrapped(undefined)), false);
+  assert.equal(hasCreatedFiles("terminal", "plain output"), false);
+  assert.equal(
+    hasCreatedFiles("mcp__fs__write", wrapped([{ name: "a.txt", size: 3 }])),
+    false,
+  );
+
+  // The rule lives in tool-fold-exemptions.ts; the group asks it per part.
+  const group = await sourceOf(
+    "../src/components/assistant-ui/tool-group.tsx",
+  );
+  assert.match(
+    initializerOf(group, "containsUngroupedTool").getText(),
+    /\.some\(holdsOwnOutput\)/,
+  );
+  const source = await sourceOf(
+    "../src/components/assistant-ui/tool-fold-exemptions.ts",
+  );
+  const call = find(
+    source,
+    (node) =>
+      ts.isCallExpression(node) &&
+      ts.isIdentifier(node.expression) &&
+      node.expression.text === "hasCreatedFiles",
+  )[0] as ts.CallExpression | undefined;
+  assert.ok(call, "a grouped terminal call hides its created files again");
+  assert.deepEqual(
+    call.arguments.map((argument) => argument.getText()),
+    ["part.toolName", "part.result"],
   );
 });

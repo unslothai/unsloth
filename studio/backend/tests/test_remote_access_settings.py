@@ -13,6 +13,14 @@ from types import SimpleNamespace
 import pytest
 from fastapi import HTTPException
 
+
+def _shared_setup_1(monkeypatch):
+    monkeypatch.setattr(remote_access, "_start_worker", None)
+    monkeypatch.setattr(remote_access, "_stop_worker", None)
+    monkeypatch.setattr(remote_access, "get_remote_access_auto_start", lambda: False)
+    monkeypatch.setattr(remote_access, "_admin_password_ready", lambda: True)
+
+
 _BACKEND = Path(__file__).resolve().parents[1]
 if str(_BACKEND) not in sys.path:
     sys.path.insert(0, str(_BACKEND))
@@ -65,10 +73,7 @@ def test_auto_start_persistence_is_strict_and_fail_closed(monkeypatch):
 def test_enabled_intent_blocks_only_selected_launch_path(
     monkeypatch, launch_managed, expected_block, can_start
 ):
-    monkeypatch.setattr(remote_access, "_start_worker", None)
-    monkeypatch.setattr(remote_access, "_stop_worker", None)
-    monkeypatch.setattr(remote_access, "get_remote_access_auto_start", lambda: False)
-    monkeypatch.setattr(remote_access, "_admin_password_ready", lambda: True)
+    _shared_setup_1(monkeypatch)
     monkeypatch.setattr(
         cloudflare_tunnel,
         "get_studio_tunnel_status",
@@ -90,10 +95,7 @@ def test_enabled_intent_blocks_only_selected_launch_path(
 
 
 def test_failed_stop_remains_retryable(monkeypatch):
-    monkeypatch.setattr(remote_access, "_start_worker", None)
-    monkeypatch.setattr(remote_access, "_stop_worker", None)
-    monkeypatch.setattr(remote_access, "get_remote_access_auto_start", lambda: False)
-    monkeypatch.setattr(remote_access, "_admin_password_ready", lambda: True)
+    _shared_setup_1(monkeypatch)
     monkeypatch.setattr(
         cloudflare_tunnel,
         "get_studio_tunnel_status",
@@ -442,10 +444,7 @@ def test_colab_auto_start_setting_is_read_only(monkeypatch):
 def test_unstoppable_connector_reports_why_start_is_blocked(monkeypatch):
     # The generic "Cloudflare tunnel failed" hides the one state the user can
     # act on: a connector whose exit was never confirmed still holds the slot.
-    monkeypatch.setattr(remote_access, "_start_worker", None)
-    monkeypatch.setattr(remote_access, "_stop_worker", None)
-    monkeypatch.setattr(remote_access, "get_remote_access_auto_start", lambda: False)
-    monkeypatch.setattr(remote_access, "_admin_password_ready", lambda: True)
+    _shared_setup_1(monkeypatch)
     monkeypatch.setattr(
         cloudflare_tunnel,
         "get_studio_tunnel_status",
@@ -502,10 +501,7 @@ def test_streaming_is_not_advertised_while_a_quick_tunnel_carries_the_traffic(mo
     # Cloudflare documents that Quick Tunnels do not support Server-Sent Events,
     # and Unsloth only ever opens Quick Tunnels. Measured against a real tunnel: an
     # SSE endpoint answers 200 with text/event-stream but delivers zero events.
-    monkeypatch.setattr(remote_access, "_start_worker", None)
-    monkeypatch.setattr(remote_access, "_stop_worker", None)
-    monkeypatch.setattr(remote_access, "get_remote_access_auto_start", lambda: False)
-    monkeypatch.setattr(remote_access, "_admin_password_ready", lambda: True)
+    _shared_setup_1(monkeypatch)
     monkeypatch.setattr(cloudflare_tunnel, "get_studio_tunnel_control_token", lambda: (1, 0))
 
     def _status(url):

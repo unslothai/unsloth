@@ -3,10 +3,13 @@
 
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
+import { FIND_PORTAL_ATTRIBUTE } from "@/features/find-in-page/lib/find-attributes";
+
 import {
   useMonitorFrameStore,
   useMonitorOverlayStore,
 } from "@/features/settings";
+import { gpuMemoryDisplay } from "@/hooks/gpu-memory-display";
 import { gpuMemoryTotalsGb, resolveGpuVramUsedGb } from "@/hooks/gpu-vram";
 import { aggregateGpuMemoryTotalGb, useSystemInfo } from "@/hooks/use-system";
 import { useT } from "@/i18n";
@@ -160,9 +163,8 @@ function useMonitorLayout(constraintsElement: HTMLDivElement | null) {
       }
 
       const width = Math.min(desiredWidth, constraintsBox.width);
-      // Clamp position against the height actually rendered. A hand-resized
-      // panel keeps its own height and scrolls, so growing content must not
-      // drag it upwards and leave a gap below.
+      // Clamp position against the height actually rendered. A hand-resized panel keeps its own
+      // height and scrolls, so growing content must not drag it upwards and leave a gap below.
       const height = Math.min(
         monitor.style.height ? monitorBox.height : desiredHeight,
         constraintsBox.height,
@@ -193,9 +195,8 @@ function useMonitorLayout(constraintsElement: HTMLDivElement | null) {
       });
 
       setLayout((current) => {
-        // Mid-drag the offset lives in a transform, and the measured box
-        // already includes it, so committing left/top here would apply it
-        // twice. finishDrag lands the position instead.
+        // Mid-drag the offset lives in a transform, and the measured box already includes it, so
+        // committing left/top here would apply it twice. finishDrag lands the position instead.
         const held = session && current ? current : null;
         const restLeft = held?.left ?? left;
         const restTop = held?.top ?? top;
@@ -234,13 +235,13 @@ function useMonitorLayout(constraintsElement: HTMLDivElement | null) {
     };
   }, [constraintsElement, publisher]);
 
-  // ResizeObserver never fires for a position-only change, so dragging alone
-  // would leave the published frame at the monitor's old corner and the overlay
-  // stack dodging where it used to be. Re-publish once each layout is committed,
-  // which after a drag is on release: the frames in between are a transform, and
-  // republishing through them would re-render every overlay in the stack for
-  // each one, which is most of what made dragging feel heavy.
+  // ResizeObserver never fires for a position-only change, so dragging alone would leave the
+  // published frame at the monitor's old corner and the overlay stack dodging where it used to be.
+  // Re-publish once each layout is committed, which after a drag is on release: the frames in
+  // between are a transform, and republishing through them would re-render every overlay in the
+  // stack for each one, which is most of what made dragging feel heavy.
   useLayoutEffect(() => {
+    void layout;
     const monitor = monitorRef.current;
     if (!(monitor && constraintsElement)) {
       return;
@@ -301,10 +302,9 @@ function useMonitorLayout(constraintsElement: HTMLDivElement | null) {
     event.currentTarget.setPointerCapture(event.pointerId);
   }
 
-  // One paint per frame, and through a transform rather than left/top. The
-  // panel is backdrop-blurred, so every layout-driven move re-sampled what is
-  // behind it; a trackpad also reports moves faster than the display refreshes,
-  // so most of those renders were never shown.
+  // One paint per frame, and through a transform rather than left/top. The panel is
+  // backdrop-blurred, so every layout-driven move re-sampled what is behind it; a trackpad also
+  // reports moves faster than the display refreshes, so most of those renders were never shown.
   function paintDrag() {
     dragFrameRef.current = 0;
     const session = dragSessionRef.current;
@@ -461,16 +461,18 @@ function FloatingMonitorPanel({
     systemInfo.inference_gpu.backend !== systemInfo.gpu.backend
       ? systemInfo.inference_gpu
       : null;
+  const memoryDisplay = gpuMemoryDisplay(displayedGpu);
+  const inferenceDisplay = gpuMemoryDisplay(separateInferenceGpu);
   const inferenceVramTotal = separateInferenceGpu
-    ? aggregateGpuMemoryTotalGb(separateInferenceGpu.devices)
+    ? aggregateGpuMemoryTotalGb(inferenceDisplay.usageDevices)
     : 0;
-  const devices = displayedGpu?.devices ?? [];
+  const devices = memoryDisplay.usageDevices;
   const memoryTotals = gpuMemoryTotalsGb(devices);
   const vramTotal = memoryTotals.total;
   const hasSharedPool = memoryTotals.shared > 0;
   // null usage = unknown (e.g. Windows ROCm perf counter); 0 would fabricate a
   // readout. The host figure can still be known when no device's is (#7452).
-  const resolvedVramUsed = resolveGpuVramUsedGb(displayedGpu);
+  const resolvedVramUsed = resolveGpuVramUsedGb(memoryDisplay.usageGpu);
   const vramUsageKnown = resolvedVramUsed !== null;
   const vramUsed = resolvedVramUsed ?? 0;
   const vramPercent = clampPercent(
@@ -478,16 +480,16 @@ function FloatingMonitorPanel({
   );
   const unknownLabel = t("settings.resources.environment.unknown");
 
-  const hasGpu = (displayedGpu?.available ?? false) && devices.length > 0;
+  const hasGpu =
+    (displayedGpu?.available ?? false) &&
+    (displayedGpu?.devices.length ?? 0) > 0;
 
-  // The container sits on the floating panel layer, above the bottom-right
-  // overlay stack. The stack is anchored to that same corner and does not move
-  // for this monitor, so the two can overlap. The stack is passive status; this
-  // is a window being dragged, resized and closed, so it wins. Still below the
-  // startup screen and tooltips. See lib/z-layers.
-  //
-  // The API monitor panel shares this layer rather than sitting under it, and
-  // whichever of the two the user touched last is the one in front.
+  // The container sits on the floating panel layer, above the bottom-right overlay stack. The stack
+  // is anchored to that same corner and does not move for this monitor, so the two can overlap. The
+  // stack is passive status; this is a window being dragged, resized and closed, so it wins. Still
+  // below the startup screen and tooltips. See lib/z-layers. The API monitor panel shares this
+  // layer rather than sitting under it, and whichever of the two the user touched last is the one
+  // in front.
   return (
     <div
       ref={setConstraintsElement}
@@ -495,6 +497,7 @@ function FloatingMonitorPanel({
       style={{ zIndex }}
     >
       <motion.div
+        {...{ [FIND_PORTAL_ATTRIBUTE]: "" }}
         ref={monitorRef}
         onPointerDownCapture={() => raisePanel("resource-monitor")}
         initial={{ opacity: 0 }}
@@ -576,7 +579,7 @@ function FloatingMonitorPanel({
               />
             </div>
 
-            {hasGpu && (
+            {hasGpu && devices.length > 0 && (
               <div className="space-y-1">
                 <div className="flex justify-between text-ui-11 font-medium font-mono">
                   <span className="truncate flex-1 pr-2">
@@ -612,18 +615,51 @@ function FloatingMonitorPanel({
                 />
               </div>
             )}
+            {hasGpu && memoryDisplay.sharedDevices.length > 0 && (
+              <div className="space-y-1 text-xs">
+                <div className="font-medium">
+                  {t("settings.resources.gpu.sharedWithSystemRam")}
+                </div>
+                <div className="font-mono text-muted-foreground">
+                  {t("settings.resources.gpu.estimatedAvailable", {
+                    value:
+                      memoryDisplay.sharedAvailableGb === null
+                        ? unknownLabel
+                        : formatGiB(memoryDisplay.sharedAvailableGb),
+                  })}
+                </div>
+              </div>
+            )}
             {separateInferenceGpu && (
-              <div className="flex justify-between gap-2 text-ui-11 font-mono">
-                <span className="text-muted-foreground">
+              <div className="space-y-1 border-t border-border/60 pt-2 text-ui-11">
+                <span className="block font-medium text-muted-foreground">
                   {t("settings.resources.gpu.ggufInference")}
                 </span>
-                <span className="uppercase text-foreground">
-                  {separateInferenceGpu.backend ?? "GPU"}
-                  {separateInferenceGpu.available
-                    ? inferenceVramTotal
-                      ? ` · ${formatGiB(inferenceVramTotal)}`
-                      : ""
-                    : ` · ${t("settings.resources.gpu.unavailable")}`}
+                <span className="block font-mono text-foreground">
+                  {separateInferenceGpu.backend?.toUpperCase() ?? "GPU"}
+                  {separateInferenceGpu.available ? (
+                    inferenceVramTotal ? (
+                      <span className="block">
+                        {t("settings.resources.gpu.vramUtilization")}:{" "}
+                        {formatGiB(inferenceVramTotal)}
+                      </span>
+                    ) : (
+                      ""
+                    )
+                  ) : (
+                    ` · ${t("settings.resources.gpu.unavailable")}`
+                  )}
+                  {separateInferenceGpu.available &&
+                    inferenceDisplay.sharedDevices.length > 0 && (
+                      <span className="block normal-case">
+                        {t("settings.resources.gpu.sharedEstimatedAvailable", {
+                          value:
+                            inferenceDisplay.sharedAvailableGb === null
+                              ? unknownLabel
+                              : formatGiB(inferenceDisplay.sharedAvailableGb),
+                        })}
+                      </span>
+                    )}
                 </span>
               </div>
             )}

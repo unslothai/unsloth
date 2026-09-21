@@ -343,6 +343,40 @@ def test_the_safetensors_load_yields_a_gpu_it_lost_while_loading():
     load_impl = route_src[route_src.index("async def _load_model_impl") :]
     unsloth_load = load_impl.index("success = await asyncio.to_thread(")
     tail = load_impl[unsloth_load:]
-    guard = tail.index("if current_owner() != CHAT:")
+    # Gated on chat_load_needs_gpu like the GGUF branch: a load that never took the
+    # arbiter has no ownership to lose, and checking against a None owner would 409
+    # every CPU-placed audio load.
+    guard = tail.index("if chat_load_needs_gpu and current_owner() != CHAT:")
     assert "await asyncio.to_thread(backend.unload_model, config.identifier)" in tail[guard:]
     assert tail.index("status_code = 409", guard) > guard
+
+
+def test_restore_owner_account_returns_residency_to_the_displaced_account(calls, monkeypatch):
+    from utils.account_context import AccountContext, run_as
+
+    alice, bob = AccountContext("a" * 32, "alice"), AccountContext("b" * 32, "bob")
+    monkeypatch.setattr(arb, "_owner_account", None)
+    monkeypatch.setattr(arb, "_prior_account", None)
+    run_as(alice, arb.acquire_for, arb.VIDEO, lambda: None)
+    run_as(bob, arb.acquire_for, arb.VIDEO, lambda: None)
+    assert arb.owner_account() == bob.account_id
+    assert run_as(bob, arb.restore_owner_account, arb.VIDEO) is True
+    assert arb.owner_account() == alice.account_id
+    assert run_as(alice, arb.restore_owner_account, arb.VIDEO) is False
+
+
+def test_restore_owner_account_is_a_noop_once_someone_else_holds_residency(calls, monkeypatch):
+    from utils.account_context import AccountContext, run_as
+
+    alice, bob, carol = (
+        AccountContext("a" * 32, "alice"),
+        AccountContext("b" * 32, "bob"),
+        AccountContext("c" * 32, "carol"),
+    )
+    monkeypatch.setattr(arb, "_owner_account", None)
+    monkeypatch.setattr(arb, "_prior_account", None)
+    run_as(alice, arb.acquire_for, arb.VIDEO, lambda: None)
+    run_as(bob, arb.acquire_for, arb.VIDEO, lambda: None)
+    run_as(carol, arb.acquire_for, arb.VIDEO, lambda: None)
+    assert run_as(bob, arb.restore_owner_account, arb.VIDEO) is False
+    assert arb.owner_account() == carol.account_id
