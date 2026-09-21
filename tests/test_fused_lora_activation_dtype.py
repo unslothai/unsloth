@@ -35,8 +35,11 @@ import unsloth  # noqa: F401
 
 from unsloth.kernels.utils import matmul_lora
 
-# Only the matmul tests need an accelerator; the probe test is pure Python.
-pytestmark = pytest.mark.gpu
+# The three matmul tests are marked `gpu` individually rather than module-wide:
+# the device-name probe test below is pure Python, and it is precisely the check
+# that has to run on the CPU-only and non-CUDA runners, since the defect it pins
+# (torch.is_autocast_enabled("hip")) only ever shows up off this box.
+_gpu = pytest.mark.gpu
 
 D_IN, D_OUT, R, ROWS, S = 32, 48, 8, 16, 2.0
 
@@ -56,6 +59,7 @@ def _reference(X, W, A, B):
     return X32 @ W32.t() + (X32 @ A32.t()) @ B32.t() * S
 
 
+@_gpu
 @pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs a real accelerator")
 @pytest.mark.parametrize("w_dtype", [torch.float16, torch.bfloat16])
 def test_fp32_activation_into_16bit_weight(w_dtype):
@@ -68,6 +72,7 @@ def test_fp32_activation_into_16bit_weight(w_dtype):
     torch.testing.assert_close(out.float(), ref, rtol = 2e-2, atol = 2e-2)
 
 
+@_gpu
 @pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs a real accelerator")
 @pytest.mark.parametrize(
     "w_dtype,amp_dtype",
@@ -88,6 +93,7 @@ def test_autocast_dtype_differs_from_weight(w_dtype, amp_dtype):
     torch.testing.assert_close(out.float(), ref, rtol = 5e-2, atol = 5e-2)
 
 
+@_gpu
 @pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs a real accelerator")
 @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16, torch.float32])
 def test_matching_dtypes_unchanged(dtype):
