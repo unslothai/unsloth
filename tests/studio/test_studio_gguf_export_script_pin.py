@@ -96,9 +96,9 @@ def _load_pin_helper(*, is_mlx = False, logger = None):
     namespace = {
         "os": os,
         "contextlib": contextlib,
-        "logger": logger if logger is not None else types.SimpleNamespace(
-            warning = lambda *args, **kwargs: None
-        ),
+        "logger": logger
+        if logger is not None
+        else types.SimpleNamespace(warning = lambda *args, **kwargs: None),
         "_LLAMA_CPP_SCRIPTS_WARNING_EMITTED": False,
         "_IS_MLX": is_mlx,
     }
@@ -109,8 +109,14 @@ def _load_pin_helper(*, is_mlx = False, logger = None):
     return namespace[PIN_HELPER], namespace
 
 
-def _install_fake_zoo(monkeypatch, *, default_dir = "/fake/llama.cpp", resolver = True,
-                      internal_pin = True, incomplete = False):
+def _install_fake_zoo(
+    monkeypatch,
+    *,
+    default_dir = "/fake/llama.cpp",
+    resolver = True,
+    internal_pin = True,
+    incomplete = False,
+):
     """A stand-in unsloth_zoo.llama_cpp whose pin is as non-reentrant as the real one."""
     calls = {"internal": []}
     fake = types.ModuleType("unsloth_zoo.llama_cpp")
