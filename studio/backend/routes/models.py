@@ -386,7 +386,11 @@ def _is_model_directory(d: Path) -> bool:
         if not has_config:
             return False
         return any(_is_weight_file(f) for f in d.iterdir() if f.is_file())
-    except OSError:
+    except OSError as exc:
+        # False here says "not a model directory", which is indistinguishable from a
+        # directory that genuinely holds no weights, so the scanner drops a row it never
+        # got to classify and the pass would still publish as complete.
+        note_scan_incident(f"model directory unreadable: {d} ({type(exc).__name__})")
         return False
 
 

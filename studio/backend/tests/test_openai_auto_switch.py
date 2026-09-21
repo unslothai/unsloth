@@ -13011,3 +13011,37 @@ def test_an_unreadable_hf_cache_repo_is_not_a_complete_scan(monkeypatch):
         with collecting_scan_incidents() as incidents:
             assert resolver._resolve_gguf_load_snapshot(flat) == flat
         assert incidents == [], f"a flat cache repo was reported as a gap: {incidents}"
+
+
+def test_a_root_the_classifier_could_not_read_is_not_a_complete_scan(monkeypatch):
+    """``_is_model_directory`` answers False for a directory it could not look inside.
+
+    A registered scan folder or LM Studio root can itself be a model directory, and False
+    there is indistinguishable from a directory that genuinely holds no weights, so the
+    scanner drops the row and the pass still publishes as complete.
+    """
+    import pathlib
+
+    from core.inference.scan_incidents import collecting_scan_incidents
+    from routes import models as models_route
+
+    with tempfile.TemporaryDirectory() as root:
+        directory = pathlib.Path(root)
+        (directory / "config.json").write_text("{}")
+        real_iterdir = pathlib.Path.iterdir
+
+        def iterdir_fails(self):
+            raise PermissionError(13, "Permission denied")
+
+        monkeypatch.setattr(pathlib.Path, "iterdir", iterdir_fails)
+        with collecting_scan_incidents() as incidents:
+            assert models_route._is_model_directory(directory) is False
+        assert any(
+            "unreadable" in note for note in incidents
+        ), f"a root the classifier could not read was dropped silently: {incidents}"
+
+        # A directory with a config and no weights IS an answer: nothing was hidden.
+        monkeypatch.undo()
+        with collecting_scan_incidents() as incidents:
+            assert models_route._is_model_directory(directory) is False
+        assert incidents == [], f"a config-only directory was reported as a gap: {incidents}"
