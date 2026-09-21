@@ -23,6 +23,8 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "settings.general.previewSharing.sectionTitle",
     "settings.general.previewSharing.enableLabel",
     "settings.general.previewSharing.revokeLabel",
+    "settings.general.managedProviderUrls.sectionTitle",
+    "settings.general.managedProviderUrls.enableLabel",
     "settings.general.rag.sectionTitle",
     "settings.general.rag.embeddingModel",
     "settings.general.helperLlm.sectionTitle",
@@ -111,8 +113,8 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "settings.chat.rememberParamsPerModel",
     "settings.chat.autoCompact",
     "settings.profile.greetingSloth",
-    "settings.chat.thinking.collapseByDefault",
-    "settings.chat.tools.collapseByDefault",
+    "settings.chat.thinking.visibility",
+    "settings.chat.tools.visibility",
     "settings.chat.tools.foldIntoThinking",
     "settings.chat.artifacts.title",
     "settings.chat.artifacts.collapseHtmlBlocks",
@@ -314,4 +316,8 @@ export const SETTINGS_SEARCH_KEYWORDS: Partial<
   "settings.resources.modelMemory.noRamReserve":
     "settings.resources.modelMemory.modelMemoryKeywords",
   "settings.chat.autoCompact": "settings.chat.autoCompactKeywords",
+  // These rows are labelled with what they are, so the verbs people search for live here.
+  "settings.chat.thinking.visibility": "settings.chat.visibilityKeywords",
+  "settings.chat.tools.visibility": "settings.chat.visibilityKeywords",
+  "settings.chat.tools.foldIntoThinking": "settings.chat.visibilityKeywords",
 };

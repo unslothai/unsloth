@@ -218,9 +218,6 @@ export const en = {
       priority: "Priority",
       lastUpdated: "Last updated",
       manualOrder: "Manual order",
-      priorityHint: "Active and unread first",
-      lastUpdatedHint: "Newest first",
-      manualOrderHint: "Drag rows to reorder",
       switchedToManual: "Sorted manually: drag rows to reorder",
       organizeChats: "Organize chats",
       organizeProjects: "Organize projects",
@@ -889,6 +886,16 @@ export const en = {
         revokeConfirmAction: "Revoke all links",
         revoked: "All preview links revoked",
         revokeError: "Couldn't revoke preview links",
+      },
+      managedProviderUrls: {
+        sectionTitle: "Managed accounts",
+        enableLabel: "Local and network connections",
+        enableDescription:
+          "Let managed accounts point their connections at local or network addresses, such as an Ollama or llama.cpp server on this computer or your LAN. Off by default, because it lets those accounts reach services running on your computer and your network.",
+        lockedByEnvironment:
+          "Set by UNSLOTH_STUDIO_BLOCK_PRIVATE_PROVIDER_URLS=1 on this server, which refuses private addresses for every account.",
+        loadError: "Failed to load managed account connection settings.",
+        saveError: "Failed to save managed account connection settings.",
       },
       permissions: {
         sectionTitle: "Permissions",
@@ -1575,10 +1582,17 @@ export const en = {
         "Older turns move to a searchable archive when a chat fills its context.",
       autoCompactKeywords:
         "compaction compact auto-compact context window truncate rolling checkpoint headroom archive retrieval recall rag search",
+      visibility: {
+        collapsed: "Collapsed",
+        auto: "Expand while running",
+        expanded: "Always expanded",
+      },
+      visibilityKeywords:
+        "collapse collapsed expand expanded open closed reasoning thinking tool calls tool activity fold group streaming",
       thinking: {
-        collapseByDefault: "Collapse Thinking by default",
-        collapseByDefaultDescription:
-          "Keep reasoning collapsed. Expand a block to read it.",
+        visibility: "Thinking",
+        visibilityDescription:
+          "How reasoning opens. You can still expand or collapse any block yourself.",
       },
       currentDate: {
         label: "Tell the model today's date",
@@ -1588,12 +1602,14 @@ export const en = {
         saveError: "Failed to update current date settings",
       },
       tools: {
-        collapseByDefault: "Collapse tool activity by default",
-        collapseByDefaultDescription:
-          "Keep tool details collapsed. Expand a row to inspect it.",
-        foldIntoThinking: "Fold tool calls into Thinking",
+        visibility: "Tool calls",
+        visibilityDescription:
+          "How tool activity opens. You can still expand or collapse any call yourself.",
+        foldIntoThinking: "Group tool calls under Thinking",
         foldIntoThinkingDescription:
-          "Hide a turn's tool calls until its Thinking block is opened.",
+          "Show a turn's tool calls inside its Thinking block instead of on their own rows.",
+        foldIntoThinkingBlocked:
+          "Unavailable while tool calls are set to Always expanded, which keeps them on their own rows.",
       },
       webSearch: {
         title: "Web search",

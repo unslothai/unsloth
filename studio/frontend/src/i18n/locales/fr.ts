@@ -216,9 +216,6 @@ export const fr = {
       priority: "Priorité",
       lastUpdated: "Dernière mise à jour",
       manualOrder: "Ordre manuel",
-      priorityHint: "Actifs et non lus en premier",
-      lastUpdatedHint: "Les plus récents en premier",
-      manualOrderHint: "Faites glisser les lignes pour les réorganiser",
       switchedToManual: "Tri manuel : faites glisser les lignes pour les réorganiser",
       organizeChats: "Organiser les discussions",
       organizeProjects: "Organiser les projets",
@@ -907,6 +904,18 @@ export const fr = {
         revokeConfirmAction: "Révoquer tous les liens",
         revoked: "Tous les liens d'aperçu ont été révoqués",
         revokeError: "Impossible de révoquer les liens d'aperçu",
+      },
+      managedProviderUrls: {
+        sectionTitle: "Comptes gérés",
+        enableLabel: "Connexions locales et réseau",
+        enableDescription:
+          "Autorise les comptes gérés à pointer leurs connexions vers des adresses locales ou réseau, comme un serveur Ollama ou llama.cpp sur cet ordinateur ou sur votre réseau local. Désactivé par défaut, car cela permet à ces comptes d'atteindre les services exécutés sur votre ordinateur et sur votre réseau.",
+        lockedByEnvironment:
+          "Défini par UNSLOTH_STUDIO_BLOCK_PRIVATE_PROVIDER_URLS=1 sur ce serveur, qui refuse les adresses privées pour tous les comptes.",
+        loadError:
+          "Impossible de charger les paramètres de connexion des comptes gérés.",
+        saveError:
+          "Impossible d'enregistrer les paramètres de connexion des comptes gérés.",
       },
       notifications: {
         sectionTitle: "Notifications",
@@ -1613,10 +1622,17 @@ export const fr = {
         "Les anciens échanges vont dans une archive consultable quand un chat sature son contexte.",
       autoCompactKeywords:
         "compaction automatique contexte fenêtre tronquer glissante point de contrôle marge archive récupération recherche rolling checkpoint headroom retrieval rag",
+      visibility: {
+        collapsed: "Replié",
+        auto: "Déplier pendant l’exécution",
+        expanded: "Toujours déplié",
+      },
+      visibilityKeywords:
+        "replier replié déplier déplié ouvert fermé réflexion raisonnement appels d'outils activité des outils regrouper streaming",
       thinking: {
-        collapseByDefault: "Replier la réflexion par défaut",
-        collapseByDefaultDescription:
-          "Garde la réflexion repliée pendant que le modèle réfléchit, au lieu de l’ouvrir automatiquement. Dépliez un bloc pour le lire.",
+        visibility: "Réflexion",
+        visibilityDescription:
+          "Comment la réflexion s’ouvre. Vous pouvez toujours déplier ou replier un bloc vous-même.",
       },
       currentDate: {
         label: "Indiquer la date du jour au modèle",
@@ -1626,12 +1642,14 @@ export const fr = {
         saveError: "Impossible de mettre à jour les paramètres de date actuelle",
       },
       tools: {
-        collapseByDefault: "Replier l’activité des outils par défaut",
-        collapseByDefaultDescription:
-          "Garde les entrées et sorties des outils repliées pendant leur exécution. Dépliez une ligne d’outil pour l’examiner.",
-        foldIntoThinking: "Replier les appels d'outils dans la Réflexion",
+        visibility: "Appels d’outils",
+        visibilityDescription:
+          "Comment l’activité des outils s’ouvre. Vous pouvez toujours déplier ou replier un appel vous-même.",
+        foldIntoThinking: "Regrouper les appels d’outils dans la Réflexion",
         foldIntoThinkingDescription:
-          "Masque les appels d'outils d'un tour jusqu'à l'ouverture de son bloc de Réflexion.",
+          "Affiche les appels d’outils d’un tour dans son bloc de Réflexion plutôt que sur leurs propres lignes.",
+        foldIntoThinkingBlocked:
+          "Indisponible tant que les appels d’outils sont sur « Toujours déplié », qui les garde sur leurs propres lignes.",
       },
       webSearch: {
         title: "Recherche web",

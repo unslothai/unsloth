@@ -215,9 +215,6 @@ export const ptBR = {
       priority: "Prioridade",
       lastUpdated: "Última atualização",
       manualOrder: "Ordem manual",
-      priorityHint: "Ativos e não lidos primeiro",
-      lastUpdatedHint: "Mais recentes primeiro",
-      manualOrderHint: "Arraste as linhas para reordenar",
       switchedToManual: "Ordem manual: arraste as linhas para reordenar",
       organizeChats: "Organizar conversas",
       organizeProjects: "Organizar projetos",
@@ -896,6 +893,18 @@ export const ptBR = {
         revokeConfirmAction: "Revogar todos os links",
         revoked: "Todos os links de pré-visualização foram revogados",
         revokeError: "Não foi possível revogar os links de pré-visualização",
+      },
+      managedProviderUrls: {
+        sectionTitle: "Contas gerenciadas",
+        enableLabel: "Conexões locais e de rede",
+        enableDescription:
+          "Permite que contas gerenciadas apontem suas conexões para endereços locais ou de rede, como um servidor Ollama ou llama.cpp neste computador ou na sua rede local. Desativado por padrão, porque permite que essas contas alcancem serviços em execução no seu computador e na sua rede.",
+        lockedByEnvironment:
+          "Definido por UNSLOTH_STUDIO_BLOCK_PRIVATE_PROVIDER_URLS=1 neste servidor, que recusa endereços privados para todas as contas.",
+        loadError:
+          "Não foi possível carregar as configurações de conexão das contas gerenciadas.",
+        saveError:
+          "Não foi possível salvar as configurações de conexão das contas gerenciadas.",
       },
       notifications: {
         sectionTitle: "Notificações",
@@ -1594,10 +1603,17 @@ export const ptBR = {
         "Os turnos antigos vão para um arquivo pesquisável quando um chat enche o contexto.",
       autoCompactKeywords:
         "compactação compactar automaticamente contexto janela truncar deslizante checkpoint margem arquivo recuperação busca compaction rolling headroom archive retrieval rag",
+      visibility: {
+        collapsed: "Recolhido",
+        auto: "Expandir durante a execução",
+        expanded: "Sempre expandido",
+      },
+      visibilityKeywords:
+        "recolher recolhido expandir expandido aberto fechado raciocínio pensamento chamadas de ferramentas atividade agrupar streaming",
       thinking: {
-        collapseByDefault: "Recolher o raciocínio por padrão",
-        collapseByDefaultDescription:
-          "Mantém o raciocínio recolhido enquanto o modelo pensa, em vez de abri-lo automaticamente. Expanda um bloco para lê-lo.",
+        visibility: "Raciocínio",
+        visibilityDescription:
+          "Como o raciocínio abre. Você ainda pode expandir ou recolher qualquer bloco.",
       },
       currentDate: {
         label: "Informar a data de hoje ao modelo",
@@ -1607,12 +1623,14 @@ export const ptBR = {
         saveError: "Não foi possível atualizar as configurações de data atual",
       },
       tools: {
-        collapseByDefault: "Recolher atividade de ferramentas por padrão",
-        collapseByDefaultDescription:
-          "Mantém entradas e saídas das ferramentas recolhidas durante a execução. Expanda uma linha para inspecioná-la.",
-        foldIntoThinking: "Recolher chamadas de ferramentas no Pensamento",
+        visibility: "Chamadas de ferramentas",
+        visibilityDescription:
+          "Como a atividade de ferramentas abre. Você ainda pode expandir ou recolher qualquer chamada.",
+        foldIntoThinking: "Agrupar chamadas de ferramentas no Raciocínio",
         foldIntoThinkingDescription:
-          "Oculta as chamadas de ferramentas de um turno até abrir o bloco de Pensamento.",
+          "Mostra as chamadas de ferramentas de um turno dentro do bloco de Raciocínio em vez de em linhas próprias.",
+        foldIntoThinkingBlocked:
+          "Indisponível enquanto as chamadas de ferramentas estiverem em «Sempre expandido», que as mantém em linhas próprias.",
       },
       webSearch: {
         title: "Busca na web",
