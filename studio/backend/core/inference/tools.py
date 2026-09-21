@@ -1349,15 +1349,33 @@ def _join_escaped_newlines(text: str) -> str:
     Only a backslash-LF continues. Checked against bash 5.2.21: a backslash before CRLF escapes
     the CARRIAGE RETURN, so the newline still starts a command and `echo hi \\<CRLF>rm -rf x`
     really runs `rm`. Joining all three characters made that read as one `echo`.
+
+    A comment strips nothing either. Inside an unquoted `#` comment the backslash is comment
+    TEXT, so the newline still ends the comment and starts a command: `echo ok # comment
+    \\<newline>rm -rf ./build` really runs `rm`, and joining made it one comment that the
+    later lex then discarded whole. `#` opens a comment only at the start of a word, so
+    `ab#cd` is an ordinary word and `"a # b"` is quoted text; both were checked against the
+    same bash.
     """
     out: list[str] = []
     i, n = 0, len(text)
-    in_single = in_double = False
+    in_single = in_double = in_comment = False
     while i < n:
         ch = text[i]
+        if in_comment:
+            if ch == "\n":
+                in_comment = False
+            out.append(ch)
+            i += 1
+            continue
         if in_single:
             if ch == "'":
                 in_single = False
+            out.append(ch)
+            i += 1
+            continue
+        if ch == "#" and not in_double and (not out or out[-1].isspace() or out[-1] in ";&|()"):
+            in_comment = True
             out.append(ch)
             i += 1
             continue

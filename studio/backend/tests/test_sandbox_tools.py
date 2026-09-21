@@ -2390,6 +2390,10 @@ class TestEscapedNewlineIsNotACommandBoundary:
             pytest.param(
                 "python train.py \\\n  --lr 1e-4 \\\n  --out /tmp/x", id = "ordinary_continuation"
             ),
+            # `#` opens a comment only at the start of a word, so neither of these is one and
+            # both lines really are joined.
+            pytest.param('echo "ok # x \\\nA=1 rm -rf y"', id = "hash_inside_quotes"),
+            pytest.param("echo ab#cd \\\nA=1 echo done", id = "hash_mid_word"),
         ],
     )
     def test_joined_line_is_one_command(self, command):
@@ -2413,6 +2417,11 @@ class TestEscapedNewlineIsNotACommandBoundary:
             pytest.param("echo hi \\\r\nrm -rf ./build", "rm", id = "backslash_crlf_is_a_boundary"),
             pytest.param(
                 "echo hi \\\r\nA=1 rm -rf ./build", "rm", id = "backslash_crlf_then_assignment"
+            ),
+            # Inside a comment the backslash is comment TEXT, so the newline still ends the
+            # comment and starts a command. Checked against bash 5.2.21.
+            pytest.param(
+                "echo ok # comment \\\nrm -rf ./build", "rm", id = "backslash_inside_a_comment"
             ),
         ],
     )
