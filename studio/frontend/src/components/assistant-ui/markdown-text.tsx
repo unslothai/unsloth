@@ -313,65 +313,76 @@ const STREAMDOWN_ALLOWED_TAGS = {
 } satisfies NonNullable<StreamdownProps["allowedTags"]>;
 
 const COPY_RESET_MS = 2000;
-// A second parser was the root cause of three review findings, so the diagram source comes from
-// `markdownBlockFallback`, which already handles every fence form CommonMark allows.
-const MERMAID_INFO_RE = /^ {0,3}(?:`{3,}|~{3,})[ \t]*mermaid\b/im;
 const ACTION_PANEL_CLASS =
   "pointer-events-auto flex shrink-0 items-center gap-1";
 const ACTION_BUTTON_CLASS =
   "flex size-8 cursor-pointer items-center justify-center rounded-[10px] text-chat-icon-fg transition-all hover:bg-chat-icon-bg-hover hover:text-chat-icon-fg-hover disabled:cursor-not-allowed disabled:opacity-50";
 
+/**
+ * THE MERMAID FENCE IN THIS BLOCK, found with fence context.
+ *
+ * One walk answers both questions the renderer asks: whether a mermaid fence is still open (so an
+ * incomplete reply shows the loading card), and where its body starts. Scanning lines with no
+ * context made a `~~~mermaid` shown as EXAMPLE inside an outer fence look like a diagram, which
+ * replaced the whole block with the loading card and gave ordinary code a diagram copy action.
+ */
+type MermaidFence =
+  | { open: true }
+  | { open: false; indent: string; body: string };
+
+function findMermaidFence(blockContent: string): MermaidFence {
+  const lines = blockContent.split("\n");
+  let enclosing: { char: string; run: number } | null = null;
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index];
+    const match = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(line);
+    if (!match) continue;
+    const [, marker, rest] = match;
+    const isClose =
+      rest.replace(/[\t ]*\r?$/, "") === "" && marker.length >= 3;
+    if (enclosing === null) {
+      if (marker[0] === "`" && rest.includes("`")) continue; // an info string may not hold a backtick
+      if (/^[\t ]*mermaid\b/i.test(rest)) {
+        const indent = /^( *)/.exec(line)?.[1] ?? "";
+        const body = lines.slice(index + 1).join("\n");
+        // The close is "at least as many" of the opener's own character, on its own line.
+        const closeRe = new RegExp(`^ {0,3}${marker[0]}{${marker.length},}[\\t ]*\\r?$`, "m");
+        const close = closeRe.exec(body);
+        if (close === null) return { open: true };
+        const raw = body.slice(0, close.index);
+        const stripped = indent
+          ? raw
+              .split("\n")
+              .map((l) => l.slice(Math.min(indent.length, /^ */.exec(l)?.[0].length ?? 0)))
+              .join("\n")
+          : raw;
+        return { open: false, indent, body: stripped.replace(/[\t ]*\r?\n?$/, "") };
+      }
+      if (isClose) continue;
+      enclosing = { char: marker[0], run: marker.length };
+    } else if (marker[0] === enclosing.char && marker.length >= enclosing.run && isClose) {
+      enclosing = null;
+    }
+  }
+  return { open: false, indent: "", body: "" };
+}
+
 function getMermaidSource(blockContent: string): string | null {
-  // A block that continues past the fence (a reply containing a footnote is one block) is not
-  // `fenced` as a whole, so the fence is re-read on its own slice.
   const fence = markdownBlockFallback(blockContent);
   if (fence.fenced && fence.language === "mermaid") {
     const source = fence.text.trim();
     return source.length > 0 ? source : null;
   }
-  const open = MERMAID_INFO_RE.exec(blockContent);
-  if (!open) return null;
-  const opener = blockContent.slice(open.index).match(/^( {0,3})(`{3,}|~{3,})/);
-  if (!opener) return null;
-  const [, indent, marker] = opener;
-  // "At least as many" of the opener's own character, and the indentation comes off the body.
-  const closeRe = new RegExp(`^ {0,3}${marker[0]}{${marker.length},}[\\t ]*\\r?$`, "m");
-  const bodyStart = blockContent.indexOf("\n", open.index) + 1;
-  if (bodyStart === 0) return null;
-  const rest = blockContent.slice(bodyStart);
-  const close = closeRe.exec(rest);
-  const body = close ? rest.slice(0, close.index) : rest;
-  const source = (indent
-    ? body
-        .split("\n")
-        .map((line) => line.slice(Math.min(indent.length, line.match(/^ */)?.[0].length ?? 0)))
-        .join("\n")
-    : body
-  ).replace(/[\t ]*\r?\n?$/, "");
+  const found = findMermaidFence(blockContent);
+  if (found.open) return null;
+  const source = found.body.trim();
   return source.length > 0 ? source : null;
 }
 
 /** True while a mermaid fence is still streaming, when there is no source to extract yet. */
 function isMermaidFenceOpener(blockContent: string): boolean {
-  const lines = blockContent.split("\n");
-  let open: { char: string; run: number } | null = null;
-  for (const line of lines) {
-    const match = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(line);
-    if (!match) continue;
-    const [, marker, rest] = match;
-    if (open === null) {
-      if (marker[0] === "`" && rest.includes("`")) continue;
-      if (/^[\t ]*mermaid\b/i.test(rest)) return true;
-      open = { char: marker[0], run: marker.length };
-    } else if (
-      marker[0] === open.char &&
-      marker.length >= open.run &&
-      rest.replace(/[\t ]*\r?$/, "") === ""
-    ) {
-      open = null;
-    }
-  }
-  return false;
+  if (markdownBlockFallback(blockContent).fenced) return false;
+  return findMermaidFence(blockContent).open;
 }
 
 function getCodeFilename(language: string | null) {

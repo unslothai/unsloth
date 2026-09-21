@@ -415,35 +415,36 @@ test("nothing is watched once there is nothing left to defer", () => {
 
 const CODE_PLUGIN = readSrc("components/assistant-ui/code-plugin.ts");
 
-test("the mermaid source matches what the scanner renders", () => {
-  // A hand-rolled matcher was the root cause of three review findings (a spaced info string, a
-  // fence with no close yet, and a line of the opposite marker), so the source now comes from the
-  // shared scanner. This pins the SHAPE of that rule rather than re-running a private copy of it.
+test("mermaid detection walks the block with fence context", () => {
+  // A context-free search was the root cause of three findings: a `~~~mermaid` shown as EXAMPLE
+  // inside an outer fence was treated as a diagram, so the block was replaced by the loading card
+  // while streaming and given a diagram copy action once settled.
   assert.match(
     MARKDOWN_TEXT,
-    /const fence = markdownBlockFallback\(blockContent\);/,
-    "getMermaidSource must read the shared scanner",
+    /function findMermaidFence\(blockContent: string\): MermaidFence \{/,
+    "one walk must answer both the opener and the source question",
+  );
+  assert.match(MARKDOWN_TEXT, /let enclosing: \{ char: string; run: number \} \| null = null;/);
+  assert.match(MARKDOWN_TEXT, /enclosing = \{ char: marker\[0\], run: marker\.length \};/);
+  // And the close still has to be the opener's own character, at least as long.
+  assert.match(MARKDOWN_TEXT, /marker\.length >= enclosing\.run/);
+  // The old context-free regex must be gone, not merely unused.
+  assert.ok(!MARKDOWN_TEXT.includes("MERMAID_INFO_RE"), "the context-free matcher is gone");
+});
+
+test("a settled alternative fence is not marked incomplete", () => {
+  // The completed form renders through the streaming component, which used to pass isIncomplete
+  // unconditionally and left data-incomplete="true" on a finished fence.
+  assert.match(
+    MARKDOWN_TEXT,
+    /<StreamingFenceBlock[\s\S]{0,160}isIncomplete=\{false\}/,
+    "the settled branch must pass isIncomplete={false}",
   );
   assert.match(
     MARKDOWN_TEXT,
-    /const open = MERMAID_INFO_RE\.exec\(blockContent\);/,
-    "and must still find a fence embedded in a longer block, or the copy button disappears",
+    /function StreamingFenceBlock\(\{[\s\S]{0,120}isIncomplete = true,/,
+    "and the parameter must default to true for the streaming branch",
   );
-  // The close is "at least as many" of the opener's own character, and the opener's indentation
-  // comes off the body ("up to N spaces", so a deeper line keeps the remainder).
-  assert.ok(
-    MARKDOWN_TEXT.includes("marker[0]}{"),
-    "the close must be at least the opener's length",
-  );
-  assert.ok(
-    MARKDOWN_TEXT.includes("line.slice(Math.min(indent.length"),
-    "the body must lose the opener's indentation",
-  );
-  // The streaming branch keys on the opener: there is no close to match yet.
-  assert.match(MARKDOWN_TEXT, /const hasMermaidFence = isMermaidFenceOpener\(props\.content\);/);
-  // Searching a LINE, so a fence preceded by prose (a footnote coalesces the reply into one
-  // block) is still found.
-  assert.match(MARKDOWN_TEXT, /const MERMAID_INFO_RE = \/\^ \{0,3\}[^;]*\/im;/);
 });
 
 test("a settled alternative fence is not marked incomplete", () => {
