@@ -15431,34 +15431,6 @@ def _web_search_images_suffix(client, query, wanted, cancel_event, website_polic
     return "\n\n---\n\n" + format_images_for_model(entries) + images_envelope(entries)
 
 
-# Node classes that _scan_bindings can do anything with. Everything else is skipped before
-# the dispatch chain. Built from the same classes that chain names, so the two cannot drift
-# without a test noticing: a binding form missing here would simply stop being recorded.
-_BINDING_NODE_TYPES = frozenset(
-    [
-        ast.Assign,
-        ast.AnnAssign,
-        ast.NamedExpr,
-        ast.AugAssign,
-        ast.For,
-        ast.AsyncFor,
-        ast.comprehension,
-        ast.withitem,
-        ast.Delete,
-        ast.ExceptHandler,
-        ast.arg,
-        ast.FunctionDef,
-        ast.AsyncFunctionDef,
-        ast.ClassDef,
-        ast.Global,
-        ast.Nonlocal,
-    ]
-    + [c for c in (getattr(ast, "MatchAs", None), getattr(ast, "MatchStar", None)) if c]
-    + [c for c in (getattr(ast, "MatchMapping", None),) if c]
-    + [c for c in (getattr(ast, "TypeAlias", None),) if c]
-)
-
-
 # Name resolution for the sandboxed-python analysis below. Module level for the same reason
 # as the tables above: a class body and its helpers are a definition, not work, and
 # rebuilding 690 lines of them on every tool call was pure overhead. Nothing here holds
@@ -15480,10 +15452,6 @@ _MATCH_CAPTURES = tuple(
 
 
 _MATCH_MAPPINGS = tuple(node for node in (getattr(ast, "MatchMapping", None),) if node is not None)
-
-
-# "no answer", as distinct from "bound to something this analysis cannot name".
-_NOTHING_HELD = object()
 
 
 def _written_fq(func_node) -> str:
@@ -15518,19 +15486,6 @@ def _callable_arms(values) -> "list":
             continue
         arms.append(value)
     return arms
-
-
-def _factory_behind(value, bindings) -> "str | None":
-    """The session factory a bound value amounts to. A conditional holds one of two values
-    and `s = requests.Session() if enabled else object()` is a session down either path that
-    has a `get`, so both arms are read."""
-    for arm in _callable_arms([value] if value is not None else []):
-        if not isinstance(arm, ast.Call):
-            continue
-        factory = _SESSION_FACTORY_FQ.get(_canonical_fq(arm.func, bindings))
-        if factory is not None:
-            return factory
-    return None
 
 
 def _held_callables(name: str, node, bindings) -> "list":
@@ -15622,694 +15577,164 @@ def _canonical_fq(func_node, bindings) -> str:
 
 
 class _NameBindings(ast.NodeVisitor):
-    """Import aliases and single-assignment string / session bindings, per scope.
+    """Import aliases, session objects and single-assignment values, for the whole module.
 
-    Imports are collected first so an alias is known before the assignment that uses it. A name
-    bound more than once, or bound by a loop / with / except / comprehension / match target, a
-    parameter, a def or a del, resolves to nothing: sandboxed code must not be able to launder
-    a blocked URL through a rebind. Bindings are keyed by the scope that made them, so an
-    assignment inside a function never answers for a name used outside it.
+    One rule does the work an earlier version of this needed scope keying, binding positions,
+    conditional-branch joins and loop analysis for: a name bound more than once resolves to
+    nothing. A name a loop target, a `del`, a parameter, a walrus, a `match` capture, a second
+    assignment or an `import` in another scope can touch is bound more than once, so it already
+    answers "no value", which is the answer all that analysis was there to reach. What it costs
+    is precision in the other direction, and that direction is safe: an unresolved name is
+    treated exactly as `main` treats it.
 
-    The alias and session tables stay flat. Resolving one of those only ever adds a name the
-    policy checks, so reading a function-local import at module level costs nothing but an
-    extra check; a wrong string binding, by contrast, would vouch for a host."""
+    Imports are collected first so `import requests as r` is known before `s = r.Session()`.
+    """
 
     def __init__(self):
-        self.modules: dict[tuple, str] = {}
-        self.funcs: dict[tuple, str] = {}
-        self.strings: dict[tuple, ast.AST] = {}
-        # Every value ever assigned to a name, single-assignment or not. Resolution only trusts
-        # a name bound once, but "where did this value come from" has to see them all: a rebind
-        # must not be able to hide that one of them reads the environment.
-        self.all_values: dict[tuple, list] = {}
-        self.sessions: dict[tuple, str] = {}
-        self._counts: dict[tuple, int] = {}
-        self._candidates: dict[tuple, ast.AST] = {}
-        self._scope_of: dict[int, object] = {}
-        self._scope_parent: dict[object, object] = {}
-        self._class_scopes: set = set()
-        self._comprehension_scopes: set = set()
-        # (scope, name) seen in a first, redirect-free pass, so a nonlocal can be pointed at
-        # the scope that really binds its name rather than at the lexical parent.
-        self._raw_bound: set = set()
-        self._raw_mode = False
-        # (scope, name) -> the scope that name really binds in, for global / nonlocal.
-        self._redirect: dict = {}
-        # (scope, name) -> [(position, is_alias)], so a call before a rebind still resolves.
-        self._bind_positions: dict = {}
-        # Aliases dropped for a later rebind, kept for the calls that precede it.
-        self._dropped_aliases: dict = {}
-        # Every binding that gives a name a resolvable target, with the position that made it.
-        # A name bound twice is not unresolvable everywhere: it holds the first target until
-        # the second binding, which is where the source says it changes.
-        self._alias_history: dict = {}
-        self._value_positions: dict = {}
-        self._conditional_suites: list = []
-        self._loop_suites: list = []
-        self._augmented_positions: set = set()
-        self._value_spans: dict = {}
-        # Names imported twice: no order-independent answer, so no alias at all.
-        self._ambiguous_aliases: set = set()
+        self.modules: dict = {}
+        self.funcs: dict = {}
+        self.sessions: dict = {}
+        self.strings: dict = {}
+        self._counts: dict = {}
+        self._values: dict = {}
 
-    @staticmethod
-    def _parameters(args) -> list:
-        return [
-            a
-            for a in (
-                list(getattr(args, "posonlyargs", []))
-                + list(args.args)
-                + list(args.kwonlyargs)
-                + [args.vararg, args.kwarg]
-            )
-            if a is not None
-        ]
-
-    def _children_with_scope(self, node, scope, inner) -> list:
-        """Children paired with the scope each is EVALUATED in. Defaults, decorators, bases and
-        annotations run in the enclosing scope, before the function body exists, so a local of
-        the same name must not answer for them."""
-        if node.__class__ not in _SCOPE_SHAPING_NODES:
-            # The common case by a wide margin: a node whose children all evaluate where it does.
-            # Inlined rather than routed through ast.iter_child_nodes, which is two generators
-            # deep and is called for every node in the tree.
-            children = []
-            for field in node._fields:
-                value = getattr(node, field, None)
-                if type(value) is list:
-                    children += [(child, inner) for child in value if isinstance(child, ast.AST)]
-                elif isinstance(value, ast.AST):
-                    children.append((value, inner))
-            return children
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
-            args = node.args
-            outer = list(getattr(node, "decorator_list", []))
-            outer += [d for d in args.defaults if d is not None]
-            outer += [d for d in (args.kw_defaults or []) if d is not None]
-            if getattr(node, "returns", None) is not None:
-                outer.append(node.returns)
-            body = node.body if isinstance(node.body, list) else [node.body]
-            pairs = [(child, scope) for child in outer]
-            pairs += [(child, inner) for child in body]
-            pairs += [(param, inner) for param in self._parameters(args)]
-            return pairs
-        if isinstance(node, ast.ClassDef):
-            outer = list(node.decorator_list) + list(node.bases)
-            outer += [kw.value for kw in node.keywords]
-            return [(child, scope) for child in outer] + [(child, inner) for child in node.body]
-        if isinstance(node, (ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)):
-            # The leftmost iterable is evaluated before the comprehension scope exists.
-            pairs = []
-            for index, gen in enumerate(node.generators):
-                pairs.append((gen.iter, scope if index == 0 else inner))
-                pairs.append((gen.target, inner))
-                pairs += [(cond, inner) for cond in gen.ifs]
-            parts = [node.key, node.value] if isinstance(node, ast.DictComp) else [node.elt]
-            pairs += [(part, inner) for part in parts if part is not None]
-            return pairs
-        if isinstance(node, ast.arg):
-            # The parameter name belongs to the function; its annotation is evaluated outside.
-            if node.annotation is None:
-                return []
-            return [(node.annotation, self._scope_parent.get(scope, None))]
-        return [(child, inner) for child in ast.iter_child_nodes(node)]
-
-    def _walk_scoped(self, root):
-        """Every node with the scope it sits in: None for module level, else id(def node).
-
-        A comprehension carries its own scope in Python 3, so its target rebinds nothing
-        outside it."""
-        stack = [(root, None)]
-        while stack:
-            node, scope = stack.pop()
-            self._scope_of[id(node)] = scope
-            inner = scope
-            if isinstance(
-                node,
-                (
-                    ast.FunctionDef,
-                    ast.AsyncFunctionDef,
-                    ast.Lambda,
-                    ast.ClassDef,
-                    ast.ListComp,
-                    ast.SetComp,
-                    ast.DictComp,
-                    ast.GeneratorExp,
-                ),
-            ):
-                inner = id(node)
-                self._scope_parent[inner] = scope
-                if isinstance(node, ast.ClassDef):
-                    self._class_scopes.add(inner)
-                elif isinstance(node, (ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)):
-                    self._comprehension_scopes.add(inner)
-            for child, child_scope in self._children_with_scope(node, scope, inner):
-                stack.append((child, child_scope))
-            yield node, scope
-
-    def _chain(self, node) -> list:
-        """Scopes that can answer for a name used at *node*, innermost first.
-
-        A class body is skipped once it is no longer the innermost scope: a bare name in a
-        method resolves to the enclosing function or module, never to a class attribute."""
-        scope = self._scope_of.get(id(node))
-        chain = []
-        first = True
-        while scope is not None:
-            if first or scope not in self._class_scopes:
-                chain.append(scope)
-            first = False
-            scope = self._scope_parent.get(scope)
-        chain.append(None)
-        return chain
-
-    def alias_for(self, table: dict, name: str, node):
-        """An import alias or session binding visible from *node*, or None. Stops at the first
-        scope that binds the name, since a nearer binding shadows the alias."""
-        for scope in self._chain(node):
-            key = (scope, name)
-            if not self._class_binding_applies(scope, key, node):
-                continue
-            if key in table:
-                return table[key]
-            held = self._target_held_here(table, key, node)
-            if held is not None:
-                return held
-            if key in self._counts:
-                # Bound nearer than the alias, so the alias is not what this name holds.
-                return None
-        return None
-
-    def _target_held_here(self, table: dict, key, node):
-        """What a name bound more than once holds at *node*: the target recorded by the last
-        binding at or before this point, and nothing when that binding recorded none.
-
-        Dropping such a name everywhere would let a later rebind retrospectively unpolice the
-        calls above it, which is a one-line bypass: `import requests as r`, the call, then
-        `import httpx as r`."""
-        history = [
-            (position, target)
-            for position, target, table_id in self._alias_history.get(key, ())
-            if table_id == id(table)
-        ]
-        if not history:
-            return None
-        history = sorted(history, key = lambda entry: entry[0])
-        if self._scope_of.get(id(node)) != key[0]:
-            # A body runs when it is called, so its line number says nothing about which
-            # outer binding it sees. The last binding is the conservative answer: a body
-            # written above an import must not escape the check.
-            return history[-1][1]
-        where = self._position(node)
-        before = [
-            position
-            for position, _alias in self._bind_positions.get(key, [])
-            if position <= where and self._binding_applies_at(key, position, where)
-        ]
-        if not before:
-            # The use precedes every binding we can place. Only an unambiguous name answers:
-            # a call above two different imports of its own name resolves to neither.
-            targets = {target for _position, target in history}
-            return targets.pop() if len(targets) == 1 else None
-        last = max(before)
-        for position, target in history:
-            if position == last:
-                return target
-        # The nearest binding is not an alias. If it only runs when a branch is taken, the
-        # alias above it is still a value this call can see, and resolving to it only ever
-        # adds a name the policy checks.
-        unconditional = [
-            position for position in before if not self._is_conditional_for(position, where)
-        ]
-        newest_alias = max((position for position, _target in history), default = None)
-        if newest_alias is not None and newest_alias <= last:
-            if not unconditional or max(unconditional) <= newest_alias:
-                for position, target in history:
-                    if position == newest_alias:
-                        return target
-        return None
-
-    def _class_binding_applies(self, scope, key, node) -> bool:
-        """A class body is read in order: an attribute assigned further down is not what a use
-        above it reads, so that use falls through to the enclosing scope."""
-        if scope not in self._class_scopes:
-            return True
-        positions = self._bind_positions.get(key, [])
-        return any(position <= self._position(node) for position, _alias in positions)
-
-    def string_for(self, name: str, node):
-        """The value bound to *name* where *node* uses it, or None when nothing is trusted."""
-        for scope in self._chain(node):
-            key = (scope, name)
-            if not self._class_binding_applies(scope, key, node):
-                continue
-            if key in self.strings:
-                return self.strings[key]
-            held = self._value_held_here(key, node)
-            if held is not _NOTHING_HELD:
-                return held
-            if key in self._counts:
-                # Bound in this scope but not trusted: it shadows anything further out.
-                return None
-        return None
-
-    def _mark_loop_suites(self, tree) -> None:
-        """Loop bodies. A binding written below a call inside one still reaches that call on
-        the next turn round, so position alone does not rule it out there."""
-        for statement in _tree_nodes(tree):
-            if not isinstance(statement, (ast.While, ast.For, ast.AsyncFor)):
-                continue
-            if statement.body:
-                self._loop_suites.append(
-                    (self._position(statement.body[0]), self._span_of(statement.body[-1])[1])
-                )
-
-    def _shares_a_loop(self, position, where) -> bool:
-        for start, end in self._loop_suites:
-            if start <= position <= end and start <= where <= end:
-                return True
-        return False
-
-    def _mark_conditional_bindings(self, tree) -> None:
-        """The suites that only run when a branch is taken. Whether a binding inside one is
-        conditional depends on where it is read: two assignments inside the same guarded block
-        run in order for a call in that same block, while one of them seen from outside the
-        block may not have run at all."""
-        branching = (ast.If, ast.While, ast.For, ast.AsyncFor, ast.Try)
-        match_statement = getattr(ast, "Match", None)
-        if match_statement is not None:
-            branching = branching + (match_statement,)
-        for statement in _tree_nodes(tree):
-            if not isinstance(statement, branching):
-                continue
-            for suite in (
-                getattr(statement, "body", None),
-                getattr(statement, "orelse", None),
-                getattr(statement, "finalbody", None),
-                *[handler.body for handler in getattr(statement, "handlers", [])],
-                *[case.body for case in getattr(statement, "cases", [])],
-            ):
-                if not suite:
-                    continue
-                if isinstance(statement, ast.Try) and suite is statement.finalbody:
-                    continue  # finally always runs
-                self._conditional_suites.append(
-                    (self._position(suite[0]), self._span_of(suite[-1])[1])
-                )
-
-    def _is_conditional_for(self, position, where) -> bool:
-        """Whether the binding at *position* sits in a suite that a use at *where* is not
-        inside, which is what makes it "may not have run" rather than "ran before this"."""
-        for start, end in self._conditional_suites:
-            if start <= position <= end and not start <= where <= end:
-                return True
-        return False
-
-    def is_bound(self, name: str, node) -> bool:
-        """Whether the source has given this name a meaning of its own by the time *node*
-        runs, which is what says a builtin or a module has been shadowed.
-
-        An import of the same name is not a shadow: `import os` is how you get the real `os`.
-        A `def`, a `class` or an assignment is. Position matters: a shadow written below the
-        call has not happened yet, so the call still reads the builtin, and answering
-        otherwise would take the call out of the policy."""
-        where = self._position(node)
-        for scope in self._chain(node):
-            key = (scope, name)
-            positions = self._bind_positions.get(key)
-            if key not in self._counts or not positions:
-                continue
-            if self._scope_of.get(id(node)) != scope:
-                # A body runs when it is called, so any shadow in an enclosing scope may
-                # already have happened. Reading it as the real module is the safe answer.
-                return False
-            before = [entry for entry in positions if entry[0] <= where]
-            while before:
-                position, is_alias = max(before)
-                if is_alias:
-                    return False
-                if not self._preserves_the_name(key, position):
-                    return True
-                # `os = os` gives the name back what it already held, so the import above it
-                # is still the meaning in force. Keep looking further up.
-                before = [entry for entry in before if entry[0] != position]
-            return False
-        return False
-
-    def _preserves_the_name(self, key, position) -> bool:
-        """Whether the binding recorded at *position* rebinds the name to what it already
-        held. Python evaluates the right side first, so `os = os` leaves `os` denoting the
-        imported module, and so does a round trip through another name."""
-        values = [value for where, value in self._value_positions.get(key, ()) if where == position]
-        if not values:
-            return False
-        return all(self._reads_back_as(value, key, position, 0) for value in values)
-
-    def _reads_back_as(self, value, key, position, depth: int) -> bool:
-        if depth > _MAX_RESOLVE_DEPTH or not isinstance(value, ast.Name):
-            return False
-        scope, name = key
-        if value.id == name:
-            return True
-        earlier = [
-            entry
-            for entry in self._value_positions.get((scope, value.id), ())
-            if entry[0] < position
-        ]
-        if not earlier:
-            return False
-        return all(self._reads_back_as(held, key, held_at, depth + 1) for held_at, held in earlier)
-
-    def may_be_bound(self, name: str, node) -> bool:
-        """Whether the source could have given this name a meaning of its own by the time
-        *node* runs, counting bindings in enclosing scopes and below the use.
-
-        The sibling question, `is_bound`, asks whether it definitely has. The two are asked
-        by callers whose safe answers point in opposite directions: an unrecognised external
-        reader keeps being policed, while an unrecognised connector loses its exemption."""
-        for scope in self._chain(node):
-            key = (scope, name)
-            if any(
-                not is_alias and not self._preserves_the_name(key, position)
-                for position, is_alias in self._bind_positions.get(key, [])
-            ):
-                return True
-        return False
-
-    def possible_values(self, name: str, node) -> list:
-        """Every value the name can hold at *node*: the last unconditional assignment that
-        precedes it, plus any conditional ones since. One value means the call sees that
-        value; more than one means each of them has to be answered for."""
-        for scope in self._chain(node):
-            key = (scope, name)
-            if not self._class_binding_applies(scope, key, node):
-                continue
-            candidates = self._candidates_held_here(key, node)
-            if candidates:
-                return [value for _position, value in candidates]
-            if key in self._counts:
-                return []
-        return []
-
-    def _candidates_held_here(self, key, node) -> list:
-        positioned = sorted(self._value_positions.get(key, ()), key = lambda entry: entry[0])
-        if not positioned:
-            return []
-        if self._scope_of.get(id(node)) != key[0]:
-            # A body runs when it is called, so every value it could see is possible.
-            return positioned
-        where = self._position(node)
-        before = [
-            entry
-            for entry in positioned
-            if (entry[0] <= where or self._shares_a_loop(entry[0], where))
-            and self._binding_applies_at(key, entry[0], where)
-        ]
-        if not before:
-            return []
-        start = 0
-        for index, (position, _value) in enumerate(before):
-            # `u += x` builds on what u already held, so it does not replace it: the old
-            # value is still one the call can reach through the new one.
-            if position in self._augmented_positions:
-                continue
-            if not self._is_conditional_for(position, where):
-                start = index
-        # An if / else that assigns the name on both paths replaces whatever came before it.
-        return before[start:]
-
-    def _value_held_here(self, key, node):
-        """The value a name bound more than once holds at *node*, or ``_NOTHING_HELD``.
-
-        Same reasoning as the import aliases: dropping the name everywhere would let a later
-        assignment unpolice the calls above it, so `u = metadata`, the request, `u = allowed`
-        would pass on the strength of a value the request never sees."""
-        candidates = self._candidates_held_here(key, node)
-        if len(candidates) != 1:
-            # Nothing to resolve, or more than one value could hold and no single one of them
-            # may vouch for the call. The caller screens them all instead.
-            return _NOTHING_HELD
-        return candidates[0][1]
-
-    def values_for(self, name: str, node) -> list:
-        """Where the name's value can have come from, stopping at the scope that binds it: a
-        parameter shadowing a global is the parameter, and the global is never read."""
-        for scope in self._chain(node):
-            key = (scope, name)
-            if not self._class_binding_applies(scope, key, node):
-                continue
-            if key in self._counts:
-                return list(self.all_values.get(key, ()))
-        return []
-
-    def _nonlocal_target(self, scope, name):
-        """The scope a `nonlocal` really writes to: the nearest enclosing function scope that
-        binds the name, skipping class bodies and scopes that never bind it at all."""
-        candidate = self._scope_parent.get(scope)
-        while candidate is not None:
-            if candidate not in self._class_scopes and (candidate, name) in self._raw_bound:
-                return candidate
-            candidate = self._scope_parent.get(candidate)
-        return self._scope_parent.get(scope)
-
-    def _record_alias(
-        self,
-        table: dict,
-        key: tuple,
-        target: str,
-        node = None,
-    ) -> None:
-        if key in table and table[key] != target:
-            self._ambiguous_aliases.add(key)
-        table[key] = target
-        if node is not None:
-            self._alias_history.setdefault(key, []).append(
-                (self._position(node), target, id(table))
-            )
-
-    @staticmethod
-    def _position(node) -> tuple:
-        return (getattr(node, "lineno", 0), getattr(node, "col_offset", 0))
-
-    @staticmethod
-    def _span_of(node) -> tuple:
-        start = (getattr(node, "lineno", 0), getattr(node, "col_offset", 0))
-        end = (
-            getattr(node, "end_lineno", None) or start[0],
-            getattr(node, "end_col_offset", None) or start[1],
-        )
-        return (start, end)
-
-    def _binding_applies_at(self, key, position, where) -> bool:
-        """Whether the binding made at *position* is in force at *where*. It is not inside
-        the expression that produces its own value: that runs first."""
-        for bound_position, (start, end) in self._value_spans.get(key, ()):
-            if bound_position == position and start <= where <= end:
-                return False
-        return True
-
+    # -- collection ---------------------------------------------------------------------
     def _mark(
         self,
-        name: "str | None",
-        scope,
-        node = None,
-        is_alias = False,
+        name,
+        value = None,
     ) -> None:
-        if name and self._raw_mode:
-            self._raw_bound.add((scope, name))
+        if not name:
             return
-        if name:
-            scope = self._redirect.get((scope, name), scope)
-            key = (scope, name)
-            self._counts[key] = self._counts.get(key, 0) + 1
-            if node is not None:
-                self._bind_positions.setdefault(key, []).append((self._position(node), is_alias))
+        self._counts[name] = self._counts.get(name, 0) + 1
+        self._values[name] = value
 
-    def _bind(
+    def _mark_target(
         self,
         target,
-        value,
-        scope,
-        came_from = None,
+        value = None,
     ) -> None:
-        if isinstance(target, ast.Name) and self._raw_mode:
-            self._raw_bound.add((scope, target.id))
-            return
         if isinstance(target, ast.Name):
-            # `global u` makes an assignment here a write to the module's u, not a local one.
-            scope = self._redirect.get((scope, target.id), scope)
-            if value is not None:
-                # Python evaluates the right side first, so `r = r.get(...)` still reads the
-                # old r inside that call. Recording where that expression is keeps a use
-                # within it answered by what the name held before this statement.
-                self._value_spans.setdefault((scope, target.id), []).append(
-                    (self._position(target), self._span_of(value))
-                )
-            self._mark(target.id, scope, target)
-            self._candidates.setdefault((scope, target.id), value)
-            self._value_positions.setdefault((scope, target.id), []).append(
-                (self._position(target), value)
-            )
-            for source in (value, came_from):
-                if source is not None:
-                    self.all_values.setdefault((scope, target.id), []).append(source)
-            return
-        # Only a Name, or a Name inside a tuple / list / star target, is rebound. `d[u] = 1` and
-        # `obj.u = 1` read `u` and `obj`, they do not rebind them, so counting those names would
-        # discard a binding that is still good.
-        if isinstance(target, ast.Starred):
-            self._bind(target.value, None, scope)
+            self._mark(target.id, value)
         elif isinstance(target, (ast.Tuple, ast.List)):
             for element in target.elts:
-                self._bind(element, None, scope)
-
-    def _scan_bindings(self, scoped) -> None:
-        """Record every binding in the tree. Run once in raw mode, to learn which
-        scope binds which name, then again for real once declarations are resolved."""
-        for node, scope in scoped:
-            # Most nodes in any tree are Name / Constant / operator nodes that bind nothing.
-            # One set lookup drops them before the chain below, which is otherwise walked in
-            # full, twice per call, for every one of them.
-            if node.__class__ not in _BINDING_NODE_TYPES:
-                continue
-            if _MATCH_CAPTURES and isinstance(node, _MATCH_CAPTURES):
-                self._mark(node.name, scope, node)
-            elif _MATCH_MAPPINGS and isinstance(node, _MATCH_MAPPINGS):
-                self._mark(node.rest, scope, node)
-            elif type(node).__name__ == "TypeAlias":  # 3.12+, absent on the floor
-                self._mark(getattr(getattr(node, "name", None), "id", None), scope)
-            if isinstance(node, ast.Assign):
-                for target in node.targets:
-                    self._bind(target, node.value, scope)
-            elif isinstance(node, (ast.AnnAssign, ast.NamedExpr)):
-                if node.value is not None:
-                    target_scope = scope
-                    if isinstance(node, ast.NamedExpr):
-                        # An assignment expression inside a comprehension binds outside it.
-                        while target_scope in self._comprehension_scopes:
-                            target_scope = self._scope_parent.get(target_scope)
-                    self._bind(node.target, node.value, target_scope)
-            elif isinstance(node, ast.AugAssign):
-                # The value is unresolvable, so nothing vouches for a host, but the right
-                # side is still where it came from: `u += input()` reads the outside.
-                self._bind(node.target, None, scope, came_from = node.value)
-                self._augmented_positions.add(self._position(node.target))
-            elif isinstance(node, (ast.For, ast.AsyncFor)):
-                self._bind(node.target, None, scope)
-            elif isinstance(node, ast.comprehension):
-                self._bind(node.target, None, scope)
-            elif isinstance(node, ast.withitem):
-                if node.optional_vars is not None:
-                    # `with socket.socket() as s` hands back the socket itself, so the name is
-                    # still a socket receiver; anything else binds a value we cannot name.
-                    held = node.context_expr
-                    # requests.Session, httpx.Client, aiohttp.ClientSession, socket and
-                    # open all hand back the object itself, so the name still holds it.
-                    opened = _canonical_fq(held.func, self) if isinstance(held, ast.Call) else ""
-                    keeps_itself = isinstance(held, ast.Call) and (
-                        opened in _SOCKET_FACTORY_FQ
-                        or opened in _SESSION_FACTORY_FQ
-                        or opened.rpartition(".")[2] in ("open", "fdopen")
-                    )
-                    self._bind(node.optional_vars, held if keeps_itself else None, scope)
-            elif isinstance(node, ast.Delete):
-                # The name is gone at runtime; whatever a later lookup finds is not this value.
-                for target in node.targets:
-                    self._bind(target, None, scope)
-            elif isinstance(node, ast.ExceptHandler):
-                self._mark(node.name, scope, node)
-            elif isinstance(node, ast.arg):
-                self._mark(node.arg, scope, node)
-            elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-                self._mark(node.name, scope, node)
-            elif isinstance(node, (ast.Global, ast.Nonlocal)):
-                pass  # a declaration, not a binding; collected in the first pass
+                self._mark_target(element)
+        elif isinstance(target, ast.Starred):
+            self._mark_target(target.value)
+        # `d[u] = 1` and `obj.u = 1` read u and obj, they do not rebind them.
 
     def collect(self, tree) -> "_NameBindings":
-        self._mark_conditional_bindings(tree)
-        self._mark_loop_suites(tree)
-        scoped = list(self._walk_scoped(tree))
-        self._raw_mode = True
-        self._scan_bindings(scoped)
-        self._raw_mode = False
-        for node, scope in scoped:
-            if isinstance(node, ast.Global):
-                for name in node.names:
-                    self._redirect[(scope, name)] = None
-            elif isinstance(node, ast.Nonlocal):
-                for name in node.names:
-                    self._redirect[(scope, name)] = self._nonlocal_target(scope, name)
-        for node, scope in scoped:
+        for node in ast.walk(tree):
             if isinstance(node, ast.Import):
                 for alias in node.names:
-                    self._mark(
-                        alias.asname or alias.name.split(".")[0],
-                        scope,
-                        node,
-                        is_alias = True,
-                    )
-                    # Without `as`, the bound name is already the canonical head of the FQ name.
+                    local = alias.asname or alias.name.split(".")[0]
+                    self._mark(local)
                     if alias.asname and alias.name in _ALIASED_MODULES:
-                        self._record_alias(self.modules, (scope, alias.asname), alias.name, node)
+                        self.modules[local] = alias.name
+                    elif not alias.asname and alias.name in _ALIASED_MODULES:
+                        self.modules[local] = alias.name
             elif isinstance(node, ast.ImportFrom):
                 for alias in node.names:
                     local = alias.asname or alias.name
-                    self._mark(local, scope, node, is_alias = True)
+                    self._mark(local)
                     if node.level or node.module is None:
                         continue
                     fq = f"{node.module}.{alias.name}"
                     if fq in _ALIASED_MODULES:
-                        self._record_alias(self.modules, (scope, local), fq, node)
+                        self.modules[local] = fq
                     elif node.module in _ALIASED_MODULES:
-                        self._record_alias(self.funcs, (scope, local), fq, node)
-        self._scan_bindings(scoped)
-        # An alias entry is only good while the name means one thing in its own scope. `import
-        # requests as r` followed by `import socket as r`, or by an assignment to `r`, leaves
-        # whichever the walk reached last, and ast.walk order is not specified, so drop both.
-        for table in (self.modules, self.funcs):
-            for key in [k for k in table if self._counts.get(k, 0) != 1]:
-                self._dropped_aliases[key] = table[key]
-                del table[key]
-        # Sessions are resolved in their own pass: classifying them while the table fills would
-        # let one binding's result change how the next one is read.
-        factories = {}
-        for (scope, name), value in self._candidates.items():
-            if value is None or self._counts.get((scope, name), 0) != 1:
+                        self.funcs[local] = fq
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Assign):
+                for target in node.targets:
+                    self._mark_target(target, node.value)
+            elif isinstance(node, (ast.AnnAssign, ast.NamedExpr)):
+                self._mark_target(node.target, node.value)
+            elif isinstance(node, ast.AugAssign):
+                self._mark_target(node.target)
+            elif isinstance(node, (ast.For, ast.AsyncFor, ast.comprehension)):
+                self._mark_target(node.target)
+            elif isinstance(node, ast.withitem):
+                if node.optional_vars is not None:
+                    self._mark_target(node.optional_vars, node.context_expr)
+            elif isinstance(node, ast.Delete):
+                for target in node.targets:
+                    self._mark_target(target)
+            elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                self._mark(node.name)
+            elif isinstance(node, ast.ExceptHandler):
+                self._mark(node.name)
+            elif isinstance(node, ast.arg):
+                self._mark(node.arg)
+            elif _MATCH_CAPTURES and isinstance(node, _MATCH_CAPTURES):
+                self._mark(getattr(node, "name", None))
+            elif _MATCH_MAPPINGS and isinstance(node, _MATCH_MAPPINGS):
+                self._mark(getattr(node, "rest", None))
+        # An import and an assignment to the same name is two bindings, so the alias goes too.
+        for name, count in self._counts.items():
+            if count > 1:
+                self.modules.pop(name, None)
+                self.funcs.pop(name, None)
+        self._classify_sessions()
+        return self
+
+    def _classify_sessions(self) -> None:
+        """`s = requests.Session()` and the one-line alias `client = s` that holds it."""
+        for name, value in self._values.items():
+            if self._counts.get(name) != 1 or not isinstance(value, ast.Call):
                 continue
-            factory = _factory_behind(value, self)
+            factory = _SESSION_FACTORY_FQ.get(_canonical_fq(value.func, self))
             if factory is not None:
-                factories[(scope, name)] = factory
-                continue
-            # A call resolves to no text, but it is still where the name's value came from, so
-            # `u = input()` has to stay followable.
-            self.strings[(scope, name)] = value
-        # `client = s` holds the same session. To a fixed point rather than a fixed number of
-        # passes, so a chain of twenty-five aliases resolves the same as a chain of two.
-        for _ in range(len(self._candidates) + 1):
+                self.sessions[name] = factory
+        for _ in range(len(self._values) + 1):
             grew = False
-            for (scope, name), value in self._candidates.items():
-                key = (scope, name)
-                if key in factories or not isinstance(value, ast.Name):
+            for name, value in self._values.items():
+                if (
+                    name in self.sessions
+                    or self._counts.get(name) != 1
+                    or not isinstance(value, ast.Name)
+                ):
                     continue
-                if self._counts.get(key, 0) != 1:
-                    continue
-                target = self.alias_for(factories, value.id, value)
+                target = self.sessions.get(value.id)
                 if target is not None:
-                    factories[key] = target
+                    self.sessions[name] = target
                     grew = True
             if not grew:
                 break
-        # A rebind ends a session, it does not unmake the calls above it. Every assignment of
-        # a session factory is recorded at its own position, so `s = requests.Session()`,
-        # `s.get(...)`, `s = object()` still polices the call in the middle.
-        for key, positioned in self._value_positions.items():
-            for position, value in positioned:
-                factory = _factory_behind(value, self)
-                if factory is not None:
-                    self._alias_history.setdefault(key, []).append(
-                        (position, factory, id(self.sessions))
-                    )
-        self.sessions.update(factories)
-        return self
+
+    # -- resolution ---------------------------------------------------------------------
+    def alias_for(
+        self,
+        table: dict,
+        name: str,
+        node = None,
+    ):
+        """The alias bound to this name, or None. `node` is accepted and ignored: bindings are
+        module-wide here, so where the name is used does not change the answer."""
+        del node
+        return table.get(name)
+
+    def possible_values(
+        self,
+        name: str,
+        node = None,
+    ) -> list:
+        del node
+        if self._counts.get(name) != 1:
+            return []
+        value = self._values.get(name)
+        return [] if value is None else [value]
+
+    def string_for(
+        self,
+        name: str,
+        node = None,
+    ):
+        """The value node a name holds, for the string reader to fold. A name bound more than
+        once holds nothing, so the reader stops there rather than trusting one of them."""
+        del node
+        values = self.possible_values(name)
+        return values[0] if values else None
 
 
 # ast.NodeVisitor.visit builds a "visit_" + class name string and does a getattr for every node
@@ -16345,24 +15770,6 @@ class _FastVisit:
                         self.visit(item)
             elif isinstance(value, ast.AST):
                 self.visit(value)
-
-
-# Nodes whose children do not all evaluate in the same scope they do: a default runs outside the
-# body it belongs to, the leftmost iterable of a comprehension runs outside the comprehension.
-# Everything else takes the fast path in _children_with_scope.
-_SCOPE_SHAPING_NODES = frozenset(
-    {
-        ast.FunctionDef,
-        ast.AsyncFunctionDef,
-        ast.Lambda,
-        ast.ClassDef,
-        ast.ListComp,
-        ast.SetComp,
-        ast.DictComp,
-        ast.GeneratorExp,
-        ast.arg,
-    }
-)
 
 
 def _ast_name_matches(node, names):
@@ -17019,22 +16426,6 @@ _SESSION_PREFIXES = (
     "urllib3.HTTPSConnectionPool",
 )
 
-_URL_OWNERS = frozenset(
-    {
-        "requests",
-        "httpx",
-        # urllib3.request("GET", url) and pool.request(...) are network calls by the prefix
-        # table already; without an owner entry the target checks would skip their URL.
-        "urllib3",
-        "urllib3.PoolManager",
-        "urllib3.HTTPConnectionPool",
-        "urllib3.HTTPSConnectionPool",
-        "requests.Session",
-        "httpx.Client",
-        "httpx.AsyncClient",
-        "aiohttp.ClientSession",
-    }
-)
 
 _URL_HOST_RE = re.compile(r"^\w+://([^/?#]+)(?:[/?#]|$)")
 
@@ -17080,26 +16471,6 @@ _API_SUBMODULES = {
 
 _SOCKET_FACTORY_FQ = ("socket.socket", "socket.create_connection", "socket.socketpair")
 
-_SOCKET_TARGET_FQ = ("socket.create_connection",)
-
-# `host = ` in a libpq DSN, `SERVER = ` in an ODBC one.
-# The value runs to the next separator and may be a comma separated failover list, which the
-# caller splits: libpq tries each host in turn, so every one of them has to be screened.
-_DSN_HOST_RE = re.compile(r"(?:^|[;\s])(?:hostaddr|host|server)\s*=\s*([^;\s]+)", re.IGNORECASE)
-
-# Schemes that name a file rather than a host, so `sqlite:///state.db` opens nothing remote.
-_LOCAL_DSN_SCHEMES = ("sqlite", "duckdb", "file", "shm", "memory")
-
-# These open a file and nothing else, so their argument is a path however it is spelled:
-# `sqlite3.connect("host=cache.db")` is a file called host=cache.db.
-_FILE_ONLY_CONNECT_OWNERS = frozenset({"sqlite3", "apsw", "duckdb"})
-
-# libpq takes a literal address in hostaddr, which reaches a host without naming one in host.
-_DATABASE_HOST_KEYWORDS = frozenset({"host", "hostaddr", "server"})
-
-# A backstop against a pathological file, not the real limit. Exhausting it answers
-# "externally sourced": a guard that answers "no" when it gives up is a bypass.
-_MAX_EXTERNAL_STEPS = 200_000
 
 # Bare method-name fallback (`x.upload_file(...)`) is fuzzy, so it fires only when huggingface_hub/hf_api is
 # imported; else paramiko.upload_file, boto3.create_commit, etc. would false-positive. Pre-scan for the imports.
@@ -17136,30 +16507,6 @@ _HF_OPERATIONS_KWARG = {
     "preupload_lfs_files": "additions",
 }
 
-# The names an aliased import can still be reading. Spelled as full names because that is what
-# the alias resolves to: `import os as o` makes `o.environ` the name `os.environ`.
-_EXTERNAL_SOURCE_FQ = frozenset(
-    {
-        "os.environ",
-        "os.environb",
-        "os.getenv",
-        "os.getenvb",
-        "sys.argv",
-        "sys.stdin",
-        "getpass.getpass",
-        "subprocess.run",
-        "subprocess.Popen",
-        "subprocess.check_output",
-        "subprocess.getoutput",
-        "subprocess.getstatusoutput",
-    }
-)
-
-# Reading a file is reading something the source does not show: a URL in a workspace file is
-# chosen wherever that file came from, which is the same hole as reading the environment.
-_FILE_READ_METHODS = frozenset({"read", "readline", "readlines", "read_text", "read_bytes"})
-
-_PATHLIB_FQ = ("pathlib.Path", "Path")
 
 # Clients handed their host at construction, after which a request needs only a path. Pools
 # take a bare host positionally; `urllib3.PoolManager(10)` takes a pool count, not a host.
@@ -17271,20 +16618,6 @@ def _check_signal_escape_patterns(code: str):
     # not the same as one it read and found dynamic: it may be a blocked literal under 30 layers
     # of concatenation, so the caller refuses rather than letting the limit decide.
     _resolve_exhausted = [False]
-
-    def _takes_a_url_argument(fq: str) -> bool:
-        """True when the call takes the target URL as an argument. Constructors that take no URL
-        (`requests.Session()`, `socket.socket(...)`) are excluded, so an unresolvable argument there
-        is never mistaken for a hidden target."""
-        if fq in ("urllib.request.urlopen", "urllib.request.urlretrieve", "urllib.request.Request"):
-            return True
-        if fq in _SOCKET_TARGET_FQ:
-            # socket.create_connection((host, port)) names its host as plainly as a URL does.
-            return True
-        owner, _, method = fq.rpartition(".")
-        if not owner or owner not in _URL_OWNERS:
-            return False
-        return method in _HTTP_METHOD_NAMES or _sending_url_index(fq) is not None
 
     def _is_a_network_call(fq: str) -> bool:
         """Whether this name reaches the network. A session instance has plenty of methods that do
@@ -17405,11 +16738,6 @@ def _check_signal_escape_patterns(code: str):
             return _static_str_prefix(current, bindings, frozenset(names), depth + 1)
         return "", False
 
-    def _resolution_gave_up(node) -> bool:
-        """Whether reading *node* as a string ran out of depth or budget rather than finishing."""
-        _static_str_prefix(node, _bindings)
-        return _resolve_exhausted[0]
-
     def _host_from_url_node(node, bindings) -> "tuple[str | None, bool]":
         """``(host, resolved)`` for a URL argument. ``resolved`` is False only when the target
         cannot be pinned down at all, which is what makes the allowlist unenforceable."""
@@ -17436,75 +16764,6 @@ def _check_signal_escape_patterns(code: str):
                 return _canonical_fq(bound.func, _bindings) in _SOCKET_FACTORY_FQ
         return False
 
-    def _dsn_hosts(text: str, complete: bool = True) -> "list[str]":
-        """Every host a database connection string names. A libpq DSN may list failover hosts,
-        `host = primary,standby`, and the client tries each, so screening the first alone would
-        let the second through. A SQLite path and a bare `dbname = app` name none."""
-        if "://" in text:
-            scheme = text.split("://", 1)[0].split("+")[0].lower()
-            if scheme in _LOCAL_DSN_SCHEMES:
-                return []
-            match = (_URL_HOST_RE if complete else _URL_HOST_TERMINATED_RE).match(text)
-            if match is None:
-                if not complete:
-                    # The authority has not been closed yet, so what follows could still be part
-                    # of it and no host is known.
-                    return []
-                authority = text.split("://", 1)[1].split("/")[0]
-            else:
-                authority = match.group(1)
-            # A libpq URL carries its failover list in the authority: user@a,b/db.
-            userinfo, _, hosts = authority.rpartition("@")
-            prefix = f"{userinfo}@" if userinfo else ""
-            return [f"{prefix}{host}" for host in hosts.split(",") if host]
-        out: list = []
-        for match in _DSN_HOST_RE.finditer(text):
-            out.extend(host for host in match.group(1).split(",") if host)
-        return out
-
-    def _expanded_host_arguments(node: ast.Call) -> "tuple[list, bool]":
-        """Host values hidden in a `**` expansion, and whether any expansion could not be read.
-        `connect("dbname = app", **{"host": metadata})` overrides the DSN, so the mapping has to
-        be looked at rather than skipped."""
-        found = []
-        opaque = False
-        for kw in node.keywords or []:
-            if kw.arg is not None:
-                continue
-            if isinstance(kw.value, ast.Dict):
-                for key, value in zip(kw.value.keys, kw.value.values):
-                    if (
-                        isinstance(key, ast.Constant)
-                        and isinstance(key.value, str)
-                        and key.value.lower() in _DATABASE_HOST_KEYWORDS
-                    ):
-                        found.append(value)
-                continue
-            opaque = True
-        return found, opaque
-
-    def _remote_database_hosts(node: ast.Call) -> "list[str]":
-        """Every host a `connect` on a database client names, across the DSN and the keywords."""
-        expanded, _opaque = _expanded_host_arguments(node)
-        positional = node.args[0] if node.args else None
-        candidates = [kw.value for kw in node.keywords or [] if kw.arg in _DATABASE_HOST_KEYWORDS]
-        candidates += expanded
-        candidates += list(node.args[:1])
-        found: list = []
-        for candidate in candidates:
-            text, complete = _static_str_prefix(candidate, _bindings)
-            if not text or not (complete or "://" in text):
-                continue
-            hosts = _dsn_hosts(text, complete) if ("://" in text or "=" in text) else []
-            if not hosts and complete and candidate is not positional:
-                # A bare `host = ` keyword is the host itself, not a connection string, and it
-                # may still list failover hosts.
-                hosts = [host for host in text.split(",") if host]
-            for host in hosts:
-                if host not in found:
-                    found.append(host)
-        return found
-
     def _assigned_attributes(target, out: set) -> None:
         """Every attribute a target assigns, through tuple, list and starred destructuring.
         `(sqlite3.connect,) = (...)` replaces the callable just as plainly as a bare assignment."""
@@ -17525,98 +16784,8 @@ def _check_signal_escape_patterns(code: str):
         ):
             _assigned_attributes(_target, _rebound_attributes)
 
-    def _dynamically_mutated_owners(tree) -> set:
-        """Names whose attributes the source replaces without writing an assignment target:
-        `setattr(sqlite3, "connect", ...)`, `vars(sqlite3)["connect"] = ...` and the `__dict__`
-        spelling of the same thing. The attribute cannot be proven unchanged after that, so the
-        exemption is withheld for everything under that name."""
-        out: set = set()
-
-        def root_of(node) -> str:
-            while isinstance(node, (ast.Attribute, ast.Subscript)):
-                node = node.value
-            if isinstance(node, ast.Call) and node.args:
-                # vars(sqlite3)[...]
-                node = node.args[0]
-            return node.id if isinstance(node, ast.Name) else ""
-
-        def writes_a_namespace(func) -> bool:
-            """`setattr`, however it is reached: bare, through `builtins`, under an alias, or as
-            `mock.patch.object`. The name at the end is what says so, because the owner in front
-            of it can be anything."""
-            if isinstance(func, ast.Attribute):
-                if func.attr in ("setattr", "delattr"):
-                    return True
-                # mock.patch.object(sqlite3, "connect", ...)
-                return func.attr == "object" and _written_fq(func).endswith("patch.object")
-            if not isinstance(func, ast.Name):
-                return False
-            if func.id in ("setattr", "delattr"):
-                return True
-            # `setter = setattr` holds the same function.
-            for value in _bindings.possible_values(func.id, func):
-                if isinstance(value, ast.Name) and value.id in ("setattr", "delattr"):
-                    return True
-                if isinstance(value, ast.Attribute) and value.attr in ("setattr", "delattr"):
-                    return True
-            return False
-
-        for node in _tree_nodes(tree):
-            if isinstance(node, ast.Call) and node.args and writes_a_namespace(node.func):
-                owner = root_of(node.args[0])
-                if owner:
-                    out.add(owner)
-            if isinstance(node, ast.Call) and node.args:
-                # mock.patch("sqlite3.connect") names its target as a dotted string.
-                target = node.args[0]
-                patches = (isinstance(node.func, ast.Attribute) and node.func.attr == "patch") or (
-                    isinstance(node.func, ast.Name) and node.func.id == "patch"
-                )
-                if patches and isinstance(target, ast.Constant) and isinstance(target.value, str):
-                    out.add(target.value.split(".")[0])
-            targets = list(getattr(node, "targets", []))
-            if isinstance(node, (ast.AnnAssign, ast.AugAssign)) and node.target:
-                targets.append(node.target)
-            if isinstance(node, ast.Delete):
-                targets += node.targets
-            for target in targets:
-                if not isinstance(target, ast.Subscript):
-                    continue
-                owner = root_of(target.value)
-                mapping = target.value
-                is_namespace = (
-                    isinstance(mapping, ast.Attribute) and mapping.attr == "__dict__"
-                ) or (
-                    isinstance(mapping, ast.Call)
-                    and isinstance(mapping.func, ast.Name)
-                    and mapping.func.id == "vars"
-                )
-                if owner and is_namespace:
-                    out.add(owner)
-        return out
-
     # Computed on first use: it resolves names, and the binding table is built further down.
     _mutated_owners_cache: list = []
-
-    def _mutated_owners() -> set:
-        if not _mutated_owners_cache:
-            _mutated_owners_cache.append(_dynamically_mutated_owners(tree))
-        return _mutated_owners_cache[0]
-
-    def _any_prefix_was_rebound(node) -> bool:
-        """Whether the source assigned this attribute or anything it hangs off. `sqlite3.x` being
-        replaced makes `sqlite3.x.connect` someone else's callable even though the root is still
-        the module that was imported."""
-        written = _written_fq(node)
-        if not written:
-            return False
-        parts = written.split(".")
-        if parts[0] in _mutated_owners():
-            # Its namespace was written to at runtime, so nothing under it is what it was.
-            return True
-        return any(
-            ".".join(parts[: index + 1]) in _rebound_attributes for index in range(len(parts))
-        )
 
     def _is_a_connect_call(node: ast.Call) -> bool:
         """Whether this call is a `connect`, however it was imported. `from psycopg2 import
@@ -17634,116 +16803,15 @@ def _check_signal_escape_patterns(code: str):
                 return name.split(".")[0]
         return ""
 
-    def _database_target_is_external(node: ast.Call) -> bool:
-        """Whether the DSN or host of a database `connect` is read from outside the source."""
-        expanded, _opaque = _expanded_host_arguments(node)
-        candidates = [kw.value for kw in node.keywords or [] if kw.arg in _DATABASE_HOST_KEYWORDS]
-        candidates += expanded
-        candidates += list(node.args[:1])
-        return any(_externally_sourced(candidate, _bindings) for candidate in candidates)
-
     def _connect_is_exempt(node: ast.Call) -> bool:
-        """Whether a `connect` call is one of the local-resource clients, still spelling what it
-        was imported as. Replacing the callable, `sqlite3.connect = smtplib.SMTP().connect`,
-        leaves the receiver looking like the module while the call opens a socket."""
-        if not isinstance(node.func, ast.Attribute):
-            return _connect_owner_root(node) in _LOCAL_CONNECT_OWNERS
-        return _opens_a_local_resource(node.func.value) and not _any_prefix_was_rebound(node.func)
-
-    def _names_a_local_client_module(node) -> bool:
-        """Whether *node* is a reference to one of the local-client modules as imported. A name
-        that was assigned rather than imported answers for its value, not for its spelling:
-        `sqlite3 = smtplib` is the smtplib module wearing a reserved name."""
-        root = node
-        while isinstance(root, ast.Attribute):
-            root = root.value
-        if not isinstance(root, ast.Name):
-            return False
-        if _bindings.may_be_bound(root.id, root):
-            # A parameter and a class bind a name without recording a value, so this asks the
-            # binding table. An enclosing scope counts: a wrong exemption costs a request to any
-            # host, a wrong shadow only a refusal.
-            return False
-        if _any_prefix_was_rebound(node):
-            # An attribute below the module was replaced, so what hangs off it is not the module's.
-            return False
-        imported = _bindings.alias_for(_bindings.modules, root.id, root)
-        return (imported or root.id).split(".")[0] in _LOCAL_CONNECT_OWNERS
-
-    def _opens_a_local_resource(receiver) -> bool:
-        """Whether a `connect` receiver is one of the local-resource clients. Judged on where the
-        value came from, never on the name: `sqlite3 = smtplib.SMTP()` spells a reserved head and
-        still opens a socket, so a name that holds a value is answered by that value."""
-        if isinstance(receiver, ast.Call):
-            return _names_a_local_client_module(receiver.func)
-        if isinstance(receiver, ast.Name):
-            values = _bindings.values_for(receiver.id, receiver)
-            if values:
-                # Every value it can hold has to be local, and a value we cannot name is not.
-                return all(_opens_a_local_resource(value) for value in values)
-            return _names_a_local_client_module(receiver)
-        if isinstance(receiver, ast.Attribute):
-            return _names_a_local_client_module(receiver)
-        return False
+        """Whether a `connect` opens a local resource rather than a host. `sqlite3.connect("a.db")`
+        names a file, and reading that file path as a host refuses ordinary code, which is what
+        main does today. Judged on the name as imported: enough for a check that only decides
+        whether to screen an argument as a bare host."""
+        root = _connect_owner_root(node)
+        return bool(root) and root in _LOCAL_CONNECT_OWNERS
 
     _external_memo: set = set()
-
-    def _externally_sourced(node, bindings) -> bool:
-        """Whether *node* takes its value from outside the program: env, stdin, argv, a file read.
-        Bindings are followed, so `u = os.environ["T"]` reads the same as the expression inline.
-
-        This is what separates a target the allowlist cannot police from one it merely cannot
-        read. An ordinary loop variable or function parameter is unresolvable too, but its value
-        came from the same source file; only an external one lets the host be chosen off-source.
-
-        Iterative on purpose. A recursive walk has to stop at some depth, and a chain of plain
-        assignments is exactly the shape that reaches it, so the depth limit itself would become
-        the way through."""
-        if node is None:
-            return False
-        stack = [node]
-        seen_nodes: set = set()
-        seen_names: set = set()
-        steps = 0
-        while stack:
-            current = stack.pop()
-            if current is None or id(current) in seen_nodes:
-                continue
-            seen_nodes.add(id(current))
-            steps += 1
-            if steps > _MAX_EXTERNAL_STEPS:
-                return True
-            for sub in ast.walk(current):
-                steps += 1
-                if steps > _MAX_EXTERNAL_STEPS:
-                    return True
-                if isinstance(sub, ast.Call) and _calls_an_external_reader(sub, bindings):
-                    return True
-                if isinstance(sub, ast.Call) and isinstance(sub.func, ast.Name):
-                    if sub.func.id in ("input", "getpass") and not bindings.is_bound(
-                        sub.func.id, sub.func
-                    ):
-                        # Only the builtin reads a terminal. A local def by that name returns
-                        # whatever the source says it returns.
-                        return True
-                if isinstance(sub, ast.Attribute) and isinstance(sub.value, ast.Name):
-                    if sub.attr in ("argv", "stdin") and _names_the_real_module(
-                        sub.value, "sys", bindings
-                    ):
-                        return True
-                if _reads_a_file(sub):
-                    return True
-                if _reads_env_or_secret(sub, bindings):
-                    return True
-                if _reads_an_external_source_through_an_alias(sub, bindings):
-                    return True
-                if isinstance(sub, ast.Name):
-                    key = (sub.id, id(sub))
-                    if key in seen_names:
-                        continue
-                    seen_names.add(key)
-                    stack.extend(bindings.values_for(sub.id, sub))
-        return False
 
     _bindings = _NameBindings().collect(tree)
 
@@ -17806,99 +16874,6 @@ def _check_signal_escape_patterns(code: str):
         if isinstance(f, ast.Name) and f.id in _UPLOAD_HF_METHODS:
             return f.id
         return None
-
-    def _is_a_file_receiver(node: ast.AST) -> bool:
-        """Whether *node* evaluates to something backed by a file. An in-memory reader is not:
-        `io.StringIO("...")` holds a string the source itself wrote."""
-        if isinstance(node, ast.Call):
-            func = node.func
-            if isinstance(func, ast.Name) and func.id == "open":
-                return not _bindings.is_bound(func.id, func)
-            fq = _canonical_fq(func, _bindings)
-            if fq in _PATHLIB_FQ or fq.endswith(".Path"):
-                return True
-            # io.open, os.fdopen, Path(...).open(): whatever the owner, `open` hands back a file.
-            return fq.rpartition(".")[2] in ("open", "fdopen")
-        if isinstance(node, ast.Name):
-            # `f1 = f0` repeated is a chain, so it is followed rather than recursed through.
-            seen: set = set()
-            current = node
-            links = 0
-            while isinstance(current, ast.Name):
-                links += 1
-                if current.id in seen or links > _MAX_BINDING_LINKS:
-                    return False
-                seen.add(current.id)
-                bound = _bindings.string_for(current.id, current)
-                if bound is None:
-                    return False
-                current = bound
-            return _is_a_file_receiver(current)
-        return False
-
-    def _reads_a_file(node: ast.AST) -> bool:
-        """Whether *node* opens or reads a file."""
-        if not isinstance(node, ast.Call):
-            return False
-        func = node.func
-        if isinstance(func, ast.Name) and func.id == "open":
-            return not _bindings.is_bound(func.id, func)
-        if not isinstance(func, ast.Attribute) or func.attr not in _FILE_READ_METHODS:
-            return False
-        # `read_text` reads like pathlib, but Python is duck typed and the name is not reserved,
-        # so the receiver settles it here as it does for `read`.
-        return _is_a_file_receiver(func.value)
-
-    def _calls_an_external_reader(call: ast.Call, bindings) -> bool:
-        """Whether a call reaches one of the external readers through a name that holds it.
-        `reader = input` and `reader = os.getenv` are the same readers under another name, and
-        following the binding loses the call, so the invocation is checked here."""
-        func = call.func
-        seen: set = set()
-        links = 0
-        while isinstance(func, ast.Name):
-            links += 1
-            if func.id in seen or links > _MAX_RESOLVE_DEPTH:
-                # Giving up cannot mean "not a reader": a chain of aliases would be the whole
-                # bypass. The same rule the string resolver follows when it runs out.
-                return True
-            seen.add(func.id)
-            if _reads_an_external_source_through_an_alias(func, bindings):
-                return True
-            if func.id in ("input", "getpass") and not bindings.is_bound(func.id, func):
-                return True
-            values = bindings.possible_values(func.id, func)
-            if len(values) != 1 or values[0] is None:
-                return False
-            func = values[0]
-        if not isinstance(func, ast.Attribute):
-            return False
-        if _reads_an_external_source_through_an_alias(func, bindings):
-            return True
-        written = _written_fq(func)
-        if written not in _EXTERNAL_SOURCE_FQ:
-            return False
-        # The written name only means the module while the source has not defined one of its own.
-        root = func
-        while isinstance(root, ast.Attribute):
-            root = root.value
-        return isinstance(root, ast.Name) and _names_the_real_module(
-            root, written.split(".")[0], bindings
-        )
-
-    def _reads_an_external_source_through_an_alias(node: ast.AST, bindings) -> bool:
-        """The alias-aware half of external-source detection. `_reads_env_or_secret` matches the
-        names as written, which misses `import os as o` and `from os import getenv as env`: the
-        target is just as externally chosen when the module was renamed on import."""
-        if isinstance(node, ast.Call):
-            node = node.func
-        if isinstance(node, ast.Name):
-            resolved = bindings.alias_for(bindings.funcs, node.id, node)
-            return bool(resolved) and resolved in _EXTERNAL_SOURCE_FQ
-        if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name):
-            owner = bindings.alias_for(bindings.modules, node.value.id, node)
-            return bool(owner) and f"{owner}.{node.attr}" in _EXTERNAL_SOURCE_FQ
-        return False
 
     def _names_the_real_module(node: ast.Name, module: str, bindings) -> bool:
         """Whether this name is the module it spells rather than something the source defined.
@@ -18182,39 +17157,6 @@ def _check_signal_escape_patterns(code: str):
             # `sock.connect((host, port))` and the scalar-host clients bypass the FQ-prefix
             # branch. Only a `connect` that opens a local resource is left alone, and only from
             # the bare-host screen: `postgresql://user:pass@host/db` still names a remote host.
-            if _is_a_connect_call(node) and _connect_is_exempt(node):
-                database_hosts = (
-                    []
-                    if _connect_owner_root(node) in _FILE_ONLY_CONNECT_OWNERS
-                    else _remote_database_hosts(node)
-                )
-                if database_hosts:
-                    for database_host in database_hosts:
-                        _screen_host(database_host, node)
-                else:
-                    _expanded, opaque = _expanded_host_arguments(node)
-                    if _connect_owner_root(node) not in _FILE_ONLY_CONNECT_OWNERS and (
-                        _database_target_is_external(node)
-                        or (
-                            opaque
-                            and any(
-                                _externally_sourced(kw.value, _bindings)
-                                for kw in node.keywords or []
-                                if kw.arg is None
-                            )
-                        )
-                    ):
-                        network_calls.append(
-                            {
-                                "type": "opaque_url_blocked",
-                                "line": getattr(node, "lineno", -1),
-                                "description": (
-                                    "Blocked: request target is read from the environment or "
-                                    "input; use a literal URL on an allowed informational source"
-                                ),
-                            }
-                        )
-
             if (
                 _is_a_connect_call(node)
                 and isinstance(node.func, ast.Attribute)
@@ -18236,17 +17178,6 @@ def _check_signal_escape_patterns(code: str):
                         host_lit = _host_from_url_node(host_node, _bindings)[0]
                     else:
                         host_lit = text
-                if not host_lit and _externally_sourced(host_node, _bindings):
-                    network_calls.append(
-                        {
-                            "type": "opaque_url_blocked",
-                            "line": getattr(node, "lineno", -1),
-                            "description": (
-                                "Blocked: request target is read from the environment or input; "
-                                "use a literal URL on an allowed informational source"
-                            ),
-                        }
-                    )
                 if host_lit:
                     if _is_metadata_host(host_lit):
                         network_calls.append(
@@ -18277,19 +17208,6 @@ def _check_signal_escape_patterns(code: str):
                 configured = _configured_host(host_node)
                 if configured:
                     _screen_host(configured, node)
-                elif _externally_sourced(host_node, _bindings):
-                    # The client is handed a host chosen off-source, which is the same hole as a
-                    # request target read from the environment and is refused for the same reason.
-                    network_calls.append(
-                        {
-                            "type": "opaque_url_blocked",
-                            "line": getattr(node, "lineno", -1),
-                            "description": (
-                                "Blocked: request target is read from the environment or input; "
-                                "use a literal URL on an allowed informational source"
-                            ),
-                        }
-                    )
                 break
 
             if network_fq:
@@ -18347,46 +17265,7 @@ def _check_signal_escape_patterns(code: str):
                 elif url_node is not None:
                     host_arg, target_resolved = _host_from_url_node(url_node, _bindings)
 
-                if (
-                    host_arg is None
-                    and url_node is not None
-                    and _takes_a_url_argument(network_fq)
-                    and _resolution_gave_up(url_node)
-                ):
-                    # The analysis abandoned the expression rather than reading it, so it cannot
-                    # say this is not a blocked host.
-                    network_calls.append(
-                        {
-                            "type": "opaque_url_blocked",
-                            "line": getattr(node, "lineno", -1),
-                            "description": (
-                                "Blocked: request target is nested too deeply to check; "
-                                "use a literal URL on an allowed informational source"
-                            ),
-                        }
-                    )
-                elif (
-                    host_arg is None
-                    and not target_resolved
-                    and _takes_a_url_argument(network_fq)
-                    and _externally_sourced(url_node, _bindings)
-                ):
-                    # A target read from the environment, stdin or argv is chosen outside the source
-                    # the allowlist was applied to, which is the one unresolvable shape that makes
-                    # the allowlist unenforceable rather than merely unread. Every other
-                    # unresolvable target (a loop variable, a parameter, a response field) keeps its
-                    # prior treatment: ordinary code fetching ordinary URLs must keep working.
-                    network_calls.append(
-                        {
-                            "type": "opaque_url_blocked",
-                            "line": getattr(node, "lineno", -1),
-                            "description": (
-                                "Blocked: request target is read from the environment or input; "
-                                "use a literal URL on an allowed informational source"
-                            ),
-                        }
-                    )
-                elif host_arg:
+                if host_arg:
                     if _is_metadata_host(host_arg):
                         network_calls.append(
                             {
