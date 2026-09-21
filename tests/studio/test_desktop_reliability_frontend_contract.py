@@ -1215,10 +1215,11 @@ def _labelled_actions(
         # `style={{ paddingRight: "5rem" }}` on the action moves it into the title while the
         # reach here is still computed from the rules it no longer obeys. The row carrier is
         # already refused this for the same reason; the actions needed it too.
-        assert not re.search(r"(?:^|[\s{])style=", tag), (
-            f"the {name} action sets an inline style, which outranks the classes and the CSS "
-            f"rules this guard measures it by, so the reach it computes is not the reach that "
-            f"renders: {tag!r}"
+        escape = _escapes_the_model(tag)
+        assert escape is None, (
+            f"the {name} action {escape}, which outranks the classes and the CSS rules this "
+            f"guard measures it by, so the reach it computes is not the reach that renders: "
+            f"{tag!r}"
         )
         # Where it sits, read from the stylesheet. A `right-*` utility or a modifier the CSS
         # does not define is positioning this guard has not modelled, and recording it as
@@ -1435,6 +1436,25 @@ _MOVES_HORIZONTALLY = (
 )
 
 
+def _escapes_the_model(tag: str) -> str | None:
+    """Why *tag*'s position cannot be read from its classes and index.css, or None.
+
+    Every number this file computes comes from a class list and a stylesheet rule. Three
+    things beat both: an inline `style`, a spread that could supply one, and a utility that
+    moves the element by a route the `right` plus `padding-right` sum does not model.
+
+    One function because the drift was the actual defect. The carrier, the row actions, the
+    spinner's wrapper and the spinner itself each grew these checks separately and each ended
+    up with a different subset, so a rule added to one path kept being missing from the next.
+    """
+    if re.search(r"(?:^|[\s{])style=", tag):
+        return "sets an inline style"
+    if any(_spread_may_supply(tag, name) for name in ("className", "style")):
+        return "takes a spread that may supply a className or a style"
+    moved = re.search(_MOVES_HORIZONTALLY, tag)
+    return f"is moved by {moved.group(0)!r}" if moved else None
+
+
 def _touch_spinner_reach(block: str, spacing: float) -> tuple[str, float] | None:
     """How far the working-row spinner reaches into the row on a coarse pointer, in units.
 
@@ -1474,14 +1494,12 @@ def _touch_spinner_reach(block: str, spacing: float) -> tuple[str, float] | None
     # actions and the carrier refuse both: `style={{ right: "8rem" }}` outranks the coarse
     # `right-16` this reads, and a transform moves the spinner without touching `right` at
     # all, so the reach reported here would not be the reach that renders.
-    for tag in _opening_jsx_tags(rendered, "<span"):
-        if "sidebar-row-action" in tag.split() or "absolute" not in tag:
-            continue
-        if re.search(r"(?:^|[\s{])style=", tag) or any(
-            _spread_may_supply(tag, attribute) for attribute in ("className", "style")
-        ):
-            return None
-        if re.search(_MOVES_HORIZONTALLY, tag):
+    positioning = [tag for tag in _opening_jsx_tags(rendered, "<span") if "absolute" in tag]
+    # The glyph as well as the wrapper. A transform on the <Spinner> moves what the reader
+    # sees while the wrapper's `right-16` and the glyph's `size-3.5`, which is all this
+    # measures, stay exactly as they were.
+    for tag in positioning + _opening_jsx_tags(rendered, "<Spinner"):
+        if _escapes_the_model(tag):
             return None
     offsets = [
         float(match.group(1))
@@ -1641,14 +1659,12 @@ def test_chat_sidebar_row_actions_visible_on_coarse_pointers():
     # attribute beats a spread written before it; it settles nothing about `style`, which no
     # attribute here declares, so `{...rowProps}` with a `style.paddingRight` of 0 overrides
     # every pr-N gutter below from either side of the className.
-    styled = [
-        tag
-        for tag in carriers
-        if re.search(r"(?:^|[\s{])style=", tag) or _spread_may_supply(tag, "style")
-    ]
-    assert not styled, (
-        f"a row carrier sets an inline style, which outranks the pr-N gutters this guard "
-        f"compares, so the room it computes is not the room that renders: {styled!r}"
+    escaped = [(tag, _escapes_the_model(tag)) for tag in carriers]
+    offending = [(tag, why) for tag, why in escaped if why]
+    assert not offending, (
+        f"a row carrier {offending[0][1] if offending else ''}, which outranks the pr-N "
+        f"gutters this guard compares, so the room it computes is not the room that renders: "
+        f"{[tag for tag, _ in offending]!r}"
     )
     assert carriers, (
         "no <SidebarMenuButton> in renderChatSidebarItem receives className={buttonClass}, so "
