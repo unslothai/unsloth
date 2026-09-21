@@ -330,8 +330,9 @@ function pastThinkTag(raw: string, at: number): number {
 export function restoreCarriedPartsFromRaw(
   raw: string,
   carried: readonly CarriedPart[],
+  { parseThink = true }: { parseThink?: boolean } = {},
 ): ReturnType<typeof parseAssistantContent> {
-  if (carried.length === 0) return parseAssistantContent(raw);
+  if (carried.length === 0) return parseAssistantContent(raw, { parseThink });
   const out: ReturnType<typeof parseAssistantContent> = [];
   const tracker = createThinkTagTracker();
   let cursor = 0;
@@ -339,7 +340,8 @@ export function restoreCarriedPartsFromRaw(
     const text = raw.slice(cursor, end);
     out.push(
       ...parseAssistantContent(
-        tracker.endsInsideThink() ? `${THINK_OPEN}${text}` : text,
+        parseThink && tracker.endsInsideThink() ? `${THINK_OPEN}${text}` : text,
+        { parseThink },
       ),
     );
     tracker.append(text);

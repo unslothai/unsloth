@@ -5226,6 +5226,7 @@ export function createOpenAIStreamAdapter(
       // Both this stream and a recovery follower must persist the marker, or the next reload
       // attaches another follower and blocks the composer for a further deadline.
       let generationStalled = false;
+      let parseThink = true;
       const generationCustom = () =>
         generationRunId
           ? {
@@ -5241,6 +5242,7 @@ export function createOpenAIStreamAdapter(
               ),
               generationLocallyInterrupted: generationStalled,
               serverManaged: true,
+              parseThinkTags: parseThink,
             }
           : {};
       if (activeModel?.isAudio && !activeModel?.hasAudioInput) {
@@ -5367,9 +5369,20 @@ export function createOpenAIStreamAdapter(
       );
       // The parse of everything streamed so far, extended by each delta. The final merge can rewrite
       // the prefix it is handed, which an extend-only parse cannot follow, so it reparses.
-      const segmentedText = createSegmentedAssistantText({
-        trustAppends: !(continuationPartial && repairContinuation),
-      });
+      const trustAppends = !(continuationPartial && repairContinuation);
+      let segmentedText = createSegmentedAssistantText({ trustAppends });
+      // Thinking off leaves <think> as reply text, unless reasoning arrives anyway: then the
+      // reply is reparsed with the tags that wrap it.
+      const setParseThink = (next: boolean): void => {
+        if (next === parseThink) {
+          return;
+        }
+        parseThink = next;
+        segmentedText = createSegmentedAssistantText({
+          trustAppends,
+          parseThink,
+        });
+      };
       // The single place `cumulativeText` grows, so everything derived from it sees the same
       // characters in the same order.
       const appendCumulative = (text: string): void => {
@@ -5888,6 +5901,7 @@ export function createOpenAIStreamAdapter(
         const {
           supportsReasoning,
           reasoningEnabled,
+          reasoningAlwaysOn,
           reasoningStyle,
           reasoningEffort,
           reasoningEffortLevels,
@@ -5991,6 +6005,15 @@ export function createOpenAIStreamAdapter(
         );
         const externalReasoningEnabled =
           !externalReasoningCaps.supportsReasoningOff ? true : reasoningEnabled;
+        setParseThink(
+          isExternalRequest
+            ? !externalReasoningCaps.supportsReasoning ||
+                externalReasoningEnabled
+            : !supportsReasoning ||
+                reasoningEnabled ||
+                reasoningAlwaysOn ||
+                reasoningStyle === "reasoning_effort",
+        );
         const buildRequestPayload = async (
           forceRefreshPublicKey = false,
         ): Promise<OpenAIChatCompletionsRequest> => {
@@ -7182,8 +7205,11 @@ export function createOpenAIStreamAdapter(
               }
               const rawDelta = chunk.choices?.[0]?.delta?.content;
               // Normalize structured delta.content (mistral magistral).
-              const { text: delta, structuredReasoningContinues } =
-                extractDeltaText(rawDelta);
+              const {
+                text: delta,
+                structuredReasoningContinues,
+                hasStructuredReasoning,
+              } = extractDeltaText(rawDelta);
               const deltaExtraContent = (
                 chunk.choices?.[0]?.delta as
                   | { extra_content?: unknown }
@@ -7666,6 +7692,9 @@ export function createOpenAIStreamAdapter(
                 runtime.setGeneratingStatus(null);
               }
 
+              if (reasoning || hasStructuredReasoning) {
+                setParseThink(true);
+              }
               if (reasoning) {
                 if (!reasoningContentOpen) {
                   reasoningDurationTracker.startGroup();
@@ -7685,7 +7714,8 @@ export function createOpenAIStreamAdapter(
               producedReplyText = true;
               // The trailing ${...} strip runs once on the finished reply, below the loop; nothing on this
               // path reads the buffer, so no arrival can flatten it.
-              const textEndsInsideThink = thinkTags.endsInsideThink();
+              const textEndsInsideThink =
+                parseThink && thinkTags.endsInsideThink();
               const assistantContent = liveAssistantContent();
 
               // Fallback when no server-side reasoning_summary arrives.

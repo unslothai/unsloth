@@ -870,6 +870,7 @@ function scheduleGenerationRecovery(
     const carried = stored.carried;
     const toolRecovery = createGenerationToolRecovery(carried, runId, cursor);
     let { raw, reasoningOpen } = stored;
+    let parseThink = metadata.parseThinkTags !== false;
     let completionTokens: number | undefined;
     let recoveryUsage:
       | {
@@ -907,6 +908,7 @@ function scheduleGenerationRecovery(
         restoreCarriedPartsFromRaw(
           reasoningOpen ? `${raw}</think>` : raw,
           carried,
+          { parseThink },
         ),
       ) as MessageRecord["content"];
     const toolNames = (content: MessageRecord["content"]): string[] =>
@@ -1112,7 +1114,13 @@ function scheduleGenerationRecovery(
                 typeof deltaRecord?.reasoning_content === "string"
                   ? deltaRecord.reasoning_content
                   : "";
-              const delta = extractDeltaText(deltaRecord?.content).text;
+              const { text: delta, hasStructuredReasoning } = extractDeltaText(
+                deltaRecord?.content,
+              );
+              if (!parseThink && (reasoning || hasStructuredReasoning)) {
+                parseThink = true;
+                currentMetadata = { ...currentMetadata, parseThinkTags: true };
+              }
               if (reasoning) {
                 if (!reasoningOpen) raw += "<think>";
                 raw += reasoning;
