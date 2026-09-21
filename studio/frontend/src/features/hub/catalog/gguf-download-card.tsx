@@ -481,8 +481,8 @@ const GgufVariantMenuRow = memo(function GgufVariantMenuRow({
       className={cn(
         "group relative mx-2 flex cursor-pointer items-center gap-2 rounded-[12px] px-2.5 py-2 text-left transition-colors",
         selected
-          ? "bg-foreground/[0.07] dark:bg-foreground/[0.12]"
-          : "hover:bg-foreground/[0.05] dark:hover:bg-foreground/[0.06]",
+          ? "bg-[color-mix(in_oklab,var(--foreground)_calc(7%*var(--contrast-wash-gain,1)),transparent)] dark:bg-[color-mix(in_oklab,var(--foreground)_calc(12%*var(--contrast-wash-gain,1)),transparent)]"
+          : "hover:bg-[color-mix(in_oklab,var(--foreground)_calc(5%*var(--contrast-wash-gain,1)),transparent)] dark:hover:bg-[color-mix(in_oklab,var(--foreground)_calc(6%*var(--contrast-wash-gain,1)),transparent)]",
       )}
     >
       {/* Status (On device / Partial) sits beside the quant on the
@@ -1011,7 +1011,7 @@ export function GgufDownloadCard({
                 e.preventDefault();
                 setOpen((o) => !o);
               }}
-              className="hub-menu-trigger flex h-9 min-w-0 flex-1 cursor-pointer items-center gap-2 rounded-full px-3 text-left transition-colors hover:bg-foreground/[0.04] data-[state=open]:bg-foreground/[0.06] disabled:cursor-wait disabled:opacity-60 disabled:hover:bg-transparent dark:hover:bg-[rgb(255_255_255_/_calc(0.04*var(--contrast-wash-gain,1)))] dark:data-[state=open]:bg-[rgb(255_255_255_/_calc(0.06*var(--contrast-wash-gain,1)))] dark:disabled:hover:bg-transparent"
+              className="hub-menu-trigger flex h-9 min-w-0 flex-1 cursor-pointer items-center gap-2 rounded-full px-3 text-left transition-colors hover:bg-[color-mix(in_oklab,var(--foreground)_calc(4%*var(--contrast-wash-gain,1)),transparent)] data-[state=open]:bg-[color-mix(in_oklab,var(--foreground)_calc(6%*var(--contrast-wash-gain,1)),transparent)] disabled:cursor-wait disabled:opacity-60 disabled:hover:bg-transparent dark:hover:bg-[rgb(255_255_255_/_calc(0.04*var(--contrast-wash-gain,1)))] dark:data-[state=open]:bg-[rgb(255_255_255_/_calc(0.06*var(--contrast-wash-gain,1)))] dark:disabled:hover:bg-transparent"
             >
               {/* Quant label + status tags travel together as one left-aligned
                   group so the fit-info icon never floats orphaned from its tags.

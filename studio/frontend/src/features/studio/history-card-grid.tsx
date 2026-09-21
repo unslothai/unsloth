@@ -510,7 +510,7 @@ export function HistoryCardGrid({
                     )}
                   </span>
                   {artifactsMissing && (
-                    <span className="inline-flex items-center rounded-full bg-foreground/[0.05] px-2 py-0.5 text-ui-10 font-medium text-muted-foreground dark:bg-[rgb(255_255_255_/_calc(0.06*var(--contrast-wash-gain,1)))]">
+                    <span className="inline-flex items-center rounded-full bg-[color-mix(in_oklab,var(--foreground)_calc(5%*var(--contrast-wash-gain,1)),transparent)] px-2 py-0.5 text-ui-10 font-medium text-muted-foreground dark:bg-[rgb(255_255_255_/_calc(0.06*var(--contrast-wash-gain,1)))]">
                       {t("studio.history.filesDeleted")}
                     </span>
                   )}

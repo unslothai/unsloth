@@ -61,7 +61,7 @@ export function HfTokenIndicator({
                   "inline-flex size-6 items-center justify-center rounded-full transition-colors",
                   hasToken
                     ? "bg-verified/15 text-verified"
-                    : "bg-foreground/[0.07] text-muted-foreground dark:bg-[rgb(255_255_255_/_calc(0.07*var(--contrast-wash-gain,1)))]",
+                    : "bg-[color-mix(in_oklab,var(--foreground)_calc(7%*var(--contrast-wash-gain,1)),transparent)] text-muted-foreground dark:bg-[rgb(255_255_255_/_calc(0.07*var(--contrast-wash-gain,1)))]",
                 )}
               >
                 <HugeiconsIcon

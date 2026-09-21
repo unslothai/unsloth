@@ -522,8 +522,8 @@ export function LocalOnDeviceCard({
                             className={cn(
                               "mx-2 flex w-[calc(100%-1rem)] min-w-0 cursor-pointer items-center gap-2 rounded-[10px] px-2.5 py-2 text-left transition-colors",
                               isSelected
-                                ? "bg-foreground/[0.07] dark:bg-foreground/[0.12]"
-                                : "hover:bg-foreground/[0.05] dark:hover:bg-foreground/[0.06]",
+                                ? "bg-[color-mix(in_oklab,var(--foreground)_calc(7%*var(--contrast-wash-gain,1)),transparent)] dark:bg-[color-mix(in_oklab,var(--foreground)_calc(12%*var(--contrast-wash-gain,1)),transparent)]"
+                                : "hover:bg-[color-mix(in_oklab,var(--foreground)_calc(5%*var(--contrast-wash-gain,1)),transparent)] dark:hover:bg-[color-mix(in_oklab,var(--foreground)_calc(6%*var(--contrast-wash-gain,1)),transparent)]",
                             )}
                           >
                             <span className="min-w-0 flex-1 truncate font-mono text-ui-12 text-format-gguf">

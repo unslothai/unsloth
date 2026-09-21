@@ -153,7 +153,7 @@ function DownloadRow({ jobKey }: { jobKey: string }) {
               }
               className={cn(
                 "inline-flex size-6 shrink-0 cursor-pointer items-center justify-center rounded-full text-muted-foreground transition-colors",
-                "hover:bg-foreground/[0.06] hover:text-foreground disabled:cursor-default disabled:opacity-50 dark:hover:bg-[rgb(255_255_255_/_calc(0.06*var(--contrast-wash-gain,1)))]",
+                "hover:bg-[color-mix(in_oklab,var(--foreground)_calc(6%*var(--contrast-wash-gain,1)),transparent)] hover:text-foreground disabled:cursor-default disabled:opacity-50 dark:hover:bg-[rgb(255_255_255_/_calc(0.06*var(--contrast-wash-gain,1)))]",
               )}
             >
               <HugeiconsIcon
@@ -257,7 +257,7 @@ export function DownloadManagerPanel({
               type="button"
               aria-label="Collapse downloads"
               onClick={() => setCollapsed(true)}
-              className="inline-flex size-6 shrink-0 cursor-pointer items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-foreground/[0.06] hover:text-foreground dark:hover:bg-[rgb(255_255_255_/_calc(0.06*var(--contrast-wash-gain,1)))]"
+              className="inline-flex size-6 shrink-0 cursor-pointer items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-[color-mix(in_oklab,var(--foreground)_calc(6%*var(--contrast-wash-gain,1)),transparent)] hover:text-foreground dark:hover:bg-[rgb(255_255_255_/_calc(0.06*var(--contrast-wash-gain,1)))]"
             >
               <HugeiconsIcon
                 icon={ChevronDownStandardIcon}

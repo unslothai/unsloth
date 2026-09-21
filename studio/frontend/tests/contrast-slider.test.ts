@@ -4,6 +4,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import { readdirSync } from "node:fs";
+import { join } from "node:path";
+
 import { readSrc, readText } from "./helpers/kit.ts";
 
 // Contrast has to reach what the eye reads as contrast: the fill of a card, a
@@ -13,6 +16,16 @@ import { readSrc, readText } from "./helpers/kit.ts";
 const CSS = readSrc("index.css");
 const STORE = readSrc("features/settings/stores/appearance-custom-store.ts");
 const SNAPSHOT = readText("../public/reload-snapshot.js");
+/** Every component file, so a new fixed wash cannot slip in unnoticed. */
+const SOURCES = (function walk(dir: string): string[] {
+  return readdirSync(join(import.meta.dirname, "../src", dir), {
+    withFileTypes: true,
+  }).flatMap((entry) => {
+    const path = dir ? `${dir}/${entry.name}` : entry.name;
+    if (entry.isDirectory()) return walk(path);
+    return entry.name.endsWith(".tsx") ? [path] : [];
+  });
+})("");
 
 /** Fills first, then lines. Every one is authored by the palettes as -base. */
 const SURFACE_TOKENS = [
@@ -154,6 +167,16 @@ test("a resting wash and its hover twin share the gain", () => {
       `${file} still has a fixed border alpha`,
     );
   }
+});
+
+test("a light wash follows the slider as its dark twin does", () => {
+  // bg-foreground/[x] is a fixed alpha, so a row that dimmed on hover in dark
+  // mode stayed put in light mode. The mix carries the gain instead, and
+  // resolves to the same colour at the default.
+  const hits = SOURCES.filter((file) =>
+    readSrc(file).includes("bg-foreground/["),
+  );
+  assert.deepEqual(hits, [], "these washes ignore the contrast setting");
 });
 
 test("the hand-written washes follow the slider, the scrims do not", () => {

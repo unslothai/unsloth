@@ -90,7 +90,7 @@ export function CardDivider() {
   return (
     <div
       aria-hidden="true"
-      className="ml-1 mr-0 h-5 w-px shrink-0 bg-foreground/[0.06] opacity-100 transition-opacity duration-150 group-hover/dl:opacity-0 dark:bg-[rgb(255_255_255_/_calc(0.04*var(--contrast-wash-gain,1)))]"
+      className="ml-1 mr-0 h-5 w-px shrink-0 bg-[color-mix(in_oklab,var(--foreground)_calc(6%*var(--contrast-wash-gain,1)),transparent)] opacity-100 transition-opacity duration-150 group-hover/dl:opacity-0 dark:bg-[rgb(255_255_255_/_calc(0.04*var(--contrast-wash-gain,1)))]"
     />
   );
 }

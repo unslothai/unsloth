@@ -481,7 +481,7 @@ function RowActions({
   const hfEndpoint = useHfEndpoint();
   const hfUrl = `${hfEndpoint}/${isDataset ? "datasets/" : ""}${row.result.id}`;
   const actionClass =
-    "pointer-events-auto inline-flex size-7 shrink-0 cursor-pointer items-center justify-center rounded-full text-muted-foreground/70 transition-colors hover:bg-foreground/[0.07] hover:text-foreground focus-visible:text-foreground data-[state=open]:bg-foreground/[0.07] data-[state=open]:text-foreground";
+    "pointer-events-auto inline-flex size-7 shrink-0 cursor-pointer items-center justify-center rounded-full text-muted-foreground/70 transition-colors hover:bg-[color-mix(in_oklab,var(--foreground)_calc(7%*var(--contrast-wash-gain,1)),transparent)] hover:text-foreground focus-visible:text-foreground data-[state=open]:bg-[color-mix(in_oklab,var(--foreground)_calc(7%*var(--contrast-wash-gain,1)),transparent)] data-[state=open]:text-foreground";
   return (
     <>
       <Tooltip>
@@ -881,7 +881,7 @@ export const ResultSplitRow = memo(function ResultSplitRow({
       aria-current={selected || undefined}
       data-selected={selected || undefined}
       onClick={() => onSelect(row.id)}
-      className="group/row flex h-full w-full cursor-pointer items-center gap-2.5 rounded-[12px] px-2.5 text-left outline-none transition-colors hover:bg-foreground/[0.04] data-[selected]:bg-foreground/[0.07] focus-visible:ring-1 focus-visible:ring-ring focus-visible:ring-inset dark:hover:bg-[rgb(255_255_255_/_calc(0.05*var(--contrast-wash-gain,1)))] dark:data-[selected]:bg-[rgb(255_255_255_/_calc(0.08*var(--contrast-wash-gain,1)))]"
+      className="group/row flex h-full w-full cursor-pointer items-center gap-2.5 rounded-[12px] px-2.5 text-left outline-none transition-colors hover:bg-[color-mix(in_oklab,var(--foreground)_calc(4%*var(--contrast-wash-gain,1)),transparent)] data-[selected]:bg-[color-mix(in_oklab,var(--foreground)_calc(7%*var(--contrast-wash-gain,1)),transparent)] focus-visible:ring-1 focus-visible:ring-ring focus-visible:ring-inset dark:hover:bg-[rgb(255_255_255_/_calc(0.05*var(--contrast-wash-gain,1)))] dark:data-[selected]:bg-[rgb(255_255_255_/_calc(0.08*var(--contrast-wash-gain,1)))]"
     >
       <OwnerAvatar
         owner={row.owner}
