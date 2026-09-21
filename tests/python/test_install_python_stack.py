@@ -2283,6 +2283,11 @@ class TestPackageManagerPolicyOptOut:
             ("", "", "numpy,bad name,ok-pkg"),
             ("", "numpy,$(touch pwned)", ""),
             ("install.no-binary='x'\nglobal.only-binary='x'", "", ""),
+            # The case that grouping by option got wrong: the command's own section is read
+            # LAST, so it wins, and reading every no-binary row before every only-binary row
+            # silently inverted it.
+            ("global.only-binary='numpy'\ninstall.no-binary='numpy'", "", ""),
+            ("global.no-binary='numpy'\ninstall.only-binary='numpy'", "", ""),
             ("global.only-binary=':all:'", "mypkg", ""),
             ("", ":none:", "a,b"),
         ],
@@ -2326,6 +2331,70 @@ class TestPackageManagerPolicyOptOut:
             python = ips._pm_build_policy_uv_args()
         assert shell.stdout.split() == python
         assert not (tmp_path / "pwned").exists(), "a substitution in the value was executed"
+
+    @pytest.mark.reads_real_pip_config
+    @pytest.mark.parametrize(
+        ("environment", "listing", "stops"),
+        [
+            ({"PIP_NO_DEPS": "1"}, b"", True),
+            ({}, b"global.no-deps='true'\n", True),
+            ({"PIP_NO_DEPS": "0"}, b"global.no-deps='true'\n", False),
+            ({}, b"global.no-deps='false'\n", False),
+            ({}, b"", False),
+        ],
+    )
+    def test_a_no_deps_policy_stops_rather_than_being_carried_or_ignored(
+        self, environment, listing, stops, monkeypatch, capsys
+    ):
+        """The one setting where both obvious answers are wrong.
+
+        Carrying no-deps into uv installs the Studio requirements without their own
+        dependencies: an environment that imports and then fails at run time, with no error
+        at install time and nothing to point at. Ignoring it installs the transitive
+        packages the operator excluded, which is what the opt-out exists to prevent. So it
+        stops and names the setting, which is the only answer that is neither.
+        """
+        monkeypatch.setattr(ips, "_PINNED_PIP_CONFIG_LISTING", listing)
+        monkeypatch.setattr(ips, "_pinned_pip_config_overrides", lambda *a, **k: {})
+        monkeypatch.setattr(ips, "_POLICY_UNCARRYABLE_REPORTED", False)
+        with self._environment(environment, opt_out = "1"):
+            if stops:
+                with pytest.raises(SystemExit) as stopped:
+                    ips._pip_policy_format_control()
+                assert stopped.value.code == 1
+                assert "no-deps" in capsys.readouterr().out
+            else:
+                ips._pip_policy_format_control()
+        # and the default path is untouched however pip is configured
+        monkeypatch.setattr(ips, "_POLICY_UNCARRYABLE_REPORTED", False)
+        with self._environment(environment):
+            ips._pip_policy_format_control()
+
+    def test_the_presence_check_knows_the_macos_locations(self, monkeypatch, tmp_path):
+        """pip uses the Apple locations on macOS, not the XDG ones.
+
+        install.sh and this module both run there, and a location left out of this set fails
+        OPEN -- the policy is read as absent and uv proceeds without it.
+        """
+        monkeypatch.setattr(ips, "_pip_config_files_present", _real_config_presence())
+        monkeypatch.setattr(ips, "IS_WINDOWS", False)
+        monkeypatch.setattr(ips, "IS_MACOS", True)
+        monkeypatch.setattr(ips.Path, "home", staticmethod(lambda: tmp_path))
+        monkeypatch.setattr(ips.sys, "prefix", str(tmp_path / "absent"))
+        monkeypatch.delenv("PIP_CONFIG_FILE", raising = False)
+        monkeypatch.delenv("VIRTUAL_ENV", raising = False)
+
+        assert ips._pip_config_files_present() is False
+        user = tmp_path / "Library" / "Application Support" / "pip"
+        user.mkdir(parents = True)
+        (user / "pip.conf").write_text("[global]\n")
+        assert ips._pip_config_files_present() is True
+
+    def test_the_shell_knows_the_macos_locations_too(self):
+        """The shell twin, by text: this suite cannot run on the platform it is about."""
+        body = _shell_function_source("_pip_config_files_present")
+        assert "/Library/Application Support/pip/pip.conf" in body
+        assert "$HOME/Library/Application Support/pip/pip.conf" in body
 
     def test_the_shell_declines_the_forced_pip_amd_wheel_too(self):
         """install.sh runs the same direct-URL install through pip, for the same reason.

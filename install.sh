@@ -279,6 +279,9 @@ _pip_config_files_present() {
     done
     IFS="$_pm_ifs"
     unset _pm_dirs _pm_ifs _pm_root
+    # pip uses the Apple locations on macOS, not the XDG ones. Omitting them fails OPEN.
+    [ -f "/Library/Application Support/pip/pip.conf" ] && return 0
+    [ -f "$HOME/Library/Application Support/pip/pip.conf" ] && return 0
     [ -f /etc/pip.conf ] && return 0
     [ -f "${XDG_CONFIG_HOME:-$HOME/.config}/pip/pip.conf" ] && return 0
     [ -f "$HOME/.pip/pip.conf" ] && return 0
@@ -292,6 +295,22 @@ _pip_config_files_present() {
 # indistinguishable from success while installing past whatever the file said. Only when a
 # file actually exists, so a uv-only host with no pip.conf is not punished for a question
 # that had no answer to begin with.
+# no-deps is the one setting where both obvious answers are wrong. Carrying it would have uv
+# install the Studio requirements without their own dependencies, producing an environment
+# that fails later with nothing to point at; ignoring it installs packages the operator
+# excluded. So neither: the run stops and names the setting.
+_require_carryable_pip_policy() {
+    _pm_nd="${PIP_NO_DEPS:-}"
+    [ -z "$_pm_nd" ] && _pm_nd=$(_pm_config_rows "no[-_]deps" | tail -n 1)
+    case "$(printf '%s' "$_pm_nd" | tr '[:upper:]' '[:lower:]')" in
+        ""|0|false|no|off|n|f) unset _pm_nd; return 0 ;;
+    esac
+    unset _pm_nd
+    step "error" "your pip no-deps policy cannot be honoured by this installer" "$C_ERR" >&2
+    substep "UNSLOTH_RESPECT_PM_POLICY is set and pip is configured with no-deps. Carrying that into uv would install the Studio requirements without their own dependencies, which fails later with nothing to point at; ignoring it would install packages you excluded. Neither is safe, so this stops here. Clear no-deps, or unset UNSLOTH_RESPECT_PM_POLICY for one run." "$C_ERR" >&2
+    exit 1
+}
+
 _require_readable_pip_policy() {
     [ "$_PM_PIP_CONFIG_READABLE" = 1 ] && return 0
     _pip_config_files_present || return 0
@@ -359,9 +378,19 @@ _pm_without() {
 _resolve_only_binary_policy() {
     _pm_no=""
     _pm_only=""
+    # ONE sed pass over the listing, so its own row order survives. Reading each key
+    # separately and concatenating grouped every no-binary row ahead of every only-binary
+    # row, so `[global] only-binary = numpy` followed by `[install] no-binary = numpy`
+    # resolved to the global row -- the opposite of pip, where the command's own section is
+    # read last and wins.
     _pm_rows=$(
-        _pm_config_rows "no[-_]binary" | sed 's/^/no-binary /'
-        _pm_config_rows "only[-_]binary" | sed 's/^/only-binary /'
+        printf '%s\n' "$_PM_PIP_CONFIG_LISTING" \
+            | sed -n \
+                -e "s/^global\.no[-_]binary=/no-binary /p" \
+                -e "s/^install\.no[-_]binary=/no-binary /p" \
+                -e "s/^global\.only[-_]binary=/only-binary /p" \
+                -e "s/^install\.only[-_]binary=/only-binary /p" \
+            | tr -d "'\""
         [ -n "${PIP_NO_BINARY:-}" ] && printf 'no-binary %s\n' "$PIP_NO_BINARY"
         [ -n "${PIP_ONLY_BINARY:-}" ] && printf 'only-binary %s\n' "$PIP_ONLY_BINARY"
         true
@@ -490,6 +519,7 @@ _resolve_index_policy() {
 if _respect_pm_policy; then
     _load_pip_config_listing
     _require_readable_pip_policy
+    _require_carryable_pip_policy
     _carry_pip_policy_into_uv
     _resolve_only_binary_policy
     _resolve_index_policy
@@ -523,6 +553,9 @@ _uv_only_policy_active() {
     _uv_flag_on "${UV_OFFLINE:-}" && return 0
     # A timestamp and a path, not booleans: any value is a setting.
     [ -n "${UV_EXCLUDE_NEWER:-}" ] && return 0
+    # A constraint file prohibits versions, and pip reads no UV_ variable, so a forced-pip
+    # step under one can install exactly what it forbids.
+    [ -n "${UV_CONSTRAINT:-}" ] && return 0
     [ -n "${UV_CONFIG_FILE:-}" ] && return 0
     # UV_NO_CONFIG means uv discovers nothing, so there is no hidden file to respect.
     _uv_flag_on "${UV_NO_CONFIG:-}" && return 1

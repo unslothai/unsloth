@@ -7092,6 +7092,28 @@ function Test-PipConfigFilesPresent {
 # it is indistinguishable from success while installing past whatever the file said. Only
 # when a file actually exists, so a uv-only host with no pip.ini is not punished for a
 # question that had no answer to begin with.
+# no-deps is the one setting where both obvious answers are wrong. Carrying it would have
+# uv install the Studio requirements without their own dependencies, producing an
+# environment that fails later with nothing to point at; ignoring it installs packages the
+# operator excluded. So neither: the run stops and names the setting.
+function Assert-CarryablePipPolicy {
+    $off = @('', '0', 'false', 'no', 'off', 'n', 'f')
+    $value = "$env:PIP_NO_DEPS".Trim()
+    if (-not $value) {
+        foreach ($line in (Get-PmPipConfigListing)) {
+            if ("$line" -match "^(global|install)\.no[-_]deps\s*=\s*'?([^']*)'?\s*$") {
+                $value = $Matches[2].Trim()
+            }
+        }
+    }
+    if ($off -contains $value.ToLowerInvariant()) { return }
+    throw ("UNSLOTH_RESPECT_PM_POLICY is set and pip is configured with no-deps. " +
+        "Carrying that into uv would install the Studio requirements without their own " +
+        "dependencies, which fails later with nothing to point at; ignoring it would " +
+        "install packages you excluded. Neither is safe, so this stops here. Clear " +
+        "no-deps, or unset UNSLOTH_RESPECT_PM_POLICY for one run.")
+}
+
 function Assert-ReadablePipPolicy {
     $null = Get-PmPipConfigListing
     if ($script:PmPipConfigReadable) { return }
@@ -7252,6 +7274,7 @@ function Get-PipPolicyIndexArgs {
 $script:PmPolicyArgs = @()
 if (Test-RespectPmPolicy) {
     Assert-ReadablePipPolicy
+    Assert-CarryablePipPolicy
     $script:PmPolicyArgs = @(Get-PipPolicyOnlyBinary) + @(Get-PipPolicyNoBinary) +
         @(Get-PipPolicyIndexArgs)
 }

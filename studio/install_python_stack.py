@@ -8915,6 +8915,10 @@ def _uv_only_policy_active() -> bool:
         _uv_env_flag("UV_REQUIRE_HASHES")
         or _uv_is_offline()
         or bool(os.environ.get("UV_EXCLUDE_NEWER", "").strip())
+        # A constraint file prohibits versions, and pip reads no UV_ variable, so a
+        # forced-pip step under one can install exactly what it forbids. Listed here for
+        # the same reason as the hash policy rather than as a different kind of thing.
+        or bool(os.environ.get("UV_CONSTRAINT", "").strip())
         or _uv_config_file_present()
     )
 
@@ -9036,6 +9040,7 @@ def _pip_policy_format_control(subcommand: str = "install") -> "tuple[list[str],
     order is stable and the tests can say what they expect.
     """
     _require_readable_pip_policy()
+    _require_carryable_pip_policy()
     sets: "dict[str, list[str]]" = {"no-binary": [], "only-binary": []}
     for key, value in _pip_format_control_source_rows(subcommand):
         target = sets[key]
@@ -9150,6 +9155,13 @@ def _pip_config_files_present() -> bool:
             if base:
                 candidates.append(Path(base) / "pip" / name)
         candidates.append(Path.home() / "pip" / name)
+    elif IS_MACOS:
+        # pip uses the Apple locations on macOS, not the XDG ones. Omitting them fails
+        # OPEN, which is the direction this check must never fail in.
+        candidates.append(Path("/Library/Application Support/pip/pip.conf"))
+        candidates.append(Path.home() / "Library" / "Application Support" / "pip" / "pip.conf")
+        candidates.append(Path.home() / ".config" / "pip" / "pip.conf")
+        candidates.append(Path.home() / ".pip" / name)
     else:
         # XDG_CONFIG_DIRS names the global roots and defaults to /etc/xdg; /etc is pip's
         # own addition below it.
@@ -9177,6 +9189,7 @@ def _pip_config_files_present() -> bool:
 
 
 _POLICY_UNREADABLE_REPORTED = False
+_POLICY_UNCARRYABLE_REPORTED = False
 
 
 def _require_readable_pip_policy() -> None:
@@ -9209,6 +9222,41 @@ def _require_readable_pip_policy() -> None:
                 "to uv. Continuing would install exactly past the settings you asked to keep. "
                 "Install pip into the environment, or unset "
                 f"{_POLICY_OPT_OUT_ENV} for one run to proceed without it."
+            )
+        )
+    sys.exit(1)
+
+
+def _require_carryable_pip_policy() -> None:
+    """Under the opt-out, a pip setting uv cannot be told and we must not ignore stops.
+
+    no-deps is the one setting where BOTH obvious answers are wrong. Carrying it would have
+    uv install the Studio dependencies without their own dependencies, producing an
+    environment that imports and then fails at run time, with no error at install time and
+    nothing to point at. Ignoring it installs the transitive packages the operator excluded,
+    which is what the opt-out exists to prevent. So neither: the run stops and says which
+    setting it was.
+
+    Deliberately a short list. The settings this feature RELAXES are translated; the ones it
+    merely cannot express are named here rather than guessed at, and everything else is left
+    to pip and uv to disagree about as they already do.
+    """
+    global _POLICY_UNCARRYABLE_REPORTED
+    if not _respect_pm_policy():
+        return
+    value = _effective_pip_policy("PIP_NO_DEPS", "no-deps")
+    if value is None or value.strip().lower() in ("", "0", "false", "no", "off", "n", "f"):
+        return
+    if not _POLICY_UNCARRYABLE_REPORTED:
+        _POLICY_UNCARRYABLE_REPORTED = True
+        _step("error", "your pip no-deps policy cannot be honoured by this installer", _red)
+        _safe_print(
+            _red(
+                f"   {_POLICY_OPT_OUT_ENV} is set and pip is configured with no-deps. "
+                "Carrying that into uv would install the Studio requirements without their "
+                "own dependencies, which fails later with nothing to point at; ignoring it "
+                "would install packages you excluded. Neither is safe, so this stops here. "
+                f"Clear no-deps, or unset {_POLICY_OPT_OUT_ENV} for one run."
             )
         )
     sys.exit(1)
