@@ -112,14 +112,23 @@ export function DebuggingTab() {
         );
         setSources(result.sources);
         setLogRoot(result.logRoot);
-        // A "View logs" action from a failure names the family that just failed.
-        // Its newest source is that attempt: the picker's usual warning that the
-        // newest is often not the right one applies to browsing, not to arriving
-        // here from the failure itself.
-        const requested = useSettingsDialogStore.getState().logFamilyRequested;
-        const fromFailure = requested
-          ? result.sources.find((source) => source.family === requested)
+        // A "View logs" action from a failure names the family that just failed, and
+        // where the diagnostic carried one, the exact file. Prefer the file: a switch
+        // that fails after evicting the previous model is rolled back by performLoad,
+        // and that rollback writes a NEWER log in the same family, so recency alone
+        // opens the attempt that succeeded. Family recency stays the fallback for a
+        // diagnostic with no path in it.
+        const dialog = useSettingsDialogStore.getState();
+        const requested = dialog.logFamilyRequested;
+        const requestedPath = dialog.logSourcePathRequested;
+        const byPath = requestedPath
+          ? result.sources.find((source) => source.realpath === requestedPath)
           : undefined;
+        const fromFailure =
+          byPath ??
+          (requested
+            ? result.sources.find((source) => source.family === requested)
+            : undefined);
         if (fromFailure) useSettingsDialogStore.getState().consumeLogFamilyRequest();
         setSourceId((current) =>
           fromFailure

@@ -35,6 +35,7 @@ function reset() {
     scrollTarget: null,
     archivedRequested: null,
     logFamilyRequested: null,
+    logSourcePathRequested: null,
     connectionRequested: null,
   });
 }
@@ -92,6 +93,52 @@ test("a generation failure asks for the server log, a load failure for the runne
     assert.equal(store.getState().logFamilyRequested, family, family);
   }
 });
+
+test("a GGUF diffusion load asks for the diffusion runner's log, not the LLM one", () => {
+  // The chat hook loads diffusion models too, and llama_cpp.py writes their runner output
+  // under logs/diffusion-server (utils/debug_log_sources.py names the family). Asking for
+  // llama-server there opens an unrelated LLM log, which is the opposite of the point.
+  reset();
+  const { viewLogsAction } = loadWithStubs<
+    typeof import("../src/features/settings/lib/view-logs-action.ts")
+  >(ACTION_URL, {
+    "@/i18n": { translate: (k: string) => k },
+    "../stores/settings-dialog-store": { useSettingsDialogStore: store },
+  });
+  viewLogsAction("diffusion-server").onClick();
+  assert.equal(store.getState().logFamilyRequested, "diffusion-server");
+});
+
+test("the exact log the diagnostic named is carried, and wins over family recency", () => {
+  reset();
+  const { viewLogsAction, failureLogPath } = loadWithStubs<
+    typeof import("../src/features/settings/lib/view-logs-action.ts")
+  >(ACTION_URL, {
+    "@/i18n": { translate: (k: string) => k },
+    "../stores/settings-dialog-store": { useSettingsDialogStore: store },
+  });
+
+  // The wording llama_cpp.py appends, and treats as a diagnostics marker.
+  const diagnostic =
+    "llama-server failed to start\n\nllama-server output:\n  ggml_abort\n\n" +
+    "Full log: /home/u/.unsloth/studio/logs/llama-server/llama-1765000000-port-8080.log";
+  const path = failureLogPath(diagnostic);
+  assert.equal(
+    path,
+    "/home/u/.unsloth/studio/logs/llama-server/llama-1765000000-port-8080.log",
+  );
+  // A message without one must not invent a path, or the tab would match nothing and
+  // silently show no log at all instead of falling back to the family.
+  assert.equal(failureLogPath("Failed to load model"), null);
+  assert.equal(failureLogPath("Full log: "), null);
+
+  viewLogsAction("llama-server", path).onClick();
+  assert.equal(store.getState().logSourcePathRequested, path);
+  // Cleared with the family, so a later visit cannot land on a stale file.
+  store.getState().consumeLogFamilyRequest();
+  assert.equal(store.getState().logSourcePathRequested, null);
+});
+
 
 test("the Logs panel clears the request once it has consumed it", () => {
   reset();

@@ -59,6 +59,9 @@ interface SettingsDialogState {
   // ids are a digest of the real path the frontend cannot compute, and at the moment
   // of a failure the newest file in the family is the attempt that just failed.
   logFamilyRequested: string | null;
+  /** The exact log file the failure named, when its diagnostic carried one. Preferred over
+   *  family recency: a rolled-back switch writes a newer log than the attempt that failed. */
+  logSourcePathRequested: string | null;
   // Set when something asks for one connection's settings (the picker's Connected group gear).
   // ConnectionsTab hands it to the form, then clears it. Same lifetime as archivedRequested.
   connectionRequested: string | null;
@@ -68,7 +71,7 @@ interface SettingsDialogState {
   /** Open Connections with `providerId`'s edit form already up. */
   openConnectionSettings: (providerId: string) => void;
   consumeArchivedChatsRequest: () => void;
-  openLogs: (family?: string) => void;
+  openLogs: (family?: string, sourcePath?: string | null) => void;
   consumeLogFamilyRequest: () => void;
   consumeConnectionRequest: () => void;
   consumeScrollTarget: (target: SettingsScrollTarget) => void;
@@ -144,6 +147,8 @@ function requestsFor(state: SettingsDialogState, tab: SettingsTab) {
         : null,
     archivedRequested: tab === "data" ? state.archivedRequested : null,
     logFamilyRequested: tab === "debugging" ? state.logFamilyRequested : null,
+    logSourcePathRequested:
+      tab === "debugging" ? state.logSourcePathRequested : null,
     connectionRequested:
       tab === "connections" ? state.connectionRequested : null,
   };
@@ -157,6 +162,7 @@ export const useSettingsDialogStore = create<SettingsDialogState>((set) => ({
   openerFallback: null,
   archivedRequested: null,
   logFamilyRequested: null,
+  logSourcePathRequested: null,
   connectionRequested: null,
   openDialog: (tab, options) =>
     set((state) => {
@@ -169,6 +175,7 @@ export const useSettingsDialogStore = create<SettingsDialogState>((set) => ({
         scrollTarget: options?.scrollTarget ?? pending.scrollTarget,
         archivedRequested: pending.archivedRequested,
         logFamilyRequested: pending.logFamilyRequested,
+        logSourcePathRequested: pending.logSourcePathRequested,
         connectionRequested: pending.connectionRequested,
         ...focusForOpen(state, options?.focusFallback),
       };
@@ -180,6 +187,7 @@ export const useSettingsDialogStore = create<SettingsDialogState>((set) => ({
       scrollTarget: null,
       archivedRequested: "chats",
       logFamilyRequested: null,
+      logSourcePathRequested: null,
       connectionRequested: null,
       ...focusForOpen(state),
     })),
@@ -190,6 +198,7 @@ export const useSettingsDialogStore = create<SettingsDialogState>((set) => ({
       scrollTarget: null,
       archivedRequested: shelf,
       logFamilyRequested: null,
+      logSourcePathRequested: null,
       connectionRequested: null,
       ...focusForOpen(state),
     })),
@@ -200,21 +209,24 @@ export const useSettingsDialogStore = create<SettingsDialogState>((set) => ({
       scrollTarget: null,
       archivedRequested: null,
       logFamilyRequested: null,
+      logSourcePathRequested: null,
       connectionRequested: providerId,
       ...focusForOpen(state),
     })),
   consumeArchivedChatsRequest: () => set({ archivedRequested: null }),
-  openLogs: (family) =>
+  openLogs: (family, sourcePath) =>
     set((state) => ({
       open: true,
       activeTab: "debugging",
       scrollTarget: null,
       archivedRequested: null,
       logFamilyRequested: family ?? null,
+      logSourcePathRequested: sourcePath ?? null,
       connectionRequested: null,
       ...focusForOpen(state),
     })),
-  consumeLogFamilyRequest: () => set({ logFamilyRequested: null }),
+  consumeLogFamilyRequest: () =>
+    set({ logFamilyRequested: null, logSourcePathRequested: null }),
   consumeConnectionRequest: () => set({ connectionRequested: null }),
   consumeScrollTarget: (target) =>
     set((state) => ({
@@ -229,6 +241,7 @@ export const useSettingsDialogStore = create<SettingsDialogState>((set) => ({
       scrollTarget: null,
       archivedRequested: null,
       logFamilyRequested: null,
+      logSourcePathRequested: null,
       connectionRequested: null,
     }),
   setActiveTab: (tab) => {

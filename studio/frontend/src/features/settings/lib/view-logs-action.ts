@@ -17,18 +17,37 @@ import { useSettingsDialogStore } from "../stores/settings-dialog-store";
 
 /** Which log a given failure is explained by.
  *
- * `llama-server` for a GGUF load, because the runner writes its own file per attempt
- * and the reason is in there rather than in the server log. The diffusion runners log
- * through the backend's own stream, so their failures are in `server`.
+ * `llama-server` for a GGUF text load and `diffusion-server` for a GGUF diffusion one,
+ * because each runner writes its own file per attempt and the reason is in there rather
+ * than in the server log (utils/debug_log_sources.py names both families). The diffusers
+ * and sd.cpp paths log through the backend's own stream, so their failures are in `server`.
  */
-export type FailureLogFamily = "llama-server" | "server";
+export type FailureLogFamily = "llama-server" | "diffusion-server" | "server";
 
-export function viewLogsAction(family: FailureLogFamily): {
+/** Pull the log path the backend already names out of a load diagnostic.
+ *
+ * llama_cpp.py appends `Full log: <path>` to the message it raises. Selecting by family
+ * recency alone picks the WRONG file whenever the failed switch was rolled back: the
+ * rollback load writes its own runner log afterwards, so the newest file in the family is
+ * the one that succeeded. The path pins the attempt that actually failed.
+ */
+export function failureLogPath(message: string): string | null {
+  const at = message.lastIndexOf("Full log: ");
+  if (at === -1) return null;
+  const path = message.slice(at + "Full log: ".length).split("\n")[0].trim();
+  return path || null;
+}
+
+export function viewLogsAction(
+  family: FailureLogFamily,
+  sourcePath?: string | null,
+): {
   label: string;
   onClick: () => void;
 } {
   return {
     label: translate("settings.debugging.viewLogs"),
-    onClick: () => useSettingsDialogStore.getState().openLogs(family),
+    onClick: () =>
+      useSettingsDialogStore.getState().openLogs(family, sourcePath ?? null),
   };
 }

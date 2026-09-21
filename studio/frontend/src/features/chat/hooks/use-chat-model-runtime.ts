@@ -35,7 +35,10 @@ import { isSettingsRouteAbsent } from "@/features/settings/api/settings-route-ab
 import { loadModelMemorySettings } from "@/features/settings/api/model-memory";
 import { loadVramBudgetSettings } from "@/features/settings/api/vram-budget";
 import { loadOpenAIAutoSwitchSettings } from "@/features/settings";
-import { viewLogsAction } from "@/features/settings/lib/view-logs-action";
+import {
+  failureLogPath,
+  viewLogsAction,
+} from "@/features/settings/lib/view-logs-action";
 import {
   confirmTransformersUpgradeIfNeeded,
   useTransformersUpgradeDialogStore,
@@ -2665,7 +2668,14 @@ export function useChatModelRuntime() {
             // action that opens the runner's own log.
             const [summary, ...rest] = message.split("\n");
             const detail = rest.join("\n").trim();
-            const logsAction = viewLogsAction("llama-server");
+            // This hook loads GGUF diffusion models too, and their runner writes under
+            // diffusion-server rather than llama-server, so a fixed family would open an
+            // unrelated LLM log. The path, when the diagnostic carries one, pins the exact
+            // attempt regardless of a rollback load landing after it.
+            const logsAction = viewLogsAction(
+              isDiffusion === true ? "diffusion-server" : "llama-server",
+              failureLogPath(message),
+            );
             if (loadToastDismissedRef.current) {
               toast.error(summary, {
                 description: detail || undefined,
