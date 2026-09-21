@@ -312,17 +312,23 @@ const STREAMDOWN_ALLOWED_TAGS = {
 } satisfies NonNullable<StreamdownProps["allowedTags"]>;
 
 const COPY_RESET_MS = 2000;
-// The close is a LINE of the opener's own character, at least as long, so a body holding
-// `~~~` or a shorter run cannot truncate the diagram.
-const MERMAID_SOURCE_RE = /^ {0,3}(`{3,}|~{3,})mermaid[^\n]*\n([\s\S]*?)^ {0,3}\1[`~]*\s*$/im;
+// A second parser was the root cause of three review findings, so the diagram source comes from
+// `markdownBlockFallback`, which already handles every fence form CommonMark allows.
+const MERMAID_INFO_RE = /^ {0,3}(?:`{3,}|~{3,})[ \t]*mermaid\b/i;
 const ACTION_PANEL_CLASS =
   "pointer-events-auto flex shrink-0 items-center gap-1";
 const ACTION_BUTTON_CLASS =
   "flex size-8 cursor-pointer items-center justify-center rounded-[10px] text-chat-icon-fg transition-all hover:bg-chat-icon-bg-hover hover:text-chat-icon-fg-hover disabled:cursor-not-allowed disabled:opacity-50";
 
 function getMermaidSource(blockContent: string): string | null {
-  const source = blockContent.match(MERMAID_SOURCE_RE)?.[2]?.trim();
-  return source && source.length > 0 ? source : null;
+  const fence = markdownBlockFallback(blockContent);
+  const source = fence.fenced && fence.language === "mermaid" ? fence.text.trim() : "";
+  return source.length > 0 ? source : null;
+}
+
+/** True while a mermaid fence is still streaming, when there is no source to extract yet. */
+function isMermaidFenceOpener(blockContent: string): boolean {
+  return MERMAID_INFO_RE.test(blockContent);
 }
 
 function getCodeFilename(language: string | null) {
@@ -536,7 +542,7 @@ function StreamdownBlockContent(props: BlockProps) {
   );
   // Tildes too, and more than three: this is what decides whether the block is a diagram, and
   // streamdown renders mermaid wherever the language tag says so.
-  const hasMermaidFence = MERMAID_SOURCE_RE.test(props.content);
+  const hasMermaidFence = isMermaidFenceOpener(props.content);
   const mermaidSource = getMermaidSource(props.content);
   const codeFence = getCodeFence(props.content);
 

@@ -5,6 +5,7 @@ import assert from "node:assert/strict";
 import { existsSync, readFileSync } from "node:fs";
 import test from "node:test";
 
+import { markdownBlockFallback } from "../src/components/assistant-ui/markdown-block-fallback.ts";
 import { readSrc } from "./helpers/kit.ts";
 
 /**
@@ -414,20 +415,24 @@ test("nothing is watched once there is nothing left to defer", () => {
 
 const CODE_PLUGIN = readSrc("components/assistant-ui/code-plugin.ts");
 
-test("a mermaid close matches its own opener, not any run", () => {
-  // A body holding its own `~~~` used to truncate the diagram the copy button reads.
-  const literal = MARKDOWN_TEXT.match(/const MERMAID_SOURCE_RE = (\/.*\/[a-z]*);/)?.[1];
-  assert.ok(literal, "MERMAID_SOURCE_RE must be a literal this test can run");
-  const re = new RegExp(literal.slice(1, literal.lastIndexOf("/")), literal.slice(literal.lastIndexOf("/") + 1));
-  const cases: Array<[string, string]> = [
+test("the mermaid source comes from the shared fence scanner", () => {
+  // A hand-rolled matcher was the root cause of three review findings: a spaced info string, a
+  // fence still streaming with no close, and a mixed-character line that is not a close.
+  const cases: Array<[string, string | null]> = [
+    ["~~~ mermaid\ngraph TD;\nA-->B;\n~~~", "graph TD;\nA-->B;"],
     ["````mermaid\ngraph TD;\nA[\"~~~\"] --> B\n````", 'graph TD;\nA["~~~"] --> B'],
-    ["```mermaid\ngraph TD;\nA-->B;\n```", "graph TD;\nA-->B;"],
-    ["~~~mermaid\ngraph TD;\nA-->B;\n~~~", "graph TD;\nA-->B;"],
-    ["````mermaid\nx\n```\ny\n````", "x\n```\ny"],
+    ["```mermaid\nx\n```~~~\ny\n```", "x\n```~~~\ny"],
+    ["```typescript\nx = 1\n```", null],
+    ["plain prose", null],
   ];
   for (const [source, want] of cases) {
-    assert.equal(re.exec(source)?.[2]?.trim(), want, `mermaid source for ${JSON.stringify(source)}`);
+    const fence = markdownBlockFallback(source);
+    const got =
+      fence.fenced && fence.language === "mermaid" ? fence.text.trim() || null : null;
+    assert.equal(got, want, `diagram source for ${JSON.stringify(source)}`);
   }
+  // The streaming branch keys on the OPENER, because there is no close to match yet.
+  assert.match(MARKDOWN_TEXT, /const MERMAID_INFO_RE = \/\^ \{0,3\}/);
 });
 
 test("the fence language is a language, not the whole info string", () => {
