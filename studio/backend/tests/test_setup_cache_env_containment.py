@@ -508,9 +508,9 @@ def test_an_ancestor_owned_by_another_account_is_refused(tmp_path):
     root.mkdir()
     os.chmod(root, 0o700)
 
-    assert storage_roots._holding_dir_is_safe(root) is True, (
-        "the same tree, ours throughout, is what the refusal below has to be measured against"
-    )
+    assert (
+        storage_roots._holding_dir_is_safe(root) is True
+    ), "the same tree, ours throughout, is what the refusal below has to be measured against"
 
     real_stat = os.stat
 
