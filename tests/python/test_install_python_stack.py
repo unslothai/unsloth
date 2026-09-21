@@ -1371,13 +1371,16 @@ class TestPackageManagerPolicyOptOut:
         earlier spelling of this test forbade the read itself and would have made the
         translation impossible to write without appearing to break an invariant.
         """
+        # PIP_CERT has to be cleared, not just asserted on: a runner that exports its own
+        # proxy CA makes _install_env_for_cmd correctly PREFER the environment value, and
+        # the control below would then fail on behaviour that is right.
         supplied = {"PIP_ONLY_BINARY": ":all:", "PIP_CERT": "/etc/ca.pem"}
 
         with mock.patch.object(ips, "_pinned_pip_config_overrides", lambda *a, **k: supplied):
-            with self._environment(self.HOSTILE, opt_out = "1"):
+            with self._environment({**self.HOSTILE, "PIP_CERT": ""}, opt_out = "1"):
                 env = ips._install_env_for_cmd(self.PINNED) or {}
                 baseline = ips._install_env_for_cmd(self.UNPINNED) or {}
-            with self._environment(self.HOSTILE):
+            with self._environment({**self.HOSTILE, "PIP_CERT": ""}):
                 default = ips._install_env_for_cmd(self.PINNED) or {}
 
         assert (
@@ -1821,7 +1824,7 @@ class TestPackageManagerPolicyOptOut:
         """
         library = "\n".join(
             _shell_function_source(name)
-            for name in ("_respect_pm_policy", "_carry_pip_policy_into_uv")
+            for name in ("_pm_config_rows", "_respect_pm_policy", "_carry_pip_policy_into_uv")
         )
         script = f"""
         {library}
@@ -1861,7 +1864,10 @@ class TestPackageManagerPolicyOptOut:
         So the charset is a safety requirement here rather than only agreement, and the
         accumulation is pip's documented behaviour for this option, unlike require-hashes.
         """
-        library = _shell_function_source("_resolve_only_binary_policy")
+        library = "\n".join(
+            _shell_function_source(name)
+            for name in ("_pm_config_rows", "_resolve_only_binary_policy")
+        )
         script = f"""
         {library}
         _PM_PIP_CONFIG_LISTING='{listing}'
@@ -2033,6 +2039,8 @@ class TestPackageManagerPolicyOptOut:
         # a CI runner that ships /etc/pip.conf would otherwise decide this test's answer.
         monkeypatch.setattr(ips, "_pip_config_files_present", _real_config_presence())
         monkeypatch.setattr(ips, "_PIP_SYSTEM_CONFIG_DIRS", (str(tmp_path / "absent"),))
+        monkeypatch.setattr(ips, "_PIP_SYSTEM_CONFIG_FILES", (str(tmp_path / "absent.conf"),))
+        monkeypatch.delenv("VIRTUAL_ENV", raising = False)
         monkeypatch.setenv("XDG_CONFIG_DIRS", str(tmp_path / "absent"))
         monkeypatch.setattr(ips.sys, "prefix", str(tmp_path / "absent"))
         monkeypatch.setattr(ips, "IS_WINDOWS", False)
@@ -2179,7 +2187,9 @@ class TestPackageManagerPolicyOptOut:
         unresolvable. Reading the row as a line rather than iterating over its words is the
         difference, so the real function is executed rather than described.
         """
-        library = _shell_function_source("_resolve_index_policy")
+        library = "\n".join(
+            _shell_function_source(name) for name in ("_pm_config_rows", "_resolve_index_policy")
+        )
         script = f"""
         {library}
         _PM_PIP_CONFIG_LISTING="global.find-links='/wheelhouse/a /wheelhouse/b'"
@@ -2193,6 +2203,55 @@ class TestPackageManagerPolicyOptOut:
         )
         assert result.returncode == 0, result.stderr
         assert result.stdout == "/wheelhouse/a,/wheelhouse/b"
+
+    def test_install_sh_uses_no_gnu_only_sed_alternation(self):
+        r"""`\(a\|b\)` is a GNU extension, and BSD sed matches it literally.
+
+        install.sh runs on macOS, where every policy read that used one printed nothing, so
+        the whole translation was silently inert there and the shell parity tests failed on
+        the macOS staging leg while passing on Linux. A text check rather than a behaviour
+        one, because the behaviour is only wrong on a platform this suite cannot run.
+        """
+        text = INSTALL_SH.read_text(encoding = "utf-8")
+        offenders = [
+            f"install.sh:{number}: {line.strip()}"
+            for number, line in enumerate(text.splitlines(), 1)
+            # Not the comment above the helper, which has to spell the construct out.
+            if "sed" in line and r"\|" in line and not line.lstrip().startswith("#")
+        ]
+        assert not offenders, "\n".join(offenders)
+
+    @pytest.mark.reads_real_pip_config
+    @pytest.mark.parametrize(
+        ("environment", "listing", "expected"),
+        [
+            ({"PIP_CONSTRAINT": "/etc/constraints.txt"}, b"", "/etc/constraints.txt"),
+            ({}, b"global.constraint='/etc/constraints.txt'\n", "/etc/constraints.txt"),
+            ({"PIP_CONSTRAINT": "/a.txt", "UV_CONSTRAINT": "/theirs.txt"}, b"", None),
+            ({}, b"", None),
+        ],
+    )
+    def test_a_required_constraint_file_reaches_uv(
+        self, environment, listing, expected, monkeypatch
+    ):
+        """uv binds --constraints to UV_CONSTRAINT and reads no pip spelling for it.
+
+        A constraint file is how an operator prohibits a version, so leaving it invisible
+        let uv resolve exactly what they had ruled out. Restrictive rather than a source, so
+        unlike the index URLs it applies to pinned commands as well: it can only narrow what
+        may be selected, never redirect where it comes from.
+        """
+        monkeypatch.setattr(ips, "_PINNED_PIP_CONFIG_LISTING", listing)
+        monkeypatch.setattr(ips, "_pinned_pip_config_overrides", lambda *a, **k: {})
+        with self._environment(environment, opt_out = "1"):
+            unpinned = ips._pip_policy_as_uv_env()
+            pinned = ips._pip_policy_as_uv_env(pinned = True)
+        assert unpinned.get("UV_CONSTRAINT") == expected
+        assert (
+            pinned.get("UV_CONSTRAINT") == expected
+        ), "a constraint narrows what may be selected, so a pin is no reason to drop it"
+        # No default-path assertion here: this function has no internal gate, its two
+        # callers do, and the 90-cell environment comparison is what holds that line.
 
     def test_the_shell_declines_the_forced_pip_amd_wheel_too(self):
         """install.sh runs the same direct-URL install through pip, for the same reason.

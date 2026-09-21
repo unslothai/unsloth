@@ -244,6 +244,16 @@ _load_pip_config_listing() {
     unset _pm_pip
 }
 
+# POSIX sed has no \(a\|b\) alternation -- that is a GNU extension, and BSD sed (macOS,
+# which install.sh supports) matches it literally and prints nothing. Every policy read
+# below went through one, so the whole translation was silently inert on a Mac. Two -e
+# expressions instead, which both sed families take.
+_pm_config_rows() {
+    printf '%s\n' "$_PM_PIP_CONFIG_LISTING" \
+        | sed -n -e "s/^global\.$1=//p" -e "s/^install\.$1=//p" \
+        | tr -d "'\""
+}
+
 # Does this host have a pip configuration file at all? Documented locations, existence only.
 # It separates "there is nothing to read" from "there is something we could not read", which
 # an empty listing on its own cannot do.
@@ -253,9 +263,26 @@ _pip_config_files_present() {
         [ -f "$PIP_CONFIG_FILE" ] && return 0
         return 1
     fi
+    # pip's WHOLE set. A location left out of it fails OPEN, which is the one direction
+    # this check must not fail in. The global XDG root and the site file beside the active
+    # environment were both missing; the site file matters most, because a virtual
+    # environment is what an installer runs in.
+    _pm_dirs="${XDG_CONFIG_DIRS:-/etc/xdg}"
+    _pm_ifs="$IFS"
+    IFS=:
+    for _pm_root in $_pm_dirs /etc/xdg /etc; do
+        [ -n "$_pm_root" ] || continue
+        if [ -f "$_pm_root/pip/pip.conf" ]; then
+            IFS="$_pm_ifs"; unset _pm_dirs _pm_ifs _pm_root
+            return 0
+        fi
+    done
+    IFS="$_pm_ifs"
+    unset _pm_dirs _pm_ifs _pm_root
     [ -f /etc/pip.conf ] && return 0
     [ -f "${XDG_CONFIG_HOME:-$HOME/.config}/pip/pip.conf" ] && return 0
     [ -f "$HOME/.pip/pip.conf" ] && return 0
+    [ -n "${VIRTUAL_ENV:-}" ] && [ -f "$VIRTUAL_ENV/pip.conf" ] && return 0
     return 1
 }
 
@@ -291,9 +318,7 @@ _carry_pip_policy_into_uv() {
     # grep -q would have exported the requirement against the operator's effective policy,
     # and would have disagreed with the Python and PowerShell halves of this same feature.
     _pm_hashes=""
-    for _pm_row in $(printf '%s\n' "$_PM_PIP_CONFIG_LISTING" \
-        | sed -n "s/^\\(global\\|install\\)\\.require[-_]hashes=//p" \
-        | tr -d "'\"" | tr '[:upper:]' '[:lower:]'); do
+    for _pm_row in $(_pm_config_rows "require[-_]hashes" | tr '[:upper:]' '[:lower:]'); do
         _pm_hashes="$_pm_row"
     done
     case "$_pm_hashes" in
@@ -313,9 +338,7 @@ _PM_ONLY_BINARY_ARGS=""
 _PM_INDEX_POLICY_ARGS=""
 _resolve_only_binary_policy() {
     _pm_set=""
-    for _pm_raw in $(printf '%s\n' "$_PM_PIP_CONFIG_LISTING" \
-        | sed -n "s/^\\(global\\|install\\)\\.only[-_]binary=//p" \
-        | tr -d "'\"" | tr ',' ' ') ${PIP_ONLY_BINARY:-}; do
+    for _pm_raw in $(_pm_config_rows "only[-_]binary" | tr ',' ' ') ${PIP_ONLY_BINARY:-}; do
         _pm_raw=$(printf '%s' "$_pm_raw" | tr ',' ' ')
         for _pm_one in $_pm_raw; do
             if [ "$_pm_one" = ":none:" ]; then
@@ -334,9 +357,7 @@ _resolve_only_binary_policy() {
     _pm_set=""
     # The mirror control: "install nothing prebuilt" is as much a supply-chain rule as
     # "never build", accumulates the same way, and uv reads neither pip spelling for it.
-    for _pm_raw in $(printf '%s\n' "$_PM_PIP_CONFIG_LISTING" \
-        | sed -n "s/^\\(global\\|install\\)\\.no[-_]binary=//p" \
-        | tr -d "'\"" | tr ',' ' ') ${PIP_NO_BINARY:-}; do
+    for _pm_raw in $(_pm_config_rows "no[-_]binary" | tr ',' ' ') ${PIP_NO_BINARY:-}; do
         _pm_raw=$(printf '%s' "$_pm_raw" | tr ',' ' ')
         for _pm_one in $_pm_raw; do
             if [ "$_pm_one" = ":none:" ]; then
@@ -365,9 +386,7 @@ _carry_pip_index_into_uv() {
     [ -n "$_pm_have" ] && return 0
     eval "_pm_val=\${$_pm_pair_env:-}"
     if [ -z "$_pm_val" ]; then
-        _pm_val=$(printf '%s\n' "$_PM_PIP_CONFIG_LISTING" \
-            | sed -n "s/^\\(global\\|install\\)\\.$_pm_pair_key=//p" \
-            | tr -d "'\"" | tail -n 1)
+        _pm_val=$(_pm_config_rows "$_pm_pair_key" | tail -n 1)
     fi
     if [ -n "$_pm_val" ]; then
         eval "$_pm_pair_uv=\"\$_pm_val\"; export $_pm_pair_uv"
@@ -383,9 +402,7 @@ _carry_pip_index_into_uv() {
 _resolve_index_policy() {
     _pm_ni="${PIP_NO_INDEX:-}"
     if [ -z "$_pm_ni" ]; then
-        for _pm_row in $(printf '%s\n' "$_PM_PIP_CONFIG_LISTING" \
-            | sed -n "s/^\\(global\\|install\\)\\.no[-_]index=//p" \
-            | tr -d "'\"" | tr '[:upper:]' '[:lower:]'); do
+        for _pm_row in $(_pm_config_rows "no[-_]index" | tr '[:upper:]' '[:lower:]'); do
             _pm_ni="$_pm_row"
         done
     fi
@@ -400,9 +417,7 @@ _resolve_index_policy() {
             # whitespace-separated row like `/wheelhouse/a /wheelhouse/b` word-splits into
             # two iterations, and the loop then keeps only the last one. With no-index in
             # force, packages that live in the earlier wheelhouse become unresolvable.
-            _pm_fl=$(printf '%s\n' "$_PM_PIP_CONFIG_LISTING" \
-                | sed -n "s/^\\(global\\|install\\)\\.find[-_]links=//p" \
-                | tr -d "'\"" | tail -n 1)
+            _pm_fl=$(_pm_config_rows "find[-_]links" | tail -n 1)
         fi
         if [ -n "$_pm_fl" ]; then
             # Measured on uv 0.10.7: a space-separated UV_FIND_LINKS fails with
@@ -422,6 +437,10 @@ if _respect_pm_policy; then
     _carry_pip_policy_into_uv
     _resolve_only_binary_policy
     _resolve_index_policy
+    # uv binds --constraints to UV_CONSTRAINT and reads no pip spelling for it, so a
+    # constraint file the operator required was invisible and uv could resolve a version
+    # they had prohibited. Restrictive, so it is carried for pinned commands too.
+    _carry_pip_index_into_uv PIP_CONSTRAINT UV_CONSTRAINT "constraint"
     _carry_pip_index_into_uv PIP_INDEX_URL UV_INDEX_URL "index[-_]url"
     _carry_pip_index_into_uv PIP_EXTRA_INDEX_URL UV_EXTRA_INDEX_URL "extra[-_]index[-_]url"
 fi

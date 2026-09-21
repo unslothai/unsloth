@@ -9075,6 +9075,9 @@ def _uv_config_file_present() -> bool:
 # The system-level roots pip searches, as a module constant so a test can point the search
 # somewhere other than the machine it runs on. `pip config debug` prints this same set.
 _PIP_SYSTEM_CONFIG_DIRS = ("/etc/xdg", "/etc")
+# pip's legacy system file, which is not under a `pip/` directory like the others. A
+# constant for the same reason: a test must be able to point the search off the machine.
+_PIP_SYSTEM_CONFIG_FILES = ("/etc/pip.conf",)
 
 
 def _pip_config_files_present() -> bool:
@@ -9114,17 +9117,16 @@ def _pip_config_files_present() -> bool:
             candidates.append(Path(root) / "pip" / name)
         for root in _PIP_SYSTEM_CONFIG_DIRS:
             candidates.append(Path(root) / "pip" / name)
-        candidates.append(Path("/etc/pip.conf"))
+        candidates.extend(Path(path) for path in _PIP_SYSTEM_CONFIG_FILES)
         xdg = os.environ.get("XDG_CONFIG_HOME", "") or str(Path.home() / ".config")
         candidates.append(Path(xdg) / "pip" / name)
         candidates.append(Path.home() / ".pip" / name)
     # The site file, beside the interpreter that is doing the installing. A venv is exactly
     # where this runs, so leaving it out would have missed the likeliest file of all.
     candidates.append(Path(sys.prefix) / name)
-    if IS_WINDOWS:
-        venv = os.environ.get("VIRTUAL_ENV", "")
-        if venv:
-            candidates.append(Path(venv) / name)
+    venv = os.environ.get("VIRTUAL_ENV", "")
+    if venv:
+        candidates.append(Path(venv) / name)
     try:
         return any(candidate.is_file() for candidate in candidates)
     except OSError:
@@ -9240,6 +9242,14 @@ def _pip_policy_as_uv_env(pinned: bool = False) -> "dict[str, str]":
         links = _effective_pip_policy("PIP_FIND_LINKS", "find-links")
         if links:
             carried["UV_FIND_LINKS"] = _uv_find_links_value(links)
+    # uv binds --constraints to UV_CONSTRAINT (uv 0.10.7) and reads no pip spelling for it,
+    # so a constraint file the operator required was invisible and uv could resolve a
+    # version they had prohibited. Restrictive rather than a source, so it applies to pinned
+    # commands too: it can only narrow what may be selected.
+    if not os.environ.get("UV_CONSTRAINT", "").strip():
+        constraint = _effective_pip_policy("PIP_CONSTRAINT", "constraint")
+        if constraint:
+            carried["UV_CONSTRAINT"] = constraint
     if pinned:
         return carried
     # A private or required index is the commonest hardening of all, and uv reads none of

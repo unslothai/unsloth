@@ -7197,6 +7197,7 @@ function Get-PipPolicyIndexArgs {
     # pinned command, on the opt-out arm too, so a pin still outranks an inherited index and
     # #6898 stays closed. Never over a uv value the operator set.
     foreach ($pair in @(
+        @('PIP_CONSTRAINT', 'UV_CONSTRAINT', 'constraint'),
         @('PIP_INDEX_URL', 'UV_INDEX_URL', 'index[-_]url'),
         @('PIP_EXTRA_INDEX_URL', 'UV_EXTRA_INDEX_URL', 'extra[-_]index[-_]url')
     )) {

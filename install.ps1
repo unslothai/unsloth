@@ -4306,6 +4306,7 @@ exit 1
         # pinned command, on the opt-out arm too, so a pin still outranks an inherited index and
         # #6898 stays closed. Never over a uv value the operator set.
         foreach ($pair in @(
+            @('PIP_CONSTRAINT', 'UV_CONSTRAINT', 'constraint'),
             @('PIP_INDEX_URL', 'UV_INDEX_URL', 'index[-_]url'),
             @('PIP_EXTRA_INDEX_URL', 'UV_EXTRA_INDEX_URL', 'extra[-_]index[-_]url')
         )) {
@@ -5874,9 +5875,7 @@ exit 0
         }
     }
 
-    # QueryFullProcessImageNameW answers for processes whose MainModule is not
     # readable here: PROCESS_QUERY_LIMITED_INFORMATION is granted where the
-    # PROCESS_VM_READ that MainModule needs is refused, and it needs no WMI.
     # Without it a host can find NO running processes and overwrite a venv Unsloth
     # has open, so the ladder still ends at Get-Process and Win32_Process. Every
     # rung reports a real executable image; a command line or working directory
@@ -5975,8 +5974,6 @@ exit 0
         $process = $null
         try { $process = Get-Process -Id $ProcessId -ErrorAction Stop } catch { $process = $null }
         if ($process) {
-            # .Path is MainModule.FileName (an ETS ScriptProperty over it on 5.1), so
-            # there is no second rung here: empty means MainModule was unreadable.
             try {
                 if (-not [string]::IsNullOrWhiteSpace($process.Path)) { return $process.Path }
             } catch {}
