@@ -270,12 +270,14 @@ if bnb is None or not native_kernels_ready(bnb, DEVICE_TYPE):
     cdequantize_blockwise_fp32 = _bnb_required
     cdequantize_blockwise_fp16_nf4 = _bnb_required
     cdequantize_blockwise_bf16_nf4 = _bnb_required
+    cdequantize_blockwise_fp32_nf4 = _bnb_required
     cgemm_4bit_inference_naive_fp16 = _bnb_required
     cgemm_4bit_inference_naive_bf16 = _bnb_required
 else:
     cdequantize_blockwise_fp32 = bnb_functional.lib.cdequantize_blockwise_fp32
     cdequantize_blockwise_fp16_nf4 = bnb_functional.lib.cdequantize_blockwise_fp16_nf4
     cdequantize_blockwise_bf16_nf4 = bnb_functional.lib.cdequantize_blockwise_bf16_nf4
+    cdequantize_blockwise_fp32_nf4 = bnb_functional.lib.cdequantize_blockwise_fp32_nf4
 
     if DEVICE_TYPE == "xpu":
         # xpu inference gemv, per bitsandbytes backends/xpu/ops.py#L115.
@@ -535,9 +537,14 @@ if DEVICE_TYPE == "xpu" and HAS_XPU_STREAM:
             )
             out_absmax += offset
 
+            # `out` is allocated with quant_state.dtype, so the kernel has to match
+            # it exactly: writing bf16 bits into an fp32 buffer silently corrupts the
+            # dequantized weight rather than failing.
             fx = (
                 cdequantize_blockwise_fp16_nf4
                 if dtype == torch_float16
+                else cdequantize_blockwise_fp32_nf4
+                if dtype == torch_float32
                 else cdequantize_blockwise_bf16_nf4
             )
             fx(
@@ -643,9 +650,14 @@ elif DEVICE_TYPE in ("cuda", "hip") and HAS_CUDA_STREAM:
             )
             out_absmax += offset
 
+            # `out` is allocated with quant_state.dtype, so the kernel has to match
+            # it exactly: writing bf16 bits into an fp32 buffer silently corrupts the
+            # dequantized weight rather than failing.
             fx = (
                 cdequantize_blockwise_fp16_nf4
                 if dtype == torch_float16
+                else cdequantize_blockwise_fp32_nf4
+                if dtype == torch_float32
                 else cdequantize_blockwise_bf16_nf4
             )
             fx(
@@ -719,9 +731,12 @@ else:
         )
         out_absmax += offset
 
+        # See the note above: the kernel must match the dtype `out` was allocated with.
         fx = (
             cdequantize_blockwise_fp16_nf4
             if dtype == torch_float16
+            else cdequantize_blockwise_fp32_nf4
+            if dtype == torch_float32
             else cdequantize_blockwise_bf16_nf4
         )
         fx(

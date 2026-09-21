@@ -22,6 +22,18 @@ from .utils import (
 )
 
 
+def _dequantize_to(W, W_quant, dtype):
+    """Dequantize a base weight and reconcile it to the backward compute dtype.
+
+    The matmuls that consume it are in-place (`addmm_`) or write into `out=`, and
+    neither form is autocast-eligible, so a base weight stored in a dtype the
+    backward is not computing in has to be cast explicitly. A no-op whenever the
+    dtypes already agree, which is every ordinary fp16/bf16/fp32 run.
+    """
+    W = fast_dequantize(W, W_quant)
+    return W if W.dtype == dtype else W.to(dtype)
+
+
 class LoRA_MLP(torch.autograd.Function):
     """
     ### LoRA weights
@@ -189,12 +201,12 @@ class LoRA_MLP(torch.autograd.Function):
         d_gateB.addmm_(gateA.t() @ X.t(), de, alpha = gateS, beta = 0)
 
         # dX = matmul_lora(df, upW.t(), ...) + matmul_lora(de, gateW.t(), ...), expanded below.
-        upW = fast_dequantize(upW.t(), upW_quant)
+        upW = _dequantize_to(upW.t(), upW_quant, dtype)
         dX = torch.matmul(df, upW.t(), out = X if ctx.inplace else None)
         del upW
         dX.addmm_(up_dB, upA.t(), alpha = upS)
 
-        gateW = fast_dequantize(gateW.t(), gateW_quant)
+        gateW = _dequantize_to(gateW.t(), gateW_quant, dtype)
         dX.addmm_(de, gateW.t())
         del gateW
         dX.addmm_(gate_dB, gateA.t(), alpha = gateS)
@@ -492,17 +504,17 @@ class LoRA_QKV(torch.autograd.Function):
         d_VB.addmm_(VA.t() @ X.t(), dV, alpha = VS, beta = 0)
 
         # Combine the per-projection derivatives into dX.
-        QW = fast_dequantize(QW.t(), QW_quant)
+        QW = _dequantize_to(QW.t(), QW_quant, dtype)
         dX = torch.matmul(dQ, QW.t(), out = X if ctx.inplace else None)
         del QW
         dX.addmm_(q_dB, QA.t(), alpha = QS)
 
-        KW = fast_dequantize(KW.t(), KW_quant)
+        KW = _dequantize_to(KW.t(), KW_quant, dtype)
         dX.addmm_(dK, KW.t())
         del KW
         dX.addmm_(k_dB, KA.t(), alpha = KS)
 
-        VW = fast_dequantize(VW.t(), VW_quant)
+        VW = _dequantize_to(VW.t(), VW_quant, dtype)
         dX.addmm_(dV, VW.t())
         del VW
         dX.addmm_(v_dB, VA.t(), alpha = VS)
@@ -637,7 +649,7 @@ class LoRA_W(torch.autograd.Function):
         d_B.addmm_(A.t() @ X.t(), dY, alpha = S, beta = 0)
 
         # Get derivative for dX
-        W = fast_dequantize(W.t(), W_quant)
+        W = _dequantize_to(W.t(), W_quant, dtype)
         dX = dY @ W.t()
         del W
         dX.addmm_(y_dB, A.t(), alpha = S)
