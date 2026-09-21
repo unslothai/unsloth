@@ -951,10 +951,24 @@ def _button_classes(source: str, tag: str, variant: str) -> str | None:
     return _resolve_classes(source, value[1:-1], variant)
 
 
-_SPACING_REM = 0.25
+def _spacing_rem(live_css: str) -> float | None:
+    """The rem one Tailwind spacing unit is worth, read from the theme's `--spacing`.
+
+    Every `pr-N` here is N of these, while the pin's offset and padding are stated in the
+    stylesheet as fixed rem. Assuming 0.25 made the two comparable only by coincidence: set
+    `--spacing: 0.20rem` and `pr-14` buys 2.8rem where the pin still needs 3.5, so the action
+    overlaps the title while this arithmetic, done in assumed units, says it does not.
+
+    Every declaration has to agree. More than one value means the answer depends on which
+    theme block is in force, which this guard does not model.
+    """
+    stated = {
+        match.group(1) for match in re.finditer(r"--spacing:\s*([\d.]+)rem\s*;", live_css)
+    }
+    return float(stated.pop()) / 1 if len(stated) == 1 else None
 
 
-def _as_spacing_units(cls: str) -> str:
+def _as_spacing_units(cls: str, spacing: float) -> str:
     """`pr-[78px]` as `pr-19.5`, so an arbitrary gutter is compared rather than refused.
 
     The checks below compare `pr-N`, where N counts Tailwind spacing units of 0.25rem. A row
@@ -971,38 +985,8 @@ def _as_spacing_units(cls: str) -> str:
     if not match:
         return cls
     prefix, amount, unit = match.group(1), float(match.group(2)), match.group(3)
-    units = amount / 16 / _SPACING_REM if unit == "px" else amount / _SPACING_REM
+    units = amount / 16 / spacing if unit == "px" else amount / spacing
     return f"{prefix}-{units:g}"
-
-
-def _row_action_paddings(live_css: str) -> dict[str, float | None]:
-    """Each `.sidebar-row-action.is-*` modifier, and the right padding it sets, in units.
-
-    A modifier that states none is absent here, and the caller falls back to the base rule.
-    None means it states one this cannot read, which is not the same as stating none: reading
-    it as the base value would credit the action with padding it does not have.
-
-    This exists because the base `pr-1.5` is not what every action gets. The container is
-    justify-end, so its right padding is what decides where the glyph sits, and
-    `.sidebar-row-action.is-unpin-action` deliberately overrides it to `0.125rem` to close the
-    gap to the options button. Applying the base to every action put the pin's reach at 15
-    when it is 14, and that false floor rejected the project row's perfectly sufficient
-    `pr-14`.
-    """
-    paddings: dict[str, float | None] = {}
-    for match in re.finditer(r"\.sidebar-row-action\.(is-[\w-]+)\s*\{([^}]*)\}", live_css):
-        body = match.group(2)
-        readable = re.search(r"\bpadding-right:\s*([\d.]+)rem\s*;", body)
-        if readable:
-            paddings[match.group(1)] = float(readable.group(1)) / _SPACING_REM
-            continue
-        applied = re.search(r"@apply[^;]*(?<![\w-])pr-(\d+(?:\.\d+)?)(?![\w.-])", body)
-        if applied:
-            paddings[match.group(1)] = float(applied.group(1))
-            continue
-        if re.search(r"\bpadding-right:", body) or re.search(r"@apply[^;]*(?<![\w-])pr-", body):
-            paddings[match.group(1)] = None
-    return paddings
 
 
 def _own_declarations(live_css: str, selector: str) -> str | None:
@@ -1059,7 +1043,7 @@ _SHORTHANDS = {
 }
 
 
-def _sole_measure(body: str, utility: str, prop: str) -> float | None | str:
+def _sole_measure(body: str, utility: str, prop: str, spacing: float) -> float | None | str:
     """One rule's value for a measure: the number, None if unreadable, "" if it states none.
 
     Every declaration is collected, because CSS resolves a repeat to the last and a
@@ -1081,7 +1065,7 @@ def _sole_measure(body: str, utility: str, prop: str) -> float | None | str:
         # Unreadable rather than absent: the shorthand renders, and falling back to the base
         # rule or reporting the longhand would both describe something that does not.
         return None
-    values = _stated_units(body, utility, prop)
+    values = _stated_units(body, utility, prop, spacing)
     if not values:
         return ""
     if len(values) > 1 or values[0] is None:
@@ -1089,7 +1073,7 @@ def _sole_measure(body: str, utility: str, prop: str) -> float | None | str:
     return values[0]
 
 
-def _stated_units(body: str, utility: str, prop: str) -> list[float | None]:
+def _stated_units(body: str, utility: str, prop: str, spacing: float) -> list[float | None]:
     """Every value this rule states for one measure, in spacing units.
 
     EVERY one, because CSS resolves a repeated declaration to the last, and a first-match
@@ -1110,9 +1094,9 @@ def _stated_units(body: str, utility: str, prop: str) -> list[float | None]:
         rem = re.fullmatch(r"([\d.]+)rem", value)
         px = re.fullmatch(r"([\d.]+)px", value)
         if rem:
-            found.append(float(rem.group(1)) / _SPACING_REM)
+            found.append(float(rem.group(1)) / spacing)
         elif px:
-            found.append(float(px.group(1)) / 16 / _SPACING_REM)
+            found.append(float(px.group(1)) / 16 / spacing)
         elif value == "0":
             found.append(0.0)
         else:
@@ -1120,7 +1104,7 @@ def _stated_units(body: str, utility: str, prop: str) -> list[float | None]:
     return found
 
 
-def _base_row_action_offset(live_css: str) -> float | None:
+def _base_row_action_offset(live_css: str, spacing: float) -> float | None:
     """The right edge `.sidebar-row-action` itself sets, in units, or None if unreadable.
 
     Every action's position is measured from this. It is `right-0` today, so an assumed zero
@@ -1131,11 +1115,11 @@ def _base_row_action_offset(live_css: str) -> float | None:
     body = _own_declarations(live_css, ".sidebar-row-action")
     if body is None:
         return None
-    measure = _sole_measure(body, "right", "right")
+    measure = _sole_measure(body, "right", "right", spacing)
     return None if measure == "" or not isinstance(measure, float) else measure
 
 
-def _row_action_offsets(live_css: str, base: float) -> dict[str, float | None]:
+def _row_action_offsets(live_css: str, base: float, spacing: float) -> dict[str, float | None]:
     """Each `.sidebar-row-action.is-*` modifier, and the right edge it renders with.
 
     Read from CSS rather than named here, so an action positioned by a modifier this file has
@@ -1144,13 +1128,13 @@ def _row_action_offsets(live_css: str, base: float) -> dict[str, float | None]:
     than zero. None means the rule states one this cannot resolve, and the caller refuses it.
     """
     return {
-        name: base if (measure := _sole_measure(body, "right", "right")) == "" else
+        name: base if (measure := _sole_measure(body, "right", "right", spacing)) == "" else
         (measure if isinstance(measure, float) else None)
         for name, body in _modifier_rules(live_css).items()
     }
 
 
-def _row_action_paddings(live_css: str, base: float) -> dict[str, float | None]:
+def _row_action_paddings(live_css: str, base: float, spacing: float) -> dict[str, float | None]:
     """Each modifier, and the right padding it renders with, in units.
 
     The base `pr-1.5` is not what every action gets: the container is justify-end, so its
@@ -1159,7 +1143,7 @@ def _row_action_paddings(live_css: str, base: float) -> dict[str, float | None]:
     the pin's reach at 15 when it is 14, and that false floor rejected a sufficient `pr-14`.
     """
     return {
-        name: base if (measure := _sole_measure(body, "pr", "padding-right")) == "" else
+        name: base if (measure := _sole_measure(body, "pr", "padding-right", spacing)) == "" else
         (measure if isinstance(measure, float) else None)
         for name, body in _modifier_rules(live_css).items()
     }
@@ -1612,8 +1596,15 @@ def test_chat_sidebar_row_actions_visible_on_coarse_pointers():
     # in the builder says nothing about the rows that do not take it: moving the verified
     # pair into `showWorkSpinner ? "...pair..." : undefined` leaves every ordinary row with
     # no gutter at all while a scan over literals still finds it.
+    live_css = re.sub(r"/\*.*?\*/", " ", css_source, flags = re.S)
+    spacing = _spacing_rem(live_css)
+    assert spacing is not None, (
+        "index.css does not state one readable --spacing, so this guard cannot convert the "
+        "pin's fixed rem offset and padding into the pr-N units the row's gutters are in, and "
+        "the two sides of every comparison below would be in different scales"
+    )
     renderings = [
-        [_as_spacing_units(cls) for cls in rendering]
+        [_as_spacing_units(cls, spacing) for cls in rendering]
         for rendering in _rendered_class_lists(_cn_arguments(row_classes))
     ]
     every_class = [cls for rendering in renderings for cls in rendering]
@@ -1717,13 +1708,12 @@ def test_chat_sidebar_row_actions_visible_on_coarse_pointers():
     # Over CSS with its comments removed, for the same reason the TSX reads are: an old rule
     # left inside `/* ... */` sits before the live one and is the one a search finds, so the
     # floor would be measured from a glyph nothing renders.
-    live_css = re.sub(r"/\*.*?\*/", " ", css_source, flags = re.S)
     glyph_rule = _own_declarations(live_css, ".sidebar-row-action-glyph")
     assert glyph_rule is not None, (
         "index.css no longer has a .sidebar-row-action-glyph rule, so this guard cannot tell "
         "how much room one action needs"
     )
-    sizes = _stated_units(glyph_rule, "size", "width")
+    sizes = _stated_units(glyph_rule, "size", "width", spacing)
     assert len(sizes) == 1 and sizes[0] is not None, (
         f"the glyph's size is not one value this guard can read: {sizes}. A second one later "
         f"in the rule is what renders, and every floor below would go on being measured from "
@@ -1749,7 +1739,7 @@ def test_chat_sidebar_row_actions_visible_on_coarse_pointers():
     )
     # Through _sole_measure, so the shorthand refusal reaches this rule too. Reading the
     # longhand directly here was how `padding: 0 5rem` in the base rule went unnoticed.
-    base_padding = _sole_measure(base_rule, "pr", "padding-right")
+    base_padding = _sole_measure(base_rule, "pr", "padding-right", spacing)
     assert isinstance(base_padding, float), (
         f"the base action's right padding is not one value this guard can read "
         f"({base_padding!r}). A later declaration, or a shorthand that contains it, is what "
@@ -1768,20 +1758,20 @@ def test_chat_sidebar_row_actions_visible_on_coarse_pointers():
     # product question - widen both gutters, or shrink the pad - not one to settle by moving a
     # contract test's floor, which would fail the shipped recents row over a defect #7276 never
     # claimed. Raise the floor here once the rows are changed, not before.
-    base_offset = _base_row_action_offset(live_css)
+    base_offset = _base_row_action_offset(live_css, spacing)
     assert base_offset is not None, (
         "index.css no longer states a right edge for .sidebar-row-action in a spelling this "
         "guard can read. Every action's position is measured from it, so reading it as flush "
         "would understate every reach below by however far the base rule moves them"
     )
-    offsets = _row_action_offsets(live_css, base_offset)
+    offsets = _row_action_offsets(live_css, base_offset, spacing)
     actions = {
         name: _labelled_actions(
             sidebar_source,
             applied,
             name,
             offsets,
-            _row_action_paddings(live_css, inner_padding),
+            _row_action_paddings(live_css, inner_padding, spacing),
             inner_padding,
             base_offset,
         )

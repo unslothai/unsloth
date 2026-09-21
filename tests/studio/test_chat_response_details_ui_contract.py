@@ -453,13 +453,21 @@ def test_response_model_badge_is_user_configurable_and_rendered_once_per_message
     # An inline style beats every utility below it in the cascade, and none of them is read
     # here. `style={{ minWidth: "max-content" }}` on the trigger leaves both min-w-0 checks
     # green while long summaries widen the row again, which is the whole defect.
-    for element in ("<ReasoningTrigger", "<ReasoningHeader"):
-        for tag in _opening_tags(_without_block_comments(reasoning_src), element):
-            assert not re.search(r"(?:^|[\s{])style=", tag), (
-                f"{element} carries an inline style, which outranks the min-w utilities this "
-                f"guard compares, so the width it computes is not the width that renders: "
-                f"{tag!r}"
-            )
+    live = _without_block_comments(reasoning_src)
+    header_tags = [tag for tag in _opening_tags(live, "<div") if 'data-slot="reasoning-header"' in tag]
+    assert header_tags, (
+        'reasoning.tsx no longer renders a div with data-slot="reasoning-header", so this '
+        "guard cannot tell which element the trigger has to shrink inside"
+    )
+    # The header is a plain div carrying data-slot, not a <ReasoningHeader> component. Naming
+    # the component matched nothing at all, so half of this check was vacuous and an inline
+    # width on the real header went straight through.
+    for tag in [*_opening_tags(live, "<ReasoningTrigger"), *header_tags]:
+        assert not re.search(r"(?:^|[\s{])style=", tag), (
+            f"an element the min-w-0 chain depends on carries an inline style, which outranks "
+            f"the utilities this guard compares, so the width it computes is not the width "
+            f"that renders: {tag!r}"
+        )
     call_site = _class_list(reasoning_src, "<ReasoningTrigger")
     assert call_site != _UNREADABLE, (
         "the ReasoningTrigger call site passes a className this guard cannot resolve, so it "
@@ -634,8 +642,12 @@ def test_reasoning_clears_manual_open_on_a_new_stream():
         f"toggle is then never remembered, and clearing the override on a new round guards "
         f"nothing"
     )
+    # Its `override`, by name. Requiring only the `next.` prefix let
+    # `setOverride(next.releaseStreamingHeight)` pass: both fields are booleans so it
+    # type-checks, but reopening a hand-closed block whose setting defaults open wants
+    # override true while releaseStreamingHeight is false, and the block stays shut.
     answer = re.search(r"const (\w+) = resolveReasoningToggle\(", handler)
-    assert answer and resolved.group(1).startswith(f"{answer.group(1)}."), (
+    assert answer and resolved.group(1) == f"{answer.group(1)}.override", (
         f"the open toggle writes {resolved.group(1)!r}, which is not the answer "
         f"resolveReasoningToggle returned, so what the reader asked for and what is stored "
         f"can differ"
