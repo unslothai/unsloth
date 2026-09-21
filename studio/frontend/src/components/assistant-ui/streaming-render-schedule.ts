@@ -143,24 +143,16 @@ function isCodeBlock(block: string): boolean {
   const backtick = BACKTICK_OPENER_RE.exec(block);
   return backtick === null || !backtick[1].includes("`");
 }
-// The reference half of the same pair, and it has to admit exactly what the definition probe
-// above admits or the widening there is unreachable: a label only resolves when BOTH ends
-// carry it, so a 201-character label failed here and the reply stayed on the blocks path with
-// the reference still literal (unslothai/unsloth#9540). Same class, same cap, same `u`.
+// Must admit exactly what `LINK_DEFINITION_RE` admits: a label resolves only when BOTH ends
+// carry it, so a narrower cap here made the wider one there unreachable (unslothai/unsloth#9540).
 const LINK_REFERENCE_RE =
   /!?\[(?:\\[\s\S]|[^\]\\]){1,999}\]\[(?:\\[\s\S]|[^\]\\]){0,999}\]/u;
 // Label side as above, plus `[` and the optional `!`; the reference side needs no `!`.
 const LINK_REFERENCE_WINDOW = 999 * 3 + 3;
-// The reference label on its own, anchored at both ends. The `[` before it means its escape
-// parity starts fresh at the seam, so the label a match could use is exactly the text between
-// the seam and the first unescaped `]` -- one candidate, testable once per seam. Without it the
-// window is re-tested from every `[` it holds, and a window packed with `[` whose reference
-// label is past the cap pays the full widened budget at each: 500k of that shape cost 1821ms
-// against 210ms for the narrow probe this replaced, which is the regression the window exists
-// to prevent, not one it was allowed to reintroduce.
+// The `[` at the seam restarts escape parity, so the reference label is ONE candidate: the text
+// up to the first unescaped `]`. Tested once here instead of from every `[` in the window.
 const LINK_REFERENCE_LABEL_RE = /^(?:\\[\s\S]|[^\]\\]){0,999}$/u;
 
-// First `]` at or after `from` that closes rather than being escaped, or -1.
 function unescapedClose(text: string, from: number): number {
   for (let i = text.indexOf("]", from); i >= 0; i = text.indexOf("]", i + 1)) {
     if (!isEscaped(text, i)) {
@@ -169,12 +161,8 @@ function unescapedClose(text: string, from: number): number {
   }
   return -1;
 }
-// Same predicate as the regex over the whole reply, for the same reason as `hasLinkDefinition`:
-// widening the cap to 999 multiplies the backtracking budget at every start position, so the
-// scan runs from the rare `][` instead. Neither label admits a bare `]`, which bounds a
-// candidate on both sides: it opens after the last unescaped `]` before the seam and closes at
-// the first one after it. Both cursors only advance, so the escape walks stay linear overall.
-// A seam whose closing `]` sits past the cap cannot match at all and is skipped without a test.
+// Same predicate as the regex over the whole reply, scanned from the rare `][` as
+// `hasLinkDefinition` scans from `]:`. Neither label admits a bare `]`, which bounds a candidate.
 function hasLinkReference(text: string): boolean {
   let bracket = text.indexOf("[");
   let nextBracket = bracket < 0 ? -1 : text.indexOf("[", bracket + 1);
@@ -182,9 +170,7 @@ function hasLinkReference(text: string): boolean {
   let nextClose = text.indexOf("]");
   let after = -1;
   for (let mid = text.indexOf("]["); mid >= 0; mid = text.indexOf("][", mid + 1)) {
-    // The label ends at `mid` and admits no empty match, so its `[` is at `mid - 2` or earlier;
-    // the `[` at `mid + 1` is the seam's own. Tracked forward for the reason `hasLinkDefinition`
-    // gives: `lastIndexOf` is unbounded backwards, which is the cost this is avoiding.
+    // No empty label, so the opener is at `mid - 2` or earlier. Forward: `lastIndexOf` is not.
     while (nextBracket >= 0 && nextBracket <= mid - 2) {
       bracket = nextBracket;
       nextBracket = text.indexOf("[", bracket + 1);
@@ -198,12 +184,8 @@ function hasLinkReference(text: string): boolean {
     if (after < mid + 2) {
       after = unescapedClose(text, mid + 2);
       if (after < 0) {
-        // Nothing at or after `mid + 2` closes, and every later seam starts later still, so none
-        // of them can close either. Returning is the same answer as skipping them, reached
-        // without re-asking: a cached -1 is always behind the next seam, so the lookahead would
-        // rescan the whole tail per seam while advancing nothing -- the cost `hasLinkDefinition`
-        // caches to avoid, and quadratic rather than merely slow (`\][` repeated: 26ms at 6k,
-        // 6.4s at 96k, against 29ms for the narrow probe this replaced).
+        // Nothing closes from here on, so no later seam can either. Returning rather than
+        // caching -1, which sits behind every later seam and rescans the tail: quadratic.
         return false;
       }
     }
@@ -217,8 +199,7 @@ function hasLinkReference(text: string): boolean {
     if (bracket < start || bracket > mid - 2) {
       continue;
     }
-    // One candidate for the reference label, so test it once rather than rediscovering it from
-    // every `[` the window holds. After the opener test, so a seam with no opener pays neither.
+    // After the opener test, so a seam with no opener pays neither.
     if (!LINK_REFERENCE_LABEL_RE.test(text.slice(mid + 2, after))) {
       continue;
     }
@@ -272,14 +253,9 @@ function blocksOf(markdown: string): readonly string[] {
 // not, so the scope would otherwise follow the reply's line ending. NOT for
 // `blocksOf`, whose one memo slot is shared with `parseMarkdownIntoRenderableBlocks`:
 // a normalised copy misses it and costs a CRLF reply two splits per render.
-// Definition first, and the order is a cost decision rather than a stylistic one: both are pure,
-// so the conjunction is the same either way, but each probe is cheap to refuse and only the one
-// that is asked SECOND is ever refused cheaply. The reference scan is the dearer of the two per
-// seam, it carries the window and the label test while the definition scan carries neither, and a
-// reply dense with `][` and no definition is the shape that separates them. Per 500k reply:
-// `][` 10.42ms -> 1.57ms, `[` then a reference 20.50ms -> 0.26ms. The trade is `]: ` at
-// 9.54ms -> 10.32ms, which is the definition scan no longer being skipped for a reply that
-// carries no reference, and is what the two dense-`]:` tests below already bound.
+// Definition first is a cost decision: both are pure so the conjunction is unchanged, but only
+// the one asked SECOND is skipped, and the reference scan is the dearer. `][` without a `]:` is
+// the shape that separates them.
 function documentProse(markdown: string): string | null {
   const normalized = normalizeLineEndings(markdown);
   if (!hasLinkDefinition(normalized) || !hasLinkReference(normalized)) {

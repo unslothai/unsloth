@@ -899,10 +899,8 @@ test("a reply dense with `]:` and no definition does not pay per occurrence", ()
 });
 
 test("a reference label past the old cap still resolves against its definition", () => {
-  // The two probes have to agree on what a label is. The definition probe was widened to
-  // 999, the reference probe was left at 200, and a label only resolves when BOTH
-  // ends carry it -- so every label in 201..999 kept the reply on the blocks path with the
-  // reference rendered literally (unslothai/unsloth#9540).
+  // A label resolves only when BOTH probes admit it, and the definition one moved to 999 while
+  // this one stayed at 200, so 201..999 stayed on the blocks path (unslothai/unsloth#9540).
   for (const length of [200, 201, 400, 999]) {
     const label = "L".repeat(length);
     const reply = `See [guide][${label}].\n\n[${label}]: https://x.test/a\n`;
@@ -910,23 +908,15 @@ test("a reference label past the old cap still resolves against its definition",
       `a ${length}-character label did not reach the document path`);
     assert.equal(markdownRenderKey(reply), `document:[${label}]: https://x.test/a`);
   }
-  // 999 is CommonMark's cap, and it is a real boundary rather than a bound we chose. Not Marked's:
-  // Marked's `def` label is `[^\]]+` with no cap, and it does register a 1000-character label.
-  // Marked only SPLITS here though, through streamdown's `parseMarkdownIntoBlocks`; the render is
-  // streamdown's remark pipeline, which is CommonMark-strict. Counting anchors through that
-  // pipeline, a 1000-character label resolves to 0 links even when the whole reply is lexed as one
-  // document, so there is no link past 999 for the blocks path to lose and nothing for a wider
-  // probe to buy. See tests/link-definition-oracle.test.ts, which guards that direction.
+  // 999 is CommonMark's, not Marked's, whose `def` label is uncapped but only SPLITS here. The
+  // render is remark, CommonMark-strict: 0 links past 999, so the blocks path loses nothing.
   const tooLong = "L".repeat(1000);
   assert.equal(markdownRenderScope(`See [guide][${tooLong}].\n\n[${tooLong}]: /u\n`), "blocks");
 });
 
 test("a run of `[` before a reference does not walk the widened label budget", () => {
-  // Widening the cap to 999 multiplies the backtracking budget at every start position, and a
-  // long run of `[` supplies one per character: measured over the whole reply the widened regex
-  // costs 1743ms at 500k against 385ms for the old narrow one, so the widening alone would have
-  // been a 4.5x regression on this shape. Bounding each `][` seam instead costs 7.7ms.
-  // Absolute and loose, so a much slower runner still separates it from either.
+  // A run of `[` is one start position per character, so the widened budget is paid at each:
+  // 1743ms at 500k against 7.7ms bounding each seam. Loose, so a slow runner still separates them.
   const run = `${"[".repeat(500000)}][x]`;
   for (let i = 0; i < 3; i += 1) markdownRenderScope(run + " ");
   const runs: number[] = [];
@@ -941,11 +931,8 @@ test("a run of `[` before a reference does not walk the widened label budget", (
 });
 
 test("a reply whose every `]` is escaped does not rescan the tail per seam", () => {
-  // `\][` gives a seam whose closer is escaped, so no unescaped `]` follows the first one and the
-  // lookahead comes back empty. A cached -1 is always behind the next seam, so re-asking walks the
-  // whole tail again while advancing nothing -- quadratic, not merely slow: 26ms at 6k, 1.7s at
-  // 48k, 196s at 500k, against 162ms there for the narrow probe this replaced. The answer is
-  // already known once the lookahead is exhausted, and it does not change for a later seam.
+  // `\][` leaves no unescaped `]` after the first seam, so the lookahead comes back empty and a
+  // cached -1 would rescan the tail per seam: quadratic, 196s at 500k against 162ms narrow.
   const escaped = "\\][".repeat(166_666);
   for (let i = 0; i < 3; i += 1) markdownRenderScope(escaped + " ");
   const runs: number[] = [];
@@ -960,11 +947,8 @@ test("a reply whose every `]` is escaped does not rescan the tail per seam", () 
 });
 
 test("a seam whose reference label is past the cap is rejected once, not per `[`", () => {
-  // The window bounds the slice, not the number of start positions inside it. A window packed
-  // with `[` whose reference label is past the cap fails from every one of them, which is the
-  // whole widened budget paid per `[` -- 1932ms at 500k against 207ms for the narrow probe, so
-  // the window would have given back nothing on this shape. The reference label a match could
-  // use is the one candidate between the seam and the first unescaped `]`, so test it once.
+  // The window bounds the slice, not the start positions in it: packed with `[` and a label past
+  // the cap, it fails from every one and gives the window back nothing. Test that label once.
   const packed = `${"[".repeat(3000)}][${"y".repeat(3000)}]`.repeat(83);
   for (let i = 0; i < 3; i += 1) markdownRenderScope(packed + " ");
   const runs: number[] = [];

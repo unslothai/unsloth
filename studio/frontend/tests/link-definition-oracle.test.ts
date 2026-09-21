@@ -152,17 +152,10 @@ test("a reply whose reference only resolves in one piece is never split into blo
 });
 
 test("a reference is never split into blocks because its label is long", () => {
-  // Every case above uses a one-character label, which is the dimension #9540 broke on and the
-  // reason this file did not catch it: the probes carry a length bound, the oracle did not vary
-  // length, so a bound that was too small was invisible here. The bound then moved on one end
-  // only (#9645 widened the definition probe, the reference probe stayed at 200) and that was
-  // invisible for the same reason.
-  //
-  // Self-calibrating in the same way as the sweep above: a length is only in scope when the
-  // rendered outcome actually differs between the two paths, so this cannot pass vacuously if the
-  // renderer stops resolving long labels, and it does not encode a cap of its own. Past
-  // CommonMark's 999 the remark pipeline resolves nothing, so those lengths drop out on their own
-  // rather than being special-cased.
+  // Every case above uses a one-character label. Length is the one dimension the probes bound and
+  // the only one this file never varied, which is why #9540 and #9645's half-fix were invisible.
+  // In scope only when the two paths really differ, so past 999 drops out and this cannot pass
+  // vacuously.
   const failures: string[] = [];
   let inScope = 0;
   for (const length of [1, 2, 199, 200, 201, 400, 998, 999, 1000, 1001, 2000]) {
