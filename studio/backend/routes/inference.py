@@ -38975,6 +38975,25 @@ def _attempt_execution_is_live(attempt_id) -> bool:
     return bool(_diffusion_queued_attempts.get(key) or _diffusion_persist_attempts.get(key))
 
 
+# Which execution the engine's unscoped slot is describing. That slot is one per process and
+# the engine only clears it when a run STARTS, so two executions overlapping could each
+# overwrite the other's terminal outcome: an older save finishing last wiped a newer failure,
+# and an older failure landing last hid a newer success. One monotone serial, so the newest
+# execution's outcome is the one that stands, whichever finishes last.
+_diffusion_unscoped_slot_serial = 0
+
+
+def _note_unscoped_slot_serial(serial: int) -> None:
+    global _diffusion_unscoped_slot_serial
+    if serial > _diffusion_unscoped_slot_serial:
+        _diffusion_unscoped_slot_serial = serial
+
+
+def _unscoped_slot_is_newer_than(serial: int) -> bool:
+    """Whether a LATER execution has already described itself in the unscoped slot."""
+    return _diffusion_unscoped_slot_serial > serial
+
+
 def _clear_unscoped_generate_failure(backend) -> None:
     """Drop the engine's unscoped reason after a save of ours succeeded.
 
@@ -39168,7 +39187,17 @@ async def generate_diffusion_image(
             # Answered with its own reason and never logged. A settling caller reads the
             # RETAINED reason instead of this response, so the record has to say so or the
             # page offers logs that cannot hold it.
-            from core.inference.generate_outcomes import mark_generate_failure_unlogged
+            # Retained as well as marked: the engine records its own ValueErrors inside its
+            # handler, but the pre-lock validation guards raise before it, so a settling
+            # client found nothing and was told its request never arrived. The text is the
+            # one this 400 answers with, so it is client-safe by construction, and the mark
+            # is what keeps the record from claiming a log it never reached.
+            from core.inference.generate_outcomes import (
+                _retain_generate_failure,
+                mark_generate_failure_unlogged,
+            )
+
+            _retain_generate_failure(request.attempt_id, str(exc))
             mark_generate_failure_unlogged(request.attempt_id)
             raise HTTPException(status_code = 400, detail = str(exc))
         except DiffusionModelReplacedError as exc:
@@ -39192,6 +39221,10 @@ async def generate_diffusion_image(
             # Whatever happened: a failure has its reason retained above, so it does not need
             # the marker, and a DiffusionModelReplacedError retry re-takes it on the next lap.
             _note_queued_attempt(queued_attempt, -1)
+            # Anything the ENGINE put in the unscoped slot during this call describes THIS
+            # execution, so the slot's serial moves with it. Harmless on success, where the
+            # engine cleared the slot at the start of the run and left it empty.
+            _note_unscoped_slot_serial(execution_serial)
 
     # The retry acquired the slot and ran: anything its predecessor retained under this id
     # after the early clear above is stale, and would otherwise resurface the moment the
@@ -39295,8 +39328,12 @@ async def generate_diffusion_image(
         _clear_outcome(request.attempt_id)
         # And the unscoped slot, which means "the last thing that happened": an older run's
         # persist failure can land there after this one started, and the engine only clears
-        # it when a run BEGINS.
-        _clear_unscoped_generate_failure(backend)
+        # it when a run BEGINS. Not over a NEWER execution, which would be the same race
+        # the other way round: a run that started after this one and failed is the later
+        # outcome, and its reason is what an unscoped probe should read.
+        if not _unscoped_slot_is_newer_than(execution_serial):
+            _clear_unscoped_generate_failure(backend)
+            _note_unscoped_slot_serial(execution_serial)
     except Exception as exc:
         logger.error("diffusion.persist_failed: %s", exc)
         # The only failure raised after the attempt was reported ACTIVE, so a settling client
@@ -39312,8 +39349,11 @@ async def generate_diffusion_image(
             _retain_generate_failure(request.attempt_id, _PERSIST_FAILURE_MSG)
             # The channel a RELOADED page has left: its mount probe polls without an attempt
             # id, so the keyed record alone was invisible to it and the resumed poll saw an
-            # error-free idle state and refreshed an unchanged gallery.
-            _note_unscoped_generate_failure(backend, request.attempt_id, _PERSIST_FAILURE_MSG)
+            # error-free idle state and refreshed an unchanged gallery. Same ordering rule as
+            # the clear on success: an execution that started after this one owns the slot.
+            if not _unscoped_slot_is_newer_than(execution_serial):
+                _note_unscoped_generate_failure(backend, request.attempt_id, _PERSIST_FAILURE_MSG)
+                _note_unscoped_slot_serial(execution_serial)
         raise HTTPException(status_code = 500, detail = _PERSIST_FAILURE_MSG)
     finally:
         _diffusion_persist_active -= 1

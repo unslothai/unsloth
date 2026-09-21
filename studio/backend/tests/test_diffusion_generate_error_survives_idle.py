@@ -214,11 +214,22 @@ def test_an_engine_records_the_failure_against_its_own_attempt(engine):
     assert (
         "_retain_generate_failure(attempt_id," in src
     ), f"{engine} does not record the failure against the attempt that ran it"
-    retained = src.index("self._last_generate_error = str(exc) or type(exc).__name__")
-    recorded = src.index("_retain_generate_failure(", retained)
-    assert (
-        recorded - retained < 300
-    ), f"{engine} records the per-attempt outcome away from where it retains the reason"
+    # Both places that set the reason: the handler inside the run and the helper for the
+    # raises that precede it. Each has to record the per-attempt outcome beside it.
+    at = 0
+    seen = 0
+    while True:
+        try:
+            retained = src.index("self._last_generate_error = str(exc) or type(exc).__name__", at)
+        except ValueError:
+            break
+        recorded = src.index("_retain_generate_failure(", retained)
+        assert (
+            recorded - retained < 500
+        ), f"{engine} records the per-attempt outcome away from where it retains the reason"
+        seen += 1
+        at = retained + 1
+    assert seen >= 2, f"{engine} no longer records a reason for the raises before the run"
 
 
 def test_the_progress_route_answers_about_the_attempt_it_was_asked_about():
@@ -768,7 +779,7 @@ def test_a_reloaded_page_hears_about_a_persist_failure():
     src = _src("routes/inference.py")
     at = src.index('logger.error("diffusion.persist_failed')
     window = src[at : at + 1600]
-    assert "_note_unscoped_generate_failure(backend, request.attempt_id" in window
+    assert "_note_unscoped_generate_failure(" in window
 
 
 def test_an_unscoped_poll_reads_the_log_flag_of_the_attempt_it_is_told_about():
@@ -1037,7 +1048,7 @@ def test_a_failure_before_the_run_starts_is_retained_too(engine):
         "def _retained_generate_failure(self, exc, attempt_id):" in src
     ), f"{engine} has no way to record a failure raised before the run starts"
     helper = src[src.index("def _retained_generate_failure") :][:900]
-    assert "_retain_generate_failure(attempt_id, self._last_generate_error)" in helper
+    assert "_retain_generate_failure(attempt_id, self._last_generate_error" in helper
     # The attempt too, or the reason is attributed to whichever attempt ran last.
     assert (
         "self._last_generate_attempt = attempt_id" in helper
@@ -1215,9 +1226,114 @@ def test_a_successful_save_clears_the_unscoped_reason():
     # reason.
     assert backend._last_generate_attempt == "attempt-older"
 
-    # Wired at the successful save.
+    # Wired at the successful save, and only where a NEWER execution has not already
+    # described itself in the slot, which would be the same race the other way round.
     src = _src("routes/inference.py")
     at = src.index("records = await asyncio.to_thread(_persist)")
+    window = src[at : at + 1200]
     assert (
-        "_clear_unscoped_generate_failure(backend)" in src[at : at + 900]
+        "_clear_unscoped_generate_failure(backend)" in window
     ), "a successful save leaves an older run's failure in the unscoped slot"
+    guard = window.index("_unscoped_slot_is_newer_than(execution_serial)")
+    assert guard < window.index(
+        "_clear_unscoped_generate_failure("
+    ), "an older save wipes the failure of a run that started after it"
+
+
+def test_the_unscoped_slot_belongs_to_the_newest_execution():
+    """One slot, two executions that can overlap, and the engine clears it only at a START.
+
+    So whoever finishes LAST used to win: an older save wiped a newer failure, and an older
+    failure hid a newer success. The serial decides instead.
+    """
+    import routes.inference as route
+
+    saved = route._diffusion_unscoped_slot_serial
+    try:
+        older = next(route._diffusion_execution_serial)
+        newer = next(route._diffusion_execution_serial)
+
+        assert route._unscoped_slot_is_newer_than(older) is False, "nothing has claimed it yet"
+        route._note_unscoped_slot_serial(newer)
+        assert (
+            route._unscoped_slot_is_newer_than(older) is True
+        ), "an older execution still gets to speak for the slot"
+        assert (
+            route._unscoped_slot_is_newer_than(newer) is False
+        ), "the newest execution was locked out of its own slot"
+        # Monotone: an older claim cannot take it back.
+        route._note_unscoped_slot_serial(older)
+        assert route._unscoped_slot_is_newer_than(older) is True
+    finally:
+        route._diffusion_unscoped_slot_serial = saved
+
+    # Both writes are guarded by it, and the engine's own write is stamped for the execution
+    # whose call it happened in.
+    src = _src("routes/inference.py")
+    at = src.index('logger.error("diffusion.persist_failed')
+    window = src[at : at + 1600]
+    guard = window.index("_unscoped_slot_is_newer_than(execution_serial)")
+    assert guard < window.index(
+        "_note_unscoped_generate_failure("
+    ), "an older persist failure still overwrites a newer execution's outcome"
+    assert (
+        "_note_unscoped_slot_serial(execution_serial)"
+        in src[src.index("_note_queued_attempt(queued_attempt, -1)") :][:400]
+    ), "the engine's own write is not attributed to the execution it happened in"
+
+
+def test_a_validation_failure_is_recorded_and_marked_unlogged():
+    """The pre-lock guards raise before the engine's handler, so nothing was recorded.
+
+    Marking corrects a record; it does not create one, so a settling client whose POST was
+    lost found nothing and was told its request never reached the server, when the answer was
+    a validation refusal the route had already written.
+    """
+    src = _src("routes/inference.py")
+    # The generate route's own handler, not the first ValueError in the file.
+    at = src.index("_retain_generate_failure(request.attempt_id, str(exc))")
+    window = src[at - 900 : at + 900]
+    assert (
+        "except ValueError as exc:" in window
+    ), "the retained refusal is not the generate route's validation branch"
+    assert (
+        "_retain_generate_failure(request.attempt_id, str(exc))" in window
+    ), "a validation refusal records nothing for a client that cannot read the response"
+    assert (
+        "mark_generate_failure_unlogged(request.attempt_id)" in window
+    ), "the recorded refusal claims a log the route never wrote"
+    assert window.index("_retain_generate_failure(") < window.index(
+        "mark_generate_failure_unlogged("
+    ), "the mark runs before there is a record to mark"
+
+    # Driven: retained then marked leaves a reason the poll can read and no log offered.
+    from core.inference.generate_outcomes import (
+        _retain_generate_failure,
+        clear_generate_failure,
+        generate_failure_for_attempt,
+        generate_failure_was_logged,
+        mark_generate_failure_unlogged,
+    )
+
+    clear_generate_failure("attempt-bad-size")
+    _retain_generate_failure("attempt-bad-size", "width must be a multiple of 8")
+    mark_generate_failure_unlogged("attempt-bad-size")
+    try:
+        assert generate_failure_for_attempt("attempt-bad-size") == ("width must be a multiple of 8")
+        assert generate_failure_was_logged("attempt-bad-size") is False
+    finally:
+        clear_generate_failure("attempt-bad-size")
+
+
+@pytest.mark.parametrize("engine", ENGINES)
+def test_a_client_state_failure_is_retained_as_unlogged(engine):
+    """Cancelled, not loaded, a superseding load: every one is answered WITHOUT logging.
+
+    Retained as logged, the settling poll published error_logged true and the page offered
+    the log for an event that is not in it.
+    """
+    src = _src(engine)
+    helper = src[src.index("def _retained_generate_failure") :][:1200]
+    assert (
+        "logged = False" in helper
+    ), f"{engine} records a client-state failure as one the log can hold"

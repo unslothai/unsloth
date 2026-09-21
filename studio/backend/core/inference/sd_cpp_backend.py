@@ -3124,7 +3124,9 @@ class SdCppDiffusionBackend:
         self._last_generate_error = str(exc) or type(exc).__name__
         # The attempt too: the block that normally sets this has not run.
         self._last_generate_attempt = attempt_id
-        _retain_generate_failure(attempt_id, self._last_generate_error)
+        # Unlogged: the route answers every one of these as a 409 or 400 WITHOUT logging,
+        # so offering the log would open an unrelated one.
+        _retain_generate_failure(attempt_id, self._last_generate_error, logged = False)
         return exc
 
     def generate(
