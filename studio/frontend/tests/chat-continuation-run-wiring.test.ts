@@ -2,21 +2,16 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 /**
- * `watchAutoContinueRun` against the real module-scope keeper, not one built with fakes.
+ * `watchAutoContinueRun` against the real module-scope keeper. `chat-continuation.test.ts` proves
+ * the keeper DECIDES correctly once handed a run; this proves the run reaches it, which a
+ * source-text match cannot: emptying this function's body kept all of those cases green.
  *
- * Its own file because it needs the store stub resolver: `auto-continue-run-keeper.ts` reads
- * `runningByThreadId` off the chat runtime store, which `chat-continuation.test.ts` does not load.
- * Both halves are worth having. That suite proves the keeper DECIDES correctly once it is handed a
- * run; this one proves the run actually reaches it, which a source-text match cannot. Emptying
- * this function's body while leaving its call site and the `issuedRunFrom` shape check in place
- * kept all of the other cases green, so the one wire between the bar and the keeper was the one
- * thing nothing executed.
- *
- * The observable is the renewal timer. `holdAutoContinueRun` starts it, and the keeper's own tick
- * clears it as soon as nothing is held, so "the timer stopped" is exactly "the hold was given up"
- * with no clock to advance and no elapsed time to compare. The timer is replaced outright rather
- * than mocked: the keeper captured `Date.now` as a default argument at import, so mocking `Date`
- * desynchronises its clock from the lease's and renewals silently stop landing.
+ * Its own file because `auto-continue-run-keeper.ts` reads `runningByThreadId` off the chat runtime
+ * store and so needs the store stub resolver. The observable is the renewal timer, which the keeper
+ * clears as soon as nothing is held, so "the timer stopped" is "the hold was given up" with no clock
+ * to advance. Replaced outright rather than mocked: the keeper captured `Date.now` as a default
+ * argument at import, so mocking `Date` desynchronises its clock from the lease's and renewals
+ * silently stop landing, passing this test for the wrong reason.
  */
 
 import assert from "node:assert/strict";
@@ -69,8 +64,8 @@ test("the run the bar started reaches the keeper, so stopping it gives the lease
   const realSetInterval = globalThis.setInterval;
   const realClearInterval = globalThis.clearInterval;
   const renewalId = Symbol("renewal-interval");
-  // Collected rather than assigned to a `let`: narrowing does not follow a write made inside a
-  // callback, so the captured handler types as `never` and will not call.
+  // Collected, not a `let`: narrowing ignores a write inside a callback, so the handler would
+  // type as `never` and not call.
   const renewalTicks: (() => void)[] = [];
   let renewalStopped = false;
   globalThis.setInterval = ((handler: () => void) => {
@@ -93,8 +88,7 @@ test("the run the bar started reaches the keeper, so stopping it gives the lease
     "this tab has to own the message before it can hold its lease",
   );
 
-  // The thread is idle, the ordinary case: the bar only fires on a reply that has already
-  // finished. So the hold owns the key, and a preflight that is stopped is decidable.
+  // Idle, the ordinary case, so the hold owns the key and a stopped preflight is decidable.
   holdAutoContinueRun("m1", "thread-A");
   assert.equal(
     renewalTicks.length,
@@ -103,16 +97,14 @@ test("the run the bar started reaches the keeper, so stopping it gives the lease
   );
   const renewalTick = renewalTicks[0];
 
-  // The run the bar just issued, still in preflight. A real promise, because that is what
-  // `startRun` hands back and what `issuedRunFrom` has to accept.
+  // A real promise, because that is what `startRun` hands back and `issuedRunFrom` must accept.
   let stopTheRun: (() => void) | undefined;
   const startedRun = new Promise<void>((resolve) => {
     stopTheRun = resolve;
   });
   watchAutoContinueRun("m1", "thread-A", startedRun);
 
-  // Preflight runs long: this chat's settings pairing, then a large local GGUF loading. The lease
-  // is renewed throughout, which is the whole reason arming has no deadline.
+  // Renewed throughout a long preflight, which is why arming has no deadline.
   for (let renewal = 0; renewal < 3; renewal += 1) {
     renewalTick();
     await settleWrites();
@@ -124,17 +116,13 @@ test("the run the bar started reaches the keeper, so stopping it gives the lease
   );
   assert.ok(lease("m1"), "the lease is still held while its run is starting");
 
-  // === The user presses Stop ===
-  // The run's own promise settles. `runningByThreadId` is never touched, because no token was ever
-  // on its way, and no failure is announced, because the abort is what the user asked for. Those
-  // are the only two signals the keeper had before this change, so without the run itself nothing
-  // here reports anything at all.
+  // Stop. The stream flag never moved and no failure is announced, and those were the keeper's
+  // only two signals before this change, so without the run itself nothing reports anything.
   stopTheRun?.();
   await startedRun;
   await settleWrites();
 
-  // The tab is still open and still ticking. Its own run is over, so there is nothing left to
-  // renew for and the keeper stops.
+  // Still open and still ticking, but its own run is over, so the keeper stops.
   renewalTick();
   await settleWrites();
 

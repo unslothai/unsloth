@@ -2261,10 +2261,8 @@ test("the abort case is wired to the run, not to a clock", () => {
     ),
     "utf8",
   );
-  // Every timer either file schedules, not just `setTimeout(`: an arming deadline spelled
-  // `setInterval` counts its own elapsed time and passed this test unnoticed. The renewal
-  // interval is the ONE timer allowed here, and it is named rather than counted, so a second
-  // `setInterval` cannot pose as it.
+  // Every timer, not just `setTimeout(`: a deadline spelled `setInterval` counts its own elapsed
+  // time and passed unnoticed. The renewal interval is NAMED, so a second one cannot pose as it.
   const TIMERS =
     /\b(?:setTimeout|setInterval|setImmediate|queueMicrotask|requestIdleCallback|requestAnimationFrame)\s*\(/g;
   for (const [name, source, allowed] of [

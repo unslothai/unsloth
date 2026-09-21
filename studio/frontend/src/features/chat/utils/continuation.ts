@@ -804,10 +804,9 @@ export type AutoContinueRunSignal = {
 };
 
 /** The run a hold was taken for. `AutoContinueRunSignal` answers off the STREAM, so it is silent
- *  for a preflight the user STOPPED; this settles when THAT run ends however it ends, and is
- *  pending for the whole preflight, so a merely slow run settles nothing. It must be the run's
- *  OWN promise: the next round is claimed while the previous is still winding down, so a
- *  thread-wide notice would lapse the successor's lease mid-preflight. */
+ *  for a preflight the user STOPPED; this is pending for the whole preflight, so a merely slow run
+ *  settles nothing. It must be the run's OWN promise: the next round is claimed while the previous
+ *  is still winding down, so a thread-wide notice would lapse the successor's lease mid-preflight. */
 export type AutoContinueIssuedRun = {
   whenSettled(onSettled: () => void): void;
 };
@@ -866,15 +865,13 @@ export function createAutoContinueLeaseKeeper({
     const at = now();
     for (const [id, hold] of [...holds]) {
       if (hold.settled && !hold.armed && hold.ownsTheKey) {
-        // Its own run is over and the stream never began: Stop during preflight. Discarded as a
-        // failed preflight is, so the lease lapses on its own TTL and no `done` marker claims a
-        // message that produced not one token.
-        //
-        // Ahead of the running check so nothing on the thread now can arm it, and only for an
-        // UNARMED hold, since the key carries a LIST of owners and dropping an armed hold costs
-        // a continuation that did stream its marker. `ownsTheKey` is the other half: a hold
-        // taken while the key was already busy cannot arm off its own run, so one that streamed
-        // throughout is indistinguishable from one that was stopped. Undecidable, so renewed.
+        // Its own run is over and the stream never began: Stop during preflight. Discarded, not
+        // released, so the lease lapses on its own TTL and no `done` marker claims a message that
+        // produced not one token. Ahead of the running check so nothing on the thread now can arm
+        // it, and only while UNARMED, since the key carries a LIST of owners and dropping an armed
+        // hold costs a continuation that did stream its marker. `ownsTheKey` likewise: a hold taken
+        // on an already-busy key cannot arm off its own run, so one that streamed throughout is
+        // indistinguishable from one that was stopped. Undecidable, so renewed.
         holds.delete(id);
         continue;
       }

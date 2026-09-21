@@ -92,9 +92,8 @@ export function holdAutoContinueRun(
   timer ??= setInterval(tick, AUTO_CONTINUE_LEASE_RENEW_MS);
 }
 
-/** Tie the hold just taken for `messageId` to the run the bar has just issued for it. The only
- *  thing that ends a hold whose preflight the user STOPPED: that run raises no failure and never
- *  reached the stream flag, so without it the hold renewed its lease until the tab closed. */
+/** The only thing that ends a hold whose preflight the user STOPPED: that run raises no failure
+ *  and never reached the stream flag, so without it the hold renewed until the tab closed. */
 export function watchAutoContinueRun(
   messageId: string,
   threadId: string | undefined,
