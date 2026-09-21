@@ -23,11 +23,10 @@ import {
 import { downloadFile, isDownloadCancelled } from "@/lib/native-files";
 
 import { cn } from "@/lib/utils";
-import { Search01Icon } from "@hugeicons/core-free-icons";
+import { Download01Icon, Search01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
   BookmarkIcon,
-  DownloadIcon,
   EyeIcon,
   LayoutListIcon,
   PencilIcon,
@@ -1319,7 +1318,7 @@ function ExportModal({
             Cancel
           </Button>
           <Button size="sm" onClick={handleExport}>
-            <DownloadIcon className="mr-1.5 size-3.5" />
+            <HugeiconsIcon icon={Download01Icon} className="mr-1.5 size-3.5" />
             Download
           </Button>
         </div>
@@ -1611,7 +1610,7 @@ function PromptDetail({
           className="flex h-8 w-8 items-center justify-center rounded-lg text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
           title="Export"
         >
-          <DownloadIcon className="size-4" />
+          <HugeiconsIcon icon={Download01Icon} className="size-4" />
         </button>
         <button
           type="button"
@@ -1939,7 +1938,7 @@ function PromptListDetail({
           className="flex h-8 w-8 items-center justify-center rounded-lg text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
           title="Export"
         >
-          <DownloadIcon className="size-4" />
+          <HugeiconsIcon icon={Download01Icon} className="size-4" />
         </button>
         <button
           type="button"
@@ -2446,7 +2445,7 @@ export function PromptStorageDialog({
                   onClick={openBulkExport}
                   className="h-8 gap-1.5 text-xs"
                 >
-                  <DownloadIcon className="size-3.5" />
+                  <HugeiconsIcon icon={Download01Icon} className="size-3.5" />
                   Export
                 </Button>
                 <div className="ml-1 h-5 w-px bg-border/60 shrink-0" />

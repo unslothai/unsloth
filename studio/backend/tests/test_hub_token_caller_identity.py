@@ -517,9 +517,10 @@ def test_an_unreachable_probe_takes_the_short_ttl_and_spans_the_next_request(mon
     assert probes["n"] == 1, "the unreachable answer did not survive to the next request"
 
     # Held under the SHORT ttl, not the denial one, and the constants must stay ordered so
-    # the memo cannot expire before the next request reaches it.
+    # Memoized as UNKNOWN rather than as False: a stored denial the Hub never gave was handed to
+    # every caller in the window. None re-resolves locally on each call inside it.
     (expiry, allowed) = next(iter(hf_tokens._repo_access_cache.values()))
-    assert allowed is False
+    assert allowed is None
     assert expiry - time.monotonic() <= hf_tokens._REPO_ACCESS_UNREACHABLE_TTL_S
     assert (
         hf_tokens._REPO_ACCESS_PROBE_TIMEOUT_S
@@ -834,7 +835,7 @@ def test_seed_inspection_derives_its_policy_from_the_caller(monkeypatch):
         seen["token"] = token
         return []
 
-    monkeypatch.setattr(seed_routes, "_list_hf_data_files", _fake_list)
+    monkeypatch.setattr(seed_routes, "_list_hf_repo_files", _fake_list)
 
     for via_api_key in (True, False):
         _router_client(seed_routes.router, "/api/data-recipe", via_api_key = via_api_key).post(
@@ -852,7 +853,7 @@ def test_an_explicit_seed_token_wins_for_either_caller(monkeypatch):
     _counting_probe(monkeypatch, True)
     monkeypatch.setattr(
         seed_routes,
-        "_list_hf_data_files",
+        "_list_hf_repo_files",
         lambda *, dataset_name, token: seen.update(token = token) or [],
     )
     monkeypatch.setattr(seed_routes, "load_dataset", lambda **_k: iter([]), raising = False)
@@ -1362,7 +1363,7 @@ def test_a_seed_preview_off_the_cache_is_refused(monkeypatch, reason, hf_token, 
     def _never(*_a, **_k):
         raise AssertionError(f"{reason} reached the dataset load")
 
-    monkeypatch.setattr(seed_routes, "_list_hf_data_files", _never)
+    monkeypatch.setattr(seed_routes, "_list_hf_repo_files", _never)
 
     payload = SimpleNamespace(
         dataset_name = "org/private",
@@ -2557,7 +2558,11 @@ def test_the_scan_predicate_covers_every_config_the_scanner_reads(monkeypatch, c
     monkeypatch.setattr("huggingface_hub.try_to_load_from_cache", _lookup)
 
     assert _scan_refused("acme/private") == 404
-    assert all(root == "/studio/cache" for _n, root in seen), "asked the wrong cache root"
+    # Compared as paths, not as strings: on Windows the round trip through str() spells it
+    # "\\studio\\cache". The claim is which root was asked about.
+    assert all(
+        Path(root) == Path("/studio/cache") for _n, root in seen
+    ), "asked the wrong cache root"
 
 
 def test_the_template_predicate_asks_the_active_cache(monkeypatch):
@@ -2594,7 +2599,9 @@ def test_the_template_predicate_asks_the_active_cache(monkeypatch):
     )
 
     assert picker_service.read_default_chat_template("org/private", "hf_dummy") is None
-    assert roots and all(r == "/studio/cache" for r in roots), "asked the wrong cache root"
+    assert roots and all(
+        Path(r) == Path("/studio/cache") for r in roots
+    ), "asked the wrong cache root"
     assert not downloads, "a template cached in the active root was served to a denied caller"
 
 
@@ -2622,3 +2629,35 @@ def test_a_local_only_config_read_stays_off_the_wire(monkeypatch):
         )
 
     assert probes["n"] == 0
+
+
+def test_a_slow_denial_is_still_a_denial(monkeypatch):
+    """Elapsed time is not evidence about what the Hub said.
+
+    Giving up is recognised by CLASS and by STATUS, and the budget covers the cold
+    huggingface_hub import and a distant mirror as well as the request, so a definitive 401 can
+    easily take all of it. Rewriting that to None discarded the refusal and left no remembered
+    denial.
+    """
+    monkeypatch.setattr(hf_tokens, "_REPO_ACCESS_PROBE_TIMEOUT_S", 0.05)
+    calls = _counting_probe(monkeypatch, False, offline = False, delay = 0.2)
+
+    assert hf_tokens._explicit_token_reaches_repo("org/private", "hf_revoked", "model") is False
+    assert calls["n"] == 1
+    # Memoized as the denial it was, under the denial TTL rather than the short unreachable one,
+    # and remembered, which is what survives a later unaskable Hub.
+    (expiry, allowed) = next(iter(hf_tokens._repo_access_cache.values()))
+    assert allowed is False
+    assert expiry - time.monotonic() > hf_tokens._REPO_ACCESS_UNREACHABLE_TTL_S
+
+    # And the refusal outlives an unaskable probe afterwards, the path the disclosure went
+    # through. Asked of the AUTHORIZATION, not of the probe's tri-state: a denial is remembered
+    # only where the disk fallback could overturn it, which needs a credential this host HOLDS
+    # and the repo on this disk, else a caller naming absent repos fills the table and costs
+    # everyone the offline fallback. `hf_revoked` is neither, so the probe reports "could not
+    # ask" and `_resolve_unaskable` refuses; the caller-visible answer is the same no. The
+    # remembering itself is pinned by test_offline_local_cache_discovery.py::
+    # test_nothing_but_the_hub_overturns_a_hub_that_answered_no.
+    hf_tokens._repo_access_cache.clear()
+    _counting_probe(monkeypatch, None, offline = False)
+    assert hf_tokens.cache_reads_authorized("hf_revoked", repo_id = "org/private") is False

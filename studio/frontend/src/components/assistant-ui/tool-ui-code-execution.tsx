@@ -10,8 +10,9 @@ import {
   type ToolCallMessagePartComponent,
   useAuiState,
 } from "@assistant-ui/react";
-import { CopyIcon, FileTextIcon, TerminalIcon } from "lucide-react";
+import { FileTextIcon, TerminalIcon } from "lucide-react";
 import { Tick02Icon } from "@/lib/tick-icon";
+import { Copy01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { Spinner } from "@/components/ui/spinner";
 import { isToolCallRunning, toolArgText } from "./tool-arg-text";
@@ -23,6 +24,7 @@ import {
   ToolFallbackTrigger,
 } from "./tool-fallback";
 import { useToolActivityOpen } from "./use-tool-activity-open";
+import { ScrollPane } from "./scroll-pane";
 
 /**
  * Renders synthetic `_toolEvent` chunks from `_stream_anthropic` for the
@@ -98,7 +100,7 @@ function CopyBtn({ text }: { text: string }) {
       {copied ? (
         <HugeiconsIcon icon={Tick02Icon} strokeWidth={2} className="size-3" />
       ) : (
-        <CopyIcon className="size-3" />
+        <HugeiconsIcon icon={Copy01Icon} className="size-3" />
       )}
       {copied ? "Copied" : "Copy"}
     </button>
@@ -122,9 +124,12 @@ export function CodeExecutionResultOutput({ result }: { result: unknown }) {
       <div className="flex justify-end">
         <CopyBtn text={resultText} />
       </div>
-      <pre className="mt-1 max-h-64 overflow-auto whitespace-pre-wrap break-words rounded bg-muted/50 p-2 text-xs">
+      <ScrollPane
+        className="mt-1 rounded bg-muted/50 p-2"
+        scrollerClassName="max-h-64 overflow-auto whitespace-pre-wrap break-words text-xs"
+      >
         {displayedResult}
-      </pre>
+      </ScrollPane>
     </div>
   );
 }

@@ -354,20 +354,20 @@
 	   sidebar, #212121 cards. Palette dark blocks override only accent
 	   tokens so dark mode stays consistent across themes. */
 	--background: #181818;
-	--foreground: #ececec;
+	--foreground: #ffffff;
 	--card: #212121;
-	--card-foreground: #ececec;
+	--card-foreground: #ffffff;
 	--popover: #212121;
-	--popover-foreground: #ececec;
+	--popover-foreground: #ffffff;
 	--primary: #17b88b;
 	--primary-foreground: oklch(1 0 0);
 	--secondary: #242424;
-	--secondary-foreground: #ececec;
+	--secondary-foreground: #ffffff;
 	--muted: #242424;
-	--muted-foreground: #9b9b9b;
+	--muted-foreground: #a3a3a3;
 	/* One step lighter than --popover so menu item hover reads clearly. */
 	--accent: #2e2e2e;
-	--accent-foreground: #ececec;
+	--accent-foreground: #ffffff;
 	--destructive: oklch(0.6368 0.2078 25.3313);
 	/* Bypass permissions accent: bright, saturated neon yellow on dark. */
 	--bypass: #ffd60a;
@@ -385,11 +385,11 @@
 	/* Elevated a step lighter than --background; the tone difference is
 	   the separator. */
 	--sidebar: #1f1f1f;
-	--sidebar-foreground: #ececec;
+	--sidebar-foreground: #ffffff;
 	--sidebar-primary: #17b88b;
 	--sidebar-primary-foreground: oklch(1 0 0);
 	--sidebar-accent: #2a2a2a;
-	--sidebar-accent-foreground: #ececec;
+	--sidebar-accent-foreground: #ffffff;
 	--sidebar-border: #2a2a2a;
 	--sidebar-ring: #ececec;
 	--destructive-foreground: oklch(1 0 0);
@@ -2786,6 +2786,19 @@ html[data-chat-font] .aui-root {
 	.aui-assistant-message-content > *:last-child > *:last-child > *:last-child > *:last-child > *:last-child,
 	.aui-assistant-message-content > *:last-child > *:last-child > *:last-child > *:last-child > *:last-child > *:last-child {
 		margin-bottom: 0 !important;
+	}
+
+	/* One vertical rhythm for everything stacked inside an assistant reply: text, thinking
+	   headers, tool-call groups and single tool rows all sit 1rem apart, the same gap
+	   streamdown puts between two paragraphs. The parts themselves own no outer margin or
+	   padding, so a header next to a paragraph reads the same as a paragraph next to a
+	   paragraph. `:where()` keeps this at zero specificity so a part that does set its own
+	   `mt-*` still wins. The first real child follows a zero-height badge anchor and gets none. */
+	:where(.aui-assistant-message-content > * + *) {
+		margin-top: 1rem;
+	}
+	:where(.aui-assistant-message-content > .h-0 + *) {
+		margin-top: 0;
 	}
 
 	/* The streamdown code-block wrapper carries `my-4` (16px top + 16px

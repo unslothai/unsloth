@@ -8486,12 +8486,32 @@ const EditComposer: FC = () => {
       return;
     }
     resendAfterCancelRef.current = false;
-    aui.composer().send();
+    aui.composer().send({ startRun: true });
   });
+
+  // The one submit path. ComposerPrimitive.Root is a form and its Enter handler sends
+  // without startRun, which drops an unchanged edit, so preventDefault here and take over.
+  const submitEdit = useCallback(() => {
+    if (isComposingRef.current) return;
+    if (aui.thread().getState().isRunning) {
+      resendAfterCancelRef.current = true;
+      aui.thread().cancelRun();
+      return;
+    }
+    // startRun forces a run when nothing was typed: the edit composer's send
+    // drops a message whose text and attachments are unchanged.
+    aui.composer().send({ startRun: true });
+  }, [aui, isComposingRef]);
 
   return (
     <MessagePrimitive.Root className="aui-edit-composer-wrapper mx-auto flex w-full max-w-(--thread-content-max-width) flex-col py-3">
-      <ComposerPrimitive.Root className="aui-edit-composer-root ml-auto flex w-full max-w-[85%] flex-col rounded-2xl bg-muted">
+      <ComposerPrimitive.Root
+        className="aui-edit-composer-root ml-auto flex w-full max-w-[85%] flex-col rounded-2xl bg-muted"
+        onSubmit={(event) => {
+          event.preventDefault();
+          submitEdit();
+        }}
+      >
         <ComposerPrimitive.Input
           submitMode={sendShortcut === "mod-enter" ? "ctrlEnter" : "enter"}
           className="aui-edit-composer-input min-h-14 w-full resize-none bg-transparent p-4 text-foreground text-sm font-[450] outline-none"
@@ -8506,32 +8526,8 @@ const EditComposer: FC = () => {
               Cancel
             </Button>
           </ComposerPrimitive.Cancel>
-          <Button
-            type="button"
-            size="sm"
-            disabled={researchActive}
-            onClick={(event) => {
-              if (isComposingRef.current) {
-                event.preventDefault();
-                return;
-              }
-              const newText = aui.composer().getState().text;
-              const originalText = aui.message().getCopyText();
-
-              if (newText === originalText) {
-                aui.composer().cancel();
-                return;
-              }
-
-              if (aui.thread().getState().isRunning) {
-                resendAfterCancelRef.current = true;
-                aui.thread().cancelRun();
-                return;
-              }
-              aui.composer().send();
-            }}
-          >
-            Update
+          <Button type="submit" size="sm" disabled={researchActive}>
+            Send
           </Button>
         </div>
       </ComposerPrimitive.Root>

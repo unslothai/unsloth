@@ -196,6 +196,7 @@ export const ja = {
       unpinChats: "ピン留めを解除",
       archiveChats: "チャットをアーカイブ",
       markUnread: "未読にする",
+      markRead: "既読にする",
       deleteChats: "チャットを削除",
       deleteTitle: "チャットを削除",
       deleteDescription: "{count} 件のチャットを削除しますか。元に戻せません。",
@@ -214,11 +215,26 @@ export const ja = {
       priority: "優先度",
       lastUpdated: "最終更新",
       manualOrder: "手動で並べ替え",
-      moveUp: "上へ移動",
-      moveDown: "下へ移動",
+      priorityHint: "実行中・未読が先頭",
+      lastUpdatedHint: "新しい順",
+      manualOrderHint: "行をドラッグして並べ替えます",
+      switchedToManual: "手動の並び順に切り替えました。行をドラッグして並べ替えます",
       organizeChats: "チャットを整理",
       organizeProjects: "プロジェクトを整理",
       sortPinnedChats: "ピン留めチャットを並べ替え",
+      dragDrop: "ドラッグ＆ドロップ",
+      dragHints: "ドラッグ中にヒントを表示",
+      reorderSwitchesSort: "並べ替えると手動順序に切り替える",
+      dragOpensFolders: "ポインターの下のフォルダーを開く",
+      moveUp: "上へ移動",
+      moveDown: "下へ移動",
+    },
+    drag: {
+      reorder: "並べ替え",
+      pin: "ピン留め",
+      unpin: "ピン留めを解除",
+      moveTo: "{name} に移動",
+      moveToRecents: "最近に移動",
     },
     dialog: {
       deleteChat: {
@@ -1581,6 +1597,9 @@ export const ja = {
         collapseByDefault: "ツールの動作をデフォルトで折りたたむ",
         collapseByDefaultDescription:
           "ツールの実行中は入力と出力を折りたたんだままにします。確認するにはツール行を展開してください。",
+        foldIntoThinking: "ツール呼び出しを思考に折りたたむ",
+        foldIntoThinkingDescription:
+          "思考ブロックを開くまで、そのターンのツール呼び出しを隠します。",
       },
       webSearch: {
         title: "ウェブ検索",

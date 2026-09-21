@@ -197,6 +197,7 @@ export const fr = {
       unpinChats: "Détacher les discussions",
       archiveChats: "Archiver les discussions",
       markUnread: "Marquer comme non lu",
+      markRead: "Marquer comme lu",
       deleteChats: "Supprimer les discussions",
       deleteTitle: "Supprimer les discussions",
       deleteDescription: "Supprimer {count} discussions ? Cette action est irréversible.",
@@ -215,11 +216,26 @@ export const fr = {
       priority: "Priorité",
       lastUpdated: "Dernière mise à jour",
       manualOrder: "Ordre manuel",
-      moveUp: "Monter",
-      moveDown: "Descendre",
+      priorityHint: "Actifs et non lus en premier",
+      lastUpdatedHint: "Les plus récents en premier",
+      manualOrderHint: "Faites glisser les lignes pour les réorganiser",
+      switchedToManual: "Tri manuel : faites glisser les lignes pour les réorganiser",
       organizeChats: "Organiser les discussions",
       organizeProjects: "Organiser les projets",
       sortPinnedChats: "Trier les discussions épinglées",
+      dragDrop: "Glisser-déposer",
+      dragHints: "Afficher une indication pendant le glissement",
+      reorderSwitchesSort: "Réordonner passe en ordre manuel",
+      dragOpensFolders: "Ouvrir les dossiers sous le pointeur",
+      moveUp: "Monter",
+      moveDown: "Descendre",
+    },
+    drag: {
+      reorder: "Réordonner",
+      pin: "Épingler",
+      unpin: "Désépingler",
+      moveTo: "Déplacer vers {name}",
+      moveToRecents: "Déplacer vers Récents",
     },
     dialog: {
       deleteChat: {
@@ -1635,6 +1651,9 @@ export const fr = {
         collapseByDefault: "Replier l’activité des outils par défaut",
         collapseByDefaultDescription:
           "Garde les entrées et sorties des outils repliées pendant leur exécution. Dépliez une ligne d’outil pour l’examiner.",
+        foldIntoThinking: "Replier les appels d'outils dans la Réflexion",
+        foldIntoThinkingDescription:
+          "Masque les appels d'outils d'un tour jusqu'à l'ouverture de son bloc de Réflexion.",
       },
       webSearch: {
         title: "Recherche web",
