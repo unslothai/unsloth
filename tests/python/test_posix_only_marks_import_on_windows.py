@@ -174,6 +174,14 @@ def _geteuid_sites(expr: ast.AST):
         for node in ast.walk(expr)
         if isinstance(node, ast.Starred) and isinstance(node.value, ast.GeneratorExp)
     }
+    # a list/set/dict comprehension runs eagerly, so a generator it iterates is advanced
+    unpacked.update(
+        generator.iter
+        for node in ast.walk(expr)
+        if isinstance(node, (ast.ListComp, ast.SetComp, ast.DictComp))
+        for generator in node.generators
+        if isinstance(generator.iter, ast.GeneratorExp)
+    )
     # `ROOT, = (os.geteuid() for _ in xs)` has to advance the generator to unpack it
     unpacked.update(
         node.value
@@ -205,6 +213,7 @@ def _geteuid_sites(expr: ast.AST):
         elif (
             isinstance(node, ast.ImportFrom)
             and node.module == "os"
+            and node.level == 0  # `from .os import geteuid` is a local module, not stdlib
             and any(alias.name == "geteuid" for alias in node.names)
         ):
             # `from os import geteuid` raises ImportError on Windows at the import
@@ -493,6 +502,11 @@ def _import_time_expressions(tree: ast.Module):
                 yield statement.value
             if not isinstance(statement.target, ast.Name):
                 yield statement.target
+            if _assigns_os_geteuid(statement):
+                # _offending_sites matches the definer by identity, and it would never
+                # see this one otherwise: `os.geteuid: object = lambda: 0` under a
+                # deferred annotation settles the attribute like any other assignment
+                yield statement
             return
         if any(
             isinstance(child, (ast.stmt, ast.ExceptHandler, MATCH_CASE))
@@ -919,3 +933,27 @@ def test_the_definition_is_found_through_an_alias():
     """`import os as _os` then `_os.geteuid = lambda: 0` settles the same attribute."""
     assert not _flagged("import os as _os\n_os.geteuid = lambda: 0\nROOT = _os.geteuid() == 0\n")
     assert _flagged("import os as _os\nROOT = _os.geteuid() == 0\n")
+
+
+def test_a_relative_import_is_not_the_stdlib_os():
+    """A package with its own os.py makes `from .os import geteuid` a local import that
+    collects fine on Windows."""
+    assert not _flagged("from .os import geteuid\n")
+    assert not _flagged("from ..os import geteuid\n")
+    assert _flagged("from os import geteuid\n")
+
+
+def test_an_eager_comprehension_advances_the_generator_it_iterates():
+    """A list, set or dict comprehension runs on the spot, so a generator it iterates is
+    advanced there too."""
+    assert _flagged("import os\nROOT = [x for x in (os.geteuid() for _ in range(1))]\n")
+    assert _flagged("import os\nROOT = {x for x in (os.geteuid() for _ in range(1))}\n")
+    assert not _flagged("import os\nGEN = (x for x in (os.geteuid() for _ in range(1)))\n")
+
+
+def test_a_deferred_annotated_assignment_still_settles_the_attribute():
+    """`os.geteuid: object = lambda: 0` is a definition whatever the annotation does, and
+    the deferred branch has to say so or nothing after it is spared."""
+    source = "import os\nos.geteuid: object = lambda: 0\nROOT = os.geteuid() == 0\n"
+    assert not _flagged(source)
+    assert not _flagged("from __future__ import annotations\n" + source)
