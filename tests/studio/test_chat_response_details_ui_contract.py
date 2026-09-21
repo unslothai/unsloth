@@ -283,7 +283,18 @@ def _spread_overrides(tag: str, attribute: str) -> bool:
     A tag with no explicit attribute at all is unknown if it spreads anything, since the
     spread is then the only thing that could be supplying it.
     """
-    spreads = [match.start() for match in re.finditer(r"\{\s*\.\.\.", tag)]
+    # At the tag's own attribute level only. An object spread inside another prop, such as
+    # `onClick={() => call({...payload})}`, cannot reach className, and treating it as if it
+    # could made this refuse a tag that is perfectly readable.
+    spreads = []
+    depth = 0
+    for index, char in enumerate(tag):
+        if char == "{":
+            if depth == 0 and re.match(r"\{\s*\.\.\.", tag[index:]):
+                spreads.append(index)
+            depth += 1
+        elif char == "}":
+            depth -= 1
     if not spreads:
         return False
     explicit = re.search(rf"(?:^|[\s{{]){re.escape(attribute)}=", tag)

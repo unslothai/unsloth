@@ -852,7 +852,7 @@ def test_chat_sidebar_rows_are_compact_without_vertical_padding():
     assert 'variant === "project" ? "pl-[39px]" : "pl-3"' in block
 
 
-def _button_classes(block: str, tag: str) -> str | None:
+def _button_classes(block: str, tag: str, variant: str) -> str | None:
     """The literal classes a `<button>` tag ends up with, or None if they cannot be read.
 
     Three forms appear here: a bare literal, `cn(...)` over literals, and a local constant
@@ -877,6 +877,21 @@ def _button_classes(block: str, tag: str) -> str | None:
         if not definition:
             return None
         inner = definition.group(1)
+        # And the branch belonging to THIS variant, if it has branches. `actionClass` is a
+        # `variant === "project" ? ... : ...`, so flattening both sides let one branch lose
+        # `sidebar-row-action` while the token from the other kept the button counted for
+        # both rows.
+        branched = re.match(r'\s*variant\s*===\s*"(\w+)"\s*\?', inner, re.S)
+        if branched:
+            # Split at the `:` that pairs with this `?`, not the first one: every class
+            # string here is full of them, so a non-greedy split lands inside a literal.
+            marks = _operators(inner[branched.end() :])
+            pairing = next((at for at, token in marks if token == ":"), None)
+            if pairing is None:
+                return None
+            rest = inner[branched.end() :]
+            taken = rest[:pairing] if branched.group(1) == variant else rest[pairing + 1 :]
+            inner = taken
     literals = re.findall(r'"([^"]*)"', inner)
     return " ".join(literals) if literals else None
 
@@ -908,7 +923,7 @@ def _labelled_actions(block: str, variant: str) -> dict[int, tuple[str, bool]]:
     for tag in _opening_jsx_tags(block, "<button"):
         at = block.find(tag, cursor)
         cursor = at + 1 if at != -1 else cursor
-        classes = _button_classes(block, tag)
+        classes = _button_classes(block, tag, variant)
         assert classes is not None, (
             f"a button in renderChatSidebarItem carries classes this guard cannot read, so it "
             f"cannot tell whether it is a row action or how far it reaches: {tag!r}"
@@ -1345,10 +1360,19 @@ def test_chat_sidebar_row_actions_visible_on_coarse_pointers():
     )
     # Tailwind's spacing unit is 0.25rem, which is what every pr-N here is counted in.
     offset_units = float(offset.group(1)) / 0.25
-    # Measured to the far edge of the GLYPH, not of its container. The container adds pr-1.5
-    # of its own, and including that puts the project row's reach at 15 against the pr-14 it
-    # states, a 4px question about the product rather than about this guard. Reported on the
-    # PR rather than decided here by failing main.
+    # To the far edge of the GLYPH, which is where the ink stops, but through the padding
+    # that positions it. The container is justify-end with its own pr, so the glyph's right
+    # edge sits that far inside the container's, and its left edge is offset + pr + size.
+    # Leaving the pr out under-measured every row by 1.5, which is how the project row's
+    # pr-14 passed while its pin reached 15.
+    inner = re.search(
+        r"\.sidebar-row-action\s*\{[^}]*?\bpr-(\d+(?:\.\d+)?)", live_css
+    )
+    assert inner, (
+        "index.css no longer gives .sidebar-row-action a pr-N, so this guard cannot tell "
+        "where inside its container the glyph sits"
+    )
+    inner_padding = float(inner.group(1))
     actions = {name: _labelled_actions(applied, name) for name in ("project", "recent")}
     assert all(actions.values()), (
         f"no labelled row action left for one of the variants, so this guard cannot tell how "
@@ -1356,7 +1380,10 @@ def test_chat_sidebar_row_actions_visible_on_coarse_pointers():
         f"{ {name: len(found) for name, found in actions.items()} }"
     )
     reach = {
-        name: max((offset_units if shifted else 0.0) + glyph_size for _, shifted in found.values())
+        name: max(
+            (offset_units if shifted else 0.0) + inner_padding + glyph_size
+            for _, shifted in found.values()
+        )
         for name, found in actions.items()
     }
     floors = {"project-chat-item": reach["project"], "recent-item": reach["recent"]}
