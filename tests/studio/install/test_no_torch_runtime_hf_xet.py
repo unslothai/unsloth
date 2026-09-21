@@ -16,14 +16,11 @@ STUDIO_TXT = REPO_ROOT / "studio" / "backend" / "requirements" / "studio.txt"
 CONSTRAINTS = REPO_ROOT / "studio" / "backend" / "requirements" / "single-env" / "constraints.txt"
 PYPROJECT = REPO_ROOT / "pyproject.toml"
 
-# Every machine hf-xet publishes a wheel for, as of 1.6.0. Anything outside this set resolves to
-# the sdist, which builds through maturin and needs a Rust toolchain -- fatal under --no-deps on
-# a user's machine, and caught by the nobuild lane in .github/scripts/clean-machine-assert.sh.
+# Machines hf-xet ships a wheel for, as of 1.6.0; off-list resolves the maturin sdist instead.
 WHEELED_MACHINES = ("x86_64", "amd64", "AMD64", "arm64", "aarch64", "ARM64")
 UNWHEELED_MACHINES = ("ppc64le", "s390x", "i686", "armv7l", "riscv64")
 
-# The floor huggingface-hub 1.32 declares for hf-xet. Under --no-deps nothing reconciles our pin
-# with the hub's, so ours must not sit below it.
+# huggingface-hub 1.32's own floor, which --no-deps leaves nothing else to enforce.
 HUB_HF_XET_FLOOR = "1.5.2"
 
 ALL_FILES = (NO_TORCH_RUNTIME, STUDIO_TXT, CONSTRAINTS)
@@ -58,8 +55,7 @@ def _hf_xet_requirements(path: pathlib.Path) -> list[Requirement]:
 
 
 def _env(python_version: str, machine: str) -> dict[str, str]:
-    """A full marker environment: leaving platform_machine to the host makes the arch assertions
-    say whatever the runner happens to be."""
+    """Full environment: an absent platform_machine makes the arch assertions read as the runner."""
     return {
         "python_version": python_version,
         "python_full_version": python_version + ".0",

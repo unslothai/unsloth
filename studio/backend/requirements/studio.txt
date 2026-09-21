@@ -22,8 +22,7 @@ pyjwt==2.13.0
 # gradio>=4.0.0                  # 148 MB - Unsloth uses React + FastAPI, not Gradio
 huggingface-hub>=1.23.0,<2.0; python_version >= "3.10"
 huggingface-hub==0.36.2; python_version < "3.10"
-# Declared so the pin matches no-torch-runtime.txt, which is the file that actually needs it
-# (installed --no-deps). Same arch gate; see that file for why.
+# Matches no-torch-runtime.txt, the file that actually needs it; see there for the arch gate.
 hf-xet>=1.5.2,<2.0; python_version >= "3.10" and (platform_machine == "x86_64" or platform_machine == "amd64" or platform_machine == "AMD64" or platform_machine == "arm64" or platform_machine == "aarch64" or platform_machine == "ARM64")
 # truststore is vendored at backend/vendor/, deliberately not a dependency.
 # Transitive via requests, pinned here for one reason: the GGUF header range-read
