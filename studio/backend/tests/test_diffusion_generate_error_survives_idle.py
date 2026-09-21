@@ -99,7 +99,7 @@ def test_the_progress_route_puts_the_classified_reason_on_the_response():
     value, not the engine's."""
     src = _src("routes/inference.py")
     at = src.index("async def diffusion_generate_progress")
-    body = src[at : at + 4500]
+    body = src[at : at + 6000]
     assert (
         '"error": _generate_failure_detail(raw_error) if raw_error else None' in body
     ), "the progress route no longer classifies the retained reason"
@@ -147,7 +147,7 @@ def test_the_route_forwards_the_attempt_id_and_sends_it_only_beside_a_reason():
         "attempt_id = request.attempt_id," in src[at : at + 4000]
     ), "the generate route no longer forwards the attempt id to the engine"
     at = src.index("async def diffusion_generate_progress")
-    body = src[at : at + 4500]
+    body = src[at : at + 6000]
     assert 'if not progress.get("error"):' in body
     assert 'progress.pop("generation_attempt", None)' in body
 
@@ -222,7 +222,7 @@ def test_the_progress_route_answers_about_the_attempt_it_was_asked_about():
     """Named, the answer is that attempt's; unnamed, the retained slot answers as before."""
     src = _src("routes/inference.py")
     at = src.index("async def diffusion_generate_progress")
-    body = src[at : at + 4500]
+    body = src[at : at + 6000]
     assert (
         "attempt_id: Optional[str] = Query(" in body
     ), "the progress route cannot be asked about a particular attempt"
@@ -302,6 +302,9 @@ def test_an_attempt_specific_progress_answer_is_only_about_that_attempt():
         try:
             route.account_access = types.SimpleNamespace(
                 managed_account = lambda: False,
+                # None is the single-identity installation: there is nobody for the
+                # engine's slot to belong to but the caller.
+                account_scope = lambda: None,
                 generation_is_foreign = lambda *_a, **_k: False,
                 generation_is_mine = lambda *_a, **_k: True,
                 resident_hidden = lambda *_a, **_k: False,
@@ -371,7 +374,7 @@ def test_a_retained_outcome_is_the_callers_own_account(monkeypatch):
     # it while someone else is generating.
     src = _src("routes/inference.py")
     at = src.index("async def diffusion_generate_progress")
-    body = src[at : at + 4500]
+    body = src[at : at + 6000]
     lookup = body.index("generate_failure_for_attempt(attempt_id)")
     guard = body.index('account_access.generation_is_foreign("diffusion")')
     assert (
@@ -411,6 +414,9 @@ def test_a_persisting_generation_counts_as_active_only_for_its_own_attempt():
         try:
             route.account_access = types.SimpleNamespace(
                 managed_account = lambda: False,
+                # None is the single-identity installation: there is nobody for the
+                # engine's slot to belong to but the caller.
+                account_scope = lambda: None,
                 generation_is_foreign = lambda *_a, **_k: False,
                 generation_is_mine = lambda *_a, **_k: True,
                 resident_hidden = lambda *_a, **_k: False,
@@ -502,3 +508,76 @@ def test_a_cancelled_attempt_settles_as_a_cancellation_not_a_failure():
     assert named.startswith("Image generation failed.")
     assert "20.00 GiB" not in named, "engine text escaped into a client-visible message"
     assert _generate_failure_detail("something nobody classified") == ("Image generation failed.")
+
+
+def test_an_unscoped_poll_on_a_multi_account_install_is_not_told_someone_elses_reason():
+    """The ENGINE's error slot is one per process; the keyed store is per account.
+
+    A poll that names no attempt reads the engine slot, and the account guards above only
+    hide a generation while it is ACTIVE. So once A's run had failed and left
+    media_generation, B's unscoped poll was answered with A's classified reason and the
+    attempt id that produced it. The keyed store is the authority: a reason this caller can
+    look up is a reason this caller owns.
+    """
+    import asyncio
+    import types
+
+    import routes.inference as route
+    from core.inference.generate_outcomes import _retain_generate_failure
+    from utils.account_context import AccountContext, run_as
+
+    class _Failed:
+        def generate_progress(self):
+            return {
+                "active": False,
+                "step": 0,
+                "total_steps": 0,
+                "fraction": 0.0,
+                "eta_seconds": None,
+                "error": "CUDA out of memory. Tried to allocate 20.00 GiB",
+                "generation_attempt": "attempt-a",
+            }
+
+        def status(self):
+            return {"loaded": True, "repo_id": "someone/model"}
+
+    def answer(scope):
+        original = route.account_access
+        try:
+            route.account_access = types.SimpleNamespace(
+                managed_account = lambda: scope is not None,
+                account_scope = lambda: scope,
+                generation_is_foreign = lambda *_a, **_k: False,
+                generation_is_mine = lambda *_a, **_k: True,
+                resident_hidden = lambda *_a, **_k: False,
+                hidden_generate_progress_response = lambda cls: cls(),
+            )
+            import core.inference.diffusion_engine_router as router
+
+            original_get = router.get_active_diffusion_engine
+            router.get_active_diffusion_engine = lambda: _Failed()
+            try:
+                return asyncio.run(
+                    route.diffusion_generate_progress(attempt_id = None, current_subject = "someone")
+                )
+            finally:
+                router.get_active_diffusion_engine = original_get
+        finally:
+            route.account_access = original
+
+    ada = AccountContext("acct-a", "ada")
+    bo = AccountContext("acct-b", "bo")
+    run_as(ada, _retain_generate_failure, "attempt-a", "CUDA out of memory")
+
+    mine = run_as(ada, answer, "acct-a")
+    assert mine.error, "the account that ran the failed generation was told nothing"
+    theirs = run_as(bo, answer, "acct-b")
+    assert theirs.error is None, "an unscoped poll was answered with another account's failure"
+    assert (
+        theirs.generation_attempt is None
+    ), "another account's attempt id came back with the empty reason"
+
+    # A single-identity installation has nobody else for the slot to belong to, so the
+    # legacy answer an older client depends on is unchanged.
+    solo = answer(None)
+    assert solo.error, "a single-account install lost the unscoped legacy answer"

@@ -39621,6 +39621,17 @@ async def diffusion_generate_progress(
         if not mine_is_running:
             # Another run's step counter is not this caller's progress either.
             progress.update(step = 0, total_steps = 0, fraction = 0.0, eta_seconds = None)
+    if attempt_id is None and account_access.account_scope() is not None:
+        # A poll that names no attempt reads the ENGINE's slot, which is one per process and
+        # holds whoever ran last. On an installation with accounts that is someone else's
+        # failure: the guards above only hide a generation while it is ACTIVE, so once A's
+        # run has exited media_generation, B's unscoped poll was answered with A's reason.
+        # The keyed store is the authority, and it is account-qualified, so a reason this
+        # caller can look up is a reason this caller owns.
+        from core.inference.generate_outcomes import generate_failure_for_attempt
+        attributed = progress.get("generation_attempt")
+        if not (attributed and generate_failure_for_attempt(attributed)):
+            progress = {**progress, "error": None}
     # Classified HERE, where every other client-visible generation message is built, so
     # this stays the only place deciding what a caller may see and engine text with its
     # local paths and argv never escapes.
