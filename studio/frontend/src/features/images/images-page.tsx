@@ -500,7 +500,9 @@ async function settleLostGeneration(
     let idle = false;
     let reported: string | null = null;
     try {
-      const p = await getGenerateProgress();
+      // Named, so the answer is about THIS generation: the engine's retained slot holds
+      // only the last run, and a queued client can start one before this poll comes round.
+      const p = await getGenerateProgress(attemptId);
       fails = 0;
       reported = generationFailureForAttempt(p, attemptId);
       if (p.active) sawActive = true;

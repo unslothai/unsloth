@@ -31,6 +31,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Callable, Optional, Sequence
 
+from core.inference.generate_outcomes import _retain_generate_failure
 from core._torchao_stub import (
     install_torchao_windows_rocm_stub,
     install_xformers_windows_rocm_stub,
@@ -7274,7 +7275,13 @@ class DiffusionBackend:
                 # clearing _gen alone reported "not running" for a failure, which the
                 # settling path read as success. Raw; the route classifies it through
                 # _generate_failure_detail, so engine text never escapes from here.
+                #
+                # Both: the slot answers a client with no attempt id (an older one), and
+                # the per-attempt record survives the runs that follow this one.
                 self._last_generate_error = str(exc) or type(exc).__name__
+                _retain_generate_failure(
+                    self, attempt_id, self._last_generate_error
+                )
                 raise
             else:
                 self._last_generate_error = None

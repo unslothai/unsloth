@@ -18,6 +18,7 @@ from __future__ import annotations
 import ast
 import re
 import sys
+import types
 from pathlib import Path
 
 import pytest
@@ -98,7 +99,7 @@ def test_the_progress_route_puts_the_classified_reason_on_the_response():
     value, not the engine's."""
     src = _src("routes/inference.py")
     at = src.index("async def diffusion_generate_progress")
-    body = src[at : at + 2000]
+    body = src[at : at + 3000]
     assert '"error": _generate_failure_detail(raw_error) if raw_error else None' in body, (
         "the progress route no longer classifies the retained reason"
     )
@@ -146,7 +147,7 @@ def test_the_route_forwards_the_attempt_id_and_sends_it_only_beside_a_reason():
         "the generate route no longer forwards the attempt id to the engine"
     )
     at = src.index("async def diffusion_generate_progress")
-    body = src[at : at + 2500]
+    body = src[at : at + 3500]
     assert 'if not progress.get("error"):' in body
     assert 'progress.pop("generation_attempt", None)' in body
 
@@ -161,3 +162,72 @@ def test_the_attempt_id_is_bounded_and_patterned_on_the_way_in():
     for bad in ("has space", "semi;colon", "<script>", "x" * 65, "sl/ash"):
         with pytest.raises(Exception):
             DiffusionGenerateRequest(prompt = "p", attempt_id = bad)
+
+
+def test_a_failure_survives_the_runs_that_follow_it():
+    """One retained slot is not enough when a second client is queued.
+
+    A client whose POST was lost polls once a second. A queued client can take the slot in
+    that window, and the run it starts clears the slot: the settling client then reads the
+    newcomer going active and idle as its OWN success, and advances a batch past an output
+    that never arrived. Outcomes are therefore kept per attempt.
+    """
+    from core.inference.generate_outcomes import (
+        _RETAINED_GENERATE_FAILURES,
+        _retain_generate_failure,
+        generate_failure_for_attempt,
+    )
+
+    engine = types.SimpleNamespace()
+    _retain_generate_failure(engine, "attempt-a", "CUDA out of memory")
+    # B starts and fails; A has not polled yet.
+    _retain_generate_failure(engine, "attempt-b", "model was replaced")
+    assert generate_failure_for_attempt(engine, "attempt-a") == "CUDA out of memory", (
+        "a later run discarded the reason the settling client is waiting for"
+    )
+    assert generate_failure_for_attempt(engine, "attempt-b") == "model was replaced"
+    # An attempt that never failed, or never ran, has nothing to report.
+    assert generate_failure_for_attempt(engine, "attempt-c") is None
+    assert generate_failure_for_attempt(engine, None) is None
+    assert generate_failure_for_attempt(engine, "") is None
+
+    # Bounded, oldest first out: only a settling caller reads one, and it reads it within
+    # seconds, so this cannot grow with uptime.
+    for i in range(_RETAINED_GENERATE_FAILURES + 4):
+        _retain_generate_failure(engine, f"attempt-{i}", f"reason {i}")
+    assert len(engine._generate_outcomes) == _RETAINED_GENERATE_FAILURES
+    assert generate_failure_for_attempt(engine, "attempt-0") is None, "the bound is not enforced"
+    assert generate_failure_for_attempt(engine, f"attempt-{_RETAINED_GENERATE_FAILURES + 3}")
+
+    # An id with no reason is not remembered at all, so a successful run leaves nothing.
+    fresh = types.SimpleNamespace()
+    _retain_generate_failure(fresh, None, "should not be kept")
+    assert getattr(fresh, "_generate_outcomes", None) is None
+
+
+@pytest.mark.parametrize("engine", ENGINES)
+def test_an_engine_records_the_failure_against_its_own_attempt(engine):
+    """Both engines, at the point where they already retain the reason."""
+    src = _src(engine)
+    assert "_retain_generate_failure(" in src, (
+        f"{engine} does not record the failure against the attempt that ran it"
+    )
+    retained = src.index("self._last_generate_error = str(exc) or type(exc).__name__")
+    recorded = src.index("_retain_generate_failure(", retained)
+    assert recorded - retained < 300, (
+        f"{engine} records the per-attempt outcome away from where it retains the reason"
+    )
+
+
+def test_the_progress_route_answers_about_the_attempt_it_was_asked_about():
+    """Named, the answer is that attempt's; unnamed, the retained slot answers as before."""
+    src = _src("routes/inference.py")
+    at = src.index("async def diffusion_generate_progress")
+    body = src[at : at + 3500]
+    assert "attempt_id: Optional[str] = Query(" in body, (
+        "the progress route cannot be asked about a particular attempt"
+    )
+    assert "generate_failure_for_attempt(engine, attempt_id)" in body
+    assert "if attempt_id is not None:" in body, (
+        "an older client with no attempt id no longer gets the retained slot"
+    )

@@ -279,8 +279,16 @@ export async function getDiffusionLoadProgress(
   );
 }
 
-export async function getGenerateProgress(): Promise<DiffusionGenerateProgress> {
-  return parseJson(await authFetch("/api/inference/images/generate-progress"));
+export async function getGenerateProgress(
+  /** Ask about this attempt's own generation rather than the last one to run. */
+  attemptId?: string | null,
+): Promise<DiffusionGenerateProgress> {
+  const query = attemptId
+    ? `?attempt_id=${encodeURIComponent(attemptId)}`
+    : "";
+  return parseJson(
+    await authFetch(`/api/inference/images/generate-progress${query}`),
+  );
 }
 
 export async function loadDiffusionModel(body: DiffusionLoadRequest): Promise<DiffusionStatus> {

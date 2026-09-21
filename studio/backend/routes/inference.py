@@ -39525,7 +39525,15 @@ async def diffusion_load_progress(
 
 
 @studio_router.get("/images/generate-progress", response_model = DiffusionGenerateProgressResponse)
-async def diffusion_generate_progress(current_subject: str = Depends(get_current_subject)):
+async def diffusion_generate_progress(
+    attempt_id: Optional[str] = Query(
+        None,
+        max_length = 64,
+        pattern = r"^[A-Za-z0-9_-]+$",
+        description = "Answer about this attempt's own generation",
+    ),
+    current_subject: str = Depends(get_current_subject),
+):
     if account_access.managed_account() and account_access.generation_is_foreign("diffusion"):
         return account_access.hidden_generate_progress_response(DiffusionGenerateProgressResponse)
     mine = account_access.generation_is_mine("diffusion")
@@ -39542,7 +39550,17 @@ async def diffusion_generate_progress(current_subject: str = Depends(get_current
     ):
         return account_access.hidden_generate_progress_response(DiffusionGenerateProgressResponse)
 
-    progress = get_active_diffusion_engine().generate_progress()
+    engine = get_active_diffusion_engine()
+    progress = engine.generate_progress()
+    # A caller that names its attempt is answered about THAT generation, however many have
+    # run since: the retained slot below holds only the last one, and a queued client can
+    # take the slot before a settling caller's next poll. Absent, the slot answers, which
+    # is what an older client gets.
+    if attempt_id is not None:
+        from core.inference.generate_outcomes import generate_failure_for_attempt
+
+        raw_error = generate_failure_for_attempt(engine, attempt_id)
+        progress = {**progress, "error": raw_error, "generation_attempt": attempt_id}
     # Classified HERE, where every other client-visible generation message is built, so
     # this stays the only place deciding what a caller may see and engine text with its
     # local paths and argv never escapes.

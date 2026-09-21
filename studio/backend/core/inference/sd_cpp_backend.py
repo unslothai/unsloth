@@ -29,6 +29,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Optional
 
+from core.inference.generate_outcomes import _retain_generate_failure
 from core.inference.diffusion_compat import flux2_inner_dim_for_pick
 from core.inference.diffusion_device import (
     resolve_diffusion_device_target,
@@ -3320,8 +3321,12 @@ class SdCppDiffusionBackend:
                 raise RuntimeError(DIFFUSION_CANCELLED_MSG) from exc
             except BaseException as exc:
                 # See the diffusers engine: idle progress is the only channel left once the
-                # POST is lost, so the reason has to outlive _gen. Raw; the route classifies.
+                # POST is lost, so the reason has to outlive _gen, and the per-attempt
+                # record has to outlive the runs after it. Raw; the route classifies.
                 self._last_generate_error = str(exc) or type(exc).__name__
+                _retain_generate_failure(
+                    self, attempt_id, self._last_generate_error
+                )
                 raise
             else:
                 self._last_generate_error = None
