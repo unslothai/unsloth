@@ -525,8 +525,10 @@ class ValidateModelRequest(BaseModel):
         description = (
             "Per-GPU share (--tensor-split) intended for the follow-up load. Manual "
             "mode promotes an explicit -ts from llama_extra_args into this field "
-            "before stripping the raw flag, so this preflight must carry the same "
-            "ratio /load will emit (#11330)."
+            "before stripping the raw flag, so the preflight strips exactly the "
+            "tokens /load strips and judges the command /load will run (#11330). "
+            "No sizing here reads the ratio itself: _guard_chat_load_against_training "
+            "and _estimate_gguf_required_gb budget per device, not per share."
         ),
     )
     n_parallel: Optional[int] = Field(

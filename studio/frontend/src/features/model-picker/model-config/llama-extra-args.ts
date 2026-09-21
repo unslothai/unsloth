@@ -248,6 +248,7 @@ function dropUnusableValues(tokens: readonly string[]): string[] {
     const minimum = INTEGER_VALUE_MINIMUM[flag];
     const unusable =
       missing ||
+      (RATIO_VALUE_FLAGS.has(flag) && ratioValueProblem(flag, value) !== null) ||
       (INTEGER_VALUE_FLAGS.has(flag) &&
         (!INTEGER.test(value.trim()) ||
           (minimum !== undefined && Number(value.trim()) < minimum)));
@@ -653,7 +654,47 @@ const VALUE_REQUIRED_FLAGS = new Set([
   "--spec-draft-type-v",
   "-ctvd",
   "--cache-type-v-draft",
+  // parse_tensor_split_override reads this with _last_flag_value too, so a bare or empty -ts is a
+  // 400 rather than a flag left to llama-server. Its VALUE is checked by RATIO_VALUE_FLAGS below.
+  "--tensor-split",
+  "-ts",
 ]);
+
+/** Flags whose value the backend reads as a per-GPU ratio. parse_tensor_split_override splits on
+ *  llama.cpp's own [,/]+ and refuses what std::stof would throw on, what it would read as a
+ *  negative or non-finite share, and a list that totals nothing -- each a 400, so the same three
+ *  rules are checked here rather than letting the load answer for them. */
+const RATIO_VALUE_FLAGS = new Set(["--tensor-split", "-ts"]);
+
+/** llama.cpp splits --tensor-split on this exact class, so "3/1" is "3,1". */
+const RATIO_DELIMITER = /[,/]+/;
+
+/** The spellings Python's float() accepts and math.isfinite() then rejects. */
+const NON_FINITE = /^[+-]?(nan|inf(inity)?)$/i;
+
+/** The three ways parse_tensor_split_override refuses a ratio, or null when it would take it. */
+function ratioValueProblem(flag: string, value: string): string | null {
+  const parts = value
+    .split(RATIO_DELIMITER)
+    .filter((part) => part.trim() !== "");
+  if (parts.length === 0) {
+    return `${flag} takes a comma- or slash-separated list of numbers.`;
+  }
+  const numbers = parts.map((part) => Number(part.trim()));
+  // Python's float() reads "nan" / "inf" / "-Infinity" and the backend refuses them a step later,
+  // as non-finite, so they are NOT the unreadable case here even though Number("nan") is NaN.
+  // Getting this the wrong way round shows the user a different message than the load would.
+  if (numbers.some((entry, at) => Number.isNaN(entry) && !NON_FINITE.test(parts[at].trim()))) {
+    return `${flag} takes a comma- or slash-separated list of numbers, and "${value}" is not one.`;
+  }
+  if (numbers.some((entry) => !Number.isFinite(entry) || entry < 0)) {
+    return `${flag} entries must be finite and non-negative.`;
+  }
+  if (numbers.reduce((total, entry) => total + entry, 0) <= 0) {
+    return `${flag} must have a positive total.`;
+  }
+  return null;
+}
 
 /** The pass-through spellings of the batch size the floor above applies to. */
 const BATCH_SIZE_FLAGS = new Set(["--batch-size", "-b"]);
@@ -883,6 +924,8 @@ export function diagnoseExtraArgs(
         message = numeric
           ? `${flag} needs a number after it.`
           : `${flag} needs a value after it.`;
+      } else if (RATIO_VALUE_FLAGS.has(flag)) {
+        message = ratioValueProblem(flag, value);
       } else if (!numeric) {
         message = null;
       } else if (!INTEGER.test(value.trim())) {

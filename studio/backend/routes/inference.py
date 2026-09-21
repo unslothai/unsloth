@@ -15645,6 +15645,13 @@ async def _load_model_impl(
         # ratio owns --tensor-split the same way: promote ``-ts`` into
         # ``tensor_split`` first, or the strip drops an asymmetric MoE split
         # and llama-server falls back to a near-even layer count (#11330).
+        # The promotion is unconditional while the strip is not, so manual +
+        # Auto layers (gpu_layers < 0) leaves the raw ``-ts`` in extras AND
+        # sets the field. That is one instruction in two places, and it stays
+        # harmless only because load_model's Auto-layers branch calls
+        # strip_split_mode_only on the extras while the first-class emitter is
+        # gated on gpu_layers >= 0, so BOTH copies die before argv.
+        # test_manual_auto_layers_never_emits_two_tensor_splits pins that.
         if request.gpu_memory_mode == "manual" and extra_llama_args:
             _manual_updates: dict[str, Any] = {}
             _gpu_layers_override = parse_gpu_layers_override(extra_llama_args)

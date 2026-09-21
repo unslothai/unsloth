@@ -1377,3 +1377,77 @@ test("a managed answer from the previous binary is never published", () => {
     /if \(generation === catalogGeneration\) \{ inFlightManaged = null; \}/,
   );
 });
+
+// ── --tensor-split, mirroring parse_tensor_split_override ─────────────
+// The backend parses this flag's value in validate_extra_args for EVERY gpu memory
+// mode, so each of these is a 400 on Load, on the pre-load /validate, and on saving a
+// per-model override. Without the same rules here the editor stays quiet and the user
+// meets an opaque server error instead of an inline one (#11330).
+
+const _tsError = (input: string): string | null =>
+  diagnoseExtraArgs(input, CATALOG).find((d) => d.level === "error")?.message ??
+  null;
+
+test("a tensor split the backend takes raises nothing here", () => {
+  for (const good of [
+    "-ts 2.2,1",
+    "--tensor-split 3,1",
+    // llama.cpp splits on [,/]+, so the slash form is the same instruction.
+    "--tensor-split 3/1",
+    "-ts 0,1",
+    "-ts 0.75,0.25",
+  ]) {
+    assert.equal(_tsError(good), null, good);
+    assert.ok(extraArgsAreLoadable(diagnoseExtraArgs(good, CATALOG)), good);
+  }
+});
+
+test("a bare tensor split is refused rather than left to llama-server", () => {
+  // _last_flag_value raises on a missing value, unlike an ordinary flag whose arity
+  // this side does not know.
+  assert.equal(_tsError("-ts"), "-ts needs a value after it.");
+  assert.equal(_tsError("-ts --top-k 20"), "-ts needs a value after it.");
+});
+
+test("a tensor split that is not a list of numbers is refused", () => {
+  // std::stof throws on this, so llama-server would exit at startup: better a 400,
+  // and better still an inline error.
+  assert.match(_tsError("-ts abc") ?? "", /comma- or slash-separated list of numbers/);
+});
+
+test("a negative or non-finite share is refused", () => {
+  for (const bad of ["-ts 1,-1", "--tensor-split nan,1", "--tensor-split inf,1"]) {
+    assert.equal(
+      _tsError(bad),
+      `${bad.split(" ")[0]} entries must be finite and non-negative.`,
+      bad,
+    );
+  }
+});
+
+test("a split that totals nothing is refused", () => {
+  // llama.cpp normalizes by the total, so an all-zero list divides by zero.
+  assert.match(_tsError("-ts 0,0") ?? "", /must have a positive total/);
+});
+
+test("every tensor split occurrence is judged, not only the last", () => {
+  // Same rule the value check already applies to -ngl: llama.cpp reads the LAST
+  // occurrence, so a bad second one must be caught; this side then errs on the strict
+  // side and reports a bad FIRST one too, rather than modelling last-wins and leaving
+  // a typo invisible.
+  assert.match(_tsError("-ts 3,1 -ts abc") ?? "", /list of numbers/);
+  assert.match(_tsError("-ts abc --tensor-split 3,1") ?? "", /list of numbers/);
+});
+
+test("a stored tensor split the backend now refuses is repaired, not shed", () => {
+  // drop_managed_flags would drop everything from the bad flag to the end of the
+  // list; removing just the option and its value keeps the rest working.
+  assert.deepEqual(
+    sanitizeStoredExtraArgs(["-ts", "abc", "--top-k", "20"], CATALOG.managed),
+    ["--top-k", "20"],
+  );
+  assert.deepEqual(
+    sanitizeStoredExtraArgs(["-ts", "2.2,1", "--top-k", "20"], CATALOG.managed),
+    ["-ts", "2.2,1", "--top-k", "20"],
+  );
+});

@@ -33,6 +33,12 @@ _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
 
+# The launcher fixtures live beside this file, and the tensor-split cells at the bottom
+# drive the real load_model through them rather than re-deriving a command builder.
+_TESTS_DIR = str(Path(__file__).resolve().parent)
+if _TESTS_DIR not in sys.path:
+    sys.path.insert(0, _TESTS_DIR)
+
 # Same external-dep stubs as the other llama_cpp unit tests so importing
 # the backend doesn't drag in structlog / httpx / loggers.
 _loggers_stub = _types.ModuleType("loggers")
@@ -1495,3 +1501,68 @@ def test_zero_vram_chat_load_treats_an_absent_mode_as_auto(not_vulkan):
     assert zero("manual", 0, [], False, "   ") is False
     # Only the canonical spelling still exempts it.
     assert zero("manual", 0, [], False, "off") is True
+
+
+def test_manual_auto_layers_never_emits_two_tensor_splits(tmp_path):
+    """Manual + Auto layers is the one cell where the route holds the ratio twice.
+
+    ``_should_strip_tensor_split`` is False at ``gpu_layers < 0``, so the promotion
+    added for #11330 sets ``tensor_split`` while the raw ``-ts`` stays in extras. That
+    is one instruction in two places, and llama.cpp reads the LAST ``--tensor-split``
+    on the line -- so if either copy ever reached argv alone the placement would be the
+    other one's, and if both reached it the emitted order would decide. Neither does
+    today: the Auto-layers branch runs ``strip_split_mode_only`` over the extras and
+    the first-class emitter is gated on ``gpu_layers >= 0``. This pins that, because
+    the route's correctness in this cell rests on the launcher, not on itself.
+    """
+    from test_llama_cpp_placement import _backend, _launch
+
+    backend, gguf = _backend(
+        tmp_path,
+        vulkan = False,
+        memory = [(0, 16_000, 16_000), (1, 16_000, 16_000)],
+    )
+    cmd = _launch(
+        backend,
+        gguf,
+        gpu_memory_mode = "manual",
+        gpu_layers = -1,
+        gpu_ids = [0, 1],
+        n_ctx = 4096,
+        # Exactly the state the /load promotion leaves behind: the field set AND the
+        # raw flag still in extras, because the strip did not fire at gpu_layers < 0.
+        tensor_split = [2.2, 1.0],
+        extra_args = ["-ts", "2.2,1", "-sm", "layer"],
+    )["cmd"]
+    tokens = [tok for tok in cmd if tok in ("--tensor-split", "-ts")]
+    assert len(tokens) <= 1, f"the ratio reached argv twice: {cmd}"
+    # Today both copies are dropped, so /status must not claim a ratio llama-server
+    # never received.
+    assert tokens == []
+    assert backend.tensor_split is None
+
+
+def test_manual_explicit_layers_emits_the_promoted_ratio_once(tmp_path):
+    """The control for the cell above: with layers pinned the strip DOES fire, so the
+    promoted field is the only copy and it is the one that reaches argv (#11330)."""
+    from test_llama_cpp_placement import _backend, _launch
+
+    backend, gguf = _backend(
+        tmp_path,
+        vulkan = False,
+        memory = [(0, 16_000, 16_000), (1, 16_000, 16_000)],
+    )
+    cmd = _launch(
+        backend,
+        gguf,
+        gpu_memory_mode = "manual",
+        gpu_layers = 49,
+        gpu_ids = [0, 1],
+        n_ctx = 4096,
+        tensor_split = [2.2, 1.0],
+        # strip_shadowing_flags already removed the raw -ts at this point.
+        extra_args = ["-sm", "layer"],
+    )["cmd"]
+    assert cmd.count("--tensor-split") == 1
+    assert cmd[cmd.index("--tensor-split") + 1] == "2.2,1"
+    assert backend.tensor_split == [2.2, 1.0]
