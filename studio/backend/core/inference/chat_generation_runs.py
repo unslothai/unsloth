@@ -516,6 +516,11 @@ class ChatGenerationSupervisor:
         # sweeper is the only bound on a producer that stops making progress at all.
         cancel_event.durable = True
         cancel_event.durable_run_id = run_id
+        # Re-arming the approval's own counter is not enough on its own: parking makes no progress,
+        # so without this the sweeper settles the run at the lease timeout (default 1200s) and
+        # cancels the wait, capping an ATTENDED deliberation at ~20 minutes. A user who is sitting
+        # there watching is not a wedged producer, which is the only thing the lease exists to reap.
+        cancel_event.renew_lease = lambda: db.touch_progress(run_id)
         activity = InferenceActivityReservation()
         activity.reserve()
         registration = active_generations.ActiveGeneration(

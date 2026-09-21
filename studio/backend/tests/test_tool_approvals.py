@@ -647,3 +647,87 @@ def test_a_follower_only_clears_its_own_stamp_not_the_run():
     assert run_subscribers.is_attended("run-solo") is True
     run_subscribers.subscriber_departed("run-solo", "tab-a")
     assert run_subscribers.is_attended("run-solo") is False
+
+
+# ── An attended park must renew the RUN's lease, not only its own counter ──
+# Parking makes no progress, so the sweeper settles the run at its lease timeout
+# (core.inference.chat_generation_runs._LEASE_TIMEOUT_SECONDS, 1200s by default) and cancels the
+# wait. Re-arming `waited` alone therefore capped an attended deliberation at ~20 minutes and
+# ended it as a cancel, while the docstring promised the full _DECISION_TIMEOUT.
+
+
+def test_an_attended_park_renews_the_runs_lease(monkeypatch):
+    monkeypatch.setattr(tool_approvals, "_PARK_TIMEOUT_S", 5.0)
+    monkeypatch.setattr(tool_approvals, "_LEASE_RENEW_EVERY_S", 0.0)
+    renewals = []
+    cancel = threading.Event()
+    cancel.durable = True
+    cancel.durable_run_id = "run-lease"
+    cancel.renew_lease = lambda: renewals.append(time.monotonic())
+    aid = new_approval_id()
+
+    run_subscribers.mark_subscriber_seen("run-lease", "tab-1")
+    w = _Waiter("sess", aid, cancel_event = cancel).start()
+    for _ in range(6):
+        run_subscribers.mark_subscriber_seen("run-lease", "tab-1")
+        time.sleep(0.1)
+
+    assert renewals, (
+        "an attended park renewed its own counter but never the run's lease, so the sweeper "
+        "settles the run at the lease timeout and cancels the decision"
+    )
+    assert resolve_tool_decision(aid, "allow", session_id = "sess") is True
+    assert w.join(timeout = 3.0) == "allow"
+
+
+def test_an_unattended_park_does_not_renew_the_lease(monkeypatch):
+    """The sweeper is the backstop for an abandoned run: holding its lease open would remove it."""
+    monkeypatch.setattr(tool_approvals, "_PARK_TIMEOUT_S", 0.2)
+    monkeypatch.setattr(tool_approvals, "_LEASE_RENEW_EVERY_S", 0.0)
+    renewals = []
+    cancel = threading.Event()
+    cancel.durable = True
+    cancel.durable_run_id = "run-abandoned"
+    cancel.renew_lease = lambda: renewals.append(1)
+    aid = new_approval_id()
+
+    w = _Waiter("sess", aid, cancel_event = cancel).start()
+    assert w.join(timeout = 3.0) == "deny"
+    assert renewals == [], "nobody was watching; the lease must be allowed to lapse"
+
+
+def test_lease_renewal_is_throttled_not_once_per_poll(monkeypatch):
+    """The poll is twice a second and this is a database write, so it is rate limited."""
+    monkeypatch.setattr(tool_approvals, "_PARK_TIMEOUT_S", 5.0)
+    monkeypatch.setattr(tool_approvals, "_LEASE_RENEW_EVERY_S", 30.0)
+    renewals = []
+    cancel = threading.Event()
+    cancel.durable = True
+    cancel.durable_run_id = "run-throttle"
+    cancel.renew_lease = lambda: renewals.append(1)
+    aid = new_approval_id()
+
+    run_subscribers.mark_subscriber_seen("run-throttle", "tab-1")
+    w = _Waiter("sess", aid, cancel_event = cancel).start()
+    for _ in range(8):
+        run_subscribers.mark_subscriber_seen("run-throttle", "tab-1")
+        time.sleep(0.1)
+    # Well inside one 30s window: the first poll renews, the rest must not.
+    assert len(renewals) == 1, f"expected a single renewal in the first window, got {len(renewals)}"
+    assert resolve_tool_decision(aid, "allow", session_id = "sess") is True
+    assert w.join(timeout = 3.0) == "allow"
+
+
+def test_a_waiter_with_no_renew_hook_still_works(monkeypatch):
+    """Backwards compatible: a cancel_event from any other producer carries no renew_lease."""
+    monkeypatch.setattr(tool_approvals, "_PARK_TIMEOUT_S", 0.2)
+    cancel = threading.Event()
+    cancel.durable = True
+    cancel.durable_run_id = "run-no-hook"
+    aid = new_approval_id()
+    run_subscribers.mark_subscriber_seen("run-no-hook", "tab-1")
+    w = _Waiter("sess", aid, cancel_event = cancel).start()
+    time.sleep(0.6)
+    assert _has_pending(aid), "attendance must still hold the park open without a renew hook"
+    assert resolve_tool_decision(aid, "allow", session_id = "sess") is True
+    assert w.join(timeout = 3.0) == "allow"

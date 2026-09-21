@@ -57,6 +57,10 @@ def _park_timeout_from_env() -> float:
 
 _PARK_TIMEOUT_S = _park_timeout_from_env()
 
+# How often an attended park renews the run's progress lease. Far under the lease timeout
+# (1200s by default), far over the 0.5s poll: one small write every half minute.
+_LEASE_RENEW_EVERY_S = 30.0
+
 # Fed to the model as the tool result when the user denies a call, so it can adapt instead of the turn ending abruptly.
 TOOL_REJECTED_MESSAGE = "The user declined to run this tool call."
 
@@ -121,10 +125,11 @@ def wait_tool_decision(
 ):
     """Block on a slot from ``begin_tool_decision`` until the user decides. Returns ``"allow"`` or ``"deny"``, falling back to ``"deny"`` if the wait times out or generation is cancelled first. Records WHY in ``slot["reason"]`` (see ``decision_reason``), because a bare ``"deny"`` cannot tell a user who refused from an approval nobody answered, and the loops report one of those to the user as their own decision. Always removes its own slot on exit.
 
-    The park ceiling measures time with NOBODY WATCHING, not time since the call parked. A durable run outlives its tab by design, so its cancel_event says nothing about whether a human is there; ``run_subscribers`` is what knows. While a follower is attached the deadline keeps re-arming and the wait is bounded by ``_DECISION_TIMEOUT`` exactly as a browser-owned run always was, so a user still reading what the tool wants to do does not lose the decision out from under them. Once the followers go the ceiling runs (default 300s, ``UNSLOTH_STUDIO_TOOL_APPROVAL_TIMEOUT_S``) and an unattended agent adapts and continues. An explicit Stop still denies immediately.
+    The park ceiling measures time with NOBODY WATCHING, not time since the call parked. A durable run outlives its tab by design, so its cancel_event says nothing about whether a human is there; ``run_subscribers`` is what knows. While a follower is attached the deadline keeps re-arming and the wait is bounded by ``_DECISION_TIMEOUT`` exactly as a browser-owned run always was, so a user still reading what the tool wants to do does not lose the decision out from under them. Reaching that bound takes renewing the RUN's lease as well (``cancel_event.renew_lease``), since parking makes no progress and the sweeper would otherwise settle the run at its lease timeout, around 20 minutes, and cancel the wait. Once the followers go the ceiling runs (default 300s, ``UNSLOTH_STUDIO_TOOL_APPROVAL_TIMEOUT_S``) and an unattended agent adapts and continues. An explicit Stop still denies immediately.
     """
     park = bool(getattr(cancel_event, "durable", False))
     run_id = getattr(cancel_event, "durable_run_id", "") or ""
+    renew_lease = getattr(cancel_event, "renew_lease", None)
 
     def _settle(verdict, reason):
         if isinstance(slot, dict):
@@ -136,6 +141,7 @@ def wait_tool_decision(
         # whole wait and never resets. A park is bounded by both.
         waited = 0.0
         total = 0.0
+        last_renew: Optional[float] = None
         while not slot["event"].wait(timeout = 0.5):
             if cancel_event is not None and cancel_event.is_set():
                 return _settle("deny", DECISION_CANCELLED)
@@ -153,6 +159,21 @@ def wait_tool_decision(
             if run_subscribers.is_attended(run_id):
                 # Someone is watching, so this is deliberation, not abandonment.
                 waited = 0.0
+                # The RUN's lease has to be renewed too, not just this counter. Parking makes no
+                # progress, so the sweeper would otherwise settle the run at its lease timeout
+                # (1200s by default) and cancel the wait, capping an attended deliberation at
+                # ~20 minutes rather than the ceiling below. Throttled: this is a small write and
+                # the poll is twice a second.
+                if renew_lease is not None and (
+                    last_renew is None or total - last_renew >= _LEASE_RENEW_EVERY_S
+                ):
+                    last_renew = total
+                    try:
+                        renew_lease()
+                    except Exception:
+                        # A lease we could not renew is the sweeper's problem to discover, not a
+                        # reason to drop the decision this wait exists to collect.
+                        pass
             elif waited >= _PARK_TIMEOUT_S:
                 return _settle("deny", DECISION_EXPIRED)
         return _settle(slot["decision"] or "deny", DECISION_ANSWERED)
