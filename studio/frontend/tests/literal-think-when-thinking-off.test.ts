@@ -147,6 +147,14 @@ test("the adapter and recovery follow the turn's think parse state", () => {
     /: !supportsReasoning \|\|\s*reasoningEnabled \|\|\s*reasoningAlwaysOn \|\|\s*reasoningStyle === "reasoning_effort",/,
     "a local model that cannot stop thinking must keep parsing its tags",
   );
+  const decided = adapter.search(/setParseThink\(\s*isExternalRequest/);
+  const continuationYield = adapter.indexOf(
+    "// Yielded before the request starts",
+  );
+  assert.ok(
+    decided !== -1 && continuationYield !== -1 && decided < continuationYield,
+    "an abort during load saves the continuation yield, so it must parse with the turn's choice",
+  );
 
   const recovery = readSrc("features/chat/runtime-provider.tsx");
   assert.match(

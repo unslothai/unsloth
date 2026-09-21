@@ -5764,6 +5764,42 @@ export function createOpenAIStreamAdapter(
         return pinTextThoughtSignature(assembled);
       };
 
+      const {
+        supportsReasoning,
+        reasoningEnabled,
+        reasoningAlwaysOn,
+        reasoningStyle,
+      } = runtime;
+      const externalReasoningCaps: ReturnType<
+        typeof getExternalReasoningCapabilities
+      > =
+        externalSelection && externalProvider
+          ? getExternalReasoningCapabilities(
+              externalProvider.providerType,
+              externalSelection.modelId,
+              {
+                isReasoningProvider: externalProvider.isReasoningModel === true,
+                baseUrl: externalProvider.baseUrl ?? null,
+              },
+            )
+          : {
+              supportsReasoning,
+              reasoningStyle,
+              reasoningAlwaysOn: false,
+              supportsReasoningOff: false,
+              reasoningEffortLevels: ["low", "medium", "high"] as const,
+            };
+      const externalReasoningEnabled =
+        !externalReasoningCaps.supportsReasoningOff ? true : reasoningEnabled;
+      // Decided before the continuation yield below, which an abort during load saves as is.
+      setParseThink(
+        isExternalRequest
+          ? !externalReasoningCaps.supportsReasoning || externalReasoningEnabled
+          : !supportsReasoning ||
+              reasoningEnabled ||
+              reasoningAlwaysOn ||
+              reasoningStyle === "reasoning_effort",
+      );
       // Yielded before the request starts: an abort during load skips the partial-content yield
       // below, saving an empty message.
       if (continuation) {
@@ -5899,10 +5935,6 @@ export function createOpenAIStreamAdapter(
         }
 
         const {
-          supportsReasoning,
-          reasoningEnabled,
-          reasoningAlwaysOn,
-          reasoningStyle,
           reasoningEffort,
           reasoningEffortLevels,
           supportsPreserveThinking,
@@ -5965,26 +5997,6 @@ export function createOpenAIStreamAdapter(
         const externalCapabilities = getProviderCapabilities(
           externalProvider?.providerType,
         );
-        const externalReasoningCaps: ReturnType<
-          typeof getExternalReasoningCapabilities
-        > =
-          externalSelection && externalProvider
-            ? getExternalReasoningCapabilities(
-                externalProvider.providerType,
-                externalSelection.modelId,
-                {
-                  isReasoningProvider:
-                    externalProvider.isReasoningModel === true,
-                  baseUrl: externalProvider.baseUrl ?? null,
-                },
-              )
-            : {
-                supportsReasoning,
-                reasoningStyle,
-                reasoningAlwaysOn: false,
-                supportsReasoningOff: false,
-                reasoningEffortLevels: ["low", "medium", "high"] as const,
-              };
         type RequestReasoningEffort = Extract<
           NonNullable<OpenAIChatCompletionsRequest["reasoning_effort"]>,
           "none" | "minimal" | "low" | "medium" | "high" | "max" | "xhigh"
@@ -6002,17 +6014,6 @@ export function createOpenAIStreamAdapter(
         const localReasoningEffort = clampReasoningEffortToLevels(
           reasoningEffort,
           reasoningEffortLevels,
-        );
-        const externalReasoningEnabled =
-          !externalReasoningCaps.supportsReasoningOff ? true : reasoningEnabled;
-        setParseThink(
-          isExternalRequest
-            ? !externalReasoningCaps.supportsReasoning ||
-                externalReasoningEnabled
-            : !supportsReasoning ||
-                reasoningEnabled ||
-                reasoningAlwaysOn ||
-                reasoningStyle === "reasoning_effort",
         );
         const buildRequestPayload = async (
           forceRefreshPublicKey = false,
