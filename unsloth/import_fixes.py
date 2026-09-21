@@ -2007,8 +2007,14 @@ def patch_enable_input_require_grads():
 
             try:
                 input_embeddings = module.get_input_embeddings()
-            except NotImplementedError:
-                # Vision models may not implement get_input_embeddings (GLM V4.6 skips only self.visual).
+            except (NotImplementedError, TypeError):
+                # Two ways a model declines to answer: the transformers 5 base
+                # implementation raises NotImplementedError (vision models such
+                # as GLM V4.6 skip only self.visual), and remote code can
+                # declare a non-standard signature that cannot be called with
+                # no arguments at all (stepfun-ai/Step-3.7-Flash defines
+                # get_input_embeddings(self, input_ids), which raises TypeError).
+                # Neither is a model to guess about, so skip it.
                 continue
 
             if input_embeddings is None:
