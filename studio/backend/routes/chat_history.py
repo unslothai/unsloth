@@ -1,11 +1,10 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""
-Chat history API routes backed by studio.db.
+"""Chat history API routes backed by studio.db.
 
-SQLite-backed handlers are sync defs unless they also perform asynchronous cleanup. Those
-mixed handlers explicitly send their database transaction through Starlette's threadpool.
+SQLite-backed handlers are sync defs unless they also perform asynchronous cleanup; those mixed
+handlers explicitly send their database transaction through Starlette's threadpool.
 """
 
 import asyncio
@@ -24,6 +23,8 @@ from pydantic import (
 )
 
 from auth.authentication import get_current_subject
+from auth import policy
+from routes.chat_generation_runs import cancel_account_run
 from core.inference.llama_server_args import (
     BATCH_MAX,
     BATCH_MIN,
@@ -33,6 +34,7 @@ from core.inference.llama_server_args import (
     PARALLEL_MIN,
 )
 from loggers import get_logger
+from utils.reasoning_budget import validate_reasoning_budget_message
 from utils.api_errors import safe_validation_errors
 from utils.utils import safe_curated_detail, log_and_http_error
 from storage.studio_db import (
@@ -151,6 +153,7 @@ class ChatThreadSettings(BaseModel):
     # -1 disables top-k, matching ChatCompletionRequest and the default.yaml fallback.
     topK: Optional[int] = Field(default = None, ge = -1, le = 100)
     minP: Optional[float] = Field(default = None, ge = 0, le = 1)
+    minPMode: Optional[Literal["server-default", "custom"]] = None
     repetitionPenalty: Optional[float] = Field(default = None, ge = 1, le = 2)
     presencePenalty: Optional[float] = Field(default = None, ge = 0, le = 2)
     seed: SamplingSeed = None
@@ -181,33 +184,23 @@ class ChatThread(BaseModel):
     def _only_the_keys_the_snapshot_stored(
         self, settings: Optional[ChatThreadSettings]
     ) -> Optional[dict]:
-        """Report a key the snapshot never held as absent rather than as null.
-
-        `seed` is the one setting whose null is a value: it means this chat draws its own
-        rather than taking the pinned one. Spelling every unset field as null, which is
-        what the default dump does, would make a snapshot written before the field existed
-        read as a chat that had cleared it.
-        """
+        """Report a key the snapshot never held as absent rather than as null. `seed` is the one
+        setting whose null is a value: it means this chat draws its own rather than taking the
+        pinned one. Spelling every unset field as null, which the default dump does, would make a
+        snapshot written before the field existed read as a chat that cleared it."""
         if settings is None:
             return None
         return settings.model_dump(exclude_unset = True)
 
 
 def thread_from_row(row: dict) -> ChatThread:
-    """Build a ChatThread from a DATABASE row, tolerating a snapshot it cannot read.
-
-    `settings` is the first strictly validated nested model Unsloth builds out of the
-    database rather than off the wire, and a stored snapshot outlives the build that
-    wrote it: a newer Unsloth adding a seventeenth setting, widening an enum or
-    raising a bound writes a blob this one rejects. Refusing it here 500s the chat on
-    open and takes the entire history export with it, since the export validates
-    every thread. `_json_loads` already shrugs off JSON that will not parse; JSON
-    that parses but postdates this build deserves the same treatment.
-
-    Only the read is forgiving. The wire contract stays strict in both directions, so
-    a client still cannot invent a setting, and the row itself is left untouched,
-    which means upgrading again restores whatever this build had to drop.
-    """
+    """Build a ChatThread from a DATABASE row, tolerating a snapshot it cannot read. `settings` is the
+    first strictly validated nested model Unsloth builds out of the database rather than off the
+    wire, and a stored snapshot outlives the build that wrote it: a newer Unsloth adding a setting,
+    widening an enum or raising a bound writes a blob this one rejects. Refusing it here 500s the
+    chat on open and takes the entire history export with it. Only the read is forgiving: the wire
+    contract stays strict in both directions and the row is left untouched, so upgrading again
+    restores whatever this build had to drop."""
     settings = row.get("settings")
     if isinstance(settings, dict):
         row = {**row, "settings": readable_thread_settings(settings)}
@@ -234,27 +227,21 @@ def readable_thread_settings(settings: dict) -> Optional[dict]:
 
 
 def _unreadable_thread_settings(stored: dict) -> dict:
-    """The part of a stored snapshot this build cannot validate, and so must not delete.
-
-    An older Unsloth opening a database a newer one wrote drops the fields it cannot read.
-    A blind replacement would make that loss permanent instead of temporary, so a write
-    carries forward everything the writer could not have known about: unknown keys, and
-    known keys holding values this build rejects.
-    """
+    """The part of a stored snapshot this build cannot validate, and so must not delete. An older
+    Unsloth opening a database a newer one wrote drops the fields it cannot read, and a blind
+    replacement would make that loss permanent, so a write carries forward everything the writer
+    could not have known about: unknown keys, and known keys holding rejected values."""
     readable = readable_thread_settings(stored) or {}
     return {k: v for k, v in stored.items() if k not in readable}
 
 
 def _settings_write_from_patch(patch: dict) -> Optional[dict]:
-    """Take `settings` / `settingsPatch` out of `patch` and describe the write they ask for.
-
-    `settings` replaces the snapshot, `settingsPatch` applies only the fields it names,
-    for a client that knows what changed but not what else the row holds. The result is
-    handed to storage rather than executed here: the read, the merge and the guarded
-    metadata write all have to be one transaction, or two tabs each build a replacement
-    from the same stale row, or a rejected precondition returns 409 having already
-    committed the settings.
-    """
+    """Take `settings` / `settingsPatch` out of `patch` and describe the write they ask for. `settings`
+    replaces the snapshot, `settingsPatch` applies only the fields it names, for a client that knows
+    what changed but not what else the row holds. The result is handed to storage rather than
+    executed here: the read, the merge and the guarded metadata write have to be one transaction, or
+    two tabs each build a replacement from the same stale row, or a rejected precondition returns
+    409 having already committed the settings."""
     replace = "settings" in patch
     merge = "settingsPatch" in patch
     seq = patch.pop("settingsSeq", None)
@@ -303,9 +290,8 @@ class ChatThreadPatch(BaseModel):
     # Applies just the fields it names. For the writer that knows what changed but not
     # what else the row holds, which is any write made before the row has been read.
     settingsPatch: Optional[ChatThreadSettings] = None
-    # Orders this writer's snapshot writes against its OWN earlier ones.
-    # So a keepalive sent on unload cannot be undone by a PATCH the server already had in hand. Never compared across
-    # writers: two browsers' counters mean nothing to each other.
+    # Orders this writer's snapshot writes against its OWN earlier ones, so a keepalive sent on unload
+    # cannot be undone by a PATCH the server already had in hand. Never compared across writers.
     settingsSeq: Optional[int] = None
     settingsWriter: Optional[str] = None
 
@@ -372,9 +358,9 @@ class ChatDeleteRequest(BaseModel):
 
 
 class ChatClearRequest(BaseModel):
-    # The client fences every legacy Dexie thread it holds, so this bound has to sit above what
-    # a migrated install can legitimately collect: a 422 here fails the whole clear, and the
-    # identical retry fails with it, leaving backend history behind after Clear all.
+    # The client fences every legacy Dexie thread it holds, so this bound has to sit above what a
+    # migrated install can legitimately collect: a 422 here fails the whole clear, and the identical
+    # retry fails with it, leaving backend history behind after Clear all.
     ids: list[str] = Field(default_factory = list, max_length = 200_000)
     operationId: Optional[str] = Field(default = None, min_length = 1, max_length = 128)
 
@@ -393,15 +379,15 @@ class ChatExportResponse(BaseModel):
 
 
 class ChatInferenceSettings(BaseModel):
-    # allow_inf_nan: json.loads accepts bare NaN and Infinity.
-    # A bare NaN token in value_json reads back fine but renders as null, so refuse it at the door the way
-    # models/training.py does.
+    # allow_inf_nan: json.loads accepts bare NaN and Infinity, and a bare NaN token in value_json reads
+    # back fine but renders as null, so refuse it at the door the way models/training.py does.
     model_config = ConfigDict(extra = "forbid", allow_inf_nan = False)
 
     temperature: Optional[float] = None
     topP: Optional[float] = None
     topK: Optional[float] = None
     minP: Optional[float] = None
+    minPMode: Optional[Literal["server-default", "custom"]] = None
     repetitionPenalty: Optional[float] = None
     presencePenalty: Optional[float] = None
     maxSeqLength: Optional[float] = None
@@ -423,6 +409,8 @@ class ChatPresetLoadConfig(BaseModel):
     speculativeType: Optional[str] = None
     specDraftNMax: Optional[int] = Field(default = None, ge = 1, le = 16)
     nParallel: Optional[int] = Field(default = None, ge = PARALLEL_MIN, le = PARALLEL_MAX)
+    reasoningBudget: NotABoolean = Field(default = None, ge = -1, le = 2_147_483_647)
+    reasoningBudgetMessage: Optional[str] = None
     # The normalizer emits both keys on every preset (null included) and this model is
     # extra="forbid", so without them PUT /api/chat/settings 400s the whole save for any
     # preset carrying a loadConfig, including one that only pinned nParallel.
@@ -440,6 +428,11 @@ class ChatPresetLoadConfig(BaseModel):
     gpuMemoryMode: Optional[Literal["manual"]] = None
     gpuLayers: Optional[int] = None
     nCpuMoe: Optional[int] = Field(default = None, ge = 0)
+
+    @field_validator("reasoningBudgetMessage")
+    @classmethod
+    def _validate_reasoning_budget_message(cls, value: Optional[str]) -> Optional[str]:
+        return None if value is None else validate_reasoning_budget_message(value)
 
 
 class ChatPreset(BaseModel):
@@ -484,12 +477,11 @@ class ChatSettingsPayload(BaseModel):
     searchImages: Optional[bool] = None
     autoHealToolCalls: Optional[bool] = None
     nudgeToolCalls: Optional[bool] = None
-    maxToolCallsPerMessage: Optional[int] = Field(default = None, ge = 1)
+    maxToolCallsPerMessage: Optional[int] = Field(default = None, ge = 0)
     toolCallTimeout: Optional[int] = Field(default = None, ge = 1)
 
-    # Composer and RAG toggles. They describe the installation, not the browser
-    # that set them, so a second browser or a remote session reads them back here
-    # instead of falling back to defaults.
+    # Composer and RAG toggles. They describe the installation, not the browser that set them, so a
+    # second browser or a remote session reads them back here instead of falling back to defaults.
     reasoningEnabled: Optional[bool] = None
     toolsEnabled: Optional[bool] = None
     codeToolsEnabled: Optional[bool] = None
@@ -532,13 +524,12 @@ class ChatSettingsPayload(BaseModel):
     contextPolicy: Optional[Literal["inherit", "checkpoint", "rolling"]] = None
     compactionHeadroomRatio: Optional[float] = Field(default = None, ge = 0.0, le = 0.9)
 
-    @field_validator("researchModelTimeoutSeconds", mode = "before")
+    @field_validator("researchModelTimeoutSeconds", "maxToolCallsPerMessage", mode = "before")
     @classmethod
     def _not_a_boolean(cls, value: Any) -> Any:
-        # bool subclasses int, so False coerces to the 0 sentinel and would persist as
-        # unlimited for every later run. The run route rejects booleans for the same reason.
+        # bool subclasses int, so False would persist as the 0 sentinel for every later run.
         if isinstance(value, bool):
-            raise ValueError("researchModelTimeoutSeconds must be an integer, not a boolean")
+            raise ValueError("Expected an integer, got a boolean.")
         return value
 
     @field_validator("researchModelTimeoutSeconds")
@@ -717,11 +708,11 @@ def patch_thread(
 def _cancel_deleted_research_runs(request: Request, run_ids: list[str]) -> None:
     """Signal workers for active runs captured by the deletion transaction."""
     supervisor = getattr(request.app.state, "research_supervisor", None)
-    if supervisor is None:
+    if supervisor is None and not policy.installation_has_managed_accounts():
         return
     for run_id in run_ids:
         try:
-            supervisor.cancel(run_id)
+            cancel_account_run(request, run_id, supervisor_name = "research_supervisor")
         except Exception:  # noqa: BLE001 - cancellation is best-effort after commit
             logger.warning(
                 "chat_history.cancel_deleted_research_failed run_id=%s",
@@ -747,8 +738,10 @@ def _cancel_active_research(request: Request, thread_ids: list[str]) -> None:
         for run in active:
             try:
                 status = research_runs_db.request_cancel(run["id"])
-                if supervisor is not None and status == "cancelling":
-                    supervisor.cancel(run["id"])
+                if status == "cancelling" and (
+                    supervisor is not None or policy.installation_has_managed_accounts()
+                ):
+                    cancel_account_run(request, run["id"], supervisor_name = "research_supervisor")
             except Exception:  # noqa: BLE001
                 logger.warning(
                     "chat_history.cancel_active_research_failed run_id=%s",
@@ -770,9 +763,9 @@ def _cancel_research_runs(request: Request, run_ids: list[str]) -> None:
         # The row is usually already gone here, which makes request_cancel raise:
         # the supervisor is what actually stops the worker, so it is told first
         # and the status update is the best-effort half.
-        if supervisor is not None:
+        if supervisor is not None or policy.installation_has_managed_accounts():
             try:
-                supervisor.cancel(run_id)
+                cancel_account_run(request, run_id, supervisor_name = "research_supervisor")
             except Exception:  # noqa: BLE001
                 logger.warning("Could not signal research run %s", run_id, exc_info = True)
         try:
@@ -782,13 +775,10 @@ def _cancel_research_runs(request: Request, run_ids: list[str]) -> None:
 
 
 def _cancel_active_generations(thread_ids: list[str]) -> None:
-    """Stop any generation still running for these threads.
-
-    The sandbox goes with the thread, but a request that has not reached the
-    executor yet would dispatch its tool call afterwards, recreate the folder,
-    and write files no chat can reach. The in-flight guard only covers calls
-    already inside the executor. Best effort: this must never break a delete.
-    """
+    """Stop any generation still running for these threads. The sandbox goes with the thread, but a
+    request that has not reached the executor yet would dispatch its tool call afterwards, recreate
+    the folder, and write files no chat can reach. The in-flight guard only covers calls already
+    inside the executor. Best effort."""
     if not thread_ids:
         return
     try:
@@ -806,17 +796,9 @@ def _cancel_chat_generation_runs(request: Request, run_ids: list[str]) -> None:
     """Cancel durable producers whose rows were captured before thread cascade."""
     if not run_ids:
         return
-    supervisor = getattr(request.app.state, "chat_generation_supervisor", None)
     for run_id in run_ids:
         try:
-            if supervisor is not None:
-                supervisor.cancel(run_id)
-            else:
-                from routes.inference import _cancel_by_cancel_id_or_stash
-                from state import active_generations
-
-                active_generations.cancel_run(run_id)
-                _cancel_by_cancel_id_or_stash(run_id)
+            cancel_account_run(request, run_id, supervisor_name = "chat_generation_supervisor")
         except Exception:  # noqa: BLE001 - deletion must still complete
             logger.warning("Could not signal chat generation run %s", run_id, exc_info = True)
 
@@ -841,9 +823,9 @@ async def delete_threads(
     # Keyed by thread id, so the folder is unreachable once the thread is gone; done in a worker because the
     # post-upgrade legacy move can be a cross-filesystem copy.
     removed, kept = await _remove_sandboxes(payload.ids, payload.delete_files)
-    # Archived turns are keyed by thread id and unreferenced once the thread is gone, so
-    # drop them rather than leaking a scope per deleted chat.
-    await run_in_threadpool(_remove_conversation_archives, payload.ids, cutoff = cutoff)
+    # Archived turns and uploaded documents are keyed by thread id and unreferenced once the thread
+    # is gone, so drop them rather than leaking scopes per deleted chat.
+    await run_in_threadpool(_remove_thread_rag_data, payload.ids, cutoff = cutoff)
     return {"status": "deleted", "sandboxes_removed": removed, "sandboxes_kept": kept}
 
 
@@ -853,34 +835,36 @@ def _archive_cutoff() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def _remove_conversation_archives(thread_ids, *, cutoff: "str | None" = None) -> None:
-    """Drop each deleted thread's archived turns. Never raises."""
+def _remove_thread_rag_data(thread_ids, *, cutoff: "str | None" = None) -> None:
+    """Drop each deleted thread's archived turns and uploaded documents. Never raises."""
     try:
         from core.rag import conversation_archive
     except Exception:
         return
     for thread_id in thread_ids or []:
-        # Cut at the instant the delete was accepted, not on recreation: another tab can have recreated this id, and
-        # skipping the scope left the deleted conversation recallable.
-        # Everything archived before that instant belongs to the deleted conversation, everything after to the new one.
+        # Cut at the instant the delete was accepted, not on recreation: another tab can have recreated this
+        # id, and skipping the scope left the deleted conversation recallable. Everything stored before
+        # that instant belongs to the deleted conversation, everything after to the new one.
         recreated = get_chat_thread(str(thread_id)) is not None
         if recreated and not cutoff:
             continue
+        created_before = cutoff if recreated else None
         try:
-            conversation_archive.delete_for_thread(
-                str(thread_id), created_before = cutoff if recreated else None
-            )
+            conversation_archive.delete_for_thread(str(thread_id), created_before = created_before)
         except Exception:
             logger.warning("Could not remove the conversation archive for %s", thread_id)
+        try:
+            conversation_archive.delete_thread_documents(
+                str(thread_id), created_before = created_before
+            )
+        except Exception:
+            logger.warning("Could not remove the uploaded documents for %s", thread_id)
 
 
 async def _remove_sandboxes(thread_ids, delete_files: bool) -> "tuple[int, list[str]]":
-    """Drop each thread's sandbox off the event loop. Never raises.
-
-    Returns how many went and which ids still have files. The chat is the only
-    way to those files, so a caller that never offered the choice can offer it
-    once it knows there was something to keep.
-    """
+    """Drop each thread's sandbox off the event loop. Never raises. Returns how many went and which ids
+    still have files. The chat is the only way to those files, so a caller that never offered the
+    choice can offer it once it knows there was something to keep."""
     from starlette.concurrency import run_in_threadpool
 
     def _remove() -> "tuple[int, list[str]]":
@@ -894,9 +878,8 @@ async def _remove_sandboxes(thread_ids, delete_files: bool) -> "tuple[int, list[
 
         removed, kept = 0, []
         for thread_id in thread_ids:
-            # The row went first, and another tab can upsert the same id in the
-            # meantime. That chat is alive, with a tool call possibly running in
-            # here, so its folder is not this delete's to take.
+            # The row went first, and another tab can upsert the same id in the meantime. That chat is alive,
+            # with a tool call possibly running in here, so its folder is not this delete's to take.
             if get_chat_thread(thread_id) is not None:
                 continue
             # A fork clones the message content, cards and all, so the source
@@ -904,9 +887,8 @@ async def _remove_sandboxes(thread_ids, delete_files: bool) -> "tuple[int, list[
             if delete_files and sandbox_is_referenced_elsewhere(thread_id):
                 if session_sandbox_has_files(thread_id):
                     kept.append(thread_id)
-                    # The user asked for these files and the chat is gone, so
-                    # nothing comes back to that folder: written down, and the
-                    # collection below takes it once the last fork goes too.
+                    # The user asked for these files and the chat is gone, so nothing comes back to that folder:
+                    # written down, and the collection below takes it once the last fork goes too.
                     record_kept_sandbox(thread_id)
                 continue
             # Again, next to the removal: the reference scan above reads
@@ -915,9 +897,8 @@ async def _remove_sandboxes(thread_ids, delete_files: bool) -> "tuple[int, list[
                 continue
             if remove_session_sandbox(thread_id, delete_files = delete_files):
                 removed += 1
-            # A removal that had to wait for a running tool call is reported as
-            # kept: that call can still write a file, and this is the only
-            # answer the caller gets.
+            # A removal that had to wait for a running tool call is reported as kept: that call can still write
+            # a file, and this is the only answer the caller gets.
             elif sandbox_removal_deferred(thread_id) or session_sandbox_has_files(thread_id):
                 kept.append(thread_id)
         return removed, kept
@@ -927,9 +908,8 @@ async def _remove_sandboxes(thread_ids, delete_files: bool) -> "tuple[int, list[
     except Exception:
         logger.warning("chat_history.sandbox_cleanup_failed", exc_info = True)
         return 0, []
-    # Whatever this delete asked for: the last chat referencing a workspace the
-    # user already asked to delete can go through the plain path, and only the
-    # records marked pending are ever collected.
+    # Whatever this delete asked for: the last chat referencing a workspace the user already asked to
+    # delete can go through the plain path, and only the records marked pending are ever collected.
     from core.inference.tools import collect_orphaned_project_workspaces
 
     await run_in_threadpool(collect_orphaned_project_workspaces)
@@ -948,12 +928,9 @@ def list_attachments(
 
 
 def _decode_attachment_base64(payload: str) -> bytes:
-    """Strict base64 decode of a stored payload.
-
-    Normalizes first: strips whitespace, fixes padding, accepts the URL-safe
-    alphabet. validate=False would silently drop bad characters and serve
-    corrupted bytes instead of failing, so raise 422 on anything else.
-    """
+    """Strict base64 decode of a stored payload. Normalizes first: strips whitespace, fixes padding,
+    accepts the URL-safe alphabet. validate=False would silently drop bad characters and serve
+    corrupted bytes, so raise 422."""
     import base64
 
     normalized = "".join(payload.split())
@@ -974,13 +951,10 @@ _AUDIO_FORMAT_MEDIA_TYPES = {
 
 
 def _safe_image_media_type(media_type: str) -> str:
-    """Clamp a data-URL media type to something inert to render.
-
-    Imported chats store image parts verbatim, so the embedded type can be
-    text/html or image/svg+xml; echoing those would execute markup with the
-    app origin when opened. Anything not a plain raster type downloads as
-    bytes instead.
-    """
+    """Clamp a data-URL media type to something inert to render. Imported chats store image parts
+    verbatim, so the embedded type can be text/html or image/svg+xml; echoing those would execute
+    markup with the app origin when opened. Anything not a plain raster type downloads as bytes
+    instead."""
     lowered = media_type.strip().lower()
     if lowered.startswith("image/") and lowered != "image/svg+xml":
         return lowered
@@ -1169,9 +1143,9 @@ async def delete_project(
 ):
     from starlette.concurrency import run_in_threadpool
 
-    # Rows first, files last: a member chat can still be running a tool in the
-    # workspace, and its cwd disappearing mid-call either kills the call or
-    # leaves what it writes next in a directory no project owns.
+    # Rows first, files last: a member chat can still be running a tool in the workspace, and its cwd
+    # disappearing mid-call either kills the call or leaves what it writes next in a directory no
+    # project owns.
     cutoff = _archive_cutoff()
     try:
         project = await run_in_threadpool(
@@ -1205,8 +1179,8 @@ async def delete_project(
         await run_in_threadpool(_delete_project_rag_sources, project_id)
     except Exception:  # noqa: BLE001 - source cleanup must not block project deletion
         logger.warning("failed to delete RAG sources for project %s", project_id, exc_info = True)
-    # The project's chats go with it, so their archives have to as well.
-    await run_in_threadpool(_remove_conversation_archives, member_ids, cutoff = cutoff)
+    # The project's chats go with it, so their archives and documents have to as well.
+    await run_in_threadpool(_remove_thread_rag_data, member_ids, cutoff = cutoff)
     if project.get("sandboxPath"):
         from core.inference.tools import (
             finish_workspace_delete_when_idle,
@@ -1222,9 +1196,8 @@ async def delete_project(
             sandbox_is_referenced_elsewhere,
         )
 
-        # Cancelling only asks: a call already in the executor still has its
-        # cwd in there, and removing it strands what it writes next. The shared
-        # id first, since a call in a project runs as `project-<id>`.
+        # Cancelling only asks: a call already in the executor still has its cwd in there, and removing it
+        # strands what it writes next. The shared id first, since a call in a project runs as `project-<id>`.
         shared = project_session_id(project_id)
         idle = (
             await run_in_threadpool(wait_for_sessions_idle, [shared, *member_ids])
@@ -1234,14 +1207,12 @@ async def delete_project(
         # A chat forked out of the project still shows cards for the shared
         # workspace, and the fork is not one of the ids deleted here.
         referenced = await run_in_threadpool(sandbox_is_referenced_elsewhere, shared, None)
-        # The row went first, so another client can create a project with this
-        # id in the window. It resolves to the same default path, and a tool
-        # call of its own may be writing in there right now.
+        # The row went first, so another client can create a project with this id in the window. It resolves
+        # to the same default path, and a tool call of its own may be writing in there right now.
         recreated = await run_in_threadpool(get_chat_project, project_id) is not None
         if not delete_files:
-            # The files stay, so the only job here is making them reachable: the
-            # row that held a custom path is gone, and a fork's cards still name
-            # this session.
+            # The files stay, so the only job here is making them reachable: the row that held a custom path is
+            # gone, and a fork's cards still name this session.
             await run_in_threadpool(
                 record_orphaned_project,
                 project_id,
@@ -1255,9 +1226,8 @@ async def delete_project(
                 project_id,
             )
         elif not idle:
-            # Still running after the wait. Removing a live tool call's working
-            # directory is worse than keeping files the user asked to delete,
-            # and the record below means the next delete can still collect them.
+            # Still running after the wait. Removing a live tool call's working directory is worse than keeping
+            # files the user asked to delete, and the record below means the next delete can still collect them.
             logger.warning(
                 "Kept project workspace %s: a tool call was still running in it",
                 project_id,
@@ -1268,9 +1238,8 @@ async def delete_project(
                 project_id,
             )
         if delete_files and idle and not referenced and not recreated:
-            # Written down first: the delete can decline an unexpected path or
-            # stop at a locked file, and the row that knew where this workspace
-            # lives has already gone. The record is the only way back to it.
+            # Written down first: the delete can decline an unexpected path or stop at a locked file, and the
+            # row that knew where this workspace lives has already gone. The record is the only way back to it.
             await run_in_threadpool(
                 record_orphaned_project,
                 project_id,
@@ -1278,17 +1247,15 @@ async def delete_project(
                 True,
                 project.get("rootPath"),
             )
-            # Once more, next to the delete itself: the record write above is
-            # an await, and a project created in that window resolves to this
-            # same path.
+            # Once more, next to the delete itself: the record write above is an await, and a project created in
+            # that window resolves to this same path.
             if await run_in_threadpool(get_chat_project, project_id) is not None:
                 logger.warning(
                     "Kept project workspace %s: a project was created with that id",
                     project_id,
                 )
-                # Only when the new row is about these folders: the default
-                # root carries the project's name, so a project remade under
-                # this id can sit elsewhere and the old one would be stranded.
+                # Only when the new row is about these folders: the default root carries the project's name, so a
+                # project remade under this id can sit elsewhere and the old one would be stranded.
                 if await run_in_threadpool(
                     live_project_owns,
                     project_id,
@@ -1305,9 +1272,8 @@ async def delete_project(
                     project.get("rootPath"),
                 )
         elif delete_files and not recreated:
-            # Written down so it can be resolved and later collected: the row
-            # that knew where it lives is gone. The root too, since the deferred
-            # delete removes what the immediate one would; not for a live id.
+            # Written down so it can be resolved and later collected: the row that knew where it lives is gone.
+            # The root too, since the deferred delete removes what the immediate one would; not for a live id.
             await run_in_threadpool(
                 record_orphaned_project,
                 project_id,
@@ -1461,6 +1427,12 @@ def record_import_ledger(
     return ChatImportLedgerRecordResponse(accepted = accepted, inserted = inserted)
 
 
+def _snapshot_chat_images() -> Optional[set[str]]:
+    """Registry and thumbnail cache are account-scoped, so this bounds the reap to the caller."""
+    from core.inference.search_images import snapshot_and_fence_registrations
+    return snapshot_and_fence_registrations()
+
+
 @router.delete("")
 async def clear_history(
     request: Request,
@@ -1495,8 +1467,6 @@ async def clear_history(
         every search in every chat for the length of a clear. The window bought back is a few
         instructions wide and its cost is one chat's thumbnails re-fetching. Not worth it.
         """
-        from core.inference.search_images import snapshot_and_fence_registrations
-
         if payload is None:
             cleared, cleared_runs, cleared_chat_runs = clear_chat_history(
                 include_chat_generation_runs = True
@@ -1506,21 +1476,18 @@ async def clear_history(
                 cleared_runs,
                 cleared_chat_runs,
                 False,
-                snapshot_and_fence_registrations(),
+                _snapshot_chat_images(),
             )
-        # Answered by the transaction itself: read beforehand it is a guess, and a concurrent retry of the same
-        # operation id would replay while believing it cleared.
-        # The one BEGIN IMMEDIATE puts second replays while still believing it cleared; `replayed` is whichever the
-        # transaction actually did.
+        # Answered by the transaction itself: read beforehand it is a guess, and the one BEGIN IMMEDIATE
+        # puts second replays while still believing it cleared. `replayed` is whichever the transaction did.
         cleared, cleared_runs, cleared_chat_runs, replayed = clear_chat_history_with_replay_status(
             payload.ids,
             operation_id = payload.operationId,
             include_chat_generation_runs = True,
         )
         if replayed:
-            # A replay takes no snapshot of its own -- the chats created since the original
-            # clear are not its to reap. It may still have to FINISH that clear's reap,
-            # though, if the process died between the commit and the cleanup.
+            # A replay takes no snapshot of its own: the chats created since the original clear are not its to
+            # reap. It may still have to FINISH that clear's reap if the process died before the cleanup.
             return (
                 cleared,
                 cleared_runs,
@@ -1528,7 +1495,7 @@ async def clear_history(
                 True,
                 unreaped_clear_operation_image_ids(payload.operationId),
             )
-        snapshot = snapshot_and_fence_registrations()
+        snapshot = _snapshot_chat_images()
         # Recorded before the reap runs.
         record_clear_operation_reap_scope(payload.operationId, snapshot)
         return cleared, cleared_runs, cleared_chat_runs, False, snapshot
@@ -1551,17 +1518,16 @@ async def clear_history(
     # By id: the rows went with the threads, so nothing can look them up now.
     _cancel_research_runs(request, cleared_runs)
     _cancel_chat_generation_runs(request, cleared_chat_runs)
-    # Same archive cleanup as DELETE /threads. Without it "Clear all chats" leaves every
-    # conversation searchable in rag.db, and a reused thread id reads the old archive.
+    # Same cleanup as DELETE /threads. Without it "Clear all chats" leaves every conversation
+    # searchable in rag.db, and a reused thread id reads the old archive.
     await run_in_threadpool(
-        _remove_conversation_archives, list(dict.fromkeys(thread_ids + cleared)), cutoff = cutoff
+        _remove_thread_rag_data, list(dict.fromkeys(thread_ids + cleared)), cutoff = cutoff
     )
     # "Clear all chats" is the common bulk delete.
     # delete_files matches DELETE /threads: off by default, since the files are the user's.
     removed, kept = await _remove_sandboxes(list(dict.fromkeys(thread_ids + cleared)), delete_files)
-    # Search thumbnails are keyed by id, not thread.
-    # reapable_image_ids is the original clear's own snapshot off the ledger, so a replay's reap cannot reach a newer
-    # chat's images.
+    # Search thumbnails are keyed by id, not thread. reapable_image_ids is the original clear's own
+    # snapshot off the ledger, so a replay's reap cannot reach a newer chat's images.
     if not replayed or reapable_image_ids:
         from core.inference.search_images import clear_cache
         await run_in_threadpool(clear_cache, reapable_image_ids)
@@ -1584,9 +1550,9 @@ def get_settings(current_subject: str = Depends(get_current_subject)):
 def compare_and_set_settings(
     payload: dict[str, Any], current_subject: str = Depends(get_current_subject)
 ):
-    # A raw dict, as put_settings takes: automatic validation of a typed body
-    # renders the offending input back, and Starlette dumps with allow_nan =
-    # False, so a rejected NaN would 500 a request the validator refused.
+    # A raw dict, as put_settings takes: automatic validation of a typed body renders the offending
+    # input back, and Starlette dumps with allow_nan = False, so a rejected NaN would 500 a request the
+    # validator refused.
     try:
         parsed = ConditionalChatSettingsPayload.model_validate(payload)
     except ValidationError as exc:

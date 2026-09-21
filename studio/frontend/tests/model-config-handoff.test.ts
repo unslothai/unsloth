@@ -227,21 +227,22 @@ test("only local GGUF files may ignore a derived active variant", () => {
   );
 });
 
-test("an Ollama load identity never advertises API-loadable settings", () => {
+test("an Ollama load identity mirrors its settings only when the API can reach it", () => {
   const id = "ollama-manifest:library/model:latest";
-  const target = modelConfigTarget(
-    id,
-    {
+  const link = "/home/u/.ollama/.studio_links/ab12/model-latest.gguf";
+  const local = (loadId: string) =>
+    ({
       source: "local",
       isLora: false,
-      loadId: id,
+      loadId,
       isDownloaded: true,
       isGguf: true,
-    },
-    "Llama 3.2",
-  );
+    }) as const;
+  const target = modelConfigTarget(id, local(id), "Llama 3.2");
 
-  assert.equal(target.apiLoadable, false);
+  // The reference is what /v1/models advertises; the link it materializes the resolver skips.
+  assert.equal(target.apiLoadable, true);
+  assert.equal(modelConfigTarget(link, local(link), "").apiLoadable, false);
   assert.equal(target.configId, undefined);
   assert.equal(target.displayName, "Llama 3.2");
   assert.equal(

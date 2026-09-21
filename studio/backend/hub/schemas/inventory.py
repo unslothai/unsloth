@@ -24,6 +24,17 @@ class GgufVariantDetail(BaseModel):
     )
     size_bytes: int = Field(0, description = "File size in bytes")
     download_size_bytes: int = Field(0, description = "Total bytes needed to download this variant")
+    pending_drafter_filename: Optional[str] = Field(
+        None,
+        description = (
+            "The sole missing MTP/DSpark/DFlash companion when the main GGUF and any "
+            "vision projector are already cached. Lets the download UI name the artifact "
+            "it is actually transferring instead of presenting it as the whole model."
+        ),
+    )
+    pending_drafter_size_bytes: int = Field(
+        0, description = "Remote size of pending_drafter_filename"
+    )
     shard_count: int = Field(0, description = "Part count for a complete canonical split GGUF")
     download_remaining_bytes: Optional[int] = Field(
         None,
@@ -96,6 +107,10 @@ class GgufVariantsResponse(BaseModel):
     resolved_locally: bool = Field(
         False,
         description = "Whether this answer came from resolving repo_id as a local path",
+    )
+    dependencies_resolved: bool = Field(
+        False,
+        description = "Whether Hub metadata was available to resolve the variant's required companion files",
     )
     loadable_variants: Optional[List[str]] = Field(
         None,
@@ -235,6 +250,8 @@ class CachedRepoBase(BaseModel):
     repo_id: str
     size_bytes: int = 0
     cache_path: Optional[str] = None
+    # Opaque stand-in for ``cache_path``, stable for the server's life and not reversible.
+    cache_ref: Optional[str] = None
     last_modified: Optional[float] = None
     partial: bool = False
     partial_transport: Optional[str] = None
@@ -368,6 +385,8 @@ class OrphanCompanionInfo(BaseModel):
     repo_id: str
     size_bytes: int = 0
     cache_path: Optional[str] = None
+    # Opaque stand-in for ``cache_path``, stable for the server's life and not reversible.
+    cache_ref: Optional[str] = None
 
 
 class OrphanCompanionsResponse(BaseModel):

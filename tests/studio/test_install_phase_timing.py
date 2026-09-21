@@ -36,7 +36,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from unsloth_pwsh_runner import run_pwsh
+from unsloth_pwsh_runner import pwsh_env, run_pwsh
 
 REPO = Path(__file__).resolve().parents[2]
 WORKFLOWS = REPO / ".github" / "workflows"
@@ -357,8 +357,14 @@ def test_the_elapsed_prefix_tracks_real_time_rather_than_printing_a_constant(tmp
 PWSH = None
 for _candidate in ("pwsh", "powershell"):
     try:
+        # pwsh_env, not run_pwsh: a probe run at import time, whose only question is whether
+        # this shell exists, must answer "no" rather than raise out of collection, which is
+        # what run_pwsh's exhausted retry loop would do. It still needs the private startup
+        # cache: a torn one makes this probe exit non-zero and silently skips the whole file.
         if (
-            subprocess.run([_candidate, "-NoProfile", "-Command", "exit 0"], timeout = 60).returncode
+            subprocess.run(
+                [_candidate, "-NoProfile", "-Command", "exit 0"], timeout = 60, env = pwsh_env()
+            ).returncode
             == 0
         ):
             PWSH = _candidate

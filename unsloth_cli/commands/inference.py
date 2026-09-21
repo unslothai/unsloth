@@ -27,7 +27,12 @@ def inference(
     temperature: float = typer.Option(0.7, "--temperature"),
     top_p: float = typer.Option(0.9, "--top-p"),
     top_k: int = typer.Option(40, "--top-k"),
-    max_new_tokens: int = typer.Option(256, "--max-new-tokens"),
+    max_new_tokens: Optional[int] = typer.Option(
+        None,
+        "--max-new-tokens",
+        help = "Cap on generated tokens. Unset lets a reply use whatever the "
+        "model's context window leaves free after the conversation.",
+    ),
     repetition_penalty: float = typer.Option(1.1, "--repetition-penalty"),
     system_prompt: str = typer.Option(
         "",

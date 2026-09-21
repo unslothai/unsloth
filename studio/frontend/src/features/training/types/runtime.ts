@@ -67,6 +67,7 @@ export interface TrainingProgressPayload {
   epoch: number | null;
   elapsed_seconds: number | null;
   eta_seconds: number | null;
+  session_start_step?: number | null;
   grad_norm: number | null;
   num_tokens: number | null;
   eval_loss: number | null;
@@ -107,6 +108,7 @@ export interface TrainingRuntimeState {
   progressPercent: number;
   elapsedSeconds: number | null;
   etaSeconds: number | null;
+  sessionStartStep: number;
   currentGradNorm: number | null;
   currentNumTokens: number | null;
   outputDir: string | null;
@@ -169,6 +171,7 @@ export interface TrainingViewData {
   progressPercent: number;
   elapsedSeconds: number | null;
   etaSeconds: number | null;
+  sessionStartStep?: number;
   evalEnabled: boolean;
   message: string;
   error: string | null;

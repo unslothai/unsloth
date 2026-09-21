@@ -63,6 +63,24 @@ def _hub_doubles(calls, seen):
             calls.append("repo_info")
             return seen.get("repo_info_result")
 
+        def repo_exists(
+            self,
+            repo_id,
+            repo_type = None,
+        ):
+            calls.append("repo_exists")
+            # Default True: the interesting case is an existing repo, and a test that wants
+            # a fresh one says so.
+            return seen.get("repo_exists", True)
+
+        def file_exists(
+            self,
+            repo_id,
+            filename,
+            repo_type = None,
+        ):
+            return seen.get("existing_files", {}).get(filename, False)
+
         def upload_file(
             self,
             path_or_fileobj,
@@ -106,6 +124,8 @@ def _hub_doubles(calls, seen):
         ):
             calls.append("model_card")
             seen["card_repo"] = repo_id
+            if seen.get("card_error"):
+                raise seen["card_error"]
 
     return _HfApi, _ModelCard
 

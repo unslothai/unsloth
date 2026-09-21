@@ -5,6 +5,7 @@ import {
   DEFAULT_INFERENCE_PARAMS,
   type InferenceParams,
 } from "../types/runtime";
+import { effectiveMinPMode } from "../lib/min-p-policy.ts";
 import type { PresetLoadConfig } from "./preset-load-config";
 
 export const defaultInferenceParams = DEFAULT_INFERENCE_PARAMS;
@@ -25,6 +26,7 @@ export type PresetOwnedParams = Pick<
   | "topP"
   | "topK"
   | "minP"
+  | "minPMode"
   | "repetitionPenalty"
   | "presencePenalty"
   | "maxTokens"
@@ -110,6 +112,7 @@ export function getPresetOwnedParams(
     topP: params.topP,
     topK: params.topK,
     minP: params.minP,
+    minPMode: effectiveMinPMode(params),
     repetitionPenalty: params.repetitionPenalty,
     presencePenalty: params.presencePenalty,
     maxTokens: params.maxTokens,
@@ -131,6 +134,7 @@ export function isSamePresetConfig(
     left.topP === right.topP &&
     left.topK === right.topK &&
     left.minP === right.minP &&
+    left.minPMode === right.minPMode &&
     left.repetitionPenalty === right.repetitionPenalty &&
     left.presencePenalty === right.presencePenalty &&
     left.maxTokens === right.maxTokens &&
@@ -158,6 +162,20 @@ export function applyPresetParams(
   return {
     ...current,
     ...getPresetOwnedParams(preset),
+  };
+}
+
+/** Built-in reset delegates on vLLM; other providers keep their dormant choice. */
+export function applyPresetForProvider(
+  current: InferenceParams,
+  preset: Preset,
+  providerType: string | null | undefined,
+): InferenceParams {
+  const applied = applyPresetParams(current, preset.params);
+  if (preset.name !== "Default") return applied;
+  return {
+    ...applied,
+    minPMode: providerType === "vllm" ? "server-default" : effectiveMinPMode(current),
   };
 }
 

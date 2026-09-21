@@ -17,6 +17,7 @@ from collections import deque
 from dataclasses import dataclass, field
 from typing import Any, Callable, Optional
 
+from utils.account_context import current_account_id
 from storage.api_usage_db import (
     MAX_ENDPOINT_CHARS,
     MAX_STATUS_CHARS,
@@ -175,6 +176,8 @@ class ApiMonitorEntry:
     updated_at: float
     # Who this row is attributed to; on a shared row it does not restrict visibility.
     subject: Optional[str] = None
+    # Usernames are reusable and these in-memory rows outlive the account, so the immutable account id fences a replacement off its predecessor's traffic.
+    account_id: str = field(default_factory = current_account_id)
     # True for sk-unsloth callers only: the panel auto-opens on these, not Unsloth's chat.
     via_api_key: bool = False
     # Monotonic anchors so duration math survives wall-clock steps (NTP).
@@ -197,7 +200,6 @@ class ApiMonitorEntry:
     progress: Optional[float] = None
     # Stamped on the first reply text; snapshot() prefers it over engine timings.
     first_token_monotonic: Optional[float] = None
-    # a tool card is client output that TTFT should count and the token-rate clock must not
     # The same instant, but only for output the model decoded. A tool card is client output that TTFT should count and
     # the token-rate clock must not: the tool run between it and the first token is not decoding.
     first_decode_monotonic: Optional[float] = None
@@ -207,7 +209,6 @@ class ApiMonitorEntry:
     # timings.predicted_ms; set only from engine timings, so its presence marks a rateable row.
     decode_ms: Optional[float] = None
     stop_reason: Optional[str] = None
-    # an n > 1 stream reports each choice in its own chunk
     # Every finish reason seen so far. An n > 1 stream reports each choice in its own chunk, so agreement can only be
     # judged across the whole request. Not serialized.
     stop_reasons_seen: set[str] = field(default_factory = set)
@@ -244,7 +245,6 @@ class ApiMonitorEntry:
         if (
             tok_per_sec is None
             and self.completion_tokens
-            # the clock starts at the first token, so one token has no gap to measure and hence no rate
             # The clock starts at the first token, so it spans only the gaps that followed it: one token has no gap to
             # measure, hence no rate at all.
             and self.completion_tokens > 1
@@ -307,7 +307,7 @@ class ApiMonitor:
     ):
         self._entries: deque[ApiMonitorEntry] = deque()
         # Shared rows one subject cleared: deleting would erase another caller's history.
-        self._hidden_shared: dict[str, set[str]] = {}
+        self._hidden_shared: dict[tuple[str, str], set[str]] = {}
         self._max_entries = max(0, max_entries)
         self._lock = threading.Lock()
         self._callback_condition = threading.Condition(self._lock)
@@ -343,8 +343,6 @@ class ApiMonitor:
         """Remove only the terminal callback registration owned by ``lease``."""
         with self._callback_condition:
             self._terminal_callback_leases.pop(lease, None)
-            # let a notification that already captured this callback finish its fast enqueue before the owner
-            # drains/stops the writer
             # A notification may already have captured this callback. Let its fast enqueue finish before the owner
             # drains/stops the writer.
             while self._terminal_callbacks_inflight.get(lease, 0):
@@ -495,10 +493,9 @@ class ApiMonitor:
                     entry.first_token_monotonic = now
                 if entry.first_decode_monotonic is None:
                     entry.first_decode_monotonic = now
-            # once the "..." marker is present the head is frozen
             # Preview is capped: once the "..." marker is present the head is frozen, so skip the per-chunk re-concat
-            # (avoids O(n^2) on long generations). A reply that landed exactly on the cap has no marker yet, so let one
-            # more append record the truncation before freezing.
+            # (avoids O(n^2) on long generations). A reply that landed exactly on the cap has no marker yet, so let
+            # one more append record the truncation before freezing.
             if len(entry.reply) >= _MAX_REPLY_CHARS:
                 if not entry.reply.endswith("..."):
                     entry.reply = _trim(entry.reply + text, _MAX_REPLY_CHARS)
@@ -693,7 +690,6 @@ class ApiMonitor:
     ) -> None:
         if not entry_id:
             return
-        # coerce before locking: a raise here (this runs inside streaming generators) would truncate the user's response
         # Coerce before locking: arbitrary payloads, and a raise here (this runs inside streaming generators) would
         # truncate the user's response.
         tok_per_sec = _finite_float_or_none(tok_per_sec)
@@ -958,7 +954,7 @@ class ApiMonitor:
                 for entry in self._entries
                 if entry.status == "running"
                 and entry.kind != "lifecycle"
-                and (subject is None or entry.subject == subject)
+                and self._attributed(entry, subject)
             )
 
     def clear(self, *, subject: Optional[str] = None) -> None:
@@ -974,7 +970,7 @@ class ApiMonitor:
                 self._hidden_shared.clear()
                 return
             # A running shared row is a load in progress, not history, so it stays.
-            hidden = self._hidden_shared.setdefault(subject, set())
+            hidden = self._hidden_shared.setdefault((current_account_id(), subject), set())
             for entry in self._entries:
                 if entry.shared and entry.status != "running":
                     hidden.add(entry.id)
@@ -984,7 +980,7 @@ class ApiMonitor:
             self._entries = deque(
                 entry
                 for entry in self._entries
-                if entry.shared or entry.subject != subject or entry.status == "running"
+                if entry.shared or not self._attributed(entry, subject) or entry.status == "running"
             )
 
     def _visible(self, entry: ApiMonitorEntry, subject: Optional[str]) -> bool:
@@ -992,8 +988,10 @@ class ApiMonitor:
             return True
         if entry.shared:
             # Every subject minus the cleared ones. Before ownership, so a clear hides own rows.
-            return entry.id not in self._hidden_shared.get(subject, ())
-        return entry.subject == subject
+            if entry.id in self._hidden_shared.get((current_account_id(), subject), ()):
+                return False
+            return _lifecycle_row_visible_to_caller(entry, subject)
+        return entry.subject == subject and entry.account_id == current_account_id()
 
     def _attributed(self, entry: ApiMonitorEntry, subject: Optional[str]) -> bool:
         """Whether *subject* is the caller this row's API traffic belongs to.
@@ -1003,7 +1001,7 @@ class ApiMonitor:
         """
         if subject is None:
             return True
-        return entry.subject == subject
+        return entry.subject == subject and entry.account_id == current_account_id()
 
     def _find_locked(self, entry_id: str) -> Optional[ApiMonitorEntry]:
         for entry in self._entries:
@@ -1024,10 +1022,23 @@ class ApiMonitor:
         self._entries = kept
         # Keep hidden sets to live rows so they stay bounded by the ring buffer.
         live = {entry.id for entry in kept}
-        for subject, hidden in list(self._hidden_shared.items()):
+        for key, hidden in list(self._hidden_shared.items()):
             hidden &= live
             if not hidden:
-                del self._hidden_shared[subject]
+                del self._hidden_shared[key]
 
 
 api_monitor = ApiMonitor(enabled = not _api_monitor_disabled())
+
+
+def _lifecycle_row_visible_to_caller(entry: "ApiMonitorEntry", subject: str) -> bool:
+    """Lifecycle rows name a model path that may sit inside the loading account's workspace, so only the owner and that account see them."""
+    if entry.kind != "lifecycle":
+        return True
+    if entry.account_id == current_account_id() and entry.subject in (None, subject):
+        return True
+    from utils.account_context import is_owner_context
+
+    if is_owner_context():
+        return True
+    return False

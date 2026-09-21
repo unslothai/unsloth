@@ -20,6 +20,8 @@ export interface VideoResolvedControl {
   // "applied" (honored, or nothing was asked) | "fell_back" | "unsupported". Absent on older backends.
   status?: "applied" | "fell_back" | "unsupported";
   reason: string;
+  // "prequant:<repo>/<file>" when a hosted checkpoint was seeded; absent on a runtime quantise.
+  artifact?: string | null;
 }
 
 // Per-family generation defaults + shape constraints, from status.defaults when loaded.
@@ -218,7 +220,6 @@ export interface GalleryVideo {
   text_encoder_quant?: string | null;
   memory_mode?: string | null;
   offload_policy?: string | null;
-  // Creation time (ISO 8601 timestamp).
   created_at: string;
   // Library state, not recipe: stored beside the clip, absent on sidecars written before this existed.
   pinned?: boolean;

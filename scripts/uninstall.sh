@@ -1,10 +1,8 @@
 #!/usr/bin/env sh
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
-#
 # Unsloth Studio uninstaller (macOS / Linux / WSL). Run --help for details.
 # Custom roots (UNSLOTH_STUDIO_HOME / STUDIO_HOME) come from studio.conf.
-#
 # Usage: curl -fsSL https://raw.githubusercontent.com/unslothai/unsloth/main/scripts/uninstall.sh | sh
 
 set -e
@@ -236,6 +234,8 @@ $_roots_from_conf"
 # where an assignment would never reach the summary.
 #   remove-failed  an rm failed, or a root was skipped while still holding data
 #   db-removed     a removed install root actually held studio.db
+#   db-kept        the default root was REFUSED and still holds studio.db. Its own flag, not
+#                  remove-failed: nothing failed, so "remove those paths by hand" is wrong here.
 # studio.db holds the chat history (backend/storage/studio_db.py), not the provider API keys:
 # providers_db.py keeps those in the browser's localStorage only. An env-mode install keeps it in
 # a custom root a bare run cannot discover, so claim the history is gone only if one was deleted.
@@ -243,9 +243,11 @@ $_roots_from_conf"
 _MARKER_DIR=$(mktemp -d 2>/dev/null || true)
 _REMOVE_FAILED_FLAG=""
 _DB_REMOVED_FLAG=""
+_DB_KEPT_FLAG=""
 if [ -n "$_MARKER_DIR" ] && [ -d "$_MARKER_DIR" ]; then
     _REMOVE_FAILED_FLAG="$_MARKER_DIR/remove-failed"
     _DB_REMOVED_FLAG="$_MARKER_DIR/db-removed"
+    _DB_KEPT_FLAG="$_MARKER_DIR/db-kept"
 fi
 
 # `printf`, never `: > "$f"`: `:` is a POSIX special builtin, so a redirection error on it kills a
@@ -273,6 +275,15 @@ _cleanup_markers() {
     fi
 }
 trap _cleanup_markers EXIT
+
+# A removal that got part way can take the sentinels and then fail on a locked child, leaving a
+# root the next run's gate would refuse. Put the marker back so a retry recognises it.
+_restore_owner_marker() {
+    [ -d "$1" ] || return 0
+    if [ -e "$1/.unsloth-studio-owned" ] || [ -L "$1/.unsloth-studio-owned" ]; then return 0; fi
+    printf '' > "$1/.unsloth-studio-owned" 2>/dev/null || true
+    return 0
+}
 
 # Remove an install root and record whether its studio.db really went with it. The check runs on
 # the RESOLVED path: a relocated install (~/.unsloth/studio a symlink to another disk) passes
@@ -305,6 +316,7 @@ _remove_root_recording_db() {
         fi
     fi
     _remove_path "$_rrd_root"
+    _restore_owner_marker "$_rrd_root"
     if [ "$_rrd_had_db" = 1 ]; then
         if [ -f "$_rrd_db" ]; then
             # Only the link went, or the delete failed: the data is still on disk.
@@ -329,6 +341,22 @@ _remove_path() {
     fi
 }
 
+# An install lock, and only an install lock. prebuilt_core.install_lock creates these with
+# O_CREAT | O_EXCL, so a lock is always a regular file: a directory or a link at that name is
+# the user's, and in a master root they chose _remove_path would rm -rf it. -L before -f, which
+# is true for a link to a file. uninstall.ps1's _RemoveLockFile excludes reparse points for the
+# same reason, and the two halves of one rule have to agree.
+_remove_lock_file() {
+    _rlf="$1"
+    if [ -L "$_rlf" ]; then
+        echo "  keeping link at an install-lock path: $_rlf" >&2
+    elif [ -f "$_rlf" ]; then
+        _remove_path "$_rlf"
+    elif [ -e "$_rlf" ]; then
+        echo "  keeping non-file at an install-lock path: $_rlf" >&2
+    fi
+}
+
 # $1 override, $2 default. A relative override is invalid per XDG and dropped by dirs (which
 # Tauri resolves through), so honouring one would spare the real data and rm -rf under our cwd.
 _xdg_dir() {
@@ -338,15 +366,91 @@ _xdg_dir() {
 # Accept as Unsloth root only if an Unsloth sentinel exists (matching install.sh's env-mode
 # ownership guard). A bare unsloth_studio/ directory is NOT enough: require the install-time owner
 # marker so a user directory that happens to contain such a folder is safe.
+# Is $1 a Python venv? What the gate reads out of one is evidence only if the directory really
+# is one; a bare file at that path is somebody else's.
+# A sentinel this gate may trust. Deliberately just -f, following links: refusing one that is a
+# link, or that sits inside a linked directory, buys nothing here and costs a supported install.
+# It buys nothing because anyone who can plant a link at that path can plant a plain file there
+# instead, which this has always accepted. It costs a supported install because relocating a
+# multi-gigabyte venv with a symlink leaves a REAL marker behind a link, and refusing it strands
+# the install, which is the failure this whole gate exists to prevent. The link test belongs in
+# install.sh's _claim_sentinel, where following one would TRUNCATE the target rather than read it.
+_is_owner_marker() { [ -f "$1" ]; }
+
+# No -L here either, and for the same reason: a relocated venv is still a venv. The leftover scan
+# below rejects links on its own, where the name came from a glob rather than from us.
+_is_venv_dir() {
+    [ -d "$1" ] || return 1
+    [ -f "$1/pyvenv.cfg" ] && return 0
+    [ -f "$1/bin/python" ] && return 0
+    return 1
+}
+
+# The exact name an installer gives a moved-aside venv: <prefix>.<stamp>.<pid>[.<n>], with a
+# 14-digit stamp or install.sh's "time" date(1) fallback. install.sh keeps every other spelling
+# as the user's data (_studio_venv_rollback_must_be_preserved); do not be looser.
+_is_installer_leftover_name() {
+    _l=${1##*/}
+    # Only the rollback name carries a collision counter (install.sh:823); .venv.invalid is
+    # written once per run, so it takes no suffix.
+    _l_suffix_ok=false
+    case "$_l" in
+        unsloth_studio.rollback.*) _l=${_l#unsloth_studio.rollback.}; _l_suffix_ok=true ;;
+        .venv.invalid.*)           _l=${_l#.venv.invalid.} ;;
+        *) return 1 ;;
+    esac
+    _l_rest=${_l#*.}
+    [ "$_l_rest" != "$_l" ] || return 1
+    _l_stamp=${_l%%.*}
+    case "$_l_stamp" in
+        time) ;;
+        ''|*[!0-9]*) return 1 ;;
+        *) [ "${#_l_stamp}" -eq 14 ] || return 1 ;;
+    esac
+    _l_pid=${_l_rest%%.*}
+    case "$_l_pid" in ''|*[!0-9]*) return 1 ;; esac
+    _l_suffix=${_l_rest#*.}
+    if [ "$_l_suffix" != "$_l_rest" ]; then
+        [ "$_l_suffix_ok" = true ] || return 1
+        case "$_l_suffix" in ''|*[!0-9]*) return 1 ;; esac
+    fi
+    return 0
+}
+
 _is_studio_root() {
     _r="$1"
+    # $2 = "managed": $_r is the default root install.sh manages, $HOME/.unsloth/studio.
+    _managed="${2:-}"
     [ -n "$_r" ] || return 1
-    [ -f "$_r/share/studio.conf" ] && return 0
-    [ -f "$_r/unsloth_studio/.unsloth-studio-owned" ] && return 0
+    # install.sh writes the first when it creates the root, before the uv cache and long before
+    # the venv, so a partial install identifies itself instead of being guessed at. The last is
+    # the legacy venv name, which only install.sh writes.
+    _is_owner_marker "$_r/.unsloth-studio-owned" && return 0
+    _is_owner_marker "$_r/share/studio.conf" && return 0
+    _is_owner_marker "$_r/unsloth_studio/.unsloth-studio-owned" && return 0
+    _is_owner_marker "$_r/.venv/.unsloth-studio-owned" && return 0
     if [ -L "$_r/bin/unsloth" ]; then
         _t=$(readlink "$_r/bin/unsloth" 2>/dev/null || true)
         case "$_t" in *unsloth_studio/bin/unsloth) return 0 ;; esac
     fi
+    # All a pre-marker install has left is bin/unsloth inside the venv, pip's console script,
+    # which ANY venv with the wheel has: proof only at the managed root, which install.sh:2987
+    # also makes the only root that can hold the layout, or a stale UNSLOTH_STUDIO_HOME deletes
+    # the project it points at.
+    [ "$_managed" = managed ] || return 1
+    for _v in unsloth_studio .venv; do
+        _is_venv_dir "$_r/$_v" || continue
+        [ -f "$_r/$_v/bin/unsloth" ] && return 0
+    done
+    # An install that died between moving the old venv aside (install.sh:3027, :819) and writing
+    # the marker (install.sh:3190) leaves only these, and only install.sh makes either name,
+    # always by renaming a venv.
+    for _p in "$_r"/unsloth_studio.rollback.* "$_r"/.venv.invalid.*; do
+        # Never a link: install.sh refuses to prune a rollback symlink either.
+        [ -L "$_p" ] && continue
+        _is_installer_leftover_name "$_p" || continue
+        _is_venv_dir "$_p" && return 0
+    done
     return 1
 }
 
@@ -374,6 +478,112 @@ _custom_studio_data_dirs() {
 #   3. Env-mode studio.conf at $<root>/share/studio.conf (discovered via 1)
 # install.sh writes UNSLOTH_EXE='<root>/unsloth_studio/bin/unsloth', so the install root is three
 # dirnames up. Each discovered non-default root is printed on its own line, de-duplicated.
+# The master root UNSLOTH_HOME names, or empty. studio/ is its child and llama.cpp, node and
+# whisper.cpp are its other children, so removing the Studio root alone strands them. Stripped
+# and tilde-expanded like storage_roots.unsloth_home() and studio/setup.sh, or a padded value
+# would name a directory neither install nor uninstall agrees on.
+_master_root() {
+    _mr_from_note=
+    _mr=$(printf '%s' "${UNSLOTH_HOME:-}" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
+    # The note setup.sh leaves in the Studio tree, when this run has no UNSLOTH_HOME of its own:
+    # `UNSLOTH_HOME=/mnt/portable unsloth studio update` leaves nothing in the environment, so
+    # without it an uninstall stranded the runtimes. The deny list and the marker gate still
+    # apply, so a stale note licenses nothing the environment could not.
+    #
+    # Only the Studio root this run is about, in studio_root()'s precedence and with no falling
+    # through: with two installs on one box, a legacy note otherwise won here while the removal
+    # worked on the named tree, so the run deleted one Studio and the OTHER install's runtimes.
+    if [ -z "$_mr" ]; then
+        # Trimmed as setup.sh trimmed them when it chose where to write the note: appending to
+        # a padded UNSLOTH_STUDIO_HOME looked somewhere that does not exist, so the note was
+        # never found while the loop below still removed the tree.
+        _mr_ush=$(printf '%s' "${UNSLOTH_STUDIO_HOME:-}" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
+        _mr_sh=$(printf '%s' "${STUDIO_HOME:-}" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
+        if [ -n "$_mr_ush" ]; then
+            _mr_roots="$_mr_ush"
+        elif [ -n "$_mr_sh" ]; then
+            _mr_roots="$_mr_sh"
+        else
+            # No override, so the root install.sh recorded in the default-mode studio.conf, then
+            # the legacy tree: with a bare environment that conf is the only way to find a
+            # <master>/studio at all. Read here, not through _custom_studio_roots, which calls
+            # back into this function. UNSLOTH_EXE='<root>/unsloth_studio/bin/unsloth', so the
+            # root is three dirnames up; apostrophes arrive escaped as '\''.
+            _mr_roots=""
+            _mr_dconf="$HOME/.local/share/unsloth/studio.conf"
+            if [ -f "$_mr_dconf" ]; then
+                _mr_exe=$(sed -n "s/^UNSLOTH_EXE='\(.*\)'\$/\1/p" "$_mr_dconf" | head -n1)
+                _mr_exe=$(printf '%s' "$_mr_exe" | sed "s/'\\\\''/'/g")
+                [ -n "$_mr_exe" ] && _mr_roots=$(dirname "$(dirname "$(dirname "$_mr_exe")")")
+            fi
+            _mr_roots="$_mr_roots
+$HOME/.unsloth/studio"
+        fi
+        _mr_saved_ifs=$IFS
+        IFS='
+'
+        for _mr_studio in $_mr_roots; do
+            IFS=$_mr_saved_ifs
+            [ -n "$_mr_studio" ] || continue
+            _mr_conf="${_mr_studio}/share/.unsloth-master-root"
+            [ -f "$_mr_conf" ] || continue
+            # One line, and REFUSED when there is a second. storage_roots.py and the CLI both
+            # strip the WHOLE file, so a two-line note is not a directory to them and they
+            # decline it, while taking line 1 here authorised removing <master>/llama.cpp, node,
+            # whisper.cpp and stable-diffusion.cpp: a note no runtime reader honours must not
+            # license a delete. A trailing newline is not a second line.
+            if [ -n "$(sed -n '2,$p' "$_mr_conf" 2>/dev/null | tr -d '[:space:]')" ]; then
+                continue
+            fi
+            _mr=$(head -n 1 "$_mr_conf" 2>/dev/null | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//') \
+                || _mr=""
+            if [ -n "$_mr" ]; then
+                _mr_from_note=1
+                break
+            fi
+        done
+        IFS=$_mr_saved_ifs
+    fi
+    [ -n "$_mr" ] || return 0
+    # shellcheck disable=SC2088
+    case "$_mr" in
+        "~") _mr="$HOME" ;;
+        "~/"*) _mr="$HOME/${_mr#'~/'}" ;;
+    esac
+    # shellcheck disable=SC1007
+    # || _mr_canon="": a bare assignment takes the substitution's exit status under set -e, and
+    # a root already gone or on a disconnected drive is the ordinary case here, which killed the
+    # whole run. bash hides this by clearing errexit inside command substitution; dash and POSIX
+    # `sh`, which the advertised `| sh` one-liner uses, do not.
+    _mr_canon=$(CDPATH= cd -P -- "$_mr" 2>/dev/null && pwd -P) || _mr_canon=""
+    [ -n "$_mr_canon" ] && _mr="$_mr_canon"
+    # A note must describe the tree it was found in: copy a Studio tree from master root A to B
+    # and uninstall B, and the copied note still names A, whose runtimes carry the same owner
+    # markers -- so the gates below would delete the ORIGINAL install's. Containment, not an
+    # exact <root>/studio match, since the flat layout is supported. An explicit UNSLOTH_HOME
+    # skips all of this: that is the user speaking, not a file on disk.
+    if [ "${_mr_from_note:-}" = 1 ]; then
+        _mr_here=$(CDPATH= cd -P -- "$_mr_studio" 2>/dev/null && pwd -P) || _mr_here=""
+        # A note found in the ordinary ~/.unsloth/studio install is declined outright, whatever
+        # it records, which is the rule storage_roots._is_legacy_studio_tree and the CLI already
+        # apply. Containment alone is not enough here: $HOME contains the legacy tree, so a note
+        # naming it passed, _custom_studio_roots then emitted "$HOME/studio", and uninstalling
+        # the legacy install accepted a SECOND marked install there as a root to remove, taking
+        # its database and outputs with it. The deny list does not catch that -- it refuses
+        # $HOME as a master root, not the separate Studio candidate derived from it.
+        _mr_legacy_studio=$(CDPATH= cd -P -- "$HOME/.unsloth/studio" 2>/dev/null && pwd -P) \
+            || _mr_legacy_studio="$HOME/.unsloth/studio"
+        [ "$_mr_here" != "$_mr_legacy_studio" ] || return 0
+        case "$_mr_here" in
+            "$_mr") : ;;
+            "$_mr"/*) : ;;
+            *) return 0 ;;
+        esac
+    fi
+    case "$_mr" in "$HOME/.unsloth"|/|"") return 0 ;; esac
+    printf '%s\n' "$_mr"
+}
+
 _custom_studio_roots() {
     # $1 = "lexical": skip the canonicalization (see the legacy sd.cpp sibling below). Reset on
     # every call, so a plain call is never affected by a preceding lexical one.
@@ -412,12 +622,22 @@ _custom_studio_roots() {
     }
     # Mirror install.sh's precedence: UNSLOTH_STUDIO_HOME wins, STUDIO_HOME is ignored when both
     # are set, or uninstalling install A could also delete install B from a leftover STUDIO_HOME.
-    if [ -n "${UNSLOTH_STUDIO_HOME:-}" ]; then
-        _emit "$UNSLOTH_STUDIO_HOME"
-        _from_conf "$UNSLOTH_STUDIO_HOME/share/studio.conf"
-    elif [ -n "${STUDIO_HOME:-}" ]; then
-        _emit "$STUDIO_HOME"
-        _from_conf "$STUDIO_HOME/share/studio.conf"
+    # Trimmed, as storage_roots.studio_root() trims them: a whitespace-only override is unset to
+    # every resolver, but a bare -n test called it present and suppressed the master-root branch
+    # below, leaving <UNSLOTH_HOME>/studio installed.
+    _ush=$(printf '%s' "${UNSLOTH_STUDIO_HOME:-}" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
+    _sh=$(printf '%s' "${STUDIO_HOME:-}" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
+    if [ -n "$_ush" ]; then
+        _emit "$_ush"
+        _from_conf "$_ush/share/studio.conf"
+    elif [ -n "$_sh" ]; then
+        _emit "$_sh"
+        _from_conf "$_sh/share/studio.conf"
+    elif [ -n "$(_master_root)" ]; then
+        # Last, as in storage_roots.studio_root(): UNSLOTH_HOME names the tree, and the two
+        # above name this exact directory, so either of them wins outright.
+        _emit "$(_master_root)/studio"
+        _from_conf "$(_master_root)/studio/share/studio.conf"
     fi
     # Default-mode conf.
     _from_conf "$HOME/.local/share/unsloth/studio.conf"
@@ -505,6 +725,9 @@ _unsloth_uninstall_main() {
     _pkill_studio
 
     echo "Removing data and install directories..."
+    # Resolved ONCE, before anything is deleted: _master_root can read its answer from a note
+    # inside a Studio tree the loop below removes, after which the runtime siblings are stranded.
+    _MASTER_ROOT_SAVED="$(_master_root)"
     _custom_studio_roots | while IFS= read -r _custom_root; do
         [ -n "$_custom_root" ] || continue
         if _is_unsafe_root "$_custom_root"; then
@@ -519,6 +742,23 @@ _unsloth_uninstall_main() {
             echo "  refusing to remove non-Unsloth path: $_custom_root" >&2
             continue
         fi
+        # The flat layout, both variables naming one directory: _remove_root_recording_db takes
+        # a marked Studio root WHOLE, so without this the user-chosen master root went with the
+        # install, which is the hole in the rule that every other child below is marker-gated
+        # for. Kept rather than pruned, since data left behind is recoverable and printed.
+        # Canonicalised on both sides, or a symlinked path compares unequal to itself.
+        _crf_canon=$(CDPATH= cd -P -- "$_custom_root" 2>/dev/null && pwd -P) || _crf_canon=""
+        [ -n "$_crf_canon" ] || _crf_canon="$_custom_root"
+        _crf_master="$_MASTER_ROOT_SAVED"
+        if [ -n "$_crf_master" ] && [ "$_crf_canon" = "$_crf_master" ]; then
+            echo "  keeping $_custom_root: UNSLOTH_HOME and the Studio root name the same" >&2
+            echo "  directory, so removing it would take whatever else you keep there." >&2
+            echo "  Delete it by hand once you have checked what is in it." >&2
+            _set_marker "$_REMOVE_FAILED_FLAG"
+            unset _crf_canon _crf_master
+            continue
+        fi
+        unset _crf_canon _crf_master
         _remove_root_recording_db "$_custom_root"
         # Native diffusion now installs UNDER the custom root, so the removal above already took
         # it. Older builds put it BESIDE the root at <parent>/stable-diffusion.cpp, which removing
@@ -557,7 +797,67 @@ _unsloth_uninstall_main() {
             _remove_path "$_lex_sd_cpp"
         fi
     done
-    _remove_root_recording_db "$HOME/.unsloth/studio"
+    # The master root's own children, marker-gated and deny-listed rather than removed outright
+    # like the ~/.unsloth ones below: <master> is a directory the user chose. The locks and
+    # .staging are ours by name (prebuilt_core.py) and carry no marker.
+    _mr_root="$_MASTER_ROOT_SAVED"
+    if [ -n "$_mr_root" ]; then
+        if _is_unsafe_root "$_mr_root"; then
+            echo "  refusing to remove unsafe path: $_mr_root" >&2
+        else
+            for _mr_child in llama.cpp node whisper.cpp stable-diffusion.cpp; do
+                _mr_path="$_mr_root/$_mr_child"
+                if _is_unsafe_root "$_mr_path"; then
+                    echo "  refusing to remove unsafe path: $_mr_path" >&2
+                # -L as well as -e: -e is false for a dangling symlink, so one named llama.cpp
+                # with its target volume unmounted fell through to _remove_path, which treats
+                # -L as present and unlinks it. In a root the user chose, that link is theirs.
+                elif { [ -e "$_mr_path" ] || [ -L "$_mr_path" ]; } \
+                    && [ ! -f "$_mr_path/.unsloth-studio-owned" ]; then
+                    echo "  keeping $_mr_child without Unsloth owner marker: $_mr_path" >&2
+                else
+                    _remove_path "$_mr_path"
+                fi
+            done
+            for _mr_lock in .llama.cpp.install.lock .node.install.lock \
+                    .whisper.cpp.install.lock .sd.cpp.install.lock; do
+                _remove_lock_file "$_mr_root/$_mr_lock"
+            done
+            # The prebuilt installers SHARE <root>/.staging and prune it only when empty, so
+            # anything left in it here is not ours. rmdir, not _remove_path: in a user-chosen
+            # root a recursive delete would take files an install was content to leave.
+            rmdir "$_mr_root/.staging" 2>/dev/null || true
+            # The exact shape prebuilt_core.py leaves: a component lock name, ".stale.", and the
+            # pid. A bare .*.install.lock.stale.* also matched .backup.install.lock.stale.copy.
+            for _mr_lock in .llama.cpp.install.lock .node.install.lock \
+                    .whisper.cpp.install.lock .sd.cpp.install.lock; do
+                for _mr_stale in "$_mr_root/$_mr_lock".stale.*; do
+                    case "${_mr_stale##*.stale.}" in
+                        ''|*[!0-9]*) continue ;;
+                    esac
+                    { [ -e "$_mr_stale" ] || [ -L "$_mr_stale" ]; } && _remove_lock_file "$_mr_stale"
+                done
+            done
+            # Only when nothing of the user's is left; rmdir refuses a non-empty directory.
+            rmdir "$_mr_root" 2>/dev/null || true
+        fi
+    fi
+    # end master-root children
+    # Same gate as a custom root: an ungated run takes a hand-made ~/.unsloth/studio, and then
+    # ~/.unsloth via the empty-dir prune below.
+    # -e OR -L: -e follows a link and misses a dangling one, which _remove_path would still
+    # unlink, so the gate has to see every entry that exists at that path.
+    if { [ -e "$HOME/.unsloth/studio" ] || [ -L "$HOME/.unsloth/studio" ]; } \
+       && ! _is_studio_root "$HOME/.unsloth/studio" managed; then
+        echo "  refusing to remove non-Unsloth path: $HOME/.unsloth/studio" >&2
+        # A refused CUSTOM root is somebody else's by definition. This is our own default path,
+        # where a damaged install can sit, so a studio.db here is chat history.
+        if [ -f "$HOME/.unsloth/studio/studio.db" ]; then
+            _set_marker "$_DB_KEPT_FLAG"
+        fi
+    else
+        _remove_root_recording_db "$HOME/.unsloth/studio"
+    fi
     # Shared llama.cpp build + cache, siblings of studio in default mode (deleting studio misses
     # them). No-op in env/custom mode and when absent. A user-set UNSLOTH_LLAMA_CPP_PATH is kept.
     _remove_path "$HOME/.unsloth/llama.cpp"
@@ -583,14 +883,23 @@ _unsloth_uninstall_main() {
     _remove_path "$HOME/.unsloth/whisper.cpp"
     # Prebuilt install locks: every prebuilt serializes on <parent>/.<name>.install.lock
     # (prebuilt_core.py), and a stray lock keeps ~/.unsloth from being pruned below.
-    _remove_path "$HOME/.unsloth/.llama.cpp.install.lock"
-    _remove_path "$HOME/.unsloth/.node.install.lock"
-    _remove_path "$HOME/.unsloth/.whisper.cpp.install.lock"
+    _remove_lock_file "$HOME/.unsloth/.llama.cpp.install.lock"
+    _remove_lock_file "$HOME/.unsloth/.node.install.lock"
+    _remove_lock_file "$HOME/.unsloth/.whisper.cpp.install.lock"
     # Taking over an abandoned lock renames it to .stale.<pid> before unlinking
     # (install_node_prebuilt.py); a crash between the two strands the rename, and a stranded one
     # blocks the rmdir below. Unmatched globs stay literal, hence the existence test.
-    for _stale in "$HOME"/.unsloth/.*.install.lock.stale.*; do
-        [ -e "$_stale" ] && _remove_path "$_stale"
+    # Same shape restriction as the master-root sweep above: the help text promises that
+    # anything else kept under ~/.unsloth is left in place, and .backup.install.lock.stale.copy
+    # is dotted too.
+    for _lock in .llama.cpp.install.lock .node.install.lock \
+            .whisper.cpp.install.lock .sd.cpp.install.lock; do
+        for _stale in "$HOME/.unsloth/$_lock".stale.*; do
+            case "${_stale##*.stale.}" in
+                ''|*[!0-9]*) continue ;;
+            esac
+            { [ -e "$_stale" ] || [ -L "$_stale" ]; } && _remove_lock_file "$_stale"
+        done
     done
     # ROCm-on-WSL helper artifacts (librocdxg clone, smoke-test venv); removing them frees the rmdir.
     _remove_path "$HOME/.unsloth/librocdxg"
@@ -832,8 +1141,16 @@ _unsloth_uninstall_main() {
         echo "Note: this also removed the app's WebView data, so the desktop app's session is"
         echo "      gone. A browser session is not affected: its tokens live in the same"
         echo "      localStorage as the API keys below."
-        echo "      No studio.db was found, so any chat history in an install root this run"
-        echo "      did not see is still on disk."
+        if _marker_set "$_DB_KEPT_FLAG"; then
+            # Named, and with no advice to delete it: the gate kept it precisely because it
+            # does not look like ours.
+            echo "      $HOME/.unsloth/studio carries no Unsloth install marker, so it was left"
+            echo "      alone. The studio.db inside it is still there; look at that directory"
+            echo "      yourself before deciding what to do with it."
+        else
+            echo "      No studio.db was found, so any chat history in an install root this run"
+            echo "      did not see is still on disk."
+        fi
     fi
     echo "Note: provider API keys are kept in the browser's localStorage, not in studio.db."
     echo "      Unless you ran Unsloth as the desktop app, clear site data for the"
