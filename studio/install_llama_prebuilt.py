@@ -8272,18 +8272,20 @@ def prebuilt_full_check_requested() -> bool:
     )
 
 
-def _newest_release_tag_from_releases(releases: "Iterable[Any]") -> "str | None":
+def _newest_release_tag_from_releases(repo: str, releases: "Iterable[Any]") -> "str | None":
     """The newest published release tag by published_at, the ordering _select uses.
 
-    Mirrors iter_release_payloads_by_time's sort (release_time_sort_key, drafts and
-    prereleases dropped) so the two cannot answer differently from the same payload.
+    Mirrors iter_release_payloads_by_time's sort (release_time_sort_key) and its
+    selectability rule so the two cannot answer differently from the same payload.
+    The rule is repository-aware, so this takes the repo: filtering every prerelease
+    here while the planner installs an upstream bNNNN build would report the freshly
+    installed build as stale and reinstall it on every update run.
     """
     published = [
         release
         for release in releases
         if isinstance(release, dict)
-        and not release.get("draft")
-        and not release.get("prerelease")
+        and release_is_selectable(repo, release)
         and isinstance(release.get("tag_name"), str)
         and release.get("tag_name")
     ]
@@ -8301,7 +8303,7 @@ def _api_newest_release_tag(repo: str) -> "str | None":
     """
     try:
         return _newest_release_tag_from_releases(
-            github_releases(repo, max_pages = DEFAULT_GITHUB_RELEASE_SCAN_MAX_PAGES)
+            repo, github_releases(repo, max_pages = DEFAULT_GITHUB_RELEASE_SCAN_MAX_PAGES)
         )
     except Exception as exc:  # noqa: BLE001 - unreachable is a reason to do the work
         log(f"could not resolve the latest release from the GitHub API ({exc})")
@@ -8333,7 +8335,7 @@ def _api_newest_release_tag_for_upstream(
             or release["tag_name"] == recorded_release
         )
     ]
-    return _newest_release_tag_from_releases(matching)
+    return _newest_release_tag_from_releases(repo, matching)
 
 
 def _memoized_api_newest_release_tag(repo: str) -> "str | None":
@@ -8355,7 +8357,7 @@ def _memoized_api_newest_release_tag(repo: str) -> "str | None":
         url = key[1]
         if isinstance(url, str) and url.startswith(prefix) and isinstance(payload, list):
             releases.extend(payload)
-    return _newest_release_tag_from_releases(releases) if releases else None
+    return _newest_release_tag_from_releases(repo, releases) if releases else None
 
 
 def _runtime_preference_moved(marker: "dict[str, Any]", host: HostInfo) -> bool:

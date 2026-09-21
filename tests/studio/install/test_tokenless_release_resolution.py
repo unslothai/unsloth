@@ -653,3 +653,38 @@ class TestPinnedTagHttpFailures:
                     MOD.DEFAULT_PUBLISHED_REPO, "", "b9415"
                 )
             )
+
+
+class TestFreshnessAgreesWithSelection:
+    """The update-currency check and the planner must answer from the same rule.
+
+    They disagreed live before this was threaded: the check reported v0.4.1 newest
+    while the planner installed b11071, so every update run would have reinstalled.
+    """
+
+    RELEASES = [
+        {"tag_name": "v0.4.1", "prerelease": False, "draft": False, "published_at": "2026-09-14T00:00:00Z"},
+        {"tag_name": "b11071", "prerelease": True, "draft": False, "published_at": "2026-09-21T00:00:00Z"},
+        {"tag_name": "b11070", "prerelease": True, "draft": False, "published_at": "2026-09-20T00:00:00Z"},
+    ]
+
+    def test_upstream_freshness_names_the_build_the_planner_installs(self, monkeypatch):
+        monkeypatch.setattr(MOD, "github_releases", lambda repo, **kw: self.RELEASES)
+        assert MOD._api_newest_release_tag(UPSTREAM) == "b11071"
+
+        monkeypatch.setattr(MOD, "web_release_payload", _boom)
+        monkeypatch.setattr(MOD, "web_release_tags", _boom)
+        planned = list(MOD.iter_release_payloads_by_time(UPSTREAM, "", "latest"))
+        assert planned[0]["tag_name"] == "b11071"
+
+    def test_the_fork_still_drops_prereleases_in_the_freshness_check(self, monkeypatch):
+        monkeypatch.setattr(MOD, "github_releases", lambda repo, **kw: self.RELEASES)
+        assert MOD._api_newest_release_tag(MOD.DEFAULT_PUBLISHED_REPO) == "v0.4.1"
+
+    def test_a_draft_is_never_newest(self, monkeypatch):
+        releases = self.RELEASES + [
+            {"tag_name": "b11072", "prerelease": True, "draft": True,
+             "published_at": "2026-09-22T00:00:00Z"}
+        ]
+        monkeypatch.setattr(MOD, "github_releases", lambda repo, **kw: releases)
+        assert MOD._api_newest_release_tag(UPSTREAM) == "b11071"
