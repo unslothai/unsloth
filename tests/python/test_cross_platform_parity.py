@@ -1629,8 +1629,8 @@ class TestDiagnosticsNeverCostTheRollback:
     def test_the_windows_probe_precedes_its_restore_too(self):
         text = INSTALL_PS1.read_text(encoding = "utf-8")
         body = text.split("function Exit-InstallFailure", 1)[1].split("\n    }", 1)[0]
-        assert (
-            body.index("Get-StudioFreeSpaceBytes") < body.index("Restore-StudioVenvRollback")
+        assert body.index("Get-StudioFreeSpaceBytes") < body.index(
+            "Restore-StudioVenvRollback"
         ), "the rollback restore frees space before the disk is measured"
 
     def test_the_shell_diagnostics_are_best_effort(self):
