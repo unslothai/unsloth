@@ -3170,27 +3170,64 @@ class TestContextManagersWalrusesAndTheVersionFloor:
         )
 
     def test_the_analysis_runs_where_match_is_not_in_the_ast(self, monkeypatch):
-        # match arrived in 3.10 and the package floor is 3.9, where ast has no MatchAs.
-        import ast as ast_module
+        # match arrived in 3.10 and the package floor is 3.9, where ast has no MatchAs. The tables
+        # that name those node types are what the floor changes, so they are emptied directly.
+        # This used to delete the attributes from `ast` and reload the module, which rebuilt every
+        # table under the patched ast. That was a truer simulation and a worse test: reloading
+        # swaps the module's sentinels for fresh ones while the old ones can still be referenced,
+        # and every test after it in the same worker inherits that.
+        import core.inference.tools as tools_module
 
-        for name in ("MatchAs", "MatchStar", "MatchMapping"):
-            monkeypatch.delattr(ast_module, name, raising = False)
-        import importlib
+        monkeypatch.setattr(tools_module, "_MATCH_CAPTURES", ())
+        monkeypatch.setattr(tools_module, "_MATCH_MAPPINGS", ())
+        monkeypatch.setattr(
+            tools_module,
+            "_BINDING_NODE_TYPES",
+            frozenset(
+                node
+                for node in tools_module._BINDING_NODE_TYPES
+                if node.__name__ not in ("MatchAs", "MatchStar", "MatchMapping")
+            ),
+        )
+        assert (
+            tools_module._check_code_safety('import requests\nrequests.get("https://hf.co")')
+            is None
+        )
+        assert "cloud-metadata host" in (
+            tools_module._check_code_safety(f'import requests as r\nr.get("{_METADATA_URL}")') or ""
+        )
+
+    def test_no_node_type_newer_than_the_floor_is_reached_by_attribute(self):
+        """The other half of the floor: the module has to IMPORT where these do not exist.
+
+        Reached by attribute, `ast.MatchAs` is an AttributeError on 3.9 at import time. Asserted
+        against the source rather than by reloading the module under a patched `ast`, which is
+        what this used to do: the reload left fresh sentinels behind for every test after it.
+        """
+        import ast as ast_module
+        import inspect
 
         import core.inference.tools as tools_module
 
-        reloaded = importlib.reload(tools_module)
-        try:
-            assert (
-                reloaded._check_code_safety('import requests\nrequests.get("https://hf.co")')
-                is None
-            )
-            assert "cloud-metadata host" in (
-                reloaded._check_code_safety(f'import requests as r\nr.get("{_METADATA_URL}")') or ""
-            )
-        finally:
-            monkeypatch.undo()
-            importlib.reload(reloaded)
+        tree = ast_module.parse(inspect.getsource(tools_module))
+        above_the_floor = {
+            "Match",
+            "MatchAs",
+            "MatchStar",
+            "MatchMapping",
+            "MatchValue",
+            "MatchSingleton",
+            "TypeAlias",
+        }
+        reached = [
+            (node.lineno, node.attr)
+            for node in ast_module.walk(tree)
+            if isinstance(node, ast_module.Attribute)
+            and isinstance(node.value, ast_module.Name)
+            and node.value.id == "ast"
+            and node.attr in above_the_floor
+        ]
+        assert reached == [], f"reached by attribute, so import fails on the floor: {reached}"
 
 
 class TestNonlocalTargetsAndSessionMethods:
