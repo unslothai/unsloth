@@ -136,7 +136,7 @@ def test_the_main_build_pins_a_commit_and_runs_after_the_release():
     # Installed only through its own step, which reads the opt-out.
     assert "diffusers-main.txt" in source
     assert "_diffusers_main_requested" in source
-    assert 'UNSLOTH_DIFFUSERS_MAIN' in source
+    assert "UNSLOTH_DIFFUSERS_MAIN" in source
     # And the CALL runs after the release pin install, or the release would overwrite it. Compared
     # on the call site, not on the filename: the helper is DEFINED earlier in the file than either
     # install, so a filename compare answers a different question and passes by accident.

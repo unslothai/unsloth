@@ -105,7 +105,7 @@ def main(argv = None) -> int:
         "--base-model-id",
         default = None,
         help = "the base id to RECORD in the checkpoint, when --base is a local mirror whose "
-               "directory name differs from the Hub repo. Must still name this family's base model.",
+        "directory name differs from the Hub repo. Must still name this family's base model.",
     )
     p.add_argument("--scheme", required = True, help = "quant scheme: int8 | fp8 | nvfp4 | mxfp8")
     p.add_argument(
@@ -179,7 +179,6 @@ def main(argv = None) -> int:
     recorded_base = args.base_model_id or args.base
     if args.base_model_id:
         from core.inference.diffusion_prequant import _same_base_model
-
         if not _same_base_model(recorded_base, fam.base_repo):
             print(
                 f"error: --base-model-id {recorded_base!r} is not {fam.name}'s base "
