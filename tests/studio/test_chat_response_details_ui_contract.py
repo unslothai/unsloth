@@ -117,7 +117,20 @@ def test_response_model_badge_is_user_configurable_and_rendered_once_per_message
     assert "group/assistant-message aui-assistant-message-root" in thread_src
     assert "pointer-events-none relative h-0" in thread_src
     assert "MessageResponseModelBadge" not in reasoning_src
-    assert 'className="min-w-0 flex-1"' in reasoning_src
+    # The trigger has to be able to shrink below its content, or a long summary pushes the
+    # row wider than the thread. `min-w-0` is what grants that; it used to be written
+    # `min-w-0 flex-1` on one element, and #11373 moved the filling to a header wrapper and
+    # left the shrinking on the trigger. Pinning the old pair asserted the layout of that one
+    # commit rather than the property, so this reads the property: the trigger can shrink,
+    # and it sits in a flex row that can shrink too.
+    assert re.search(r'<ReasoningTrigger\s+className="[^"]*\bmin-w-0\b', reasoning_src), (
+        "the reasoning trigger can no longer shrink below its content, so a long summary "
+        "widens the row past the thread"
+    )
+    assert "flex min-w-0 items-center" in reasoning_src, (
+        "the header row holding the trigger can no longer shrink either, which puts the "
+        "overflow back one level up"
+    )
 
 
 def test_reasoning_keeps_streaming_height_cap_through_automatic_collapse():
@@ -135,7 +148,18 @@ def test_reasoning_keeps_streaming_height_cap_through_automatic_collapse():
     assert "const closeDelay = GRID_COLLAPSE_REASONING_ENABLED" in src
     assert "? ANIMATION_DURATION + CLOSE_FALLBACK_MARGIN_MS" in src
     assert ": ANIMATION_DURATION;" in src
-    assert "streaming={isReasoningStreaming || retainStreamingHeight}" in src
+    # The cap is `streaming || retained`, and #11373 moved the render down a level: the state
+    # lives here and is handed to the child as a prop, which then ORs it with its own
+    # streaming flag. Which component evaluates it is layout; that it is still ORed, and that
+    # the retained flag actually reaches the evaluation, is the claim.
+    assert "retainStreamingHeight={retainStreamingHeight}" in src, (
+        "the retained-height flag no longer reaches the component that renders the block, so "
+        "nothing can OR it into the streaming cap"
+    )
+    assert re.search(r"streaming=\{\w+ \|\| retainStreamingHeight\}", src), (
+        "the streaming cap no longer ORs in retainStreamingHeight, so the block collapses to "
+        "its idle height the moment streaming stops, which is the jump this test exists for"
+    )
 
 
 def test_reasoning_clears_manual_open_on_a_new_stream():

@@ -860,7 +860,23 @@ def test_chat_sidebar_row_actions_visible_on_coarse_pointers():
     block = sidebar_source.split("function renderChatSidebarItem", 1)[1].split("\n  function ", 1)[
         0
     ]
-    assert "[@media(pointer:coarse)]:pr-10" in block
+    # The split above bounds the block at the next top-level function, and a nested one inside
+    # renderChatSidebarItem ends it early. When #11373 added one, the block shrank to the
+    # signature and a comment, and every assertion below started reading an empty room. A
+    # truncated block must fail as a stale guard, not as a missing affordance.
+    assert len(block) > 2000, (
+        f"renderChatSidebarItem now yields only {len(block)} characters, so this guard is "
+        f"reading a fragment rather than the row. Widen the bound before trusting anything "
+        f"it says about the row's classes"
+    )
+    # Reserved room for the action on touch, where there is no hover to make it appear. The
+    # exact width tracks how many actions the row carries: it was pr-10, and became pr-14 for
+    # project rows and pr-16 for recents when the row gained one. That number is not the
+    # contract; reserving SOMETHING on a coarse pointer is.
+    assert re.search(r"\[@media\(pointer:coarse\)\]:pr-\d+", block), (
+        "no coarse-pointer padding left on the chat sidebar row, so the kebab overlaps the "
+        "title on a touch device (#7276)"
+    )
     assert "sidebar-touch-reveal" in block
     # Coarse-pointer visibility must come after .sidebar-row-action { opacity-0 }.
     coarse_idx = css_source.index("@media (pointer: coarse)")
