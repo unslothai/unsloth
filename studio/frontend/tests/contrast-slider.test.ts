@@ -178,20 +178,31 @@ test("a light wash follows the slider as its dark twin does", () => {
   // resolves to the same colour at the default. Both spellings count, the
   // arbitrary one and Tailwind's shorthand.
   // index.css authors the same washes in @apply, in black and white rather
-  // than the token, so both spellings are swept.
+  // than the token, and both of those take an arbitrary alpha or Tailwind's
+  // shorthand, so all four spellings are swept.
   const FIXED_WASH =
-    /(bg-foreground\/(\[[\d.]+\]|\d+)|bg-(white|black)\/\[?0?\.\d+\]?)/;
+    /(bg-foreground\/(\[[\d.]+\]|\d+)|bg-(white|black)\/(\[0?\.\d+\]|\d+))/;
   // Two fills are not chrome: the dark button's own surface, and the snippet
   // highlight that sits beside amber and red siblings on no curve at all.
   const NOT_CHROME = new Set([
     "components/ui/button.tsx",
     "features/security/components/remote-code-consent-dialog.tsx",
   ]);
-  // Scrims and opaque stages cover content instead of tinting chrome, so they
-  // keep their own alpha whatever the slider says.
+  // These paint over content rather than tinting chrome: the media viewers
+  // and their controls, the image hover scrims, the selection markers. They
+  // stage a picture at a contrast of their own and keep it.
+  const OVER_CONTENT = new Set([
+    "components/assistant-ui/attachment-preview.tsx",
+    "components/assistant-ui/image.tsx",
+    "components/assistant-ui/markdown-text.tsx",
+    "components/assistant-ui/tool-ui-image-generation.tsx",
+    "features/images/images-page.tsx",
+    "features/video/video-page.tsx",
+  ]);
+  // Scrims and opaque stages cover content too, wherever they are declared.
   const SCRIM = /(overlayClassName|bg-(black|white)\/(\[0?\.[3-9]\d*\]|[3-9]\d|100))/;
   const hits = SOURCES.filter((file) => {
-    if (NOT_CHROME.has(file)) return false;
+    if (NOT_CHROME.has(file) || OVER_CONTENT.has(file)) return false;
     const source = readSrc(file);
     return source
       .split("\n")
