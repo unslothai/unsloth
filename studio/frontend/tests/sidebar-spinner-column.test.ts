@@ -106,12 +106,15 @@ test("the pin and options buttons do not overlap", () => {
     value.trim().endsWith("rem")
       ? Number.parseFloat(value) * 16
       : Number.parseFloat(value);
+  // Every metacharacter, backslash included: escaping only . and + leaves the rest to be
+  // read as syntax.
+  const quote = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   const decl = (selector: string, prop: string) => {
-    const block = new RegExp(
-      `${selector.replace(/[.+]/g, "\\$&")} \\{([^}]*)\\}`,
-    ).exec(css);
+    const block = new RegExp(`${quote(selector)} \\{([^}]*)\\}`).exec(css);
     assert.ok(block, `could not find ${selector} in index.css`);
-    const m = new RegExp(`(?:^|;|\\n)\\s*${prop}:\\s*([^;]+)`).exec(block[1]);
+    const m = new RegExp(`(?:^|;|\\n)\\s*${quote(prop)}:\\s*([^;]+)`).exec(
+      block[1],
+    );
     assert.ok(m, `${selector} does not set ${prop}`);
     return px(m[1]);
   };
