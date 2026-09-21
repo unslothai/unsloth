@@ -341,6 +341,33 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         sd_cpp_flow_shift = 3.0,
     ),
     DiffusionFamily(
+        # Qwen-Image-2.1 is a different ARCHITECTURE, not a refreshed checkpoint, so it is its own
+        # family rather than a prequant_variant_repos row on qwen-image: 32 single-stream blocks
+        # against 60 dual-stream MMDiT ones, nine weights per block, no bias tensors anywhere, one
+        # global modulation projection, a Qwen3-VL text encoder and its own VAE class. Sharing the
+        # qwen-image entry would hand it that family's pipeline, transformer, VAE and exclusion
+        # rules, none of which fit.
+        name = "qwen-image-2.1",
+        pipeline_class = "QwenImage21Pipeline",
+        transformer_class = "QwenImage21Transformer2DModel",
+        base_repo = "Qwen/Qwen-Image-2.1",
+        prequant_repos = (
+            ("int8", "unsloth/Qwen-Image-2.1-FP8"),
+            ("fp8", "unsloth/Qwen-Image-2.1-FP8"),
+        ),
+        # The artifacts are safetensors, not the historical torch.save pickle, so the family has to
+        # NAME them: every derived fallback ends in .pt, and without these rows the loader would ask
+        # the Hub for a file that is not there and silently fall back to the dense bf16 download.
+        prequant_filenames = (
+            ("fp8", "Qwen-Image-2.1-FP8.safetensors"),
+            ("int8", "Qwen-Image-2.1-INT8.safetensors"),
+        ),
+        # Qwen3-VL 8B, pre-cast. Independent of the DiT scheme, as on every other family.
+        te_prequant_repos = (("fp8", "text_encoder", "unsloth/Qwen-Image-2.1-FP8"),),
+        cfg_kwarg = "true_cfg_scale",
+        aliases = ("qwen_image_21", "qwenimage21", "qwen-image-21"),
+    ),
+    DiffusionFamily(
         name = "z-image",
         pipeline_class = "ZImagePipeline",
         transformer_class = "ZImageTransformer2DModel",
@@ -1127,6 +1154,10 @@ _PIPELINE_MIN_DIFFUSERS: dict[str, str] = {
     "LTX2Pipeline": "0.37.0",
     "Flux2KleinInpaintPipeline": "0.38.0",
     "Ideogram4Pipeline": "0.39.0",
+    # Qwen-Image-2.1 merged upstream on 2026-09-18, four weeks after 0.40.0 was cut, so 0.41.0 is
+    # the first release that can carry it. ``_version_tuple`` stops at the first non-numeric part,
+    # so a 0.41.0.dev0 build from main reads as (0, 41, 0) and satisfies this too.
+    "QwenImage21Pipeline": "0.41.0",
     "Krea2Pipeline": "0.39.0",
     # Older than the 0.35 baseline, but listed anyway: the packaging leaves an UNCONSTRAINED diffusers installable
     # below 3.10, so an already-present ancient one satisfies the pin, and quoting the 0.39 floor at a family that has

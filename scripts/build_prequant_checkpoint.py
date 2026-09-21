@@ -101,6 +101,12 @@ def main(argv = None) -> int:
         "--base", required = True, help = "diffusers base repo (carries the transformer subfolder)"
     )
     p.add_argument("--family", required = True, help = "diffusion family name/alias (e.g. z-image)")
+    p.add_argument(
+        "--base-model-id",
+        default = None,
+        help = "the base id to RECORD in the checkpoint, when --base is a local mirror whose "
+               "directory name differs from the Hub repo. Must still name this family's base model.",
+    )
     p.add_argument("--scheme", required = True, help = "quant scheme: int8 | fp8 | nvfp4 | mxfp8")
     p.add_argument(
         "--out",
@@ -164,6 +170,23 @@ def main(argv = None) -> int:
         print(f"error: unknown family '{args.family}'", flush = True)
         return 2
     transformer_cls = getattr(diffusers, fam.transformer_class)
+    # What the artifact RECORDS as its base, which is not always what this build READ. Weights staged into a local
+    # directory keep that directory's name, and the loader's ``_same_base_model`` compares final path segments: a
+    # checkpoint built from ./temp/qwen_image_21 records a base whose tail is "qwen_image_21", the load asks for
+    # "Qwen/Qwen-Image-2.1", the tails differ and a perfectly good artifact is refused after the dense shards were
+    # already dropped. Pinned to the FAMILY's own base_repo rather than taken on trust, so the override can only ever
+    # name the model this family is for, and cannot relabel one checkpoint as another.
+    recorded_base = args.base_model_id or args.base
+    if args.base_model_id:
+        from core.inference.diffusion_prequant import _same_base_model
+
+        if not _same_base_model(recorded_base, fam.base_repo):
+            print(
+                f"error: --base-model-id {recorded_base!r} is not {fam.name}'s base "
+                f"({fam.base_repo!r}); it would label this checkpoint as a different model",
+                flush = True,
+            )
+            return 2
     # The CONTAINER is chosen by the --out extension, so one flag picks the on-disk format, the reachable upload name
     # and the writer, and they cannot be set to disagree.
     is_safetensors_out = str(args.out).lower().endswith(".safetensors")
@@ -246,7 +269,7 @@ def main(argv = None) -> int:
         for k, v in transformer.state_dict().items()
     }
     metadata = {
-        "base_model_id": args.base,
+        "base_model_id": recorded_base,
         "family": fam.name,
         "scheme": scheme,
         "min_features": args.min_features,
