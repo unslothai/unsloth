@@ -1464,7 +1464,13 @@ def _companion_cache_repo(tmp_path, *, weights: str = "weights-revision"):
 
 
 @contextmanager
-def _capture_load_config(route, seen, *, native_grant_backed = False, model_identifier = None):
+def _capture_load_config(
+    route,
+    seen,
+    *,
+    native_grant_backed = False,
+    model_identifier = None,
+):
     backend = SimpleNamespace(
         is_loaded = False,
         model_identifier = None,
@@ -1487,9 +1493,7 @@ def _capture_load_config(route, seen, *, native_grant_backed = False, model_iden
         patch.object(route, "resolve_effective_chat_template_override", return_value = None),
         patch.object(route, "get_llama_cpp_backend", return_value = backend),
         patch.object(route, "get_inference_backend", return_value = backend),
-        patch.object(
-            route, "ModelConfig", SimpleNamespace(from_identifier = _from_identifier)
-        ),
+        patch.object(route, "ModelConfig", SimpleNamespace(from_identifier = _from_identifier)),
     ):
         yield
 
@@ -1531,8 +1535,7 @@ class TestPathLoadCompanionRoots:
 
         _repo, selected, companions = _companion_cache_repo(tmp_path)
         assert (
-            ModelConfig.from_identifier(str(selected), gguf_variant = "Q4_K_M").gguf_mtp_file
-            is None
+            ModelConfig.from_identifier(str(selected), gguf_variant = "Q4_K_M").gguf_mtp_file is None
         )
         config = ModelConfig.from_identifier(
             str(selected),
