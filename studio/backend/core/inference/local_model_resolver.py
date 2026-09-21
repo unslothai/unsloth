@@ -725,11 +725,10 @@ def local_load_dir(path: Optional[str]) -> Optional[str]:
         return path
 
 
-# How many sources the scan in progress had to skip. Each source is guarded on its own so one
-# bad root does not crash the index, which means a published snapshot can be fresh and
-# incomplete at the same time: a caller reading a miss from it as a confirmed ABSENCE would
-# memoize an answer the recovered scan contradicts. Written only in ``_index``, which holds
-# ``_lock`` for the whole pass.
+# How many sources the scan in progress had to skip. Each source is guarded on its own, so a
+# published snapshot can be fresh and incomplete at once, and a caller reading a miss from it
+# as a confirmed ABSENCE would memoize what the recovered scan contradicts. Written only in
+# ``_index``, which holds ``_lock`` for the whole pass.
 _scan_sources_skipped = 0
 # The verdict for the OWNER's snapshot, and one per managed account, selected exactly like
 # ``_snapshot``: scan roots are account private, so one tenant's partial scan says nothing
@@ -866,13 +865,10 @@ def _build_index() -> dict[str, _LocalGgufEntry]:
         for folder in list_scan_folders():
             try:
                 fp = Path(folder["path"])
-                # A REGISTERED folder was configured explicitly, so its absence is a source
-                # this pass could not read, not a source that has nothing in it. Every scan
-                # below answers an unreachable path with an empty list and no exception -- a
-                # disconnected network mount, an unplugged drive, a revoked permission -- so
-                # without this the pass publishes as complete and a miss is memoized as a
-                # confirmed absence. Unlike the discovered roots above, which are absent on
-                # most hosts by nature and would make every scan incomplete forever.
+                # A REGISTERED folder was configured explicitly, so its absence is a
+                # source this pass could not read rather than an empty one, and every scan
+                # below answers an unreachable path with an empty list and no exception.
+                # Unlike the discovered roots above, absent on most hosts by nature.
                 # X_OK as well as R_OK: a directory can be readable and not searchable,
                 # which lists names and fails every child stat. The scanners suppress those
                 # per-child errors and hand back an empty list, so nothing below would
@@ -1079,11 +1075,10 @@ def _index_with_state() -> tuple[dict[str, _LocalGgufEntry], tuple[int, float]]:
         # Around the call, not inside it, so the verdict belongs to whatever actually built
         # this snapshot. Reset first: the count is per pass.
         _scan_sources_skipped = 0
-        # A whole source dropping is not the only way to come back short: the scanners
-        # suppress a per-child OSError and hand back a shorter list, which from out here
-        # looks exactly like a root that genuinely holds less. Collected rather than
-        # counted globally, so a concurrent models-route scan's incidents are not charged
-        # to this pass.
+        # A whole source dropping is not the only way to come back short: a suppressed
+        # per-child OSError hands back a shorter list, which from out here looks like a
+        # root that holds less. Collected rather than counted globally, so a concurrent
+        # models-route scan's incidents are not charged to this pass.
         with collecting_scan_incidents() as incidents:
             fresh = _build_index()
         # Only after it returned, and published beside the snapshot it describes. A build
@@ -1096,9 +1091,8 @@ def _index_with_state() -> tuple[dict[str, _LocalGgufEntry], tuple[int, float]]:
         _publish((time.monotonic(), fresh))
         # The scan supersedes the notes: whatever landed is in the index now.
         _just_downloaded.clear()
-        # Read here, still holding the lock, and of the snapshot just published: this is the
-        # index being returned, so its identity cannot be the one belonging to a snapshot
-        # published after this pass.
+        # Still under the lock, of the snapshot just published: this is the index being
+        # returned, so it cannot be labelled with a later snapshot's identity.
         return fresh, (_generation, _snapshot()[0])
 
 
@@ -1124,11 +1118,10 @@ def index_answer_is_trustworthy() -> bool:
     that landed during the caller's own pass is the other way to earn that, and
     ``index_scan_stamp`` answers it; an index that was already fresh never needed one.
 
-    Narrower than that rule in one respect: an additions-only invalidation keeps a NEGATIVE
-    stamp trusted so known positive hits still answer while the rebuild runs, and a
-    negative answer is exactly what such a snapshot cannot give. Something was just added,
-    and a rebuild that then raises leaves the stamp where it was, so an absence read here
-    would be memoized against an index already known to be behind the disk.
+    Narrower in one respect: an additions-only invalidation keeps a NEGATIVE stamp trusted
+    so known positive hits still answer while the rebuild runs, and that is exactly the
+    snapshot an absence cannot come from -- something was just added, and a rebuild that
+    then raises leaves the stamp where it was.
     """
     stamp = _snapshot()[0]
     if stamp <= 0.0:
@@ -1249,18 +1242,16 @@ def resolve_local_gguf(
     requested = requested.strip()
     try:
         if allow_scan:
-            # The mapping and its identity from the same pass: a caller memoizing a MISS has
-            # to know which index said so, and re-reading the published snapshot afterwards
-            # answers for a different one -- an invalidation landing in between retains the
-            # old entries under a revoked stamp, which would resolve a model from a scan
-            # root that was just removed.
+            # Mapping and identity from the same pass: re-reading the published
+            # snapshot afterwards answers for a different index, and an invalidation
+            # landing in between retains the old entries under a revoked stamp, which
+            # would resolve a model from a scan root that was just removed.
             index, state = _index_with_state()
         else:
-            # Never the scan mutex here: this mode is the non-blocking snapshot read the
-            # request path relies on, and the lock is held for a whole multi-root scan. The
-            # published tuple is immutable and carries its own stamp, so reading it once is
-            # enough; a generation that moves alongside only ever makes a marker read stale,
-            # which declines a memoized answer rather than inventing one.
+            # Never the scan mutex: this mode is the non-blocking snapshot read the
+            # request path relies on, and that lock is held for a whole multi-root scan.
+            # The published tuple is immutable and carries its own stamp, so one read is
+            # enough; a generation that moves alongside only makes a marker read stale.
             snapshot = _snapshot()
             index, state = snapshot[1], (_generation, snapshot[0])
         if index_state is not None:
