@@ -63,6 +63,10 @@ $invokeInstallSrc    = Get-FunctionText $installAst "Invoke-InstallCommand" $ins
 $fastInstallSrc      = Get-FunctionText $setupAst   "Fast-Install" $setupPs1
 $fastDownloadSrc     = Get-FunctionText $setupAst   "Fast-Download" $setupPs1
 $removeUvFlagsSrc    = Get-FunctionText $setupAst   "Remove-UvOnlyResolverFlags" $setupPs1
+# Fast-Install asks these two which policy to carry into uv. Extracted by name rather than
+# stubbed: a stub would answer for the shipped code instead of letting it answer.
+$pipEnvFlagSrc       = Get-FunctionText $setupAst   "Test-PipEnvFlag" $setupPs1
+$uvEnvFlagSrc        = Get-FunctionText $setupAst   "Test-UvEnvFlag" $setupPs1
 
 Write-Host "== extraction =="
 Check "install.ps1 and studio/setup.ps1 both parse" $true
@@ -229,9 +233,13 @@ function Reset-OperatorEnv {
 function Clear-AllEnv {
     foreach ($n in $UV_NAMES) { Remove-Item "Env:$n" -ErrorAction SilentlyContinue }
 }
+# Observed but deliberately NOT in $UV_NAMES: that list also drives the "environment
+# untouched" comparisons, and a policy variable a test sets on purpose would read there as
+# an environment the helper had disturbed.
+$POLICY_NAMES = @('PIP_REQUIRE_HASHES', 'UV_REQUIRE_HASHES')
 function Snapshot-Env {
     $h = @{}
-    foreach ($n in $UV_NAMES) { $h[$n] = [Environment]::GetEnvironmentVariable($n) }
+    foreach ($n in $UV_NAMES + $POLICY_NAMES) { $h[$n] = [Environment]::GetEnvironmentVariable($n) }
     return $h
 }
 
@@ -362,12 +370,22 @@ Check "Fast-Install's scrub is gated on --index-url" ($fastInstallSrc -match "'-
 Check "Fast-Install consults Test-RespectPmPolicy" ($fastInstallSrc -match 'Test-RespectPmPolicy')
 
 Invoke-Expression $removeUvFlagsSrc
+Invoke-Expression $pipEnvFlagSrc
+Invoke-Expression $uvEnvFlagSrc
 Invoke-Expression $fastInstallSrc
 
 # Stand-ins for the two NATIVE commands Fast-Install shells out to. PowerShell resolves a
 # function ahead of an application, so `& uv` and `& python` inside the real body land here --
 # the body itself, including the scrub and the finally, is the shipped text.
-function uv { $global:LASTEXITCODE = 0; $script:seen = Snapshot-Env; $script:sawUv = $true }
+# $script:uvExit lets a test make the uv stand-in FAIL, which is the only way to reach the
+# fallback branch at all. Without it every Fast-Install check ran the success path and the
+# refusal below could never have been observed.
+$script:uvExit = 0
+# setup.ps1's own reporter. Fast-Install calls it on the refusal path, and without a
+# stand-in the extracted function threw CommandNotFoundException mid-suite, which read as a
+# failing assertion rather than as a missing dependency.
+function substep($text, $colour) { $script:lastSubstep = "$text" }
+function uv { $global:LASTEXITCODE = $script:uvExit; $script:seen = Snapshot-Env; $script:sawUv = $true }
 function python { $global:LASTEXITCODE = 0; $script:seen = Snapshot-Env; $script:sawPip = $true }
 
 function Run-FastInstall($policy, $args_, $useUv) {
@@ -383,6 +401,42 @@ function Run-FastInstall($policy, $args_, $useUv) {
 }
 
 $pinnedArgs = @('torch', '--index-url', 'https://pinned.invalid/simple')
+
+# A FAILING uv, which is the branch the opt-out changes: pip must not stand in for a resolver
+# that was never told what uv refused.
+$script:uvExit = 1
+$r = Run-FastInstall $unsetSentinel $pinnedArgs $true
+Check "Fast-Install uv failure, default: still falls back to pip" ($r.uv -and $r.pip)
+$r = Run-FastInstall '1' $pinnedArgs $true
+Check "Fast-Install uv failure, opt-out: uv ran" $r.uv
+Check "Fast-Install uv failure, opt-out: pip is NOT reached" (-not $r.pip)
+Check "Fast-Install uv failure, opt-out: reports a non-zero exit" ($LASTEXITCODE -ne 0)
+
+# A pip-expressed hash policy has to reach the uv run standing in for pip.
+$script:uvExit = 0
+Reset-OperatorEnv
+$env:PIP_REQUIRE_HASHES = '1'
+Remove-Item Env:UV_REQUIRE_HASHES -ErrorAction SilentlyContinue
+$r = Run-FastInstall '1' $pinnedArgs $true
+Check "Fast-Install opt-out: carries PIP_REQUIRE_HASHES into UV_REQUIRE_HASHES" (
+    $r.during.UV_REQUIRE_HASHES -eq '1'
+)
+Check "Fast-Install opt-out: the carried UV_REQUIRE_HASHES does not outlive the call" (
+    $null -eq [Environment]::GetEnvironmentVariable('UV_REQUIRE_HASHES')
+)
+Reset-OperatorEnv
+$env:PIP_REQUIRE_HASHES = '1'
+$env:UV_REQUIRE_HASHES = '0'
+$r = Run-FastInstall '1' $pinnedArgs $true
+Check "Fast-Install opt-out: an explicit UV_REQUIRE_HASHES the operator set is not overwritten" (
+    $r.during.UV_REQUIRE_HASHES -eq '0'
+)
+# Reset-OperatorEnv only restores the names it owns, so clear the two this block introduced
+# or they leak into every later check as an environment that was never "untouched".
+Remove-Item Env:PIP_REQUIRE_HASHES -ErrorAction SilentlyContinue
+Remove-Item Env:UV_REQUIRE_HASHES -ErrorAction SilentlyContinue
+Reset-OperatorEnv
+$script:uvExit = 0
 
 $r = Run-FastInstall $unsetSentinel $pinnedArgs $true
 Check "Fast-Install default arm: the uv stand-in ran and the env was observed" ($r.uv -and $null -ne $r.during)

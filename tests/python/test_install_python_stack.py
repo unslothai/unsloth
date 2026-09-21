@@ -1451,75 +1451,50 @@ class TestPackageManagerPolicyOptOut:
     @pytest.mark.parametrize(
         ("environment", "expected"),
         [
-            # uv would enforce it and pip has an exact equivalent: carry it, or the fallback
-            # installs exactly what uv just refused.
-            ({"UV_REQUIRE_HASHES": "1"}, {"PIP_REQUIRE_HASHES": "1"}),
-            ({"UV_REQUIRE_HASHES": "true"}, {"PIP_REQUIRE_HASHES": "1"}),
-            # UV_OFFLINE is NOT carried. PIP_NO_INDEX is not its equivalent: pip documents
-            # --no-index as ignoring the package INDEXES, and a direct git+https requirement
-            # is still fetched, so the mapping would claim a guarantee pip cannot give.
-            # pip_install() refuses the fallback instead.
-            ({"UV_OFFLINE": "1"}, {}),
-            ({"UV_REQUIRE_HASHES": "true", "UV_OFFLINE": "yes"}, {"PIP_REQUIRE_HASHES": "1"}),
-            # uv's own false spellings mean the control is off, so there is nothing to carry.
-            ({"UV_REQUIRE_HASHES": "0"}, {}),
-            ({"UV_REQUIRE_HASHES": "false"}, {}),
+            # uv is standing in for pip, so a pip-expressed hash policy must reach it.
+            ({"PIP_REQUIRE_HASHES": "1"}, {"UV_REQUIRE_HASHES": "1"}),
+            ({"PIP_REQUIRE_HASHES": "true"}, {"UV_REQUIRE_HASHES": "1"}),
+            # pip's own false spellings mean the control is off, so nothing is carried.
+            ({"PIP_REQUIRE_HASHES": "0"}, {}),
+            ({"PIP_REQUIRE_HASHES": "no"}, {}),
             ({}, {}),
-            # An explicit pip value outranks a translation of the uv one, in either direction:
-            # the operator set that themselves.
-            ({"UV_REQUIRE_HASHES": "1", "PIP_REQUIRE_HASHES": "0"}, {}),
+            # An explicit uv value the operator set outranks a translation of their pip one.
+            ({"PIP_REQUIRE_HASHES": "1", "UV_REQUIRE_HASHES": "0"}, {}),
         ],
     )
-    def test_uv_expressed_policy_is_carried_to_the_pip_fallback(self, environment, expected):
-        """pip_install() falls back to pip on ANY uv failure, and pip reads no UV_ variable.
+    def test_pip_expressed_policy_reaches_the_uv_run(self, environment, expected):
+        """The installer choosing uv must not decide whether the operator's policy applies.
 
-        Without this the opt-out stops uv over UV_REQUIRE_HASHES and then lets pip install the
-        unhashed requirement anyway, which is the outcome the whole feature exists to prevent.
-        Refusing the fallback outright was the alternative and is worse: uv also exits non-zero
-        for network and resolver reasons, and those installs must still complete.
+        A hardened host is far more likely to carry a pip hash requirement than a uv one, and
+        uv reads no PIP_ variable, so without this the primary uv install proceeds unhashed on
+        exactly the machine the opt-out was set for.
         """
         with self._environment(environment, opt_out = "1"):
-            assert ips._uv_policy_as_pip_env() == expected
-            cmd = [sys.executable, "-m", "pip", "install", "-r", "requirements.txt"]
-            env = ips._install_env_for_cmd(cmd)
-            for name, value in expected.items():
-                assert env is not None and env[name] == value
-            # The relaxation is still withheld whatever else is carried.
-            assert (env or {}).get("PIP_REQUIRE_HASHES") != "0"
-
-    def test_the_carried_policy_reaches_a_pinned_fallback_too(self):
-        """The fallback's pip command is itself pinned, so the pinned arm needs it as well.
-
-        `_pinned_cmd_and_env` routes through `_install_env_for_cmd`, whose opt-out arm returns
-        early; an edit that forgets the translation there leaves the exact hole this closes
-        open for every torch repair.
-        """
-        with self._environment({"UV_REQUIRE_HASHES": "1"}, opt_out = "1"):
+            assert ips._pip_policy_as_uv_env() == expected
             env = ips._install_env_for_cmd(
-                [sys.executable, "-m", "pip", "install", "--index-url", "https://x", "torch"]
+                ["uv", "pip", "install", "--index-url", "https://x", "torch"]
             )
-        assert env is not None and env["PIP_REQUIRE_HASHES"] == "1"
+        for name, value in expected.items():
+            assert env is not None and env[name] == value
 
-    def test_no_mapping_claims_an_offline_guarantee_pip_cannot_give(self):
-        """PIP_NO_INDEX must never be handed out as the equivalent of UV_OFFLINE.
+    def test_nothing_is_carried_in_the_other_direction(self):
+        """There is no uv-to-pip translation, because under the opt-out there is no fallback.
 
-        Measured against pip's own documentation: --no-index is "Ignore package index (only
-        looking at --find-links URLs instead)", which leaves a direct reference fetchable, and
-        this installer ships one (_UNSLOTH_ZOO_GIT_URL). A future edit that "completes" the
-        table by adding the pair back would reintroduce a false guarantee, so the absence is
-        asserted rather than merely implemented.
+        A partial carry reads as an absolute promise while covering less than it appears to:
+        a uv.toml `[pip] require-hashes = true` is invisible to any translation this module
+        could make, so the fallback is refused instead. Asserted so a later edit does not
+        reintroduce the weaker design.
         """
-        assert "UV_OFFLINE" not in dict(ips._UV_TO_PIP_POLICY)
-        assert "PIP_NO_INDEX" not in dict(ips._UV_TO_PIP_POLICY).values()
-        with self._environment({"UV_OFFLINE": "1"}, opt_out = "1"):
-            assert ips._uv_policy_as_pip_env() == {}
+        assert not hasattr(ips, "_uv_policy_as_pip_env")
+        assert not hasattr(ips, "_UV_TO_PIP_POLICY")
+        with self._environment({"UV_REQUIRE_HASHES": "1"}, opt_out = "1"):
+            assert ips._relaxed_pip_policy_env([sys.executable, "-m", "pip", "install", "x"]) == {}
 
-    def test_the_offline_fallback_is_refused_rather_than_translated(self):
-        """Under the opt-out, a uv failure while UV_OFFLINE is set must not reach pip.
+    def test_the_pip_fallback_is_refused_under_the_opt_out(self):
+        """A uv failure must not be retried with a resolver that never heard the policy.
 
-        The refusal lives beside the Windows-on-ARM bail, which is the existing precedent for
-        "uv failed and pip cannot stand in for it". Asserted structurally because the branch
-        sits inside pip_install()'s uv arm, which needs a real uv to execute.
+        Asserted structurally: the branch lives in pip_install()'s uv arm, which needs a real
+        uv to execute. It must sit BEFORE the "falling back to pip" line and must exit.
         """
         import ast
 
@@ -1529,20 +1504,14 @@ class TestPackageManagerPolicyOptOut:
             for node in ast.walk(tree)
             if isinstance(node, ast.FunctionDef) and node.name == "pip_install"
         )
-        guards = [
-            node
-            for node in ast.walk(fn)
-            if isinstance(node, ast.BoolOp)
-            and isinstance(node.op, ast.And)
-            and {getattr(getattr(v, "func", None), "id", "") for v in node.values}
-            == {"_respect_pm_policy", "_uv_is_offline"}
-        ]
-        assert guards, "pip_install no longer refuses the fallback while uv is offline"
         body = ast.get_source_segment(STACK_SOURCE, fn) or ""
-        refusal = body[body.index("_uv_is_offline()") :]
+        guard = body.find("if _respect_pm_policy():")
+        fallback = body.find("falling back to pip")
+        assert guard != -1, "pip_install no longer refuses the fallback under the opt-out"
+        assert guard < fallback, "the refusal must precede the fallback"
         assert (
-            "_report_failed_command" in refusal.split("falling back to pip")[0]
-        ), "the offline refusal must exit, not fall through to the pip fallback"
+            "_report_failed_command" in body[guard:fallback]
+        ), "the refusal must exit rather than fall through"
 
     def test_a_uv_command_is_not_given_pip_variables(self):
         """uv reads UV_ itself; restating them as PIP_ for a uv command would be noise."""

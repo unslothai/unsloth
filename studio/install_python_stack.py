@@ -8850,45 +8850,40 @@ def _relaxed_pip_policy_env(cmd: "list[str]") -> "dict[str, str]":
     the duplicate-metadata repair stages with it, and require-hashes rejects that too
     (#8530).
 
-    Under UNSLOTH_RESPECT_PM_POLICY the relaxation is withheld and the operator's uv-expressed
-    policy is restated for pip instead; see _uv_policy_as_pip_env().
+    Empty under UNSLOTH_RESPECT_PM_POLICY: an operator who would rather the install stop
+    than proceed unhashed gets exactly that.
     """
     if not _is_pip_subcommand(cmd, ("install", "download", "wheel")):
         return {}
     if _respect_pm_policy():
-        return _uv_policy_as_pip_env()
+        return {}
     return {"PIP_REQUIRE_HASHES": "0"}
 
 
-# Policy the operator expressed in uv's language that pip has an EXACT equivalent for.
-# pip_install() falls back to pip whenever uv exits non-zero, so without this the opt-out
-# stops uv over UV_REQUIRE_HASHES and then installs the very thing uv refused -- the one
-# outcome the feature exists to prevent. Refusing to fall back at all was the alternative
-# and is worse: uv exits non-zero for network and resolver reasons too, and those installs
-# must still complete.
+# The operator's policy travels in whichever manager's language they wrote it, and the
+# installer picks the manager. Under the opt-out that choice must not decide whether their
+# policy applies, so a pip-expressed hash requirement is restated for the uv run that
+# stands in for pip. Verified against uv's documentation: UV_REQUIRE_HASHES is "equivalent
+# to the --require-hashes command-line argument".
 #
-# EXACT is the bar, and UV_OFFLINE does not clear it. PIP_NO_INDEX looks like the
-# equivalent and is not: pip documents --no-index as "Ignore package index (only looking at
-# --find-links URLs instead)", so a direct reference is still fetched, and the installer
-# has one -- _UNSLOTH_ZOO_GIT_URL, `unsloth-zoo @ git+https://github.com/...`. Mapping it
-# would have claimed an offline guarantee pip cannot give. Offline refuses the fallback
-# instead; see pip_install().
-_UV_TO_PIP_POLICY = (("UV_REQUIRE_HASHES", "PIP_REQUIRE_HASHES"),)
+# One direction only. The reverse, carrying uv policy to a pip FALLBACK, is not needed:
+# under the opt-out there is no fallback (see pip_install), because the policy that made uv
+# refuse may live in a uv.toml this module deliberately does not parse, and a translation
+# that silently covers less than it appears to is worse than none.
+_PIP_TO_UV_POLICY = (("PIP_REQUIRE_HASHES", "UV_REQUIRE_HASHES"),)
 
 
-def _uv_policy_as_pip_env() -> "dict[str, str]":
-    """uv-expressed policy restated for the pip fallback. Opt-out only.
+def _pip_policy_as_uv_env() -> "dict[str, str]":
+    """pip-expressed policy restated for a uv command. Opt-out only.
 
-    NOT a general bridge, and deliberately not one. A `uv.toml` `[pip] require-hashes = true`
-    is invisible here, since parsing uv's configuration is the unbounded surface this change
-    keeps out; that gap is real and documented rather than guessed at. An explicit pip value
-    wins in either direction, because the operator's own pip setting outranks a translation
-    of their uv one.
+    A `pip.conf` require-hashes is NOT carried: only the environment is read here, and the
+    residual gap is that a config-file-only hash policy binds a pip command and not the uv
+    one chosen in its place. Named rather than guessed at.
     """
     carried: "dict[str, str]" = {}
-    for uv_name, pip_name in _UV_TO_PIP_POLICY:
-        if _uv_env_flag(uv_name) and not os.environ.get(pip_name, "").strip():
-            carried[pip_name] = "1"
+    for pip_name, uv_name in _PIP_TO_UV_POLICY:
+        if _pip_env_flag(pip_name) and not os.environ.get(uv_name, "").strip():
+            carried[uv_name] = "1"
     return carried
 
 
@@ -9281,9 +9276,10 @@ def _install_env_for_cmd(cmd: "list[str]") -> "dict[str, str] | None":
         # removed, devnull is never set here, and only-binary ACCUMULATES, so re-asserting
         # would apply the same keys twice.
         #
-        # The pinned pip command is the uv fallback's own, so it needs the translation too:
-        # _relaxed_pip_policy_env returns the carried uv policy on this arm, not a relaxation.
-        env.update(_relaxed_pip_policy_env(cmd))
+        # A uv command standing in for pip still has to honour a pip-expressed hash policy,
+        # or the installer's choice of manager decides whether the operator's policy applies.
+        if cmd[:1] == ["uv"]:
+            env.update(_pip_policy_as_uv_env())
         return env
     for name in _UV_INDEX_ENV_VARS:
         env.pop(name, None)
@@ -9574,24 +9570,26 @@ def pip_install(
                 )
                 _safe_print(_red("   Install uv and re-run, or re-run install.ps1."))
                 _report_failed_command(label, result)
-            if _respect_pm_policy() and _uv_is_offline():
-                # pip cannot stand in for UV_OFFLINE, the same shape as the Windows on ARM
-                # bail above. --no-index only ignores the INDEXES, so the pip fallback would
-                # still clone _UNSLOTH_ZOO_GIT_URL over the network uv was told not to touch.
-                # Stopping is the opt-out's own contract: the install fails where the policy
-                # forbids it, rather than succeeding by a route the policy did not cover.
+            if _respect_pm_policy():
+                # No fallback under the opt-out, the same shape as the Windows on ARM bail
+                # above. pip reads neither uv.toml nor any UV_ variable, so whatever made uv
+                # refuse -- a uv.toml require-hashes, an upload cutoff, offline -- pip cannot
+                # be told about, and substituting a resolver that has not heard of the policy
+                # is how the opt-out would install exactly what uv just refused. Carrying the
+                # translatable subset was tried and is worse: it covers less than it appears
+                # to, so the promise reads absolute while the guarantee is partial.
                 _step("error", f"{label} failed and pip cannot stand in for it", _red)
                 _safe_print(
                     _red(
-                        "   UV_OFFLINE told uv not to touch the network and pip has no "
-                        "equivalent: --no-index ignores the package indexes only, and a "
-                        "direct git+https or URL requirement is still fetched."
+                        f"   {_POLICY_OPT_OUT_ENV} keeps your uv settings in force, and pip "
+                        "reads none of them: falling back would retry with a resolver that "
+                        "has not been told what uv refused."
                     )
                 )
                 _safe_print(
                     _red(
-                        f"   Clear UV_OFFLINE, or unset {_POLICY_OPT_OUT_ENV} for one run to "
-                        "allow the pip fallback."
+                        f"   Fix what uv reported, or unset {_POLICY_OPT_OUT_ENV} for one run "
+                        "to allow the pip fallback."
                     )
                 )
                 _report_failed_command(label, result)

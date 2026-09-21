@@ -7079,24 +7079,25 @@ function Fast-Install {
     }
     try {
         if ($UseUv) {
+            # uv is standing in for pip here, so a pip-expressed hash policy has to reach it
+            # or the choice of manager decides whether the operator's policy applies at all.
+            # UV_REQUIRE_HASHES is uv's documented equivalent of --require-hashes.
+            if ($respectPolicy -and (Test-PipEnvFlag 'PIP_REQUIRE_HASHES') -and -not "$env:UV_REQUIRE_HASHES".Trim()) {
+                $carriedRequireHashes = $true
+                $env:UV_REQUIRE_HASHES = '1'
+            }
             $VenvPy = (Get-Command python).Source
             $result = & uv pip install --python $VenvPy @Args_ 2>&1
             if ($LASTEXITCODE -eq 0) { return }
-            # Same hand-off as pip_install(): pip reads no UV_ variable and no uv.toml, so
-            # under the opt-out a uv refusal must not become a pip success. Hashes translate
-            # exactly; UV_OFFLINE does not, because --no-index ignores the INDEXES only and a
-            # direct git+https requirement is still fetched, so offline stops here instead.
+            # Same hand-off as pip_install(): pip reads neither uv.toml nor any UV_ variable,
+            # so under the opt-out a uv refusal must not become a pip success. No translation
+            # is attempted, because whatever made uv refuse may live in a uv.toml this never
+            # parses, and a partial carry reads absolute while covering less.
             if ($respectPolicy) {
-                if (Test-UvEnvFlag 'UV_OFFLINE') {
-                    Write-Host $result
-                    substep "[ERROR] UV_OFFLINE told uv not to touch the network and pip has no equivalent: --no-index ignores the package indexes only, and a direct git+https or URL requirement is still fetched. Clear UV_OFFLINE, or unset UNSLOTH_RESPECT_PM_POLICY for one run to allow the pip fallback." "Red"
-                    $global:LASTEXITCODE = 1
-                    return
-                }
-                if ((Test-UvEnvFlag 'UV_REQUIRE_HASHES') -and -not "$env:PIP_REQUIRE_HASHES".Trim()) {
-                    $carriedRequireHashes = $true
-                    $env:PIP_REQUIRE_HASHES = '1'
-                }
+                Write-Host $result
+                substep "[ERROR] UNSLOTH_RESPECT_PM_POLICY keeps your uv settings in force, and pip reads none of them: falling back would retry with a resolver that has not been told what uv refused. Fix what uv reported, or unset UNSLOTH_RESPECT_PM_POLICY for one run to allow the pip fallback." "Red"
+                $global:LASTEXITCODE = 1
+                return
             }
         }
         $pipArgs = Remove-UvOnlyResolverFlags -Arguments $Args_
@@ -7109,7 +7110,7 @@ function Fast-Install {
             Remove-Item "Env:UV_NO_CONFIG" -ErrorAction SilentlyContinue
             Remove-Item "Env:PIP_CONFIG_FILE" -ErrorAction SilentlyContinue
         }
-        if ($carriedRequireHashes) { Remove-Item "Env:PIP_REQUIRE_HASHES" -ErrorAction SilentlyContinue }
+        if ($carriedRequireHashes) { Remove-Item "Env:UV_REQUIRE_HASHES" -ErrorAction SilentlyContinue }
         foreach ($n in $saved.Keys) { if ($null -ne $saved[$n]) { Set-Item "Env:$n" $saved[$n] } }
     }
 }
