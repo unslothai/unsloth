@@ -1491,7 +1491,9 @@ def _touch_spinner_reach(block: str, spacing: float) -> tuple[str, float] | None
     ]
     widths = [
         float(match.group(1))
-        for match in re.finditer(r"<Spinner[^>]*?(?<![\w-])size-(\d+(?:\.\d+)?)(?![\w.-])", rendered, re.S)
+        for match in re.finditer(
+            r"<Spinner[^>]*?(?<![\w-])size-(\d+(?:\.\d+)?)(?![\w.-])", rendered, re.S
+        )
     ]
     if len(offsets) != 1 or len(widths) != 1:
         return None
