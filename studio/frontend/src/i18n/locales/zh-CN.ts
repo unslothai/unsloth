@@ -1119,7 +1119,7 @@ export const zhCN = {
       custom: {
         chatWidth: {
           label: "聊天宽度",
-          description: "设置消息和输入框的宽度。全宽会使用侧边栏之间的可用空间。",
+          description: "消息和输入框的宽度。",
           standard: "标准",
           wide: "宽",
           full: "全宽",
@@ -1211,7 +1211,7 @@ export const zhCN = {
       sidebarNav: {
         title: "侧边栏导航",
         description:
-          "固定并重新排序侧边栏标签。取消固定的标签会收进“更多”菜单；若只有一个取消固定，则直接隐藏，而不是为它单独建一个菜单。新聊天保持固定。",
+          "固定并重新排序侧边栏标签。未固定的标签会进入“更多”菜单。",
         dragToReorder: "拖动以重新排序",
         pinToSidebar: "将{name}固定到侧边栏",
         moreHolds: "更多（{count}）",
@@ -1219,7 +1219,7 @@ export const zhCN = {
       sidebarMenu: {
         title: "个人菜单",
         description:
-          "选择点击侧边栏底部你的名字时显示哪些快捷项及其顺序。设置、帮助、退出登录和关闭始终显示。",
+          "选择并排序个人资料菜单中的快捷项。",
         darkModeToggle: "深色模式切换",
         dragToReorder: "拖动以重新排序",
       },

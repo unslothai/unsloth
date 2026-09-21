@@ -1160,7 +1160,7 @@ export const fr = {
       custom: {
         chatWidth: {
           label: "Largeur du chat",
-          description: "Réglez la largeur des messages et de la zone de saisie. La pleine largeur utilise l’espace entre les barres latérales.",
+          description: "Largeur des messages et de la zone de saisie.",
           standard: "Standard",
           wide: "Large",
           full: "Pleine largeur",
@@ -1262,7 +1262,7 @@ export const fr = {
       sidebarNav: {
         title: "Navigation de la barre latérale",
         description:
-          "Épinglez et réorganisez les onglets de la barre latérale. Les onglets non épinglés sont regroupés dans le menu « Plus » ; s'il ne reste qu'un seul onglet non épinglé, il est masqué au lieu de créer un menu à une seule entrée. « Nouvelle discussion » reste fixe.",
+          "Épinglez et réorganisez les onglets de la barre latérale. Les onglets non épinglés vont dans le menu « Plus ».",
         dragToReorder: "Faites glisser pour réorganiser",
         pinToSidebar: "Épingler {name} dans la barre latérale",
         moreHolds: "Plus ({count})",
@@ -1270,7 +1270,7 @@ export const fr = {
       sidebarMenu: {
         title: "Menu de la barre latérale",
         description:
-          "Affichez, masquez et réorganisez les éléments du menu de profil de la barre latérale. Paramètres, Aide, Se déconnecter et Arrêter restent fixes.",
+          "Choisissez et réorganisez les raccourcis du menu de profil.",
         darkModeToggle: "Bascule du mode sombre",
         dragToReorder: "Faites glisser pour réorganiser",
       },

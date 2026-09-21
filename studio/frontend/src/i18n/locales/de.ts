@@ -1161,7 +1161,7 @@ export const de = {
       custom: {
         chatWidth: {
           label: "Chatbreite",
-          description: "Breite von Nachrichten und Eingabefeld festlegen. Volle Breite nutzt den Platz zwischen den Seitenleisten.",
+          description: "Breite von Nachrichten und Eingabefeld.",
           standard: "Standard",
           wide: "Breit",
           full: "Volle Breite",
@@ -1263,7 +1263,7 @@ export const de = {
       sidebarNav: {
         title: "Seitenleisten-Navigation",
         description:
-          "Tabs der Seitenleiste anheften und neu anordnen. Nicht angeheftete Tabs sammeln sich im Menü „Mehr“; ein einzelner nicht angehefteter Tab wird ausgeblendet, statt ein Menü mit nur einem Eintrag zu erhalten. „Neuer Chat“ bleibt fest.",
+          "Tabs der Seitenleiste anheften und neu anordnen. Nicht angeheftete Tabs landen im Menü „Mehr“.",
         dragToReorder: "Zum Neuanordnen ziehen",
         pinToSidebar: "{name} an die Seitenleiste anheften",
         moreHolds: "Mehr ({count})",
@@ -1271,7 +1271,7 @@ export const de = {
       sidebarMenu: {
         title: "Seitenleistenmenü",
         description:
-          "Elemente im Profilmenü der Seitenleiste anzeigen, ausblenden und neu anordnen. Einstellungen, Hilfe, Abmelden und Herunterfahren bleiben an ihrem Platz.",
+          "Verknüpfungen im Profilmenü auswählen und neu anordnen.",
         darkModeToggle: "Umschalter für den dunklen Modus",
         dragToReorder: "Zum Neuanordnen ziehen",
       },
