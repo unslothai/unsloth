@@ -823,9 +823,7 @@ class LinkLedger:
             record[2] += 1
 
     def freeable_bytes(self) -> int:
-        return self._single + sum(
-            size for size, links, met in self._multi.values() if met >= links
-        )
+        return self._single + sum(size for size, links, met in self._multi.values() if met >= links)
 
 
 def _record_entry(entry: os.DirEntry, ledger: LinkLedger) -> None:
@@ -1083,11 +1081,7 @@ def _total_disk_bytes() -> Optional[int]:
 
 
 def _remove_entry(
-    entry: os.DirEntry,
-    root: Path,
-    outcome: PurgeOutcome,
-    ledger: LinkLedger,
-    survivors: LinkLedger,
+    entry: os.DirEntry, root: Path, outcome: PurgeOutcome, ledger: LinkLedger, survivors: LinkLedger
 ) -> None:
     """Remove one top-level entry, recording what it would free rather than adding it up here.
 

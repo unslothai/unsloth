@@ -1561,7 +1561,9 @@ def test_an_unverifiable_load_state_refuses_rather_than_clears(monkeypatch, isol
     assert result["errors"] and "Could not verify" in result["errors"][0]
 
 
-def test_a_cache_the_environment_is_symlinked_into_is_not_offered(tmp_path, monkeypatch, isolated_caches):
+def test_a_cache_the_environment_is_symlinked_into_is_not_offered(
+    tmp_path, monkeypatch, isolated_caches
+):
     """uv help sync: clearing the cache under UV_LINK_MODE=symlink "will break all installed
     packages". A bulk clear is meant to cost a re-download at worst, never a broken install."""
     _write(tmp_path / "uv" / "archive" / "pkg" / "__init__.py", "x")
