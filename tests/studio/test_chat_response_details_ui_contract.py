@@ -565,13 +565,75 @@ def test_reasoning_clears_manual_open_on_a_new_stream():
     isOpen is `(streaming && !dismissed) || manualOpen` and manualOpen is only
     settable while idle, so the new-stream reset has to clear it too.
     """
-    src = REASONING_TSX.read_text(encoding = "utf-8")
+    src = _without_block_comments(REASONING_TSX.read_text(encoding = "utf-8"))
 
-    marker = "setDismissedWhileStreaming(false)"
-    start = src.find(marker)
-    assert start != -1, "new-stream reset effect is missing"
-    effect = src[src.rfind("useEffect(() => {", 0, start) : src.find("});", start)]
-    assert "setManualOpen(false)" in effect
+    # Which state holds the manual answer is read, not assumed. The previous form of this test
+    # pinned `setManualOpen(false)`, and when #11433 replaced the `manualOpen` /
+    # `dismissedWhileStreaming` pair with one nullable override the rename read as the reset
+    # having been deleted. The override is identified the way the component itself identifies
+    # it: it is the value `resolveReasoningOpen` is given as its override.
+    opener = re.search(r"resolveReasoningOpen\(\{(.*?)\}\)", src, re.S)
+    assert opener, (
+        "reasoning.tsx no longer resolves its open state through resolveReasoningOpen, so "
+        "this guard cannot tell which state holds a hand toggle's answer"
+    )
+    field = re.search(r"(?:^|,)\s*override\s*(?::\s*([A-Za-z_$][\w$]*))?\s*(?:,|$)", opener.group(1))
+    assert field, (
+        f"resolveReasoningOpen is no longer passed an override, so nothing here outranks the "
+        f"visibility setting and a hand toggle has nowhere to live: {opener.group(1)!r}"
+    )
+    held = field.group(1) or "override"
+    setter = re.search(rf"const \[{re.escape(held)},\s*(set\w+)\]\s*=\s*useState", src)
+    assert setter, (
+        f"{held!r} reaches resolveReasoningOpen but is not a useState in reasoning.tsx, so "
+        f"this guard cannot tell what writing it looks like"
+    )
+    writes = setter.group(1)
+
+    # It is the hand toggle that writes it. Without this the override could be some derived
+    # value the reader never sets, and clearing it would say nothing about a pinned block.
+    toggle_at = src.find("resolveReasoningToggle(")
+    assert toggle_at != -1, "reasoning.tsx no longer resolves its open toggle, so nothing here "
+    handler = src[src.rfind("useCallback(", 0, toggle_at) : src.find("\n  );", toggle_at)]
+    assert f"{writes}(" in handler, (
+        f"the open toggle does not write {held!r}, so that state is not where a hand toggle's "
+        f"answer is kept and clearing it would not unpin anything"
+    )
+
+    # And a new round clears it. Regenerate reuses this component instance, so without this a
+    # block opened by hand over the last answer stays pinned open over the next one.
+    round_at = src.find("startsNewReasoningRound(")
+    assert round_at != -1, (
+        "reasoning.tsx no longer asks whether a new reasoning round started, so nothing "
+        "distinguishes a fresh stream from the end of the last one"
+    )
+    # The brace has to be this condition's own. `_without_block_comments` strips the braces
+    # around a comment along with it, so a branch whose body is only a comment loses its `{}`
+    # entirely, and a scan for the next `{` then runs on into whatever block follows and reads
+    # that one instead. Found by sabotage: emptying the new-round branch left this guard
+    # reading the visibility-change branch, which clears the override too, so the guard passed
+    # while the reset it exists for was gone.
+    opened = src.find("{", round_at)
+    assert opened != -1 and not re.search(r"[};]", src[round_at:opened]), (
+        "the branch taken when a new reasoning round starts is not a block this guard can "
+        "read: a statement or block boundary comes between the condition and the next brace, "
+        "so what follows would be some other branch"
+    )
+    depth, closed = 0, None
+    for index in range(opened, len(src)):
+        if src[index] == "{":
+            depth += 1
+        elif src[index] == "}":
+            depth -= 1
+            if depth == 0:
+                closed = index
+                break
+    assert closed is not None, "the new-round branch in reasoning.tsx is unterminated"
+    assert f"{writes}(null)" in src[opened:closed], (
+        f"a new reasoning round does not clear {held!r}. A block the reader opened by hand "
+        f"during the previous round keeps its override, so it stays pinned open over the "
+        f"next answer whatever the Thinking setting says"
+    )
 
 
 def test_response_details_metadata_is_persisted_without_backend_schema_change():

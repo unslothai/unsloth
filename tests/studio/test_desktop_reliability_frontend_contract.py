@@ -912,6 +912,30 @@ def _button_classes(source: str, tag: str, variant: str) -> str | None:
     return _resolve_classes(source, value[1:-1], variant)
 
 
+_SPACING_REM = 0.25
+
+
+def _as_spacing_units(cls: str) -> str:
+    """`pr-[78px]` as `pr-19.5`, so an arbitrary gutter is compared rather than refused.
+
+    The checks below compare `pr-N`, where N counts Tailwind spacing units of 0.25rem. A row
+    that states its touch gutter as an exact pixel value is saying the same thing in another
+    spelling, and refusing it made a correct row (#11408's spinner column, `pr-[78px]`) fail a
+    guard about a defect it does not have.
+
+    Only px and rem convert, and only on `pr-`: those are the two the arithmetic here is
+    defined in. Anything else (`%`, `calc()`, `var()`) resolves against something this cannot
+    see, so it is left alone for the refusal below to catch. Left alone rather than dropped,
+    which is the point: an unconvertible value must still reach a check that says so.
+    """
+    match = re.fullmatch(r"((?:\S*:)?pr)-\[(\d+(?:\.\d+)?)(px|rem)\]", cls)
+    if not match:
+        return cls
+    prefix, amount, unit = match.group(1), float(match.group(2)), match.group(3)
+    units = amount / 16 / _SPACING_REM if unit == "px" else amount / _SPACING_REM
+    return f"{prefix}-{units:g}"
+
+
 def _row_action_offsets(live_css: str) -> dict[str, float | None]:
     """Each `.sidebar-row-action.is-*` modifier the stylesheet defines, and the right edge it
     sets, in Tailwind spacing units.
@@ -1322,7 +1346,10 @@ def test_chat_sidebar_row_actions_visible_on_coarse_pointers():
     # in the builder says nothing about the rows that do not take it: moving the verified
     # pair into `showWorkSpinner ? "...pair..." : undefined` leaves every ordinary row with
     # no gutter at all while a scan over literals still finds it.
-    renderings = _rendered_class_lists(_cn_arguments(row_classes))
+    renderings = [
+        [_as_spacing_units(cls) for cls in rendering]
+        for rendering in _rendered_class_lists(_cn_arguments(row_classes))
+    ]
     every_class = [cls for rendering in renderings for cls in rendering]
     # Refused across the WHOLE builder, not just the row's own literal. What follows compares
     # pr-N numbers and takes the last one to win, which is tailwind-merge's answer only while
