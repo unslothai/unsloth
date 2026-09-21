@@ -45,6 +45,7 @@ import { useTauriUpdate } from "@/hooks/use-tauri-update";
 import { isTauri } from "@/lib/api-base";
 import { followDesktopUpdateScreen } from "@/lib/desktop-update-activity";
 import { resyncInferenceStatusAfterServerModelChange } from "@/features/chat";
+import { useUiSpaceScale } from "@/hooks/use-ui-space-scale";
 import { getToastOffsets } from "@/lib/toast-offset";
 import { Z_LAYER } from "@/lib/z-layers";
 import { useRouterState } from "@tanstack/react-router";
@@ -1003,10 +1004,12 @@ const REDUCED_MOTION_MAP = {
 
 export function AppProvider({ children }: AppProviderProps) {
   const pathname = useRouterState({ select: (s) => s.location.pathname });
+  const uiSpaceScale = useUiSpaceScale();
   const toastOffsets = getToastOffsets(
     pathname,
     isTauri,
     shouldUseCustomWindowTitlebar(),
+    uiSpaceScale,
   );
   const reduceMotion = useAppearanceCustomStore(
     (s) => s.customization.reduceMotion,
