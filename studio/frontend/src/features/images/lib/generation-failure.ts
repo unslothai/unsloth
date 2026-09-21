@@ -43,3 +43,17 @@ export function newGenerationAttemptId(): string {
     for (let i = 0; i < bytes.length; i++) bytes[i] = (Math.random() * 256) | 0;
   return Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
 }
+
+/** The prefix every reason the backend CLASSIFIED and LOGGED carries. */
+export const GENERATE_FAILURE_LOGGED_PREFIX = "Image generation failed.";
+
+/** Whether Settings > Logs can actually hold this failure.
+ *
+ * Only the 500 paths log: they call logger.error and answer with a classified reason, which
+ * always opens with the prefix above. A request rejected at validation (400) is answered
+ * without logging, and "did not reach the server" never left the browser, so offering the
+ * action there opens an unrelated current log and points at a false diagnosis.
+ */
+export function generationFailureWasLogged(message: string): boolean {
+  return message.startsWith(GENERATE_FAILURE_LOGGED_PREFIX);
+}

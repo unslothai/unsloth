@@ -177,6 +177,7 @@ import { useNavigate, useSearch } from "@tanstack/react-router";
 import { useStagedDownload, type StagedDownloadEntry } from "@/features/hub/download-manager";
 import {
   generationFailureForAttempt,
+  generationFailureWasLogged,
   newGenerationAttemptId,
 } from "./lib/generation-failure";
 import { DiffusionTrainPanel } from "./train/diffusion-train-panel";
@@ -3585,7 +3586,12 @@ export function ImagesPage({
           stopRequested: cancelRequested.current && cancelAcked.current,
         })
       )
-        toast.error(msg, { action: viewLogsAction("server") });
+        toast.error(msg, {
+          // Only when the server logged it: see generationFailureWasLogged.
+          action: generationFailureWasLogged(msg)
+            ? viewLogsAction("server")
+            : undefined,
+        });
     } finally {
       if (genPollTimer.current) clearInterval(genPollTimer.current);
       genPollTimer.current = null;

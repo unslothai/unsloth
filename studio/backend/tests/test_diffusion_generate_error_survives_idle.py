@@ -481,3 +481,24 @@ def test_a_retained_outcome_survives_an_engine_switch():
     # And the two engines record into it without passing themselves.
     for engine_src in ENGINES:
         assert "_retain_generate_failure(attempt_id," in _src(engine_src)
+
+
+def test_a_cancelled_attempt_settles_as_a_cancellation_not_a_failure():
+    """The sentinel survives classification, because it is the one reason that is not a failure.
+
+    A POST that returns normally answers 409 with the sentinel and the page treats that as
+    the requested outcome. A POST that was LOST has only the retained reason, and the generic
+    classifier turned the sentinel into "Image generation failed.", so the user's own Stop
+    toasted a failure.
+    """
+    from core.inference.diffusion_families import DIFFUSION_CANCELLED_MSG
+    from routes.inference import _generate_failure_detail
+
+    assert (
+        _generate_failure_detail(DIFFUSION_CANCELLED_MSG) == DIFFUSION_CANCELLED_MSG
+    ), "a cancellation read as a generic failure to the client settling a lost post"
+    # Everything else still goes through the classifier, engine text included.
+    named = _generate_failure_detail("CUDA out of memory. Tried to allocate 20.00 GiB")
+    assert named.startswith("Image generation failed.")
+    assert "20.00 GiB" not in named, "engine text escaped into a client-visible message"
+    assert _generate_failure_detail("something nobody classified") == ("Image generation failed.")

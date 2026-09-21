@@ -38957,6 +38957,14 @@ def _generate_failure_detail(message: str) -> str:
     renderer aborts inside its own text encoder, and the page showed "Image generation failed."
     with nothing to act on. Naming the CLASS of failure keeps the message useful without echoing
     the engine's text, which can carry local paths and argv."""
+    from core.inference.diffusion_families import DIFFUSION_CANCELLED_MSG
+
+    # The cancellation sentinel is fixed text already, and the only reason a client must be
+    # able to tell apart from a failure: a POST that returns normally answers 409 with it and
+    # the page treats that as the requested outcome. Classified, it came back as the generic
+    # fallback, so a caller settling a LOST post toasted a failure for its own Stop.
+    if str(message or "") == DIFFUSION_CANCELLED_MSG:
+        return DIFFUSION_CANCELLED_MSG
     text = str(message or "").lower()
     for needles, detail in _GENERATE_FAILURE_CLASSES:
         if any(n in text for n in needles):

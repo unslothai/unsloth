@@ -15,6 +15,7 @@ import test from "node:test";
 
 import {
   generationFailureForAttempt,
+  generationFailureWasLogged,
   newGenerationAttemptId,
 } from "../src/features/images/lib/generation-failure.ts";
 
@@ -132,5 +133,48 @@ test("an id is minted per post and sent with it", () => {
   assert.ok(
     body.includes("attemptId,"),
     "the settling waiter is not given this attempt's id",
+  );
+});
+
+test("only a failure the server logged offers the logs action", () => {
+  // The 500 paths log and answer with a classified reason, which always opens with this
+  // prefix. Nothing else is in the log the action would open.
+  assert.equal(generationFailureWasLogged("Image generation failed."), true);
+  assert.equal(
+    generationFailureWasLogged(
+      "Image generation failed. The GPU ran out of memory.",
+    ),
+    true,
+  );
+  // Never left the browser.
+  assert.equal(
+    generationFailureWasLogged(
+      "The image generation request did not reach the server.",
+    ),
+    false,
+    "offered the logs of an unrelated run for a request that never arrived",
+  );
+  // Answered at validation, without logging.
+  assert.equal(generationFailureWasLogged("prompt must not be empty"), false);
+  assert.equal(
+    generationFailureWasLogged(
+      "Timed out waiting for the image generation to finish.",
+    ),
+    false,
+  );
+  assert.equal(
+    generationFailureWasLogged("Lost connection to the image server."),
+    false,
+  );
+
+  // And the page gates the action on it rather than attaching it to every error.
+  const page = readFileSync(
+    new URL("../src/features/images/images-page.tsx", import.meta.url),
+    "utf8",
+  );
+  assert.match(
+    page,
+    /action: generationFailureWasLogged\(msg\)\s*\?\s*viewLogsAction\("server"\)\s*:\s*undefined/,
+    "the generate error toast still offers logs for a failure that was never logged",
   );
 });
