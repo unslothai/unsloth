@@ -270,8 +270,10 @@ def test_the_route_reports_the_tighter_of_the_hub_and_xet_volumes(monkeypatch, t
 def test_one_volume_is_read_once(monkeypatch, tmp_path):
     """The negative control for the test above, and the cost claim in the docstring.
 
-    Hub and Xet share a volume on an ordinary install. If that were read twice the route would
-    pay two syscalls for one answer on every machine to save one on the rare split install.
+    Hub and Xet share a volume on an ordinary install. The first version of this deduplicated
+    AFTER reading, so it still paid a disk_usage per root: two syscalls to answer about one
+    volume on every ordinary machine, which is what the docstring promises not to do and what
+    costs most on a network mount. The device is resolved first now.
     """
     both = tmp_path / "cache"
     (both / "hub").mkdir(parents = True)
@@ -290,7 +292,9 @@ def test_one_volume_is_read_once(monkeypatch, tmp_path):
     )
     route(current_subject = "alice")
 
-    assert len(calls) == 2, f"expected one reading per root before dedup, got {calls}"
+    assert (
+        len(calls) == 1
+    ), f"hub and xet share a volume, so one disk_usage should answer for both; got {calls}"
 
 
 def test_an_api_key_caller_is_not_told_the_host_path(monkeypatch, tmp_path):
@@ -329,3 +333,51 @@ def test_a_ui_session_still_sees_the_path(monkeypatch, tmp_path):
     reading = route(current_subject = "alice", via_api_key = False)
 
     assert reading["path"], "a UI session lost the path it needs to identify the volume"
+
+
+def test_an_unreadable_cache_volume_is_not_reported_as_its_parent(monkeypatch, tmp_path):
+    """Missing and unreadable are different answers.
+
+    A cache directory that does not exist yet is ordinary, and the volume it would live on is
+    its nearest existing parent. A permission error, an I/O error or a network mount that is
+    not answering is not missing: climbing past it reports the parent filesystem's free space
+    for a disk nothing could read, which suppresses the warning with a confidently wrong
+    number. This route already refuses to turn an unreadable host into a zero for the same
+    reason.
+    """
+    roomy = tmp_path / "roomy"
+    roomy.mkdir()
+    cache = roomy / "cache"
+    cache.mkdir()
+
+    real_stat = os.stat
+    real_usage = shutil.disk_usage
+
+    def deny_stat(path, *args, **kwargs):
+        if str(path) == str(cache):
+            raise PermissionError(13, "Permission denied")
+        return real_stat(path, *args, **kwargs)
+
+    def deny_usage(path, *args, **kwargs):
+        # Both calls, because an unreadable volume refuses both and the two versions of this
+        # route fail at different ones: denying only os.stat left the old code reading the
+        # cache happily and the test passing against the bug.
+        if str(path) == str(cache):
+            raise PermissionError(13, "Permission denied")
+        return real_usage(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "stat", deny_stat)
+    monkeypatch.setattr(shutil, "disk_usage", deny_usage)
+
+    route = _load_route(
+        monkeypatch,
+        hub_cache = cache,
+        xet_cache = cache,
+        default_cache = tmp_path / "missing-default",
+        studio = tmp_path / "missing-studio",
+    )
+    reading = route(current_subject = "alice", via_api_key = False)
+
+    assert reading["path"] != str(
+        roomy
+    ), "an unreadable cache reported its parent volume's free space"

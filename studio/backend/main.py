@@ -2447,11 +2447,15 @@ def get_disk_space(
     except Exception as exc:  # noqa: BLE001 - a settings read must not cost the reading
         logger.debug(f"Could not resolve the active caches for the disk reading: {exc}")
 
-    def _read(probe):
-        """The volume *probe* lives on, found at its first existing ancestor.
+    def _locate(probe):
+        """(first existing ancestor, its device), or None when this root is unreadable.
 
-        disk_usage raises on a path that does not exist, and the cache directory legitimately
-        does not exist yet on a fresh install.
+        Two failures that look alike and must not be treated alike. A MISSING directory is
+        ordinary, since the cache legitimately does not exist yet on a fresh install, and the
+        volume it would live on is its nearest existing parent. A permission error, an I/O
+        error or a network mount that is not answering is not missing: climbing past it would
+        report the parent filesystem's free space for a disk nothing could read, which is the
+        confidently wrong answer this route exists to avoid. Those leave the root unreadable.
         """
         try:
             chain = [probe, *probe.parents]
@@ -2459,51 +2463,60 @@ def get_disk_space(
             return None
         for candidate in chain:
             try:
-                usage = shutil.disk_usage(candidate)
-            except (OSError, ValueError):
+                return candidate, os.stat(candidate).st_dev
+            except (FileNotFoundError, NotADirectoryError):
                 continue
-            try:
-                device = os.stat(candidate).st_dev
-            except OSError:
-                device = None
-            return {
-                "device": device,
-                "path": str(candidate),
-                # Decimal GB, matching /api/system, so the two agree on screen.
-                "total_gb": round(usage.total / 1e9, 2),
-                "free_gb": round(usage.free / 1e9, 2),
-                "percent_used": (
-                    round((usage.total - usage.free) / usage.total * 100, 1) if usage.total else 0
-                ),
-            }
+            except OSError as exc:
+                logger.debug(f"Cache root {candidate} could not be read: {exc}")
+                return None
         return None
 
-    readings = []
+    def _read(candidate):
+        """The reading for one already-located directory, or None if it cannot be taken."""
+        try:
+            usage = shutil.disk_usage(candidate)
+        except (OSError, ValueError):
+            return None
+        return {
+            "path": str(candidate),
+            # Decimal GB, matching /api/system, so the two agree on screen.
+            "total_gb": round(usage.total / 1e9, 2),
+            "free_gb": round(usage.free / 1e9, 2),
+            "percent_used": (
+                round((usage.total - usage.free) / usage.total * 100, 1) if usage.total else 0
+            ),
+        }
+
+    # Locate first, THEN read. Deduplicating after the reading still paid a disk_usage per
+    # root, so the ordinary install with both caches on one disk was doing two probes to
+    # answer about one volume, which is the opposite of what the docstring promises and
+    # costs most on exactly the network mounts this is careful about.
+    located = []
     seen = set()
     for root in roots:
-        reading = _read(root)
-        if reading is None:
+        found = _locate(root)
+        if found is None:
             continue
-        # One syscall per VOLUME. A device of None means the stat failed, which is not proof of
-        # a distinct volume, so those are kept rather than collapsed onto each other.
-        key = reading["device"]
-        if key is not None and key in seen:
+        candidate, device = found
+        if device in seen:
             continue
-        if key is not None:
-            seen.add(key)
-        readings.append(reading)
+        seen.add(device)
+        located.append(candidate)
+
+    readings = [reading for reading in map(_read, located) if reading is not None]
 
     if not readings:
         # Nothing resolved: fall back to the same places the old reading used.
         for probe in (hf_default_cache_dir(), studio_root(), Path(os.path.abspath(os.sep))):
-            reading = _read(probe)
+            found = _locate(probe)
+            reading = None if found is None else _read(found[0])
             if reading is not None:
                 readings.append(reading)
                 break
 
     if readings:
         tightest = min(readings, key = lambda r: r["free_gb"])
-        answer = {key: value for key, value in tightest.items() if key != "device"}
+        answer = dict(tightest)
         # An API key reaches this route through get_current_subject, and `path` is a raw host
         # path naming the service account and its home layout. The repo already draws that
         # boundary for the Hub inventory routes; a capacity reading is not a reason to cross
