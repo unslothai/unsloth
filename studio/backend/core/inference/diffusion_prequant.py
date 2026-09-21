@@ -13,10 +13,15 @@ to device. Measured (B200, Z-Image fp8): GPU load peak 12.9 -> 6.3 GB, download 
 output bit-identical (LPIPS 0.0). The checkpoint carries the same scheme + ``min_features`` as the
 runtime path, so the result matches quantising on the fly.
 
-torchao's weight subclasses are not safetensors-serializable, so the artifact is a torch.save pickle
--- read under ``weights_only`` plus the constructor ALLOWLIST below, never as a free one. It is a
+Two containers, one dict. Historically the artifact could only be a ``torch.save`` pickle, because
+torchao's weight subclasses are wrapper tensors and safetensors stores flat ones; that pickle is read
+under ``weights_only`` plus the constructor ALLOWLIST below, never as a free one, since it is a
 mutable remote file reached by loads that never asked for a scheme (auto resolves an unset precision
-to a hosted checkpoint), so "first-party repo" cannot stand in for that restriction.
+to a hosted checkpoint) and "first-party repo" cannot stand in for that restriction. torchao >= 0.16
+can flatten those subclasses, so an artifact may now also be ``.safetensors`` (see
+``prequant_safetensors``), which needs no allowlist at all and answers the validation questions from
+its header. ``_load_prequant_checkpoint`` returns the same ``{"format", "state_dict", "metadata"}``
+for both, so every check in this module applies to them identically and the two cannot drift apart.
 
 Best-effort and lazily imported: a missing / mismatched / unreadable checkpoint returns None and the
 caller falls back to dense-quantise (then GGUF). Inert with nothing configured.
@@ -233,7 +238,10 @@ def _register_prequant_safe_globals() -> bool:
         return ok
 
 
-def restricted_prequant_load_supported(scheme: Optional[str] = None) -> bool:
+def restricted_prequant_load_supported(
+    scheme: Optional[str] = None,
+    filename: Optional[str] = None,
+) -> bool:
     """Whether this install can read a pre-quant checkpoint, for ``scheme`` when one is named.
 
     Without the allowlist there is no safe way to open a pre-quant pickle and the loader refuses.
@@ -247,7 +255,18 @@ def restricted_prequant_load_supported(scheme: Optional[str] = None) -> bool:
     deprecated upstream (pytorch/ao#2752), so a release that drops them while keeping
     ``Float8Tensor`` leaves fp8 loadable and int8 not. An unknown or unnamed scheme gets the floor
     answer the registration itself already checked.
+
+    ``filename`` is the artifact the question is actually about, when the caller knows it. A
+    safetensors checkpoint names no constructors, so there is nothing to allowlist and none of the
+    above applies: it needs torchao's flatten/unflatten helpers and nothing else. Answering the
+    pickle's question for a safetensors artifact would refuse a perfectly loadable file on exactly
+    the installs the new container exists to unblock (a torch too old for ``add_safe_globals``, a
+    torchao missing a scheme's constructors, the stubbed torchao on Windows ROCm).
     """
+    from .prequant_safetensors import is_safetensors_checkpoint, safetensors_prequant_supported
+
+    if is_safetensors_checkpoint(filename):
+        return safetensors_prequant_supported()
     if not _register_prequant_safe_globals():
         return False
     required = _SCHEME_REQUIRED_GLOBALS.get((scheme or "").strip().lower())
@@ -271,6 +290,21 @@ def _torch_load_prequant(path: str, **kwargs: Any) -> Any:
             "globals"
         )
     return torch.load(path, weights_only = True, **kwargs)
+
+
+def _load_prequant_checkpoint(path: str, **kwargs: Any) -> Any:
+    """Read a pre-quant checkpoint of EITHER container, as the same ``{"format", "state_dict",
+    "metadata"}`` dict.
+
+    Dispatched on the file extension rather than on content sniffing: the extension is what the
+    resolver asked the Hub for, so a repo hosting both containers cannot serve one and be parsed as
+    the other. ``kwargs`` are the pickle path's (``map_location``, ``mmap``); safetensors has no
+    equivalent knobs and reads to CPU, which is where the pickle path maps too."""
+    from .prequant_safetensors import is_safetensors_checkpoint, load_prequant_safetensors
+
+    if is_safetensors_checkpoint(path):
+        return load_prequant_safetensors(path)
+    return _torch_load_prequant(path, **kwargs)
 
 
 _PREQUANT_TOGGLE_TOKENS = {"1", "true", "yes", "on", "0", "false", "no", "off"}
@@ -432,6 +466,9 @@ def local_prequant_scheme(path: str) -> Optional[str]:
     (path, mtime, size) because the auto ladder asks once per candidate scheme. Read under the same
     allowlisted ``weights_only`` load the loader uses, so probing a file that turns out not to be a
     checkpoint cannot execute anything either.
+
+    A safetensors artifact answers from its HEADER, so the probe reads a few KB of JSON and no
+    tensor at all, and needs neither the allowlist nor a torchao that can rebuild the subclasses.
     """
     import os
 
@@ -446,9 +483,14 @@ def local_prequant_scheme(path: str) -> Optional[str]:
         return None
     if key in _LOCAL_PREQUANT_SCHEME:
         return _LOCAL_PREQUANT_SCHEME[key]
+    from .prequant_safetensors import is_safetensors_checkpoint, read_prequant_header
+
     scheme: Optional[str] = None
     try:
-        obj = _torch_load_prequant(real, map_location = "meta", mmap = True)
+        if is_safetensors_checkpoint(real):
+            obj = read_prequant_header(real)
+        else:
+            obj = _torch_load_prequant(real, map_location = "meta", mmap = True)
         if isinstance(obj, dict) and obj.get("format") in PREQUANT_FORMATS:
             recorded = (obj.get("metadata") or {}).get("scheme")
             scheme = str(recorded) if recorded else None
@@ -478,12 +520,26 @@ def usable_prequant_source(
 
     An install that cannot restrict the load has no usable source AT ALL, hosted included: the
     loader refuses every checkpoint there, and a plan that had already dropped the dense shards for
-    one would find that out after the eviction.
+    one would find that out after the eviction. That question is asked of the RESOLVED names rather
+    than of the scheme alone, because it has different answers for the two containers: a repo whose
+    primary artifact is safetensors is usable on an install that could not open a pickle at all, and
+    resolving first is what lets the source say so. Any one loadable name is enough, since the
+    resolver tries them in order and the first that exists wins.
     """
-    if not restricted_prequant_load_supported(scheme):
-        return None
     src = resolve_prequant_source(fam, scheme, path_override = path_override, base_repo = base_repo)
-    if src is not None and src.kind == "path":
+    if src is None:
+        return None
+    # getattr, because a source here is anything shaped like one (the planners hand round lightweight stand-ins) and a
+    # missing attribute must not turn a usable prequant into a silent dense fallback. No name at all asks the
+    # scheme-only question, which is what this did before either container existed.
+    candidates = (
+        [src.location]
+        if getattr(src, "kind", None) == "path"
+        else [n for n in (getattr(src, "filename", None), getattr(src, "fallback_filename", None)) if n]
+    ) or [None]
+    if not any(restricted_prequant_load_supported(scheme, name) for name in candidates):
+        return None
+    if src.kind == "path":
         if not local_prequant_path_ready(src.location):
             return None
         if local_prequant_scheme(src.location) != scheme:
@@ -637,11 +693,12 @@ def load_prequantized_transformer(
         if path is None:
             return None
 
-        # A torch.save pickle, deserialized under the constructor ALLOWLIST above and never as a free-running one.
-        # First-party hosting is no reason to execute whatever bytes arrive: the artifact is mutable, fetched over the
-        # network, and reached by loads that never asked for one (auto resolves an unset precision to a hosted
-        # checkpoint), so a mutated file must fail to load rather than run.
-        ckpt = _torch_load_prequant(path, map_location = "cpu")
+        # A safetensors artifact, or a torch.save pickle deserialized under the constructor ALLOWLIST above and never
+        # as a free-running one. First-party hosting is no reason to execute whatever bytes arrive: the artifact is
+        # mutable, fetched over the network, and reached by loads that never asked for one (auto resolves an unset
+        # precision to a hosted checkpoint), so a mutated file must fail to load rather than run. Both containers
+        # hand back the same dict, so every check below applies to them equally.
+        ckpt = _load_prequant_checkpoint(path, map_location = "cpu")
         if not _validate_checkpoint(
             ckpt, scheme, base, logger, min_features = min_features, fast_accum = fast_accum
         ):

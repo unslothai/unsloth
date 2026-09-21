@@ -70,3 +70,35 @@ def test_a_rotated_upload_with_no_declared_name_is_refused_rather_than_published
         == "Z-Image-Turbo-INT8-ConvRot.pt"
     )
     assert build.upload_destination(zimage, "fp8", rotated = False) == "transformer_fp8.pt"
+
+
+def test_a_safetensors_upload_needs_a_name_the_loader_would_ask_for():
+    build = _script()
+    zimage = detect_family("Tongyi-MAI/Z-Image-Turbo", override = "z-image")
+    assert zimage is not None
+    # Every DERIVED name ends in .pt, so no build ever asks the Hub for a safetensors artifact
+    # unless the family declares one. Publishing under a derived name produces a file nothing can
+    # reach, on a repo that looks like it has a checkpoint.
+    with pytest.raises(ValueError, match = "prequant_filenames"):
+        build.upload_destination(zimage, "fp8", rotated = False, safetensors = True)
+    assert (
+        build.upload_destination(
+            zimage,
+            "fp8",
+            rotated = False,
+            safetensors = True,
+            override = "Z-Image-Turbo-FP8.safetensors",
+        )
+        == "Z-Image-Turbo-FP8.safetensors"
+    )
+
+
+def test_a_safetensors_build_refuses_a_declared_name_that_reads_as_a_pickle():
+    build = _script()
+    h3 = detect_video_family("MiniMaxAI/MiniMax-H3")
+    assert h3 is not None
+    # H3 declares a .pt name for int8. Uploading a safetensors artifact there gives every loader a
+    # file whose extension says pickle and whose bytes are not one, so the load fails for a reason
+    # that has nothing to do with the real mistake. Refuse at build time and say which name to fix.
+    with pytest.raises(ValueError, match = "not a safetensors name"):
+        build.upload_destination(h3, "int8", rotated = False, safetensors = True)

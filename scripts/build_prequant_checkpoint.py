@@ -52,6 +52,7 @@ def upload_destination(
     scheme: str,
     *,
     rotated: bool,
+    safetensors: bool = False,
     override: Optional[str] = None,
 ) -> str:
     """The repo-root filename this build should publish under.
@@ -61,21 +62,35 @@ def upload_destination(
     ``transformer_<scheme>.pt`` is either never resolved at all, or resolved as the fallback by a
     build too old to honour the rotation, which then refuses the v2 tag and drops to the dense
     download. A rotated build therefore goes to the declared name or nowhere. Plain builds keep
-    the legacy name they have always used."""
+    the legacy name they have always used.
+
+    A SAFETENSORS build is in the same position for a different reason: both derived names end in
+    ``.pt``, so no build ever asks the Hub for a safetensors artifact unless the family names it.
+    Uploading one under a derived name produces a file that is reachable by nothing and a repo that
+    looks like it has a checkpoint when it does not, so it is refused here rather than discovered
+    as a silent dense fallback later."""
     if override:
         return override
     from core.inference.diffusion_prequant import prequant_filename
 
-    if not rotated:
+    if not rotated and not safetensors:
         return prequant_filename(scheme)
     from core.inference.diffusion_families import family_prequant_filename
 
     preferred = family_prequant_filename(fam, scheme)
+    why = "a rotated checkpoint" if rotated else "a safetensors checkpoint"
     if not preferred:
         raise ValueError(
             f"family {getattr(fam, 'name', fam)!r} declares no prequant_filenames entry for "
-            f"{scheme!r}, so a rotated checkpoint has no name the loader would ask for. Add the "
+            f"{scheme!r}, so {why} has no name the loader would ask for. Add the "
             "entry to the family table, or pass --upload-filename."
+        )
+    if safetensors and not preferred.lower().endswith(".safetensors"):
+        raise ValueError(
+            f"family {getattr(fam, 'name', fam)!r} declares {preferred!r} for {scheme!r}, which is "
+            "not a safetensors name, so this build would be published under a name the loader "
+            "reads as a pickle. Point the prequant_filenames entry at the .safetensors artifact, "
+            "or pass --upload-filename."
         )
     return preferred
 
@@ -87,7 +102,12 @@ def main(argv = None) -> int:
     )
     p.add_argument("--family", required = True, help = "diffusion family name/alias (e.g. z-image)")
     p.add_argument("--scheme", required = True, help = "quant scheme: int8 | fp8 | nvfp4 | mxfp8")
-    p.add_argument("--out", required = True, help = "output .pt path for the checkpoint")
+    p.add_argument(
+        "--out",
+        required = True,
+        help = "output path; a .safetensors extension writes the safetensors container, anything "
+               "else writes the torch.save one",
+    )
     p.add_argument("--min-features", type = int, default = 512)
     p.add_argument("--dtype", default = "bfloat16", choices = ["bfloat16"])
     p.add_argument("--hf-token", default = None)
@@ -144,6 +164,20 @@ def main(argv = None) -> int:
         print(f"error: unknown family '{args.family}'", flush = True)
         return 2
     transformer_cls = getattr(diffusers, fam.transformer_class)
+    # The CONTAINER is chosen by the --out extension, so one flag picks the on-disk format, the reachable upload name
+    # and the writer, and they cannot be set to disagree.
+    is_safetensors_out = str(args.out).lower().endswith(".safetensors")
+    if is_safetensors_out:
+        from core.inference.prequant_safetensors import safetensors_prequant_supported
+
+        if not safetensors_prequant_supported():
+            print(
+                "error: --out names a .safetensors checkpoint but this install cannot write one "
+                "(needs torchao >= 0.16 for torchao.prototype.safetensors.safetensors_support, "
+                "plus the safetensors package)",
+                flush = True,
+            )
+            return 2
     # Resolved BEFORE the load, so a rotated build with nowhere resolvable to publish fails in a second rather than
     # after the quantise and the multi-gigabyte save.
     upload_dest = None
@@ -153,6 +187,7 @@ def main(argv = None) -> int:
                 fam,
                 scheme,
                 rotated = bool(args.convrot_groupsize),
+                safetensors = is_safetensors_out,
                 override = args.upload_filename,
             )
         except ValueError as exc:
@@ -240,7 +275,17 @@ def main(argv = None) -> int:
 
     out = Path(args.out)
     out.parent.mkdir(parents = True, exist_ok = True)
-    torch.save(ckpt, out)
+    if is_safetensors_out:
+        from core.inference.prequant_safetensors import save_prequant_safetensors
+
+        save_prequant_safetensors(
+            str(out),
+            fmt = ckpt["format"],
+            state_dict = state_dict,
+            metadata = metadata,
+        )
+    else:
+        torch.save(ckpt, out)
     size_gb = out.stat().st_size / 1e9
     print(f"  saved {out}  ({size_gb:.2f} GB) in {time.time() - t0:.0f}s", flush = True)
     print(f"  metadata: {ckpt['metadata']}", flush = True)
