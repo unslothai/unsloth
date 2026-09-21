@@ -312,14 +312,16 @@ const STREAMDOWN_ALLOWED_TAGS = {
 } satisfies NonNullable<StreamdownProps["allowedTags"]>;
 
 const COPY_RESET_MS = 2000;
-const MERMAID_SOURCE_RE = /(?:`{3,}|~{3,})mermaid\s*([\s\S]*?)(?:`{3,}|~{3,})/i;
+// The close is a LINE of the opener's own character, at least as long, so a body holding
+// `~~~` or a shorter run cannot truncate the diagram.
+const MERMAID_SOURCE_RE = /^ {0,3}(`{3,}|~{3,})mermaid[^\n]*\n([\s\S]*?)^ {0,3}\1[`~]*\s*$/im;
 const ACTION_PANEL_CLASS =
   "pointer-events-auto flex shrink-0 items-center gap-1";
 const ACTION_BUTTON_CLASS =
   "flex size-8 cursor-pointer items-center justify-center rounded-[10px] text-chat-icon-fg transition-all hover:bg-chat-icon-bg-hover hover:text-chat-icon-fg-hover disabled:cursor-not-allowed disabled:opacity-50";
 
 function getMermaidSource(blockContent: string): string | null {
-  const source = blockContent.match(MERMAID_SOURCE_RE)?.[1]?.trim();
+  const source = blockContent.match(MERMAID_SOURCE_RE)?.[2]?.trim();
   return source && source.length > 0 ? source : null;
 }
 
@@ -534,7 +536,7 @@ function StreamdownBlockContent(props: BlockProps) {
   );
   // Tildes too, and more than three: this is what decides whether the block is a diagram, and
   // streamdown renders mermaid wherever the language tag says so.
-  const hasMermaidFence = /(?:`{3,}|~{3,})mermaid/i.test(props.content);
+  const hasMermaidFence = MERMAID_SOURCE_RE.test(props.content);
   const mermaidSource = getMermaidSource(props.content);
   const codeFence = getCodeFence(props.content);
 
@@ -718,7 +720,9 @@ function useFenceTokens(
         if (wanted.current === body) setTokens(late);
       },
     );
-    if (settled) setTokens(settled);
+    // `settled === null` means the plugin caught a tokenization error; keeping the previous
+    // tokens would show an older, shorter body. The callback restores them if it succeeds later.
+    setTokens(settled ?? null);
   }, [enabled, source, languageToken]);
   return tokens;
 }

@@ -414,6 +414,22 @@ test("nothing is watched once there is nothing left to defer", () => {
 
 const CODE_PLUGIN = readSrc("components/assistant-ui/code-plugin.ts");
 
+test("a mermaid close matches its own opener, not any run", () => {
+  // A body holding its own `~~~` used to truncate the diagram the copy button reads.
+  const literal = MARKDOWN_TEXT.match(/const MERMAID_SOURCE_RE = (\/.*\/[a-z]*);/)?.[1];
+  assert.ok(literal, "MERMAID_SOURCE_RE must be a literal this test can run");
+  const re = new RegExp(literal.slice(1, literal.lastIndexOf("/")), literal.slice(literal.lastIndexOf("/") + 1));
+  const cases: Array<[string, string]> = [
+    ["````mermaid\ngraph TD;\nA[\"~~~\"] --> B\n````", 'graph TD;\nA["~~~"] --> B'],
+    ["```mermaid\ngraph TD;\nA-->B;\n```", "graph TD;\nA-->B;"],
+    ["~~~mermaid\ngraph TD;\nA-->B;\n~~~", "graph TD;\nA-->B;"],
+    ["````mermaid\nx\n```\ny\n````", "x\n```\ny"],
+  ];
+  for (const [source, want] of cases) {
+    assert.equal(re.exec(source)?.[2]?.trim(), want, `mermaid source for ${JSON.stringify(source)}`);
+  }
+});
+
 test("the fence language is a language, not the whole info string", () => {
   // `getCodeFence` captures everything after the backticks, so ```python startLine=10 arrives as
   // "python startLine=10". Markdown treats everything past the first word as metadata and
