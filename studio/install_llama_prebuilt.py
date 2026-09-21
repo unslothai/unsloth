@@ -307,25 +307,12 @@ _RUN_STAGED_PREBUILT_VALIDATION = False
 
 
 def prebuilt_needs_functional_validation(choice: "AssetChoice") -> bool:
-    """True when a staged prebuilt must run the functional smoke test before activation.
+    """True when a staged prebuilt must run the smoke test before activation.
 
-    Three cases, and only the third is allowed to skip it:
-
-    * No digest at all. Nothing else gates the archive, so the smoke test is its only
-      integrity gate and always runs.
-    * A digest GitHub published on the release (``unmanifested_digest``). It proves the
-      bytes are the ones upstream uploaded, and nothing about whether they RUN here --
-      right bytes, wrong glibc, absent CUDA runtime, an arch this host cannot load. The
-      upstream path is exactly where that mismatch lands, because it is what hosts the
-      fork does not cover fall to: Linux ARM64 Vulkan, Intel, the pinned macOS tag, any
-      ``--published-repo``. These archives ran the smoke test while they were hashless
-      and keep running it, so requiring a digest does not quietly buy a weaker check.
-    * An approved-manifest bundle. Unsloth's own release process built and exercised it,
-      so the manifest speaks for integrity and runnability both, and its smoke test -- a
-      cold CUDA-JIT pass costing minutes on Blackwell sm_100 -- stays gated behind
-      staged_validation_enabled() (constant or UNSLOTH_LLAMA_STAGED_VALIDATION),
-      disabled for now. That check and the source-build fallback it triggers are kept
-      intact; flip the flag / env to restore it (#5854).
+    A release digest proves the bytes are upstream's, not that they load on this host, so
+    those archives keep the test they ran while hashless. Only a manifest-approved bundle,
+    which Unsloth built and exercised, skips it: that pass costs minutes of cold CUDA JIT
+    on Blackwell sm_100, so it stays behind staged_validation_enabled() (#5854).
     """
     if choice.expected_sha256 is None:
         return True
@@ -467,10 +454,8 @@ class AssetChoice:
     max_sm: int | None = None
     selection_log: list[str] | None = None
     expected_sha256: str | None = None
-    # True when expected_sha256 came from GitHub's per-asset release digest rather than
-    # the approved checksum manifest. Both prove the bytes; only the manifest also means
-    # Unsloth built and exercised that bundle, so see
-    # prebuilt_needs_functional_validation.
+    # expected_sha256 came from GitHub's release digest, not the approved manifest:
+    # see prebuilt_needs_functional_validation.
     unmanifested_digest: bool = False
     # ROCm bundles only (mirrors PublishedLlamaArtifact): umbrella gfx family
     # and the concrete archs the binaries were built for.
@@ -1365,22 +1350,16 @@ def direct_upstream_release_plan(
             )
     if not attempts:
         raise PrebuiltFallback("no compatible upstream prebuilt asset was found")
-    # These archives are extracted, chmod 0o755'd and executed, so bind each one to a
-    # digest here rather than letting it through unverified. The fork path already
-    # refuses an attempt no checksum covers; this path used to leave expected_sha256 at
-    # None, which download_file_verified treats as a pass. GitHub states a per-asset
-    # digest on the release we were already handed, so this costs no extra request, and
-    # _apply_release_digests applies the same two rules the fork path uses: an attempt
-    # with no digest is dropped, and an unverifiable paired runtime archive unpairs.
+    # These archives are extracted, chmod 0o755'd and executed, and download_file_verified
+    # treats a None digest as a pass. The release we were handed already states a per-asset
+    # digest, so bind every attempt to one and drop the attempts it does not cover.
     verified = _apply_release_digests(attempts, release_asset_digests(release))
     if not verified:
         raise PrebuiltFallback(
             f"{repo}@{release_tag} publishes no asset digest for any compatible prebuilt; "
             "refusing to install one unverified"
         )
-    # A release digest is not a manifest entry, so keep the functional smoke test these
-    # attempts already ran while they were hashless. See
-    # prebuilt_needs_functional_validation.
+    # Digest-verified but not manifest-approved, so the smoke test stays on.
     for attempt in verified:
         attempt.unmanifested_digest = True
     return InstallReleasePlan(

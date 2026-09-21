@@ -62,11 +62,7 @@ ASSET_NAMES = (
 
 
 def _fixture_digest(name: str) -> str:
-    """A stand-in for the per-asset digest GitHub publishes on a real release.
-
-    direct_upstream_release_plan drops an attempt the release states no digest for,
-    so a fixture release without one selects nothing.
-    """
+    """Stand-in for the digest GitHub publishes; a fixture without one selects nothing."""
     return hashlib.sha256(name.encode()).hexdigest()
 
 

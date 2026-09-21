@@ -38,11 +38,7 @@ UPSTREAM_REPO = INSTALL_LLAMA_PREBUILT.UPSTREAM_REPO
 
 
 def _fixture_digest(name: str) -> str:
-    """A stable stand-in for the per-asset digest GitHub publishes on a real release.
-
-    direct_upstream_release_plan now drops an attempt the release states no digest for,
-    so a fixture release without one selects nothing.
-    """
+    """Stand-in for the digest GitHub publishes; a fixture without one selects nothing."""
     return hashlib.sha256(name.encode()).hexdigest()
 
 
@@ -4885,12 +4881,9 @@ class TestExactSourceAssetUrl:
 class TestDirectUpstreamRequiresAssetDigests:
     """The upstream planner must bind every attempt to a digest.
 
-    The fork path refuses an attempt no approved checksum covers. The upstream path used
-    to build every AssetChoice with expected_sha256 left at None and pair it with an
-    empty approved-checksums map, and download_file_verified treats a falsy digest as a
-    pass. The archive is then extracted, chmod 0o755'd and executed, so a release the
-    installer reroutes to by itself (Linux ARM64 Vulkan, and any --published-repo) got a
-    weaker integrity policy than the default one.
+    It used to leave expected_sha256 None, which download_file_verified treats as a pass,
+    so an archive the installer reroutes to by itself (Linux ARM64 Vulkan, any
+    --published-repo) was extracted, chmod 0o755'd and executed unverified.
     """
 
     TAG = "b9365"
@@ -4941,12 +4934,9 @@ class TestDirectUpstreamRequiresAssetDigests:
 class TestUpstreamDigestKeepsTheFunctionalSmokeTest:
     """Requiring a digest must not quietly disable the smoke test it replaces.
 
-    validate_prebuilt_choice skips the staged smoke test for any attempt carrying a
-    sha256, because an approved-manifest bundle is one Unsloth built and exercised.
-    Upstream attempts used to reach it with expected_sha256 None, so they always ran it.
-    Binding them to the release digest would have flipped that off for every upstream
-    install -- Linux ARM64 Vulkan, Intel, the pinned macOS tag, any --published-repo --
-    and a release digest proves the bytes, not that they run on this host.
+    validate_prebuilt_choice skips the test for any attempt carrying a sha256. Upstream
+    attempts reached it with None and so always ran it; binding them to a release digest
+    would have flipped that off for every upstream install.
     """
 
     TAG = "b9365"
@@ -5025,12 +5015,9 @@ class TestUpstreamDigestKeepsTheFunctionalSmokeTest:
     def test_probe_preresolution_agrees_with_the_validation_decision(self):
         """All three gates must read the same predicate.
 
-        The two probe gates decide whether to resolve the validation model UP FRONT.
-        Their comments say why it matters: the per-candidate handler catches Exception,
-        so a probe download failing lazily inside it reads as a bad bundle and demotes a
-        healthy GPU pick to CPU, re-downloading once per attempt. If a gate still tested
-        `expected_sha256 is None` while validation tested something wider, upstream
-        attempts would validate with an unresolved probe and hit exactly that.
+        A gate left on `expected_sha256 is None` while validation tests something wider
+        would validate upstream attempts with an unresolved probe, which the probe gates'
+        own comments say demotes a healthy GPU pick to CPU.
         """
         source = pathlib.Path(INSTALL_LLAMA_PREBUILT.__file__).read_text()
         stale = [
