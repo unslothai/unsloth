@@ -1656,4 +1656,4 @@ def test_an_explicitly_empty_companion_scope_is_not_recomputed():
     pinned._gguf_companion_roots_set = True
     # The path route's own guard, spelled exactly as it is at routes/inference.py.
     assert not (not pinned._gguf_companion_roots and not pinned._gguf_companion_roots_set)
-    assert (not unset._gguf_companion_roots and not unset._gguf_companion_roots_set)
+    assert not unset._gguf_companion_roots and not unset._gguf_companion_roots_set
