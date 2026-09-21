@@ -48,8 +48,6 @@ def unmasked(monkeypatch):
     return monkeypatch
 
 
-
-
 def test_a_leading_igpu_does_not_strand_the_discrete_card(unmasked):
     """The reported host: Raphael gfx1036 driving the display enumerates ahead of the
     RX 9060 XT. One arch picks the bundle, so the discrete card must win."""
@@ -107,8 +105,6 @@ def test_a_mask_this_resolver_cannot_read_is_still_an_explicit_choice(unmasked, 
     doing so: the user selected a device, so this is not the place to second-guess it."""
     unmasked.setenv("HIP_VISIBLE_DEVICES", value)
     assert ILP._pick_rocm_gfx_target(_rocminfo("gfx1036", "gfx1200")) == "gfx1036"
-
-
 
 
 def _choice(install_kind: str) -> "ILP.AssetChoice":
@@ -192,8 +188,6 @@ def test_only_a_flagged_marker_may_disagree_with_its_own_backend():
     assert ILP._marker_backend_fits_host(honest, host) is True
     assert ILP._marker_backend_fits_host(unflagged, host) is False
     assert ILP._marker_backend_fits_host(flagged, host) is True
-
-
 
 
 def test_an_unserved_preferred_arch_source_builds_rather_than_using_the_igpus_bundle():
