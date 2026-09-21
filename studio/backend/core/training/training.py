@@ -23,7 +23,7 @@ from core.training.account_jobs import (
     validate_job_paths,
     worker_alive,
 )
-from utils.account_context import account_thread, current_account
+from utils.account_context import account_thread, current_account, run_as
 import json as _json
 import math
 import multiprocessing as mp
@@ -44,6 +44,7 @@ from typing import Optional, Tuple, Any, Callable, Union, TYPE_CHECKING, Literal
 
 if TYPE_CHECKING:
     import matplotlib.pyplot as plt
+from hub.utils.hf_tokens import hf_token_arg
 from utils.hardware import get_device, prepare_gpu_selection
 from utils.native_path_leases import (
     native_path_secret_removed_for_child_start,
@@ -71,6 +72,9 @@ _STOP_TIMEOUT_S = _env_int("UNSLOTH_STUDIO_TRAINING_STOP_TIMEOUT_S", 600)
 _CANCEL_TIMEOUT_S = _env_int("UNSLOTH_STUDIO_TRAINING_CANCEL_TIMEOUT_S", 120)
 # Generous: is_run_finished already unwedges the UI, and a post-run wandb sync can legitimately take a while.
 _COMPLETE_EXIT_GRACE_S = _env_int("UNSLOTH_STUDIO_TRAINING_COMPLETE_EXIT_GRACE_S", 120)
+# Also bounded by the stop watchdog above: raising this past _STOP_TIMEOUT_S only waits longer
+# for a worker that gets force-terminated at the watchdog's cap anyway.
+_SHUTDOWN_STOP_TIMEOUT_S = _env_int("UNSLOTH_STUDIO_SHUTDOWN_STOP_TIMEOUT_S", 120)
 
 # A few short retries so a transient SQLite lock doesn't lose the terminal state.
 _DB_FINALIZE_RETRIES = 3
@@ -151,6 +155,16 @@ def _coerce_optional_bool(value, default: bool) -> bool:
         if normalized in ("false", "0", "no", "off", ""):
             return False
     return bool(value)
+
+
+def apply_save_strategy(config, save_steps_val):
+    # Save Steps 0 means "no checkpoints"; without an explicit strategy HF defaults to every 500 steps.
+    if save_steps_val and save_steps_val > 0:
+        config["save_steps"] = save_steps_val
+        config["save_strategy"] = "steps"
+    else:
+        config["save_strategy"] = "no"
+    return config
 
 
 def _coerce_optional_nonneg_float(name: str, value):
@@ -273,6 +287,7 @@ def _build_training_worker_config(values: dict[str, Any]) -> dict[str, Any]:
         "trust_remote_code": values.get("trust_remote_code", False),
         "approved_remote_code_fingerprint": values.get("approved_remote_code_fingerprint"),
         "subject": values.get("subject"),
+        "allow_ambient": values.get("allow_ambient", True),
         "gpu_ids": values.get("gpu_ids"),
         "s3_config": values.get("s3_config"),
         "disable_xet": values.get("disable_xet", False),
@@ -638,6 +653,7 @@ class TrainingProgress:
     status_message: str = "Ready to train"
     elapsed_seconds: Optional[float] = None
     eta_seconds: Optional[float] = None
+    session_start_step: int = 0
     grad_norm: Optional[float] = None
     num_tokens: Optional[int] = None
     eval_loss: Optional[float] = None
@@ -1036,6 +1052,10 @@ class _MLXTrainerAdapter:
                     self.training_progress.elapsed_seconds,
                 ),
                 eta_seconds = event.get("eta_seconds", self.training_progress.eta_seconds),
+                session_start_step = event.get(
+                    "session_start_step",
+                    self.training_progress.session_start_step,
+                ),
                 grad_norm = event.get("grad_norm", self.training_progress.grad_norm),
                 num_tokens = event.get("num_tokens", self.training_progress.num_tokens),
                 eval_loss = event.get("eval_loss", self.training_progress.eval_loss),
@@ -1683,6 +1703,9 @@ class TrainingBackend:
         self._pump_running = False
 
         config = _build_training_worker_config(kwargs)
+        hf_token = hf_token_arg(
+            config["hf_token"], allow_ambient_token = config.get("allow_ambient", True)
+        )
 
         _apply_cache_pins(config)
         from .provenance import initialize_resource_provenance
@@ -1697,7 +1720,7 @@ class TrainingBackend:
         gpu_ids = kwargs.get("gpu_ids")
         gpu_selection_kwargs = dict(
             model_name = config["model_name"],
-            hf_token = config["hf_token"] or None,
+            hf_token = hf_token,
             training_type = config["training_type"],
             load_in_4bit = config["load_in_4bit"],
             batch_size = config.get("batch_size", 4),
@@ -1745,7 +1768,7 @@ class TrainingBackend:
                 effective_training_load_in_4bit(
                     config,
                     config.get("model_snapshot_path") or config["model_name"],
-                    config.get("hf_token") or None,
+                    hf_token,
                 )
             with self._lock:
                 if not self._start_request_allows_spawn_locked(start_request_id, job_id):
@@ -1816,7 +1839,7 @@ class TrainingBackend:
                         # the worker would then train on past it holding the GPU.
                         if is_process_shutting_down():
                             logger.info(
-                                "Studio is shutting down; not starting training worker for %s",
+                                "Unsloth is shutting down; not starting training worker for %s",
                                 start_request_id,
                             )
                             return False
@@ -1833,7 +1856,7 @@ class TrainingBackend:
                         # adoption ran first, so the worker is in the sweep record for as
                         # long as it exists.
                         if is_process_shutting_down():
-                            raise RuntimeError("Studio is shutting down")
+                            raise RuntimeError("Unsloth is shutting down")
                     except Exception:
                         logger.error(
                             "Could not keep the training subprocess; terminating it",
@@ -2333,6 +2356,50 @@ class TrainingBackend:
                     if self.current_job_id == run_id:
                         self._run_finalized = False
 
+    def stop_for_shutdown(self, timeout: float = _SHUTDOWN_STOP_TIMEOUT_S) -> bool:
+        """Ask a live run to stop and save, then wait for the worker and for the pump's
+        terminal DB write. True once nothing is left to save; False if the stop was refused
+        or the save outlived ``timeout``, in which case the caller's force_terminate() ends it."""
+        with self._lock:
+            proc = self._proc
+            job_id = self.current_job_id
+            account = self._result_account
+        deadline = time.monotonic() + max(0.0, timeout)
+        if proc is None or not proc.is_alive() or not job_id or self.is_run_finished():
+            return self._await_run_record(proc, deadline)
+        # The signal path runs as the owner, which job_control refuses for a managed account's run.
+        if not run_as(account, self.stop_training, save = True, expected_job_id = job_id):
+            return False
+        logger.info("Shutdown: stopping training run %s and saving a checkpoint", job_id)
+        while time.monotonic() < deadline:
+            if not proc.is_alive() or self.is_run_finished():
+                return self._await_run_record(proc, deadline)
+            time.sleep(0.25)
+        logger.warning(
+            "Shutdown: training run %s did not finish saving within %.0fs", job_id, timeout
+        )
+        return False
+
+    def _await_run_record(self, proc: "Optional[mp.Process]", deadline: float) -> bool:
+        """Wait out the pump's terminal DB write, which lands after _complete_seen is set and can
+        outlast force_terminate's join when SQLite is contended. Exiting first leaves the row
+        running, which the next startup's orphan sweep rewrites to an error; the checkpoint and
+        its output_dir survive, the stopped status and the final metrics do not.
+
+        Only a worker that has exited is waited on, since the pump loops while one is alive. A run
+        whose worker lingers past its save still falls back to that join: telling a write that has
+        not started from one that started and failed needs a signal the finalize paths do not
+        publish, and adding one is a change to terminal-state handling, not to shutdown."""
+        while time.monotonic() < deadline:
+            if proc is not None and proc.is_alive():
+                return True
+            pump = self._pump_thread
+            if pump is None or not pump.is_alive():
+                return True
+            time.sleep(0.25)
+        logger.warning("Shutdown: the training run record was still being written at the deadline")
+        return True
+
     def force_terminate(self, target_proc: "Optional[mp.Process]" = None) -> None:
         """Force-kill the training subprocess so state can be reset immediately. With
         ``target_proc``, terminate only that handle and no-op if a new run has replaced
@@ -2527,7 +2594,7 @@ class TrainingBackend:
                         # this respawn after the shutdown sweep has taken its snapshot.
                         if is_process_shutting_down():
                             raise RuntimeError(
-                                "Studio is shutting down; not respawning the training worker"
+                                "Unsloth is shutting down; not respawning the training worker"
                             )
                         new_proc.start()
                         adopt_pid(new_proc.pid)
@@ -2550,7 +2617,7 @@ class TrainingBackend:
                                     "could not reap the new training worker", exc_info = True
                                 )
                             raise RuntimeError(
-                                "Studio is shutting down; not respawning the training worker"
+                                "Unsloth is shutting down; not respawning the training worker"
                             )
                 except Exception:
                     logger.error("Failed to respawn training subprocess", exc_info = True)
@@ -3002,6 +3069,9 @@ class TrainingBackend:
                 self._progress.total_steps = event.get("total_steps", self._progress.total_steps)
                 self._progress.elapsed_seconds = event.get("elapsed_seconds")
                 self._progress.eta_seconds = event.get("eta_seconds")
+                self._progress.session_start_step = event.get(
+                    "session_start_step", self._progress.session_start_step
+                )
                 self._progress.grad_norm = event.get("grad_norm")
                 self._progress.num_tokens = event.get("num_tokens")
                 self._progress.eval_loss = event.get("eval_loss")

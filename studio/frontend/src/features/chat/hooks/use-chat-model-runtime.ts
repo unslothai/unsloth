@@ -1,6 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import {
+  CACHE_MISS_DOWNLOAD_DESCRIPTION,
+  EMPTY_CACHE_MISS_WATCH,
+  watchCacheMissDownload,
+} from "../lib/cache-miss-download";
 import { mlxRuntimeStateFrom } from "../lib/mlx-runtime-state";
 import {
   type ServerTuningValues,
@@ -10,6 +15,10 @@ import {
 } from "../lib/server-tuning-fields";
 import { createElement, useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "@/lib/toast";
+import {
+  isBackendDownForDesktopUpdate,
+  isSilencedDesktopUpdateFailure,
+} from "@/lib/desktop-update-activity";
 import { subscribeModelLifecycle } from "@/lib/model-lifecycle-events";
 import {
   type TransferSample,
@@ -33,7 +42,7 @@ import {
 import { consumeNativePathToken } from "@/features/native-intents/api";
 // eslint-disable-next-line no-restricted-imports -- Avoid the hub barrel's React and download-manager exports.
 import {
-  isOllamaLinkPath,
+  isOllamaModelId,
   modelDisplayName,
 } from "@/features/hub/lib/model-identity";
 // eslint-disable-next-line no-restricted-imports -- Avoid the hub barrel's React and download-manager exports.
@@ -61,21 +70,29 @@ import {
 } from "../api/chat-api";
 import { formatEta, formatRate } from "../utils/format-transfer";
 import { confirmStopRunningChatsIfNeeded } from "../utils/confirm-stop-running-chats";
-import { requestLocalPromptQueueStop } from "../utils/prompt-queue-boundary";
+import {
+  requestLocalPromptQueueStop,
+  notifyLocalPromptQueueLoadFailed,
+} from "../utils/prompt-queue-boundary";
 import { cancelPreStreamRunReservations } from "../utils/pre-stream-run-reservation";
-import type { ModelLifecycleLease } from "../utils/model-lifecycle-gate";
+import {
+  chatModelLifecycleGate,
+  type ModelLifecycleLease,
+} from "../utils/model-lifecycle-gate";
 import {
   GPU_LAYERS_AUTO,
   isLocalModelPath,
   loadedGpuMemoryFields,
   noteLoadedModelReasoningMode,
   persistGpuMemoryModeOnLoad,
+  pinHoldsLiveEffort,
   readPersistedGpuMemoryMode,
   readPersistedSpeculativeType,
   reconcilePersistedGpuIds,
   resolvePreserveThinkingOnLoad,
   resolveToolsEnabledOnLoad,
   saveSpeculativeType,
+  takeEffortDisplacedByPin,
   useChatRuntimeStore,
   type LoadingModelPick,
   type ReasoningEffort,
@@ -156,6 +173,11 @@ export type SelectedModelInput = {
   loadingDescription?: string;
   isDownloaded?: boolean;
   expectedBytes?: number;
+  downloadPresentation?: {
+    label: string;
+    filename: string;
+    expectedBytes: number;
+  };
   forceReload?: boolean;
   nativePathToken?: string;
   nativePathExpiresAtMs?: number | null;
@@ -199,13 +221,14 @@ async function readServerWideReloadHints(): Promise<boolean> {
   return serverWideReloadRequired({ modelMemory, vramBudget });
 }
 
-/** Placement is a set: the backend narrows and reorders it at fit time. */
+/** Placement is an ordered list: position decides which card the model is given
+ *  first, so the same set in a different order is a different placement. */
 function sameGpuSelection(
   left: readonly number[] | null | undefined,
   right: readonly number[] | null | undefined,
 ): boolean {
-  const a = [...(left ?? [])].sort((x, y) => x - y);
-  const b = [...(right ?? [])].sort((x, y) => x - y);
+  const a = left ?? [];
+  const b = right ?? [];
   return a.length === b.length && a.every((id, index) => id === b[index]);
 }
 
@@ -463,6 +486,7 @@ async function syncInferenceStatusToStore(options?: {
   externalChatSlotLoad?: boolean;
 }): Promise<void> {
   const signal = options?.signal;
+  const downWhenIssued = isBackendDownForDesktopUpdate();
   const includeLoras = options?.includeLoras ?? true;
   const generation = ++syncGeneration;
   const loraGeneration = includeLoras ? ++loraSyncGeneration : null;
@@ -607,6 +631,8 @@ async function syncInferenceStatusToStore(options?: {
     // A superseded refresh reports nothing, or a stale failure would raise a toast about a read
     // whose answer would have been discarded. The LoRA inventory settles from its own request.
     if (signal?.aborted || superseded()) return;
+    // The update screen already reports the backend it stopped.
+    if (isSilencedDesktopUpdateFailure(error, downWhenIssued)) return;
     const message =
       error instanceof Error ? error.message : "Failed to load models";
     setModelsError(message);
@@ -787,6 +813,7 @@ export function useChatModelRuntime() {
   const cancelLoading = useCallback(() => {
     const model = loadingModelRef.current;
     if (!model) return;
+    notifyLocalPromptQueueLoadFailed(loadLifecycleLeaseRef.current);
     loadAbortRef.current?.abort();
     loadAbortRef.current = null;
     loadingModelRef.current = null;
@@ -1090,11 +1117,10 @@ export function useChatModelRuntime() {
         }
       }
 
-      // Block queue materialization before taking the cancellation snapshot: a queue that appears while
-      // the dialog is open must not be stopped without having been included in the confirmation.
+      // Hold the lifecycle lease through confirmation and loading.
       const lifecycleLease = useChatRuntimeStore
         .getState()
-        .beginModelLoading();
+        .beginModelLoading("preparing");
       if (lifecycleLease === null) {
         restorePreviousConfig();
         toast.info("A model is loading", {
@@ -1221,7 +1247,7 @@ export function useChatModelRuntime() {
         // token must not gate a local or cached-LoRA load. An Ollama row's id is an opaque
         // `ollama-manifest:` reference rather than a path, so isLocalModelPath does not recognise it.
         const mayReachHub =
-          !isLocal && !isOllamaLinkPath(modelId) && nativePathToken == null;
+          !isLocal && !isOllamaModelId(modelId) && nativePathToken == null;
         if (mayReachHub) {
           const preparedToken = await prepareHfTokenForUse(hfToken);
           if (!preparedToken.proceed) {
@@ -1247,6 +1273,14 @@ export function useChatModelRuntime() {
             typeof selection !== "string" && selection.previousConfig
               ? (selection.previousConfig.nParallel ?? null)
               : useChatRuntimeStore.getState().nParallel;
+          const previousReasoningBudget =
+            typeof selection !== "string" && selection.previousConfig
+              ? selection.previousConfig.reasoningBudget
+              : useChatRuntimeStore.getState().reasoningBudget;
+          const previousReasoningBudgetMessage =
+            typeof selection !== "string" && selection.previousConfig
+              ? selection.previousConfig.reasoningBudgetMessage
+              : useChatRuntimeStore.getState().reasoningBudgetMessage;
           const previousNBatch =
             typeof selection !== "string" && selection.previousConfig
               ? (selection.previousConfig.nBatch ?? null)
@@ -1424,6 +1458,12 @@ export function useChatModelRuntime() {
             pendingLoadConfig?.specDraftNMax ?? stateBeforeUnload.specDraftNMax;
           let loadNParallel =
             pendingLoadConfig?.nParallel ?? stateBeforeUnload.nParallel;
+          let loadReasoningBudget =
+            pendingLoadConfig?.reasoningBudget ??
+            stateBeforeUnload.reasoningBudget;
+          let loadReasoningBudgetMessage =
+            pendingLoadConfig?.reasoningBudgetMessage ??
+            stateBeforeUnload.reasoningBudgetMessage;
           // No store fallback and no reset with the rest below: undefined means "this config never read
           // them", and the route preserves the stored flags when the field is omitted, so a fallback
           // would clear flags the user set elsewhere.
@@ -1471,6 +1511,12 @@ export function useChatModelRuntime() {
             const validateNParallel = resetsPerModelSettings
               ? (pendingLoadConfig?.nParallel ?? null)
               : loadNParallel;
+            const validateReasoningBudget = resetsPerModelSettings
+              ? (pendingLoadConfig?.reasoningBudget ?? -1)
+              : loadReasoningBudget;
+            const validateReasoningBudgetMessage = resetsPerModelSettings
+              ? (pendingLoadConfig?.reasoningBudgetMessage ?? "")
+              : loadReasoningBudgetMessage;
             const validateNBatch = resetsPerModelSettings
               ? (pendingLoadConfig?.nBatch ?? null)
               : loadNBatch;
@@ -1529,6 +1575,12 @@ export function useChatModelRuntime() {
                     // when it fits.
                     gpu_layers: validateGpuLayers,
                     n_parallel: validateNParallel,
+                    reasoning_budget: targetIsDiffusion
+                      ? -1
+                      : validateReasoningBudget,
+                    reasoning_budget_message: targetIsDiffusion
+                      ? ""
+                      : validateReasoningBudgetMessage,
                     // omitted when blank, like the load payload below
                     ...(validateNBatch != null
                       ? { n_batch: validateNBatch }
@@ -1628,6 +1680,12 @@ export function useChatModelRuntime() {
                 // Per-model too: a different model follows the server default unless its staged config overrides it.
                 nParallel: null,
                 loadedNParallel: null,
+                reasoningBudget: -1,
+                loadedReasoningBudget: null,
+                loadedReasoningBudgetRequested: null,
+                reasoningBudgetMessage: "",
+                loadedReasoningBudgetMessage: null,
+                loadedReasoningBudgetMessageRequested: null,
                 nBatch: null,
                 loadedNBatch: null,
                 nUbatch: null,
@@ -1650,6 +1708,9 @@ export function useChatModelRuntime() {
                   : persistedSpeculativeType;
               loadSpecDraftNMax = pendingLoadConfig?.specDraftNMax ?? null;
               loadNParallel = pendingLoadConfig?.nParallel ?? null;
+              loadReasoningBudget = pendingLoadConfig?.reasoningBudget ?? -1;
+              loadReasoningBudgetMessage =
+                pendingLoadConfig?.reasoningBudgetMessage ?? "";
               loadNBatch = pendingLoadConfig?.nBatch ?? null;
               loadNUbatch = pendingLoadConfig?.nUbatch ?? null;
               loadServerTuning = {
@@ -1736,9 +1797,11 @@ export function useChatModelRuntime() {
             );
             const effectiveChatTemplateOverride =
               loadChatTemplateOverride?.trim() ? loadChatTemplateOverride : null;
-            // A queue can be created while the preliminary unload is pending, so stop a second time at the
-            // final boundary.
+            // Invalidate factories started before the final loading boundary.
             requestLocalPromptQueueStop();
+            if (lifecycleLease !== null) {
+              chatModelLifecycleGate.markLoading(lifecycleLease);
+            }
             const loadResponse = await loadModel({
               model_path: loadPath,
               nativePathLease: loadNativePathLease,
@@ -1756,6 +1819,10 @@ export function useChatModelRuntime() {
               spec_draft_n_max: loadSpecDraftNMax,
               // GGUF-only: slots mean nothing for a transformers load.
               n_parallel: isGguf ? loadNParallel : null,
+              reasoning_budget:
+                isGguf && !targetIsDiffusion ? loadReasoningBudget : -1,
+              reasoning_budget_message:
+                isGguf && !targetIsDiffusion ? loadReasoningBudgetMessage : "",
               // Sent only once known, and [] is the explicit "launch with none": the flags are llama-server's,
               // so neither a transformers load nor a diffusion GGUF carries them.
               ...(isGguf && !targetIsDiffusion && loadLlamaExtraArgs !== undefined
@@ -1905,7 +1972,12 @@ export function useChatModelRuntime() {
               loadResponse.reasoning_effort_levels.length > 0
                 ? (loadResponse.reasoning_effort_levels as ReasoningEffort[])
                 : (["low", "medium", "high"] as const);
-            const existingReasoningEffort = useChatRuntimeStore.getState().reasoningEffort;
+            // The chat's own level when the model this replaces was running a pin's, for the
+            // reason applyActiveModelStatusToStore gives at its own clamp: a pin is one model's,
+            // and everything between the pick and this response can abort without loading.
+            const existingReasoningEffort =
+              (pinHoldsLiveEffort() ? takeEffortDisplacedByPin() : null) ??
+              useChatRuntimeStore.getState().reasoningEffort;
             const clampedReasoningEffort =
               reasoningStyle === "enable_thinking_effort" ||
               reasoningStyle === "reasoning_effort"
@@ -1967,6 +2039,36 @@ export function useChatModelRuntime() {
               // "server default" control.
               nParallel: committedSlots,
               loadedNParallel: committedSlots,
+              reasoningBudget:
+                (loadResponse.is_gguf ?? false) &&
+                !(loadResponse.is_diffusion ?? false)
+                  ? (loadResponse.reasoning_budget ?? loadReasoningBudget)
+                  : -1,
+              loadedReasoningBudget:
+                (loadResponse.is_gguf ?? false) &&
+                !(loadResponse.is_diffusion ?? false)
+                  ? (loadResponse.reasoning_budget ?? loadReasoningBudget)
+                  : -1,
+              reasoningBudgetMessage:
+                (loadResponse.is_gguf ?? false) &&
+                !(loadResponse.is_diffusion ?? false)
+                  ? (loadResponse.reasoning_budget_message ??
+                    loadReasoningBudgetMessage)
+                  : "",
+              loadedReasoningBudgetMessage:
+                (loadResponse.is_gguf ?? false) &&
+                !(loadResponse.is_diffusion ?? false)
+                  ? (loadResponse.reasoning_budget_message ??
+                    loadReasoningBudgetMessage)
+                  : "",
+              loadedReasoningBudgetRequested:
+                loadResponse.is_gguf && !loadResponse.is_diffusion
+                  ? (loadResponse.requested_reasoning_budget ?? loadReasoningBudget)
+                  : -1,
+              loadedReasoningBudgetMessageRequested:
+                loadResponse.is_gguf && !loadResponse.is_diffusion
+                  ? (loadResponse.requested_reasoning_budget_message ?? loadReasoningBudgetMessage)
+                  : "",
               nBatch: committedNBatch,
               loadedNBatch: committedNBatch,
               ...committedServerTuning,
@@ -2048,7 +2150,8 @@ export function useChatModelRuntime() {
               });
             }
           } catch (error) {
-            // Skip rollback if the user cancelled: the model is already being unloaded.
+            notifyLocalPromptQueueLoadFailed(lifecycleLease);
+            // Cancellation already handles unloading.
             if (abortCtrl.signal.aborted) throw error;
             if (previousWasUnloaded && previousCheckpoint) {
               let rollbackNativePathLease: string | undefined;
@@ -2087,6 +2190,10 @@ export function useChatModelRuntime() {
                   spec_draft_n_max:
                     stateBeforeUnload.loadedSpecDraftNMax,
                   n_parallel: stateBeforeUnload.loadedNParallel,
+                  reasoning_budget:
+                    stateBeforeUnload.loadedReasoningBudgetRequested ?? -1,
+                  reasoning_budget_message:
+                    stateBeforeUnload.loadedReasoningBudgetMessageRequested ?? "",
                   // omit unset fields: a null counts as set and would strip the previous server's extras
                   ...(stateBeforeUnload.loadedNBatch != null
                     ? { n_batch: stateBeforeUnload.loadedNBatch }
@@ -2143,6 +2250,20 @@ export function useChatModelRuntime() {
                   // Control keeps its intent; only the baseline takes the echo.
                   nParallel: previousNParallel,
                   loadedNParallel: stateBeforeUnload.loadedNParallel ?? null,
+                  reasoningBudget: previousReasoningBudget,
+                  loadedReasoningBudget:
+                    rollbackResponse.reasoning_budget ?? -1,
+                  reasoningBudgetMessage: previousReasoningBudgetMessage,
+                  loadedReasoningBudgetMessage:
+                    rollbackResponse.reasoning_budget_message ?? "",
+                  loadedReasoningBudgetRequested:
+                    rollbackResponse.requested_reasoning_budget ??
+                    stateBeforeUnload.loadedReasoningBudgetRequested ??
+                    -1,
+                  loadedReasoningBudgetMessageRequested:
+                    rollbackResponse.requested_reasoning_budget_message ??
+                    stateBeforeUnload.loadedReasoningBudgetMessageRequested ??
+                    "",
                   nBatch: previousNBatch,
                   loadedNBatch: stateBeforeUnload.loadedNBatch ?? null,
                   nUbatch: previousNUbatch,
@@ -2279,6 +2400,22 @@ export function useChatModelRuntime() {
 
         let downloadComplete = isDownloaded || isCachedLora;
 
+  // A load that believes the weights are cached can still turn into a download (#9094): the
+  // backend re-fetches a blob it judged unsafe to resume. MOVEMENT is the only proof accepted,
+  // since bytes below the expected total is the ordinary state of a partial revision.
+        const watchForCacheMiss =
+          isDownloaded && !isLocal && nativePathToken == null && !isOllamaModelId(modelId);
+        const cacheMissDescription = [
+          currentCheckpoint ? "Switching models." : null,
+          extraLoadingDescription ?? null,
+          CACHE_MISS_DOWNLOAD_DESCRIPTION,
+        ]
+          .filter(Boolean)
+          .join(" ");
+        let activeLoadingDescription = loadingDescription;
+        let cacheMissWatch = EMPTY_CACHE_MISS_WATCH;
+        let cacheMissDownload = false;
+
         const pollDownload = async () => {
           if (abortCtrl.signal.aborted || !loadingModelRef.current) {
             if (progressInterval) clearInterval(progressInterval);
@@ -2323,7 +2460,7 @@ export function useChatModelRuntime() {
                 ...modelLoadToastOptions(
                   renderLoadDescription(
                     "Downloading model…",
-                    loadingDescription,
+                    activeLoadingDescription,
                     pct,
                     progressLabel,
                   ),
@@ -2339,12 +2476,27 @@ export function useChatModelRuntime() {
               const est = estimate(dlSamples, prog.downloaded_bytes, 0);
               const rateSuffix =
                 est.stable ? ` • ${formatRate(est.rate)}` : "";
+              const unknownTotalLabel = `${dlGb.toFixed(1)} GB downloaded${rateSuffix}`;
               // Inline-status-only state; skip the chat-page re-render unless it is shown.
               if (loadToastDismissedRef.current) {
                 setLoadProgress({
                   percent: null,
-                  label: `${dlGb.toFixed(1)} GB downloaded${rateSuffix}`,
+                  label: unknownTotalLabel,
                   phase: "downloading",
+                });
+              } else {
+                // The toast is UP and would otherwise say "Loading cached model into
+                // memory" for the whole download. A missing total is supported, not an error.
+                toast(null, {
+                  id: toastId,
+                  ...modelLoadToastOptions(
+                    renderLoadDescription(
+                      "Downloading model…",
+                      activeLoadingDescription,
+                      null,
+                      unknownTotalLabel,
+                    ),
+                  ),
                 });
               }
             } else if (prog.progress >= 1 && hasShownProgress) {
@@ -2427,12 +2579,44 @@ export function useChatModelRuntime() {
           }
         };
 
+        /** Whether this "cached" load has quietly become a download. */
+        const cacheMissDownloadStarted = async (): Promise<boolean> => {
+          try {
+            const reading = await getDownloadProgress(modelId, hfToken);
+              // Re-read AFTER the await, as pollDownload does: the load can finish or be
+              // cancelled in flight, and `finally` then calls resetLoadingUi().
+            if (abortCtrl.signal.aborted || !loadingModelRef.current) return false;
+            const verdict = watchCacheMissDownload(cacheMissWatch, reading);
+            cacheMissWatch = verdict.watch;
+            if (!verdict.started) return false;
+            cacheMissDownload = true;
+              // pollDownload's completion branch is gated on it; leaving it false leaves
+              // `downloadComplete` false forever and suppresses later progress.
+            hasShownProgress = true;
+            downloadComplete = false;
+            activeLoadingDescription = cacheMissDescription;
+            setLoadProgress({
+              percent: verdict.percent,
+              label: "Downloading the rest of the model",
+              phase: "downloading",
+            });
+            return true;
+          } catch {
+            // Ignore polling errors; the next poll asks again.
+            return false;
+          }
+        };
+
         const pollProgress = async () => {
           if (!downloadComplete) {
             await pollDownload();
-          } else {
-            await pollLoad();
+            return;
           }
+          if (watchForCacheMiss && !cacheMissDownload && (await cacheMissDownloadStarted())) {
+            await pollDownload();
+            return;
+          }
+          await pollLoad();
         };
 
         let hasShownProgress = false;
@@ -2544,9 +2728,10 @@ export function useChatModelRuntime() {
     }
     let lifecycleLease: ModelLifecycleLease | null = null;
     try {
-      // Block queue materialization before taking the confirmation snapshot, or a queue can appear
-      // while the dialog is open and be stopped without the user confirming it.
-      lifecycleLease = useChatRuntimeStore.getState().beginModelLoading();
+      // Hold the lifecycle lease through confirmation and unloading.
+      lifecycleLease = useChatRuntimeStore
+        .getState()
+        .beginModelLoading("unloading");
       if (lifecycleLease === null) {
         return false;
       }

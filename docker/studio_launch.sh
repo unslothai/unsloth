@@ -2,7 +2,7 @@
 # Default CMD of the full Unsloth image (Dockerfile.studio).
 #
 # Bootstraps the three services managed by supervisord:
-#   studio   port 8000   user unsloth; password from UNSLOTH_STUDIO_PASSWORD, or
+#   studio   port UNSLOTH_STUDIO_PORT (8000)   user unsloth; password from UNSLOTH_STUDIO_PASSWORD, or
 #                        the generated one printed in `docker logs` (studio-password)
 #   jupyter  port 8888   password from JUPYTER_PASSWORD, or a random one
 #                        printed in `docker logs` when unset
@@ -16,9 +16,40 @@
 #   PUBLIC_KEY/SSH_KEY OpenSSH public key for root login; sshd stays disabled
 #                      when neither is set (nothing to authenticate with --
 #                      password login is never enabled for root)
+#   UNSLOTH_STUDIO_LAUNCH_CHECK_ONLY=1  exit 0 right after the settings checks, before
+#                      anything is written (tests only)
 set -euo pipefail
 
 export JUPYTER_PORT="${JUPYTER_PORT:-8888}"
+export UNSLOTH_STUDIO_PORT="${UNSLOTH_STUDIO_PORT:-8000}"
+# at most five significant digits, or bash arithmetic wraps 18446744073709551617 to 1
+if ! [[ "$UNSLOTH_STUDIO_PORT" =~ ^0*[0-9]{1,5}$ ]] || (( 10#$UNSLOTH_STUDIO_PORT < 1 || 10#$UNSLOTH_STUDIO_PORT > 65535 )); then
+    printf "\033[1;31mERROR:\033[0m UNSLOTH_STUDIO_PORT=%s is not a port number (1-65535).\n" "$UNSLOTH_STUDIO_PORT" >&2
+    exit 1
+fi
+UNSLOTH_STUDIO_PORT=$(( 10#$UNSLOTH_STUDIO_PORT ))
+if [[ -n "${SSH_KEY:-${PUBLIC_KEY:-}}" ]] && (( UNSLOTH_STUDIO_PORT == 22 )); then
+    printf "\033[1;31mERROR:\033[0m UNSLOTH_STUDIO_PORT=22 is sshd's port inside the container when SSH_KEY or PUBLIC_KEY is set.\n" >&2
+    exit 1
+fi
+# JupyterLab starts first and wins the bind, so Studio silently falls back to an unpublished
+# port. Compared as traitlets does, via int(): whitespace, leading zeros, a leading + and
+# underscores ("08000", " 8000", "8_000") all bind 8000.
+jupyter_port_digits="${JUPYTER_PORT//[[:space:]_]/}"
+jupyter_port_digits="${jupyter_port_digits#+}"
+if [[ "$jupyter_port_digits" =~ ^[0-9]+$ ]] && (( 10#$jupyter_port_digits == UNSLOTH_STUDIO_PORT )); then
+    printf "\033[1;31mERROR:\033[0m JUPYTER_PORT=%s is Unsloth Studio's port inside the container (UNSLOTH_STUDIO_PORT).\n" "$UNSLOTH_STUDIO_PORT" >&2
+    printf "       Leave JupyterLab on 8888 and map the host side instead: -p 9000:8888\n" >&2
+    exit 1
+fi
+export UNSLOTH_STUDIO_SHUTDOWN_STOP_TIMEOUT_S="${UNSLOTH_STUDIO_SHUTDOWN_STOP_TIMEOUT_S:-120}"
+if ! [[ "$UNSLOTH_STUDIO_SHUTDOWN_STOP_TIMEOUT_S" =~ ^[0-9]+$ ]]; then
+    printf "\033[1;31mERROR:\033[0m UNSLOTH_STUDIO_SHUTDOWN_STOP_TIMEOUT_S=%s is not a number of seconds.\n" "$UNSLOTH_STUDIO_SHUTDOWN_STOP_TIMEOUT_S" >&2
+    exit 1
+fi
+export UNSLOTH_STUDIO_STOP_WAIT_S=$(( 10#$UNSLOTH_STUDIO_SHUTDOWN_STOP_TIMEOUT_S + 30 ))
+# tests run this on the host; everything past here writes /etc/profile.d, /root/.jupyter, /workspace
+[[ "${UNSLOTH_STUDIO_LAUNCH_CHECK_ONLY:-0}" == 1 ]] && exit 0
 export UNSLOTH_STUDIO_HOME="${UNSLOTH_STUDIO_HOME:-/opt/unsloth-studio}"
 export UNSLOTH_JUPYTER_CLOUDFLARE="${UNSLOTH_JUPYTER_CLOUDFLARE:-0}"
 
@@ -76,10 +107,17 @@ EOF
         UNSLOTH_VIEW_REL="${_view_rel}" UNSLOTH_VIEW_DIR="${_view_dir}" \
         python - >> "${JUPYTER_CONFIG_DIR}/jupyter_lab_config.py" <<'PY'
 import os
+import urllib.parse
 rel  = os.environ["UNSLOTH_VIEW_REL"]
 view = os.environ["UNSLOTH_VIEW_DIR"]
-print(f"c.ServerApp.default_url = {'/lab/tree/' + rel!r}")
-print(f"c.LabApp.default_url = {'/lab/tree/' + rel!r}")
+# default_url is a URL, not a path: the default view directory has a space in it,
+# and unencoded it lands in the banner Jupyter prints as
+# "http://host:8888/lab/tree/Unsloth Notebooks", which is not copy-pasteable and
+# is not a legal request target. Measured: curl refuses the raw form outright and
+# gets 302 from the encoded one. quote() leaves "/" alone, so subdirectories keep working.
+url = "/lab/tree/" + urllib.parse.quote(rel)
+print(f"c.ServerApp.default_url = {url!r}")
+print(f"c.LabApp.default_url = {url!r}")
 print(f"c.ServerApp.preferred_dir = {view!r}")
 PY
     fi
@@ -123,12 +161,12 @@ elif [[ -n "${UNSLOTH_STUDIO_PASSWORD:-}" ]]; then
     STUDIO_NOTE="user unsloth, password from UNSLOTH_STUDIO_PASSWORD env"
     UNSLOTH_STUDIO_PASSWORD_STATE=initial
 else
-    STUDIO_NOTE="user unsloth, generated password printed below once Studio is up"
+    STUDIO_NOTE="user unsloth, generated password printed below once Unsloth Studio is up"
     UNSLOTH_STUDIO_PASSWORD_STATE=generated
 fi
 unset UNSLOTH_STUDIO_PASSWORD
 export UNSLOTH_STUDIO_PASSWORD_STATE  # read by unsloth-studio-password
-echo "Unsloth Studio  -> http://localhost:8000   (${STUDIO_NOTE})"
+echo "Unsloth Studio  -> http://localhost:${UNSLOTH_STUDIO_PORT}   (${STUDIO_NOTE})"
 echo "JupyterLab      -> http://localhost:${JUPYTER_PORT}   (${JUPYTER_NOTE})"
 if [[ "${UNSLOTH_JUPYTER_CLOUDFLARE}" == "1" ]]; then
     echo "JupyterLab tunnel-> enabled; public trycloudflare URL appears below once it is up"

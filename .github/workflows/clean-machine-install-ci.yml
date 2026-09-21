@@ -54,6 +54,9 @@ on:
       - 'studio/setup.ps1'
       - 'studio/setup.bat'
       - 'studio/install_python_stack.py'
+      # The wsl job runs its install inside this watcher, so a change to it changes what that
+      # job can detect.
+      - '.github/scripts/Watch-ForCompiler.ps1'
       # setup.sh (727) and setup.ps1 (2343, 3630, 3916) call these directly and the
       # overlay makes them THIS ref's code, so they decide whether a clean machine gets
       # a native prebuilt or a toolchain-dependent fallback.
@@ -85,6 +88,7 @@ on:
       - 'studio/setup.ps1'
       - 'studio/setup.bat'
       - 'studio/install_python_stack.py'
+      - '.github/scripts/Watch-ForCompiler.ps1'
       - 'studio/install_*_prebuilt.py'
       - 'studio/prebuilt_core.py'
       - 'studio/install_manifest.py'
@@ -936,6 +940,58 @@ jobs:
           # A freshly imported rootfs is genuinely bare: the clean machine, not a simulation.
           wsl -d unsloth-ci -- sh -c 'for t in curl wget git gcc cmake python3 sudo; do printf "%-8s %s\n" "$t" "$(command -v $t || echo ABSENT)"; done'
 
+      - name: Enable process creation auditing, and prove the watcher sees a real compile
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          # Watch-ForCompiler.ps1 unions two detectors, and its 4688 half needs the caller to turn
+          # auditing on -- its no-match path returns an empty compiler list whenever the Security
+          # log merely reads clean. Without this step that half is silently dead here, so a compile
+          # the FileSystemWatcher missed would be reported as "no compiler process" rather than as
+          # "not measured". windows-no-compiler-ci.yml enables the same two settings.
+          auditpol /set /subcategory:"Process Creation" /success:enable | Out-Null
+          $auditKey = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System\Audit'
+          New-Item -Path $auditKey -Force | Out-Null
+          New-ItemProperty -Path $auditKey -Name 'ProcessCreationIncludeCmdLine_Enabled' `
+              -Value 1 -PropertyType DWord -Force | Out-Null
+
+          # Large enough that the install's own process noise cannot roll the watched window off
+          # the end of the log.
+          wevtutil sl Security /ms:268435456
+
+          $state = auditpol /get /subcategory:"Process Creation"
+          $state | Tee-Object -FilePath logs/auditpol.txt
+          # Out-String first: auditpol returns an array, and -notmatch on an array filters instead
+          # of testing, so the surviving header lines make any array truthy.
+          if (($state | Out-String) -notmatch 'Process Creation\s+Success') {
+              Write-Host '::error::process creation auditing did not turn on; this lane cannot measure whether a compiler ran'
+              exit 1
+          }
+
+          # A machine-policy override can leave auditpol reporting Success while no 4688 is written,
+          # and a clean run looks identical to an unmeasured one. So compile something on purpose
+          # and require both halves to see it before any clean verdict below is believed.
+          . "$env:GITHUB_WORKSPACE\.github\scripts\Watch-ForCompiler.ps1"
+          $control = Invoke-WithCompilerWatch -Name 'wsl-control' -EvidenceRoot "$PWD/logs" -Action {
+              # The only Add-Type in this lane, here to make the detector fire.
+              Add-Type -TypeDefinition 'public static class UnslothWslCompilerProbe { public static int N() { return 1; } }'
+          }
+          # BOTH halves, because the install below trusts both. Checking only the process half left
+          # a FileSystemWatcher that never attached, or stopped reporting creations, looking exactly
+          # like a run where no library was dropped -- and $seen.TempLibraries is the half the
+          # Bitdefender report in #10540 actually keyed on. windows-no-compiler-ci.yml validates
+          # both for the same reason.
+          if (-not $control.Compilers) {
+              Write-Host '::error::the positive control compiled a type and no compiler process was recorded; a clean result from this lane would mean nothing'
+              exit 1
+          }
+          if (-not $control.TempLibraries) {
+              Write-Host '::error::the positive control compiled a type and no dropped library was recorded, so the filesystem half of the watch is not working; an empty TempLibraries result from the install below would mean nothing'
+              exit 1
+          }
+          Write-Host "positive control: compiler seen ($($control.Compilers -join ', ')) and library seen ($($control.TempLibraries -join ', '))"
+
       - name: Install inside WSL, piped exactly as documented
         shell: pwsh
         run: |
@@ -958,10 +1014,34 @@ jobs:
             Write-Host "installer source in WSL: $wslPath"
             wsl -d unsloth-ci -u root -- cp "$wslPath" /root/install.sh
           }
-          # Piped, the `curl ... | sh` shape, so an early exit still exposes the broken pipe.
-          wsl -d unsloth-ci -u root -- sh -c 'cd /root && cat install.sh | sh' 2>&1 | Tee-Object -FilePath logs/wsl-install.log
-          $installRc = $LASTEXITCODE
+          # Watched LIVE while it runs, not inspected afterwards. The shortcut path runs
+          # powershell.exe on the Windows side, so a compile would happen here, and CodeDom deletes
+          # its whole intermediate directory once the assembly is loaded -- Watch-ForCompiler.ps1
+          # records that a before-and-after listing "saw nothing at all while 4688 recorded
+          # csc.exe". A post-hoc search for .cmdline files therefore cannot fail for the case this
+          # lane exists to catch, and a control that plants persistent files only proves the search
+          # can traverse a directory.
+          . "$env:GITHUB_WORKSPACE\.github\scripts\Watch-ForCompiler.ps1"
+          $seen = Invoke-WithCompilerWatch -Name 'wsl-install' -EvidenceRoot "$PWD/logs" -Action {
+            # Piped, the `curl ... | sh` shape, so an early exit still exposes the broken pipe.
+            wsl -d unsloth-ci -u root -- sh -c 'cd /root && cat install.sh | sh' 2>&1 |
+              Tee-Object -FilePath logs/wsl-install.log
+            $global:installRc = $LASTEXITCODE
+          }
+          $installRc = $global:installRc
           Write-Host "installer exit: $installRc"
+          if ($seen.Compilers) {
+            Write-Host "::error::a C# compiler ran during the WSL install: $($seen.Compilers -join ', ')"
+            Write-Host '::error::install.sh must declare SHChangeNotify through reflection emit, never Add-Type -MemberDefinition'
+            exit 1
+          }
+          if ($seen.TempLibraries) {
+            # The other end of the same chain, and the one the Bitdefender report in #10540 keyed
+            # on: Add-Type leaves a freshly built DLL in the temp directory.
+            Write-Host "::error::a compiled library was dropped in the Windows temp during the WSL install: $($seen.TempLibraries -join ', ')"
+            exit 1
+          }
+          Write-Host 'live watch: no compiler process and no compiled library during the install'
 
           if (-not (Test-Path logs/wsl-install.log)) {
             Write-Host '::error::the WSL install produced no log'
@@ -1015,6 +1095,111 @@ jobs:
             Write-Host '::error::WSL install left no usable unsloth CLI'
             exit 1
           }
+
+      - name: Did the Windows shortcut survive, and did nothing compile to make it?
+        if: always()
+        shell: pwsh
+        run: |
+          # The only lane that runs install.sh's WSL shortcut branch, so the only one that can
+          # answer either half of this. Both halves changed together: the generated script moved
+          # from WSL's /tmp (a \\wsl.localhost UNC path, which is why it needed a relaxed execution
+          # policy) to the Windows %TEMP%, and its icon-refresh declaration stopped compiling.
+          #
+          # Advisory, not fatal. Shortcut creation is best-effort in the installer itself -- it
+          # warns and continues when interop is unavailable -- so failing the job for an absent
+          # .lnk would make this stricter than the code it measures. What must never be advisory is
+          # the compiler check below.
+          $names = @('Unsloth Studio (WSL*.lnk')
+          $roots = @(
+            [Environment]::GetFolderPath('Desktop'),
+            (Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs')
+          )
+          $found = @()
+          foreach ($root in $roots) {
+            if (-not $root -or -not (Test-Path -LiteralPath $root)) { continue }
+            foreach ($pattern in $names) {
+              $found += @(Get-ChildItem -LiteralPath $root -Filter $pattern -ErrorAction SilentlyContinue)
+            }
+          }
+          if ($found.Count -eq 0) {
+            Write-Host '::warning::no WSL shortcut was created; the installer prints its own notice when interop is unavailable, so check logs/wsl-install.log before reading this as a regression'
+          } else {
+            $shell = New-Object -ComObject WScript.Shell
+            foreach ($lnk in $found) {
+              $sc = $shell.CreateShortcut($lnk.FullName)
+              Write-Host "shortcut: $($lnk.Name)"
+              Write-Host "  target: $($sc.TargetPath)"
+              Write-Host "  args  : $($sc.Arguments)"
+              # wsl.exe or wt.exe, never a script engine. #6326 removed the .vbs launcher for
+              # exactly this reason and nothing in the WSL path should reintroduce one.
+              if ($sc.TargetPath -match 'wscript|cscript|mshta') {
+                Write-Host "::error::$($lnk.Name) launches a script host: $($sc.TargetPath)"
+                exit 1
+              }
+            }
+          }
+
+          # The compiler half. A .cmdline or .rsp in the Windows %TEMP% is csc.exe's response file,
+          # and nothing else writes one, so a hit means the icon-refresh declaration is compiling
+          # again.
+          #
+          # Positive control first, because a detector that sees nothing looks exactly like a clean
+          # run, and every reason it could see nothing is silent: an unreadable TEMP, a TEMP that is
+          # not the one the interop process used, a Get-ChildItem that fails on a long path. Plant
+          # one intermediate of each kind, require the search to find both, then remove them. If the
+          # control does not fire the job fails as a broken detector rather than reporting a pass.
+          # The planted files carry a nonce in their NAME, and the control matches on the name.
+          # It used to match on the directory, `$_.FullName -like (Join-Path $controlDir '*')`,
+          # which compares two strings that need not spell the same directory the same way:
+          # %TEMP% on a hosted runner is the 8.3 form (C:\Users\RUNNER~1\...), and whether an
+          # enumerated FullName comes back short or long is not something this check should be
+          # betting on. A nonce in the filename is unique on its own, so nothing has to agree
+          # about paths.
+          $controlStamp = [guid]::NewGuid().ToString('N').Substring(0, 8)
+          $controlDir = Join-Path $env:TEMP ('unsloth-compiler-control-' + $controlStamp)
+          New-Item -ItemType Directory -Path $controlDir -Force | Out-Null
+          $controlNames = @("control-$controlStamp.cmdline", "control-$controlStamp.rsp")
+          $controlFiles = @($controlNames | ForEach-Object { Join-Path $controlDir $_ })
+          foreach ($f in $controlFiles) { Set-Content -LiteralPath $f -Value '/noconfig /fullpaths' -Encoding ascii }
+          $controlOnDisk = @($controlFiles | Where-Object { Test-Path -LiteralPath $_ })
+          $controlSweep = @(
+            Get-ChildItem -LiteralPath $env:TEMP -Recurse -Include '*.cmdline', '*.rsp' -ErrorAction SilentlyContinue
+          )
+          $controlSeen = @($controlSweep | Where-Object { $controlNames -contains $_.Name })
+          Remove-Item -LiteralPath $controlDir -Recurse -Force -ErrorAction SilentlyContinue
+          if ($controlSeen.Count -lt 2) {
+            # SAY WHICH HALF FAILED. This check exists because "the detector saw nothing" and
+            # "there was nothing to see" look identical, and the first version reproduced that
+            # very problem one level up: writing, sweeping and matching all fail as `0 of 2`.
+            # These three numbers separate them, so the next failure names its own cause.
+            Write-Host "::error::the compiler-intermediate detector is broken: it found $($controlSeen.Count) of 2 planted files under $env:TEMP."
+            Write-Host "::error::wrote $($controlOnDisk.Count) of 2 control files; the %TEMP% sweep returned $($controlSweep.Count) intermediate(s) in total; planted under $controlDir looking for $($controlNames -join ', ')."
+            Write-Host '::error::Not reporting this run as clean. A search that cannot see a file it just wrote cannot see one csc.exe wrote either.'
+            exit 1
+          }
+          Write-Host "positive control fired: the detector saw both planted intermediates under $env:TEMP"
+
+          $leftovers = @(
+            Get-ChildItem -LiteralPath $env:TEMP -Filter 'unsloth-shortcut-*.ps1' -ErrorAction SilentlyContinue
+          )
+          if ($leftovers.Count) {
+            Write-Host "::error::the generated shortcut script was not cleaned up: $($leftovers.Name -join ', ')"
+            exit 1
+          }
+          # Leftovers only. The compile itself is judged by the live watch around the install step,
+          # because CodeDom cleans up after itself and this listing would see nothing either way.
+          # Kept because it catches what IS left behind, which is the other half of the union
+          # Watch-ForCompiler.ps1 describes.
+          $compiled = @(
+            Get-ChildItem -LiteralPath $env:TEMP -Recurse -Include '*.cmdline', '*.rsp' -ErrorAction SilentlyContinue |
+              Where-Object { $_.LastWriteTime -gt (Get-Date).AddMinutes(-30) }
+          )
+          if ($compiled.Count) {
+            Write-Host "::error::compiler intermediates were left in the Windows TEMP: $($compiled.FullName -join ', ')"
+            Write-Host '::error::install.sh must declare SHChangeNotify through reflection emit, never Add-Type -MemberDefinition'
+            exit 1
+          }
+          Write-Host 'no compiler intermediates left behind, and no generated script left behind'
 
       - name: Tear the distro down
         if: always()

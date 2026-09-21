@@ -375,6 +375,22 @@ def hidden_chat_status_response():
     return JSONResponse(content = {"loaded": [], "loading": [], "yours": False})
 
 
+def hidden_generate_progress_response(response_model):
+    """The generate-progress shape, idle, with nothing of the resident.
+
+    A generate-progress route declares ``active``/``fraction``/..., and a returned
+    ``Response`` bypasses that model, so answering ``hidden_resident_response()``
+    there hands a poller an object with no ``active`` at all. ``progress["active"]``
+    then raises ``KeyError`` instead of reading "nothing is running", which is what
+    the caller is entitled to learn either way. The model's own defaults ARE idle,
+    so they reveal exactly as little as the loaded/yours pair and stay in step with
+    the declared shape on their own.
+    """
+    return JSONResponse(
+        content = {**response_model().model_dump(mode = "json"), "loaded": True, "yours": False}
+    )
+
+
 def gpu_busy_error(path: str | None = None) -> HTTPException:
     from core.inference import gpu_arbiter
     from state import active_generations

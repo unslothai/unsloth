@@ -7,6 +7,7 @@ import os
 import re
 import sys
 import unittest
+import types
 from contextlib import nullcontext
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
@@ -224,9 +225,28 @@ class TestVisibleGpuUtilization(_GpuCacheResetMixin, unittest.TestCase):
             },
         ]
 
+        # Two discrete cards. Stubbed rather than left to the host's own torch: the
+        # integrated-memory reconciliation reads props.total_memory for every CUDA row,
+        # so on a unified-memory machine (an RTX Spark N1X) a real 45.39 GiB pool was
+        # joined onto this fake 24 GiB row and the assertion below read the runner's
+        # hardware instead of the fixture.
+        _discrete = types.SimpleNamespace(
+            name = "NVIDIA RTX 4090",
+            total_memory = 24 * (1 << 30),
+            is_integrated = 0,
+            gcnArchName = "",
+        )
+
         with (
             patch("utils.hardware.hardware.get_device", return_value = DeviceType.CUDA),
             patch.object(_hw_module, "IS_ROCM", False),
+            patch(
+                "utils.hardware.hardware._torch_get_device_module",
+                return_value = (
+                    types.SimpleNamespace(get_device_properties = lambda ordinal: _discrete),
+                    "cuda",
+                ),
+            ),
             patch(
                 "utils.hardware.hardware._get_parent_visible_gpu_spec",
                 return_value = {"raw": "5,3", "numeric_ids": [5, 3]},
@@ -1749,6 +1769,31 @@ class TestMinGpuVram(unittest.TestCase):
         )
         breakdown = estimate_training_vram(arch, config)
         self.assertEqual(breakdown.total, breakdown.min_gpu_vram(1))
+
+
+class TestAttentionEstimateModelClass(unittest.TestCase):
+    def _resolved_model_class(self, raw_config):
+        from utils.hardware import hardware as hardware_module
+
+        captured = {}
+
+        def _stub_resolver(model_class, cfg):
+            captured["model_class"] = model_class
+            return "sdpa"
+
+        with patch("utils.transformers_version._load_config_json", return_value = raw_config):
+            config = hardware_module._load_config_for_gpu_estimate("unsloth/test")
+        with patch.dict(sys.modules, _fake_unsloth_attention_modules(_stub_resolver)):
+            hardware_module._determine_attention_impl_for_gpu_estimate(config)
+        return captured["model_class"]
+
+    def test_raw_config_resolves_model_class_from_model_type(self):
+        from transformers import LlamaForCausalLM
+        model_class = self._resolved_model_class({"model_type": "llama", "hidden_size": 4096})
+        self.assertIs(model_class, LlamaForCausalLM)
+
+    def test_unknown_model_type_resolves_no_model_class(self):
+        self.assertIsNone(self._resolved_model_class({"model_type": "not_a_real_model"}))
 
 
 class TestPerGpuFitGuardAllCounts(unittest.TestCase):

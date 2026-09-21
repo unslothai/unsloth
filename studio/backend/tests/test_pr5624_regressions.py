@@ -30,6 +30,8 @@ from core.inference.tool_call_parser import (
     strip_tool_markup,
 )
 
+from growth import assert_linear  # tests/_shared, on sys.path via tests/conftest.py
+
 
 # GLM string-vs-JSON-encoded value coercion (finding B in plan)
 
@@ -222,96 +224,12 @@ def test_kimi_bare_counter_id_is_dropped():
 # DeepSeek truncated mid-stream
 
 
-def _growth(
-    build,
-    units: int,
-    factor: int = 4,
-    repeats: int = 3,
-) -> tuple[float, float, list]:
-    """How much more `factor` times the input costs. Returns (ratio, big_seconds, big_result).
-
-    The MEDIAN of `repeats` PAIRED ratios: each pair times the small input and then the big
-    one back to back, and the ratio is formed inside the pair before anything is aggregated.
-
-    This replaces an absolute ``elapsed < 1.0`` budget at one size. That budget read 0.20s on
-    a quiet runner and 1.41s on a busy one, so it failed for the wrong reason on unrelated
-    PRs, and it also sat close enough to the line that a REAL regression (#10507, which made
-    the R1 path quadratic again) only tipped it over some of the time. A ratio answers the
-    question these tests are named for: linear is ~`factor`, quadratic is ~`factor ** 2`.
-
-    It also replaces ``min(big over repeats) / min(small over repeats)``, which looked like
-    it cancelled the machine out and did not. Those two minima come from batches run at
-    different times, so a quiet window during the small batch and a busy one during the big
-    batch multiply instead of cancelling, and the quotient of two separately-taken minima is
-    not a minimum of anything. Measured on a 2-vCPU box under load, 15 trials per shape:
-
-        strategy      R1        R1-distant  GLM       V3        >= 6.0
-        min/min       max 8.69  max 8.23    max 8.27  max 8.59  7 of 60
-        paired median max 4.26  max 4.83    max 4.83  max 5.42  0 of 60
-
-    That 12% false-fail rate is not hypothetical: it is why this test failed on #10825 and
-    again on #10864 at 6.56, both times on branches that touch none of this code.
-
-    Pairing is what fixes it. Contention hits both halves of a pair roughly equally and
-    divides out, which is what the old comment claimed for the unpaired form. The median
-    then discards a pair that got unlucky, in either direction, rather than trusting one
-    reading.
-
-    Detection power is kept, which is the half worth checking before loosening anything. On
-    a synthetic path with a true 16x profile this reports 8 of 8 over the bar, same as the
-    old form. On the marginal 6.7x shape (#10832's partially fixed sweep) it reports 9 of 12
-    against the old form's 10 of 12, a difference well inside the noise at that sample size,
-    and that shape's sibling test measures 12.2x when broken, so the suite still catches it.
-    """
-    import statistics as _statistics
-    import time as _time
-
-    def once(text: str) -> tuple[float, list]:
-        start = _time.perf_counter()
-        result = parse_tool_calls_from_text(text)
-        return _time.perf_counter() - start, result
-
-    small_text, big_text = build(units), build(units * factor)
-    ratios, big, result = [], None, None
-    for _ in range(repeats):
-        small_elapsed, _ = once(small_text)
-        big_elapsed, result = once(big_text)
-        # The backstop below reads the BEST big time, not the worst. Contention only adds, so
-        # the minimum is the closest this size got to its own cost, and the backstop should
-        # fire on a path that is genuinely too slow rather than on a runner that stalled once.
-        big = big_elapsed if big is None else min(big, big_elapsed)
-        # A timer's own resolution must not read as superlinear growth on a very fast machine.
-        ratios.append(big_elapsed / max(small_elapsed, 1e-4))
-
-    return _statistics.median(ratios), big, result
-
-
-def _assert_linear(
-    build,
-    label: str,
-    units: int,
-    *,
-    factor: int = 4,
-    tolerance: float = 6.0,
-):
-    """`build(n)` must cost ~`factor`x, not ~`factor ** 2`x, for `factor`x the input."""
-    ratio, big, result = _growth(build, units, factor)
-    # Backstop: a regression bad enough to make the ratio unmeasurable still has to fail, and
-    # fail quickly, rather than run until the job's own timeout kills it with no explanation.
-    assert big < 60.0, f"{label} path took {big:.1f}s on {units * factor} units"
-    assert ratio < tolerance, (
-        f"{label} path is not linear: {factor}x the input cost {ratio:.1f}x the time "
-        f"(linear is ~{factor}, quadratic is ~{factor ** 2})"
-    )
-    return result
-
-
 def test_deepseek_v3_1_huge_truncated_body_is_linear():
     """Adversarial input: DeepSeek envelope with no JSON brace and a long
     body. A regex-based ``[^\\n<]+?`` name capture is O(N^2) here; the
     parser uses ``str.find`` on the sep marker so it stays linear."""
     build = lambda n: "<｜tool▁calls▁begin｜><｜tool▁call▁begin｜>fn<｜tool▁sep｜>" + "x" * n
-    assert _assert_linear(build, "V3", 50_000) == []
+    assert assert_linear(parse_tool_calls_from_text, build, "V3", 50_000) == []
 
 
 def test_deepseek_r1_huge_fenceless_body_is_linear():
@@ -319,7 +237,7 @@ def test_deepseek_r1_huge_fenceless_body_is_linear():
     fence-less body of repeated ``function<sep>`` tokens. The parser now scans with
     ``str.find``."""
     build = lambda n: "<｜tool▁calls▁begin｜>" + "function<｜tool▁sep｜>a" * n
-    assert _assert_linear(build, "R1", 10_000) == []
+    assert assert_linear(parse_tool_calls_from_text, build, "R1", 10_000) == []
 
 
 def test_deepseek_r1_fenceless_body_with_one_distant_object_is_linear():
@@ -328,7 +246,7 @@ def test_deepseek_r1_fenceless_body_with_one_distant_object_is_linear():
     rescanned the tail to reach it, so the sweep stayed quadratic while the fence-less
     case above had gone linear."""
     build = lambda n: "<｜tool▁calls▁begin｜>" + "function<｜tool▁sep｜>a" * n + '{"a": 1}'
-    _assert_linear(build, "R1 distant-object", 10_000)
+    assert_linear(parse_tool_calls_from_text, build, "R1 distant-object", 10_000)
 
 
 def test_glm_unclosed_body_many_arg_keys_is_linear():
@@ -336,7 +254,7 @@ def test_glm_unclosed_body_many_arg_keys_is_linear():
     over many bare ``<arg_key>`` tokens was O(N^2). The parser now walks pairs with
     ``str.find``."""
     build = lambda n: "<tool_call>foo\n" + "<arg_key>k" * n
-    _assert_linear(build, "GLM", 10_000)
+    assert_linear(parse_tool_calls_from_text, build, "GLM", 10_000)
 
 
 def test_deepseek_r1_fenced_json_parses():

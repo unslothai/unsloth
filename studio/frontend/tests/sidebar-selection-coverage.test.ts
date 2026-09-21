@@ -8,15 +8,16 @@ import { readSrc } from "./helpers/kit.ts";
 
 const APP_SIDEBAR = readSrc("components/app-sidebar.tsx");
 
-// A row is only selectable if it is handed the list it belongs to. Dropping
-// that argument still compiles, since it is optional, and the row just stops
-// responding to cmd and shift click.
+// A row is only selectable if it is handed the list it belongs to. The same argument carries the
+// ids a drag reorders, so a list that loses it stops responding to cmd and shift click and stops
+// being draggable at once.
 
 test("every chat list hands its rows a selection list", async () => {
   const source = APP_SIDEBAR;
   for (const list of [
-    /\{ scope: PINNED_ORDER_SCOPE, ids: pinnedRowIds \}/,
-    /\{ scope: RECENTS_ORDER_SCOPE, ids: recentRowIds \}/,
+    // Pinned chat rows select among chats and reorder within the whole Pinned list.
+    /scope: PINNED_ORDER_SCOPE,\s*ids: pinnedChatRowIds,\s*orderIds: pinnedRowIds,/,
+    /scope: RECENTS_ORDER_SCOPE,\s*ids: recentRowIds,/,
     /scope: projectOrderScope\(project\.id\),\s*ids: projectChatIds,/,
   ]) {
     assert.match(source, list);
@@ -25,7 +26,12 @@ test("every chat list hands its rows a selection list", async () => {
 
 test("folder rows select too, and open their own bulk menu", async () => {
   const source = APP_SIDEBAR;
-  assert.match(source, /handleProjectSelectionClick\(event, project\.id\)/);
+  // The row hands in its own list. Pinned is folders and chats in one order, so it
+  // ranges over its folder ids alone.
+  assert.match(
+    source,
+    /handleProjectSelectionClick\(\n\s*event,\n\s*project\.id,\n\s*order\.selectionIds \?\? order\.orderedIds,\n\s*\)/,
+  );
   assert.match(source, /selectProjectForContextMenu\(project\.id\)/);
   assert.match(source, /\{renderProjectContextMenu\(\)\}/);
   assert.match(source, /selectedProjectIds\.has\(project\.id\)/);
