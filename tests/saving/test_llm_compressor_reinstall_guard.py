@@ -360,3 +360,71 @@ def test_the_probe_runs_the_way_the_export_runner_is_launched():
     assert (
         "probe_path" in src and "subprocess.run" in src
     ), "the probe is no longer executed as a file"
+
+
+def _module_at(location: str | None, version: str | None):
+    import types
+
+    module = types.ModuleType("llmcompressor")
+    if location is not None:
+        module.__file__ = location
+    if version is not None:
+        module.__version__ = version
+    return module
+
+
+def test_an_import_only_this_process_can_do_is_not_evidence(tmp_path, monkeypatch):
+    """A successful in-process import does not mean the runner can repeat it.
+
+    The export launches _compressed_quantize.py BY FILE, so its sys.path[0] is the runner's
+    directory and the cwd is on its path nowhere. A checkout importable here only because
+    the cwd is on OUR path is invisible there, and the export then dies after the whole
+    model merge instead of being repaired first.
+    """
+    from unsloth.save import _llm_compressor_module_is_usable
+
+    cwd_only = tmp_path / "cwd-checkout" / "llmcompressor" / "__init__.py"
+    cwd_only.parent.mkdir(parents = True)
+    cwd_only.write_text("")
+    monkeypatch.chdir(cwd_only.parent.parent)
+    monkeypatch.setattr(sys, "path", [""] + [p for p in sys.path if p not in ("", ".")])
+    monkeypatch.delenv("PYTHONPATH", raising = False)
+    assert (
+        _llm_compressor_module_is_usable(_module_at(str(cwd_only), None)) is False
+    ), "a checkout reachable only through the cwd was taken as evidence for the runner"
+
+    # The same file, now on PYTHONPATH, IS on the runner's path.
+    monkeypatch.setenv("PYTHONPATH", str(cwd_only.parent.parent))
+    assert _llm_compressor_module_is_usable(_module_at(str(cwd_only), None)) is True
+
+    # Nothing to locate is unknown, and unknown stays usable.
+    assert _llm_compressor_module_is_usable(_module_at(None, None)) is True
+
+
+def test_the_fast_path_checks_the_version_of_the_module_it_imported(monkeypatch):
+    """Metadata answers for a distribution; the fast path returns a MODULE.
+
+    A checkout shadowing an in-range wheel imports fine and metadata says 0.12.0, so the
+    fast path returned symbols from code the pin excludes.
+    """
+    from packaging.requirements import Requirement
+
+    from unsloth.save import _LLM_COMPRESSOR_SPEC, _llm_compressor_module_is_usable
+
+    assert not Requirement(_LLM_COMPRESSOR_SPEC).specifier.contains(
+        "0.13.0", prereleases = True
+    ), "0.13.0 must be outside the pin for this case to mean anything"
+    assert _llm_compressor_module_is_usable(_module_at(None, "0.13.0")) is False
+    assert _llm_compressor_module_is_usable(_module_at(None, "0.12.0")) is True
+
+
+def test_the_fast_path_asks_before_returning_its_symbols():
+    """Wiring: the check has to gate the early return, or it changes nothing."""
+    import inspect
+
+    from unsloth.save import install_llm_compressor
+
+    src = inspect.getsource(install_llm_compressor)
+    assert (
+        "if _llm_compressor_module_is_usable(llmcompressor):" in src
+    ), "the fast path returns its symbols without asking whether the runner can use them"

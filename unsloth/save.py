@@ -1677,15 +1677,72 @@ def _llm_compressor_imports_cleanly():
         return True
 
 
+def _llm_compressor_module_is_usable(module):
+    """Whether the module THIS process imported is the one the export will get, in range.
+
+    Two ways a successful in-process import is not evidence. The export launches
+    ``_compressed_quantize.py`` BY FILE, so its sys.path[0] is the runner's directory and
+    the current directory is not on the path at all: a checkout importable here only
+    because the cwd is on our path is invisible there, and the export dies after the whole
+    merge. And the version that matters is the imported module's, not a same-named
+    distribution's, since a checkout earlier on sys.path shadows an installed wheel.
+
+    Unknown counts as usable (no ``__file__``, no ``__version__``, an unparseable spec):
+    the alternative is the destructive pip re-resolve this guard exists to avoid.
+    """
+    location = getattr(module, "__file__", None)
+    if location:
+        try:
+            location = os.path.abspath(location)
+            runner_dir = os.path.dirname(os.path.abspath(__file__))
+            cwd = os.getcwd()
+            roots = [runner_dir]
+            roots += [
+                entry for entry in os.environ.get("PYTHONPATH", "").split(os.pathsep) if entry
+            ]
+            # Everything the runner would also have, minus the cwd-shaped entries only
+            # this process has.
+            roots += [entry for entry in sys.path if entry not in ("", ".", cwd)]
+            # The path entry the module would have to sit DIRECTLY under, since import
+            # reaches a top-level package as a child of an entry, not as any descendant.
+            parent = os.path.dirname(location)
+            if os.path.basename(location).startswith("__init__."):
+                parent = os.path.dirname(parent)
+            entries = set()
+            for entry in roots:
+                try:
+                    entries.add(os.path.abspath(entry))
+                except Exception:
+                    continue
+            if parent not in entries:
+                return False
+        except Exception:
+            return True
+    reported = getattr(module, "__version__", None)
+    if not reported:
+        return True
+    try:
+        from packaging.requirements import Requirement
+        return Requirement(_LLM_COMPRESSOR_SPEC).specifier.contains(str(reported), prereleases = True)
+    except Exception:
+        return True
+
+
 def install_llm_compressor():
     """Import llm-compressor, installing a version-pinned copy on first use for FP8/FP4 export and pinning the current torch + transformers so pip does not upgrade them. UNSLOTH_DISABLE_LLM_COMPRESSOR_AUTOINSTALL=1 forbids the auto-install. Returns (oneshot, QuantizationModifier)."""
     # Gated on the version, not just importability: an out-of-range release that imports
     # would be accepted here and never reach the check below, leaving the pin decorative.
+    # And gated on the module actually imported, not on metadata: an import that only this
+    # process can perform, or a checkout shadowing an in-range wheel, is not evidence about
+    # the subprocess that does the quantizing.
     if _llm_compressor_version_is_supported():
         try:
+            import llmcompressor
             from llmcompressor import oneshot
             from llmcompressor.modifiers.quantization import QuantizationModifier
-            return oneshot, QuantizationModifier
+
+            if _llm_compressor_module_is_usable(llmcompressor):
+                return oneshot, QuantizationModifier
         except Exception:
             pass
 
