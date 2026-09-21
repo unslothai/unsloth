@@ -1605,6 +1605,7 @@ export const it = {
         "compattazione automatica contesto finestra troncare scorrevole checkpoint margine archivio recupero ricerca compaction rolling headroom archive retrieval rag",
       visibility: {
         collapsed: "Compresso",
+        auto: "Espandi durante l’esecuzione",
         expanded: "Sempre espanso",
       },
       visibilityKeywords:
@@ -1613,7 +1614,6 @@ export const it = {
         visibility: "Ragionamento",
         visibilityDescription:
           "Come si apre il ragionamento. Puoi comunque espandere o comprimere ogni blocco a mano.",
-        visibilityAuto: "Espandi durante lo streaming",
       },
       currentDate: {
         label: "Comunica al modello la data di oggi",
@@ -1626,7 +1626,6 @@ export const it = {
         visibility: "Chiamate agli strumenti",
         visibilityDescription:
           "Come si apre l’attività degli strumenti. Puoi comunque espandere o comprimere ogni chiamata a mano.",
-        visibilityAuto: "Espandi durante l’esecuzione",
         foldIntoThinking: "Raggruppa le chiamate agli strumenti nel Ragionamento",
         foldIntoThinkingDescription:
           "Mostra le chiamate agli strumenti di un turno nel blocco Ragionamento invece che su righe proprie.",

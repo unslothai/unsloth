@@ -1595,6 +1595,7 @@ export const en = {
         "compaction compact auto-compact context window truncate rolling checkpoint headroom archive retrieval recall rag search",
       visibility: {
         collapsed: "Collapsed",
+        auto: "Expand while running",
         expanded: "Always expanded",
       },
       visibilityKeywords:
@@ -1603,7 +1604,6 @@ export const en = {
         visibility: "Thinking",
         visibilityDescription:
           "How reasoning opens. You can still expand or collapse any block yourself.",
-        visibilityAuto: "Expand while streaming",
       },
       currentDate: {
         label: "Tell the model today's date",
@@ -1616,7 +1616,6 @@ export const en = {
         visibility: "Tool calls",
         visibilityDescription:
           "How tool activity opens. You can still expand or collapse any call yourself.",
-        visibilityAuto: "Expand while running",
         foldIntoThinking: "Group tool calls under Thinking",
         foldIntoThinkingDescription:
           "Show a turn's tool calls inside its Thinking block instead of on their own rows.",

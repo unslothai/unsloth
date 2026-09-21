@@ -1583,6 +1583,7 @@ export const ja = {
         "圧縮 自動圧縮 コンテキスト ウィンドウ 切り詰め スライディング チェックポイント 余裕 アーカイブ 検索 取得 compaction rolling headroom archive retrieval rag",
       visibility: {
         collapsed: "折りたたむ",
+        auto: "実行中は展開",
         expanded: "常に展開",
       },
       visibilityKeywords:
@@ -1591,7 +1592,6 @@ export const ja = {
         visibility: "思考",
         visibilityDescription:
           "思考の開き方。個々のブロックは手動で展開・折りたたみできます。",
-        visibilityAuto: "ストリーミング中は展開",
       },
       currentDate: {
         label: "今日の日付をモデルに伝える",
@@ -1604,7 +1604,6 @@ export const ja = {
         visibility: "ツール呼び出し",
         visibilityDescription:
           "ツールの動作の開き方。個々の呼び出しは手動で展開・折りたたみできます。",
-        visibilityAuto: "実行中は展開",
         foldIntoThinking: "ツール呼び出しを思考にまとめる",
         foldIntoThinkingDescription:
           "そのターンのツール呼び出しを独立した行ではなく思考ブロック内に表示します。",

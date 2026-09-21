@@ -1564,6 +1564,7 @@ export const zhCN = {
         "压缩 自动压缩 上下文 窗口 截断 滑动 检查点 余量 归档 检索 搜索 compaction rolling checkpoint headroom archive retrieval rag",
       visibility: {
         collapsed: "折叠",
+        auto: "运行时展开",
         expanded: "始终展开",
       },
       visibilityKeywords:
@@ -1572,7 +1573,6 @@ export const zhCN = {
         visibility: "思考过程",
         visibilityDescription:
           "思考过程如何展开。你仍可自行展开或折叠任意区块。",
-        visibilityAuto: "流式输出时展开",
       },
       currentDate: {
         label: "告诉模型今天的日期",
@@ -1585,7 +1585,6 @@ export const zhCN = {
         visibility: "工具调用",
         visibilityDescription:
           "工具活动如何展开。你仍可自行展开或折叠任意调用。",
-        visibilityAuto: "运行时展开",
         foldIntoThinking: "将工具调用归入思考过程",
         foldIntoThinkingDescription:
           "把该轮的工具调用显示在思考区块内，而不是各自独立成行。",

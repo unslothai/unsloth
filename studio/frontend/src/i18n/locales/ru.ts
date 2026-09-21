@@ -1615,6 +1615,7 @@ export const ru = {
         "сжатие автоматически контекст окно обрезка скользящее контрольная точка запас архив поиск извлечение compaction rolling checkpoint headroom archive retrieval rag",
       visibility: {
         collapsed: "Свёрнуто",
+        auto: "Разворачивать во время работы",
         expanded: "Всегда развёрнуто",
       },
       visibilityKeywords:
@@ -1623,7 +1624,6 @@ export const ru = {
         visibility: "Размышления",
         visibilityDescription:
           "Как открываются размышления. Любой блок по-прежнему можно развернуть или свернуть вручную.",
-        visibilityAuto: "Разворачивать во время потока",
       },
       currentDate: {
         label: "Сообщать модели сегодняшнюю дату",
@@ -1636,7 +1636,6 @@ export const ru = {
         visibility: "Вызовы инструментов",
         visibilityDescription:
           "Как открываются действия инструментов. Любой вызов по-прежнему можно развернуть или свернуть вручную.",
-        visibilityAuto: "Разворачивать во время работы",
         foldIntoThinking: "Группировать вызовы инструментов в Размышлениях",
         foldIntoThinkingDescription:
           "Показывать вызовы инструментов хода внутри блока размышлений, а не отдельными строками.",

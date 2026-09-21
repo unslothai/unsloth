@@ -531,7 +531,7 @@ export function ChatTab() {
                 {t("settings.chat.visibility.collapsed")}
               </SelectItem>
               <SelectItem value="auto">
-                {t("settings.chat.thinking.visibilityAuto")}
+                {t("settings.chat.visibility.auto")}
               </SelectItem>
               <SelectItem value="expanded">
                 {t("settings.chat.visibility.expanded")}
@@ -562,7 +562,7 @@ export function ChatTab() {
                 {t("settings.chat.visibility.collapsed")}
               </SelectItem>
               <SelectItem value="auto">
-                {t("settings.chat.tools.visibilityAuto")}
+                {t("settings.chat.visibility.auto")}
               </SelectItem>
               <SelectItem value="expanded">
                 {t("settings.chat.visibility.expanded")}

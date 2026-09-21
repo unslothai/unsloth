@@ -1637,6 +1637,7 @@ export const fr = {
         "compaction automatique contexte fenêtre tronquer glissante point de contrôle marge archive récupération recherche rolling checkpoint headroom retrieval rag",
       visibility: {
         collapsed: "Replié",
+        auto: "Déplier pendant l’exécution",
         expanded: "Toujours déplié",
       },
       visibilityKeywords:
@@ -1645,7 +1646,6 @@ export const fr = {
         visibility: "Réflexion",
         visibilityDescription:
           "Comment la réflexion s’ouvre. Vous pouvez toujours déplier ou replier un bloc vous-même.",
-        visibilityAuto: "Déplier pendant le streaming",
       },
       currentDate: {
         label: "Indiquer la date du jour au modèle",
@@ -1658,7 +1658,6 @@ export const fr = {
         visibility: "Appels d’outils",
         visibilityDescription:
           "Comment l’activité des outils s’ouvre. Vous pouvez toujours déplier ou replier un appel vous-même.",
-        visibilityAuto: "Déplier pendant l’exécution",
         foldIntoThinking: "Regrouper les appels d’outils dans la Réflexion",
         foldIntoThinkingDescription:
           "Affiche les appels d’outils d’un tour dans son bloc de Réflexion plutôt que sur leurs propres lignes.",

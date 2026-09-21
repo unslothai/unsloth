@@ -1618,6 +1618,7 @@ export const ptBR = {
         "compactação compactar automaticamente contexto janela truncar deslizante checkpoint margem arquivo recuperação busca compaction rolling headroom archive retrieval rag",
       visibility: {
         collapsed: "Recolhido",
+        auto: "Expandir durante a execução",
         expanded: "Sempre expandido",
       },
       visibilityKeywords:
@@ -1626,7 +1627,6 @@ export const ptBR = {
         visibility: "Raciocínio",
         visibilityDescription:
           "Como o raciocínio abre. Você ainda pode expandir ou recolher qualquer bloco.",
-        visibilityAuto: "Expandir durante o streaming",
       },
       currentDate: {
         label: "Informar a data de hoje ao modelo",
@@ -1639,7 +1639,6 @@ export const ptBR = {
         visibility: "Chamadas de ferramentas",
         visibilityDescription:
           "Como a atividade de ferramentas abre. Você ainda pode expandir ou recolher qualquer chamada.",
-        visibilityAuto: "Expandir durante a execução",
         foldIntoThinking: "Agrupar chamadas de ferramentas no Raciocínio",
         foldIntoThinkingDescription:
           "Mostra as chamadas de ferramentas de um turno dentro do bloco de Raciocínio em vez de em linhas próprias.",

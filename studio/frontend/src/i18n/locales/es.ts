@@ -1631,6 +1631,7 @@ export const es = {
         "compactación compactar automáticamente contexto ventana truncar deslizante checkpoint margen archivo recuperación búsqueda compaction rolling headroom archive retrieval rag",
       visibility: {
         collapsed: "Contraído",
+        auto: "Expandir mientras se ejecuta",
         expanded: "Siempre expandido",
       },
       visibilityKeywords:
@@ -1639,7 +1640,6 @@ export const es = {
         visibility: "Razonamiento",
         visibilityDescription:
           "Cómo se abre el razonamiento. Puedes expandir o contraer cualquier bloque por tu cuenta.",
-        visibilityAuto: "Expandir mientras se transmite",
       },
       currentDate: {
         label: "Indicar al modelo la fecha de hoy",
@@ -1652,7 +1652,6 @@ export const es = {
         visibility: "Llamadas de herramientas",
         visibilityDescription:
           "Cómo se abre la actividad de herramientas. Puedes expandir o contraer cualquier llamada por tu cuenta.",
-        visibilityAuto: "Expandir mientras se ejecuta",
         foldIntoThinking: "Agrupar las llamadas de herramientas en Razonamiento",
         foldIntoThinkingDescription:
           "Muestra las llamadas de herramientas de un turno dentro de su bloque de Razonamiento en lugar de en filas propias.",

@@ -1595,6 +1595,7 @@ export const ko = {
         "압축 자동 컨텍스트 윈도우 자르기 슬라이딩 체크포인트 여유 보관 검색 회수 compaction rolling checkpoint headroom archive retrieval rag",
       visibility: {
         collapsed: "접힘",
+        auto: "실행 중 펼치기",
         expanded: "항상 펼침",
       },
       visibilityKeywords:
@@ -1603,7 +1604,6 @@ export const ko = {
         visibility: "사고 과정",
         visibilityDescription:
           "사고 과정이 열리는 방식. 각 블록은 직접 펼치거나 접을 수 있습니다.",
-        visibilityAuto: "스트리밍 중 펼치기",
       },
       currentDate: {
         label: "모델에 오늘 날짜 알려주기",
@@ -1616,7 +1616,6 @@ export const ko = {
         visibility: "도구 호출",
         visibilityDescription:
           "도구 활동이 열리는 방식. 각 호출은 직접 펼치거나 접을 수 있습니다.",
-        visibilityAuto: "실행 중 펼치기",
         foldIntoThinking: "도구 호출을 사고 과정으로 묶기",
         foldIntoThinkingDescription:
           "해당 턴의 도구 호출을 별도 행 대신 사고 과정 블록 안에 표시합니다.",

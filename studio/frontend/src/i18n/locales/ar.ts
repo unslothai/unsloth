@@ -1600,6 +1600,7 @@ export const ar = {
         "ضغط تلقائي سياق نافذة اقتطاع منزلقة نقطة تحقق هامش أرشيف استرجاع بحث compaction rolling checkpoint headroom archive retrieval rag",
       visibility: {
         collapsed: "مطوي",
+        auto: "التوسيع أثناء التشغيل",
         expanded: "موسّع دائمًا",
       },
       visibilityKeywords:
@@ -1608,7 +1609,6 @@ export const ar = {
         visibility: "التفكير",
         visibilityDescription:
           "كيفية فتح التفكير. لا يزال بإمكانك توسيع أو طي أي كتلة بنفسك.",
-        visibilityAuto: "التوسيع أثناء البث",
       },
       currentDate: {
         label: "إخبار النموذج بتاريخ اليوم",
@@ -1621,7 +1621,6 @@ export const ar = {
         visibility: "استدعاءات الأدوات",
         visibilityDescription:
           "كيفية فتح نشاط الأدوات. لا يزال بإمكانك توسيع أو طي أي استدعاء بنفسك.",
-        visibilityAuto: "التوسيع أثناء التشغيل",
         foldIntoThinking: "تجميع استدعاءات الأدوات ضمن التفكير",
         foldIntoThinkingDescription:
           "عرض استدعاءات الأدوات في الدور داخل كتلة التفكير بدلًا من صفوف مستقلة.",

@@ -1607,6 +1607,7 @@ export const hi = {
         "कॉम्पैक्शन कॉम्पैक्ट कॉन्टेक्स्ट विंडो ट्रंकेट स्लाइडिंग चेकपॉइंट हेडरूम आर्काइव पुनर्प्राप्ति खोज compaction rolling checkpoint headroom archive retrieval rag",
       visibility: {
         collapsed: "संक्षिप्त",
+        auto: "चलने के दौरान विस्तृत करें",
         expanded: "हमेशा विस्तृत",
       },
       visibilityKeywords:
@@ -1615,7 +1616,6 @@ export const hi = {
         visibility: "थिंकिंग",
         visibilityDescription:
           "रीज़निंग कैसे खुलती है। आप किसी भी ब्लॉक को खुद विस्तृत या संक्षिप्त कर सकते हैं।",
-        visibilityAuto: "स्ट्रीमिंग के दौरान विस्तृत करें",
       },
       currentDate: {
         label: "मॉडल को आज की तारीख बताएँ",
@@ -1628,7 +1628,6 @@ export const hi = {
         visibility: "टूल कॉल",
         visibilityDescription:
           "टूल गतिविधि कैसे खुलती है। आप किसी भी कॉल को खुद विस्तृत या संक्षिप्त कर सकते हैं।",
-        visibilityAuto: "चलने के दौरान विस्तृत करें",
         foldIntoThinking: "टूल कॉल को थिंकिंग के अंतर्गत समूहित करें",
         foldIntoThinkingDescription:
           "किसी टर्न के टूल कॉल अलग पंक्तियों के बजाय उसके थिंकिंग ब्लॉक के भीतर दिखाएँ।",

@@ -1640,6 +1640,7 @@ export const de = {
         "Komprimierung automatisch Kontext Fenster kürzen gleitend Prüfpunkt Reserve Archiv Abruf Suche compaction rolling checkpoint headroom archive retrieval rag",
       visibility: {
         collapsed: "Eingeklappt",
+        auto: "Während der Ausführung ausklappen",
         expanded: "Immer ausgeklappt",
       },
       visibilityKeywords:
@@ -1648,7 +1649,6 @@ export const de = {
         visibility: "Denken",
         visibilityDescription:
           "Wie das Denken geöffnet wird. Einzelne Blöcke lassen sich weiterhin selbst aus- und einklappen.",
-        visibilityAuto: "Beim Streamen ausklappen",
       },
       currentDate: {
         label: "Dem Modell das heutige Datum mitteilen",
@@ -1661,7 +1661,6 @@ export const de = {
         visibility: "Tool-Aufrufe",
         visibilityDescription:
           "Wie die Tool-Aktivität geöffnet wird. Einzelne Aufrufe lassen sich weiterhin selbst aus- und einklappen.",
-        visibilityAuto: "Während der Ausführung ausklappen",
         foldIntoThinking: "Tool-Aufrufe unter Denken gruppieren",
         foldIntoThinkingDescription:
           "Die Tool-Aufrufe eines Zuges im Denken-Block statt in eigenen Zeilen anzeigen.",
