@@ -3743,8 +3743,7 @@ def _resolve_variant_gguf_files(
             listed = [
                 f
                 for f in repo_files
-                if f.lower().endswith(".gguf")
-                and not _is_companion_gguf_path(f)
+                if f.lower().endswith(".gguf") and not _is_companion_gguf_path(f)
             ]
             if listed:
                 # The listing answered; the variant genuinely has no file to name
@@ -3755,7 +3754,8 @@ def _resolve_variant_gguf_files(
                         {
                             (
                                 _qualified_variant_name(f, _extract_quant_label(f))
-                                if _extract_quant_label is not None and _qualified_variant_name is not None
+                                if _extract_quant_label is not None
+                                and _qualified_variant_name is not None
                                 else f
                             )
                             for f in listed

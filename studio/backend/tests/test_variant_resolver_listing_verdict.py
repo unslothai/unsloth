@@ -23,6 +23,7 @@ BONSAI_REPO = "dealignai/Bonsai-2-27B-Ternary-CRACK-GGUF"
 @pytest.fixture
 def hub_unreachable(monkeypatch):
     """A listing the Hub never returns."""
+
     def boom(repo_id, token = None):
         raise ConnectionError("hub unreachable")
 
@@ -31,9 +32,7 @@ def hub_unreachable(monkeypatch):
 
 @pytest.fixture
 def no_cached_variant(monkeypatch):
-    monkeypatch.setattr(
-        llama_cpp, "_cached_variant_resolution", lambda repo, variant: (None, [])
-    )
+    monkeypatch.setattr(llama_cpp, "_cached_variant_resolution", lambda repo, variant: (None, []))
 
 
 def test_a_whole_listing_that_names_no_file_for_the_variant_raises_helpfully(
@@ -72,9 +71,7 @@ def test_a_failed_listing_still_falls_through_to_synthesis(hub_unreachable, no_c
     assert filename == "Llama-3.2-1B-Q4_K_M.gguf"
 
 
-def test_a_whole_listing_beats_the_cache_for_an_incorrect_variant(
-    monkeypatch, no_cached_variant
-):
+def test_a_whole_listing_beats_the_cache_for_an_incorrect_variant(monkeypatch, no_cached_variant):
     """The raise fires after the cache tier ran, so cache is still a legal escape."""
     calls = []
 
