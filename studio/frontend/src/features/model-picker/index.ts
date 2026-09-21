@@ -3,28 +3,59 @@
 
 export { ModelSelector } from "./components/model-selector";
 export { FolderBrowser } from "./components/model-selector/folder-browser";
+export { invalidateLlamaFlagCatalog } from "./api/llama-flags";
 export { ModelRowMenu } from "./components/model-selector/model-row-menu";
 export {
   makePinRank,
   pinKey,
   usePinnedModelsStore,
 } from "./components/model-selector/pinned-models";
-export { hfModelFitsDevice } from "./components/model-selector/recommended-fit";
+export {
+  pinnedReasoningEffort,
+  useModelReasoningEffortStore,
+} from "./components/model-selector/model-reasoning-effort";
+export {
+  hfModelFitsDevice,
+  loadScopedGpu,
+} from "./components/model-selector/recommended-fit";
 export {
   NumericValueInput,
+  type NumericValueInputHandle,
   snapToStep,
 } from "./components/numeric-value-input";
+export { ModelConfigPage } from "./components/model-config-page";
 export { SidebarModelConfig } from "./components/sidebar-model-config";
+export type { ModelPickTarget } from "./components/model-selector/types";
 export {
-  useActiveModelConfig,
-} from "./hooks/use-active-model-config";
+  fetchModelOverrides,
+  modelOverrideKey,
+  putModelOverride,
+  syncModelOverride,
+  type ApiModelOverride,
+  type ApiModelOverrides,
+} from "./api/model-overrides";
+export { useActiveModelConfig } from "./hooks/use-active-model-config";
 export type {
   DeletedModelRef,
+  ExternalConnectionRef,
   ExternalModelOption,
   LoraModelOption,
   ModelOption,
   ModelSelectorChangeMeta,
 } from "./components/model-selector";
+export { modelConfigInstanceKey } from "./model-config/config-signature";
+export { modelConfigDraftKey } from "./model-config/model-config-draft";
+export {
+  clearModelConfigHandoff,
+  createModelConfigHandoffRequestId,
+  modelConfigHandoffForDestination,
+  modelConfigTarget,
+  modelConfigTargetIsResident,
+  modelConfigTargetMatchesSelection,
+  requestModelConfigHandoff,
+  useModelConfigHandoffStore,
+  type ModelConfigHandoffRequest,
+} from "./model-config/model-config-handoff";
 export {
   applyModelLoadConfigToRuntime,
   applyPerModelConfigToRuntime,
@@ -33,7 +64,20 @@ export {
 } from "./model-config/apply-per-model-config";
 export {
   DEFAULT_MAX_SEQ_LENGTH,
+  DEFAULT_PER_MODEL_CONFIG,
   normalizeMaxSeqLength,
   type PerModelConfig,
+  PER_MODEL_CONFIG_STORAGE_KEY,
+  PER_MODEL_CONFIG_UPDATED_EVENT,
+  adoptLegacyConfigKey,
+  isServedByLlamaCpp,
+  contextPinPatch,
+  listPerModelConfigs,
+  isServedByMlx,
+  residentIsServedByMlx,
+  savedContextPin,
+  loadedContextFields,
+  presetLoadSettingNames,
   resolveInitialConfig,
+  resolveResidentInitialConfig,
 } from "./model-config/per-model-config";

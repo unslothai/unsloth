@@ -2,7 +2,11 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { create } from "zustand";
-import { createJSONStorage, persist, type StateStorage } from "zustand/middleware";
+import {
+  type StateStorage,
+  createJSONStorage,
+  persist,
+} from "zustand/middleware";
 import type { ResolvedTheme } from "./theme-store";
 
 // Best-effort persistence: localStorage can be blocked (private browsing) and
@@ -33,6 +37,7 @@ const guardedLocalStorage: StateStorage = {
 };
 
 export type ReduceMotionSetting = "system" | "on" | "off";
+export type ChatWidthSetting = "standard" | "wide" | "full";
 
 export type CustomModeColors = {
   accent: string | null;
@@ -82,6 +87,124 @@ export const SIDEBAR_MENU_DEFAULT_VISIBLE: Record<SidebarMenuItemId, boolean> =
     connections: false,
   };
 
+/** Sidebar NAVIGATION rows the user can pin and reorder, distinct from the profile-menu entries above. Array order is render order. Unpinned rows go to the "More" flyout, except a lone one, which is hidden. */
+export const SIDEBAR_NAV_ITEM_IDS = [
+  // Model hub leads: picking a model comes before the work that uses one.
+  "hub",
+  "projects",
+  "images",
+  // Video and Audio sit directly under Images: the media tabs read as one group.
+  "video",
+  "audio",
+  "train",
+  "recipes",
+  "export",
+  "api",
+] as const;
+
+export type SidebarNavItemId = (typeof SIDEBAR_NAV_ITEM_IDS)[number];
+
+export type SidebarNavItemPref = {
+  id: SidebarNavItemId;
+  /** true = top-level row; false = under "More". */
+  pinned: boolean;
+};
+
+/** Rows whose placement follows the sidebar's own state until the user decides for them. */
+export const SIDEBAR_NAV_AUTO_ITEM_IDS = ["projects"] as const satisfies
+  readonly SidebarNavItemId[];
+
+/** Where a nav row goes. Projects repeats the Projects section, so while that section lists the
+ *  folders the row steps aside into "More". A toggle in Customize sidebar drops it from `auto`
+ *  and wins from then on. */
+export function sidebarNavRowPinned(
+  item: SidebarNavItemPref,
+  auto: readonly SidebarNavItemId[],
+  context: { projectsSectionShowing: boolean },
+): boolean {
+  if (item.id === "projects" && auto.includes("projects")) {
+    return !context.projectsSectionShowing;
+  }
+  return item.pinned;
+}
+
+/** The list after the user has decided a row's placement themselves. */
+export function sidebarNavAutoAfterChoice(
+  auto: readonly SidebarNavItemId[],
+  id: SidebarNavItemId,
+): SidebarNavItemId[] {
+  return auto.filter((entry) => entry !== id);
+}
+
+// Matches the shipped layout, so an untouched install looks unchanged.
+export const SIDEBAR_NAV_DEFAULT_PINNED: Record<SidebarNavItemId, boolean> = {
+  hub: true,
+  projects: true,
+  images: true,
+  video: true,
+  // Under "More" until a user pins it.
+  audio: false,
+  train: true,
+  recipes: false,
+  export: false,
+  api: false,
+};
+
+/** Every previously shipped layout, so a migration can tell an untouched install from one the
+ *  user arranged themselves. v3 pinned Video under Images; v4 moved Model hub above Projects;
+ *  v5 put Video back under "More" and later added API before Audio shipped; v6 added Audio;
+ *  v7 pins Video under Images again. */
+const SHIPPED_SIDEBAR_NAV_DEFAULTS: SidebarNavItemPref[][] = [
+  [
+    { id: "projects", pinned: true },
+    { id: "hub", pinned: true },
+    { id: "images", pinned: true },
+    { id: "train", pinned: true },
+    { id: "video", pinned: false },
+    { id: "recipes", pinned: false },
+    { id: "export", pinned: false },
+  ],
+  [
+    { id: "projects", pinned: true },
+    { id: "hub", pinned: true },
+    { id: "images", pinned: true },
+    { id: "video", pinned: true },
+    { id: "train", pinned: true },
+    { id: "recipes", pinned: false },
+    { id: "export", pinned: false },
+  ],
+  [
+    { id: "hub", pinned: true },
+    { id: "projects", pinned: true },
+    { id: "images", pinned: true },
+    { id: "video", pinned: true },
+    { id: "train", pinned: true },
+    { id: "recipes", pinned: false },
+    { id: "export", pinned: false },
+  ],
+  [
+    { id: "hub", pinned: true },
+    { id: "projects", pinned: true },
+    { id: "images", pinned: true },
+    { id: "video", pinned: false },
+    { id: "train", pinned: true },
+    { id: "recipes", pinned: false },
+    { id: "export", pinned: false },
+    { id: "api", pinned: false },
+  ],
+  [
+    { id: "hub", pinned: true },
+    { id: "projects", pinned: true },
+    { id: "images", pinned: true },
+    { id: "video", pinned: false },
+    { id: "audio", pinned: false },
+    { id: "train", pinned: true },
+    { id: "recipes", pinned: false },
+    { id: "export", pinned: false },
+    { id: "api", pinned: false },
+  ],
+];
+
 export const MAX_IMPORTED_FONTS = 3;
 /** Imported-font family name cap; must match the backend name max_length (100). */
 export const MAX_IMPORTED_FONT_NAME_LENGTH = 100;
@@ -99,9 +222,10 @@ export type AppearanceCustomization = {
   uiFont: string | null;
   headingFont: string | null;
   chatFont: string | null;
+  chatWidth: ChatWidthSetting;
   codeFont: string | null;
   importedFonts: ImportedFont[];
-  /** Root font size in px (rem base). null = browser default (16). */
+  /** UI font size in px. null = app default (15). */
   uiFontSize: number | null;
   /** Code/pre font size in px. null = inherit each element's own size. */
   codeFontSize: number | null;
@@ -113,6 +237,11 @@ export type AppearanceCustomization = {
   fontSmoothing: boolean;
   /** Order and visibility of the optional sidebar profile menu items. */
   sidebarMenu: SidebarMenuItemPref[];
+  /** Order of the sidebar nav rows, and which are pinned vs. under "More". */
+  sidebarNav: SidebarNavItemPref[];
+  /** Rows still following their automatic rule instead of a choice made in Customize sidebar.
+   *  Only Projects has one. */
+  sidebarNavAuto: SidebarNavItemId[];
 };
 
 const EMPTY_MODE_COLORS: CustomModeColors = {
@@ -126,6 +255,7 @@ export const DEFAULT_CUSTOMIZATION: AppearanceCustomization = {
   uiFont: null,
   headingFont: null,
   chatFont: null,
+  chatWidth: "standard",
   codeFont: null,
   importedFonts: [],
   uiFontSize: null,
@@ -138,10 +268,16 @@ export const DEFAULT_CUSTOMIZATION: AppearanceCustomization = {
     id,
     visible: SIDEBAR_MENU_DEFAULT_VISIBLE[id],
   })),
+  sidebarNav: SIDEBAR_NAV_ITEM_IDS.map((id) => ({
+    id,
+    pinned: SIDEBAR_NAV_DEFAULT_PINNED[id],
+  })),
+  sidebarNavAuto: [...SIDEBAR_NAV_AUTO_ITEM_IDS],
 };
 
-export const UI_FONT_SIZE_RANGE = { min: 12, max: 20, default: 16 } as const;
+export const UI_FONT_SIZE_RANGE = { min: 12, max: 20, default: 15 } as const;
 export const CODE_FONT_SIZE_RANGE = { min: 10, max: 20, default: 13 } as const;
+const UI_FONT_SIZE_CSS_BASE = 16;
 
 const HEX_COLOR_PATTERN = /^#[0-9a-fA-F]{6}$/;
 
@@ -200,7 +336,9 @@ function sanitizeImportedFonts(value: unknown): ImportedFont[] {
     const source = (entry ?? {}) as Partial<ImportedFont>;
     // Cap to the backend name length so an over-long name can't fail the PUT.
     const rawName = sanitizeFont(source.name);
-    const name = rawName ? rawName.slice(0, MAX_IMPORTED_FONT_NAME_LENGTH) : null;
+    const name = rawName
+      ? rawName.slice(0, MAX_IMPORTED_FONT_NAME_LENGTH)
+      : null;
     if (!name || seen.has(name)) continue;
     const dataUrl = source.dataUrl;
     if (
@@ -222,6 +360,48 @@ function isSidebarMenuItemId(value: unknown): value is SidebarMenuItemId {
   return SIDEBAR_MENU_ITEM_IDS.includes(value as SidebarMenuItemId);
 }
 
+function isSidebarNavItemId(value: unknown): value is SidebarNavItemId {
+  return SIDEBAR_NAV_ITEM_IDS.includes(value as SidebarNavItemId);
+}
+
+function sanitizeSidebarNav(value: unknown): SidebarNavItemPref[] {
+  const items: SidebarNavItemPref[] = [];
+  const seen = new Set<SidebarNavItemId>();
+  for (const entry of Array.isArray(value) ? value : []) {
+    const source = (entry ?? {}) as Partial<SidebarNavItemPref>;
+    if (!isSidebarNavItemId(source.id) || seen.has(source.id)) continue;
+    seen.add(source.id);
+    items.push({ id: source.id, pinned: source.pinned !== false });
+  }
+  // Ids added after the payload was written land at the end with their default.
+  for (const id of SIDEBAR_NAV_ITEM_IDS) {
+    if (!seen.has(id)) items.push({ id, pinned: SIDEBAR_NAV_DEFAULT_PINNED[id] });
+  }
+  return items;
+}
+
+/** `undefined` is a payload written before this field. Only an untouched layout never chose a
+ *  placement for Projects, so an arranged one keeps the pin it already carries. */
+function sanitizeSidebarNavAuto(
+  value: unknown,
+  nav: SidebarNavItemPref[],
+): SidebarNavItemId[] {
+  if (value === undefined || value === null) {
+    return isUntouchedSidebarNav(nav) ? [...SIDEBAR_NAV_AUTO_ITEM_IDS] : [];
+  }
+  const seen = new Set<SidebarNavItemId>();
+  for (const entry of Array.isArray(value) ? value : []) {
+    // Only rows that have a rule: anything else would silently pin itself.
+    if (
+      isSidebarNavItemId(entry) &&
+      (SIDEBAR_NAV_AUTO_ITEM_IDS as readonly string[]).includes(entry)
+    ) {
+      seen.add(entry);
+    }
+  }
+  return [...seen];
+}
+
 function sanitizeSidebarMenu(value: unknown): SidebarMenuItemPref[] {
   const items: SidebarMenuItemPref[] = [];
   const seen = new Set<SidebarMenuItemId>();
@@ -231,8 +411,7 @@ function sanitizeSidebarMenu(value: unknown): SidebarMenuItemPref[] {
     seen.add(source.id);
     items.push({ id: source.id, visible: source.visible !== false });
   }
-  // Ids added after the payload was written land at the end with their
-  // default visibility.
+  // Ids added after the payload was written land at the end with their default visibility.
   for (const id of SIDEBAR_MENU_ITEM_IDS) {
     if (!seen.has(id))
       items.push({ id, visible: SIDEBAR_MENU_DEFAULT_VISIBLE[id] });
@@ -253,6 +432,7 @@ export function sanitizeCustomization(value: unknown): AppearanceCustomization {
     typeof source.contrast === "number" && Number.isFinite(source.contrast)
       ? Math.min(100, Math.max(0, Math.round(source.contrast)))
       : DEFAULT_CUSTOMIZATION.contrast;
+  const sidebarNav = sanitizeSidebarNav(source.sidebarNav);
   return {
     colors: {
       light: sanitizeModeColors(source.colors?.light),
@@ -261,6 +441,10 @@ export function sanitizeCustomization(value: unknown): AppearanceCustomization {
     uiFont: sanitizeFont(source.uiFont),
     headingFont: sanitizeFont(source.headingFont),
     chatFont: sanitizeFont(source.chatFont),
+    chatWidth:
+      source.chatWidth === "wide" || source.chatWidth === "full"
+        ? source.chatWidth
+        : "standard",
     codeFont: sanitizeFont(source.codeFont),
     importedFonts: sanitizeImportedFonts(source.importedFonts),
     uiFontSize: sanitizeSize(source.uiFontSize, UI_FONT_SIZE_RANGE),
@@ -273,7 +457,37 @@ export function sanitizeCustomization(value: unknown): AppearanceCustomization {
         : "system",
     fontSmoothing: source.fontSmoothing !== false,
     sidebarMenu: sanitizeSidebarMenu(source.sidebarMenu),
+    sidebarNav,
+    sidebarNavAuto: sanitizeSidebarNavAuto(source.sidebarNavAuto, sidebarNav),
   };
+}
+
+/** Whether a nav layout is still one we shipped, rather than one the user arranged. */
+function isUntouchedSidebarNav(nav: SidebarNavItemPref[]): boolean {
+  const stored = JSON.stringify(nav);
+  if (stored === JSON.stringify(DEFAULT_CUSTOMIZATION.sidebarNav)) return true;
+  // Sanitize each layout too: the stored one has since gained any ids added after it was
+  // written, so a raw compare would never match.
+  return SHIPPED_SIDEBAR_NAV_DEFAULTS.some(
+    (layout) => JSON.stringify(sanitizeSidebarNav(layout)) === stored,
+  );
+}
+
+/** Adopt the latest default only when the sidebar still matches one we shipped. */
+export function migrateShippedSidebarNavDefault(
+  customization: AppearanceCustomization,
+  storedVersion: number,
+  migrationVersion: number,
+): AppearanceCustomization {
+  // Once this migration version has been persisted, the same layout may be a
+  // deliberate user choice and must never be adopted again.
+  if (storedVersion >= migrationVersion) return customization;
+  return isUntouchedSidebarNav(customization.sidebarNav)
+    ? {
+        ...customization,
+        sidebarNav: [...DEFAULT_CUSTOMIZATION.sidebarNav],
+      }
+    : customization;
 }
 
 export function isDefaultCustomization(c: AppearanceCustomization): boolean {
@@ -350,13 +564,16 @@ export const useAppearanceCustomStore = create<AppearanceCustomState>()(
     }),
     {
       name: "unsloth_appearance_customization",
-      version: 2,
+      version: 7,
       storage: createJSONStorage(() => guardedLocalStorage),
-      migrate: (persisted) => {
+      migrate: (persisted, version) => {
         const state = (persisted ?? {}) as Partial<AppearanceCustomState>;
-        return {
-          customization: sanitizeCustomization(state.customization),
-        } as AppearanceCustomState;
+        const customization = migrateShippedSidebarNavDefault(
+          sanitizeCustomization(state.customization),
+          version,
+          7,
+        );
+        return { customization } as AppearanceCustomState;
       },
       // Sanitize on EVERY rehydrate, not just version bumps: a same-version
       // payload written by an older bundle (e.g. before importedFonts existed)
@@ -389,15 +606,160 @@ function hexLuminance(hex: string): number {
   return 0.2126 * channel(1) + 0.7152 * channel(3) + 0.0722 * channel(5);
 }
 
+const FOREGROUND_DARK = "#111417";
+const FOREGROUND_LIGHT = "#ffffff";
+const FOREGROUND_DARK_FALLBACK = "#000000";
+const FOREGROUND_CONTRAST_FLOOR = 4.5;
+const ACCENT_TEXT_FLOOR = 2.5;
+const ACCENT_TEXT_WASH_OPACITY = 0.2;
+// Cover the full 8-bit channel range so a narrow valid contrast band is not
+// skipped when the custom and elevated surfaces sit far apart.
+const MIX_STEPS = 255;
+
+/** WCAG contrast ratio between two relative luminances. */
+function contrastRatio(a: number, b: number): number {
+  const [high, low] = a >= b ? [a, b] : [b, a];
+  return (high + 0.05) / (low + 0.05);
+}
+
+function mixColors(hex: string, target: string, amount: number): string {
+  const channel = (index: number) => {
+    const value = Number.parseInt(hex.slice(index, index + 2), 16);
+    const targetValue = Number.parseInt(target.slice(index, index + 2), 16);
+    return Math.round(value + (targetValue - value) * amount)
+      .toString(16)
+      .padStart(2, "0");
+  };
+  return `#${channel(1)}${channel(3)}${channel(5)}`;
+}
+
+/**
+ * Whichever foreground actually contrasts more. A fixed luminance threshold
+ * put white on mid-tone accents: #22c55e scored 2.28:1 on white against
+ * 8.11:1 on the dark ink. The crossover for this pair is near 0.19, but
+ * comparing the ratios needs no constant at all.
+ */
 function readableForeground(hex: string): string {
-  return hexLuminance(hex) > 0.45 ? "#111417" : "#ffffff";
+  const accent = hexLuminance(hex);
+  const darkContrast = contrastRatio(accent, hexLuminance(FOREGROUND_DARK));
+  const lightContrast = contrastRatio(accent, hexLuminance(FOREGROUND_LIGHT));
+  const preferred =
+    darkContrast >= lightContrast ? FOREGROUND_DARK : FOREGROUND_LIGHT;
+  if (Math.max(darkContrast, lightContrast) >= FOREGROUND_CONTRAST_FLOOR) {
+    return preferred;
+  }
+  // The preferred inks have a narrow crossover where both fall below AA.
+  // True black closes it without changing the established dark ink elsewhere.
+  return FOREGROUND_DARK_FALLBACK;
+}
+
+/** Palette surfaces that custom colors do not replace. */
+const PALETTE_SURFACES: Record<
+  ResolvedTheme,
+  { background: string; elevated: string }
+> = {
+  light: { background: "#ffffff", elevated: "#ffffff" },
+  dark: { background: "#181818", elevated: "#212121" },
+};
+
+function minimumAccentTextContrast(
+  accent: string,
+  backgrounds: readonly string[],
+): number {
+  const accentLuminance = hexLuminance(accent);
+  const against = (background: string) => {
+    const wash = mixColors(background, accent, ACCENT_TEXT_WASH_OPACITY);
+    return Math.min(
+      contrastRatio(accentLuminance, hexLuminance(background)),
+      contrastRatio(accentLuminance, hexLuminance(wash)),
+    );
+  };
+  return Math.min(...backgrounds.map(against));
+}
+
+function minimumPlainTextContrast(
+  accent: string,
+  backgrounds: readonly string[],
+): number {
+  const accentLuminance = hexLuminance(accent);
+  return Math.min(
+    ...backgrounds.map((background) =>
+      contrastRatio(accentLuminance, hexLuminance(background)),
+    ),
+  );
+}
+
+function findAccentCorrection(
+  accent: string,
+  backgrounds: readonly string[],
+  score: (hex: string, surfaces: readonly string[]) => number,
+): string | null {
+  const clears = (hex: string) => score(hex, backgrounds) >= ACCENT_TEXT_FLOOR;
+  if (clears(accent)) {
+    return accent;
+  }
+
+  const targets = [FOREGROUND_DARK_FALLBACK, FOREGROUND_LIGHT].sort(
+    (a, b) => score(b, backgrounds) - score(a, backgrounds),
+  );
+  for (let step = 1; step <= MIX_STEPS; step += 1) {
+    for (const target of targets) {
+      const candidate = mixColors(accent, target, step / MIX_STEPS);
+      if (clears(candidate)) {
+        return candidate;
+      }
+    }
+  }
+  return null;
+}
+
+/**
+ * The accent is not only a fill: text-primary and text-control-accent paint it
+ * straight onto page and elevated surfaces, including primary washes up to
+ * 20%. A pale pick in light mode, or a near-black one in dark, then disappears.
+ * Hold custom accents to the same 2.5:1 bar across both plain and tinted uses.
+ *
+ * Find the smallest correction in either direction. Endpoint order is based
+ * on actual worst-case contrast, so a mid-gray background cannot send a
+ * failing accent toward white when black is the readable endpoint. Arbitrary
+ * custom and elevated surfaces can make the stronger wash constraint
+ * impossible; in that case the plain-surface floor remains mandatory.
+ */
+function legibleAccent(accent: string, backgrounds: readonly string[]): string {
+  const washSafe = findAccentCorrection(
+    accent,
+    backgrounds,
+    minimumAccentTextContrast,
+  );
+  if (washSafe) {
+    return washSafe;
+  }
+
+  const plainSafe = findAccentCorrection(
+    accent,
+    backgrounds,
+    minimumPlainTextContrast,
+  );
+  if (plainSafe) {
+    return plainSafe;
+  }
+
+  const targets = [FOREGROUND_DARK_FALLBACK, FOREGROUND_LIGHT].sort(
+    (a, b) =>
+      minimumPlainTextContrast(b, backgrounds) -
+      minimumPlainTextContrast(a, backgrounds),
+  );
+  return targets[0] ?? FOREGROUND_DARK_FALLBACK;
 }
 
 /**
  * FontFaces registered for imported fonts, keyed by family name. The dataUrl is
  * tracked too so a re-import under the same name (new bytes) replaces the face.
  */
-const registeredFontFaces = new Map<string, { face: FontFace; dataUrl: string }>();
+const registeredFontFaces = new Map<
+  string,
+  { face: FontFace; dataUrl: string }
+>();
 
 function syncImportedFonts(fonts: ImportedFont[]): void {
   if (typeof document === "undefined" || !("fonts" in document)) return;
@@ -406,9 +768,8 @@ function syncImportedFonts(fonts: ImportedFont[]): void {
   const wanted = new Map(
     (Array.isArray(fonts) ? fonts : []).map((f) => [f.name, f.dataUrl]),
   );
-  // Drop faces whose name is gone OR whose bytes changed: document.fonts is a
-  // set of FontFace objects, not keyed by family, so a stale face must be
-  // deleted before the new bytes are added.
+  // Drop faces whose name is gone OR whose bytes changed: document.fonts is a set of FontFace
+  // objects, not keyed by family, so a stale face must be deleted before the new bytes are added.
   for (const [name, entry] of registeredFontFaces) {
     if (wanted.get(name) !== entry.dataUrl) {
       document.fonts.delete(entry.face);
@@ -436,12 +797,20 @@ function syncImportedFonts(fonts: ImportedFont[]): void {
 }
 
 /**
- * The custom "Accent" recolors the accent family (toggles, badges, chart-1).
- * Focus/selection rings and button colors (--primary) are deliberately left
- * alone: highlight borders stay neutral and Classic's buttons stay neutral.
+ * The custom "Accent" recolors the whole accent family: toggles and badges
+ * (--control-accent), charts (--chart-1), and the brand color behind primary
+ * buttons, active pills and meter labels (--primary). Only set while the user
+ * has picked an accent, so every palette keeps its own colors by default.
+ *
+ * Focus rings are unaffected: --ring is its own neutral in every palette.
+ * --verified stays pinned to the brand green on purpose, since it signals
+ * status rather than theme.
  */
-const ACCENT_VARS = ["--control-accent", "--chart-1"] as const;
-const ACCENT_FG_VARS = ["--control-accent-foreground"] as const;
+const ACCENT_VARS = ["--control-accent", "--chart-1", "--primary"] as const;
+const ACCENT_FG_VARS = [
+  "--control-accent-foreground",
+  "--primary-foreground",
+] as const;
 
 /**
  * Push the customization onto <html> as inline CSS variables, attributes, and
@@ -463,13 +832,40 @@ export function applyCustomizationToDocument(
   };
 
   const colors = c.colors[resolved];
+  const paletteSurfaces = PALETTE_SURFACES[resolved];
 
-  for (const name of ACCENT_VARS) setVar(name, colors.accent);
+  const accent = colors.accent
+    ? legibleAccent(colors.accent, [
+        colors.background ?? paletteSurfaces.background,
+        paletteSurfaces.elevated,
+      ])
+    : null;
+  for (const name of ACCENT_VARS) setVar(name, accent);
   for (const name of ACCENT_FG_VARS) {
-    setVar(name, colors.accent ? readableForeground(colors.accent) : null);
+    // Keyed off the corrected accent, since that is the color labels sit on.
+    setVar(name, accent ? readableForeground(accent) : null);
   }
   setVar("--background", colors.background);
   setVar("--foreground", colors.foreground);
+  // keep the full-width inset from making narrow panes smaller than wide.
+  setVar(
+    "--custom-chat-max-width",
+    c.chatWidth === "full"
+      ? "max(72rem, calc(100% - 6rem))"
+      : c.chatWidth === "wide"
+        ? "72rem"
+        : null,
+  );
+  // The composer shell fills whatever its parent was capped to, so the cap is
+  // never applied twice. Same result as before at every width.
+  setVar(
+    "--custom-chat-shell-max-width",
+    c.chatWidth === "standard" ? null : "100%",
+  );
+  setVar(
+    "--custom-chat-welcome-padding",
+    c.chatWidth === "standard" ? null : "0px",
+  );
 
   syncImportedFonts(c.importedFonts);
 
@@ -510,13 +906,16 @@ export function applyCustomizationToDocument(
     setVar("--custom-chat-font", null);
   }
 
-  // The UI font size drives a typography scale factor, never the root font
-  // size: rem-based layout geometry must not move with the preference. The
-  // scale reaches text through the --text-* / --text-ui-* / --leading-*
-  // tokens in index.css.
-  if (c.uiFontSize !== null && c.uiFontSize !== UI_FONT_SIZE_RANGE.default) {
-    setVar("--ui-font-scale", String(c.uiFontSize / UI_FONT_SIZE_RANGE.default));
-    el.setAttribute("data-ui-font-size", String(c.uiFontSize));
+  // The UI font size drives a typography scale factor, never the root font size: rem-based layout
+  // geometry must not move with the preference. The scale reaches text through the --text-* /
+  // --text-ui-* / --leading-* tokens in index.css.
+  const effectiveUiFontSize = c.uiFontSize ?? UI_FONT_SIZE_RANGE.default;
+  if (effectiveUiFontSize !== UI_FONT_SIZE_RANGE.default) {
+    setVar(
+      "--ui-font-scale",
+      String(effectiveUiFontSize / UI_FONT_SIZE_CSS_BASE),
+    );
+    el.setAttribute("data-ui-font-size", String(effectiveUiFontSize));
   } else {
     setVar("--ui-font-scale", null);
     el.removeAttribute("data-ui-font-size");
@@ -563,7 +962,8 @@ export function applyCustomizationToDocument(
  * (canvas-confetti, view transitions) that CSS/MotionConfig cannot reach.
  */
 export function prefersReducedMotion(): boolean {
-  const setting = useAppearanceCustomStore.getState().customization.reduceMotion;
+  const setting =
+    useAppearanceCustomStore.getState().customization.reduceMotion;
   if (setting === "on") return true;
   if (setting === "off") return false;
   return (

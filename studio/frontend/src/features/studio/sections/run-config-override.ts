@@ -49,6 +49,8 @@ export function mapRunConfigToOverride(
       ? "rslora"
       : config.use_loftq
         ? "loftq"
-        : "lora",
+        : config.use_dora
+          ? "dora"
+          : "lora",
   };
 }

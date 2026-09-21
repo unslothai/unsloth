@@ -1,14 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import {
-  ChevronDown,
-  CircleAlert,
-  CircleOff,
-  Hand,
-  ShieldCheck,
-} from "lucide-react";
-import { useState } from "react";
+import { ChevronDown, CircleAlert, Hand, ShieldCheck } from "lucide-react";
+import type { ComponentType } from "react";
+import { useEffect, useState } from "react";
+import { useFullAccessAllowed } from "@/features/auth/account-session";
 
 import {
   AlertDialog,
@@ -29,6 +25,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
+import { SparklesGlyph } from "@/lib/sparkles-icon";
 import { Tick02Icon } from "@/lib/tick-icon";
 import { cn } from "@/lib/utils";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -37,33 +34,33 @@ import {
   useChatRuntimeStore,
 } from "./stores/chat-runtime-store";
 
-/**
- * Permission levels for tool calls. Full access stays last because it disables
- * both approval prompts and the code sandbox.
- */
+/** Permission levels for tool calls. Full access stays last because it disables both approval
+ *  prompts and the code sandbox. */
 export const PERMISSION_MODE_OPTIONS: readonly {
   value: PermissionMode;
   label: string;
   description: string;
-  icon: typeof Hand;
+  icon: ComponentType<{ className?: string; strokeWidth?: number }>;
 }[] = [
   {
     value: "ask",
     label: "Ask for approval",
-    description: "Always ask before tool calls edit files or use the internet",
+    description:
+      "Always ask before tool calls, editing files or using the internet",
     icon: Hand,
   },
   {
     value: "auto",
     label: "Approve for me",
-    description: "Only ask for actions detected as potentially unsafe",
+    description:
+      "Run tool calls, but ask before high-risk actions like credential access, privilege escalation, or destructive commands",
     icon: ShieldCheck,
   },
   {
     value: "off",
     label: "Run automatically",
     description: "Run tool calls without approval prompts inside the sandbox",
-    icon: CircleOff,
+    icon: SparklesGlyph,
   },
   {
     value: "full",
@@ -80,24 +77,38 @@ export const FULL_ACCESS_WARNING =
 export function permissionModeOption(mode: PermissionMode) {
   return (
     PERMISSION_MODE_OPTIONS.find((option) => option.value === mode) ??
+    // Unknown values fall back to the default ("Approve for me"), not row 0 ("Ask").
+    PERMISSION_MODE_OPTIONS.find((option) => option.value === "auto") ??
     PERMISSION_MODE_OPTIONS[0]
   );
 }
 
-/** The option rows shared by every permission dropdown/submenu. Non-full
- *  levels apply directly; picking Full access must go through the caller's
- *  danger confirmation, so it's a separate callback. */
+/** The option rows shared by every permission dropdown or submenu. Non-full levels apply
+ *  directly; picking Full access must go through the caller's danger confirmation. */
+function useAccountPermissionMode() {
+  const fullAccessAllowed = useFullAccessAllowed();
+  const permissionMode = useChatRuntimeStore((s) => s.permissionMode);
+  const setPermissionMode = useChatRuntimeStore((s) => s.setPermissionMode);
+  useEffect(() => {
+    if (!fullAccessAllowed && permissionMode === "full") setPermissionMode("auto");
+  }, [fullAccessAllowed, permissionMode, setPermissionMode]);
+  return {
+    permissionMode: !fullAccessAllowed && permissionMode === "full" ? "auto" : permissionMode,
+    fullAccessAllowed,
+  };
+}
+
 export function PermissionModeMenuItems({
   onRequestFullAccess,
 }: {
   onRequestFullAccess: () => void;
 }) {
-  const permissionMode = useChatRuntimeStore((s) => s.permissionMode);
+  const { permissionMode, fullAccessAllowed } = useAccountPermissionMode();
   const setPermissionMode = useChatRuntimeStore((s) => s.setPermissionMode);
 
   return (
     <>
-      {PERMISSION_MODE_OPTIONS.map((option) => (
+      {PERMISSION_MODE_OPTIONS.filter((option) => fullAccessAllowed || option.value !== "full").map((option) => (
         <DropdownMenuItem
           key={option.value}
           onSelect={() => {
@@ -138,8 +149,8 @@ export function PermissionModeMenuItems({
   );
 }
 
-/** Danger confirmation shown before Full access turns on. Self-contained so
- *  the dropdown works outside the chat page (e.g. the Settings dialog). */
+/** Danger confirmation shown before Full access turns on. Self-contained so the dropdown works
+ *  outside the chat page (e.g. the Settings dialog). */
 export function FullAccessConfirmDialog({
   open,
   onOpenChange,
@@ -148,6 +159,8 @@ export function FullAccessConfirmDialog({
   onOpenChange: (open: boolean) => void;
 }) {
   const setPermissionMode = useChatRuntimeStore((s) => s.setPermissionMode);
+  const { fullAccessAllowed } = useAccountPermissionMode();
+  if (!fullAccessAllowed) return null;
 
   return (
     <AlertDialog open={open} onOpenChange={onOpenChange}>
@@ -176,10 +189,8 @@ export function FullAccessConfirmDialog({
   );
 }
 
-/**
- * Select-style dropdown (like the MCP composer menu) for picking the
- * permission level. Used in General settings and the chat settings sheet.
- */
+/** Select-style dropdown (like the MCP composer menu) for picking the permission level. Used in
+ *  General settings and the chat settings sheet. */
 export function PermissionModeDropdown({
   side = "bottom",
   align = "end",
@@ -189,7 +200,7 @@ export function PermissionModeDropdown({
   align?: "start" | "end";
   triggerClassName?: string;
 } = {}) {
-  const permissionMode = useChatRuntimeStore((s) => s.permissionMode);
+  const { permissionMode, fullAccessAllowed } = useAccountPermissionMode();
   const [confirmOpen, setConfirmOpen] = useState(false);
   const active = permissionModeOption(permissionMode);
   const ActiveIcon = active.icon;
@@ -227,8 +238,8 @@ export function PermissionModeDropdown({
             How should tool calls be approved?
           </DropdownMenuLabel>
           <PermissionModeMenuItems
-            // Defer past the menu-close focus restoration so the dialog's
-            // focus trap isn't broken by the dropdown grabbing focus back.
+            // Defer past the menu-close focus restoration so the dialog's focus trap is not broken by the
+            // dropdown grabbing focus back.
             onRequestFullAccess={() =>
               setTimeout(() => setConfirmOpen(true), 0)
             }
@@ -243,19 +254,16 @@ export function PermissionModeDropdown({
   );
 }
 
-/**
- * Composer pill (mirrors the MCP pill) showing the current permission level
- * in the chat box; clicking opens the level dropdown. Danger-styled while
- * Full access is on. The Full access pick routes through the store-driven
- * BypassPermissionsConfirmDialog mounted at the chat-page root, so the
- * warning survives this menu unmounting.
- */
+/** Composer pill showing the current permission level in the chat box; clicking opens the level
+ *  dropdown. Danger-styled while Full access is on. The Full access pick routes through the
+ *  store-driven confirm dialog mounted at the chat-page root, so the warning survives this
+ *  menu unmounting. */
 export function PermissionModeComposerPill({
   side = "bottom",
 }: {
   side?: "top" | "bottom";
 } = {}) {
-  const permissionMode = useChatRuntimeStore((s) => s.permissionMode);
+  const { permissionMode, fullAccessAllowed } = useAccountPermissionMode();
   const setBypassConfirmOpen = useChatRuntimeStore(
     (s) => s.setBypassConfirmOpen,
   );

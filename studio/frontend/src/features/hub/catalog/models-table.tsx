@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { useHfEndpoint } from "@/lib/hf-endpoint";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -28,7 +29,6 @@ import {
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { cn, formatCompact } from "@/lib/utils";
 import {
-  ArrowLeft01Icon,
   ArrowUpDownIcon,
   Copy01Icon,
   Download01Icon,
@@ -40,6 +40,9 @@ import {
   Refresh01Icon,
   ViewSidebarLeftIcon,
 } from "@hugeicons/core-free-icons";
+import {
+  ChevronLeftIcon,
+} from "lucide-react";
 import type { IconSvgElement } from "@hugeicons/react";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { Fragment, type ReactNode, memo, useMemo } from "react";
@@ -220,8 +223,7 @@ export function HubListHeader({
             // avatars below, just inside the row hover's left edge.
             className="hub-section-chevron -ml-3 inline-flex size-8 shrink-0 cursor-pointer items-center justify-center rounded-full text-muted-foreground"
           >
-            <HugeiconsIcon
-              icon={ArrowLeft01Icon}
+            <ChevronLeftIcon
               strokeWidth={2}
               className="size-4"
             />
@@ -476,7 +478,8 @@ function RowActions({
   isDataset: boolean;
   onSelect: (id: string) => void;
 }) {
-  const hfUrl = `https://huggingface.co/${isDataset ? "datasets/" : ""}${row.result.id}`;
+  const hfEndpoint = useHfEndpoint();
+  const hfUrl = `${hfEndpoint}/${isDataset ? "datasets/" : ""}${row.result.id}`;
   const actionClass =
     "pointer-events-auto inline-flex size-7 shrink-0 cursor-pointer items-center justify-center rounded-full text-muted-foreground/70 transition-colors hover:bg-foreground/[0.07] hover:text-foreground focus-visible:text-foreground data-[state=open]:bg-foreground/[0.07] data-[state=open]:text-foreground";
   return (
@@ -576,7 +579,7 @@ function useResultRowModel(
   const taskLabel = isDataset
     ? null
     : formatPipelineTag(row.result.pipelineTag);
-  const unsupported = support?.status === "unsupported";
+  const unsupported = support?.status === "unsupported" && !support?.supportedIn;
   return {
     support,
     unsupported,

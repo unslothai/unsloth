@@ -2,7 +2,13 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { cn } from "@/lib/utils";
-import { useRef, useState } from "react";
+import {
+  forwardRef,
+  useEffect,
+  useImperativeHandle,
+  useRef,
+  useState,
+} from "react";
 
 export function snapToStep(
   value: number,
@@ -28,43 +34,122 @@ function sanitizeNumeric(raw: string, allowNegative: boolean): string {
   return `${sign}${head}${tail}`;
 }
 
-export function NumericValueInput({
-  value,
-  min,
-  max,
-  step,
-  onChange,
-  displayValue,
-  className,
-  ariaLabel,
-  size: sizeAttr,
-  disabled = false,
-}: {
-  value: number;
-  min?: number;
-  max?: number;
-  step: number;
-  onChange: (v: number) => void;
-  displayValue?: string;
-  className?: string;
-  ariaLabel?: string;
-  size?: number;
-  disabled?: boolean;
-}) {
+export type NumericValueInputHandle = {
+  /** Commit a valid focused/same-click draft; null when none is pending. */
+  commit: () => number | null;
+};
+
+export const NumericValueInput = forwardRef<
+  NumericValueInputHandle,
+  {
+    value: number;
+    min?: number;
+    max?: number;
+    step: number;
+    onChange: (v: number) => void;
+    displayValue?: string;
+    derived?: boolean;
+    className?: string;
+    ariaLabel?: string;
+    size?: number;
+    disabled?: boolean;
+    /** Take the width from `className` instead of the value's length. */
+    fixedWidth?: boolean;
+  }
+>(function NumericValueInput(
+  {
+    value,
+    min,
+    max,
+    step,
+    onChange,
+    displayValue,
+    derived = false,
+    className,
+    ariaLabel,
+    size: sizeAttr,
+    disabled = false,
+    fixedWidth = false,
+  },
+  ref,
+) {
   const [focused, setFocused] = useState(false);
   const [draft, setDraft] = useState("");
   const cancelBlurCommitRef = useRef(false);
+  const draftRef = useRef("");
+  const dirtyRef = useRef(false);
+  // Same-click Load: blur commits via onChange and clears dirtyRef before the button onClick runs,
+  // while parent `value` is still stale. Keep the blur result for one imperative commit(); clear
+  // when `value` catches up or on focus or an external edit.
+  const lastBlurCommittedRef = useRef<number | null>(null);
 
-  const commit = (raw: string) => {
+  // The blur bridge is only valid across the single synchronous gesture that set it: blur commits
+  // during a button's mousedown and that button's onClick consumes it before React re-renders. Any
+  // settled render means the gesture is over, so drop the cache on every commit. Keying on
+  // [value] alone missed a Reset that restores the shown value unchanged, so value netted back to
+  // its prior number, the effect never re-ran, and the next Load replayed the removed override.
+  useEffect(() => {
+    lastBlurCommittedRef.current = null;
+  });
+
+  // The shown number is not always the user's -- a placeholder hides it, and a derived
+  // one stands in for a choice never made -- but typing it is still a choice.
+  const isEdit = (final: number) =>
+    final !== value || displayValue != null || derived;
+
+  const commitDraft = (raw: string): number | null => {
     const parsed = Number.parseFloat(raw);
     if (!Number.isFinite(parsed)) {
-      return;
+      return null;
     }
-    const final = snapToStep(parsed, step, min, max);
-    if (final !== value) {
+    // Committing the number already shown means that number, not the nearest one on the
+    // control's grid: a derived value describes what a load resolves to and need not sit
+    // on the grid. Outside what the control accepts it cannot be asked for at all, so it
+    // reads as no commit rather than as a value the blur bridge would hold.
+    const shown = parsed === value;
+    if (shown && ((max != null && parsed > max) || (min != null && parsed < min))) {
+      return null;
+    }
+    const final = shown ? parsed : snapToStep(parsed, step, min, max);
+    if (isEdit(final)) {
       onChange(final);
     }
+    return final;
   };
+
+  useImperativeHandle(
+    ref,
+    () => ({
+      commit: () => {
+        if (dirtyRef.current) {
+          const raw = draftRef.current;
+          const final = commitDraft(raw);
+          dirtyRef.current = false;
+          lastBlurCommittedRef.current = null;
+          if (final == null) {
+            draftRef.current = String(value);
+          }
+          if (focused) {
+            setFocused(false);
+          }
+          return final;
+        }
+        const blurCommitted = lastBlurCommittedRef.current;
+        if (blurCommitted != null) {
+          lastBlurCommittedRef.current = null;
+          if (focused) {
+            setFocused(false);
+          }
+          return blurCommitted;
+        }
+        if (focused) {
+          setFocused(false);
+        }
+        return null;
+      },
+    }),
+    [derived, displayValue, draft, focused, max, min, onChange, step, value],
+  );
 
   const displayed = focused ? draft : (displayValue ?? String(value));
 
@@ -74,40 +159,82 @@ export function NumericValueInput({
       inputMode="decimal"
       disabled={disabled}
       size={sizeAttr}
-      style={{
-        boxSizing: "content-box",
-        width: `calc(${Math.max(displayed.length, 4)}ch + 2px)`,
-      }}
+      style={
+        fixedWidth
+          ? undefined
+          : {
+              boxSizing: "content-box",
+              width: `calc(${Math.max(displayed.length, 4)}ch + 2px)`,
+            }
+      }
       value={displayed}
       aria-label={ariaLabel}
       onFocus={(e) => {
         cancelBlurCommitRef.current = false;
-        setDraft(String(value));
+        dirtyRef.current = false;
+        lastBlurCommittedRef.current = null;
+        const next = String(value);
+        draftRef.current = next;
+        setDraft(next);
         setFocused(true);
         const target = e.currentTarget;
-        requestAnimationFrame(() => target.select());
+        requestAnimationFrame(() => {
+          // Only while this input still holds focus. select() FOCUSES a blurred input in
+          // Chrome, and it takes focus off another element to do it, so an unconditional
+          // select a frame later steals focus back from wherever the user moved to. Two of
+          // these focused in the same task (tab, or a click straight from one field to the
+          // next) then steal from each other every frame forever: each steal fires focus on
+          // the other input, whose onFocus queues the next frame's steal. Measured on
+          // /images with Steps and Guidance: 7870 of 9081 animation frames in 76s scheduled
+          // from here, and every popover opened while it runs is dismissed immediately
+          // because focus keeps landing outside it.
+          if (document.activeElement === target) target.select();
+        });
       }}
       onBlur={() => {
         if (cancelBlurCommitRef.current) {
           cancelBlurCommitRef.current = false;
-        } else {
-          commit(draft);
+          lastBlurCommittedRef.current = null;
+        } else if (dirtyRef.current) {
+          const final = commitDraft(draftRef.current);
+          dirtyRef.current = false;
+          if (final == null) {
+            draftRef.current = String(value);
+            lastBlurCommittedRef.current = null;
+          } else {
+            draftRef.current = String(final);
+            // Only bridge the still-stale parent value when the blur actually dispatched onChange.
+            // Otherwise the parent is already current and there is nothing to bridge; caching here
+            // would leave a stale pin that a later Reset or external edit (which doesn't change the
+            // displayed value) can never clear, so a following Load/Save would recreate the
+            // override Reset removed. Same test as the dispatch, so a click in the same turn as the
+            // blur cannot see them disagree.
+            lastBlurCommittedRef.current = isEdit(final) ? final : null;
+          }
         }
         setFocused(false);
       }}
-      onChange={(e) =>
-        setDraft(sanitizeNumeric(e.target.value, (min ?? 0) < 0))
-      }
+      onChange={(e) => {
+        dirtyRef.current = true;
+        lastBlurCommittedRef.current = null;
+        const next = sanitizeNumeric(e.target.value, (min ?? 0) < 0);
+        draftRef.current = next;
+        setDraft(next);
+      }}
       onKeyDown={(e) => {
         if (e.key === "Enter") {
           e.currentTarget.blur();
         } else if (e.key === "Escape") {
           cancelBlurCommitRef.current = true;
-          setDraft(String(value));
+          dirtyRef.current = false;
+          lastBlurCommittedRef.current = null;
+          const next = String(value);
+          draftRef.current = next;
+          setDraft(next);
           e.currentTarget.blur();
         }
       }}
       className={cn(className)}
     />
   );
-}
+});

@@ -7,10 +7,8 @@
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+. "$SCRIPT_DIR/_harness.sh"
 INSTALL_SH="$SCRIPT_DIR/../../install.sh"
-PASS=0
-FAIL=0
-
 # Extract the helper functions from install.sh and source them
 # (_torch_index_url_leaf is the shared leaf extractor the classifiers call).
 _FUNC_FILE=$(mktemp)
@@ -31,15 +29,6 @@ _FUNC_FILE=$(mktemp)
 . "$_FUNC_FILE"
 rm -f "$_FUNC_FILE"
 
-assert_eq() {
-    _label="$1"; _expected="$2"; _actual="$3"
-    if [ "$_actual" = "$_expected" ]; then
-        echo "  PASS: $_label"; PASS=$((PASS + 1))
-    else
-        echo "  FAIL: $_label (expected '$_expected', got '$_actual')"; FAIL=$((FAIL + 1))
-    fi
-}
-
 echo "=== _torch_flavor_tag ==="
 assert_eq "cu130 wheel"        "cu130" "$(_torch_flavor_tag '2.10.0+cu130')"
 assert_eq "cu128 wheel"        "cu128" "$(_torch_flavor_tag '2.8.0+cu128')"
@@ -52,6 +41,9 @@ assert_eq "nightly cu130"      "cu130" "$(_torch_flavor_tag '2.10.0.dev20250601+
 assert_eq "cu130 with suffix"  "cu130" "$(_torch_flavor_tag '2.10.0+cu130.post1')"
 assert_eq "empty -> empty"     ""      "$(_torch_flavor_tag '')"
 assert_eq "garbage -> cpu"     "cpu"   "$(_torch_flavor_tag 'not-a-version')"
+# Intel XPU wheels carry a +xpu local label; without this arm a correct XPU build reads as "cpu".
+assert_eq "xpu wheel"          "xpu"   "$(_torch_flavor_tag '2.10.0+xpu')"
+assert_eq "nightly xpu"        "xpu"   "$(_torch_flavor_tag '2.11.0.dev20260401+xpu')"
 
 echo "=== _expected_torch_flavor_tag ==="
 assert_eq "cu130 index"        "cu130" "$(_expected_torch_flavor_tag 'https://download.pytorch.org/whl/cu130')"
@@ -83,6 +75,13 @@ assert_eq "suffixed rocm7.2-private" "" "$(_expected_torch_flavor_tag 'https://c
 assert_eq "suffixed rocm7-current"   "" "$(_expected_torch_flavor_tag 'https://co.internal/whl/rocm7-current')"
 assert_eq "two-dot rocm7.2.1"        "" "$(_expected_torch_flavor_tag 'https://co.internal/whl/rocm7.2.1')"
 assert_eq "bare rocm7 stays"       "rocm" "$(_expected_torch_flavor_tag 'https://download.pytorch.org/whl/rocm7')"
+# The xpu leaf is a GPU flavor, so a pinned xpu index repairs a stale CPU wheel. A suffixed
+# xpu-* leaf is a custom mirror pin -> "" (custom), like cu128-private.
+assert_eq "xpu index"              "xpu" "$(_expected_torch_flavor_tag 'https://download.pytorch.org/whl/xpu')"
+assert_eq "xpu trailing /"         "xpu" "$(_expected_torch_flavor_tag 'https://download.pytorch.org/whl/xpu/')"
+assert_eq "mirror xpu leaf"        "xpu" "$(_expected_torch_flavor_tag 'https://my.mirror/pytorch/whl/xpu')"
+assert_eq "query-bearing xpu"      "xpu" "$(_expected_torch_flavor_tag 'https://m/whl/xpu?token=x')"
+assert_eq "suffixed xpu-private"   ""    "$(_expected_torch_flavor_tag 'https://co.internal/whl/xpu-private')"
 
 echo "=== _torch_index_repairable ==="
 assert_eq "cu130 repairable"   "yes"   "$(_torch_index_repairable 'https://download.pytorch.org/whl/cu130')"
@@ -93,6 +92,10 @@ assert_eq "cpu NOT repairable" "no"    "$(_torch_index_repairable 'https://downl
 assert_eq "unknown NOT repair" "no"    "$(_torch_index_repairable 'https://my.mirror/whl/simple')"
 # A suffixed rocm leaf is a verbatim pin, not a --default-index repairable family.
 assert_eq "rocm-private NOT repair" "no" "$(_torch_index_repairable 'https://co.internal/whl/rocm7.2-private')"
+# whl/xpu is a plain PEP 503 index, so a stale CPU wheel under an xpu pin is repairable.
+assert_eq "xpu repairable"     "yes"   "$(_torch_index_repairable 'https://download.pytorch.org/whl/xpu')"
+assert_eq "xpu mirror repair"  "yes"   "$(_torch_index_repairable 'https://my.mirror/pytorch/whl/xpu/')"
+assert_eq "xpu-private NOT repair" "no" "$(_torch_index_repairable 'https://co.internal/whl/xpu-private')"
 
 echo "=== _is_pip_rocm_family_leaf ==="
 assert_family() {

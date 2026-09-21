@@ -132,7 +132,13 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     pkg["allowScripts"] = {renames.get(k, k): v for k, v in policy.items()}
-    pkg_path.write_text(json.dumps(pkg, indent = 2, ensure_ascii = False) + "\n", encoding = "utf-8")
+    # newline = "\n", not the default None, which translates every "\n" to os.linesep. This is a
+    # pre-commit hook running --fix on studio/frontend/package.json, and .gitattributes pins that
+    # file to LF (`studio/frontend/** text=auto eol=lf`), so on Windows the default turned a
+    # two-line pin bump into a whole-file CRLF rewrite. open() rather than write_text(newline =):
+    # write_text only grew `newline` in 3.10 and pyproject still says requires-python >= 3.9.
+    with open(pkg_path, "w", encoding = "utf-8", newline = "\n") as handle:
+        handle.write(json.dumps(pkg, indent = 2, ensure_ascii = False) + "\n")
     print(
         f"sync-allow-scripts: re-pinned {len(renames)} entr{'y' if len(renames) == 1 else 'ies'} in {pkg_path}"
     )

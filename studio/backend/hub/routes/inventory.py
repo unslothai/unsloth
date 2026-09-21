@@ -7,10 +7,20 @@ from __future__ import annotations
 
 from typing import Optional
 
-from fastapi import APIRouter, Body, Depends, Query
+from fastapi import APIRouter, Body, Depends, HTTPException, Query
 
-from auth.authentication import get_current_subject
-from hub.dependencies import get_hf_token
+from auth.authentication import (
+    allow_ambient_hf_token,
+    authenticated_via_api_key,
+    get_current_subject,
+)
+from hub.dependencies import get_hf_token, get_request_hf_token
+from hub.utils.host_paths import (
+    redact_host_paths,
+    redact_inventory_error_detail,
+    redact_inventory_host_paths,
+    resolve_host_path_reference,
+)
 from hub.schemas.downloads import (
     ActiveDownloadsResponse,
     CancelDownloadResponse,
@@ -21,26 +31,27 @@ from hub.schemas.downloads import (
     DownloadStartResponse,
     TransportStatusResponse,
 )
+from hub.utils.hf_tokens import HfTokenArg
 from hub.schemas.inventory import (
     AddScanFolderRequest,
-    BrowseFoldersResponse,
     CachedGgufResponse,
     CachedModelsResponse,
     DeleteCachedModelResponse,
+    DeleteImpactResponse,
     GgufVariantsResponse,
     HiddenModelsResponse,
     LocalModelListResponse,
     ModelsFolderResponse,
-    RecommendedFoldersResponse,
+    OrphanCompanionsResponse,
     RemoveScanFolderResponse,
     ScanFolderInfo,
     ScanFoldersResponse,
 )
 from hub.services.models import (
     cache_inventory,
+    companion_cleanup,
     deletion,
     downloads,
-    folder_browser,
     gguf_variants,
     local_inventory,
 )
@@ -54,22 +65,57 @@ async def list_local_models(
         default = "./models", description = "Directory to scan for local model folders"
     ),
     current_subject: str = Depends(get_current_subject),
+    via_api_key: bool = Depends(authenticated_via_api_key),
 ):
-    return await local_inventory.list_local_models_response(models_dir)
+    # Inside the try: an exception raised while evaluating an argument never reaches the
+    # function it was being passed to, so its detail goes out unredacted.
+    try:
+        payload = await local_inventory.list_local_models_response(models_dir)
+    except HTTPException as error:
+        raise HTTPException(
+            status_code = error.status_code,
+            detail = redact_inventory_error_detail(error.detail, via_api_key = via_api_key),
+            headers = error.headers,
+        ) from error
+    return redact_inventory_host_paths(payload, via_api_key = via_api_key)
 
 
-# Plain `def` (not async): synchronous SQLite + filesystem work runs in
-# FastAPI's thread-pool instead of blocking the event loop.
+# Plain def, not async: synchronous SQLite and filesystem work runs in FastAPI's thread pool instead
+# of blocking the event loop.
 @router.get("/scan-folders", response_model = ScanFoldersResponse)
-def get_scan_folders(current_subject: str = Depends(get_current_subject)):
-    return local_inventory.get_scan_folders_response()
+def get_scan_folders(
+    current_subject: str = Depends(get_current_subject),
+    via_api_key: bool = Depends(authenticated_via_api_key),
+):
+    try:
+        payload = local_inventory.get_scan_folders_response()
+    except HTTPException as error:
+        raise HTTPException(
+            status_code = error.status_code,
+            detail = redact_inventory_error_detail(error.detail, via_api_key = via_api_key),
+            headers = error.headers,
+        ) from error
+    return redact_inventory_host_paths(payload, via_api_key = via_api_key)
 
 
 @router.post("/scan-folders", response_model = ScanFolderInfo, status_code = 201)
 def add_scan_folder_endpoint(
-    body: AddScanFolderRequest, current_subject: str = Depends(get_current_subject)
+    body: AddScanFolderRequest,
+    current_subject: str = Depends(get_current_subject),
+    via_api_key: bool = Depends(authenticated_via_api_key),
 ):
-    return local_inventory.add_scan_folder_response(body.path)
+    # Redacted even though the caller named this path, so a NORMALISED path (symlinks resolved,
+    # a relative one anchored) cannot answer for the host. Inside the try, since an exception
+    # raised while evaluating an argument never reaches the function it was passed to.
+    try:
+        payload = local_inventory.add_scan_folder_response(body.path)
+    except HTTPException as error:
+        raise HTTPException(
+            status_code = error.status_code,
+            detail = redact_inventory_error_detail(error.detail, via_api_key = via_api_key),
+            headers = error.headers,
+        ) from error
+    return redact_inventory_host_paths(payload, via_api_key = via_api_key)
 
 
 @router.delete("/scan-folders/{folder_id}", response_model = RemoveScanFolderResponse)
@@ -79,23 +125,22 @@ def remove_scan_folder_endpoint(
     return local_inventory.remove_scan_folder_response(folder_id)
 
 
-@router.get("/recommended-folders", response_model = RecommendedFoldersResponse)
-def get_recommended_folders(current_subject: str = Depends(get_current_subject)):
-    return folder_browser.get_recommended_folders_response()
-
-
-@router.get("/browse-folders", response_model = BrowseFoldersResponse)
-def browse_folders(
-    path: Optional[str] = Query(None),
-    show_hidden: bool = Query(False),
-    current_subject: str = Depends(get_current_subject),
-):
-    return folder_browser.browse_folders_response(path, show_hidden)
-
-
 @router.get("/models-folder", response_model = ModelsFolderResponse)
-def get_models_folder(current_subject: str = Depends(get_current_subject)):
-    return local_inventory.get_models_folder_response()
+def get_models_folder(
+    current_subject: str = Depends(get_current_subject),
+    via_api_key: bool = Depends(authenticated_via_api_key),
+):
+    # Inside the try, not the redactor's argument list: this route RAISES with the cache path
+    # in the detail.
+    try:
+        payload = local_inventory.get_models_folder_response()
+    except HTTPException as error:
+        raise HTTPException(
+            status_code = error.status_code,
+            detail = redact_inventory_error_detail(error.detail, via_api_key = via_api_key),
+            headers = error.headers,
+        ) from error
+    return redact_inventory_host_paths(payload, via_api_key = via_api_key)
 
 
 @router.get("/gguf-variants", response_model = GgufVariantsResponse)
@@ -106,15 +151,24 @@ async def get_gguf_variants(
     prefer_local_cache: bool = Query(False),
     offline: bool = Query(False),
     local_path: Optional[str] = Query(None),
-    hf_token: Optional[str] = Depends(get_hf_token),
+    hf_token: HfTokenArg = Depends(get_request_hf_token),
     current_subject: str = Depends(get_current_subject),
+    via_api_key: bool = Depends(authenticated_via_api_key),
 ):
-    return await gguf_variants.get_gguf_variants_response(
-        repo_id,
-        prefer_local_cache = prefer_local_cache,
-        offline = offline,
-        local_path = local_path,
-        hf_token = hf_token,
+    # Both identifiers can come back as handles: an API-key caller is handed `ref:` in place of
+    # every host path, and that reference is the only name it has for a custom local GGUF or a
+    # copy in a secondary root. Unresolved, the lookup misses or is answered out of the ACTIVE
+    # cache, a different file. Redacted on the way out because a local listing copies its input
+    # into `repo_id`, which would hand back the path the inventory took trouble to hide.
+    return redact_host_paths(
+        await gguf_variants.get_gguf_variants_response(
+            resolve_host_path_reference(repo_id) or repo_id,
+            prefer_local_cache = prefer_local_cache,
+            offline = offline,
+            local_path = resolve_host_path_reference(local_path) or local_path,
+            hf_token = hf_token,
+        ),
+        via_api_key = via_api_key,
     )
 
 
@@ -122,9 +176,14 @@ async def get_gguf_variants(
 async def download_model(
     body: DownloadModelRequest,
     hf_token: Optional[str] = Depends(get_hf_token),
+    allow_ambient_token: bool = Depends(allow_ambient_hf_token),
     current_subject: str = Depends(get_current_subject),
 ):
-    return await downloads.download_model_response(body, hf_token)
+    return await downloads.download_model_response(
+        body,
+        hf_token,
+        allow_ambient_token = allow_ambient_token,
+    )
 
 
 @router.post("/download/cancel", response_model = CancelDownloadResponse, status_code = 202)
@@ -139,8 +198,14 @@ async def get_download_status(
     repo_id: str = Query(..., description = "HuggingFace repo ID"),
     gguf_variant: str = Query("", description = "Quantization variant (empty for safetensors)"),
     current_subject: str = Depends(get_current_subject),
+    via_api_key: bool = Depends(authenticated_via_api_key),
 ):
-    return await downloads.get_download_status_response(repo_id, gguf_variant)
+    # `error` is the worker's own stderr, kept after `scrub_secrets` only, so polling a failed
+    # download reads the host layout from a route with no path field at all.
+    return redact_host_paths(
+        await downloads.get_download_status_response(repo_id, gguf_variant),
+        via_api_key = via_api_key,
+    )
 
 
 @router.get("/active-downloads", response_model = ActiveDownloadsResponse)
@@ -155,13 +220,17 @@ async def get_active_downloads(
 async def get_model_transport_status(
     repo_id: str = Query(..., description = "HuggingFace repo ID"),
     gguf_variant: str = Query("", description = "Quantization variant (empty for safetensors)"),
-    hf_token: Optional[str] = Depends(get_hf_token),
+    hf_token: HfTokenArg = Depends(get_request_hf_token),
     current_subject: str = Depends(get_current_subject),
+    via_api_key: bool = Depends(authenticated_via_api_key),
 ):
-    return await downloads.get_model_transport_status_response(
-        repo_id,
-        gguf_variant,
-        hf_token,
+    return redact_host_paths(
+        await downloads.get_model_transport_status_response(
+            repo_id,
+            gguf_variant,
+            hf_token,
+        ),
+        via_api_key = via_api_key,
     )
 
 
@@ -174,14 +243,18 @@ async def get_gguf_download_progress(
     repo_id: str = Query(..., description = "HuggingFace repo ID"),
     variant: str = Query("", description = "Quantization variant (e.g. UD-TQ1_0)"),
     expected_bytes: int = Query(0, description = "Expected total download size in bytes"),
-    hf_token: Optional[str] = Depends(get_hf_token),
+    hf_token: HfTokenArg = Depends(get_request_hf_token),
     current_subject: str = Depends(get_current_subject),
+    via_api_key: bool = Depends(authenticated_via_api_key),
 ):
-    return await downloads.get_gguf_download_progress_response(
-        repo_id,
-        variant = variant,
-        expected_bytes = expected_bytes,
-        hf_token = hf_token,
+    return redact_host_paths(
+        await downloads.get_gguf_download_progress_response(
+            repo_id,
+            variant = variant,
+            expected_bytes = expected_bytes,
+            hf_token = hf_token,
+        ),
+        via_api_key = via_api_key,
     )
 
 
@@ -189,40 +262,82 @@ async def get_gguf_download_progress(
 async def get_download_progress(
     repo_id: str = Query(..., description = "HuggingFace repo ID"),
     expected_bytes: int = Query(0, description = "Expected total download size in bytes"),
-    hf_token: Optional[str] = Depends(get_hf_token),
+    hf_token: HfTokenArg = Depends(get_request_hf_token),
     current_subject: str = Depends(get_current_subject),
+    via_api_key: bool = Depends(authenticated_via_api_key),
 ):
-    return await downloads.get_download_progress_response(
-        repo_id,
-        expected_bytes = expected_bytes,
-        hf_token = hf_token,
+    return redact_host_paths(
+        await downloads.get_download_progress_response(
+            repo_id,
+            expected_bytes = expected_bytes,
+            hf_token = hf_token,
+        ),
+        via_api_key = via_api_key,
     )
 
 
 @router.get("/cached-gguf", response_model = CachedGgufResponse)
 async def list_cached_gguf(
-    hf_token: Optional[str] = Depends(get_hf_token),
+    hf_token: HfTokenArg = Depends(get_request_hf_token),
     current_subject: str = Depends(get_current_subject),
+    via_api_key: bool = Depends(authenticated_via_api_key),
 ):
-    return await cache_inventory.list_cached_gguf_response(hf_token)
+    return redact_host_paths(
+        await cache_inventory.list_cached_gguf_response(hf_token), via_api_key = via_api_key
+    )
 
 
 @router.get("/cached-models", response_model = CachedModelsResponse)
 async def list_cached_models(
-    hf_token: Optional[str] = Depends(get_hf_token),
+    hf_token: HfTokenArg = Depends(get_request_hf_token),
     current_subject: str = Depends(get_current_subject),
+    via_api_key: bool = Depends(authenticated_via_api_key),
 ):
-    return await cache_inventory.list_cached_models_response(hf_token)
+    return redact_host_paths(
+        await cache_inventory.list_cached_models_response(hf_token), via_api_key = via_api_key
+    )
 
 
 @router.get("/hidden-models", response_model = HiddenModelsResponse)
-async def list_hidden_models(current_subject: str = Depends(get_current_subject)):
+async def list_hidden_models(
+    current_subject: str = Depends(get_current_subject),
+    via_api_key: bool = Depends(authenticated_via_api_key),
+):
     import asyncio
 
     from routes.models import hidden_model_matchers
 
     needles, exact_ids, exact_paths = await asyncio.to_thread(hidden_model_matchers)
-    return HiddenModelsResponse(needles = needles, exact_ids = exact_ids, exact_paths = exact_paths)
+    return redact_host_paths(
+        HiddenModelsResponse(needles = needles, exact_ids = exact_ids, exact_paths = exact_paths),
+        via_api_key = via_api_key,
+    )
+
+
+@router.post("/delete-impact", response_model = DeleteImpactResponse)
+async def delete_impact(
+    repo_id: str = Body(...),
+    variant: Optional[str] = Body(None),
+    current_subject: str = Depends(get_current_subject),
+):
+    """Preview a delete: bytes reclaimed, shared assets retained, and anything blocking it.
+
+    POST rather than GET because a repo id is a path-shaped value and this reads no cache of its
+    own; it is a pure query and mutates nothing.
+    """
+    return await companion_cleanup.delete_impact_response(repo_id, variant)
+
+
+@router.get("/orphan-companions", response_model = OrphanCompanionsResponse)
+async def orphan_companions(
+    current_subject: str = Depends(get_current_subject),
+    via_api_key: bool = Depends(authenticated_via_api_key),
+):
+    """Cached companion assets no installed model needs. Listing only; removal goes through
+    the ordinary guarded delete."""
+    return redact_host_paths(
+        await companion_cleanup.orphan_companions_response(), via_api_key = via_api_key
+    )
 
 
 @router.delete(
@@ -234,7 +349,17 @@ async def delete_cached_model(
     repo_id: str = Body(...),
     variant: Optional[str] = Body(None),
     cache_path: Optional[str] = Body(None),
-    hf_token: Optional[str] = Depends(get_hf_token),
+    # Free up space's precondition: refuse with 409 if the repo is no longer an unused asset.
+    only_if_orphan: bool = Body(False),
+    hf_token: HfTokenArg = Depends(get_request_hf_token),
     current_subject: str = Depends(get_current_subject),
 ):
-    return await deletion.delete_cached_model_response(repo_id, variant, hf_token, cache_path)
+    # `cache_ref` is the only identifier an API-key caller HAS for a specific copy; omitting it
+    # silently acts on the active root.
+    return await deletion.delete_cached_model_response(
+        repo_id,
+        variant,
+        hf_token,
+        resolve_host_path_reference(cache_path) or cache_path,
+        only_if_orphan,
+    )

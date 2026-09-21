@@ -19,12 +19,14 @@ import {
 import { FolderBrowser } from "@/features/model-picker";
 import {
   AlertCircleIcon,
-  ArrowRight01Icon,
   CancelCircleIcon,
   CheckmarkCircle02Icon,
   FolderSearchIcon,
   Key01Icon,
 } from "@hugeicons/core-free-icons";
+import {
+  ChevronRightIcon,
+} from "lucide-react";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useEffect, useRef, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
@@ -318,7 +320,7 @@ export function ExportRunPanel(props: ExportRunPanelProps) {
 
           {destination === "hub" && (
             <div className="flex flex-col gap-4 px-0.5">
-                  <div className="grid grid-cols-2 gap-3">
+                  <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                     <div className="flex flex-col gap-1.5">
                       <label className="text-xs font-medium text-muted-foreground">
                         Username / Org
@@ -353,7 +355,7 @@ export function ExportRunPanel(props: ExportRunPanelProps) {
                         className="flex items-center gap-1 text-ui-11 text-emerald-600 hover:text-emerald-700 transition-colors"
                       >
                         Get token
-                        <HugeiconsIcon icon={ArrowRight01Icon} className="size-3" />
+                        <ChevronRightIcon className="size-3" />
                       </a>
                     </div>
                     <InputGroup>

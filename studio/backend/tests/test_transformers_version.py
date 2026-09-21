@@ -17,6 +17,31 @@ from unittest.mock import patch
 # ---------------------------------------------------------------------------
 import sys
 
+
+def _shared_setup_1(monkeypatch, self):
+    self._patch_venvs(monkeypatch)
+    monkeypatch.setattr(
+        "utils.transformers_version._check_tokenizer_config_needs_v5", lambda m, t = None: False
+    )
+
+
+def _shared_setup_2(monkeypatch, tmp_path):
+    import utils.transformers_version as tv
+
+    monkeypatch.setattr(tv, "_VENV_T5_LATEST_DIR", str(tmp_path / "venv_t5_latest"))
+    lock = tv._swap_lock_path()
+    lock.parent.mkdir(parents = True, exist_ok = True)
+    return lock, tv
+
+
+def _shared_setup_3(monkeypatch, self, tmp_path):
+    live = self._sidecar(tmp_path / "venv_t5_latest")
+    tv, _ = self._patch(monkeypatch, live)
+    monkeypatch.setattr(tv, "_install_to_dir", lambda pkg, target: False)
+    self._damage(live)
+    return _, live, tv
+
+
 _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
@@ -49,6 +74,7 @@ from utils.transformers_version import (
     _higher_tier,
     _config_json_cache,
     _tokenizer_class_cache,
+    _config_mapping_cache,
     _config_needs_510_cache,
     _config_needs_530_cache,
     _config_needs_550_cache,
@@ -59,9 +85,42 @@ from utils.transformers_version import (
     get_transformers_tier,
     activate_transformers_for_subprocess,
     _venv_dir_is_valid,
+    _venv_dir_is_valid_and_undamaged,
+    _CURRENT_EXT_TAG,
     _ensure_venv_dir,
     hf_endpoint_unreachable,
 )
+
+
+_SELF = object()  # stands in for "the checkpoint directory itself" inside a parametrized config
+
+
+def _write_config(directory: Path, cfg: dict) -> str:
+    """Write ``cfg`` as ``directory/config.json`` and return the directory as a string path."""
+    directory.mkdir(parents = True, exist_ok = True)
+    (directory / "config.json").write_text(json.dumps(cfg))
+    return str(directory)
+
+
+@pytest.fixture(autouse = True)
+def _no_ambient_proxy(monkeypatch):
+    """Module-wide: these tests patch urlopen, which a selected proxy opener bypasses.
+
+    Every remote read here goes through ``_hf_urlopen``, which calls ``opener.open`` when
+    a proxy applies. A runner with HTTPS_PROXY / ALL_PROXY set would then make a real
+    request instead of hitting the patch, so results would track ambient CI connectivity.
+    """
+    for key in (
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "ALL_PROXY",
+        "NO_PROXY",
+        "http_proxy",
+        "https_proxy",
+        "all_proxy",
+        "no_proxy",
+    ):
+        monkeypatch.delenv(key, raising = False)
 
 
 @pytest.fixture(autouse = True)
@@ -92,59 +151,53 @@ def _capturable_logger(monkeypatch):
 class TestResolveBaseModel:
     """Tests for _resolve_base_model() local config fallbacks."""
 
-    def test_adapter_config_takes_priority(self, tmp_path: Path):
-        """adapter_config.json should be preferred over config.json."""
-        adapter_cfg = {"base_model_name_or_path": "meta-llama/Llama-3-8B"}
-        config_cfg = {"_name_or_path": "different/model"}
-        (tmp_path / "adapter_config.json").write_text(json.dumps(adapter_cfg))
-        (tmp_path / "config.json").write_text(json.dumps(config_cfg))
-
-        result = _resolve_base_model(str(tmp_path))
-        assert result == "meta-llama/Llama-3-8B"
-
-    def test_config_json_fallback_model_name(self, tmp_path: Path):
-        """config.json model_name should resolve when no adapter_config."""
-        config_cfg = {"model_name": "Qwen/Qwen3.5-9B"}
-        (tmp_path / "config.json").write_text(json.dumps(config_cfg))
-
-        result = _resolve_base_model(str(tmp_path))
-        assert result == "Qwen/Qwen3.5-9B"
-
-    def test_config_json_fallback_name_or_path(self, tmp_path: Path):
-        """config.json _name_or_path should resolve as secondary fallback."""
-        config_cfg = {"_name_or_path": "Qwen/Qwen3.5-9B"}
-        (tmp_path / "config.json").write_text(json.dumps(config_cfg))
-
-        result = _resolve_base_model(str(tmp_path))
-        assert result == "Qwen/Qwen3.5-9B"
-
-    def test_non_string_base_does_not_crash(self, tmp_path: Path):
-        """A malformed config (list/dict for model_name) must not raise."""
-        config_cfg = {"model_name": ["x"], "_name_or_path": "Qwen/Qwen3.5-9B"}
-        (tmp_path / "config.json").write_text(json.dumps(config_cfg))
-
-        # Skips the non-string model_name and falls through to _name_or_path.
-        assert _resolve_base_model(str(tmp_path)) == "Qwen/Qwen3.5-9B"
-
-    def test_model_name_takes_priority_over_name_or_path(self, tmp_path: Path):
-        """model_name should be preferred over _name_or_path."""
-        config_cfg = {
-            "model_name": "Qwen/Qwen3.5-9B",
-            "_name_or_path": "some/other-model",
-        }
-        (tmp_path / "config.json").write_text(json.dumps(config_cfg))
-
-        result = _resolve_base_model(str(tmp_path))
-        assert result == "Qwen/Qwen3.5-9B"
-
-    def test_config_json_skips_self_referencing(self, tmp_path: Path):
-        """config.json should be ignored if model_name == the checkpoint path."""
-        config_cfg = {"model_name": str(tmp_path)}
-        (tmp_path / "config.json").write_text(json.dumps(config_cfg))
-
-        result = _resolve_base_model(str(tmp_path))
-        # Falls through; does not return the self-referencing path.
-        assert result == str(tmp_path)
+    @pytest.mark.parametrize(
+        "cfg, adapter_cfg, expected",
+        [
+            pytest.param(
+                {"_name_or_path": "different/model"},
+                {"base_model_name_or_path": "meta-llama/Llama-3-8B"},
+                "meta-llama/Llama-3-8B",
+                id = "adapter_config_takes_priority",
+            ),
+            pytest.param(
+                {"model_name": "Qwen/Qwen3.5-9B"},
+                None,
+                "Qwen/Qwen3.5-9B",
+                id = "config_json_fallback_model_name",
+            ),
+            pytest.param(
+                {"_name_or_path": "Qwen/Qwen3.5-9B"},
+                None,
+                "Qwen/Qwen3.5-9B",
+                id = "config_json_fallback_name_or_path",
+            ),
+            # A non-string model_name must not raise; it is skipped for _name_or_path.
+            pytest.param(
+                {"model_name": ["x"], "_name_or_path": "Qwen/Qwen3.5-9B"},
+                None,
+                "Qwen/Qwen3.5-9B",
+                id = "non_string_base_does_not_crash",
+            ),
+            pytest.param(
+                {"model_name": "Qwen/Qwen3.5-9B", "_name_or_path": "some/other-model"},
+                None,
+                "Qwen/Qwen3.5-9B",
+                id = "model_name_takes_priority_over_name_or_path",
+            ),
+            pytest.param(
+                {"model_name": _SELF}, None, _SELF, id = "config_json_skips_self_referencing"
+            ),
+        ],
+    )
+    def test_resolve_base_model(self, tmp_path: Path, cfg, adapter_cfg, expected):
+        cfg = {k: (str(tmp_path) if v is _SELF else v) for k, v in cfg.items()}
+        if adapter_cfg is not None:
+            (tmp_path / "adapter_config.json").write_text(json.dumps(adapter_cfg))
+        _write_config(tmp_path, cfg)
+        assert _resolve_base_model(str(tmp_path)) == (
+            str(tmp_path) if expected is _SELF else expected
+        )
 
     def test_no_config_files(self, tmp_path: Path):
         """Returns original name when no config files are present."""
@@ -196,7 +249,7 @@ class TestRemoteLoraBase:
     def test_fetches_base_from_remote_adapter_config(self, monkeypatch):
         monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
         cfg = {"base_model_name_or_path": "nvidia/NVIDIA-Nemotron-3-Nano-4B"}
-        with patch("urllib.request.urlopen", return_value = self._resp(cfg)):
+        with patch("utils.utils.auth_safe_open", return_value = self._resp(cfg)):
             assert (
                 _remote_lora_base("someuser/my-nemotron-lora") == "nvidia/NVIDIA-Nemotron-3-Nano-4B"
             )
@@ -215,9 +268,9 @@ class TestRemoteLoraBase:
             seen["url"] = req.full_url
             return self._resp({"base_model_name_or_path": "org/base"})
 
-        with patch("urllib.request.urlopen", side_effect = fake_urlopen):
+        with patch("utils.utils.auth_safe_open", side_effect = fake_urlopen):
             assert _remote_lora_base("user/adapter") == "org/base"
-        assert seen["url"].startswith("https://hf.mirror.internal/user/adapter/raw/main/")
+        assert seen["url"].startswith("https://hf.mirror.internal/user/adapter/resolve/main/")
 
     @staticmethod
     def _seed_adapter_cache(
@@ -237,7 +290,7 @@ class TestRemoteLoraBase:
         self._seed_adapter_cache(tmp_path, "user/cached-lora", "nvidia/Nemotron-H-8B")
         monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path))
         monkeypatch.setenv("HF_HUB_OFFLINE", "1")
-        with patch("urllib.request.urlopen") as mock_url:
+        with patch("utils.utils.auth_safe_open") as mock_url:
             assert _remote_lora_base("user/cached-lora") == "nvidia/Nemotron-H-8B"
             mock_url.assert_not_called()  # offline: cache only, no network
 
@@ -245,20 +298,20 @@ class TestRemoteLoraBase:
         self._seed_adapter_cache(tmp_path, "user/cached-lora", "nvidia/Nemotron-H-8B")
         monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path))
         monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
-        with patch("urllib.request.urlopen", side_effect = OSError("boom")):
+        with patch("utils.utils.auth_safe_open", side_effect = OSError("boom")):
             assert _remote_lora_base("user/cached-lora") == "nvidia/Nemotron-H-8B"
 
     def test_offline_uncached_makes_no_request(self, tmp_path: Path, monkeypatch):
         monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path))
         monkeypatch.setenv("HF_HUB_OFFLINE", "1")
-        with patch("urllib.request.urlopen") as mock_url:
+        with patch("utils.utils.auth_safe_open") as mock_url:
             assert _remote_lora_base("org/adapter") is None
             mock_url.assert_not_called()
 
     def test_non_adapter_repo_returns_none(self, tmp_path: Path, monkeypatch):
         monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path))
         monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
-        with patch("urllib.request.urlopen", side_effect = OSError("boom")):
+        with patch("utils.utils.auth_safe_open", side_effect = OSError("boom")):
             assert _remote_lora_base("org/not-an-adapter") is None
 
     def test_existing_relative_path_not_treated_as_repo(self, monkeypatch):
@@ -266,7 +319,7 @@ class TestRemoteLoraBase:
         # a Hub repo: no request, no risk of matching an unrelated remote/cached adapter.
         import utils.paths as paths
         monkeypatch.setattr(paths, "is_local_path", lambda p: True)
-        with patch("urllib.request.urlopen") as mock_url:
+        with patch("utils.utils.auth_safe_open") as mock_url:
             assert _remote_lora_base("outputs/run1") is None
             mock_url.assert_not_called()
 
@@ -279,7 +332,7 @@ class TestRemoteLoraBase:
         monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path))
         monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
         err = urllib.error.HTTPError("url", 404, "Not Found", {}, None)
-        with patch("urllib.request.urlopen", side_effect = err):
+        with patch("utils.utils.auth_safe_open", side_effect = err):
             assert _remote_lora_base("user/was-a-lora") is None
 
     def test_transient_http_error_falls_back_to_cache(self, tmp_path: Path, monkeypatch):
@@ -289,7 +342,7 @@ class TestRemoteLoraBase:
         monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path))
         monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
         err = urllib.error.HTTPError("url", 503, "Service Unavailable", {}, None)
-        with patch("urllib.request.urlopen", side_effect = err):
+        with patch("utils.utils.auth_safe_open", side_effect = err):
             assert _remote_lora_base("user/cached-lora") == "nvidia/Nemotron-H-8B"
 
 
@@ -325,7 +378,7 @@ class TestCheckTokenizerConfigNeedsV5:
         tc = {"tokenizer_class": "LlamaTokenizerFast"}
         (tmp_path / "tokenizer_config.json").write_text(json.dumps(tc))
 
-        with patch("urllib.request.urlopen") as mock_urlopen:
+        with patch("utils.utils.auth_safe_open") as mock_urlopen:
             result = _check_tokenizer_config_needs_v5(str(tmp_path))
             mock_urlopen.assert_not_called()
         assert result is False
@@ -368,11 +421,38 @@ class TestCheckTokenizerConfigNeedsV5:
                 return _Resp(json.dumps({"tokenizer_class": "TokenizersBackend"}))
             raise OSError("HTTP 401")
 
-        monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+        monkeypatch.setattr("utils.utils.auth_safe_open", fake_urlopen)
         assert _check_tokenizer_config_needs_v5("org/gated") is False  # unauth miss
         assert _check_tokenizer_config_needs_v5("org/gated", "tok") is True  # authed hit
         assert seen_auth == [None, "Bearer tok"]
         assert _tokenizer_class_cache[("org/gated", None)] is False  # miss not poisoning
+
+    def test_remote_fetch_respects_hf_endpoint(self, monkeypatch):
+        import utils.transformers_version as tv
+
+        monkeypatch.setattr(tv, "_env_offline", lambda: False)
+        monkeypatch.setenv("HF_ENDPOINT", "https://hf.mirror.internal/")
+        seen = {}
+
+        class _Resp:
+            def read(self):
+                return json.dumps({"tokenizer_class": "TokenizersBackend"}).encode()
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+        def fake_urlopen(req, timeout = 10):
+            seen["url"] = req.full_url
+            return _Resp()
+
+        monkeypatch.setattr("utils.utils.auth_safe_open", fake_urlopen)
+        assert _check_tokenizer_config_needs_v5("org/model") is True
+        assert seen["url"] == (
+            "https://hf.mirror.internal/org/model/resolve/main/tokenizer_config.json"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -427,34 +507,80 @@ class TestCheckConfigNeeds550:
         _config_json_cache.clear()
         _config_needs_550_cache.clear()
 
-    def test_gemma4_architecture(self, tmp_path: Path):
-        """config.json with Gemma4ForConditionalGeneration should return True."""
-        cfg = {
-            "architectures": ["Gemma4ForConditionalGeneration"],
-            "model_type": "gemma4",
-        }
-        (tmp_path / "config.json").write_text(json.dumps(cfg))
-
-        assert _check_config_needs_550(str(tmp_path)) is True
-
-    def test_gemma4_model_type_only(self, tmp_path: Path):
-        """config.json with model_type=gemma4 (no architectures) should return True."""
-        cfg = {"model_type": "gemma4"}
-        (tmp_path / "config.json").write_text(json.dumps(cfg))
-
-        assert _check_config_needs_550(str(tmp_path)) is True
-
-    def test_llama_architecture(self, tmp_path: Path):
-        """config.json with LlamaForCausalLM should return False."""
-        cfg = {"architectures": ["LlamaForCausalLM"], "model_type": "llama"}
-        (tmp_path / "config.json").write_text(json.dumps(cfg))
-
-        assert _check_config_needs_550(str(tmp_path)) is False
+    @pytest.mark.parametrize(
+        "cfg, expected",
+        [
+            pytest.param(
+                {"architectures": ["Gemma4ForConditionalGeneration"], "model_type": "gemma4"},
+                True,
+                id = "gemma4_architecture",
+            ),
+            pytest.param({"model_type": "gemma4"}, True, id = "gemma4_model_type_only"),
+            pytest.param(
+                {"architectures": ["HiggsAudioV2ForConditionalGeneration"]},
+                True,
+                id = "higgs_tts_uses_transformers_550-higgs-tts2-architecture",
+            ),
+            pytest.param(
+                {"model_type": "higgs_audio_v2"},
+                True,
+                id = "higgs_tts_uses_transformers_550-higgs-tts2-model-type",
+            ),
+            pytest.param(
+                {"architectures": ["HiggsMultimodalQwen3ForConditionalGeneration"]},
+                True,
+                id = "higgs_tts_uses_transformers_550-higgs-tts3-architecture",
+            ),
+            pytest.param(
+                {"model_type": "higgs_multimodal_qwen3"},
+                True,
+                id = "higgs_tts_uses_transformers_550-higgs-tts3-model-type",
+            ),
+            # mlx-vlm processors that require Transformers 5 select the 5.5 tier.
+            pytest.param(
+                {"architectures": ["KimiK3ForConditionalGeneration"]},
+                True,
+                id = "mlx_vlm_v5_processor_config-kimi-k3-architecture",
+            ),
+            pytest.param(
+                {"model_type": "kimi_k3"}, True, id = "mlx_vlm_v5_processor_config-kimi-k3-model-type"
+            ),
+            pytest.param(
+                {"architectures": ["LocateAnythingForConditionalGeneration"]},
+                True,
+                id = "mlx_vlm_v5_processor_config-locate-anything-architecture",
+            ),
+            pytest.param(
+                {"model_type": "locateanything"},
+                True,
+                id = "mlx_vlm_v5_processor_config-locate-anything-model-type",
+            ),
+            pytest.param(
+                {"architectures": ["DiffusionGemmaForBlockDiffusion"]},
+                True,
+                id = "mlx_vlm_v5_processor_config-diffusion-gemma-architecture",
+            ),
+            pytest.param(
+                {"model_type": "diffusion_gemma"},
+                True,
+                id = "mlx_vlm_v5_processor_config-diffusion-gemma-model-type",
+            ),
+            pytest.param(
+                {"architectures": ["LlamaForCausalLM"], "model_type": "llama"},
+                False,
+                id = "llama_architecture",
+            ),
+        ],
+    )
+    def test_local_config_json_decides_the_550_tier(
+        self, tmp_path: Path, cfg: dict, expected: bool
+    ):
+        assert _check_config_needs_550(_write_config(tmp_path, cfg)) is expected
 
     def test_no_config_json(self, tmp_path: Path):
         """Missing config.json should return False (fail-open)."""
         # Patch network call to avoid a real fetch.
-        with patch("urllib.request.urlopen") as mock_urlopen:
+        with patch("utils.utils.auth_safe_open") as mock_urlopen:
             mock_urlopen.side_effect = Exception("no network")
             assert _check_config_needs_550(str(tmp_path)) is False
 
@@ -473,7 +599,7 @@ class TestCheckConfigNeeds550:
         cfg = {"architectures": ["LlamaForCausalLM"]}
         (tmp_path / "config.json").write_text(json.dumps(cfg))
 
-        with patch("urllib.request.urlopen") as mock_urlopen:
+        with patch("utils.utils.auth_safe_open") as mock_urlopen:
             _check_config_needs_550(str(tmp_path))
             mock_urlopen.assert_not_called()
 
@@ -490,71 +616,58 @@ class TestCheckConfigNeeds510:
         _config_json_cache.clear()
         _config_needs_510_cache.clear()
 
-    def test_gemma4_unified_architecture(self, tmp_path: Path):
-        """config.json with Gemma4UnifiedForConditionalGeneration should return True."""
-        cfg = {
-            "architectures": ["Gemma4UnifiedForConditionalGeneration"],
-            "model_type": "gemma4_unified",
-        }
-        (tmp_path / "config.json").write_text(json.dumps(cfg))
-
-        assert _check_config_needs_510(str(tmp_path)) is True
-
-    def test_gemma4_unified_model_type_only(self, tmp_path: Path):
-        """config.json with model_type=gemma4_unified should return True."""
-        cfg = {"model_type": "gemma4_unified"}
-        (tmp_path / "config.json").write_text(json.dumps(cfg))
-
-        assert _check_config_needs_510(str(tmp_path)) is True
-
-    def test_gemma4_unified_assistant_architecture(self, tmp_path: Path):
-        """Assistant Gemma 4 Unified configs should return True."""
-        cfg = {
-            "architectures": ["Gemma4UnifiedAssistantForCausalLM"],
-            "model_type": "gemma4_unified_assistant",
-        }
-        (tmp_path / "config.json").write_text(json.dumps(cfg))
-
-        assert _check_config_needs_510(str(tmp_path)) is True
-
-    def test_gemma4_unified_assistant_model_type_only(self, tmp_path: Path):
-        """Assistant Gemma 4 Unified model_type should return True."""
-        cfg = {"model_type": "gemma4_unified_assistant"}
-        (tmp_path / "config.json").write_text(json.dumps(cfg))
-
-        assert _check_config_needs_510(str(tmp_path)) is True
-
-    def test_gemma4_assistant_architecture(self, tmp_path: Path):
-        """Assistant Gemma 4 configs should return True."""
-        cfg = {
-            "architectures": ["Gemma4AssistantForCausalLM"],
-            "model_type": "gemma4_assistant",
-        }
-        (tmp_path / "config.json").write_text(json.dumps(cfg))
-
-        assert _check_config_needs_510(str(tmp_path)) is True
-
-    def test_gemma4_assistant_model_type_only(self, tmp_path: Path):
-        """Assistant Gemma 4 model_type should return True."""
-        cfg = {"model_type": "gemma4_assistant"}
-        (tmp_path / "config.json").write_text(json.dumps(cfg))
-
-        assert _check_config_needs_510(str(tmp_path)) is True
-
-    def test_gemma4_non_unified_returns_false(self, tmp_path: Path):
-        """Older Gemma 4 config should stay on the 550 tier."""
-        cfg = {
-            "architectures": ["Gemma4ForConditionalGeneration"],
-            "model_type": "gemma4",
-        }
-        (tmp_path / "config.json").write_text(json.dumps(cfg))
-
-        assert _check_config_needs_510(str(tmp_path)) is False
+    @pytest.mark.parametrize(
+        "cfg, expected",
+        [
+            pytest.param(
+                {
+                    "architectures": ["Gemma4UnifiedForConditionalGeneration"],
+                    "model_type": "gemma4_unified",
+                },
+                True,
+                id = "gemma4_unified_architecture",
+            ),
+            pytest.param(
+                {"model_type": "gemma4_unified"}, True, id = "gemma4_unified_model_type_only"
+            ),
+            pytest.param(
+                {
+                    "architectures": ["Gemma4UnifiedAssistantForCausalLM"],
+                    "model_type": "gemma4_unified_assistant",
+                },
+                True,
+                id = "gemma4_unified_assistant_architecture",
+            ),
+            pytest.param(
+                {"model_type": "gemma4_unified_assistant"},
+                True,
+                id = "gemma4_unified_assistant_model_type_only",
+            ),
+            pytest.param(
+                {"architectures": ["Gemma4AssistantForCausalLM"], "model_type": "gemma4_assistant"},
+                True,
+                id = "gemma4_assistant_architecture",
+            ),
+            pytest.param(
+                {"model_type": "gemma4_assistant"}, True, id = "gemma4_assistant_model_type_only"
+            ),
+            # Older Gemma 4 stays on the 550 tier.
+            pytest.param(
+                {"architectures": ["Gemma4ForConditionalGeneration"], "model_type": "gemma4"},
+                False,
+                id = "gemma4_non_unified_returns_false",
+            ),
+        ],
+    )
+    def test_local_config_json_decides_the_510_tier(
+        self, tmp_path: Path, cfg: dict, expected: bool
+    ):
+        assert _check_config_needs_510(_write_config(tmp_path, cfg)) is expected
 
     def test_no_config_json(self, tmp_path: Path):
         """Missing config.json should return False (fail-open)."""
         # Patch network call to avoid real fetch
-        with patch("urllib.request.urlopen") as mock_urlopen:
+        with patch("utils.utils.auth_safe_open") as mock_urlopen:
             mock_urlopen.side_effect = Exception("no network")
             assert _check_config_needs_510(str(tmp_path)) is False
 
@@ -573,7 +686,7 @@ class TestCheckConfigNeeds510:
         cfg = {"architectures": ["LlamaForCausalLM"]}
         (tmp_path / "config.json").write_text(json.dumps(cfg))
 
-        with patch("urllib.request.urlopen") as mock_urlopen:
+        with patch("utils.utils.auth_safe_open") as mock_urlopen:
             _check_config_needs_510(str(tmp_path))
             mock_urlopen.assert_not_called()
 
@@ -586,12 +699,24 @@ class TestCheckConfigNeeds510:
 class TestNemotronHNeedsMlpSupport:
     """Dense NemotronH configs (MLP layers) require transformers >= 5.10."""
 
-    def test_hybrid_override_pattern_with_dash(self):
+    @pytest.mark.parametrize(
+        "expected_model_type, expected_hybrid_override_pattern, expected",
+        [
+            pytest.param("nemotron_h", "M-M-M*-M-", True, id = "hybrid_override_pattern_with_dash"),
+            # A pure MoE NemotronH (no MLP) does not need the 5.10 tier.
+            pytest.param("nemotron_h", "MEME*MEM", False, id = "nemotron_h_moe_only_returns_false"),
+            # The dash heuristic only applies to nemotron_h configs.
+            pytest.param("llama", "M-M-", False, id = "non_nemotron_with_dash_returns_false"),
+        ],
+    )
+    def test_nemotron_h_needs_mlp_support_cases(
+        self, expected_model_type, expected_hybrid_override_pattern, expected
+    ):
         cfg = {
-            "model_type": "nemotron_h",
-            "hybrid_override_pattern": "M-M-M*-M-",
+            "model_type": expected_model_type,
+            "hybrid_override_pattern": expected_hybrid_override_pattern,
         }
-        assert _nemotron_h_needs_mlp_support(cfg) is True
+        assert _nemotron_h_needs_mlp_support(cfg) is expected
 
     def test_layers_block_type_with_mlp(self):
         cfg = {
@@ -599,19 +724,6 @@ class TestNemotronHNeedsMlpSupport:
             "layers_block_type": ["mamba", "mlp", "attention", "mamba"],
         }
         assert _nemotron_h_needs_mlp_support(cfg) is True
-
-    def test_nemotron_h_moe_only_returns_false(self):
-        """A pure MoE NemotronH (no MLP) does not need the 5.10 tier."""
-        cfg = {
-            "model_type": "nemotron_h",
-            "hybrid_override_pattern": "MEME*MEM",
-        }
-        assert _nemotron_h_needs_mlp_support(cfg) is False
-
-    def test_non_nemotron_with_dash_returns_false(self):
-        """The dash heuristic only applies to nemotron_h configs."""
-        cfg = {"model_type": "llama", "hybrid_override_pattern": "M-M-"}
-        assert _nemotron_h_needs_mlp_support(cfg) is False
 
     def test_config_needs_510_includes_dense_nemotron_h(self):
         cfg = {
@@ -704,7 +816,7 @@ class TestConfigJsonHfCacheFallback:
         self._seed_cache(tmp_path, "unsloth/NVIDIA-Nemotron-3-Nano-4B", cfg)
         monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path))
         monkeypatch.setenv("HF_HUB_OFFLINE", "1")
-        with patch("urllib.request.urlopen") as mock_url:
+        with patch("utils.utils.auth_safe_open") as mock_url:
             assert _load_config_json("unsloth/NVIDIA-Nemotron-3-Nano-4B") == cfg
             mock_url.assert_not_called()
 
@@ -715,21 +827,35 @@ class TestConfigJsonHfCacheFallback:
         monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path))
         monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
         monkeypatch.delenv("TRANSFORMERS_OFFLINE", raising = False)
-        with patch("urllib.request.urlopen", return_value = _hf_response(fresh)):
+        with patch("utils.utils.auth_safe_open", return_value = _hf_response(fresh)):
             assert _load_config_json("org/model") == fresh  # network wins, not stale cache
+
+    def test_remote_fetch_respects_hf_endpoint(self, monkeypatch):
+        monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
+        monkeypatch.delenv("TRANSFORMERS_OFFLINE", raising = False)
+        monkeypatch.setenv("HF_ENDPOINT", "https://hf.mirror.internal/")
+        seen = {}
+
+        def fake_urlopen(req, timeout = 10):
+            seen["url"] = req.full_url
+            return _hf_response({"model_type": "llama"})
+
+        with patch("utils.utils.auth_safe_open", side_effect = fake_urlopen):
+            assert _load_config_json("org/model") == {"model_type": "llama"}
+        assert seen["url"] == "https://hf.mirror.internal/org/model/resolve/main/config.json"
 
     def test_network_failure_falls_back_to_cache(self, tmp_path: Path, monkeypatch):
         cfg = {"model_type": "nemotron_h", "hybrid_override_pattern": "M-M*-"}
         self._seed_cache(tmp_path, "org/model", cfg)
         monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path))
         monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
-        with patch("urllib.request.urlopen", side_effect = OSError("boom")):
+        with patch("utils.utils.auth_safe_open", side_effect = OSError("boom")):
             assert _load_config_json("org/model") == cfg
 
     def test_offline_uncached_returns_none(self, tmp_path: Path, monkeypatch):
         monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path))
         monkeypatch.setenv("HF_HUB_OFFLINE", "1")
-        with patch("urllib.request.urlopen") as mock_url:
+        with patch("utils.utils.auth_safe_open") as mock_url:
             assert _load_config_json("private/unknown") is None
             mock_url.assert_not_called()
 
@@ -760,10 +886,10 @@ class TestConfigJsonHfCacheFallback:
         monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path))
         monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
         # Network fails -> serve the cached snapshot, but it must not be memoized.
-        with patch("urllib.request.urlopen", side_effect = OSError("boom")):
+        with patch("utils.utils.auth_safe_open", side_effect = OSError("boom")):
             assert _load_config_json("org/model") == stale
         # Connectivity returns: the next call must hit the network for the fresh config.
-        with patch("urllib.request.urlopen", return_value = _hf_response(fresh)):
+        with patch("utils.utils.auth_safe_open", return_value = _hf_response(fresh)):
             assert _load_config_json("org/model") == fresh
 
     def test_auth_failure_does_not_serve_cache(self, tmp_path: Path, monkeypatch):
@@ -778,7 +904,7 @@ class TestConfigJsonHfCacheFallback:
         for code in (401, 403, 404):
             _config_json_cache.clear()
             err = urllib.error.HTTPError("url", code, "denied", {}, None)
-            with patch("urllib.request.urlopen", side_effect = err):
+            with patch("utils.utils.auth_safe_open", side_effect = err):
                 assert _load_config_json("private/model") is None
 
     def test_server_error_still_falls_back_to_cache(self, tmp_path: Path, monkeypatch):
@@ -790,7 +916,7 @@ class TestConfigJsonHfCacheFallback:
         monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
         # A 5xx is transient, not an access decision: keep serving the cache.
         err = urllib.error.HTTPError("url", 503, "busy", {}, None)
-        with patch("urllib.request.urlopen", side_effect = err):
+        with patch("utils.utils.auth_safe_open", side_effect = err):
             assert _load_config_json("org/model") == cfg
 
 
@@ -823,11 +949,11 @@ class TestTierCheckTransientRetry:
         monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path))
         monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
         # Network blip -> serve the cache, but do NOT pin the tier result.
-        with patch("urllib.request.urlopen", side_effect = OSError("boom")):
+        with patch("utils.utils.auth_safe_open", side_effect = OSError("boom")):
             assert _check_config_needs_510("org/model") is False
         assert ("org/model", None) not in _config_needs_510_cache
         # Connectivity returns: the next call re-fetches and sees the higher tier.
-        with patch("urllib.request.urlopen", return_value = _hf_response(fresh)):
+        with patch("utils.utils.auth_safe_open", return_value = _hf_response(fresh)):
             assert _check_config_needs_510("org/model") is True
         assert _config_needs_510_cache[("org/model", None)] is True  # definitive read memoized
 
@@ -835,7 +961,7 @@ class TestTierCheckTransientRetry:
         fresh = {"architectures": ["Gemma4ForConditionalGeneration"]}  # needs 550
         monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path))
         monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
-        with patch("urllib.request.urlopen", return_value = _hf_response(fresh)) as mock_url:
+        with patch("utils.utils.auth_safe_open", return_value = _hf_response(fresh)) as mock_url:
             assert _check_config_needs_550("org/model") is True
             assert _check_config_needs_550("org/model") is True
             assert mock_url.call_count == 1  # second call served from the tier cache
@@ -863,47 +989,65 @@ class TestGetTransformersTier:
         _config_needs_510_cache.clear()
         _config_needs_550_cache.clear()
 
-    def test_gemma4_substring_returns_550(self):
-        assert get_transformers_tier("google/gemma-4-E2B-it") == "550"
+    @pytest.mark.parametrize(
+        "model_name, expected",
+        [
+            pytest.param("google/gemma-4-E2B-it", "550", id = "gemma4_substring_returns_550"),
+            pytest.param("unsloth/gemma-4-12b-it", "510", id = "gemma4_12b_substring_returns_510"),
+            pytest.param(
+                "google/gemma-4-E2B-it-assistant",
+                "510",
+                id = "gemma4_assistant_substring_returns_510",
+            ),
+            pytest.param("unsloth/gemma4-E4B-it", "550", id = "gemma4_alt_substring_returns_550"),
+            # 5.5.0 is checked before 5.3.0 - a model matching both gets 550.
+            pytest.param("gemma-4-model", "550", id = "550_checked_before_530"),
+        ],
+    )
+    def test_get_transformers_tier_cases(self, model_name, expected):
+        assert get_transformers_tier(model_name) == expected
 
-    def test_gemma4_12b_substring_returns_510(self):
-        assert get_transformers_tier("unsloth/gemma-4-12b-it") == "510"
+    @pytest.mark.parametrize(
+        "model_id",
+        (
+            "moonshotai/Kimi-K3",
+            "mlx-community/KimiK3-4bit",
+            "nvidia/LocateAnything-3B",
+            "mlx-community/locate-anything-3b-4bit",
+            "mlx-community/diffusiongemma-26B-A4B-it-4bit",
+            "mlx-community/diffusion-gemma-26B-A4B-it-4bit",
+        ),
+    )
+    def test_mlx_vlm_v5_processor_name_returns_550(self, model_id: str):
+        assert get_transformers_tier(model_id) == "550"
 
-    def test_gemma4_assistant_substring_returns_510(self):
-        assert get_transformers_tier("google/gemma-4-E2B-it-assistant") == "510"
-
-    def test_gemma4_alt_substring_returns_550(self):
-        assert get_transformers_tier("unsloth/gemma4-E4B-it") == "550"
-
-    def test_gemma4_config_json_returns_550(self, tmp_path: Path):
-        """Local checkpoint with Gemma4 architecture → 550."""
-        cfg = {
-            "architectures": ["Gemma4ForConditionalGeneration"],
-            "model_type": "gemma4",
-        }
+    @pytest.mark.parametrize(
+        "architecture, model_type, expected",
+        [
+            pytest.param(
+                "Gemma4ForConditionalGeneration",
+                "gemma4",
+                "550",
+                id = "gemma4_config_json_returns_550",
+            ),
+            pytest.param(
+                "Gemma4UnifiedForConditionalGeneration",
+                "gemma4_unified",
+                "510",
+                id = "gemma4_unified_config_json_returns_510",
+            ),
+            pytest.param(
+                "Gemma4AssistantForCausalLM",
+                "gemma4_assistant",
+                "510",
+                id = "gemma4_assistant_config_json_returns_510",
+            ),
+        ],
+    )
+    def test_get_transformers_tier_cases_2(self, tmp_path, architecture, model_type, expected):
+        cfg = {"architectures": [architecture], "model_type": model_type}
         (tmp_path / "config.json").write_text(json.dumps(cfg))
-
-        assert get_transformers_tier(str(tmp_path)) == "550"
-
-    def test_gemma4_unified_config_json_returns_510(self, tmp_path: Path):
-        """Local checkpoint with Gemma4 Unified architecture → 510."""
-        cfg = {
-            "architectures": ["Gemma4UnifiedForConditionalGeneration"],
-            "model_type": "gemma4_unified",
-        }
-        (tmp_path / "config.json").write_text(json.dumps(cfg))
-
-        assert get_transformers_tier(str(tmp_path)) == "510"
-
-    def test_gemma4_assistant_config_json_returns_510(self, tmp_path: Path):
-        """Local checkpoint with Gemma4 Assistant architecture → 510."""
-        cfg = {
-            "architectures": ["Gemma4AssistantForCausalLM"],
-            "model_type": "gemma4_assistant",
-        }
-        (tmp_path / "config.json").write_text(json.dumps(cfg))
-
-        assert get_transformers_tier(str(tmp_path)) == "510"
+        assert get_transformers_tier(str(tmp_path)) == expected
 
     def test_dense_nemotron_h_config_json_returns_510(self, tmp_path: Path):
         """Local dense NemotronH checkpoint → 510 (MLP layers need >= 5.10)."""
@@ -917,7 +1061,7 @@ class TestGetTransformersTier:
             json.dumps({"tokenizer_class": "TokenizersBackend"})
         )
 
-        with patch("urllib.request.urlopen") as mock_urlopen:
+        with patch("utils.utils.auth_safe_open") as mock_urlopen:
             assert get_transformers_tier(str(tmp_path)) == "510"
             mock_urlopen.assert_not_called()
 
@@ -939,7 +1083,7 @@ class TestGetTransformersTier:
                     }
                 ).encode()
 
-        with patch("urllib.request.urlopen", return_value = _Response()):
+        with patch("utils.utils.auth_safe_open", return_value = _Response()):
             assert get_transformers_tier("unsloth/NVIDIA-Nemotron-3-Nano-4B") == "510"
 
     def test_local_config_json_short_circuits_path_substrings(self, tmp_path: Path):
@@ -958,7 +1102,7 @@ class TestGetTransformersTier:
             json.dumps({"tokenizer_class": "LlamaTokenizerFast"})
         )
 
-        with patch("urllib.request.urlopen") as mock_urlopen:
+        with patch("utils.utils.auth_safe_open") as mock_urlopen:
             assert get_transformers_tier(str(model_dir)) == "default"
             mock_urlopen.assert_not_called()
 
@@ -980,7 +1124,7 @@ class TestGetTransformersTier:
                     }
                 ).encode()
 
-        with patch("urllib.request.urlopen", return_value = _Response()) as mock_urlopen:
+        with patch("utils.utils.auth_safe_open", return_value = _Response()) as mock_urlopen:
             assert get_transformers_tier("org/no-fast-substring-model") == "550"
 
         assert mock_urlopen.call_count == 1
@@ -1027,10 +1171,6 @@ class TestGetTransformersTier:
             ),
         ):
             assert get_transformers_tier("meta-llama/Llama-3-8B") == "default"
-
-    def test_550_checked_before_530(self):
-        """5.5.0 is checked before 5.3.0 - a model matching both gets 550."""
-        assert get_transformers_tier("gemma-4-model") == "550"
 
     # ---- issue #6103: the tier decision must be traceable in the logs ----
 
@@ -1370,6 +1510,10 @@ class TestProbeGating:
         _config_needs_510_cache.clear()
         _config_needs_550_cache.clear()
         _tokenizer_class_cache.clear()
+        # Sixth cache, and the one this class used to miss. get_transformers_tier consults
+        # CONFIG_MAPPING_NAMES per tier and upgrades a model_type the ambient default does
+        # not ship, so a mapping parsed by an earlier test decides the answer here.
+        _config_mapping_cache.clear()
 
     def _patch_venvs(self, monkeypatch):
         for fn in (
@@ -1415,12 +1559,14 @@ class TestProbeGating:
     # ---- version-field probe is default-first (no mis-routing of 4.x models) ----
 
     def test_version_field_probe_stays_default_when_default_parses(self, monkeypatch):
-        self._patch_venvs(monkeypatch)
-        monkeypatch.setattr(
-            "utils.transformers_version._check_tokenizer_config_needs_v5", lambda m, t = None: False
-        )
+        _shared_setup_1(monkeypatch, self)
+        # A model_type the ambient default DOES ship. "brandnew" is in none of the
+        # mappings, so the static config-mapping tier upgraded it to 530 before the
+        # version-field probe under test ever ran, and the assert below only passed
+        # when an earlier test had left _config_mapping_cache in a state that skipped
+        # that path. The probe, not the mapping upgrade, is the subject here.
         _config_json_cache[("org/new", None)] = {
-            "model_type": "brandnew",
+            "model_type": "llama",
             "transformers_version": "5.0.0",
         }
         seen = []
@@ -1434,12 +1580,10 @@ class TestProbeGating:
     def test_version_field_probe_escalates_when_default_fails(self, monkeypatch):
         import utils.transformers_version as tv
 
-        self._patch_venvs(monkeypatch)
-        monkeypatch.setattr(
-            "utils.transformers_version._check_tokenizer_config_needs_v5", lambda m, t = None: False
-        )
+        _shared_setup_1(monkeypatch, self)
+        # Shipped by the ambient default, for the same reason as the test above.
         _config_json_cache[("org/new", None)] = {
-            "model_type": "brandnew",
+            "model_type": "llama",
             "transformers_version": "5.6.0",
         }
         results = iter([_proc(1, "KeyError: 'x'"), _proc(1, "KeyError: 'x'"), _proc(0)])
@@ -1451,11 +1595,45 @@ class TestProbeGating:
         assert get_transformers_tier("org/new") == "550"
         assert seen == ["", tv._VENV_T5_530_DIR, tv._VENV_T5_550_DIR]
 
-    def test_ordinary_4x_config_does_not_probe(self, monkeypatch):
-        self._patch_venvs(monkeypatch)
+    def test_a_model_type_the_default_lacks_never_reaches_the_version_field_probe(
+        self, monkeypatch
+    ):
+        """The mapping check answers first, and short-circuits the probe below it.
+
+        This ordering is what quietly invalidated the two tests above. They pinned
+        model_type "brandnew", which no mapping ships, so once #7043 landed the mapping
+        check answered before the version-field probe they were written for ever ran, and
+        they began asserting the wrong branch's answer. Nothing pinned the ordering, so
+        the only symptom was those two failing in a way that read like a probe bug.
+
+        Pinning it here means a future reshuffle that puts the probe first fails as
+        itself, and the two tests above keep testing the probe rather than this.
+        """
+        import utils.transformers_version as tv
+
+        _shared_setup_1(monkeypatch, self)
         monkeypatch.setattr(
-            "utils.transformers_version._check_tokenizer_config_needs_v5", lambda m, t = None: False
+            tv,
+            "_config_model_types",
+            lambda tier: frozenset({"llama"} if tier == "default" else {"llama", "brandnew"}),
         )
+        # Declares 5.x too, so the version-field probe below WOULD fire if it were reached.
+        _config_json_cache[("org/brandnew", None)] = {
+            "model_type": "brandnew",
+            "transformers_version": "5.0.0",
+        }
+        probed = []
+        monkeypatch.setattr(
+            "utils.transformers_version.subprocess.run",
+            lambda cmd, **k: probed.append(cmd[3]) or _proc(0),
+        )
+
+        tier = get_transformers_tier("org/brandnew")
+        assert tier != "default", f"a model_type the default lacks must be raised, got {tier!r}"
+        assert probed == [], "the mapping check must answer before any sidecar probe runs"
+
+    def test_ordinary_4x_config_does_not_probe(self, monkeypatch):
+        _shared_setup_1(monkeypatch, self)
         _config_json_cache[("org/llama", None)] = {
             "model_type": "llama",
             "transformers_version": "4.57.0",
@@ -1527,7 +1705,7 @@ class TestLocalCheckpointFilesAppear:
         def boom(*a, **k):
             raise AssertionError("a local checkpoint must not be fetched from the Hub")
 
-        monkeypatch.setattr("urllib.request.urlopen", boom)
+        monkeypatch.setattr("utils.utils.auth_safe_open", boom)
         # Before the file exists: not 5.x, no network, and the miss must not be pinned.
         assert _check_tokenizer_config_needs_v5(local) is False
         # The file appears with a 5.x-only tokenizer -> the next call must read it.
@@ -1542,7 +1720,7 @@ class TestLocalCheckpointFilesAppear:
         def boom(*a, **k):
             raise AssertionError("a local checkpoint must not be fetched from the Hub")
 
-        monkeypatch.setattr("urllib.request.urlopen", boom)
+        monkeypatch.setattr("utils.utils.auth_safe_open", boom)
         assert _load_config_json(local) is None
         (tmp_path / "config.json").write_text(json.dumps({"model_type": "gemma4"}))
         assert _load_config_json(local) == {"model_type": "gemma4"}
@@ -1739,6 +1917,436 @@ class TestVenvDirIsValidLogging:
 
 
 # ---------------------------------------------------------------------------
+# _venv_dir_is_valid_and_undamaged — issue #7715
+# A sidecar whose METADATA survived a disk-full or an interrupted pip passes
+# every package-level check, so the wipe-and-reinstall in _ensure_venv_dir
+# never fires and the worker dies importing transformers instead.
+# ---------------------------------------------------------------------------
+
+
+class TestVenvDirFileIntegrity:
+    def _make_venv(
+        self,
+        venv_dir: Path,
+        pkg: str = "transformers",
+        version: str = "5.3.0",
+        files: dict | None = None,
+        record_extra: list | None = None,
+    ) -> Path:
+        """Fake target-dir install of *pkg* with a RECORD matching what it wrote."""
+        di = venv_dir / f"{pkg}-{version}.dist-info"
+        di.mkdir(parents = True)
+        (di / "METADATA").write_text(f"Name: {pkg}\nVersion: {version}\n")
+        files = files if files is not None else {f"{pkg}/__init__.py": "x" * 40}
+        rows = []
+        for rel, body in files.items():
+            path = venv_dir / rel
+            path.parent.mkdir(parents = True, exist_ok = True)
+            path.write_text(body)
+            rows.append(f"{rel},sha256=deadbeef,{len(body)}")
+        rows.extend(record_extra or [])
+        # pip records its own metadata with a blank size, as real wheels do.
+        rows.append(f"{pkg}-{version}.dist-info/METADATA,sha256=cafe,")
+        rows.append(f"{pkg}-{version}.dist-info/RECORD,,")
+        (di / "RECORD").write_text("\n".join(rows) + "\n")
+        return venv_dir
+
+    def test_intact_sidecar_is_valid(self, tmp_path: Path):
+        venv_dir = self._make_venv(tmp_path / "venv")
+        assert _venv_dir_is_valid_and_undamaged(str(venv_dir), ("transformers==5.3.0",))
+
+    def test_truncated_file_is_detected(self, tmp_path: Path, caplog):
+        venv_dir = self._make_venv(tmp_path / "venv")
+        (venv_dir / "transformers" / "__init__.py").write_text("x")  # disk-full shape
+
+        caplog.set_level(logging.INFO)
+        result = _venv_dir_is_valid_and_undamaged(str(venv_dir), ("transformers==5.3.0",))
+
+        assert result is False, "a truncated file must force the wipe-and-reinstall"
+        joined = " ".join(r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING)
+        assert "transformers/__init__.py" in joined, f"damage not named in the log: {joined!r}"
+
+    def test_deleted_file_is_detected(self, tmp_path: Path):
+        venv_dir = self._make_venv(tmp_path / "venv")
+        (venv_dir / "transformers" / "__init__.py").unlink()
+        assert not _venv_dir_is_valid_and_undamaged(str(venv_dir), ("transformers==5.3.0",))
+
+    @pytest.mark.parametrize(
+        "ext_name",
+        [
+            "_regex.cpython-{tag}-darwin.so",
+            "_regex.cp{tag}-win_amd64.pyd",
+            "_regex.cpython-{tag}t-darwin.so",
+        ],
+    )
+    def test_extension_built_for_another_interpreter_is_detected(
+        self, tmp_path: Path, ext_name: str
+    ):
+        # Pick a stale tag by VERSION, not by whole tag: one template appends "t", so
+        # deriving it from _CURRENT_EXT_TAG directly builds "313t" -- the current tag --
+        # when the suite runs on a free-threaded 3.13, and the case asserts damage.
+        stale = "313" if _CURRENT_EXT_TAG.rstrip("t") != "313" else "312"
+        venv_dir = self._make_venv(
+            tmp_path / "venv",
+            files = {
+                "transformers/__init__.py": "x" * 40,
+                f"regex/{ext_name.format(tag = stale)}": "y" * 40,
+            },
+        )
+        assert not _venv_dir_is_valid_and_undamaged(str(venv_dir), ("transformers==5.3.0",))
+
+    def test_extension_for_the_running_interpreter_passes(self, tmp_path: Path):
+        venv_dir = self._make_venv(
+            tmp_path / "venv",
+            files = {
+                "transformers/__init__.py": "x" * 40,
+                f"regex/_regex.cpython-{_CURRENT_EXT_TAG}-darwin.so": "y" * 40,
+                "yaml/_yaml.so": "w" * 40,
+                # Spellings the tag regex deliberately does not recognise. Each has to fail
+                # OPEN: guessing wrong here costs a several-hundred-MB re-download.
+                "regex/_regex.pypy311-pp73-x86_64-linux-gnu.so": "p" * 40,
+                "regex/_regex.graalpy311-310-native-x86_64-linux.so": "g" * 40,
+                "regex/_regex.cpython-313d-x86_64-linux-gnu.so": "d" * 40,
+            },
+        )
+        assert _venv_dir_is_valid_and_undamaged(str(venv_dir), ("transformers==5.3.0",))
+
+    @pytest.mark.parametrize(
+        "rel",
+        [
+            # The tag sits in a DIRECTORY component; the binary itself is untagged and fine.
+            "vendor/build.cp312/libhelper.so",
+            "pkg.cp312.libs/libfoo.so",
+            "data/v.cp39/native.pyd",
+        ],
+    )
+    def test_a_version_tag_in_a_directory_name_is_not_damage(self, tmp_path: Path, rel: str):
+        """Matching the whole RECORD path wipes the sidecar over a directory name."""
+        venv_dir = self._make_venv(
+            tmp_path / "venv",
+            files = {"transformers/__init__.py": "x" * 40, rel: "y" * 40},
+        )
+        assert _venv_dir_is_valid_and_undamaged(str(venv_dir), ("transformers==5.3.0",))
+
+    @pytest.mark.parametrize(
+        ("current_tag", "expect_damage"),
+        [("313", False), ("314", False), ("313t", True), ("314t", True)],
+    )
+    def test_stable_abi_is_damage_only_on_a_free_threaded_build(
+        self, tmp_path: Path, monkeypatch, current_tag: str, expect_damage: bool
+    ):
+        """A GIL build loads any older .abi3.so. A free-threaded one segfaults on it, and
+        the file survives an in-place interpreter swap because nothing else changes."""
+        monkeypatch.setattr("utils.transformers_version._CURRENT_EXT_TAG", current_tag)
+        venv_dir = self._make_venv(
+            tmp_path / "venv",
+            files = {
+                "transformers/__init__.py": "x" * 40,
+                "hf_xet/hf_xet.abi3.so": "z" * 40,
+                "win/_thing.abi3.pyd": "z" * 40,
+            },
+        )
+        if expect_damage:
+            assert not _venv_dir_is_valid_and_undamaged(str(venv_dir), ("transformers==5.3.0",))
+        else:
+            assert _venv_dir_is_valid_and_undamaged(str(venv_dir), ("transformers==5.3.0",))
+
+    @pytest.mark.parametrize(
+        ("current_tag", "ext_tag"),
+        [
+            # Both directions of the GIL/free-threaded swap, on a fixed pair of versions so
+            # the case cannot collapse into "current tag" on whichever build runs the suite.
+            ("313t", "313"),
+            ("313", "313t"),
+            ("314t", "314"),
+            ("314", "314t"),
+        ],
+    )
+    def test_free_threaded_mismatch_is_detected_in_both_directions(
+        self, tmp_path: Path, monkeypatch, current_tag: str, ext_tag: str
+    ):
+        monkeypatch.setattr("utils.transformers_version._CURRENT_EXT_TAG", current_tag)
+        venv_dir = self._make_venv(
+            tmp_path / "venv",
+            files = {
+                "transformers/__init__.py": "x" * 40,
+                f"regex/_regex.cpython-{ext_tag}-x86_64-linux-gnu.so": "y" * 40,
+            },
+        )
+        assert not _venv_dir_is_valid_and_undamaged(str(venv_dir), ("transformers==5.3.0",))
+
+    def test_damage_in_an_unpinned_dependency_is_detected(self, tmp_path: Path):
+        """The whole dir is prepended to sys.path, so a shadowing dep breaks the
+        import just as surely as transformers itself."""
+        venv_dir = self._make_venv(tmp_path / "venv")
+        self._make_venv(venv_dir, pkg = "regex", version = "2026.7.19")
+        assert _venv_dir_is_valid_and_undamaged(str(venv_dir), ("transformers==5.3.0",))
+        (venv_dir / "regex" / "__init__.py").write_text("")
+        assert not _venv_dir_is_valid_and_undamaged(str(venv_dir), ("transformers==5.3.0",))
+
+    def test_console_script_rows_are_ignored(self, tmp_path: Path):
+        """pip --target records scripts at a path that cannot resolve.
+
+        pip installs through a temporary normal-scheme prefix and writes RECORD
+        before flattening, so a healthy sidecar records ../../bin/hf while the
+        file lands in <target>/bin. Believing those rows fails CLOSED on a
+        healthy install, and since the repair reinstalls with the same pip it
+        would wipe and re-download several hundred MB on every activation,
+        forever.
+        """
+        venv_dir = self._make_venv(
+            tmp_path / "venv",
+            record_extra = [
+                "../../bin/hf,sha256=deadbeef,343",
+                "../../Scripts/hf.exe,sha256=deadbeef,343",
+            ],
+        )
+        assert _venv_dir_is_valid_and_undamaged(str(venv_dir), ("transformers==5.3.0",))
+
+    def test_shared_non_runtime_rows_are_ignored(self, tmp_path: Path):
+        """A top-level test/ tree is shared, so one wheel's uninstall deletes
+        another's files. Nothing imports it: the stdlib shadows `test`, and
+        `tests`/`scripts` ship no __init__.py."""
+        venv_dir = self._make_venv(
+            tmp_path / "venv",
+            record_extra = ["test/conftest.py,sha256=deadbeef,20650"],
+        )
+        assert _venv_dir_is_valid_and_undamaged(str(venv_dir), ("transformers==5.3.0",))
+
+    def test_shared_non_runtime_rows_are_ignored_for_our_own_wheels_too(self, tmp_path: Path):
+        """Unreliable ownership is a property of the path, not of the claimant.
+        unsloth_zoo <= 2026.8.5 shipped a top-level tests/ into the same squatted
+        namespace, so exempting only third parties left it reported forever."""
+        venv_dir = self._make_venv(
+            tmp_path / "venv",
+            pkg = "unsloth_zoo",
+            record_extra = ["tests/conftest.py,sha256=deadbeef,11429"],
+        )
+        assert _venv_dir_is_valid_and_undamaged(str(venv_dir), ("unsloth_zoo==5.3.0",))
+
+    def test_our_own_runtime_tree_is_still_checked(self, tmp_path: Path):
+        """Only the shared roots are exempt. A tests/ tree inside our package is
+        ours alone, so damage there still forces the wipe-and-reinstall."""
+        venv_dir = self._make_venv(
+            tmp_path / "venv",
+            pkg = "unsloth_zoo",
+            files = {"unsloth_zoo/__init__.py": "x" * 40, "unsloth_zoo/tests/h.py": "y" * 10},
+        )
+        (venv_dir / "unsloth_zoo" / "tests" / "h.py").unlink()
+        assert not _venv_dir_is_valid_and_undamaged(str(venv_dir), ("unsloth_zoo==5.3.0",))
+
+    def test_an_installer_rewritten_file_keeps_its_existence_check(self, tmp_path: Path):
+        """setup.ps1 runs npm install in the installed tree, so the lockfile's
+        recorded size drifts. npm never deletes it, so only the size is dropped."""
+        rel = "studio/backend/core/data_recipe/oxc-validator/package-lock.json"
+        venv_dir = self._make_venv(
+            tmp_path / "venv",
+            record_extra = [f"{rel},sha256=deadbeef,28473"],
+        )
+        lock = venv_dir / rel
+        lock.parent.mkdir(parents = True, exist_ok = True)
+        lock.write_text("x" * 27225)  # shrunk by npm, not damage
+        assert _venv_dir_is_valid_and_undamaged(str(venv_dir), ("transformers==5.3.0",))
+
+        lock.unlink()  # gone entirely, which npm never does
+        assert not _venv_dir_is_valid_and_undamaged(str(venv_dir), ("transformers==5.3.0",))
+
+    def test_in_target_script_rows_are_ignored(self, tmp_path: Path):
+        """uv records bin/hf, which does resolve -- but pip --upgrade rmtree's a
+        colliding directory in the target, so a later install into the same
+        sidecar deletes an earlier package's scripts. Nothing imports from
+        there, so the row carries no signal either way."""
+        venv_dir = self._make_venv(
+            tmp_path / "venv",
+            record_extra = [
+                "bin/hf,sha256=deadbeef,343",
+                "Scripts/hf.exe,sha256=deadbeef,343",
+            ],
+        )
+        assert _venv_dir_is_valid_and_undamaged(str(venv_dir), ("transformers==5.3.0",))
+
+    def test_skipping_scripts_does_not_mask_real_damage(self, tmp_path: Path):
+        """The skip must be scoped to script rows, not a blanket exemption."""
+        venv_dir = self._make_venv(
+            tmp_path / "venv", record_extra = ["../../bin/hf,sha256=deadbeef,343"]
+        )
+        (venv_dir / "transformers" / "__init__.py").unlink()
+        assert not _venv_dir_is_valid_and_undamaged(str(venv_dir), ("transformers==5.3.0",))
+
+    def test_larger_than_recorded_is_not_damage(self, tmp_path: Path):
+        """A packaging collision leaves a bigger file, not a broken one."""
+        venv_dir = self._make_venv(tmp_path / "venv")
+        (venv_dir / "transformers" / "__init__.py").write_text("y" * 400)
+        assert _venv_dir_is_valid_and_undamaged(str(venv_dir), ("transformers==5.3.0",))
+
+    def test_multiply_owned_path_skips_the_size_check_but_not_existence(self, tmp_path: Path):
+        venv_dir = self._make_venv(
+            tmp_path / "venv",
+            files = {"transformers/__init__.py": "x" * 40, "shared/mod.py": "z" * 90},
+        )
+        self._make_venv(
+            venv_dir,
+            pkg = "other",
+            version = "1.0.0",
+            files = {"other/__init__.py": "o" * 10},
+            record_extra = ["shared/mod.py,sha256=beef,999999"],
+        )
+        # Two RECORDs disagree on the size; whichever copy landed says nothing
+        # about either, so this is not damage.
+        assert _venv_dir_is_valid_and_undamaged(str(venv_dir), ("transformers==5.3.0",))
+        # Ambiguous sizes cannot explain the file being gone.
+        (venv_dir / "shared" / "mod.py").unlink()
+        assert not _venv_dir_is_valid_and_undamaged(str(venv_dir), ("transformers==5.3.0",))
+
+    def test_directory_standing_in_for_a_recorded_file_is_damage(self, tmp_path: Path):
+        venv_dir = self._make_venv(tmp_path / "venv")
+        target = venv_dir / "transformers" / "__init__.py"
+        target.unlink()
+        target.mkdir()  # st_size 4096 on POSIX would sail past a shrinkage test
+        assert not _venv_dir_is_valid_and_undamaged(str(venv_dir), ("transformers==5.3.0",))
+
+    def test_blank_size_row_still_reports_a_deletion(self, tmp_path: Path):
+        venv_dir = self._make_venv(tmp_path / "venv")
+        (venv_dir / "transformers" / "data.bin").write_text("q")
+        record = venv_dir / "transformers-5.3.0.dist-info" / "RECORD"
+        record.write_text(record.read_text() + "transformers/data.bin,,\n")
+        assert _venv_dir_is_valid_and_undamaged(str(venv_dir), ("transformers==5.3.0",))
+        (venv_dir / "transformers" / "data.bin").unlink()
+        assert not _venv_dir_is_valid_and_undamaged(str(venv_dir), ("transformers==5.3.0",))
+
+    def test_missing_record_is_not_damage(self, tmp_path: Path):
+        """Fails open: the answer to a finding is to delete hundreds of MB."""
+        venv_dir = self._make_venv(tmp_path / "venv")
+        (venv_dir / "transformers-5.3.0.dist-info" / "RECORD").unlink()
+        assert _venv_dir_is_valid_and_undamaged(str(venv_dir), ("transformers==5.3.0",))
+
+    def test_pyc_and_dist_info_rows_are_ignored(self, tmp_path: Path):
+        venv_dir = self._make_venv(tmp_path / "venv")
+        record = venv_dir / "transformers-5.3.0.dist-info" / "RECORD"
+        record.write_text(
+            record.read_text()
+            + "transformers/__pycache__/__init__.cpython-311.pyc,sha256=aa,500\n"
+            + "transformers-5.3.0.dist-info/direct_url.json,sha256=bb,500\n"
+        )
+        assert _venv_dir_is_valid_and_undamaged(str(venv_dir), ("transformers==5.3.0",))
+
+    def test_directory_rows_are_ignored(self, tmp_path: Path):
+        venv_dir = self._make_venv(tmp_path / "venv")
+        record = venv_dir / "transformers-5.3.0.dist-info" / "RECORD"
+        record.write_text(record.read_text() + "transformers/subdir/,,\n")
+        assert _venv_dir_is_valid_and_undamaged(str(venv_dir), ("transformers==5.3.0",))
+
+    def test_default_is_package_level_only(self, tmp_path: Path):
+        """The routing predicate keeps the cheap semantics: it runs several times
+        per /validate request with no cache in front of it."""
+        venv_dir = self._make_venv(tmp_path / "venv")
+        (venv_dir / "transformers" / "__init__.py").write_text("x")
+        assert _venv_dir_is_valid(str(venv_dir), ("transformers==5.3.0",)) is True
+
+    def test_env_kill_switch_disables_the_scan(self, tmp_path: Path, monkeypatch):
+        venv_dir = self._make_venv(tmp_path / "venv")
+        (venv_dir / "transformers" / "__init__.py").write_text("x")
+        monkeypatch.setenv("UNSLOTH_SKIP_SIDECAR_FILE_CHECK", "1")
+        assert _venv_dir_is_valid_and_undamaged(str(venv_dir), ("transformers==5.3.0",))
+
+    def test_ensure_venv_dir_wipes_and_reinstalls_a_damaged_sidecar(
+        self, tmp_path: Path, monkeypatch
+    ):
+        """End to end: the damage reaches the repair that already exists."""
+        venv_dir = self._make_venv(tmp_path / "venv")
+        (venv_dir / "transformers" / "__init__.py").write_text("x")
+
+        installed = []
+
+        def _fake_install(pkg, target):
+            installed.append(pkg)
+            return True
+
+        monkeypatch.setattr("utils.transformers_version._install_to_dir", _fake_install)
+        ok = _ensure_venv_dir(str(venv_dir), ("transformers==5.3.0",), "transformers 5.3.0")
+
+        assert ok is True
+        assert installed == ["transformers==5.3.0"], "damaged sidecar was not reinstalled"
+        assert not (venv_dir / "transformers").exists(), "damaged tree was not wiped first"
+
+    def test_ensure_venv_dir_repairs_a_symlinked_sidecar_in_place(
+        self, tmp_path: Path, monkeypatch
+    ):
+        """The Docker image keeps the sidecars under UNSLOTH_STUDIO_APP and links them into
+        the Studio home. rmtree refuses a symlink and ignore_errors hides that, so the
+        damaged tree used to survive the wipe and a version-satisfied install left it in
+        place. The repair has to reach the directory the link points at, and the link
+        itself must stay, since Studio keeps addressing the sidecar through the home."""
+        monkeypatch.setenv("UNSLOTH_STUDIO_APP", str(tmp_path / "app"))
+        real = self._make_venv(tmp_path / "app" / "venv")
+        (real / "transformers" / "__init__.py").write_text("x")
+        link = tmp_path / "home" / "venv"
+        link.parent.mkdir()
+        link.symlink_to(real)
+
+        targets = []
+
+        def _fake_install(pkg, target):
+            targets.append(target)
+            return True
+
+        monkeypatch.setattr("utils.transformers_version._install_to_dir", _fake_install)
+        ok = _ensure_venv_dir(str(link), ("transformers==5.3.0",), "transformers 5.3.0")
+
+        assert ok is True
+        assert link.is_symlink(), "the home's link to the sidecar was replaced by a real dir"
+        assert not (real / "transformers").exists(), "damaged tree behind the link was not wiped"
+        assert targets == [str(real)], "the reinstall did not target the linked directory"
+        assert (real / ".unsloth-studio-owned").is_file()
+
+    def test_ensure_venv_dir_does_not_wipe_behind_a_link_that_is_not_the_image_tree(
+        self, tmp_path: Path, monkeypatch
+    ):
+        """A user who moved a sidecar to another disk and linked it is not the Docker
+        layout, so the repair must not follow that link into a tree it does not own."""
+        monkeypatch.delenv("UNSLOTH_STUDIO_APP", raising = False)
+        real = self._make_venv(tmp_path / "elsewhere" / "venv")
+        (real / "transformers" / "__init__.py").write_text("x")
+        (real / "keep.txt").write_text("mine")
+        link = tmp_path / "home" / "venv"
+        link.parent.mkdir()
+        link.symlink_to(real)
+
+        targets = []
+
+        def _fake_install(pkg, target):
+            targets.append(target)
+            return True
+
+        monkeypatch.setattr("utils.transformers_version._install_to_dir", _fake_install)
+        _ensure_venv_dir(str(link), ("transformers==5.3.0",), "transformers 5.3.0")
+
+        assert link.is_symlink()
+        assert (
+            real / "keep.txt"
+        ).read_text() == "mine", "the user's tree behind the link was wiped"
+        assert targets == [str(link)]
+
+        monkeypatch.setenv("UNSLOTH_STUDIO_APP", str(tmp_path / "app"))
+        _ensure_venv_dir(str(link), ("transformers==5.3.0",), "transformers 5.3.0")
+        assert (real / "keep.txt").exists(), "a link outside the app tree was followed"
+
+    def test_ensure_venv_dir_restores_the_studio_owned_marker(self, tmp_path: Path, monkeypatch):
+        """The wipe takes setup.sh's ownership marker with the old directory. Without a
+        new one, the next `unsloth studio update` under a custom UNSLOTH_STUDIO_HOME
+        aborts on a sidecar we just repaired, and adoption cannot rescue it because that
+        needs a prebuilt-info file a venv never has."""
+        venv_dir = self._make_venv(tmp_path / "venv")
+        (venv_dir / ".unsloth-studio-owned").touch()
+        (venv_dir / "transformers" / "__init__.py").write_text("x")
+
+        monkeypatch.setattr("utils.transformers_version._install_to_dir", lambda pkg, target: True)
+        assert _ensure_venv_dir(str(venv_dir), ("transformers==5.3.0",), "transformers 5.3.0")
+
+        assert (venv_dir / ".unsloth-studio-owned").is_file()
+
+
+# ---------------------------------------------------------------------------
 # _ensure_venv_dir — issue #6103
 # A slow runtime install must log each package as it starts, otherwise it
 # looks like a hang.
@@ -1805,45 +2413,58 @@ class TestTierFromName:
     """Unit tests for _tier_from_name(), which backs both the fast substring
     path and the config _name_or_path fallback."""
 
-    def test_returns_none_for_unknown(self):
-        assert _tier_from_name("meta-llama/Llama-3-8B") is None
-
-    def test_gemma4_returns_550(self):
-        tier, _ = _tier_from_name("google/gemma-4-E2B-it")
-        assert tier == "550"
-
-    def test_gemma4_assistant_returns_510(self):
-        tier, match = _tier_from_name("google/gemma-4-E2B-it-assistant")
-        assert tier == "510"
-        assert "assistant" in match
-
-    def test_gemma4_12b_returns_510(self):
-        tier, _ = _tier_from_name("unsloth/gemma-4-12b-it")
-        assert tier == "510"
-
-    def test_qwen35_returns_530(self):
-        tier, match = _tier_from_name("Qwen/Qwen3.5-7B")
-        assert tier == "530"
-        assert "qwen3.5" in match
-
-    def test_ministral3_returns_530(self):
-        # The existing substring "ministral-3-" matches the 2512 naming style.
-        tier, _ = _tier_from_name("mistralai/Ministral-3-8B-Instruct-2512")
-        assert tier == "530"
-
-    def test_qwen3_moe_substring_returns_530(self):
-        tier, _ = _tier_from_name("Qwen/Qwen3-30B-A3B-Instruct-2507")
-        assert tier == "530"
-
-    def test_510_beats_550(self):
-        """gemma-4-12b matches 510 (checked first), not 550."""
-        tier, _ = _tier_from_name("google/gemma-4-12b-it")
-        assert tier == "510"
-
-    def test_550_beats_530(self):
-        """gemma-4 matches 550, not 530."""
-        tier, _ = _tier_from_name("gemma-4-model")
-        assert tier == "550"
+    @pytest.mark.parametrize(
+        "name, tier, match_fragment",
+        [
+            pytest.param("meta-llama/Llama-3-8B", None, None, id = "returns_none_for_unknown"),
+            pytest.param("google/gemma-4-E2B-it", "550", None, id = "gemma4_returns_550"),
+            pytest.param(
+                "google/gemma-4-E2B-it-assistant",
+                "510",
+                "assistant",
+                id = "gemma4_assistant_returns_510",
+            ),
+            pytest.param("unsloth/gemma-4-12b-it", "510", None, id = "gemma4_12b_returns_510"),
+            pytest.param("Qwen/Qwen3.5-7B", "530", "qwen3.5", id = "qwen35_returns_530"),
+            # The existing substring "ministral-3-" matches the 2512 naming style.
+            pytest.param(
+                "mistralai/Ministral-3-8B-Instruct-2512", "530", None, id = "ministral3_returns_530"
+            ),
+            pytest.param(
+                "Qwen/Qwen3-30B-A3B-Instruct-2507",
+                "530",
+                None,
+                id = "qwen3_moe_substring_returns_530",
+            ),
+            # gemma-4-12b matches 510 (checked first), not 550.
+            pytest.param("google/gemma-4-12b-it", "510", None, id = "510_beats_550"),
+            # gemma-4 matches 550, not 530.
+            pytest.param("gemma-4-model", "550", None, id = "550_beats_530"),
+            # Underscore/dot aliases must resolve to the same tier as their canonical spellings.
+            pytest.param("Qwen/Qwen3_5-7B", "530", None, id = "qwen3_underscore_5_returns_530"),
+            pytest.param("org/Qwen3_Next-14B", "530", None, id = "qwen3_next_underscore_returns_530"),
+            pytest.param("google/gemma_4_E2B_it", "550", None, id = "gemma_4_underscore_returns_550"),
+            pytest.param(
+                "unsloth/gemma_4_12b_it", "510", None, id = "gemma_4_12b_underscore_returns_510"
+            ),
+            pytest.param(
+                "meta_llama/Llama_3_8B", None, None, id = "unrelated_underscores_not_promoted"
+            ),
+            # Qwen3-6B / Qwen3-5B are size names, not the qwen3.6 / qwen3.5 release lines.
+            pytest.param(
+                "Qwen/Qwen3-6B-Instruct", None, None, id = "qwen3_hyphen_6_size_not_promoted"
+            ),
+            pytest.param("Qwen/Qwen3-5B", None, None, id = "qwen3_hyphen_5_size_not_promoted"),
+        ],
+    )
+    def test_tier_from_name(self, name, tier, match_fragment):
+        result = _tier_from_name(name)
+        if tier is None:
+            assert result is None
+            return
+        assert result[0] == tier
+        if match_fragment is not None:
+            assert match_fragment in result[1]
 
 
 # ---------------------------------------------------------------------------
@@ -1863,232 +2484,165 @@ class TestLocalConfig530Tier:
         _tokenizer_class_cache.clear()
         _config_needs_530_cache.clear()
 
-    # --- config-set matches -------------------------------------------------
-
-    def test_config_needs_530_qwen3_5_model_type(self):
-        assert _config_needs_530({"model_type": "qwen3_5"}) is True
-
-    def test_config_needs_530_qwen3_5_conditional_generation(self):
-        assert _config_needs_530({"architectures": ["Qwen3_5ForConditionalGeneration"]}) is True
-
-    def test_config_needs_530_qwen3_moe(self):
-        assert _config_needs_530({"model_type": "qwen3_moe"}) is True
-
-    def test_config_needs_530_glm4_moe_lite(self):
-        assert _config_needs_530({"model_type": "glm4_moe_lite"}) is True
-
-    def test_config_needs_530_lfm2_vl(self):
-        assert _config_needs_530({"model_type": "lfm2_vl"}) is True
-
-    def test_config_needs_530_qwen3_5_moe(self):
-        """Qwen3.5 MoE (Qwen3.5-35B-A3B / 122B-A10B) uses qwen3_5_moe ids."""
-        assert (
-            _config_needs_530(
+    @pytest.mark.parametrize(
+        "cfg, expected",
+        [
+            pytest.param({"model_type": "qwen3_5"}, True, id = "config_needs_530_qwen3_5_model_type"),
+            pytest.param(
+                {"architectures": ["Qwen3_5ForConditionalGeneration"]},
+                True,
+                id = "config_needs_530_qwen3_5_conditional_generation",
+            ),
+            pytest.param({"model_type": "qwen3_moe"}, True, id = "config_needs_530_qwen3_moe"),
+            pytest.param(
+                {"model_type": "glm4_moe_lite"}, True, id = "config_needs_530_glm4_moe_lite"
+            ),
+            pytest.param({"model_type": "lfm2_vl"}, True, id = "config_needs_530_lfm2_vl"),
+            # Qwen3.5 MoE (Qwen3.5-35B-A3B / 122B-A10B) uses qwen3_5_moe ids.
+            pytest.param(
                 {
                     "model_type": "qwen3_5_moe",
                     "architectures": ["Qwen3_5MoeForConditionalGeneration"],
-                }
-            )
-            is True
-        )
+                },
+                True,
+                id = "config_needs_530_qwen3_5_moe",
+            ),
+            pytest.param(
+                {"model_type": "qwen3_next", "architectures": ["Qwen3NextForCausalLM"]},
+                True,
+                id = "config_needs_530_qwen3_next",
+            ),
+            # Text-tower configs (architectures may be stripped) still need 5.3.0.
+            pytest.param(
+                {"model_type": "qwen3_5_text"},
+                True,
+                id = "config_needs_530_qwen3_5_text_towers_plain",
+            ),
+            pytest.param(
+                {"model_type": "qwen3_5_moe_text"},
+                True,
+                id = "config_needs_530_qwen3_5_text_towers_moe",
+            ),
+            # Regular Qwen3 (non-MoE, non-3.5) must not be promoted to 5.3.0.
+            pytest.param(
+                {"model_type": "qwen3"}, False, id = "config_needs_530_plain_qwen3_is_false"
+            ),
+        ],
+    )
+    def test_config_needs_530(self, cfg: dict, expected: bool):
+        assert _config_needs_530(cfg) is expected
 
-    def test_config_needs_530_qwen3_next(self):
-        assert (
-            _config_needs_530(
-                {"model_type": "qwen3_next", "architectures": ["Qwen3NextForCausalLM"]}
-            )
-            is True
-        )
-
-    def test_config_needs_530_qwen3_5_text_towers(self):
-        """Text-tower configs (architectures may be stripped) still need 5.3.0."""
-        assert _config_needs_530({"model_type": "qwen3_5_text"}) is True
-        assert _config_needs_530({"model_type": "qwen3_5_moe_text"}) is True
-
-    def test_config_needs_530_plain_qwen3_is_false(self):
-        """Regular Qwen3 (non-MoE, non-3.5) must not be promoted to 5.3.0."""
-        assert _config_needs_530({"model_type": "qwen3"}) is False
-
-    def test_tier_local_qwen35_config_selects_530(self, tmp_path: Path):
-        """Reported case: a local Qwen3.5 folder routes to 530 via config.json."""
-        d = tmp_path / "Qwen3.5-2B"
-        d.mkdir()
-        (d / "config.json").write_text(json.dumps({"model_type": "qwen3_5"}))
-        assert get_transformers_tier(str(d)) == "530"
-
-    def test_tier_local_qwen3_moe_config_selects_530(self, tmp_path: Path):
-        """Local Qwen3 MoE checkpoint routes to 530 via config.json."""
-        d = tmp_path / "my-qwen3-moe"
-        d.mkdir()
-        (d / "config.json").write_text(
-            json.dumps({"model_type": "qwen3_moe", "architectures": ["Qwen3MoeForCausalLM"]})
-        )
-        assert get_transformers_tier(str(d)) == "530"
-
-    def test_tier_local_glm4_moe_lite_config_selects_530(self, tmp_path: Path):
-        """Local GLM-4.7-Flash checkpoint routes to 530 via config.json."""
-        d = tmp_path / "my-glm-model"
-        d.mkdir()
-        (d / "config.json").write_text(
-            json.dumps({"model_type": "glm4_moe_lite", "architectures": ["Glm4MoeLiteForCausalLM"]})
-        )
-        assert get_transformers_tier(str(d)) == "530"
-
-    def test_tier_local_lfm2_vl_config_selects_530(self, tmp_path: Path):
-        """Local LFM2.5-VL checkpoint routes to 530 via config.json."""
-        d = tmp_path / "my-liquid-model"
-        d.mkdir()
-        (d / "config.json").write_text(
-            json.dumps(
-                {"model_type": "lfm2_vl", "architectures": ["Lfm2VlForConditionalGeneration"]}
-            )
-        )
-        assert get_transformers_tier(str(d)) == "530"
-
-    def test_tier_local_qwen35_moe_config_selects_530(self, tmp_path: Path):
-        """A renamed Qwen3.5 MoE folder (no name hint) routes to 530 via config."""
-        d = tmp_path / "my-custom-moe"
-        d.mkdir()
-        (d / "config.json").write_text(
-            json.dumps(
+    @pytest.mark.parametrize(
+        "folder, cfg, tier",
+        [
+            # Reported case: a local Qwen3.5 folder routes to 530 via config.json.
+            pytest.param(
+                "Qwen3.5-2B",
+                {"model_type": "qwen3_5"},
+                "530",
+                id = "tier_local_qwen35_config_selects_530",
+            ),
+            pytest.param(
+                "my-qwen3-moe",
+                {"model_type": "qwen3_moe", "architectures": ["Qwen3MoeForCausalLM"]},
+                "530",
+                id = "tier_local_qwen3_moe_config_selects_530",
+            ),
+            pytest.param(
+                "my-glm-model",
+                {"model_type": "glm4_moe_lite", "architectures": ["Glm4MoeLiteForCausalLM"]},
+                "530",
+                id = "tier_local_glm4_moe_lite_config_selects_530",
+            ),
+            pytest.param(
+                "my-liquid-model",
+                {"model_type": "lfm2_vl", "architectures": ["Lfm2VlForConditionalGeneration"]},
+                "530",
+                id = "tier_local_lfm2_vl_config_selects_530",
+            ),
+            # A renamed Qwen3.5 MoE folder (no name hint) routes to 530 via config.
+            pytest.param(
+                "my-custom-moe",
                 {
                     "model_type": "qwen3_5_moe",
                     "architectures": ["Qwen3_5MoeForConditionalGeneration"],
-                }
-            )
-        )
-        assert get_transformers_tier(str(d)) == "530"
-
-    # --- Qwen3.6 reuses Qwen3.5 config ids but routes to 550 by name ---------
-
-    def test_local_qwen36_config_keeps_550_name_tier(self, tmp_path: Path):
-        """Qwen3.6 config carries qwen3_5 ids; a higher-tier name match wins."""
-        d = tmp_path / "Qwen3.6-27B"
-        d.mkdir()
-        (d / "config.json").write_text(
-            json.dumps(
-                {"model_type": "qwen3_5", "architectures": ["Qwen3_5ForConditionalGeneration"]}
-            )
-        )
-        assert get_transformers_tier(str(d)) == "550"
-
-    def test_local_qwen36_moe_via_name_or_path_keeps_550(self, tmp_path: Path):
-        """Renamed Qwen3.6 MoE folder: _name_or_path carries the 5.5 name signal."""
-        d = tmp_path / "renamed-q36-moe"
-        d.mkdir()
-        (d / "config.json").write_text(
-            json.dumps(
+                },
+                "530",
+                id = "tier_local_qwen35_moe_config_selects_530",
+            ),
+            # Qwen3.6 configs carry qwen3_5 ids, so a higher-tier name match wins over them.
+            pytest.param(
+                "Qwen3.6-27B",
+                {"model_type": "qwen3_5", "architectures": ["Qwen3_5ForConditionalGeneration"]},
+                "550",
+                id = "local_qwen36_config_keeps_550_name_tier",
+            ),
+            pytest.param(
+                "renamed-q36-moe",
                 {
                     "model_type": "qwen3_5_moe",
                     "architectures": ["Qwen3_5MoeForConditionalGeneration"],
                     "_name_or_path": "Qwen/Qwen3.6-35B-A3B",
-                }
-            )
-        )
-        assert get_transformers_tier(str(d)) == "550"
+                },
+                "550",
+                id = "local_qwen36_moe_via_name_or_path_keeps_550",
+            ),
+            # An unrecognised model_type still routes by the HF ID in _name_or_path.
+            pytest.param(
+                "my-custom-name",
+                {"model_type": "future_unknown_type", "_name_or_path": "Qwen/Qwen3.5-7B"},
+                "530",
+                id = "renamed_folder_falls_back_to_hf_id_in_config",
+            ),
+            pytest.param(
+                "renamed-gemma",
+                {"model_type": "future_unknown_type", "_name_or_path": "google/gemma-4-E2B-it"},
+                "550",
+                id = "hf_id_fallback_respects_550_tier",
+            ),
+        ],
+    )
+    def test_local_config_selects_tier(self, tmp_path: Path, folder: str, cfg: dict, tier: str):
+        assert get_transformers_tier(_write_config(tmp_path / folder, cfg)) == tier
 
-    def test_stale_absolute_name_or_path_not_promoted(self, tmp_path: Path):
-        """A non-5.x checkpoint with a stale absolute _name_or_path isn't name-matched."""
-        d = tmp_path / "my-llama-ckpt"
-        d.mkdir()
-        (d / "config.json").write_text(
-            json.dumps({"model_type": "llama", "_name_or_path": "/old/run/qwen3.5-source"})
-        )
+    @pytest.mark.parametrize(
+        "folder, cfg",
+        [
+            # A non-5.x checkpoint with a stale absolute _name_or_path is not name-matched.
+            pytest.param(
+                "my-llama-ckpt",
+                {"model_type": "llama", "_name_or_path": "/old/run/qwen3.5-source"},
+                id = "stale_absolute_name_or_path_not_promoted",
+            ),
+            # save_pretrained writes _name_or_path == the path, which must not be tier-scanned.
+            pytest.param(
+                "qwen3.5-experiment",
+                {"model_type": "llama", "_name_or_path": _SELF},
+                id = "hf_id_fallback_skipped_when_same_as_path",
+            ),
+            # Absolute vs relative spellings of one directory: the strings differ, so the local-dir
+            # branch must recurse into the config rather than substring-match the path.
+            pytest.param(
+                "qwen3.5-experiment",
+                {"model_type": "llama", "_name_or_path": _SELF},
+                id = "hf_id_fallback_not_triggered_when_name_or_path_is_absolute_self",
+            ),
+            # The directory-name false-positive guard is preserved for a plain checkpoint.
+            pytest.param(
+                "checkpoint-1000",
+                {"architectures": ["LlamaForCausalLM"], "model_type": "llama"},
+                id = "tier_local_plain_model_still_default",
+            ),
+        ],
+    )
+    def test_local_config_stays_on_the_default_tier(self, tmp_path: Path, folder: str, cfg: dict):
+        d = tmp_path / folder
+        cfg = {k: (str(d) if v is _SELF else v) for k, v in cfg.items()}
+        path = _write_config(d, cfg)
         with patch(
             "utils.transformers_version._check_tokenizer_config_needs_v5", return_value = False
         ):
-            assert get_transformers_tier(str(d)) == "default"
-
-    # --- _name_or_path fallback ---------------------------------------------
-
-    def test_renamed_folder_falls_back_to_hf_id_in_config(self, tmp_path: Path):
-        """A renamed local folder with an unrecognised model_type but a known
-        HF ID in _name_or_path still routes to the correct tier."""
-        d = tmp_path / "my-custom-name"
-        d.mkdir()
-        # Simulate a future/unknown model_type; the HF ID carries the tier signal.
-        (d / "config.json").write_text(
-            json.dumps(
-                {
-                    "model_type": "future_unknown_type",
-                    "_name_or_path": "Qwen/Qwen3.5-7B",
-                }
-            )
-        )
-        assert get_transformers_tier(str(d)) == "530"
-
-    def test_hf_id_fallback_respects_550_tier(self, tmp_path: Path):
-        """_name_or_path pointing to a Gemma-4 HF ID routes to 550."""
-        d = tmp_path / "renamed-gemma"
-        d.mkdir()
-        (d / "config.json").write_text(
-            json.dumps(
-                {
-                    "model_type": "future_unknown_type",
-                    "_name_or_path": "google/gemma-4-E2B-it",
-                }
-            )
-        )
-        assert get_transformers_tier(str(d)) == "550"
-
-    def test_hf_id_fallback_skipped_when_same_as_path(self, tmp_path: Path):
-        """If _name_or_path equals the model path, skip the name fallback to
-        avoid false positives from self-referencing configs."""
-        d = tmp_path / "qwen3.5-experiment"
-        d.mkdir()
-        # _name_or_path is the local path itself (e.g. saved via save_pretrained)
-        (d / "config.json").write_text(
-            json.dumps(
-                {
-                    "model_type": "llama",
-                    "_name_or_path": str(d),
-                }
-            )
-        )
-        with patch(
-            "utils.transformers_version._check_tokenizer_config_needs_v5", return_value = False
-        ):
-            # "qwen3.5" is in the path but config says llama and _name_or_path
-            # is self-referencing — must not be promoted to 530.
-            assert get_transformers_tier(str(d)) == "default"
-
-    def test_hf_id_fallback_not_triggered_when_name_or_path_is_absolute_self(self, tmp_path: Path):
-        """_name_or_path == absolute path of the same checkpoint while model_name
-        is a relative path: the two strings differ, but both point to the same
-        directory.  The absolute path must not be scanned for tier substrings."""
-        d = tmp_path / "qwen3.5-experiment"
-        d.mkdir()
-        (d / "config.json").write_text(
-            json.dumps(
-                {
-                    "model_type": "llama",
-                    # absolute path — textually different from a relative model_name
-                    "_name_or_path": str(d),
-                }
-            )
-        )
-        with patch(
-            "utils.transformers_version._check_tokenizer_config_needs_v5", return_value = False
-        ):
-            # Even though str(d) contains "qwen3.5", the local-dir branch recurses
-            # into config checks on the resolved path, which returns default.
-            assert get_transformers_tier(str(d)) == "default"
-
-    # --- false-positive guard -----------------------------------------------
-
-    def test_tier_local_plain_model_still_default(self, tmp_path: Path):
-        """A local non-5.x checkpoint returns default; the directory-name
-        false-positive guard is preserved."""
-        d = tmp_path / "checkpoint-1000"
-        d.mkdir()
-        (d / "config.json").write_text(
-            json.dumps({"architectures": ["LlamaForCausalLM"], "model_type": "llama"})
-        )
-        with patch(
-            "utils.transformers_version._check_tokenizer_config_needs_v5",
-            return_value = False,
-        ):
-            assert get_transformers_tier(str(d)) == "default"
+            assert get_transformers_tier(path) == "default"
 
 
 # ---------------------------------------------------------------------------
@@ -2146,23 +2700,19 @@ class TestCheckConfigNeeds530:
 
 
 class TestNormSeparators:
-    def test_underscore_to_hyphen(self):
-        assert _norm_separators("qwen3_5") == "qwen3-5"
-
-    def test_dot_preserved(self):
-        assert _norm_separators("qwen3.5") == "qwen3.5"
-
-    def test_hyphen_unchanged(self):
-        assert _norm_separators("gemma-4") == "gemma-4"
-
-    def test_mixed(self):
-        assert _norm_separators("Qwen3_5.MoE") == "Qwen3-5.MoE"
-
-    def test_whitespace_to_hyphen(self):
-        assert _norm_separators("some model") == "some-model"
-
-    def test_empty(self):
-        assert _norm_separators("") == ""
+    @pytest.mark.parametrize(
+        "raw, normalized",
+        [
+            pytest.param("qwen3_5", "qwen3-5", id = "underscore_to_hyphen"),
+            pytest.param("qwen3.5", "qwen3.5", id = "dot_preserved"),
+            pytest.param("gemma-4", "gemma-4", id = "hyphen_unchanged"),
+            pytest.param("Qwen3_5.MoE", "Qwen3-5.MoE", id = "mixed"),
+            pytest.param("some model", "some-model", id = "whitespace_to_hyphen"),
+            pytest.param("", "", id = "empty"),
+        ],
+    )
+    def test_norm_separators(self, raw, normalized):
+        assert _norm_separators(raw) == normalized
 
 
 # ---------------------------------------------------------------------------
@@ -2171,38 +2721,12 @@ class TestNormSeparators:
 
 
 class TestTierFromNameSeparatorNorm:
-    """Verify that underscore/dot aliases in model IDs resolve to the same
-    tier as their canonical hyphen/dot counterparts."""
-
-    def test_qwen3_underscore_5_returns_530(self):
-        tier, _ = _tier_from_name("Qwen/Qwen3_5-7B")
-        assert tier == "530"
-
-    def test_qwen3_next_underscore_returns_530(self):
-        tier, _ = _tier_from_name("org/Qwen3_Next-14B")
-        assert tier == "530"
-
-    def test_gemma_4_underscore_returns_550(self):
-        tier, _ = _tier_from_name("google/gemma_4_E2B_it")
-        assert tier == "550"
-
-    def test_gemma_4_12b_underscore_returns_510(self):
-        tier, _ = _tier_from_name("unsloth/gemma_4_12b_it")
-        assert tier == "510"
+    """Underscore/dot aliases in model IDs resolve to the same tier as their canonical
+    hyphen/dot counterparts; see test_tier_from_name for the alias cases themselves."""
 
     def test_canonical_dot_still_works(self):
         tier, _ = _tier_from_name("Qwen/Qwen3.5-7B")
         assert tier == "530"
-
-    def test_unrelated_underscores_not_promoted(self):
-        assert _tier_from_name("meta_llama/Llama_3_8B") is None
-
-    def test_qwen3_hyphen_6_size_not_promoted(self):
-        """Qwen3-6B is a size name, not the qwen3.6 release line."""
-        assert _tier_from_name("Qwen/Qwen3-6B-Instruct") is None
-
-    def test_qwen3_hyphen_5_size_not_promoted(self):
-        assert _tier_from_name("Qwen/Qwen3-5B") is None
 
 
 # ---------------------------------------------------------------------------
@@ -2509,7 +3033,7 @@ class TestOfflineCacheNotPoisoned:
             def __exit__(self, *a):
                 return False
 
-        monkeypatch.setattr("urllib.request.urlopen", lambda req, timeout = 10: _Resp())
+        monkeypatch.setattr("utils.utils.auth_safe_open", lambda req, timeout = 10: _Resp())
         assert _check_tokenizer_config_needs_v5("org/needs5") is True
 
     def test_offline_config_miss_not_cached(self, monkeypatch):
@@ -2527,6 +3051,8 @@ class TestOfflineCacheNotPoisoned:
 
 
 class TestHfEndpointUnreachable:
+    # Ambient proxies are cleared module-wide by _no_ambient_proxy.
+
     def test_reachable_returns_false(self, monkeypatch):
         class _Resp:
             def __enter__(self):
@@ -2566,6 +3092,70 @@ class TestHfEndpointUnreachable:
         monkeypatch.setattr("urllib.request.urlopen", _tls)
         # TLS reached the server: treat as reachable so the load surfaces the cert error.
         assert hf_endpoint_unreachable(timeout = 2) is False
+
+    def test_connection_refused_is_reachable(self, monkeypatch):
+        import urllib.error
+
+        def _refused(*a, **k):
+            raise urllib.error.URLError(ConnectionRefusedError("refused"))
+
+        monkeypatch.setattr("urllib.request.urlopen", _refused)
+        assert hf_endpoint_unreachable(timeout = 2) is False
+
+    def test_connection_reset_is_reachable(self, monkeypatch):
+        """A reset proves the path answered, exactly like the refusal above.
+
+        urllib wraps an OSError raised while sending, so this is the URLError form.
+        """
+        import urllib.error
+
+        def _reset(*a, **k):
+            raise urllib.error.URLError(ConnectionResetError(104, "Connection reset by peer"))
+
+        monkeypatch.setattr("urllib.request.urlopen", _reset)
+        assert hf_endpoint_unreachable(timeout = 2) is False
+
+    def test_remote_disconnect_is_reachable(self, monkeypatch):
+        """getresponse() is not inside urllib's OSError->URLError wrapper, so a server
+        that accepts the HEAD then closes raises http.client.RemoteDisconnected raw --
+        and it subclasses ConnectionResetError -> OSError."""
+        import http.client
+
+        def _disconnect(*a, **k):
+            raise http.client.RemoteDisconnected("Remote end closed connection without response")
+
+        monkeypatch.setattr("urllib.request.urlopen", _disconnect)
+        assert hf_endpoint_unreachable(timeout = 2) is False
+
+    def test_real_server_that_accepts_then_closes_is_reachable(self, monkeypatch):
+        """End-to-end over a real socket: no mocking of the exception type at all."""
+        import socket
+        import threading
+
+        srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        srv.bind(("127.0.0.1", 0))
+        srv.listen(4)
+
+        def _accept_then_close():
+            try:
+                conn, _ = srv.accept()
+            except OSError:
+                return
+            try:
+                conn.recv(4096)
+            except OSError:
+                pass
+            conn.close()
+
+        thread = threading.Thread(target = _accept_then_close, daemon = True)
+        thread.start()
+        monkeypatch.setenv("HF_ENDPOINT", f"http://127.0.0.1:{srv.getsockname()[1]}")
+        try:
+            assert hf_endpoint_unreachable(timeout = 2) is False
+        finally:
+            srv.close()
+            thread.join(5)
 
     def test_dns_failure_is_unreachable(self, monkeypatch):
         import socket
@@ -2672,7 +3262,7 @@ class TestLatestTierForces16Bit:
 
     def _read(self, rel):
         backend_dir = Path(__file__).resolve().parent.parent
-        return (backend_dir / rel).read_text()
+        return (backend_dir / rel).read_text(encoding = "utf-8")
 
     def test_worker_guard_present(self):
         src = self._read("core/inference/worker.py")
@@ -2721,7 +3311,9 @@ class TestLatestTierForces16Bit:
             "fallback so /validate does not 409 a 4-bit load /load would allow"
         )
         # requires_trust_remote_code must be resolved before the flip consumes it.
-        assert body.index("requires_trust_remote_code = any(") < body.index(
+        # Anchored on the resolving call, not its expression form: the any() now runs
+        # inside _offline_guarded on a worker thread.
+        assert body.index("_requires_trust_remote_code_for_model(_t") < body.index(
             "not requires_trust_remote_code"
         )
 
@@ -2862,11 +3454,8 @@ class TestSidecarSwapReservation:
         process, and its lock is never broken while the owner is alive."""
         import os
         import time
-        import utils.transformers_version as tv
 
-        monkeypatch.setattr(tv, "_VENV_T5_LATEST_DIR", str(tmp_path / "venv_t5_latest"))
-        lock = tv._swap_lock_path()
-        lock.parent.mkdir(parents = True, exist_ok = True)
+        lock, tv = _shared_setup_2(monkeypatch, tmp_path)
         # A live owner (this process): visible and never reclaimed, even once aged past
         # the cutoff -- a slow but live pip install must keep its lock.
         lock.write_text('{"pid": %d}' % os.getpid())
@@ -2880,11 +3469,7 @@ class TestSidecarSwapReservation:
     def test_dead_owner_lock_reclaimed_promptly(self, monkeypatch, tmp_path):
         """A fresh lock whose recorded owner is dead is reclaimed at once, not after the
         long cutoff: a crash mid-install must not wedge loads/training/export for hours."""
-        import utils.transformers_version as tv
-
-        monkeypatch.setattr(tv, "_VENV_T5_LATEST_DIR", str(tmp_path / "venv_t5_latest"))
-        lock = tv._swap_lock_path()
-        lock.parent.mkdir(parents = True, exist_ok = True)
+        lock, tv = _shared_setup_2(monkeypatch, tmp_path)
         # 999999 is not a live PID: a fresh dead-owner lock is immediately stale.
         lock.write_text('{"pid": 999999, "kind": "install"}')
         assert tv._pid_alive(999999) is False
@@ -2902,11 +3487,8 @@ class TestSidecarSwapReservation:
         created is not stolen before its PID lands."""
         import os
         import time
-        import utils.transformers_version as tv
 
-        monkeypatch.setattr(tv, "_VENV_T5_LATEST_DIR", str(tmp_path / "venv_t5_latest"))
-        lock = tv._swap_lock_path()
-        lock.parent.mkdir(parents = True, exist_ok = True)
+        lock, tv = _shared_setup_2(monkeypatch, tmp_path)
         lock.write_text("")  # created but metadata not yet written
         assert tv.sidecar_swap_in_progress() is True
         old_ts = time.time() - (tv._SWAP_LOCK_STALE_SECS + 60)
@@ -3037,6 +3619,20 @@ class TestOverlayRepairsIncompleteSidecar:
         live = tmp_path / "venv_t5_latest"
         (live / "transformers").mkdir(parents = True)
         monkeypatch.setattr(tv, "_VENV_T5_LATEST_DIR", str(live))
+        # Every other tier dir too, not just latest.
+        #
+        # _install_to_dir below is patched but the DESTINATIONS were not, and _probe_tier
+        # walks 530, 550 and 510 provisioning each one it finds missing. So this class
+        # wrote a fake transformers 5.99.0 sidecar, whose CONFIG_MAPPING_NAMES is
+        # {"brandnew": "C"}, into the developer's real ~/.unsloth/studio.
+        #
+        # It then poisons the NEXT run rather than this one, which is why it stayed
+        # hidden: tier resolution finds "brandnew" in 530, and the three tests here that
+        # assert an unknown model type routes to "latest" get "530" instead. Reproducible
+        # on plain main, in isolation, on any machine that has run this file before, and
+        # observed on the CI runner too.
+        for name in ("_VENV_T5_530_DIR", "_VENV_T5_550_DIR", "_VENV_T5_510_DIR"):
+            monkeypatch.setattr(tv, name, str(live.parent / name.lower()))
         monkeypatch.setattr(tv, "_latest_tier_disabled", lambda: False)
         monkeypatch.setattr(tv, "latest_venv_pinned_version", lambda: "5.99.0")
         monkeypatch.setattr(
@@ -3141,6 +3737,10 @@ class TestKillSwitchBeatsMappingCache:
 
         key = tv._probe_cache_key("some/model")
         monkeypatch.setitem(tv._probe_tier_cache, key, "latest")
+        # A cached 'latest' only ever arises while the tier is pinned, since an unpinned
+        # one is not in the probe order at all, and an unpinned cache entry is now
+        # re-probed in its own right. Hold the pin so this stays a test of the switch.
+        monkeypatch.setattr(tv, "latest_venv_pinned_version", lambda: "5.99.0")
         monkeypatch.setenv("UNSLOTH_STUDIO_NO_LATEST_TRANSFORMERS", "1")
         # With the switch set, the cached latest entry must not short-circuit;
         # the probe re-resolves against the non-latest order (stub it to 530).
@@ -3233,3 +3833,422 @@ class TestRaiseTierForNested:
         monkeypatch.setattr(tv, "_config_needs_510", lambda cfg: False)
         monkeypatch.setattr(tv, "_config_needs_550", lambda cfg: True)
         assert tv.get_transformers_tier(str(ckpt), probe = False) == "latest"
+
+
+class TestDamagedLatestSidecarRepairHandoff:
+    """A worker child refuses to repair the sidecar, so damage it finds must reach the
+    parent's routing self-heal. The routing predicate is package-level and cannot see a
+    truncated file, so without a handoff every worker retry fails forever waiting for a
+    repair nothing ever triggers."""
+
+    def _sidecar(
+        self,
+        root: Path,
+        model_types = ("brandnew",),
+    ) -> Path:
+        """A pinned latest sidecar whose RECORD matches what it wrote."""
+        import utils.transformers_version as tv
+
+        di = root / "transformers-5.99.0.dist-info"
+        di.mkdir(parents = True, exist_ok = True)
+        (di / "METADATA").write_text("Name: transformers\nVersion: 5.99.0\n")
+        mapping = ", ".join(f'"{t}": "C"' for t in model_types)
+        files = {
+            "transformers/__init__.py": "x" * 40,
+            "transformers/models/auto/configuration_auto.py": "CONFIG_MAPPING_NAMES = {%s}\n"
+            % mapping,
+        }
+        rows = []
+        for rel, body in files.items():
+            path = root / rel
+            path.parent.mkdir(parents = True, exist_ok = True)
+            path.write_text(body)
+            rows.append(f"{rel},sha256=deadbeef,{len(body)}")
+        rows.append("transformers-5.99.0.dist-info/RECORD,,")
+        (di / "RECORD").write_text("\n".join(rows) + "\n")
+        (root / tv._LATEST_PIN_MARKER).write_text(
+            json.dumps({"version": "5.99.0", "packages": ["transformers==5.99.0"]})
+        )
+        return root
+
+    def _patch(
+        self,
+        monkeypatch,
+        live: Path,
+        is_child: bool = False,
+    ):
+        """Point the module at *live* and make a repair succeed without pip."""
+        import multiprocessing
+        import utils.transformers_version as tv
+
+        monkeypatch.setattr(tv, "_VENV_T5_LATEST_DIR", str(live))
+        # The other three tiers go to tmp_path as well, and this is not tidiness.
+        #
+        # _fake_install below writes a sidecar at whatever target it is handed, and
+        # _probe_tier walks _PROBE_TIER_ORDER provisioning each tier it tries. With only
+        # the latest dir redirected, the 530, 550 and 510 targets were the REAL ones under
+        # ~/.unsloth/studio, so running this file wrote a fake transformers 5.99.0 whose
+        # CONFIG_MAPPING_NAMES is {"brandnew": "C"} into the developer's own Unsloth.
+        #
+        # It then failed the next run of this same class: _lowest_tier_for("brandnew")
+        # found it in tier 530 and returned "530" where the test asserts "latest". Three
+        # tests, on a clean checkout of main, only on a machine that had run the suite
+        # before. That is also what CI reproduced, since a runner accumulates the same
+        # state within one session.
+        # Derived from the module rather than listed, because listing them is what went
+        # wrong: the list would have to be updated by whoever adds a tier, and the
+        # consequence of forgetting is invisible until a later run of an unrelated test.
+        # This also caught _VENV_T5_DIR, a fifth constant aliasing the 550 sidecar that a
+        # hand-written list of the three obvious ones missed.
+        for _tier_dir in [
+            name for name in dir(tv) if name.startswith("_VENV_T5_") and name.endswith("_DIR")
+        ]:
+            if _tier_dir == "_VENV_T5_LATEST_DIR":
+                continue  # already pointed at `live`, which is the sidecar under test
+            monkeypatch.setattr(tv, _tier_dir, str(live.parent / _tier_dir.lower().strip("_")))
+        monkeypatch.setattr(tv, "_latest_tier_disabled", lambda: False)
+        monkeypatch.setattr(tv, "_env_offline", lambda: False)
+        monkeypatch.setattr(tv, "_workers_active_for_repair", lambda: False)
+        monkeypatch.setattr(tv, "_config_mapping_cache", {})
+        monkeypatch.setattr(tv, "_latest_repair_failed_at", 0.0)
+        monkeypatch.setattr(
+            multiprocessing, "parent_process", lambda: object() if is_child else None
+        )
+        installs = []
+
+        def _fake_install(pkg, target):
+            installs.append(pkg)
+            self._sidecar(Path(target))
+            return True
+
+        monkeypatch.setattr(tv, "_install_to_dir", _fake_install)
+        return tv, installs
+
+    def test_every_sidecar_dir_is_redirected_away_from_the_real_studio_home(
+        self, monkeypatch, tmp_path
+    ):
+        """Adding a fifth tier must not silently start writing to the developer's home.
+
+        _fake_install writes a sidecar at whatever target it is handed, and _probe_tier
+        walks the tiers provisioning each one it tries. Redirecting only the latest dir
+        meant the other three targets were the real ones, and this file wrote a fake
+        transformers 5.99.0 into ~/.unsloth/studio, then failed its own next run.
+
+        So the assertion is over whatever tier constants the module defines, not over the
+        four that exist today: a new _VENV_T5_..._DIR that _patch does not redirect fails
+        here rather than in whichever unrelated test happens to read the tier mapping
+        next.
+        """
+        import utils.transformers_version as tv
+
+        tiers = [name for name in dir(tv) if name.startswith("_VENV_T5_") and name.endswith("_DIR")]
+        assert tiers, "no tier directory constants found; this guard would pass on nothing"
+
+        self._patch(monkeypatch, self._sidecar(tmp_path / "venv_t5_latest"))
+        stray = {
+            name: getattr(tv, name)
+            for name in tiers
+            if not str(getattr(tv, name)).startswith(str(tmp_path))
+        }
+        assert not stray, (
+            f"_patch leaves {stray} pointing outside tmp_path. A repair or probe that "
+            f"provisions one of those writes test fixture data into the real Unsloth "
+            f"install, which poisons tier resolution for every later run on that machine."
+        )
+
+    def _damage(self, live: Path):
+        """Disk-full shape: the file is still there, just short."""
+        (live / "transformers" / "__init__.py").write_text("x")
+
+    def _is_damaged(self, tv, live: Path) -> bool:
+        return bool(tv._sidecar_damaged_files(str(live)))
+
+    def test_damage_predating_the_process_heals_before_any_worker_starts(
+        self, monkeypatch, tmp_path
+    ):
+        """The parent resolves the mapping through _overlay_transformers_dir on a cache
+        miss, which is the one place that can afford the RECORD scan."""
+        live = self._sidecar(tmp_path / "venv_t5_latest")
+        tv, installs = self._patch(monkeypatch, live)
+        self._damage(live)
+        assert tv._venv_dir_is_valid(
+            str(live), ("transformers==5.99.0",)
+        ), "precondition: the package-level predicate cannot see this damage"
+
+        assert tv._tier_from_config_mapping({"model_type": "brandnew"}) == "latest"
+
+        assert installs == ["transformers==5.99.0"], "the parent did not self-heal"
+        assert not self._is_damaged(tv, live)
+
+    def test_worker_child_flags_damage_instead_of_only_refusing(self, monkeypatch, tmp_path):
+        live = self._sidecar(tmp_path / "venv_t5_latest")
+        tv, installs = self._patch(monkeypatch, live, is_child = True)
+        self._damage(live)
+
+        assert tv._ensure_venv_t5_latest_exists() is False, "a child must not repair"
+        assert installs == []
+        assert tv._latest_repair_requested(), "the child left no signal for the parent"
+
+    def test_flagged_damage_breaks_the_worker_retry_deadlock(self, monkeypatch, tmp_path):
+        """The reported deadlock, end to end.
+
+        Damage that appears AFTER this process cached the latest mapping is invisible to
+        every parent-side predicate cheap enough to run per request, so the parent keeps
+        routing to 'latest' and the child keeps refusing. Pinned here is that the loop
+        terminates: the child's flag makes the next parent routing call repair, and the
+        retry after that activates.
+        """
+        live = self._sidecar(tmp_path / "venv_t5_latest")
+        tv, installs = self._patch(monkeypatch, live)
+
+        # Warm the mapping cache from the healthy sidecar, as any earlier request does.
+        assert tv._tier_from_config_mapping({"model_type": "brandnew"}) == "latest"
+        assert "latest" in tv._config_mapping_cache
+        installs.clear()
+
+        self._damage(live)
+
+        # Parent keeps routing to 'latest' off the cached mapping and never scans.
+        for _ in range(3):
+            assert tv._tier_from_config_mapping({"model_type": "brandnew"}) == "latest"
+        assert installs == [], "the cached hot path must not pay for a scan"
+        assert self._is_damaged(tv, live)
+
+        # The worker child sees the damage, refuses, and flags it.
+        monkeypatch.setattr("multiprocessing.parent_process", lambda: object())
+        assert tv._ensure_venv_t5_latest_exists() is False
+        assert installs == []
+
+        # The next parent routing call repairs. Before the fix it never did, and the
+        # worker below failed forever.
+        monkeypatch.setattr("multiprocessing.parent_process", lambda: None)
+        assert tv._tier_from_config_mapping({"model_type": "brandnew"}) == "latest"
+        assert installs == ["transformers==5.99.0"], "the parent never repaired"
+        assert not self._is_damaged(tv, live)
+
+        # The worker retry now succeeds, which is the property that was deadlocked.
+        monkeypatch.setattr("multiprocessing.parent_process", lambda: object())
+        assert tv._ensure_venv_t5_latest_exists() is True
+        assert not tv._latest_repair_requested(), "a satisfied request must not persist"
+
+    def test_stale_flag_on_a_healthy_sidecar_is_cleared_not_acted_on(self, monkeypatch, tmp_path):
+        """A false positive here costs a several-hundred-MB re-download, so a flag a
+        clean scan contradicts must be dropped, and must not re-arm the branch."""
+        live = self._sidecar(tmp_path / "venv_t5_latest")
+        tv, installs = self._patch(monkeypatch, live)
+        sentinel = live / "transformers" / "__init__.py"
+        tv._request_latest_repair()
+
+        assert tv._tier_from_config_mapping({"model_type": "brandnew"}) == "latest"
+
+        assert installs == [], "a healthy sidecar must never be wiped on a stale flag"
+        assert sentinel.read_text() == "x" * 40
+        assert not tv._latest_repair_requested(), "the stale flag must not survive"
+
+    def test_cached_mapping_hit_never_scans_the_sidecar(self, monkeypatch, tmp_path):
+        """The revalidation on a _config_mapping_cache HIT runs several times per
+        /validate request, so it must stay package level."""
+        live = self._sidecar(tmp_path / "venv_t5_latest")
+        tv, _ = self._patch(monkeypatch, live)
+        assert tv._config_model_types("latest") == frozenset({"brandnew"})
+
+        monkeypatch.setattr(
+            tv,
+            "_sidecar_damaged_files",
+            lambda d, limit = 3: pytest.fail("the cached hot path must not scan RECORDs"),
+        )
+        for _ in range(5):
+            assert tv._config_model_types("latest") == frozenset({"brandnew"})
+
+    def test_repair_backoff_window_never_repeats_the_scan(self, monkeypatch, tmp_path):
+        """A sidecar that cannot be repaired (offline, pip down) must not put a ~25 ms
+        scan on every routing call for the whole backoff window."""
+        _, live, tv = _shared_setup_3(monkeypatch, self, tmp_path)
+
+        assert tv._overlay_transformers_dir("latest") is None  # scans, tries, fails
+
+        monkeypatch.setattr(
+            tv,
+            "_sidecar_damaged_files",
+            lambda d, limit = 3: pytest.fail("the backoff window must not re-scan"),
+        )
+        for _ in range(5):
+            tv._overlay_transformers_dir("latest")
+
+    def test_backoff_window_keeps_the_damaged_sidecar_withheld(self, monkeypatch, tmp_path):
+        """Backing off from pip must not double as declaring the sidecar usable: the
+        cheap predicate cannot see a truncated file, so without the marker every
+        routing call in the window routes latest-only models straight back into a
+        sidecar whose worker activation is known to fail."""
+        _, live, tv = _shared_setup_3(monkeypatch, self, tmp_path)
+
+        assert tv._overlay_transformers_dir("latest") is None  # scans, tries, fails
+        assert tv._venv_dir_is_valid(
+            str(live), ("transformers==5.99.0",)
+        ), "precondition: only the scan can see this damage, not the cheap predicate"
+
+        monkeypatch.setattr(
+            tv,
+            "_sidecar_damaged_files",
+            lambda d, limit = 3: pytest.fail("the backoff window must not re-scan"),
+        )
+        for _ in range(5):
+            assert tv._overlay_transformers_dir("latest") is None
+        assert tv._tier_from_config_mapping({"model_type": "brandnew"}) != "latest"
+
+    def test_every_unrepaired_exit_flags_the_damage(self, monkeypatch, tmp_path):
+        """Offline, a child, and a swap already running each return before any repair.
+        Whichever one is taken, the damage has to be recorded, or the cheap predicate
+        keeps reporting the sidecar healthy and nothing ever revisits it."""
+        import multiprocessing
+
+        bailouts = {
+            "offline": lambda tv: monkeypatch.setattr(tv, "_env_offline", lambda: True),
+            "child": lambda tv: monkeypatch.setattr(
+                multiprocessing, "parent_process", lambda: object()
+            ),
+            "swap_running": lambda tv: monkeypatch.setattr(
+                tv, "try_begin_sidecar_swap", lambda kind = None: False
+            ),
+        }
+        for name, arrange in bailouts.items():
+            live = self._sidecar(tmp_path / f"venv_t5_latest_{name}")
+            tv, _ = self._patch(monkeypatch, live)
+            arrange(tv)
+            self._damage(live)
+
+            assert tv._ensure_venv_t5_latest_exists() is False, name
+            assert tv._latest_repair_requested(), f"{name} exited without recording the damage"
+            assert not tv._latest_sidecar_intact(), name
+
+    def test_cached_probe_result_does_not_survive_a_flagged_sidecar(self, monkeypatch, tmp_path):
+        """_probe_tier caches per process. A result cached while the sidecar was healthy
+        must not keep sending workers into it once damage is known, the way the
+        config-mapping cache already refuses to."""
+        live = self._sidecar(tmp_path / "venv_t5_latest")
+        tv, _ = self._patch(monkeypatch, live)
+        monkeypatch.setattr(tv, "_install_to_dir", lambda pkg, target: False)
+        key = f"{tv._probe_cache_key('some/model')}\0floor=default:def=1"
+        monkeypatch.setitem(tv._probe_tier_cache, key, "latest")
+
+        self._damage(live)
+        tv._request_latest_repair()
+
+        assert (
+            tv._probe_tier("some/model", None, "test", include_default = True, floor = "default")
+            != "latest"
+        )
+
+    def test_file_check_kill_switch_suppresses_the_whole_handoff(self, monkeypatch, tmp_path):
+        """UNSLOTH_SKIP_SIDECAR_FILE_CHECK is the escape hatch for a false positive; it
+        must leave no path that still wipes the sidecar."""
+        live = self._sidecar(tmp_path / "venv_t5_latest")
+        tv, installs = self._patch(monkeypatch, live)
+        monkeypatch.setenv("UNSLOTH_SKIP_SIDECAR_FILE_CHECK", "1")
+        self._damage(live)
+
+        assert tv._tier_from_config_mapping({"model_type": "brandnew"}) == "latest"
+        assert installs == []
+        monkeypatch.setattr("multiprocessing.parent_process", lambda: object())
+        assert tv._ensure_venv_t5_latest_exists() is True
+        assert not tv._latest_repair_requested()
+
+    def test_kill_switch_frees_the_sidecar_mid_backoff(self, monkeypatch, tmp_path):
+        """The hatch exists for a false positive, so it has to work at the moment one is
+        being hit: with a marker already written and a repair already failed, it must
+        restore routing now rather than one backoff window later."""
+        _, live, tv = _shared_setup_3(monkeypatch, self, tmp_path)
+
+        assert tv._overlay_transformers_dir("latest") is None  # arms marker + backoff
+        assert tv._latest_repair_requested(), "precondition: the marker is armed"
+
+        monkeypatch.setenv("UNSLOTH_SKIP_SIDECAR_FILE_CHECK", "1")
+
+        assert tv._overlay_transformers_dir("latest") is not None
+        assert tv._tier_from_config_mapping({"model_type": "brandnew"}) == "latest"
+
+    def test_an_unreadable_file_is_not_reported_as_damage(self, monkeypatch, tmp_path):
+        """A wipe costs a several-hundred-MB re-download, so the scan may only condemn
+        what it can prove: EIO or ESTALE on a flaky mount says the file could not be
+        read, never that it is gone."""
+        import errno
+
+        live = self._sidecar(tmp_path / "venv_t5_latest")
+        tv, _ = self._patch(monkeypatch, live)
+        real_stat = Path.stat
+
+        def _flaky(self, *a, **k):
+            if self.name == "__init__.py":
+                raise OSError(errno.EIO, "Input/output error")
+            return real_stat(self, *a, **k)
+
+        monkeypatch.setattr(Path, "stat", _flaky)
+
+        assert tv._sidecar_damaged_files(str(live)) == []
+        assert tv._latest_sidecar_undamaged() is True
+        assert tv._overlay_transformers_dir("latest") is not None
+
+    def test_a_deleted_file_is_still_reported_as_damage(self, monkeypatch, tmp_path):
+        """The counterpart: narrowing the caught errors must not blind the scan to a
+        genuinely missing file."""
+        live = self._sidecar(tmp_path / "venv_t5_latest")
+        tv, _ = self._patch(monkeypatch, live)
+        (live / "transformers" / "__init__.py").unlink()
+
+        assert tv._sidecar_damaged_files(str(live)) == [
+            "transformers: transformers/__init__.py is missing"
+        ]
+
+    def test_an_inconclusive_scan_does_not_retire_proven_damage(self, monkeypatch, tmp_path):
+        """Skipping unreadable rows means an empty result can mean 'nothing proven', not
+        'proven healthy'. A worker already proved this sidecar damaged, and a scan that
+        could not read the file must not erase that and hand it back to routing."""
+        import errno
+
+        live = self._sidecar(tmp_path / "venv_t5_latest")
+        tv, _ = self._patch(monkeypatch, live)
+        # A repair that cannot complete, so what is observed is the decision itself and
+        # not a rebuild papering over it.
+        monkeypatch.setattr(tv, "_install_to_dir", lambda pkg, target: False)
+        self._damage(live)
+        tv._request_latest_repair()
+        real_stat = Path.stat
+
+        def _flaky(self, *a, **k):
+            if self.name == "__init__.py":
+                raise OSError(errno.EIO, "Input/output error")
+            return real_stat(self, *a, **k)
+
+        monkeypatch.setattr(Path, "stat", _flaky)
+        assert tv._sidecar_damaged_files(str(live)) == []  # the scan sees nothing
+        assert tv._sidecar_scan(str(live)) == ([], True)  # but knows it is blind
+
+        assert tv._ensure_venv_t5_latest_exists() is False
+        assert tv._latest_repair_requested(), "an unreadable scan cannot disprove damage"
+
+    def test_a_clean_scan_still_retires_a_stale_marker(self, monkeypatch, tmp_path):
+        """The counterpart: a scan that really did read every row must still clear the
+        marker, or a request left by a lost race loops forever."""
+        live = self._sidecar(tmp_path / "venv_t5_latest")
+        tv, _ = self._patch(monkeypatch, live)
+        tv._request_latest_repair()
+
+        assert tv._ensure_venv_t5_latest_exists() is True
+        assert not tv._latest_repair_requested()
+
+    def test_a_cached_probe_does_not_survive_the_pin_being_deleted(self, monkeypatch, tmp_path):
+        """Deleting the pin takes the repair marker with it, so the marker cannot carry
+        this case. Activation short-circuits on a missing pin before it can signal
+        anything, so a cached latest would fail every retry until the process restarts."""
+        live = self._sidecar(tmp_path / "venv_t5_latest")
+        tv, _ = self._patch(monkeypatch, live)
+        import shutil
+
+        key = f"{tv._probe_cache_key('some/model')}\0floor=default:def=1"
+        monkeypatch.setitem(tv._probe_tier_cache, key, "latest")
+        shutil.rmtree(live)
+
+        assert (
+            tv._probe_tier("some/model", None, "test", include_default = True, floor = "default")
+            != "latest"
+        )

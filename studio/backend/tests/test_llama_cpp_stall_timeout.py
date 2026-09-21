@@ -31,6 +31,7 @@ sys.modules.setdefault("loggers", _loggers_stub)
 sys.modules.setdefault("structlog", _types.ModuleType("structlog"))
 
 import httpcore  # noqa: E402
+import httpx  # noqa: E402
 
 from core.inference import llama_cpp as llama_cpp_mod  # noqa: E402
 from core.inference.llama_cpp import LlamaCppBackend  # noqa: E402
@@ -97,6 +98,110 @@ def test_stall_timeout_honored_after_first_token(monkeypatch):
         f"(expected ~{_STALL_TIMEOUT}s, not {_PREFILL_TIMEOUT}s)"
     )
     assert clock["t"] >= _STALL_TIMEOUT * 0.5
+
+
+def test_prompt_progress_keeps_the_prefill_read_timeout():
+    progress = (
+        'data: {"choices":[{"delta":{"role":"assistant","content":null}}],'
+        '"prompt_progress":{"processed":512,"cache":0,"time_ms":64}}\n\n'
+    )
+
+    output = 'data: {"choices":[{"delta":{"content":"x"}}]}\n\n'
+    fragments = (progress[:32], progress[32:], output[:24], output[24:])
+
+    class Response:
+        request = _types.SimpleNamespace(extensions = {"timeout": {"read": _PREFILL_TIMEOUT}})
+
+        @staticmethod
+        def iter_text():
+            yield from fragments
+
+        @staticmethod
+        def close():
+            return None
+
+    iterator = LlamaCppBackend._iter_text_cancellable(
+        Response(),
+        first_token_deadline = llama_cpp_mod.time.monotonic() + _PREFILL_TIMEOUT,
+        post_first_chunk_read_timeout_s = _STALL_TIMEOUT,
+    )
+
+    assert next(iterator) == fragments[0]
+    assert Response.request.extensions["timeout"]["read"] > _STALL_TIMEOUT
+    assert next(iterator) == fragments[1]
+    assert Response.request.extensions["timeout"]["read"] > _STALL_TIMEOUT
+    # A generated-output event switches timeouts only after its delimiter is complete.
+    assert next(iterator) == fragments[2]
+    assert Response.request.extensions["timeout"]["read"] > _STALL_TIMEOUT
+    assert next(iterator) == fragments[3]
+    assert Response.request.extensions["timeout"]["read"] == _STALL_TIMEOUT
+    iterator.close()
+
+
+_OUTPUT_EVENT = 'data: {"choices":[{"delta":{"content":"x"}}]}\n\n'
+
+
+def _progress_event(processed: int) -> str:
+    return (
+        'data: {"choices":[{"delta":{"role":"assistant","content":null}}],'
+        f'"prompt_progress":{{"processed":{processed},"cache":0,"time_ms":1}}}}\n\n'
+    )
+
+
+def _run(events, clock):
+    """Drain _iter_text_cancellable over ``events``, 200s of fake time apart."""
+
+    class Response:
+        request = _types.SimpleNamespace(extensions = {"timeout": {"read": _PREFILL_TIMEOUT}})
+
+        @staticmethod
+        def iter_text():
+            for event in events:
+                clock["t"] += 200.0
+                yield event
+
+        @staticmethod
+        def close():
+            return None
+
+    return list(
+        LlamaCppBackend._iter_text_cancellable(
+            Response(),
+            first_token_deadline = clock["t"] + _PREFILL_TIMEOUT,
+            post_first_chunk_read_timeout_s = _STALL_TIMEOUT,
+        )
+    )
+
+
+def test_advancing_prefill_progress_extends_the_first_token_deadline(monkeypatch):
+    """A prompt that keeps prefilling past the window is not a hang (#9037)."""
+    clock = {"t": 0.0}
+    monkeypatch.setattr(llama_cpp_mod.time, "monotonic", lambda: clock["t"])
+
+    # Progress every 200s keeps a 4000s prefill alive.
+    events = [_progress_event(i * 4096) for i in range(1, 21)] + [_OUTPUT_EVENT]
+
+    assert _run(events, clock)[-1] == _OUTPUT_EVENT
+    assert clock["t"] > _PREFILL_TIMEOUT
+
+
+def test_repeated_prefill_progress_still_times_out(monkeypatch):
+    """A server replaying one progress value is stuck, not prefilling."""
+    clock = {"t": 0.0}
+    monkeypatch.setattr(llama_cpp_mod.time, "monotonic", lambda: clock["t"])
+
+    with pytest.raises(httpx.ReadTimeout):
+        _run([_progress_event(4096)] * 20 + [_OUTPUT_EVENT], clock)
+
+
+def test_prefill_without_progress_events_still_times_out(monkeypatch):
+    """Content-free events alone are not proof of life: the window still applies."""
+    clock = {"t": 0.0}
+    monkeypatch.setattr(llama_cpp_mod.time, "monotonic", lambda: clock["t"])
+
+    keepalive = 'data: {"choices":[{"delta":{"role":"assistant","content":null}}]}\n\n'
+    with pytest.raises(httpx.ReadTimeout):
+        _run([keepalive] * 20 + [_OUTPUT_EVENT], clock)
 
 
 def test_prefill_timeout_used_when_no_live_override(monkeypatch):

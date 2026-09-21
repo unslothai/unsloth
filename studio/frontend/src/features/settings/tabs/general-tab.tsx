@@ -12,35 +12,46 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
-import { usePlatformStore } from "@/config/env";
-import { resetOnboardingDone } from "@/features/auth";
 import { PermissionModeDropdown, useChatRuntimeStore } from "@/features/chat";
-import { emitTrainingRunsChanged } from "@/features/training";
+// From the keys module, not the barrel or the store: both are in an import cycle with this file,
+// so the key was still in its temporal dead zone when the module-scope list below read it, killing
+// the module graph. The keys module imports nothing, so it is always evaluated first.
+import { SIDEBAR_ORGANIZATION_STORAGE_KEY } from "@/features/chat/stores/sidebar-organization-keys";
+import {
+  LOADED_MODELS_PREFERENCE_KEYS,
+  setShowLoadedModels,
+  useShowLoadedModels,
+} from "@/features/loaded-models";
+
+import { useHfTokenStore } from "@/features/hub";
+import {
+  emitTrainingRunsChanged,
+  TRAINING_UI_PREFERENCE_KEYS,
+} from "@/features/training";
 import {
   setShowLlamaUpdateBanner,
+  setShowWhisperUpdateBanner,
   useShowLlamaUpdateBanner,
+  useShowWhisperUpdateBanner,
 } from "@/hooks/use-llama-update-pref";
 import { useHfTokenValidation } from "@/hooks";
 import { LOCALE_STORAGE_KEY, useT } from "@/i18n";
 import { isTauri } from "@/lib/api-base";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
-import { useNavigate, useRouterState } from "@tanstack/react-router";
 import { Check, Eye, EyeOff } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
-import {
-  EmbeddingModelBlockedError,
-  type EmbeddingModelSettings,
-  EmbeddingModelVerificationError,
-  loadEmbeddingModelSettings,
-  resetEmbeddingModelSettings,
-  updateEmbeddingModelSettings,
-} from "../api/embedding-model";
 import {
   type HelperPrecacheSettings,
   loadHelperPrecacheSettings,
   updateHelperPrecacheSettings,
 } from "../api/helper-precache";
+import {
+  type ManagedProviderUrlSettings,
+  loadManagedProviderUrls,
+  updateManagedProviderUrls,
+} from "../api/managed-provider-urls";
+import { isSettingsRouteAbsent } from "../api/settings-route-absent";
 import {
   type PreviewSharingSettings,
   loadPreviewSharing,
@@ -53,34 +64,58 @@ import {
   loadUploadLimitSettings,
   updateUploadLimitSettings,
 } from "../api/upload-limit";
+import { loadCloseToTray, updateCloseToTray } from "../api/close-to-tray";
+import { loadLaunchAtLogin, updateLaunchAtLogin } from "../api/launch-at-login";
+import { useIsAccountOwner } from "@/features/auth";
 import { ChangePasswordDialog } from "../components/change-password-dialog";
-import { EmbeddingModelCombobox } from "../components/embedding-model-combobox";
+import { DesktopRepairControl } from "../components/desktop-repair-control";
+import {
+  DesktopUpdateControl,
+  DesktopUpdateNote,
+} from "../components/desktop-update-control";
+import { DocumentsRagSection } from "../components/documents-rag-section";
 import { LanguageSelect } from "../components/language-select";
+import { TRANSPORT_MODE_STORAGE_KEY } from "@/features/hub";
+import { DownloadTransportRow } from "../components/download-transport-row";
 import { SettingsRow } from "../components/settings-row";
 import { SettingsSection } from "../components/settings-section";
 import { StudioVersionSection } from "../components/studio-version-section";
-import { useSettingsDialogStore } from "../stores/settings-dialog-store";
+import { useDesktopBooleanSetting } from "../hooks/use-desktop-boolean-setting";
+import { KEYBOARD_SHORTCUTS_STORAGE_KEY } from "../stores/keyboard-shortcuts-store";
+import { INTERFACE_SCALE_STORAGE_KEY } from "../stores/interface-scale-store";
+import { SETTINGS_PANEL_PREFS_STORAGE_KEY } from "../stores/settings-panel-prefs-store";
+import { CHAT_PROJECT_ATTACHMENT_TARGET_KEY } from "@/features/chat/utils/project-attachment-target";
 
-// Keys cleared by "Reset all local preferences".
-// NEVER include auth/session keys here — clearing them would log the user out
-// or force re-onboarding. Explicitly excluded: unsloth_auth_token,
-// unsloth_auth_refresh_token, unsloth_auth_must_change_password,
-// unsloth_onboarding_done.
+// Keys cleared by "Reset all local preferences". NEVER include auth/session keys here -- that
+// would log the user out (unsloth_auth_token, unsloth_auth_refresh_token, and
+// unsloth_auth_must_change_password are excluded).
 const PREFS_KEYS: string[] = [
   // Appearance
   "theme",
   "palette",
   "unsloth_appearance_customization",
+  INTERFACE_SCALE_STORAGE_KEY,
   LOCALE_STORAGE_KEY,
   // UI state
   "sidebar_pinned",
+  "sidebar_width",
+  "chat_settings_width",
   "unsloth_sidebar_navigate_open",
+  // Grouping, sort and the manual row order.
+  SIDEBAR_ORGANIZATION_STORAGE_KEY,
   "unsloth_settings_active_tab",
+  SETTINGS_PANEL_PREFS_STORAGE_KEY,
+  // Rebound chords. Without this a reset leaves the user on shortcuts they asked to throw away, and
+  // a chord bound to something unusable has no escape hatch from this button.
+  KEYBOARD_SHORTCUTS_STORAGE_KEY,
+  // Outranks the install-wide setting, so a reset that left it behind would keep ignoring
+  // transport changes made elsewhere.
+  TRANSPORT_MODE_STORAGE_KEY,
   // Chat runtime prefs
+  CHAT_PROJECT_ATTACHMENT_TARGET_KEY,
   "unsloth_chat_auto_title",
   "unsloth_chat_permission_mode",
-  // Legacy confirm key: loadPermissionMode falls back to it, so clear both or
-  // a reset would restore the old level instead of the fresh default.
+  // Legacy confirm key: loadPermissionMode falls back to it, so clear both or a reset restores it.
   "unsloth_chat_confirm_tool_calls",
   "unsloth_hf_token",
   "unsloth_auto_heal_tool_calls",
@@ -93,10 +128,19 @@ const PREFS_KEYS: string[] = [
   "unsloth_model_configs",
   "unsloth_model_configs_migrated",
   "unsloth_load_settings",
+  "unsloth_model_advanced_settings",
   "unsloth_chat_load_on_selection",
   // Model selector settings ("Select model settings" group)
   "unsloth_chat_expand_quantizations",
   "unsloth_chat_show_all_quantizations",
+  // The memory bar's opt-in. Reset All advertises restoring defaults and this feature's default is
+  // off, so leaving the key out left it switched on across a reset that said it had turned
+  // everything back. Spelled out rather than imported as CHAT_SHOW_MEMORY_BAR_KEY, for the same
+  // reason the note above gives: it lives in chat-runtime-store, which is in an import cycle with
+  // this file, so the constant would still be in its temporal dead zone when this module-scope list
+  // is built. A test pins this literal against the store's constant so the two cannot drift apart
+  // silently.
+  "unsloth_chat_show_memory_bar",
   "unsloth_models_fit_on_device_only",
   // Chat presets
   "unsloth_chat_custom_presets",
@@ -107,19 +151,27 @@ const PREFS_KEYS: string[] = [
   "unsloth_training_config_v1",
   "unsloth_prev_max_steps",
   "unsloth_prev_save_steps",
+  ...TRAINING_UI_PREFERENCE_KEYS,
   // Profile personalization
   "unsloth_user_profile",
   // Guided tour flags
   "tour:studio:v1",
   // Update notifications
   "unsloth_show_llama_update_banner",
+  "unsloth_show_whisper_update_banner",
   "unsloth_monitor_overlay",
+  LOADED_MODELS_PREFERENCE_KEYS.show,
+  LOADED_MODELS_PREFERENCE_KEYS.collapsed,
+  LOADED_MODELS_PREFERENCE_KEYS.position,
+  LOADED_MODELS_PREFERENCE_KEYS.dismissed,
   // Voice settings
   "unsloth_voice_settings",
+  // Retired keys. The onboarding wizard is gone, but installs that ran it still
+  // carry its flag, so a reset has to clear it or the orphan outlives the app.
+  "unsloth_onboarding_done",
 ];
 
-// Set by resetAllPrefs so the unmount-commit effect skips writing back the
-// in-memory draft, else cleanup would re-persist the just-cleared HF token.
+// Set by resetAllPrefs so the unmount-commit effect skips writing back the in-memory draft.
 let resetInProgress = false;
 
 function resetAllPrefs() {
@@ -135,25 +187,17 @@ function resetAllPrefs() {
 }
 
 export function GeneralTab() {
+  const isOwner = useIsAccountOwner();
   const t = useT();
-  const navigate = useNavigate();
-  const closeDialog = useSettingsDialogStore((s) => s.closeDialog);
-  const { pathname, search } = useRouterState({
-    select: (s) => ({
-      pathname: s.location.pathname,
-      search:
-        "searchStr" in s.location
-          ? ((s.location as { searchStr?: string }).searchStr ?? "")
-          : typeof window !== "undefined"
-            ? window.location.search
-            : "",
-    }),
-  });
   const hfToken = useChatRuntimeStore((s) => s.hfToken);
   const setHfToken = useChatRuntimeStore((s) => s.setHfToken);
-  const chatOnly = usePlatformStore((s) => s.chatOnly);
+
+  const hfTokenPersistenceError = useHfTokenStore(
+    (s) => s.persistenceError,
+  );
   const showLlamaUpdates = useShowLlamaUpdateBanner();
-  const redirectTo = `${pathname}${search}`;
+  const showWhisperUpdates = useShowWhisperUpdateBanner();
+  const showLoadedModels = useShowLoadedModels();
 
   const [draftToken, setDraftToken] = useState(hfToken ?? "");
   const [showToken, setShowToken] = useState(false);
@@ -178,26 +222,39 @@ export function GeneralTab() {
     null,
   );
   const [isSavingPreviewSharing, setIsSavingPreviewSharing] = useState(false);
+  const [managedProviderUrls, setManagedProviderUrls] =
+    useState<ManagedProviderUrlSettings | null>(null);
+  const [managedProviderUrlsError, setManagedProviderUrlsError] = useState<
+    string | null
+  >(null);
+  const [isSavingManagedProviderUrls, setIsSavingManagedProviderUrls] =
+    useState(false);
+  // A backend that does not serve the route has no such setting to show.
+  const [managedProviderUrlsAbsent, setManagedProviderUrlsAbsent] =
+    useState(false);
   const [revokePreviewOpen, setRevokePreviewOpen] = useState(false);
   const [isRevokingPreview, setIsRevokingPreview] = useState(false);
-  const [embeddingModel, setEmbeddingModel] =
-    useState<EmbeddingModelSettings | null>(null);
-  const [draftEmbeddingModel, setDraftEmbeddingModel] = useState("");
-  const [embeddingModelError, setEmbeddingModelError] = useState<string | null>(
-    null,
-  );
-  // Set after a 409 (unverifiable model); offers "Save anyway".
-  const [embeddingModelNeedsForce, setEmbeddingModelNeedsForce] =
-    useState(false);
-  const [isSavingEmbeddingModel, setIsSavingEmbeddingModel] = useState(false);
+  const launchAtLoginSetting = useDesktopBooleanSetting({
+    enabled: isTauri,
+    load: loadLaunchAtLogin,
+    save: updateLaunchAtLogin,
+    loadError: t("settings.general.startup.loadError"),
+    saveError: t("settings.general.startup.saveError"),
+  });
+  const closeToTraySetting = useDesktopBooleanSetting({
+    enabled: isTauri,
+    load: loadCloseToTray,
+    save: updateCloseToTray,
+    loadError: t("settings.general.startup.loadError"),
+    saveError: t("settings.general.startup.closeToTraySaveError"),
+  });
 
   const draftRef = useRef(draftToken);
   useEffect(() => {
     draftRef.current = draftToken;
   }, [draftToken]);
 
-  // Commit on unmount (dialog close / tab switch). Skip during reset-prefs
-  // flow so we don't re-persist the draft after localStorage was cleared.
+  // Commit on unmount (dialog close / tab switch), skipped during the reset-prefs flow.
   useEffect(() => {
     return () => {
       if (resetInProgress) return;
@@ -221,15 +278,15 @@ export function GeneralTab() {
     setHfToken("");
   };
 
-  // Only show the success tick for the currently displayed token after the
-  // authenticated validation endpoint has confirmed it. A saved token alone
-  // may still be malformed, expired, or revoked.
+  // Only show the success tick after the authenticated validation endpoint confirms this token:
+  // a saved token alone may still be malformed, expired, or revoked.
   const tokenIsCurrent =
     draftToken.trim().length > 0 && draftToken.trim() === (hfToken ?? "");
   const tokenValidation = useHfTokenValidation(hfToken ?? "");
   const tokenValidated = tokenIsCurrent && tokenValidation.isValid === true;
 
   useEffect(() => {
+    if (!isOwner) return;
     let cancelled = false;
     void loadUploadLimitSettings()
       .then((settings) => {
@@ -248,9 +305,10 @@ export function GeneralTab() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [isOwner]);
 
   useEffect(() => {
+    if (!isOwner) return;
     let cancelled = false;
     void loadHelperPrecacheSettings()
       .then((settings) => {
@@ -269,9 +327,10 @@ export function GeneralTab() {
     return () => {
       cancelled = true;
     };
-  }, [t]);
+  }, [t, isOwner]);
 
   useEffect(() => {
+    if (!isOwner) return;
     let cancelled = false;
     void loadPreviewSharing()
       .then((settings) => {
@@ -290,28 +349,33 @@ export function GeneralTab() {
     return () => {
       cancelled = true;
     };
-  }, [t]);
+  }, [t, isOwner]);
 
   useEffect(() => {
+    if (!isOwner) return;
     let cancelled = false;
-    void loadEmbeddingModelSettings()
+    void loadManagedProviderUrls()
       .then((settings) => {
         if (cancelled) return;
-        setEmbeddingModel(settings);
-        setDraftEmbeddingModel(settings.embeddingModel);
+        setManagedProviderUrls(settings);
+        setManagedProviderUrlsError(null);
       })
       .catch((error) => {
         if (cancelled) return;
-        setEmbeddingModelError(
+        if (isSettingsRouteAbsent(error)) {
+          setManagedProviderUrlsAbsent(true);
+          return;
+        }
+        setManagedProviderUrlsError(
           error instanceof Error
             ? error.message
-            : t("settings.general.rag.loadError"),
+            : t("settings.general.managedProviderUrls.loadError"),
         );
       });
     return () => {
       cancelled = true;
     };
-  }, [t]);
+  }, [t, isOwner]);
 
   const saveHelperPrecache = async (enabled: boolean) => {
     setIsSavingHelperPrecache(true);
@@ -336,8 +400,7 @@ export function GeneralTab() {
     try {
       const settings = await updatePreviewSharing(enabled);
       setPreviewSharing(settings);
-      // Toggling sharing changes whether /api/train/runs returns preview_sig, so
-      // refresh the history grid (hide/show the Copy preview link buttons).
+      // Toggling sharing changes whether /api/train/runs returns preview_sig, so refresh the grid.
       emitTrainingRunsChanged();
     } catch (error) {
       setPreviewSharingError(
@@ -350,12 +413,28 @@ export function GeneralTab() {
     }
   };
 
+  const saveManagedProviderUrls = async (allowed: boolean) => {
+    setIsSavingManagedProviderUrls(true);
+    setManagedProviderUrlsError(null);
+    try {
+      const settings = await updateManagedProviderUrls(allowed);
+      setManagedProviderUrls(settings);
+    } catch (error) {
+      setManagedProviderUrlsError(
+        error instanceof Error
+          ? error.message
+          : t("settings.general.managedProviderUrls.saveError"),
+      );
+    } finally {
+      setIsSavingManagedProviderUrls(false);
+    }
+  };
+
   const revokePreviewLinks = async () => {
     setIsRevokingPreview(true);
     try {
       await rotatePreviewLinks();
-      // The secret rotated, so any preview_sig the history grid still holds is
-      // now stale. Refresh so copied links use freshly minted signatures.
+      // The secret rotated, so any preview_sig the history grid holds is stale.
       emitTrainingRunsChanged();
       setRevokePreviewOpen(false);
       toast.success(t("settings.general.previewSharing.revoked"));
@@ -368,60 +447,6 @@ export function GeneralTab() {
     }
   };
 
-  const saveEmbeddingModel = async (force: boolean) => {
-    const trimmed = draftEmbeddingModel.trim();
-    if (!trimmed) {
-      setEmbeddingModelError(t("settings.general.rag.emptyError"));
-      return;
-    }
-    setIsSavingEmbeddingModel(true);
-    setEmbeddingModelError(null);
-    try {
-      const settings = await updateEmbeddingModelSettings(trimmed, {
-        hfToken: hfToken || undefined,
-        force,
-      });
-      setEmbeddingModel(settings);
-      setDraftEmbeddingModel(settings.embeddingModel);
-      setEmbeddingModelNeedsForce(false);
-      toast.success(t("settings.general.rag.saved"), {
-        description: t("settings.general.rag.reindexWarning"),
-      });
-    } catch (error) {
-      // A hard security block cannot be forced; keep the "save anyway" action hidden.
-      if (error instanceof EmbeddingModelBlockedError) {
-        setEmbeddingModelNeedsForce(false);
-      } else if (error instanceof EmbeddingModelVerificationError) {
-        setEmbeddingModelNeedsForce(true);
-      }
-      setEmbeddingModelError(
-        error instanceof Error
-          ? error.message
-          : t("settings.general.rag.saveError"),
-      );
-    } finally {
-      setIsSavingEmbeddingModel(false);
-    }
-  };
-
-  const resetEmbeddingModel = async () => {
-    setIsSavingEmbeddingModel(true);
-    setEmbeddingModelError(null);
-    setEmbeddingModelNeedsForce(false);
-    try {
-      const settings = await resetEmbeddingModelSettings();
-      setEmbeddingModel(settings);
-      setDraftEmbeddingModel(settings.embeddingModel);
-    } catch (error) {
-      setEmbeddingModelError(
-        error instanceof Error
-          ? error.message
-          : t("settings.general.rag.saveError"),
-      );
-    } finally {
-      setIsSavingEmbeddingModel(false);
-    }
-  };
 
   const saveUploadLimit = async () => {
     const parsed = Number(draftUploadLimit);
@@ -461,7 +486,16 @@ export function GeneralTab() {
         </p>
       </header>
 
-      <StudioVersionSection />
+      {/* Desktop-only, and self-gating: outside the desktop app both render
+          nothing and the section keeps just the version rows. */}
+      <StudioVersionSection>
+        {isTauri ? (
+          <div data-settings-label={t("settings.about.updates")}>
+            <DesktopUpdateControl />
+            <DesktopUpdateNote />
+          </div>
+        ) : null}
+      </StudioVersionSection>
 
       <SettingsSection title={t("settings.general.account")}>
         <SettingsRow
@@ -486,8 +520,7 @@ export function GeneralTab() {
                   )}
                 />
                 {tokenValidated ? (
-                  // Decorative: pointer-events-none lets clicks reach the input
-                  // underneath so the field still focuses anywhere.
+                  // Decorative: pointer-events-none lets clicks reach the input underneath.
                   <span
                     className="pointer-events-none absolute right-7 top-1/2 flex size-5 -translate-y-1/2 items-center justify-center text-emerald-600 duration-150 animate-in fade-in zoom-in dark:text-emerald-500"
                     role="img"
@@ -522,11 +555,17 @@ export function GeneralTab() {
                 disabled={!draftToken && !hfToken}
                 onClick={clearHfToken}
               >
-                Clear
+                {t("settings.general.clearToken")}
               </Button>
             </div>
-            {tokenValidation.isChecking ? (
-              <p className="text-xs text-muted-foreground">Checking token…</p>
+            {hfTokenPersistenceError ? (
+              <p className="max-w-[330px] text-right text-xs text-destructive">
+                {hfTokenPersistenceError}
+              </p>
+            ) : tokenValidation.isChecking ? (
+              <p className="text-xs text-muted-foreground">
+                {t("settings.general.checkingToken")}
+              </p>
             ) : tokenValidation.error ? (
               <p className="max-w-[330px] text-right text-xs text-destructive">
                 {tokenValidation.error}
@@ -534,10 +573,10 @@ export function GeneralTab() {
             ) : null}
           </div>
         </SettingsRow>
-        {/* The desktop app authenticates via desktop auto-auth with a generated
-            secret, so there is no user-entered password to change here (and
-            changing it would clear the desktop secret). Web only. */}
-        {isTauri ? null : (
+        {/* The desktop owner authenticates via desktop auto-auth with a generated
+            secret, so the owner password only governs remote browsers and is
+            managed in Remote access instead. Managed accounts sign in here. */}
+        {isTauri && isOwner ? null : (
           <SettingsRow
             label={t("settings.general.password")}
             description={t("settings.general.passwordDescription")}
@@ -565,7 +604,64 @@ export function GeneralTab() {
         </SettingsRow>
       </SettingsSection>
 
+      {isTauri ? (
+        <SettingsSection title={t("settings.general.startup.sectionTitle")}>
+          <SettingsRow
+            label={t("settings.general.startup.launchAtLogin")}
+            description={t("settings.general.startup.launchAtLoginDescription")}
+          >
+            <div className="flex flex-col items-end gap-1">
+              <Switch
+                checked={launchAtLoginSetting.value ?? false}
+                disabled={
+                  launchAtLoginSetting.value === null || launchAtLoginSetting.saving
+                }
+                onCheckedChange={(enabled) => void launchAtLoginSetting.update(enabled)}
+              />
+              {launchAtLoginSetting.error ? (
+                <span className="max-w-[260px] text-right text-xs text-destructive">
+                  {launchAtLoginSetting.error}
+                </span>
+              ) : null}
+            </div>
+          </SettingsRow>
+
+          {closeToTraySetting.supported ? (
+            <SettingsRow
+              label={t("settings.general.startup.closeToTray")}
+              description={t("settings.general.startup.closeToTrayDescription")}
+            >
+              <div className="flex flex-col items-end gap-1">
+                <Switch
+                  checked={closeToTraySetting.value ?? false}
+                  disabled={
+                    closeToTraySetting.value === null || closeToTraySetting.saving
+                  }
+                  onCheckedChange={(enabled) => void closeToTraySetting.update(enabled)}
+                />
+                {closeToTraySetting.error ? (
+                  <span className="max-w-[260px] text-right text-xs text-destructive">
+                    {closeToTraySetting.error}
+                  </span>
+                ) : null}
+              </div>
+            </SettingsRow>
+          ) : null}
+        </SettingsSection>
+      ) : null}
+
       <SettingsSection title={t("settings.general.notifications.sectionTitle")}>
+        <SettingsRow
+          label={t("settings.general.notifications.showLoadedModels")}
+          description={t(
+            "settings.general.notifications.showLoadedModelsDescription",
+          )}
+        >
+          <Switch
+            checked={showLoadedModels}
+            onCheckedChange={setShowLoadedModels}
+          />
+        </SettingsRow>
         <SettingsRow
           label={t("settings.general.notifications.showLlamaUpdates")}
           description={t(
@@ -577,8 +673,22 @@ export function GeneralTab() {
             onCheckedChange={setShowLlamaUpdateBanner}
           />
         </SettingsRow>
+        <SettingsRow
+          label={t("settings.general.notifications.showWhisperUpdates")}
+          description={t(
+            "settings.general.notifications.showWhisperUpdatesDescription",
+          )}
+        >
+          <Switch
+            checked={showWhisperUpdates}
+            onCheckedChange={setShowWhisperUpdateBanner}
+          />
+        </SettingsRow>
       </SettingsSection>
 
+      {/* Installation-wide settings: owner-only routes, so a managed account gets no dead controls. */}
+      {isOwner ? (
+        <>
       <SettingsSection
         title={t("settings.general.previewSharing.sectionTitle")}
       >
@@ -615,74 +725,47 @@ export function GeneralTab() {
         </SettingsRow>
       </SettingsSection>
 
-      <SettingsSection title={t("settings.general.rag.sectionTitle")}>
-        <SettingsRow
-          label={t("settings.general.rag.embeddingModel")}
-          description={t("settings.general.rag.embeddingModelDescription", {
-            defaultModel: embeddingModel?.defaultEmbeddingModel ?? "",
-          })}
-          className="max-[360px]:flex-col max-[360px]:items-stretch max-[360px]:gap-3"
+      {managedProviderUrlsAbsent ? null : (
+        <SettingsSection
+          title={t("settings.general.managedProviderUrls.sectionTitle")}
         >
-          <div className="flex flex-col items-end gap-1 max-[360px]:w-full">
-            <div className="flex items-center gap-2 max-[360px]:w-full">
-              <EmbeddingModelCombobox
-                value={draftEmbeddingModel}
-                onChange={(next) => {
-                  setDraftEmbeddingModel(next);
-                  setEmbeddingModelNeedsForce(false);
-                  setEmbeddingModelError(null);
-                }}
-                accessToken={hfToken || undefined}
-                disabled={!embeddingModel}
-                placeholder={embeddingModel?.defaultEmbeddingModel ?? ""}
-                ariaLabel={t("settings.general.rag.embeddingModel")}
-                className="w-[220px] max-[360px]:min-w-0 max-[360px]:flex-1"
-              />
-              <Button
-                variant="outline"
-                size="sm"
+          <SettingsRow
+            label={t("settings.general.managedProviderUrls.enableLabel")}
+            description={t(
+              "settings.general.managedProviderUrls.enableDescription",
+            )}
+          >
+            <div className="flex flex-col items-end gap-1">
+              <Switch
+                checked={managedProviderUrls?.allowed ?? false}
                 disabled={
-                  !embeddingModel ||
-                  isSavingEmbeddingModel ||
-                  draftEmbeddingModel.trim() === embeddingModel.embeddingModel
+                  !managedProviderUrls ||
+                  isSavingManagedProviderUrls ||
+                  managedProviderUrls.lockedByEnvironment
                 }
-                onClick={() => void saveEmbeddingModel(false)}
-              >
-                {isSavingEmbeddingModel ? t("common.saving") : t("common.save")}
-              </Button>
-            </div>
-            {embeddingModelError ? (
-              <span className="max-w-[300px] text-right text-xs text-destructive">
-                {embeddingModelError}
-              </span>
-            ) : null}
-            <div className="flex items-center gap-2">
-              {embeddingModelNeedsForce ? (
-                <Button
-                  variant="outline"
-                  size="sm"
-                  disabled={isSavingEmbeddingModel}
-                  onClick={() => void saveEmbeddingModel(true)}
-                >
-                  {t("settings.general.rag.saveAnyway")}
-                </Button>
+                onCheckedChange={(allowed) =>
+                  void saveManagedProviderUrls(allowed)
+                }
+              />
+              {managedProviderUrls?.lockedByEnvironment ? (
+                <span className="max-w-[260px] text-right text-xs text-muted-foreground">
+                  {t("settings.general.managedProviderUrls.lockedByEnvironment")}
+                </span>
               ) : null}
-              {embeddingModel?.isCustom ? (
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  disabled={isSavingEmbeddingModel}
-                  onClick={() => void resetEmbeddingModel()}
-                >
-                  {t("settings.general.rag.resetAction")}
-                </Button>
+              {managedProviderUrlsError ? (
+                <span className="max-w-[260px] text-right text-xs text-destructive">
+                  {managedProviderUrlsError}
+                </span>
               ) : null}
             </div>
-            <span className="max-w-[300px] text-right text-xs text-muted-foreground">
-              {t("settings.general.rag.reindexWarning")}
-            </span>
-          </div>
-        </SettingsRow>
+          </SettingsRow>
+        </SettingsSection>
+      )}
+
+      <DocumentsRagSection />
+
+      <SettingsSection title={t("settings.general.downloads.sectionTitle")}>
+        <DownloadTransportRow />
       </SettingsSection>
 
       <SettingsSection title={t("settings.general.uploads.sectionTitle")}>
@@ -703,7 +786,7 @@ export function GeneralTab() {
                   max={uploadLimit?.maxAllowedUploadSizeMb ?? 8192}
                   step={1}
                   value={draftUploadLimit}
-                  aria-label="Training dataset upload cap in MB"
+                  aria-label={t("settings.general.uploads.maxUploadSize")}
                   onChange={(event) => setDraftUploadLimit(event.target.value)}
                   className="h-8 w-24"
                 />
@@ -729,26 +812,6 @@ export function GeneralTab() {
         </SettingsRow>
       </SettingsSection>
 
-      {!chatOnly && (
-        <SettingsSection title={t("settings.general.gettingStarted")}>
-          <SettingsRow
-            label={t("settings.general.startOnboarding")}
-            description={t("settings.general.startOnboardingDescription")}
-          >
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => {
-                resetOnboardingDone();
-                closeDialog();
-                navigate({ to: "/onboarding", search: { redirectTo } });
-              }}
-            >
-              {t("settings.general.startOnboardingAction")}
-            </Button>
-          </SettingsRow>
-        </SettingsSection>
-      )}
 
       <SettingsSection title={t("settings.general.helperLlm.sectionTitle")}>
         <SettingsRow
@@ -779,6 +842,8 @@ export function GeneralTab() {
           </div>
         </SettingsRow>
       </SettingsSection>
+        </>
+      ) : null}
 
       <SettingsSection
         title={t("settings.general.resetPreferences.sectionTitle")}
@@ -797,6 +862,10 @@ export function GeneralTab() {
             {t("settings.general.resetPreferences.action")}
           </Button>
         </SettingsRow>
+        {/* Same section as the reset row: both rewrite state the user cannot easily put
+            back, and the desktop-only repair renders nothing on the web build, which
+            would leave a section header with no rows under it if it had its own. */}
+        <DesktopRepairControl />
       </SettingsSection>
 
       <Dialog open={confirmOpen} onOpenChange={setConfirmOpen}>

@@ -11,10 +11,8 @@
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-INSTALL_SH="$SCRIPT_DIR/../../install.sh"
-PASS=0
-FAIL=0
-
+. "$SCRIPT_DIR/_harness.sh"
+INSTALL_SH="${1:-$SCRIPT_DIR/../../install.sh}"
 # Extract _previous_torch_pin and its dependency _torch_release_in_window.
 _FUNC_FILE=$(mktemp)
 {
@@ -25,15 +23,6 @@ _FUNC_FILE=$(mktemp)
 # shellcheck disable=SC1090
 . "$_FUNC_FILE"
 rm -f "$_FUNC_FILE"
-
-assert_eq() {
-    _label="$1"; _expected="$2"; _actual="$3"
-    if [ "$_actual" = "$_expected" ]; then
-        echo "  PASS: $_label"; PASS=$((PASS + 1))
-    else
-        echo "  FAIL: $_label (expected '$_expected', got '$_actual')"; FAIL=$((FAIL + 1))
-    fi
-}
 
 unset UNSLOTH_TORCH_UPGRADE
 
@@ -88,6 +77,39 @@ assert_eq "garbage minor -> no"  "no"  "$(_torch_release_in_window '2.x' 'torch>
 echo "=== _previous_torch_pin: UNSLOTH_TORCH_UPGRADE=1 opts out ==="
 assert_eq "upgrade env set"    "" "$(UNSLOTH_TORCH_UPGRADE=1 _previous_torch_pin '2.10.0+cu126' 'torch>=2.4,<2.12.0')"
 assert_eq "upgrade env 0"      "torch==2.10.0" "$(UNSLOTH_TORCH_UPGRADE=0 _previous_torch_pin '2.10.0+cu126' 'torch>=2.4,<2.12.0')"
+
+echo "=== the preservation probe reads off disk, not through the interpreter ==="
+# `import torch` can block forever on a wedged Intel driver, and this probe runs before
+# setup.sh's bounded ones. Executed, not grepped: the stub interpreter records being called.
+_PREVBLK=$(mktemp)
+# The interpreter fallback is wrapped in _run_bounded, so the helper has to come along too.
+{
+    sed -n '/^_run_bounded()/,/^}/p' "$INSTALL_SH"
+    awk '/^    _PREV_TORCH_VER=""$/{on=1} on{print} on && /tail -n 1 \|\| true\)$/{exit}' \
+        "$INSTALL_SH"
+} > "$_PREVBLK"
+grep -q 'version.py' "$_PREVBLK" || { echo "FATAL: probe block not extracted"; exit 1; }
+grep -q 'import torch' "$_PREVBLK" || { echo "FATAL: extraction lost the fallback"; exit 1; }
+grep -q '^_run_bounded()' "$_PREVBLK" || { echo "FATAL: could not extract _run_bounded"; exit 1; }
+
+_prev_probe() {  # $1 = torch label to put on disk ("" for no version.py)
+    _d=$(mktemp -d)
+    mkdir -p "$_d/bin"
+    printf '#!/bin/sh\ntouch "%s/CALLED"\necho 9.9.9+fromimport\n' "$_d" > "$_d/bin/python"
+    chmod +x "$_d/bin/python"
+    if [ -n "$1" ]; then
+        mkdir -p "$_d/lib/python3.12/site-packages/torch"
+        printf "__version__ = '%s'\n" "$1" > "$_d/lib/python3.12/site-packages/torch/version.py"
+    fi
+    ( VENV_DIR="$_d"; . "$_PREVBLK"; printf '%s|%s' "$_PREV_TORCH_VER" "$([ -f "$_d/CALLED" ] && echo called || echo not-called)" )
+    rm -rf "$_d"
+}
+assert_eq "xpu wheel read off disk"      "2.9.1+xpu|not-called"      "$(_prev_probe '2.9.1+xpu')"
+assert_eq "cuda wheel read off disk"     "2.9.1+cu128|not-called"    "$(_prev_probe '2.9.1+cu128')"
+assert_eq "untagged wheel read off disk" "2.9.1|not-called"          "$(_prev_probe '2.9.1')"
+# No version.py means no torch, so the interpreter fallback is free to run and fails fast.
+assert_eq "falls back with no version.py" "9.9.9+fromimport|called"  "$(_prev_probe '')"
+rm -f "$_PREVBLK"
 
 echo "=== install.sh wiring ==="
 # The probe must run against the OLD venv, before it is moved aside for rollback.

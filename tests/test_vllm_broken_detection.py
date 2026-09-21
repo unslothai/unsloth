@@ -134,8 +134,8 @@ def test_disable_broken_vllm_detects_lazy_loaded_broken_extension(broken_ext):
     ids = ["libnccl", "libcuda"],
 )
 def test_disable_broken_vllm_detects_non_cudart_so_failure(error):
-    # A CUDA mismatch can surface through a non-libcudart .so (libnccl, libcuda),
-    # which the old libcudart/libcublas/libnvrtc allow-list let slip through.
+    # A CUDA mismatch can surface through a non-libcudart .so (libnccl, libcuda), which the old
+    # libcudart/libcublas/libnvrtc allow-list let slip through.
     with _fake_vllm(present = {"vllm._C"}, broken = {"vllm._C"}, error = error) as import_fixes:
         detected = import_fixes.disable_broken_vllm()
 
