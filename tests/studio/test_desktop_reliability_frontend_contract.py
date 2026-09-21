@@ -852,49 +852,67 @@ def test_chat_sidebar_rows_are_compact_without_vertical_padding():
     assert 'variant === "project" ? "pl-[39px]" : "pl-3"' in block
 
 
-def _button_classes(block: str, tag: str, variant: str) -> str | None:
-    """The literal classes a `<button>` tag ends up with, or None if they cannot be read.
+def _resolve_classes(source: str, expression: str, variant: str) -> str | None:
+    """`expression` as the class string it yields for `variant`, or None if unreadable.
 
-    Three forms appear here: a bare literal, `cn(...)` over literals, and a local constant
-    holding either. A fourth, an identifier this cannot resolve, is the one that matters:
-    moving an action's classes into a differently named constant used to make the button
-    invisible to the count, so the row's floor dropped while the action still rendered. None
-    means unreadable, and the caller refuses rather than omitting it.
+    Every argument has to resolve. Collecting the quoted literals and ignoring the rest is
+    what let the pin's own `cn(..., REVEAL_WITH_OPEN_MENU_PROJECT_CHAT)` read as complete:
+    a constant supplying `sidebar-row-action`, an `is-*` modifier or a positioning utility
+    would have been invisible, and the button skipped or its reach understated with the
+    contract still green.
+
+    Four forms are read, and anything else is None: a literal, `cn(...)` over readable
+    arguments, a ternary on `variant === "..."`, and an identifier defined as a const in this
+    file, which is resolved recursively. `undefined` and a plain conditional's short-circuit
+    contribute nothing, which is what they do.
     """
+    expression = expression.strip().rstrip(",").strip()
+    if not expression or expression == "undefined":
+        return ""
+    literal = re.fullmatch(r'"([^"]*)"', expression)
+    if literal:
+        return literal.group(1)
+    call = re.fullmatch(r"cn\((.*)\)", expression, re.S)
+    if call:
+        parts = []
+        for argument in _cn_arguments(call.group(1)):
+            piece = _resolve_classes(source, argument, variant)
+            if piece is None:
+                return None
+            parts.append(piece)
+        return " ".join(part for part in parts if part)
+    branched = re.match(r'\s*variant\s*===\s*"(\w+)"\s*\?', expression, re.S)
+    if branched:
+        marks = _operators(expression[branched.end() :])
+        pairing = next((at for at, token in marks if token == ":"), None)
+        if pairing is None:
+            return None
+        rest = expression[branched.end() :]
+        taken = rest[:pairing] if branched.group(1) == variant else rest[pairing + 1 :]
+        return _resolve_classes(source, taken, variant)
+    identifier = re.fullmatch(r"[A-Za-z_$][\w$]*", expression)
+    if identifier:
+        definition = re.search(
+            rf"const {re.escape(expression)} =(.*?);\n", source, re.S
+        )
+        if not definition:
+            return None
+        return _resolve_classes(source, definition.group(1), variant)
+    return None
+
+
+def _button_classes(source: str, tag: str, variant: str) -> str | None:
+    """The classes a `<button>` tag ends up with for `variant`, or None if unreadable."""
     match = re.search(r"className=(\{.*?\}|\"[^\"]*\")", tag, re.S)
     if not match:
         return ""
     value = match.group(1).strip()
     if value.startswith('"'):
         return value.strip('"')
-    inner = value[1:-1].strip()
-    identifier = re.fullmatch(r"[A-Za-z_$][\w$]*", inner)
-    if identifier:
-        # A local constant: read its own definition out of the same function.
-        definition = re.search(rf"const {re.escape(inner)} =(.*?);\n", block, re.S)
-        if not definition:
-            return None
-        inner = definition.group(1)
-        # And the branch belonging to THIS variant, if it has branches. `actionClass` is a
-        # `variant === "project" ? ... : ...`, so flattening both sides let one branch lose
-        # `sidebar-row-action` while the token from the other kept the button counted for
-        # both rows.
-        branched = re.match(r'\s*variant\s*===\s*"(\w+)"\s*\?', inner, re.S)
-        if branched:
-            # Split at the `:` that pairs with this `?`, not the first one: every class
-            # string here is full of them, so a non-greedy split lands inside a literal.
-            marks = _operators(inner[branched.end() :])
-            pairing = next((at for at, token in marks if token == ":"), None)
-            if pairing is None:
-                return None
-            rest = inner[branched.end() :]
-            taken = rest[:pairing] if branched.group(1) == variant else rest[pairing + 1 :]
-            inner = taken
-    literals = re.findall(r'"([^"]*)"', inner)
-    return " ".join(literals) if literals else None
+    return _resolve_classes(source, value[1:-1], variant)
 
 
-def _row_action_offsets(live_css: str) -> dict[str, float]:
+def _row_action_offsets(live_css: str) -> dict[str, float | None]:
     """Each `.sidebar-row-action.is-*` modifier the stylesheet defines, and the right edge it
     sets, in Tailwind spacing units.
 
@@ -902,15 +920,23 @@ def _row_action_offsets(live_css: str) -> dict[str, float]:
     never heard of is refused instead of being recorded as flush right. A modifier that the
     stylesheet defines without moving `right` contributes 0, which is what it does.
     """
-    offsets = {}
+    offsets: dict[str, float | None] = {}
     for match in re.finditer(r"\.sidebar-row-action\.(is-[\w-]+)\s*\{([^}]*)\}", live_css):
-        edge = re.search(r"\bright:\s*([\d.]+)rem", match.group(2))
-        offsets[match.group(1)] = float(edge.group(1)) / 0.25 if edge else 0.0
+        body = match.group(2)
+        readable = re.search(r"\bright:\s*([\d.]+)rem\s*;", body)
+        if readable:
+            offsets[match.group(1)] = float(readable.group(1)) / 0.25
+            continue
+        # Says nothing about `right` at all, so it moves the action nowhere. A rule that DOES
+        # state one in another spelling, `30px`, a `calc(...)`, or an `@apply right-*`, is
+        # unreadable rather than absent, and the caller refuses it.
+        states_an_edge = re.search(r"\bright:", body) or re.search(r"@apply[^;]*\bright-", body)
+        offsets[match.group(1)] = None if states_an_edge else 0.0
     return offsets
 
 
 def _labelled_actions(
-    block: str, variant: str, offsets: dict[str, float]
+    source: str, block: str, variant: str, offsets: dict[str, float | None]
 ) -> dict[int, tuple[str, float]]:
     """The row actions one variant renders: label -> whether it is the offset one.
 
@@ -938,7 +964,7 @@ def _labelled_actions(
     for tag in _opening_jsx_tags(block, "<button"):
         at = block.find(tag, cursor)
         cursor = at + 1 if at != -1 else cursor
-        classes = _button_classes(block, tag, variant)
+        classes = _button_classes(source, tag, variant)
         assert classes is not None, (
             f"a button in renderChatSidebarItem carries classes this guard cannot read, so it "
             f"cannot tell whether it is a row action or how far it reaches: {tag!r}"
@@ -976,7 +1002,16 @@ def _labelled_actions(
             f"the {name} action carries {unknown}, which index.css does not define for "
             f".sidebar-row-action, so this guard cannot tell how far that action reaches"
         )
-        found[at] = (name, max((offsets[token] for token in modifiers), default = 0.0))
+        # A modifier whose rule sets `right` in a spelling this cannot read is not the same
+        # as one that leaves it alone, and recording it as zero would lower the floor while
+        # the action rendered further in.
+        unreadable = [token for token in modifiers if offsets[token] is None]
+        assert not unreadable, (
+            f"the {name} action carries {unreadable}, whose right edge index.css states in a "
+            f"spelling this guard cannot read. It reads a bare rem value, so state the offset "
+            f"that way or teach this guard the other one"
+        )
+        found[at] = (name, max((offsets[token] or 0.0 for token in modifiers), default = 0.0))
     return found
 
 
@@ -1401,7 +1436,10 @@ def test_chat_sidebar_row_actions_visible_on_coarse_pointers():
     )
     inner_padding = float(inner.group(1))
     offsets = _row_action_offsets(live_css)
-    actions = {name: _labelled_actions(applied, name, offsets) for name in ("project", "recent")}
+    actions = {
+        name: _labelled_actions(sidebar_source, applied, name, offsets)
+        for name in ("project", "recent")
+    }
     assert all(actions.values()), (
         f"no labelled row action left for one of the variants, so this guard cannot tell how "
         f"much room that row has to reserve: "
