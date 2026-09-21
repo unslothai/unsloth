@@ -11,7 +11,7 @@ import { resolveToolActivityOpen } from "./tool-activity-open-state";
 export function useToolActivityOpen(isRunning: boolean, hasText: boolean) {
   const visibility = useChatPreferencesStore((state) => state.toolVisibility);
   const [state, setState] = useState(() => ({
-    open: defaultOpenFor(visibility, isRunning && !hasText),
+    open: defaultOpenFor(visibility, isRunning),
     // null until the user clicks the trigger, so a controlled card can keep a manual open
     // the same way the uncontrolled cards and groups do.
     override: null as boolean | null,

@@ -315,6 +315,34 @@ test("changing the setting hands the card back to the automatic rules", () => {
   );
 });
 
+test("switching to auto opens a running card on a message that already has text", () => {
+  // The call still running belongs to a message whose prose arrived first, so hasText is
+  // already true when the setting changes. Expand while running is about the call, not the text.
+  assert.equal(
+    resolveToolActivityOpen({
+      currentOpen: false,
+      visibility: "auto",
+      previousVisibility: "collapsed",
+      isRunning: true,
+      hasText: true,
+    }),
+    true,
+    "a running card stayed closed when the setting changed to Expand while running",
+  );
+  // A finished call on the same message still opens nothing.
+  assert.equal(
+    resolveToolActivityOpen({
+      currentOpen: false,
+      visibility: "auto",
+      previousVisibility: "collapsed",
+      isRunning: false,
+      hasText: true,
+    }),
+    false,
+  );
+});
+
+
 test("a hand-opened controlled card keeps its open when the answer starts", () => {
   const transition = (hasText: boolean, override?: boolean | null) =>
     resolveToolActivityOpen({

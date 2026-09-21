@@ -30,7 +30,9 @@ export function resolveToolActivityOpen({
   override = null,
 }: ToolActivityTransition) {
   if (visibility !== previousVisibility) {
-    return defaultOpenFor(visibility, isRunning && !hasText);
+    // A running call opens here for the same reason it opens below: Expand while running is
+    // about the call still going, not about whether the answer has started yet.
+    return defaultOpenFor(visibility, isRunning);
   }
   // A click outranks the automatic rules until the setting changes, so a card the user opened
   // stays open when the answer text arrives.
