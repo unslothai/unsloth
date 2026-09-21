@@ -16,14 +16,14 @@ import { readSrc, readText } from "./helpers/kit.ts";
 const CSS = readSrc("index.css");
 const STORE = readSrc("features/settings/stores/appearance-custom-store.ts");
 const SNAPSHOT = readText("../public/reload-snapshot.js");
-/** Every component file, so a new fixed wash cannot slip in unnoticed. */
+/** Every source that can carry a class, so a fixed wash cannot slip in. */
 const SOURCES = (function walk(dir: string): string[] {
   return readdirSync(join(import.meta.dirname, "../src", dir), {
     withFileTypes: true,
   }).flatMap((entry) => {
     const path = dir ? `${dir}/${entry.name}` : entry.name;
     if (entry.isDirectory()) return walk(path);
-    return entry.name.endsWith(".tsx") ? [path] : [];
+    return /\.(tsx?|css)$/.test(entry.name) ? [path] : [];
   });
 })("");
 
@@ -177,16 +177,26 @@ test("a light wash follows the slider as its dark twin does", () => {
   // mode stayed put in light mode. The mix carries the gain instead, and
   // resolves to the same colour at the default. Both spellings count, the
   // arbitrary one and Tailwind's shorthand.
-  const FIXED_WASH = /bg-foreground\/(\[[\d.]+\]|\d+)/;
+  // index.css authors the same washes in @apply, in black and white rather
+  // than the token, so both spellings are swept.
+  const FIXED_WASH =
+    /(bg-foreground\/(\[[\d.]+\]|\d+)|bg-(white|black)\/\[?0?\.\d+\]?)/;
   // Two fills are not chrome: the dark button's own surface, and the snippet
   // highlight that sits beside amber and red siblings on no curve at all.
   const NOT_CHROME = new Set([
     "components/ui/button.tsx",
     "features/security/components/remote-code-consent-dialog.tsx",
   ]);
-  const hits = SOURCES.filter(
-    (file) => !NOT_CHROME.has(file) && FIXED_WASH.test(readSrc(file)),
-  );
+  // Scrims and opaque stages cover content instead of tinting chrome, so they
+  // keep their own alpha whatever the slider says.
+  const SCRIM = /(overlayClassName|bg-(black|white)\/(\[0?\.[3-9]\d*\]|[3-9]\d|100))/;
+  const hits = SOURCES.filter((file) => {
+    if (NOT_CHROME.has(file)) return false;
+    const source = readSrc(file);
+    return source
+      .split("\n")
+      .some((line) => FIXED_WASH.test(line) && !SCRIM.test(line));
+  });
   assert.deepEqual(hits, [], "these washes ignore the contrast setting");
 
   // Hairlines are the part of a control the eye reads first, so they follow

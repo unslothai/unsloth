@@ -1274,7 +1274,7 @@ html[data-chat-font] .aui-root {
 	.sidebar-row-action[data-state="open"] .sidebar-row-action-glyph {
 		@apply text-nav-fg;
 		/* A step darker than the row hover so the circle reads on top of it. */
-		background-color: color-mix(in srgb, var(--foreground) 11%, transparent);
+		background-color: color-mix(in srgb, var(--foreground) calc(11% * var(--contrast-wash-gain, 1)), transparent);
 	}
 	.dark .sidebar-row-action:hover .sidebar-row-action-glyph,
 	.dark .sidebar-row-action[data-state="open"] .sidebar-row-action-glyph {
@@ -1559,10 +1559,10 @@ html[data-chat-font] .aui-root {
 	/* Wider right gutter: the value is right-aligned on the panel's own edge. */
 	/* 32px like every other inline control on the panel. */
 	.panel-number-input {
-		@apply h-8 min-w-8 shrink-0 rounded-full border-0 bg-transparent pl-2 pr-3 text-right text-ui-13! font-medium tabular-nums text-nav-fg shadow-none transition-colors hover:bg-black/[0.04] focus:bg-black/[0.05] focus-visible:ring-0! focus-visible:outline-none md:text-ui-13!;
+		@apply h-8 min-w-8 shrink-0 rounded-full border-0 bg-transparent pl-2 pr-3 text-right text-ui-13! font-medium tabular-nums text-nav-fg shadow-none transition-colors hover:bg-[rgb(0_0_0_/_calc(0.04*var(--contrast-wash-gain,1)))] focus:bg-[rgb(0_0_0_/_calc(0.05*var(--contrast-wash-gain,1)))] focus-visible:ring-0! focus-visible:outline-none md:text-ui-13!;
 	}
 	.dark .panel-number-input {
-		@apply hover:bg-white/[0.04] focus:bg-white/[0.06];
+		@apply hover:bg-[rgb(255_255_255_/_calc(0.04*var(--contrast-wash-gain,1)))] focus:bg-[rgb(255_255_255_/_calc(0.06*var(--contrast-wash-gain,1)))];
 	}
 
 	/* Select trigger on the panel: the surface and padding the model rows
@@ -1910,7 +1910,7 @@ html[data-chat-font] .aui-root {
 	}
 
 	.composer-pill-btn {
-		@apply flex cursor-pointer items-center gap-1.5 rounded-full py-1.5 pl-2 pr-2.5 text-ui-14 font-medium text-muted-foreground/70 transition-colors hover:bg-primary/10 dark:hover:bg-white/[0.1] disabled:cursor-not-allowed disabled:opacity-40;
+		@apply flex cursor-pointer items-center gap-1.5 rounded-full py-1.5 pl-2 pr-2.5 text-ui-14 font-medium text-muted-foreground/70 transition-colors hover:bg-primary/10 dark:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))] disabled:cursor-not-allowed disabled:opacity-40;
 	}
 
 	/* Caret pills (RAG, MCP): the chevron carries its own whitespace, so the
@@ -2003,7 +2003,7 @@ html[data-chat-font] .aui-root {
 	/* On hover the icon swaps for an X inside a soft circle (ChatGPT-style),
 	   filling the icon slot so every pill's X is identical and centered. */
 	.composer-pill-x {
-		@apply pointer-events-none absolute inset-0 m-auto size-[var(--ui-icon-size)] rounded-full bg-primary/15 p-[3px] opacity-0 transition-opacity dark:bg-white/[0.14];
+		@apply pointer-events-none absolute inset-0 m-auto size-[var(--ui-icon-size)] rounded-full bg-primary/15 p-[3px] opacity-0 transition-opacity dark:bg-[rgb(255_255_255_/_calc(0.14*var(--contrast-wash-gain,1)))];
 	}
 
 	/* Hovering an active pill swaps the icon for an X (click to turn off). */
@@ -2454,7 +2454,7 @@ html[data-chat-font] .aui-root {
 	/* Right-side Thinking pill (toggle or dropdown). pl-2 matches the left
 	   pills so the hover X is not pushed in too far. */
 	.unsloth-thinking-pill {
-		@apply inline-flex shrink-0 cursor-pointer items-center gap-1 rounded-full py-1.5 pl-2 pr-2.5 text-ui-14 font-medium text-muted-foreground transition-colors hover:bg-primary/10 dark:hover:bg-white/[0.1] disabled:cursor-not-allowed disabled:opacity-40;
+		@apply inline-flex shrink-0 cursor-pointer items-center gap-1 rounded-full py-1.5 pl-2 pr-2.5 text-ui-14 font-medium text-muted-foreground transition-colors hover:bg-primary/10 dark:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))] disabled:cursor-not-allowed disabled:opacity-40;
 		/* Reserve a text line so the icon-only (inactive) pill matches the
 		   text pills' height instead of collapsing to the icon. */
 		min-height: calc(1lh + 0.75rem);
