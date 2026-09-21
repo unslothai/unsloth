@@ -2261,15 +2261,31 @@ test("the abort case is wired to the run, not to a clock", () => {
     ),
     "utf8",
   );
-  for (const [name, source] of [
-    ["auto-continue-issued-run.ts", probe],
-    ["auto-continue-run-keeper.ts", wiredKeeper],
+  // Every timer either file schedules, not just `setTimeout(`: an arming deadline spelled
+  // `setInterval` counts its own elapsed time and passed this test unnoticed. The renewal
+  // interval is the ONE timer allowed here, and it is named rather than counted, so a second
+  // `setInterval` cannot pose as it.
+  const TIMERS =
+    /\b(?:setTimeout|setInterval|setImmediate|queueMicrotask|requestIdleCallback|requestAnimationFrame)\s*\(/g;
+  for (const [name, source, allowed] of [
+    ["auto-continue-issued-run.ts", probe, []],
+    [
+      "auto-continue-run-keeper.ts",
+      wiredKeeper,
+      ["setInterval(tick, AUTO_CONTINUE_LEASE_RENEW_MS)"],
+    ],
   ] as const) {
-    assert.doesNotMatch(
-      source,
-      /setTimeout\(/,
+    assert.deepEqual(
+      source.match(TIMERS) ?? [],
+      allowed.map((call) => `${call.slice(0, call.indexOf("("))}(`),
       `${name} decides on facts, not on elapsed time`,
     );
+    for (const call of allowed) {
+      assert.ok(
+        source.includes(call),
+        `${name}'s only timer must be ${call}`,
+      );
+    }
   }
 });
 
