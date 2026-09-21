@@ -233,9 +233,9 @@ def test_a_failed_main_build_degrades_instead_of_failing_the_install(monkeypatch
     module._diffusers_main_step()
 
     assert attempted and attempted[0].name == "diffusers-main.txt"
-    assert steps["diffusers-main.txt"] == "skipped", (
-        "a failed build recorded as 'ran' would report an install that never happened"
-    )
+    assert (
+        steps["diffusers-main.txt"] == "skipped"
+    ), "a failed build recorded as 'ran' would report an install that never happened"
     assert notes and "keeps the pinned" in notes[0]
 
 
