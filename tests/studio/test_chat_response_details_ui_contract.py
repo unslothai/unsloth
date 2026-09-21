@@ -460,7 +460,9 @@ def test_response_model_badge_is_user_configurable_and_rendered_once_per_message
     # here. `style={{ minWidth: "max-content" }}` on the trigger leaves both min-w-0 checks
     # green while long summaries widen the row again, which is the whole defect.
     live = _without_block_comments(reasoning_src)
-    header_tags = [tag for tag in _opening_tags(live, "<div") if 'data-slot="reasoning-header"' in tag]
+    header_tags = [
+        tag for tag in _opening_tags(live, "<div") if 'data-slot="reasoning-header"' in tag
+    ]
     assert header_tags, (
         'reasoning.tsx no longer renders a div with data-slot="reasoning-header", so this '
         "guard cannot tell which element the trigger has to shrink inside"
@@ -628,7 +630,9 @@ def test_reasoning_clears_manual_open_on_a_new_stream():
         "reasoning.tsx no longer resolves its open state through resolveReasoningOpen, so "
         "this guard cannot tell which state holds a hand toggle's answer"
     )
-    field = re.search(r"(?:^|,)\s*override\s*(?::\s*([A-Za-z_$][\w$]*))?\s*(?:,|$)", opener.group(1))
+    field = re.search(
+        r"(?:^|,)\s*override\s*(?::\s*([A-Za-z_$][\w$]*))?\s*(?:,|$)", opener.group(1)
+    )
     assert field, (
         f"resolveReasoningOpen is no longer passed an override, so nothing here outranks the "
         f"visibility setting and a hand toggle has nowhere to live: {opener.group(1)!r}"

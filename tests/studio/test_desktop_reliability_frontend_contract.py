@@ -892,9 +892,7 @@ def _resolve_classes(source: str, expression: str, variant: str) -> str | None:
         return _resolve_classes(source, taken, variant)
     identifier = re.fullmatch(r"[A-Za-z_$][\w$]*", expression)
     if identifier:
-        definition = re.search(
-            rf"const {re.escape(expression)} =(.*?);\n", source, re.S
-        )
+        definition = re.search(rf"const {re.escape(expression)} =(.*?);\n", source, re.S)
         if not definition:
             return None
         return _resolve_classes(source, definition.group(1), variant)
@@ -962,9 +960,7 @@ def _spacing_rem(live_css: str) -> float | None:
     Every declaration has to agree. More than one value means the answer depends on which
     theme block is in force, which this guard does not model.
     """
-    stated = {
-        match.group(1) for match in re.finditer(r"--spacing:\s*([\d.]+)rem\s*;", live_css)
-    }
+    stated = {match.group(1) for match in re.finditer(r"--spacing:\s*([\d.]+)rem\s*;", live_css)}
     return float(stated.pop()) / 1 if len(stated) == 1 else None
 
 
@@ -1053,14 +1049,8 @@ def _sole_measure(body: str, utility: str, prop: str, spacing: float) -> float |
     """
     properties, utilities = _SHORTHANDS[utility]
     shorthand = [
-        name
-        for name in properties
-        if re.search(rf"(?<![\w-]){re.escape(name)}:", body)
-    ] + [
-        name
-        for name in utilities
-        if re.search(rf"(?<![\w-])@?{re.escape(name)}-\S", body)
-    ]
+        name for name in properties if re.search(rf"(?<![\w-]){re.escape(name)}:", body)
+    ] + [name for name in utilities if re.search(rf"(?<![\w-])@?{re.escape(name)}-\S", body)]
     if shorthand:
         # Unreadable rather than absent: the shorthand renders, and falling back to the base
         # rule or reporting the longhand would both describe something that does not.
@@ -1128,8 +1118,9 @@ def _row_action_offsets(live_css: str, base: float, spacing: float) -> dict[str,
     than zero. None means the rule states one this cannot resolve, and the caller refuses it.
     """
     return {
-        name: base if (measure := _sole_measure(body, "right", "right", spacing)) == "" else
-        (measure if isinstance(measure, float) else None)
+        name: base
+        if (measure := _sole_measure(body, "right", "right", spacing)) == ""
+        else (measure if isinstance(measure, float) else None)
         for name, body in _modifier_rules(live_css).items()
     }
 
@@ -1143,8 +1134,9 @@ def _row_action_paddings(live_css: str, base: float, spacing: float) -> dict[str
     the pin's reach at 15 when it is 14, and that false floor rejected a sufficient `pr-14`.
     """
     return {
-        name: base if (measure := _sole_measure(body, "pr", "padding-right", spacing)) == "" else
-        (measure if isinstance(measure, float) else None)
+        name: base
+        if (measure := _sole_measure(body, "pr", "padding-right", spacing)) == ""
+        else (measure if isinstance(measure, float) else None)
         for name, body in _modifier_rules(live_css).items()
     }
 
@@ -1301,7 +1293,7 @@ def _labelled_actions(
     # English "Chat options" would fail the moment the row is translated.
     assert shared, (
         f"the {variant} row renders no ungated .sidebar-row-action: every action it has sits "
-        f"inside a `variant === \"...\"` gate. The shared action is what the gutter on both "
+        f'inside a `variant === "..."` gate. The shared action is what the gutter on both '
         f"rows is sized for, so if it moved behind a gate say so here, and if it was removed "
         f"the reserved room should shrink with it (#7276)"
     )
