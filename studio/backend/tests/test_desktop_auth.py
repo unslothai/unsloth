@@ -1137,7 +1137,10 @@ def test_desktop_login_validates_off_the_event_loop():
 # The two secrets the shipped desktop shell posts to this route on purpose, to learn from the 401
 # that the backend is one it can manage. studio/src-tauri/src/preflight/backend.rs and
 # studio/src-tauri/src/desktop_backend_owner.rs; neither binary can be changed from here.
-_SHIPPED_PROBE_SECRETS = ("desktop-preflight-invalid-secret", "desktop-owner-adoption-invalid-secret")
+_SHIPPED_PROBE_SECRETS = (
+    "desktop-preflight-invalid-secret",
+    "desktop-owner-adoption-invalid-secret",
+)
 
 
 def well_formed_wrong_secret(body = "A"):
@@ -1330,9 +1333,9 @@ def test_a_desktop_exchange_does_not_reset_the_shared_password_throttle():
 
     assert client.post("/api/auth/desktop-login", json = {"secret": raw}).status_code == 200
 
-    assert len(auth_route._LOGIN_IP_BUCKETS.get(ip, [])) == sprayed, (
-        "a desktop exchange cleared /login's per-IP aggregate"
-    )
+    assert (
+        len(auth_route._LOGIN_IP_BUCKETS.get(ip, [])) == sprayed
+    ), "a desktop exchange cleared /login's per-IP aggregate"
     # Its own bucket is still cleared: the shell must not be locked out by its own earlier miss.
     assert auth_route._unknown_user_key(None)[1] not in {k[1] for k in auth_route._LOGIN_BUCKETS}
 
