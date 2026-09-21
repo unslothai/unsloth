@@ -5516,7 +5516,9 @@ class ExternalProviderClient:
                                     "finish_reason": (
                                         "tool_calls"
                                         if tool_calls
-                                        else "length" if status == "incomplete" else "stop"
+                                        else "length"
+                                        if status == "incomplete"
+                                        else "stop"
                                     ),
                                 }
                             ],
@@ -5527,9 +5529,7 @@ class ExternalProviderClient:
                             completion_tokens = usage.get("output_tokens") or 0
                             details = usage.get("input_tokens_details")
                             cached_tokens = (
-                                details.get("cached_tokens")
-                                if isinstance(details, dict)
-                                else 0
+                                details.get("cached_tokens") if isinstance(details, dict) else 0
                             ) or 0
                             completion["usage"] = {
                                 "prompt_tokens": prompt_tokens,
