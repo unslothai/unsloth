@@ -877,10 +877,6 @@ export function useChatModelRuntime() {
         typeof selection === "string" ? undefined : selection.isGguf;
       let isDiffusion =
         typeof selection === "string" ? undefined : selection.isDiffusion;
-      // Whether the load request actually went out. Preflight failures -- a rejected
-      // staged-metadata read, a cancelled token prompt -- reach the same catch before any
-      // runner was started, so there is no runner log for their reason to be in.
-      let loadRequestIssued = false;
       const restorePreviousConfig = () => {
         if (typeof selection !== "string" && selection.previousConfig) {
           applyPerModelConfigToRuntime(selection.previousConfig, {
@@ -1857,14 +1853,6 @@ export function useChatModelRuntime() {
 
               force_reload: forceReload,
             }, {
-              // loadModel prepares the HF token and checks the abort signal BEFORE it
-              // calls this, and only then sends the request, so this is the first point
-              // at which a runner may have written a log of its own. Setting the flag
-              // before the call counted a cancelled token prompt as an attempt and
-              // offered the newest unrelated runner log for it.
-              onRequestStart: () => {
-                loadRequestIssued = true;
-              },
             });
             cpuFallbackReason = loadResponse.cpu_fallback_reason ?? null;
             mmprojFallbackReason = loadResponse.mmproj_fallback_reason ?? null;
@@ -2685,11 +2673,15 @@ export function useChatModelRuntime() {
             // Which file holds the reason depends on who was loading: only a GGUF load
             // goes through a runner that writes its own file per attempt, and a
             // Transformers or MLX load reaches this same catch with its reason in the
-            // backend's current server log instead. The path, when the diagnostic carries
-            // one, pins the exact attempt regardless of a rollback load landing after it.
+            // backend's current server log instead. The path the diagnostic names is both
+            // halves of the answer: it pins the exact attempt regardless of a rollback
+            // load landing after it, and its ABSENCE is what says no runner of this
+            // attempt's ever wrote one -- a failure in the client's preflight, or in the
+            // backend ahead of the launch.
+            const runnerLogPath = failureLogPath(message);
             const logsAction = viewLogsAction(
-              loadFailureLogFamily(isGguf, isDiffusion, loadRequestIssued),
-              failureLogPath(message),
+              loadFailureLogFamily(isGguf, isDiffusion, runnerLogPath),
+              runnerLogPath,
             );
             if (loadToastDismissedRef.current) {
               toast.error(summary, {

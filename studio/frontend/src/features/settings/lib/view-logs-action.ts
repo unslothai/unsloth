@@ -32,16 +32,21 @@ export type FailureLogFamily = "llama-server" | "diffusion-server" | "server";
  * log, so answering `llama-server` there opens whatever older runner attempt happens to be
  * on the host -- an unrelated log, which is worse than none.
  *
- * `runnerAttempted` is the same question in time rather than in kind: a GGUF load that
- * fails in PREFLIGHT, before the load request is issued, started no runner either, so it
- * has no file of its own however it was going to be served.
+ * `runnerLogPath` is the same question in time rather than in kind, and answered by the
+ * only witness that cannot be wrong about it: the runner's log path, which the backend
+ * appends to the diagnostic when it has one to name. A GGUF load can fail before any
+ * runner starts -- in the client's own preflight, or in the backend ahead of the launch
+ * (a refused sidecar swap, rejected extra args) -- and "the request went out" does not
+ * distinguish those from a runner that ran and failed. Without a named path there is no
+ * file of this attempt's to open, however it was going to be served, and answering
+ * `llama-server` opens whatever older attempt is newest on the host.
  */
 export function loadFailureLogFamily(
   isGguf: boolean | undefined,
   isDiffusion: boolean | undefined,
-  runnerAttempted: boolean,
+  runnerLogPath: string | null | undefined,
 ): FailureLogFamily {
-  if (!runnerAttempted || !isGguf) return "server";
+  if (!runnerLogPath || !isGguf) return "server";
   return isDiffusion === true ? "diffusion-server" : "llama-server";
 }
 

@@ -15,17 +15,20 @@
  */
 
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 
-import { en } from "../src/i18n/locales/en.ts";
-import { useSettingsDialogStore } from "../src/features/settings/stores/settings-dialog-store.ts";
 import {
   OWNER_ONLY_SETTINGS_TABS,
   resolveSettingsTab,
 } from "../src/features/settings/settings-tab-visibility.ts";
+import { useSettingsDialogStore } from "../src/features/settings/stores/settings-dialog-store.ts";
+import { en } from "../src/i18n/locales/en.ts";
 import { loadWithStubs } from "./helpers/module-stubs.ts";
 
+const RUNNER_LOG =
+  "/home/u/.unsloth/studio/logs/llama-server-20260921-141500.log";
 const ACTION_URL = new URL(
   "../src/features/settings/lib/view-logs-action.ts",
   import.meta.url,
@@ -136,16 +139,20 @@ test("only a GGUF load is explained by a runner log; everything else is in the s
     "@/features/auth/account-session": { isAccountOwner: () => true },
   });
 
-  // The runners write a file per attempt, so a GGUF failure's reason is in there.
-  assert.equal(loadFailureLogFamily(true, false, true), "llama-server");
-  assert.equal(loadFailureLogFamily(true, true, true), "diffusion-server");
+  // The runners write a file per attempt and the backend names it in the diagnostic, so a
+  // GGUF failure's reason is in there.
+  assert.equal(loadFailureLogFamily(true, false, RUNNER_LOG), "llama-server");
+  assert.equal(
+    loadFailureLogFamily(true, true, RUNNER_LOG),
+    "diffusion-server",
+  );
   // A Transformers or MLX load has no runner at all. Answering llama-server for those
   // opens whatever older GGUF attempt happens to be on the host -- an unrelated log,
   // which reads as the reason and is not. performLoad's catch is shared by all of them.
   for (const notGguf of [false, undefined] as const) {
     for (const diffusion of [true, false, undefined] as const) {
       assert.equal(
-        loadFailureLogFamily(notGguf, diffusion, true),
+        loadFailureLogFamily(notGguf, diffusion, RUNNER_LOG),
         "server",
         `isGguf=${notGguf} isDiffusion=${diffusion}`,
       );
@@ -153,11 +160,13 @@ test("only a GGUF load is explained by a runner log; everything else is in the s
   }
 });
 
-test("a load that failed before the request went out has no runner log to open", () => {
-  // The same catch also sees PREFLIGHT failures: a rejected staged-metadata read, a
-  // cancelled HF token prompt. No load request was issued, so no runner was started and
-  // no file of its own exists, whatever the artifact was going to be served by. Choosing
-  // llama-server there opens the newest unrelated prior attempt on the host.
+test("a load whose diagnostic names no runner log has none to open", () => {
+  // The same catch sees failures from before any runner started: the client's own
+  // preflight (a rejected staged-metadata read, a cancelled HF token prompt) and the
+  // backend ahead of the launch (a refused sidecar swap, rejected extra args). The
+  // request going out does not tell those from a runner that ran and failed; only the
+  // backend naming a log does, since it names one exactly when it has one. Choosing
+  // llama-server without it opens the newest unrelated prior attempt on the host.
   const { loadFailureLogFamily } = loadWithStubs<
     typeof import("../src/features/settings/lib/view-logs-action.ts")
   >(ACTION_URL, {
@@ -167,17 +176,51 @@ test("a load that failed before the request went out has no runner log to open",
   });
   for (const gguf of [true, false, undefined] as const) {
     for (const diffusion of [true, false, undefined] as const) {
-      assert.equal(
-        loadFailureLogFamily(gguf, diffusion, false),
-        "server",
-        `isGguf=${gguf} isDiffusion=${diffusion}`,
-      );
+      for (const noPath of [null, undefined, ""] as const) {
+        assert.equal(
+          loadFailureLogFamily(gguf, diffusion, noPath),
+          "server",
+          `isGguf=${gguf} isDiffusion=${diffusion} path=${String(noPath)}`,
+        );
+      }
     }
   }
-  // And it is the runner question, not a blanket override: the same inputs with the
-  // request issued still name the runner.
-  assert.equal(loadFailureLogFamily(true, false, true), "llama-server");
-  assert.equal(loadFailureLogFamily(true, true, true), "diffusion-server");
+  // And it is the runner question, not a blanket override: the same inputs with a named
+  // log still name the runner.
+  assert.equal(loadFailureLogFamily(true, false, RUNNER_LOG), "llama-server");
+  assert.equal(
+    loadFailureLogFamily(true, true, RUNNER_LOG),
+    "diffusion-server",
+  );
+});
+
+test("the family and the path are read from the same diagnostic", () => {
+  // Source-shape: two answers derived from one value, because a family naming a runner
+  // while the action carries no path is the exact pairing that opens someone else's log.
+  const src = readFileSync(
+    new URL(
+      "../src/features/chat/hooks/use-chat-model-runtime.ts",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  assert.ok(
+    src.includes("const runnerLogPath = failureLogPath(message);"),
+    "the hook no longer derives the runner log path from the diagnostic",
+  );
+  assert.ok(
+    src.includes("loadFailureLogFamily(isGguf, isDiffusion, runnerLogPath),"),
+    "the family no longer comes from the diagnostic's own path",
+  );
+  assert.match(
+    src,
+    /viewLogsAction\(\s*loadFailureLogFamily\(isGguf, isDiffusion, runnerLogPath\),\s*runnerLogPath,\s*\)/,
+    "the family and the path handed to the action are no longer the same value",
+  );
+  assert.ok(
+    !src.includes("loadRequestIssued"),
+    "the hook still equates issuing the request with a runner having started",
+  );
 });
 
 test("the exact log the diagnostic named is carried, and wins over family recency", () => {
