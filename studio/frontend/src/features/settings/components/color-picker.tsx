@@ -166,7 +166,9 @@ export function ColorPickerSwatch({
           <span
             className={cn(
               "size-3.5 shrink-0 rounded-full border",
-              light ? "border-[rgb(0_0_0_/_calc(0.2*var(--contrast-edge-gain,1)))]" : "border-white/40",
+              light
+                ? "border-[rgb(0_0_0_/_calc(0.2*var(--contrast-edge-gain,1)))]"
+                : "border-[rgb(255_255_255_/_calc(0.4*var(--contrast-edge-gain,1)))]",
             )}
           />
           {value.toUpperCase()}

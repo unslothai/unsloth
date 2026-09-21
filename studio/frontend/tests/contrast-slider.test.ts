@@ -142,6 +142,18 @@ test("a resting wash and its hover twin share the gain", () => {
       `${file} still has a fixed hover wash`,
     );
   }
+  // Same for the borders that carry the edge gain: a fixed hover or drag
+  // outline is a jump out of the setting, not a state change.
+  for (const file of [
+    "features/studio/sections/dataset-upload.tsx",
+    "features/settings/components/color-picker.tsx",
+  ]) {
+    assert.doesNotMatch(
+      readSrc(file),
+      /border-(white|black)\/(\[0?\.\d+\]|\d+)/,
+      `${file} still has a fixed border alpha`,
+    );
+  }
 });
 
 test("the hand-written washes follow the slider, the scrims do not", () => {
