@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Open/closed rules for a reasoning group, kept out of the component so the
-// streaming and preference interplay stays testable.
+// Open/closed rules for a reasoning group, kept out of the component so the streaming and
+// preference interplay stays testable.
 export interface ReasoningOpenStateInput {
   /** Group is receiving reasoning deltas. */
   isStreaming: boolean;
@@ -14,10 +14,8 @@ export interface ReasoningOpenStateInput {
   manualOpen: boolean;
 }
 
-/**
- * Thinking auto opens while it streams and collapses when it finishes, unless
- * the preference is on: then only an explicit open shows it, in either phase.
- */
+/** Thinking auto opens while it streams and collapses when it finishes, unless the preference is
+ *  on: then only an explicit open shows it, in either phase. */
 export function resolveReasoningOpen({
   isStreaming,
   collapseByDefault,
@@ -41,11 +39,9 @@ export function reasoningAutoOpensWhileStreaming(
   return isStreaming && !collapseByDefault;
 }
 
-/**
- * A new round starts when streaming resumes. Regenerate reuses the component,
- * so last round's open state has to clear in that same render, not in an
- * effect, or the block paints open before collapsing.
- */
+/** A new round starts when streaming resumes. Regenerate reuses the component, so last round's
+ *  open state has to clear in that same render, not in an effect, or the block paints open
+ *  before collapsing. */
 export function startsNewReasoningRound(
   isStreaming: boolean,
   wasStreaming: boolean,

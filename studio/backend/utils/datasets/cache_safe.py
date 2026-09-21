@@ -60,7 +60,7 @@ def _disable_hf_symlinks_for_process() -> None:
     # added this constant; older installs decide purely from the mapping below.
     try:
         from huggingface_hub import constants, file_download
-    except ImportError:  # never mask the load error we are recovering from
+    except ImportError:  # never mask the load error we are recovering
         return
 
     if hasattr(constants, "HF_HUB_DISABLE_SYMLINKS"):
@@ -83,9 +83,7 @@ def load_dataset_cache_safe(*args, **kwargs):
     """Load a dataset with narrow retries for known cache permission failures."""
     from datasets import load_dataset
 
-    # datasets is in sys.modules exactly now, which is what lets its bar class be
-    # patched; the server never imports it at boot, so this shared entry point is
-    # where its "Generating train split" bar stops reaching the structured log.
+    # datasets is in sys.modules exactly now.
     from loggers.config import quiet_third_party_progress_bars
 
     quiet_third_party_progress_bars()

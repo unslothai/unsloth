@@ -168,11 +168,143 @@ def test_login_jsx_declares_exactly_one_password_input():
     ), f"login JSX must declare exactly one password-typed input; found {pw_ids!r}"
 
 
+def _at_depth_zero(condition: str):
+    """Every character of ``condition`` that sits outside any bracket."""
+    depth = 0
+    for index, char in enumerate(condition):
+        if char in "([{":
+            depth += 1
+        elif char in ")]}":
+            depth -= 1
+        elif depth == 0:
+            yield index, char
+
+
+def _leading_disjunct(condition: str) -> str:
+    """The first operand of ``condition`` read as a `||` chain.
+
+    Split at depth zero, so `!active || !(a || b)` yields `!active` and the inner
+    `||` is left where it belongs.
+    """
+    for index, char in _at_depth_zero(condition):
+        if char == "|" and condition[index : index + 2] == "||":
+            return condition[:index]
+    return condition
+
+
+def _binds_looser_than_or(condition: str) -> bool:
+    """Whether something outside the `||` chain decides what ``condition`` is worth.
+
+    `?:` and `,` both bind looser than `||`, so `!active || mounted ? false : true`
+    and `!active || track(), active` each leave the disjunction as a sub-expression
+    whose value is then discarded, and both skip the return while inactive. `?.` and
+    `??` are neither.
+    """
+    for index, char in _at_depth_zero(condition):
+        if char == ",":
+            return True
+        if char != "?":
+            continue
+        if condition[index + 1 : index + 2] in (".", "?") or condition[index - 1 : index] == "?":
+            continue
+        return True
+    return False
+
+
+def _blanked(source: str) -> str:
+    """A same-length copy of ``source`` with comment and string bodies blanked.
+
+    Bracket depth and token searches only mean anything once prose and literals can
+    no longer contribute brackets, or a guard that survives only as a commented-out
+    line still reads as the guard.
+    """
+    out, index, end = list(source), 0, len(source)
+    while index < end:
+        pair = source[index : index + 2]
+        if pair in ("//", "/*"):
+            stop = source.find("\n" if pair == "//" else "*/", index + 2)
+            stop = end if stop == -1 else stop + (0 if pair == "//" else 2)
+            out[index:stop] = " " * (stop - index)
+            index = stop
+        elif source[index] in "\"'`":
+            quote, stop = source[index], index + 1
+            while stop < end and source[stop] != quote:
+                stop += 2 if source[stop] == "\\" else 1
+            out[index + 1 : stop] = " " * max(0, stop - index - 1)
+            index = min(stop + 1, end)
+        else:
+            index += 1
+    return "".join(out)
+
+
+def _function_body(source: str, name: str) -> str:
+    """``name``'s body, from its opening brace to the matching close.
+
+    The parameter list is walked past rather than skipped by eye: the signature is
+    `({ active }: { active: boolean })`, so the first brace after the name belongs to
+    the destructuring and not to the body.
+    """
+    index = source.index("(", source.index(f"export function {name}("))
+    depth = 0
+    while index < len(source):
+        depth += (source[index] == "(") - (source[index] == ")")
+        index += 1
+        if depth == 0:
+            break
+    opening = source.index("{", index)
+    depth = 0
+    for index in range(opening, len(source)):
+        depth += (source[index] == "{") - (source[index] == "}")
+        if depth == 0:
+            return source[opening : index + 1]
+    return source[opening:]
+
+
+def _inactive_returns_null(body: str) -> bool:
+    """Whether ``body`` returns null from its OWN top level on every inactive render.
+
+    Read as a parse and not as text. The condition has to be a disjunction whose first
+    operand is `!active`, because that is what makes an inactive render short-circuit to
+    the return whatever the rest of the guard says. Only statements directly in the
+    component body count: `(active) => { if (!active) return null; }` returns from the
+    callback and leaves the component mounting.
+    """
+    for match in re.finditer(r"\bif \(", body):
+        before = body[: match.start()]
+        if before.count("{") - before.count("}") != 1:
+            continue
+        start = match.end()
+        depth, index = 1, start
+        while index < len(body) and depth:
+            depth += (body[index] == "(") - (body[index] == ")")
+            index += 1
+        condition, tail = body[start : index - 1], body[index:]
+        # Braced or not: `{ return null; }` is the same guard through a formatter.
+        if not re.match(r"\s*\{?\s*return null;", tail):
+            continue
+        if _binds_looser_than_or(condition):
+            continue
+        if _leading_disjunct(condition).strip() == "!active":
+            return True
+    return False
+
+
 def test_auth_flow_routes_do_not_mount_global_settings():
     root = (FRONTEND / "app/routes/__root.tsx").read_text(encoding = "utf-8")
-    assert "{!isAuthFlowRoute && <SettingsDialog />}" in root
+    mount = (FRONTEND / "features/settings/settings-dialog-mount.tsx").read_text(encoding = "utf-8")
+    assert "<SettingsDialogMount active={active && ready} />" in root
+    assert "<CredentialBootstrapGate active={!isAuthFlowRoute}>" in root
+    # The mount must render nothing whenever inactive, which is what keeps the auth routes
+    # clear. The rest of the guard is lazy-mount bookkeeping that #10237 changed from one
+    # flag to two, so an exact spelling stopped matching.
+    mount_body = _function_body(_blanked(mount), "SettingsDialogMount")
+    assert _inactive_returns_null(mount_body), (
+        "SettingsDialogMount no longer returns null while inactive, so the settings "
+        "dialog can mount on the auth routes"
+    )
     assert "useSettingsDialogStore.getState().closeDialog();" in root
-    assert "if (isAuthFlowRoute) return;" in root
+    # The settings chord must stay inert on the auth routes.
+    assert "if (isAuthFlowRoute) return;" in root or "{ enabled: !isAuthFlowRoute }" in root
     for route in ("login", "change-password"):
         assert "isAuthFlow: true" in (FRONTEND / f"app/routes/{route}.tsx").read_text(
             encoding = "utf-8"
@@ -182,12 +314,17 @@ def test_auth_flow_routes_do_not_mount_global_settings():
 def test_auth_redirect_targets_are_idempotent_and_concurrent(tmp_path: Path):
     if shutil.which("node") is None:
         pytest.skip("node not available")
-    probe = subprocess.run(
-        ["node", "--experimental-strip-types", "--version"],
-        capture_output = True,
-        text = True,
-        timeout = 5,
-    )
+    # A timeout is a SKIP: the first `node` of a job on a Windows runner pays for image
+    # scanning and a cold file cache, and 5s was not enough for a `--version` there.
+    try:
+        probe = subprocess.run(
+            ["node", "--experimental-strip-types", "--version"],
+            capture_output = True,
+            text = True,
+            timeout = 120,
+        )
+    except subprocess.TimeoutExpired:
+        pytest.skip("node did not answer --version in time on this runner")
     if probe.returncode != 0:
         pytest.skip("node --experimental-strip-types not available")
 
@@ -195,6 +332,7 @@ def test_auth_redirect_targets_are_idempotent_and_concurrent(tmp_path: Path):
         AUTH_API.read_text(encoding = "utf-8")
         .replace('from "@/lib/api-base"', 'from "./stubs.mjs"')
         .replace('from "./session"', 'from "./stubs.mjs"')
+        .replace('from "@/lib/account-transition"', 'from "./stubs.mjs"')
     )
     (tmp_path / "api.ts").write_text(source)
     (tmp_path / "stubs.mjs").write_text(
@@ -202,6 +340,12 @@ def test_auth_redirect_targets_are_idempotent_and_concurrent(tmp_path: Path):
             let access = null, refresh = null, passwordChange = false;
             export const apiUrl = (path) => path;
             export const isTauri = false;
+            // Read by the Tauri transport-failure path before it asks the native health
+            // check. This stub is the web build (isTauri false), where that path is never
+            // taken, but the import is unconditional and an ES module import of a name the
+            // stub does not export is a SyntaxError at instantiation, not at call time.
+            export const getApiPort = () => null;
+            export const accountTransitionPending = () => false;
             export const reset = (a = null, r = null) => { access = a; refresh = r; passwordChange = false; };
             export const clearAuthTokens = () => { access = null; refresh = null; };
             export const getAuthToken = () => access;
@@ -272,6 +416,7 @@ def test_auth_redirect_targets_are_idempotent_and_concurrent(tmp_path: Path):
         cwd = tmp_path,
         capture_output = True,
         text = True,
-        timeout = 30,
+        # The same cold-start allowance as the probe above, plus the work itself.
+        timeout = 180,
     )
     assert result.returncode == 0, f"stderr: {result.stderr}\nstdout: {result.stdout}"

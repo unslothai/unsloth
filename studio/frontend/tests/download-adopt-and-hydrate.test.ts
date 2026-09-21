@@ -7,13 +7,15 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { registerBundlerResolver } from "./helpers/kit.ts";
+import { readSrc, registerBundlerResolver } from "./helpers/kit.ts";
 
 registerBundlerResolver();
 
-const { carriesOverSeed, idleProbeVerdict } = await import(
+const { carriesOverSeed, idleProbeVerdict, seededMeasuredTransfer } = await import(
   "../src/features/hub/download-manager/adopt-rules.ts"
 );
+
+const POLL_LOOP = readSrc("features/hub/download-manager/poll-loop.ts");
 
 test("adopting a new generation drops the previous run's byte seed", () => {
   // The persisted job describes generation 4; the backend reports 5 in flight. Seeding 4's bytes
@@ -95,4 +97,44 @@ test("a scan that never happened does not retire a job", () => {
   // A measured scan behaves exactly as before, and so does an older backend that omits it.
   assert.equal(idleProbeVerdict(0, null, null, true), "gone");
   assert.equal(idleProbeVerdict(0, null, null, undefined), "gone");
+});
+
+test("live idle polls retire an explicitly missing target before the grace period", () => {
+  const start = POLL_LOOP.indexOf("function handleIdleAfterProgress");
+  const end = POLL_LOOP.indexOf("\nfunction handleTickError", start);
+  const handler = POLL_LOOP.slice(start, end);
+
+  assert.match(
+    handler,
+    /idleProbeVerdict\([\s\S]*progressResp\.target_present[\s\S]*\) === "gone"/,
+    "an authoritative missing-target response must bypass the idle grace period",
+  );
+  assert.match(
+    POLL_LOOP,
+    /handleIdleAfterProgress\(rt, key, madeProgress, progressResp\)/,
+    "the live poll must pass its progress response to the idle verdict",
+  );
+});
+
+test("the held-transfer marker travels with the counters it describes", () => {
+  // Keeping the bytes while dropping it restores undefined, which reads as
+  // measured, and the row goes back to "0 B left".
+  assert.equal(seededMeasuredTransfer(true, false), false);
+  assert.equal(seededMeasuredTransfer(true, true), true);
+  // No seed means zeroed counters, so there is no held figure to distrust.
+  assert.equal(seededMeasuredTransfer(false, false), undefined);
+  // A job that never recorded one stays unknown rather than becoming held.
+  assert.equal(seededMeasuredTransfer(true, undefined), undefined);
+});
+
+test("the adoption path actually seeds the marker onto the job", () => {
+  // The helper above is pure, so it cannot catch the seed being computed and
+  // then left off the rebuilt job, which is how the marker was lost once.
+  assert.match(
+    POLL_LOOP,
+    /measuredTransfer:\s*seedMeasuredTransfer/,
+    "startJob computes the seeded held-transfer marker but no longer puts it on "
+      + "the job, so an adopted run restores it as undefined (measured) and "
+      + "prices the retry against the dead run's bytes",
+  );
 });

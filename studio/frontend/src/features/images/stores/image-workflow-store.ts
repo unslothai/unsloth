@@ -4,11 +4,9 @@
 import { create } from "zustand";
 import type { WorkflowId } from "../workflows";
 
-/**
- * The Images page's active workflow, lifted out of the page so the sidebar submenu can drive it.
- * `supported` is what the loaded model can do, published by the page; null means nothing is
- * loaded, in which case every workflow stays selectable.
- */
+/** The Images page's active workflow, lifted out of the page so the sidebar submenu can drive it.
+ *  `supported` is what the loaded model can do, published by the page; null means nothing is
+ *  loaded, in which case every workflow stays selectable. */
 interface ImageWorkflowState {
   workflow: WorkflowId;
   pageMode: "create" | "train";

@@ -29,8 +29,8 @@ _INSTALL_PS1 = _REPO_ROOT / "install.ps1"
 _THRESHOLD = 52428800  # 50 MiB, the shipped default in both installers.
 
 # Shaped like real `uv pip install` output, but the two nvidia sizes are picked to bracket
-# _THRESHOLD rather than to match those wheels (both are in fact far larger), so moving the
-# default in either direction changes what is marked. transformers lands unannounced.
+# _THRESHOLD rather than to match those wheels, so moving the default in either direction changes
+# what is marked. transformers lands unannounced.
 _UV_OUTPUT = """Resolved 38 packages in 2.60s
 Downloading torch (2.4GiB)
 Downloading nvidia-cudnn-cu12 (674.0MiB)
@@ -47,8 +47,8 @@ Installed 38 packages in 9.20s
 + torch==2.10.0+cu126
 """
 
-# uv does not repeat a completion, but a repeat must not close a download twice: the app
-# would see an end for something it never saw start.
+# uv does not repeat a completion, but a repeat must not close a download twice: the app would see
+# an end for something it never saw start.
 _UV_REPEATED_COMPLETION = """Downloading torch (2.4GiB)
  Downloaded torch
  Downloaded torch
@@ -171,9 +171,9 @@ def test_the_exit_code_survives_the_added_pipe(exit_code):
 
 @pytest.mark.parametrize("verbose", [False, True])
 def test_a_host_without_awk_still_installs(verbose):
-    # install.sh supports minimal images that ship no awk, and this pipe now carries every
-    # install command, so losing awk must cost the markers and nothing else. Without the
-    # fallback the pipeline closes and the child dies of SIGPIPE, reporting exit 141.
+    # install.sh supports minimal images that ship no awk, and this pipe now carries every install
+    # command, so losing awk must cost the markers and nothing else. Without the fallback the pipeline
+    # closes and the child dies of SIGPIPE, reporting exit 141.
     with tempfile.TemporaryDirectory() as tmp:
         stub = Path(tmp) / "bin"
         stub.mkdir()
@@ -187,14 +187,14 @@ def test_a_host_without_awk_still_installs(verbose):
     assert (ok_rc, rc) == ("0", "42"), "a missing awk turned into SIGPIPE"
     assert markers == [] and ok_markers == [], "markers cannot be produced without awk"
     assert _UV_OUTPUT.strip() in shown, "the failure path lost the child's output"
-    # The sink still has to differ by arm: quiet holds output in the log until something
-    # fails, verbose passes it straight through.
+    # The sink still has to differ by arm: quiet holds output in the log until something fails, verbose
+    # passes it straight through.
     assert (_UV_OUTPUT.strip() in ok_shown) is verbose
 
 
 def test_a_marker_arrives_while_its_download_is_still_running():
-    # Every other test reads output after the child exits, so a buffered marker still
-    # shows up -- just too late. Verbose is the arm with the block-buffering redactor.
+    # Every other test reads output after the child exits, so a buffered marker still shows up, just
+    # too late. Verbose is the arm with the block-buffering redactor.
     proc = subprocess.Popen(
         ["/bin/sh", "-c", _sh_harness('printf "Downloading torch (2.4GiB)\\n"; sleep 30')],
         stdout = subprocess.DEVNULL,
@@ -282,8 +282,8 @@ def test_both_installers_emit_the_same_markers(options):
 
 
 def test_both_installers_ship_the_same_threshold():
-    # Execution only brackets the default between two fixture sizes; the literal pins it
-    # exactly, and pins the two installers to each other so they cannot drift apart.
+    # Execution only brackets the default between two fixture sizes; the literal pins it exactly, and
+    # pins the two installers to each other so they cannot drift apart.
     assert _extract_default() == f': "${{UNSLOTH_DL_MARKER_MIN_BYTES:={_THRESHOLD}}}"'
     ps1 = _INSTALL_PS1.read_text(encoding = "utf-8")
     assert f"$script:UvDownloadMarkerMinBytes = {_THRESHOLD}" in ps1

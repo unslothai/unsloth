@@ -9,6 +9,20 @@
 
 const DEFAULT_STUDIO_PORT = "8888";
 const DEFAULT_AGENT = "claude";
+const SAFE_SHELL_ARG_PATTERN = /^[A-Za-z0-9_./:@%+=,-]+$/;
+
+export type AgentCommandOs = "unix" | "windows";
+
+export const shSingle = (value: string): string =>
+  value.replace(/'/g, "'\\''");
+export const psSingle = (value: string): string => value.replace(/'/g, "''");
+
+export function quoteShellArg(value: string, os: AgentCommandOs): string {
+  if (SAFE_SHELL_ARG_PATTERN.test(value)) {
+    return value;
+  }
+  return os === "windows" ? `'${psSingle(value)}'` : `'${shSingle(value)}'`;
+}
 
 // URL.hostname brackets IPv6 literals (`new URL("http://[::1]:8888").hostname` is
 // "[::1]"), so strip the brackets before matching the bare "::1" loopback rules below.
@@ -39,7 +53,7 @@ export function isLoopbackHost(host: string): boolean {
 export function buildAgentCommand(
   base: string | null | undefined,
   key: string | null | undefined,
-  os: "unix" | "windows",
+  os: AgentCommandOs,
   agent: string = DEFAULT_AGENT,
 ): string {
   const bare = `unsloth start ${agent}`;
@@ -70,4 +84,158 @@ export function buildAgentCommand(
   return os === "windows"
     ? `$env:UNSLOTH_STUDIO_URL="${studioUrl}"; ${cmd}`
     : `UNSLOTH_STUDIO_URL=${studioUrl} ${cmd}`;
+}
+
+export interface AgentShellCommands {
+  primary: string;
+  subagent: string;
+  remoteSetup: string;
+  passThrough: string[];
+  dryRun: string;
+}
+
+const REMOTE_SETUP_COMMANDS: Record<AgentCommandOs, string> = {
+  unix: `export UNSLOTH_STUDIO_URL=https://studio.example.com
+export UNSLOTH_API_KEY=sk-unsloth-...
+unsloth start claude`,
+  windows: `$env:UNSLOTH_STUDIO_URL = "https://studio.example.com"
+$env:UNSLOTH_API_KEY = "sk-unsloth-..."
+unsloth start claude`,
+};
+
+function appendCommand(command: string, args: string): string {
+  return args ? `${command} ${args}` : command;
+}
+
+export function buildAgentShellCommands(
+  base: string | null | undefined,
+  os: AgentCommandOs,
+  agent: string,
+  modelArgs: string,
+): AgentShellCommands {
+  const primaryBase = buildAgentCommand(base, null, os, agent);
+  return {
+    primary: appendCommand(primaryBase, modelArgs),
+    subagent: appendCommand(
+      `${primaryBase} --as-subagent`,
+      modelArgs,
+    ),
+    remoteSetup: REMOTE_SETUP_COMMANDS[os],
+    passThrough: [
+      `${buildAgentCommand(base, null, os, "claude")} --continue`,
+      `${buildAgentCommand(base, null, os, "codex")} --persist resume --last`,
+    ],
+    dryRun: `${buildAgentCommand(base, null, os, "claude")} --no-launch`,
+  };
+}
+
+// Codex (/v1/responses) and Claude Code (/v1/messages) are llama-server only; the rest use
+// /v1/chat/completions, which also serves safetensors and MLX.
+export const GGUF_ONLY_AGENTS: readonly string[] = ["codex", "claude"];
+
+export function agentRunsOnActiveModel(
+  agent: string,
+  isGguf: boolean,
+): boolean {
+  return isGguf || !GGUF_ONLY_AGENTS.includes(agent);
+}
+
+// The non-GGUF reset target: DEFAULT_AGENT is itself GGUF-only.
+export const UNIVERSAL_AGENT = "opencode";
+
+// Stays inside `offered`, or a narrower backend list names an agent with no chip. null =
+// nothing offered runs.
+export function fallbackAgent(
+  isGguf: boolean,
+  offered: readonly string[] = [],
+): string | null {
+  const runs = (agent: string) => agentRunsOnActiveModel(agent, isGguf);
+  if (offered.length === 0) {
+    return runs(DEFAULT_AGENT) ? DEFAULT_AGENT : UNIVERSAL_AGENT;
+  }
+  for (const preference of [DEFAULT_AGENT, UNIVERSAL_AGENT]) {
+    if (offered.includes(preference) && runs(preference)) {
+      return preference;
+    }
+  }
+  return offered.find(runs) ?? null;
+}
+
+export function pickCompatibleAgent(
+  detectedAgents: readonly string[],
+  currentAgent: string,
+  isGguf: boolean,
+  offered: readonly string[] = [],
+): string | null {
+  const preferred = detectedAgents.find((agent) =>
+    agentRunsOnActiveModel(agent, isGguf),
+  );
+  if (preferred) {
+    return preferred;
+  }
+  return agentRunsOnActiveModel(currentAgent, isGguf)
+    ? null
+    : fallbackAgent(isGguf, offered);
+}
+
+// The server wins: only it sees a swap this tab did not make. The store covers the routes
+// that never mount useChatModelRuntime, and the moment after a switch made here. null from
+// both is unknown, which is not false and gates nothing.
+export function resolveGgufCompatibility(
+  fromStore: boolean | null,
+  fromServer: boolean | null,
+): boolean | null {
+  return fromServer ?? fromStore;
+}
+
+// is_gguf carries a False default, so an idle server answers false while naming no model.
+// Only a status that names what it holds is a verdict.
+export function statusGgufVerdict(
+  resident: string | null | undefined,
+  isGguf: boolean | null | undefined,
+): boolean | null {
+  if (resident == null) return null;
+  return isGguf ?? null;
+}
+
+// Same model, ignoring any ":quant" a caller pinned.
+export function sameBaseModelId(a: string, b: string): boolean {
+  const base = (id: string) => id.trim().toLowerCase().split(":")[0];
+  return (
+    a.trim().toLowerCase() === b.trim().toLowerCase() || base(a) === base(b)
+  );
+}
+
+// The status and catalog polls run on separate timers, so a swap reaches one first; without
+// this the panel pairs a newly named model with the previous verdict. Neither side naming
+// anything is silence, not a contradiction.
+export function verdictDescribesModel(
+  resident: string | null | undefined,
+  named: string | null | undefined,
+): boolean {
+  if (resident == null || named == null) return true;
+  return sameBaseModelId(resident, named);
+}
+
+/** A status answer already collapsed onto the identity /v1/models publishes. */
+export interface StatusAnswer {
+  resident: string | null;
+  isGguf: boolean | null;
+}
+
+// The panel's single compatibility rule; `status` is null when the last answer is not about
+// the store state on screen. Disagreeing polls leave the question unknown rather than
+// falling back to the store, which is blind to the very swap that caused the disagreement.
+export function compatibilityFromSources(
+  fromStore: boolean | null,
+  status: StatusAnswer | null,
+  namedModel: string | null,
+): boolean | null {
+  if (status === null) {
+    return fromStore;
+  }
+  if (!verdictDescribesModel(status.resident, namedModel)) {
+    return null;
+  }
+  return resolveGgufCompatibility(fromStore, status.isGguf);
 }

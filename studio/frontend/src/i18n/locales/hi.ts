@@ -5,6 +5,67 @@ import type { DeepPartialMessageTree } from "../types";
 import type { en } from "./en";
 
 export const hi = {
+  composerSettings: {
+    title: "संदेश लिखना",
+    plainText: "सादा टेक्स्ट इनपुट",
+    plainTextDescription: "कोड, Markdown और लिंक को मूल टेक्स्ट के रूप में रखें। फ़ॉर्मैट किया हुआ पूर्वावलोकन दिखाने के लिए इसे बंद करें।",
+    showContext: "कॉन्टेक्स्ट विंडो का उपयोग दिखाएँ",
+    sendShortcut: "भेजने का शॉर्टकट",
+    sendDescription: "चुनें कि Enter से संदेश भेजना है या नई पंक्ति जोड़नी है।",
+    followUp: "अगले संदेश का व्यवहार",
+    followUpDescription: "उत्तर के दौरान संदेश भेजने पर क्या होगा, चुनें। एक संदेश के लिए विपरीत विकल्प इस्तेमाल करने हेतु {shortcut} दबाएँ।",
+    queue: "कतार में जोड़ें",
+    steer: "दिशा बदलें",
+    steerDescription: "दिशा बदलने से वर्तमान उत्तर रुक जाता है और आपका अगला संदेश पहले भेजा जाता है।",
+    settings: "संदेश इनपुट की सेटिंग",
+    preview: "फ़ॉर्मैट किया हुआ पूर्वावलोकन",
+  },
+  promptQueue: {
+    loading: "कतार के संदेश लोड हो रहे हैं",
+    listLabel: "कतार के संदेश",
+    regionLabel: "संदेश कतार, {total} में से {current}",
+    itemLabel: "कतार का संदेश {total} में से {position}: {prompt}",
+    reorderInstructions: "क्रम बदलने के लिए हैंडल को खींचें। हैंडल पर फ़ोकस होने पर ऊपर या नीचे तीर से एक स्थान खिसकाएँ, या Home या End से शुरुआत या अंत में ले जाएँ।",
+    dragTooltip: "क्रम बदलने के लिए खींचें",
+    reorderLabel: "कतार के संदेश {total} में से {position} का क्रम बदलें",
+    paused: "रुका हुआ",
+    steer: "दिशा बदलें",
+    steerTooltip: "उत्तर रोककर यह संदेश अगला भेजें",
+    steerLabel: "कतार के संदेश {position} से दिशा बदलें",
+    removeTooltip: "कतार से हटाएँ",
+    removeLabel: "कतार का संदेश {position} हटाएँ",
+    moreTooltip: "और विकल्प",
+    moreLabel: "कतार के संदेश {position} के लिए और विकल्प",
+    editItem: "संदेश संपादित करें",
+    copyItem: "संदेश कॉपी करें",
+    editLabel: "कतार का संदेश {position} संपादित करें",
+    cancel: "रद्द करें",
+    save: "सहेजें",
+    turnOffQueueing: "कतार बंद करें",
+    turnOnQueueing: "कतार चालू करें",
+    resume: "कतार फिर से शुरू करें",
+    queueButton: "संदेश कतार में जोड़ें",
+    steerButton: "उत्तर की दिशा बदलें",
+    sendTooltip: "संदेश भेजें ({shortcut})",
+    sendLabel: "संदेश भेजें",
+    followUpTooltip: "{action} ({send}) · विपरीत के लिए {opposite}",
+    announceUpdated: "कतार का संदेश अपडेट हो गया।",
+    announceEditFailed: "कतार बदल जाने के कारण यह संदेश अब संपादित नहीं किया जा सकता।",
+    announceRemoved: "संदेश कतार से हटा दिया गया।",
+    announceSteered: "यह संदेश अगला उत्तर की दिशा बदलेगा।",
+    announceSteerFailed: "यह संदेश उत्तर की दिशा नहीं बदल सका। कतार जाँचें और फिर कोशिश करें।",
+    announceCopied: "संदेश कॉपी हो गया।",
+    announceCopyFailed: "यह संदेश कॉपी नहीं हो सका। फिर कोशिश करें।",
+    announceQueueingOn: "नए अगले संदेश मौजूदा उत्तर के बाद कतार में जुड़ेंगे।",
+    announceQueueingOff: "नए अगले संदेश मौजूदा उत्तर की दिशा बदलेंगे।",
+    announceMoved: "संदेश {total} में से {position} स्थान पर ले जाया गया।",
+    announceMoveFailed: "इस संदेश को खिसकाने से पहले कतार बदल गई। फिर कोशिश करें।",
+    announceDragReset: "कतार बदल गई। बाकी संदेशों का क्रम बदलने के लिए फिर से खींचें।",
+    editingHint: "संदेश संपादित हो रहा है",
+    queueingOffHint: "नए संदेश बीच में आकर अगले चलते हैं।",
+    queueingOnHint: "नए संदेश अपनी बारी का इंतज़ार करते हैं।",
+    queueingHintShared: "कतार बनी रहती है।",
+  },
   picker: {
     onDevice: "डिवाइस पर",
     huggingFace: "Hugging Face",
@@ -55,6 +116,13 @@ export const hi = {
     shutdown: "शटडाउन",
   },
   shell: {
+    find: {
+      label: "पेज में खोजें",
+      previous: "पिछला मिलान",
+      next: "अगला मिलान",
+      close: "खोज बंद करें",
+      truncated: "यह पेज पूरी तरह खोजने के लिए बहुत लंबा है।",
+    },
     beta: "BETA",
     brand: "unsloth",
     product: "Unsloth",
@@ -97,6 +165,10 @@ export const hi = {
       export: "एक्सपोर्ट",
       recents: "हाल के",
       noChatsYet: "अभी तक कोई चैट नहीं",
+      // Shown under an empty project folder in the sidebar.
+      noChats: "कोई चैट नहीं",
+      showMore: "और दिखाएं",
+      showLess: "कम दिखाएं",
       settings: "सेटिंग्स",
       api: "API",
       lightMode: "लाइट मोड",
@@ -110,6 +182,60 @@ export const hi = {
       title: "पेज नहीं मिला",
       description: "{path} मौजूद नहीं है।",
       backToChat: "चैट पर वापस जाएँ",
+    },
+    selection: {
+      pinProjects: "प्रोजेक्ट पिन करें",
+      unpinProjects: "प्रोजेक्ट अनपिन करें",
+      deleteProjects: "प्रोजेक्ट हटाएँ",
+      deleteProjectsTitle: "प्रोजेक्ट हटाएँ",
+      deleteProjectsDescription:
+        "{count} प्रोजेक्ट हटाएँ? उनकी चैट स्थायी रूप से हट जाएँगी।",
+      deleteProjectsFilesDescription:
+        "हर प्रोजेक्ट का कार्यक्षेत्र फ़ोल्डर डिस्क से हटा दिया जाता है।",
+      countSelected: "{count} चुने गए",
+      pinChats: "चैट पिन करें",
+      unpinChats: "चैट अनपिन करें",
+      archiveChats: "चैट संग्रहित करें",
+      markUnread: "अपठित के रूप में चिह्नित करें",
+      markRead: "पढ़ा हुआ चिह्नित करें",
+      deleteChats: "चैट हटाएँ",
+      deleteTitle: "चैट हटाएँ",
+      deleteDescription: "{count} चैट हटाएँ? इसे पूर्ववत नहीं किया जा सकता।",
+      deleteFilesDescription:
+        "हर चैट का अपना सैंडबॉक्स फ़ोल्डर डिस्क से हटा दिया जाता है। किसी प्रोजेक्ट के अंदर लिखी गई फ़ाइलें उस प्रोजेक्ट के कार्यक्षेत्र में बनी रहती हैं।",
+      deleteFilesLabel: "फ़ाइलें और सैंडबॉक्स फ़ोल्डर हटाएं",
+      deleteChatFilesDescription:
+        "इस चैट का अपना सैंडबॉक्स फ़ोल्डर डिस्क से हटा दिया जाता है। किसी प्रोजेक्ट के अंदर लिखी गई फ़ाइलें उस प्रोजेक्ट के कार्यक्षेत्र में बनी रहती हैं।",
+    },
+    organize: {
+      sidebarHeading: "साइडबार व्यवस्थित करें",
+      byProject: "प्रोजेक्ट के अनुसार",
+      inOneList: "एक ही सूची में",
+      sortChatsBy: "चैट क्रमबद्ध करें",
+      sortPinnedBy: "पिन किए गए क्रमबद्ध करें",
+      priority: "प्राथमिकता",
+      lastUpdated: "अंतिम अपडेट",
+      manualOrder: "मैन्युअल क्रम",
+      priorityHint: "सक्रिय और अपठित पहले",
+      lastUpdatedHint: "सबसे नए पहले",
+      manualOrderHint: "पंक्तियाँ खींचकर क्रम बदलें",
+      switchedToManual: "अब मैन्युअल क्रम: पंक्तियाँ खींचकर क्रम बदलें",
+      organizeChats: "चैट व्यवस्थित करें",
+      organizeProjects: "प्रोजेक्ट व्यवस्थित करें",
+      sortPinnedChats: "पिन की गई चैट क्रमबद्ध करें",
+      dragDrop: "खींचें और छोड़ें",
+      dragHints: "खींचते समय संकेत दिखाएँ",
+      reorderSwitchesSort: "क्रम बदलने पर मैन्युअल क्रम पर स्विच करें",
+      dragOpensFolders: "पॉइंटर के नीचे फ़ोल्डर खोलें",
+      moveUp: "ऊपर ले जाएँ",
+      moveDown: "नीचे ले जाएँ",
+    },
+    drag: {
+      reorder: "क्रम बदलें",
+      pin: "पिन करें",
+      unpin: "अनपिन करें",
+      moveTo: "{name} में ले जाएँ",
+      moveToRecents: "हाल के में ले जाएँ",
     },
     dialog: {
       deleteChat: {
@@ -138,6 +264,44 @@ export const hi = {
     },
   },
   settings: {
+    accounts: {
+      title: "खाते",
+      description: "निजी Unsloth खाते बनाएँ। नए उपयोगकर्ता एक बार इस्तेमाल होने वाले सेटअप कोड से साइन इन करते हैं और पासवर्ड चुनते हैं।",
+      username: "उपयोगकर्ता नाम",
+      create: "खाता बनाएँ",
+      createDescription: "सेटअप कोड साझा करें ताकि वे अपना पासवर्ड खुद चुन सकें।",
+      actionsFor: "{username} प्रबंधित करें",
+      actions: "कार्रवाइयाँ",
+      search: "खाते खोजें",
+      noResults: "कोई मेल खाता खाता नहीं",
+      created: "बनाया गया",
+      status: "स्थिति",
+      loginHint: "इस कोड को पासवर्ड के रूप में इस्तेमाल करके {username} के रूप में साइन इन करें, फिर नया पासवर्ड चुनें।",
+      privateAccount: "निजी खाता",
+      empty: "अभी कोई अन्य खाता नहीं",
+      setupCode: "सेटअप कोड",
+      setupFor: "{username} के लिए सेटअप कोड",
+      shownOnce: "यह कोड अभी कॉपी करें और खाता धारक को दें। यह केवल यहीं दिखता है और 60 मिनट के भीतर एक बार इस्तेमाल किया जा सकता है।",
+      expires: "समाप्ति: {expiry}",
+      copy: "सेटअप कोड कॉपी करें",
+      copied: "कॉपी हो गया",
+      copyFailed: "कॉपी नहीं हो सका। ऊपर दिए सेटअप कोड को चुनकर कॉपी करें।",
+      dismiss: "हो गया",
+      owner: "इंस्टॉलेशन स्वामी",
+      active: "सक्षम",
+      inactive: "अक्षम",
+      regenerate: "सेटअप कोड फिर से बनाएँ",
+      resetTitle: "{username} का पासवर्ड रीसेट करें?",
+      resetDescription: "सेटअप कोड फिर से बनाने पर {username} का पासवर्ड बदल जाता है, उनके सत्र समाप्त हो जाते हैं और उनकी API कुंजियाँ रद्द हो जाती हैं। उन्हें नया कोड दें ताकि वे फिर से पासवर्ड चुन सकें।",
+      deactivate: "अक्षम करें",
+      reactivate: "सक्षम करें",
+      delete: "खाता हटाएँ",
+      deleteTitle: "{username} को हटाएँ?",
+      deleteDescription: "इससे {username} के सत्र रद्द हो जाएँगे और उनका चल रहा काम बंद हो जाएगा। उनकी चैट, सेटिंग्स, क्रेडेंशियल, अपलोड, डेटासेट, ट्रेनिंग रन, आउटपुट, एक्सपोर्ट, गैलरी, सैंडबॉक्स, प्रोजेक्ट और अस्थायी फ़ाइलें अलग रख दी जाती हैं। डायरेक्टरी का नाम बदलकर उन्हें किनारे कर दिया जाता है, हटाया कभी नहीं जाता। यही उपयोगकर्ता नाम फिर से बनाने पर इस डेटा के बिना एक नया खाता शुरू होता है।",
+      cancel: "रद्द करें",
+      retry: "खाते ताज़ा करें",
+      failed: "खाता अनुरोध विफल रहा।",
+    },
     title: "सेटिंग्स",
     dialog: {
       title: "सेटिंग्स",
@@ -145,8 +309,11 @@ export const hi = {
       closeAriaLabel: "सेटिंग्स बंद करें",
       searchPlaceholder: "सेटिंग्स खोजें…",
       searchNoResults: "कोई सेटिंग नहीं मिली।",
+      panelFailed: "यह अनुभाग लोड नहीं हो सका।",
+      panelReload: "फिर से लोड करें",
     },
     tabs: {
+      accounts: "खाते",
       general: "सामान्य",
       profile: "प्रोफ़ाइल",
       appearance: "रूप-रंग",
@@ -154,11 +321,257 @@ export const hi = {
       chat: "चैट",
       connections: "कनेक्शन",
       apiKeys: "API",
+      remoteLan: "रिमोट और LAN",
       about: "परिचय",
       data: "डेटा",
       agents: "एजेंट",
       debugging: "लॉग",
       voice: "आवाज़",
+      keyboardShortcuts: "शॉर्टकट",
+    },
+    keyboardShortcuts: {
+      title: "कीबोर्ड शॉर्टकट",
+      searchPlaceholder: "शॉर्टकट खोजें…",
+      keystrokePlaceholder: "खोजने के लिए शॉर्टकट दबाएँ",
+      searchByKeystrokes: "कीस्ट्रोक से खोजें",
+      searchByName: "नाम से खोजें",
+      noResults: "इस खोज से कोई शॉर्टकट मेल नहीं खाता।",
+      unassigned: "असाइन नहीं",
+      recording: "कुंजियाँ दबाएँ…",
+      recordingHint: "नया संयोजन दबाएँ, या रद्द करने के लिए Esc।",
+      needsModifier: "⌘, Ctrl या Alt जोड़ें। अकेली कुंजी टाइपिंग निगल लेगी।",
+      conflict: "यह किसी और शॉर्टकट में भी इस्तेमाल हो रहा है",
+      conflictShadowed: "यह संयोजन किसी और शॉर्टकट के पास है और उसके बदले वही चलता है",
+      edit: "शॉर्टकट बदलें",
+      clear: "शॉर्टकट हटाएँ",
+      reset: "डिफ़ॉल्ट पर लौटाएँ",
+      resetAll: "सभी को डिफ़ॉल्ट पर रीसेट करें",
+      primarySlot: "शॉर्टकट",
+      alternateSlot: "वैकल्पिक शॉर्टकट",
+      browserReserved:
+        "आपका ब्राउज़र यह कुंजी संयोजन अपने पास रख सकता है। डेस्कटॉप ऐप में यह काम करता है।",
+      actions: {
+        findInPage: {
+          label: "पेज में खोजें",
+          description: "इस पेज के टेक्स्ट में खोजें",
+        },
+        openSettings: {
+          label: "सेटिंग्स खोलें",
+          description: "सेटिंग्स संवाद खोलें",
+        },
+        openKeyboardShortcuts: {
+          label: "कीबोर्ड शॉर्टकट",
+          description: "यह शॉर्टकट सूची खोलें",
+        },
+        searchChats: {
+          label: "चैट खोजें",
+          description: "चैट खोज संवाद खोलें",
+        },
+        openMcpServers: {
+          label: "MCP सर्वर",
+          description: "इस चैट के लिए MCP सर्वर कॉन्फ़िगर करें",
+        },
+        logOut: {
+          label: "लॉग आउट",
+          description: "Unsloth से साइन आउट करें",
+        },
+        approveToolRequest: {
+          label: "अनुरोध स्वीकारें",
+          description: "प्रतीक्षारत टूल कॉल की अनुमति दें",
+        },
+        declineToolRequest: {
+          label: "अनुरोध अस्वीकारें",
+          description: "प्रतीक्षारत टूल कॉल को मना करें",
+        },
+        newChat: {
+          label: "नई चैट",
+          description: "नई चैट शुरू करें",
+        },
+        newTemporaryChat: {
+          label: "नई अस्थायी चैट",
+          description: "ऐसी चैट शुरू करें जो इतिहास में सहेजी न जाए",
+        },
+        newStandaloneChat: {
+          label: "नई स्वतंत्र चैट",
+          description: "किसी भी प्रोजेक्ट के बाहर नई चैट शुरू करें",
+        },
+        archiveChat: {
+          label: "चैट संग्रहित करें",
+          description: "चुनी गई चैट संग्रहित करें, या मौजूदा चैट",
+        },
+        markChatUnread: {
+          label: "अपठित के रूप में चिह्नित करें",
+          description: "चुनी गई चैट को अपठित चिह्नित करें, या मौजूदा चैट",
+        },
+        togglePinChat: {
+          label: "पिन टॉगल करें",
+          description: "चुनी गई चैट पिन या अनपिन करें, या मौजूदा चैट",
+        },
+        selectAllChats: {
+          label: "सभी चैट चुनें",
+          description: "साइडबार की हर चैट चुनें",
+        },
+        clearChatSelection: {
+          label: "चयन हटाएँ",
+          description: "चुनी गई चैट का चयन हटाएँ। Escape से भी चयन हटता है",
+        },
+        deleteSelectedChats: {
+          label: "चुनी गई चैट हटाएँ",
+          description: "हर चुनी गई चैट को हटाएँ",
+        },
+        nextRecentlyViewedChat: {
+          label: "अगली हाल में देखी चैट",
+          description: "हाल में देखी चैट में आगे बढ़ें",
+        },
+        previousRecentlyViewedChat: {
+          label: "पिछली हाल में देखी चैट",
+          description: "हाल में देखी चैट में पीछे जाएँ",
+        },
+        nextChat: {
+          label: "अगली चैट",
+          description: "साइडबार की अगली चैट पर जाएँ",
+        },
+        previousChat: {
+          label: "पिछली चैट",
+          description: "साइडबार की पिछली चैट पर जाएँ",
+        },
+        nextChatNeedingAttention: {
+          label: "ध्यान चाहने वाली अगली चैट",
+          description: "अगली उत्पन्न होती, कतार में या अपठित चैट पर जाएँ",
+        },
+        clearAllUnreads: {
+          label: "सभी अपठित हटाएँ",
+          description: "हर चैट को पढ़ा हुआ चिह्नित करें",
+        },
+        goToRecentChat1: {
+          label: "हाल की चैट 1 पर जाएँ",
+          description: "“हाल के” में 1वीं चैट खोलें",
+        },
+        goToRecentChat2: {
+          label: "हाल की चैट 2 पर जाएँ",
+          description: "“हाल के” में 2वीं चैट खोलें",
+        },
+        goToRecentChat3: {
+          label: "हाल की चैट 3 पर जाएँ",
+          description: "“हाल के” में 3वीं चैट खोलें",
+        },
+        goToRecentChat4: {
+          label: "हाल की चैट 4 पर जाएँ",
+          description: "“हाल के” में 4वीं चैट खोलें",
+        },
+        goToRecentChat5: {
+          label: "हाल की चैट 5 पर जाएँ",
+          description: "“हाल के” में 5वीं चैट खोलें",
+        },
+        goToRecentChat6: {
+          label: "हाल की चैट 6 पर जाएँ",
+          description: "“हाल के” में 6वीं चैट खोलें",
+        },
+        switchToChat: {
+          label: "चैट पर जाएँ",
+          description: "चैट कार्यक्षेत्र पर जाएँ",
+        },
+        switchToProjects: {
+          label: "प्रोजेक्ट पर जाएँ",
+          description: "प्रोजेक्ट कार्यक्षेत्र पर जाएँ",
+        },
+        switchToHub: {
+          label: "मॉडल हब पर जाएँ",
+          description: "मॉडल हब पर जाएँ",
+        },
+        switchToTrain: {
+          label: "ट्रेन पर जाएँ",
+          description: "प्रशिक्षण कार्यक्षेत्र पर जाएँ",
+        },
+        switchToRecipes: {
+          label: "Recipes पर जाएँ",
+          description: "Data Recipes पर जाएँ",
+        },
+        switchToImages: {
+          label: "इमेज पर जाएँ",
+          description: "इमेज कार्यक्षेत्र पर जाएँ",
+        },
+        switchToVideo: {
+          label: "वीडियो पर जाएँ",
+          description: "वीडियो कार्यक्षेत्र पर जाएँ",
+        },
+        switchToAudio: {
+          label: "ऑडियो पर जाएँ",
+          description: "ऑडियो कार्यक्षेत्र पर जाएँ",
+        },
+        switchToExport: {
+          label: "एक्सपोर्ट पर जाएँ",
+          description: "एक्सपोर्ट कार्यक्षेत्र पर जाएँ",
+        },
+        toggleSidebar: {
+          label: "साइडबार टॉगल करें",
+          description: "साइडबार दिखाएँ या छिपाएँ",
+        },
+        toggleApiMonitor: {
+          label: "API गतिविधि टॉगल करें",
+          description: "API गतिविधि मॉनिटर दिखाएँ या छिपाएँ",
+        },
+        openModelPicker: {
+          label: "मॉडल चयनकर्ता खोलें",
+          description: "इस चैट के लिए मॉडल चुनें",
+        },
+        openProjectPicker: {
+          label: "प्रोजेक्ट चयनकर्ता खोलें",
+          description: "चैट हेडर से किसी दूसरे प्रोजेक्ट पर जाएँ",
+        },
+        startDictation: {
+          label: "श्रुतलेख",
+          description: "लिखने के बॉक्स में श्रुतलेख शुरू या बंद करें",
+        },
+        attachFiles: {
+          label: "फ़ोटो और फ़ाइलें संलग्न करें",
+          description: "लिखने के बॉक्स में अनुलग्नक जोड़ें",
+        },
+        sendMessage: {
+          label: "संदेश भेजें",
+          description: "लिखने के बॉक्स की सामग्री भेजें",
+        },
+        queueMessage: {
+          label: "संदेश कतार में डालें",
+          description: "ड्राफ़्ट को कतार के अंत में भेजें",
+        },
+        steerMessage: {
+          label: "उत्तर बदलें",
+          description: "मौजूदा उत्तर रोककर ड्राफ़्ट अगला भेजें",
+        },
+        cycleReasoningEffort: {
+          label: "तर्क प्रयास बदलें",
+          description: "तर्क प्रयास के स्तरों में क्रमशः बदलें",
+        },
+        increaseReasoningEffort: {
+          label: "तर्क प्रयास बढ़ाएँ",
+          description: "तर्क प्रयास एक स्तर बढ़ाएँ",
+        },
+        decreaseReasoningEffort: {
+          label: "तर्क प्रयास घटाएँ",
+          description: "तर्क प्रयास एक स्तर घटाएँ",
+        },
+        toggleFastMode: {
+          label: "Fast मोड टॉगल करें",
+          description: "Fast मोड चालू या बंद करें",
+        },
+        renameChat: {
+          label: "चैट का नाम बदलें",
+          description: "मौजूदा चैट का नाम बदलें",
+        },
+        forkChat: {
+          label: "चैट फ़ोर्क करें",
+          description: "अंतिम संदेश से नई चैट अलग करें",
+        },
+        copyChatAsMarkdown: {
+          label: "Markdown के रूप में कॉपी करें",
+          description: "पूरी चैट को Markdown के रूप में क्लिपबोर्ड पर कॉपी करें",
+        },
+        copySessionId: {
+          label: "सत्र आईडी कॉपी करें",
+          description: "इस चैट की सैंडबॉक्स सत्र आईडी कॉपी करें",
+        },
+      },
     },
     debugging: {
       logSection: "लॉग फ़ाइल",
@@ -182,6 +595,17 @@ export const hi = {
       droppedNotice: "कुछ पंक्तियाँ छोड़ दी गईं: लॉग इतनी तेज़ी से लिखा गया कि उसे पढ़ा नहीं जा सका।",
       morePending: "और पंक्तियां अभी पढ़ी जा रही हैं; वे अगले रिफ्रेश पर आएंगी।",
       staleSession: "फ़ाइल लॉगिंग बंद है, इसलिए यह पुराना सत्र है और अपडेट नहीं होगा।",
+      downloadAllLogs: "सभी लॉग डाउनलोड करें (.zip)",
+      downloadingAllLogs: "लॉग पैक किए जा रहे हैं...",
+      exportMaskedNote: "निर्यात की गई फ़ाइलों में क्रेडेंशियल छिपा दिए जाते हैं। बहुत बड़े लॉग केवल अपनी सबसे हाल की पंक्तियाँ रखते हैं, और कुछ लॉग पूरी तरह छूट सकते हैं; संग्रह में EXPORT_WARNINGS.txt देखें।",
+      downloadedTo: "{path} में सहेजा गया",
+      downloadedToBrowser: "डाउनलोड शुरू हो गया।",
+      showInFolder: "फ़ोल्डर में दिखाएँ",
+      openLogsFolder: "लॉग फ़ोल्डर खोलें",
+      openLogsFolderFailed: "लॉग फ़ोल्डर नहीं खोला जा सका।",
+      exportFailed: "लॉग डाउनलोड नहीं किए जा सके।",
+      exportTooOld: "चल रहा Unsloth बैकएंड लॉग निर्यात करने के लिए बहुत पुराना है। उस बैकएंड को अपडेट करें और पुनः आरंभ करें।",
+      exportForbidden: "सभी लॉग डाउनलोड करने के लिए साइन-इन किया हुआ Unsloth सत्र चाहिए। केवल API कुंजी पर्याप्त नहीं है।",
       keywords: "डिबग डिबगिंग लॉग त्रुटि गड़बड़ी क्रैश ट्रेसबैक निदान समस्या निवारण debug log logs error",
     },
     voice: {
@@ -196,8 +620,26 @@ export const hi = {
         engineModel: "लोकल ट्रांसक्रिप्शन",
         engineModelDescription:
           "स्पीच-टू-टेक्स्ट (STT) मॉडल लोकली चलाता है और ऑफ़लाइन काम करता है। डाउनलोड करें, लोड करें; कुछ देर उपयोग न होने पर यह अनलोड हो जाता है।",
+        engineCustom: "कस्टम एंडपॉइंट",
+        engineCustomDescription:
+          "आपके कनेक्शन से रिकॉर्ड किया गया ऑडियो OpenAI-संगत STT सर्वर को भेजता है।",
+        connectionLabel: "कनेक्शन",
+        connectionDescription:
+          "कनेक्शन में OpenAI-संगत सर्वर और वैकल्पिक API कुंजी जोड़ें।",
+        connectionPlaceholder: "कनेक्शन चुनें",
+        connectionEmpty: "कोई कनेक्शन उपलब्ध नहीं है",
+        customModelLabel: "मॉडल",
+        customModelDescription:
+          "/v1/audio/transcriptions को भेजा जाने वाला मॉडल नाम।",
         sttModelLabel: "स्पीच रिकग्निशन मॉडल",
         sttModelDescription: "लोकली चलाने के लिए STT मॉडल चुनें या खोजें।",
+        sttDeviceLabel: "इसमें लोड करें",
+        sttDeviceAuto: "उपलब्ध होने पर GPU",
+        sttDeviceCpu: "CPU RAM",
+        sttDeviceAutoDescription:
+          "GPU उपलब्ध हो तो उसका उपयोग करें, अन्यथा CPU का।",
+        sttDeviceCpuDescription:
+          "मॉडल को सिस्टम RAM में रखें। ट्रांसक्रिप्शन धीमा होगा, पर GPU मेमोरी नहीं लगेगी।",
         sttModelSearchPlaceholder: "मॉडल खोजें",
         sttModelSearching: "Hugging Face पर खोजा जा रहा है…",
         sttModelValidating: "Whisper संगतता जाँची जा रही है…",
@@ -245,6 +687,8 @@ export const hi = {
         allowMicrophone: "माइक्रोफ़ोन की अनुमति दें",
         micAccessBlocked:
           "माइक्रोफ़ोन एक्सेस रोक दिया गया है। इस Unsloth पेज के लिए माइक्रोफ़ोन एक्सेस की अनुमति दें, फिर दोबारा कोशिश करें।",
+        micAccessBlockedDesktop:
+          "माइक्रोफ़ोन एक्सेस रोक दिया गया है। दोबारा कोशिश करें और अनुमति दें चुनें, या सिस्टम की प्राइवेसी सेटिंग में माइक्रोफ़ोन चालू करें।",
         micAccessUnsupported:
           "इस ब्राउज़र या संदर्भ में माइक्रोफ़ोन एक्सेस समर्थित नहीं है।",
         systemDefault: "सिस्टम डिफ़ॉल्ट",
@@ -252,6 +696,7 @@ export const hi = {
         languageLabel: "डिक्टेशन की भाषा",
         languageDescription: "पहचानी जाने वाली भाषा",
         languageAuto: "स्वतः (ब्राउज़र की भाषा)",
+        languageAutoDetect: "स्वतः (भाषा पहचानें)",
       },
       dictionary: {
         sectionTitle: "डिक्टेशन शब्दकोश",
@@ -316,9 +761,19 @@ export const hi = {
           "लोड किए गए ऑडियो मॉडल का उपयोग करता है (जैसे Orpheus)",
         engineSystem: "सिस्टम की आवाज़ें",
         engineStudio: "TTS मॉडल लोड करें",
+        engineCustom: "कस्टम एंडपॉइंट",
+        engineCustomDescription:
+          "आपके कनेक्शनों में से एक OpenAI-संगत TTS सर्वर (जैसे Kokoro)",
+        connectionLabel: "कनेक्शन",
+        connectionDescription: "कनेक्शन टैब में OpenAI-संगत सर्वर जोड़ें",
+        connectionPlaceholder: "कनेक्शन चुनें",
+        customModelLabel: "मॉडल",
+        customVoiceDescription:
+          "एंडपॉइंट द्वारा अपेक्षित वॉइस नाम; डिफ़ॉल्ट alloy है",
         modelLabel: "TTS मॉडल",
         modelDescription:
           "मॉडल सिलेक्टर से एक ऑडियो मॉडल लोड करें (जैसे Orpheus TTS)",
+        openAudioAction: "ऑडियो खोलें",
         voiceLabel: "आवाज़",
         voiceDescription: "इस डिवाइस पर सबसे अच्छी आवाज़ें",
         speedLabel: "गति",
@@ -328,6 +783,7 @@ export const hi = {
         previewDescription: "एक छोटा नमूना चलाएँ",
         previewFailed: "TTS पूर्वावलोकन विफल रहा",
         previewAction: "सुनें",
+        preparingAction: "बना रहे हैं…",
         stopAction: "रोकें",
         ttsLabel: "टेक्स्ट-टू-स्पीच",
         notSupported: "इस ब्राउज़र में समर्थित नहीं है",
@@ -392,18 +848,21 @@ export const hi = {
         sectionTitle: "मॉडल ऑटो-स्विच (OpenAI API)",
         enable: "अनुरोध के अनुसार मॉडल बदलें",
         enableDescription:
-          "API अनुरोध में दिए गए डाउनलोड किए गए GGUF को सेवा देने से पहले लोड करें। डिफ़ॉल्ट रूप से बंद।",
+          "API अनुरोध में दिए गए डाउनलोड किए गए मॉडल को सेवा देने से पहले लोड करें। डिफ़ॉल्ट रूप से बंद।",
         idleUnload: "निष्क्रिय ऑटो-अनलोड",
         idleUnloadDescription:
           "इतने सेकंड तक निष्क्रिय रहने के बाद VRAM खाली करें। 0 पर मॉडल लोड रहता है; न्यूनतम 60 सेकंड।",
         idleSecondsAriaLabel: "निष्क्रिय ऑटो-अनलोड की अवधि (सेकंड में)",
+        mediaEnable: "अनुरोध के अनुसार इमेज और वीडियो मॉडल बदलें",
+        mediaEnableDescription:
+          "जनरेट करने से पहले API अनुरोध में दिए गए डाउनलोड किए गए इमेज या वीडियो मॉडल को लोड करें। यह अलग सेटिंग है: ऊपर वाली केवल चैट मॉडल पर लागू होती है। डिफ़ॉल्ट रूप से बंद।",
         mediaIdleUnload: "इमेज और वीडियो के लिए निष्क्रिय ऑटो-अनलोड",
         mediaIdleUnloadDescription:
           "इतने सेकंड तक निष्क्रिय रहने के बाद इमेज और वीडियो मॉडल अनलोड करके VRAM खाली करें। यह अपनी अलग सेटिंग है: ऊपर वाली सेटिंग केवल चैट मॉडल पर लागू होती है। 0 पर वे लोड रहते हैं; न्यूनतम 60 सेकंड।",
         mediaIdleSecondsAriaLabel:
           "इमेज और वीडियो के निष्क्रिय ऑटो-अनलोड की अवधि (सेकंड में)",
         mediaIdlePaused:
-          "‘मॉडल को GPU मेमोरी में रखें’ या ‘केवल API द्वारा लोड किए गए मॉडल अनलोड करें’ चालू रहने तक रुका हुआ है।",
+          "जब तक “मॉडल को GPU मेमोरी में रखें” चालू है, तब तक रुका हुआ है।",
         idleNeedsEnable: "पहले ‘अनुरोध के अनुसार मॉडल बदलें’ चालू करें।",
         idleActiveViaEnv:
           "निष्क्रिय ऑटो-अनलोड UNSLOTH_MODEL_IDLE_TTL एनवायरनमेंट वेरिएबल के माध्यम से सक्रिय है।",
@@ -418,7 +877,7 @@ export const hi = {
           "निष्क्रियता पर अनलोड होने से पहले KV कैश सहेजता है, ताकि दोबारा शुरू की गई चैट को इतिहास फिर से न पढ़ना पड़े। डिस्क पर 10 GB तक।",
         apiOnly: "केवल API द्वारा लोड किए गए मॉडल अनलोड करें",
         apiOnlyDescription:
-          "निष्क्रियता पर अनलोड करते समय Studio से आपके द्वारा लोड किया गया मॉडल मेमोरी में बना रहता है, और केवल वही मॉडल हटाए जाते हैं जिन्हें किसी API अनुरोध ने लोड किया था।",
+          "निष्क्रियता पर अनलोड करते समय Unsloth से आपके द्वारा लोड किया गया मॉडल मेमोरी में बना रहता है, और केवल वही मॉडल हटाए जाते हैं जिन्हें किसी API अनुरोध ने लोड किया था।",
       },
       previewSharing: {
         sectionTitle: "पूर्वावलोकन साझाकरण",
@@ -447,6 +906,9 @@ export const hi = {
         showLoadedModels: "लोड किए गए मॉडल का संकेतक",
         showLoadedModelsDescription:
           "नीचे दाएं कोने में एक छोटा कार्ड दिखाएं जिसमें वर्तमान में मेमोरी में मौजूद हर मॉडल (चैट, स्पीच, इमेज, वीडियो) सूचीबद्ध हो, और हर एक को हटाने के लिए एक बटन हो।",
+        showWhisperUpdates: "whisper.cpp अपडेट सूचनाएं",
+        showWhisperUpdatesDescription:
+          "स्पीच-टू-टेक्स्ट मॉडल के लिए जब कोई नया whisper.cpp बिल्ड उपलब्ध हो तो सूचित करें। यदि आप ऑडियो ट्रांसक्राइब नहीं करते हैं तो बंद कर दें।",
       },
       startup: {
         sectionTitle: "स्टार्टअप",
@@ -461,6 +923,29 @@ export const hi = {
         loadError: "लॉगिन पर चलाने की सेटिंग लोड नहीं हो सकी।",
         saveError: "लॉगिन पर चलाने की सेटिंग अपडेट नहीं हो सकी।",
       },
+      downloads: {
+        sectionTitle: "डाउनलोड",
+        transport: "डाउनलोड ट्रांसपोर्ट",
+        transportDescription:
+          "Hugging Face से मॉडल और डेटासेट फ़ाइलें कैसे आती हैं। HTTPS वहीं से जारी रहता है जहाँ रुका था; Xet पहली बार डाउनलोड में अक्सर तेज़ होता है, लेकिन रद्द करने पर फ़ाइल फिर से शुरू करता है।",
+        transportHint:
+          "HTTPS सामान्य TLS है: हर नेटवर्क, प्रॉक्सी और VPN इसे चलने देता है, रद्द या टूटा ट्रांसफ़र डिस्क पर मौजूद बाइट्स से जारी रहता है, और मेमोरी उपयोग स्थिर रहता है। Xet डीडुप्लिकेट किए गए चंक लाता है, इसलिए जिस रिपॉज़िटरी का डेटा आपके पास पहले से है वह बहुत तेज़ आ सकती है, पर इसके लिए hf_xet चाहिए, RAM ज़्यादा लगती है, और रद्द करने पर चल रही फ़ाइल छूट जाती है। Auto इस मशीन के हिसाब से तय करता है: यह RAM और यहाँ Xet के अटकने को देखता है, और ज़रूरत पर HTTPS पर लौट आता है।",
+        https: "HTTPS",
+        xet: "Xet",
+        auto: "Auto",
+        httpsHint:
+          "मानक TLS। रद्द करने के बाद जारी रहता है, हर नेटवर्क पर चलता है, मेमोरी उपयोग स्थिर।",
+        transportDescriptionNoResume:
+          "मॉडल और डेटासेट फ़ाइलें Hugging Face से कैसे आती हैं। इस इंस्टॉलेशन में कोई भी ट्रांसपोर्ट डाउनलोड फिर से शुरू नहीं कर सकता, इसलिए रद्द किया गया डाउनलोड शुरू से चलता है; पहली बार डाउनलोड करने में Xet अक्सर तेज़ होता है।",
+        httpsHintNoResume:
+          "मानक TLS। किसी भी नेटवर्क पर काम करता है, मेमोरी का उपयोग स्थिर रहता है। यह इंस्टॉलेशन रद्द किए गए डाउनलोड को फिर से शुरू नहीं कर सकता।",
+        xetHint:
+          "डीडुप्लिकेट चंक ट्रांसफ़र। नए डाउनलोड में अक्सर तेज़, रद्द करने पर फ़ाइल फिर से शुरू, ज़्यादा मेमोरी चाहिए।",
+        autoHint:
+          "मशीन के अनुसार चुनता है और यहाँ Xet अटकने या विफल होने पर HTTPS पर चला जाता है।",
+        autoCurrently: "इस मशीन पर Auto {transport} उपयोग कर रहा है।",
+        xetMissing: "hf_xet इंस्टॉल नहीं है, इसलिए Xet उपलब्ध नहीं है।",
+      },
       uploads: {
         sectionTitle: "अपलोड",
         maxUploadSize: "ट्रेनिंग डेटासेट अपलोड सीमा",
@@ -471,6 +956,7 @@ export const hi = {
         embeddingModel: "एम्बेडिंग मॉडल",
         embeddingModelDescription:
           "आपके दस्तावेज़ों को इंडेक्स और खोजने के लिए उपयोग किया जाने वाला Hugging Face मॉडल या स्थानीय पथ। डिफ़ॉल्ट {defaultModel} है।",
+        searchPlaceholder: "HF पर कोई भी मॉडल खोजें",
         reindexWarning:
           "केवल नए इंडेक्स किए गए दस्तावेज़ों को प्रभावित करता है। मॉडल बदलने के बाद मौजूदा दस्तावेज़ फिर से अपलोड करें।",
         emptyError: "एक Hugging Face मॉडल id या स्थानीय पथ दर्ज करें।",
@@ -478,7 +964,24 @@ export const hi = {
         saveError: "एम्बेडिंग मॉडल सहेजने में विफल।",
         saved: "एम्बेडिंग मॉडल सहेजा गया।",
         saveAnyway: "फिर भी सहेजें",
-        resetAction: "डिफ़ॉल्ट पर रीसेट करें",
+        recommended: "अनुशंसित",
+        onDevice: "डिवाइस पर",
+        searching: "Hugging Face पर खोज रहे हैं…",
+        checking: "जाँच रहे हैं…",
+        noResults: "कोई एम्बेडिंग मॉडल नहीं मिला",
+        download: "डाउनलोड करें",
+        unload: "अनलोड करें",
+        unloadFailed: "एम्बेडिंग मॉडल अनलोड नहीं हो सका",
+        downloadingStatus: "डाउनलोड हो रहा है…",
+        notDownloaded: "डाउनलोड नहीं हुआ",
+        notDownloadedSized: "डाउनलोड नहीं हुआ · {size}",
+        loaded: "लोड हो गया",
+        downloading: "{model} डाउनलोड हो रहा है",
+        downloadingDescription:
+          "प्रगति डाउनलोड पैनल में दिखती है। पूरा होने पर इंडेक्सिंग इसका उपयोग करेगी।",
+        downloadFailed: "डाउनलोड शुरू नहीं हो सका",
+        downloadConflict: "इस डाउनलोड को Hub से फिर से शुरू करें",
+        downloadBusy: "डाउनलोड पहले से चल रहा है",
       },
       storage: {
         sectionTitle: "स्टोरेज",
@@ -489,6 +992,16 @@ export const hi = {
         copied: "पथ कॉपी किया गया",
         openError: "फ़ोल्डर नहीं खोला जा सका",
         copyError: "पथ कॉपी नहीं किया जा सका",
+      },
+      repairInstall: {
+        label: "इंस्टॉलेशन ठीक करें",
+        description:
+          "प्रबंधित परिवेश पर इंस्टॉलर को फिर से चलाता है। यदि GPU का पता नहीं चल रहा है या ऐप शुरू नहीं हो रहा है तो इसका उपयोग करें।",
+        action: "इंस्टॉल ठीक करें",
+        confirmTitle: "क्या यह इंस्टॉलेशन ठीक करना है?",
+        confirmDescription:
+          "सर्वर रोकता है और इंस्टॉलर फिर से चलाता है, जो इस मशीन के GPU के लिए PyTorch को दोबारा इंस्टॉल करता है। चैट और सेटिंग्स सुरक्षित रहती हैं। इसमें कई मिनट लग सकते हैं।",
+        confirmAction: "अभी ठीक करें",
       },
       resetPreferences: {
         sectionTitle: "खतरनाक क्षेत्र",
@@ -543,16 +1056,20 @@ export const hi = {
           "नीचे सब कुछ आपके अपने इतिहास से गिना जाता है। कुछ भी इकट्ठा नहीं किया जाता और न ही Unsloth को भेजा जाता है।",
         retry: "फिर कोशिश करें",
         privacyNote:
-          "आँकड़े आपके Unsloth इंस्टॉल में मौजूद चैट और ट्रेनिंग इतिहास से गिने जाते हैं। कुछ भी इकट्ठा नहीं किया जाता, और Unsloth या किसी तीसरे पक्ष को कुछ नहीं भेजा जाता।",
+          "आँकड़े आपके Unsloth इंस्टॉल के स्थानीय चैट, API उपयोग और ट्रेनिंग इतिहास से गिने जाते हैं। आँकड़ों के लिए API प्रॉम्प्ट, जवाब या कुंजियाँ कभी संग्रहीत नहीं होतीं। Unsloth या किसी तीसरे पक्ष को कुछ नहीं भेजा जाता।",
         emptyChats:
-          "अभी तक कोई चैट नहीं। बातचीत शुरू करें और आपके आँकड़े यहाँ दिखने लगेंगे।",
+          "अभी तक चैट या API उपयोग नहीं है। बातचीत शुरू करें या प्रमाणित स्थानीय API अनुरोध करें।",
         lifetimeTokens: "अब तक के कुल टोकन",
         peakTokens: "सबसे व्यस्त दिन",
         longestChat: "सबसे लंबी चैट",
         currentStreak: "मौजूदा स्ट्रीक",
         longestStreak: "सबसे लंबी स्ट्रीक",
         activityTitle: "टोकन गतिविधि",
-        activityDescription: "अवधि: {weeks} · {total}",
+        activityDescription: {
+          daily: "अवधि: {weeks} · {total}",
+          weekly: "सबसे व्यस्त सप्ताह {total} · पिछले {weeks}",
+          cumulative: "पिछले {weeks} में कुल {total}",
+        },
         mode: {
           daily: "दैनिक",
           weekly: "साप्ताहिक",
@@ -567,6 +1084,9 @@ export const hi = {
         totalMessages: "कुल संदेश",
         tokensIn: "भेजे गए टोकन",
         tokensOut: "बनाए गए टोकन",
+        totalTokens: "कुल टोकन",
+        studioChatTokens: "Unsloth Chat टोकन",
+        apiTokens: "API टोकन",
         cachedTokens: "कैश किए गए टोकन",
         cachedValue: "{tokens} (इनपुट का {percent}%)",
         avgTokensPerChat: "प्रति चैट औसत टोकन",
@@ -613,6 +1133,13 @@ export const hi = {
         minimal: "मिनिमल",
       },
       custom: {
+        chatWidth: {
+          label: "चैट की चौड़ाई",
+          description: "संदेशों और इनपुट बॉक्स की चौड़ाई तय करें। पूरी चौड़ाई साइडबार के बीच की जगह का उपयोग करती है।",
+          standard: "मानक",
+          wide: "चौड़ा",
+          full: "पूरी चौड़ाई",
+        },
         reset: "रीसेट करें",
         resetAll: "कस्टमाइज़ेशन रीसेट करें",
         preferencesTitle: "प्राथमिकताएं",
@@ -662,6 +1189,10 @@ export const hi = {
           errorStorageFull:
             "इस फ़ॉन्ट के लिए पर्याप्त लोकल स्टोरेज नहीं है। पहले कोई आयातित फ़ॉन्ट हटाएं।",
           errorFailed: "यह फ़ॉन्ट फ़ाइल लोड नहीं हो सकी।",
+        },
+        interfaceScale: {
+          label: "इंटरफ़ेस स्केल",
+          description: "सभी इंटरफ़ेस तत्वों का आकार बदलें।",
         },
         uiFontSize: {
           label: "UI फ़ॉन्ट का आकार",
@@ -742,12 +1273,26 @@ export const hi = {
         currentLoad: "वर्तमान लोड",
         free: "{value} खाली",
         noGpu: "कोई दृश्यमान GPU नहीं",
+        gpuUnusable: "GPU अनुपयोगी",
+        gpuUnusableDetail: "पहचाना गया, लेकिन PyTorch इसका उपयोग नहीं कर सकता",
       },
       gpu: {
         title: "GPU डिवाइस",
-        ggufInference: "GGUF इन्फ़रेंस",
+        memory: "GPU मेमोरी",
+        sharedWithSystemRam: "सिस्टम RAM के साथ साझा",
+        estimatedAvailable: "अनुमानित उपलब्ध: {value}",
+        sharedEstimatedAvailable: "साझा सिस्टम RAM: अनुमानित उपलब्ध {value}",
+        ggufInference: "GGUF मॉडल मेमोरी",
         unavailable: "उपलब्ध नहीं",
+        detecting: "GPU खोजे जा रहे हैं...",
+        unreadable: "इस सर्वर का हार्डवेयर नहीं पढ़ा जा सका।",
         noGpu: "कोई दृश्यमान GPU नहीं मिला। केवल-CPU संसाधन ऊपर दिखाए गए हैं।",
+        noUsableGpu: "इस मशीन का कोई भी GPU PyTorch के लिए उपयोग योग्य नहीं है।",
+        mismatchCpuBuild:
+          "PyTorch केवल-CPU बिल्ड ({version}) है, इसलिए नीचे दिए गए GPU उपयोग नहीं किए जा सकते। GPU समर्थन बहाल करने के लिए इंस्टॉलेशन की मरम्मत करें।",
+        mismatchUnavailable:
+          "PyTorch ({version}) नीचे दिए गए GPU को आरंभ नहीं कर पा रहा है, इसलिए उनका उपयोग नहीं किया जा सकता। GPU ड्राइवर जाँचें या इंस्टॉलेशन की मरम्मत करें।",
+        unusableDevice: "अनुपयोगी",
         unknownDevice: "अज्ञात GPU",
         deviceWithIndex: "GPU {index}",
         vramUtilization: "VRAM",
@@ -770,6 +1315,24 @@ export const hi = {
         switchFailed: "llama.cpp बैकएंड नहीं बदला जा सका।",
         switchInterrupted: "स्विच पूरा होने से पहले बाधित हो गया।",
         envLocked: "पर्यावरण चर UNSLOTH_LLAMA_CPP_BACKEND ने इसे {backend} पर तय किया है, जो इस सेटिंग पर भारी पड़ता है।",
+        customPath: {
+          label: "कस्टम llama.cpp फ़ोल्डर",
+          description: "अपना llama-server बिल्ड इस्तेमाल करें।",
+          hint: "वह llama.cpp फ़ोल्डर चुनें जिसमें llama-server हो, या ऐसा बिल्ड जहाँ यह build/bin में हो। कस्टम रनटाइम GGUF चैट, एम्बेडिंग और समर्थित वॉइस मॉडल के लिए इस्तेमाल होता है। पर्यावरण चर को फिर भी प्राथमिकता मिलती है।",
+          automatic: "स्वचालित (बंडल किया हुआ)",
+          bundled: "Unsloth द्वारा इंस्टॉल किया गया llama.cpp रनटाइम इस्तेमाल करता है।",
+          active: "अगली बार मॉडल लोड होने पर आपका कस्टम llama-server इस्तेमाल होगा।",
+          environmentManaged: "{variable} पर्यावरण चर द्वारा प्रबंधित।",
+          missingBinary: "इस फ़ोल्डर में llama-server अब उपलब्ध नहीं है। दूसरा फ़ोल्डर चुनें या बंडल रनटाइम इस्तेमाल करें।",
+          reloadRequired: "चुने हुए llama-server को इस्तेमाल करने के लिए मॉडल फिर से लोड करें।",
+          change: "बदलें",
+          saving: "सहेजा जा रहा है...",
+          useBundled: "बंडल वाला इस्तेमाल करें",
+          chooseTitle: "llama.cpp फ़ोल्डर चुनें",
+          chooseAction: "यह फ़ोल्डर इस्तेमाल करें",
+          saved: "llama.cpp फ़ोल्डर अपडेट हुआ",
+          saveError: "llama.cpp फ़ोल्डर अपडेट नहीं हो सका",
+        },
         backends: {
           auto: "स्वचालित",
           cpu: "CPU",
@@ -782,7 +1345,10 @@ export const hi = {
           notInstalled: "कोई प्रबंधित llama.cpp इंस्टॉल नहीं मिला, इसलिए बदलने के लिए कोई बैकएंड नहीं है।",
           localLink: "llama.cpp आपकी अपनी लिंक की हुई लोकल डायरेक्टरी है, इसलिए Unsloth उसे नहीं बदलेगा।",
           sourceBuild: "यह llama.cpp सोर्स से बनाया गया है, इसलिए इसका बैकएंड यहाँ से नहीं बदला जा सकता।",
+          customPath: "एक कस्टम llama.cpp फ़ोल्डर चुना गया है। उसका बिल्ड कंप्यूट बैकएंड तय करता है।",
           unresolved: "उपलब्ध बैकएंड की जाँच नहीं हो सकी। अपना कनेक्शन देखकर दोबारा कोशिश करें।",
+          updateChecksDisabled:
+            "अपडेट जाँच बंद है (UNSLOTH_DISABLE_UPDATE_CHECK=1), इसलिए उपलब्ध बैकएंड नहीं खोजे जाते।",
         },
         // दिखाया नहीं जाता: सेटिंग्स खोज के लिए अतिरिक्त शब्द।
         llamaBackendKeywords:
@@ -794,8 +1360,8 @@ export const hi = {
         keepResidentDescription: "प्रॉम्प्ट के बीच VRAM में बना रहता है।",
         keepResidentHint: "जब तक मॉडल लोड रहता है, वेट्स सिस्टम RAM को वापस नहीं दिए जाते। निष्क्रिय होने पर स्वतः अनलोड बंद कर देता है, और जब वेट्स वास्तव में होस्ट RAM में रहते हैं (यूनिफाइड मेमोरी, या आंशिक GPU ऑफ़लोड) तब --mlock भी भेजता है, ताकि OS उन्हें पेज आउट करके आपके अगले प्रॉम्प्ट पर दोबारा अपलोड न करे।",
         noRamReserve: "मॉडल के लिए सिस्टम RAM आरक्षित न करें",
-        noRamReserveDescription: "RAM में पूरी प्रति नहीं रखता।",
-        noRamReserveHint: "RAM में पूरी प्रति रखने के बजाय वेट्स को VRAM में भेजता है। llama.cpp की मेमोरी-मैप्ड लोडिंग बनाए रखता है और --no-mmap तथा --mlock हटा देता है।",
+        noRamReserveDescription: "मॉडल वेट्स के लिए रखी गई RAM घटाता है।",
+        noRamReserveHint: "जब मॉडल पूरी तरह GPU पर ऑफ़लोड हो, तो समर्थित Windows बिल्ड पर मेमोरी-मैप्ड लोडिंग छोड़ देता है, ताकि उसके पेज रेज़िडेंट न रहें। अन्यथा मेमोरी-मैप्ड लोडिंग बनाए रखता है। आवश्यक CPU बफ़र अब भी RAM ले सकते हैं। --no-mmap तथा --mlock हटा देता है।",
         mlockVetoed: "--mlock बंद ही रहता है: मॉडल को पिन करने से उसकी पूरी मात्रा के लिए RAM आरक्षित हो जाएगी। निष्क्रिय होने पर स्वतः अनलोड अब भी अक्षम है।",
         memlockCapped: "यह सिस्टम लॉक की गई मेमोरी को {limit} तक सीमित करता है। इससे बड़ा मॉडल पूरी तरह पिन नहीं होगा; ulimit -l से सीमा बढ़ाएँ।",
         reloadRequired: "नई मेमोरी सेटिंग्स लागू करने के लिए मॉडल दोबारा लोड करें।",
@@ -841,6 +1407,7 @@ export const hi = {
         processMemory: "प्रोसेस मेमोरी",
         notInstalled: "इंस्टॉल नहीं है",
         unknown: "अज्ञात",
+        vramWithShared: "{vram} VRAM + {shared} साझा मेमोरी",
       },
     },
     agents: {
@@ -848,11 +1415,12 @@ export const hi = {
       description:
         "unsloth start की मदद से Claude Code और Codex जैसे कोडिंग एजेंट को लोकल मॉडल से जोड़ें।",
       intro:
-        "Claude Code, Codex, Hermes, OpenClaw, OpenCode और दूसरे एजेंट को Unsloth द्वारा लोकली सर्व किए गए मॉडल से जोड़ता है, पूरी तरह ऑफ़लाइन। यह एक OpenAI-संगत सर्वर चलाता है और आपके एजेंट की कॉन्फ़िगरेशन फ़ाइलों को कभी नहीं छूता।",
+        "Claude Code, Codex, DeepSeek Harness, Hermes, OpenClaw, OpenCode और दूसरे एजेंट को Unsloth द्वारा लोकली सर्व किए गए मॉडल से जोड़ता है, पूरी तरह ऑफ़लाइन। यह एक OpenAI-संगत सर्वर चलाता है और आपके एजेंट की कॉन्फ़िगरेशन फ़ाइलों को कभी नहीं छूता।",
       readDocs: "दस्तावेज़ पढ़ें",
       copy: "कॉपी करें",
       copied: "कॉपी किया गया",
       commandBuilder: "कमांड बिल्डर",
+      commandShell: "सभी कमांड के लिए शेल",
       agent: "कोडिंग एजेंट",
       model: "मॉडल",
       searchModels: "GGUF मॉडल खोजें...",
@@ -870,6 +1438,14 @@ export const hi = {
       docs: "दस्तावेज़",
       agentDocs: "{agent} के सेटअप दस्तावेज़ खोलें",
       copyGeneratedCommand: "बनाया गया कमांड कॉपी करें",
+      // English is the baseline until translated: the three-part sentence is assembled around an
+      // inline link and needs restructuring first.
+      automaticSettingsNote:
+        "Unsloth automatically applies the model’s recommended settings if you have not set any flags.",
+      configurationNote:
+        "You can also adjust any configuration. See further below or",
+      configurationDocs: "docs",
+      configurationFlagsSuffix: "for flags.",
       modelNote:
         "Codex को llama-server द्वारा सर्व किया गया GGUF मॉडल चाहिए। दूसरे एजेंट Transformers-आधारित मॉडल भी उपयोग कर सकते हैं; Unsloth में पहले से लोड किए गए मॉडल का उपयोग करने के लिए --model हटा दें।",
       subagent: {
@@ -886,7 +1462,7 @@ export const hi = {
       quickstart: {
         title: "कमांड बनाएं",
         description:
-          "Studio में अभी लोड किए गए मॉडल के साथ एजेंट चलाएं। पहले एक मॉडल लोड करें, फिर claude की जगह नीचे दिए गए किसी भी समर्थित एजेंट का नाम रखें।",
+          "Unsloth में अभी लोड किए गए मॉडल के साथ एजेंट चलाएं। पहले एक मॉडल लोड करें, फिर claude की जगह नीचे दिए गए किसी भी समर्थित एजेंट का नाम रखें।",
         noneDetected: "आपके PATH में कोई समर्थित एजेंट CLI नहीं मिला।",
         installed: "इंस्टॉल है",
       },
@@ -907,7 +1483,7 @@ export const hi = {
         description:
           "Unsloth के फ़्लैग पहले पढ़े जाते हैं; जो पहचान में नहीं आता वह सीधे एजेंट को भेज दिया जाता है।",
         model:
-          "मॉडल चुनता है। --model न देने पर unsloth start वही मॉडल उपयोग करता है जो Studio में लोड है, और कोई लोड न हो तो त्रुटि देता है।",
+          "मॉडल चुनता है। --model न देने पर unsloth start वही मॉडल उपयोग करता है जो Unsloth में लोड है, और कोई लोड न हो तो त्रुटि देता है।",
         contextLength:
           "मांगी गई कॉन्टेक्स्ट लंबाई सेट करता है (उपनाम: --max-seq-length)।",
         ggufVariant: "GGUF क्वांटाइज़ेशन वेरिएंट चुनता है।",
@@ -922,13 +1498,17 @@ export const hi = {
           "मूल एजेंट को उसके मौजूदा मॉडल पर रखता है और Unsloth को लोकल सबएजेंट के रूप में दर्ज करता है (Claude Code, Codex और OpenCode)।",
         apiKey:
           "आपकी Unsloth API key लेता है (या UNSLOTH_API_KEY सेट करें)।",
+        reasoning:
+          "चैट में रीज़निंग इस्तेमाल करें: on, off या auto। Auto मॉडल के चैट टेम्पलेट के अनुसार चलता है, जो आम तौर पर on होता है।",
+        reasoningEffort:
+          "मॉडल के चैट टेम्पलेट को दिया जाने वाला रीज़निंग एफ़र्ट, जैसे medium। स्तर हर मॉडल के अपने होते हैं, इसलिए वही दें जो वह मॉडल स्वीकार करता है। खाली छोड़ने पर टेम्पलेट का स्तर रहता है।",
         yolo:
           "मंज़ूरी के प्रॉम्प्ट छोड़ देता है। केवल भरोसेमंद वातावरण में उपयोग करें।",
       },
       remote: {
-        title: "रिमोट Studio से जुड़ें",
+        title: "रिमोट Unsloth से जुड़ें",
         description:
-          "चलाने से पहले ये सेट करके unsloth start को कहीं और चल रहे Studio की ओर भेजें (या --api-key सीधे दें):",
+          "चलाने से पहले ये सेट करके unsloth start को कहीं और चल रहे Unsloth की ओर भेजें (या --api-key सीधे दें):",
       },
       passthrough: {
         title: "एजेंट को आर्ग्युमेंट भेजना",
@@ -942,6 +1522,34 @@ export const hi = {
       },
     },
     chat: {
+      groups: {
+        conversations: { title: "बातचीत" },
+        files: { title: "फ़ाइलें और पेस्ट" },
+        display: { title: "दिखावट" },
+        composer: { title: "संदेश बॉक्स" },
+        menu: { title: "चैट मेन्यू" },
+        advanced: { title: "उन्नत" },
+        contextTitle: "संदर्भ",
+      },
+      projectAttachmentsHint:
+        "हर चैट के अटैचमेंट मेन्यू से इस सेटिंग को अलग से बदलें।",
+      rememberParamsPerModelHint:
+        "बंद होने पर सभी मॉडल एक ही सेटिंग इस्तेमाल करते हैं।",
+      autoCompactHint:
+        "केवल लोकल GGUF चैट पर लागू। हटाए गए टर्न इंडेक्स किए जाते हैं ताकि मॉडल उन्हें दोबारा खोज सके, और रीसेट पर जितने स्थायी निर्देश समा सकें, वे हूबहू दोहरा दिए जाते हैं, जिनमें बीच वाले के बजाय सबसे पुराने और सबसे नए को प्राथमिकता मिलती है। आर्काइव के लिए सहेजी गई चैट और वेक्टर इंडेक्स ज़रूरी हैं; इनके बिना पुराने टर्न हटा दिए जाते हैं। उपलब्ध VRAM के बजाय आपके तय किए गए संदर्भ की लंबाई का उपयोग करता है।",
+      pastedTextShortDescription:
+        "{count} या अधिक अक्षरों वाला पेस्ट किया गया टेक्स्ट .txt अटैचमेंट बन जाता है। छोटा टेक्स्ट संदेश बॉक्स में रहता है।",
+      pastedTextOffDescription:
+        "पेस्ट किया गया सारा टेक्स्ट संदेश बॉक्स में रहता है, चाहे उसकी लंबाई कितनी भी हो।",
+      compactionDescriptionInherit:
+        "सर्वर की संदर्भ नीति का पालन करें।",
+      compactionDescriptionCheckpoint:
+        "सबसे हाल का संवाद और जितने स्थायी निर्देश समा सकें, उन्हें बनाए रखें, और बाकी को खोज के लिए आर्काइव करें।",
+      compactionDescriptionRolling:
+        "पुराने संवाद आर्काइव करके हाल का इतिहास और चुनी गई अतिरिक्त खाली जगह बनाए रखें।",
+      projectsSection: "प्रोजेक्ट अनुभाग दिखाएँ",
+      projectsSectionDescription:
+        "प्रोजेक्ट चैट को प्रोजेक्ट शीर्षक के नीचे समूहित करता है। बंद करने पर वे हाल ही के अंतर्गत दिखती हैं।",
       title: "चैट",
       description: "इस डिवाइस पर चैट के व्यवहार को अपनी पसंद के अनुसार बदलें।",
       modelSelection: {
@@ -952,6 +1560,9 @@ export const hi = {
         showAllQuantizations: "सभी क्वांटाइज़ेशन दिखाएँ",
         showAllQuantizationsDescription:
           "चालू: “On Device” के सभी क्वांटाइज़ेशन की सूची दिखेगी, जिनमें डाउनलोड न किए गए क्वांटाइज़ेशन भी शामिल हैं। बंद: केवल डाउनलोड किए गए क्वांटाइज़ेशन दिखेंगे।",
+        showMemoryBar: "VRAM उपयोग बार दिखाएँ",
+        showMemoryBarDescription:
+          "हर डाउनलोड किए गए मॉडल की पंक्ति के नीचे उसका अनुमानित VRAM उपयोग दिखाएँ: वेट्स, जिस कॉन्टेक्स्ट लंबाई पर वह लोड होगा उस पर KV कैश, और स्पेकुलेटिव ड्राफ़्ट के लिए आरक्षित मेमोरी।",
       },
       menu: {
         title: "चैट मेन्यू",
@@ -959,20 +1570,66 @@ export const hi = {
           "आइटम को चैट के + साइड मेन्यू में पिन करें। बाकी आइटम “More” में चले जाएँगे।",
         chatWithFiles: "फ़ाइलों के साथ चैट (RAG)",
         mcp: "MCP",
+        skills: "कौशल",
         savedPrompts: "सहेजे गए प्रॉम्प्ट",
         compareChat: "चैट की तुलना करें",
         exportChat: "चैट एक्सपोर्ट करें",
       },
+      pastedTextThreshold: "लंबे पेस्ट को संक्षिप्त करें",
+      pastedTextThresholdDescription:
+        "सीधे संदेश बॉक्स में पेस्ट करने के लिए {shortcut} दबाएँ।",
+      pastedTextThresholdOff: "बंद",
       showResponseModel: "जवाब देने वाला मॉडल दिखाएँ",
       showResponseModelDescription:
         "असिस्टेंट के जवाबों में मॉडल का मेटाडेटा दिखाएँ।",
       modelDisclaimer: "मॉडल अस्वीकरण दिखाएं",
       modelDisclaimerDescription:
         'चैट बॉक्स के नीचे "LLMs can make mistakes" दिखाएं।',
+      projectAttachments: "प्रोजेक्ट भर में फ़ाइलें साझा करें",
+      projectAttachmentsDescription:
+        "नए चैट अटैचमेंट प्रोजेक्ट की हर चैट में उपलब्ध कराएँ।",
+      rememberParamsPerModel: "हर मॉडल के लिए सेटिंग्स याद रखें",
+      rememberParamsPerModelDescription:
+        "हर मॉडल के साथ आखिरी बार इस्तेमाल किए गए प्रॉम्प्ट, तापमान और अन्य सेटिंग्स वापस लाएँ।",
+      autoCompact: "लंबी चैट को अपने आप कॉम्पैक्ट करें",
+      autoCompactDescription:
+        "चैट का कॉन्टेक्स्ट भरने पर पुराने टर्न खोजे जा सकने वाले आर्काइव में चले जाते हैं।",
+      compactionStyle: "कॉन्टेक्स्ट भरने पर",
+      compactionStyleDescription:
+        "सर्वर डिफ़ॉल्ट से UNSLOTH_CONTEXT_POLICY बना रहता है। बातचीत रीसेट करने पर नवीनतम टर्न और जितने स्थायी निर्देश समा सकें, वे रहते हैं। स्लाइडिंग विंडो सबसे पुराने टर्न हटाती है और हाल का अधिक इतिहास रख सकती है।",
+      compactionStyleInherit: "सर्वर डिफ़ॉल्ट उपयोग करें",
+      compactionStyleCheckpoint: "बातचीत रीसेट करें",
+      compactionStyleRollingDefault: "पुराने टर्न आर्काइव करें (~25% अतिरिक्त जगह)",
+      compactionStyleRolling10: "पुराने टर्न आर्काइव करें (~10% अतिरिक्त जगह)",
+      compactionStyleRolling5: "पुराने टर्न आर्काइव करें (~5% अतिरिक्त जगह)",
+      compactionStyleRollingNone: "पुराने टर्न आर्काइव करें (कोई अतिरिक्त कटौती नहीं)",
+      autoCompactKeywords:
+        "कॉम्पैक्शन कॉम्पैक्ट कॉन्टेक्स्ट विंडो ट्रंकेट स्लाइडिंग चेकपॉइंट हेडरूम आर्काइव पुनर्प्राप्ति खोज compaction rolling checkpoint headroom archive retrieval rag",
       thinking: {
         collapseByDefault: "थिंकिंग को डिफ़ॉल्ट रूप से संक्षिप्त रखें",
         collapseByDefaultDescription:
           "मॉडल के सोचते समय रीज़निंग अपने आप खुलने के बजाय संक्षिप्त रहती है। पढ़ने के लिए किसी भी ब्लॉक को विस्तृत करें।",
+      },
+      currentDate: {
+        label: "मॉडल को आज की तारीख बताएँ",
+        description:
+          "प्रॉम्प्ट में मौजूदा तारीख जोड़ें ताकि वेब सर्च और Deep Research मॉडल की ट्रेनिंग कटऑफ मान लेने के बजाय हाल के स्रोत खोजें।",
+        loadError: "मौजूदा तारीख की सेटिंग्स लोड नहीं हो सकीं",
+        saveError: "मौजूदा तारीख की सेटिंग्स अपडेट नहीं हो सकीं",
+      },
+      tools: {
+        collapseByDefault: "टूल गतिविधि को डिफ़ॉल्ट रूप से संक्षिप्त रखें",
+        collapseByDefaultDescription:
+          "टूल चलते समय उनके इनपुट और आउटपुट संक्षिप्त रखें। जाँचने के लिए किसी भी टूल पंक्ति को विस्तृत करें।",
+        foldIntoThinking: "टूल कॉल को थिंकिंग में समेटें",
+        foldIntoThinkingDescription:
+          "किसी टर्न के टूल कॉल तब तक छिपाएँ जब तक उसका थिंकिंग ब्लॉक न खोला जाए।",
+      },
+      webSearch: {
+        title: "वेब खोज",
+        images: "वेब खोज से छवियाँ दिखाएँ",
+        imagesDescription:
+          "खोज के नतीजों में छवियाँ शामिल करें।",
       },
       artifacts: {
         title: "Canvas",
@@ -985,6 +1642,11 @@ export const hi = {
         blockedBanner: "{hosts} से {count} बाहरी संसाधन अवरुद्ध किया गया।",
         blockedBannerPlural: "{hosts} से {count} बाहरी संसाधन अवरुद्ध किए गए।",
         blockedBannerAction: "इस Canvas के लिए अनुमति दें",
+        blockedTitle: "Canvas नेटवर्क एक्सेस बंद है",
+        blockedHint:
+          "Canvas को बाहरी संसाधन लोड करने देने के लिए सेटिंग्स → चैट में “{setting}” चालू करें, या केवल इस Canvas के लिए अनुमति दें।",
+        blockedSettingsAction: "सेटिंग्स खोलें",
+        blockedDismiss: "खारिज करें",
       },
       data: "डेटा",
       exportHistory: "चैट इतिहास एक्सपोर्ट करें",
@@ -993,7 +1655,7 @@ export const hi = {
       exportingAction: "एक्सपोर्ट हो रहा है...",
       exportConversations: "हाल के और प्रोजेक्ट एक्सपोर्ट करें",
       exportConversationsDescription:
-        "हाल के या हाल के और प्रोजेक्ट चैट को Raw JSONL, CSV या ShareGPT JSONL के रूप में डाउनलोड करें, एक संयुक्त फ़ाइल में या हर चैट के लिए अलग-अलग।",
+        "हाल के या हाल के और प्रोजेक्ट चैट को Training JSONL, CSV या ShareGPT JSONL के रूप में डाउनलोड करें, एक संयुक्त फ़ाइल में या हर चैट के लिए अलग-अलग। Message JSONL केवल हर चैट के लिए अलग फ़ाइल में उपलब्ध है।",
       exportConversationsAction: "एक्सपोर्ट करें",
       exportScopeRecents: "हाल के",
       exportScopeAll: "हाल के + प्रोजेक्ट",
@@ -1001,7 +1663,7 @@ export const hi = {
       exportPerChatSuffix: "(प्रति चैट)",
       importChats: "चैट इंपोर्ट करें",
       importChatsDescription:
-        "Open WebUI, JSONL, NDJSON या CSV एक्सपोर्ट को Recents में इंपोर्ट करें।",
+        "JSON, JSONL, NDJSON या CSV फ़ाइलों को Recents में इंपोर्ट करें।",
       importChatsAction: "इंपोर्ट करें",
       importNoConversations: "फ़ाइल में कोई वार्तालाप नहीं मिला।",
       importedOneChat: "1 वार्तालाप हाल के सेक्शन में इंपोर्ट किया गया।",
@@ -1046,6 +1708,80 @@ export const hi = {
       failedToClearChats: "चैट साफ़ करने में विफल",
     },
     data: {
+      library: {
+        defaultSort: "डिफ़ॉल्ट",
+        updated: "अपडेट का समय",
+        created: "बनाने का समय",
+        oldest: "सबसे पुराने पहले",
+        alphabetical: "वर्णानुक्रम",
+        allChats: "सभी चैट",
+        singleChats: "एकल चैट",
+        compareChats: "तुलना चैट",
+        allProjects: "सभी प्रोजेक्ट",
+        noProject: "कोई प्रोजेक्ट नहीं",
+        unavailableProject: "प्रोजेक्ट उपलब्ध नहीं है",
+        filterSort: "फ़िल्टर और क्रम",
+        sort: "क्रमबद्ध करें",
+        type: "प्रकार",
+        sortBy: "इसके अनुसार क्रमबद्ध करें",
+        filterProject: "प्रोजेक्ट के अनुसार फ़िल्टर करें",
+        searchProjects: "प्रोजेक्ट खोजें",
+        noProjects: "कोई प्रोजेक्ट नहीं मिला।",
+        untitled: "बिना शीर्षक",
+        oneChat: "1 चैट",
+        chatCount: "{count} चैट",
+        searchChats: "चैट या प्रोजेक्ट खोजें",
+        searchArchivedChats: "संग्रहीत चैट या प्रोजेक्ट खोजें",
+        searchImages: "संग्रहीत चित्र खोजें",
+        searchVideos: "संग्रहीत वीडियो खोजें",
+        searchAudio: "संग्रहीत ऑडियो खोजें",
+        unarchive: "संग्रह से निकालें",
+        unarchiveAll: "सभी को संग्रह से निकालें",
+        unarchiveResults: "परिणामों को संग्रह से निकालें",
+        deleteResults: "परिणाम मिटाएँ",
+        noChats: "आपकी खोज से मेल खाती कोई चैट नहीं है।",
+        noArchivedChats: "कोई संग्रहीत चैट नहीं है।",
+        noArchivedMatches: "आपकी खोज से मेल खाती कोई संग्रहीत चैट नहीं है।",
+        noMedia: "कोई संग्रहीत आइटम नहीं है।",
+        noMediaMatches: "आपकी खोज से मेल खाता कोई संग्रहीत आइटम नहीं है।",
+        itemCount: "आइटम: {count}",
+        incompleteSearch: "खोज अधूरी है। बाकी आइटम लोड करने का फिर से प्रयास करें।",
+        searchingRemaining: "बाकी आइटम खोजे जा रहे हैं ({count} लोड हो चुके हैं)...",
+        noLoadedMatches: "अब तक लोड किए गए आइटम में कोई मेल नहीं मिला।",
+        deleteItem: "मिटाएँ: {title}",
+        unarchiveItem: "संग्रह से निकालें: {title}",
+        deleteItemsTitle: "संग्रहीत आइटम मिटाएँ ({count})",
+        unarchiveItemsTitle: "आइटम को संग्रह से निकालें ({count})",
+        deleteFilesWarning: "ये फ़ाइलें स्थायी रूप से मिटा दी जाएँगी। इसे पूर्ववत नहीं किया जा सकता।",
+        restoreWarning: "ये आइटम गैलरी में वापस आ जाएँगे।",
+        working: "प्रक्रिया जारी है...",
+        loadFailed: "संग्रहीत आइटम लोड नहीं हो सके",
+        loadMoreFailed: "और संग्रहीत आइटम लोड नहीं हो सके",
+        restoreFailed: "चुने गए आइटम को संग्रह से नहीं निकाला जा सका",
+        deleteFailed: "चुने गए आइटम मिटाए नहीं जा सके",
+        projectsFailed: "संग्रहीत प्रोजेक्ट लोड नहीं हो सके",
+        pageStalled: "संग्रह का अगला पृष्ठ लोड नहीं हुआ। फिर से प्रयास करें।",
+        pageChanged: "लोड करते समय संग्रह बदल गया। फिर से प्रयास करें।",
+        selectAll: "दिख रही सभी चैट चुनें",
+        selectItem: "\"{title}\" चुनें",
+        selectedChats: "चुनी गई चैट: {count}",
+        move: "स्थानांतरित करें",
+        pin: "पिन करें",
+        unpin: "अनपिन करें",
+        archive: "संग्रहीत करें",
+        deletedChats: "मिटाई गई चैट: {count}",
+        restoredChats: "संग्रह से निकाली गई चैट: {count}",
+        pinnedChats: "पिन की गई चैट: {count}",
+        unpinnedChats: "अनपिन की गई चैट: {count}",
+        movedChatsToProject: "{project} में स्थानांतरित चैट: {count}",
+        movedChatsToRecents: "हाल के में स्थानांतरित चैट: {count}",
+        moveFailed: "चैट स्थानांतरित नहीं हो सकीं",
+        deleteChatsTitle: "चैट मिटाएँ ({count})",
+        deleteChatsWarning: "चुनी गई चैट ({count}) मिटाएँ? इसे पूर्ववत नहीं किया जा सकता।",
+        deleteArchivedTitle: "{count} संग्रहीत चैट मिटाएँ",
+        deleteArchivedWarning: "चुनी गई संग्रहीत चैट ({count}) मिटाएँ? इसे पूर्ववत नहीं किया जा सकता।",
+        deleting: "मिटाया जा रहा है...",
+      },
       title: "डेटा",
       backToData: "डेटा पर वापस जाएँ",
       exportFailed: "चैट एक्सपोर्ट नहीं की जा सकीं",
@@ -1058,7 +1794,12 @@ export const hi = {
       archivedImagesDescription: "आपके द्वारा संग्रहित की गई छवियाँ देखें और प्रबंधित करें।",
       archivedVideos: "संग्रहित वीडियो",
       archivedVideosDescription: "आपके द्वारा संग्रहित किए गए वीडियो देखें और प्रबंधित करें।",
+      archivedAudio: "संग्रहित ऑडियो",
+      archivedAudioDescription: "आपके द्वारा संग्रहित किए गए ऑडियो क्लिप देखें और प्रबंधित करें।",
       manageAction: "प्रबंधित करें",
+      manageChats: "चैट प्रबंधित करें",
+      manageChatsDescription:
+        "कई चैट चुनें और उन्हें स्थानांतरित, पिन, संग्रहित, निर्यात या हटाएं।",
       exportArchivedChats: "एक्सपोर्ट करें",
       exportingArchivedChats: "एक्सपोर्ट हो रहा है...",
       exportedOneArchivedChat: "1 संग्रहित चैट एक्सपोर्ट की गई",
@@ -1081,6 +1822,30 @@ export const hi = {
       confirmBeforeDeleting: "हटाने से पहले पुष्टि करें",
       confirmBeforeDeletingDescription:
         "चैट हटाने से पहले पुष्टि मांगता है। तुरंत हटाने के लिए इसे बंद करें।",
+      alwaysDeleteFiles: "फ़ाइलें हमेशा हटाएँ",
+      alwaysDeleteFilesDescription:
+        "चैट हटाने पर उसका अपना सैंडबॉक्स फ़ोल्डर भी डिस्क से हट जाता है। किसी प्रोजेक्ट के अंदर लिखी गई फ़ाइलें उस प्रोजेक्ट के कार्यक्षेत्र में बनी रहती हैं।",
+      chatsSection: "चैट और संग्रह",
+      transferSection: "इंपोर्ट और एक्सपोर्ट",
+      deletionSection: "हटाना",
+      archives: "संग्रह",
+      archiveChatsLabel: "चैट",
+      archiveVideosLabel: "वीडियो",
+      exportFormatsSummary:
+        "Recents और प्रोजेक्ट की चैट को अपने पसंदीदा फ़ॉर्मैट में एक्सपोर्ट करें।",
+      trainingSummary: "अपनी चैट से फ़ाइन-ट्यूनिंग के लिए डेटासेट बनाएँ।",
+      confirmDeletionSummary: "अलग-अलग चैट हटाने से पहले पुष्टि माँगें।",
+      sandboxFiles: "चैट की सैंडबॉक्स फ़ाइलें",
+      sandboxFilesDescription: "चैट हटाते समय डिफ़ॉल्ट कार्रवाई।",
+      keepSandboxFiles: "सैंडबॉक्स फ़ाइलें रखें",
+      deleteSandboxFiles: "सैंडबॉक्स फ़ाइलें हटाएँ",
+      projectFilesKept:
+        "सैंडबॉक्स अलग-अलग चैट के लिए बनाए गए फ़ोल्डर हैं। प्रोजेक्ट के कार्यक्षेत्रों में सहेजी गई फ़ाइलें रखी जाती हैं।",
+      deleteAllAction: "सभी हटाएँ",
+      deleteChatsOnly: "केवल चैट हटाएँ…",
+      deleteChatsAndSandboxes: "चैट और सैंडबॉक्स हटाएँ…",
+      deleteSandboxFilesDescription:
+        "हर चैट का सैंडबॉक्स फ़ोल्डर और उसके अंदर की फ़ाइलें भी हटाएँ। प्रोजेक्ट के कार्यक्षेत्रों की फ़ाइलें रखी जाती हैं।",
       filesSection: "फ़ाइलें",
       uploadedFiles: "अपलोड की गई फ़ाइलें",
       uploadedFilesDescription:
@@ -1102,6 +1867,11 @@ export const hi = {
     connections: {
       title: "कनेक्शन",
       description: "प्रदाता और बाहरी कनेक्शन प्रबंधित करें।",
+    },
+    remoteLan: {
+      title: "रिमोट और LAN",
+      description:
+        "इस Unsloth तक अपने दूसरे डिवाइस से पहुँचें, अपने लोकल नेटवर्क या एक अस्थायी सार्वजनिक URL से।",
     },
     apiKeys: {
       title: "API",
@@ -1232,7 +2002,7 @@ export const hi = {
         desktopAvailableDescription:
           "अभी अपडेट करें। अपडेट पूरा होने पर डेस्कटॉप ऐप फिर से शुरू होगा।",
         desktopExternalServer:
-          "जिस टर्मिनल से सर्वर शुरू किया गया था, उसमें `unsloth studio update` चलाएँ।",
+          "ऐप पहले से चल रहे Studio सर्वर से जुड़ा है और उसे अपडेट नहीं कर सकता। उस सर्वर को रोकें, फिर अपडेट करने के लिए डेस्कटॉप ऐप बंद करके दोबारा खोलें।",
         desktopManualInstall:
           "नवीनतम Linux पैकेज इंस्टॉल करने के लिए रिलीज़ पेज खोलें।",
         desktopCheckFailed: "अपडेट की जाँच नहीं हो सकी",
@@ -1403,13 +2173,14 @@ export const hi = {
         "इस डिवाइस पर मौजूद मॉडल को ट्रेन नहीं किया जा सकता।",
       reasonUnsupportedFormat:
         "यह मॉडल फ़ॉर्मेट ट्रेनिंग के लिए समर्थित नहीं है।",
-      vramNeeds: "लगभग {est}GB VRAM चाहिए (GPU: {total}GB)",
-      vramTight: "लगभग {est}GB VRAM ({total}GB पर बमुश्किल फिट)",
+      vramNeeds: "लगभग {est}GB VRAM चाहिए (GPU: {total}GiB)",
+      vramTight: "लगभग {est}GB VRAM ({total}GiB पर बमुश्किल फिट)",
       vramApprox: "लगभग {est}GB VRAM",
       sourceModelsFolder: "मॉडल फ़ोल्डर",
       sourceHfCache: "HF कैश",
       sourceLmStudio: "LM Studio",
       sourceOllama: "Ollama",
+      sourceHermes: "Hermes",
       sourceCustomFolder: "कस्टम फ़ोल्डर",
       sourceLocalModel: "स्थानीय मॉडल",
       vramOomBadge: "OOM",
@@ -1657,6 +2428,7 @@ export const hi = {
       memoryEfficient: "मेमोरी कुशल",
       weightDecomposed: "भार-विघटित",
       notSupportedAppleSilicon: "Apple Silicon पर समर्थित नहीं",
+      doraNeedsVisionLayersOff: "DoRA उपयोग करने के लिए विज़न लेयर्स ट्रेनिंग बंद करें",
       optimization: "ऑप्टिमाइज़ेशन",
       schedule: "शेड्यूल",
       memory: "मेमोरी",
@@ -1948,5 +2720,32 @@ export const hi = {
       datasetStreaming: "डेटासेट: स्ट्रीमिंग (कोई पूर्ण डाउनलोड नहीं)",
       modelWeights: "मॉडल वेट्स",
     },
+  },
+  modelMemory: {
+    readout:
+      "वेट्स {model} + कॉन्टेक्स्ट {context} = {budget} उपयोग-योग्य VRAM में से {total}",
+    readoutWithSpec:
+      "वेट्स {model} + KV {kv} + MTP ड्राफ़्ट {spec} = {budget} उपयोग-योग्य VRAM में से {total}",
+    kvRate: "KV आरक्षित, ~{rate}/टोकन",
+    oomLikely: "मौजूदा सेटिंग्स के साथ मेमोरी कम पड़ सकती है",
+    tooLarge: "VRAM से बड़ा है, CPU पर ऑफ़लोड होगा। छोटा क्वांटाइज़ेशन तेज़ चलता है",
+  },
+  skills: {
+    title: "कौशल",
+    description: "कौशल आपके मानक एजेंट फ़ोल्डरों से खोजे जाते हैं। उन्हें यहाँ सक्षम करें, फिर चैट में @ टाइप करके किसी का उल्लेख करें।",
+    precedence: "~/.agents/skills को ~/.claude/skills पर प्राथमिकता मिलती है।",
+    refresh: "रीफ़्रेश",
+    empty: "कोई कौशल नहीं मिला। ~/.agents/skills या ~/.claude/skills में SKILL.md फ़ोल्डर जोड़ें, फिर रीफ़्रेश करें।",
+    sourceAgents: "Agents",
+    sourceClaude: "Claude",
+    sourceBundled: "बंडल्ड",
+    shadowed: "छिपा हुआ",
+    invalid: "अमान्य",
+    compatibility: "संगतता: {value}",
+    shadowedBy: "इसी नाम का एक और कौशल ({source}) प्राथमिकता लेता है।",
+    enable: "{name} सक्षम करें",
+    disable: "{name} अक्षम करें",
+    updateError: "कौशल अपडेट नहीं हो सका",
+    mentions: "कौशल",
   },
 } satisfies DeepPartialMessageTree<typeof en>;

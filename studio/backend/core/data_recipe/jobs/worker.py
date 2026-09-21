@@ -15,17 +15,19 @@ import unicodedata
 from pathlib import Path
 from typing import Any
 
-from ..jsonable import to_jsonable, to_preview_jsonable
+from ..jsonable import to_jsonable, to_preview_jsonable_row
 from .constants import EVENT_JOB_COMPLETED, EVENT_JOB_ERROR, EVENT_JOB_STARTED
-from ..service import build_config_builder, create_data_designer
+from ..service import build_config_builder, create_data_designer, install_public_egress_guard
+from utils.paths.lazy import LazyPath
 from utils.paths import ensure_dir, recipe_datasets_root
 
 # Fresh spawned interpreter: re-apply main.py's OS-trust-store injection.
 from utils.native_tls import activate_native_tls
+from utils.paths.path_utils import drop_appledouble_metadata
 
 activate_native_tls()
 
-_ARTIFACT_ROOT = recipe_datasets_root()
+_ARTIFACT_ROOT = LazyPath(recipe_datasets_root)
 _RE_GITHUB_CURSOR = re.compile(r"\bcursor=[^\s,]+")
 _RE_SECRET_TOKEN = re.compile(
     r"\b(?:(?:ghp|gho|ghu|ghs|ghr|github_pat)_[A-Za-z0-9_]+|sk-unsloth-[A-Za-z0-9]+)"
@@ -81,7 +83,8 @@ def run_job_process(*, event_queue, recipe: dict[str, Any], run: dict[str, Any])
     """Subprocess entrypoint. Sends events to `event_queue`."""
     import os
 
-    os.environ["PYTHONWARNINGS"] = "ignore"  # suppress C-level warnings before imports
+    install_public_egress_guard()
+    os.environ["PYTHONWARNINGS"] = "ignore"
 
     import warnings
     from loggers.config import LogConfig
@@ -117,8 +120,8 @@ def run_job_process(*, event_queue, recipe: dict[str, Any], run: dict[str, Any])
         builder = build_config_builder(recipe)
         designer = create_data_designer(recipe, artifact_path = str(_ARTIFACT_ROOT))
 
-        # DataDesigner resets root logging in __init__; attach the queue handler
-        # to the named loggers directly so parser events survive.
+        # DataDesigner resets root logging in __init__; attach the queue handler to the named loggers so
+        # parser events survive.
         handler = _QueueLogHandler(event_queue)
         handler.setLevel(logging.INFO)
         for logger_name in (
@@ -146,7 +149,7 @@ def run_job_process(*, event_queue, recipe: dict[str, Any], run: dict[str, Any])
             dataset = (
                 []
                 if results.dataset is None
-                else to_preview_jsonable(results.dataset.to_dict(orient = "records"))
+                else to_preview_jsonable_row(results.dataset.to_dict(orient = "records"))
             )
             processor_artifacts = (
                 None
@@ -192,7 +195,8 @@ def run_job_process(*, event_queue, recipe: dict[str, Any], run: dict[str, Any])
 
 def _merge_batches_to_single_parquet(base_dataset_path: Path) -> None:
     parquet_dir = base_dataset_path / "parquet-files"
-    parquet_files = sorted(parquet_dir.glob("*.parquet"))
+    # Counted, so a companion would make a single-batch job take the merge path and rewrite a dataset that needed none.
+    parquet_files = drop_appledouble_metadata(sorted(parquet_dir.glob("*.parquet")))
     if len(parquet_files) <= 1:
         return
 

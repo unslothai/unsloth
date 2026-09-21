@@ -38,7 +38,12 @@ import {
 import { useT } from "@/i18n";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
-import { ArrowDown01Icon, Database02Icon } from "@hugeicons/core-free-icons";
+import {
+  Database02Icon,
+} from "@hugeicons/core-free-icons";
+import {
+  ChevronDownIcon,
+} from "lucide-react";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useNavigate } from "@tanstack/react-router";
 import { useCallback, useMemo } from "react";
@@ -379,8 +384,7 @@ export function DatasetSelector() {
               {display ?? t("studio.datasetPicker.selectDataset")}
             </span>
           </span>
-          <HugeiconsIcon
-            icon={ArrowDown01Icon}
+          <ChevronDownIcon
             strokeWidth={1.25}
             className="size-3.5 shrink-0 text-muted-foreground"
           />
