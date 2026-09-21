@@ -1157,7 +1157,8 @@ def test_chat_sidebar_row_actions_visible_on_coarse_pointers():
     # Comments first: they hold commas and prose, and splitting arguments around them turns
     # a sentence into an unreadable "value".
     row_classes = "\n".join(
-        re.sub(r"(?<!:)//.*$", "", line) for line in applied[builder.end() : builder_end].splitlines()
+        re.sub(r"(?<!:)//.*$", "", line)
+        for line in applied[builder.end() : builder_end].splitlines()
     )
     # Every value the builder contributes has to be readable. An identifier holding a class
     # string is invisible to a scan over quoted literals, so `cn(..., coarseOverride)` would
