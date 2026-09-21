@@ -3820,9 +3820,13 @@ _MCP_APP_DOMAIN_RE = _re.compile(
 )
 # Bounds the header a template can ask for.
 _MCP_APP_MAX_DOMAINS = 24
+# A document or worker loaded from one of these inherits this policy, the sandbox
+# flags and the opaque origin, so neither widens the box. Any other bare scheme
+# ("https:") names every host, which is the "*" refused above.
+_MCP_APP_LOCAL_SCHEMES = frozenset({"blob:", "data:"})
 
 
-def _mcp_app_domains(raw: Optional[str]) -> list:
+def _mcp_app_domains(raw: Optional[str], local_schemes: bool = True) -> list:
     """Parse a comma-separated declared-domain list into CSP source tokens.
     Anything that is not a host is dropped rather than echoed: these arrive from
     the browser and go straight into a response header."""
@@ -3833,7 +3837,9 @@ def _mcp_app_domains(raw: Optional[str]) -> list:
         candidate = part.strip()
         if not candidate or len(out) >= _MCP_APP_MAX_DOMAINS:
             continue
-        if _MCP_APP_DOMAIN_RE.match(candidate):
+        if local_schemes and candidate.lower() in _MCP_APP_LOCAL_SCHEMES:
+            out.append(candidate.lower())
+        elif _MCP_APP_DOMAIN_RE.match(candidate):
             out.append(candidate)
     return out
 
@@ -3847,6 +3853,8 @@ def _mcp_app_csp(connect: list, resource: list, frame: list, base_uri: list) -> 
     connect_src = " ".join(connect) if connect else "'none'"
     frame_src = " ".join(frame) if frame else "'none'"
     base_uri_src = " ".join(base_uri) if base_uri else "'none'"
+    # A blob worker runs under this same policy, so it reaches nothing the page cannot.
+    worker_src = "blob:" if "blob:" in resource else "'none'"
     return (
         "default-src 'none'; "
         f"script-src 'unsafe-inline'{' ' + resource_src if resource_src else ''}; "
@@ -3856,7 +3864,7 @@ def _mcp_app_csp(connect: list, resource: list, frame: list, base_uri: list) -> 
         f"media-src data: blob:{' ' + resource_src if resource_src else ''}; "
         f"connect-src {connect_src}; "
         f"frame-src {frame_src}; "
-        "worker-src 'none'; "
+        f"worker-src {worker_src}; "
         "object-src 'none'; "
         f"base-uri {base_uri_src}; "
         "form-action 'none'; "
@@ -3882,7 +3890,7 @@ async def mcp_app_frame(
         _mcp_app_domains(connect),
         _mcp_app_domains(resource),
         _mcp_app_domains(frame),
-        _mcp_app_domains(base_uri),
+        _mcp_app_domains(base_uri, local_schemes = False),
     )
     return Response(
         content = _ARTIFACT_PREVIEW_FRAME_HTML,
