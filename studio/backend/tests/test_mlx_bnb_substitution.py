@@ -272,7 +272,10 @@ def test_the_mirror_still_matches_the_loader_it_mirrors():
         ("adapters.safetensors",),
     ],
 )
-def test_mlx_progress_verifies_loader_files_without_a_manifest(monkeypatch, tmp_path, weight_names):
+@pytest.mark.parametrize("offline", [False, True])
+def test_mlx_progress_verifies_loader_files_without_a_manifest(
+    monkeypatch, tmp_path, weight_names, offline
+):
     import asyncio
     from collections import OrderedDict
     from types import SimpleNamespace
@@ -293,6 +296,28 @@ def test_mlx_progress_verifies_loader_files_without_a_manifest(monkeypatch, tmp_
     ]
     monkeypatch.setattr(HfApi, "model_info", lambda *_a, **_k: SimpleNamespace(siblings = siblings))
     monkeypatch.setattr(cache_inventory, "_mlx_plan_cache", OrderedDict())
+    if offline:
+        from huggingface_hub._tree_cache import TreeCacheEntry, write_tree_cache
+        import hub.utils.hf_cache_state as cache_state
+
+        (entry / "refs").mkdir()
+        (entry / "refs" / "main").write_text(snap.name)
+        write_tree_cache(
+            str(entry),
+            snap.name,
+            {
+                item.rfilename: TreeCacheEntry(
+                    size = item.size, blob_id = "pointer", lfs_sha256 = item.blob_id
+                )
+                for item in siblings
+            },
+        )
+
+        def offline_info(*_a, **_k):
+            raise OSError("offline")
+
+        monkeypatch.setattr(HfApi, "model_info", offline_info)
+        monkeypatch.setattr(cache_state, "preferred_repo_cache_dirs", lambda *_a, **_k: [entry])
     monkeypatch.setattr(snapshot_progress, "preferred_repo_cache_dirs", lambda *_a, **_k: [entry])
     monkeypatch.setattr(
         downloads, "_registry", SimpleNamespace(get_job = lambda _key: SimpleNamespace(state = "idle"))
@@ -317,3 +342,28 @@ def test_mlx_progress_verifies_loader_files_without_a_manifest(monkeypatch, tmp_
         i = names.index(name)
         (snap / name).symlink_to(blobs / f"blob{i}")
         assert progress()["progress"] == 1
+
+
+@pytest.mark.parametrize("warm", [False, True])
+def test_mlx_metadata_outage_reuses_plan_and_bounds_retries(monkeypatch, warm):
+    from collections import OrderedDict
+    from huggingface_hub import HfApi
+    from hub.services.models import cache_inventory
+
+    key = ("unsloth/cached-base", cache_inventory.hf_cache_scan.token_fingerprint(None))
+    plan = (4, frozenset({"weight"}), ())
+    monkeypatch.setattr(
+        cache_inventory, "_mlx_plan_cache", OrderedDict({key: (plan, 0)} if warm else {})
+    )
+    monkeypatch.setattr(cache_inventory, "_cached_mlx_siblings", lambda _repo: [])
+    calls = []
+
+    def unavailable(*_a, **_k):
+        calls.append(True)
+        raise OSError("unreachable")
+
+    monkeypatch.setattr(HfApi, "model_info", unavailable)
+    expected = plan if warm else (0, frozenset(), ())
+    for _ in range(2):
+        assert cache_inventory.get_mlx_load_plan_cached(key[0]) == expected
+    assert len(calls) == 1

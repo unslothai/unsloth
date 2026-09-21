@@ -139,6 +139,24 @@ def get_repo_snapshot_metadata_cached(
 _mlx_plan_cache: OrderedDict = OrderedDict()
 
 
+def _cached_mlx_siblings(repo_id):
+    from huggingface_hub.hf_api import RepoSibling
+
+    # The raw tree retains LFS SHA256s, not just Git pointer IDs.
+    from huggingface_hub._tree_cache import read_tree_cache
+    from hub.utils.hf_cache_state import preferred_repo_cache_dirs
+
+    for entry in preferred_repo_cache_dirs("model", repo_id):
+        snapshot = hf_cache_scan.default_ref_snapshot(entry)
+        tree = read_tree_cache(str(entry), snapshot.name) if snapshot is not None else None
+        if tree:
+            return [
+                RepoSibling(rfilename = path, size = item.size, blob_id = item.lfs_sha256 or item.blob_id)
+                for path, item in tree.items()
+            ]
+    return []
+
+
 def get_mlx_load_plan_cached(repo_id: str, hf_token: Optional[str] = None):
     from core.inference.mlx_bnb import mlx_load_siblings
     from hub.utils.snapshot_filters import blob_hashes_for_siblings
@@ -150,12 +168,22 @@ def get_mlx_load_plan_cached(repo_id: str, hf_token: Optional[str] = None):
         if cached is not None and time.monotonic() - cached[1] < _REPO_SIZE_POS_TTL:
             _mlx_plan_cache.move_to_end(key)
             return cached[0]
-    info = HfApi(token = hf_token).model_info(
-        repo_id,
-        files_metadata = True,
-        timeout = _MODEL_METADATA_TIMEOUT_SECONDS,
-    )
-    siblings = mlx_load_siblings(info.siblings)
+    try:
+        siblings = (
+            HfApi(token = hf_token)
+            .model_info(
+                repo_id,
+                files_metadata = True,
+                timeout = _MODEL_METADATA_TIMEOUT_SECONDS,
+            )
+            .siblings
+        )
+    except Exception:
+        try:
+            siblings = _cached_mlx_siblings(repo_id)
+        except Exception:
+            siblings = []
+    siblings = mlx_load_siblings(siblings)
     files = tuple(
         download_manifest.ExpectedFile(
             path = item.rfilename,
@@ -165,6 +193,8 @@ def get_mlx_load_plan_cached(repo_id: str, hf_token: Optional[str] = None):
         for item in siblings
     )
     plan = (sum(file.size for file in files), blob_hashes_for_siblings(siblings), files)
+    if not siblings and cached is not None:
+        plan = cached[0]
     with _repo_size_cache_lock:
         _mlx_plan_cache[key] = (plan, time.monotonic())
         _mlx_plan_cache.move_to_end(key)
