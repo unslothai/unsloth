@@ -1498,9 +1498,9 @@ export const en = {
         yolo: "Skip approval prompts. Use only in trusted environments.",
       },
       remote: {
-        title: "Connect to a remote Unsloth Studio",
+        title: "Connect to a remote Unsloth",
         description:
-          "Point unsloth start at an Unsloth Studio running elsewhere by setting these before launching (or pass --api-key directly):",
+          "Point unsloth start at an Unsloth instance running elsewhere by setting these before launching (or pass --api-key directly):",
       },
       passthrough: {
         title: "Passing agent arguments",
