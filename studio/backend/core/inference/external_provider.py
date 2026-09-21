@@ -872,9 +872,7 @@ class _PinnedNonMetadataTransport(_PinnedPublicTransport):
         if _public_registry_hostname(host):
             return await self._pool(("registry",)).handle_async_request(request)
         try:
-            address = await asyncio.to_thread(
-                provider_address_excluding_metadata, str(request.url)
-            )
+            address = await asyncio.to_thread(provider_address_excluding_metadata, str(request.url))
         except ValueError as exc:
             raise httpx.ConnectError(str(exc), request = request) from exc
         pinned = httpx.Request(

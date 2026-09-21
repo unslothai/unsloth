@@ -168,7 +168,9 @@ def test_the_recipe_endpoint_check_stands_down_with_the_setting_on(monkeypatch, 
     service._require_public_provider_endpoint("http://192.168.1.50:8000/v1")
 
 
-@pytest.mark.parametrize("url", ["http://169.254.169.254/latest/meta-data/", "http://2852039166/v1"])
+@pytest.mark.parametrize(
+    "url", ["http://169.254.169.254/latest/meta-data/", "http://2852039166/v1"]
+)
 def test_the_recipe_endpoint_check_still_refuses_metadata_with_the_setting_on(
     monkeypatch, as_alice, url
 ):

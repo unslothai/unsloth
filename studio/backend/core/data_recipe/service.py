@@ -169,7 +169,8 @@ def _require_public_provider_endpoint(endpoint: str) -> None:
     try:
         if urlsplit(url).scheme != "https":
             raise ValueError(
-                "Managed accounts may only use HTTPS provider endpoints." + managed_private_url_hint()
+                "Managed accounts may only use HTTPS provider endpoints."
+                + managed_private_url_hint()
             )
         public_provider_address(url)
     except ValueError as exc:

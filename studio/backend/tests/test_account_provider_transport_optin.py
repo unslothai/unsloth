@@ -84,9 +84,7 @@ def test_the_choice_follows_a_live_flip(switch):
     """A stale module-level singleton must not outlive the setting that selected it."""
     assert is_pinned(client_as(ALICE))
     switch["allowed"] = True
-    assert isinstance(
-        client_as(ALICE)._transport, external_provider._PinnedNonMetadataTransport
-    )
+    assert isinstance(client_as(ALICE)._transport, external_provider._PinnedNonMetadataTransport)
     switch["allowed"] = False
     assert is_pinned(client_as(ALICE))
 
