@@ -147,6 +147,17 @@ def _fallback_takes(fallback: ast.AST, call: ast.Call) -> bool:
             # -1 is a UnaryOp around a Constant, not a Constant
             ast.UnaryOp,
         ),
+    ) and not _is_literal_arithmetic(fallback)
+
+
+def _is_literal_arithmetic(node: ast.AST) -> bool:
+    """`1 + 2` is a BinOp, and still a number nobody can call. Only when every leaf is a
+    literal: `a + b` could be anything."""
+    if not isinstance(node, ast.BinOp):
+        return False
+    return all(
+        isinstance(leaf, (ast.BinOp, ast.UnaryOp, ast.Constant, ast.operator, ast.unaryop))
+        for leaf in ast.walk(node)
     )
 
 
@@ -163,6 +174,14 @@ def _geteuid_sites(expr: ast.AST):
         for node in ast.walk(expr)
         if isinstance(node, ast.Starred) and isinstance(node.value, ast.GeneratorExp)
     }
+    # `ROOT, = (os.geteuid() for _ in xs)` has to advance the generator to unpack it
+    unpacked.update(
+        node.value
+        for node in ast.walk(expr)
+        if isinstance(node, ast.Assign)
+        and isinstance(node.value, ast.GeneratorExp)
+        and any(isinstance(target, (ast.Tuple, ast.List)) for target in node.targets)
+    )
     invoked = set()
     for node in ast.walk(expr):
         if not isinstance(node, ast.Call):
@@ -368,6 +387,32 @@ def _has_future_annotations(tree: ast.Module) -> bool:
     )
 
 
+def _assigns_os_geteuid(expr: ast.AST) -> bool:
+    """`os.geteuid = lambda: 0` puts the attribute there, so every later read finds it.
+    Not `os.geteuid += 1`, whose target is a Store in the AST but reads first and so has
+    already raised."""
+    if isinstance(expr, ast.AugAssign):
+        return False
+    return any(
+        isinstance(node, ast.Attribute)
+        and node.attr == "geteuid"
+        and isinstance(node.value, ast.Name)
+        and node.value.id == "os"
+        and isinstance(node.ctx, ast.Store)
+        for node in ast.walk(expr)
+    )
+
+
+def _offending_sites(tree: ast.Module):
+    """Every unguarded import-time lookup, in source order, stopping at the point the
+    module gives os.geteuid a definition of its own."""
+    for expr in _import_time_expressions(tree):
+        if not _is_guarded(expr):
+            yield from _geteuid_sites(expr)
+        if _assigns_os_geteuid(expr):
+            return  # from here on the attribute exists, even on Windows
+
+
 def _import_time_expressions(tree: ast.Module):
     """Yield the expressions evaluated when the module is imported.
 
@@ -457,11 +502,8 @@ def test_no_test_module_calls_os_geteuid_unguarded_at_import():
         except (SyntaxError, UnicodeDecodeError):
             continue  # not ours to parse; the lint job owns syntax
         checked += 1
-        for expr in _import_time_expressions(tree):
-            for node in _geteuid_sites(expr):
-                if not _is_guarded(expr):
-                    offenders.append(f"{path.relative_to(REPO_ROOT)}:{node.lineno}")
-                    break
+        for node in _offending_sites(tree):
+            offenders.append(f"{path.relative_to(REPO_ROOT)}:{node.lineno}")
     assert checked > 100, f"only {checked} test modules parsed; the scan lost its tree"
     assert not offenders, (
         "os.geteuid is evaluated at import with nothing to spare it on Windows, so the "
@@ -548,13 +590,7 @@ def test_a_runtime_call_inside_a_function_is_not_flagged():
 
 
 def _flagged(source: str) -> list[int]:
-    tree = ast.parse(source)
-    return [
-        node.lineno
-        for expr in _import_time_expressions(tree)
-        for node in _geteuid_sites(expr)
-        if not _is_guarded(expr)
-    ]
+    return [node.lineno for node in _offending_sites(ast.parse(source))]
 
 
 def test_an_os_name_guard_is_read_for_polarity_not_presence():
@@ -822,3 +858,22 @@ def test_an_augmented_assignment_reads_before_it_writes():
     plain assignment, which creates it."""
     assert _flagged("import os\nos.geteuid += 1\n")
     assert not _flagged("import os\nos.geteuid = lambda: 0\n")
+
+
+def test_a_module_that_defines_geteuid_itself_is_left_alone():
+    """`os.geteuid = lambda: 0` puts the attribute there, so every read after it finds it
+    even on Windows. Reads BEFORE it still fail."""
+    assert not _flagged("import os\nos.geteuid = lambda: 0\nROOT = os.geteuid() == 0\n")
+    assert _flagged("import os\nROOT = os.geteuid() == 0\nos.geteuid = lambda: 0\n")
+
+
+def test_a_destructured_generator_is_advanced_here():
+    """`ROOT, = (os.geteuid() for _ in xs)` has to advance the generator to unpack it."""
+    assert _flagged("import os\nROOT, = (os.geteuid() for _ in range(1))\n")
+    assert not _flagged("import os\nGEN = (os.geteuid() for _ in range(1))\n")
+
+
+def test_literal_arithmetic_is_still_a_literal():
+    """`1 + 2` is a BinOp and still a number nobody can call; `a + b` could be anything."""
+    assert _flagged('import os\nROOT = getattr(os, "geteuid", 1 + 2)() == 0\n')
+    assert not _flagged('import os\nROOT = getattr(os, "geteuid", a + b)() == 0\n')
