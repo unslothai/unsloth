@@ -1336,6 +1336,50 @@ _BLOCKED_WORD_RE = (
 )
 
 
+def _join_escaped_newlines(text: str) -> str:
+    """Remove a backslash-newline where the shell removes it, and only there.
+
+    The shell strips the pair before it reads a command, so the line break is not a boundary and
+    the words either side belong to one command: `echo hi \\<newline>A=1 rm -rf x` is one `echo`.
+    Inside SINGLE quotes it strips nothing, and that difference is load-bearing:
+    `sed -n '1e touch a\\<newline>rm -f victim' f` continues the executed payload onto the next
+    line, so joining there would drop a command that really runs. An escaped backslash consumes
+    both characters, which leaves a following newline standing, as the shell does.
+    """
+    out: list[str] = []
+    i, n = 0, len(text)
+    in_single = in_double = False
+    while i < n:
+        ch = text[i]
+        if in_single:
+            if ch == "'":
+                in_single = False
+            out.append(ch)
+            i += 1
+            continue
+        if ch == "\\" and i + 1 < n:
+            nxt = text[i + 1]
+            if nxt == "\n":
+                out.append(" ")
+                i += 2
+                continue
+            if nxt == "\r" and i + 2 < n and text[i + 2] == "\n":
+                out.append(" ")
+                i += 3
+                continue
+            out.append(ch)
+            out.append(nxt)
+            i += 2
+            continue
+        if ch == "'" and not in_double:
+            in_single = True
+        elif ch == '"':
+            in_double = not in_double
+        out.append(ch)
+        i += 1
+    return "".join(out)
+
+
 def _find_blocked_commands(command: str) -> set[str]:
     """Detect blocked commands at shell command position only.
 
@@ -1349,6 +1393,13 @@ def _find_blocked_commands(command: str) -> set[str]:
     # Decode ANSI-C quoting first ($'ssh' -> ssh) so a blocked name hidden behind it is still detected at command
     # position.
     command = _decode_ansi_c(command, keep_one_word = True)
+
+    # The shell removes a backslash-newline before it reads a command, so the line break is not a
+    # boundary there and the words on both sides belong to one command: `echo hi \<newline>A=1 rm
+    # -rf x` is one `echo`, while `env \<newline>FOO=bar rm -rf x` really runs `rm` and stays
+    # blocked because joining puts `rm` at command position behind `env`. Joining here rather than
+    # only before the regex keeps the token walk and the backstop reading the same text.
+    command = _join_escaped_newlines(command)
 
     # punctuation_chars splits separators into their own tokens, so command position is detected even in `echo done;
     # rm -rf x` and at a line break. Keyed to the shell that will actually run this, not to the OS: on a Windows host
@@ -16585,13 +16636,27 @@ def _check_signal_escape_patterns(code: str):
                 cur = cur.value
             if isinstance(cur, ast.Name):
                 parts.insert(0, cur.id)
-            fq = ".".join(parts) if parts else ""
+            # Resolving an alias may only ADD a way to recognise this call, never take one away.
+            # The alias map is not scope aware on purpose, so an `import socket as requests` inside
+            # a function body or an untaken branch would otherwise rewrite a module-level
+            # `requests.get(...)` to `socket.get`, which matches no network prefix, and carry a
+            # hardcoded host past a screen that refuses it on `main`. Both spellings are checked and
+            # the recognised one decides; the cost of checking a name the code does not really call
+            # is a refusal of a call that would not have run anyway.
+            written = ".".join(parts) if parts else ""
+            fq_candidates = [written] if written else []
             if len(parts) > 1 and parts[0] in self.module_aliases:
-                fq = ".".join([self.module_aliases[parts[0]]] + parts[1:])
+                fq_candidates.append(".".join([self.module_aliases[parts[0]]] + parts[1:]))
             elif len(parts) == 1 and parts[0] in self.func_aliases:
-                fq = self.func_aliases[parts[0]]
+                fq_candidates.append(self.func_aliases[parts[0]])
             elif len(parts) == 1 and self.star_modules:
-                fq = self._star_imported_fq(parts[0]) or fq
+                starred = self._star_imported_fq(parts[0])
+                if starred:
+                    fq_candidates.append(starred)
+            recognised = [
+                c for c in fq_candidates if any(c.startswith(p) for p in _NETWORK_FQ_PREFIXES)
+            ]
+            fq = recognised[0] if recognised else (fq_candidates[0] if fq_candidates else "")
 
             hf_upload_name = _method_call_hf_upload_name(node)
             if hf_upload_name is not None:
@@ -16636,7 +16701,7 @@ def _check_signal_escape_patterns(code: str):
                             }
                         )
 
-            if fq and any(fq.startswith(p) for p in _NETWORK_FQ_PREFIXES):
+            if recognised:
                 # 1) Upload-shape check (host-independent).
                 if _call_is_upload_shape(node, fq):
                     network_calls.append(
@@ -16653,7 +16718,14 @@ def _check_signal_escape_patterns(code: str):
                 # the other.
                 hosts: list[str] = []
                 unreadable = False
-                spec = _NETWORK_DESTINATION_ARG.get(fq)
+                spec = next(
+                    (
+                        _NETWORK_DESTINATION_ARG[c]
+                        for c in recognised
+                        if c in _NETWORK_DESTINATION_ARG
+                    ),
+                    None,
+                )
                 destination = None
                 if spec is not None:
                     index, keywords = spec
