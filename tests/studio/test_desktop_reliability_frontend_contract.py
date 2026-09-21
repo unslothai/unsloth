@@ -930,6 +930,18 @@ def _button_classes(source: str, tag: str, variant: str) -> str | None:
     """The classes a `<button>` tag ends up with for `variant`, or None if unreadable."""
     if _className_from_spread(tag):
         return None
+    # A suffixed lookalike is refused, not read as absent. `data-className={cn(...)}` is not a
+    # className, so the boundary above correctly declines to read it, but returning "" then
+    # said "this button carries no classes" and `_labelled_actions` skipped it as not a row
+    # action. The pin can vanish from the reach calculation that way while still rendering,
+    # now with none of the classes that position or reveal it, and the shared options button
+    # keeps every later assertion satisfied.
+    lookalike = re.search(r"[\w-]className=", tag)
+    assert not lookalike, (
+        f"a button in renderChatSidebarItem carries {lookalike.group(0)!r} rather than a "
+        f"className. It renders with none of the classes that string holds, and this guard "
+        f"would otherwise read it as a button that simply has no classes: {tag!r}"
+    )
     match = re.search(r"(?:^|[\s{])className=(\{.*?\}|\"[^\"]*\")", tag, re.S)
     if not match:
         return ""
@@ -991,6 +1003,59 @@ def _row_action_paddings(live_css: str) -> dict[str, float | None]:
         if re.search(r"\bpadding-right:", body) or re.search(r"@apply[^;]*(?<![\w-])pr-", body):
             paddings[match.group(1)] = None
     return paddings
+
+
+def _own_declarations(live_css: str, selector: str) -> str | None:
+    """One rule's own body, with any rule nested inside it removed.
+
+    Brace-matched rather than read as `[^}]*`, which stops at the first `}` and so takes in a
+    nested rule's selector and declarations while cutting the outer rule short.
+    `.sidebar-row-action` has such a nested rule, `.sidebar-touch-reveal`, so the lazy form was
+    reading part of a different rule as if it belonged to this one.
+    """
+    start = re.search(rf"{re.escape(selector)}\s*\{{", live_css)
+    if not start:
+        return None
+    depth, body_at = 0, start.end() - 1
+    for index in range(body_at, len(live_css)):
+        if live_css[index] == "{":
+            depth += 1
+        elif live_css[index] == "}":
+            depth -= 1
+            if depth == 0:
+                return re.sub(r"[^{}]*\{[^{}]*\}", " ", live_css[body_at + 1 : index])
+    return None
+
+
+def _stated_units(body: str, utility: str, prop: str) -> list[float | None]:
+    """Every value this rule states for one measure, in spacing units.
+
+    EVERY one, because CSS resolves a repeated declaration to the last, and a first-match
+    search reports the first. `.sidebar-row-action-glyph` gaining a `size-20` after its
+    `size-6`, or the base action rule gaining an `@apply pr-20` after its `pr-1.5`, changes
+    what renders and left every floor here unmoved. The caller refuses anything but a single
+    readable answer rather than picking one, since which wins also depends on specificity and
+    on where Tailwind emits the utility, and this guard does not model either.
+
+    None marks a value it cannot read, which must not collapse into "not stated".
+    """
+    found: list[float | None] = []
+    for match in re.finditer(rf"(?<![\w-]){re.escape(utility)}-(\S+?)(?=[\s;]|$)", body):
+        raw = match.group(1)
+        found.append(float(raw) if re.fullmatch(r"\d+(?:\.\d+)?", raw) else None)
+    for match in re.finditer(rf"\b{re.escape(prop)}:\s*([^;]+);", body):
+        value = match.group(1).strip()
+        rem = re.fullmatch(r"([\d.]+)rem", value)
+        px = re.fullmatch(r"([\d.]+)px", value)
+        if rem:
+            found.append(float(rem.group(1)) / _SPACING_REM)
+        elif px:
+            found.append(float(px.group(1)) / 16 / _SPACING_REM)
+        elif value == "0":
+            found.append(0.0)
+        else:
+            found.append(None)
+    return found
 
 
 def _base_row_action_offset(live_css: str) -> float | None:
@@ -1573,15 +1638,21 @@ def test_chat_sidebar_row_actions_visible_on_coarse_pointers():
     # left inside `/* ... */` sits before the live one and is the one a search finds, so the
     # floor would be measured from a glyph nothing renders.
     live_css = re.sub(r"/\*.*?\*/", " ", css_source, flags = re.S)
-    glyph = re.search(r"\.sidebar-row-action-glyph\s*\{[^}]*?\bsize-(\d+(?:\.\d+)?)", live_css)
-    assert glyph, (
-        "index.css no longer sizes .sidebar-row-action-glyph with a size-N utility, so this "
-        "guard cannot tell how much room one action needs"
+    glyph_rule = _own_declarations(live_css, ".sidebar-row-action-glyph")
+    assert glyph_rule is not None, (
+        "index.css no longer has a .sidebar-row-action-glyph rule, so this guard cannot tell "
+        "how much room one action needs"
+    )
+    sizes = _stated_units(glyph_rule, "size", "width")
+    assert len(sizes) == 1 and sizes[0] is not None, (
+        f"the glyph's size is not one value this guard can read: {sizes}. A second one later "
+        f"in the rule is what renders, and every floor below would go on being measured from "
+        f"the first, so state it once in a spelling this reads"
     )
     # Read per variant, because each variant's own actions decide its floor: an action added to
     # one row only would otherwise require the other to reserve room for something it does not
     # render, and this guard would fail a correct change.
-    glyph_size = float(glyph.group(1))
+    glyph_size = sizes[0]
     # The actions do not sit side by side and counting them assumed they did. They are
     # absolutely positioned and one is pushed clear of the other, so what the row has to
     # reserve is how far the furthest one reaches, not how many there are. Each action's
@@ -1591,12 +1662,18 @@ def test_chat_sidebar_row_actions_visible_on_coarse_pointers():
     # edge sits that far inside the container's, and its left edge is offset + pr + size.
     # Leaving the pr out under-measured every row by 1.5, which is how the project row's
     # pr-14 passed while its pin reached 15.
-    inner = re.search(r"\.sidebar-row-action\s*\{[^}]*?\bpr-(\d+(?:\.\d+)?)", live_css)
-    assert inner, (
-        "index.css no longer gives .sidebar-row-action a pr-N, so this guard cannot tell "
-        "where inside its container the glyph sits"
+    base_rule = _own_declarations(live_css, ".sidebar-row-action")
+    assert base_rule is not None, (
+        "index.css no longer has a .sidebar-row-action rule, so this guard cannot tell where "
+        "inside its container the glyph sits"
     )
-    inner_padding = float(inner.group(1))
+    base_paddings = _stated_units(base_rule, "pr", "padding-right")
+    assert len(base_paddings) == 1 and base_paddings[0] is not None, (
+        f"the base action's right padding is not one value this guard can read: "
+        f"{base_paddings}. A later one in the same rule is what renders, and the shared "
+        f"action would reach further into the title while the floor stayed put"
+    )
+    inner_padding = base_paddings[0]
     # The container's `pl` is deliberately NOT added. `pr` is measured because justify-end makes
     # it decide where the glyph sits; `pl` decides nothing about the glyph, it only extends a
     # transparent box further left. #7276 is about the action sitting over the title, and what
