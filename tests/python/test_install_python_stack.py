@@ -1621,10 +1621,13 @@ class TestPackageManagerPolicyOptOut:
         monkeypatch.setattr(ips.subprocess, "run", _record)
         monkeypatch.setattr(ips, "_pinned_cmd_and_env", lambda cmd: (list(cmd), None))
         monkeypatch.setattr(ips, "_invalidate_torch_runtime_probe", lambda: None)
-        # uv discovers configuration relative to the cwd, so a repo checkout that happens to
-        # carry a [tool.uv] table would make every "inactive" case active and the negative
-        # half of this test vacuous. An empty directory is the only honest starting point.
+        # uv discovers configuration relative to the cwd AND in user and system locations,
+        # so a machine with a uv.toml of its own would make every "inactive" case active and
+        # the negative half of this test vacuous -- which is how it passed here and failed
+        # on the macOS leg. The cwd is emptied and discovery is answered "none"; the
+        # presence check has its own test.
         monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(ips, "_uv_config_file_present", lambda: False)
         counted: list = []
         monkeypatch.setattr(ips, "_count_install_action", lambda: counted.append(1))
         with self._environment(environment, opt_out = "1"):
@@ -1935,6 +1938,10 @@ class TestPackageManagerPolicyOptOut:
         """
         monkeypatch.setattr(ips, "_PINNED_PIP_CONFIG_LISTING", listing)
         monkeypatch.setattr(ips, "_pinned_pip_config_overrides", lambda *a, **k: {})
+        # The CA travels with the index now, so a runner exporting its own proxy CA appends
+        # --cert to every result here. Cleared rather than allowed for, since this test is
+        # about no-index; the cert has its own.
+        environment = {**environment, "PIP_CERT": ""}
         with self._environment(environment, opt_out = "1"):
             assert ips._pm_index_policy_uv_args(self.PINNED) == expected
             assert ips._pm_index_policy_uv_args(["uv", "pip", "install", "x"]) == expected
@@ -2294,6 +2301,10 @@ class TestPackageManagerPolicyOptOut:
             ("global.no-binary='numpy'\ninstall.only-binary='numpy'", "", ""),
             ("global.only-binary=':all:'", "mypkg", ""),
             ("", ":none:", "a,b"),
+            # pip canonicalizes before comparing, so these name ONE package and the later
+            # control must win rather than both surviving.
+            ("global.no-binary='foo_bar'", "", "foo-bar"),
+            ("global.only-binary='Foo.Bar'", "foo-bar", ""),
         ],
     )
     def test_the_shell_and_python_resolve_format_control_identically(
@@ -2445,18 +2456,28 @@ class TestPackageManagerPolicyOptOut:
 
     @pytest.mark.parametrize(
         "variable",
-        ["UV_REQUIRE_HASHES", "UV_OFFLINE", "UV_EXCLUDE_NEWER", "UV_CONSTRAINT", "UV_OVERRIDE"],
+        [
+            "UV_REQUIRE_HASHES",
+            "UV_OFFLINE",
+            "UV_EXCLUDE_NEWER",
+            "UV_CONSTRAINT",
+            "UV_OVERRIDE",
+            "UV_EXCLUDE",
+        ],
     )
     def test_every_uv_only_setting_declines_a_forced_pip_step(
         self, variable, monkeypatch, tmp_path
     ):
-        """A constraint prohibits versions; an override replaces them. pip reads neither.
+        """A constraint prohibits versions, an override replaces them, an exclude removes
+        them from resolution entirely. pip reads none of the three.
 
-        So a forced-pip step under either installs exactly what they rule out, which is the
-        same reason the hash policy is in this list rather than a different kind of thing.
-        The shell twin is asserted by text below, since these run there too.
+        So a forced-pip step under any of them installs exactly what they rule out, which is
+        the same reason the hash policy is in this list rather than a different kind of
+        thing. The shell twin is asserted by text in the same pass, since these run there
+        too and the list has now been extended three times in one half only.
         """
         monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(ips, "_uv_config_file_present", lambda: False)
         with self._environment({}, opt_out = "1"):
             assert ips._uv_only_policy_active() is False
         with self._environment({variable: "1"}, opt_out = "1"):

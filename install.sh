@@ -442,6 +442,10 @@ _resolve_only_binary_policy() {
                 if [ "$_pm_which" = "no-binary" ]; then _pm_no=""; else _pm_only=""; fi
                 continue
             fi
+            # pip canonicalizes before comparing, so foo_bar and foo-bar are one package
+            # to it. Exact strings kept both, and uv given --no-binary foo_bar with
+            # --only-binary foo-bar reports an otherwise usable wheel as unsatisfiable.
+            _pm_one=$(printf '%s' "$_pm_one" | tr '[:upper:]' '[:lower:]' | sed 's/[-_.][-_.]*/-/g')
             if [ "$_pm_which" = "no-binary" ]; then
                 _pm_only=$(_pm_without "$_pm_one" "$_pm_only")
                 case " $_pm_no " in *" $_pm_one "*) ;; *) _pm_no="$_pm_no $_pm_one" ;; esac
@@ -582,6 +586,8 @@ _uv_only_policy_active() {
     # no UV_ variable, so a forced-pip step under either can install what they rule out.
     [ -n "${UV_CONSTRAINT:-}" ] && return 0
     [ -n "${UV_OVERRIDE:-}" ] && return 0
+    # --excludes removes packages from resolution entirely.
+    [ -n "${UV_EXCLUDE:-}" ] && return 0
     [ -n "${UV_CONFIG_FILE:-}" ] && return 0
     # UV_NO_CONFIG means uv discovers nothing, so there is no hidden file to respect.
     _uv_flag_on "${UV_NO_CONFIG:-}" && return 1
@@ -7271,6 +7277,8 @@ _bootstrap_packaged_mlx_override() {
     [ "$SKIP_TORCH" = false ] || return 0
     [ -f "${_OVERRIDES_FILE:-}" ] && return 0
     [ -n "${UV_OVERRIDE:-}" ] && return 0
+    # --excludes removes packages from resolution entirely.
+    [ -n "${UV_EXCLUDE:-}" ] && return 0
 
     substep "preparing Apple Silicon model support..."
     run_install_cmd_retry "prepare Apple Silicon dependencies" \

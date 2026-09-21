@@ -7212,6 +7212,10 @@ function Get-PipPolicyFormatControl {
                 continue
             }
             if ($part -eq ':none:') { $sets[$which] = @(); continue }
+            # pip canonicalizes before comparing, so foo_bar and foo-bar are one package
+            # to it. Exact strings kept both, and uv given --no-binary foo_bar with
+            # --only-binary foo-bar reports an otherwise usable wheel as unsatisfiable.
+            $part = ($part -replace '[-_.]+', '-').ToLowerInvariant()
             $sets[$otherKey] = @($sets[$otherKey] | Where-Object { $_ -ne $part })
             if ($sets[$which] -notcontains $part) { $sets[$which] += $part }
         }
@@ -7309,7 +7313,13 @@ if ((Test-RespectPmPolicy) -and -not "$env:UV_REQUIRE_HASHES".Trim() -and (Test-
 function Fast-Install {
     param([Parameter(ValueFromRemainingArguments=$true)]$Args_)
     # Here rather than at file scope: by the time anything installs, the target venv is on
-    # PATH, so its own pip answers for its site configuration.
+    # PATH, so its own pip answers for its site configuration. The interpreter is named
+    # BEFORE resolving, or the probe falls back to a system pip and marks that environment's
+    # listing as the target's own -- which is the case the fail-closed check exists for.
+    if (-not $script:PmVenvPython) {
+        $_pmPy = Get-Command python -ErrorAction SilentlyContinue
+        if ($_pmPy) { $script:PmVenvPython = $_pmPy.Source }
+    }
     Resolve-PmPolicy
     # An explicit --index-url must win: inherited index vars pull CPU torch over GPU (#6898).
     $saved = @{}
@@ -7351,7 +7361,6 @@ function Fast-Install {
                 $env:UV_REQUIRE_HASHES = '1'
             }
             $VenvPy = (Get-Command python).Source
-            if (-not $script:PmVenvPython) { $script:PmVenvPython = $VenvPy }
             $result = & uv pip install --python $VenvPy @script:PmPolicyArgs @Args_ 2>&1
             if ($LASTEXITCODE -eq 0) { return }
             # Same hand-off as pip_install(): pip reads neither uv.toml nor any UV_ variable,
@@ -7401,6 +7410,10 @@ function Fast-Uninstall {
 # UV_* pip cannot read: an inherited PIP_INDEX_URL or user pip.conf would outrank --index-url.
 function Fast-Download {
     param([Parameter(ValueFromRemainingArguments=$true)]$Args_)
+    if (-not $script:PmVenvPython) {
+        $_pmPy = Get-Command python -ErrorAction SilentlyContinue
+        if ($_pmPy) { $script:PmVenvPython = $_pmPy.Source }
+    }
     Resolve-PmPolicy
     $saved = @{}
     # Gated like Fast-Install: a pip.conf kept in force must bind the fetch half of a staged

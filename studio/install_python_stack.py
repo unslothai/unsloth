@@ -8921,6 +8921,9 @@ def _uv_only_policy_active() -> bool:
         # a different kind of thing.
         or bool(os.environ.get("UV_CONSTRAINT", "").strip())
         or bool(os.environ.get("UV_OVERRIDE", "").strip())
+        # --excludes removes packages from resolution entirely, so under one the forced-pip
+        # wheel is a package uv was told not to install at all.
+        or bool(os.environ.get("UV_EXCLUDE", "").strip())
         or _uv_config_file_present()
     )
 
@@ -9070,6 +9073,10 @@ def _pip_policy_format_control(subcommand: str = "install") -> "tuple[list[str],
             # whole change exists to close, so the rule is stated once and applied thrice.
             if not re.fullmatch(r"[A-Za-z0-9._:-]+", part):
                 continue
+            # pip canonicalizes before comparing, so `foo_bar` and `foo-bar` are one
+            # package to it. Exact strings kept both, and uv given --no-binary foo_bar with
+            # --only-binary foo-bar reports an otherwise usable wheel as unsatisfiable.
+            part = _canonical_package_name(part)
             if part in other:
                 other.remove(part)
             if part not in target:

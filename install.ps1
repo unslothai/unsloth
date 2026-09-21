@@ -4321,7 +4321,11 @@ exit 1
                     continue
                 }
                 if ($part -eq ':none:') { $sets[$which] = @(); continue }
-                $sets[$otherKey] = @($sets[$otherKey] | Where-Object { $_ -ne $part })
+                # pip canonicalizes before comparing, so foo_bar and foo-bar are one package
+            # to it. Exact strings kept both, and uv given --no-binary foo_bar with
+            # --only-binary foo-bar reports an otherwise usable wheel as unsatisfiable.
+            $part = ($part -replace '[-_.]+', '-').ToLowerInvariant()
+            $sets[$otherKey] = @($sets[$otherKey] | Where-Object { $_ -ne $part })
                 if ($sets[$which] -notcontains $part) { $sets[$which] += $part }
             }
         }
