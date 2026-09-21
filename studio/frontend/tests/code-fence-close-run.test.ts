@@ -115,6 +115,15 @@ test("the close is at least three, not exactly three", () => {
   assert.equal(five?.source, "x = 1");
 });
 
+test("a run with no line break before it does not close the fence", () => {
+  // A close needs a LINE BREAK before it unless the body is empty. Without one, a body ending in a
+  // run of backticks had that run eaten: `` ```\nfoo```` `` returned `foo` where CommonMark keeps
+  // `foo```` `. Such a block is not closed, so it must be declined and left to the streaming route.
+  assert.equal(getCodeFence("```\nfoo````"), null);
+  assert.equal(getCodeFence("```\nfoo```"), null);
+  assert.equal(getCodeFence("```python\n````")?.source, "", "an empty fence still closes");
+});
+
 test("a run shorter than three does not close the fence", () => {
   // A short run is code, so the block is still open and the collapse must decline it.
   for (const short of ["`", "``"]) {

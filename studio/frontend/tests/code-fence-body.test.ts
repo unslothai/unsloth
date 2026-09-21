@@ -119,7 +119,7 @@ test("a completed fence on a non-``` form keeps the bounded renderer", () => {
   // to fall to streamdown's whole-token `Block` and remount every span. A stopped reply never
   // settles, which is the same route.
   assert.ok(
-    /const settledFence = props\.isIncomplete \? null : markdownBlockFallback\(props\.content\);\s*if \(settledFence\?\.fenced\)/.test(
+    /const settledFence = props\.isIncomplete \? null : markdownBlockFallback\(props\.content\);\s*if \(settledFence\?\.fenced/.test(
       MARKDOWN_TEXT,
     ),
     "a completed fence must be recognised by the CommonMark-complete scanner",

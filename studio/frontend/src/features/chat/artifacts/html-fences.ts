@@ -16,8 +16,14 @@ export type CodeFence = {
 // as many" as the opener, and a model closing a fence whose body holds three backticks writes four.
 // `{3}` matched such a line by its LAST three and handed the surplus to `source` (`x = 1\n\``); a
 // bare lazy `+?` is the other half of the rule and accepts a one- or two-backtick run as a close.
-// Against `micromark` over 540 shapes: `{3}` and `+?` each disagreed on 54, this on 0.
-export const CODE_FENCE_RE = /^```([^\r\n`]*)\r?\n([\s\S]*?)\r?\n?`{3,}$/;
+// The close needs a LINE BREAK before it unless the body is empty, so the alternation is outside
+// the body group: without that, `` ```\nfoo```` `` matched with the run eaten and gave `foo` where
+// CommonMark gives `foo```` `. A fence that closes on the same line it opens has no body at all.
+//
+// Against `micromark`: `{3}` and `+?` each disagreed on 54 of 540 shapes; the shape above was this
+// rule's one regression, found by review and now a row in the test.
+export const CODE_FENCE_RE =
+  /^```([^\r\n`]*)\r?\n(?:([\s\S]*?)\r?\n`{3,}|`{3,})$/;
 
 export type ToolCallPartLike = {
   type?: string;
@@ -56,7 +62,8 @@ export function getCodeFence(blockContent: string): CodeFence | null {
 
   return {
     language: match[1]?.trim() || null,
-    source: match[2],
+    // Absent only for a fence that closes on the line after it opens.
+    source: match[2] ?? "",
   };
 }
 

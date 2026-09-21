@@ -312,7 +312,7 @@ const STREAMDOWN_ALLOWED_TAGS = {
 } satisfies NonNullable<StreamdownProps["allowedTags"]>;
 
 const COPY_RESET_MS = 2000;
-const MERMAID_SOURCE_RE = /```mermaid\s*([\s\S]*?)```/i;
+const MERMAID_SOURCE_RE = /(?:`{3,}|~{3,})mermaid\s*([\s\S]*?)(?:`{3,}|~{3,})/i;
 const ACTION_PANEL_CLASS =
   "pointer-events-auto flex shrink-0 items-center gap-1";
 const ACTION_BUTTON_CLASS =
@@ -532,7 +532,9 @@ function StreamdownBlockContent(props: BlockProps) {
   const messageHasRenderableRenderHtmlTool = useContext(
     RenderHtmlToolPresenceContext,
   );
-  const hasMermaidFence = props.content.includes("```mermaid");
+  // Tildes too, and more than three: this is what decides whether the block is a diagram, and
+  // streamdown renders mermaid wherever the language tag says so.
+  const hasMermaidFence = /(?:`{3,}|~{3,})mermaid/i.test(props.content);
   const mermaidSource = getMermaidSource(props.content);
   const codeFence = getCodeFence(props.content);
 
@@ -655,7 +657,7 @@ function StreamdownBlockContent(props: BlockProps) {
    * the action bar and the mode switch, which are wired to the narrower form on purpose.
    */
   const settledFence = props.isIncomplete ? null : markdownBlockFallback(props.content);
-  if (settledFence?.fenced) {
+  if (settledFence?.fenced && !(settledFence.language === "mermaid" && mermaidSource)) {
     return (
       <StreamingFenceBlock language={settledFence.language} source={settledFence.text} />
     );
