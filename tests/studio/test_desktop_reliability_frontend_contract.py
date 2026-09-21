@@ -960,6 +960,7 @@ def _labelled_actions(
                     gates.append((match.group(1), match.start(), index))
                     break
     found = {}
+    shared = []
     cursor = 0
     for tag in _opening_jsx_tags(block, "<button"):
         at = block.find(tag, cursor)
@@ -1011,7 +1012,22 @@ def _labelled_actions(
             f"spelling this guard cannot read. It reads a bare rem value, so state the offset "
             f"that way or teach this guard the other one"
         )
+        if not owners:
+            shared.append(name)
         found[at] = (name, max((offsets[token] or 0.0 for token in modifiers), default = 0.0))
+    # Both rows carry an action that no `variant === "..."` gate guards, and every assertion
+    # below is written about a row that has one. Without this the per-variant pins alone keep
+    # both maps non-empty, so deleting the shared options button, or letting it lose
+    # `sidebar-row-action`, leaves the floor and the reserve agreeing with each other while
+    # the action the gutter was widened for is no longer rendered at all. Structural on
+    # purpose: an earlier form of this file keyed actions on `aria-label`, and matching the
+    # English "Chat options" would fail the moment the row is translated.
+    assert shared, (
+        f"the {variant} row renders no ungated .sidebar-row-action: every action it has sits "
+        f"inside a `variant === \"...\"` gate. The shared action is what the gutter on both "
+        f"rows is sized for, so if it moved behind a gate say so here, and if it was removed "
+        f"the reserved room should shrink with it (#7276)"
+    )
     return found
 
 
@@ -1414,11 +1430,9 @@ def test_chat_sidebar_row_actions_visible_on_coarse_pointers():
         "index.css no longer sizes .sidebar-row-action-glyph with a size-N utility, so this "
         "guard cannot tell how much room one action needs"
     )
-    # Counted by the label each one carries, so the two branches of a per-variant class do not
-    # read as two actions while the one button they dress reads as none. Per variant, because
-    # the count decides that variant's floor: an action added to one row only would otherwise
-    # require the other to reserve room for something it does not render, and this guard would
-    # fail a correct change.
+    # Read per variant, because each variant's own actions decide its floor: an action added to
+    # one row only would otherwise require the other to reserve room for something it does not
+    # render, and this guard would fail a correct change.
     glyph_size = float(glyph.group(1))
     # The actions do not sit side by side and counting them assumed they did. They are
     # absolutely positioned and one is pushed clear of the other, so what the row has to
@@ -1435,6 +1449,17 @@ def test_chat_sidebar_row_actions_visible_on_coarse_pointers():
         "where inside its container the glyph sits"
     )
     inner_padding = float(inner.group(1))
+    # The container's `pl` is deliberately NOT added. `pr` is measured because justify-end makes
+    # it decide where the glyph sits; `pl` decides nothing about the glyph, it only extends a
+    # transparent box further left. #7276 is about the action sitting over the title, and what
+    # a reader sees over the title is the glyph.
+    #
+    # That box does extend one unit past the 15 the ink reaches, and since
+    # `.sidebar-row-action.sidebar-touch-reveal` is `pointer-events-auto`, a tap in that last
+    # 4px of a pr-16 row hits the pin rather than opening the chat. That is real, and it is a
+    # product question - widen both gutters, or shrink the pad - not one to settle by moving a
+    # contract test's floor, which would fail the shipped recents row over a defect #7276 never
+    # claimed. Raise the floor here once the rows are changed, not before.
     offsets = _row_action_offsets(live_css)
     actions = {
         name: _labelled_actions(sidebar_source, applied, name, offsets)
