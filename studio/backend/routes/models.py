@@ -385,7 +385,7 @@ def _is_model_directory(d: Path) -> bool:
         has_config = (d / "config.json").exists() or (d / "adapter_config.json").exists()
         if not has_config:
             return False
-        return any(_is_weight_file(f) for f in d.iterdir() if f.is_file())
+        return any(_is_weight_file(f) for f in _dir_entries(d) if f.is_file())
     except OSError as exc:
         # False here says "not a model directory", which is indistinguishable from a
         # directory that genuinely holds no weights, so the scanner drops a row it never
@@ -404,6 +404,26 @@ def _is_weight_bin(name: str) -> bool:
     return low.endswith(".bin") and low.startswith(_WEIGHT_BIN_PREFIXES)
 
 
+def _dir_entries(path: Path) -> list[Path]:
+    """Every entry in *path*, with an enumeration failure RAISED rather than swallowed.
+
+    ``Path.glob`` answers an unreadable directory with an empty result, so the handlers
+    around these predicates never fired for the case they exist for and a checkpoint the
+    scan could not look at was dropped while the pass published as complete. ``iterdir``
+    raises, which is what reaches the incident.
+    """
+    return list(path.iterdir())
+
+
+def _suffixed(path: Path, suffix: str) -> list[Path]:
+    """Entries in *path* whose suffix is *suffix*, compared case-insensitively.
+
+    Matching ``glob``'s behaviour on Windows, which is case-insensitive, rather than
+    Linux's: a staged ``MODEL.GGUF`` was discovered there and must stay discovered.
+    """
+    return [entry for entry in _dir_entries(path) if entry.suffix.lower() == suffix]
+
+
 def _has_non_gguf_weights(path: Path) -> bool:
     """True if *path* holds non-GGUF weight files (``.safetensors`` or a weight ``.bin``), ignoring
     companion ``.bin`` files such as ``tokenizer.bin`` so a GGUF-only folder is not misread as a plain
@@ -411,9 +431,9 @@ def _has_non_gguf_weights(path: Path) -> bool:
     try:
         # Only the safetensors arm needs the check: a weight ".bin" is recognised by its name prefix, which a
         # "._" already fails.
-        if any(not is_appledouble_metadata(f) for f in path.glob("*.safetensors")):
+        if any(not is_appledouble_metadata(f) for f in _suffixed(path, ".safetensors")):
             return True
-        return any(_is_weight_bin(f.name) for f in path.glob("*.bin"))
+        return any(_is_weight_bin(f.name) for f in _suffixed(path, ".bin"))
     except OSError:
         note_scan_incident(f"weights unreadable: {path}")
         return False
@@ -430,7 +450,7 @@ def _servable_gguf_names(directory: Path) -> list[str]:
     companions of a real model and presence is all they decide."""
     return [
         p.name
-        for p in directory.glob("*.gguf")
+        for p in _suffixed(directory, ".gguf")
         if not is_appledouble_metadata(p) and not _is_imatrix_path(p.name)
     ]
 
@@ -445,8 +465,11 @@ def _is_gguf_companion_only_dir(path: Path) -> bool:
             return False
         if (path / "config.json").exists() or (path / "adapter_config.json").exists():
             return False
-        return any(path.glob("*.gguf")) and not _has_non_gguf_weights(path)
-    except OSError:
+        return bool(_suffixed(path, ".gguf")) and not _has_non_gguf_weights(path)
+    except OSError as exc:
+        # Same rule as everywhere else in this pass: a folder it could not read is a gap,
+        # not a folder holding nothing.
+        note_scan_incident(f"gguf companion check unreadable: {path} ({type(exc).__name__})")
         return False
 
 

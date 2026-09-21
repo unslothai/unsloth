@@ -53,8 +53,11 @@ def staged_gguf_files(hermes_dir: Path) -> List[Path]:
         # yields nothing, so an unreadable or stale-mounted Hermes folder reached the
         # caller as an empty one and the pass published as complete over it. Verified
         # against CPython: a directory with no search permission makes glob return [] while
-        # iterdir raises. Matching is unchanged -- the same flat, case-sensitive suffix.
-        files = sorted(p for p in hermes_dir.iterdir() if p.name.endswith(".gguf") and p.is_file())
+        # iterdir raises. The suffix is compared case-INSENSITIVELY, which is what glob does
+        # on Windows, where a staged MODEL.GGUF was discovered and must stay so.
+        files = sorted(
+            p for p in hermes_dir.iterdir() if p.suffix.lower() == ".gguf" and p.is_file()
+        )
     except OSError as exc:
         logger.warning("Error scanning Hermes directory %s: %s", hermes_dir, exc)
         # An empty list here is indistinguishable from a directory holding nothing, and a

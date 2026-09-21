@@ -13118,3 +13118,62 @@ def test_a_scan_directory_that_cannot_be_enumerated_is_reported():
         with collecting_scan_incidents() as incidents:
             assert hermes_service.staged_gguf_files(empty) == []
         assert incidents == [], f"an empty Hermes folder was reported as a gap: {incidents}"
+
+
+def test_a_checkpoint_directory_that_cannot_be_enumerated_is_reported():
+    """The weight predicates in routes/models.py globbed too.
+
+    A model child directory that cannot be read answers every glob with nothing and every
+    exists()/is_file() with False, so a safetensors checkpoint inside it was dropped while
+    the pass published as complete. Driven against the real filesystem, since the
+    suppression is pathlib's.
+    """
+    import os
+    import pathlib
+
+    from core.inference.scan_incidents import collecting_scan_incidents
+    from routes import models as models_route
+
+    with tempfile.TemporaryDirectory() as root:
+        child = pathlib.Path(root) / "checkpoint"
+        child.mkdir()
+        (child / "model.safetensors").write_bytes(b"x")
+        os.chmod(child, 0o000)
+        try:
+            assert (
+                list(child.glob("*.safetensors")) == []
+            ), "glob no longer suppresses the enumeration failure, so this case is stale"
+            with collecting_scan_incidents() as incidents:
+                assert models_route._has_non_gguf_weights(child) is False
+            assert any(
+                "unreadable" in note for note in incidents
+            ), f"a checkpoint the scan could not read was dropped silently: {incidents}"
+        finally:
+            os.chmod(child, 0o755)
+
+        # Readable and holding no weights is an ANSWER.
+        empty = pathlib.Path(root) / "empty"
+        empty.mkdir()
+        with collecting_scan_incidents() as incidents:
+            assert models_route._has_non_gguf_weights(empty) is False
+        assert incidents == [], f"an empty directory was reported as a gap: {incidents}"
+
+
+def test_the_scanners_match_a_gguf_suffix_the_way_windows_does():
+    """glob is case-INSENSITIVE on Windows, so a staged MODEL.GGUF was discovered there.
+
+    Moving to iterdir with an endswith would have dropped it silently, and a dropped row on
+    a pass that publishes as complete is exactly what the rest of this PR is about.
+    """
+    import pathlib
+
+    from hub.services.models import hermes as hermes_service
+    from routes import models as models_route
+
+    with tempfile.TemporaryDirectory() as root:
+        directory = pathlib.Path(root)
+        (directory / "MODEL.GGUF").write_bytes(b"GGUF")
+        assert [p.name for p in hermes_service.staged_gguf_files(directory)] == [
+            "MODEL.GGUF"
+        ], "an upper-case GGUF is no longer staged, which Windows used to discover"
+        assert models_route._servable_gguf_names(directory) == ["MODEL.GGUF"]
