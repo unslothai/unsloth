@@ -2738,7 +2738,8 @@ def test_deleting_an_external_project_spares_a_reserved_root_it_never_made(
     monkeypatch.setattr(chat_history, "_delete_project_rag_sources", lambda pid: None)
     asyncio.new_event_loop().run_until_complete(
         chat_history.delete_project(
-            project["id"], request = None, delete_files = True, current_subject = "t")
+            project["id"], request = None, delete_files = True, current_subject = "t"
+        )
     )
 
     assert precious.exists(), "the delete removed a directory Studio never created"
