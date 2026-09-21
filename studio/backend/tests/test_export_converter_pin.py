@@ -14,6 +14,7 @@ from __future__ import annotations
 import contextlib
 import os
 import sys
+import threading
 from pathlib import Path
 
 _BACKEND_DIR = Path(__file__).resolve().parent.parent
@@ -33,13 +34,17 @@ _SCRIPTS_DIR = "UNSLOTH_LLAMA_CPP_SCRIPTS_DIR"
 _CONVERTER_TAG = "UNSLOTH_LLAMA_CPP_CONVERTER_TAG"
 
 
-def _export_mod(monkeypatch):
+def _export_mod(monkeypatch, *, mlx = False):
     _install_export_backend_stubs(monkeypatch)
     monkeypatch.delenv(_SCRIPTS_DIR, raising = False)
     monkeypatch.delenv(_CONVERTER_TAG, raising = False)
-    return _load_module(
+    mod = _load_module(
         "test_core_export_backend_converter_pin", "core/export/export.py", monkeypatch
     )
+    # The stub unsloth is MLX, so say which host each case is about: Studio pins on a
+    # GPU host, and leaves the pinning to unsloth_zoo's MLX save path on a Mac.
+    monkeypatch.setattr(mod, "_IS_MLX", mlx)
+    return mod
 
 
 def _zoo(
@@ -52,8 +57,15 @@ def _zoo(
     llama_cpp = sys.modules["unsloth_zoo.llama_cpp"]
     calls = {"internal": [], "incomplete": []}
 
+    # Not reentrant, exactly like the real one: it holds a plain threading.Lock for the
+    # whole conversion, so a second entry on the same thread hangs rather than raising.
+    # Raising here turns that hang into a test failure.
+    held = threading.Lock()
+
     @contextlib.contextmanager
     def _internal_scripts_dir_pin(folder):
+        if not held.acquire(blocking = False):
+            raise RuntimeError("internal_scripts_dir_pin re-entered: the real one deadlocks here")
         calls["internal"].append(folder)
         existing = os.environ.get(_SCRIPTS_DIR)
         if existing is None:
@@ -65,6 +77,7 @@ def _zoo(
                 os.environ.pop(_SCRIPTS_DIR, None)
             else:
                 os.environ[_SCRIPTS_DIR] = existing
+            held.release()
 
     if internal_pin:
         monkeypatch.setattr(
@@ -159,6 +172,61 @@ def test_the_pin_unwinds_when_the_conversion_raises(monkeypatch):
         with mod._llama_cpp_scripts_pin():
             raise RuntimeError("conversion failed")
     assert _SCRIPTS_DIR not in os.environ
+
+
+def test_mlx_leaves_the_pinning_to_unsloth_zoo(monkeypatch):
+    """The MLX save path installs llama.cpp and pins it itself, so there is nothing to
+    add here."""
+    mod = _export_mod(monkeypatch, mlx = True)
+    _llama_cpp, calls = _zoo(monkeypatch)
+
+    with mod._llama_cpp_scripts_pin():
+        assert _SCRIPTS_DIR not in os.environ
+    assert calls["internal"] == []
+
+
+def test_mlx_export_does_not_nest_the_pin(monkeypatch):
+    """unsloth_zoo's pin holds a plain threading.Lock for the whole conversion, so
+    entering it here and again inside save_pretrained_gguf hangs a Mac GGUF export
+    for good. The stub raises where the real one would block."""
+    mod = _export_mod(monkeypatch, mlx = True)
+    llama_cpp, _calls = _zoo(monkeypatch)
+
+    with mod._llama_cpp_scripts_pin():
+        # What unsloth_zoo/mlx/utils.py:save_pretrained_gguf does inside the call above.
+        with llama_cpp.internal_scripts_dir_pin(llama_cpp.LLAMA_CPP_DEFAULT_DIR):
+            pass
+    assert _SCRIPTS_DIR not in os.environ
+
+
+def test_a_gguf_export_leaves_no_pin_behind(tmp_path, monkeypatch):
+    """End to end through export_gguf: the pin is in force while the model converts and
+    gone once the export returns. The export worker outlives the export, so a variable
+    left here is read by every later export in that process."""
+    mod = _export_mod(monkeypatch)
+    llama_cpp, calls = _zoo(monkeypatch)
+    save_dir = tmp_path / "export"
+    monkeypatch.setattr(mod, "resolve_export_write_dir", lambda _value: save_dir)
+    seen = {}
+
+    class _Model:
+        def save_pretrained_gguf(self, model_save_path, tokenizer, **kwargs):
+            seen["pinned_during_conversion"] = os.environ.get(_SCRIPTS_DIR)
+            output_dir = Path(f"{model_save_path}_gguf")
+            output_dir.mkdir(parents = True, exist_ok = True)
+            (output_dir / "converted.gguf").write_bytes(b"gguf")
+
+    backend = mod.ExportBackend.__new__(mod.ExportBackend)
+    backend.current_model = _Model()
+    backend.current_tokenizer = object()
+    backend.current_checkpoint = None
+
+    success, message, _output_path = backend.export_gguf(str(save_dir), "Q4_K_M")
+
+    assert success is True, message
+    assert os.environ.get(_SCRIPTS_DIR) is None
+    assert seen["pinned_during_conversion"] == llama_cpp.LLAMA_CPP_DEFAULT_DIR
+    assert calls["internal"] == [llama_cpp.LLAMA_CPP_DEFAULT_DIR]
 
 
 def test_zoo_without_the_pin_warns_once_and_runs(monkeypatch):

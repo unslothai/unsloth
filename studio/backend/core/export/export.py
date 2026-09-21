@@ -100,6 +100,14 @@ def _llama_cpp_scripts_pin():
     A pin the user set is left exactly as it is; that one carries their exemption.
     """
     global _LLAMA_CPP_SCRIPTS_WARNING_EMITTED
+    if _IS_MLX:
+        # The MLX save path pins the converter itself, around the llama.cpp install it
+        # has just made, so there is nothing to add here. Entering the pin anyway would
+        # nest unsloth_zoo's own internal pin inside this one, and that pin holds a plain
+        # threading.Lock for the whole conversion, so the second entry deadlocks a Mac
+        # GGUF export for good.
+        yield
+        return
     try:
         from unsloth_zoo.llama_cpp import (
             LLAMA_CPP_DEFAULT_DIR,
