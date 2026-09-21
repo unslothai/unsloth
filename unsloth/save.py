@@ -1391,10 +1391,27 @@ def install_llm_compressor():
     try:
         from importlib.metadata import version as _iv, PackageNotFoundError as _PNF
         try:
-            _iv("llmcompressor")
-            # Present; the compressed-export subprocess performs the real import. The caller only
-            # uses this to trigger the install and fail fast, so returning None here is safe.
-            return None, None
+            _installed = _iv("llmcompressor")
+            # Presence alone is not enough: a version outside the pinned range is exactly what
+            # the spec exists to correct, and short-circuiting on it would leave the export
+            # quantizing against an unsupported release. Only skip the install when what is
+            # installed is what we would have installed anyway.
+            _supported = True
+            try:
+                from packaging.requirements import Requirement
+
+                _supported = Requirement(_LLM_COMPRESSOR_SPEC).specifier.contains(
+                    _installed, prereleases = True
+                )
+            except Exception:
+                # No packaging, or a spec this cannot parse: treat presence as good enough
+                # rather than forcing the destructive re-resolve this guard exists to avoid.
+                _supported = True
+            if _supported:
+                # Present and supported; the compressed-export subprocess performs the real
+                # import. The caller only uses this to trigger the install and fail fast, so
+                # returning None here is safe.
+                return None, None
         except _PNF:
             pass
     except Exception:
