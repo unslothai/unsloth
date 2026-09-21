@@ -7045,7 +7045,32 @@ function Test-RespectPmPolicy {
 
 # Same one-shot translation as install.sh and install.ps1: setup.ps1 drives uv directly in
 # places Fast-Install does not cover, and uv reads no PIP_ variable.
-if ((Test-RespectPmPolicy) -and -not "$env:UV_REQUIRE_HASHES".Trim() -and (Test-PipEnvFlag 'PIP_REQUIRE_HASHES')) {
+# The pip half of the same question, resolved the way pip itself resolves it: PIP_* outranks
+# pip.conf, so an explicit variable is the answer and the files are never read. A hardened
+# host is likelier to express this in pip.conf than in the environment, and the Python phase
+# already reads it, so leaving it unread here let the shell phase run uv unhashed first.
+# One `pip config list`, and only ever on a host that has already opted in.
+function Test-PipPolicyRequiresHashes {
+    $off = @('', '0', 'false', 'no', 'off', 'n', 'f')
+    $raw = "$env:PIP_REQUIRE_HASHES".Trim()
+    if ($raw) { return (@('1', 't', 'true', 'y', 'yes', 'on') -contains $raw.ToLowerInvariant()) }
+    foreach ($exe in @('pip3', 'pip')) {
+        $found = Get-Command $exe -ErrorAction SilentlyContinue
+        if (-not $found) { continue }
+        $on = $false
+        try { $listing = & $found.Source config list 2>$null } catch { return $false }
+        foreach ($line in @($listing)) {
+            # Printed in load order, so a later entry -- including one that DISABLES it -- wins.
+            if ("$line" -match "^(global|install)\.require[-_]hashes\s*=\s*'?([^']*)'?\s*$") {
+                $on = ($off -notcontains $Matches[2].Trim().ToLowerInvariant())
+            }
+        }
+        return $on
+    }
+    return $false
+}
+
+if ((Test-RespectPmPolicy) -and -not "$env:UV_REQUIRE_HASHES".Trim() -and (Test-PipPolicyRequiresHashes)) {
     $env:UV_REQUIRE_HASHES = '1'
 }
 
@@ -7087,7 +7112,7 @@ function Fast-Install {
         if ($UseUv) {
             # The run-level carry above covers the usual case; this repeats it because
             # Fast-Install is also dot-sourced and called on its own by the test suites.
-            if ($respectPolicy -and (Test-PipEnvFlag 'PIP_REQUIRE_HASHES') -and -not "$env:UV_REQUIRE_HASHES".Trim()) {
+            if ($respectPolicy -and (Test-PipPolicyRequiresHashes) -and -not "$env:UV_REQUIRE_HASHES".Trim()) {
                 $carriedRequireHashes = $true
                 $env:UV_REQUIRE_HASHES = '1'
             }
@@ -7099,7 +7124,11 @@ function Fast-Install {
             # is attempted, because whatever made uv refuse may live in a uv.toml this never
             # parses, and a partial carry reads absolute while covering less.
             if ($respectPolicy) {
-                Write-Host $result
+                # Write-StudioLine, not Write-Host: 5.1's console host writes Write-Host
+                # itself rather than through the UTF-8 writer bound to [Console]::Out, so
+                # under CREATE_NO_WINDOW the desktop app renders uv's report as U+FFFD --
+                # which is the one line the operator needs in order to act on the refusal.
+                foreach ($line in @($result)) { Write-StudioLine "$line" }
                 substep "[ERROR] UNSLOTH_RESPECT_PM_POLICY keeps your uv settings in force, and pip reads none of them: falling back would retry with a resolver that has not been told what uv refused. Fix what uv reported, or unset UNSLOTH_RESPECT_PM_POLICY for one run to allow the pip fallback." "Red"
                 $global:LASTEXITCODE = 1
                 return

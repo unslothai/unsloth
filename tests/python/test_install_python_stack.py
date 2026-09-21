@@ -64,6 +64,29 @@ def _shared_setup_5(tmp_path):
 
 
 STUDIO_DIR = Path(__file__).resolve().parents[2] / "studio"
+INSTALL_SH = Path(__file__).resolve().parents[2] / "install.sh"
+
+
+def _shell_function_source(name: str) -> str:
+    """The body of one POSIX shell function in install.sh, by brace depth.
+
+    Ordering inside these functions is load-bearing -- a guard that declines below a step
+    that has already mutated the venv is not a decline -- and only the real file can show
+    it, so the text is read rather than restated here.
+    """
+    text = INSTALL_SH.read_text(encoding = "utf-8")
+    start = text.index(f"\n{name}() {{")
+    depth = 0
+    for offset in range(start, len(text)):
+        if text[offset] == "{":
+            depth += 1
+        elif text[offset] == "}":
+            depth -= 1
+            if depth == 0:
+                return text[start : offset + 1]
+    raise AssertionError(f"{name}() is not closed in install.sh")
+
+
 sys.path.insert(0, str(STUDIO_DIR))
 
 import install_python_stack as ips
@@ -1522,7 +1545,7 @@ class TestPackageManagerPolicyOptOut:
         """
         monkeypatch.setattr(ips, "_PINNED_PIP_CONFIG_LISTING", listing)
         monkeypatch.setattr(ips, "_pinned_pip_config_overrides", lambda *a, **k: {})
-        assert ips._pip_config_requires_hashes() is expected
+        assert ips._pip_policy_requires_hashes() is expected
         with self._environment({}, opt_out = "1"):
             carried = ips._pip_policy_as_uv_env()
         assert carried == ({"UV_REQUIRE_HASHES": "1"} if expected else {})
@@ -1539,7 +1562,7 @@ class TestPackageManagerPolicyOptOut:
         ],
     )
     def test_force_pip_declines_under_uv_only_policy(
-        self, environment, active, monkeypatch, capsys
+        self, environment, active, monkeypatch, capsys, tmp_path
     ):
         """force_pip routes PAST uv on purpose, and pip reads none of uv's settings.
 
@@ -1557,6 +1580,10 @@ class TestPackageManagerPolicyOptOut:
         monkeypatch.setattr(ips.subprocess, "run", _record)
         monkeypatch.setattr(ips, "_pinned_cmd_and_env", lambda cmd: (list(cmd), None))
         monkeypatch.setattr(ips, "_invalidate_torch_runtime_probe", lambda: None)
+        # uv discovers configuration relative to the cwd, so a repo checkout that happens to
+        # carry a [tool.uv] table would make every "inactive" case active and the negative
+        # half of this test vacuous. An empty directory is the only honest starting point.
+        monkeypatch.chdir(tmp_path)
         counted: list = []
         monkeypatch.setattr(ips, "_count_install_action", lambda: counted.append(1))
         with self._environment(environment, opt_out = "1"):
@@ -1611,6 +1638,117 @@ class TestPackageManagerPolicyOptOut:
         """uv reads UV_ itself; restating them as PIP_ for a uv command would be noise."""
         with self._environment({"UV_REQUIRE_HASHES": "1"}, opt_out = "1"):
             assert ips._relaxed_pip_policy_env(["uv", "pip", "install", "torch"]) == {}
+
+    @pytest.mark.reads_real_pip_config
+    @pytest.mark.parametrize(
+        ("variable", "listing", "expected"),
+        [
+            # pip ranks PIP_* above its files, so an explicit 0 DISABLES a configured policy.
+            ("0", b"global.require-hashes='true'\n", False),
+            ("false", b"global.require-hashes='true'\n", False),
+            ("off", b"global.require-hashes='true'\n", False),
+            # and an explicit 1 stands on its own, files or no files.
+            ("1", b"global.require-hashes='false'\n", True),
+            ("1", b"", True),
+            # only an absent or blank variable defers to the file.
+            ("", b"global.require-hashes='true'\n", True),
+            ("   ", b"global.require-hashes='true'\n", True),
+            ("", b"global.require-hashes='false'\n", False),
+        ],
+    )
+    def test_the_environment_outranks_pip_config_when_carrying_policy(
+        self, variable, listing, expected, monkeypatch
+    ):
+        """Carrying a STRICTER policy than pip would apply is its own bug.
+
+        An operator who keeps `require-hashes = true` in pip.conf and exports
+        PIP_REQUIRE_HASHES=0 for one run has disabled it for that run: pip reads the
+        environment first. Reading the file alone would hand uv a requirement the operator
+        had just switched off, and the opt-out exists to honour their configuration rather
+        than to outrank it.
+        """
+        monkeypatch.setattr(ips, "_PINNED_PIP_CONFIG_LISTING", listing)
+        monkeypatch.setattr(ips, "_pinned_pip_config_overrides", lambda *a, **k: {})
+        with self._environment({"PIP_REQUIRE_HASHES": variable}, opt_out = "1"):
+            assert ips._pip_policy_requires_hashes() is expected
+            carried = ips._pip_policy_as_uv_env()
+        assert carried == ({"UV_REQUIRE_HASHES": "1"} if expected else {})
+
+    @pytest.mark.reads_real_pip_config
+    @pytest.mark.parametrize(
+        ("variable", "listing", "expected"),
+        [
+            (":all:", b"", [":all:"]),
+            ("", b"global.only-binary=':all:'\n", [":all:"]),
+            ("numpy,scipy", b"", ["numpy", "scipy"]),
+            # the environment wins over the file here too
+            (":all:", b"global.only-binary='numpy'\n", [":all:"]),
+            ("", b"", []),
+        ],
+    )
+    def test_an_unpinned_uv_command_is_told_the_only_binary_policy(
+        self, variable, listing, expected, monkeypatch
+    ):
+        """uv has no environment spelling for --only-binary, so argv is the only channel.
+
+        Measured on uv 0.10.7: `uv pip install --help` documents an env var for
+        --require-hashes and none for --only-binary. Withdrawing the sdist exemption under
+        the opt-out without stating the operator's own restriction in its place enforced
+        nothing; it merely differed from the default.
+        """
+        monkeypatch.setattr(ips, "_PINNED_PIP_CONFIG_LISTING", listing)
+        monkeypatch.setattr(ips, "_pinned_pip_config_overrides", lambda *a, **k: {})
+        unpinned_uv = ["uv", "pip", "install", "-r", "extras.txt"]
+        with self._environment({"PIP_ONLY_BINARY": variable}, opt_out = "1"):
+            assert ips._pip_policy_only_binary() == expected
+            args = ips._pinned_binary_policy_args(unpinned_uv, None)
+            # A plain pip command gains nothing: pip reads these settings itself.
+            assert ips._pinned_binary_policy_args(self.UNPINNED, None) == []
+        assert args == [arg for part in expected for arg in ("--only-binary", part)]
+        with self._environment({"PIP_ONLY_BINARY": variable}):
+            assert (
+                ips._pinned_binary_policy_args(unpinned_uv, None) == []
+            ), "the default path must not gain arguments it did not have before"
+
+    def test_a_uv_config_file_counts_as_policy_by_its_presence(self, monkeypatch, tmp_path):
+        """uv.toml is never parsed, so its presence has to be the answer.
+
+        Whatever restriction it holds -- a hash requirement, offline, a pinned source -- is
+        exactly what a forced-pip step will not see. Presence is cheap and conservative;
+        parsing uv's configuration is the unbounded surface this change keeps out.
+        """
+        monkeypatch.chdir(tmp_path)
+        with self._environment({}, opt_out = "1"):
+            assert ips._uv_config_file_present() is False
+            assert ips._uv_only_policy_active() is False
+
+            (tmp_path / "pyproject.toml").write_text("[project]\nname = 'x'\n")
+            assert (
+                ips._uv_config_file_present() is False
+            ), "a pyproject without a [tool.uv] table says nothing about uv"
+
+            (tmp_path / "pyproject.toml").write_text("[project]\nname = 'x'\n[tool.uv]\n")
+            assert ips._uv_config_file_present() is True
+            assert ips._uv_only_policy_active() is True
+
+            (tmp_path / "pyproject.toml").unlink()
+            (tmp_path / "uv.toml").write_text("")
+            assert ips._uv_config_file_present() is True
+
+    def test_the_shell_declines_the_forced_pip_amd_wheel_too(self):
+        """install.sh runs the same direct-URL install through pip, for the same reason.
+
+        _install_bnb_rocm bootstraps pip deliberately, because uv rejects the prerelease
+        wheel's metadata. Under the opt-out that is the same substitution pip_install_try
+        declines, and the guard has to sit ABOVE the bootstrap: ensurepip mutates the venv,
+        so a step that declines below it has already changed what it promised to leave.
+        """
+        body = _shell_function_source("_install_bnb_rocm")
+        guard = body.index("if _respect_pm_policy && _uv_only_policy_active")
+        assert guard < body.index(
+            "-m ensurepip"
+        ), "the decline must come before the venv is mutated by the pip bootstrap"
+        assert guard < body.index("-m pip install"), "and before the wheel is fetched"
 
 
 class TestProgressLineNotes:

@@ -8775,6 +8775,13 @@ def _pinned_binary_policy_args(cmd: "list[str]", env: "dict[str, str] | None") -
     package the operator named: a CLI --no-binary overrides their rule for it (pip 26.2).
     """
     if not _is_pinned_index_cmd(cmd):
+        # Unpinned uv commands under the opt-out: uv reads neither PIP_ONLY_BINARY nor
+        # pip.conf, and --only-binary has no environment spelling on `uv pip install` (uv
+        # 0.10.7, unlike --require-hashes), so argv is the ONLY way to state this policy.
+        # Without it the opt-out withdrew the sdist exemption without putting the operator's
+        # own restriction in its place, which enforced nothing and merely differed.
+        if _respect_pm_policy() and cmd[:1] == ["uv"]:
+            return [arg for part in _pip_policy_only_binary() for arg in ("--only-binary", part)]
         return []
     parts = [part.strip() for part in (env or {}).get("PIP_ONLY_BINARY", "").split(",")]
     parts = [part for part in parts if part]
@@ -8876,39 +8883,46 @@ _PIP_TO_UV_POLICY = (("PIP_REQUIRE_HASHES", "UV_REQUIRE_HASHES"),)
 def _uv_only_policy_active() -> bool:
     """Policy that binds uv and that pip cannot be told about.
 
-    Environment only, and that is the point: these are the settings whose presence can be
-    established. A uv.toml is not read, so this is a floor, not a complete answer -- which is
-    why the FALLBACK refuses outright rather than consulting this.
+    Two kinds of evidence, because the environment alone was a floor rather than an answer:
+    a named uv setting, or the mere PRESENCE of a uv configuration file. The file is not
+    parsed -- a hash, offline or index restriction inside it is exactly what pip will not
+    see, so a file that might hold one and cannot be read cheaply is treated as holding one.
+
+    Deliberately not "the opt-out is on, therefore refuse": that would decline the AMD
+    bitsandbytes prerelease for every operator who keeps their policy in force while having
+    no uv policy at all, which is a working install broken over a hypothetical.
     """
     return (
         _uv_env_flag("UV_REQUIRE_HASHES")
         or _uv_is_offline()
         or bool(os.environ.get("UV_EXCLUDE_NEWER", "").strip())
+        or _uv_config_file_present()
     )
 
 
-def _pip_config_requires_hashes(subcommand: str = "install") -> bool:
-    """Is require-hashes set in pip's own configuration, for the command being run?
+def _pip_config_value(option: str, subcommand: str = "install") -> "str | None":
+    """The effective value of a pip config OPTION, or None when the files do not set it.
 
     Reads the listing _pinned_pip_config_overrides() already fetches and memoises, so this
-    costs no extra subprocess and inherits its timeout and attempt budget. require-hashes is
+    costs no extra subprocess and inherits its timeout and attempt budget. These options are
     deliberately absent from _PINNED_PIP_CONFIG_KEEP_KEYS -- that allowlist decides what to
     RE-ASSERT after devnull, a different question from what the operator has asked for.
 
-    A pip.conf hash requirement is the likeliest shape a hardened host takes, likelier than
-    the environment variable, so leaving it unread would have missed the common case.
+    `:env:` rows are skipped here and reapplied by the caller, because pip ranks the
+    environment ABOVE the files and this returns the file half of that answer alone.
     """
     _pinned_pip_config_overrides(subcommand)
     listing = _PINNED_PIP_CONFIG_LISTING
     if not listing:
-        return False
-    found = False
+        return None
+    wanted = option.lower().replace("_", "-")
+    found: "str | None" = None
     for line in _decode_pip_output(listing).splitlines():
         name, separator, raw = line.partition("=")
         if not separator or name.startswith(":env:"):
             continue
-        section, _, option = name.strip().rpartition(".")
-        if option.strip().lower().replace("_", "-") != "require-hashes":
+        section, _, key = name.strip().rpartition(".")
+        if key.strip().lower().replace("_", "-") != wanted:
             continue
         if section not in ("global", subcommand):
             continue
@@ -8918,8 +8932,82 @@ def _pip_config_requires_hashes(subcommand: str = "install") -> bool:
             value = raw.strip().strip("'\"")
         # Printed in load order and the command's own section is read last, so a later
         # entry -- including one that DISABLES it -- is the answer.
-        found = str(value).strip().lower() not in ("", "0", "false", "no", "off", "n", "f")
+        found = str(value).strip()
     return found
+
+
+def _effective_pip_policy(
+    env_name: str,
+    option: str,
+    subcommand: str = "install",
+) -> "str | None":
+    """One pip setting as pip itself would resolve it: environment first, then the files.
+
+    pip ranks PIP_* above pip.conf, so a host that keeps `require-hashes = true` in the file
+    and exports PIP_REQUIRE_HASHES=0 for one run has DISABLED it for that run. Reading the
+    file alone would carry a policy stricter than the operator asked for into uv, which the
+    opt-out has no business doing: it exists to honour their configuration, not to outrank it.
+    """
+    raw = os.environ.get(env_name)
+    if raw is not None and raw.strip():
+        return raw.strip()
+    return _pip_config_value(option, subcommand)
+
+
+def _pip_policy_requires_hashes(subcommand: str = "install") -> bool:
+    """Is a hash requirement in force for pip, by environment or by configuration?"""
+    value = _effective_pip_policy("PIP_REQUIRE_HASHES", "require-hashes", subcommand)
+    if value is None:
+        return False
+    return value.strip().lower() not in ("", "0", "false", "no", "off", "n", "f")
+
+
+def _pip_policy_only_binary(subcommand: str = "install") -> "list[str]":
+    """The operator's only-binary targets, from PIP_ONLY_BINARY or pip.conf, as uv sees them.
+
+    `:all:` and named packages are both returned verbatim: uv spells the same restriction
+    `--only-binary`, so the values carry across unchanged and no mapping table is needed.
+    """
+    value = _effective_pip_policy("PIP_ONLY_BINARY", "only-binary", subcommand)
+    if not value:
+        return []
+    return [part.strip() for part in value.split(",") if part.strip()]
+
+
+def _uv_config_file_present() -> bool:
+    """Could uv be reading policy from a configuration file on this host?
+
+    Presence only -- the file is never parsed, which is the unbounded surface this change
+    keeps out. It answers the one question a forced-pip step needs: is there somewhere a
+    hash, offline or index restriction could be hiding that pip will not see? If yes, the
+    honest answer is that the substitution cannot be shown to be safe.
+
+    Cheap by construction: at most three stat calls and one small read, and only reached
+    once the opt-out is already on.
+    """
+    try:
+        if os.environ.get("UV_CONFIG_FILE", "").strip():
+            return True
+        if Path("uv.toml").is_file():
+            return True
+        pyproject = Path("pyproject.toml")
+        if pyproject.is_file():
+            # A substring, not a TOML parse: `[tool.uv]` cannot appear by accident, and a
+            # malformed file should not decide a security question by raising.
+            if "[tool.uv]" in pyproject.read_text(encoding = "utf-8", errors = "replace"):
+                return True
+        if IS_WINDOWS:
+            base = os.environ.get("APPDATA", "")
+            user = Path(base) / "uv" / "uv.toml" if base else None
+        else:
+            base = os.environ.get("XDG_CONFIG_HOME", "") or os.path.expanduser("~/.config")
+            user = Path(base) / "uv" / "uv.toml"
+        if user is not None and user.is_file():
+            return True
+    except OSError:
+        # An unreadable candidate is not evidence of absence.
+        return True
+    return False
 
 
 def _pip_policy_as_uv_env() -> "dict[str, str]":
@@ -8928,7 +9016,7 @@ def _pip_policy_as_uv_env() -> "dict[str, str]":
     for pip_name, uv_name in _PIP_TO_UV_POLICY:
         if os.environ.get(uv_name, "").strip():
             continue  # an explicit uv value the operator set outranks a translation
-        if _pip_env_flag(pip_name) or _pip_config_requires_hashes():
+        if _pip_policy_requires_hashes():
             carried[uv_name] = "1"
     return carried
 

@@ -66,6 +66,8 @@ $removeUvFlagsSrc    = Get-FunctionText $setupAst   "Remove-UvOnlyResolverFlags"
 # Fast-Install asks these two which policy to carry into uv. Extracted by name rather than
 # stubbed: a stub would answer for the shipped code instead of letting it answer.
 $pipEnvFlagSrc       = Get-FunctionText $setupAst   "Test-PipEnvFlag" $setupPs1
+# Fast-Install resolves the pip hash policy through this now, environment then pip.conf.
+$pipPolicySrc        = Get-FunctionText $setupAst   "Test-PipPolicyRequiresHashes" $setupPs1
 $uvEnvFlagSrc        = Get-FunctionText $setupAst   "Test-UvEnvFlag" $setupPs1
 
 Write-Host "== extraction =="
@@ -371,6 +373,7 @@ Check "Fast-Install consults Test-RespectPmPolicy" ($fastInstallSrc -match 'Test
 
 Invoke-Expression $removeUvFlagsSrc
 Invoke-Expression $pipEnvFlagSrc
+Invoke-Expression $pipPolicySrc
 Invoke-Expression $uvEnvFlagSrc
 Invoke-Expression $fastInstallSrc
 

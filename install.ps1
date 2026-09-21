@@ -4151,8 +4151,33 @@ exit 1
     # uv reads no PIP_ variable and this script drives uv directly, so a pip-expressed hash
     # requirement is restated once for the run. UV_REQUIRE_HASHES is uv's documented spelling
     # of --require-hashes; an explicit uv value the operator set is left alone.
+    # The pip half of the same question, resolved the way pip itself resolves it: PIP_* outranks
+    # pip.conf, so an explicit variable is the answer and the files are never read. A hardened
+    # host is likelier to express this in pip.conf than in the environment, and the Python phase
+    # already reads it, so leaving it unread here let the shell phase run uv unhashed first.
+    # One `pip config list`, and only ever on a host that has already opted in.
+    function Test-PipPolicyRequiresHashes {
+        $off = @('', '0', 'false', 'no', 'off', 'n', 'f')
+        $raw = "$env:PIP_REQUIRE_HASHES".Trim()
+        if ($raw) { return (@('1', 't', 'true', 'y', 'yes', 'on') -contains $raw.ToLowerInvariant()) }
+        foreach ($exe in @('pip3', 'pip')) {
+            $found = Get-Command $exe -ErrorAction SilentlyContinue
+            if (-not $found) { continue }
+            $on = $false
+            try { $listing = & $found.Source config list 2>$null } catch { return $false }
+            foreach ($line in @($listing)) {
+                # Printed in load order, so a later entry -- including one that DISABLES it -- wins.
+                if ("$line" -match "^(global|install)\.require[-_]hashes\s*=\s*'?([^']*)'?\s*$") {
+                    $on = ($off -notcontains $Matches[2].Trim().ToLowerInvariant())
+                }
+            }
+            return $on
+        }
+        return $false
+    }
+
     if ((Test-RespectPmPolicy) -and -not "$env:UV_REQUIRE_HASHES".Trim() -and
-        (@('1', 't', 'true', 'y', 'yes', 'on') -contains "$env:PIP_REQUIRE_HASHES".Trim().ToLowerInvariant())) {
+        (Test-PipPolicyRequiresHashes)) {
         $env:UV_REQUIRE_HASHES = '1'
     }
 
