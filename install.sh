@@ -239,8 +239,13 @@ _load_pip_config_listing() {
     if [ -n "${_VENV_PY:-}" ] && [ -x "${_VENV_PY:-}" ]; then
         if _PM_PIP_CONFIG_LISTING=$("$_VENV_PY" -m pip config list 2>/dev/null); then
             _PM_PIP_CONFIG_READABLE=1
-            return 0
         fi
+        # Return either way. A uv-created venv is often unseeded, so `-m pip` failing there
+        # is ordinary -- and falling through to a system pip would answer for a DIFFERENT
+        # environment and mark the answer readable, which is worse than no answer: the
+        # target's own site policy would be reported as successfully loaded and absent.
+        _PM_PIP_CONFIG_LISTING=${_PM_PIP_CONFIG_LISTING:-}
+        return 0
     fi
     for _pm_pip in pip3 pip; do
         command -v "$_pm_pip" >/dev/null 2>&1 || continue
@@ -573,9 +578,10 @@ _uv_only_policy_active() {
     _uv_flag_on "${UV_OFFLINE:-}" && return 0
     # A timestamp and a path, not booleans: any value is a setting.
     [ -n "${UV_EXCLUDE_NEWER:-}" ] && return 0
-    # A constraint file prohibits versions, and pip reads no UV_ variable, so a forced-pip
-    # step under one can install exactly what it forbids.
+    # A constraint file prohibits versions and an override file replaces them, and pip reads
+    # no UV_ variable, so a forced-pip step under either can install what they rule out.
     [ -n "${UV_CONSTRAINT:-}" ] && return 0
+    [ -n "${UV_OVERRIDE:-}" ] && return 0
     [ -n "${UV_CONFIG_FILE:-}" ] && return 0
     # UV_NO_CONFIG means uv discovers nothing, so there is no hidden file to respect.
     _uv_flag_on "${UV_NO_CONFIG:-}" && return 1

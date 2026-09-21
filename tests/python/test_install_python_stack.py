@@ -2419,6 +2419,18 @@ class TestPackageManagerPolicyOptOut:
             body = _shell_function_source(name)
             assert "_pm_policy_ready" in body, f"{name} consumes the policy without resolving it"
 
+        # A failed query against the target must NOT be replaced by another environment's.
+        # A uv-created venv is often unseeded, so `-m pip` failing there is ordinary, and
+        # falling through would mark a different environment's listing as the target's own
+        # and report the target's policy as successfully loaded and absent.
+        listing_body = _shell_function_source("_load_pip_config_listing")
+        venv_arm = listing_body.index("_VENV_PY")
+        path_arm = listing_body.index("for _pm_pip in pip3 pip")
+        between = listing_body[venv_arm:path_arm]
+        assert (
+            "return 0" in between
+        ), "the target arm must return unconditionally, not fall through to a system pip"
+
         # And the resolution itself must be able to reach the target interpreter and file.
         listing = _shell_function_source("_load_pip_config_listing")
         assert "_VENV_PY" in listing, "the target venv's own pip answers for its site config"
@@ -2430,6 +2442,27 @@ class TestPackageManagerPolicyOptOut:
         # Memoised, or every command in the run pays for a subprocess.
         ready_body = _shell_function_source("_pm_policy_ready")
         assert "_PM_POLICY_RESOLVED" in ready_body
+
+    @pytest.mark.parametrize(
+        "variable",
+        ["UV_REQUIRE_HASHES", "UV_OFFLINE", "UV_EXCLUDE_NEWER", "UV_CONSTRAINT", "UV_OVERRIDE"],
+    )
+    def test_every_uv_only_setting_declines_a_forced_pip_step(
+        self, variable, monkeypatch, tmp_path
+    ):
+        """A constraint prohibits versions; an override replaces them. pip reads neither.
+
+        So a forced-pip step under either installs exactly what they rule out, which is the
+        same reason the hash policy is in this list rather than a different kind of thing.
+        The shell twin is asserted by text below, since these run there too.
+        """
+        monkeypatch.chdir(tmp_path)
+        with self._environment({}, opt_out = "1"):
+            assert ips._uv_only_policy_active() is False
+        with self._environment({variable: "1"}, opt_out = "1"):
+            assert ips._uv_only_policy_active() is True, f"{variable} left a pip step permitted"
+        body = _shell_function_source("_uv_only_policy_active")
+        assert variable in body, f"install.sh's twin does not know about {variable}"
 
     def test_the_shell_declines_the_forced_pip_amd_wheel_too(self):
         """install.sh runs the same direct-URL install through pip, for the same reason.

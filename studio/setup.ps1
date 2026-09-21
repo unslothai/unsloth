@@ -7050,6 +7050,18 @@ function Get-PmPipConfigListing {
     if ($null -ne $script:PmPipConfigListing) { return $script:PmPipConfigListing }
     $script:PmPipConfigListing = @()
     $script:PmPipConfigReadable = $false
+    # The TARGET interpreter first: its site pip.ini is the file governing the installs this
+    # protects, and a pip on PATH answers for a different environment. Return either way --
+    # a uv-created venv is often unseeded, so `-m pip` failing there is ordinary, and
+    # falling through would mark another environment's listing as the target's own.
+    if ($script:PmVenvPython -and (Test-Path -LiteralPath $script:PmVenvPython -PathType Leaf)) {
+        try {
+            $script:PmPipConfigListing = @(& $script:PmVenvPython -m pip config list 2>$null)
+            if ($LASTEXITCODE -ne 0) { $script:PmPipConfigListing = @() }
+            else { $script:PmPipConfigReadable = $true }
+        } catch { $script:PmPipConfigListing = @() }
+        return $script:PmPipConfigListing
+    }
     foreach ($exe in @('pip3', 'pip')) {
         $found = Get-Command $exe -ErrorAction SilentlyContinue
         if (-not $found) { continue }
@@ -7080,6 +7092,9 @@ function Test-PipConfigFilesPresent {
     }
     $candidates += (Join-Path $HOME 'pip\pip.ini')
     if ($env:VIRTUAL_ENV) { $candidates += (Join-Path $env:VIRTUAL_ENV 'pip.ini') }
+    # Not $VIRTUAL_ENV: this script creates or updates that venv rather than running
+    # in it, so the variable is unset exactly when the target's policy matters most.
+    if ($script:PmVenvDir) { $candidates += (Join-Path $script:PmVenvDir 'pip.ini') }
     foreach ($candidate in $candidates) {
         if (Test-Path -LiteralPath $candidate -PathType Leaf) { return $true }
     }
@@ -7270,9 +7285,16 @@ function Get-PipPolicyIndexArgs {
     return $args
 }
 
-# Empty by default, so every splat below is a no-op on the default path.
+# Resolved on FIRST USE, not here: the target venv's interpreter is chosen later in this
+# file, and the installs this protects run against it, so resolving now would query
+# whichever pip is on PATH and never see the target's own site configuration. Memoised, and
+# empty by default, so every splat at the uv call sites is a no-op unless opted in.
+$script:PmPolicyResolved = $false
 $script:PmPolicyArgs = @()
-if (Test-RespectPmPolicy) {
+function Resolve-PmPolicy {
+    if ($script:PmPolicyResolved) { return }
+    $script:PmPolicyResolved = $true
+    if (-not (Test-RespectPmPolicy)) { return }
     Assert-ReadablePipPolicy
     Assert-CarryablePipPolicy
     $script:PmPolicyArgs = @(Get-PipPolicyOnlyBinary) + @(Get-PipPolicyNoBinary) +
@@ -7286,6 +7308,9 @@ if ((Test-RespectPmPolicy) -and -not "$env:UV_REQUIRE_HASHES".Trim() -and (Test-
 # Helper: install a package, preferring uv with pip fallback
 function Fast-Install {
     param([Parameter(ValueFromRemainingArguments=$true)]$Args_)
+    # Here rather than at file scope: by the time anything installs, the target venv is on
+    # PATH, so its own pip answers for its site configuration.
+    Resolve-PmPolicy
     # An explicit --index-url must win: inherited index vars pull CPU torch over GPU (#6898).
     $saved = @{}
     $pinned = @($Args_) -contains '--index-url'
@@ -7326,6 +7351,7 @@ function Fast-Install {
                 $env:UV_REQUIRE_HASHES = '1'
             }
             $VenvPy = (Get-Command python).Source
+            if (-not $script:PmVenvPython) { $script:PmVenvPython = $VenvPy }
             $result = & uv pip install --python $VenvPy @script:PmPolicyArgs @Args_ 2>&1
             if ($LASTEXITCODE -eq 0) { return }
             # Same hand-off as pip_install(): pip reads neither uv.toml nor any UV_ variable,
@@ -7375,6 +7401,7 @@ function Fast-Uninstall {
 # UV_* pip cannot read: an inherited PIP_INDEX_URL or user pip.conf would outrank --index-url.
 function Fast-Download {
     param([Parameter(ValueFromRemainingArguments=$true)]$Args_)
+    Resolve-PmPolicy
     $saved = @{}
     # Gated like Fast-Install: a pip.conf kept in force must bind the fetch half of a staged
     # swap too, or the wheel arrives unverified.

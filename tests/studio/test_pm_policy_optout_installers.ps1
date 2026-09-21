@@ -69,6 +69,8 @@ $pipEnvFlagSrc       = Get-FunctionText $setupAst   "Test-PipEnvFlag" $setupPs1
 # Fast-Install resolves the pip hash policy through these now, environment then pip.conf,
 # and splats the only-binary policy, which uv can only be told as argv.
 $pipListingSrc       = Get-FunctionText $setupAst   "Get-PmPipConfigListing" $setupPs1
+# Both chokepoints resolve the policy on first use now, so the stand-in has to exist.
+$resolveSrc          = Get-FunctionText $setupAst   "Resolve-PmPolicy" $setupPs1
 $pipPolicySrc        = Get-FunctionText $setupAst   "Test-PipPolicyRequiresHashes" $setupPs1
 $buildTargetsSrc     = Get-FunctionText $setupAst   "Get-PipPolicyFormatControl" $setupPs1
 $onlyBinarySrc       = Get-FunctionText $setupAst   "Get-PipPolicyOnlyBinary" $setupPs1
@@ -281,6 +283,9 @@ function Write-UvDownloadMarker { param($a) }
 function Redact-InstallOutput { param($a) return "$a" }
 function Write-StudioLine { param($a, $ForegroundColor) }
 $script:UnslothVerbose = $false
+# A no-op stand-in: these checks are about the scrub and the flags, not about probing pip,
+# and the real one would shell out. Its own behaviour is covered further down.
+function Resolve-PmPolicy { }
 
 Invoke-Expression $invokeInstallSrc
 

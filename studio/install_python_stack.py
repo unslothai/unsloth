@@ -8915,10 +8915,12 @@ def _uv_only_policy_active() -> bool:
         _uv_env_flag("UV_REQUIRE_HASHES")
         or _uv_is_offline()
         or bool(os.environ.get("UV_EXCLUDE_NEWER", "").strip())
-        # A constraint file prohibits versions, and pip reads no UV_ variable, so a
-        # forced-pip step under one can install exactly what it forbids. Listed here for
-        # the same reason as the hash policy rather than as a different kind of thing.
+        # A constraint file prohibits versions and an override file replaces them, and pip
+        # reads no UV_ variable, so a forced-pip step under either can install exactly what
+        # they rule out. Listed here for the same reason as the hash policy rather than as
+        # a different kind of thing.
         or bool(os.environ.get("UV_CONSTRAINT", "").strip())
+        or bool(os.environ.get("UV_OVERRIDE", "").strip())
         or _uv_config_file_present()
     )
 

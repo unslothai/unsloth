@@ -4163,6 +4163,18 @@ exit 1
         if ($null -ne $script:PmPipConfigListing) { return $script:PmPipConfigListing }
         $script:PmPipConfigListing = @()
         $script:PmPipConfigReadable = $false
+        # The TARGET interpreter first: its site pip.ini is the file governing the installs this
+        # protects, and a pip on PATH answers for a different environment. Return either way --
+        # a uv-created venv is often unseeded, so `-m pip` failing there is ordinary, and
+        # falling through would mark another environment's listing as the target's own.
+        if ($script:PmVenvPython -and (Test-Path -LiteralPath $script:PmVenvPython -PathType Leaf)) {
+            try {
+                $script:PmPipConfigListing = @(& $script:PmVenvPython -m pip config list 2>$null)
+                if ($LASTEXITCODE -ne 0) { $script:PmPipConfigListing = @() }
+                else { $script:PmPipConfigReadable = $true }
+            } catch { $script:PmPipConfigListing = @() }
+            return $script:PmPipConfigListing
+        }
         foreach ($exe in @('pip3', 'pip')) {
             $found = Get-Command $exe -ErrorAction SilentlyContinue
             if (-not $found) { continue }
@@ -4193,6 +4205,9 @@ exit 1
         }
         $candidates += (Join-Path $HOME 'pip\pip.ini')
         if ($env:VIRTUAL_ENV) { $candidates += (Join-Path $env:VIRTUAL_ENV 'pip.ini') }
+        # Not $VIRTUAL_ENV: this script creates or updates that venv rather than running
+        # in it, so the variable is unset exactly when the target's policy matters most.
+        if ($script:PmVenvDir) { $candidates += (Join-Path $script:PmVenvDir 'pip.ini') }
         foreach ($candidate in $candidates) {
             if (Test-Path -LiteralPath $candidate -PathType Leaf) { return $true }
         }
@@ -4379,9 +4394,16 @@ exit 1
         return $args
     }
 
-    # Empty by default, so every splat at the uv call sites is a no-op unless opted in.
+    # Resolved on FIRST USE, not here: the target venv's interpreter is chosen later in this
+    # file, and the installs this protects run against it, so resolving now would query
+    # whichever pip is on PATH and never see the target's own site configuration. Memoised, and
+    # empty by default, so every splat at the uv call sites is a no-op unless opted in.
+    $script:PmPolicyResolved = $false
     $script:PmPolicyArgs = @()
-    if (Test-RespectPmPolicy) {
+    function Resolve-PmPolicy {
+        if ($script:PmPolicyResolved) { return }
+        $script:PmPolicyResolved = $true
+        if (-not (Test-RespectPmPolicy)) { return }
         Assert-ReadablePipPolicy
         Assert-CarryablePipPolicy
         $script:PmPolicyArgs = @(Get-PipPolicyOnlyBinary) + @(Get-PipPolicyNoBinary) +
@@ -4398,6 +4420,9 @@ exit 1
             [Parameter(Mandatory = $true)][ScriptBlock]$Command,
             [string]$Label = "install command"
         )
+        # Here rather than at file scope: $VenvPython is chosen further down, and the
+        # target's own site pip.ini is what governs the installs this protects.
+        Resolve-PmPolicy
         # A pinned index must beat an inherited uv mirror (#6898); UV_NO_CONFIG=1 blocks uv.toml.
         # Runs before install_python_stack.py, so the Python opt-out cannot cover it: under the
         # opt-out the uv.toml binds this install too, and only the ADDITIVE vars go.
@@ -7155,6 +7180,10 @@ exit 0
     Write-StudioRootOwnerMarker -Root $StudioHome
 
     $VenvPython = Join-Path $VenvDir "Scripts\python.exe"
+    # Published for Resolve-PmPolicy, which runs after this point and asks this interpreter
+    # for its own pip configuration rather than whichever pip is on PATH.
+    $script:PmVenvPython = $VenvPython
+    $script:PmVenvDir = $VenvDir
     $_Migrated = $false
     $script:StudioVenvRollbackDir = $null
     $script:StudioVenvRollbackTarget = $VenvDir
