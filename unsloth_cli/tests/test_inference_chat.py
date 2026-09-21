@@ -1231,7 +1231,12 @@ def test_cli_leaves_unset_sampling_to_the_server(monkeypatch, command):
     backend = HttpChatBackend("http://localhost:8888", "token")
     bodies = []
 
-    def fake_request(method, path, payload = None, timeout = None):
+    def fake_request(
+        method,
+        path,
+        payload = None,
+        timeout = None,
+    ):
         bodies.append(payload)
         return _FakeSSEResponse([b"data: [DONE]\n"])
 
