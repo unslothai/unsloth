@@ -1017,9 +1017,6 @@ def test_chat_sidebar_row_actions_visible_on_coarse_pointers():
     # Per VARIANT, not once for the block. The two rows carry their own paddings, so a single
     # search over the whole function is satisfied by the project row on its own and would stay
     # green while recents lost theirs, which is the half of #7276 that was actually reported.
-    # Per VARIANT, not once for the block. The two rows carry their own paddings, so a single
-    # search over the whole function is satisfied by the project row on its own and would stay
-    # green while recents lost theirs, which is the half of #7276 that was actually reported.
     #
     # An earlier version of this worked out which padding WINS: last in cn order, across
     # arguments, with conditional arguments applying only to their own branch and an
