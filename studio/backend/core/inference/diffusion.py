@@ -6766,8 +6766,8 @@ class DiffusionBackend:
         controlnet: Optional[tuple[str, str, str, float, float, float]] = None,
         # load_identity() of the caller's status() read; refuse rather than run a different load (#9448)
         expected_load: Optional[LoadIdentity] = None,
-        # Client-generated id for THIS request, echoed back beside a retained failure.
-        # Absent from an older client, which simply gets the pre-existing gallery probe.
+        # Client id for THIS request, echoed back beside a retained failure. Absent from
+        # an older client, which gets the pre-existing gallery probe.
         attempt_id: Optional[str] = None,
     ) -> dict[str, Any]:
         import torch
@@ -6792,10 +6792,9 @@ class DiffusionBackend:
                 # Cleared at the START, not only on success, so the retained reason can
                 # never be read as belonging to the run that is now in flight.
                 self._last_generate_error = None
-                # The id THIS request carried, kept with the reason so a caller settling a
-                # lost POST can tell a failure that is its own from one that is not. A post
-                # that never reached the backend started no run, so no retained reason
-                # carries its id, and a concurrent client's run carries its own.
+                # The id THIS request carried, kept with the reason: a post that never
+                # reached the backend started no run, so nothing carries its id, and a
+                # concurrent client's run carries its own.
                 self._last_generate_attempt = attempt_id
             try:
                 self._state_device_target(state)
@@ -7270,12 +7269,11 @@ class DiffusionBackend:
                     "workflow": workflow,
                 }
             except BaseException as exc:
-                # Kept so the idle progress below can still say WHY. A generation whose POST
-                # was lost past the proxy window leaves the client polling progress as its
-                # only channel, and clearing _gen without this reported "not running" for a
-                # failure, which the settling path then read as success. RAW: the route
-                # classifies it through _generate_failure_detail, so engine text and the
-                # paths and argv in it never reach a client from here.
+                # Kept so the idle progress below can still say WHY: once the POST is
+                # lost past the proxy window that poll is the client's only channel, and
+                # clearing _gen alone reported "not running" for a failure, which the
+                # settling path read as success. Raw; the route classifies it through
+                # _generate_failure_detail, so engine text never escapes from here.
                 self._last_generate_error = str(exc) or type(exc).__name__
                 raise
             else:
@@ -7303,9 +7301,8 @@ class DiffusionBackend:
                 # Idle is not the same as fine. Carried only while it is the LAST thing that
                 # happened: the next generation clears it on success.
                 "error": getattr(self, "_last_generate_error", None),
-                # WHICH attempt that reason belongs to, so a caller settling a LOST post
-                # can reject a failure that is not its own -- a previous run's, or a
-                # concurrent client's. None when the request carried no id.
+                # WHICH attempt the reason belongs to, so a caller settling a LOST
+                # post can reject one that is not its own. None if no id was sent.
                 "generation_attempt": getattr(self, "_last_generate_attempt", None),
             }
         return {

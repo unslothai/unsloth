@@ -70,18 +70,13 @@ export interface DiffusionGenerateProgress {
   eta_seconds: number | null;
   /** Why the LAST generation failed, when one did and is no longer running.
    *
-   * The only channel left when a generation's POST is lost past the proxy window: the
-   * settling path polls this, and without it an idle read of a failed run cannot be told
-   * from a finished one. Already classified by the backend, so it is safe to show.
-   * Optional: an older backend omits it. */
+   * The only channel left when a POST is lost past the proxy window: without it an idle
+   * read of a failed run cannot be told from a finished one. Classified by the backend,
+   * so it is safe to show; absent on an older one. */
   error?: string | null;
-  /** Which ATTEMPT the `error` belongs to: the id that request carried. Sent only
-   * alongside a reason.
-   *
-   * A caller settling a generation whose POST was lost cannot assume the reason is its
-   * own. If that POST never reached the backend no run started, so nothing carries its id;
-   * and a run that started after it may belong to another client entirely. Only an exact
-   * match makes the failure this attempt's. */
+  /** Which ATTEMPT the `error` belongs to: the id that request carried, sent only beside
+   * a reason. A lost POST that never arrived started no run, so nothing carries its id,
+   * and a later run may be another client's. Only an exact match is this attempt's. */
   generation_attempt?: string | null;
 }
 

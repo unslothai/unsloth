@@ -486,11 +486,9 @@ const SETTLE_MAX_FAILS = 5; // consecutive progress failures before calling the 
 async function settleLostGeneration(
   isCurrent: () => boolean,
   baseline: NewRecordProbeBaseline,
-  // This attempt's own id, as sent with the POST. A retained reason is only this attempt's
-  // if it carries the same id: a post that never reached the backend started no run, and a
-  // run that did start may be a concurrent client's. Without the match a failure that did
-  // not happen here is reported, and the gallery probe that would have said what did is
-  // skipped.
+  // This attempt's own id, as sent with the POST: a retained reason is only this
+  // attempt's if it carries the same id. Without the match a failure that happened
+  // elsewhere is reported and the gallery probe that would have said so is skipped.
   attemptId: string | null,
 ): Promise<void> {
   const start = Date.now();
@@ -511,11 +509,10 @@ async function settleLostGeneration(
       fails += 1;
       if (fails >= SETTLE_MAX_FAILS) throw new Error("Lost connection to the image server.");
     }
-    // Outside the catch, so a reason the backend reported is not counted as a transport
-    // failure. Idle is not the same as finished: a generation that failed after its POST
-    // was lost ends active-to-idle exactly like a successful one, so returning here
-    // reported success and could advance a multi-run batch past an output that never
-    // arrived. The string is already classified by the backend.
+    // Outside the catch, so a reported reason is not counted as a transport failure. A
+    // run that failed after its POST was lost goes active-to-idle exactly like one that
+    // finished, so returning here read as success and could advance a batch past an
+    // output that never arrived. Already classified by the backend.
     if (reported) throw new Error(reported);
     if (!idle) continue;
     if (sawActive) return;
@@ -3499,10 +3496,8 @@ export function ImagesPage({
           galleryCache.hasMore,
           knownIds,
         );
-        // This attempt's identity, minted here so it describes exactly one post. A reason
-        // the engine retains carries the id of the run it came from, so neither an earlier
-        // failure nor a concurrent client's can be mistaken for this attempt's, and a post
-        // that never arrived started nothing that carries this at all.
+        // Minted here so it describes exactly one post: a retained reason carries the id
+        // of the run it came from, and a post that never arrived started nothing.
         const attemptId = newGenerationAttemptId();
         let res: DiffusionGenerateResponse;
         try {

@@ -109,16 +109,13 @@ export function DebuggingTab() {
       try {
         // Bounded like the tail read: the poll loop and its failure recovery
         // both await this, so an unanswered /sources would freeze both.
-        // Sent with the listing so the backend can canonicalise it against the same
-        // realpaths it is about to report; the spellings do not match as strings.
+        // Sent with the listing so the backend canonicalises it against the realpaths
+        // it is about to report; the spellings do not match as strings.
         //
-        // Captured for the WHOLE fetch, not re-read from the store afterwards. A refresh
-        // already in flight when the user clicks "View logs" would otherwise answer the
-        // newly pending request from a listing fetched without its path, pick the
-        // family's newest file, and consume the request; consuming it then aborts the
-        // newer exact-path refresh through this effect's cleanup, so after a failed switch
-        // and rollback the panel lands on the rollback's log, the one the path exists to
-        // avoid.
+        // Captured for the WHOLE fetch rather than re-read afterwards: a refresh already
+        // in flight when "View logs" is clicked would answer the new request from a
+        // listing fetched without its path, take the family's newest file, and consume
+        // the request, aborting the exact-path refresh that was about to be right.
         const requestedFor = pendingLogRequestKey(
           useSettingsDialogStore.getState(),
         );
@@ -131,12 +128,10 @@ export function DebuggingTab() {
         );
         setSources(result.sources);
         setLogRoot(result.logRoot);
-        // A "View logs" action from a failure names the family that just failed, and
-        // where the diagnostic carried one, the exact file. Prefer the file: a switch
-        // that fails after evicting the previous model is rolled back by performLoad,
-        // and that rollback writes a NEWER log in the same family, so recency alone
-        // opens the attempt that succeeded. Family recency stays the fallback for a
-        // diagnostic with no path in it, or one naming a file no longer listed.
+        // Prefer the exact file the diagnostic named: a failed switch is rolled back by
+        // performLoad, and the rollback writes a NEWER log in the same family, so
+        // recency alone opens the attempt that succeeded. Recency stays the fallback
+        // when there is no path, or it names a file no longer listed.
         const dialog = useSettingsDialogStore.getState();
         const requested = dialog.logFamilyRequested;
         const byPath = result.matchedSourceId
@@ -176,10 +171,10 @@ export function DebuggingTab() {
     return () => controller.abort();
   }, [refreshSources]);
 
-  // A request that arrives while this panel is ALREADY mounted. openLogs only writes the
-  // store, and reopening the tab it is already on does not remount, so the mount effect
-  // above never runs again; in manual refresh mode nothing else rescans either, and the
-  // panel sat on its previous selection indefinitely. Subscribed, so the arrival itself is
+  // A request that arrives while this panel is ALREADY mounted. openLogs only writes
+  // the store and reopening the current tab does not remount, so the mount effect never
+  // runs again and manual refresh mode rescans nothing: the panel sat on its previous
+  // selection indefinitely. Subscribed, so the arrival itself is
   // what triggers the rescan that consumes it.
   const pendingLogRequest = useSettingsDialogStore(pendingLogRequestKey);
   useEffect(() => {

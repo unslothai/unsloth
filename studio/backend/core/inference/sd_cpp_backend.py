@@ -3143,8 +3143,8 @@ class SdCppDiffusionBackend:
         controlnet: Optional[tuple[str, str, str, float, float, float]] = None,
         # load_identity() of the caller's status() read; refuse rather than run a different load (#9448)
         expected_load: Optional[LoadIdentity] = None,
-        # Client-generated id for THIS request, echoed back beside a retained failure.
-        # Absent from an older client, which simply gets the pre-existing gallery probe.
+        # Client id for THIS request, echoed back beside a retained failure. Absent from
+        # an older client, which gets the pre-existing gallery probe.
         attempt_id: Optional[str] = None,
     ) -> dict[str, Any]:
         import tempfile
@@ -3206,10 +3206,9 @@ class SdCppDiffusionBackend:
                 self._gen = _SdGen(total_steps = int(steps))
                 # Cleared at the START, so the retained reason is never read as this run's.
                 self._last_generate_error = None
-                # The id THIS request carried, kept with the reason so a caller settling a
-                # lost POST can tell a failure that is its own from one that is not. A post
-                # that never reached the backend started no run, so no retained reason
-                # carries its id, and a concurrent client's run carries its own.
+                # The id THIS request carried, kept with the reason: a post that never
+                # reached the backend started no run, so nothing carries its id, and a
+                # concurrent client's run carries its own.
                 self._last_generate_attempt = attempt_id
             try:
                 if seed is None:
@@ -3643,9 +3642,8 @@ class SdCppDiffusionBackend:
                 # Idle is not the same as fine. Only while it is the LAST thing that
                 # happened: the next generation clears it on success.
                 "error": getattr(self, "_last_generate_error", None),
-                # WHICH attempt that reason belongs to, so a caller settling a LOST post
-                # can reject a failure that is not its own -- a previous run's, or a
-                # concurrent client's. None when the request carried no id.
+                # WHICH attempt the reason belongs to, so a caller settling a LOST
+                # post can reject one that is not its own. None if no id was sent.
                 "generation_attempt": getattr(self, "_last_generate_attempt", None),
             }
         return {

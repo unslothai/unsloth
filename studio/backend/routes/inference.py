@@ -39543,18 +39543,17 @@ async def diffusion_generate_progress(current_subject: str = Depends(get_current
         return account_access.hidden_generate_progress_response(DiffusionGenerateProgressResponse)
 
     progress = get_active_diffusion_engine().generate_progress()
-    # Classified HERE, where every other client-visible generation message is built: the
-    # engine retains its own raw text so this stays the only place that decides what a
-    # caller may see, and engine text with its local paths and argv never escapes.
+    # Classified HERE, where every other client-visible generation message is built, so
+    # this stays the only place deciding what a caller may see and engine text with its
+    # local paths and argv never escapes.
     raw_error = progress.get("error")
     progress = {
         **progress,
         "error": _generate_failure_detail(raw_error) if raw_error else None,
     }
-    # The attempt id is only meaningful beside the reason it dates, and only the client that
-    # sent it can match it, so it goes no further than that: without a reason there is
-    # nothing to attribute, and a concurrent client has no business reading which attempt
-    # last failed.
+    # Only meaningful beside the reason it dates, and only its own sender can match it:
+    # without a reason there is nothing to attribute, and a concurrent client has no
+    # business reading which attempt last failed.
     if not progress.get("error"):
         progress.pop("generation_attempt", None)
     log_media_generation_progress("image", progress)

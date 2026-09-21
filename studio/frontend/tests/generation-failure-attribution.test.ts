@@ -3,13 +3,10 @@
 
 /** Which attempt a retained generation failure belongs to.
  *
- * The reason has to outlive the run it came from, because a caller whose POST was lost past
- * the proxy window has nothing else to read. That is exactly why it cannot be taken at face
- * value. Two different things can be true and both look like "a failure is available": the
- * POST never reached the backend, so nothing ran for it, or something ran and failed that
- * was not this attempt -- an earlier run, or a concurrent client on the same account.
- * Reporting either one is a failure that did not happen here, and it skips the gallery probe
- * that would have said what did.
+ * The reason outlives its run because a caller whose POST was lost has nothing else to
+ * read, which is why it cannot be taken at face value: the POST may never have arrived,
+ * or the run that failed may be an earlier one or a concurrent client's. Reporting either
+ * is a failure that did not happen here, and it skips the gallery probe that says what did.
  */
 
 import assert from "node:assert/strict";

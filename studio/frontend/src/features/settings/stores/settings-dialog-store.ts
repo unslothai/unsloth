@@ -54,10 +54,9 @@ interface SettingsDialogState {
   // toast). DataTab uses it as its initial subpage, then clears it. See requestsFor
   // for how long it lives unconsumed.
   archivedRequested: ArchivedShelf | null;
-  // Set when a failure elsewhere in the app offers "View logs". The Logs tab reads it
-  // as its initial source family, then clears it. A FAMILY rather than a source id:
-  // ids are a digest of the real path the frontend cannot compute, and at the moment
-  // of a failure the newest file in the family is the attempt that just failed.
+  // Set when a failure offers "View logs"; the Logs tab reads it as its initial source
+  // family, then clears it. A family rather than a source id, which is a digest of the
+  // real path the frontend cannot compute.
   logFamilyRequested: string | null;
   /** The exact log file the failure named, when its diagnostic carried one. Preferred over
    *  family recency: a rolled-back switch writes a newer log than the attempt that failed. */
@@ -156,14 +155,11 @@ function requestsFor(state: SettingsDialogState, tab: SettingsTab) {
 
 /** One value identifying the log request currently pending, for a subscriber.
  *
- * The Logs panel reads the request imperatively when it refreshes its source list, so it
- * needs a reason to refresh when one ARRIVES while it is already mounted: reopening the tab
- * it is on does not remount it, and in manual refresh mode nothing else rescans. Subscribing
- * to a derived string rather than the two fields keeps that one subscription, and returning
- * the same value for "nothing pending" keeps the effect from firing on unrelated changes.
- *
- * Both fields, because a second failure in the same family with a different log must look
- * different here or the panel would not go and fetch it.
+ * The Logs panel needs a reason to refresh when a request ARRIVES while it is mounted:
+ * reopening the tab it is on does not remount it, and manual refresh mode rescans nothing.
+ * One derived string keeps that to a single subscription and a stable value while nothing
+ * is pending. Both fields, so a second failure in the same family naming a different log
+ * still looks different here.
  */
 export function pendingLogRequestKey(state: {
   logFamilyRequested: string | null;

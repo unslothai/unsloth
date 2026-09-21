@@ -3,8 +3,8 @@
 
 /** Attributing a retained generation failure to the attempt that is settling.
  *
- * Its own module, with no imports: the decision is the interesting part and the rest of the
- * images API pulls in enough of the app that it cannot be loaded on its own to test.
+ * Its own module, with no imports: the images API pulls in enough of the app that it
+ * cannot be loaded on its own to test.
  */
 
 /** Just the two fields of a progress read this decision needs. */
@@ -15,18 +15,11 @@ export interface RetainedGenerationFailure {
 
 /** The failure reason that belongs to THIS attempt, if any.
  *
- * A retained reason outlives the run it came from, because it is what a caller settling a
- * lost POST has to read. That is exactly why it has to be identified rather than merely
- * dated. "A run started after my post" is not the same claim as "my post started a run":
- * the post may never have reached the backend, in which case nothing ran for it and the
- * reason is someone else's; and a concurrent client, another tab or a second browser on the
- * same account, can start and fail its own run in the same window. Attributing either one
- * reports a failure that did not happen to this attempt, and skips the gallery probe that
- * would have said what did.
- *
- * So the test is an exact match on the attempt's own id. A reason with no id (an older
- * backend, or a request that carried none) is not used, and the pre-existing probe settles
- * the attempt as it did before this field existed.
+ * The reason has to outlive its run, since a caller whose POST was lost has nothing else
+ * to read, so it must be identified rather than merely dated: "a run started after my
+ * post" includes a concurrent client's run, while a post that never arrived started none.
+ * Hence an exact match on the attempt's own id. A reason with no id, from an older backend
+ * or a request that carried none, is left to the gallery probe as before.
  */
 export function generationFailureForAttempt(
   progress: RetainedGenerationFailure,
@@ -37,13 +30,9 @@ export function generationFailureForAttempt(
   return progress.generation_attempt === attemptId ? progress.error : null;
 }
 
-/** An id for one generation attempt.
- *
- * Opaque and per POST: it exists only so a retained failure can be matched back to the
- * request that caused it. Kept to characters the backend's own pattern accepts, and short
- * enough for its length bound, since it comes back out on a response. `randomUUID` needs a
- * secure context, which a LAN Studio over plain http is not, so there is a fallback.
- */
+/** An id for one generation attempt: opaque, per POST, within the backend's own pattern
+ * and length bound since it comes back out on a response. `randomUUID` needs a secure
+ * context, which a LAN Studio over plain http is not, hence the fallback. */
 export function newGenerationAttemptId(): string {
   const uuid = globalThis.crypto?.randomUUID;
   if (typeof uuid === "function") return globalThis.crypto.randomUUID();

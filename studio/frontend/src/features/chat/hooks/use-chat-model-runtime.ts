@@ -2663,21 +2663,15 @@ export function useChatModelRuntime() {
           if (!abortCtrl.signal.aborted) {
             const message =
               err instanceof Error ? err.message : "Failed to load model";
-            // The backend sends a real diagnostic here: a summary, the llama-server
-            // tail, and the path of the file it came from. It arrived intact and was
-            // shown as an 8s toast title, so the reader got a wall of prose and no way
-            // back to it. First line as the title, the rest as the description, and an
-            // action that opens the runner's own log.
+            // The backend's diagnostic (summary, runner tail, log path) arrived intact
+            // and was shown as an 8s toast TITLE: a wall of prose with no way back to it.
+            // First line as the title, the rest as the description, plus a log action.
             const [summary, ...rest] = message.split("\n");
             const detail = rest.join("\n").trim();
-            // Which file holds the reason depends on who was loading: only a GGUF load
-            // goes through a runner that writes its own file per attempt, and a
-            // Transformers or MLX load reaches this same catch with its reason in the
-            // backend's current server log instead. The path the diagnostic names is both
-            // halves of the answer: it pins the exact attempt regardless of a rollback
-            // load landing after it, and its ABSENCE is what says no runner of this
-            // attempt's ever wrote one -- a failure in the client's preflight, or in the
-            // backend ahead of the launch.
+            // The path the diagnostic names answers both halves: it pins the exact
+            // attempt even when a rollback load lands after it, and its ABSENCE says no
+            // runner of this attempt's ever wrote one (a Transformers or MLX load, or a
+            // failure before the launch), whose reason is in the current server log.
             const runnerLogPath = failureLogPath(message);
             const logsAction = viewLogsAction(
               loadFailureLogFamily(isGguf, isDiffusion, runnerLogPath),

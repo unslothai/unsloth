@@ -3,17 +3,14 @@
 
 """Whether a failed image generation can still say WHY once it is no longer running.
 
-A generation whose POST is lost past the proxy's ~100s window leaves the client polling
-generate-progress as its only channel. Both engines clear ``_gen`` in a ``finally``, so
-without a retained reason that poll answers "not running" for a failure -- identical to a
-run that finished -- and the client's settling path reads it as success and can advance a
-multi-run batch past an output that never arrived.
+A POST lost past the proxy's ~100s window leaves the client polling generate-progress as
+its only channel. Both engines clear ``_gen`` in a ``finally``, so without a retained
+reason that poll answers "not running" for a failure, and the settling path reads it as
+success and can advance a batch past an output that never arrived.
 
-Static plus behavioural, deliberately. The engines need a GPU to generate, so what is
-exercised here by executing is the part that decides what a CALLER sees: the route's
-classification. That the reason is retained at all, cleared at the start of the next run,
-and published on the idle branch is asserted against the engines' own source, which is
-cheap and cannot drift silently.
+Static plus behavioural: generating needs a GPU, so what runs here is the part deciding
+what a CALLER sees, the route's classification, while the engines' retention, clearing and
+publishing are asserted against their own source.
 """
 
 from __future__ import annotations

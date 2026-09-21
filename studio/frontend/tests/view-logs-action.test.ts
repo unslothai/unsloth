@@ -3,15 +3,11 @@
 
 /** The "View logs" route a failure offers, and the request that carries it.
  *
- * A failure toast is the only thing pointing at Settings > Logs, so if the action or the
- * request it sets stops working the reported experience -- a failure with no reason and no
- * route to one -- comes straight back, silently. Three call sites raise it (a GGUF load, an
- * image generation, a video generation) and none of them had a test.
- *
- * The request's LIFETIME is asserted here too. Only the panel that performs the jump clears
- * it, and panels are fetched on first view, so a request has to survive a navigation that
- * lands back on its own tab and be dropped by anything else. Held wider it replays on a
- * later visit; held narrower a deep link still in flight is lost.
+ * A failure toast is the only thing pointing at Settings > Logs, so if this breaks the
+ * reported experience comes back silently, from any of the three call sites (GGUF load,
+ * image, video). The request's LIFETIME is asserted too: only the panel performing the
+ * jump clears it, so it must survive a navigation back to its own tab and be dropped by
+ * anything else. Held wider it replays later; narrower, a deep link in flight is lost.
  */
 
 import assert from "node:assert/strict";
@@ -161,12 +157,10 @@ test("only a GGUF load is explained by a runner log; everything else is in the s
 });
 
 test("a load whose diagnostic names no runner log has none to open", () => {
-  // The same catch sees failures from before any runner started: the client's own
-  // preflight (a rejected staged-metadata read, a cancelled HF token prompt) and the
-  // backend ahead of the launch (a refused sidecar swap, rejected extra args). The
-  // request going out does not tell those from a runner that ran and failed; only the
-  // backend naming a log does, since it names one exactly when it has one. Choosing
-  // llama-server without it opens the newest unrelated prior attempt on the host.
+  // The same catch sees failures from before any runner started, in the client's
+  // preflight or in the backend ahead of the launch. The request going out does not
+  // tell those from a runner that ran and failed; the backend naming a log does, since
+  // it names one exactly when it has one.
   const { loadFailureLogFamily } = loadWithStubs<
     typeof import("../src/features/settings/lib/view-logs-action.ts")
   >(ACTION_URL, {
@@ -310,10 +304,9 @@ test("the sibling openers do not leave a stale log request behind", () => {
 });
 
 test("an account that cannot open Logs is offered no action at all", () => {
-  // Settings > Logs is owner-only (OWNER_ONLY_SETTINGS_TABS) and resolveSettingsTab sends a
-  // managed account asking for it to General, while /debug/logs/sources is owner-guarded.
-  // A non-owner can still run an image or video generation and see this toast, so an
-  // unconditional button opened Settings on an unrelated tab and read as a broken link.
+  // Logs is owner-only and resolveSettingsTab reroutes a managed account to General,
+  // while the sources route is owner-guarded. A non-owner can still see this toast, so
+  // an unconditional button landed on an unrelated tab and read as broken.
   reset();
   const { viewLogsAction } = loadWithStubs<
     typeof import("../src/features/settings/lib/view-logs-action.ts")
@@ -350,10 +343,9 @@ test("the owner-only tab list is what the gate is gating on", () => {
 });
 
 test("a request arriving while Logs is already open is visible to a subscriber", async () => {
-  // openLogs only writes the store, and reopening the tab it is already on does not
-  // remount the panel, so nothing re-read the request: in manual refresh mode the panel
-  // sat on its previous selection indefinitely. The panel subscribes to this key, so the
-  // properties that matter are that it MOVES on arrival and settles back on consumption.
+  // openLogs only writes the store and reopening the current tab does not remount, so
+  // nothing re-read the request. The panel subscribes to this key, so what matters is
+  // that it MOVES on arrival and settles back on consumption.
   const { pendingLogRequestKey, NO_PENDING_LOG_REQUEST } = await import(
     "../src/features/settings/stores/settings-dialog-store.ts"
   );
@@ -386,11 +378,10 @@ test("a request arriving while Logs is already open is visible to a subscriber",
 });
 
 test("an older in-flight refresh does not consume a newer request", async () => {
-  // The panel captures the request key its fetch was made FOR and compares it to the store
-  // when the response lands. Without that, a pathless refresh already in flight answers a
-  // request that arrived after it, picks the family's newest file, and consumes it; the
-  // consumption then aborts the newer exact-path refresh, so after a failed switch and
-  // rollback the panel opens the rollback's log -- the thing carrying the path prevents.
+  // The panel captures the request key its fetch was made FOR and compares it when the
+  // response lands. Without that, a pathless refresh in flight answers a request that
+  // arrived after it, takes the family's newest file and consumes it, aborting the
+  // exact-path refresh: after a failed switch the panel opens the rollback's log.
   const { pendingLogRequestKey, NO_PENDING_LOG_REQUEST } = await import(
     "../src/features/settings/stores/settings-dialog-store.ts"
   );
@@ -416,9 +407,8 @@ test("an older in-flight refresh does not consume a newer request", async () => 
   store.getState().consumeLogFamilyRequest();
   assert.equal(pendingLogRequestKey(store.getState()), NO_PENDING_LOG_REQUEST);
 
-  // And that the panel actually performs that comparison. A wiring check, because the
-  // guard lives in an async callback the static render of this component never runs, so
-  // the store properties above would keep passing with it deleted.
+  // And that the panel performs that comparison: the guard lives in an async callback
+  // a static render never runs, so the store assertions above pass without it.
   const tab = await readFile(
     new URL("../src/features/settings/tabs/debugging-tab.tsx", import.meta.url),
     "utf8",
