@@ -584,12 +584,12 @@ def test_a_banner_on_the_probes_stdout_does_not_become_the_version(monkeypatch):
         probe_location = "/opt/checkout/llmcompressor/__init__.py",
         probe_noise = "Loading sitecustomize\nwarning: cuda graphs disabled",
     )
-    assert invoked is True, (
-        "a banner ahead of the probe's answer hid an out-of-range module from the repair"
-    )
-    assert _LLM_COMPRESSOR_PROBE_RESULT["version"] == "0.13.0", (
-        f"the parsed version came from the noise: {_LLM_COMPRESSOR_PROBE_RESULT!r}"
-    )
+    assert (
+        invoked is True
+    ), "a banner ahead of the probe's answer hid an out-of-range module from the repair"
+    assert (
+        _LLM_COMPRESSOR_PROBE_RESULT["version"] == "0.13.0"
+    ), f"the parsed version came from the noise: {_LLM_COMPRESSOR_PROBE_RESULT!r}"
     assert (
         _LLM_COMPRESSOR_PROBE_RESULT["location"] == "/opt/checkout/llmcompressor/__init__.py"
     ), f"the parsed location came from the noise: {_LLM_COMPRESSOR_PROBE_RESULT!r}"
@@ -617,12 +617,14 @@ def test_a_checkout_the_child_reaches_first_is_not_answered_for_by_the_cached_wh
 
     wheel = _provide("site-packages")
     _provide("checkout")
-    monkeypatch.setattr(sysconfig, "get_paths", lambda: {"purelib": str(tmp_path / "site-packages")})
+    monkeypatch.setattr(
+        sysconfig, "get_paths", lambda: {"purelib": str(tmp_path / "site-packages")}
+    )
 
     monkeypatch.setenv("PYTHONPATH", str(tmp_path / "checkout"))
-    assert _llm_compressor_module_is_usable(_module_at(str(wheel), "0.12.0")) is False, (
-        "the cached wheel answered for a checkout the child reaches before it"
-    )
+    assert (
+        _llm_compressor_module_is_usable(_module_at(str(wheel), "0.12.0")) is False
+    ), "the cached wheel answered for a checkout the child reaches before it"
 
     # With no competing entry, the same cached wheel IS what the child gets.
     monkeypatch.delenv("PYTHONPATH", raising = False)

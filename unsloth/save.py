@@ -1736,7 +1736,6 @@ def _path_entry_provides_llm_compressor(entry):
             continue
     try:
         import glob as _glob
-
         return bool(_glob.glob(os.path.join(entry, "llmcompressor.*.so"))) or bool(
             _glob.glob(os.path.join(entry, "llmcompressor.pyd"))
         )
