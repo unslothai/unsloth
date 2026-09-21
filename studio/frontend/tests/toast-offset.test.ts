@@ -7,6 +7,7 @@ import test from "node:test";
 import {
   getToastOffsets,
   insetPastChatSettings,
+  watchChatSettingsInset,
 } from "../src/lib/toast-offset.ts";
 
 test("web chat toasts clear the header and stay against the right edge", () => {
@@ -112,4 +113,62 @@ test("desktop toasts shift left by the open Run settings panel", () => {
     top: 52,
     right: "calc(12px + var(--studio-chat-settings-inset, 0px))",
   });
+});
+
+function fakeInsetDom(rowWidth: number, panelWidth: number) {
+  const vars = new Map<string, string>();
+  const root = {
+    style: {
+      setProperty: (name: string, value: string) => void vars.set(name, value),
+      removeProperty: (name: string) => {
+        vars.delete(name);
+        return "";
+      },
+    },
+  };
+  const row = { clientWidth: rowWidth };
+  const panel = { offsetWidth: panelWidth, parentElement: row };
+  const observed = new Set<object>();
+  let notify = () => {};
+  class Observer {
+    constructor(callback: () => void) {
+      notify = callback;
+    }
+    observe(target: object) {
+      observed.add(target);
+    }
+    disconnect() {
+      observed.clear();
+    }
+  }
+  const resize = (target: object) => {
+    if (observed.has(target)) notify();
+  };
+  return { vars, root, row, panel, Observer, resize };
+}
+
+test("the inset follows the panel while it is dragged wider", () => {
+  const dom = fakeInsetDom(1400, 320);
+  watchChatSettingsInset(dom.root, dom.panel, 320, dom.Observer);
+  assert.equal(dom.vars.get("--studio-chat-settings-inset"), "320px");
+
+  // A drag paints the panel wider before settingsWidth commits.
+  dom.panel.offsetWidth = 520;
+  dom.resize(dom.panel);
+  assert.equal(dom.vars.get("--studio-chat-settings-inset"), "520px");
+});
+
+test("the inset is dropped when the chat column cannot hold a corner card", () => {
+  const dom = fakeInsetDom(1400, 320);
+  const stop = watchChatSettingsInset(dom.root, dom.panel, 320, dom.Observer);
+  dom.row.clientWidth = 700;
+  dom.resize(dom.row);
+  assert.equal(dom.vars.has("--studio-chat-settings-inset"), false);
+
+  dom.row.clientWidth = 1400;
+  dom.resize(dom.row);
+  assert.equal(dom.vars.get("--studio-chat-settings-inset"), "320px");
+
+  stop();
+  assert.equal(dom.vars.has("--studio-chat-settings-inset"), false);
 });

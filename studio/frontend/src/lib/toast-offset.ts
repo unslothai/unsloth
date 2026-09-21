@@ -60,3 +60,41 @@ export function insetPastChatSettings(offset: ToastOffset): {
     right: `calc(${offset.right}px + var(${CHAT_SETTINGS_INSET_VAR}, 0px))`,
   };
 }
+
+type InsetPanel = {
+  offsetWidth: number;
+  parentElement: { clientWidth: number } | null;
+};
+type InsetObserver = new (callback: () => void) => {
+  observe(target: object): void;
+  disconnect(): void;
+};
+
+// Publishes the panel's live width: a drag paints the panel before it commits the stored width.
+export function watchChatSettingsInset(
+  root: { style: Pick<CSSStyleDeclaration, "setProperty" | "removeProperty"> },
+  panel: InsetPanel | null,
+  fallbackWidth: number,
+  Observer: InsetObserver = ResizeObserver,
+): () => void {
+  const row = panel?.parentElement ?? null;
+  let applied: string | null = null;
+  const apply = () => {
+    const width = panel?.offsetWidth || fallbackWidth;
+    const fits =
+      !row || row.clientWidth - width >= CHAT_SETTINGS_INSET_MIN_COLUMN;
+    const next = fits ? `${width}px` : null;
+    if (next === applied) return;
+    applied = next;
+    if (next) root.style.setProperty(CHAT_SETTINGS_INSET_VAR, next);
+    else root.style.removeProperty(CHAT_SETTINGS_INSET_VAR);
+  };
+  apply();
+  const observer = panel ? new Observer(apply) : null;
+  if (row) observer?.observe(row);
+  if (panel) observer?.observe(panel);
+  return () => {
+    observer?.disconnect();
+    root.style.removeProperty(CHAT_SETTINGS_INSET_VAR);
+  };
+}
