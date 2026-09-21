@@ -1878,6 +1878,35 @@ function savePermissionMode(mode: PermissionMode): void {
 
 const INITIAL_PERMISSION_MODE: PermissionMode = loadPermissionMode();
 
+/** Re-picking the level already in force is not a fresh grant, so a manual Code-off stands. */
+function codeDeclinedOnEnteringFullAccess(state: ChatRuntimeStore): boolean {
+  return state.permissionMode === "full"
+    ? state.codeToolsDeclinedUnderFullAccess
+    : false;
+}
+
+/** Effective Code setting. Full access auto-enables it only for local models.
+ *  Read the level live, never a flag armed on entry: Full access outlives a chat switch
+ *  (applyThreadScopedSettings) but codeToolsEnabled does not, so a snapshotted grant missed
+ *  every chat opened afterwards. */
+export function codeToolsOn(
+  state: Pick<
+    ChatRuntimeStore,
+    | "codeToolsEnabled"
+    | "codeToolsDeclinedUnderFullAccess"
+    | "permissionMode"
+    | "supportsTools"
+  > & { params: { checkpoint: string } },
+): boolean {
+  return (
+    state.codeToolsEnabled ||
+    (!state.codeToolsDeclinedUnderFullAccess &&
+      state.permissionMode === "full" &&
+      state.supportsTools &&
+      !isExternalModelId(state.params.checkpoint))
+  );
+}
+
 function loadString(key: string, fallback: string): string {
   return readStorageValue(key) ?? fallback;
 }
@@ -2295,7 +2324,11 @@ type ChatRuntimeStore = {
    *  composer's Fetch pill, independent of Search. */
   supportsBuiltinWebFetch: boolean;
   toolsEnabled: boolean;
+  /** Persisted Code preference. Use codeToolsOn() for the effective value. */
   codeToolsEnabled: boolean;
+  /** Session-only: a manual Code-off under Full access, so the grant is not re-applied over it.
+   *  Cleared on entering or leaving the level. */
+  codeToolsDeclinedUnderFullAccess: boolean;
   imageToolsEnabled: boolean;
   deepResearchEnabled: boolean;
   researchWebsitePolicy: ResearchWebsitePolicy;
@@ -4098,6 +4131,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   supportsBuiltinWebFetch: false,
   toolsEnabled: loadBool(CHAT_TOOLS_ENABLED_KEY, false),
   codeToolsEnabled: loadBool(CHAT_CODE_TOOLS_ENABLED_KEY, false),
+  codeToolsDeclinedUnderFullAccess: false,
   imageToolsEnabled: loadBool(CHAT_IMAGE_TOOLS_ENABLED_KEY, false),
   deepResearchEnabled: loadBool(CHAT_DEEP_RESEARCH_ENABLED_KEY, false),
   researchWebsitePolicy: loadResearchWebsitePolicy(),
@@ -5289,6 +5323,8 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         ...(codeToolsEnabled
           ? { codeToolsEnabled, deepResearchEnabled: false }
           : { codeToolsEnabled }),
+        codeToolsDeclinedUnderFullAccess:
+          !codeToolsEnabled && state.permissionMode === "full",
         queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
       };
     }),
@@ -5322,6 +5358,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
             deepResearchEnabled,
             toolsEnabled: false,
             codeToolsEnabled: false,
+            codeToolsDeclinedUnderFullAccess: false,
             imageToolsEnabled: false,
             artifactsEnabled: false,
             mcpEnabledForChat: false,
@@ -5436,6 +5473,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
           bypassPermissions: true,
           confirmToolCalls: false,
           deepResearchEnabled: false,
+          codeToolsDeclinedUnderFullAccess: codeDeclinedOnEnteringFullAccess(state),
           queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
         };
       }
@@ -5446,6 +5484,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         permissionMode,
         bypassPermissions: false,
         confirmToolCalls,
+        codeToolsDeclinedUnderFullAccess: false,
         queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
       };
     }),
@@ -5461,6 +5500,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
           permissionMode: "full" as PermissionMode,
           confirmToolCalls: false,
           deepResearchEnabled: false,
+          codeToolsDeclinedUnderFullAccess: codeDeclinedOnEnteringFullAccess(state),
           queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
         };
       }
@@ -5471,6 +5511,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         bypassPermissions,
         permissionMode,
         confirmToolCalls: permissionMode === "ask" || permissionMode === "auto",
+        codeToolsDeclinedUnderFullAccess: false,
         queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
       };
     }),

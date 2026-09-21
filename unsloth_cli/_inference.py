@@ -132,10 +132,41 @@ def read_json_checking_deferred_error(url: str, response):
     return require_completed_padded_body(url, raise_for_deferred_error(url, body))
 
 
-def ensure_studio_backend_path() -> None:
+_cache_env_seeded = False
+
+
+def _seed_cache_env() -> None:
+    """Pin the cache locations the backend pins, for in-process CLI commands.
+
+    Otherwise they inherit unsloth_zoo's relative UNSLOTH_COMPILE_LOCATION, resolved against the
+    working directory, leaving an unsloth_compiled_cache cache_cleanup will not remove (#8865).
+    """
+    global _cache_env_seeded
+    if _cache_env_seeded:
+        return
+    _cache_env_seeded = True
+    try:
+        from utils.paths.storage_roots import setup_cache_env
+        setup_cache_env()
+    except Exception:  # noqa: BLE001 - never fail a command over cache placement
+        pass
+
+
+def ensure_studio_backend_path(*, seed_cache_env: bool = True) -> None:
+    """Put studio/backend on sys.path, and by default pin the cache locations too.
+
+    `seed_cache_env = False` is for callers that only want to IMPORT a path helper.
+    setup_cache_env() creates every cache directory it pins, so seeding it from
+    `unsloth start`'s Node discovery turned a read-only lookup into 18 mkdirs under a home
+    that may have nothing to do with the command being run -- including one against a remote
+    server. Seeding stays on for the ML entry points, where the pins are the point.
+    """
     backend_dir = str(Path(__file__).resolve().parents[1] / "studio" / "backend")
     if backend_dir not in sys.path:
         sys.path.insert(0, backend_dir)
+    if seed_cache_env:
+        # After the path insert, before the caller's backend import pulls in unsloth_zoo.compiler.
+        _seed_cache_env()
 
 
 def configure_quiet_logging() -> None:

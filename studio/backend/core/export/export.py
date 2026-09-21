@@ -463,6 +463,13 @@ def _staging_dir(export_parent):
     return tempfile.TemporaryDirectory(prefix = _STAGING_PREFIX)
 
 
+def _dir_is_fresh(directory):
+    # Finder metadata does not count; the upload drops it anyway.
+    return not (
+        Path(directory).is_dir() and any_not_appledouble_metadata(Path(directory).iterdir())
+    )
+
+
 def _holds_checkpoint_weights(directory):
     return Path(directory).is_dir() and any(
         entry.suffix in (".safetensors", ".bin") for entry in Path(directory).iterdir()
@@ -956,11 +963,8 @@ class ExportBackend:
                 save_directory = str(resolve_export_write_dir(save_directory))
                 logger.info(f"Saving merged model locally to: {save_directory}")
                 # Leftovers in a reused folder would be uploaded too, so only a fresh one is
-                # pushed as is. Finder metadata does not count; the upload drops it anyway.
-                save_dir_was_empty = not (
-                    Path(save_directory).is_dir()
-                    and any_not_appledouble_metadata(Path(save_directory).iterdir())
-                )
+                # pushed as is.
+                save_dir_was_empty = _dir_is_fresh(save_directory)
                 ensure_dir(Path(save_directory))
 
                 # No push, but the merge resolves the base repo and save.py turns None into
@@ -1129,10 +1133,12 @@ class ExportBackend:
             )
 
         output_path: Optional[str] = None
+        save_dir_was_empty = False
         try:
             if save_directory:
                 save_directory = str(resolve_export_write_dir(save_directory))
                 logger.info(f"Saving base model locally to: {save_directory}")
+                save_dir_was_empty = _dir_is_fresh(save_directory)
                 ensure_dir(Path(save_directory))
 
                 if _IS_MLX:
@@ -1188,36 +1194,49 @@ class ExportBackend:
                         base_model_id or self.current_model.config._name_or_path or "unknown"
                     )
 
-                    hf_api = HfApi(token = hf_token)
-                    repo_url = hf_api.create_repo(repo_id, private = private, exist_ok = True)
-                    repo_id = getattr(repo_url, "repo_id", repo_id)
-                    if private:
-                        _ensure_hub_repo_private(hf_api, repo_id)
-                    username = repo_id.split("/")[0]
+                    with contextlib.ExitStack() as stack:
+                        upload_dir = save_directory
+                        if save_directory and not save_dir_was_empty:
+                            # A reused folder can hold leftovers, so upload a clean second save
+                            # instead.
+                            upload_dir = stack.enter_context(
+                                _staging_dir(Path(save_directory).parent)
+                            )
+                            self.current_model.save_pretrained(upload_dir)
+                            self.current_tokenizer.save_pretrained(upload_dir)
+                        hf_api = HfApi(token = hf_token)
+                        repo_url = hf_api.create_repo(repo_id, private = private, exist_ok = True)
+                        repo_id = getattr(repo_url, "repo_id", repo_id)
+                        if private:
+                            _ensure_hub_repo_private(hf_api, repo_id)
+                        username = repo_id.split("/")[0]
 
-                    content = MODEL_CARD.format(
-                        username = username,
-                        base_model = base_model,
-                        model_type = self.current_model.config.model_type,
-                        method = "",
-                        extra = "unsloth",
-                    )
-                    card = ModelCard(content)
-                    card.push_to_hub(repo_id, token = hf_token, commit_message = "Unsloth Model Card")
+                        content = MODEL_CARD.format(
+                            username = username,
+                            base_model = base_model,
+                            model_type = self.current_model.config.model_type,
+                            method = "",
+                            extra = "unsloth",
+                        )
+                        card = ModelCard(content)
+                        card.push_to_hub(
+                            repo_id, token = hf_token, commit_message = "Unsloth Model Card"
+                        )
 
-                    if save_directory:
-                        hf_api.upload_folder(
-                            folder_path = save_directory,
-                            repo_id = repo_id,
-                            repo_type = "model",
-                        )
-                        logger.info(f"Model pushed successfully to {repo_id}")
-                    else:
-                        return (
-                            False,
-                            "Local save directory required for Hub upload",
-                            None,
-                        )
+                        if save_directory:
+                            hf_api.upload_folder(
+                                folder_path = upload_dir,
+                                repo_id = repo_id,
+                                repo_type = "model",
+                                ignore_patterns = _HUB_UPLOAD_IGNORE,
+                            )
+                            logger.info(f"Model pushed successfully to {repo_id}")
+                        else:
+                            return (
+                                False,
+                                "Local save directory required for Hub upload",
+                                None,
+                            )
 
             return True, "Model exported successfully", output_path
 
@@ -1620,25 +1639,30 @@ class ExportBackend:
                     None,
                 )
 
+        def save_lora_gguf(directory):
+            # Writes the adapter files plus "<base>-lora-<outtype>.gguf".
+            self.current_model.save_pretrained_gguf(
+                directory,
+                self.current_tokenizer,
+                save_method = "lora",
+                quantization_method = outtype,
+                # A token fetches a gated base's config; False keeps a denied caller
+                # off get_token().
+                token = normalize_token(hf_token),
+            )
+
         output_path: Optional[str] = None
+        save_dir_was_empty = False
         try:
             if save_directory:
                 save_directory = str(resolve_export_write_dir(save_directory))
                 logger.info(f"Saving LoRA adapter locally to: {save_directory}")
+                save_dir_was_empty = _dir_is_fresh(save_directory)
                 ensure_dir(Path(save_directory))
 
                 if gguf:
-                    # Writes the adapter files plus "<base>-lora-<outtype>.gguf".
                     _apply_wsl_sudo_patch()
-                    self.current_model.save_pretrained_gguf(
-                        save_directory,
-                        self.current_tokenizer,
-                        save_method = "lora",
-                        quantization_method = outtype,
-                        # A token fetches a gated base's config; False keeps a denied caller
-                        # off get_token().
-                        token = normalize_token(hf_token),
-                    )
+                    save_lora_gguf(save_directory)
                     # iterdir, not glob.glob: glob hides dot-leading names.
                     final_ggufs = sorted(
                         str(p)
@@ -1680,12 +1704,23 @@ class ExportBackend:
                 hf_api = HfApi(token = hf_token)
 
                 if gguf:
-                    repo_id = _open_hub_repo(hf_api, repo_id, private)
-                    hf_api.upload_folder(
-                        folder_path = output_path,
-                        repo_id = repo_id,
-                        repo_type = "model",
-                    )
+                    with contextlib.ExitStack() as stack:
+                        upload_dir = output_path
+                        if not save_dir_was_empty:
+                            # A reused folder can hold leftovers, so upload a clean second save
+                            # instead. The converter names the GGUF's model after its folder.
+                            upload_dir = os.path.join(
+                                stack.enter_context(_staging_dir(Path(output_path).parent)),
+                                Path(output_path).name,
+                            )
+                            save_lora_gguf(upload_dir)
+                        repo_id = _open_hub_repo(hf_api, repo_id, private)
+                        hf_api.upload_folder(
+                            folder_path = upload_dir,
+                            repo_id = repo_id,
+                            repo_type = "model",
+                            ignore_patterns = _HUB_UPLOAD_IGNORE,
+                        )
                 elif _IS_MLX:
                     with tempfile.TemporaryDirectory() as tmp_dir:
                         # Serialise first: opening the repo before this would leave an empty

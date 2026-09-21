@@ -45,6 +45,7 @@ sys.modules.setdefault("structlog", _structlog_stub)
 import pytest
 
 from utils import llama_cpp_freshness as fr
+from utils.prebuilt import freshness_flow
 
 
 # Helpers.
@@ -504,8 +505,6 @@ def test_check_prebuilt_freshness_downgrade_guard(monkeypatch, tmp_path):
 def test_fetch_latest_release_tag_uses_publish_time(monkeypatch):
     # Resolves newest by published_at (like the installer), skips drafts/prereleases,
     # and does NOT just take GitHub's first/`/releases/latest` item.
-    import urllib.request
-
     class _Resp:
         def __init__(self, payload):
             self._p = json.dumps(payload).encode()
@@ -539,7 +538,7 @@ def test_fetch_latest_release_tag_uses_publish_time(monkeypatch):
             "published_at": "2026-06-12T00:00:00Z",
         },
     ]
-    monkeypatch.setattr(urllib.request, "urlopen", lambda req, timeout = 5.0: _Resp(payload))
+    monkeypatch.setattr(freshness_flow, "auth_safe_open", lambda req, timeout = 5.0: _Resp(payload))
     assert fr._fetch_latest_release_tag("unslothai/llama.cpp") == "b9596-mix-e6f2453"
 
 
@@ -746,13 +745,12 @@ def test_release_fetch_cannot_outlive_its_deadline(monkeypatch, fetch):
     """urllib applies its timeout per address, so /api/inference/status inherits that
     multiplication without a wall-clock deadline; one stalled connect stands in for the
     walk. Both entry points, since they share the fetch."""
-    import urllib.request
 
     def _stalls(req, timeout = 5.0):
         time.sleep(30)  # never returns within the deadline
         raise AssertionError("deadline did not cut the fetch short")
 
-    monkeypatch.setattr(urllib.request, "urlopen", _stalls)
+    monkeypatch.setattr(freshness_flow, "auth_safe_open", _stalls)
     started = time.monotonic()
     assert getattr(fr, fetch)("unslothai/llama.cpp", timeout = 0.25) is None
     # Pins the implemented timeout + 1, not merely "faster than the 30s stall".
