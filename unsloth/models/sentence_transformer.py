@@ -1621,6 +1621,19 @@ class FastSentenceTransformer(FastModel):
                 cache_folder = kwargs.get("cache_dir") or kwargs.get("cache_folder"),
             )
 
+            # Guardrail: see _warn_if_quantization_silently_dropped + #5344. The bnb config
+            # above rides in on model_kwargs, so this path can drop quantization the same
+            # way the text loaders can.
+            from unsloth.models.vision import _warn_if_quantization_silently_dropped
+
+            _warn_if_quantization_silently_dropped(
+                st_model,
+                load_in_4bit = load_in_4bit,
+                load_in_8bit = False,
+                full_finetuning = False,
+                quantization_config = model_kwargs.get("quantization_config"),
+            )
+
             st_model._unsloth_fast_encoder = True
             st_model._compile_mode = compile_mode
             st_model._dtype = dtype

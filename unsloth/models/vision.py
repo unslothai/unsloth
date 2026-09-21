@@ -233,6 +233,7 @@ def _warn_if_quantization_silently_dropped(
     load_in_8bit,
     full_finetuning,
     quantization_config = None,
+    check_partial = True,
 ):
     """Guardrail for unslothai/unsloth#5344.
 
@@ -308,6 +309,13 @@ def _warn_if_quantization_silently_dropped(
             f"a version known to work.",
             stacklevel = 3,
         )
+        return
+
+    if not check_partial:
+        # Callers whose parameter naming this heuristic was not tuned for. bnb converts
+        # only nn.Linear and Conv1D (transformers/integrations/bitsandbytes.py:189), so a
+        # Conv2d-heavy UNet legitimately keeps large float weights and would trip the
+        # ratio below on every correctly quantized load.
         return
 
     # Failure mode 2: partial bypass. Walk named_parameters and find large

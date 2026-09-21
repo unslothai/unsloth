@@ -464,6 +464,70 @@ def test_float_storage_still_reports_a_real_partial_bypass():
     assert any("gate_up_proj" in m for m in msgs), msgs
 
 
+class _Conv2dHeavyUNet(nn.Module):
+    """A diffusion-shaped model: Linear4bit attention plus large Conv2d weights.
+
+    bnb converts only nn.Linear and Conv1D
+    (transformers/integrations/bitsandbytes.py:189), so the convs stay float on a
+    perfectly good 4-bit load. Running the LLM-tuned partial-bypass ratio over
+    this would warn on every correctly quantized diffusion model.
+    """
+
+    def __init__(self):
+        super().__init__()
+        self.attn_to_q = _PretendLinear4bit()
+        self.conv_in = nn.Parameter(
+            torch.zeros(8 * 1024 * 1024 + 16, dtype = torch.bfloat16),
+            requires_grad = False,
+        )
+
+
+def test_check_partial_false_reports_total_bypass_but_not_the_ratio():
+    model = _Conv2dHeavyUNet()
+    with warnings.catch_warnings(record = True) as caught:
+        warnings.simplefilter("always")
+        _warn_if_quantization_silently_dropped(
+            model,
+            load_in_4bit = True,
+            load_in_8bit = False,
+            full_finetuning = False,
+            check_partial = False,
+        )
+    msgs = [str(w.message) for w in caught]
+    assert not any("partially applied" in m for m in msgs), msgs
+
+
+def test_check_partial_false_still_catches_a_total_bypass():
+    # Negative control: the half that IS naming-agnostic must survive the gate.
+    model = nn.Sequential(nn.Linear(4, 4), nn.Linear(4, 4))
+    with warnings.catch_warnings(record = True) as caught:
+        warnings.simplefilter("always")
+        _warn_if_quantization_silently_dropped(
+            model,
+            load_in_4bit = True,
+            load_in_8bit = False,
+            full_finetuning = False,
+            check_partial = False,
+        )
+    msgs = [str(w.message) for w in caught]
+    assert any("was requested but no bitsandbytes" in m for m in msgs), msgs
+
+
+def test_the_same_model_does_warn_when_partial_checking_is_on():
+    # And the gate is really a gate: default True still runs the ratio.
+    model = _Conv2dHeavyUNet()
+    with warnings.catch_warnings(record = True) as caught:
+        warnings.simplefilter("always")
+        _warn_if_quantization_silently_dropped(
+            model,
+            load_in_4bit = True,
+            load_in_8bit = False,
+            full_finetuning = False,
+        )
+    msgs = [str(w.message) for w in caught]
+    assert any("partially applied" in m for m in msgs), msgs
+
+
 if __name__ == "__main__":
     test_fires_when_4bit_requested_but_no_bnb_modules()
     test_silent_when_4bit_succeeded()
@@ -482,4 +546,7 @@ if __name__ == "__main__":
     test_fires_when_the_bulk_weight_shares_the_quantized_device()
     test_float_storage_payload_counts_as_quantized_not_as_a_suspect()
     test_float_storage_still_reports_a_real_partial_bypass()
-    print("All 17 guardrail tests passed.")
+    test_check_partial_false_reports_total_bypass_but_not_the_ratio()
+    test_check_partial_false_still_catches_a_total_bypass()
+    test_the_same_model_does_warn_when_partial_checking_is_on()
+    print("All 20 guardrail tests passed.")

@@ -298,6 +298,22 @@ class FastDiffusionModel:
         )
 
         model = model_cls.from_pretrained(model_name, **load_kwargs).eval()
+        # Guardrail: see _warn_if_quantization_silently_dropped + #5344. This path builds
+        # its own BitsAndBytesConfig above and calls from_pretrained directly, so it can
+        # drop quantization exactly the way the text loaders can.
+        # check_partial=False: the partial-bypass ratio is tuned for LLM parameter naming,
+        # and bnb converts only nn.Linear and Conv1D, so a Conv2d-heavy UNet keeps large
+        # float weights on a perfectly good 4-bit load. Total bypass is naming-agnostic.
+        from unsloth.models.vision import _warn_if_quantization_silently_dropped
+
+        _warn_if_quantization_silently_dropped(
+            model,
+            load_in_4bit = load_in_4bit,
+            load_in_8bit = load_in_8bit,
+            full_finetuning = False,
+            quantization_config = load_kwargs.get("quantization_config"),
+            check_partial = False,
+        )
         # Mark before any early return so get_peft_model/for_* route to the slow path.
         model._unsloth_slow_diffusion = True
 
