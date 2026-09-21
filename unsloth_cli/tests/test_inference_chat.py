@@ -318,6 +318,49 @@ def test_chatbackend_gguf_leaves_max_tokens_unset_for_llama_server():
     assert [call["max_tokens"] for call in fake.calls] == [None, 8]
 
 
+_UNSET_SAMPLING = dict(temperature = None, top_p = None, top_k = None, repetition_penalty = None)
+_GEMMA3_SAMPLING = dict(temperature = 1.0, top_p = 0.95, top_k = 64, repetition_penalty = 1.0)
+
+
+def _clear_sampling_pins(monkeypatch):
+    for field in _GEMMA3_SAMPLING:
+        monkeypatch.delenv(f"UNSLOTH_SAMPLING_{field.upper()}", raising = False)
+
+
+def test_chatbackend_resolves_unset_sampling_to_the_model_recommendation(monkeypatch):
+    _clear_sampling_pins(monkeypatch)
+    fake = _FakeBackend()
+    fake.active_model_name = "unsloth/gemma-3-270m-it"
+    backend = ChatBackend("unsloth", fake)
+
+    list(
+        backend.stream([{"role": "user", "content": "x"}], **{**_STREAM_KWARGS, **_UNSET_SAMPLING})
+    )
+
+    kwargs = fake.calls[0][2]
+    assert {field: kwargs[field] for field in _GEMMA3_SAMPLING} == _GEMMA3_SAMPLING
+
+
+def test_chatbackend_gguf_resolves_unset_sampling_but_keeps_explicit_values(monkeypatch):
+    _clear_sampling_pins(monkeypatch)
+    fake = _FakeGgufBackend()
+    fake.model_identifier = "unsloth/gemma-3-4b-it-GGUF"
+    backend = ChatBackend("gguf", fake)
+
+    list(
+        backend.stream(
+            [{"role": "user", "content": "x"}],
+            **{**_STREAM_KWARGS, **_UNSET_SAMPLING, "temperature": 0.3},
+        )
+    )
+
+    call = fake.calls[0]
+    assert {field: call[field] for field in _GEMMA3_SAMPLING} == {
+        **_GEMMA3_SAMPLING,
+        "temperature": 0.3,
+    }
+
+
 class _FakeStatsBackend:
     def __init__(self, stats):
         self._stats = stats
@@ -1175,6 +1218,39 @@ def test_http_backend_omits_max_tokens_when_unset(monkeypatch):
 
 def test_http_backend_sends_an_explicit_max_tokens(monkeypatch):
     assert _http_stream_body(monkeypatch, 128)["max_tokens"] == 128
+
+
+@pytest.mark.parametrize("command", ["chat", "inference"])
+def test_cli_leaves_unset_sampling_to_the_server(monkeypatch, command):
+    from unsloth_cli.commands import inference as infermod
+
+    module, app, argv = {
+        "chat": (chatmod, _chat_app(), ["fake-model"]),
+        "inference": (infermod, _inference_app(), ["fake-model", "hello"]),
+    }[command]
+    backend = HttpChatBackend("http://localhost:8888", "token")
+    bodies = []
+
+    def fake_request(method, path, payload = None, timeout = None):
+        bodies.append(payload)
+        return _FakeSSEResponse([b"data: [DONE]\n"])
+
+    monkeypatch.setattr(backend, "_request", fake_request)
+    monkeypatch.setattr(backend, "close", lambda: None)
+    monkeypatch.setattr(module, "connect_studio_server", lambda *a, **k: backend)
+    if command == "chat":
+        monkeypatch.setattr(chatmod, "resolve_model_config", lambda *a, **k: _FakeConfig())
+        monkeypatch.setattr(chatmod, "_compare_needs_second_model", lambda: False)
+
+    for extra in ([], ["--temperature", "0.3"]):
+        result = CliRunner().invoke(app, [*argv, *extra], input = "hi\n/exit\n")
+        assert result.exit_code == 0, result.output
+
+    sampling = ("temperature", "top_p", "top_k", "repetition_penalty")
+    assert [{k: body[k] for k in sampling if k in body} for body in bodies] == [
+        {},
+        {"temperature": 0.3},
+    ]
 
 
 def _http_finish(monkeypatch, finish_reason):
