@@ -1577,6 +1577,57 @@ function Get-RocmPinStaleTags {
 # away, so "the HIP DLLs will not load", "torch is not installed" and "the import never came back"
 # all reached the caller as one silent False -- and one such caller deletes the environment over
 # that answer. Mirrors install.ps1's copy.
+function Get-CodeIntegrityBlockReason {
+    param([string]$Text)
+    # Mirrors studio/backend/utils/code_integrity.py, which classifies the same refusal for
+    # llama-server. Text only, because this side holds a probe's stderr rather than the
+    # exception object: the statuses are matched as Python printed them.
+    #
+    # Why it is worth classifying at all: a blocked DLL makes `import torch` fail exactly
+    # like a faulted driver does, so the rescue below told users with Smart App Control on
+    # to update a driver that was never the problem (#6588, #6648). The blocked files there
+    # are AMD's ROCm wheels, which nobody signs, so a reinstall cannot clear it either.
+    if ([string]::IsNullOrWhiteSpace($Text)) { return $null }
+    # NTSTATUS first: the most specific thing in the text, and the only one that names
+    # which refusal it was.
+    $statuses = [ordered]@{
+        "c0e90002" = "Smart App Control or an Application Control policy blocked the image"
+        "c0000428" = "the image failed code integrity validation (invalid or missing signature)"
+        "c0000602" = "the image was refused by a code integrity fail-fast"
+    }
+    foreach ($status in $statuses.Keys) {
+        if ($Text -imatch "0x$status\b") { return $statuses[$status] }
+    }
+    # Python surfaces the same refusals as OSError winerrors, which reach here as
+    # "[WinError 4551] ..." inside the traceback line.
+    $winerrors = [ordered]@{
+        "577"  = "Windows could not verify the digital signature of the image"
+        "1260" = "an Application Control policy blocked this program"
+        "4551" = "code integrity blocked the image"
+    }
+    foreach ($code in $winerrors.Keys) {
+        if ($Text -imatch "WinError\s+$code\b") { return $winerrors[$code] }
+    }
+    if ($Text -imatch "blocked by smart app control") { return "Smart App Control blocked this program" }
+    if (($Text -imatch "application control policy has blocked") -or ($Text -imatch "blocked by group policy")) {
+        return "an Application Control policy blocked this program"
+    }
+    # "Bad Image" on its own is deliberately not a block: a corrupt or half-written DLL
+    # prints it too, and there a reinstall IS the remedy. Same rule as the Python side.
+    return $null
+}
+
+function Write-CodeIntegrityTorchNotice {
+    param([string]$Reason)
+    # Said once, in the three places the driver advice used to be. The wheels this refuses
+    # are AMD's and NVIDIA's own, published unsigned to PyPI, so neither a reinstall nor a
+    # driver update changes the verdict; only the policy does.
+    substep "Windows blocked part of the PyTorch GPU runtime: $Reason." "Yellow"
+    substep "This is a Windows code integrity policy refusing unsigned files, not a driver fault or a damaged install, so reinstalling will not clear it." "Yellow"
+    substep "On a device you administer, Smart App Control is under Windows Security, App and browser control; on a managed device the policy belongs to whoever administers it." "Yellow"
+    substep "Training on the CPU is unaffected. The environment is kept as it is." "DarkGray"
+}
+
 function Invoke-BoundedPythonProbe {
     param([string]$PythonExe, [string]$Code, [int]$TimeoutSec = 30)
     # TimedOut separates "never answered" from "answered with a failure": both leave Ok
@@ -6147,6 +6198,11 @@ if ((Test-Path -LiteralPath $VenvDir -PathType Container) -and -not $NoTorchMode
         # import. An unreadable flavor -> rebuild.
         $_verProbe = Invoke-BoundedPythonProbe -PythonExe $VenvPyExe -Code 'import torch; print(torch.__version__)'
         $torchVer = $_verProbe.Output.Trim()
+        # A Windows policy refusing an unsigned GPU library is not a driver fault and not a
+        # broken wheel, and the three rescue arms below would otherwise say it was.
+        $_probeBlockReason = if ($_verProbe -and -not $_verProbe.Ok) {
+            Get-CodeIntegrityBlockReason -Text $_verProbe.Error
+        } else { $null }
         if ($_verProbe.Ok -and $torchVer) {
             if ($torchVer -match '\+(cu\d+)') {
                 $installedTorchTag = $Matches[1]
@@ -6171,7 +6227,11 @@ if ((Test-Path -LiteralPath $VenvDir -PathType Container) -and -not $NoTorchMode
             # Trust the disk and warn about the driver; other families keep rebuilding.
             $installedTorchTag = "xpu"
             substep "PyTorch did not respond in time but this venv holds an XPU build -- keeping it." "Yellow"
-            substep "If training fails, update the Intel GPU compute driver." "Yellow"
+            if ($_probeBlockReason) {
+                Write-CodeIntegrityTorchNotice -Reason $_probeBlockReason
+            } else {
+                substep "If training fails, update the Intel GPU compute driver." "Yellow"
+            }
         } elseif (Test-VenvTorchIsRocm -VenvPath $VenvDir) {
             # Same rescue on the AMD side, and the one that has cost users whole installs: a
             # faulted Adrenalin or HIP runtime makes `import torch` raise at the DLL load or never
@@ -6180,16 +6240,24 @@ if ((Test-Path -LiteralPath $VenvDir -PathType Container) -and -not $NoTorchMode
             # so trust it and point at the driver instead (#8335, #7275).
             $installedTorchTag = "rocm"
             substep "PyTorch did not respond but this venv holds a ROCm build -- keeping it." "Yellow"
-            substep "If training fails, reboot and update the AMD Adrenalin / HIP SDK driver." "Yellow"
+            if ($_probeBlockReason) {
+                Write-CodeIntegrityTorchNotice -Reason $_probeBlockReason
+            } else {
+                substep "If training fails, reboot and update the AMD Adrenalin / HIP SDK driver." "Yellow"
+            }
         } elseif (Test-VenvTorchIsCuda -VenvPath $VenvDir) {
             # Without this the chain fell through with a NULL tag, so the no-wipe escape
             # below saw no cu* wheel to preserve. Keep the FAMILY, not a generic "cuda".
             $installedTorchTag = Get-VenvTorchCudaTag -VenvPath $VenvDir
             substep "PyTorch did not respond but this venv holds a $installedTorchTag build -- keeping it." "Yellow"
-            substep "If training fails, reboot and update the NVIDIA driver." "Yellow"
+            if ($_probeBlockReason) {
+                Write-CodeIntegrityTorchNotice -Reason $_probeBlockReason
+            } else {
+                substep "If training fails, reboot and update the NVIDIA driver." "Yellow"
+            }
             # A half-written torch also leaves a +cu* version.py behind, and the matched
             # install below would write a completion manifest over it. Force the reinstall.
-            if ($_verProbe -and -not $_verProbe.TimedOut) {
+            if ($_verProbe -and -not $_verProbe.TimedOut -and -not $_probeBlockReason) {
                 $script:TorchImportDefinitivelyFailed = $true
                 substep "PyTorch failed to import rather than timing out -- reinstalling the same family in place." "Yellow"
             }
@@ -6372,6 +6440,8 @@ if ((Test-Path -LiteralPath $VenvDir -PathType Container) -and -not $NoTorchMode
             $_probeErrLine = $_verProbe.Error -split "`r?`n" |
                 Where-Object { $_.Trim() } | Select-Object -Last 1
             if ($_probeErrLine) { substep "PyTorch reported: $($_probeErrLine.Trim())" "DarkGray" }
+            $_rebuildBlockReason = Get-CodeIntegrityBlockReason -Text $_verProbe.Error
+            if ($_rebuildBlockReason) { Write-CodeIntegrityTorchNotice -Reason $_rebuildBlockReason }
         }
     }
 
