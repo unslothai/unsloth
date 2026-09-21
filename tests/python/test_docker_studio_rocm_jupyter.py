@@ -1,8 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-Present the Unsloth team. See /studio/LICENSE.AGPL-3.0
 
-"""docker/Dockerfile.studio-rocm ships JupyterLab, the notebooks and key-only sshd
-beside Unsloth Studio, as unsloth/unsloth:studio does on CUDA. Dockerfile.studio
+"""docker/Dockerfile.studio-rocm ships JupyterLab and the notebooks beside Unsloth
+Studio, as unsloth/unsloth:studio does on CUDA, minus its sshd. Dockerfile.studio
 inherits JupyterLab and the notebook tooling from the CUDA core image; the ROCm base
 carries none of that, so the ROCm file installs it itself, and the two can drift
 apart without any build noticing. These pin each piece to the CUDA file it mirrors,
@@ -228,7 +228,7 @@ def test_the_notebooks_are_baked_where_the_sync_script_looks():
     assert "grep -c '^AMD-'" in text
 
 
-# ── the three services ───────────────────────────────────────────────────────
+# ── the services ───────────────────────────────────────────────────────
 
 
 def test_every_supervisord_program_is_installed_by_the_dockerfile():
@@ -247,7 +247,13 @@ def test_every_supervisord_program_is_installed_by_the_dockerfile():
             ), f"supervisord runs {command}, which the Dockerfile never copies"
             assert command in chmod, f"{command} is copied but not made executable"
         elif command == "/usr/sbin/sshd":
-            assert "openssh-server" in apt
+            # supervisord.conf is shared with the CUDA image, which does run sshd.
+            # This image leaves openssh-server out, so the program has no binary and
+            # must never be started: studio_launch.sh's `command -v sshd` gate keeps
+            # UNSLOTH_ENABLE_SSHD false, and the image default agrees.
+            assert "openssh-server" not in apt
+            assert 'command -v sshd >/dev/null 2>&1' in _read(LAUNCH)
+            assert _env(ROCM_STUDIO)["UNSLOTH_ENABLE_SSHD"] == "false"
         elif command == "jupyter":
             pass  # the venv's, pinned above
         else:
@@ -263,17 +269,20 @@ def test_the_launcher_is_the_command_and_the_ports_are_exposed():
     assert "unsloth-studio-home" not in cmd, "the home link moved into the entrypoint"
     env = _env(ROCM_STUDIO)
     (expose,) = _instructions(ROCM_STUDIO, "EXPOSE")
-    assert set(expose.split()) == {env["UNSLOTH_STUDIO_PORT"], env["JUPYTER_PORT"], "22"}
+    # no 22: this image has no sshd, unlike the CUDA one
+    assert set(expose.split()) == {env["UNSLOTH_STUDIO_PORT"], env["JUPYTER_PORT"]}
     # supervisord.conf expands these before the launcher has exported anything
     for name in ("JUPYTER_PORT", "UNSLOTH_ENABLE_SSHD", "UNSLOTH_STUDIO_STOP_WAIT_S"):
         assert name in env, f"supervisord's %(ENV_{name})s needs an image default"
 
 
-def test_ssh_login_shells_keep_the_rocm_variables():
-    """studio_launch.sh writes the container's env into /etc/profile.d for SSH
-    sessions, filtered by prefix. The image's ROCBLAS_USE_HIPBLASLT and a user's
-    HSA_OVERRIDE_GFX_VERSION have to make it through, or an SSH shell trains on a
-    different ROCm configuration than the Studio and Jupyter processes."""
+def test_login_shells_keep_the_rocm_variables():
+    """studio_launch.sh writes the container's env into /etc/profile.d, filtered by
+    prefix. Nothing here arrives over SSH, but a JupyterLab terminal and `docker exec
+    -it ... bash -l` are both login shells, and `docker run -e` values reach neither
+    otherwise. The image's ROCBLAS_USE_HIPBLASLT and a user's HSA_OVERRIDE_GFX_VERSION
+    have to make it through, or a terminal trains on a different ROCm configuration
+    than the Studio and Jupyter processes."""
     match = re.search(r'keep\s*=\s*re\.compile\(r"(.*?)"\)', _read(LAUNCH))
     assert match, "the profile.d keep pattern moved"
     keep = re.compile(match.group(1))

@@ -1060,7 +1060,7 @@ class TestStudioLaunchRocm:
         assert 'CMD ["/usr/local/bin/unsloth-studio-launch"]' in body
         assert "COPY studio_run.sh /usr/local/bin/unsloth-studio-run" in body
         # The single-service ROCm launcher was replaced by the shared studio_launch.sh
-        # under supervisord once this image gained JupyterLab and sshd (#11286); the
+        # under supervisord once this image gained JupyterLab (#11286); the
         # program list itself is asserted in test_docker_studio_rocm_jupyter.py.
         assert "COPY studio_launch.sh /usr/local/bin/unsloth-studio-launch" in body
         assert "COPY supervisord.conf /etc/supervisor/supervisord.conf" in body

@@ -1,5 +1,5 @@
 # Unsloth Studio + JupyterLab on AMD (ROCm): the ROCm training image, Studio's web
-# UI, JupyterLab with the Unsloth notebooks, and key-only sshd, run by supervisord.
+# UI and JupyterLab with the Unsloth notebooks, run by supervisord.
 #
 # The AMD counterpart to Dockerfile.studio, which layers the same services on the
 # CUDA core image. Kept as its own file rather than a branch in that one: the CUDA
@@ -37,8 +37,10 @@
 # Studio on :8000 (user unsloth; UNSLOTH_STUDIO_PASSWORD env, else a generated one is
 # printed in the logs; persisted under /opt/unsloth-studio/auth/); JupyterLab on :8888
 # (JUPYTER_PASSWORD env, else a random one is printed), opening on the by-topic view
-# of the notebooks with the AMD-* set shown; sshd on :22 only when PUBLIC_KEY / SSH_KEY
-# is set. /opt/unsloth-studio (UNSLOTH_STUDIO_HOME) holds only Studio's data; the code
+# of the notebooks with the AMD-* set shown. No sshd: openssh-server is left out of
+# this image, so studio_launch.sh's `command -v sshd` gate never fires and the shared
+# supervisord program stays down, whatever PUBLIC_KEY / SSH_KEY is set to.
+# /opt/unsloth-studio (UNSLOTH_STUDIO_HOME) holds only Studio's data; the code
 # lives in /opt/unsloth-studio-app (UNSLOTH_STUDIO_APP) and unsloth-studio-home links
 # it into the home at build time and at every start, so a named volume on the home
 # keeps accounts, chats and outputs without pinning the first image's code.
@@ -75,9 +77,10 @@ ARG UNSLOTH_STUDIO_ZOO_REF=main
 # unslothai/notebooks commit/branch/tag to bake; a sha for a reproducible build.
 ARG UNSLOTH_NOTEBOOKS_REF=main
 
-# Services run as root, as in Dockerfile.studio. sshd is key-only, disabled unless
-# PUBLIC_KEY/SSH_KEY is set (see studio_launch.sh). The JUPYTER_PORT /
-# UNSLOTH_ENABLE_SSHD defaults let supervisord's %(ENV_*)s resolve.
+# Services run as root, as in Dockerfile.studio. The JUPYTER_PORT default lets
+# supervisord's %(ENV_*)s resolve; UNSLOTH_ENABLE_SSHD is there for the same reason
+# and stays false, since supervisord.conf is shared with the CUDA image and still
+# carries an sshd program this image has no binary for.
 # UV_CACHE_DIR lives in the app dir: install.sh defaults it to
 # $UNSLOTH_STUDIO_HOME/cache/uv, which would fill a volume on the home with wheels.
 ENV UNSLOTH_STUDIO_HOME=/opt/unsloth-studio \
@@ -90,12 +93,12 @@ ENV UNSLOTH_STUDIO_HOME=/opt/unsloth-studio \
     UNSLOTH_STUDIO_STOP_WAIT_S=150 \
     DEBIAN_FRONTEND=noninteractive
 
-# install.sh needs curl + git; supervisor + openssh-server run the service trio;
+# install.sh needs curl + git; supervisor runs Studio and JupyterLab together;
 # ffmpeg is what the notebooks' audio decode shells out to (docker/Dockerfile bakes
 # it for the same reason), and it is not in the ROCm base.
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
-        curl git ca-certificates supervisor openssh-server ffmpeg \
+        curl git ca-certificates supervisor ffmpeg \
  && rm -rf /var/lib/apt/lists/*
 
 # JupyterLab and the notebooks' runtime packages into the base venv, so the kernel
@@ -286,8 +289,8 @@ RUN chmod +x /usr/local/bin/unsloth-studio-home \
              /usr/local/bin/unsloth-studio-run \
              /usr/local/bin/unsloth-jupyter-tunnel
 
-# Studio, JupyterLab, sshd. All bind 0.0.0.0 in the container; publish with -p.
-EXPOSE 8000 8888 22
+# Studio and JupyterLab. Both bind 0.0.0.0 in the container; publish with -p.
+EXPOSE 8000 8888
 
 # BASE_IMAGE defaults to the PUBLISHED base, whose baked entrypoint predates the two
 # Studio hooks (link the code into the home, sync the notebooks): without this copy
