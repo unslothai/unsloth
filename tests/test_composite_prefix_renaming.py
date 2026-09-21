@@ -129,9 +129,9 @@ def composite_model():
     """A composite Qwen3.5: a text `PreTrainedModel` nested under `model.language_model`."""
     model = _meta_model("qwen3_5", _shrink_qwen3_5, "AutoModelForImageTextToText")
     names = {name for name, _ in model.named_parameters(remove_duplicate = False)}
-    assert any(name.startswith("model.language_model.") for name in names), (
-        "this model is not the nested shape the fix is about"
-    )
+    assert any(
+        name.startswith("model.language_model.") for name in names
+    ), "this model is not the nested shape the fix is about"
     return model
 
 
@@ -149,7 +149,6 @@ def standalone_text_model():
         config.mtp_num_hidden_layers = 0
     try:
         from transformers import AutoModelForCausalLM
-
         with torch.device("meta"):
             return AutoModelForCausalLM.from_config(config)
     except Exception as exc:
@@ -349,9 +348,9 @@ def test_the_patch_is_idempotent_and_undoable():
     fix_transformers_composite_prefix_renaming()
     first = conversion_mapping.get_model_conversion_mapping
     fix_transformers_composite_prefix_renaming()
-    assert conversion_mapping.get_model_conversion_mapping is first, (
-        "a second call wrapped the wrapper"
-    )
+    assert (
+        conversion_mapping.get_model_conversion_mapping is first
+    ), "a second call wrapped the wrapper"
     original = first.__wrapped__
     assert not getattr(original, _COMPOSITE_PREFIX_RENAMING_FLAG, False)
     conversion_mapping.get_model_conversion_mapping = original
