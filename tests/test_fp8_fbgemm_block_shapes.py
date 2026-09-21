@@ -58,6 +58,32 @@ def _reference(X, Wq, scale, block):
     return (X.float() @ _dequant(Wq, scale, block).T).to(X.dtype)
 
 
+def _bf16_atol(ref, floor = 5e-2):
+    """One bf16 ULP at the largest magnitude in the result.
+
+    Both sides of these comparisons are bf16, and an element's error comes from
+    cancellation among K terms whose magnitudes reach max|ref| -- not from the
+    size of the element itself. The absolute floor is therefore a last-bit
+    difference at THAT magnitude, and any atol below it compares the
+    accumulation order of whichever kernel fbgemm picked rather than whether
+    the fallback is correct.
+
+    Measured on the odd-N fixture (N=250, K=256): the errors land exactly on
+    bf16 ULPs -- max 0.25, p99 0.125, mean 0.021, against max|ref| = 42.75, one
+    ULP of which is 0.334. A flat atol=5e-2 cleared the worst element by 13%,
+    so it held on an idle GPU and failed 2 elements in 1000 under a loaded one,
+    where fbgemm selects a different split-k. Deriving the bound from the dtype
+    keeps the assert on the fallback's correctness: a genuinely wrong kernel
+    misses by orders of magnitude, not by a last bit.
+
+    This costs no detection power. Injecting a uniform mis-scale into the output
+    -- the failure this file exists to catch -- both bounds miss 2% and both
+    catch 5%, 8%, 10%, 50% and 2x, because rtol dominates on the large elements
+    where a mis-scale shows. Only the flake goes.
+    """
+    return max(floor, torch.finfo(torch.bfloat16).eps * ref.abs().max().item())
+
+
 def _check_grad(X, out, Wq, scale, block):
     # grad_output is all-ones, so grad_X is the row-sum of the dequantized weight.
     # The old backward hardcoded 128x128 and returned finite but mis-scaled grads.
@@ -66,7 +92,7 @@ def _check_grad(X, out, Wq, scale, block):
     grad_ref = torch.ones(out.shape, device = out.device, dtype = torch.float32) @ _dequant(
         Wq, scale, block
     )
-    torch.testing.assert_close(X.grad.float(), grad_ref, atol = 5e-2, rtol = 5e-2)
+    torch.testing.assert_close(X.grad.float(), grad_ref, atol = _bf16_atol(grad_ref), rtol = 5e-2)
 
 
 def _rel_err(out, ref):
@@ -76,8 +102,9 @@ def _rel_err(out, ref):
 
 def test_output_tile_grid_battery_matches_reference():
     skip_without_fbgemm()
-    # Both dispatch buckets' former failure zones plus safe shapes. On fbgemm
-    # <=1.3.0 the bad ones hit ~0.7 rel error; healthy quant noise is ~0.04.
+    # Both dispatch buckets' former failure zones plus safe shapes.
+    # On fbgemm <=1.3.0 the bad ones hit ~0.7 rel error;
+    # healthy quant noise is ~0.04.
     from unsloth.kernels.fp8 import FP8_fbgemm_block_linear
 
     torch.manual_seed(0)
@@ -118,7 +145,7 @@ def test_odd_k_uses_dequant_fallback():
     assert torch.isfinite(out).all()
 
     ref = _reference(X.detach(), Wq, scale, block)
-    torch.testing.assert_close(out, ref, atol = 5e-2, rtol = 5e-2)
+    torch.testing.assert_close(out, ref, atol = _bf16_atol(ref), rtol = 5e-2)
 
     _check_grad(X, out, Wq, scale, block)
 
@@ -136,7 +163,7 @@ def test_odd_n_uses_dequant_fallback():
 
     out = FP8_fbgemm_block_linear.apply(X, Wq, scale)
     ref = _reference(X.detach(), Wq, scale, block)
-    torch.testing.assert_close(out, ref, atol = 5e-2, rtol = 5e-2)
+    torch.testing.assert_close(out, ref, atol = _bf16_atol(ref), rtol = 5e-2)
 
     _check_grad(X, out, Wq, scale, block)
 
@@ -162,8 +189,8 @@ def test_non_square_block_uses_dequant_fallback():
 
 @pytest.mark.parametrize("kind", ["per_tensor", "per_tensor_2d", "bf16_scale", "strided_3d"])
 def test_inputs_the_kernel_rejects_use_dequant_fallback(kind):
-    # All four used to reach f8f8bf16_blockwise and raise: no block grid to unpack
-    # (0-dim or (1, 1)), a non-float32 scale, and a strided view no .view() flattens.
+    # All four used to reach f8f8bf16_blockwise and raise: no block grid to unpack (0-dim or (1, 1)), a non-float32
+    # scale, and a strided view no .view() flattens.
     from unsloth.kernels.fp8 import FP8_fbgemm_block_linear
 
     torch.manual_seed(0)
@@ -197,8 +224,8 @@ def test_inputs_the_kernel_rejects_use_dequant_fallback(kind):
 @pytest.mark.parametrize("block", [[128, 64], [64, 128]])  # square stays on the kernel
 @pytest.mark.parametrize("N,K", [(256, 512), (256, 256)])
 def test_transposed_weight_swaps_block_axes(block, N, K):
-    # fast_lora's backward passes downW.t(), whose block axes are swapped too. At
-    # N == K both grids validate, which is where a rectangular block mis-scaled dX.
+    # fast_lora's backward passes downW.t(), whose block axes are swapped too. At N == K both grids validate, which is
+    # where a rectangular block mis-scaled dX.
     from unsloth.kernels.fp8 import FP8_fbgemm_block_linear
 
     torch.manual_seed(0)

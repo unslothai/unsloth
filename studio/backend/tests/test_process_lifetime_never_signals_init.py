@@ -9,7 +9,7 @@ pid 1 as a child turns the startup sweep into a SIGTERM of everything the user
 owns, a five second wait, then a SIGKILL of the same.
 
 That is not hypothetical. It was observed on a shared build box, from a record
-holding `{"pid": 1, "identity": "...", "pgid": 1}`: starting Studio killed the
+holding `{"pid": 1, "identity": "...", "pgid": 1}`: starting Unsloth killed the
 user's tmux server and all twenty of their unrelated agent processes within one
 second, then SIGKILLed the replacement tmux server exactly `timeout` later.
 
@@ -78,7 +78,7 @@ def test_unsignalable_values_are_rejected(pid):
 
 def test_the_public_name_is_the_internal_one():
     """Other modules import the public spelling. If the two ever come apart, the
-    floor stops meaning one thing across Studio, which is how a site gets missed."""
+    floor stops meaning one thing across Unsloth, which is how a site gets missed."""
     assert pl._signalable is pl.is_signalable_pid
 
 
@@ -328,7 +328,7 @@ def test_llama_pidfile_reaper_refuses_init(tmp_path, monkeypatch, recorded_signa
     Every check behind the floor is stubbed to say yes, deliberately. Leave them
     real and this test passes with the floor removed, because `_pid_is_llama_server(1)`
     is False on a normal box and it is the cmdline check, not the floor, doing the
-    work. #7894 established Studio can run as a container entrypoint, and a
+    work. #7894 established Unsloth can run as a container entrypoint, and a
     container whose entrypoint is llama-server has a process at pid 1 that answers
     yes to all of them.
     """
@@ -354,7 +354,7 @@ def test_llama_orphan_sweep_skips_init(tmp_path, monkeypatch):
     """The orphan sweep must not kill pid 1 even when pid 1 looks exactly like an
     owned, parentless llama-server.
 
-    That is not a contrived shape: #7894 established Studio can run as a
+    That is not a contrived shape: #7894 established Unsloth can run as a
     container entrypoint, and a container whose entrypoint is llama-server puts
     a process this sweep recognises at pid 1. Killing it takes the container
     down. The /proc scan and the psutil scan both feed one kill loop, so the

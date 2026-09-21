@@ -1,12 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""MLX loads the full-precision base of an unsloth bnb-4bit repo, never the bnb weights.
-
-The swap happens inside ``unsloth_zoo.mlx.loader``, which only prints it, so a curated
-list naming a bnb repo costs an Apple Silicon user a download that is then discarded for
-a much larger one, and the load-time stall watchdog measures a repo nothing is writing.
-"""
 
 from __future__ import annotations
 
@@ -39,7 +33,6 @@ def test_repos_mlx_loads_as_given_have_no_base():
 
 
 def test_a_local_directory_is_never_remapped(monkeypatch, tmp_path):
-    """Mirrors the loader: an on-disk path that looks like a repo id is loaded as given."""
     (tmp_path / "unsloth" / "model-bnb-4bit").mkdir(parents = True)
     monkeypatch.chdir(tmp_path)
 
@@ -166,7 +159,6 @@ def test_the_host_rule_only_fires_on_mlx(monkeypatch):
 
 
 def test_diffusion_bnb_repos_are_loaded_as_named(monkeypatch):
-    """Diffusion runs on diffusers/MPS, which reads bnb weights; only the MLX loader cannot."""
     from core.inference.mlx_bnb import mlx_host_bnb_base_repo
 
     monkeypatch.setattr(hw, "get_device", lambda: hw.DeviceType.MLX)
@@ -194,8 +186,6 @@ def test_validate_reports_the_repo_mlx_will_load(monkeypatch):
 
 
 def test_the_fetched_ranking_is_mapped_on_a_mac_too(monkeypatch):
-    """/api/models/list serves curated + the remote ranking, and that ranking is mostly
-    bnb repos, so leaving it alone keeps offering the download MLX discards."""
     import core.inference.orchestrator as orch_mod
 
     monkeypatch.setattr(orch_mod.InferenceOrchestrator, "_fetch_top_models", lambda self: None)
@@ -217,13 +207,6 @@ def test_the_fetched_ranking_is_mapped_on_a_mac_too(monkeypatch):
 
 
 def test_a_diffusion_bnb_repo_in_the_ranking_keeps_its_name(monkeypatch):
-    """The suggestion list must make the same diffusion exception the host rule makes.
-
-    unsloth publishes diffusion bnb repos and the ranking is ordered by downloads, so one
-    can surface there at any time. They load on the diffusers/MPS path exactly as named,
-    so mapping one would advertise the BIGGER full-precision repo in place of the one the
-    loader uses -- the opposite of what this change is for.
-    """
     import core.inference.orchestrator as orch_mod
 
     monkeypatch.setattr(orch_mod.InferenceOrchestrator, "_fetch_top_models", lambda self: None)
@@ -265,12 +248,6 @@ def test_the_fetched_ranking_is_untouched_off_mlx(monkeypatch):
 
 
 def test_the_mirror_still_matches_the_loader_it_mirrors():
-    """The rule lives in unsloth_zoo; this module only restates it, so pin the two together.
-
-    importorskip for the same reason test_mlx_inference_backend.py uses it on this exact
-    module: bare backend CI does not install Zoo, so skip rather than error there. Every
-    behaviour asserted above stands on its own; this only catches Zoo moving underneath it.
-    """
     loader = pytest.importorskip("unsloth_zoo.mlx.loader")
 
     for name in (

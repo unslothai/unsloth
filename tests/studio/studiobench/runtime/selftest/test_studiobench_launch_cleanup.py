@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""A Studio this harness launched and could not reach is terminated, not abandoned.
+"""An Unsloth this harness launched and could not reach is terminated, not abandoned.
 
 THE PROCESS WE LAUNCH IS NOT THE PROCESS WE SPAWN. `launch_studio` runs the server under
 `setsid -f`, which always forks and whose parent exits without waiting, so `Popen.pid` belongs to a
@@ -10,17 +10,17 @@ cannot reach. `pgrep` is the only handle on it -- and it used to be taken AFTER 
 so a server that started and stayed unhealthy raised with `install.pid` still None and
 `stop_studio` had nothing to kill.
 
-That leak is not idle. It holds the requested port, and Studio's own launcher aborts rather than
+That leak is not idle. It holds the requested port, and Unsloth's own launcher aborts rather than
 binding when it finds one of its own servers there (`studio/backend/run.py`, `_resolve_port` with
 `avoid_own_studio`), so the next attempt's server exits and `wait_for_healthz` takes its 200 from
 the STALE one -- which by then has finished starting. The run then measures the build the previous
 attempt installed and records the ref this one asked for.
 
-AND THE PORT CAN BE OCCUPIED WITHOUT ANYTHING HAVING FAILED. `--keep-studio` asks for a Studio to
+AND THE PORT CAN BE OCCUPIED WITHOUT ANYTHING HAVING FAILED. `--keep-studio` asks for an Unsloth to
 be LEFT RUNNING, so no cleanup reaches it by design and the next run walks into exactly the same
 launch: `_discover_pid` pgreps `unsloth studio.*-p <port>` and finds the older process, `/healthz`
 answers 200 from it, and `authenticate` retries with `BENCH_PASSWORD` -- which a previous
-studiobench run has already rotated that Studio to -- so the login succeeds as well. Nothing
+studiobench run has already rotated that Unsloth to -- so the login succeeds as well. Nothing
 downstream can tell which build answered, so an occupied port is refused before anything is
 launched rather than reported afterwards.
 """
@@ -59,8 +59,8 @@ def launched(monkeypatch, tmp_path):
     }
 
     # `raising = False` so this fixture also builds against a lifecycle without the constant, which
-    # is what makes the test below fail on the unfixed code for the reason it is about rather than
-    # on the way in.
+    # makes the test below fail on the unfixed code for the reason it is about rather than on the way
+    # in.
     monkeypatch.setattr(lifecycle, "PID_DISCOVERY_TIMEOUT_S", 0.0, raising = False)
     # Stubbed for the same reason and, for every test but the two about it, so that whatever this
     # machine happens to have on :5399 cannot decide the answer.
@@ -70,8 +70,7 @@ def launched(monkeypatch, tmp_path):
     monkeypatch.setattr(lifecycle, "_find_unsloth_bin", lambda install: "/bin/true")
     monkeypatch.setattr(lifecycle, "_read_bootstrap_password", lambda *a, **k: "secret")
     monkeypatch.setattr(lifecycle, "wait_for_healthz", lambda *a, **k: state["healthy"])
-    # Recorded rather than dropped: a launch refused before the spawn has to be shown not to have
-    # spawned anything.
+    # Recorded rather than dropped: a launch refused before the spawn has to be shown not to have spawned anything.
     monkeypatch.setattr(subprocess, "Popen", lambda *a, **k: state["spawned"].append(a))
 
     def fake_run(cmd, *a, **k):
@@ -113,7 +112,7 @@ def test_a_studio_that_never_started_at_all_still_raises(launched):
 
 
 def test_a_healthy_studio_is_returned_with_its_pid_and_is_not_signalled(launched):
-    """The control that matters: the ordinary launch must still hand back a running Studio."""
+    """The control that matters: the ordinary launch must still hand back a running Unsloth."""
 
     launched["healthy"] = True
 
@@ -200,9 +199,8 @@ def test_the_probe_itself_gives_both_answers_against_a_real_socket():
         port = listener.getsockname()[1]
         assert lifecycle.port_is_busy(port) is True
 
-    # Closed, so the same port is now the negative case. A port the kernel has just released can
-    # linger in TIME_WAIT for a connect, which is why the assertion below is on a port that was
-    # never bound at all rather than on this one.
+    # Closed, so the same port is now the negative case. A port the kernel has just released can linger
+    # in TIME_WAIT for a connect, which is why the assertion below is on a port never bound at all.
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
         probe.bind(("127.0.0.1", 0))
         free_port = probe.getsockname()[1]

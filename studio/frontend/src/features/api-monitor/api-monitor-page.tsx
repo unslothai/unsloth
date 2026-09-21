@@ -1,6 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { useAppShellReadySignal } from "@/components/app-readiness";
+import { GuidedTour, useGuidedTourController } from "@/features/tour";
+import { apiMonitorTourSteps } from "./tour";
+
 // Full-page monitor for Unsloth's OpenAI-compatible API server. Settings still owns
 // configuration (keys, auto-switch, examples); this page owns observability.
 
@@ -523,6 +527,11 @@ function RequestDetail({
 }
 
 export function ApiMonitorPage(): ReactElement {
+  const signalReady = useAppShellReadySignal();
+  const tour = useGuidedTourController({
+    id: "api-monitor",
+    steps: apiMonitorTourSteps,
+  });
   const {
     data,
     entries,
@@ -544,8 +553,8 @@ export function ApiMonitorPage(): ReactElement {
       return;
     }
     reloadReadySent.current = true;
-    window.dispatchEvent(new Event("unsloth:app-shell-ready"));
-  }, [loading]);
+    signalReady();
+  }, [loading, signalReady]);
   const serverUrl = usePlatformStore((s) => s.serverUrl);
   const cloudflareUrl = usePlatformStore((s) => s.cloudflareUrl);
   const [unloading, setUnloading] = useState(false);
@@ -693,6 +702,7 @@ export function ApiMonitorPage(): ReactElement {
 
   return (
     <main className="mx-auto flex w-full max-w-6xl flex-col gap-6 px-6 pb-10 pt-12 font-heading sm:px-10">
+      <GuidedTour {...tour.tourProps} />
       <header className="flex flex-wrap items-start justify-between gap-4">
         <div className="flex min-w-0 flex-col gap-1">
           <h1 className="text-ui-30 font-semibold leading-[1.04] tracking-[-0.028em] text-foreground sm:text-ui-34">
@@ -702,7 +712,7 @@ export function ApiMonitorPage(): ReactElement {
             Live traffic through Unsloth&apos;s OpenAI-compatible server.
           </p>
         </div>
-        <div className="flex flex-wrap items-center gap-2">
+        <div data-tour="api-toolbar" className="flex flex-wrap items-center gap-2">
           <Button
             type="button"
             variant="outline"
@@ -790,7 +800,10 @@ export function ApiMonitorPage(): ReactElement {
       </header>
 
       {/* Checked first when a client can't reach the API: base URL and what is loaded. */}
-      <section className="flex flex-wrap items-center gap-x-6 gap-y-3 rounded-xl border border-border/60 bg-card px-4 py-3">
+      <section
+        data-tour="api-endpoint"
+        className="flex flex-wrap items-center gap-x-6 gap-y-3 rounded-xl border border-border/60 bg-card px-4 py-3"
+      >
         <div className="flex min-w-0 items-center gap-2.5">
           <span className="flex size-8 shrink-0 items-center justify-center rounded-lg border border-border/60 bg-muted/40">
             <HugeiconsIcon
@@ -948,7 +961,10 @@ export function ApiMonitorPage(): ReactElement {
           </span>
         </div>
 
-        <div className="grid min-h-0 grid-cols-1 lg:grid-cols-[minmax(0,380px)_minmax(0,1fr)]">
+        <div
+          data-tour="api-log"
+          className="grid min-h-0 grid-cols-1 lg:grid-cols-[minmax(0,380px)_minmax(0,1fr)]"
+        >
           <div className="max-h-[560px] min-h-[220px] overflow-y-auto border-b border-border/60 lg:border-b-0 lg:border-r">
             {loading ? (
               <div className="flex flex-col gap-3 p-4">
@@ -961,7 +977,7 @@ export function ApiMonitorPage(): ReactElement {
                 {entries.length > 0
                   ? "No requests match this filter."
                   : loggingDisabled
-                    ? "Recording is off: UNSLOTH_STUDIO_DISABLE_API_MONITOR is set. Requests and model loads still run normally, they are just not listed here. Unset the variable and restart Studio to re-enable."
+                    ? "Recording is off: UNSLOTH_STUDIO_DISABLE_API_MONITOR is set. Requests and model loads still run normally, they are just not listed here. Unset the variable and restart Unsloth to re-enable."
                     : "No API traffic yet. Point a client at the base URL above to see requests here."}
               </p>
             ) : (

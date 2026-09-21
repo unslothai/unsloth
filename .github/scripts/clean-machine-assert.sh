@@ -1,9 +1,7 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
-#
 # Assert the clean-machine contract after an install attempt.
-#
 #   absent   The toolchain really was absent for the whole run. Catches a leg that
 #            "passed" because masking silently failed, or because the installer
 #            quietly installed Xcode CLT behind our back.
@@ -17,7 +15,6 @@
 #   macho    Every Mach-O under $MACHO_ROOT is the host architecture, and every
 #            Mach-O MAIN EXECUTABLE is signed. Closes the Rosetta 2 gap, the one
 #            divergence masking cannot reproduce.
-#
 # Usage: bash .github/scripts/clean-machine-assert.sh absent nodylibtool notools dylibpatch nobuild macho
 set -uo pipefail
 
@@ -207,11 +204,8 @@ for check in "$@"; do
       #   triton-kernels  -- a git URL under the triton repo's python/triton_kernels
       #     subdir: 75 Python files, no setup.py, kernels compiled at runtime. Named by
       #     the installer, not chosen by resolution, and only the Linux legs reach it.
-      #   diffusers  -- pinned to a source archive because MiniMax-H3 support is not in
-      #     any release yet. Plain setuptools, no ext_modules, and the tree has zero
-      #     .c/.cpp/.pyx/.rs/.cu files, so the PEP 517 build is a pure-Python copy.
-      #     REMOVE this entry once a diffusers release carries H3 and the requirement
-      #     goes back to a version specifier.
+      #   diffusers  -- overlay:false releases still pin a pure-Python source archive.
+      #     Remove this once a published Unsloth release carries the wheel pin.
       # UNSLOTH_ALLOW_SDIST extends it. Lowercased and underscore-folded on both sides:
       # the distribution name and the name uv prints can differ on the separator.
       _allow="$(printf '%s' "openai-whisper argbind randomname antlr4-python3-runtime triton-kernels diffusers ${UNSLOTH_ALLOW_SDIST:-}" | tr 'A-Z_' 'a-z-')"
@@ -257,7 +251,6 @@ for check in "$@"; do
       # not on a factory-fresh Mac, so an x86_64-only payload runs green here and dies
       # with "bad CPU type in executable" for the user. `lipo` is an xcrun shim and gone
       # after masking, so read `file -Lb`, keyed off `uname -m` (macos-15-intel is x86_64).
-      #
       # SCOPE: all of $MACHO_ROOT, .venv_t5_510/_530/_550 sidecars included -- payload,
       # not scratch (setup.sh:579-581 creates them, transformers_version.py:338-348 puts
       # them on sys.path). Any exclusion must be a named path rule, never a narrowed find.

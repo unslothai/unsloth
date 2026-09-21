@@ -84,6 +84,7 @@ jobs:
         id: pip-cache
         uses: ./.github/actions/pip-cache-restore
         with:
+          name: studio-export
           key-files: |
             .github/workflows/studio-export-capability-ci.yml
 

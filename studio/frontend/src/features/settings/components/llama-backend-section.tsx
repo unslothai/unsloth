@@ -42,6 +42,7 @@ const UNSUPPORTED_REASONS: Record<string, TranslationKey> = {
   no_install_dir: "settings.resources.llamaBackend.unsupported.notInstalled",
   custom_path: "settings.resources.llamaBackend.unsupported.customPath",
   unresolved: "settings.resources.llamaBackend.unsupported.unresolved",
+  update_checks_disabled: "settings.resources.llamaBackend.unsupported.updateChecksDisabled",
 };
 
 function LlamaCppPathRow({ onChanged }: { onChanged: () => void }) {
@@ -231,7 +232,7 @@ export function LlamaBackendSection() {
 
   const job = status?.job;
   const envLocked = status?.envBackend != null;
-  // Null means the marker holds a choice a newer Studio wrote. Show it as
+  // Null means the marker holds a choice a newer Unsloth wrote. Show it as
   // unknown rather than as Automatic, and let it be replaced deliberately.
   const unknownRecorded = status?.backendRequest === null;
   const value = selected ?? status?.backendRequest ?? "unknown";

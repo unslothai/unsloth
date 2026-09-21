@@ -34,3 +34,10 @@ export const updateLanAccessAutoStart = (enabled: boolean) =>
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ enabled }),
   });
+
+export const updateLanAccessPort = (port: number | null) =>
+  requestLanAccess("/port", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ port }),
+  });

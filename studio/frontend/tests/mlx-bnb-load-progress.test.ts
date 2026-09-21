@@ -37,7 +37,7 @@ test("MLX base substitution tracks every downloaded repository", () => {
     DOWNLOAD_POLL,
     /progressModelIdsAtRequest\.map\(\(progressModelId\) =>/,
   );
-  assert.match(DOWNLOAD_POLL, /getDownloadProgress\(progressModelId\)/);
+  assert.match(DOWNLOAD_POLL, /getDownloadProgress\(progressModelId, hfToken\)/);
 });
 
 test("validated LoRA status controls download tracking", () => {

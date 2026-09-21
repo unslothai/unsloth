@@ -239,9 +239,8 @@ export async function getExportStatus(): Promise<ExportStatus> {
   return parseJson<ExportStatus>(response);
 }
 
-// ─────────────────────────────────────────────────────────────────────
-// Live export log stream (Server-Sent Events)
-// ─────────────────────────────────────────────────────────────────────
+// ───────────────────────────────────────────────────────────────────── Live export log stream
+// (Server-Sent Events) ─────────────────────────────────────────────────────────────────────
 
 export type ExportLogStream = "stdout" | "stderr" | "status";
 

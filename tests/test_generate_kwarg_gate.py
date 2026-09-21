@@ -130,6 +130,59 @@ def test_generate_kwarg_gate():
         assert got is expected, f"{name}: got {got}, expected {expected}"
 
 
+# transformers >= 5 injects logits_to_keep=1 in generate() itself, but the injection
+# is guarded by `"logits_to_keep" not in model_kwargs`, so it is a DEFAULT: popping
+# unconditionally turns an explicit logits_to_keep=0 into 1. Only the values the
+# strict validator would raise on may be stripped.
+
+
+def _filter_logits_kwargs(model, kwargs):
+    """The v5 branch of unsloth_base_fast_generate, as a testable function."""
+    for key in ("logits_to_keep", "num_logits_to_keep"):
+        if key in kwargs and not accepts(model, key):
+            kwargs.pop(key, None)
+    return kwargs
+
+
+def test_v5_preserves_a_supported_caller_value():
+    model = PrepHasKwargs_ForwardHasKey()
+    # 0 means "all logits": rewriting it to 1 changes the output shape
+    assert _filter_logits_kwargs(model, {"logits_to_keep": 0}) == {"logits_to_keep": 0}
+    assert _filter_logits_kwargs(model, {"logits_to_keep": 5}) == {"logits_to_keep": 5}
+
+
+def test_v5_strips_a_value_the_model_would_reject():
+    # renamed away in v5, so the validator raises on it
+    model = PrepHasKwargs_ForwardHasKey()
+    assert _filter_logits_kwargs(model, {"num_logits_to_keep": 1}) == {}
+    # a VLM whose top-level forward has no logits_to_keep at all
+    assert _filter_logits_kwargs(NoPrepare(), {"logits_to_keep": 1}) == {}
+
+
+def test_v5_leaves_other_kwargs_alone():
+    model = PrepHasKwargs_ForwardHasKey()
+    out = _filter_logits_kwargs(model, {"logits_to_keep": 2, "max_new_tokens": 8})
+    assert out == {"logits_to_keep": 2, "max_new_tokens": 8}
+
+
+def test_source_has_no_unconditional_pop():
+    src = open(VISION, encoding = "utf-8").read()
+    assert (
+        'kwargs.pop("logits_to_keep", None)\n        kwargs.pop("num_logits_to_keep", None)'
+        not in src
+    ), "the v5 branch must not drop caller-supplied logits_to_keep unconditionally"
+
+
+def test_the_v5_gate_uses_the_plain_release_sentinel():
+    # unsloth_zoo's Version() is not packaging's: it keeps the leading numeric run and
+    # appends ".1" for any suffix, so a "5.0.0.dev0" sentinel is 5.0.0.1 and 5.0.0 FINAL
+    # sorts below it, down the legacy 4.x branch. The plain sentinel still catches the
+    # prereleases, which normalize to 5.0.0.1 either way.
+    src = open(VISION, encoding = "utf-8").read()
+    assert 'Version(transformers_version) < Version("5.0.0")' in src
+    assert 'Version("5.0.0.dev0")' not in src
+
+
 if __name__ == "__main__":
     test_generate_kwarg_gate()
     for name, _, _, _ in CASES:

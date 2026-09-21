@@ -9,14 +9,11 @@
  */
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
-import { fileURLToPath } from "node:url";
 import test from "node:test";
 
-const source = readFileSync(
-  fileURLToPath(new URL("../src/features/images/images-page.tsx", import.meta.url)),
-  "utf8",
-);
+import { readSrc } from "./helpers/kit.ts";
+
+const source = readSrc("features/images/images-page.tsx");
 
 test("the Memory recipe row renders on an offload with no memory mode", () => {
   // The native engine reports memory_mode null (it has no torchao path to choose one for) while

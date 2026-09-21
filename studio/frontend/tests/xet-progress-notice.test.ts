@@ -19,11 +19,15 @@ const noticeModule = await import(
   "../src/features/hub/download-manager/xet-progress-notice.ts"
 );
 const {
+  RESTART_NOTICE_DESCRIPTION,
+  RESTART_NOTICE_TITLE,
+  RESTART_XET_NOTICE_DESCRIPTION,
   XET_NOTICE_DESCRIPTION,
   XET_NOTICE_DESCRIPTION_CLASS,
   XET_NOTICE_DURATION_MS,
   XET_NOTICE_TITLE,
   composeNoticeDescription,
+  composeRestartNoticeDescription,
   shouldShowXetNotice,
 } = noticeModule;
 
@@ -115,6 +119,38 @@ test("a caller with nothing to add leaves the notice alone", () => {
     composeNoticeDescription({ description: "   " }),
     XET_NOTICE_DESCRIPTION,
   );
+});
+
+test("restart and Xet facts compose into one short notice", () => {
+  const composed = composeRestartNoticeDescription({ xet: true });
+  assert.equal(RESTART_NOTICE_TITLE, "Restarting this download");
+  assert.equal(composed, RESTART_XET_NOTICE_DESCRIPTION);
+  assert.match(composed, /can't be resumed/);
+  assert.match(composed, /0%/);
+  assert.match(composed, /jump to done/);
+  assert.ok(RESTART_NOTICE_TITLE.length <= 32);
+  assert.ok(composed.length <= 110);
+  assert.ok(!composed.includes("\n"));
+});
+
+test("restart disclosure survives a spent Xet allowance", () => {
+  assert.equal(
+    composeRestartNoticeDescription({ xet: false }),
+    RESTART_NOTICE_DESCRIPTION,
+  );
+  assert.match(RESTART_NOTICE_DESCRIPTION, /starting over/);
+  assert.ok(RESTART_NOTICE_DESCRIPTION.length <= 110);
+});
+
+test("chat auto-load copy folds into the restart notice", () => {
+  const composed = composeRestartNoticeDescription({
+    xet: true,
+    callerToast: {
+      description: "It'll load automatically once the download finishes.",
+    },
+  });
+  assert.ok(composed.startsWith(RESTART_XET_NOTICE_DESCRIPTION));
+  assert.match(composed, /load automatically once the download finishes\.$/);
 });
 
 test("it stays up longer than the Toaster default", () => {

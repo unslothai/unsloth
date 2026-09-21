@@ -88,9 +88,48 @@ def test_public_ip_lookup_skipped_when_disabled(monkeypatch, calls):
     assert IFCONFIG not in calls
 
 
+def test_display_host_resolves_every_wildcard_alias(monkeypatch):
+    monkeypatch.setattr(run, "_resolve_external_ip", lambda: "192.168.1.50")
+    monkeypatch.setattr("lan_access.detect_lan_addresses", lambda _ip_version = 4: ["fd00::50"])
+    for host in ("0.0.0.0", "0", "::ffff:0.0.0.0"):
+        assert run._display_host_for_bind(host) == "192.168.1.50"
+    for host in ("::", "::0", "0:0:0:0:0:0:0:0"):
+        assert run._display_host_for_bind(host) == "fd00::50"
+
+    monkeypatch.setattr("lan_access.detect_lan_addresses", lambda _ip_version = 4: [])
+    assert run._display_host_for_bind("::") == "::"
+
+
+def test_display_host_falls_back_to_ipv6_for_dual_stack_wildcard(monkeypatch):
+    original_getaddrinfo = socket.getaddrinfo
+
+    def dual_stack_wildcard(host, *args, **kwargs):
+        if host == "dual-wildcard.test":
+            return [
+                (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("0.0.0.0", 0)),
+                (socket.AF_INET6, socket.SOCK_STREAM, 6, "", ("::", 0, 0, 0)),
+            ]
+        return original_getaddrinfo(host, *args, **kwargs)
+
+    monkeypatch.setattr(socket, "getaddrinfo", dual_stack_wildcard)
+    monkeypatch.setattr(run, "_resolve_external_ip", lambda: "0.0.0.0")
+    monkeypatch.setattr("lan_access.detect_lan_addresses", lambda _ip_version = 4: ["fd00::50"])
+
+    assert run._display_host_for_bind("dual-wildcard.test") == "fd00::50"
+
+
 def test_reachability_probe_runs_by_default(calls):
     _verify_global_reachability("95.216.11.2", 8888)
     assert any(CHECK_HOST in url for url in calls)
+
+
+def test_ipv6_reachability_probe_brackets_the_host(calls):
+    import urllib.parse
+
+    _verify_global_reachability("2001:4860:4860::8844", 8888)
+    request_url = next(url for url in calls if CHECK_HOST in url)
+    query = urllib.parse.parse_qs(urllib.parse.urlparse(request_url).query)
+    assert query["host"] == ["[2001:4860:4860::8844]:8888"]
 
 
 def test_reachability_probe_skipped_when_disabled(monkeypatch, calls, capsys):

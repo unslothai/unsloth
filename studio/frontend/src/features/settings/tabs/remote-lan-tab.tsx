@@ -6,7 +6,7 @@ import { KeylessApiAccessSection } from "../components/keyless-api-access-sectio
 import { LanAccessSection } from "../components/lan-access-section";
 import { RemoteAccessSection } from "../components/remote-access-section";
 
-/** Reaching Studio from another device, without the API token list in the way. */
+/** Reaching Unsloth from another device, without the API token list in the way. */
 export function RemoteLanTab() {
   const t = useT();
 

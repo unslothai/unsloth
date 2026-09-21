@@ -3,8 +3,8 @@ name: Release Desktop App
 on:
   workflow_dispatch:
     # Both version inputs are free text in the dispatch UI, and studio_version
-    # alone decides the release tag, all nine asset filenames and the updater
-    # manifest version together. Near-miss tags are the failure mode worth
+    # alone decides the release tag and updater manifest version. Asset filenames
+    # stay stable across releases. Near-miss tags are the failure mode worth
     # guarding, because they look right at a glance:
     #
     #   studio_version   v0.1.52-beta     correct
@@ -38,11 +38,12 @@ env:
   DESKTOP_RELEASE_NOTES: |
     Desktop app for Unsloth.
 
-    **macOS**: Download the Apple Silicon `.dmg`.
-    **Windows**: Download the `-setup.exe` installer.
-    **Linux**: Download `.deb` for Ubuntu/Debian. `.AppImage` is experimental.
+    **macOS**: Download `Unsloth-Desktop-MacOS.dmg` (Apple Silicon).
+    **Windows**: Download `Unsloth-Desktop-Windows.exe`, or `Unsloth-Desktop-Windows-ARM64.exe` on a Windows on ARM machine.
+    **Linux x64**: Download `Unsloth-Desktop-Ubuntu.deb` for Ubuntu/Debian. `.AppImage` is experimental.
+    **Linux ARM64**: Download `Unsloth-Desktop-Ubuntu-ARM64.deb` for Ubuntu 24.04 or newer on aarch64, such as a DGX Spark. `Unsloth-Desktop-ARM64.app.tar.gz` is macOS-only.
 
-    > Linux in-app updates are AppImage-oriented. Package installs should update by downloading a new package.
+    > Linux in-app updates cover `.deb` and AppImage installs. A `.deb` installed before in-app updates shipped needs one manual update first.
     > Linux AppImage can show a blank window on some Tauri/WebKitGTK + Wayland/Mesa stacks; use `.deb` when available.
     > Linux AppImage on Ubuntu 24.04+ may require: `sudo apt install libfuse2t64`
     > First-run system dependency elevation is supported on Ubuntu/Debian. Other Linux distributions should install system packages manually.
@@ -71,7 +72,6 @@ jobs:
     outputs:
       studio_version: ${{ steps.prepare.outputs.studio_version }}
       app_version: ${{ steps.prepare.outputs.app_version }}
-      asset_version: ${{ steps.prepare.outputs.asset_version }}
       desktop_release_tag: ${{ steps.prepare.outputs.desktop_release_tag }}
       pypi_version: ${{ steps.backend.outputs.pypi_version }}
 
@@ -126,7 +126,6 @@ jobs:
               sys.exit(f'studio_version must be a SemVer tag with leading v, for example v0.1.52-beta: {studio_version}')
 
           app_version = studio_version.removeprefix('v')
-          asset_version = re.sub(r'[^0-9A-Za-z]+', '_', app_version).strip('_')
           desktop_release_tag = studio_version
 
           # Both updater paths compare SemVer, so a tag whose numbers go backwards
@@ -189,7 +188,6 @@ jobs:
           with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
               print(f'studio_version={studio_version}', file=output)
               print(f'app_version={app_version}', file=output)
-              print(f'asset_version={asset_version}', file=output)
               print(f'desktop_release_tag={desktop_release_tag}', file=output)
 
           PY
@@ -281,7 +279,6 @@ jobs:
           GH_REPO: ${{ github.repository }}
           GH_TOKEN: ${{ github.token }}
           DESKTOP_RELEASE_TAG: ${{ steps.prepare.outputs.desktop_release_tag }}
-          ASSET_VERSION: ${{ steps.prepare.outputs.asset_version }}
         run: |
           set -euo pipefail
           # v{version} is tagged and published when main is tagged, before this runs,
@@ -297,11 +294,6 @@ jobs:
             exit 1
           fi
           gh api "repos/${GH_REPO}/releases/tags/${DESKTOP_RELEASE_TAG}" > "$RUNNER_TEMP/target-release.json"
-          # A carried-forward manifest for an older version is expected here (see
-          # publish-desktop-updater.yml), so read it rather than judge by name alone.
-          mkdir -p "$RUNNER_TEMP/target-manifest"
-          gh release download "$DESKTOP_RELEASE_TAG" --pattern latest.json \
-            --dir "$RUNNER_TEMP/target-manifest" --clobber 2>/dev/null || true
           python3 <<'PY'
           import json, os, pathlib, sys
 
@@ -313,27 +305,26 @@ jobs:
           if release.get('prerelease'):
               sys.exit(f'Release {tag} is a prerelease; GitHub cannot mark it latest.')
 
-          prefix = f'Unsloth-Desktop-{os.environ["ASSET_VERSION"]}'
+          prefix = 'Unsloth-Desktop-'
           clashing = sorted(
               asset['name']
               for asset in release.get('assets', [])
               if str(asset.get('name', '')).startswith(prefix)
+              or asset.get('name') == 'latest.json'
           )
-          manifest_path = runner / 'target-manifest' / 'latest.json'
-          if manifest_path.is_file():
-              try:
-                  version = json.loads(manifest_path.read_text()).get('version')
-              except json.JSONDecodeError:
-                  version = None
-              # Only this version's own manifest is a clash; anything else is the
-              # pointer being carried forward and is overwritten on upload.
-              if not isinstance(version, str) or version.removeprefix('v') == tag.removeprefix('v'):
-                  clashing.append('latest.json')
 
           if clashing:
               print(f'Refusing to republish {tag}: it already carries desktop assets.', file=sys.stderr)
               for name in clashing:
                   print(f'  gh release delete-asset {tag} {name} --yes', file=sys.stderr)
+              if 'latest.json' in clashing:
+                  # Deleting a manifest off whichever release is currently GitHub
+                  # latest 404s every update check until this workflow finishes.
+                  print(
+                      '  latest.json is the live updater manifest: only delete it once '
+                      f'{tag} is not the GitHub latest release.',
+                      file=sys.stderr,
+                  )
               sys.exit(1)
           PY
 
@@ -395,7 +386,7 @@ jobs:
           PY
 
           if [ "$GITHUB_REPOSITORY" = "wasimysaid/unsloth" ]; then
-            echo "Fork-only updater A/B build: skipping the upstream PyPI-to-Studio release stamp check."
+            echo "Fork-only updater A/B build: skipping the upstream PyPI-to-Unsloth release stamp check."
           elif [ -f scripts/stamp_studio_release.py ]; then
             mapfile -t dists < <(find "$RUNNER_TEMP/pypi-unsloth-dist" -type f \( -name '*.whl' -o -name '*.tar.gz' \) | sort)
             if [ "${#dists[@]}" -eq 0 ]; then
@@ -510,10 +501,23 @@ jobs:
             args: ''
             label: Linux (x64)
             artifact: linux-x64
+          - platform: ubuntu-24.04-arm
+            args: ''
+            label: Linux (ARM64)
+            artifact: linux-arm64
           - platform: windows-latest
             args: ''
             label: Windows (x64)
             artifact: windows-x64
+          # Cross-compiled from the same x64 runner: there is no ARM64 Windows
+          # runner, and Tauri builds aarch64-pc-windows-msvc from x64 the way
+          # the macOS leg builds aarch64-apple-darwin. NSIS is the only Windows
+          # bundle target configured, which is the one that supports ARM64 (WiX
+          # does not), so nothing in bundle.targets needs an exception here.
+          - platform: windows-latest
+            args: '--target aarch64-pc-windows-msvc'
+            label: Windows (ARM64)
+            artifact: windows-arm64
 
     name: Build ${{ matrix.label }}
     needs: prepare-version
@@ -539,7 +543,6 @@ jobs:
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
       APP_VERSION: ${{ needs.prepare-version.outputs.app_version }}
-      ASSET_VERSION: ${{ needs.prepare-version.outputs.asset_version }}
       STUDIO_VERSION: ${{ needs.prepare-version.outputs.studio_version }}
       DESKTOP_RELEASE_TAG: ${{ needs.prepare-version.outputs.desktop_release_tag }}
       # Compiled in by preflight/version.rs. Without it the app only knows the
@@ -554,7 +557,7 @@ jobs:
       # harden-runner v2.20.0; stay in audit until the macOS + Windows
       # codesign paths have been observed.
       - name: Harden runner (audit)
-        uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c  # v2.21.0
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1  # v2.21.1
         with:
           egress-policy: audit
 
@@ -568,7 +571,7 @@ jobs:
 
       # ── Linux dependencies ──
       - name: Install Linux dependencies
-        if: matrix.platform == 'ubuntu-22.04'
+        if: startsWith(matrix.artifact, 'linux-')
         # Bounded and retried through the shared helper: an unbounded apt step does
         # not fail, it spends the job's whole budget and is reported as "cancelled"
         # with no reason and every later step skipped. update and install go as one
@@ -727,7 +730,9 @@ jobs:
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8  # stable @ 2026-03-27
         with:
-          targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+          # macOS installs both slices; the Windows ARM64 leg needs the cross target
+          # installed or cargo fails with "target may not be installed".
+          targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || (matrix.artifact == 'windows-arm64' && 'aarch64-pc-windows-msvc' || '') }}
 
       - name: Patch desktop app version
         shell: bash
@@ -973,6 +978,18 @@ jobs:
           tauriScript: npx --prefix . tauri
           args: -v --bundles deb,appimage
 
+      - name: Build Linux ARM64 package
+        id: build_linux_arm64
+        if: matrix.platform == 'ubuntu-24.04-arm'
+        uses: tauri-apps/tauri-action@84b9d35b5fc46c1e45415bdb6144030364f7ebc5
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ''
+        with:
+          projectPath: studio
+          tauriScript: npx --prefix . tauri
+          args: -v --bundles deb
+
       - name: Verify complete Linux AppImage
         if: matrix.platform == 'ubuntu-22.04'
         shell: bash
@@ -1205,8 +1222,63 @@ jobs:
             -DisableRealtimeMonitoring $false -DisableIOAVProtection $false `
             -DisableScriptScanning $false -DisableBehaviorMonitoring $false `
             -DisableArchiveScanning $false -MAPSReporting Advanced `
-            -SubmitSamplesConsent SendAllSamples -CloudBlockLevel High `
-            -CloudExtendedTimeout 50 -DisableBlockAtFirstSeen $false -ErrorAction Continue
+            -SubmitSamplesConsent SendAllSamples -CloudBlockLevel HighPlus `
+            -CloudExtendedTimeout 50 -DisableBlockAtFirstSeen $false `
+            -PUAProtection Enabled -ErrorAction Continue
+
+          # Set-MpPreference returns before the service has applied the change, and
+          # on a runner whose image ships real-time protection off it can be
+          # ignored outright. Retry, then settle, so a slow apply is not read as a
+          # refusal. Tamper protection is the usual reason a refusal sticks, and it
+          # cannot be turned off from here, so record it for the verdict below.
+          $rtpOn = $false
+          foreach ($try in 1..5) {
+            $rtpStatus = $null
+            try { $rtpStatus = Get-MpComputerStatus -ErrorAction Stop } catch { }
+            if ($rtpStatus -and $rtpStatus.RealTimeProtectionEnabled) { $rtpOn = $true; break }
+            Set-MpPreference -DisableRealtimeMonitoring $false -ErrorAction Continue
+            Start-Sleep -Seconds (3 * $try)
+          }
+          $tamperProtected = $false
+          try {
+            $tp = Get-MpComputerStatus -ErrorAction Stop
+            if ($null -ne $tp.IsTamperProtected) { $tamperProtected = [bool]$tp.IsTamperProtected }
+          } catch { }
+          if ($rtpOn) {
+            Write-Host 'real-time protection is enabled'
+          } else {
+            Write-Host "real-time protection could not be enabled after 5 attempts (IsTamperProtected=$tamperProtected)"
+          }
+
+          # Audit (2), never Block: 01443614 approximates the cloud-reputation half
+          # of a Smart App Control verdict, and fires on low prevalence, i.e. ours.
+          $asrRules = @(
+            '01443614-cd74-433a-b99e-2ecdc07bfc25',  # low prevalence / new file
+            'be9ba2d9-53ea-4cdc-84e5-9b1eeee46550',  # executable content from mail
+            'b2b3f03d-6a65-4f7b-a9c7-1c7ef74a9ba4',  # untrusted unsigned from USB
+            'c1db55ab-c21a-4637-bb3f-a12568109d35'   # advanced ransomware protection
+          )
+          $asrActions = @('AuditMode') * $asrRules.Count
+          Add-MpPreference -AttackSurfaceReductionRules_Ids $asrRules `
+            -AttackSurfaceReductionRules_Actions $asrActions -ErrorAction Continue
+          # A rule that did not apply reports no events, like one that found none.
+          # Add-MpPreference is additive: check the action, not just the id.
+          $asrPref = Get-MpPreference
+          $asrIds = @($asrPref.AttackSurfaceReductionRules_Ids)
+          $asrStates = @($asrPref.AttackSurfaceReductionRules_Actions)
+          $asrApplied = @{}
+          for ($i = 0; $i -lt [Math]::Min($asrIds.Count, $asrStates.Count); $i++) {
+            $asrApplied[[string]$asrIds[$i]] = [int]$asrStates[$i]
+          }
+          $asrBad = @($asrRules | Where-Object { $asrApplied[$_] -ne 2 } | ForEach-Object {
+            if ($asrApplied.ContainsKey($_)) { "$_ is action $($asrApplied[$_]), expected 2 (AuditMode)" }
+            else { "$_ not applied" }
+          })
+          if ($asrBad) { Write-Host "::warning::ASR audit rules not in audit mode: $($asrBad -join '; ')" }
+          else { Write-Host "ASR audit rules applied: $($asrRules.Count)" }
+
+          # Bounds the ASR event query below; that log is shared with the runner.
+          $scanStart = Get-Date
 
           $mp = "$env:ProgramFiles\Windows Defender\MpCmdRun.exe"
           $plat = Get-ChildItem 'C:\ProgramData\Microsoft\Windows Defender\Platform' -Directory -ErrorAction SilentlyContinue |
@@ -1254,14 +1326,31 @@ jobs:
           # guard drops a readable $pref's MAPS and block-at-first-sight checks.
           $fatal = @()
           $degraded = @()
+          # Real-time protection is on-access scanning, and this job never opens
+          # the bundle: it scans copies on demand with MpCmdRun. What its absence
+          # actually costs is block-at-first-sight, which only consults the cloud
+          # on an on-access open. The cloud verdicts this gate exists to catch
+          # ("!ml", low prevalence) still reach an on-demand scan through MAPS,
+          # so treat it as fatal only when the scan cannot be trusted on its own
+          # terms - that is, when the EICAR control did not fire or MAPS is
+          # unreachable, both of which are already fatal in their own right below.
+          # Deciding that here would read $controlPassed before it is set, so the
+          # demotion is applied after the control runs.
+          $rtpOff = $false
           if ($status) {
-            if (-not $status.RealTimeProtectionEnabled) { $fatal += "RealTimeProtectionEnabled=false (AMRunningMode=$($status.AMRunningMode))" }
+            if (-not $status.RealTimeProtectionEnabled) {
+              $rtpOff = $true
+              $rtpDetail = "RealTimeProtectionEnabled=false (AMRunningMode=$($status.AMRunningMode), IsTamperProtected=$tamperProtected)"
+            }
           }
           if ($pref) {
             if ([int]$pref.MAPSReporting -ne 2)         { $fatal += "MAPSReporting=$($pref.MAPSReporting), expected 2 (Advanced)" }
             if ($pref.DisableBlockAtFirstSeen)          { $fatal += 'DisableBlockAtFirstSeen=true' }
             if ([int]$pref.SubmitSamplesConsent -ne 3)  { $degraded += "SubmitSamplesConsent=$($pref.SubmitSamplesConsent), expected 3 (SendAllSamples)" }
-            if ([int]$pref.CloudBlockLevel -eq 0)       { $degraded += "CloudBlockLevel=$($pref.CloudBlockLevel), expected High" }
+            # 4 is HighPlus; a refused change leaves the old level, not zero.
+            if ([int]$pref.CloudBlockLevel -ne 4)       { $degraded += "CloudBlockLevel=$($pref.CloudBlockLevel), expected 4 (HighPlus)" }
+            # PUA is a separate class, off by default: unwanted-not-malicious passes.
+            if ([int]$pref.PUAProtection -ne 1)         { $degraded += "PUAProtection=$($pref.PUAProtection), expected 1 (Enabled)" }
             if ($pref.ExclusionPath)                    { $degraded += "exclusions remain: $($pref.ExclusionPath -join ',')" }
           }
 
@@ -1319,6 +1408,20 @@ jobs:
           }
           if ($cmdletsDown) {
             Write-Host 'EICAR positive control fired via MpCmdRun; scanning with the cmdlets unavailable.'
+          }
+
+          # Real-time protection off, resolved now that the control has run. The
+          # EICAR control proves the engine scans on demand and the MAPS check
+          # proves the cloud is reachable; with both, an on-demand scan still sees
+          # signature and cloud verdicts, and only block-at-first-sight is lost.
+          # Without either, the scan proves nothing and this stays fatal - but
+          # those are already in $fatal, so demoting here cannot mask them.
+          if ($rtpOff) {
+            if ($controlPassed -and $maps) {
+              $degraded += "$rtpDetail; block-at-first-sight cannot fire, on-demand signature and cloud verdicts still can"
+            } else {
+              $fatal += $rtpDetail
+            }
           }
 
           if ($degraded) {
@@ -1422,12 +1525,37 @@ jobs:
             Write-Host "::error::Refusing to publish a Windows bundle Defender flags: $($detected -join '; ')"
             Write-Host 'If this is a false positive, submit it at https://www.microsoft.com/en-us/wdsi/filesubmission (Software developer -> incorrectly detected) and re-run once cleared.'
           }
+          # ASR fires on process launch and this job never runs the bundle, so these
+          # are runner activity, not a verdict on it. Fatal would block every release.
+          $asrEvents = @(Get-WinEvent -FilterHashtable @{
+            LogName = 'Microsoft-Windows-Windows Defender/Operational'; Id = 1121, 1122
+          } -ErrorAction SilentlyContinue | Where-Object { $_.TimeCreated -ge $scanStart })
+          if ($asrEvents) {
+            Write-Host "::warning::$($asrEvents.Count) attack surface reduction audit event(s) on this runner during the scan window; the bundle is never executed, so these are runner activity, not a finding against it"
+            foreach ($e in $asrEvents | Select-Object -First 20) {
+              Write-Host "  [$($e.Id)] $($e.TimeCreated): $(($e.Message -split "`n")[0])"
+            }
+          } else {
+            Write-Host 'No attack surface reduction audit events on this runner during the scan window.'
+          }
+
           if ($detected -or $unscanned) { exit 1 }
           Remove-Item $work -Recurse -Force -ErrorAction SilentlyContinue
           Write-Host "All $($paths.Count) Windows bundle(s) scanned clean."
 
       # Later steps carry an implicit success(), so on a detection the flagged
       # bundle would be discarded with the runner.
+      #
+      # 90 days, not 7. Clearance is per hash and a rebuild hashes differently, so these copies are
+      # the only submittable sample for this release -- and a vendor analyst round trip plus our own
+      # reaction routinely outlasts a week, at which point the evidence for the detection we are
+      # disputing is gone and the dispute has to start from a different build.
+      #
+      # The Microsoft submission packet that describes them is uploaded by its own step further
+      # down, NOT here. It cannot be added to this step's path: the packet is assembled ~60 lines
+      # below, and steps run top to bottom, so at this point the file does not exist yet. That was
+      # the first version of this change, and `if-no-files-found: ignore` would have hidden it
+      # forever -- an artefact silently missing the one document it exists to carry.
       - name: Preserve flagged Windows bundles
         if: failure() && matrix.platform == 'windows-latest'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
@@ -1436,7 +1564,7 @@ jobs:
           path: ${{ runner.temp }}/defender-scan/*
           if-no-files-found: ignore
           compression-level: 0
-          retention-days: 7
+          retention-days: 90
 
       # ── Windows: every executable in the bundle must be signed ──
       # NSIS runs its plugin DLLs from $PLUGINSDIR; signing the installer misses them.
@@ -1494,10 +1622,31 @@ jobs:
           $md -join "`n" | Out-File $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
           Write-Host ($md -join "`n")
 
+      # Here, and not on the bundle-preserving step above, because the packet is written by the step
+      # immediately before this one. A job summary is ephemeral: it goes with the run, so the one
+      # document written for the purpose of disputing a detection was being discarded along with the
+      # detection it disputes. 90 days for the same reason the bundles get 90 -- clearance is per
+      # hash, and a vendor round trip outlasts a week.
+      - name: Preserve the Microsoft submission packet
+        if: always() && matrix.platform == 'windows-latest'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: ms-submission-packet-${{ matrix.artifact }}
+          path: ${{ runner.temp }}/ms-submission-packet.md
+          # ignore, not warn: the packet is only assembled when there is something to submit, so its
+          # absence on a clean release is the normal case and must not add an annotation.
+          if-no-files-found: ignore
+          retention-days: 90
+
       - name: Stage release assets
         shell: bash
         env:
-          ARTIFACT_PATHS: ${{ steps.build_linux.outputs.artifactPaths || steps.build_macos.outputs.artifactPaths || steps.build_windows.outputs.artifactPaths }}
+          ARTIFACT_PATHS: ${{ steps.build_linux.outputs.artifactPaths || steps.build_linux_arm64.outputs.artifactPaths || steps.build_macos.outputs.artifactPaths || steps.build_windows.outputs.artifactPaths }}
+          # Both Windows legs emit a -setup.exe, and publish-release merges every
+          # leg's artifact into one directory, so the two must not stage the same
+          # name. x64 keeps the historical name; anything else would break every
+          # published download link and the updater entry that points at it.
+          MATRIX_ARTIFACT: ${{ matrix.artifact }}
         run: |
           set -euo pipefail
           if command -v python3 >/dev/null 2>&1; then
@@ -1522,16 +1671,31 @@ jobs:
 
           destination = pathlib.Path(os.environ['RUNNER_TEMP'], 'desktop-release-assets')
           destination.mkdir(parents=True, exist_ok=True)
-          base_name = f'Unsloth-Desktop-{os.environ["ASSET_VERSION"]}'
+          base_name = 'Unsloth-Desktop'
+          windows_name = (
+              f'{base_name}-Windows-ARM64'
+              if os.environ.get('MATRIX_ARTIFACT') == 'windows-arm64'
+              else f'{base_name}-Windows'
+          )
+          # Both Linux legs bundle a deb and, since in-app Debian updates, its updater
+          # signature. publish-release merges every leg's artifact into one directory, so
+          # staging the arm64 pair under the x64 names would silently overwrite one with
+          # the other and hand x64 users the wrong signature.
+          deb_base = (
+              f'{base_name}-Ubuntu-ARM64'
+              if os.environ.get('MATRIX_ARTIFACT') == 'linux-arm64'
+              else f'{base_name}-Ubuntu'
+          )
           suffix_names = (
               ('.app.tar.gz.sig', f'{base_name}-ARM64.app.tar.gz.sig'),
               ('.app.tar.gz', f'{base_name}-ARM64.app.tar.gz'),
               ('.AppImage.sig', f'{base_name}-Linux.AppImage.sig'),
               ('.AppImage', f'{base_name}-Linux.AppImage'),
-              ('-setup.exe.sig', f'{base_name}-Windows.exe.sig'),
-              ('-setup.exe', f'{base_name}-Windows.exe'),
+              ('-setup.exe.sig', f'{windows_name}.exe.sig'),
+              ('-setup.exe', f'{windows_name}.exe'),
               ('.dmg', f'{base_name}-MacOS.dmg'),
-              ('.deb', f'{base_name}-Ubuntu.deb'),
+              ('.deb.sig', f'{deb_base}.deb.sig'),
+              ('.deb', f'{deb_base}.deb'),
           )
           staged = []
           for raw_path in artifact_paths:
@@ -1586,14 +1750,13 @@ jobs:
     env:
       GH_REPO: ${{ github.repository }}
       APP_VERSION: ${{ needs.prepare-version.outputs.app_version }}
-      ASSET_VERSION: ${{ needs.prepare-version.outputs.asset_version }}
       PYPI_VERSION: ${{ needs.prepare-version.outputs.pypi_version }}
       STUDIO_VERSION: ${{ needs.prepare-version.outputs.studio_version }}
       DESKTOP_RELEASE_TAG: ${{ needs.prepare-version.outputs.desktop_release_tag }}
 
     steps:
       - name: Harden runner (audit)
-        uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c  # v2.21.0
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1  # v2.21.1
         with:
           egress-policy: audit
 
@@ -1605,8 +1768,8 @@ jobs:
         run: |
           set -uo pipefail
 
-          # The three matrix legs, by their `name:` (Build <matrix.label>).
-          LEGS=('Build macOS (Apple Silicon)' 'Build Linux (x64)' 'Build Windows (x64)')
+          # publishing requires every named matrix leg to finish successfully.
+          LEGS=('Build macOS (Apple Silicon)' 'Build Linux (x64)' 'Build Linux (ARM64)' 'Build Windows (x64)' 'Build Windows (ARM64)')
           POLL=30
           DEADLINE=$(( $(date +%s) + 75 * 60 ))
           # Matrix job records appear with the run, so a leg still missing well
@@ -1693,7 +1856,7 @@ jobs:
 
           asset_dir = pathlib.Path(os.environ['RUNNER_TEMP'], 'desktop-release-assets')
           files = [path for path in asset_dir.iterdir() if path.is_file()]
-          base_name = f'Unsloth-Desktop-{os.environ["ASSET_VERSION"]}'
+          base_name = 'Unsloth-Desktop'
           expected_names = {
               f'{base_name}-MacOS.dmg',
               f'{base_name}-ARM64.app.tar.gz',
@@ -1701,8 +1864,13 @@ jobs:
               f'{base_name}-Linux.AppImage',
               f'{base_name}-Linux.AppImage.sig',
               f'{base_name}-Ubuntu.deb',
+              f'{base_name}-Ubuntu.deb.sig',
+              f'{base_name}-Ubuntu-ARM64.deb',
+              f'{base_name}-Ubuntu-ARM64.deb.sig',
               f'{base_name}-Windows.exe',
               f'{base_name}-Windows.exe.sig',
+              f'{base_name}-Windows-ARM64.exe',
+              f'{base_name}-Windows-ARM64.exe.sig',
           }
           actual_names = {path.name for path in files}
           if actual_names != expected_names:
@@ -1736,11 +1904,6 @@ jobs:
             echo "  Tag main and publish it first, then re-dispatch this workflow." >&2
             exit 1
           fi
-          # A carried-forward manifest for an older version is expected here (see
-          # publish-desktop-updater.yml), so read it rather than judge by name alone.
-          mkdir -p "$RUNNER_TEMP/target-manifest"
-          gh release download "$DESKTOP_RELEASE_TAG" --pattern latest.json \
-            --dir "$RUNNER_TEMP/target-manifest" --clobber 2>/dev/null || true
           python3 <<'PY'
           import json, os, pathlib, sys
 
@@ -1752,27 +1915,26 @@ jobs:
           if release.get('prerelease'):
               sys.exit(f'Release {tag} is a prerelease; GitHub cannot mark it latest.')
 
-          prefix = f'Unsloth-Desktop-{os.environ["ASSET_VERSION"]}'
+          prefix = 'Unsloth-Desktop-'
           clashing = sorted(
               asset['name']
               for asset in release.get('assets', [])
               if str(asset.get('name', '')).startswith(prefix)
+              or asset.get('name') == 'latest.json'
           )
-          manifest_path = runner / 'target-manifest' / 'latest.json'
-          if manifest_path.is_file():
-              try:
-                  version = json.loads(manifest_path.read_text()).get('version')
-              except json.JSONDecodeError:
-                  version = None
-              # Only this version's own manifest is a clash; anything else is the
-              # pointer being carried forward and is overwritten on upload.
-              if not isinstance(version, str) or version.removeprefix('v') == tag.removeprefix('v'):
-                  clashing.append('latest.json')
 
           if clashing:
               print(f'Refusing to republish {tag}: it already carries desktop assets.', file=sys.stderr)
               for name in clashing:
                   print(f'  gh release delete-asset {tag} {name} --yes', file=sys.stderr)
+              if 'latest.json' in clashing:
+                  # Deleting a manifest off whichever release is currently GitHub
+                  # latest 404s every update check until this workflow finishes.
+                  print(
+                      '  latest.json is the live updater manifest: only delete it once '
+                      f'{tag} is not the GitHub latest release.',
+                      file=sys.stderr,
+                  )
               sys.exit(1)
           PY
 
@@ -1824,7 +1986,15 @@ jobs:
 
           darwin = entry('.app.tar.gz.sig')
           linux = entry('.AppImage.sig')
-          windows = entry('.exe.sig')
+          # Same full-name rule as the Windows pair below: both debs end in .deb.sig, and
+          # -Ubuntu.deb.sig does not match -Ubuntu-ARM64.deb.sig under endswith.
+          debian = entry('-Ubuntu.deb.sig')
+          debian_arm64 = entry('-Ubuntu-ARM64.deb.sig')
+          # Both Windows bundles end in .exe.sig, and exactly_one() refuses an ambiguous
+          # match, so name them in full. -Windows.exe.sig does not match -Windows-ARM64.exe.sig
+          # under endswith, which is what keeps the two entries distinct.
+          windows = entry('-Windows.exe.sig')
+          windows_arm64 = entry('-Windows-ARM64.exe.sig')
           notes = pathlib.Path(os.environ['RUNNER_TEMP'], 'desktop-release-notes.md').read_text()
           metadata = {
               'version': os.environ['APP_VERSION'],
@@ -1837,8 +2007,19 @@ jobs:
                   'darwin-aarch64-app': darwin,
                   'linux-x86_64': linux,
                   'linux-x86_64-appimage': linux,
+                  'linux-x86_64-deb': debian,
+                  # Same reason as the Windows ARM64 pair: without these an arm64 deb
+                  # install finds no entry and never updates, or matches the x86_64 one
+                  # and installs an amd64 package over a native install.
+                  'linux-aarch64': debian_arm64,
+                  'linux-aarch64-deb': debian_arm64,
                   'windows-x86_64': windows,
                   'windows-x86_64-nsis': windows,
+                  # Tauri asks for {os}-{arch}; without these an ARM64 install either
+                  # finds no entry and never updates, or takes the x86_64 one and
+                  # replaces a native install with an emulated build.
+                  'windows-aarch64': windows_arm64,
+                  'windows-aarch64-nsis': windows_arm64,
               },
           }
           output = pathlib.Path(os.environ['RUNNER_TEMP'], 'latest.json')
@@ -1848,7 +2029,7 @@ jobs:
       # The release body is the maintainer's changelog and this workflow never
       # rewrites it. The target release is already public, so a validation-only
       # run must not upload to it.
-      - name: Publish versioned release assets
+      - name: Publish release assets
         if: ${{ !inputs.draft }}
         shell: bash
         env:
@@ -1869,9 +2050,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          # --clobber only for latest.json: it may already hold an older version's
-          # pointer. The bundles above are still uploaded without it.
-          gh release upload "$DESKTOP_RELEASE_TAG" "$RUNNER_TEMP/latest.json" --clobber
+          gh release upload "$DESKTOP_RELEASE_TAG" "$RUNNER_TEMP/latest.json"
 
       - name: Download versioned updater metadata
         if: ${{ !inputs.draft }}
@@ -1931,7 +2110,9 @@ jobs:
           required_families = {
               'darwin-aarch64': False,
               'linux-x86_64': False,
+              'linux-aarch64': False,
               'windows-x86_64': False,
+              'windows-aarch64': False,
           }
           expected_prefix = f'https://github.com/{os.environ["GITHUB_REPOSITORY"]}/releases/download/{release_tag}/'
           forbidden_fragments = ('/releases/latest/', '/releases/download/desktop-latest/')
@@ -2050,8 +2231,18 @@ jobs:
           if latest.get('draft') or latest.get('prerelease'):
               sys.exit(f'GitHub latest release {expected} is not a normal published release')
           names = {asset.get('name') for asset in latest.get('assets', [])}
-          if 'latest.json' not in names:
-              sys.exit(f'GitHub latest release {expected} is missing latest.json')
+          required = {
+              'latest.json',
+              'Unsloth-Desktop-MacOS.dmg',
+              'Unsloth-Desktop-Linux.AppImage',
+              'Unsloth-Desktop-Ubuntu.deb',
+              'Unsloth-Desktop-Ubuntu-ARM64.deb',
+              'Unsloth-Desktop-Windows.exe',
+              'Unsloth-Desktop-Windows-ARM64.exe',
+          }
+          missing = sorted(required - names)
+          if missing:
+              sys.exit(f'GitHub latest release {expected} is missing stable download assets: {missing}')
           PY
 
 
@@ -2081,7 +2272,7 @@ jobs:
     timeout-minutes: 30
     steps:
       - name: Harden runner (audit)
-        uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c  # v2.21.0
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1  # v2.21.1
         with:
           egress-policy: audit
 
@@ -2130,3 +2321,21 @@ jobs:
             echo '' >> "$GITHUB_STEP_SUMMARY"
             echo 'The scan step produced no summary.' >> "$GITHUB_STEP_SUMMARY"
           fi
+
+      # The summary carries the false-positive submission packet that
+      # submission_packet_lines() builds: the flagged assets, their SHA-256s, the vendor routes and
+      # the note that clearance is per hash. A job summary is ephemeral, so the one document written
+      # for the purpose of disputing a detection was being thrown away along with the run, and the
+      # dispute then had to be reconstructed from a report nobody kept. Keeping it costs a few KB.
+      #
+      # No env and no secret here on purpose: test_post_publish_scan_job_holds_no_release_credentials
+      # asserts this job's complete secret set is VIRUS_TOTAL_API_TOKEN alone and that no step of it
+      # carries a token, so an upload step must add neither.
+      - name: Preserve the VirusTotal summary and submission packet
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: virustotal-summary
+          path: ${{ runner.temp }}/virustotal-summary.md
+          if-no-files-found: warn
+          retention-days: 90

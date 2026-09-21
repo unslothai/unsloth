@@ -25,7 +25,9 @@ import {
   type DownloadProgressResponse,
 } from "@/features/chat/api/chat-api";
 import { useTransferStats } from "@/features/chat/hooks/use-transfer-stats";
-import { formatEta, formatRate } from "@/features/chat/utils/format-transfer";
+import { formatEta } from "@/features/chat/utils/format-transfer";
+import { formatBytes, formatRate } from "@/features/hub";
+import { useHfTokenStore } from "@/features/hub/stores/hf-token-store";
 import {
   EMPTY_DOWNLOAD_STATE,
   coerceCachedStateReady,
@@ -45,7 +47,7 @@ import {
 } from "@/features/training";
 import { Cancel01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { useEffect, useState, type ReactElement } from "react";
+import { useCallback, useEffect, useState, type ReactElement } from "react";
 import { useT } from "@/i18n";
 
 const HF_REPO_REGEX = /^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/;
@@ -54,14 +56,6 @@ const HF_REPO_REGEX = /^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/;
 // overlay unmounts on navigation away, so without this its typing/fade-in would
 // replay on every return mid-run. Module-level so it survives remounts.
 const animatedJobs = new Set<string>();
-
-function formatBytes(n: number): string {
-  if (n <= 0) return "0 B";
-  if (n < 1024) return `${n} B`;
-  if (n < 1024 ** 2) return `${(n / 1024).toFixed(1)} KB`;
-  if (n < 1024 ** 3) return `${(n / 1024 ** 2).toFixed(1)} MB`;
-  return `${(n / 1024 ** 3).toFixed(2)} GB`;
-}
 
 function formatCachePath(path: string): string {
   return path
@@ -146,12 +140,26 @@ function useHfDownloadProgress(
   return state;
 }
 
-function useModelDownloadProgress(modelName: string | null): DownloadState {
-  return useHfDownloadProgress(modelName, getDownloadProgress);
+function useModelDownloadProgress(
+  modelName: string | null,
+  hfToken: string | null,
+): DownloadState {
+  const fetchProgress = useCallback(
+    (repoId: string) => getDownloadProgress(repoId, hfToken),
+    [hfToken],
+  );
+  return useHfDownloadProgress(modelName, fetchProgress);
 }
 
-function useDatasetDownloadProgress(datasetName: string | null): DownloadState {
-  return useHfDownloadProgress(datasetName, getDatasetDownloadProgress);
+function useDatasetDownloadProgress(
+  datasetName: string | null,
+  hfToken: string | null,
+): DownloadState {
+  const fetchProgress = useCallback(
+    (repoId: string) => getDatasetDownloadProgress(repoId, hfToken),
+    [hfToken],
+  );
+  return useHfDownloadProgress(datasetName, fetchProgress);
 }
 
 const PROGRESS_INDICATOR_CLASS =
@@ -183,7 +191,7 @@ function ResourceRow({
 }: ResourceRowProps): ReactElement | null {
   const t = useT();
   // Rolling-window rate + ETA from the cumulative-byte series the poll hook
-  // produces, so we show "5.2 / 20.7 GB • 85.3 MB/s • 3m 12s left", not just the pair.
+  // produces, so we show "5.2 GB / 21 GB • 85 MB/s • 3m 12s left", not just the pair.
   const stats = useTransferStats(state.downloadedBytes, state.totalBytes);
 
   if (!resourceRowHasContent(state, preparation)) return null;
@@ -292,8 +300,10 @@ export function TrainingStartOverlay({
   const jobId = useTrainingRuntimeStore((s) => s.jobId);
   const startModelName = useTrainingRuntimeStore((s) => s.startModelName);
   const startDatasetName = useTrainingRuntimeStore((s) => s.startDatasetName);
+  const startHfToken = useTrainingRuntimeStore((s) => s.startHfToken);
   const startFromResume = useTrainingRuntimeStore((s) => s.startFromResume);
   const configuredModel = useTrainingConfigStore((s) => s.selectedModel);
+  const configuredHfToken = useHfTokenStore((s) => s.token);
   const datasetSource = useTrainingConfigStore((s) => s.datasetSource);
   const dataset = useTrainingConfigStore((s) => s.dataset);
   // Streaming runs never fully download the dataset (only small metadata lands
@@ -315,12 +325,13 @@ export function TrainingStartOverlay({
     : useConfiguredResources
       ? hfDatasetName
       : null;
+  const hfToken = hasStartResources ? startHfToken : configuredHfToken;
   const displayMessage =
     startFromResume && /^download/i.test(message)
       ? t("studio.trainingStart.resumingTraining")
       : message || t("studio.trainingStart.startingTraining");
-  const rawModelDownload = useModelDownloadProgress(modelName);
-  const rawDatasetDownload = useDatasetDownloadProgress(datasetName);
+  const rawModelDownload = useModelDownloadProgress(modelName, hfToken);
+  const rawDatasetDownload = useDatasetDownloadProgress(datasetName, hfToken);
   const modelDownload = coerceCachedStateReady(rawModelDownload);
   const datasetDownload = coerceCachedStateReady(rawDatasetDownload);
   // the raw message, not displayMessage: a resumed run rewrites its download statuses to

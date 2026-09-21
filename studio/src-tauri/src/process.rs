@@ -340,8 +340,9 @@ mod appimage_environment_tests {
 #[cfg(windows)]
 const STUDIO_MANAGED_RUNTIME_MUTEX_PREFIX: &str = "Global\\UnslothStudioManagedEnvironment-";
 
-#[cfg(windows)]
 pub(crate) const STUDIO_RUNTIME_GATE_HANDOFF_ENV: &str = "_UNSLOTH_STUDIO_RUNTIME_GATE_HANDOFF";
+pub(crate) const STUDIO_RUNTIME_GATE_BUSY: &str = "Unsloth installation is modifying the managed environment. Wait for it to finish, then start the backend again.";
+const STUDIO_RUNTIME_GATE_ACQUIRE_ENV: &str = "_UNSLOTH_STUDIO_RUNTIME_GATE_ACQUIRE";
 
 #[cfg(windows)]
 #[derive(Debug)]
@@ -355,6 +356,23 @@ impl Drop for StudioManagedRuntimeLaunchGuard {
         unsafe {
             let _ = windows_sys::Win32::System::Threading::ReleaseMutex(self.handle);
             let _ = windows_sys::Win32::Foundation::CloseHandle(self.handle);
+        }
+    }
+}
+
+#[cfg(unix)]
+#[derive(Debug)]
+struct StudioManagedRuntimeLaunchGuard {
+    file: std::fs::File,
+}
+
+#[cfg(unix)]
+impl Drop for StudioManagedRuntimeLaunchGuard {
+    fn drop(&mut self) {
+        use std::os::fd::AsRawFd;
+
+        unsafe {
+            libc::flock(self.file.as_raw_fd(), libc::LOCK_UN);
         }
     }
 }
@@ -373,7 +391,7 @@ fn acquire_named_studio_runtime_launch_guard(
     };
     if handle.is_null() {
         return Err(format!(
-            "Could not create the Studio runtime lock: {}",
+            "Could not create the Unsloth runtime lock: {}",
             std::io::Error::last_os_error()
         ));
     }
@@ -385,10 +403,7 @@ fn acquire_named_studio_runtime_launch_guard(
             unsafe {
                 let _ = windows_sys::Win32::Foundation::CloseHandle(handle);
             }
-            Err(
-                "Unsloth installation is modifying the managed environment. Wait for it to finish, then start the backend again."
-                    .to_string(),
-            )
+            Err(STUDIO_RUNTIME_GATE_BUSY.to_string())
         }
         _ => {
             let error = std::io::Error::last_os_error();
@@ -396,7 +411,7 @@ fn acquire_named_studio_runtime_launch_guard(
                 let _ = windows_sys::Win32::Foundation::CloseHandle(handle);
             }
             Err(format!(
-                "Could not acquire the Studio runtime lock: {error}"
+                "Could not acquire the Unsloth runtime lock: {error}"
             ))
         }
     }
@@ -418,7 +433,7 @@ fn current_windows_user_sid() -> Result<String, String> {
     let mut token = std::ptr::null_mut();
     if unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) } == 0 {
         return Err(format!(
-            "Could not open the Windows user token for the Studio runtime lock: {}",
+            "Could not open the Windows user token for the Unsloth runtime lock: {}",
             std::io::Error::last_os_error()
         ));
     }
@@ -430,7 +445,7 @@ fn current_windows_user_sid() -> Result<String, String> {
         }
         if required == 0 {
             return Err(format!(
-                "Could not size the Windows user SID for the Studio runtime lock: {}",
+                "Could not size the Windows user SID for the Unsloth runtime lock: {}",
                 std::io::Error::last_os_error()
             ));
         }
@@ -448,7 +463,7 @@ fn current_windows_user_sid() -> Result<String, String> {
         } == 0
         {
             return Err(format!(
-                "Could not read the Windows user SID for the Studio runtime lock: {}",
+                "Could not read the Windows user SID for the Unsloth runtime lock: {}",
                 std::io::Error::last_os_error()
             ));
         }
@@ -456,14 +471,14 @@ fn current_windows_user_sid() -> Result<String, String> {
         let token_user = unsafe { &*(buffer.as_ptr().cast::<TOKEN_USER>()) };
         let sid = token_user.User.Sid;
         if sid.is_null() || unsafe { IsValidSid(sid) } == 0 {
-            return Err("Windows returned an invalid user SID for the Studio runtime lock".into());
+            return Err("Windows returned an invalid user SID for the Unsloth runtime lock".into());
         }
 
         let authority_ptr = unsafe { GetSidIdentifierAuthority(sid) };
         let count_ptr = unsafe { GetSidSubAuthorityCount(sid) };
         if authority_ptr.is_null() || count_ptr.is_null() {
             return Err(
-                "Could not inspect the Windows user SID for the Studio runtime lock".into(),
+                "Could not inspect the Windows user SID for the Unsloth runtime lock".into(),
             );
         }
         let authority = unsafe { (*authority_ptr).Value }
@@ -476,7 +491,7 @@ fn current_windows_user_sid() -> Result<String, String> {
             let sub_authority = unsafe { GetSidSubAuthority(sid, index) };
             if sub_authority.is_null() {
                 return Err(
-                    "Could not inspect the Windows user SID for the Studio runtime lock".into(),
+                    "Could not inspect the Windows user SID for the Unsloth runtime lock".into(),
                 );
             }
             sid_text.push_str(&format!("-{}", unsafe { *sub_authority }));
@@ -496,11 +511,38 @@ fn acquire_studio_runtime_launch_guard() -> Result<StudioManagedRuntimeLaunchGua
     acquire_named_studio_runtime_launch_guard(&name)
 }
 
-/// Serialize creation of managed-environment children with install/repair.
-///
-/// The guard ends when the sync operation returns. The installer takes the same
-/// mutex then scans for managed processes, so holding it through child creation
-/// closes the race without carrying a thread-owned Win32 mutex across an await.
+#[cfg(unix)]
+fn acquire_file_studio_runtime_launch_guard(
+    home: &std::path::Path,
+) -> Result<StudioManagedRuntimeLaunchGuard, String> {
+    use std::os::fd::AsRawFd;
+
+    std::fs::create_dir_all(home)
+        .map_err(|error| format!("Could not create the Unsloth runtime lock directory: {error}"))?;
+    let path = home.join(".studio-runtime.lock");
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .open(&path)
+        .map_err(|error| format!("Could not open the Unsloth runtime lock: {error}"))?;
+    let result = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+    if result == 0 {
+        return Ok(StudioManagedRuntimeLaunchGuard { file });
+    }
+    let error = std::io::Error::last_os_error();
+    if error.kind() == std::io::ErrorKind::WouldBlock {
+        return Err(STUDIO_RUNTIME_GATE_BUSY.to_string());
+    }
+    Err(format!("Could not acquire the Unsloth runtime lock: {error}"))
+}
+
+#[cfg(unix)]
+fn acquire_studio_runtime_launch_guard() -> Result<StudioManagedRuntimeLaunchGuard, String> {
+    acquire_file_studio_runtime_launch_guard(&crate::diagnostics::studio_dir())
+}
+
+/// serialize managed-environment child creation with install and repair.
 #[cfg(windows)]
 fn with_named_studio_runtime_launch_guard<T>(
     name: &str,
@@ -518,14 +560,44 @@ pub(crate) fn with_studio_runtime_launch_guard<T>(
         let name = studio_runtime_mutex_name_for_sid(&current_windows_user_sid()?);
         return with_named_studio_runtime_launch_guard(&name, operation);
     }
-    #[cfg(not(windows))]
-    operation()
+    #[cfg(unix)]
+    {
+        let _runtime_launch_guard = acquire_studio_runtime_launch_guard()?;
+        return operation();
+    }
+    #[cfg(not(any(windows, unix)))]
+    {
+        operation()
+    }
+}
+
+#[cfg(all(test, unix))]
+mod posix_studio_runtime_launch_guard_tests {
+    use super::*;
+
+    #[test]
+    fn blocks_a_second_launcher_until_the_first_releases_the_file_lock() {
+        let home = tempfile::tempdir().unwrap();
+        let first = acquire_file_studio_runtime_launch_guard(home.path()).unwrap();
+        let path = home.path().to_path_buf();
+        let error = std::thread::spawn(move || {
+            acquire_file_studio_runtime_launch_guard(&path)
+                .err()
+                .expect("second launcher unexpectedly acquired the gate")
+        })
+        .join()
+        .unwrap();
+        assert!(error.contains("installation is modifying"));
+
+        drop(first);
+        acquire_file_studio_runtime_launch_guard(home.path()).unwrap();
+    }
 }
 
 #[cfg(windows)]
 fn normalized_existing_windows_path(path: &std::path::Path) -> Result<String, String> {
     let resolved = std::fs::canonicalize(path)
-        .map_err(|error| format!("Could not resolve managed Studio path {:?}: {error}", path))?;
+        .map_err(|error| format!("Could not resolve managed Unsloth path {:?}: {error}", path))?;
     Ok(resolved
         .to_string_lossy()
         .trim_end_matches(['\\', '/'])
@@ -537,15 +609,15 @@ fn windows_ordinal_ignore_case_equal(left: &[u16], right: &[u16]) -> Result<bool
     use windows_sys::Win32::Globalization::{CompareStringOrdinal, CSTR_EQUAL};
 
     let left_length = i32::try_from(left.len())
-        .map_err(|_| "Normalized Studio path exceeds Win32 comparison limits".to_string())?;
+        .map_err(|_| "Normalized Unsloth path exceeds Win32 comparison limits".to_string())?;
     let right_length = i32::try_from(right.len())
-        .map_err(|_| "Normalized Studio path exceeds Win32 comparison limits".to_string())?;
+        .map_err(|_| "Normalized Unsloth path exceeds Win32 comparison limits".to_string())?;
     let comparison = unsafe {
         CompareStringOrdinal(left.as_ptr(), left_length, right.as_ptr(), right_length, 1)
     };
     if comparison == 0 {
         return Err(format!(
-            "Could not compare normalized Studio paths: {}",
+            "Could not compare normalized Unsloth paths: {}",
             std::io::Error::last_os_error()
         ));
     }
@@ -608,7 +680,7 @@ fn process_image_path(process_id: u32) -> Option<std::path::PathBuf> {
 }
 
 /// Reject an update when a process image runs from the target venv or the exact
-/// supported Studio shim.
+/// supported Unsloth shim.
 ///
 /// Callers must hold the runtime launch mutex across the whole mutation: this
 /// scan finds older consumers, and the gate blocks new launches after it.
@@ -636,13 +708,13 @@ pub(crate) fn ensure_managed_environment_is_idle(
             .and_then(std::path::Path::parent)
             .ok_or_else(|| {
                 format!(
-                    "Could not determine the managed Studio environment for {:?}",
+                    "Could not determine the managed Unsloth environment for {:?}",
                     managed_binary
                 )
             })?;
         let studio_home = venv.parent().ok_or_else(|| {
             format!(
-                "Could not determine the managed Studio root for {:?}",
+                "Could not determine the managed Unsloth root for {:?}",
                 managed_binary
             )
         })?;
@@ -656,7 +728,7 @@ pub(crate) fn ensure_managed_environment_is_idle(
         let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) };
         if snapshot == INVALID_HANDLE_VALUE {
             return Err(format!(
-                "Could not inspect running processes before Studio update: {}",
+                "Could not inspect running processes before Unsloth update: {}",
                 std::io::Error::last_os_error()
             ));
         }
@@ -673,7 +745,7 @@ pub(crate) fn ensure_managed_environment_is_idle(
                     return Ok(());
                 }
                 return Err(format!(
-                    "Could not enumerate running processes before Studio update: {}",
+                    "Could not enumerate running processes before Unsloth update: {}",
                     std::io::Error::from_raw_os_error(error as i32)
                 ));
             }
@@ -694,7 +766,7 @@ pub(crate) fn ensure_managed_environment_is_idle(
                                 .unwrap_or(entry.szExeFile.len());
                             let name = String::from_utf16_lossy(&entry.szExeFile[..name_length]);
                             return Err(format!(
-                                "The managed Studio environment is in use by {} (PID {}). Stop that process, then retry the update.",
+                                "The managed Unsloth environment is in use by {} (PID {}). Stop that process, then retry the update.",
                                 name, entry.th32ProcessID
                             ));
                         }
@@ -708,7 +780,7 @@ pub(crate) fn ensure_managed_environment_is_idle(
                         break;
                     }
                     return Err(format!(
-                        "Could not finish enumerating running processes before Studio update: {}",
+                        "Could not finish enumerating running processes before Unsloth update: {}",
                         std::io::Error::from_raw_os_error(error as i32)
                     ));
                 }
@@ -804,7 +876,7 @@ mod studio_runtime_launch_guard_tests {
         with_named_studio_runtime_launch_guard(&name, || Ok(())).unwrap();
     }
 
-    // Since issue #8490 the long-lived Studio image is Scripts\python.exe, not
+    // Since issue #8490 the long-lived Unsloth image is Scripts\python.exe, not
     // Scripts\unsloth.exe. ensure_managed_environment_is_idle matches by venv
     // root, so both must still register as "the environment is in use" -- a
     // miss here would let an update mutate a venv somebody is running.
@@ -854,7 +926,7 @@ mod studio_runtime_launch_guard_tests {
         let managed_binary = target_root.join("Scripts").join("unsloth.exe");
 
         let error = ensure_managed_environment_is_idle(&managed_binary).unwrap_err();
-        assert!(error.contains("managed Studio environment is in use"));
+        assert!(error.contains("managed Unsloth environment is in use"));
     }
 
     #[test]
@@ -1096,6 +1168,66 @@ pub(crate) fn owned_backend_snapshot(
     Ok(snapshot)
 }
 
+/// Whether the handle that names *port* still refers to a process that EXISTS: a handle
+/// outlives its process, and another process can bind the freed port.
+/// Anything this cannot read leaves the handle trusted, so a running backend is never declared dead.
+pub(crate) fn owned_backend_on_port_is_running(state: &BackendState, port: u16) -> bool {
+    let mut proc = match state.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    let handle = match proc.owned.as_mut() {
+        Some(handle) => handle,
+        None => return false,
+    };
+    if handle.port() != Some(port) {
+        return false;
+    }
+    match handle {
+        OwnedBackendHandle::Spawned { child, .. } => !matches!(child.try_wait(), Ok(Some(_))),
+        OwnedBackendHandle::Adopted { pid, .. } => backend_pid_is_running(*pid),
+    }
+}
+
+/// Whether anything of ours COULD be on *port*, which is the question ABSENCE needs.
+///
+/// A handle we spawned names no port until a probe validates one, and for that whole window
+/// `owned_backend_on_port_is_running` calls our own starting backend somebody else's: right
+/// for presence, wrong here, since a refusal about a port we are about to bind proves nothing.
+pub(crate) fn owned_backend_could_bind_port(state: &BackendState, port: u16) -> bool {
+    let mut proc = match state.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    let handle = match proc.owned.as_mut() {
+        Some(handle) => handle,
+        None => return false,
+    };
+    match handle {
+        // A port it has not claimed yet is a port it may still claim.
+        OwnedBackendHandle::Spawned {
+            child,
+            reported_port,
+            ..
+        } => {
+            reported_port.is_none_or(|bound| bound == port)
+                && !matches!(child.try_wait(), Ok(Some(_)))
+        }
+        OwnedBackendHandle::Adopted {
+            port: owned_port,
+            pid,
+            ..
+        } => *owned_port == port && backend_pid_is_running(*pid),
+    }
+}
+
+/// Whether *pid* still exists: false only when the pid is PROVABLY gone. A zombie has exited
+/// but is unreaped, which `kill(pid, 0)` alone cannot see.
+pub(crate) fn backend_pid_is_running(pid: u32) -> bool {
+    crate::desktop_backend_owner::pid_is_not_dead(pid)
+        && !crate::process_identity::is_zombie(pid)
+}
+
 pub(crate) fn record_owned_backend_port_if_current(
     state: &BackendState,
     generation: u64,
@@ -1150,6 +1282,60 @@ pub(crate) fn clear_adopted_backend_if_current(
 
     warn!("Clearing adopted backend state after {reason}");
     proc.owned = None;
+    proc.port = None;
+    proc.diagnostics_session = None;
+    proc.adopted_watchdog_generation = None;
+    true
+}
+
+/// Drop a spawned backend handle whose child has provably exited, so a launch can spawn.
+///
+/// The counterpart of `clear_adopted_backend_if_current` for the arm this app owns. A
+/// `Spawned` handle with no validated port is normally a healthy cold start still
+/// importing torch, so a probe that does not verify is on its own no reason to clear
+/// anything: this fires only on an exit status the child has actually reported. Without
+/// it, a child that died without its stdout ever reaching EOF, which is the one case the
+/// crash detector in `read_output_stream` cannot see, leaves `has_owned_backend` true for
+/// the life of the app: every launch then answers `Backend is already running.` and every
+/// preflight answers `desktop_owned_backend_starting`.
+///
+/// Unlike the adopted case, this app wrote the owner file, so it is removed here too.
+pub(crate) fn clear_spawned_backend_if_exited(
+    state: &BackendState,
+    generation: u64,
+    reason: &str,
+) -> bool {
+    let mut proc = match state.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    if proc.generation != generation {
+        return false;
+    }
+    let status = match proc
+        .owned
+        .as_mut()
+        .and_then(OwnedBackendHandle::spawned_child_mut)
+    {
+        // One look, not the thirty of `exit_status_after_stdout_closed`. This runs on the
+        // preflight a window mount drives, so it must not block it for three seconds, and
+        // a child merely slow to be reaped is answered by the next preflight instead.
+        Some(child) => match child.try_wait() {
+            Ok(Some(status)) => status.to_string(),
+            Ok(None) => return false,
+            Err(error) => {
+                warn!("Could not read the spawned backend's exit status: {error}");
+                return false;
+            }
+        },
+        // Adopted, or nothing owned at all. Neither belongs to this function.
+        None => return false,
+    };
+
+    warn!("Clearing spawned backend state after {reason}; the child had exited: {status}");
+    if let Some(owned) = proc.owned.take() {
+        owned.remove_owner_metadata();
+    }
     proc.port = None;
     proc.diagnostics_session = None;
     proc.adopted_watchdog_generation = None;
@@ -1343,7 +1529,9 @@ fn windows_site_packages_carries_the_cli(site_packages: &std::path::Path) -> boo
 /// Returns the path to the unsloth binary inside the managed venv, if it exists.
 /// Checks the new layout (~/.unsloth/studio/unsloth_studio/) first,
 /// then falls back to the old layout (~/.unsloth/studio/.venv/) for compat.
-fn find_unsloth_binary_in_studio_dir(studio: &std::path::Path) -> Option<std::path::PathBuf> {
+pub(crate) fn find_unsloth_binary_in_studio_dir(
+    studio: &std::path::Path,
+) -> Option<std::path::PathBuf> {
     // New layout (upstream scripts >= March 2026)
     let new_base = studio.join("unsloth_studio");
     // Old layout (bundled scripts, older upstream)
@@ -1776,6 +1964,7 @@ fn windows_roots_from(
 /// PATH are absent: they are not single paths. Mirrors `_RELATIVE_PATH_ENV` in
 /// unsloth_cli/_system_dir_guard.py, held identical by a parity test.
 pub(crate) const RELATIVE_PATH_ENV: &[&str] = &[
+    "UNSLOTH_HOME",
     "UNSLOTH_STUDIO_HOME",
     "STUDIO_HOME",
     "UNSLOTH_STUDIO_DOCUMENTS_HOME",
@@ -1809,6 +1998,18 @@ pub(crate) const RELATIVE_PATH_ENV: &[&str] = &[
     "UNSLOTH_DG_SHIM",
     "UNSLOTH_COMPILE_LOCATION",
     "TORCHINDUCTOR_CACHE_DIR",
+    // storage_roots.py fills these only when blank, so a relative value the user set is kept as
+    // written and would name a different folder after the move.
+    "TORCH_EXTENSIONS_DIR",
+    "TORCH_HOME",
+    "TRITON_HOME",
+    "TRITON_CACHE_DIR",
+    "TRITON_DUMP_DIR",
+    "CUDA_CACHE_PATH",
+    "MPLCONFIGDIR",
+    "NUMBA_CACHE_DIR",
+    "DATA_DESIGNER_HOME",
+    "DATA_DESIGNER_MANAGED_ASSETS_PATH",
     "UNSLOTH_DIFFUSION_COMPILE_CACHE_DIR",
     "UNSLOTH_DIFFUSION_COND_CACHE_DIR",
     "HF_HOME",
@@ -1817,10 +2018,13 @@ pub(crate) const RELATIVE_PATH_ENV: &[&str] = &[
     "HF_XET_CACHE",
     "HF_DATASETS_CACHE",
     "HF_ASSETS_CACHE",
+    // transformers appends this to sys.path, so a relative value would import a
+    // different generated module after the move.
+    "HF_MODULES_CACHE",
     // huggingface_hub resolves the credential file from here; a relative value
     // would follow the child and silently lose access to gated repos.
     "HF_TOKEN_PATH",
-    // uv reads this as written and Studio treats a non-blank value as
+    // uv reads this as written and Unsloth treats a non-blank value as
     // authoritative, so an update would install from a different cache.
     "UV_CACHE_DIR",
     "TRANSFORMERS_CACHE",
@@ -1962,7 +2166,7 @@ const INLINE_JSON_ENV: &[&str] = &["MLX_HOSTFILE", "MLX_IBV_DEVICES"];
 
 /// Names whose readers disagree about %VAR%: huggingface_hub expands HF_HOME
 /// (and the XDG_CACHE_HOME it defaults from), HF_HUB_CACHE and HF_ASSETS_CACHE,
-/// and Studio expands SENTENCE_TRANSFORMERS_HOME, but Studio's own
+/// and Unsloth expands SENTENCE_TRANSFORMERS_HOME, but Unsloth's own
 /// hf_cache_settings does not, so it reads %LOCALAPPDATA%\hf as a relative
 /// folder. Expanding before deciding settles it: both readers then see one
 /// absolute path. Scoped to these names because a directory really called
@@ -2125,9 +2329,19 @@ fn names_a_path(name: &str, value: &str) -> bool {
 }
 
 /// Names every managed spawn removes before starting the child: Tauri uses the
-/// legacy Studio root whatever the environment says. Resolving one can only
+/// legacy Unsloth root whatever the environment says. Resolving one can only
 /// invent a failure for a value the child is never going to see.
-const MANAGED_CHILD_SCRUBBED_ENV: &[&str] = &["UNSLOTH_STUDIO_HOME", "STUDIO_HOME"];
+///
+/// UNSLOTH_HOME moves the databases, assets and caches exactly as
+/// UNSLOTH_STUDIO_HOME does, plus the managed llama.cpp, node and whisper.cpp
+/// dirs. UNSLOTH_PORTABLE names no root but portable_mode() reads it on its own,
+/// repointing the Hugging Face and torch caches away from the shared user ones.
+pub(crate) const MANAGED_CHILD_SCRUBBED_ENV: &[&str] = &[
+    "UNSLOTH_HOME",
+    "UNSLOTH_STUDIO_HOME",
+    "STUDIO_HOME",
+    "UNSLOTH_PORTABLE",
+];
 
 /// Read only by the update and installer path (install_python_stack.py), so a
 /// stale value must not be able to fail a probe, a backend start or an auth
@@ -2655,7 +2869,7 @@ mod tests {
 
     // Quarantine takes the unsigned stub and leaves the environment intact. The
     // finder gates the backend, the updater and the install-status probe, so a None
-    // here reports "not installed" for a Studio that still runs.
+    // here reports "not installed" for an Unsloth that still runs.
     #[cfg(windows)]
     #[test]
     fn a_quarantined_stub_is_still_a_managed_install() {
@@ -3034,6 +3248,136 @@ mod tests {
         (port, tx, handle)
     }
 
+    // ── #9756: a spawned handle whose child has exited must not block the next launch ──
+    //
+    // The crash detector in `read_output_stream` clears the handle when the child's
+    // stdout reaches EOF, and `stop_backend_inner` clears it on a deliberate stop. A
+    // child that dies without either happening leaves the handle behind, and from then
+    // on `has_owned_backend` refuses every launch with "Backend is already running."
+    // while preflight reports `desktop_owned_backend_starting`.
+
+    #[cfg(unix)]
+    const ALREADY_EXITED: [&str; 3] = ["/bin/sh", "-c", "exit 3"];
+    #[cfg(unix)]
+    const STILL_RUNNING: [&str; 3] = ["/bin/sh", "-c", "exec sleep 30"];
+    #[cfg(windows)]
+    const ALREADY_EXITED: [&str; 3] = ["cmd", "/C", "exit 3"];
+    #[cfg(windows)]
+    const STILL_RUNNING: [&str; 3] = ["cmd", "/C", "ping -n 31 127.0.0.1"];
+
+    // Shaped like the real spawn in `start_backend`: a process group on Unix, a bare
+    // Child on Windows, where the app-wide job object already covers the tree.
+    fn spawn_test_child(args: &[&str]) -> Box<dyn ChildWrapper + Send> {
+        let mut cmd = Command::new(args[0]);
+        cmd.args(&args[1..])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        #[cfg(unix)]
+        {
+            let mut wrap = CommandWrap::from(cmd);
+            wrap.wrap(ProcessGroup::leader());
+            wrap.spawn().expect("spawn test child")
+        }
+        #[cfg(windows)]
+        {
+            Box::new(cmd.spawn().expect("spawn test child"))
+        }
+    }
+
+    // Reaped before the handle is built, so the test is about the clear and not about
+    // racing the kernel; `exit_status_after_stdout_closed_tests` already covers the race.
+    fn spawn_and_reap() -> Box<dyn ChildWrapper + Send> {
+        let mut child = spawn_test_child(&ALREADY_EXITED);
+        for _ in 0..100 {
+            match child.try_wait() {
+                Ok(Some(_)) => return child,
+                Ok(None) => std::thread::sleep(Duration::from_millis(50)),
+                Err(error) => panic!("could not poll the test child: {error}"),
+            }
+        }
+        panic!("the test child never exited");
+    }
+
+    fn state_with_spawned(child: Box<dyn ChildWrapper + Send>, generation: u64) -> BackendState {
+        let state = new_backend_state();
+        {
+            let mut proc = state.lock().unwrap();
+            proc.generation = generation;
+            proc.port = Some(8888);
+            proc.owned = Some(OwnedBackendHandle::spawned(child, None, 4242, generation));
+        }
+        state
+    }
+
+    #[test]
+    fn a_dead_spawned_backend_is_cleared_and_stops_blocking_a_launch() {
+        let state = state_with_spawned(spawn_and_reap(), 5);
+        assert!(
+            state.lock().unwrap().has_owned_backend(),
+            "precondition: this is what makes start_backend answer Backend is already running."
+        );
+        assert!(clear_spawned_backend_if_exited(&state, 5, "test"));
+        let proc = state.lock().unwrap();
+        assert!(!proc.has_owned_backend(), "the dead handle still blocks a launch");
+        assert!(proc.port.is_none());
+        assert!(proc.diagnostics_session.is_none());
+    }
+
+    #[test]
+    fn a_live_spawned_backend_is_left_alone() {
+        // The regression guard that matters more than the fix: a handle with no
+        // validated port is usually a cold start still importing torch, and clearing it
+        // would abandon a backend that is about to come up.
+        let state = state_with_spawned(spawn_test_child(&STILL_RUNNING), 5);
+        assert!(!clear_spawned_backend_if_exited(&state, 5, "test"));
+        {
+            let mut proc = state.lock().unwrap();
+            assert!(proc.has_owned_backend(), "cleared a backend that was still running");
+            assert_eq!(proc.port, Some(8888));
+            if let Some(child) = proc
+                .owned
+                .as_mut()
+                .and_then(OwnedBackendHandle::spawned_child_mut)
+            {
+                let _ = child.start_kill();
+            }
+        }
+    }
+
+    #[test]
+    fn a_dead_spawned_backend_from_an_older_generation_is_left_alone() {
+        // A launch that has already moved on owns the handle now.
+        let state = state_with_spawned(spawn_and_reap(), 5);
+        assert!(!clear_spawned_backend_if_exited(&state, 4, "test"));
+        assert!(state.lock().unwrap().has_owned_backend());
+    }
+
+    #[test]
+    fn an_adopted_backend_is_not_this_functions_business() {
+        // clear_adopted_backend_if_current owns that arm, and it probes liveness a
+        // different way: an adopted handle carries no child to try_wait on.
+        let state = new_backend_state();
+        let owner = crate::desktop_backend_owner::test_owner_state(
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "desktop-owner-token",
+            8888,
+        );
+        {
+            let mut proc = state.lock().unwrap();
+            proc.generation = 5;
+            proc.owned = Some(OwnedBackendHandle::adopted(owner, 8888, 4242, 5));
+        }
+        assert!(!clear_spawned_backend_if_exited(&state, 5, "test"));
+        assert!(state.lock().unwrap().has_owned_backend());
+    }
+
+    #[test]
+    fn nothing_owned_is_not_an_error() {
+        let state = new_backend_state();
+        state.lock().unwrap().generation = 5;
+        assert!(!clear_spawned_backend_if_exited(&state, 5, "test"));
+    }
+
     #[test]
     fn stop_backend_rolls_back_shutdown_flag_when_adopted_stop_fails() {
         let (port, stop_listener, listener_thread) = listening_non_studio_port();
@@ -3120,7 +3464,6 @@ pub fn start_backend(
     shutdown: &ShutdownFlag,
     diagnostics_state: &DiagnosticsState,
 ) -> Result<u64, String> {
-    #[cfg(windows)]
     let _runtime_launch_guard = acquire_studio_runtime_launch_guard()?;
 
     // A backend started while the job is disarmed is the orphan this guards
@@ -3234,8 +3577,8 @@ pub fn start_backend(
         return Err(msg);
     }
 
-    #[cfg(windows)]
-    cmd.env(STUDIO_RUNTIME_GATE_HANDOFF_ENV, "1");
+    cmd.env_remove(STUDIO_RUNTIME_GATE_HANDOFF_ENV);
+    cmd.env(STUDIO_RUNTIME_GATE_ACQUIRE_ENV, "1");
 
     if let Some(native_state) = app.try_state::<crate::native_intents::NativeIntakeState>() {
         cmd.env(
@@ -3249,11 +3592,13 @@ pub fn start_backend(
     #[cfg(target_os = "linux")]
     scrub_appimage_python_env(&mut cmd);
 
-    // Tauri uses the legacy root regardless of UNSLOTH_STUDIO_HOME / STUDIO_HOME;
-    // scrub so the spawned Python backend can't diverge. UNSLOTH_LLAMA_CPP_PATH
-    // is a pre-existing user-controlled llama.cpp dir override; keep it.
-    cmd.env_remove("UNSLOTH_STUDIO_HOME");
-    cmd.env_remove("STUDIO_HOME");
+    // Tauri uses the legacy root whatever the environment says; scrub so the
+    // spawned Python backend can't diverge. Off the shared list, so a name added
+    // there cannot be honoured by the backend and missed here.
+    // UNSLOTH_LLAMA_CPP_PATH is a pre-existing user-controlled override; keep it.
+    for name in MANAGED_CHILD_SCRUBBED_ENV {
+        cmd.env_remove(name);
+    }
 
     // read_output_stream decodes as UTF-8; without these, Python encodes its
     // redirected streams with the locale code page and non-ASCII lands as U+FFFD.
@@ -3975,7 +4320,7 @@ fn read_output_stream<R: std::io::Read>(
 /// was emitted, so the window sat on the startup screen with nothing reported. Seen on
 /// Windows CI, which logged "process is still running" for a PID that was already gone.
 ///
-/// Returning None still means "genuinely alive", which matters because Studio may close
+/// Returning None still means "genuinely alive", which matters because Unsloth may close
 /// its own stdout once logging moves to the session log, so stdout EOF alone must not
 /// be read as death. Same poll shape as `wait_for_child_exit` below.
 fn exit_status_after_stdout_closed(child: &mut Box<dyn ChildWrapper + Send>) -> Option<String> {
@@ -4560,7 +4905,7 @@ mod managed_cli_working_dir_tests {
         let work_dir = PathBuf::from("C:\\Users\\me\\.unsloth");
         let env = |name: &str| match name {
             "HF_HOME" => Some("cache".to_string()),
-            // A name the child keeps: the two Studio roots are removed for
+            // A name the child keeps: the two Unsloth roots are removed for
             // every managed spawn, so they are never pinned.
             "UNSLOTH_COMPILE_LOCATION" => Some("  studio  ".to_string()),
             "OLLAMA_MODELS" => Some("D:\\models".to_string()),
@@ -5979,5 +6324,172 @@ mod exit_status_after_stdout_closed_tests {
                 "child exiting after {delay_ms}ms was read as still alive"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod owned_backend_liveness_tests {
+    use super::*;
+
+    #[cfg(unix)]
+    fn spawn_owned(args: &[&str]) -> Box<dyn ChildWrapper + Send> {
+        let mut cmd = Command::new(args[0]);
+        cmd.args(&args[1..])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let mut wrap = CommandWrap::from(cmd);
+        wrap.wrap(ProcessGroup::leader());
+        wrap.spawn().expect("spawn test child")
+    }
+
+    #[cfg(windows)]
+    fn spawn_owned(args: &[&str]) -> Box<dyn ChildWrapper + Send> {
+        let mut cmd = Command::new(args[0]);
+        cmd.args(&args[1..])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        CommandWrap::from(cmd).spawn().expect("spawn test child")
+    }
+
+    #[cfg(unix)]
+    const LIVE_CHILD: [&str; 3] = ["/bin/sh", "-c", "exec sleep 30"];
+    #[cfg(unix)]
+    const DEAD_CHILD: [&str; 3] = ["/bin/sh", "-c", "exit 0"];
+    #[cfg(windows)]
+    const LIVE_CHILD: [&str; 3] = ["cmd.exe", "/C", "ping -n 30 127.0.0.1"];
+    #[cfg(windows)]
+    const DEAD_CHILD: [&str; 3] = ["cmd.exe", "/C", "exit 0"];
+
+    fn state_owning(child: Box<dyn ChildWrapper + Send>, port: u16) -> BackendState {
+        let state = new_backend_state();
+        {
+            let mut proc = state.lock().unwrap();
+            let pid = 0;
+            proc.owned = Some(OwnedBackendHandle::spawned(child, None, pid, 1));
+            if let Some(handle) = proc.owned.as_mut() {
+                handle.set_reported_port(port);
+            }
+            proc.port = Some(port);
+        }
+        state
+    }
+
+    #[test]
+    fn a_child_that_is_still_running_is_ours() {
+        let state = state_owning(spawn_owned(&LIVE_CHILD), 8765);
+        assert!(owned_backend_on_port_is_running(&state, 8765));
+        let mut proc = state.lock().unwrap();
+        if let Some(handle) = proc.owned.as_mut() {
+            if let Some(child) = handle.spawned_child_mut() {
+                let _ = child.start_kill();
+            }
+        }
+    }
+
+    #[test]
+    fn a_child_that_has_exited_leaves_the_port_to_strangers() {
+        let mut child = spawn_owned(&DEAD_CHILD);
+        let _ = child.wait();
+        let state = state_owning(child, 8765);
+        assert!(
+            !owned_backend_on_port_is_running(&state, 8765),
+            "an exited child still counted as the managed backend, so a foreign service on \
+             its port would be reported to the user as Unsloth still running"
+        );
+    }
+
+    #[test]
+    fn a_handle_for_another_port_is_not_this_port() {
+        let state = state_owning(spawn_owned(&LIVE_CHILD), 8765);
+        assert!(!owned_backend_on_port_is_running(&state, 8766));
+        let mut proc = state.lock().unwrap();
+        if let Some(handle) = proc.owned.as_mut() {
+            if let Some(child) = handle.spawned_child_mut() {
+                let _ = child.start_kill();
+            }
+        }
+    }
+
+    #[test]
+    fn no_handle_at_all_is_not_a_managed_backend() {
+        let state = new_backend_state();
+        assert!(!owned_backend_on_port_is_running(&state, 8765));
+        assert!(!owned_backend_could_bind_port(&state, 8765));
+    }
+
+    /// While a handle has no port yet, presence reads every port as "not ours". Absence must
+    /// not agree, or a refusal during our own start becomes proof of death.
+    #[test]
+    fn a_child_that_has_not_reported_a_port_could_still_bind_the_one_asked_about() {
+        let state = new_backend_state();
+        {
+            let mut proc = state.lock().unwrap();
+            proc.owned = Some(OwnedBackendHandle::spawned(
+                spawn_owned(&LIVE_CHILD),
+                None,
+                0,
+                1,
+            ));
+        }
+        assert!(
+            !owned_backend_on_port_is_running(&state, 8765),
+            "presence is unchanged: a handle with no port names no port"
+        );
+        assert!(
+            owned_backend_could_bind_port(&state, 8765),
+            "a live backend of ours that has not bound a port yet was ruled out as the owner \
+             of the port it is starting on, which is the slow start #10520 exists to survive"
+        );
+        let mut proc = state.lock().unwrap();
+        if let Some(handle) = proc.owned.as_mut() {
+            if let Some(child) = handle.spawned_child_mut() {
+                let _ = child.start_kill();
+            }
+        }
+    }
+
+    #[test]
+    fn a_child_that_died_before_reporting_a_port_cannot_bind_anything() {
+        let mut child = spawn_owned(&DEAD_CHILD);
+        let _ = child.wait();
+        let state = new_backend_state();
+        {
+            let mut proc = state.lock().unwrap();
+            proc.owned = Some(OwnedBackendHandle::spawned(child, None, 0, 1));
+        }
+        assert!(
+            !owned_backend_could_bind_port(&state, 8765),
+            "an exited child kept the fast path switched off for every port"
+        );
+    }
+
+    #[test]
+    fn a_handle_that_reported_another_port_does_not_cover_this_one() {
+        let state = state_owning(spawn_owned(&LIVE_CHILD), 8765);
+        assert!(
+            !owned_backend_could_bind_port(&state, 8766),
+            "a backend that has told us its port was still treated as a candidate for others"
+        );
+        assert!(owned_backend_could_bind_port(&state, 8765));
+        let mut proc = state.lock().unwrap();
+        if let Some(handle) = proc.owned.as_mut() {
+            if let Some(child) = handle.spawned_child_mut() {
+                let _ = child.start_kill();
+            }
+        }
+    }
+
+    // The adopted half, where there is no child handle to wait on.
+    #[test]
+    fn an_adopted_pid_that_is_gone_is_not_running() {
+        assert!(backend_pid_is_running(std::process::id()));
+        // A real process run to completion, so this pid is PROVABLY gone; an unreadable pid stays trusted by design.
+        let mut child = spawn_owned(&DEAD_CHILD);
+        let pid = child.id();
+        let _ = child.wait();
+        assert!(
+            !backend_pid_is_running(pid),
+            "an adopted backend that has exited still read as running"
+        );
     }
 }

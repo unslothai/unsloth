@@ -3,7 +3,7 @@
 
 """The Xet notice counter: the count survives, and concurrency cannot beat the limit.
 
-It lived in per-origin localStorage, and a Studio origin moves whenever port 8888 is
+It lived in per-origin localStorage, and an Unsloth origin moves whenever port 8888 is
 taken, so "three times" meant "three times per port, forever".
 """
 

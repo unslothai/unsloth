@@ -219,6 +219,8 @@ def test_runtime_resolver_uses_studio_path_and_does_not_silently_fallback(
 def test_runtime_resolver_rejects_a_selected_binary_that_loses_execute_permission(
     settings_store, monkeypatch, tmp_path
 ):
+    from core.inference.llama_cpp import LlamaCppBackend
+
     from core.inference import llama_cpp as llama_cpp_module
     from core.inference.llama_cpp import (
         LLAMA_SERVER_NOT_FOUND_DETAIL,
@@ -297,8 +299,9 @@ def test_settings_route_round_trips_the_selected_folder(settings_store, monkeypa
 
 
 def test_settings_route_reports_reload_while_old_binary_launch_is_pending(monkeypatch):
-    from routes import inference as inference_route
     from routes import settings as settings_route
+
+    from routes import inference as inference_route
 
     class _PendingBackend:
         is_active = False
@@ -314,8 +317,9 @@ def test_settings_route_reports_reload_while_old_binary_launch_is_pending(monkey
 
 
 def test_settings_route_rejects_api_key_writes_before_mutation(monkeypatch):
-    from fastapi import HTTPException
     from routes import settings as settings_route
+
+    from fastapi import HTTPException
 
     mutated = False
 
@@ -337,8 +341,9 @@ def test_settings_route_rejects_api_key_writes_before_mutation(monkeypatch):
 
 
 def test_settings_route_returns_the_specific_validation_error(settings_store, tmp_path):
-    from fastapi import HTTPException
     from routes import settings as settings_route
+
+    from fastapi import HTTPException
 
     empty = tmp_path / "empty"
     empty.mkdir()

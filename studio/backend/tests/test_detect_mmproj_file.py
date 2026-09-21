@@ -275,6 +275,31 @@ def test_metadata_url_mismatch_dropped(tmp_path: Path):
     assert detect_mmproj_file(str(weight)) is None
 
 
+def test_metadata_url_derivative_repack_accepts_base_mmproj(tmp_path: Path):
+    """#6305: LM Studio repack/derivative GGUF + base-projector is valid."""
+    weight = _gguf_with_general(
+        tmp_path / "gemma-4-26B-A4B-it-qat-q4_0-uncensored-heretic-Q4_0.gguf",
+        {
+            "general.architecture": "gemma4",
+            "general.type": "model",
+            "general.basename": "gemma-4-26B-A4B-it",
+            "general.base_model.0.repo_url": (
+                "https://huggingface.co/lmstudio-community/gemma-4-26B-A4B-it-GGUF"
+            ),
+        },
+    )
+    mmproj = _gguf_with_general(
+        tmp_path / "mmproj-F16.gguf",
+        {
+            "general.architecture": "clip",
+            "general.type": "mmproj",
+            "general.basename": "gemma-4-26B-A4B-it",
+            "general.base_model.0.repo_url": "https://huggingface.co/google/gemma-4-26B-A4B-it",
+        },
+    )
+    assert detect_mmproj_file(str(weight)) == str(mmproj.resolve())
+
+
 def test_metadata_identifies_mmproj_without_filename_hint(tmp_path: Path):
     """Projector named ``vision-projector.gguf`` discovered via header."""
     weight = _gguf_with_general(
@@ -340,3 +365,49 @@ def test_a_zero_byte_projector_does_not_shadow_a_whole_one(tmp_path: Path):
     whole = _touch(tmp_path / "mmproj-Q8_0.gguf")
 
     assert detect_mmproj_file(str(weight)) == str(whole.resolve())
+
+
+def test_trusted_companion_snapshot_finds_nested_projector(tmp_path: Path):
+    weights = tmp_path / "weights"
+    sibling = tmp_path / "companion"
+    weights.mkdir()
+    (sibling / "vision").mkdir(parents = True)
+    weight = _touch(weights / "Model-Q4_K_M.gguf")
+    projector = _touch(sibling / "vision" / "mmproj-Model-F16.gguf")
+    assert detect_mmproj_file(str(weight), search_root = str(sibling)) is None
+    assert detect_mmproj_file(
+        str(weight), search_root = str(sibling), allow_disjoint_search_root = True
+    ) == str(projector.resolve())
+
+
+def test_finds_the_projector_hermes_stages_under_assets(tmp_path: Path):
+    """Hermes keeps a download's mmproj in models/assets/ so its router never lists it as a
+    model; the weight sits one level up. A sibling-only walk loads Qwen3.8-27B text-only."""
+    model = _touch(tmp_path / "Qwen3.8-27B-UD-Q4_K_M.gguf")
+    mmproj = _touch(tmp_path / "assets" / "mmproj-Qwen3.8-27B-BF16.gguf")
+    assert detect_mmproj_file(str(model)) == str(mmproj.resolve())
+
+
+def test_assets_holding_several_projectors_still_pairs_by_family(tmp_path: Path):
+    """One assets/ dir serves every Hermes download, so it fills with projectors for
+    different families. The family gate must keep picking the right one."""
+    model = _touch(tmp_path / "gemma-4-26B-A4B-it-UD-Q4_K_M.gguf")
+    _touch(tmp_path / "assets" / "mmproj-Qwen3.8-27B-BF16.gguf")
+    gemma = _touch(tmp_path / "assets" / "mmproj-gemma-4-26B-A4B-it-BF16.gguf")
+    assert detect_mmproj_file(str(model)) == str(gemma.resolve())
+
+
+def test_assets_holding_two_same_family_projectors_pairs_by_name(tmp_path: Path):
+    """Two Qwen downloads share one assets/ dir. Without header metadata both projectors
+    survive the family gate, so the name tie-break has to read past the mmproj- marker;
+    comparing raw stems ties at zero and the shorter name (the wrong model) won."""
+    model = _touch(tmp_path / "Qwen3.6-35B-A3B-UD-Q4_K_M.gguf")
+    _touch(tmp_path / "assets" / "mmproj-Qwen3.8-27B-BF16.gguf")
+    mine = _touch(tmp_path / "assets" / "mmproj-Qwen3.6-35B-A3B-BF16.gguf")
+    assert detect_mmproj_file(str(model)) == str(mine.resolve())
+
+
+def test_a_draft_model_under_assets_is_not_mistaken_for_a_projector(tmp_path: Path):
+    model = _touch(tmp_path / "Qwen3.8-27B-UD-Q4_K_M.gguf")
+    _touch(tmp_path / "assets" / "Qwen3.8-0.8B-draft-Q4_K_M.gguf")
+    assert detect_mmproj_file(str(model)) is None

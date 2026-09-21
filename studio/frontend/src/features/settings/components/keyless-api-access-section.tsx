@@ -30,7 +30,7 @@ function activeExposureWarning(
   exposure: KeylessApiAccessSettings["exposure"],
 ): string {
   if (exposure === "public_url") {
-    return " A public URL or tunnel is active, so keyless access remains disabled, including on localhost, until it is stopped.";
+    return " A public URL or tunnel is active, so keyless access is disabled on localhost until it is stopped.";
   }
   if (exposure === "colab") {
     return " This Colab runtime cannot receive keyless access.";
@@ -84,6 +84,7 @@ export function KeylessApiAccessSection({
   const [saving, setSaving] = useState(false);
   const [pending, setPending] = useState<PendingGrant | null>(null);
 
+  // biome-ignore lint/correctness/useExhaustiveDependencies: cloudflareUrl is a trigger, not an input -- exposure is recomputed by the backend when a tunnel appears or goes away
   useEffect(() => {
     let cancelled = false;
     loadKeylessApiAccess()

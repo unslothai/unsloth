@@ -52,6 +52,7 @@ import {
   useRef,
   useState,
 } from "react";
+import { ScrollPane } from "./scroll-pane";
 
 const AttachmentThumb: FC = () => {
   const src = useAttachmentImageSrc();
@@ -92,9 +93,8 @@ type PastedTextAttachment = {
   readonly sentBytes?: number;
 };
 
-// Long pastes arrive as a synthetic .txt and render as a chip, not a tile.
-// The selector only passes references along: the text can be megabytes, so
-// nothing here may copy or scan it.
+// Long pastes arrive as a synthetic .txt and render as a chip, not a tile. The selector only passes
+// references along: the text can be megabytes, so nothing here may copy or scan it.
 const usePastedTextAttachment = (): PastedTextAttachment | null => {
   return useAuiState(
     useShallow(({ attachment }): PastedTextAttachment | null => {
@@ -156,9 +156,12 @@ const PastedTextPreviewDialog: FC<
       <DialogTrigger asChild={true}>{children}</DialogTrigger>
       <DialogContent className="aui-pasted-text-dialog flex max-h-[88dvh] w-[min(68rem,94vw)] max-w-none flex-col gap-3 overflow-hidden">
         <DialogTitle className="truncate pr-8 text-sm">{name}</DialogTitle>
-        <pre className="aui-pasted-text-dialog-body max-h-[72dvh] overflow-auto whitespace-pre-wrap break-words rounded-lg border bg-muted/40 p-3 text-left font-mono text-xs leading-relaxed">
+        <ScrollPane
+          className="aui-pasted-text-dialog-body rounded-lg border bg-muted/40 p-3"
+          scrollerClassName="max-h-[72dvh] overflow-auto whitespace-pre-wrap break-words text-left font-mono text-xs leading-relaxed"
+        >
           {preview?.text ?? "Loading…"}
-        </pre>
+        </ScrollPane>
         {preview && preview.remaining > 0 ? (
           <p className="text-muted-foreground text-xs">
             {`First ${PASTED_TEXT_PREVIEW_MAX_CHARS.toLocaleString()} characters shown. ${preview.remaining.toLocaleString()} more were sent with the message.`}

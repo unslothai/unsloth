@@ -217,6 +217,10 @@ def _gated_backend(
     monkeypatch.setattr(
         LlamaCppBackend, "_is_unsloth_managed_binary", staticmethod(lambda _binary: True)
     )
+    # The build probe runs `--version`, which the Popen patch below would count as a launch.
+    monkeypatch.setattr(
+        LlamaCppBackend, "probe_build_number", classmethod(lambda cls, binary = None: None)
+    )
     backend = LlamaCppBackend()
     backend._get_gpu_memory = lambda _binary = None, **_kw: []
     backend._get_gpu_free_memory = lambda _binary = None, **_kw: []
@@ -235,7 +239,7 @@ def _gated_backend(
     backend._prepare_cpu_fallback_launch = lambda *_a, **_kw: None
     backend._detect_audio_type_strict = lambda: None
     backend._apply_detected_audio = lambda _detected: True
-    backend._wait_for_health = lambda timeout: True
+    backend._wait_for_health = lambda timeout, **_kw: True
     backend._llama_server_env_for_binary = lambda _binary: {"PATH": os.environ.get("PATH", "")}
     return backend, gguf
 

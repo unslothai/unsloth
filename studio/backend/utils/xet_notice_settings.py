@@ -3,7 +3,7 @@
 
 """Lifetime count of the Xet "download is running" notice.
 
-It lived in localStorage, which is per-origin, and a Studio origin is not stable:
+It lived in localStorage, which is per-origin, and an Unsloth origin is not stable:
 run.py falls back past port 8888 when Jupyter has it, and Colab and the tunnel differ
 again. Each new origin handed out a fresh three, so the notice never stopped.
 """

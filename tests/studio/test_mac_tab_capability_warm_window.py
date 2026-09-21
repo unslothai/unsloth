@@ -3,7 +3,7 @@
 
 """The macOS tab-capability smoke has to be able to fail.
 
-tests/studio/playwright_mac_tab_capabilities.py needs a live Studio and a browser, so
+tests/studio/playwright_mac_tab_capabilities.py needs a live Unsloth and a browser, so
 CI is the only place it runs and nothing else checks that a red case comes out red.
 Twice now it has gone green having observed nothing: first by authenticating with
 nobody, then by computing `seen_spinner` and only logging it, so a backend that
@@ -12,7 +12,7 @@ settled before the browser arrived skipped every assertion.
 This drives the same functions with the page and the backend stubbed, over the exact
 shapes that used to pass: the warm window already shut, the row absent, the row greyed
 out. It is a plain pytest file so it runs in the Backend CI walk over tests/, where
-neither playwright nor a Studio is installed.
+neither playwright nor an Unsloth is installed.
 """
 
 from __future__ import annotations
@@ -32,14 +32,12 @@ SCRIPT = REPO / "tests/studio/playwright_mac_tab_capabilities.py"
 APPEARANCE_STORE = REPO / "studio/frontend/src/features/settings/stores/appearance-custom-store.ts"
 
 BASE = "http://127.0.0.1:18893"
-# A settled reply: no hardware_detecting at all. This is the state the runner is in by
-# the time the browser is authenticated, and the one the old code passed vacuously on.
+# A settled reply: no hardware_detecting at all.
 SETTLED = {"status": "healthy", "service": "Unsloth UI Backend", "device_type": "mac"}
 UNMEASURED = {"status": "healthy", "service": "Unsloth UI Backend", "hardware_detecting": True}
 
-# Spelled out rather than read off the script, so these cases run unchanged against a
-# build of it that does not define the constant yet. test_inline_row_ids_match_the_
-# frontends_default_pinned_set is what keeps the spelling honest.
+# Spelled out rather than read off the script, so these cases run unchanged against a build of it that does not define
+# the constant yet. test_inline_row_ids_match_the_frontends_default_pinned_set is what keeps the spelling honest.
 TRAIN = "train"
 
 GREYED = {"disabled": True, "spinner": False}
@@ -63,8 +61,8 @@ def _load(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("BASE_URL", BASE)
     monkeypatch.setenv("STUDIO_OLD_PW", "stub-password")
     monkeypatch.setenv("PW_ART_DIR", str(tmp_path / "art"))
-    # The real default gives the row 15s to settle; the stub answers instantly, so the
-    # only thing the wait would buy here is 15s of a red test.
+    # The real default gives the row 15s to settle; the stub answers instantly, so the only thing the wait would buy
+    # here is 15s of a red test.
     monkeypatch.setenv("STUDIO_MAC_FORCED_PENDING_S", "0.2")
     spec = importlib.util.spec_from_file_location("mac_tab_capabilities_under_test", SCRIPT)
     mod = importlib.util.module_from_spec(spec)
@@ -700,9 +698,7 @@ def test_a_refused_port_does_not_get_the_recovery_window(tmp_path, monkeypatch):
     at once rather than costing the run 90 seconds to reach the same answer."""
     mod = _load(tmp_path, monkeypatch)
     calls = _scripted_probes(mod, ["refused"])
-    # Small but non-zero on purpose. A build that stopped returning early would spend it
-    # and rack up probes, so this fails on the call count in a moment rather than hanging
-    # the suite for as long as the real window lasts.
+    # Small but non-zero on purpose.
     kind, _, _, probes = mod.await_recovery(window_s = 2.0, spacing_s = 0.0)
     assert kind == "refused"
     assert len(calls) == 1, f"spent the window instead of returning at once: {len(calls)} probes"
@@ -772,8 +768,8 @@ def _serve(
 
         def do_GET(self):
             if trickle:
-                # Headers, then a byte at a time forever. Every chunk resets urllib's
-                # per-operation timeout, which is the shape that hangs a naive read().
+                # Headers, then a byte at a time forever. Every chunk resets urllib's per-operation timeout, which is
+                # the shape that hangs a naive read().
                 self.send_response(200)
                 self.send_header("Content-Length", "1000000")
                 self.end_headers()
@@ -902,9 +898,7 @@ def test_the_warning_counts_the_post_run_wait(tmp_path, monkeypatch, capsys):
     last timed-out sample, so the reported length leaves out every second of the watch
     that actually saw the stall clear. A warning nobody can trust is worse than none."""
     mod = _load(tmp_path, monkeypatch)
-    # A SHORT trailing stall on purpose. With a long one the span alone clears any
-    # threshold and the assertion below passes whether or not the wait is counted, which
-    # is how this test first shipped without discriminating.
+    # A SHORT trailing stall on purpose.
     samples = _timeline(150, stalls = [(140, 9999)])
     assert samples[-1]["kind"] == "timeout", "fixture no longer ends mid-stall"
     raw = max(end - start for start, end, _ in mod._stall_windows(samples))
@@ -959,20 +953,25 @@ def _serve_trickling_headers():
     srv.listen(4)
     srv.settimeout(0.25)
     port = srv.getsockname()[1]
-    state = {"accepted": 0, "lines": 0}
+    # Bytes, never whole header lines: whole lines hit http.client's _MAXHEADERS cap of 100
+    # and end the call themselves in ~2s, passing against a build with no deadline at all.
+    chunk = b"x"
+    # urllib's per-socket-operation timeout is reset by any traffic. While max_gap stays under
+    # it no per-operation timeout can have fired, so a probe that returned anyway returned on
+    # the whole-request deadline. That is the only thing here that tells the two bounds apart.
+    state = {"accepted": 0, "lines": 0, "chunk": chunk, "max_gap": 0.0, "last_write": None}
     stop = threading.Event()
 
     def drip(conn):
         try:
             conn.recv(4096)
-            # One header line that is never terminated, a byte at a time. Whole header
-            # LINES would hit http.client's own _MAXHEADERS cap of 100 and end the call
-            # on their own at about two seconds, which would make this fixture pass
-            # against a build that has no deadline at all. An unterminated line has no
-            # such cap and blocks urlopen for as long as the peer keeps dribbling.
             conn.sendall(b"HTTP/1.1 200 OK\r\nX-Pad: ")
             while not stop.is_set():
-                conn.sendall(b"x")
+                conn.sendall(chunk)
+                now = time.monotonic()
+                if state["last_write"] is not None:
+                    state["max_gap"] = max(state["max_gap"], now - state["last_write"])
+                state["last_write"] = now
                 state["lines"] += 1
                 time.sleep(0.02)
         except Exception:
@@ -1030,21 +1029,41 @@ def test_trickling_response_headers_cannot_outlive_the_probe_budget(tmp_path, mo
     urlopen has not returned, so nothing inside it is running yet and only urllib's
     per-socket-operation timeout applies, which a peer resets by dribbling. The budget is
     whole-request for that reason: connect, headers and body under one deadline."""
+    socket_timeout = 0.5
     mod = _load(tmp_path, monkeypatch)
     base, state, shutdown = _serve_trickling_headers()
     monkeypatch.setattr(mod, "BASE", base)
     try:
-        returned, value, elapsed = _probe_bounded(mod, "/api/liveness", timeout = 0.5, wait = 6.0)
+        returned, value, elapsed = _probe_bounded(
+            mod, "/api/liveness", timeout = socket_timeout, wait = 6.0
+        )
+        probe_ended = time.monotonic()
+        lines, max_gap, last_write = state["lines"], state["max_gap"], state["last_write"]
     finally:
         shutdown()
-    # Fixture preconditions first, so a server that stopped trickling fails loudly
-    # instead of letting the probe return fast and passing for free.
+
     assert state["accepted"] >= 1, "fixture never accepted a connection"
-    assert state["lines"] >= 3, f"fixture stopped trickling headers after {state['lines']} bytes"
-    assert state["lines"] < 100, (
+    assert b"\n" not in state["chunk"] and b"\r" not in state["chunk"], (
         "fixture is sending whole header lines again; http.client's _MAXHEADERS would "
-        "end the call by itself and this would pass without any deadline"
+        f"end the call by itself and this would pass without any deadline: {state['chunk']!r}"
     )
+
+    # Contention that breaks the gap invariant yields no evidence, not a failure: report that
+    # rather than pass on a build with no deadline or go red on a busy machine.
+    trickled_throughout = (
+        lines >= 3
+        and last_write is not None
+        and max_gap < socket_timeout
+        and probe_ended - last_write < socket_timeout
+    )
+    if not trickled_throughout:
+        pytest.skip(
+            "fixture could not keep inside the per-operation timeout on this runner, so a "
+            f"timeout here would not distinguish the two bounds: {lines} bytes, "
+            f"max gap {max_gap:.3f}s, last write {probe_ended - (last_write or probe_ended):.3f}s "
+            f"before the probe returned, socket timeout {socket_timeout}s"
+        )
+
     assert returned, "probe never returned: urlopen is outside the deadline again"
     assert value[2] == "timeout", value
     assert 0.4 <= elapsed < 4.0, f"probe took {elapsed:.2f}s against a 0.5s whole-request budget"

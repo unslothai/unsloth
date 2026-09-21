@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import re
 from fnmatch import fnmatchcase
 from typing import Iterable
 from utils.paths.path_utils import drop_shadowed_appledouble_names
@@ -17,6 +18,40 @@ SNAPSHOT_IGNORE_PATTERNS: tuple[str, ...] = (
     "*.bin.index.json.bak",
 )
 CONSOLIDATED_PATTERN = "consolidated*"
+DUPLICATE_WEIGHT_FORMAT_PATTERNS: tuple[str, ...] = (
+    "original/*",
+    "metal/*",
+    "coreml/*",
+    "tf_model*.h5",
+    "tf_model.h5.index.json",
+    "flax_model*.msgpack",
+    "flax_model.msgpack.index.json",
+    "rust_model.ot",
+)
+# Resolved per repo, not globbed: a dtype variant is redundant only when the SAME variant ships
+# as safetensors (test_prefetch_snapshot_scope.py::test_variant_keeps_bin_when_only_default_safetensors),
+# and a glob kept whisper-large-v3's pytorch_model.bin.index.fp32.json while dropping its shards.
+# Both shard layouts, since transformers writes the counter-first one (unsloth/models/_utils.py).
+_BIN_WEIGHT_RES = (
+    re.compile(r"pytorch_model(?:\.(?P<variant>[A-Za-z0-9_]+))?(?:[-_][0-9]+-of-[0-9]+)?\.bin"),
+    re.compile(r"pytorch_model[-_][0-9]+-of-[0-9]+\.(?P<variant>[A-Za-z0-9_]+)\.bin"),
+)
+
+
+def _variant_shard_re(variant: str) -> "re.Pattern[str]":
+    v = re.escape(variant)
+    return re.compile(
+        rf"model\.{v}[-_][0-9]+-of-[0-9]+\.safetensors|model[-_][0-9]+-of-[0-9]+\.{v}\.safetensors"
+    )
+
+
+_BIN_INDEX_RE = re.compile(
+    r"pytorch_model(?:\.(?P<pre>[A-Za-z0-9_]+))?\.bin\.index(?:\.(?P<post>[A-Za-z0-9_]+))?\.json"
+)
+# [0-9] rather than \d: Python's \d also matches non-ASCII digits while JavaScript's does not, and the
+# frontend mirror in studio/frontend/src/features/hub/lib/dataset-size.ts has to answer this identically.
+SHARDED_SAFETENSORS_RE = re.compile(r"model[-_][0-9]+-of-[0-9]+\.safetensors")
+SAFETENSORS_INDEX = "model.safetensors.index.json"
 SNAPSHOT_WEIGHT_EXTENSIONS = (
     ".safetensors",
     ".bin",
@@ -44,8 +79,8 @@ def _size(sibling) -> int:
 
 
 def repo_ships_transformers_weights(filenames: Iterable[str]) -> bool:
-    # A "._consolidated.safetensors" does not start with "consolidated", so it would answer yes
-    # here and then have every consolidated* file stripped from the download.
+    # A "._consolidated.safetensors" does not start with "consolidated", so it would answer yes here and
+    # then have every consolidated* file stripped from the download.
     for name in drop_shadowed_appledouble_names(list(filenames)):
         base = name.rsplit("/", 1)[-1].lower()
         if base.startswith("consolidated"):
@@ -57,11 +92,63 @@ def repo_ships_transformers_weights(filenames: Iterable[str]) -> bool:
     return False
 
 
+def repo_ships_root_safetensors(filenames: Iterable[str]) -> bool:
+    """Whether a load would find a COMPLETE root safetensors checkpoint.
+
+    Numbered shards are resolved through the index; with none, a load looks for a single
+    file and raises. So one shard is not evidence a checkpoint is there.
+    """
+    names = list(filenames)
+    if any(name == "model.safetensors" for name in names):
+        return True
+    return SAFETENSORS_INDEX in names and any(
+        SHARDED_SAFETENSORS_RE.fullmatch(name) for name in names
+    )
+
+
+def _variant_ships_as_safetensors(names: list[str], variant: str | None) -> bool:
+    """Whether `variant` is already covered by a COMPLETE safetensors checkpoint.
+
+    ``None`` is the canonical one, established by the root-safetensors gate. A named variant
+    needs its own safetensors, and its sharded form needs an index, as the canonical one does.
+    """
+    if variant is None:
+        return True
+    if f"model.{variant}.safetensors" in names:
+        return True
+    # _add_variant puts the variant second-to-last, so this is the only index spelling a
+    # variant load can find; accepting another would drop bins over an index nothing reads.
+    if f"model.safetensors.index.{variant}.json" not in names:
+        return False
+    return any(_variant_shard_re(variant).fullmatch(name) for name in names)
+
+
+def redundant_torch_bin_files(filenames: Iterable[str]) -> list[str]:
+    """The pytorch_model .bin files, and their indexes, a safetensors copy makes redundant."""
+    names = list(filenames)
+    redundant = []
+    for name in names:
+        match = next((m for m in (rx.fullmatch(name) for rx in _BIN_WEIGHT_RES) if m), None)
+        variant = match.group("variant") if match else None
+        if not match:
+            match = _BIN_INDEX_RE.fullmatch(name)
+            if not match:
+                continue
+            variant = match.group("pre") or match.group("post")
+        if _variant_ships_as_safetensors(names, variant):
+            redundant.append(name)
+    return redundant
+
+
 def resolve_snapshot_ignore_patterns_for_files(filenames: Iterable[str]) -> list[str]:
     names = list(filenames)
     ignore = list(SNAPSHOT_IGNORE_PATTERNS)
     if repo_ships_transformers_weights(names):
         ignore.append(CONSOLIDATED_PATTERN)
+    if repo_ships_root_safetensors(names):
+        ignore.extend(DUPLICATE_WEIGHT_FORMAT_PATTERNS)
+        # Exact names, not globs: fnmatch treats "." literally, so each entry matches only itself.
+        ignore.extend(redundant_torch_bin_files(names))
     return ignore
 
 
@@ -94,9 +181,8 @@ def total_size_for_siblings(siblings: Iterable) -> int:
 
 
 def blob_hashes_for_siblings(siblings: Iterable) -> frozenset[str]:
-    # Blob filename == file etag (LFS sha256, else git blob id). Collecting both
-    # lets progress count exactly this revision's files without summing stale
-    # blobs from other revisions.
+    # Blob filename == file etag (LFS sha256, else git blob id), so collecting both lets progress count
+    # exactly this revision's files without summing stale blobs from other revisions.
     hashes: set[str] = set()
     for sibling in siblings:
         sha = getattr(getattr(sibling, "lfs", None), "sha256", None)

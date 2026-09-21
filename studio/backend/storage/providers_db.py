@@ -3,12 +3,10 @@
 
 """SQLite storage for external LLM provider configurations.
 
-Same pattern as studio_db.py (module-level functions, raw sqlite3, WAL,
-per-function connections). API keys are NOT stored here: they live only in
-the browser (localStorage) and are sent encrypted per-request.
-
-Enabled model selections and discovered catalog IDs are stored server-side so
-remote Studio clients see the same connection state (#7281).
+Same pattern as studio_db.py (module-level functions, raw sqlite3, WAL, per-function connections). API keys are
+NOT stored here: they live only in the browser (localStorage) and are sent encrypted per-request. Enabled model
+selections and discovered catalog IDs are stored server-side so remote Unsloth clients see the same connection
+state (#7281).
 """
 
 from __future__ import annotations
@@ -17,6 +15,7 @@ import json
 import logging
 import sqlite3
 import threading
+from pathlib import Path
 from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import datetime, timezone
@@ -27,7 +26,7 @@ logger = logging.getLogger(__name__)
 from utils.paths import studio_db_path, ensure_dir
 
 _schema_lock = threading.Lock()
-_schema_ready = False
+_schema_ready: set[Path] = set()
 _UNSET = object()
 
 
@@ -59,7 +58,6 @@ def _row_models(row: sqlite3.Row) -> tuple[list[str], list[str]]:
 
 
 def _ensure_schema(conn: sqlite3.Connection) -> None:
-    """Create the llm_providers table if absent. Called once per process."""
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute(
         """
@@ -85,19 +83,23 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE llm_providers ADD COLUMN max_output_tokens INTEGER")
 
 
+def reset_schema_state_for_tests() -> None:
+    with _schema_lock:
+        _schema_ready.clear()
+
+
 def get_connection() -> sqlite3.Connection:
-    """Open studio.db with WAL mode, create table once per process."""
-    global _schema_ready
     db_path = studio_db_path()
     ensure_dir(db_path.parent)
     conn = sqlite3.connect(str(db_path))
     conn.row_factory = sqlite3.Row
-    if not _schema_ready:
+    if db_path not in _schema_ready:
         with _schema_lock:
-            if not _schema_ready:
+            schema_path = db_path.resolve()
+            if schema_path not in _schema_ready:
                 try:
                     _ensure_schema(conn)
-                    _schema_ready = True
+                    _schema_ready.add(schema_path)
                 except Exception:
                     conn.close()
                     raise
@@ -106,15 +108,12 @@ def get_connection() -> sqlite3.Connection:
 
 @contextmanager
 def provider_bundle_transaction() -> Iterator[sqlite3.Connection]:
-    """Atomically mutate a provider row and its saved credentials.
-
-    Provider metadata and encrypted credentials share ``studio.db``.  A single
-    SQLite write transaction therefore prevents other processes from observing
-    a new endpoint with the previous key (or the inverse) while a provider edit
-    is in progress.
+    """Atomically mutate a provider row and its saved credentials. Provider metadata and encrypted credentials
+    share ``studio.db``, so a single SQLite write transaction prevents other processes from observing a new
+    endpoint with the previous key (or the inverse) while a provider edit is in progress.
     """
-    # Ensure both tables exist before opening the transaction.  The credential
-    # module commits schema initialization on its own connection.
+    # Ensure both tables exist before opening the transaction. The credential module commits schema
+    # initialization on its own connection.
     from storage import credential_secrets
 
     credential_secrets.ensure_schema()

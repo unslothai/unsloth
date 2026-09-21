@@ -9,6 +9,7 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import { getHfDatasetsServerBase, useHfDatasetsServer } from "@/lib/hf-endpoint";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 
@@ -18,17 +19,22 @@ import {
   importDiffusionDatasetExample,
 } from "../api";
 
-// Best-effort preview thumbnails from the public HF datasets-server, cached per repo (module level) so re-renders do not
-// refetch. A repo the server cannot serve resolves to an empty list and the card renders without previews.
+// Best-effort preview thumbnails from the public HF datasets-server, cached per repo at module
+// level so re-renders do not refetch. A repo the server cannot serve resolves to an empty list
+// and the card renders without previews.
 const _previewCache = new Map<string, Promise<string[]>>();
 
 async function fetchPreviews(repo: string): Promise<string[]> {
-  const cached = _previewCache.get(repo);
+  // Keyed by server too: an empty result cached against the default would
+  // otherwise never be retried against a mirror that arrives later.
+  const base = getHfDatasetsServerBase();
+  const cacheKey = `${base}::${repo}`;
+  const cached = _previewCache.get(cacheKey);
   if (cached) return cached;
   const p = (async () => {
     try {
       const res = await fetch(
-        `https://datasets-server.huggingface.co/first-rows?dataset=${encodeURIComponent(
+        `${base}/first-rows?dataset=${encodeURIComponent(
           repo,
         )}&config=default&split=train`,
       );
@@ -50,7 +56,7 @@ async function fetchPreviews(repo: string): Promise<string[]> {
       return [];
     }
   })();
-  _previewCache.set(repo, p);
+  _previewCache.set(cacheKey, p);
   return p;
 }
 
@@ -61,6 +67,7 @@ export function shortExampleLabel(label: string): string {
 
 function ExamplePreviews({ repo }: { repo: string }) {
   const [urls, setUrls] = useState<string[] | null>(null);
+  const hfDatasetsServer = useHfDatasetsServer();
   useEffect(() => {
     let cancelled = false;
     void fetchPreviews(repo).then((u) => {
@@ -69,7 +76,7 @@ function ExamplePreviews({ repo }: { repo: string }) {
     return () => {
       cancelled = true;
     };
-  }, [repo]);
+  }, [repo, hfDatasetsServer]);
 
   if (!urls || urls.length === 0) return null;
   return (
@@ -83,8 +90,9 @@ function ExamplePreviews({ repo }: { repo: string }) {
   );
 }
 
-// One-click example-dataset importers. Each card shows the license (terms before import) plus preview thumbnails; on success the parent refreshes
-// its dataset list and selects the folder. One card per row: the config column is narrow, so a two-column grid wrapped titles one word per line.
+// One-click example-dataset importers. Each card shows the license before import plus preview
+// thumbnails; on success the parent refreshes its dataset list and selects the folder. One card
+// per row: the config column is narrow, so a two-column grid wrapped titles one word per line.
 export function ExampleDatasetCards({
   examples,
   busyId,

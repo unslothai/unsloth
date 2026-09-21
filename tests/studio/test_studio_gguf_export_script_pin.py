@@ -1,10 +1,25 @@
-"""Unsloth GGUF export pins convert_hf_to_gguf.py via UNSLOTH_LLAMA_CPP_SCRIPTS_DIR, with a once-per-process warning fallback when unsloth_zoo lacks the local-script resolver."""
+"""Unsloth GGUF export pins convert_hf_to_gguf.py for the conversion and takes the pin
+back afterwards, with a once-per-process warning fallback when unsloth_zoo lacks the
+local-script resolver.
+
+The pin used to be an ``os.environ.setdefault`` that was never unwound. unsloth_zoo reads
+UNSLOTH_LLAMA_CPP_SCRIPTS_DIR as the user's own choice: it outranks
+UNSLOTH_LLAMA_CPP_CONVERTER_TAG, and it exempts the converter from the
+UNSLOTH_CONVERTER_SCAN_STRICT refusal. Neither is true of a directory Studio pinned for
+its own routing, so the pin now goes through unsloth_zoo's internal_scripts_dir_pin and is
+scoped to the conversion.
+
+The behaviour cases below execute the real helper, lifted out of export.py with ast, rather
+than a copy written here: a hand-written copy of the block passes whatever the block does.
+"""
 
 from __future__ import annotations
 
 import ast
+import contextlib
 import os
 import sys
+import threading
 import types
 from pathlib import Path
 
@@ -14,6 +29,9 @@ SOURCE_PATH = (
 )
 SRC = SOURCE_PATH.read_text(encoding = "utf-8")
 TREE = ast.parse(SRC)
+SCRIPTS_DIR = "UNSLOTH_LLAMA_CPP_SCRIPTS_DIR"
+CONVERTER_TAG = "UNSLOTH_LLAMA_CPP_CONVERTER_TAG"
+PIN_HELPER = "_llama_cpp_scripts_pin"
 
 
 def _module_level_assignments(tree: ast.Module):
@@ -22,6 +40,13 @@ def _module_level_assignments(tree: ast.Module):
             for target in node.targets:
                 if isinstance(target, ast.Name):
                     yield target.id, node.value
+
+
+def _pin_helper_node(tree: ast.AST):
+    for node in ast.walk(tree):
+        if isinstance(node, ast.FunctionDef) and node.name == PIN_HELPER:
+            return node
+    return None
 
 
 def _find_pin_try(tree: ast.AST):
@@ -38,30 +63,98 @@ def _find_pin_try(tree: ast.AST):
     return None
 
 
-# The pin catches Exception, not ImportError: a half-built unsloth_zoo raises
-# RuntimeError or AttributeError too. Anything that still catches an ImportError
-# counts, so widening the handler again does not break this test.
+# The pin catches Exception, not ImportError: a half-built unsloth_zoo raises RuntimeError or
+# AttributeError too. Anything that still catches an ImportError counts, so widening the handler
+# again does not break this test.
 _CATCHES_IMPORT_ERROR = ("ImportError", "Exception", "BaseException")
 
 
 def _catches_import_error(handler: ast.ExceptHandler) -> bool:
-    if handler.type is None:  # bare except
+    if handler.type is None:
         return True
     names = handler.type.elts if isinstance(handler.type, ast.Tuple) else [handler.type]
     return any(isinstance(n, ast.Name) and n.id in _CATCHES_IMPORT_ERROR for n in names)
 
 
-# A half-built unsloth_zoo imports and then raises RuntimeError or AttributeError, which
-# ImportError alone does not cover.
+# A half-built unsloth_zoo imports and then raises RuntimeError or AttributeError, which ImportError alone does not
+# cover.
 _CATCHES_EVERYTHING = ("Exception", "BaseException")
 
 
 def _covers_half_built_zoo(handler: ast.ExceptHandler) -> bool:
-    if handler.type is None:  # bare except
+    if handler.type is None:
         return True
     names = handler.type.elts if isinstance(handler.type, ast.Tuple) else [handler.type]
     caught = {n.id for n in names if isinstance(n, ast.Name)}
     return bool(caught & set(_CATCHES_EVERYTHING)) or {"RuntimeError", "AttributeError"} <= caught
+
+
+def _load_pin_helper(*, is_mlx = False, logger = None):
+    """The real helper, executed on its own so these cases run the shipped code."""
+    node = _pin_helper_node(TREE)
+    assert node is not None, f"expected a {PIN_HELPER} helper in export.py"
+    namespace = {
+        "os": os,
+        "contextlib": contextlib,
+        "logger": logger
+        if logger is not None
+        else types.SimpleNamespace(warning = lambda *args, **kwargs: None),
+        "_LLAMA_CPP_SCRIPTS_WARNING_EMITTED": False,
+        "_IS_MLX": is_mlx,
+    }
+    exec(
+        compile(ast.Module(body = [node], type_ignores = []), str(SOURCE_PATH), "exec"),
+        namespace,
+    )
+    return namespace[PIN_HELPER], namespace
+
+
+def _install_fake_zoo(
+    monkeypatch,
+    *,
+    default_dir = "/fake/llama.cpp",
+    resolver = True,
+    internal_pin = True,
+    incomplete = False,
+):
+    """A stand-in unsloth_zoo.llama_cpp whose pin is as non-reentrant as the real one."""
+    calls = {"internal": []}
+    fake = types.ModuleType("unsloth_zoo.llama_cpp")
+    if default_dir is not None:
+        fake.LLAMA_CPP_DEFAULT_DIR = default_dir
+    if resolver:
+        fake._resolve_local_convert_script = lambda *args, **kwargs: None
+    fake._converter_dir_is_incomplete = lambda folder: incomplete
+    held = threading.Lock()
+
+    @contextlib.contextmanager
+    def _internal_scripts_dir_pin(folder):
+        if not held.acquire(blocking = False):
+            raise RuntimeError("internal_scripts_dir_pin re-entered: the real one deadlocks here")
+        calls["internal"].append(folder)
+        existing = os.environ.get(SCRIPTS_DIR)
+        if existing is None:
+            os.environ[SCRIPTS_DIR] = folder
+        try:
+            yield
+        finally:
+            if existing is None:
+                os.environ.pop(SCRIPTS_DIR, None)
+            else:
+                os.environ[SCRIPTS_DIR] = existing
+            held.release()
+
+    if internal_pin:
+        fake.internal_scripts_dir_pin = _internal_scripts_dir_pin
+    package = types.ModuleType("unsloth_zoo")
+    monkeypatch.setitem(sys.modules, "unsloth_zoo", package)
+    monkeypatch.setitem(sys.modules, "unsloth_zoo.llama_cpp", fake)
+    monkeypatch.delenv(SCRIPTS_DIR, raising = False)
+    monkeypatch.delenv(CONVERTER_TAG, raising = False)
+    return fake, calls
+
+
+# ---------------------------------------------------------------- source contract
 
 
 def test_warning_flag_defined_at_module_scope():
@@ -86,26 +179,70 @@ def test_constant_and_resolver_imported_in_same_try():
     assert "_resolve_local_convert_script" in imported
 
 
-def test_setdefault_inside_try_block():
-    try_node = _find_pin_try(TREE)
-    assert try_node is not None
-    setdefault_calls = []
-    for stmt in try_node.body:
-        for node in ast.walk(stmt):
-            if (
-                isinstance(node, ast.Call)
-                and isinstance(node.func, ast.Attribute)
-                and node.func.attr == "setdefault"
-                and isinstance(node.func.value, ast.Attribute)
-                and node.func.value.attr == "environ"
-                and node.args
-                and isinstance(node.args[0], ast.Constant)
-                and node.args[0].value == "UNSLOTH_LLAMA_CPP_SCRIPTS_DIR"
-            ):
-                setdefault_calls.append(node)
-    assert setdefault_calls
-    second = setdefault_calls[0].args[1]
-    assert isinstance(second, ast.Name) and second.id == "LLAMA_CPP_DEFAULT_DIR"
+def test_the_pin_is_never_left_in_the_environment():
+    """No setdefault, and every direct write is answered by a pop in a finally. The
+    setdefault this replaced is what made the converter tag inert and turned
+    UNSLOTH_CONVERTER_SCAN_STRICT into a warning for every Studio export."""
+    setdefaults = []
+    for node in ast.walk(TREE):
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "setdefault"
+            and isinstance(node.func.value, ast.Attribute)
+            and node.func.value.attr == "environ"
+            and node.args
+            and isinstance(node.args[0], ast.Constant)
+            and node.args[0].value == SCRIPTS_DIR
+        ):
+            setdefaults.append(node)
+    assert not setdefaults, "the scripts pin must not be left in the environment"
+
+    helper = _pin_helper_node(TREE)
+    assert helper is not None
+    writes = [
+        node
+        for node in ast.walk(helper)
+        if isinstance(node, ast.Subscript)
+        and isinstance(node.ctx, ast.Store)
+        and isinstance(node.value, ast.Attribute)
+        and node.value.attr == "environ"
+    ]
+    pops = [
+        node
+        for node in ast.walk(helper)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "pop"
+        and isinstance(node.func.value, ast.Attribute)
+        and node.func.value.attr == "environ"
+    ]
+    assert len(writes) <= len(pops), "a direct write to os.environ needs an unwind"
+
+
+def test_pin_prefers_the_internal_helper():
+    """unsloth_zoo exempts a user pin from the strict converter scan, so Studio's own
+    routing has to be marked as internal or the exemption is taken by a converter nobody
+    reviewed."""
+    helper = _pin_helper_node(TREE)
+    assert helper is not None
+    imported = [
+        alias.name
+        for node in ast.walk(helper)
+        if isinstance(node, ast.ImportFrom) and node.module == "unsloth_zoo.llama_cpp"
+        for alias in node.names
+    ]
+    assert "internal_scripts_dir_pin" in imported
+    used = [
+        item
+        for node in ast.walk(helper)
+        if isinstance(node, ast.With)
+        for item in node.items
+        if isinstance(item.context_expr, ast.Call)
+        and isinstance(item.context_expr.func, ast.Name)
+        and item.context_expr.func.id == "internal_scripts_dir_pin"
+    ]
+    assert used, "internal_scripts_dir_pin must be entered, not just imported"
 
 
 def test_warning_handler_gated_on_module_flag():
@@ -141,92 +278,114 @@ def test_warning_handler_gated_on_module_flag():
     assert flag_writes
     assert warning_calls
     msg = ast.dump(warning_calls[0])
-    assert "UNSLOTH_LLAMA_CPP_SCRIPTS_DIR" in msg
+    assert SCRIPTS_DIR in msg
     assert "unsloth_zoo" in msg
 
 
-def test_default_dir_is_string_for_setdefault_compat():
+def test_default_dir_is_string():
     from unsloth_zoo.llama_cpp import LLAMA_CPP_DEFAULT_DIR
     assert isinstance(LLAMA_CPP_DEFAULT_DIR, str)
 
 
-def test_setdefault_preserves_explicit_user_override(monkeypatch):
-    monkeypatch.setenv("UNSLOTH_LLAMA_CPP_SCRIPTS_DIR", "/explicit/override")
-    from unsloth_zoo.llama_cpp import LLAMA_CPP_DEFAULT_DIR
-
-    os.environ.setdefault("UNSLOTH_LLAMA_CPP_SCRIPTS_DIR", LLAMA_CPP_DEFAULT_DIR)
-    assert os.environ["UNSLOTH_LLAMA_CPP_SCRIPTS_DIR"] == "/explicit/override"
+# ---------------------------------------------------------------- behaviour
 
 
-def test_setdefault_assigns_default_when_unset(monkeypatch):
-    monkeypatch.delenv("UNSLOTH_LLAMA_CPP_SCRIPTS_DIR", raising = False)
-    from unsloth_zoo.llama_cpp import LLAMA_CPP_DEFAULT_DIR
+def test_pin_is_in_force_only_while_converting(monkeypatch):
+    fake, calls = _install_fake_zoo(monkeypatch)
+    pin, _ns = _load_pin_helper()
 
-    os.environ.setdefault("UNSLOTH_LLAMA_CPP_SCRIPTS_DIR", LLAMA_CPP_DEFAULT_DIR)
-    assert os.environ["UNSLOTH_LLAMA_CPP_SCRIPTS_DIR"] == LLAMA_CPP_DEFAULT_DIR
+    with pin():
+        assert os.environ[SCRIPTS_DIR] == fake.LLAMA_CPP_DEFAULT_DIR
+    assert SCRIPTS_DIR not in os.environ
+    assert calls["internal"] == [fake.LLAMA_CPP_DEFAULT_DIR]
 
 
-def _simulate_pin_block(emit_records, set_value):
-    fake = types.ModuleType("unsloth_zoo.llama_cpp")
-    if set_value is not None:
-        fake.LLAMA_CPP_DEFAULT_DIR = set_value
-    sys.modules["unsloth_zoo.llama_cpp"] = fake
+def test_pin_preserves_an_explicit_user_override(monkeypatch):
+    _fake, _calls = _install_fake_zoo(monkeypatch)
+    monkeypatch.setenv(SCRIPTS_DIR, "/explicit/override")
+    pin, _ns = _load_pin_helper()
 
-    state = {"emitted": False}
+    with pin():
+        assert os.environ[SCRIPTS_DIR] == "/explicit/override"
+    assert os.environ[SCRIPTS_DIR] == "/explicit/override"
 
-    def run_once():
-        try:
-            from unsloth_zoo.llama_cpp import (
-                LLAMA_CPP_DEFAULT_DIR,
-                _resolve_local_convert_script,  # noqa: F401
-            )
-            os.environ.setdefault("UNSLOTH_LLAMA_CPP_SCRIPTS_DIR", LLAMA_CPP_DEFAULT_DIR)
-        except ImportError:
-            if not state["emitted"]:
-                emit_records.append("warned")
-                state["emitted"] = True
 
-    return run_once
+def test_converter_tag_is_not_overridden(monkeypatch):
+    """UNSLOTH_LLAMA_CPP_SCRIPTS_DIR outranks the tag, so pinning while a tag is set is
+    what made the tag do nothing."""
+    _fake, calls = _install_fake_zoo(monkeypatch)
+    monkeypatch.setenv(CONVERTER_TAG, "b9999")
+    pin, _ns = _load_pin_helper()
+
+    with pin():
+        assert SCRIPTS_DIR not in os.environ
+    assert calls["internal"] == []
+
+
+def test_incomplete_install_is_not_pinned(monkeypatch):
+    _fake, calls = _install_fake_zoo(monkeypatch, incomplete = True)
+    pin, _ns = _load_pin_helper()
+
+    with pin():
+        assert SCRIPTS_DIR not in os.environ
+    assert calls["internal"] == []
+
+
+def test_mlx_does_not_nest_the_pin(monkeypatch):
+    """unsloth_zoo's MLX save path pins the converter itself and its pin holds a plain
+    threading.Lock across the conversion, so a second entry hangs the export."""
+    fake, calls = _install_fake_zoo(monkeypatch)
+    pin, _ns = _load_pin_helper(is_mlx = True)
+
+    with pin():
+        with fake.internal_scripts_dir_pin(fake.LLAMA_CPP_DEFAULT_DIR):
+            pass
+    assert calls["internal"] == [fake.LLAMA_CPP_DEFAULT_DIR]
+    assert SCRIPTS_DIR not in os.environ
+
+
+def test_older_zoo_without_the_internal_helper_still_unwinds(monkeypatch):
+    fake, _calls = _install_fake_zoo(monkeypatch, internal_pin = False)
+    pin, _ns = _load_pin_helper()
+
+    with pin():
+        assert os.environ[SCRIPTS_DIR] == fake.LLAMA_CPP_DEFAULT_DIR
+    assert SCRIPTS_DIR not in os.environ
 
 
 def test_warning_fires_at_most_once_across_calls(monkeypatch):
-    monkeypatch.delenv("UNSLOTH_LLAMA_CPP_SCRIPTS_DIR", raising = False)
+    """A zoo with no local-script resolver: warn once, keep exporting."""
+    _fake, _calls = _install_fake_zoo(monkeypatch, resolver = False)
     emits = []
-    runner = _simulate_pin_block(emits, set_value = "/fake/default")
-    runner()
-    runner()
-    runner()
-    assert emits == ["warned"]
+    logger = types.SimpleNamespace(warning = lambda message, *a, **k: emits.append(message))
+    pin, _ns = _load_pin_helper(logger = logger)
+
+    for _ in range(3):
+        with pin():
+            pass
+    assert len(emits) == 1
+    assert SCRIPTS_DIR in emits[0]
+    assert SCRIPTS_DIR not in os.environ
 
 
 def test_missing_default_dir_degrades_to_warning(monkeypatch):
-    monkeypatch.delenv("UNSLOTH_LLAMA_CPP_SCRIPTS_DIR", raising = False)
+    _fake, _calls = _install_fake_zoo(monkeypatch, default_dir = None)
     emits = []
-    runner = _simulate_pin_block(emits, set_value = None)
-    runner()
-    assert emits == ["warned"]
-    assert "UNSLOTH_LLAMA_CPP_SCRIPTS_DIR" not in os.environ
+    logger = types.SimpleNamespace(warning = lambda message, *a, **k: emits.append(message))
+    pin, _ns = _load_pin_helper(logger = logger)
+
+    with pin():
+        assert SCRIPTS_DIR not in os.environ
+    assert len(emits) == 1
+    assert SCRIPTS_DIR not in os.environ
 
 
 def test_no_warning_when_both_symbols_present(monkeypatch):
-    monkeypatch.delenv("UNSLOTH_LLAMA_CPP_SCRIPTS_DIR", raising = False)
-    fake = types.ModuleType("unsloth_zoo.llama_cpp")
-    fake.LLAMA_CPP_DEFAULT_DIR = "/fake/dir"
-    fake._resolve_local_convert_script = lambda: None
-    monkeypatch.setitem(sys.modules, "unsloth_zoo.llama_cpp", fake)
-
+    fake, _calls = _install_fake_zoo(monkeypatch)
     emits = []
-    state = {"emitted": False}
-    try:
-        from unsloth_zoo.llama_cpp import (
-            LLAMA_CPP_DEFAULT_DIR,
-            _resolve_local_convert_script,  # noqa: F401
-        )
-        os.environ.setdefault("UNSLOTH_LLAMA_CPP_SCRIPTS_DIR", LLAMA_CPP_DEFAULT_DIR)
-    except ImportError:
-        if not state["emitted"]:
-            emits.append("warned")
-            state["emitted"] = True
+    logger = types.SimpleNamespace(warning = lambda message, *a, **k: emits.append(message))
+    pin, _ns = _load_pin_helper(logger = logger)
 
+    with pin():
+        assert os.environ.get(SCRIPTS_DIR) == fake.LLAMA_CPP_DEFAULT_DIR
     assert emits == []
-    assert os.environ.get("UNSLOTH_LLAMA_CPP_SCRIPTS_DIR") == "/fake/dir"
