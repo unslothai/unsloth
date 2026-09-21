@@ -272,9 +272,17 @@ function blocksOf(markdown: string): readonly string[] {
 // not, so the scope would otherwise follow the reply's line ending. NOT for
 // `blocksOf`, whose one memo slot is shared with `parseMarkdownIntoRenderableBlocks`:
 // a normalised copy misses it and costs a CRLF reply two splits per render.
+// Definition first, and the order is a cost decision rather than a stylistic one: both are pure,
+// so the conjunction is the same either way, but each probe is cheap to refuse and only the one
+// that is asked SECOND is ever refused cheaply. The reference scan is the dearer of the two per
+// seam, it carries the window and the label test while the definition scan carries neither, and a
+// reply dense with `][` and no definition is the shape that separates them. Per 500k reply:
+// `][` 10.42ms -> 1.57ms, `[` then a reference 20.50ms -> 0.26ms. The trade is `]: ` at
+// 9.54ms -> 10.32ms, which is the definition scan no longer being skipped for a reply that
+// carries no reference, and is what the two dense-`]:` tests below already bound.
 function documentProse(markdown: string): string | null {
   const normalized = normalizeLineEndings(markdown);
-  if (!hasLinkReference(normalized) || !hasLinkDefinition(normalized)) {
+  if (!hasLinkDefinition(normalized) || !hasLinkReference(normalized)) {
     return null;
   }
   const prose = normalizeLineEndings(
