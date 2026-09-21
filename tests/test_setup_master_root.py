@@ -762,6 +762,12 @@ def test_the_windows_inductor_cache_agrees_with_the_resolver():
     assert refusal, "the unparseable-path refusal is gone"
     assert "\\s" in refusal.group(1), "the whitespace refusal is gone"
     assert "''" in refusal.group(1), "the apostrophe refusal is gone"
+    # The two refusals do NOT share a destination. A spaced path keeps the drive-root directory
+    # it has always used; an apostrophe-only path publishes nothing, because C:\tc is shared and
+    # predictable and _setup_cache_env honours an inherited value without applying its own
+    # per-account rule to it.
+    assert "$TorchCacheUnparseable" in block, "the apostrophe case lost its separate route"
+    assert "-not $TorchCacheUnparseable" in block
     assert '"C:\\tc"' in block
 
     roots = (REPO_ROOT / "studio" / "backend" / "utils" / "paths" / "storage_roots.py").read_text(

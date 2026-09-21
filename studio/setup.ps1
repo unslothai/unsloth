@@ -7461,21 +7461,40 @@ if ($script:UnslothVerbose) {
 # quote is illegal in an NTFS name, and a backslash is the separator, which cpp_builder rewrites
 # to "/" on Windows before it builds the command.
 $TorchCacheDir = $null
+$TorchCacheUnparseable = $false
 if ($StageRoot) {
     $TorchCacheDir = Join-Path $RuntimeRoot "TORCHINDUCTOR_CACHE_DIR"
 } elseif ($LongPathsEnabled) {
     $candidate = Join-Path (Join-Path $StudioHome "cache") "torchinductor"
-    if ($candidate -notmatch '[\s'']') { $TorchCacheDir = $candidate }
+    if ($candidate -notmatch '[\s'']') {
+        $TorchCacheDir = $candidate
+    } elseif ($candidate -notmatch '\s') {
+        # Apostrophe only, which is the population this change added. A spaced path keeps
+        # falling through to the drive-root directory it has always used.
+        $TorchCacheUnparseable = $true
+    }
 }
-if (-not $TorchCacheDir) {
+# C:\tc is shared and predictable at a drive root, where the default ACL lets any account
+# create. Persisting it for a NEW population would hand an O'Brien account an Inductor cache
+# another local user could have made first, and because _setup_cache_env honours any inherited
+# value, the backend's own per-account rule would never get to run. So the widened refusal
+# publishes nothing and leaves the choice to storage_roots, which puts it under the per-account
+# %LOCALAPPDATA%\Temp or declines. The pre-existing triggers, long paths off and a spaced path,
+# keep the drive-root directory they have always used: that is not this change's to move.
+if (-not $TorchCacheDir -and -not $TorchCacheUnparseable) {
     $TorchCacheDir = "C:\tc"
 }
-if (-not (Test-Path -LiteralPath $TorchCacheDir)) { [System.IO.Directory]::CreateDirectory($TorchCacheDir) | Out-Null }
-$env:TORCHINDUCTOR_CACHE_DIR = $TorchCacheDir
-if (-not $StageRoot) {
-    [Environment]::SetEnvironmentVariable('TORCHINDUCTOR_CACHE_DIR', $TorchCacheDir, 'User')
+if (-not $TorchCacheDir) {
+    substep "TORCHINDUCTOR_CACHE_DIR left unset: $candidate holds a character the C++ builders cannot paste into a command line, and the shared fallback is not account-private"
 }
-substep "TORCHINDUCTOR_CACHE_DIR set to $TorchCacheDir (avoids MAX_PATH issues)"
+if ($TorchCacheDir) {
+    if (-not (Test-Path -LiteralPath $TorchCacheDir)) { [System.IO.Directory]::CreateDirectory($TorchCacheDir) | Out-Null }
+    $env:TORCHINDUCTOR_CACHE_DIR = $TorchCacheDir
+    if (-not $StageRoot) {
+        [Environment]::SetEnvironmentVariable('TORCHINDUCTOR_CACHE_DIR', $TorchCacheDir, 'User')
+    }
+    substep "TORCHINDUCTOR_CACHE_DIR set to $TorchCacheDir (avoids MAX_PATH issues)"
+}
 
 $PinnedTorchIndexUrl = Get-PinnedTorchIndexUrl
 $TorchIndexPinned = [bool]$PinnedTorchIndexUrl

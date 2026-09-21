@@ -1142,35 +1142,48 @@ def _windows_temp_root_is_private(parent: Path) -> bool:
         return False
 
 
-def _holding_dir_is_safe(parent: Path) -> bool:
-    """Whether another account could swap the directory we just validated for one of its own.
-
-    Checking the child settles who may write INSIDE it and nothing else. On POSIX, renaming or
-    unlinking an entry is authorised by the write bit on the PARENT, and the sticky bit is what
-    narrows that to the entry's owner. So a shared parent that is group or world writable and
-    NOT sticky lets someone rename ours aside and put theirs at the same name after the check
-    and before the compiler reads the variable. /tmp is 1777 and safe; a TMPDIR pointed at an
-    ordinary shared directory is not, which is why this is asked rather than assumed.
-    """
-    if os.name == "nt":
-        return _windows_temp_root_is_private(parent)
+def _dir_is_not_swappable(directory: Path) -> bool:
+    """Whether an entry inside *directory* can be renamed away by another account."""
     try:
-        info = os.stat(parent)
+        info = os.stat(directory)
     except (OSError, ValueError):
         return False
-    # A parent nobody else can write is enough on its own, whoever owns it. Ownership is NOT a
-    # substitute for that: owning a directory does not stop anyone else writing in it, the write
-    # bits do, so a world-writable parent we own is as renameable by a third account as one we
-    # do not.
+    # A directory nobody else can write is enough on its own, whoever owns it. Ownership is NOT
+    # a substitute: owning a directory does not stop anyone else writing in it, the write bits
+    # do, so a world-writable one we own is as renameable by a third account as one we do not.
     if not info.st_mode & (stat_module.S_IWGRP | stat_module.S_IWOTH):
         return True
     # Sticky narrows removal and rename of a child to the child's owner, the DIRECTORY's owner,
     # and a privileged process. So sticky alone is not enough either: a sticky shared directory
-    # belonging to another ordinary account still lets that account swap our cache. /tmp passes
-    # because root owns it, which is the case this is actually for.
+    # belonging to another ordinary account still lets that account swap what is inside it.
+    # /tmp passes because root owns it, which is the case this is actually for.
     if not info.st_mode & stat_module.S_ISVTX:
         return False
     return info.st_uid in (0, os.geteuid())
+
+
+def _holding_dir_is_safe(parent: Path) -> bool:
+    """Whether another account could swap the directory we are about to trust.
+
+    Every ANCESTOR is asked, not just the immediate holder. Checking one level made
+    TMPDIR=/shared/victim-tmp look safe at mode 0700 while /shared stayed 0777, and renaming
+    the whole root through /shared substitutes a tree containing the predictable cache name just
+    as effectively as swapping the leaf. The walk is bounded by the path's own depth.
+
+    On Windows there are no POSIX bits to read, so the per-account default root answers instead.
+    """
+    if os.name == "nt":
+        return _windows_temp_root_is_private(parent)
+    try:
+        current = parent.resolve()
+    except (OSError, ValueError):
+        return False
+    while True:
+        if not _dir_is_not_swappable(current):
+            return False
+        if current.parent == current:
+            return True
+        current = current.parent
 
 
 def _parseable_toolchain_fallback(key: str, intended: str) -> str | None:

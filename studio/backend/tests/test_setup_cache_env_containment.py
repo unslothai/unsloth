@@ -486,6 +486,31 @@ def test_the_holding_directory_decides_whether_the_fallback_can_be_swapped(
     assert ("TORCH_EXTENSIONS_DIR" in os.environ) is published
 
 
+@pytest.mark.skipif(os.name == "nt", reason = "POSIX rename permissions")
+def test_a_private_temp_root_inside_a_shared_parent_is_refused(monkeypatch, tmp_path):
+    """Checking one level is not enough.
+
+    TMPDIR=/shared/victim-tmp at 0700 looks private, but if /shared is 0777 another account can
+    rename the whole root away and leave a tree carrying the predictable cache name in its
+    place, which substitutes the artifacts just as effectively as swapping the leaf. Every
+    ancestor is asked, bounded by the path's own depth."""
+    shared = tmp_path / "shared"
+    shared.mkdir()
+    private_root = shared / "victim-tmp"
+    private_root.mkdir(mode = 0o700)
+    sr = _load_storage_roots()
+
+    shared.chmod(0o777)
+    try:
+        assert sr._holding_dir_is_safe(private_root) is False
+        # The leaf alone still looks fine, which is exactly why the walk is needed.
+        assert sr._dir_is_not_swappable(private_root) is True
+        shared.chmod(0o755)
+        assert sr._holding_dir_is_safe(private_root) is True
+    finally:
+        shared.chmod(0o755)
+
+
 @pytest.mark.skipif(os.name == "nt", reason = "POSIX sticky semantics")
 def test_a_sticky_parent_owned_by_somebody_else_is_still_refused(monkeypatch, tmp_path):
     """Sticky is not a blanket safe answer.
