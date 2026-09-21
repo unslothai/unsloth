@@ -7043,6 +7043,12 @@ function Test-RespectPmPolicy {
     return (@('1', 'true', 'yes', 'on') -contains $value.Trim($ws).ToLowerInvariant())
 }
 
+# Same one-shot translation as install.sh and install.ps1: setup.ps1 drives uv directly in
+# places Fast-Install does not cover, and uv reads no PIP_ variable.
+if ((Test-RespectPmPolicy) -and -not "$env:UV_REQUIRE_HASHES".Trim() -and (Test-PipEnvFlag 'PIP_REQUIRE_HASHES')) {
+    $env:UV_REQUIRE_HASHES = '1'
+}
+
 # Helper: install a package, preferring uv with pip fallback
 function Fast-Install {
     param([Parameter(ValueFromRemainingArguments=$true)]$Args_)
@@ -7079,9 +7085,8 @@ function Fast-Install {
     }
     try {
         if ($UseUv) {
-            # uv is standing in for pip here, so a pip-expressed hash policy has to reach it
-            # or the choice of manager decides whether the operator's policy applies at all.
-            # UV_REQUIRE_HASHES is uv's documented equivalent of --require-hashes.
+            # The run-level carry above covers the usual case; this repeats it because
+            # Fast-Install is also dot-sourced and called on its own by the test suites.
             if ($respectPolicy -and (Test-PipEnvFlag 'PIP_REQUIRE_HASHES') -and -not "$env:UV_REQUIRE_HASHES".Trim()) {
                 $carriedRequireHashes = $true
                 $env:UV_REQUIRE_HASHES = '1'

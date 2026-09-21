@@ -1477,6 +1477,100 @@ class TestPackageManagerPolicyOptOut:
         for name, value in expected.items():
             assert env is not None and env[name] == value
 
+    def test_an_unpinned_uv_command_is_translated_too(self):
+        """The MAIN dependency install is an unpinned uv command.
+
+        Translating only on the pinned branch left the largest install of the run
+        unconstrained, which is the opposite of the case the opt-out is set for.
+        """
+        with self._environment({"PIP_REQUIRE_HASHES": "1"}, opt_out = "1"):
+            env = ips._install_env_for_cmd(["uv", "pip", "install", "-r", "requirements.txt"])
+        assert env is not None, "an unpinned uv command inherited the environment unchanged"
+        assert env["UV_REQUIRE_HASHES"] == "1"
+
+    def test_an_unpinned_pip_command_gains_nothing(self):
+        """pip reads PIP_REQUIRE_HASHES itself; restating it would be noise."""
+        with self._environment({"PIP_REQUIRE_HASHES": "1"}, opt_out = "1"):
+            assert (
+                ips._install_env_for_cmd(
+                    [sys.executable, "-m", "pip", "install", "-r", "requirements.txt"]
+                )
+                is None
+            )
+
+    @pytest.mark.reads_real_pip_config
+    @pytest.mark.parametrize(
+        ("listing", "expected"),
+        [
+            (b"global.require-hashes='true'\n", True),
+            (b"install.require-hashes='true'\n", True),
+            (b"global.require_hashes='1'\n", True),
+            # The command's own section is read last, so a later entry decides -- including
+            # one that switches the control off.
+            (b"global.require-hashes='true'\ninstall.require-hashes='false'\n", False),
+            (b"download.require-hashes='true'\n", False),  # a different command entirely
+            (b":env:.require-hashes='true'\n", False),  # restates the environment
+            (b"global.cert='/etc/ca.pem'\n", False),
+            (b"", False),
+        ],
+    )
+    def test_a_pip_config_hash_policy_is_read_and_carried(self, listing, expected, monkeypatch):
+        """A pip.conf require-hashes is the likeliest shape a hardened host takes.
+
+        Likelier than the environment variable, so leaving it unread would have missed the
+        common case while appearing to handle it.
+        """
+        monkeypatch.setattr(ips, "_PINNED_PIP_CONFIG_LISTING", listing)
+        monkeypatch.setattr(ips, "_pinned_pip_config_overrides", lambda *a, **k: {})
+        assert ips._pip_config_requires_hashes() is expected
+        with self._environment({}, opt_out = "1"):
+            carried = ips._pip_policy_as_uv_env()
+        assert carried == ({"UV_REQUIRE_HASHES": "1"} if expected else {})
+
+    @pytest.mark.parametrize(
+        ("environment", "active"),
+        [
+            ({"UV_REQUIRE_HASHES": "1"}, True),
+            ({"UV_OFFLINE": "1"}, True),
+            ({"UV_EXCLUDE_NEWER": "2025-01-01"}, True),
+            ({"UV_REQUIRE_HASHES": "0"}, False),
+            ({"UV_OFFLINE": "false"}, False),
+            ({}, False),
+        ],
+    )
+    def test_force_pip_declines_under_uv_only_policy(
+        self, environment, active, monkeypatch, capsys
+    ):
+        """force_pip routes PAST uv on purpose, and pip reads none of uv's settings.
+
+        The AMD bitsandbytes prerelease is the live caller. Installing it through pip under an
+        active uv policy is the same silent substitution the fallback refusal exists to stop,
+        so the optional step declines rather than reaching the network or installing unhashed.
+        """
+        ran: list = []
+
+        def _record(cmd, **kwargs):
+            ran.append(cmd)
+            return subprocess.CompletedProcess(cmd, 0, b"")
+
+        # pip_install_try shells out through subprocess.run directly, so that is the seam.
+        monkeypatch.setattr(ips.subprocess, "run", _record)
+        monkeypatch.setattr(ips, "_pinned_cmd_and_env", lambda cmd: (list(cmd), None))
+        monkeypatch.setattr(ips, "_invalidate_torch_runtime_probe", lambda: None)
+        counted: list = []
+        monkeypatch.setattr(ips, "_count_install_action", lambda: counted.append(1))
+        with self._environment(environment, opt_out = "1"):
+            result = ips.pip_install_try(
+                "AMD bitsandbytes prerelease", "bitsandbytes", force_pip = True
+            )
+        if active:
+            assert ran == [], "the forced-pip step ran under an active uv-only policy"
+            assert result is False, "the caller must see an optional install that did not happen"
+            assert counted == [], "a step that never ran must not count as having moved metadata"
+            assert ips._POLICY_OPT_OUT_ENV in capsys.readouterr().out
+        else:
+            assert ran, "the step must still run when no uv-only policy is set"
+
     def test_nothing_is_carried_in_the_other_direction(self):
         """There is no uv-to-pip translation, because under the opt-out there is no fallback.
 

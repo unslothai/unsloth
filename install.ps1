@@ -4148,6 +4148,14 @@ exit 1
         return (@('1', 'true', 'yes', 'on') -contains $value.Trim($ws).ToLowerInvariant())
     }
 
+    # uv reads no PIP_ variable and this script drives uv directly, so a pip-expressed hash
+    # requirement is restated once for the run. UV_REQUIRE_HASHES is uv's documented spelling
+    # of --require-hashes; an explicit uv value the operator set is left alone.
+    if ((Test-RespectPmPolicy) -and -not "$env:UV_REQUIRE_HASHES".Trim() -and
+        (@('1', 't', 'true', 'y', 'yes', 'on') -contains "$env:PIP_REQUIRE_HASHES".Trim().ToLowerInvariant())) {
+        $env:UV_REQUIRE_HASHES = '1'
+    }
+
     function Invoke-InstallCommand {
         param(
             [Parameter(Mandatory = $true)][ScriptBlock]$Command,

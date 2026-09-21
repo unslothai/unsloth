@@ -224,6 +224,20 @@ _respect_pm_policy() {
     return 1
 }
 
+# uv reads no PIP_ variable, and this script runs many uv commands directly, so a
+# pip-expressed hash requirement has to be restated ONCE for the whole run rather than per
+# command: the pinned arm below is not the only place uv is invoked. UV_REQUIRE_HASHES is
+# uv's documented spelling of --require-hashes. Never over a uv value the operator set.
+_carry_pip_policy_into_uv() {
+    _respect_pm_policy || return 0
+    [ -n "${UV_REQUIRE_HASHES:-}" ] && return 0
+    case "$(printf '%s' "${PIP_REQUIRE_HASHES:-}" | tr '[:upper:]' '[:lower:]')" in
+        1|t|true|y|yes|on) UV_REQUIRE_HASHES=1; export UV_REQUIRE_HASHES ;;
+    esac
+    return 0
+}
+_carry_pip_policy_into_uv
+
 run_install_cmd() {
     _label="$1"
     shift

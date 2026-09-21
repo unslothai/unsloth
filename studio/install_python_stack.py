@@ -8866,23 +8866,69 @@ def _relaxed_pip_policy_env(cmd: "list[str]") -> "dict[str, str]":
 # stands in for pip. Verified against uv's documentation: UV_REQUIRE_HASHES is "equivalent
 # to the --require-hashes command-line argument".
 #
-# One direction only. The reverse, carrying uv policy to a pip FALLBACK, is not needed:
-# under the opt-out there is no fallback (see pip_install), because the policy that made uv
+# One direction only. The reverse, carrying uv policy to pip, is not attempted: under the
+# opt-out pip never stands in for uv (see pip_install), because the policy that made uv
 # refuse may live in a uv.toml this module deliberately does not parse, and a translation
 # that silently covers less than it appears to is worse than none.
 _PIP_TO_UV_POLICY = (("PIP_REQUIRE_HASHES", "UV_REQUIRE_HASHES"),)
 
 
-def _pip_policy_as_uv_env() -> "dict[str, str]":
-    """pip-expressed policy restated for a uv command. Opt-out only.
+def _uv_only_policy_active() -> bool:
+    """Policy that binds uv and that pip cannot be told about.
 
-    A `pip.conf` require-hashes is NOT carried: only the environment is read here, and the
-    residual gap is that a config-file-only hash policy binds a pip command and not the uv
-    one chosen in its place. Named rather than guessed at.
+    Environment only, and that is the point: these are the settings whose presence can be
+    established. A uv.toml is not read, so this is a floor, not a complete answer -- which is
+    why the FALLBACK refuses outright rather than consulting this.
     """
+    return (
+        _uv_env_flag("UV_REQUIRE_HASHES")
+        or _uv_is_offline()
+        or bool(os.environ.get("UV_EXCLUDE_NEWER", "").strip())
+    )
+
+
+def _pip_config_requires_hashes(subcommand: str = "install") -> bool:
+    """Is require-hashes set in pip's own configuration, for the command being run?
+
+    Reads the listing _pinned_pip_config_overrides() already fetches and memoises, so this
+    costs no extra subprocess and inherits its timeout and attempt budget. require-hashes is
+    deliberately absent from _PINNED_PIP_CONFIG_KEEP_KEYS -- that allowlist decides what to
+    RE-ASSERT after devnull, a different question from what the operator has asked for.
+
+    A pip.conf hash requirement is the likeliest shape a hardened host takes, likelier than
+    the environment variable, so leaving it unread would have missed the common case.
+    """
+    _pinned_pip_config_overrides(subcommand)
+    listing = _PINNED_PIP_CONFIG_LISTING
+    if not listing:
+        return False
+    found = False
+    for line in _decode_pip_output(listing).splitlines():
+        name, separator, raw = line.partition("=")
+        if not separator or name.startswith(":env:"):
+            continue
+        section, _, option = name.strip().rpartition(".")
+        if option.strip().lower().replace("_", "-") != "require-hashes":
+            continue
+        if section not in ("global", subcommand):
+            continue
+        try:
+            value = ast.literal_eval(raw.strip())
+        except (ValueError, SyntaxError):
+            value = raw.strip().strip("'\"")
+        # Printed in load order and the command's own section is read last, so a later
+        # entry -- including one that DISABLES it -- is the answer.
+        found = str(value).strip().lower() not in ("", "0", "false", "no", "off", "n", "f")
+    return found
+
+
+def _pip_policy_as_uv_env() -> "dict[str, str]":
+    """pip-expressed policy restated for a uv command. Opt-out only."""
     carried: "dict[str, str]" = {}
     for pip_name, uv_name in _PIP_TO_UV_POLICY:
-        if _pip_env_flag(pip_name) and not os.environ.get(uv_name, "").strip():
+        if os.environ.get(uv_name, "").strip():
+            continue  # an explicit uv value the operator set outranks a translation
+        if _pip_env_flag(pip_name) or _pip_config_requires_hashes():
             carried[uv_name] = "1"
     return carried
 
@@ -9257,11 +9303,15 @@ def _install_env_for_cmd(cmd: "list[str]") -> "dict[str, str] | None":
     opposite.
     """
     if not _is_pinned_index_cmd(cmd):
-        relaxed = _relaxed_pip_policy_env(cmd)
-        if not relaxed:
+        overrides = _relaxed_pip_policy_env(cmd)
+        if _respect_pm_policy() and cmd[:1] == ["uv"]:
+            # The main dependency install is an UNPINNED uv command, so translating only on
+            # the pinned branch left the biggest install of the run unconstrained.
+            overrides = {**overrides, **_pip_policy_as_uv_env()}
+        if not overrides:
             return None
         env = os.environ.copy()
-        env.update(relaxed)
+        env.update(overrides)
         return env
     env = os.environ.copy()
     if _respect_pm_policy():
@@ -9462,6 +9512,21 @@ def pip_install_try(
     """Like pip_install but returns False on failure instead of exiting.
     For optional installs that have a follow-up fallback.
     """
+    if force_pip and _respect_pm_policy() and _uv_only_policy_active():
+        # BEFORE the probe invalidation and the action counter: nothing runs, so nothing
+        # should be counted as having moved. force_pip routes PAST uv on purpose (the AMD
+        # bitsandbytes prerelease, a direct URL), and pip reads no UV_ variable and no
+        # uv.toml, so under the opt-out this is the same silent substitution the fallback
+        # refusal exists to stop. False is the caller's "optional install did not happen".
+        _step("skip", f"{label} needs pip, which your uv policy cannot reach", _red)
+        _safe_print(
+            _red(
+                f"   {_POLICY_OPT_OUT_ENV} keeps your uv settings in force and this step has "
+                "to run pip, which reads none of them. Skipping it rather than installing "
+                f"past the policy. Unset {_POLICY_OPT_OUT_ENV} for one run to take it."
+            )
+        )
+        return False
     # Same reason as pip_install: this installs torch too (the Windows AMD ROCm trio),
     # so the memoized classification must not survive it.
     _invalidate_torch_runtime_probe()
