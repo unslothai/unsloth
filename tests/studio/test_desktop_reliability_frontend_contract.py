@@ -1854,7 +1854,6 @@ def test_chat_sidebar_row_actions_visible_on_coarse_pointers():
         f"utilities instead, so it would credit the row with room it does not have"
     )
 
-
     # The spinner too, on the renderings that show it. Everything above measures the row's
     # actions, and a working row also renders a spinner that the title has to clear: it sits
     # further in than the pin on touch, which is why the row reserves 78px there and not the
