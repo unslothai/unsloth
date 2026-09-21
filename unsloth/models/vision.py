@@ -357,7 +357,16 @@ def _warn_if_quantization_silently_dropped(
         lname = name.lower()
         if any(pat in lname for pat in skip_patterns):
             continue
-        if quantized_devices and p.device not in quantized_devices:
+        # Only a TRUE offload is excused: cpu or meta, and only when the payload
+        # does not live there too. A float weight on another accelerator is still
+        # accelerator-resident full precision and stays suspect, which is the
+        # whole multi-GPU case (bnb on cuda:0, fused experts on cuda:1). A
+        # cpu-only bnb load keeps its cpu floats suspect for the same reason.
+        if (
+            p.device.type in ("cpu", "meta")
+            and quantized_devices
+            and p.device not in quantized_devices
+        ):
             offloaded_bytes += nbytes
             continue
         suspect_bytes += nbytes

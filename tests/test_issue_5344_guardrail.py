@@ -528,6 +528,47 @@ def test_the_same_model_does_warn_when_partial_checking_is_on():
     assert any("partially applied" in m for m in msgs), msgs
 
 
+def test_float_weight_on_another_accelerator_stays_suspect():
+    """Multi-GPU: the payload landed on one device, the fused experts on another.
+
+    Those bytes ARE accelerator-resident full precision, so excusing them as
+    "offload" suppresses a real partial bypass. Needs a real accelerator,
+    because the whole point is a device that is neither cpu nor meta.
+    """
+    if not torch.cuda.is_available():
+        import pytest
+        pytest.skip("needs a real accelerator to be a device that is not cpu/meta")
+    model = nn.Sequential(_Quantized("cpu"), _OffloadedExperts("cuda:0"))
+    with warnings.catch_warnings(record = True) as caught:
+        warnings.simplefilter("always")
+        _warn_if_quantization_silently_dropped(
+            model,
+            load_in_4bit = True,
+            load_in_8bit = False,
+            full_finetuning = False,
+        )
+    msgs = [str(w.message) for w in caught]
+    assert any("partially applied" in m for m in msgs), msgs
+    assert not any("sits off those devices" in m for m in msgs), msgs
+
+
+def test_cpu_only_load_keeps_its_cpu_floats_suspect():
+    # A bnb load whose payload IS on cpu must not have its cpu floats excused:
+    # the exclusion is for weights moved OFF the payload's devices, not for cpu
+    # as such.
+    model = nn.Sequential(_Quantized("cpu"), _OffloadedExperts("cpu"))
+    with warnings.catch_warnings(record = True) as caught:
+        warnings.simplefilter("always")
+        _warn_if_quantization_silently_dropped(
+            model,
+            load_in_4bit = True,
+            load_in_8bit = False,
+            full_finetuning = False,
+        )
+    msgs = [str(w.message) for w in caught]
+    assert any("partially applied" in m for m in msgs), msgs
+
+
 if __name__ == "__main__":
     test_fires_when_4bit_requested_but_no_bnb_modules()
     test_silent_when_4bit_succeeded()
@@ -549,4 +590,6 @@ if __name__ == "__main__":
     test_check_partial_false_reports_total_bypass_but_not_the_ratio()
     test_check_partial_false_still_catches_a_total_bypass()
     test_the_same_model_does_warn_when_partial_checking_is_on()
-    print("All 20 guardrail tests passed.")
+    test_float_weight_on_another_accelerator_stays_suspect()
+    test_cpu_only_load_keeps_its_cpu_floats_suspect()
+    print("All 22 guardrail tests passed.")

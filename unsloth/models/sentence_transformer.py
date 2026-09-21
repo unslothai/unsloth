@@ -1629,7 +1629,10 @@ class FastSentenceTransformer(FastModel):
             _warn_if_quantization_silently_dropped(
                 st_model,
                 load_in_4bit = load_in_4bit,
-                load_in_8bit = False,
+                # The real flag, not False. This path builds a bnb config for 4-bit
+                # only, so an 8-bit request here IS the silent bypass the guardrail
+                # exists to report; hardcoding False hid exactly that case.
+                load_in_8bit = load_in_8bit,
                 full_finetuning = False,
                 quantization_config = model_kwargs.get("quantization_config"),
             )
