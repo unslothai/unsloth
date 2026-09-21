@@ -608,17 +608,26 @@ async def _test_custom_provider_connectivity(
     back to a chat probe."""
     model_id = (model_id or "").strip()
     models_error: Exception | None = None
+    models = None
     try:
         models = await client.list_models()
+    except Exception as exc:
+        models_error = exc
+
+    if models is not None and api_type != "responses":
         return ProviderTestResult(
             success = True,
             message = f"Connected successfully. Found {len(models)} model(s).",
             models_count = len(models),
         )
-    except Exception as exc:
-        models_error = exc
 
     if not model_id:
+        if models is not None:
+            return ProviderTestResult(
+                success = True,
+                message = f"Connected successfully. Found {len(models)} model(s).",
+                models_count = len(models),
+            )
         return ProviderTestResult(
             success = False,
             message = (

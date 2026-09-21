@@ -1371,6 +1371,7 @@ class ExternalProviderClient:
                 tools,
                 tool_choice,
                 response_format,
+                stream = stream if self.provider_type == "custom" else True,
             ):
                 yield line
             return
@@ -4902,6 +4903,7 @@ class ExternalProviderClient:
         tools: Optional[list[dict[str, Any]]] = None,
         tool_choice: Optional[Any] = None,
         response_format: Optional[dict[str, Any]] = None,
+        stream: bool = True,
     ) -> AsyncGenerator[str, None]:
         """Call OpenAI's /v1/responses endpoint and translate its SSE stream back into OpenAI Chat
         Completions chunk format. The Responses API uses a different request shape (``input`` not
@@ -5179,7 +5181,7 @@ class ExternalProviderClient:
         body: dict[str, Any] = {
             "model": model,
             "input": input_items,
-            "stream": True,
+            "stream": stream,
         }
         if self.provider_type == "custom":
             if temperature is not None:
@@ -5437,6 +5439,106 @@ class ExternalProviderClient:
                             self.provider_type,
                             response.headers.get("Retry-After"),
                         )
+                        return
+
+                    if not stream:
+                        response_payload = _json.loads(await response.aread())
+                        status = response_payload.get("status")
+                        if status == "failed" or response_payload.get("error"):
+                            yield _json.dumps(
+                                {
+                                    "error": {
+                                        "message": _openai_response_error_message(response_payload),
+                                        "type": "server_error",
+                                        "provider": self.provider_type,
+                                    }
+                                }
+                            )
+                            return
+                        text_parts: list[str] = []
+                        refusal_parts: list[str] = []
+                        tool_calls: list[dict[str, Any]] = []
+                        for item in response_payload.get("output") or []:
+                            if not isinstance(item, dict):
+                                continue
+                            if item.get("type") == "message":
+                                content = item.get("content") or []
+                                if isinstance(content, str):
+                                    text_parts.append(content)
+                                    continue
+                                for part in content:
+                                    if not isinstance(part, dict):
+                                        continue
+                                    if part.get("type") in ("output_text", "text"):
+                                        text = part.get("text")
+                                        if isinstance(text, str):
+                                            text_parts.append(text)
+                                    elif part.get("type") == "refusal":
+                                        refusal = part.get("refusal")
+                                        if isinstance(refusal, str):
+                                            refusal_parts.append(refusal)
+                            elif item.get("type") == "function_call":
+                                name = item.get("name")
+                                if not isinstance(name, str) or not name:
+                                    continue
+                                arguments = item.get("arguments", "")
+                                if not isinstance(arguments, str):
+                                    arguments = _json.dumps(arguments)
+                                tool_calls.append(
+                                    {
+                                        "id": item.get("call_id") or item.get("id") or "call_0",
+                                        "type": "function",
+                                        "function": {"name": name, "arguments": arguments},
+                                    }
+                                )
+
+                        if not text_parts and isinstance(response_payload.get("output_text"), str):
+                            text_parts.append(response_payload["output_text"])
+
+                        message: dict[str, Any] = {
+                            "role": "assistant",
+                            "content": "".join(text_parts) or None,
+                        }
+                        if refusal_parts:
+                            message["refusal"] = "".join(refusal_parts)
+                        if tool_calls:
+                            message["tool_calls"] = tool_calls
+
+                        completion: dict[str, Any] = {
+                            "id": response_payload.get("id") or completion_id,
+                            "object": "chat.completion",
+                            "created": int(response_payload.get("created_at") or time.time()),
+                            "model": response_payload.get("model") or model,
+                            "choices": [
+                                {
+                                    "index": 0,
+                                    "message": message,
+                                    "finish_reason": (
+                                        "tool_calls"
+                                        if tool_calls
+                                        else "length" if status == "incomplete" else "stop"
+                                    ),
+                                }
+                            ],
+                        }
+                        usage = response_payload.get("usage")
+                        if isinstance(usage, dict):
+                            prompt_tokens = usage.get("input_tokens") or 0
+                            completion_tokens = usage.get("output_tokens") or 0
+                            details = usage.get("input_tokens_details")
+                            cached_tokens = (
+                                details.get("cached_tokens")
+                                if isinstance(details, dict)
+                                else 0
+                            ) or 0
+                            completion["usage"] = {
+                                "prompt_tokens": prompt_tokens,
+                                "completion_tokens": completion_tokens,
+                                "total_tokens": usage.get("total_tokens")
+                                or prompt_tokens + completion_tokens,
+                                "prompt_tokens_details": {"cached_tokens": cached_tokens},
+                            }
+                        yield _json.dumps(completion)
                         return
 
                     # Same manual __anext__ loop as stream_chat_completion -- see there for the GeneratorExit / aclose

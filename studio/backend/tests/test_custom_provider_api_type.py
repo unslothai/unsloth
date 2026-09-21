@@ -151,6 +151,121 @@ def test_endpoint_and_payload_translation(monkeypatch, provider_type, api_type, 
         assert body["max_tokens"] == 128
 
 
+def test_responses_non_streaming_translation(monkeypatch):
+    requests = []
+
+    def handle(request):
+        requests.append(request)
+        return httpx.Response(
+            200,
+            json = {
+                "id": "resp_test",
+                "object": "response",
+                "created_at": 1_700_000_000,
+                "model": "gateway-model",
+                "status": "completed",
+                "output": [
+                    {
+                        "type": "message",
+                        "role": "assistant",
+                        "content": [{"type": "output_text", "text": "Hello"}],
+                    },
+                    {
+                        "type": "function_call",
+                        "call_id": "call_1",
+                        "name": "lookup",
+                        "arguments": '{"q":"docs"}',
+                    },
+                ],
+                "usage": {
+                    "input_tokens": 4,
+                    "output_tokens": 2,
+                    "total_tokens": 6,
+                    "input_tokens_details": {"cached_tokens": 1},
+                },
+            },
+        )
+
+    async def run():
+        async with httpx.AsyncClient(transport = httpx.MockTransport(handle)) as transport:
+            monkeypatch.setattr(ep, "_http_client", transport)
+            client = ExternalProviderClient(
+                "custom",
+                "https://gateway.example/v1",
+                "test-key",
+                api_type = "responses",
+            )
+            return [
+                line
+                async for line in client.stream_chat_completion(
+                    messages = [{"role": "user", "content": "Hi"}],
+                    model = "gateway-model",
+                    stream = False,
+                )
+            ]
+
+    lines = asyncio.run(run())
+    assert len(requests) == 1
+    assert requests[0].url.path == "/v1/responses"
+    assert json.loads(requests[0].content)["stream"] is False
+    assert len(lines) == 1
+    completion = json.loads(lines[0])
+    assert completion["object"] == "chat.completion"
+    assert completion["choices"][0]["message"] == {
+        "role": "assistant",
+        "content": "Hello",
+        "tool_calls": [
+            {
+                "id": "call_1",
+                "type": "function",
+                "function": {"name": "lookup", "arguments": '{"q":"docs"}'},
+            }
+        ],
+    }
+    assert completion["choices"][0]["finish_reason"] == "tool_calls"
+    assert completion["usage"] == {
+        "prompt_tokens": 4,
+        "completion_tokens": 2,
+        "total_tokens": 6,
+        "prompt_tokens_details": {"cached_tokens": 1},
+    }
+
+
+def test_responses_non_streaming_failure_is_not_reported_as_completion(monkeypatch):
+    def handle(request):
+        assert json.loads(request.content)["stream"] is False
+        return httpx.Response(
+            200,
+            json = {
+                "id": "resp_failed",
+                "status": "failed",
+                "error": {"message": "provider unavailable"},
+            },
+        )
+
+    async def run():
+        async with httpx.AsyncClient(transport = httpx.MockTransport(handle)) as transport:
+            monkeypatch.setattr(ep, "_http_client", transport)
+            client = ExternalProviderClient(
+                "custom",
+                "https://gateway.example/v1",
+                "test-key",
+                api_type = "responses",
+            )
+            return [
+                line
+                async for line in client.stream_chat_completion(
+                    messages = [{"role": "user", "content": "Hi"}],
+                    model = "gateway-model",
+                    stream = False,
+                )
+            ]
+
+    lines = asyncio.run(run())
+    assert len(lines) == 1
+    assert json.loads(lines[0])["error"]["message"] == "provider unavailable"
+
+
 @pytest.fixture()
 def provider_api(tmp_path, monkeypatch):
     from fastapi import FastAPI
@@ -215,14 +330,18 @@ def test_api_create_update_and_saved_target_binding(provider_api):
     assert changed.json()["api_type"] == "chat_completions"
 
 
+@pytest.mark.parametrize("models_status", [200, 404])
 @pytest.mark.parametrize("status", [200, 500])
-def test_responses_only_connectivity_probe(provider_api, monkeypatch, status):
+def test_responses_only_connectivity_probe(provider_api, monkeypatch, models_status, status):
     paths = []
 
     def handle(request):
         paths.append(request.url.path)
         if request.url.path == "/v1/models":
-            return httpx.Response(404)
+            return httpx.Response(
+                models_status,
+                json = {"data": [{"id": "responses-only"}]} if models_status == 200 else None,
+            )
         assert request.url.path == "/v1/responses"
         assert "input" in json.loads(request.content)
         if status == 500:
