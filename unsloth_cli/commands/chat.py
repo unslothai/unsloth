@@ -158,6 +158,7 @@ def _pick_model(console) -> str:
 
 
 def chat(
+    ctx: typer.Context,
     model: Optional[str] = typer.Argument(
         None, help = "HF model id or local path. Omit to pick one of your local models."
     ),
@@ -292,8 +293,13 @@ def chat(
         load_opts["spec_draft_n_max"] = spec_draft_n_max
 
     # Prefer a running Unsloth server: instant starts, model shared with the UI.
+    server_load_opts = dict(load_opts)
+    if ctx.get_parameter_source("load_in_4bit").name != "COMMANDLINE":
+        server_load_opts["load_in_4bit"] = None
     chat_backend = (
-        None if (no_server or is_mlx_distributed) else connect_studio_server(model, **load_opts)
+        None
+        if (no_server or is_mlx_distributed)
+        else connect_studio_server(model, **server_load_opts)
     )
     server_mode = chat_backend is not None
     if server_mode and should_print:

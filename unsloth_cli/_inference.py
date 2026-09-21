@@ -890,9 +890,10 @@ class HttpChatBackend:
             "model_path": model,
             "hf_token": hf_token,
             "max_seq_length": max_seq_length,
-            "load_in_4bit": load_in_4bit,
             "tensor_parallel": tensor_parallel,
         }
+        if load_in_4bit is not None:
+            payload["load_in_4bit"] = load_in_4bit
         if llama_extra_args:
             payload["llama_extra_args"] = llama_extra_args
         if speculative_type is not None:

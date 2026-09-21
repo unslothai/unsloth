@@ -19,6 +19,7 @@ from unsloth_cli._inference import (
 
 
 def inference(
+    ctx: typer.Context,
     model: str = typer.Argument(..., help = "HF model id or local path."),
     prompt: str = typer.Argument(..., help = "Prompt to send to the model."),
     hf_token: Optional[str] = typer.Option(
@@ -121,8 +122,13 @@ def inference(
         load_opts["speculative_type"] = speculative_type
     if spec_draft_n_max is not None:
         load_opts["spec_draft_n_max"] = spec_draft_n_max
+    server_load_opts = dict(load_opts)
+    if ctx.get_parameter_source("load_in_4bit").name != "COMMANDLINE":
+        server_load_opts["load_in_4bit"] = None
     chat_backend = (
-        None if (no_server or is_mlx_distributed) else connect_studio_server(model, **load_opts)
+        None
+        if (no_server or is_mlx_distributed)
+        else connect_studio_server(model, **server_load_opts)
     )
     if chat_backend is None:
         chat_backend = load_chat_backend(model, **load_opts)
