@@ -352,8 +352,9 @@ def test_mlx_metadata_outage_reuses_plan_and_bounds_retries(monkeypatch, warm):
 
     key = ("unsloth/cached-base", cache_inventory.hf_cache_scan.token_fingerprint(None))
     plan = (4, frozenset({"weight"}), ())
+    expired = cache_inventory.time.monotonic() - cache_inventory._REPO_SIZE_POS_TTL - 1
     monkeypatch.setattr(
-        cache_inventory, "_mlx_plan_cache", OrderedDict({key: (plan, 0)} if warm else {})
+        cache_inventory, "_mlx_plan_cache", OrderedDict({key: (plan, expired)} if warm else {})
     )
     monkeypatch.setattr(cache_inventory, "_cached_mlx_siblings", lambda _repo: [])
     calls = []
