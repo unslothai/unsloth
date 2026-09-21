@@ -80,9 +80,18 @@ export type SidebarDropCue =
   | { line: { rowKey: string; edge: DropEdge } }
   | { ring: string };
 
+/** Where a chat from another list lands: its slot against a row of that list. Kept beside the
+ *  order snapshot, so a move that finishes after the list was reordered can re-aim the slot
+ *  instead of writing the snapshot over the newer order. */
+export interface SidebarDropPlace {
+  id: string;
+  targetId: string;
+  edge: DropEdge;
+}
+
 /** Everything the drop changes. */
 export interface SidebarDropEffects {
-  orders: Array<{ scope: string; ids: string[] }>;
+  orders: Array<{ scope: string; ids: string[]; place?: SidebarDropPlace }>;
   pinChat?: string;
   unpinChat?: string;
   pinProject?: string;
@@ -393,14 +402,18 @@ function landingIn(
   zone: SidebarDropZone,
   edge: DropEdge,
   sort: SidebarChatSort,
-): { cue: SidebarDropCue; order: { scope: string; ids: string[] } } | null {
+): { cue: SidebarDropCue; order: SidebarDropEffects["orders"][number] } | null {
   if (sort !== "manual" || zone.row?.kind !== "chat" || zone.row.scope !== scope) {
     return null;
   }
   if (zone.row.id === chatId) return null;
   return {
     cue: line(scope, zone.row.id, edge),
-    order: { scope, ids: placeIdAt(ids, chatId, zone.row.id, edge) },
+    order: {
+      scope,
+      ids: placeIdAt(ids, chatId, zone.row.id, edge),
+      place: { id: chatId, targetId: zone.row.id, edge },
+    },
   };
 }
 

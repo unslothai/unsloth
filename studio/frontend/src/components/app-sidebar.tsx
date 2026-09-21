@@ -162,6 +162,7 @@ import {
   applyManualOrder,
   showsInRecents,
   moveIdBy,
+  placeIdAt,
   projectOrderScope,
   PINNED_ORDER_SCOPE,
   PINNED_PROJECT_ORDER_SCOPE,
@@ -240,6 +241,7 @@ import {
   useSidebarDrag,
   type SidebarDragItem,
   type SidebarDropContext,
+  type SidebarDropEffects,
   type SidebarDropPlan,
   type SidebarSection,
 } from "@/features/chat";
@@ -342,6 +344,18 @@ const DROP_INTO_CUE =
 // The menu keeps a 1px gap between rows. A pointer resting on that gap would hit the section
 // instead, which answers with its last slot, so each row's box reaches over the gap below it.
 const DROP_ROW_HIT = "pb-px -mb-px";
+/** The order a landing writes once its move has gone through: the snapshot from the drop,
+ *  unless that list was reordered meanwhile, in which case the chat takes its slot in the list
+ *  as it stands now. `before` is that list's manual order when the drop began. */
+function landedOrder(
+  order: SidebarDropEffects["orders"][number],
+  before: string[] | undefined,
+): string[] {
+  const current = useSidebarOrganizationStore.getState().manualOrder[order.scope];
+  if (!order.place || !current || current === before) return order.ids;
+  return placeIdAt(current, order.place.id, order.place.targetId, order.place.edge);
+}
+
 // A closed section has no body to light, so its header takes the tint.
 const DROP_INTO_HEADER_CUE =
   "rounded-full bg-primary/8 ring-1 ring-inset ring-primary/70";
@@ -1963,8 +1977,13 @@ export function AppSidebar() {
     if (effects.unpinProject && pinnedProjectIdSet.has(effects.unpinProject)) {
       toggleProjectPin(effects.unpinProject);
     }
-    const applyOrders = () => {
-      for (const order of effects.orders) setManualOrder(order.scope, order.ids);
+    const applyOrders = (before?: Record<string, string[]>) => {
+      for (const order of effects.orders) {
+        setManualOrder(
+          order.scope,
+          before ? landedOrder(order, before[order.scope]) : order.ids,
+        );
+      }
       if (effects.switchSort === "chats" && chatSort !== "manual") {
         setChatSort("manual");
         toast.info(t("shell.organize.switchedToManual"));
@@ -1982,11 +2001,13 @@ export function AppSidebar() {
     const item = allChatItems.find((candidate) => candidate.id === move.chatId);
     if (!item) return;
     // The move can fail. Its slot in the new list and the pin it sheds both wait for it, so a
-    // failed move leaves nothing behind in the list the chat never reached.
+    // failed move leaves nothing behind in the list the chat never reached. A slow move can
+    // also be overtaken by a reorder of that list, so the slot is re-aimed once it lands.
     const unpinAfter = effects.unpinChat;
+    const ordersBefore = useSidebarOrganizationStore.getState().manualOrder;
     void moveChatToProject(item, move.projectId).then((moved) => {
       if (!moved) return;
-      applyOrders();
+      applyOrders(ordersBefore);
       if (unpinAfter) usePinnedChatsStore.getState().unpin(unpinAfter);
     });
   }

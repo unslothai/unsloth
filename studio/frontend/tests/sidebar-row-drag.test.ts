@@ -241,8 +241,13 @@ test("a chat filed into a folder on Manual order lands in the slot it dropped on
   assert.deepEqual(plan.cue, {
     line: { rowKey: rowKey(projectOrderScope("work"), "c2"), edge: "top" },
   });
+  // The slot travels with the snapshot, so a move that lands late can re-aim it.
   assert.deepEqual(plan.effects.orders, [
-    { scope: projectOrderScope("work"), ids: ["c1", "r1", "c2"] },
+    {
+      scope: projectOrderScope("work"),
+      ids: ["c1", "r1", "c2"],
+      place: { id: "r1", targetId: "c2", edge: "top" },
+    },
   ]);
 });
 
@@ -793,7 +798,7 @@ test("a drop that moves writes its slot and takes the pin off after the move", (
   );
   assert.match(
     APP_SIDEBAR,
-    /void moveChatToProject\(item, move\.projectId\)\.then\(\(moved\) => \{\n\s*if \(!moved\) return;\n\s*applyOrders\(\);\n\s*if \(unpinAfter\) usePinnedChatsStore\.getState\(\)\.unpin\(unpinAfter\);/,
+    /void moveChatToProject\(item, move\.projectId\)\.then\(\(moved\) => \{\n\s*if \(!moved\) return;\n\s*applyOrders\(ordersBefore\);\n\s*if \(unpinAfter\) usePinnedChatsStore\.getState\(\)\.unpin\(unpinAfter\);/,
   );
   // And nothing else in commitDrop writes an order on its own.
   const commit = APP_SIDEBAR.slice(
@@ -801,5 +806,19 @@ test("a drop that moves writes its slot and takes the pin off after the move", (
     APP_SIDEBAR.indexOf("function dropCueClass("),
   );
   assert.equal((commit.match(/setManualOrder\(/g) ?? []).length, 1);
+  // A slow move can be overtaken by a reorder of the list it lands in. The slot is re-aimed at
+  // the list as it stands then, not written from the snapshot taken at the drop.
+  assert.match(
+    APP_SIDEBAR,
+    /const ordersBefore = useSidebarOrganizationStore\.getState\(\)\.manualOrder;\n\s*void moveChatToProject\(item, move\.projectId\)\.then\(\(moved\) => \{\n\s*if \(!moved\) return;\n\s*applyOrders\(ordersBefore\);/,
+  );
+  assert.match(
+    APP_SIDEBAR,
+    /before \? landedOrder\(order, before\[order\.scope\]\) : order\.ids,/,
+  );
+  assert.match(
+    APP_SIDEBAR,
+    /if \(!order\.place \|\| !current \|\| current === before\) return order\.ids;\n\s*return placeIdAt\(current, order\.place\.id, order\.place\.targetId, order\.place\.edge\);/,
+  );
   assert.match(APP_SIDEBAR, /\): Promise<boolean> \{\n\s*if \(item\.projectId === projectId\) return true;/);
 });

@@ -117,6 +117,7 @@ export {
   type SidebarDropCue,
   type SidebarDropEffects,
   type SidebarDropOutcome,
+  type SidebarDropPlace,
   type SidebarDropPlan,
   type SidebarDropZone,
   type SidebarSection,
