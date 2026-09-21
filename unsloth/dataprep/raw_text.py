@@ -163,11 +163,17 @@ class RawTextDataLoader:
             # Tokenizer returned a count; build a range
             tokens = list(range(tokens))
 
-        if len(tokens) <= chunk_size:
+        eos_token_id = getattr(self.tokenizer, "eos_token_id", None)
+        # Count the final EOS in the budget without materializing all token IDs. chunk_size 1
+        # cannot hold a token and the EOS, so there is nothing to reserve there and the last
+        # chunk keeps the one-token overflow it has always had.
+        reserve_eos = return_tokenized and eos_token_id is not None and chunk_size > 1
+        num_tokens = len(tokens) + int(reserve_eos)
+
+        if num_tokens <= chunk_size:
             # Fits in a single chunk
             if return_tokenized:
                 tokens = tokens.tolist() if hasattr(tokens, "tolist") else list(tokens)
-                eos_token_id = getattr(self.tokenizer, "eos_token_id", None)
                 if eos_token_id is not None:
                     tokens.append(eos_token_id)
 
@@ -180,8 +186,8 @@ class RawTextDataLoader:
         chunks = []
         start_idx = 0
 
-        while start_idx < len(tokens):
-            end_idx = min(start_idx + chunk_size, len(tokens))
+        while start_idx < num_tokens:
+            end_idx = min(start_idx + chunk_size, num_tokens)
             chunk_tokens = tokens[start_idx:end_idx]
 
             if return_tokenized:
@@ -190,10 +196,8 @@ class RawTextDataLoader:
                 )
 
                 # EOS only at the true end: a full chunk mid-stride continues in the next chunk.
-                if end_idx == len(tokens):
-                    eos_token_id = getattr(self.tokenizer, "eos_token_id", None)
-                    if eos_token_id is not None:
-                        chunk_tokens_list.append(eos_token_id)
+                if end_idx == num_tokens and eos_token_id is not None:
+                    chunk_tokens_list.append(eos_token_id)
 
                 attention_mask = [1] * len(chunk_tokens_list)
 
@@ -201,16 +205,25 @@ class RawTextDataLoader:
             else:
                 chunk_text = self.tokenizer.decode(chunk_tokens, skip_special_tokens = True)
 
-                if end_idx == len(tokens):
+                if end_idx == num_tokens:
                     eos_token = self.tokenizer.eos_token if self.tokenizer.eos_token else ""
                     chunk_text += eos_token
 
                 chunks.append(chunk_text)
 
             # Advance with stride overlap
-            if end_idx == len(tokens):
+            if end_idx == num_tokens:
                 break
             start_idx += chunk_size - stride
+
+        # Stride 0 with a token count that is an exact multiple of chunk_size leaves the reserved
+        # EOS slot alone in a chunk of its own, which is the degenerate lone-EOS sample the
+        # empty-text guard above exists to avoid. Move the previous chunk's last token across:
+        # both stay inside the budget and the concatenation is unchanged.
+        if reserve_eos and len(chunks) > 1 and len(chunks[-1]["input_ids"]) == 1:
+            chunks[-1]["input_ids"].insert(0, chunks[-2]["input_ids"].pop())
+            for chunk in chunks[-2:]:
+                chunk["attention_mask"] = [1] * len(chunk["input_ids"])
 
         return chunks
 

@@ -816,3 +816,54 @@ if __name__ == "__main__":
     success = test_validate_dataset_streams_instead_of_materialising_columns() and success
     success = test_validate_dataset_reports_zero_min_length_when_nothing_has_content() and success
     sys.exit(0 if success else 1)
+
+
+def _eos_tokenizer():
+    class Tokenizer:
+        eos_token_id = 99
+        eos_token = "</s>"
+
+        def __call__(self, text, **kwargs):
+            return {"input_ids": [[int(word) for word in text.split()]]}
+
+    return Tokenizer()
+
+
+def test_tokenized_chunks_reserve_space_for_the_final_eos():
+    for size in (2, 4):
+        for stride in range(size):
+            loader = RawTextDataLoader(_eos_tokenizer(), chunk_size = size, stride = stride)
+            # 2 * size and 3 * size are the exact multiples: with stride 0 the content fills
+            # whole chunks and the reserved EOS slot is left over on its own.
+            for count in (size - 1, size, 2 * size - stride, 2 * size, 3 * size):
+                if count == 0:
+                    continue
+                chunks = loader.chunk_text(" ".join(map(str, range(count))))
+                assert all(len(chunk["input_ids"]) <= size for chunk in chunks)
+                # A chunk holding nothing but the EOS is a one-token training row, the same
+                # thing the empty-text guard in smart_chunk_text exists to avoid.
+                assert all(chunk["input_ids"] != [99] for chunk in chunks)
+                assert all(
+                    len(chunk["attention_mask"]) == len(chunk["input_ids"]) for chunk in chunks
+                )
+                assert chunks[-1]["input_ids"][-1] == 99
+                restored = list(chunks[0]["input_ids"])
+                for chunk in chunks[1:]:
+                    restored.extend(chunk["input_ids"][stride:])
+                assert restored == list(range(count)) + [99]
+                dataset = loader.create_causal_dataset(chunks)
+                assert dataset["labels"] == dataset["input_ids"]
+
+
+def test_chunk_size_one_keeps_the_final_eos_overflow():
+    # A one-token chunk cannot hold a token and the EOS, so nothing is reserved there and the
+    # last chunk stays two long, as it has always been. Reserving would only move the problem:
+    # it would hand back a chunk holding nothing but the EOS.
+    loader = RawTextDataLoader(_eos_tokenizer(), chunk_size = 1, stride = 0)
+    for count in (1, 2, 3):
+        chunks = loader.chunk_text(" ".join(map(str, range(count))))
+        assert all(chunk["input_ids"] != [99] for chunk in chunks)
+        assert all(len(chunk["attention_mask"]) == len(chunk["input_ids"]) for chunk in chunks)
+        assert chunks[-1]["input_ids"] == [count - 1, 99]
+        restored = [token for chunk in chunks for token in chunk["input_ids"]]
+        assert restored == list(range(count)) + [99]
