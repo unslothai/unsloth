@@ -246,6 +246,9 @@ def test_the_main_build_is_satisfied_without_touching_the_network(monkeypatch):
     monkeypatch.delenv("UNSLOTH_DIFFUSERS_MAIN", raising = False)
     monkeypatch.setattr(module, "_has_working_git", lambda: True)
     monkeypatch.setattr(module, "_direct_reference_is_installed", lambda *a, **k: True)
+    # Provenance AND payload: residency needs both, and a test environment with no installed
+    # Diffusers payload would otherwise fall through to the failing stub below and blame the step.
+    monkeypatch.setattr(module, "_payload_recorded_intact", lambda *a, **k: True)
     monkeypatch.setattr(module, "_progress", lambda *a, **k: None)
     monkeypatch.setattr(module, "_note", lambda *a, **k: None)
     monkeypatch.setattr(
@@ -519,5 +522,43 @@ def test_a_damaged_main_build_is_repaired_rather_than_believed(monkeypatch):
     monkeypatch.setattr(
         module, "pip_install_try", lambda *a, req = None, **k: (attempted.append(req), True)[1]
     )
+    module._diffusers_main_step()
+    assert attempted and attempted[0].name == "diffusers-main.txt"
+
+
+def test_python_39_does_not_clone_a_build_it_can_never_install(monkeypatch):
+    """diffusers-pin.txt still names 0.36.0 below 3.10, so 3.9 is a supported install, and main
+    declares requires-python >= 3.10. Unmarked, pip clones the repository and only then rejects
+    it, and since the build can never become resident that clone repeats on every update."""
+    module = _probe_module("install_python_stack_probe8")
+    monkeypatch.delenv("UNSLOTH_DIFFUSERS_MAIN", raising = False)
+    monkeypatch.setattr(
+        module, "pip_install_try", lambda *a, **k: pytest.fail("cloned main on python 3.9")
+    )
+    monkeypatch.setattr(module, "_has_working_git", lambda: True)
+    monkeypatch.setattr(module, "_note", lambda *a, **k: None)
+
+    class _V(tuple):
+        pass
+
+    monkeypatch.setattr(module.sys, "version_info", _V((3, 9, 21)))
+    progressed: list = []
+    monkeypatch.setattr(module, "_progress", lambda label, *a, **k: progressed.append(label))
+    module._diffusers_main_step()
+    # The slot is still spent: the denominator is fixed before the interpreter is consulted.
+    assert len(progressed) == 1 and "python 3.10" in progressed[0], progressed
+
+    # And the release pin is NOT superseded there, so 3.9 keeps getting its 0.36.0.
+    monkeypatch.setattr(module, "_direct_reference_is_installed", lambda *a, **k: False)
+    assert not (module._diffusers_main_requested() and module._diffusers_main_resident())
+
+    # 3.10 is unaffected.
+    attempted: list = []
+    monkeypatch.setattr(module.sys, "version_info", _V((3, 10, 0)))
+    monkeypatch.setattr(module, "_payload_recorded_intact", lambda *a, **k: False)
+    monkeypatch.setattr(
+        module, "pip_install_try", lambda *a, req = None, **k: (attempted.append(req), True)[1]
+    )
+    monkeypatch.setattr(module, "_record_step", lambda *a, **k: None)
     module._diffusers_main_step()
     assert attempted and attempted[0].name == "diffusers-main.txt"

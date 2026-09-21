@@ -640,6 +640,11 @@ _TRUSTED_NON_GGUF_REPOS = frozenset(
         "qwen/qwen-image",
         "qwen/qwen-image-2512",
         "qwen/qwen-image-edit-2511",
+        # Qwen-Image-2.1: the family's own base_repo, and a family whose base is not listed here is
+        # not a family at all. Detection resolves it, the version gate passes once the pinned main
+        # build is in, and then validate_load_request refuses it as a non-unsloth repo before the
+        # pipeline is ever built.
+        "qwen/qwen-image-2.1",
         # Krea 2: assembled per-component. Turbo = inference; Raw = the LoRA training base.
         "krea/krea-2-turbo",
         "krea/krea-2-raw",

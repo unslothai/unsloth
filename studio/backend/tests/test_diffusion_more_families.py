@@ -617,3 +617,49 @@ def test_flux2_gguf_base_mismatch_check_fails_open(tmp_path):
     assert_flux2_gguf_matches_base(
         detect_family("unsloth/FLUX.1-dev-GGUF"), "black-forest-labs/FLUX.2-klein-4B", empty
     )
+
+
+def test_qwen_image_21_is_reachable_end_to_end_not_just_detectable():
+    """A family whose base repo is not trusted is not a family at all.
+
+    Detection resolving is the easy half and was never the problem: the load is refused several
+    layers later, by a check that reads a different list, so the entry shipped looking complete and
+    every non-GGUF pick of it died with "restricted to unsloth/* repos". This asserts the whole
+    chain the picker actually walks, which is why it is one test rather than four.
+    """
+    from core.inference.diffusion_families import (
+        _PIPELINE_MIN_DIFFUSERS,
+        detect_family,
+        detect_family_by_pipeline_class,
+    )
+
+    fam = detect_family("Qwen/Qwen-Image-2.1")
+    assert fam is not None and fam.name == "qwen-image-2.1"
+    # Not swallowed by the generic family, and not swallowing it either.
+    assert detect_family("Qwen/Qwen-Image").name == "qwen-image"
+    assert detect_family("Qwen/Qwen-Image-2512").name == "qwen-image"
+    for alias in ("qwen_image_21", "qwenimage21", "qwen-image-21"):
+        assert detect_family("", override = alias) is fam, alias
+    # The class really is what the published model_index.json names.
+    assert detect_family_by_pipeline_class("QwenImage21Pipeline") is fam
+    assert fam.pipeline_class in _PIPELINE_MIN_DIFFUSERS
+
+    # The gate that made the entry inert. _is_trusted_diffusion_repo is asked of the base repo by
+    # validate_load_request BEFORE anything is built, so a family base missing from that list is
+    # unloadable however correct the rest of the entry is.
+    assert _is_trusted_diffusion_repo(fam.base_repo), (
+        f"{fam.base_repo} is the family's own base and is not in _TRUSTED_NON_GGUF_REPOS, so "
+        "every non-GGUF pick of this family is refused before the pipeline is built"
+    )
+
+
+def test_every_image_family_base_repo_is_loadable():
+    """The general form of the above, so the next family cannot ship inert the same way."""
+    from core.inference.diffusion_families import _FAMILIES
+
+    unreachable = [
+        f.name for f in _FAMILIES if f.base_repo and not _is_trusted_diffusion_repo(f.base_repo)
+    ]
+    assert (
+        not unreachable
+    ), f"these families declare a base repo that validate_load_request refuses: {unreachable}"
