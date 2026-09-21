@@ -1,24 +1,37 @@
 # SPDX-License-Identifier: AGPL-3.0-only
-"""MLX inference backend for Apple Silicon.
+"""MLX inference backend for Apple Silicon. Drop-in replacement for InferenceBackend, same
+interface, using mlx-lm/mlx-vlm instead of torch/transformers for model loading and generation."""
 
-Drop-in replacement for InferenceBackend — same interface, uses mlx-lm/mlx-vlm
-instead of torch/transformers for model loading and generation.
-"""
-
+import copy
+import difflib
+import hashlib
+import importlib
 import os
 import re
 import sys
 import threading
-from contextlib import contextmanager
+import time
+from collections import OrderedDict
+from contextlib import ExitStack, closing, contextmanager, nullcontext
 from typing import Optional, Generator
 from core.inference.message_content import content_to_text
+from core.inference.native_tool_tokens import (
+    NativeToolTokenDecoder,
+    closes_an_open_envelope,
+    decoder_preserves_token,
+    reasoning_control_tokens,
+    stop_token_text,
+)
 from core.inference.runtime_context import (
     MAX_REQUESTABLE_CONTEXT,
+    UNSET_GENERATION_BUDGET,
+    generation_budget_for_window,
     runtime_context_length,
 )
 from core.inference.chat_template_helpers import (
     # Aliased to this module's historic names; bodies moved to the shared helper (#10092).
     count_structured_images as _count_vlm_images,
+    count_structured_videos as _count_vlm_videos,
     detect_reasoning_channel_markers,
     make_reasoning_normalizer,
     markup_for_tokenizer,
@@ -31,10 +44,508 @@ from core.inference.chat_template_helpers import (
     trailing_assistant_text,
     vlm_prompt_issue as _vlm_prompt_issue,
 )
+from core.inference.mcp_images import (
+    image_marker_parts,
+    pixels_in_marker_order,
+    top_up_image_markers,
+    trim_image_turns,
+)
 from utils.models.model_config import is_audio_input_type
 from loggers import get_logger
 
 logger = get_logger(__name__)
+
+
+# Prefix reuse for mlx-vlm generation, owned by Studio. A forward is not shape-invariant, so a reused turn answers as
+# an unreused one only when both chunk the same rows: every request prefills on mlx-vlm's own grid and snapshots where
+# a chunk of it ends, counting forwards. Driven through public kwargs only: prompt_cache, prompt_cache_state,
+# prefill_step_size.
+
+# mlx-vlm's default step, for when it cannot be read: a prompt no longer than it has no boundary.
+VLM_PREFILL_STEP = 2048
+VLM_PROMPT_CACHE_ENTRIES = 6
+
+
+def vlm_prefill_step():
+    """mlx-vlm's own step, so an unreused request prefills as mlx-vlm does. It divides every
+    boundary, so a step no grid can be built on falls back here rather than reaching a request."""
+    try:
+        from mlx_vlm.generate.common import DEFAULT_PREFILL_STEP_SIZE
+        step = int(DEFAULT_PREFILL_STEP_SIZE)
+    except Exception:
+        return VLM_PREFILL_STEP
+    return step if step > 0 else VLM_PREFILL_STEP
+
+
+def shape_stable_prefix(
+    token_count,
+    origin = 0,
+    step = VLM_PREFILL_STEP,
+):
+    """Rows whole chunks produced from ``origin``; mlx-vlm holds the last token back."""
+    rows = token_count - 1
+    if rows < origin:
+        return 0
+    return origin + (rows - origin) // step * step
+
+
+def _is_cache(value):
+    """Every mlx-vlm cache class carries ``state``; read off the type so no property runs."""
+    return hasattr(value, "__dict__") and hasattr(type(value), "state")
+
+
+def _is_opaque_cache(value):
+    """A cache whose fields this cannot reach: it carries ``state`` but keeps its attributes
+    somewhere ``vars`` does not see, as a ``__slots__`` layout does. Every class mlx-vlm ships
+    today is an ordinary one; a future one that is not must stop the copy rather than be handed
+    back as itself, which would share it."""
+    return not hasattr(value, "__dict__") and hasattr(type(value), "state")
+
+
+def _copy_value(value, mx):
+    if isinstance(value, mx.array):
+        return value + 0
+    if isinstance(value, list):
+        return [_copy_value(item, mx) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_copy_value(item, mx) for item in value)
+    if isinstance(value, dict):
+        return {key: _copy_value(item, mx) for key, item in value.items()}
+    if _is_cache(value):
+        duplicate = copy.copy(value)
+        for name, item in list(vars(duplicate).items()):
+            setattr(duplicate, name, _copy_value(item, mx))
+        return duplicate
+    if _is_opaque_cache(value):
+        raise TypeError(f"{type(value).__name__} cannot be copied")
+    return value
+
+
+def _arrays(value, mx):
+    if isinstance(value, mx.array):
+        yield value
+    elif isinstance(value, (list, tuple)):
+        for item in value:
+            yield from _arrays(item, mx)
+    elif isinstance(value, dict):
+        for item in value.values():
+            yield from _arrays(item, mx)
+    elif _is_cache(value):
+        for item in vars(value).values():
+            yield from _arrays(item, mx)
+
+
+def _release_value(value, mx):
+    if isinstance(value, mx.array):
+        return None
+    if isinstance(value, list):
+        value[:] = [_release_value(item, mx) for item in value]
+    elif isinstance(value, tuple):
+        return tuple(_release_value(item, mx) for item in value)
+    elif isinstance(value, dict):
+        for key, item in list(value.items()):
+            value[key] = _release_value(item, mx)
+    elif _is_cache(value):
+        for name, item in list(vars(value).items()):
+            setattr(value, name, _release_value(item, mx))
+    return value
+
+
+def release_cache_entries(entries):
+    import mlx.core as mx
+    entries[:] = [_release_value(entry, mx) for entry in entries]
+
+
+def copy_cache_entries(entries):
+    """Copies, object-shallow and array-deep, evaluated so they own their data."""
+    import mlx.core as mx
+
+    for entry in entries:
+        if not (_is_cache(entry) or isinstance(entry, (list, tuple))):
+            raise TypeError(f"{type(entry).__name__} cannot be copied")
+    copies = [_copy_value(entry, mx) for entry in entries]
+    mx.eval(list(_arrays(copies, mx)))
+    return copies
+
+
+def cache_entries_nbytes(entries):
+    import mlx.core as mx
+    return sum(array.nbytes for array in _arrays(entries, mx))
+
+
+def cache_entries_offset(entries):
+    """Tokens the entries hold, else None: only ``offset`` counts prompt rows."""
+    for entry in entries:
+        offset = getattr(entry, "offset", None)
+        if isinstance(offset, int):
+            return offset
+        nested = vars(entry).values() if _is_cache(entry) else entry
+        if isinstance(nested, (list, tuple)) or _is_cache(entry):
+            found = cache_entries_offset(
+                [item for item in nested if _is_cache(item) or isinstance(item, (list, tuple))]
+            )
+            if found is not None:
+                return found
+    return None
+
+
+def media_prefix_end(token_ids, media_token_ids):
+    """Rows through the last media placeholder, 0 if none: what mlx-vlm resumes past."""
+    media = {int(token) for token in media_token_ids}
+    if not media:
+        return 0
+    for index in range(len(token_ids) - 1, -1, -1):
+        if int(token_ids[index]) in media:
+            return index + 1
+    return 0
+
+
+def _chunk_rows(args, kwargs):
+    for chunk in (kwargs.get("inputs_embeds"), kwargs.get("inputs"), args[0] if args else None):
+        shape = getattr(chunk, "shape", None)
+        if shape and len(shape) > 1:
+            return shape[1]
+    return 0
+
+
+def _place_per_layer_inputs(kwargs, rows, start):
+    """Slice ``per_layer_inputs`` to this forward's own rows: mlx-vlm computes it for the whole
+    uncached prompt and the model slices it at an offset a resume shifts. A single-token forward
+    gets none and computes its own, as the reference model does."""
+    inputs = kwargs.get("per_layer_inputs")
+    shape = getattr(inputs, "shape", None)
+    if not shape:
+        return
+    if rows == 1:
+        kwargs.pop("per_layer_inputs")
+    elif rows > 1 and shape[1] != rows and 0 <= start and start + rows <= shape[1]:
+        kwargs["per_layer_inputs"] = inputs[:, start : start + rows]
+
+
+class _ForwardRecord:
+    __slots__ = ("forwards", "capture_at", "snapshot", "resume_offset", "on_resume")
+
+    def __init__(self):
+        self.forwards = 0
+        self.capture_at = 0
+        self.snapshot = None
+        self.resume_offset = None
+        self.on_resume = None
+
+
+_RECORDING_CLASSES = {}
+
+
+def _prompt_wide_position_ids(args, kwargs):
+    """Whether ``position_ids`` spans more than the chunk being fed: mlx-vlm primes mRoPE
+    prompt-wide and not every family slices the kwarg (glm4v feeds it through as is), so a
+    prompt-wide one is withheld for the model's own primed state."""
+    shape = getattr(kwargs.get("position_ids"), "shape", None)
+    if not shape:
+        return False
+    chunk = kwargs.get("inputs", args[0] if args else None)
+    chunk_shape = getattr(chunk, "shape", None) or getattr(
+        kwargs.get("inputs_embeds"), "shape", None
+    )
+    return bool(chunk_shape) and len(chunk_shape) > 1 and shape[-1] != chunk_shape[1]
+
+
+def _recording_class(base):
+    """``base`` with a forward that counts itself and copies the cache on cue."""
+    cls = _RECORDING_CLASSES.get(base)
+    if cls is not None:
+        return cls
+
+    def __call__(self, *args, **kwargs):
+        # A plain attribute: nn.Module stores dicts and lists in its module tree.
+        record = self.__dict__.get("_studio_forward_record")
+        cache = kwargs.get("cache")
+        if record is not None:
+            offset = cache_entries_offset(cache) if cache is not None else None
+            if record.resume_offset is None:
+                record.resume_offset = offset or 0
+                if record.on_resume is not None:
+                    record.on_resume(record.resume_offset)
+            # Only after a resume: a Qwen VL model fed no positions reuses the previous request's.
+            if record.resume_offset and _prompt_wide_position_ids(args, kwargs):
+                kwargs.pop("position_ids")
+            _place_per_layer_inputs(
+                kwargs, _chunk_rows(args, kwargs), (offset or 0) - record.resume_offset
+            )
+        # As the next forward begins, not as the boundary one returns: generate_step converts the cache between the
+        # two (KV quantization).
+        if (
+            record is not None
+            and record.capture_at
+            and record.forwards == record.capture_at
+            and cache is not None
+        ):
+            try:
+                record.snapshot = copy_cache_entries(cache)
+            except Exception as exc:
+                logger.info("MLX VLM prompt cache: cache layout not copied (%s)", exc)
+        output = base.__call__(self, *args, **kwargs)
+        if record is not None:
+            record.forwards += 1
+        return output
+
+    cls = type(f"Recording{base.__name__}", (base,), {"__call__": __call__, "_studio_base": base})
+    _RECORDING_CLASSES[base] = cls
+    return cls
+
+
+def _offset_aware_policy(host):
+    """``chunked_prefill_policy`` of ``host`` fed only the token types past the cache: with the
+    vision block already there, the suffix is text and may chunk."""
+    base_policy = type(host).chunked_prefill_policy
+
+    def policy(
+        *,
+        prompt_cache = None,
+        prefill_kwargs = None,
+        **rest,
+    ):
+        offset = cache_entries_offset(prompt_cache) if prompt_cache is not None else 0
+        if offset and prefill_kwargs:
+            prefill_kwargs = dict(prefill_kwargs)
+            for key in ("mm_token_type_ids", "token_type_ids"):
+                shape = getattr(prefill_kwargs.get(key), "shape", None)
+                if shape and len(shape) > 1 and shape[1] > offset:
+                    prefill_kwargs[key] = prefill_kwargs[key][:, offset:]
+        return base_policy(host, prompt_cache = prompt_cache, prefill_kwargs = prefill_kwargs, **rest)
+
+    return policy
+
+
+class RecordingForward:
+    def __init__(self, language_model):
+        self._language_model = language_model
+        self.record = _ForwardRecord()
+        self._base = None
+
+    def __enter__(self):
+        model = self._language_model
+        base = getattr(type(model), "_studio_base", type(model))
+        self._base = base
+        model.__class__ = _recording_class(base)
+        model.__dict__["_studio_forward_record"] = self.record
+        return self
+
+    def __exit__(self, *_exc):
+        model = self._language_model
+        model.__dict__.pop("_studio_forward_record", None)
+        model.__class__ = self._base
+        return False
+
+    def unrecorded(self, *args, **kwargs):
+        """A forward the record does not count: rows prepared outside the generation."""
+        return self._base.__call__(self._language_model, *args, **kwargs)
+
+
+class VLMPromptSnapshotStore:
+    """Boundary snapshots, most recently used last, under a byte budget."""
+
+    def __init__(
+        self,
+        max_bytes,
+        max_entries = VLM_PROMPT_CACHE_ENTRIES,
+    ):
+        self._max_bytes = max_bytes
+        self._max_entries = max_entries
+        self._entries = OrderedDict()
+        self.nbytes = 0
+
+    def __len__(self):
+        return len(self._entries)
+
+    def lookup(self, key, token_ids, limit):
+        """Longest stored prefix of ``token_ids`` under ``key`` ending by ``limit``."""
+        best = None
+        for (stored_key, prefix), (entries, _nbytes) in self._entries.items():
+            n = len(prefix)
+            if stored_key != key or n == 0 or n > limit:
+                continue
+            if best is not None and n <= len(best[0]):
+                continue
+            if tuple(token_ids[:n]) == prefix:
+                best = (prefix, entries)
+        if best is None:
+            return None, 0
+        self._entries.move_to_end((key, best[0]))
+        return best[1], len(best[0])
+
+    def store(self, key, prefix_ids, entries):
+        nbytes = cache_entries_nbytes(entries)
+        if nbytes > self._max_bytes:
+            logger.debug(
+                "MLX VLM prompt cache: skipping %.2f GB snapshot over the %.2f GB budget",
+                nbytes / 1e9,
+                self._max_bytes / 1e9,
+            )
+            return False
+        item = (key, tuple(prefix_ids))
+        self.discard(item)
+        while self._entries and (
+            self.nbytes + nbytes > self._max_bytes or len(self._entries) >= self._max_entries
+        ):
+            self.discard(next(iter(self._entries)))
+        self._entries[item] = (entries, nbytes)
+        self.nbytes += nbytes
+        return True
+
+    def discard(self, item):
+        dropped = self._entries.pop(item, None)
+        if dropped is not None:
+            self.nbytes -= dropped[1]
+
+    def retain(self, item):
+        for other in [other for other in self._entries if other != item]:
+            self.discard(other)
+
+    def clear(self):
+        self._entries.clear()
+        self.nbytes = 0
+
+
+class VLMPromptCacheSession:
+    """The ``prompt_cache_state`` one generation hands to mlx-vlm: ``find_prefix_length`` picks the
+    snapshot to resume from, swaps ``cache`` to it and arms the capture, and ``finish`` stores
+    it. ``releases_unserved`` frees the rest, the headroom a media pass needs. A ``media_block``
+    prefills the rows through the last vision token for models that cannot chunk them, becoming
+    the grid's origin, and ``policy_hosts`` are the models whose ``chunked_prefill_policy`` would
+    then refuse to chunk the suffix."""
+
+    def __init__(
+        self,
+        store,
+        key,
+        language_model,
+        make_cache,
+        media_token_ids = (),
+        releases_unserved = False,
+        media_block = None,
+        policy_hosts = (),
+        step = VLM_PREFILL_STEP,
+    ):
+        self.step = step
+        self._store = store
+        self._key = key
+        self._media_token_ids = tuple(media_token_ids)
+        self._releases_unserved = releases_unserved
+        self.media_block = media_block
+        self._origin = 0
+        # Produced for this request: prefill work rather than reuse, for the stats.
+        self.produced_tokens = 0
+        self.produced_seconds = 0.0
+        self._policy_hosts = tuple(policy_hosts)
+        self._forward = RecordingForward(language_model)
+        self.cache = make_cache()
+        self.reused_tokens = 0
+        self._token_ids = None
+        self._media_end = 0
+
+    def __enter__(self):
+        self._forward.__enter__()
+        self._patched_hosts = [
+            host for host in self._policy_hosts if hasattr(type(host), "chunked_prefill_policy")
+        ]
+        for host in self._patched_hosts:
+            host.chunked_prefill_policy = _offset_aware_policy(host)
+        return self
+
+    def __exit__(self, *exc):
+        try:
+            for host in self._patched_hosts:
+                # policy_hosts is (model, language_model), which name one object twice when the wrapper exposes none,
+                # so unpatch idempotently rather than del twice.
+                host.__dict__.pop("chunked_prefill_policy", None)
+        finally:
+            # The class goes back regardless: one left wrapped serves every later request.
+            self._forward.__exit__(*exc)
+        return False
+
+    def find_prefix_length(self, token_ids):
+        token_ids = list(token_ids)
+        self._token_ids = token_ids
+        origin = self.media_block.rows(token_ids) if self.media_block is not None else 0
+        self._origin = origin
+        boundary = shape_stable_prefix(len(token_ids), origin, self.step)
+        self._media_end = media_prefix_end(token_ids, self._media_token_ids)
+        record = self._forward.record
+        if boundary < self._media_end:
+            # Inside the media span: the prompt has to grow past it first.
+            self._keep(None)
+            return 0
+        entries, prefix_len = self._store.lookup(self._key, token_ids, boundary)
+        if entries is None and origin:
+            # Produced here instead, in the one square forward the vision tokens need.
+            self._keep(None)
+            started = time.perf_counter()
+            try:
+                entries, prefix_len = self.media_block.prefill(self._forward, origin), origin
+                self.produced_tokens = origin
+            except Exception as exc:
+                # Prefilled by mlx-vlm as before, off this grid: no capture.
+                logger.info("MLX VLM prompt cache: media block not prefilled (%s)", exc)
+                self._keep(None)
+                return 0
+            finally:
+                # Spent either way, and outside mlx-vlm's prompt timer.
+                self.produced_seconds = time.perf_counter() - started
+        if entries is not None:
+            # The copy is taken at the first forward, once mlx-vlm has resumed.
+            self.cache = entries
+            record.on_resume = self._detach_served
+        self._keep((self._key, tuple(token_ids[:prefix_len])) if prefix_len else None)
+        record.capture_at = (boundary - prefix_len) // self.step
+        self.reused_tokens = prefix_len
+        return prefix_len
+
+    def _keep(self, item):
+        # At lookup, before the media pass a declined request starts.
+        if self._releases_unserved:
+            self._store.retain(item)
+
+    def _detach_served(self, offset):
+        prefix_ids = self._token_ids[: self.reused_tokens]
+        if offset != self.reused_tokens:
+            # Declined: freed now, before the fresh-cache request's media pass evaluates.
+            self._store.discard((self._key, tuple(prefix_ids)))
+            try:
+                release_cache_entries(self.cache)
+            except Exception as exc:
+                logger.info("MLX VLM prompt cache: declined snapshot not released (%s)", exc)
+            return
+        # About to be advanced by this generation: the store keeps a copy.
+        try:
+            copy = copy_cache_entries(self.cache)
+        except Exception as exc:
+            # Costs the next turn its reuse, never this answer.
+            logger.info("MLX VLM prompt cache: served snapshot not kept (%s)", exc)
+            self._store.discard((self._key, tuple(prefix_ids)))
+            return
+        self._store.store(self._key, prefix_ids, copy)
+
+    def update(self, _token_ids, _cache):
+        """mlx-vlm's after-generation hook; ``finish`` stores, as it also runs on a consumer that
+        stops reading early."""
+
+    def finish(self):
+        snapshot = self._forward.record.snapshot
+        if snapshot is None or self._token_ids is None:
+            return False
+        # Read off the snapshot: a declined offer captures an earlier boundary.
+        held = cache_entries_offset(snapshot)
+        if (
+            not held
+            or held < self._origin
+            or (held - self._origin) % self.step
+            or held < self._media_end
+            or held > shape_stable_prefix(len(self._token_ids), self._origin, self.step)
+        ):
+            logger.debug("MLX VLM prompt cache: snapshot holds %r rows, not stored", held)
+            return False
+        return self._store.store(self._key, self._token_ids[:held], snapshot)
 
 
 def _mlx_adapter_modules(model):
@@ -52,6 +563,97 @@ def _mlx_adapter_modules(model):
         else:
             adapters.append((path, module, base))
     return adapters, unsupported
+
+
+_MLX_FUSION_UNAVAILABLE = set()
+
+
+def _mlx_fusion_unavailable(name, error):
+    """Log once per cause: this is a per-request path, so repeating would flood."""
+    key = (name, type(error).__name__, str(error))
+    if key not in _MLX_FUSION_UNAVAILABLE:
+        _MLX_FUSION_UNAVAILABLE.add(key)
+        logger.warning(
+            "Optional MLX fusion %s is unavailable, continuing with native inference: %s: %s",
+            name,
+            type(error).__name__,
+            error,
+        )
+
+
+def _mlx_inference_patch(name):
+    """An optional Zoo fusion helper, or None. Never raises: these are a throughput
+    optimization, so no Zoo state may fail a load or a request that worked without it."""
+    try:
+        patches = importlib.import_module("unsloth_zoo.mlx.inference")
+    except ModuleNotFoundError as error:
+        if error.name != "unsloth_zoo.mlx.inference":
+            _mlx_fusion_unavailable(name, error)  # a transitive import inside Zoo failed
+        return None
+    except Exception as error:
+        # A partial or skewed install raises ImportError rather than ModuleNotFoundError.
+        _mlx_fusion_unavailable(name, error)
+        return None
+    return getattr(patches, name, None)
+
+
+@contextmanager
+def _mlx_optional_fusion(name, model):
+    """Hold an optional Zoo fusion scope, or yield the model unfused. Guard ENTRY only:
+    an open scope must unwind through the ExitStack as an unguarded `with` would, or an
+    interrupted generation stops restoring the module tree."""
+    patch = _mlx_inference_patch(name)
+    with ExitStack() as scope:
+        active = model
+        if patch is not None:
+            try:
+                entered = scope.enter_context(patch(model))
+            except Exception as error:
+                _mlx_fusion_unavailable(name, error)
+            else:
+                if entered is not None:
+                    active = entered
+        yield active
+
+
+def _mlx_fused_moe_gate_up(model):
+    return _mlx_optional_fusion("fused_moe_gate_up", model)
+
+
+def _mlx_fused_decode_conv_silu(model):
+    return _mlx_optional_fusion("fused_decode_conv_silu", model)
+
+
+def _mlx_fused_residual_norm(model):
+    return _mlx_optional_fusion("fused_residual_norm", model)
+
+
+def _mlx_fused_moe_router(model):
+    return _mlx_optional_fusion("fused_moe_router", model)
+
+
+def _vlm_generation_context():
+    import mlx.core as mx
+    from mlx_vlm.generate import generation_stream
+    return mx.stream(generation_stream)
+
+
+def _iter_vlm_responses(responses):
+    iterator = iter(responses)
+    try:
+        while True:
+            # Token views outside VLM's inner step must use its generation stream too.
+            with _vlm_generation_context():
+                try:
+                    response = next(iterator)
+                except StopIteration:
+                    return
+            yield response
+    finally:
+        close = getattr(iterator, "close", None)
+        if close is not None:
+            with _vlm_generation_context():
+                close()
 
 
 @contextmanager
@@ -95,8 +697,8 @@ def _temporary_mlx_adapter_state(model, use_adapter):
 
 
 def _mlx_vlm_model_config(model):
-    """Return the loaded MLX model config and its type, preferring whichever of
-    config / _config actually carries a model_type."""
+    """Return the loaded MLX model config and its type, preferring whichever of config / _config
+    actually carries a model_type."""
 
     def _model_type(cfg):
         return cfg.get("model_type") if isinstance(cfg, dict) else getattr(cfg, "model_type", None)
@@ -113,8 +715,8 @@ def _mlx_vlm_model_config(model):
     return (configs[0] if configs else None), None
 
 
-# Matched on the context-bearing term, not a field list: mlx-lm alone spells it four ways.
-# max_length is a generation default and n_sequences a batch count, so neither qualifies.
+# Matched on the context-bearing term, not a field list: mlx-lm alone spells it four ways. max_length is a generation
+# default and n_sequences a batch count, so neither qualifies.
 _MLX_CONTEXT_KEY = re.compile(
     r"(?:position(?:s|_embeddings)|(?:^|_)ctx|context_len(?:gth)?"
     r"|seq(?:uence)?_len(?:gth)?|model_max_length)$"
@@ -161,12 +763,10 @@ def _positive_int(value):
 
 
 def mlx_native_context_length(model):
-    """The window the model was trained for, or None when it isn't readable.
-
-    The widest plausible length across every config wins, so a stub text config the
-    blocks were never built from cannot shorten the window the weights support --
-    mlx-vlm's Phi-3-V carries a 4096 text config beside the 131072 its attention uses.
-    """
+    """The window the model was trained for, or None when it isn't readable. The widest plausible
+    length across every config wins, so a stub text config the blocks were never built from
+    cannot shorten the window the weights support -- mlx-vlm's Phi-3-V carries a 4096 text config
+    beside the 131072 its attention uses."""
     lengths = []
     for cfg in _mlx_config_candidates(model):
         try:
@@ -185,8 +785,8 @@ def mlx_native_context_length(model):
 
 
 def _ascii_registry_key(value):
-    """An mlx-vlm registry key lowered within ASCII, else None. Not `casefold`:
-    it folds non-ASCII onto ASCII, so "ſmolvlm" would reach `smolvlm`."""
+    """An mlx-vlm registry key lowered within ASCII, else None. Not `casefold`: it folds non-ASCII
+    onto ASCII, so "ſmolvlm" would reach `smolvlm`."""
     if not isinstance(value, str) or not value.isascii():
         return None
     return value.lower()
@@ -200,13 +800,11 @@ def _render_registered_vlm_prompt(
     num_audios = 0,
     continue_final_message = False,
 ):
-    """Render through mlx-vlm when it declares a formatter for this model.
-
-    With *continue_final_message* the trailing assistant turn is dropped from the render
-    and appended as text, resuming the partial rather than opening a fresh turn. That text
-    comes from the SWEPT messages: a raw partial could close the turn or open another
-    role instead of resuming (#7066).
-    """
+    """Render through mlx-vlm when it declares a formatter for this model. With
+    *continue_final_message* the trailing assistant turn is dropped from the render and appended
+    as text, resuming the partial rather than opening a fresh turn. That text comes from the
+    SWEPT messages: a raw partial could close the turn or open another role instead of resuming
+    (#7066)."""
     from mlx_vlm import prompt_utils
 
     config, model_type = _mlx_vlm_model_config(model)
@@ -214,8 +812,8 @@ def _render_registered_vlm_prompt(
         return None
     model_config = getattr(prompt_utils, "MODEL_CONFIG", {})
     if model_type not in model_config:
-        # Registry keys are ASCII, so fold in ASCII: casefold would route
-        # "ſmolvlm" into the unrelated `smolvlm` renderer.
+        # Registry keys are ASCII, so fold in ASCII: casefold would route "ſmolvlm" into the unrelated `smolvlm`
+        # renderer.
         folded = _ascii_registry_key(model_type)
         matches = (
             [
@@ -230,9 +828,8 @@ def _render_registered_vlm_prompt(
         if len(matches) != 1:
             return None
         canonical = matches[0]
-        # Preserve the checkpoint's config object. The prompt helper only needs
-        # its own canonical routing key, and mutating the loaded model would make
-        # later capability and export logic observe a value it never published.
+        # Preserve the checkpoint's config object. The prompt helper only needs its own canonical routing key, and
+        # mutating the loaded model would make later capability and export logic observe a value it never published.
         config = dict(config) if isinstance(config, dict) else dict(config.__dict__)
         config["model_type"] = canonical
 
@@ -260,7 +857,179 @@ _AUDIO_PROBE_MESSAGES = [{"role": "user", "content": "audio"}]
 _IMAGE_PROBE_MESSAGES = [
     {"role": "user", "content": [{"type": "image"}, {"type": "text", "text": "hi"}]}
 ]
+# A pair differing only in image count, so a diff isolates the marker; the question is distinctive.
+_MULTI_IMAGE_PROBE_TEXT = "what is in these"
+_MULTI_IMAGE_PROBE_MESSAGES = [
+    [
+        {
+            "role": "user",
+            "content": [{"type": "image"}] * count
+            + [{"type": "text", "text": _MULTI_IMAGE_PROBE_TEXT}],
+        }
+    ]
+    for count in (1, 2)
+]
 _TEXT_PROBE_MESSAGES = [{"role": "user", "content": [{"type": "text", "text": "hi"}]}]
+_VIDEO_PROBE_MESSAGES = [
+    {"role": "user", "content": [{"type": "video"}, {"type": "text", "text": "hi"}]}
+]
+
+
+def _mlx_vlm_decodes_video() -> bool:
+    """Both halves of the decoder, ``load_video`` (0.5.0+) and cv2, so a clip missing either is
+    refused by name rather than by a ModuleNotFoundError mid-stream."""
+    try:
+        from mlx_vlm import utils as vlm_utils
+    except ImportError:
+        return False
+    if not callable(getattr(vlm_utils, "load_video", None)):
+        return False
+    try:
+        import cv2  # noqa: F401
+    except ImportError:
+        return False
+    return True
+
+
+def _video_placeholder(processor):
+    """The model's own video placeholder, when it names one."""
+    for source in (processor, getattr(processor, "tokenizer", None)):
+        token = getattr(source, "video_token", None)
+        if isinstance(token, str) and token:
+            return token
+    return None
+
+
+def _mlx_reads_video(processor) -> bool:
+    """Processor carries a video component AND the template places a video marker: a render that
+    merely differs from the text one can still be prose, as in the image probe."""
+    if processor is None or getattr(processor, "video_processor", None) is None:
+        return False
+    if not _mlx_vlm_decodes_video():
+        return False
+    from core.inference.chat_template_helpers import (
+        apply_chat_template_for_generation,
+        chat_render_target,
+    )
+
+    try:
+        target = chat_render_target(processor)
+        marked = apply_chat_template_for_generation(target, _VIDEO_PROBE_MESSAGES)
+        if not marked or marked == apply_chat_template_for_generation(target, _TEXT_PROBE_MESSAGES):
+            return False
+        if _vlm_prompt_issue(marked, _VIDEO_PROBE_MESSAGES):
+            return False
+        placeholder = _video_placeholder(processor)
+        return placeholder is None or placeholder in marked
+    except BaseException:
+        # A load must never fail on a probe, matching _image_marker_survives.
+        return False
+
+
+def _write_video_clip(video_b64: str) -> str:
+    import base64
+    import tempfile
+
+    data = base64.b64decode(video_b64)
+    with tempfile.NamedTemporaryFile(prefix = "unsloth-video-", delete = False) as handle:
+        handle.write(data)
+        return handle.name
+
+
+# mlx-vlm holds two native-resolution RGB copies of the sampled frames before the processor resizes.
+_VIDEO_DECODE_BUDGET_BYTES = 2 << 30
+
+
+# load_video's own defaults, unchanged 0.5.0 to 0.7.0, for a release that settles a knob nowhere.
+_VIDEO_SAMPLING_FALLBACK = {"fps": 2.0, "min_frames": 4}
+
+
+def _sampled(name, value):
+    return _VIDEO_SAMPLING_FALLBACK[name] if value is None else value
+
+
+def _declared_video_sampling(processor) -> dict:
+    """Read the way mlx-vlm's ``processor_video_sampling`` reads it, so both branches agree."""
+    component = getattr(processor, "video_processor", None)
+    if component is None:
+        return {}
+    for owner in (component, processor):
+        hook = getattr(owner, "video_sampling_defaults", None)
+        if callable(hook):
+            declared = hook()
+            return dict(declared) if isinstance(declared, dict) else vars(declared)
+    return {name: getattr(component, name, None) for name in ("fps", "min_frames", "max_frames")}
+
+
+def _video_sampling_target(processor) -> tuple[float, int, Optional[int]]:
+    """mlx-vlm's (fps, min_frames, nframes); older releases pass only ``fps`` to ``load_video``."""
+    import inspect
+
+    from mlx_vlm import utils as vlm_utils
+
+    resolve = getattr(vlm_utils, "resolve_video_sampling", None)
+    if resolve is not None:
+        sampling = resolve(processor, {})
+        # Unset is unreachable today; the fallback keeps the rate divisible for a future release.
+        return (
+            _sampled("fps", sampling.fps),
+            _sampled("min_frames", sampling.min_frames),
+            sampling.nframes,
+        )
+    # Below 0.7.0, where install_python_stack.py pins it, prepare_inputs forwards only ``fps``,
+    # so nothing else applies the model's rate. ``min_frames`` stays the count really decoded.
+    defaults = inspect.signature(vlm_utils.load_video).parameters
+
+    def _default(name):
+        parameter = defaults.get(name)
+        if parameter is None or parameter.default is inspect.Parameter.empty:
+            return None
+        return parameter.default
+
+    declared_fps = _declared_video_sampling(processor).get("fps")
+    return (
+        _sampled("fps", _default("fps") if declared_fps is None else declared_fps),
+        _sampled("min_frames", _default("min_frames")),
+        None,
+    )
+
+
+def _video_frame_rate(clip_path: str, processor) -> Optional[float]:
+    """The sampling ``fps`` keeping the decoded stack within the budget; None when the clip has no
+    readable frame geometry or count, which mlx-vlm then refuses itself."""
+    import cv2
+
+    capture = cv2.VideoCapture(clip_path)
+    try:
+        if not capture.isOpened():
+            return None
+        width = int(capture.get(cv2.CAP_PROP_FRAME_WIDTH))
+        height = int(capture.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        total_frames = int(capture.get(cv2.CAP_PROP_FRAME_COUNT))
+        native_fps = capture.get(cv2.CAP_PROP_FPS)
+    finally:
+        capture.release()
+    if min(width, height, total_frames) <= 0:
+        return None
+    if not native_fps or native_fps <= 0:
+        # The one measurement mlx-vlm substitutes rather than refusing; match its substitution.
+        native_fps = 1.0
+    wanted_fps, min_frames, nframes = _video_sampling_target(processor)
+    affordable = _VIDEO_DECODE_BUDGET_BYTES // (2 * 3 * width * height)
+    needed = min_frames if nframes is None else nframes
+    if affordable < needed:
+        raise RuntimeError(
+            f"The video's {width}x{height} frames are too large to decode: {needed} of them "
+            f"exceed the {_VIDEO_DECODE_BUDGET_BYTES >> 20} MiB frame budget."
+        )
+    return min(wanted_fps, affordable * native_fps / total_frames)
+
+
+def _discard_video_clip(path: str) -> None:
+    try:
+        os.remove(path)
+    except OSError:
+        pass
 
 
 def _classify_mlx_audio_type(
@@ -269,32 +1038,24 @@ def _classify_mlx_audio_type(
     is_vision,
     config_audio_type = None,
 ):
-    """audio_type for the model entry: "audio_vlm" (omni audio input; is_audio
-    stays False — it means TTS and redirects in the chat route) or None.
+    """audio_type for the model entry: "audio_vlm" (omni audio input; is_audio stays False, since it
+    means TTS and redirects in the chat route) or None.
 
-    The checkpoint's own capability comes from unsloth_zoo, which answers it by
-    observing whether audio content changes what the processor returns. Two
-    things stay here because they are this backend's, not the checkpoint's: the
-    waveform arrives at the rate the chat route decodes to, and the prompt is
-    rendered through mlx-vlm's registry, where some families accept an audio
-    count and silently drop it. The rendered prompt is what the capability call
-    probes with, so a family whose marker only its own template emits is judged
-    on the real thing.
+    The checkpoint's own capability comes from unsloth_zoo, which answers it by observing whether
+    audio content changes what the processor returns. Two things stay here because they are this
+    backend's, not the checkpoint's: the waveform arrives at the rate the chat route decodes to, and
+    the prompt is rendered through mlx-vlm's registry, where some families accept an audio count and
+    silently drop it. The rendered prompt is what the capability call probes with, so a family whose
+    marker only its own template emits is judged on the real thing.
 
-    This probe speaks for "audio_vlm" and nothing else, so `config_audio_type`
-    (the pre-load answer from detect_audio_type) is carried through untouched
-    whenever the probe has no standing:
-
-      * a non-vision checkpoint is never asked, so a TTS codec ("snac", "dac",
-        "bicodec", "csm") or Whisper keeps the classification it arrived with —
-        the worker mirrors this entry over the pre-load config, so returning a
-        bare None here would silently strip the chat route's TTS redirect;
-      * a probe that could not run (absent or older unsloth_zoo, a raising or
-        unrecognised capability result) leaves the pre-load answer standing
-        rather than downgrading a model on the strength of a missing
-        dependency.
-
-    Only a probe that actually ran and answered may retract "audio_vlm".
+    This probe speaks for "audio_vlm" and nothing else, so ``config_audio_type`` (the pre-load
+    answer from detect_audio_type) is carried through untouched whenever the probe has no standing:
+    a non-vision checkpoint is never asked, so a TTS codec ("snac", "dac", "bicodec", "csm") or
+    Whisper keeps the classification it arrived with (the worker mirrors this entry over the
+    pre-load config, so returning a bare None would silently strip the chat route's TTS redirect);
+    and a probe that could not run (absent or older unsloth_zoo, a raising or unrecognised
+    capability result) leaves the pre-load answer standing rather than downgrading a model over a
+    missing dependency. Only a probe that actually ran and answered may retract "audio_vlm".
     """
 
     def _probe_says_no():
@@ -303,8 +1064,8 @@ def _classify_mlx_audio_type(
 
     if not is_vision or processor is None:
         return config_audio_type
-    # All of it inside the guard: a model load must never fail on a probe.
-    # BaseException because any escape here aborts the load.
+    # All of it inside the guard: a model load must never fail on a probe. BaseException because any escape here
+    # aborts the load.
     try:
         from unsloth_zoo.mlx.utils import (
             audio_extractor_sampling_rate,
@@ -343,12 +1104,10 @@ def _classify_mlx_audio_type(
 
 
 def _mlx_config_field(model, name):
-    """Read a config field in either shape a loaded MLX model exposes it in.
-
-    A checkpoint's config is a dict on some models and an object on others, under
-    ``config`` or ``_config`` -- the same spread ``_mlx_vlm_model_config`` walks to
-    find a model_type. A getattr-only read silently misses the dict half.
-    """
+    """Read a config field in either shape a loaded MLX model exposes it in. A checkpoint's config
+    is a dict on some models and an object on others, under ``config`` or ``_config`` -- the same
+    spread ``_mlx_vlm_model_config`` walks to find a model_type. A getattr-only read silently
+    misses the dict half."""
     for cfg in (getattr(model, "config", None), getattr(model, "_config", None)):
         value = cfg.get(name) if isinstance(cfg, dict) else getattr(cfg, name, None)
         if value is not None:
@@ -357,14 +1116,10 @@ def _mlx_config_field(model, name):
 
 
 def _mlx_stop_token_ids(tokenizer, model = None):
-    """Ids the runtime actually stops on, as a tuple.
-
-    Prefer the stopping criteria mlx_vlm consults, then the model config that
-    seeds them, before the tokenizer attribute: they disagree on some repos
-    (Kimi-VL lists two config ids and a different tokenizer id), and picking the
-    wrong source misreads a real stop as truncation. Each source may be a bare
-    int or a collection.
-    """
+    """Ids the runtime actually stops on, as a tuple. Prefer the stopping criteria mlx_vlm consults,
+    then the model config that seeds them, before the tokenizer attribute: they disagree on some
+    repos (Kimi-VL lists two config ids and a different tokenizer id), and picking the wrong
+    source misreads a real stop as truncation. Each source may be a bare int or a collection."""
     for source in (
         getattr(getattr(tokenizer, "stopping_criteria", None), "eos_token_ids", None),
         _mlx_config_field(model, "eos_token_id"),
@@ -374,9 +1129,8 @@ def _mlx_stop_token_ids(tokenizer, model = None):
         if source is None:
             continue
         if isinstance(source, (list, tuple, set, frozenset)):
-            # An empty collection falls through too: a source present but unset is
-            # not an answer, and stopping on nothing misreads a real stop as
-            # truncation. A bare id is kept as-is, since 0 is a valid token.
+            # An empty collection falls through too: a source present but unset is not an answer, and stopping on
+            # nothing misreads a real stop as truncation. A bare id is kept as-is, since 0 is a valid token.
             if not source:
                 continue
             return tuple(source)
@@ -386,28 +1140,159 @@ def _mlx_stop_token_ids(tokenizer, model = None):
 
 
 def _mlx_stop_sequences(stop):
-    """The sequences a request asked to stop on, as a list.
-
-    An empty one is dropped rather than matched: it is found at position 0 of
-    every reply and would end each turn before its first token.
-    """
+    """The sequences a request asked to stop on, as a list. An empty one is dropped rather than
+    matched: it is found at position 0 of every reply and would end each turn before its first
+    token."""
     return [x for x in ([stop] if isinstance(stop, str) else stop or []) if x]
 
 
+def _rebuilt_detokenizer(detokenizer):
+    """A fresh one of ``detokenizer``'s kind, for the versions whose own cannot be copied.
+
+    Only the naive detokenizer needs this, and it is also the only one that keeps the tokenizer it
+    wraps -- SPM and BPE build decoded tables in ``__init__`` and copy cleanly -- so that attribute
+    doubles as the test for "can be rebuilt at all"."""
+    tokenizer = getattr(detokenizer, "_tokenizer", None)
+    if tokenizer is None:
+        return None
+    try:
+        return type(detokenizer)(tokenizer)
+    except Exception as exc:  # noqa: BLE001 -- third-party detokenizers vary; caller falls back
+        logger.debug("MLX streaming detokenizer could not be rebuilt (%s)", exc)
+        return None
+
+
+def _mlx_stream_detokenizer(source):
+    """One of ``source``'s own kind, independent of the detokenizer the runtime drives.
+
+    Copying is the fallback, not the rule: it raises on the naive detokenizer, whose ``text`` is a
+    property over an inherited slot. mlx-lm builds one per read, so a second read is already
+    independent; mlx-vlm's processor hands back the one its older versions stream through."""
+    detokenizer = getattr(source, "detokenizer", None)
+    if detokenizer is None:
+        return None
+    independent = getattr(source, "detokenizer", None)
+    if independent is None or independent is detokenizer:
+        try:
+            independent = copy.copy(detokenizer)
+        except Exception as exc:  # noqa: BLE001 -- third-party detokenizers vary; caller falls back
+            # mlx-vlm gained ``__copy__`` only at 0.6.0, and below it the naive detokenizer --
+            # what every model resolves to whose decoder is neither SPM nor a top-level ByteLevel
+            # -- cannot be copied at all. Rebuilding one is what that ``__copy__`` does. Giving up
+            # here instead leaves the turn with no detokenizer, and the branch that handles that
+            # can only pass the runtime's text through, so every control the allowlist suppresses
+            # would reach the reply on the whole supported floor.
+            independent = _rebuilt_detokenizer(detokenizer)
+            if independent is None:
+                logger.debug("MLX streaming detokenizer unavailable (%s)", exc)
+                return None
+    try:
+        independent.reset()
+    except Exception as exc:  # noqa: BLE001 -- as above
+        logger.debug("MLX streaming detokenizer unavailable (%s)", exc)
+        return None
+    return independent
+
+
+class _MlxStreamedText:
+    """A reply rebuilt from the ids the runtime sampled, for turns carrying native controls.
+
+    A streaming detokenizer holds a piece until the ones after it settle, so a control reaches
+    ``response.text`` inside a later segment, with nothing left to say which characters came from
+    it: deciding suppression there deletes prose that merely spells a control, and re-decoding the
+    id on its own step writes a second copy ahead of the text still held.
+
+    ``generation_tokens``, not a finish reason, says which ids the reply owes -- the supported
+    mlx-vlm floor has no such field, and a turn broken out of on a stop token or the token limit
+    reports a position no yield covered. Hence also ``finish``, run by the caller once the runtime
+    stops yielding.
+
+    Stop ids are held rather than written, since both runtimes stop before their detokenizer sees
+    one, and released only to close a tool envelope. The run is held whole: the ids read as ending
+    a turn come from the model config, which lists more than the one the runtime stopped on.
+
+    Neither a denoised block, which names one id for many, nor a missing detokenizer leaves ids to
+    rebuild from; the runtime's own text stands and the allowlist cannot speak for it."""
+
+    def __init__(self, detokenizer, decoder, tokenizer, stop_ids):
+        self._detokenizer = detokenizer
+        self._decoder = decoder
+        self._tokenizer = tokenizer
+        self._stop_ids = stop_ids
+        self._held_stops = []
+        self._filled = 0
+
+    def feed(self, response) -> str:
+        if self._detokenizer is None:
+            # Every id but the one generation stopped before is already in that text, so only the
+            # last can still be a closer the reply owes.
+            stop_id = getattr(response, "token", None)
+            self._held_stops = (
+                [int(stop_id)] if stop_id is not None and int(stop_id) in self._stop_ids else []
+            )
+            return getattr(response, "text", None) or ""
+        filled = getattr(response, "generation_tokens", None)
+        if filled is not None:
+            filled = int(filled)
+            if filled <= self._filled:
+                return ""
+            several = filled > self._filled + 1
+            self._filled = filled
+            if several:
+                return self._drain() + (getattr(response, "text", None) or "")
+        token_id = getattr(response, "token", None)
+        if token_id is None:
+            return ""
+        token_id = int(token_id)
+        if token_id in self._stop_ids:
+            self._held_stops.append(token_id)
+            return ""
+        if self._decoder.suppresses(token_id):
+            return ""
+        if self._held_stops:
+            # Text followed them, so they ended nothing.
+            held, self._held_stops = self._held_stops, []
+            for stop_id in held:
+                if not self._decoder.suppresses(stop_id):
+                    self._detokenizer.add_token(stop_id)
+        self._detokenizer.add_token(token_id)
+        return self._detokenizer.last_segment
+
+    def finish(self, sampled: str) -> str:
+        """The text still held once the runtime stops yielding."""
+        if self._detokenizer is None:
+            return self._closing_stop(sampled)
+        segment = self._drain()
+        return segment + self._closing_stop(sampled + segment)
+
+    def _drain(self) -> str:
+        self._detokenizer.finalize()
+        return self._detokenizer.last_segment
+
+    def _closing_stop(self, settled: str) -> str:
+        held, self._held_stops = self._held_stops, []
+        closing = ""
+        for stop_id in held:
+            if not self._decoder.keeps(stop_id):
+                continue
+            text = stop_token_text(self._tokenizer, stop_id) or ""
+            if settled.endswith(text):
+                continue
+            # Nested markup ends on a closer each, so the run can owe more than one.
+            if closes_an_open_envelope(settled + text, text):
+                closing += text
+        return closing
+
+
 def _mlx_stop_cut(text: str, stops) -> tuple[int, bool]:
-    """How much of a cumulative reply may be shown, and whether a stop ended it.
-
-    Text that could still grow into a sequence is held back, as llama-server holds
-    it: a client cannot unsee a fragment the next token completes. A trailing
-    replacement character is never matched either, since a decode prints the same
-    character for one the model wrote and for bytes that never finished arriving
-    and neither runtime tells them apart; it is delivered regardless.
-
-    A caller whose decode rewrites as readily as it extends must withhold until the
-    turn ends and apply this cut once.
-    """
-    # An unresolved character is not a character yet, and dropping it can uncover
-    # the start of a sequence.
+    """How much of a cumulative reply may be shown, and whether a stop ended it. Text that could
+    still grow into a sequence is held back, as llama-server holds it: a client cannot unsee a
+    fragment the next token completes. A trailing replacement character is never matched either,
+    since a decode prints the same character for one the model wrote and for bytes that never
+    finished arriving and neither runtime tells them apart; it is delivered regardless. A caller
+    whose decode rewrites as readily as it extends must withhold until the turn ends and apply
+    this cut once."""
+    # An unresolved character is not a character yet, and dropping it can uncover the start of a sequence.
     resolved = text.rstrip("\ufffd")
     cut = len(resolved)
     for sequence in stops:
@@ -426,13 +1311,10 @@ def _mlx_stop_cut(text: str, stops) -> tuple[int, bool]:
 
 
 def _mlx_finish_reason(response, stop_ids, generated_n, max_tokens):
-    """Why generation stopped: "length" only when the limit was reached.
-
-    mlx_lm reports it directly. mlx_vlm's result carries no reason, and a count
-    at the limit is ambiguous -- a stop token sampled as the final allowed token
-    looks identical to ordinary exhaustion -- so fall back to the last token's
-    identity, which separates them.
-    """
+    """Why generation stopped: "length" only when the limit was reached. mlx_lm reports it directly.
+    mlx_vlm's result carries no reason, and a count at the limit is ambiguous -- a stop token
+    sampled as the final allowed token looks identical to ordinary exhaustion -- so fall back to
+    the last token's identity, which separates them."""
     reason = getattr(response, "finish_reason", None)
     if reason in ("stop", "length"):
         return reason
@@ -450,8 +1332,8 @@ def _build_generation_stats(
     cached_n = 0,
     finish_reason = None,
 ):
-    """Map mlx stream stats onto the usage/timings shape llama-server emits,
-    plus the reason generation ended."""
+    """Map mlx stream stats onto the usage/timings shape llama-server emits, plus the reason
+    generation ended."""
     prompt_n = int(prompt_n or 0)
     gen_n = int(gen_n or 0)
     cached_n = int(cached_n or 0)
@@ -465,9 +1347,8 @@ def _build_generation_stats(
             "prompt_tokens": total_prompt_n,
             "completion_tokens": gen_n,
             "total_tokens": total_prompt_n + gen_n,
-            # The reused prefix is inside prompt_tokens, so name it here as
-            # llama-server does. Reporting it only under timings.cache_n leaves a
-            # caller reading the OpenAI field a cached_tokens of 0 on every hit.
+            # The reused prefix is inside prompt_tokens, so name it here as llama-server does. Reporting it only under
+            # timings.cache_n leaves a caller reading the OpenAI field a cached_tokens of 0 on every hit.
             "prompt_tokens_details": {"cached_tokens": cached_n},
         },
         "timings": {
@@ -481,8 +1362,8 @@ def _build_generation_stats(
             "predicted_per_second": gen_tps,
             "cache_n": cached_n,
         },
-        # Latched where generation exits, so a cancel arriving afterwards
-        # cannot rewrite the reason the completion actually ended for.
+        # Latched where generation exits, so a cancel arriving afterwards cannot rewrite the reason the completion
+        # actually ended for.
         "finish_reason": finish_reason,
     }
 
@@ -501,8 +1382,8 @@ MLX_KV_QUANT_NO_REUSE = (
 MLX_KV_QUANT_VLM_CACHE_NOTE = (
     "On vision models, quantization starts once the cache reaches {start} tokens."
 )
-# RotatingKVCache.to_quantized raises and mlx-lm converts from the first token, so the
-# two are resolved here rather than failing generation on its first step.
+# RotatingKVCache.to_quantized raises and mlx-lm converts from the first token, so the two are resolved here rather
+# than failing generation on its first step.
 MLX_KV_QUANT_PINNED_CONTEXT = (
     "Context Length is set for this model, which limits the KV cache, and the installed "
     "mlx-lm cannot quantize a limited cache. Reset it to quantize instead."
@@ -510,14 +1391,11 @@ MLX_KV_QUANT_PINNED_CONTEXT = (
 
 
 def _kv_entry_nbytes(entry):
-    """Bytes held by one cache entry, or None when it cannot be measured.
-
-    Read straight off the property, because that is what decides admission:
-    upstream's LRUPromptCache.insert_cache sums ``c.nbytes`` itself, so an
-    entry whose property raises (mlx-lm 0.31.2's QuantizedKVCache, a missing
-    tree_reduce import) cannot enter the cache however else it could be sized.
-    Measuring it another way here would only promise reuse that never happens.
-    """
+    """Bytes held by one cache entry, or None when it cannot be measured. Read straight off the
+    property, because that is what decides admission: upstream's LRUPromptCache.insert_cache sums
+    ``c.nbytes`` itself, so an entry whose property raises (mlx-lm 0.31.2's QuantizedKVCache, a
+    missing tree_reduce import) cannot enter the cache however else it could be sized. Measuring
+    it another way here would only promise reuse that never happens."""
     try:
         return int(entry.nbytes)
     except Exception:
@@ -544,12 +1422,10 @@ def _normalize_mlx_kv_bits(value):
 
 
 def _mlx_rng_key_words():
-    """The MLX PRNG key as its two 32-bit words, or None if it cannot be read.
-
-    Deciding it here is what lets the rewind below stay unconditional. A key
-    that reads but is not two words is not the same as an unreadable one: the
-    rewind no longer works on the installed mlx, so say so before declining.
-    """
+    """The MLX PRNG key as its two 32-bit words, or None if it cannot be read. Deciding it here is
+    what lets the rewind below stay unconditional. A key that reads but is not two words is not
+    the same as an unreadable one: the rewind no longer works on the installed mlx, so say so
+    before declining."""
     import mlx.core as mx
 
     try:
@@ -570,18 +1446,16 @@ def _mlx_rng_key_words():
 def _as_uint32_pair(high, low):
     """Both words as uint32, or None if either is not a 32-bit word at all.
 
-    mx.random.seed takes a uint64 and raises outside [0, 2**64); that raise would
-    land in the probe's finally and replace the probe's own outcome. So the words
-    are range-checked here rather than passed through, which is what lets the
-    rewind below stay unguarded.
+    mx.random.seed takes a uint64 and raises outside [0, 2**64); that raise would land in the
+    probe's finally and replace the probe's own outcome. So the words are range-checked here rather
+    than passed through, which is what lets the rewind below stay unguarded.
 
-    Range-checked and not simply masked, though. A negative reads as the two's
-    complement of the uint32 mlx stores, so reinterpreting it loses nothing. A
-    value at or above 2**32 is not a 32-bit word under any reading, and masking
-    it would turn a key we cannot represent into a plausible wrong one: (2**32, 0)
-    would restore as (0, 0), the probe would report success, and sampling would
-    silently diverge from an unprobed run. Decline instead, which is the outcome
-    the caller already handles.
+    Range-checked and not simply masked, though. A negative reads as the two's complement of the
+    uint32 mlx stores, so reinterpreting it loses nothing. A value at or above 2**32 is not a 32-bit
+    word under any reading, and masking it would turn a key we cannot represent into a plausible
+    wrong one: (2**32, 0) would restore as (0, 0), the probe would report success, and sampling
+    would silently diverge from an unprobed run. Decline instead, which is the outcome the caller
+    already handles.
     """
     converted = []
     for word in (high, low):
@@ -598,16 +1472,12 @@ def _as_uint32_pair(high, low):
 
 
 def _restore_mlx_rng_key(words):
-    """Rewind the MLX PRNG to a key captured by ``_mlx_rng_key_words``.
-
-    mlx 0.32.1 made mx.random.state a sentinel that refuses item assignment.
-    mx.random.key packs a seed as its two 32-bit halves, so reseeding with a
-    key's own words restores it exactly, over the whole unsigned 64-bit range.
-
-    Unguarded on purpose: the range check in _as_uint32_pair removes the only way
-    this can raise, so there is no failure to swallow, and a blanket except here
-    would be a failure indistinguishable from an intentional no-op.
-    """
+    """Rewind the MLX PRNG to a key captured by ``_mlx_rng_key_words``. mlx 0.32.1 made
+    mx.random.state a sentinel that refuses item assignment; mx.random.key packs a seed as its
+    two 32-bit halves, so reseeding with a key's own words restores it exactly, over the whole
+    unsigned 64-bit range. Unguarded on purpose: the range check in _as_uint32_pair removes the
+    only way this can raise, so there is no failure to swallow, and a blanket except here would
+    be a failure indistinguishable from an intentional no-op."""
     import mlx.core as mx
 
     if words is None:
@@ -619,17 +1489,12 @@ def _restore_mlx_rng_key(words):
 
 
 def _kv_quant_probe(language_model, entries, bits):
-    """Attempt the conversion the runtime will perform, on a real cache.
-
-    Static proxies proved wrong in both directions: a model can declare a
-    head_dim it does not use for the cache, and a window can be spelled
-    differently from entry to entry. So populate one token and try the
-    conversion that generation would do.
-
-    Returns ``(converted, skipped, failure, retainable)``. ``retainable`` is
-    False when a converted entry's size cannot be read, because the prompt
-    cache budgets by size and upstream recomputes it internally.
-    """
+    """Attempt the conversion the runtime will perform, on a real cache. Static proxies proved wrong
+    in both directions: a model can declare a head_dim it does not use for the cache, and a
+    window can be spelled differently from entry to entry. So populate one token and try the
+    conversion that generation would do. Returns ``(converted, skipped, failure, retainable)``,
+    where ``retainable`` is False when a converted entry's size cannot be read, because the
+    prompt cache budgets by size and upstream recomputes it internally."""
     import mlx.core as mx
 
     convertible = [entry for entry in entries if getattr(entry, "to_quantized", None) is not None]
@@ -641,8 +1506,8 @@ def _kv_quant_probe(language_model, entries, bits):
         for entry in convertible
         for name in ("max_size", "window_size")
     ):
-        # A bounded ring cannot be probed unwrapped, and wrapped its conversion
-        # keeps an absolute offset past its storage. Refuse before the forward pass.
+        # A bounded ring cannot be probed unwrapped, and wrapped its conversion keeps an absolute offset past its
+        # storage. Refuse before the forward pass.
         return 0, 0, "it uses a bounded sliding window", True
 
     # The forward pass below draws random numbers, so keep sampled output stable.
@@ -675,8 +1540,8 @@ def _kv_quant_probe(language_model, entries, bits):
         _restore_mlx_rng_key(rng_key)
 
 
-# A no-argument mx.synchronize() waits on the default stream, which generation does not
-# use. mlx-vlm moves the symbol between layouts, and speculative decoding owns its own.
+# A no-argument mx.synchronize() waits on the default stream, which generation does not use. mlx-vlm moves the symbol
+# between layouts, and speculative decoding owns its own.
 _GENERATION_STREAM_MODULES = (
     "mlx_lm.generate",
     "mlx_vlm.generate",
@@ -687,13 +1552,10 @@ _GENERATION_STREAM_MODULES = (
 
 
 def _drain_generation_streams(mx):
-    """Best effort: every caller is a cleanup path whose old body could not fail.
-
-    At the mlx-vlm pin floor generation_stream is a plain mx.new_stream, which raises
-    when synchronized off its creating thread (mlx made command encoders thread local
-    in 0.31.2). Draining is a margin on top of the clear, never a precondition, so a
-    drain we cannot perform is skipped.
-    """
+    """Best effort: every caller is a cleanup path whose old body could not fail. At the mlx-vlm pin
+    floor generation_stream is a plain mx.new_stream, which raises when synchronized off its
+    creating thread (mlx made command encoders thread local in 0.31.2). Draining is a margin on
+    top of the clear, never a precondition, so a drain we cannot perform is skipped."""
 
     synchronize = getattr(mx, "synchronize", None)
     if not callable(synchronize):
@@ -720,13 +1582,10 @@ def _kv_quant_eligibility(
     is_vlm,
     bits = MLX_KV_BITS_CHOICES[0],
 ):
-    """Whether KV quantization can apply to this model, before generating.
-
-    Returns ``(verdict, reason, retainable)``, verdict in
-    full/partial/none/refused. Eligibility only: what the runtime converts stays
-    its own decision. Refusing here is what stops an ineligible model raising
-    mid-generation, once the leading entries are already converted.
-    """
+    """Whether KV quantization can apply to this model, before generating. Returns ``(verdict,
+    reason, retainable)``, verdict in full/partial/none/refused. Eligibility only: what the
+    runtime converts stays its own decision. Refusing here is what stops an ineligible model
+    raising mid-generation, once the leading entries are already converted."""
     language_model = getattr(model, "language_model", model) if is_vlm else model
     try:
         if is_vlm:
@@ -743,8 +1602,7 @@ def _kv_quant_eligibility(
         return "none", "this model builds no KV cache to quantize", True
 
     converted, skipped, failure, retainable = _kv_quant_probe(language_model, entries, bits)
-    # Released only here, once the probe's own locals are gone, or the pages stay
-    # in the allocator.
+    # Released only here, once the probe's own locals are gone, or the pages stay in the allocator.
     import mlx.core as mx
 
     entries.clear()
@@ -769,9 +1627,8 @@ def _vlm_quantized_kv_start():
         return 5000
 
 
-# An override replaces an existing template, never creates one: both render
-# selectors pick their target by whether a template is present, so creating one
-# would silently move the render to a different object.
+# An override replaces an existing template, never creates one: both render selectors pick their target by whether a
+# template is present, so creating one would silently move the render to a different object.
 _TEMPLATE_NOT_CAPTURED = object()
 MLX_TEMPLATE_NO_TARGET = (
     "this model builds its prompt without a chat template, and supplying one "
@@ -796,11 +1653,9 @@ MLX_TEMPLATE_DROPS_AUDIO = (
 
 
 def _template_install_targets(tokenizer, processor):
-    """Objects whose chat_template would be read at render time.
-
-    The processor and the tokenizer can be the same object when a processor
-    exposes no nested tokenizer, so the result is de-duplicated by identity.
-    """
+    """Objects whose chat_template would be read at render time. The processor and the tokenizer can
+    be the same object when a processor exposes no nested tokenizer, so the result is
+    de-duplicated by identity."""
     seen, targets = [], []
     for candidate in (processor, tokenizer):
         if candidate is None:
@@ -813,12 +1668,9 @@ def _template_install_targets(tokenizer, processor):
 
 
 def _template_render_targets(tokenizer, processor):
-    """Objects a render selector would actually read the template from.
-
-    Deferred to chat_render_target rather than restated (#7066): it also
-    requires the processor to be able to render, and mlx-vlm's
-    get_chat_template applies the same rule for audio.
-    """
+    """Objects a render selector would actually read the template from. Deferred to
+    chat_render_target rather than restated (#7066): it also requires the processor to be able to
+    render, and mlx-vlm's get_chat_template applies the same rule for audio."""
     from core.inference.chat_template_helpers import chat_render_target
 
     target = chat_render_target(processor, tokenizer)
@@ -831,13 +1683,10 @@ def _usable_template(value):
 
 
 def _native_template_source(tokenizer, processor):
-    """The object whose chat_template is this model's default.
-
-    The render target, so the editor's "model default" is the text generation
-    really uses. Falls back to the tokenizer when that target holds no usable
-    string, keeping the nested template reported for a processor carrying a
-    named set rather than reporting none at all.
-    """
+    """The object whose chat_template is this model's default. The render target, so the editor's
+    "model default" is the text generation really uses. Falls back to the tokenizer when that
+    target holds no usable string, keeping the nested template reported for a processor carrying
+    a named set rather than reporting none at all."""
     for target in _template_render_targets(tokenizer, processor):
         if _usable_template(getattr(target, "chat_template", None)):
             return target
@@ -845,11 +1694,9 @@ def _native_template_source(tokenizer, processor):
 
 
 def _template_override_status(override, tokenizer, processor):
-    """Resolve a requested override against this model, without applying it.
-
-    Returns the targets to install onto and a status dict; an empty target list
-    with a reason means the override cannot be honored.
-    """
+    """Resolve a requested override against this model, without applying it. Returns the targets to
+    install onto and a status dict; an empty target list with a reason means the override cannot
+    be honored."""
     status = {
         "requested": override,
         "applied": None,
@@ -866,27 +1713,24 @@ def _template_override_status(override, tokenizer, processor):
     except Exception as exc:
         status["reason"] = MLX_TEMPLATE_NOT_SETTABLE.format(error = exc)
         return [], status
-    # Judge only the objects that render: an unreplaceable template on an object
-    # nothing reads would reject a working override.
+    # Judge only the objects that render: an unreplaceable template on an object nothing reads would reject a working
+    # override.
     blocked = [(c, getattr(c, "chat_template", None)) for c in rendering]
     if any(getattr(c, "_chat_template", None) is not None for c in rendering):
-        # apply_chat_template prefers a callable template over the attribute, so
-        # an assignment would be inert.
+        # apply_chat_template prefers a callable template over the attribute, so an assignment would be inert.
         status["reason"] = MLX_TEMPLATE_CALLABLE
         return [], status
     if any(isinstance(value, (dict, list)) for _, value in blocked):
         status["reason"] = MLX_TEMPLATE_NAMED_SET
         return [], status
     if not any(_usable_template(value) for _, value in blocked):
-        # Nothing to replace. Honorable on a text model, which cannot chat without
-        # one. Not with a processor: creating one takes the render away from
-        # mlx-vlm's fallback, which is what places the markers.
+        # Nothing to replace. Honorable on a text model, which cannot chat without one. Not with a processor: creating
+        # one takes the render away from mlx-vlm's fallback, which is what places the markers.
         if processor is not None or not blocked:
             status["reason"] = MLX_TEMPLATE_NO_TARGET
             return [], status
         return [c for c, _ in blocked], status
-    # Install on every object holding a replaceable string, so both selectors keep
-    # choosing what they chose before.
+    # Install on every object holding a replaceable string, so both selectors keep choosing what they chose before.
     return [c for c, value in existing if _usable_template(value)], status
 
 
@@ -912,19 +1756,97 @@ def _image_placeholder(tokenizer, processor):
     return None
 
 
+_IMAGE_TOKEN_ID_KEYS = ("image_token_index", "image_token_id", "boi_token_index")
+
+
+def _declared_image_tokens(
+    tokenizer,
+    processor,
+    model = None,
+):
+    """Config token ids too: granite-vision names its token only by id, on a bare tokenizer."""
+    named = []
+
+    def add(token):
+        if isinstance(token, str) and token and token not in named:
+            named.append(token)
+
+    for source in (processor, tokenizer):
+        for attr in ("image_token", "boi_token"):
+            add(getattr(source, attr, None))
+    config, _model_type = _mlx_vlm_model_config(model) if model is not None else (None, None)
+    for key in _IMAGE_TOKEN_ID_KEYS:
+        token_id = config.get(key) if isinstance(config, dict) else getattr(config, key, None)
+        for source in (getattr(processor, "tokenizer", None), tokenizer, processor):
+            try:
+                add(source.convert_ids_to_tokens(token_id))
+            except BaseException:
+                continue
+            break
+    return named
+
+
+def _scaling_image_marker(
+    tokenizer,
+    processor,
+    model = None,
+):
+    """The text this template writes once per image, or None -- a load must never fail on a probe.
+
+    Diffed rather than looked up by attribute name, which would only recognise families someone had
+    checked: Gemma 3 writes its ``boi_token``, Qwen-VL a three-token block. The block must repeat
+    once more for the second image, the question must survive (InternVL drops it), and the marker
+    must be a token the model names, so an override nothing binds pixels to cannot pass.
+    """
+    from core.inference.chat_template_helpers import apply_chat_template_for_generation
+
+    targets = _template_render_targets(tokenizer, processor)
+    if not targets:
+        return None
+    try:
+        one, two = (
+            apply_chat_template_for_generation(targets[0], probe)
+            for probe in _MULTI_IMAGE_PROBE_MESSAGES
+        )
+        if not isinstance(one, str) or not isinstance(two, str):
+            return None
+        if _MULTI_IMAGE_PROBE_TEXT not in one or _MULTI_IMAGE_PROBE_TEXT not in two:
+            return None
+        opcodes = difflib.SequenceMatcher(None, one, two, autojunk = False).get_opcodes()
+        inserted = [two[j1:j2] for tag, _i1, _i2, j1, j2 in opcodes if tag == "insert"]
+        if len(inserted) != 1 or any(tag in ("replace", "delete") for tag, *_rest in opcodes):
+            return None
+        marker = inserted[0]
+        if one.count(marker) != 1 or two.count(marker) != 2:
+            return None
+        named = _declared_image_tokens(tokenizer, processor, model)
+        if any(token in marker for token in named):
+            return marker
+    except BaseException:
+        return None
+    return None
+
+
+def _model_type_takes_several_images(model):
+    """Studio renders the model's own template, so mlx-vlm's deny-list has to be read here."""
+    try:
+        from mlx_vlm.prompt_utils import SINGLE_IMAGE_ONLY_MODELS
+    except BaseException:
+        return False
+    _config, model_type = _mlx_vlm_model_config(model)
+    return bool(model_type) and model_type not in SINGLE_IMAGE_ONLY_MODELS
+
+
 def _image_marker_survives(
     tokenizer,
     processor,
     placeholder = None,
 ):
-    """Whether the installed template still marks where an image goes.
-
-    Rendered through the target generation uses, so this sees what a real image
-    request would. Three ways to fail: rendering an image the same as no image,
-    emitting the structured content object instead of a marker, and dropping
-    the placeholder the model names. A bare difference is not enough on its
-    own, since a template can render the image as ordinary prose.
-    """
+    """Whether the installed template still marks where an image goes. Rendered through the target
+    generation uses, so this sees what a real image request would. Three ways to fail: rendering
+    an image the same as no image, emitting the structured content object instead of a marker,
+    and dropping the placeholder the model names. A bare difference is not enough on its own,
+    since a template can render the image as ordinary prose."""
     from core.inference.chat_template_helpers import apply_chat_template_for_generation
 
     targets = _template_render_targets(tokenizer, processor)
@@ -944,12 +1866,9 @@ def _image_marker_survives(
 
 
 def _revoke_override_dropping(status, survives, reason):
-    """Undo an installed override that stopped marking where media goes.
-
-    Capability was classified against the native template, so an override that
-    no longer renders the marker would leave the model advertising an input it
-    can no longer place.
-    """
+    """Undo an installed override that stopped marking where media goes. Capability was classified
+    against the native template, so an override that no longer renders the marker would leave the
+    model advertising an input it can no longer place."""
     if not status["applied"] or survives():
         return status
     _restore_templates(status["restore"])
@@ -987,17 +1906,14 @@ def _restore_templates(installed):
 
 
 def _install_template_override(override, tokenizer, processor, probe):
-    """Install a chat template override, or report why it was not honored.
-
-    ``probe`` renders a short conversation with whatever is installed; a
-    template that cannot render would otherwise raise on every generation
-    instead of once here, which is how a hand-edited template usually fails.
-    """
+    """Install a chat template override, or report why it was not honored. ``probe`` renders a short
+    conversation with whatever is installed; a template that cannot render would otherwise raise
+    on every generation instead of once here, which is how a hand-edited template usually fails."""
     targets, status = _template_override_status(override, tokenizer, processor)
     if not targets:
         return status
-    # Restore only what was actually assigned: a target that refused the assignment
-    # would refuse the restore too, masking the real error.
+    # Restore only what was actually assigned: a target that refused the assignment would refuse the restore too,
+    # masking the real error.
     installed = []
     template = MLX_TEMPLATE_RENDER_FAILED
     try:
@@ -1018,26 +1934,22 @@ def _install_template_override(override, tokenizer, processor, probe):
 
 
 def _kv_entry_is_bounded(entry, window):
-    """Whether this cache entry declares a cap that holds it at or below *window*.
-
-    Only a declared cap counts, and only up to the requested size. mlx-vlm's Florence2
-    hands back a class that concatenates forever and declares nothing; a model that
-    declares a cap wider than the request is bounded, but not at what was asked for.
-    """
+    """Whether this cache entry declares a cap that holds it at or below *window*. Only a declared
+    cap counts, and only up to the requested size. mlx-vlm's Florence2 hands back a class that
+    concatenates forever and declares nothing; a model that declares a cap wider than the request
+    is bounded, but not at what was asked for."""
     cap = getattr(entry, "max_size", None) or getattr(entry, "chunk_size", None)
     if not cap or cap > window:
         return False
-    # Retaining as much as it holds means it never rotates: the write index resets past
-    # the buffer end and updates stop landing.
+    # Retaining as much as it holds means it never rotates: the write index resets past the buffer end and updates
+    # stop landing.
     return cap > getattr(entry, "keep", 0)
 
 
 def _kv_window_enforced(model, is_vlm, window):
-    """Whether a cache built for this model at *window* is bounded in every layer.
-
-    Both runtimes defer to a model's own make_cache when it has one and ignore
-    max_kv_size there. Returns None when no cache could be built to judge.
-    """
+    """Whether a cache built for this model at *window* is bounded in every layer. Both runtimes
+    defer to a model's own make_cache when it has one and ignore max_kv_size there. Returns None
+    when no cache could be built to judge."""
     language_model = getattr(model, "language_model", model) if is_vlm else model
     try:
         if is_vlm:
@@ -1046,8 +1958,8 @@ def _kv_window_enforced(model, is_vlm, window):
         else:
             from mlx_lm.models import cache as lm_cache
             entries = lm_cache.make_prompt_cache(language_model, max_kv_size = window)
-        # Inside the guard with the build: an unjudgeable shape must read as unknown,
-        # since load_model calls this unguarded and a raise would fail the load.
+        # Inside the guard with the build: an unjudgeable shape must read as unknown, since load_model calls this
+        # unguarded and a raise would fail the load.
         flattened = list(_flatten_kv_entries(entries))
         return bool(flattened) and all(_kv_entry_is_bounded(entry, window) for entry in flattened)
     except Exception as exc:
@@ -1131,12 +2043,10 @@ def _flatten_kv_entries(cache):
 
 
 def _kv_prefix_coverage(cache):
-    """Tokens the whole cache holds, or None when no entry can attest to it.
-
-    A recurrent entry has no offset: it holds fixed-size state, not a token
-    sequence. An attention sibling attests for it, since unrewindable state only
-    ever serves the prefix it was built from. Nothing attesting keeps mamba out.
-    """
+    """Tokens the whole cache holds, or None when no entry can attest to it. A recurrent entry has
+    no offset: it holds fixed-size state, not a token sequence. An attention sibling attests for
+    it, since unrewindable state only ever serves the prefix it was built from. Nothing attesting
+    keeps mamba out."""
     covered = None
     for entry in _flatten_kv_entries(cache):
         offset = getattr(entry, "offset", None)
@@ -1225,7 +2135,6 @@ class _MLXPromptCacheHistory:
 
 
 def _mlx_distributed_rank_size(group = None):
-    """Return ``(rank, world_size)`` for an optional MLX distributed group."""
     if group is None:
         return 0, 1
     rank = int(group.rank())
@@ -1267,13 +2176,10 @@ def _init_mlx_distributed():
 
 
 def _normalize_mlx_seed(seed):
-    """Map any request seed onto ``mx.random.key``'s unsigned domain.
-
-    The seed field is shared with backends that accept values this one cannot:
-    llama-server forwards ``-1`` unchanged, while ``mx.random.key`` raises for
-    negatives and for anything >= 2**64. Reducing modulo 2**64 is total over
-    every Python int, so no schema-valid seed can fail mid-generation.
-    """
+    """Map any request seed onto ``mx.random.key``'s unsigned domain. The seed field is shared with
+    backends that accept values this one cannot: llama-server forwards ``-1`` unchanged, while
+    ``mx.random.key`` raises for negatives and for anything >= 2**64. Reducing modulo 2**64 is
+    total over every Python int, so no schema-valid seed can fail mid-generation."""
     return int(seed) % (2**64)
 
 
@@ -1287,16 +2193,12 @@ def _make_seeded_mlx_sampler(
     min_tokens_to_keep = 1,
 ):
     """mlx_lm.make_sampler's chain with a request-scoped key instead of global RNG.
-
-    ``mx.random.seed`` mutates thread-local state that later requests inherit, so
-    an unseeded request following a seeded one would silently become reproducible.
-    A per-request key keeps determinism inside the request that asked for it.
-
-    The filtering stages are mlx_lm's own ``apply_*`` functions rather than
-    reimplementations: supplying a custom sampler suppresses the chain mlx_lm and
-    mlx_vlm would otherwise build, so anything not reused here would be silently
-    dropped from seeded requests only.
-    """
+    ``mx.random.seed`` mutates thread-local state that later requests inherit, so an unseeded
+    request following a seeded one would silently become reproducible; a per-request key keeps
+    determinism inside the request that asked for it. The filtering stages are mlx_lm's own
+    ``apply_*`` functions rather than reimplementations: supplying a custom sampler suppresses
+    the chain mlx_lm and mlx_vlm would otherwise build, so anything not reused here would be
+    silently dropped from seeded requests only."""
     import mlx.core as mx
     from mlx_lm.sample_utils import apply_top_p, apply_min_p, apply_top_k
 
@@ -1325,11 +2227,8 @@ def _make_seeded_mlx_sampler(
 
 def _make_mlx_presence_penalty_processor(penalty: float):
     """Presence penalty as an mlx_lm/mlx_vlm logits processor, matching the safetensors path.
-
-    generate_step calls processors as ``fn(tokens, logits)`` with ``tokens`` the
-    full running sequence; the first call is prompt-only, so latch that length
-    and penalize only after it.
-    """
+    generate_step calls processors as ``fn(tokens, logits)`` with ``tokens`` the full running
+    sequence; the first call is prompt-only, so latch that length and penalize only after it."""
     state = {"prompt_len": None}
 
     def _processor(tokens, logits):
@@ -1343,17 +2242,14 @@ def _make_mlx_presence_penalty_processor(penalty: float):
         import mlx.core as mx
 
         vocab = logits.shape[-1]
-        # Bound ids to [0, vocab) before indexing logits: MLX does no bounds
-        # checking and out-of-bounds indexing is undefined behavior (crash /
-        # corruption), unlike torch's harmless negative wrap. MLX also lacks
-        # boolean-mask filtering, so out-of-range/negative ids route to a
-        # scratch slot at index vocab (dropped before the subtract) that never
-        # collides with a real token: real ids (including 0) are penalized
-        # once, strays ignored.
+        # Bound ids to [0, vocab) before indexing logits: MLX does no bounds checking and out-of-bounds indexing is
+        # undefined behavior (crash / corruption), unlike torch's harmless negative wrap. MLX also lacks boolean-mask
+        # filtering, so out-of-range/negative ids route to a scratch slot at index vocab (dropped before the subtract)
+        # that never collides with a real token: real ids (including 0) are penalized once, strays ignored.
         valid = (generated >= 0) & (generated < vocab)
         safe = mx.where(valid, generated, vocab).astype(mx.int32)
-        # Scatter penalty into a (vocab + 1)-wide mask: duplicate ids are
-        # idempotent (presence applies once per token); scratch column dropped.
+        # Scatter penalty into a (vocab + 1)-wide mask: duplicate ids are idempotent (presence applies once per
+        # token); scratch column dropped.
         mask = mx.zeros((vocab + 1,), dtype = logits.dtype)
         mask[safe] = penalty
         logits = logits - mask[:vocab]
@@ -1363,14 +2259,11 @@ def _make_mlx_presence_penalty_processor(penalty: float):
 
 
 def _make_mlx_frequency_penalty_processor(penalty: float):
-    """Frequency penalty as an mlx_lm/mlx_vlm logits processor.
-
-    Identical to the presence processor except the scatter *accumulates*, so a
-    token repeated N times in the completion is charged N × penalty. It counts
-    occurrences and scales once, in float32: accumulating the penalty itself in
-    a float16 logits dtype rounds on every repeat, which drifts by tens of
-    logits over a long run (1000 repeats at 0.3 lands on -274.25, not -300).
-    """
+    """Frequency penalty as an mlx_lm/mlx_vlm logits processor. Identical to the presence processor
+    except the scatter *accumulates*, so a token repeated N times in the completion is charged N
+    x penalty. It counts occurrences and scales once, in float32: accumulating the penalty itself
+    in a float16 logits dtype rounds on every repeat, which drifts by tens of logits over a long
+    run (1000 repeats at 0.3 lands on -274.25, not -300)."""
     state = {"prompt_len": None}
 
     def _processor(tokens, logits):
@@ -1392,13 +2285,10 @@ def _make_mlx_frequency_penalty_processor(penalty: float):
 
 
 def _make_mlx_logit_bias_processor(logit_bias: dict):
-    """Additive logit bias as an mlx_lm/mlx_vlm logits processor.
-
-    mlx_lm's own ``logit_bias`` processor indexes logits with the raw client
-    ids; MLX does no bounds checking, so a bias on an id past the model's logit
-    width is undefined behavior. Route strays to the same discarded scratch
-    slot the penalty processors use.
-    """
+    """Additive logit bias as an mlx_lm/mlx_vlm logits processor. mlx_lm's own ``logit_bias``
+    processor indexes logits with the raw client ids; MLX does no bounds checking, so a bias on
+    an id past the model's logit width is undefined behavior. Route strays to the same discarded
+    scratch slot the penalty processors use."""
     state = {"safe": None, "values": None, "vocab": None}
 
     def _processor(tokens, logits):
@@ -1425,15 +2315,11 @@ def _mlx_sampling_processors(
     frequency_penalty: float = 0.0,
     logit_bias = None,
 ):
-    """Logits processors for the sampling knobs, or ``None`` when all are inert.
-
-    Bias runs before the penalties, matching llama-server's sampler order.
-    mlx_lm supplies only the repetition penalty here: its presence and
-    frequency processors window the last 20 tokens *including the prompt*,
-    while the penalties below score the whole completion and exclude it, so
-    using them would make the same request sample differently depending on the
-    backend.
-    """
+    """Logits processors for the sampling knobs, or ``None`` when all are inert. Bias runs before
+    the penalties, matching llama-server's sampler order. mlx_lm supplies only the repetition
+    penalty here: its presence and frequency processors window the last 20 tokens *including the
+    prompt*, while the penalties below score the whole completion and exclude it, so using them
+    would make the same request sample differently depending on the backend."""
     processors = []
     if logit_bias:
         processors.append(_make_mlx_logit_bias_processor(logit_bias))
@@ -1447,11 +2333,91 @@ def _mlx_sampling_processors(
     return processors or None
 
 
-# Families that mlx_vlm inlined before should_add_special_tokens existed: their template
-# already emits the markers, so tokenization must not add them again. Deliberately not the
-# current helper's list, which carries laguna -- only 0.6.9 stopped tokenizing laguna with
-# the markers, and 0.6.0-0.6.8 are what this stands in for.
+# Families that mlx_vlm inlined before should_add_special_tokens existed: their template already emits the markers, so
+# tokenization must not add them again. Deliberately not the current helper's list, which carries laguna -- only 0.6.9
+# stopped tokenizing laguna with the markers, and 0.6.0-0.6.8 are what this stands in for.
 _VLM_INLINE_SPECIAL_TOKEN_FAMILIES = ("gemma3", "gemma3n", "gemma4", "gemma4_unified")
+# First mlx-vlm whose gemma-4 mask overlay skips a resumed suffix's non-square mask (#1445).
+_VLM_MEDIA_BLOCK_MIN_VERSION = "0.6.4"
+
+
+def _vlm_add_special_tokens(model_type, processor):
+    try:
+        from mlx_vlm.utils import should_add_special_tokens
+        return should_add_special_tokens(model_type, processor)
+    except Exception:
+        # The rule those releases inline, which Studio's runtime gate still accepts.
+        return (
+            getattr(processor, "chat_template", None) is None
+            if model_type in _VLM_INLINE_SPECIAL_TOKEN_FAMILIES
+            else True
+        )
+
+
+class _VLMMediaBlock:
+    """A prompt's rows through its last vision token, prefilled by Studio: models whose vision
+    tokens attend to each other prefill in one forward that lands off the grid, and this is that
+    forward cut where the grid can continue."""
+
+    def __init__(self, model, processor, prompt, images, make_cache):
+        from mlx_vlm.utils import prepare_inputs
+
+        self._model = model
+        self._make_cache = make_cache
+        config = getattr(model, "config", None)
+        read = config.get if isinstance(config, dict) else lambda attr: getattr(config, attr, None)
+        self._inputs = prepare_inputs(
+            processor,
+            images = images,
+            prompts = prompt,
+            image_token_index = read("image_token_index"),
+            add_special_tokens = _vlm_add_special_tokens(read("model_type"), processor),
+        )
+
+    def generate_kwargs(self):
+        inputs = dict(self._inputs)
+        return {
+            "input_ids": inputs.pop("input_ids"),
+            "pixel_values": inputs.pop("pixel_values", None),
+            "mask": inputs.pop("attention_mask", None),
+            **inputs,
+        }
+
+    def rows(self, token_ids):
+        ids = self._inputs["input_ids"]
+        if ids.shape[0] != 1 or ids[0].tolist() != list(token_ids):
+            return 0
+        types = self._inputs.get("mm_token_type_ids", self._inputs.get("token_type_ids"))
+        if types is None:
+            return 0
+        visual = [index for index, kind in enumerate(types[0].tolist()) if kind in (1, 2)]
+        return visual[-1] + 1 if visual else 0
+
+    def prefill(self, forward, rows):
+        import mlx.core as mx
+
+        inputs = self._inputs
+        extra = {
+            key: value
+            for key, value in inputs.items()
+            if key not in ("input_ids", "pixel_values", "attention_mask")
+        }
+        features = self._model.get_input_embeddings(
+            input_ids = inputs["input_ids"], pixel_values = inputs.get("pixel_values"), **extra
+        )
+        kwargs = {
+            key: extra[key][:, :rows]
+            for key in ("mm_token_type_ids", "token_type_ids")
+            if key in extra
+        }
+        if features.per_layer_inputs is not None:
+            kwargs["per_layer_inputs"] = features.per_layer_inputs[:, :rows]
+        entries = self._make_cache()
+        forward.unrecorded(
+            inputs = None, inputs_embeds = features.inputs_embeds[:, :rows], cache = entries, **kwargs
+        )
+        mx.eval([entry.state for entry in entries])
+        return entries
 
 
 class MLXInferenceBackend:
@@ -1462,14 +2428,15 @@ class MLXInferenceBackend:
         self.loaded_local_models = []
         self.device = "mlx"
         self._generation_lock = threading.Lock()
-        # usage, timings and terminal reason of the latest generation,
-        # shipped on gen_done.
+        # usage, timings and terminal reason of the latest generation, shipped on gen_done.
         self.last_generation_stats = None
 
         self._model = None
+        self._model_fusion = ExitStack()
         self._tokenizer = None
         self._processor = None
         self._is_vlm = False
+        self._multi_image_marker = None
         self._config = {}
         self._distributed_group = None
         self._distributed_rank = 0
@@ -1478,15 +2445,18 @@ class MLXInferenceBackend:
         # Recorded for unload to release pinned memory back to the OS.
         self._memory_limits_applied = {}
 
-        # Load-time runtime knobs; every generation path reads them from here rather
-        # than from per-request kwargs. Bound now so a load that fails before
-        # installing leaves readers a dict rather than raising.
+        # Load-time runtime knobs; every generation path reads them from here rather than from per-request kwargs.
+        # Bound now so a load that fails before installing leaves readers a dict rather than raising.
         self._kv_quant = _kv_quant_status(None, None, False)
         self._kv_cache_window = None
+        self._served_context = None
         self._template_override = _template_override_status(None, None, None)[1]
 
         self._prompt_cache_history = None
         self._prompt_cache_unavailable = False
+        self._vlm_snapshot_store = None
+        self._vlm_snapshot_store_unavailable = False
+        self._vlm_is_diffusion_model = None
 
     def _prompt_cache(self):
         if self._prompt_cache_history is not None or self._prompt_cache_unavailable:
@@ -1516,6 +2486,133 @@ class MLXInferenceBackend:
     def _clear_prompt_cache(self):
         self._prompt_cache_history = None
         self._prompt_cache_unavailable = False
+        self._vlm_snapshot_store = None
+        self._vlm_snapshot_store_unavailable = False
+        self._vlm_is_diffusion_model = None
+
+    def _release_vlm_snapshots(self):
+        store = getattr(self, "_vlm_snapshot_store", None)
+        if store is not None:
+            store.clear()
+
+    def _vlm_prompt_cache_store(self):
+        if self._vlm_snapshot_store is not None or self._vlm_snapshot_store_unavailable:
+            return self._vlm_snapshot_store
+        max_bytes = _prompt_cache_max_bytes(self._memory_limits_applied.get("recommended_gb"))
+        if max_bytes <= 0:
+            self._vlm_snapshot_store_unavailable = True
+            logger.info("MLX VLM prompt cache disabled by budget")
+            return None
+        # Needs a dispatcher that primes mRoPE state, reports reuse and routes diffusion itself: all three arrived
+        # with cached_tokens.
+        try:
+            from mlx_vlm.generate import GenerationResult
+            from mlx_vlm.generate.diffusion import is_diffusion_model
+            if not hasattr(GenerationResult, "cached_tokens"):
+                raise ImportError("GenerationResult has no cached_tokens")
+        except ImportError as exc:
+            self._vlm_snapshot_store_unavailable = True
+            logger.info(
+                "MLX VLM prompt cache needs a newer mlx-vlm (%s); prefilling every request", exc
+            )
+            return None
+        self._vlm_is_diffusion_model = is_diffusion_model
+        self._vlm_snapshot_store = VLMPromptSnapshotStore(max_bytes)
+        logger.info("MLX VLM prompt cache: %.2f GB budget", max_bytes / 1e9)
+        return self._vlm_snapshot_store
+
+    @staticmethod
+    def _vlm_media_token_ids(config):
+        ids = set()
+        for attr in ("image_token_id", "image_token_index", "video_token_id", "video_token_index"):
+            value = config.get(attr) if isinstance(config, dict) else getattr(config, attr, None)
+            if value is not None:
+                ids.add(int(value))
+        return ids
+
+    @staticmethod
+    def _vlm_image_digest(images):
+        digest = hashlib.sha256()
+        for image in images:
+            # What the tower sees: RGB, so palette indices and alpha decide nothing.
+            rgb = image.convert("RGB")
+            digest.update(f"{rgb.size}:{image.getexif().get(0x0112, 1)}:".encode())
+            digest.update(rgb.tobytes())
+        return digest.hexdigest()[:16]
+
+    @staticmethod
+    def _vlm_bidirectional_vision(model):
+        config = getattr(getattr(model, "language_model", model), "config", None)
+        return getattr(config, "use_bidirectional_attention", None) == "vision"
+
+    def _vlm_prompt_cache_session(
+        self,
+        adapter_state,
+        images = None,
+        prompt = None,
+        has_video = False,
+    ):
+        store = self._vlm_prompt_cache_store()
+        if store is None or self._vlm_is_diffusion_model(self._model):
+            # Diffusion generation never consults the prefix hook.
+            return None
+        if has_video:
+            # Keyed by token ids the clip does not vary: a later clip would resume the first
+            # one's mRoPE grid.
+            return None
+        media_ids = self._vlm_media_token_ids(getattr(self._model, "config", None))
+        if images and not media_ids:
+            # Neither side can tell where the image's rows end without them.
+            return None
+        try:
+            from mlx_vlm.models.cache import make_prompt_cache
+
+            language_model = getattr(self._model, "language_model", self._model)
+            window = self._kv_cache_window
+            # Base-vs-LoRA compare must not serve one side's KV to the other.
+            key = f"{self.active_model_name}|{adapter_state!r}"
+            if images:
+                key += f"|{self._vlm_image_digest(images)}"
+            make_cache = lambda: make_prompt_cache(language_model, max_kv_size = window)
+            block = self._vlm_media_block(prompt, images, make_cache)
+            return VLMPromptCacheSession(
+                store,
+                key,
+                language_model,
+                make_cache,
+                media_token_ids = media_ids,
+                releases_unserved = bool(images),
+                media_block = block,
+                policy_hosts = (self._model, language_model) if block is not None else (),
+                step = vlm_prefill_step(),
+            )
+        except Exception as exc:
+            # A layout that cannot be built once cannot be built later.
+            self._vlm_snapshot_store = None
+            self._vlm_snapshot_store_unavailable = True
+            logger.info("MLX VLM prompt cache unavailable (%s); prefilling every request", exc)
+            return None
+
+    @staticmethod
+    def _vlm_media_block_available():
+        try:
+            import mlx_vlm
+            from packaging.version import Version
+            return Version(mlx_vlm.__version__) >= Version(_VLM_MEDIA_BLOCK_MIN_VERSION)
+        except Exception:
+            return False
+
+    def _vlm_media_block(self, prompt, images, make_cache):
+        if not images or prompt is None or not self._vlm_bidirectional_vision(self._model):
+            return None
+        if not self._vlm_media_block_available():
+            return None
+        try:
+            return _VLMMediaBlock(self._model, self._processor, prompt, images, make_cache)
+        except Exception as exc:
+            # This request prefills the image as before; the store stays.
+            logger.info("MLX VLM prompt cache: media block not prepared (%s)", exc)
+            return None
 
     def _prepare_prompt_cache(self, prompt, adapter_state):
         history = self._prompt_cache()
@@ -1532,30 +2629,41 @@ class MLXInferenceBackend:
             return prompt, None, None, None, 0
         return rest, cache, key, tokens, len(tokens) - len(rest)
 
-    def _kv_quant_generate_kwargs(self):
-        """Load-time runtime knobs for a generate call, empty when unset.
+    def _unset_generation_budget(
+        self,
+        prompt,
+        prompt_tokens = None,
+    ):
+        """Free context for an unset limit, or the default if the prompt cannot be counted."""
+        try:
+            prompt_n = (
+                len(prompt_tokens)
+                if prompt_tokens is not None
+                else self._count_prompt_tokens(prompt)
+            )
+        except Exception as exc:
+            logger.debug("MLX prompt count for an unset budget failed: %s", exc)
+            return UNSET_GENERATION_BUDGET
+        return generation_budget_for_window(self._served_context, prompt_n, None)
 
-        quantized_kv_start is deliberately not passed: mlx-lm and mlx-vlm ship
-        different defaults (0 and 5000) and each runtime keeps its own.
-        """
+    def _kv_quant_generate_kwargs(self):
+        """Load-time runtime knobs for a generate call, empty when unset. quantized_kv_start is
+        deliberately not passed: mlx-lm and mlx-vlm ship different defaults (0 and 5000) and each
+        runtime keeps its own."""
         kv_bits = (getattr(self, "_kv_quant", None) or {}).get("kv_bits")
         return {} if kv_bits is None else {"kv_bits": kv_bits}
 
     def _kv_window_generate_kwargs(self):
-        """The cache bound for a generation that builds its own cache, empty when unset.
-
-        Both runtimes read it only when no prompt_cache is passed, so this covers the
-        request that reaches generation without one rather than duplicating the bound.
-        """
+        """The cache bound for a generation that builds its own cache, empty when unset. Both
+        runtimes read it only when no prompt_cache is passed, so this covers the request that
+        reaches generation without one rather than duplicating the bound."""
         window = getattr(self, "_kv_cache_window", None)
         return {} if window is None else {"max_kv_size": window}
 
     def _encode_prompt(self, prompt):
-        """The tokens a generation sends for this prompt.
-
-        A template that already emitted the BOS would otherwise get a second one, shifting
-        every cached-prefix comparison and overstating a counted prompt by one.
-        """
+        """The tokens a generation sends for this prompt. A template that already emitted the BOS
+        would otherwise get a second one, shifting every cached-prefix comparison and overstating
+        a counted prompt by one."""
         bos = getattr(self._tokenizer, "bos_token", None)
         return list(
             self._tokenizer.encode(
@@ -1563,13 +2671,18 @@ class MLXInferenceBackend:
             )
         )
 
-    def _configure_memory_limits(self):
-        """Apply Metal memory caps before loading a model.
+    def _count_prompt_tokens(self, prompt):
+        """Prompt length as generation tokenizes it; vision models follow mlx_vlm's marker rule."""
+        if not self._is_vlm:
+            return len(self._encode_prompt(prompt))
+        model_type = getattr(getattr(self._model, "config", None), "model_type", None)
+        add_special = _vlm_add_special_tokens(model_type, self._processor)
+        return len(self._tokenizer.encode(prompt, add_special_tokens = add_special))
 
-        memory_limit = 85% of recommended working-set;
-        wired_limit = min(recommended, memory_limit). Recorded so unload can
-        lower wired_limit back to release pinned RAM.
-        """
+    def _configure_memory_limits(self):
+        """Apply Metal memory caps before loading a model. memory_limit = 85% of recommended
+        working-set; wired_limit = min(recommended, memory_limit). Recorded so unload can lower
+        wired_limit back to release pinned RAM."""
         import mlx.core as mx
 
         if not mx.metal.is_available():
@@ -1597,15 +2710,15 @@ class MLXInferenceBackend:
     def _resolve_context_lengths(self, model, max_seq_length):
         """Resolve (served, native, ceiling) for a freshly loaded model.
 
-        Mirrors the GGUF resolution order: whatever the load attached or was asked for is
-        honored verbatim, while asking for nothing takes the trained window. The served
-        length is what bounds the KV cache, where the architecture allows it.
+        Mirrors the GGUF resolution order: whatever the load attached or was asked for is honored
+        verbatim, while asking for nothing takes the trained window. The served length is what
+        bounds the KV cache, where the architecture allows it.
 
-        The served value is held to the same ceiling a request is (LoadRequest bounds
-        max_seq_length at MAX_REQUESTABLE_CONTEXT), because it drives the cache and the
-        usage bar's denominator. Llama-4 Scout declares 10,485,760, ten times that: served
-        unclamped would make the bar meaningless and name a length no control can ask for.
-        The native window is reported as read, since it is metadata about the model.
+        The served value is held to the same ceiling a request is (LoadRequest bounds max_seq_length
+        at MAX_REQUESTABLE_CONTEXT), because it drives the cache and the usage bar's denominator.
+        Llama-4 Scout declares 10,485,760, ten times that: served unclamped would make the bar
+        meaningless and name a length no control can ask for. The native window is reported as read,
+        since it is metadata about the model.
         """
         native = mlx_native_context_length(model)
         served = runtime_context_length(model, max_seq_length) or native
@@ -1615,11 +2728,9 @@ class MLXInferenceBackend:
         return served, native, native
 
     def _kv_cache_window_enforceable(self, served):
-        """Whether a cache built for this model would really cap at *served*.
-
-        A probe that could not run counts as not enforceable: claiming a bound nobody
-        confirmed is what makes the setting look like it works.
-        """
+        """Whether a cache built for this model would really cap at *served*. A probe that could not
+        run counts as not enforceable: claiming a bound nobody confirmed is what makes the
+        setting look like it works."""
         if not served or served <= 0:
             return False
         enforced = _kv_window_enforced(self._model, self._is_vlm, int(served))
@@ -1640,18 +2751,18 @@ class MLXInferenceBackend:
     def _resolve_kv_policy(self, is_vlm, kv_bits, max_seq_length, served):
         """The quantization status and cache window this load will run with.
 
-        Rotation is what keeps a long conversation inside the window, so nothing here can
-        refuse a request; the model simply stops attending to the oldest tokens.
+        Rotation is what keeps a long conversation inside the window, so nothing here can refuse a
+        request; the model simply stops attending to the oldest tokens.
 
-        Quantization cannot coexist with a bound -- a rotating cache has no conversion,
-        and mlx-lm converts from the first token -- so an enforceable pin, an explicit
-        instruction about memory, outranks it. A window the backend chose for itself
-        yields to an explicitly requested quantization, and so does a pin that cannot be
-        enforced, which would otherwise spend the quantization and bound nothing.
+        Quantization cannot coexist with a bound -- a rotating cache has no conversion, and mlx-lm
+        converts from the first token -- so an enforceable pin, an explicit instruction about
+        memory, outranks it. A window the backend chose for itself yields to an explicitly requested
+        quantization, and so does a pin that cannot be enforced, which would otherwise spend the
+        quantization and bound nothing.
         """
         pinned = _positive_int(max_seq_length) is not None
-        # Tri-state: True bounded, False confirmed unbounded, None unjudgeable. Only True
-        # installs a bound; the other two stay apart so a client can tell them apart.
+        # Tri-state: True bounded, False confirmed unbounded, None unjudgeable. Only True installs a bound; the other
+        # two stay apart so a client can tell them apart.
         confirmed = self._kv_cache_window_enforceable(served)
         enforceable = confirmed is True
         quant = _kv_quant_status(
@@ -1661,8 +2772,8 @@ class MLXInferenceBackend:
             pinned and enforceable,
         )
         if not enforceable or (quant["kv_bits"] is not None and not pinned):
-            # No bound installed, so False wherever the probe answered at all; None only
-            # where nothing could be built to judge.
+            # No bound installed, so False wherever the probe answered at all; None only where nothing could be built
+            # to judge.
             return quant, None, None if confirmed is None else False
         logger.info("MLX KV cache limited to %d tokens", int(served))
         return quant, int(served), True
@@ -1683,8 +2794,7 @@ class MLXInferenceBackend:
     ) -> bool:
         import mlx.core as mx
 
-        # Keep the token so the native-template fallback can fetch a gated
-        # model's repo template during generation.
+        # Keep the token so the native-template fallback can fetch a gated model's repo template during generation.
         self._hf_token = hf_token
         model_name = config.identifier if hasattr(config, "identifier") else str(config)
         is_vision = getattr(config, "is_vision", False)
@@ -1694,10 +2804,9 @@ class MLXInferenceBackend:
         self._distributed_rank = distributed_rank
         self._distributed_world_size = distributed_size
 
-        # GGUF guard: GGUF is served by llama-server in the parent process,
-        # not mlx-lm. Reaching here with is_gguf=True means the route's
-        # detection flaked but the subprocess re-detected GGUF; raise loudly
-        # instead of a cryptic mlx_lm error.
+        # GGUF guard: GGUF is served by llama-server in the parent process, not mlx-lm. Reaching here with
+        # is_gguf=True means the route's detection flaked but the subprocess re-detected GGUF; raise loudly instead of
+        # a cryptic mlx_lm error.
         if getattr(config, "is_gguf", False):
             raise RuntimeError(
                 f"MLXInferenceBackend cannot load GGUF model '{model_name}': "
@@ -1759,6 +2868,9 @@ class MLXInferenceBackend:
             else:
                 load_kwargs["tensor_group"] = distributed_group
 
+        # Freed before the replacement weights are allocated, for headroom.
+        self._model_fusion.close()
+        self._clear_prompt_cache()
         model, tokenizer_or_processor = FastMLXModel.from_pretrained(
             model_name,
             **load_kwargs,
@@ -1786,9 +2898,9 @@ class MLXInferenceBackend:
         _served_ctx, _native_ctx, _max_ctx = self._resolve_context_lengths(
             self._model, max_seq_length
         )
-        # Classify before the first generation: an ineligible cache would otherwise
-        # raise inside maybe_quantize_kv_cache mid-stream, after converting the
-        # leading entries.
+        self._served_context = _served_ctx
+        # Classify before the first generation: an ineligible cache would otherwise raise inside
+        # maybe_quantize_kv_cache mid-stream, after converting the leading entries.
         self._kv_quant, self._kv_cache_window, _ctx_enforced = self._resolve_kv_policy(
             is_vision, kv_bits, max_seq_length, _served_ctx
         )
@@ -1799,10 +2911,9 @@ class MLXInferenceBackend:
                 self._kv_quant["eligibility"],
             )
 
-        # Captured before installing, so chat_template_info keeps reporting what the
-        # model shipped with. From the render target, not the nested tokenizer: on a
-        # processor owning its own template those differ, and saving the wrong
-        # default back would install the tokenizer's template over the processor.
+        # Captured before installing, so chat_template_info keeps reporting what the model shipped with. From the
+        # render target, not the nested tokenizer: on a processor owning its own template those differ, and saving the
+        # wrong default back would install the tokenizer's template over the processor.
         native_source = _native_template_source(self._tokenizer, self._processor)
         native_template = getattr(native_source, "chat_template", None)
         native_marks_audio = bool(
@@ -1819,16 +2930,21 @@ class MLXInferenceBackend:
         )
         if native_marks_audio:
             _revoke_override_that_drops_audio(self._template_override, self._processor, self._model)
-        # Unconditional for vision, unlike audio: a native template that marks
-        # nothing still renders images through _generate_vlm's recovery, but an
-        # override rendering plain text drops the image in silence, so gating on
-        # the native template would skip exactly the models needing the check.
+        # Unconditional for vision, unlike audio: a native template that marks nothing still renders images through
+        # _generate_vlm's recovery, but an override rendering plain text drops the image in silence, so gating on the
+        # native template would skip exactly the models needing the check.
         if is_vision:
             _revoke_override_that_drops_image(
                 self._template_override, self._tokenizer, self._processor, image_placeholder
             )
-        # Released once the media checks are done: the pairs reference the tokenizer
-        # and processor, so keeping them would outlive the unload that nulls both.
+        # After the override settles, so the probe measures the template generation will use.
+        self._multi_image_marker = (
+            _scaling_image_marker(self._tokenizer, self._processor, self._model)
+            if is_vision and _model_type_takes_several_images(self._model)
+            else None
+        )
+        # Released once the media checks are done: the pairs reference the tokenizer and processor, so keeping them
+        # would outlive the unload that nulls both.
         self._template_override["restore"] = []
         if self._template_override["reason"]:
             logger.info(
@@ -1855,16 +2971,17 @@ class MLXInferenceBackend:
             "is_audio": _audio_type is not None and _audio_type != "audio_vlm",
             "audio_type": _audio_type,
             "has_audio_input": is_audio_input_type(_audio_type),
+            "has_video_input": is_vision and _mlx_reads_video(self._processor),
             "context_length": _served_ctx,
-            # Parity with llama.cpp's requested_n_ctx: the served window cannot say
-            # whether anything was asked for, and that decides reuse and "pinned".
+            # Parity with llama.cpp's requested_n_ctx: the served window cannot say whether anything was asked for,
+            # and that decides reuse and "pinned".
             "requested_context_length": _positive_int(max_seq_length) or 0,
             # Nothing measures the machine, so window and ceiling coincide.
             "native_context_length": _native_ctx,
             "max_context_length": _max_ctx,
-            # Whether the served window actually bounds the cache: True confirmed on a
-            # real cache, False confirmed unbounded, None nothing could be built to judge.
-            # Without it the API reports a limit a client cannot tell from an enforced one.
+            # Whether the served window actually bounds the cache: True confirmed on a real cache, False confirmed
+            # unbounded, None nothing could be built to judge. Without it the API reports a limit a client cannot tell
+            # from an enforced one.
             "context_length_enforced": _ctx_enforced,
             "mlx_kv_bits": self._kv_quant["kv_bits"],
             "mlx_kv_bits_requested": self._kv_quant["requested_kv_bits"],
@@ -1877,16 +2994,17 @@ class MLXInferenceBackend:
         # Capture chat_template_info for the worker IPC reply and route capability classification.
         self._populate_chat_template_info(model_name, native_template)
 
+        # The worker owns fixed base weights until unload; adapter requests stay scoped.
+        if not is_lora:
+            self._model_fusion.enter_context(_mlx_fused_moe_gate_up(model))
         logger.info("Model %s loaded successfully", model_name)
         return True
 
     def _render_template_probe(self, is_vision: bool) -> str:
-        """Render a short conversation through the path generation will use.
-
-        Must use the same target the real request does. The recovery renderer
-        returns None instead of raising for a model outside mlx-vlm's family
-        list, so probing it would pass a template that cannot render at all.
-        """
+        """Render a short conversation through the path generation will use. Must use the same
+        target the real request does: the recovery renderer returns None instead of raising for a
+        model outside mlx-vlm's family list, so probing it would pass a template that cannot
+        render at all."""
         from core.inference.chat_template_helpers import (
             apply_chat_template_for_generation,
             chat_render_target,
@@ -1908,13 +3026,10 @@ class MLXInferenceBackend:
         model_name: str,
         native_template = _TEMPLATE_NOT_CAPTURED,
     ) -> None:
-        """Mirror InferenceBackend._load_chat_template_info for MLX.
-
-        Stores ``chat_template_info`` on ``self.models[model_name]``. The
-        template recorded is the one the model shipped with, not an override:
-        the capability classification and the editor's notion of "default"
-        both read it, so an override installed on the tokenizer must not
-        show up here."""
+        """Mirror InferenceBackend._load_chat_template_info for MLX. Stores ``chat_template_info``
+        on ``self.models[model_name]``. The template recorded is the one the model shipped with,
+        not an override: the capability classification and the editor's notion of "default" both
+        read it, so an override installed on the tokenizer must not show up here."""
         entry = self.models.get(model_name)
         if not entry:
             return
@@ -1931,6 +3046,7 @@ class MLXInferenceBackend:
             # The body _generate_vlm renders an image turn with, not the tokenizer body.
             "processor_template": None,
             "renders_image": False,
+            "accepts_multiple_images": False,
         }
         from core.inference.chat_template_helpers import (
             chat_render_target as _chat_render_target,
@@ -1944,6 +3060,9 @@ class MLXInferenceBackend:
         if isinstance(_proc_tpl, (str, dict, list, tuple)) and _proc_tpl:
             info["processor_template"] = _proc_tpl
         info["renders_image"] = _proc is not None and bool(getattr(self, "_is_vlm", False))
+        info["accepts_multiple_images"] = info["renders_image"] and bool(
+            getattr(self, "_multi_image_marker", None)
+        )
         try:
             tpl = (
                 getattr(tok, "chat_template", None)
@@ -1976,6 +3095,7 @@ class MLXInferenceBackend:
         import mlx.core as mx
         import gc
 
+        self._model_fusion.close()
         if model_name in self.models:
             del self.models[model_name]
         self._model = None
@@ -2011,10 +3131,8 @@ class MLXInferenceBackend:
         preserve_thinking = None,
         continue_final_message = False,
     ):
-        """Render the prompt a text generation sends, with its template metadata.
-
-        Shared with counting, so a count cannot price a prompt the model never sees.
-        """
+        """Render the prompt a text generation sends, with its template metadata. Shared with
+        counting, so a count cannot price a prompt the model never sees."""
         from core.inference.chat_template_helpers import (
             apply_chat_template_for_generation,
             render_with_native_template_fallback,
@@ -2032,10 +3150,9 @@ class MLXInferenceBackend:
         if prompt is None:
             raise RuntimeError("apply_chat_template returned None — tokenizer may be incompatible")
 
-        # Parity with the transformers backend: if the template dropped the requested
-        # tools, fall back to the native template so MLX text models keep advertising
-        # them. self._tokenizer is this entry's tokenizer, so probe and native render
-        # share a renderer. (VLM renders via the processor for image tokens.)
+        # Parity with the transformers backend: if the template dropped the requested tools, fall back to the native
+        # template so MLX text models keep advertising them. self._tokenizer is this entry's tokenizer, so probe and
+        # native render share a renderer. (VLM renders via the processor for image tokens.)
         model_info = self.models.get(self.active_model_name, {})
         return render_with_native_template_fallback(
             formatted_prompt = prompt,
@@ -2054,11 +3171,8 @@ class MLXInferenceBackend:
 
     @staticmethod
     def _with_system_prompt(messages, system_prompt):
-        """The conversation a request carrying this system prompt turns into.
-
-        Shared with generation, which takes the system prompt beside the messages rather
-        than inside them.
-        """
+        """The conversation a request carrying this system prompt turns into. Shared with
+        generation, which takes the system prompt beside the messages rather than inside them."""
         full_messages = []
         if system_prompt:
             full_messages.append({"role": "system", "content": system_prompt})
@@ -2075,19 +3189,16 @@ class MLXInferenceBackend:
         reasoning_effort = None,
         preserve_thinking = None,
     ) -> int:
-        """Prompt tokens this model would receive for these messages.
-
-        Renders and tokenizes exactly as generation does.
-        """
+        """Prompt tokens this model would receive for these messages. Renders and tokenizes exactly
+        as generation does."""
         if self._model is None:
             raise RuntimeError("No model loaded")
         full_messages = self._with_system_prompt(messages, system_prompt)
 
         if self._is_vlm:
-            # Through the processor, which is what a vision generation renders with; the
-            # text renderer would not recover the template failures it recovers from.
-            # images=None: an image anywhere in the conversation makes the structured-item
-            # check raise, and the caller declines rather than pricing a prompt without it.
+            # Through the processor, which is what a vision generation renders with; the text renderer would not
+            # recover the template failures it recovers from. images=None: an image anywhere in the conversation makes
+            # the structured-item check raise, and the caller declines rather than pricing a prompt without it.
             prompt, _ = self._render_vlm_prompt(
                 full_messages,
                 None,
@@ -2096,21 +3207,7 @@ class MLXInferenceBackend:
                 reasoning_effort = reasoning_effort,
                 preserve_thinking = preserve_thinking,
             )
-            # Whether the markers belong to the template or to tokenization is a per-model
-            # answer mlx_vlm makes for every generation; ask it rather than guess, or the
-            # count is off by whatever the generation's own choice would have added.
-            _model_type = getattr(getattr(self._model, "config", None), "model_type", None)
-            try:
-                from mlx_vlm.utils import should_add_special_tokens
-                add_special = should_add_special_tokens(_model_type, self._processor)
-            except Exception:
-                # The rule those releases inline, which Studio's runtime gate still accepts.
-                add_special = (
-                    getattr(self._processor, "chat_template", None) is None
-                    if _model_type in _VLM_INLINE_SPECIAL_TOKEN_FAMILIES
-                    else True
-                )
-            return len(self._tokenizer.encode(prompt, add_special_tokens = add_special))
+            return self._count_prompt_tokens(prompt)
 
         render_result = self._render_text_prompt(
             full_messages,
@@ -2119,13 +3216,15 @@ class MLXInferenceBackend:
             reasoning_effort = reasoning_effort,
             preserve_thinking = preserve_thinking,
         )
-        return len(self._encode_prompt(render_result.prompt))
+        return self._count_prompt_tokens(render_result.prompt)
 
     def generate_chat_response(
         self,
         messages,
         system_prompt = "",
         image = None,
+        images = None,
+        image_ordinal = None,
         temperature = 0.7,
         top_p = 0.9,
         top_k = 40,
@@ -2145,19 +3244,33 @@ class MLXInferenceBackend:
         logit_bias = None,
         stop = None,
         _adapter_state = None,
+        # Unrestricted mode runs the tool protocol with an EMPTY tools list, so bool(tools)
+        # cannot tell that the wrappers below still have to survive decoding.
+        tool_protocol_active = None,
+        video = None,
     ) -> Generator[str, None, None]:
         if self._model is None:
             raise RuntimeError("No model loaded")
+        if video is not None:
+            if not _mlx_vlm_decodes_video():
+                raise RuntimeError("The installed mlx-vlm does not read video.")
+            if not self._is_vlm:
+                raise RuntimeError("The loaded model does not read video.")
 
         # Reset so a failed run cannot surface stale stats.
         self.last_generation_stats = None
 
+        full_messages = self._with_system_prompt(messages, system_prompt)
+
+        # History first, the attachment last: MLX binds pixels to markers in order.
+        attached = list(images or []) + ([image] if image is not None else [])
         # Shared with the transformers vision path so both render the same turns (#10092).
-        if self._is_vlm and image is not None:
+        if self._is_vlm and (attached or video is not None):
             # Processor templates want part lists, the tokenizer fallback wants strings.
             from core.inference.chat_template_helpers import (
                 chat_render_target as _chat_render_target,
             )
+
             _renders_via_processor = (
                 self._processor is not None
                 and _chat_render_target(self._processor) is self._processor
@@ -2166,14 +3279,41 @@ class MLXInferenceBackend:
                 messages,
                 system_prompt = system_prompt,
                 structured_content = _renders_via_processor,
+                image = len(attached),
+                video = video is not None,
             )
-        else:
-            full_messages = self._with_system_prompt(messages, system_prompt)
+            # That helper leaves a conversation that already carries markers alone,
+            # which is right for a retry but not for replayed MCP pictures: those
+            # markers are not the attachment's, and the render would be one short
+            # for two pixels.
+            _prior_markers = image_marker_parts(full_messages)
+            full_messages = top_up_image_markers(
+                full_messages, len(attached), ordinal = image_ordinal
+            )
+            if image is not None:
+                # Read off the conversation: the attachment's turn can precede a
+                # replayed picture, and pixels bind to markers in document order.
+                attached = pixels_in_marker_order(
+                    full_messages, _prior_markers, list(images or []), image
+                )
+            if len(attached) > 1 and not self._multi_image_marker:
+                # The template marks one image, so replayed pictures cannot each have their
+                # own. Serve the caller's attachment, or else the newest picture, with its marker.
+                keep = next(
+                    (i for i, one in enumerate(attached) if one is image), len(attached) - 1
+                )
+                logger.info(
+                    "Serving 1 of %d images: '%s' marks one image per request.",
+                    len(attached),
+                    self.active_model_name,
+                )
+                full_messages = list(full_messages)
+                trim_image_turns(full_messages, attached, limit = 1, keep = (keep,))
 
         if self._is_vlm:
             stream = self._generate_vlm(
                 full_messages,
-                image,
+                attached,
                 temperature,
                 top_p,
                 top_k,
@@ -2192,6 +3332,8 @@ class MLXInferenceBackend:
                 logit_bias = logit_bias,
                 _adapter_state = _adapter_state,
                 stop = stop,
+                tool_protocol_active = tool_protocol_active,
+                video = video,
             )
         else:
             stream = self._generate_text(
@@ -2214,6 +3356,7 @@ class MLXInferenceBackend:
                 logit_bias = logit_bias,
                 _adapter_state = _adapter_state,
                 stop = stop,
+                tool_protocol_active = tool_protocol_active,
             )
         yield from stream
 
@@ -2243,6 +3386,7 @@ class MLXInferenceBackend:
         frequency_penalty = 0.0,
         logit_bias = None,
         _adapter_state = None,
+        tool_protocol_active = None,
         stop = None,
     ):
         from mlx_lm import stream_generate
@@ -2260,14 +3404,22 @@ class MLXInferenceBackend:
         )
         prompt = render_result.prompt
         reasoning_channel_markers = render_result.reasoning_channel_markers
-        # Not the request flag: a later tool-loop pass keeps it but renders an
-        # ordinary post-tool prompt.
+        # Not the request flag: a later tool-loop pass keeps it but renders an ordinary post-tool prompt.
         _resumed_partial = bool(continue_final_message and trailing_assistant_text(messages))
 
-        # An open <think> prefilled by the template lives in the prompt, not
-        # the generated tokens; re-emit it so the frontend renders the block.
+        # An open <think> prefilled by the template lives in the prompt, not the generated tokens; re-emit it so the
+        # frontend renders the block.
         think_prefix = detect_think_prefill(
-            prompt, getattr(self._tokenizer, "all_special_tokens", None)
+            prompt,
+            getattr(self._tokenizer, "all_special_tokens", None),
+            # Matches native_token_decoder below: when it runs </think> survives, so the
+            # prefilled opener has to be re-emitted with it.
+            preserves_think_close = (
+                bool(tools) or tool_protocol_active or reasoning_channel_markers is not None
+            )
+            and decoder_preserves_token(
+                self._tokenizer, "</think>", reasoning_control_tokens(reasoning_channel_markers)
+            ),
         )
         if seed is None:
             sampler = make_sampler(
@@ -2293,6 +3445,30 @@ class MLXInferenceBackend:
         )
 
         preserve_native_channels = reasoning_channel_markers is not None
+        native_token_decoder = (
+            NativeToolTokenDecoder(
+                self._tokenizer,
+                preserved_tokens = reasoning_control_tokens(reasoning_channel_markers),
+            )
+            if tools or preserve_native_channels or tool_protocol_active
+            else None
+        )
+        # Consulted per token on the reasoning path below, so resolved once here.
+        stop_token_ids = (
+            _mlx_stop_token_ids(self._tokenizer, self._model)
+            if native_token_decoder is not None
+            else ()
+        )
+        streamed_text = (
+            _MlxStreamedText(
+                _mlx_stream_detokenizer(self._tokenizer),
+                native_token_decoder,
+                self._tokenizer,
+                stop_token_ids,
+            )
+            if preserve_native_channels
+            else None
+        )
         token_ids = []
         normalizer = (
             make_reasoning_normalizer(
@@ -2304,18 +3480,24 @@ class MLXInferenceBackend:
             if reasoning_channel_markers is not None
             else None
         )
-        # Sequences match the sampled text, ahead of the prefill this path restores
-        # and the <think> rewriting below: matching delivered text would end turns on
-        # markup the model never wrote, and never find a native marker asked for.
+        # Sequences match the sampled text, ahead of the prefill this path restores and the <think> rewriting below:
+        # matching delivered text would end turns on markup the model never wrote, and never find a native marker
+        # asked for.
         sequences = _mlx_stop_sequences(stop)
         stopped = False
         sampled = ""
         released = 0
-        # MLX consumers diff cumulative snapshots. Keep a prompt-prefilled
-        # <think> prefix on every native-protocol snapshot just as the normal
-        # decoding path does below.
+        # MLX consumers diff cumulative snapshots. Keep a prompt-prefilled <think> prefix on every native-protocol
+        # snapshot just as the normal decoding path does below.
         normalized_output = think_prefix
-        with self._generation_lock, _temporary_mlx_adapter_state(self._model, _adapter_state):
+        with (
+            self._generation_lock,
+            _temporary_mlx_adapter_state(self._model, _adapter_state),
+            _mlx_fused_moe_gate_up(self._model),
+            _mlx_fused_decode_conv_silu(self._model),
+            _mlx_fused_residual_norm(self._model),
+            _mlx_fused_moe_router(self._model),
+        ):
             (
                 gen_prompt,
                 prompt_cache,
@@ -2323,6 +3505,8 @@ class MLXInferenceBackend:
                 prompt_tokens,
                 cached_n,
             ) = self._prepare_prompt_cache(prompt, _adapter_state)
+            if max_new_tokens is None:
+                max_new_tokens = self._unset_generation_budget(prompt, prompt_tokens)
             logger.info(
                 "Generating: prompt_len=%d, cached=%d, max_tokens=%d, model=%s, tokenizer=%s",
                 len(prompt),
@@ -2355,34 +3539,51 @@ class MLXInferenceBackend:
                     final_response = response
                     token_ids.append(response.token)
                     if preserve_native_channels:
-                        sampled += getattr(response, "text", None) or ""
+                        sampled += streamed_text.feed(response)
                         if sequences:
                             cut, stopped = _mlx_stop_cut(sampled, sequences)
                         else:
                             cut = len(sampled)
-                        # Cut before normalizing: the markers the normalizer writes are
-                        # this layer's own, unmatched for the same reason the prefill is.
+                        # Cut before normalizing: the markers the normalizer writes are this layer's own, unmatched
+                        # for the same reason the prefill is.
                         delta = normalizer.feed(sampled[released:cut])
                         released = cut
                         if delta:
                             normalized_output += delta
                             yield normalized_output
                     else:
-                        # Re-decoding every id rebuilds rather than extends, so an
-                        # invalid byte sequence can revise characters already shown.
-                        # Predates stop handling and affects plain replies too.
-                        sampled = self._tokenizer.decode(
-                            token_ids,
-                            skip_special_tokens = True,
-                        )
+                        # Re-decoding every id rebuilds rather than extends, so an invalid byte sequence can revise
+                        # characters already shown. Predates stop handling and affects plain replies too.
+                        if native_token_decoder is not None:
+                            # Some runtimes stop on an allowlisted control (TML Inkling's
+                            # <|end_message|>). Drop only the TRAILING stop id, so the marker
+                            # still closes a real tool envelope.
+                            _ids = list(token_ids)
+                            if _ids and _ids[-1] in _mlx_stop_token_ids(
+                                self._tokenizer, self._model
+                            ):
+                                # Only when the turn has no tool markup: the same marker can
+                                # be the closer strict parsing needs.
+                                _whole = native_token_decoder.decode(_ids)
+                                _closer = _whole[len(native_token_decoder.decode(_ids[:-1])) :]
+                                # With the prefill: a restored ``<think>`` opener lives in the
+                                # PROMPT, so judging the closer on generated ids alone dropped
+                                # the ``</think>`` and left the block open over the answer.
+                                if not closes_an_open_envelope(think_prefix + _whole, _closer):
+                                    _ids = _ids[:-1]
+                            sampled = native_token_decoder.decode(_ids)
+                        else:
+                            sampled = self._tokenizer.decode(
+                                token_ids,
+                                skip_special_tokens = True,
+                            )
                         if not sequences:
                             yield think_prefix + sampled
                         else:
-                            # Matched every step, delivered once at the end: this
-                            # decode revises earlier snapshots, and consumers diff
-                            # them by length, so a revised one splices two renderings
-                            # into text that can spell the sequence itself. A stream
-                            # cannot unsend, so nothing goes out until it settles.
+                            # Matched every step, delivered once at the end: this decode revises earlier snapshots,
+                            # and consumers diff them by length, so a revised one splices two renderings into text
+                            # that can spell the sequence itself. A stream cannot unsend, so nothing goes out until it
+                            # settles.
                             cut, stopped = _mlx_stop_cut(sampled, sequences)
                     if stopped:
                         break
@@ -2401,8 +3602,8 @@ class MLXInferenceBackend:
                 logger.error("stream_generate failed:\n%s", traceback.format_exc())
                 raise
             finally:
-                # Latch final stats here, so a cancel arriving later cannot
-                # rewrite the reason the generation actually ended for.
+                # Latch final stats here, so a cancel arriving later cannot rewrite the reason the generation actually
+                # ended for.
                 if final_response is not None:
                     self.last_generation_stats = _build_generation_stats(
                         getattr(final_response, "prompt_tokens", 0),
@@ -2417,16 +3618,21 @@ class MLXInferenceBackend:
                             max_new_tokens,
                         ),
                     )
-        # The turn's settled text: delivered once for the plain path, as the tail for
-        # the native-channel one. Every snapshot was matched as it arrived, so a turn
-        # no sequence ended owes all of its text, held-back partial included.
-        if sequences:
+        # The turn's settled text: delivered once for the plain path, as the tail for the native-channel one. Every
+        # snapshot was matched as it arrived, so a turn no sequence ended owes all of its text, held-back partial
+        # included.
+        if streamed_text is not None and not stopped:
+            # The flush can carry a whole sequence: it was held back unmatched, not cleared.
+            sampled += streamed_text.finish(sampled)
+            if sequences:
+                cut, stopped = _mlx_stop_cut(sampled, sequences)
+        if sequences or streamed_text is not None:
             if not stopped:
                 cut = len(sampled)
             if normalizer is None:
                 settled = think_prefix + sampled[:cut]
-                # The prefill already went out, so a turn whose settled text is just
-                # the prefill owes no second snapshot saying the same thing.
+                # The prefill already went out, so a turn whose settled text is just the prefill owes no second
+                # snapshot saying the same thing.
                 if settled != think_prefix:
                     yield settled
             else:
@@ -2435,8 +3641,8 @@ class MLXInferenceBackend:
                     normalized_output += delta
                     yield normalized_output
         if normalizer is not None:
-            # A sequence ends the turn as a stop token would, so a reasoning block it
-            # cut inside is closed. Only a cancelled turn drains: more was coming.
+            # A sequence ends the turn as a stop token would, so a reasoning block it cut inside is closed. Only a
+            # cancelled turn drains: more was coming.
             cancelled = not stopped and cancel_event is not None and cancel_event.is_set()
             tail = normalizer.drain() if cancelled else normalizer.finish()
             if tail:
@@ -2450,26 +3656,24 @@ class MLXInferenceBackend:
         messages,
         images,
         *,
+        videos = None,
         tools = None,
         enable_thinking = None,
         reasoning_effort = None,
         preserve_thinking = None,
         continue_final_message = False,
     ):
-        """Render the prompt a vision generation sends, and the target that rendered it.
-
-        Shared with counting, as _render_text_prompt is for text models, so a count cannot
-        price a prompt the model never sees. A text-only conversation passes images=None.
-        """
+        """Render the prompt a vision generation sends, and the target that rendered it. Shared with
+        counting, as _render_text_prompt is for text models, so a count cannot price a prompt the
+        model never sees. A text-only conversation passes images=None."""
         from core.inference.chat_template_helpers import (
             apply_chat_template_for_generation,
             chat_render_target,
         )
 
-        # Pick the chat-template-aware caller: processors with their own
-        # apply_chat_template + chat_template (e.g. Qwen2.5-VL), else the nested tokenizer.
-        # Shared with the healing catalog the route builds ahead of this render, which has
-        # to authorize against the same template this line selects (#7066).
+        # Pick the chat-template-aware caller: processors with their own apply_chat_template + chat_template (e.g.
+        # Qwen2.5-VL), else the nested tokenizer. Shared with the healing catalog the route builds ahead of this
+        # render, which has to authorize against the same template this line selects (#7066).
         chat_target = chat_render_target(self._processor)
 
         attached_images = 0 if images is None else len(images)
@@ -2482,6 +3686,17 @@ class MLXInferenceBackend:
             raise RuntimeError(
                 f"VLM conversation contains {structured_images} structured image "
                 f"item(s) for {attached_images} attached image(s)."
+            )
+        attached_videos = 0 if videos is None else len(videos)
+        structured_videos = sum(
+            _count_vlm_videos(message.get("content"))
+            for message in messages
+            if isinstance(message, dict)
+        )
+        if structured_videos != attached_videos:
+            raise RuntimeError(
+                f"VLM conversation contains {structured_videos} structured video "
+                f"item(s) for {attached_videos} attached video(s)."
             )
         prompt = None
         has_tool_history = _vlm_messages_have_tool_history(messages)
@@ -2507,6 +3722,12 @@ class MLXInferenceBackend:
             raise RuntimeError(
                 f"VLM chat template returned {prompt_issue} and cannot be recovered "
                 "without dropping tool-call history."
+            ) from prompt_error
+        if prompt_issue and attached_videos:
+            # mlx-vlm's registered renderers take image and audio counts only.
+            raise RuntimeError(
+                f"VLM chat template returned {prompt_issue} and cannot be recovered "
+                "for a video turn."
             ) from prompt_error
 
         if images is not None and prompt_issue:
@@ -2553,12 +3774,19 @@ class MLXInferenceBackend:
             prompt = recovered_prompt
         elif prompt_issue:
             raise RuntimeError(f"VLM chat template returned {prompt_issue}.") from prompt_error
+        # mlx-vlm binds pixel_values[i] to the i-th image token: miscounted markers answer wrong.
+        if attached_images > 1 and self._multi_image_marker:
+            marked = prompt.count(self._multi_image_marker)
+            if marked != attached_images:
+                raise RuntimeError(
+                    f"VLM chat template marked {marked} image(s) for {attached_images} attached."
+                )
         return prompt, chat_target
 
     def _generate_vlm(
         self,
         messages,
-        image,
+        images,
         temperature,
         top_p,
         top_k,
@@ -2577,14 +3805,17 @@ class MLXInferenceBackend:
         frequency_penalty = 0.0,
         logit_bias = None,
         _adapter_state = None,
+        tool_protocol_active = None,
         stop = None,
+        video = None,
     ):
         from mlx_vlm import stream_generate as vlm_stream
 
-        images = [image] if image is not None else None
+        images = list(images) if images else None
         prompt, chat_target = self._render_vlm_prompt(
             messages,
             images,
+            videos = [video] if video is not None else None,
             tools = tools,
             enable_thinking = enable_thinking,
             reasoning_effort = reasoning_effort,
@@ -2594,20 +3825,40 @@ class MLXInferenceBackend:
 
         from core.inference.chat_template_helpers import detect_think_prefill
 
+        # Detected once: the decoder keeps the delimiters the normalizer below consumes.
+        vlm_reasoning_markers = detect_reasoning_channel_markers(chat_target, tools = tools)
         # Re-emit an open <think> prefill from the prompt (see _generate_text).
-        prefill = detect_think_prefill(prompt, getattr(chat_target, "all_special_tokens", None))
+        prefill = detect_think_prefill(
+            prompt,
+            getattr(chat_target, "all_special_tokens", None),
+            # The same activation the decoder below uses: in unrestricted mode ``tools`` is
+            # empty while the protocol is live, so ``bool(tools)`` said the closer would be
+            # stripped, the opener was suppressed, and the stream ran on to an orphan
+            # ``</think>``. Mirrors the text path.
+            preserves_think_close = (
+                bool(tools) or tool_protocol_active or vlm_reasoning_markers is not None
+            )
+            and decoder_preserves_token(self._tokenizer, "</think>"),
+        )
         vlm_continued = bool(continue_final_message and trailing_assistant_text(messages))
         # Matched on the sampled text, for the reason _generate_text gives.
         sequences = _mlx_stop_sequences(stop)
         stopped = False
+        if max_new_tokens is None:
+            max_new_tokens = self._unset_generation_budget(prompt)
+            if images or video is not None:
+                # Media expands past its placeholder (a clip by a frame each), so the counted
+                # prompt is short: cap at the default, under the cache window.
+                max_new_tokens = min(max_new_tokens, UNSET_GENERATION_BUDGET)
         logger.info(
-            "VLM generating: prompt_len=%d, has_image=%s",
+            "VLM generating: prompt_len=%d, images=%d, has_video=%s",
             len(prompt),
-            image is not None,
+            len(images or ()),
+            video is not None,
         )
-        # stream_generate forwards **kwargs into generate_step (builds the
-        # sampler + logits_processors internally). GOTCHA: generate_step expects
-        # temperature= (long form); temp= is silently ignored, stuck at greedy 0.0.
+        # stream_generate forwards **kwargs into generate_step (which builds the sampler + logits_processors
+        # internally). GOTCHA: generate_step expects temperature= (long form); temp= is silently ignored, stuck at
+        # greedy 0.0.
         vlm_kwargs = dict(
             max_tokens = max_new_tokens,
             temperature = temperature,
@@ -2618,9 +3869,8 @@ class MLXInferenceBackend:
         vlm_kwargs.update(self._kv_quant_generate_kwargs())
         vlm_kwargs.update(self._kv_window_generate_kwargs())
         if seed is not None:
-            # generate_step builds its temperature/top_p/min_p/top_k sampler only
-            # when sampler is None, so a seeded request must supply the whole
-            # chain -- otherwise seeding would silently disable those controls.
+            # generate_step builds its temperature/top_p/min_p/top_k sampler only when sampler is None, so a seeded
+            # request must supply the whole chain -- otherwise seeding would silently disable those controls.
             vlm_kwargs["sampler"] = _make_seeded_mlx_sampler(
                 seed,
                 temp = temperature,
@@ -2633,8 +3883,8 @@ class MLXInferenceBackend:
             1.0,
         )
         if presence_penalty or frequency_penalty or logit_bias:
-            # These need custom processors: pass the full list (repetition +
-            # the rest) instead of the repetition_penalty shortcut so all apply.
+            # These need custom processors: pass the full list (repetition + the rest) instead of the
+            # repetition_penalty shortcut so all apply.
             vlm_kwargs["logits_processors"] = _mlx_sampling_processors(
                 repetition_penalty = repetition_penalty,
                 presence_penalty = presence_penalty,
@@ -2644,59 +3894,160 @@ class MLXInferenceBackend:
         elif _rep_active:
             vlm_kwargs["repetition_penalty"] = float(repetition_penalty)
 
+        # The allowlist the text path applies: a native tool control or reasoning delimiter stays
+        # so the parser can tell a wrapped call from markerless prose and the snapshot normalizer
+        # can find the thought channel. Text-only requests on a VLM come here too.
+        vlm_token_decoder = (
+            NativeToolTokenDecoder(
+                self._tokenizer,
+                preserved_tokens = reasoning_control_tokens(vlm_reasoning_markers),
+            )
+            if (tools or tool_protocol_active or vlm_reasoning_markers is not None)
+            and self._tokenizer
+            else None
+        )
+        # The runtime EOS can itself be an allowlisted control, and this path appends every
+        # decoded token to the snapshot, so it would trail each answer. As in _generate_text.
+        vlm_stop_ids = (
+            _mlx_stop_token_ids(self._tokenizer, self._model)
+            if vlm_token_decoder is not None
+            else ()
+        )
+        vlm_detokenizer = (
+            _mlx_stream_detokenizer(self._processor) or _mlx_stream_detokenizer(self._tokenizer)
+            if vlm_token_decoder is not None
+            else None
+        )
+        vlm_streamed_text = (
+            _MlxStreamedText(vlm_detokenizer, vlm_token_decoder, self._tokenizer, vlm_stop_ids)
+            if vlm_token_decoder is not None
+            else None
+        )
+
+        session = self._vlm_prompt_cache_session(
+            _adapter_state, images, prompt, has_video = video is not None
+        )
+        if session is not None:
+            vlm_kwargs["prompt_cache"] = session.cache
+            vlm_kwargs["prompt_cache_state"] = session
+            if session.media_block is not None:
+                vlm_kwargs.update(session.media_block.generate_kwargs())
+            # Reused and unreused turns must prefill on the same grid to match.
+            vlm_kwargs["prefill_step_size"] = session.step
+        session_scope = session if session is not None else nullcontext()
+
         def _stream_vlm_snapshots():
             nonlocal stopped
             sampled = ""
             released = 0
-            # Hold the generation lock AND the request-scoped adapter state for the
-            # whole stream so Base-vs-LoRA compare mode honors use_adapter and the
-            # wrapper tree is restored on completion, cancellation, or close.
-            with self._generation_lock, _temporary_mlx_adapter_state(self._model, _adapter_state):
+            # Hold the generation lock AND the request-scoped adapter state for the whole stream so Base-vs-LoRA
+            # compare mode honors use_adapter and the wrapper tree is restored on completion, cancellation, or close.
+            with (
+                self._generation_lock,
+                _temporary_mlx_adapter_state(self._model, _adapter_state),
+                ExitStack() as generation_scope,
+                session_scope,
+            ):
+                if session is None and (images or video is not None):
+                    # The vision pass gets the headroom, under the lock so nothing refills it.
+                    # A video turn resumes no snapshot, so retained ones are pure occupancy.
+                    self._release_vlm_snapshots()
+                generation_scope.enter_context(_mlx_fused_moe_gate_up(self._model))
+                generation_scope.enter_context(_mlx_fused_decode_conv_silu(self._model))
+                generation_scope.enter_context(_mlx_fused_residual_norm(self._model))
+                generation_scope.enter_context(_mlx_fused_moe_router(self._model))
                 final_response = None
+                clip_path = None
                 try:
-                    # Emit any prefilled <think> block before the first token so the
-                    # UI renders it during prefill, matching _generate_text. Done
-                    # inside the adapter context so an unsupported request raises
-                    # before any output escapes.
+                    if video is not None:
+                        clip_path = _write_video_clip(video)
+                        vlm_kwargs["video"] = [clip_path]
+                        frame_rate = _video_frame_rate(clip_path, self._processor)
+                        if frame_rate is not None:
+                            vlm_kwargs["fps"] = frame_rate
+                    # Emit any prefilled <think> block before the first token so the UI renders it during prefill,
+                    # matching _generate_text. Done inside the adapter context so an unsupported request raises before
+                    # any output escapes.
                     if prefill:
                         yield prefill
-                    for response in vlm_stream(
-                        self._model,
-                        self._processor,
-                        prompt,
-                        images,
-                        **vlm_kwargs,
-                    ):
-                        final_response = response
-                        token_text = response.text if hasattr(response, "text") else str(response)
-                        sampled += token_text
-                        if not sequences:
-                            yield prefill + sampled
-                        else:
-                            cut, stopped = _mlx_stop_cut(sampled, sequences)
-                            # These deltas only append, so the cut never moves back
-                            # over text already released.
-                            if cut > released:
-                                released = cut
-                                yield prefill + sampled[:cut]
-                            if stopped:
+                    with closing(
+                        _iter_vlm_responses(
+                            vlm_stream(
+                                self._model,
+                                self._processor,
+                                prompt,
+                                images,
+                                **vlm_kwargs,
+                            )
+                        )
+                    ) as responses:
+                        for response in responses:
+                            final_response = response
+                            if vlm_streamed_text is not None:
+                                token_text = vlm_streamed_text.feed(response)
+                            else:
+                                token_text = (
+                                    response.text if hasattr(response, "text") else str(response)
+                                )
+                            sampled += token_text
+                            if not sequences:
+                                yield prefill + sampled
+                            else:
+                                cut, stopped = _mlx_stop_cut(sampled, sequences)
+                                # These deltas only append, so the cut never moves back over text already released.
+                                if cut > released:
+                                    released = cut
+                                    yield prefill + sampled[:cut]
+                                if stopped:
+                                    break
+                            if cancel_event and cancel_event.is_set():
                                 break
-                        if cancel_event and cancel_event.is_set():
-                            break
+                    if vlm_streamed_text is not None and not stopped:
+                        tail = vlm_streamed_text.finish(sampled)
+                        if tail:
+                            sampled += tail
+                            if not sequences:
+                                yield prefill + sampled
+                            else:
+                                cut, stopped = _mlx_stop_cut(sampled, sequences)
+                                if cut > released:
+                                    released = cut
+                                    yield prefill + sampled[:cut]
                     # As in _generate_text: what was withheld is ordinary text now.
                     if sequences and not stopped and released < len(sampled):
                         yield prefill + sampled
                 finally:
-                    # mlx_vlm exposes the same stats fields as mlx_lm, minus a
-                    # finish reason, so that one is derived.
+                    if clip_path is not None:
+                        _discard_video_clip(clip_path)
+                    cached_n = produced_n = 0
+                    produced_s = 0.0
+                    if session is not None:
+                        # Not from mlx-vlm's hook, which a stop or cancel never reaches.
+                        try:
+                            session.finish()
+                        except Exception as exc:
+                            logger.debug("MLX VLM prompt cache: snapshot not stored (%s)", exc)
+                        # What mlx-vlm reused, less the rows produced here as prefill.
+                        cached_n = int(getattr(final_response, "cached_tokens", 0) or 0)
+                        produced_n, produced_s = session.produced_tokens, session.produced_seconds
+                        cached_n = max(cached_n - produced_n, 0)
+                    # mlx_vlm exposes the same stats fields as mlx_lm, minus a finish reason, so that one is derived.
                     if final_response is not None:
                         tokenizer = getattr(self._processor, "tokenizer", self._processor)
                         stop_ids = _mlx_stop_token_ids(tokenizer, self._model)
+                        # mlx-vlm rates the whole prompt against the prefill it ran, which leaves out the rows the
+                        # session produced first.
+                        prompt_n = int(getattr(final_response, "prompt_tokens", 0) or 0)
+                        prefilled_n = max(prompt_n - cached_n, 0)
+                        prompt_tps = float(getattr(final_response, "prompt_tps", 0.0) or 0.0)
+                        if prompt_tps and (cached_n or produced_s):
+                            prompt_tps = prefilled_n / (prompt_n / prompt_tps + produced_s)
                         self.last_generation_stats = _build_generation_stats(
-                            getattr(final_response, "prompt_tokens", 0),
-                            getattr(final_response, "prompt_tps", 0.0),
+                            prefilled_n,
+                            prompt_tps,
                             getattr(final_response, "generation_tokens", 0),
                             getattr(final_response, "generation_tps", 0.0),
+                            cached_n,
                             finish_reason = _mlx_finish_reason(
                                 final_response,
                                 stop_ids,
@@ -2709,6 +4060,7 @@ class MLXInferenceBackend:
             _stream_vlm_snapshots(),
             chat_target,
             cancel_event,
+            markers = vlm_reasoning_markers,
             tools = tools,
             prompt = prompt,
             continued = vlm_continued,
@@ -2728,9 +4080,9 @@ class MLXInferenceBackend:
         stop = None,
         **_sampler,
     ):
-        """Audio-input chat (omni models): waveform in, incremental text deltas
-        out (the audio route forwards deltas, unlike the snapshot-diffing
-        text/vision paths). Greedy, so the worker's sampler kwargs go unused."""
+        """Audio-input chat (omni models): waveform in, incremental text deltas out (the audio route
+        forwards deltas, unlike the snapshot-diffing text/vision paths). Greedy, so the worker's
+        sampler kwargs go unused."""
         entry = self.models.get(self.active_model_name) or {}
         if entry.get("audio_type") != "audio_vlm":
             raise RuntimeError(
@@ -2751,6 +4103,7 @@ class MLXInferenceBackend:
         if not system_prompt:
             system_prompt = "You are an assistant that transcribes speech accurately."
 
+        # No name: mlx-vlm rebuilds non-tool turns from role and text, dropping anything else.
         audio_messages = [
             {"role": "system", "content": [{"type": "text", "text": system_prompt}]},
             {"role": "user", "content": [{"type": "audio"}, {"type": "text", "text": user_text}]},
@@ -2768,6 +4121,11 @@ class MLXInferenceBackend:
                 "cannot build an audio prompt."
             )
 
+        if max_new_tokens is None:
+            # Audio expands past its placeholder token exactly as an image does, so the counted
+            # prompt is short of the real one: cap at the default, but stay under the window.
+            max_new_tokens = min(self._unset_generation_budget(prompt), UNSET_GENERATION_BUDGET)
+
         logger.info("MLX audio-input generating: prompt_len=%d", len(prompt))
         markers = detect_reasoning_channel_markers(self._processor)
         normalizer = make_reasoning_normalizer(markers) if markers is not None else None
@@ -2778,41 +4136,56 @@ class MLXInferenceBackend:
         stopped = False
         # Hold the adapter state for the whole stream, as text and vision do,
         # so Base-vs-LoRA compare doesn't run the adapter on both sides.
-        with self._generation_lock, _temporary_mlx_adapter_state(self._model, use_adapter):
+        with (
+            self._generation_lock,
+            _temporary_mlx_adapter_state(self._model, use_adapter),
+            ExitStack() as generation_scope,
+        ):
+            # As on the image path: the tower gets the headroom, under the lock.
+            self._release_vlm_snapshots()
+            generation_scope.enter_context(_mlx_fused_moe_gate_up(self._model))
+            generation_scope.enter_context(_mlx_fused_decode_conv_silu(self._model))
+            generation_scope.enter_context(_mlx_fused_residual_norm(self._model))
+            generation_scope.enter_context(_mlx_fused_moe_router(self._model))
             final_response = None
             try:
-                for response in vlm_stream(
-                    self._model,
-                    self._processor,
-                    prompt,
-                    audio = [audio_array],
-                    max_tokens = max_new_tokens,
-                    # Greedy; the knobs below are load-time state, not caller kwargs.
-                    temperature = 0.0,
-                    **self._kv_quant_generate_kwargs(),
-                    **self._kv_window_generate_kwargs(),
-                ):
-                    final_response = response
-                    sampled += response.text if hasattr(response, "text") else str(response)
-                    if sequences:
-                        cut, stopped = _mlx_stop_cut(sampled, sequences)
-                    else:
-                        cut = len(sampled)
-                    # Cut before normalizing: the markers the normalizer writes are
-                    # this layer's own, unmatched for the same reason the prefill is.
-                    delta = sampled[released:cut]
-                    released = cut
-                    if normalizer is not None:
-                        delta = normalizer.feed(delta)
-                    if delta:
-                        yield delta
-                    if stopped:
-                        break
-                    if cancel_event and cancel_event.is_set():
-                        break
+                with closing(
+                    _iter_vlm_responses(
+                        vlm_stream(
+                            self._model,
+                            self._processor,
+                            prompt,
+                            audio = [audio_array],
+                            max_tokens = max_new_tokens,
+                            # Greedy; the knobs below are load-time state, not caller kwargs.
+                            temperature = 0.0,
+                            **self._kv_quant_generate_kwargs(),
+                            **self._kv_window_generate_kwargs(),
+                        )
+                    )
+                ) as responses:
+                    for response in responses:
+                        final_response = response
+                        sampled += response.text if hasattr(response, "text") else str(response)
+                        if sequences:
+                            cut, stopped = _mlx_stop_cut(sampled, sequences)
+                        else:
+                            cut = len(sampled)
+                        # Cut before normalizing: the markers the normalizer writes are this layer's own, unmatched for
+                        # the same reason the prefill is.
+                        delta = sampled[released:cut]
+                        released = cut
+                        if normalizer is not None:
+                            delta = normalizer.feed(delta)
+                        if delta:
+                            yield delta
+                        if stopped:
+                            break
+                        if cancel_event and cancel_event.is_set():
+                            break
             finally:
-                # Derived as the vision path derives it: this backend reports no
-                # finish reason, and unset reads as a natural end.
+                # Derived as the vision path derives it: this backend reports no finish reason, and unset reads as a
+                # natural end.
                 if final_response is not None:
                     tokenizer = getattr(self._processor, "tokenizer", self._processor)
                     self.last_generation_stats = _build_generation_stats(

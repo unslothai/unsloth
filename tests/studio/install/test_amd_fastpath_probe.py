@@ -62,16 +62,16 @@ def _host(
     monkeypatch.setattr(stack, "_has_rocm_gpu", lambda: rocm_gpu and not nvidia)
 
     def _detect(dedup = True, **_kw):
-        # The real probe records which tool answered; callers read it to decide whether the
-        # list is ROCr-filtered and in the masks' order. Leaving the global at whatever ran
-        # last makes that depend on test order, and on a real AMD box on the machine.
+        # The real probe records which tool answered; callers read it to decide whether the list is ROCr-filtered and in
+        # the masks' order. Leaving the global at whatever ran last makes that depend on test order, and on a real AMD
+        # box on the machine.
         stack._LAST_AMD_GFX_PROBE = probe_source if gfx else None
         return list(dict.fromkeys(gfx)) if dedup else list(gfx)
 
     monkeypatch.setattr(stack, "_detect_amd_gfx_codes", _detect)
     monkeypatch.setattr(stack, "_kfd_gfx_targets", lambda: [], raising = False)
-    # No AMD per-arch wheel is installed unless a case says so: on the gfx1151 runner these
-    # two read a real one out of the venv and decide gates no case here described.
+    # No AMD per-arch wheel is installed unless a case says so: on the gfx1151 runner these two read a real one out
+    # of the venv and decide gates no case here described.
     monkeypatch.setattr(stack, "_installed_rocm_wheel_family", lambda: installed_family)
     monkeypatch.setattr(stack, "_torch_requires_rocm_sdk", lambda: installed_family is not None)
     monkeypatch.setattr(stack, "_detect_rocm_version", lambda: rocm_ver)
@@ -92,8 +92,6 @@ def _needs_pass():
 
 
 # Wrong wheel
-
-
 @pytest.mark.parametrize(
     "version",
     ["2.9.0+cpu", "2.9.0+cu128", "2.9.0", "2.8.0a0+34c6371d24.nv25.08"],
@@ -120,9 +118,6 @@ def test_a_real_device_selection_is_not_a_hidden_host(monkeypatch):
     assert _needs_pass() is True
 
 
-# Correct wheel
-
-
 @pytest.mark.parametrize(
     "torch",
     [
@@ -134,9 +129,9 @@ def test_a_real_device_selection_is_not_a_hidden_host(monkeypatch):
     ],
 )
 def test_a_rocm_wheel_keeps_the_fast_path(monkeypatch, torch):
-    # gfx1100 rather than the default gfx1151: the question here is whether a ROCm wheel is
-    # left alone, and only an arch every one of these wheels actually carries asks it. Strix
-    # is not that arch on the older tags, and the case below is where it is answered.
+    # gfx1100 rather than the default gfx1151: the question here is whether a ROCm wheel is left alone, and only an
+    # arch every one of these wheels actually carries asks it. Strix is not that arch on the older tags, and the case
+    # below is where it is answered.
     _host(monkeypatch, torch = torch, gfx = ("gfx1100",))
     assert _needs_pass() is False
 
@@ -148,9 +143,8 @@ def test_a_strix_host_on_a_wheel_without_its_kernels_forces_the_pass(monkeypatch
     is the preflight declining a repair the repair itself performs."""
     _host(monkeypatch, torch = ("2.9.0+rocm6.4", "6.4"), gfx = (gfx,))
     assert _needs_pass() is True
-    # A generic tag that does carry them is still not the build Strix wants: the reroute
-    # prefers AMD's 7.13 fixes over every generic index below the floor, so the pass is due
-    # until torch IS that build.
+    # A generic tag that does carry them is still not the build Strix wants: the reroute prefers AMD's 7.13 fixes over
+    # every generic index below the floor, so the pass is due until torch IS that build.
     _host(monkeypatch, torch = ("2.11.0+rocm7.2", "7.2"), gfx = (gfx,), rocm_ver = (7, 2))
     assert _needs_pass() is True
     _host(
@@ -161,9 +155,6 @@ def test_a_strix_host_on_a_wheel_without_its_kernels_forces_the_pass(monkeypatch
         installed_family = gfx,
     )
     assert _needs_pass() is False
-
-
-# Uncertain classification
 
 
 @pytest.mark.parametrize(
@@ -332,28 +323,21 @@ def test_a_host_without_rocm_wheels_keeps_the_fast_path(monkeypatch, kwargs):
     assert _needs_pass() is False
 
 
-# CLI
-
-
 def _run_cli(
     *args,
     env = None,
     safe_path = False,
 ):
-    # PINNED, and UNSLOTH_NO_TORCH is pinned for the same reason PATH and HOME already are:
-    # it is an ambient input to the answer under test that the caller does not intend to vary.
-    # Left unset, `_infer_no_torch` falls through to `install_manifest.recorded_no_torch()`,
-    # which reads `.unsloth-no-torch` and `unsloth_install_manifest.json` out of `sys.prefix` --
-    # one path, shared by every xdist worker. Three other test modules drive the real
-    # `install_python_stack()` in process and leave that marker behind with no cleanup, so
-    # whether it exists when this child starts is a race between workers. It resolves the FIRST
-    # line of `_amd_torch_needs_dependency_pass`, which returns False and exits 1 before any
-    # wheel-family logic runs, and the probe sends the child's stderr to DEVNULL, so the failure
-    # arrives as rc=1 with empty stdout and empty stderr and names nothing.
-    # Measured on origin/main with this file byte-identical: marker absent 8/8 pass, marker
-    # present 8/8 fail. A test that reports its subject broken on the strength of a file another
-    # test left lying around is not measuring its subject.
-    # The `**(env or {})` below still wins, so the cases that set it deliberately are unaffected.
+    # PINNED, and UNSLOTH_NO_TORCH is pinned for the same reason PATH and HOME already are: it is an ambient input to
+    # the answer under test that the caller does not intend to vary.
+    # Left unset, `_infer_no_torch` falls through to `install_manifest.recorded_no_torch()`, which reads
+    # `.unsloth-no-torch` and `unsloth_install_manifest.json` out of `sys.prefix` -- one path, shared by every xdist
+    # worker.
+    # Three other test modules drive the real `install_python_stack()` in process and leave that marker behind with no
+    # cleanup, so whether it exists when this child starts is a race between workers.
+    # It resolves the FIRST line of `_amd_torch_needs_dependency_pass`, which returns False and exits 1 before any
+    # wheel-family logic runs, and the probe sends the child's stderr to DEVNULL, so the failure arrives as rc=1 with
+    # empty stdout and empty stderr and names nothing.
     child = {
         "PATH": "/usr/bin:/bin",
         "HOME": "/nonexistent",
@@ -403,14 +387,12 @@ def test_the_cli_reports_keep_the_fast_path_as_a_non_zero_exit(env_name, safe_pa
     stderr = result.stderr.decode(errors = "replace")
     # An import failure also exits 1, so exit 1 alone does not prove the gate ran.
     assert not stderr, stderr
-    # Read as a STATEMENT, not in an assert message: a `_decision(result)` that appears only
-    # after the comma runs once the assertion has already failed, so it checks nothing on the
-    # passing path while reading exactly like it does.
+    # Read as a STATEMENT, not in an assert message: a `_decision(result)` that appears only after the comma runs once
+    # the assertion has already failed, so it checks nothing on the passing path while reading exactly like it does.
     decision = _decision(result)
     assert result.returncode == 1, decision
-    # ...and the gate that answered must be the one this case names, not whichever other
-    # exit-1 state the host happened to be in, or the case passes on any host that keeps
-    # the fast path for an unrelated reason.
+    # ...and the gate that answered must be the one this case names, not whichever other exit-1 state the host happened
+    # to be in, or the case passes on any host that keeps the fast path for an unrelated reason.
     expected_field = {
         "UNSLOTH_NO_TORCH": "no_torch=True",
         "UNSLOTH_TORCH_BACKEND": "backend='cpu'",
@@ -441,13 +423,13 @@ def test_the_cli_answers_end_to_end_over_a_stub_torch(tmp_path, version, hip, ex
     )
     stderr = result.stderr.decode(errors = "replace")
     assert not stderr, stderr
-    # The decision line, not the bare code: exit 1 is five states here, and a bare
-    # `assert 1 == 0` with both streams empty is what this case used to report. A statement,
-    # so it is checked on the passing path too, not only when the next line fails.
+    # The decision line, not the bare code: exit 1 is five states here, and a bare `assert 1 == 0` with both streams
+    # empty is what this case used to report. A statement, so it is checked on the passing path too, not only when the
+    # next line fails.
     decision = _decision(result)
     assert result.returncode == expected, f"{decision}\n{stderr}"
-    # The wheel family must be the input that decided it, so the case cannot pass on a host
-    # that answered before the probe was reached.
+    # The wheel family must be the input that decided it, so the case cannot pass on a host that answered before the
+    # probe was reached.
     assert f"'{version}'" in decision, decision
 
 
@@ -468,8 +450,6 @@ def test_a_malformed_probe_call_never_falls_through_to_the_installer(argv):
 # Both directions are asserted, so every row must be one the two sides agree on. The
 # conservative divergences (unreadable torch, hidden mask, mixed arch, wrong ROCm
 # family) are covered above and do not belong here.
-
-
 def _repair_installs(monkeypatch):
     """Torch index URLs _ensure_rocm_torch installs, under the same stubs."""
     installed = []
@@ -513,8 +493,7 @@ def _repair_installs(monkeypatch):
             dict(rocm_ver = None, inferred = "gfx1151", rocm_gpu = False, gfx = ()),
             True,
         ),
-        # Only UNSLOTH_ROCM_GFX_ARCH carries this: a visible GPU defeats the row
-        # above's "no runtime" disjunct.
+        # Only UNSLOTH_ROCM_GFX_ARCH carries this: a visible GPU defeats the row above's "no runtime" disjunct.
         (
             "UNSLOTH_ROCM_GFX_ARCH rescuing a visible GPU with an unreadable ROCm",
             dict(rocm_ver = None, inferred = "gfx1151", gfx = ("gfx1151",)),
@@ -526,15 +505,15 @@ def _repair_installs(monkeypatch):
             dict(rocm_ver = (6, 4), inferred = None, gfx = ("gfx1030",)),
             True,
         ),
-        # The default host here is Strix, whose per-arch index needs no host ROCm version, so
-        # an unreadable one is the shape that route exists for rather than a reason to stop.
+        # The default host here is Strix, whose per-arch index needs no host ROCm version, so an unreadable one is
+        # the shape that route exists for rather than a reason to stop.
         (
             "a visible Strix GPU whose ROCm version cannot be read",
             dict(rocm_ver = None, inferred = None),
             True,
         ),
-        # A non-Strix arch the generic wheel does carry: the repair prints "skipping torch
-        # reinstall" and returns, so the preflight must keep the fast path.
+        # A non-Strix arch the generic wheel does carry: the repair prints "skipping torch reinstall" and returns,
+        # so the preflight must keep the fast path.
         (
             "a visible GPU whose ROCm version cannot be read",
             dict(rocm_ver = None, inferred = None, gfx = ("gfx1100",)),
@@ -567,8 +546,6 @@ def test_the_preflight_and_the_repair_agree(monkeypatch, label, host, expected):
 
 
 # Right wheel family, wrong architecture
-
-
 def _rocm_torch(
     monkeypatch,
     *,
@@ -679,8 +656,8 @@ def test_a_rocm_pin_is_not_asked_a_hardware_question(monkeypatch):
         env = {"UNSLOTH_TORCH_INDEX_URL": "https://download.pytorch.org/whl/rocm7.13"},
     )
     assert _needs_pass() is False
-    # A pin that no longer matches the installed wheel is the pin's own question, not a
-    # hardware one, and _ensure_rocm_torch reinstalls for it.
+    # A pin that no longer matches the installed wheel is the pin's own question, not a hardware one, and
+    # _ensure_rocm_torch reinstalls for it.
     _rocm_torch(
         monkeypatch,
         family = "gfx110x-all",
@@ -699,8 +676,8 @@ def test_a_stale_family_no_index_can_repair_keeps_the_fast_path(monkeypatch):
     and answering True here buys a dependency pass per update and never a working torch."""
     _rocm_torch(monkeypatch, family = "gfx110x-all", gfx = ("gfx1010",))
     assert _needs_pass() is False
-    # An empty leaf is not the test: the datacentre parts have none and the generic index
-    # serves them, so their stale family is still worth the pass.
+    # An empty leaf is not the test: the datacentre parts have none and the generic index serves them, so their
+    # stale family is still worth the pass.
     for _gfx in ("gfx942", "gfx950"):
         _rocm_torch(monkeypatch, family = "gfx110x-all", gfx = (_gfx,))
         assert _needs_pass() is True, _gfx
@@ -742,7 +719,6 @@ def test_a_sole_gfx906_above_its_legacy_tag_forces_the_pass(monkeypatch):
     question never saw it and the rocm6.3 downgrade was unreachable from `studio update`."""
     _rocm_torch(monkeypatch, family = None, gfx = ("gfx906",), rocm_ver = (6, 4))
     assert _needs_pass() is True
-    # Already on the legacy tag: nothing left to do.
     _host(monkeypatch, torch = ("2.9.0+rocm6.3", "6.3"), gfx = ("gfx906",), rocm_ver = (6, 4))
     assert _needs_pass() is False
 

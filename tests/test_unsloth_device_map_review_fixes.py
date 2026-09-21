@@ -180,8 +180,6 @@ def test_sentence_transformers_hands_the_nested_load_a_plain_value():
 
 
 # --------------------------------------------------------------------------------------
-# 2. max_memory arrived twice.
-# --------------------------------------------------------------------------------------
 
 
 def test_a_caller_supplied_max_memory_does_not_collide_with_the_measured_one():

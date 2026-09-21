@@ -16,6 +16,7 @@ import sys
 import time
 from pathlib import Path
 
+from playwright.sync_api import TimeoutError as PlaywrightTimeout
 from playwright.sync_api import sync_playwright
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -109,9 +110,29 @@ def open_bar(page, mod: str) -> None:
     )
 
 
+def settle(
+    page,
+    condition: str,
+    *,
+    timeout: int = 10000,
+) -> None:
+    """Give `condition` until `timeout` to hold, and do not fail here if it never does.
+
+    A flat sleep before reading the state asserts the runner's speed alongside the
+    behaviour, and a busy runner failed the chord re-focus check on a build that only
+    touched a PowerShell script. Waiting on the condition lets a slow machine take its
+    time, while a genuinely broken one spends the timeout and then fails on the SAME check
+    with the same message, so nothing is swallowed here.
+    """
+    try:
+        page.wait_for_function(condition, timeout = timeout)
+    except PlaywrightTimeout:
+        pass
+
+
 def close_bar(page) -> None:
     page.keyboard.press("Escape")
-    page.wait_for_timeout(250)
+    settle(page, "() => !window.__findSmoke.state().open")
 
 
 def check_chord(page, engine: str, mode: str, mod: str) -> None:
@@ -125,11 +146,19 @@ def check_chord(page, engine: str, mode: str, mod: str) -> None:
         page.locator('[role="search"]').count() == 1,
     )
 
-    # Re-pressing it while the field has focus restarts the search rather than
-    # handing the chord back to the browser.
+    # Re-pressing the chord keeps the search open and returns focus to its field.
     page.evaluate("() => document.activeElement?.blur()")
+    check(
+        engine,
+        mode,
+        "the field can lose focus while the bar stays open",
+        state(page).get("focused") is False,
+    )
     page.keyboard.press(f"{mod}+f")
-    page.wait_for_timeout(200)
+    settle(
+        page,
+        "() => { const s = window.__findSmoke.state(); return s.open && s.focused; }",
+    )
     check(
         engine,
         mode,
@@ -735,7 +764,16 @@ def run_entry_chunk_failure(browser, engine: str) -> None:
         engine,
         mode,
         "the failure offers reload recovery",
-        failure.get_by_role("button").count() == 1,
+        failure.get_by_role("button").count() == 2,
+    )
+
+    check(
+        engine,
+        mode,
+        "the failure recovery receives keyboard focus",
+        failure.get_by_role("button", name = "Reload").evaluate(
+            "button => button === document.activeElement",
+        ),
     )
     check(
         engine,
@@ -750,9 +788,18 @@ def run_entry_chunk_failure(browser, engine: str) -> None:
         "the failed bar does not leave a search landmark",
         page.locator('[role="search"]').count() == 0,
     )
+
     if ENTRY_SCREENSHOT:
         Path(ENTRY_SCREENSHOT.format(engine = engine)).parent.mkdir(parents = True, exist_ok = True)
         page.screenshot(path = ENTRY_SCREENSHOT.format(engine = engine), full_page = False)
+
+    failure.get_by_role("button", name = "Close").click()
+    check(
+        engine,
+        mode,
+        "the failed bar can be dismissed without reloading",
+        failure.count() == 0,
+    )
     context.close()
 
 
@@ -782,6 +829,8 @@ def run_entry_chunk_delay(browser, engine: str) -> None:
         })"""
     )
     composer_value = composer.input_value()
+
+    field.press("Enter")
     loading.wait_for(
         state = "detached",
         timeout = max(15000, ENTRY_DELAY_MS + 10000),
@@ -828,9 +877,134 @@ def run_entry_chunk_delay(browser, engine: str) -> None:
     check(
         engine,
         mode,
-        "Enter queued by the loading shell advances after handoff",
-        "2/28" in page.locator('[role="search"]').inner_text(),
+        "every Enter queued by the loading shell advances after handoff",
+        "3/28" in page.locator('[role="search"]').inner_text(),
         page.locator('[role="search"]').inner_text(),
+    )
+    loaded.fill("studio")
+    loaded.evaluate(
+        """input => {
+          input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+          input.dispatchEvent(new KeyboardEvent('keydown', {
+            key: 'f',
+            code: 'KeyF',
+            ctrlKey: true,
+            bubbles: true,
+          }));
+        }""",
+    )
+    page.wait_for_timeout(500)
+    check(
+        engine,
+        mode,
+        "a repeated find chord clears pending navigation",
+        "1/8" in page.locator('[role="search"]').inner_text(),
+        page.locator('[role="search"]').inner_text(),
+    )
+
+    context.close()
+
+    context = browser.new_context(user_agent = PLATFORMS["Linux"][1])
+    page = new_page(context)
+    page.locator('textarea[placeholder="Message"]').focus()
+    page.keyboard.press("Control+f")
+    loading = page.get_by_test_id("find-in-page-loading")
+    loading.wait_for(state = "visible", timeout = 5000)
+    field = loading.locator("input")
+    field.fill("definitely-no-such-match")
+    field.press("Enter")
+    loading.wait_for(
+        state = "detached",
+        timeout = max(15000, ENTRY_DELAY_MS + 10000),
+    )
+    page.evaluate(
+        "() => window.__findSmoke.stream("
+        "'definitely-no-such-match definitely-no-such-match', 1)",
+    )
+    page.wait_for_timeout(1600)
+    check(
+        engine,
+        mode,
+        "a zero-result search consumes queued navigation",
+        "1/2" in page.locator('[role="search"]').inner_text(),
+        page.locator('[role="search"]').inner_text(),
+    )
+    loaded = page.locator('[role="search"] input')
+    loaded.fill("unsloth")
+    page.wait_for_timeout(500)
+    check(
+        engine,
+        mode,
+        "a queued step for an empty result does not advance a later query",
+        "1/28" in page.locator('[role="search"]').inner_text(),
+        page.locator('[role="search"]').inner_text(),
+    )
+    context.close()
+
+    context = browser.new_context(user_agent = PLATFORMS["Linux"][1])
+    page = new_page(context)
+    page.locator('textarea[placeholder="Message"]').focus()
+    page.keyboard.press("Control+f")
+    loading = page.get_by_test_id("find-in-page-loading")
+    loading.wait_for(state = "visible", timeout = 5000)
+    field = loading.locator("input")
+    field.fill("definitely-no-such-match")
+    field.press("Enter")
+    field.fill("unsloth")
+    loading.wait_for(
+        state = "detached",
+        timeout = max(15000, ENTRY_DELAY_MS + 10000),
+    )
+    page.wait_for_timeout(500)
+    check(
+        engine,
+        mode,
+        "a loading-shell step does not advance a query typed after it",
+        "1/28" in page.locator('[role="search"]').inner_text(),
+        page.locator('[role="search"]').inner_text(),
+    )
+    context.close()
+
+    context = browser.new_context(user_agent = PLATFORMS["Linux"][1])
+    page = new_page(context)
+    page.locator('textarea[placeholder="Message"]').focus()
+    page.keyboard.press("Control+f")
+    loading = page.get_by_test_id("find-in-page-loading")
+    loading.wait_for(state = "visible", timeout = 5000)
+    field = loading.locator("input")
+    field.dispatch_event("compositionstart", {"data": "u"})
+    page.wait_for_timeout(ENTRY_DELAY_MS + 500)
+    check(
+        engine,
+        mode,
+        "an active IME composition keeps the loading input mounted",
+        loading.count() == 1 and field.evaluate("input => input.isConnected"),
+    )
+    field.evaluate(
+        """input => {
+          input.dispatchEvent(new CompositionEvent('compositionend', { data: '語', bubbles: true }));
+          const setValue = Object.getOwnPropertyDescriptor(
+            HTMLInputElement.prototype,
+            'value',
+          ).set;
+          setValue.call(input, '語');
+          input.dispatchEvent(new InputEvent('input', {
+            data: '語',
+            inputType: 'insertCompositionText',
+            bubbles: true,
+          }));
+        }""",
+    )
+    loading.wait_for(
+        state = "detached",
+        timeout = max(15000, ENTRY_DELAY_MS + 10000),
+    )
+    check(
+        engine,
+        mode,
+        "the loaded bar takes over after composition ends",
+        page.locator('[role="search"] input').count() == 1
+        and page.locator('[role="search"] input').input_value() == "語",
     )
     context.close()
 

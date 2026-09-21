@@ -252,14 +252,16 @@ def test_a_lost_conversation_is_still_a_finding_while_a_reply_runs(browser):
     assert "DIFFERENT MESSAGES on screen" in got["reason"]
 
 
-# What the refusal may NOT take out with it. The blind-probe refusal is about rows whose meaning
-# depends on where the stream had got to; two kinds provably do not: a row both arms call the
-# user's, and a row whose ROLE changed. Both used to leave here as NOT COMPARABLE with an empty
-# `moved`, and `visible_report` buckets a refusal as blind and never consults it for the exit
-# code, so the run went green on them.
-
-
 # ── what the refusal may NOT take out with it ────────────────────────
+#
+# The blind-probe refusal is about rows whose meaning depends on where the stream had got to. Two
+# kinds of row provably do not: a row both arms call the user's, because a reply is written into an
+# assistant message; and a row whose ROLE changed, because a role is captured beside the digest and
+# how far a reply has arrived says nothing about whose it is. Both used to leave here as NOT
+# COMPARABLE with an empty `moved`, and `visible_report` buckets a refusal as blind and never
+# consults it for the exit code, so the run went green on them.
+
+
 def test_a_changed_user_row_survives_the_blind_refusal(browser):
     base = _capture(browser, **_SETTLED)
     treat = _capture(browser, **dict(_BLIND, user_body = "the user message, rewritten"))

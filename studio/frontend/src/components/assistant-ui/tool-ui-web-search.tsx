@@ -18,13 +18,18 @@ import { stringifyToolResult } from "@/lib/strip-ansi";
 import { memo } from "react";
 import { SearchImageThumb } from "./search-image";
 import { Source, SourceIcon, SourceTitle } from "./sources";
-import { toolArgText } from "./tool-arg-text";
+import {
+  isToolCallRunning,
+  toolArgText,
+  webSearchToolName,
+} from "./tool-arg-text";
 import {
   ToolFallbackContent,
   ToolFallbackRoot,
   ToolFallbackTrigger,
 } from "./tool-fallback";
 import { useToolActivityOpen } from "./use-tool-activity-open";
+import { ScrollPane } from "./scroll-pane";
 
 interface ParsedSource {
   title: string;
@@ -98,9 +103,8 @@ const WebSearchToolUIImpl: ToolCallMessagePartComponent = ({
   // object here, and .trim() on one crashes the card that was meant to show the call.
   const query = toolArgText((args as { query?: unknown })?.query);
   const url = toolArgText((args as { url?: unknown })?.url).trim();
-  // gpt-5.x agentic search: `open_page` carries a url, `find_in_page` a url and
-  // a pattern. Older streams send neither, so a url with a pattern is the same
-  // call by shape.
+  // gpt-5.x agentic search: `open_page` carries a url, `find_in_page` a url and a pattern. Older
+  // streams send neither, so a url with a pattern is the same call by shape.
   const pattern = toolArgText((args as { pattern?: unknown })?.pattern);
   const actionType = toolArgText(
     (args as { action_type?: unknown })?.action_type,
@@ -135,7 +139,7 @@ const WebSearchToolUIImpl: ToolCallMessagePartComponent = ({
       return "";
     }
   })();
-  const isRunning = status?.type === "running";
+  const isRunning = isToolCallRunning(status);
   const withImages = isSearchImagesToolResult(result);
   const resultText =
     result == null
@@ -160,6 +164,18 @@ const WebSearchToolUIImpl: ToolCallMessagePartComponent = ({
   const awaitingApproval = useToolAwaitingApproval(toolCallId);
   const [open, setOpen] = useToolActivityOpen(isRunning, hasText);
 
+  const toolName = webSearchToolName({
+    isRunning,
+    isFindInPage,
+    isUrlFetch,
+    isImageOnly,
+    foundImages,
+    displayDomain,
+    pattern,
+    query,
+    imageLabel,
+  });
+
   return (
     <ToolFallbackRoot
       open={open}
@@ -167,29 +183,7 @@ const WebSearchToolUIImpl: ToolCallMessagePartComponent = ({
       awaitingApproval={awaitingApproval}
     >
       <ToolFallbackTrigger
-        toolName={
-          isFindInPage
-            ? // Neutral: the action carries no match status, so a finished call
-              // is not evidence the pattern was there.
-              pattern
-              ? `Searched for "${pattern}" in ${displayDomain || "page"}`
-              : `Searched ${displayDomain || "page"}`
-            : isUrlFetch
-              ? displayDomain
-                ? `Read ${displayDomain}`
-                : "Read page"
-              : isImageOnly
-                ? isRunning
-                  ? `Finding images for “${imageLabel}”`
-                  : foundImages
-                    ? `Found images for “${imageLabel}”`
-                    : `No images for “${imageLabel}”`
-                : query
-                  ? imageLabel && foundImages
-                    ? `Searched "${query}" · images for ${imageLabel}`
-                    : `Searched "${query}"`
-                  : "Web Search"
-        }
+        toolName={toolName}
         status={status}
         icon={GlobeIcon}
       />
@@ -254,9 +248,12 @@ const WebSearchToolUIImpl: ToolCallMessagePartComponent = ({
                   ))}
                 </div>
                 {resultText && (
-                  <pre className="max-h-40 overflow-auto whitespace-pre-wrap break-words rounded bg-muted/50 p-2 text-xs">
+                  <ScrollPane
+                    className="rounded bg-muted/50 p-2"
+                    scrollerClassName="max-h-40 overflow-auto whitespace-pre-wrap break-words text-xs"
+                  >
                     {resultText}
-                  </pre>
+                  </ScrollPane>
                 )}
               </div>
             ) : sources.length > 0 ? (
@@ -291,9 +288,12 @@ const WebSearchToolUIImpl: ToolCallMessagePartComponent = ({
                 )}
               </div>
             ) : resultText ? (
-              <pre className="max-h-40 overflow-auto whitespace-pre-wrap break-words rounded bg-muted/50 p-2 text-xs">
+              <ScrollPane
+                className="rounded bg-muted/50 p-2"
+                scrollerClassName="max-h-40 overflow-auto whitespace-pre-wrap break-words text-xs"
+              >
                 {resultText}
-              </pre>
+              </ScrollPane>
             ) : null}
           </div>
         )}

@@ -7,17 +7,14 @@
 // shape the measurements were taken against, as drag-costs-no-render.test.ts does for panels.
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
 
+import { readSrc } from "./helpers/kit.ts";
+
+const RESEARCH_ACTIVITY_PANEL = readSrc("features/chat/components/research-activity-panel.tsx");
+
 function followLoopSource(): string {
-  const text = readFileSync(
-    new URL(
-      "../src/features/chat/components/research-activity-panel.tsx",
-      import.meta.url,
-    ),
-    "utf8",
-  );
+  const text = readSrc("features/chat/components/research-activity-panel.tsx");
   const start = text.indexOf("function useResearchActivityScroll");
   assert.ok(start >= 0, "useResearchActivityScroll is gone");
   const end = text.indexOf("\n}", text.indexOf("}, [runId];".replace(";", ");")));
@@ -60,14 +57,7 @@ test("detach cancels every pending follow step", () => {
 });
 
 test("the pinned threshold stays at 2px, not 1", () => {
-  const text = readFileSync(
-    new URL(
-      "../src/features/chat/components/research-activity-panel.tsx",
-      import.meta.url,
-    ),
-    "utf8",
-  );
   // HiDPI subpixel rounding leaves a fractional gap; at 1px the loop never reads as pinned and
   // never exits, the configuration the freeze was reported on.
-  assert.match(text, /const ACTIVITY_PINNED_THRESHOLD_PX = 2;/);
+  assert.match(RESEARCH_ACTIVITY_PANEL, /const ACTIVITY_PINNED_THRESHOLD_PX = 2;/);
 });

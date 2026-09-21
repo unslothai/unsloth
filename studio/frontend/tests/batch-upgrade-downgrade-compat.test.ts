@@ -40,6 +40,8 @@ function config(overrides: Record<string, unknown> = {}) {
     nParallel: null,
     nBatch: null,
     nUbatch: null,
+    reasoningBudget: -1,
+    reasoningBudgetMessage: "",
     tensorParallel: false,
     disableVision: false,
     chatTemplateOverride: null,

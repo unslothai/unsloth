@@ -17,8 +17,6 @@
 // Unsloth's local python/terminal are for connections that have none.
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
-import { fileURLToPath } from "node:url";
 import test from "node:test";
 
 import {
@@ -26,10 +24,9 @@ import {
   selectCodeToolNames,
 } from "../src/features/chat/api/code-tool-placement.ts";
 
-const SOURCE = readFileSync(
-  fileURLToPath(new URL("../src/features/chat/api/chat-adapter.ts", import.meta.url)),
-  "utf8",
-);
+import { readSrc } from "./helpers/kit.ts";
+
+const SOURCE = readSrc("features/chat/api/chat-adapter.ts");
 
 // ── the rule itself ────────────────────────────────────────────────
 

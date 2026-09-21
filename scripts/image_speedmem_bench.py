@@ -3,31 +3,13 @@
 
 """Speed + accuracy lever benchmark for the IMAGE diffusion backend (per-lever LPIPS).
 
-Drives the SAME production lever functions the image loader calls -- ``apply_step_cache``,
-``apply_attention_backend``, ``apply_speed_optims``, ``quantize_text_encoders``, the
-compile-safe eager patches -- with the loader's own default arguments and order, so each
-measured configuration reflects a real load. For each config it loads the pipeline fresh
-(quant/compile mutate irreversibly), warms up (to pay the one-time compile), renders a
-fixed prompt set at a fixed seed, and reports total latency, median per-step ms, peak
-resident GB, and mean LPIPS(AlexNet) vs the bit-exact reference config (speed off,
-native attention, uncached, dense) rendered at the same seed/settings.
+Drives the SAME production lever functions the image loader calls (``apply_step_cache``, ``apply_attention_backend``, ``apply_speed_optims``, ``quantize_text_encoders``, the compile-safe eager patches) with the loader's own default arguments and order, so each measured configuration reflects a real load. For each config it loads the pipeline fresh (quant/compile mutate irreversibly), warms up to pay the one-time compile, renders a fixed prompt set at a fixed seed, and reports total latency, median per-step ms, peak resident GB, and mean LPIPS(AlexNet) against the bit-exact reference config (speed off, native attention, uncached, dense) rendered at the same seed and settings.
 
-Every generation starts from a clean step cache, exactly like the production backend:
-diffusers keys FBCache residuals on the long-lived transformer and never resets them, so
-without the per-generation reset the measured prompts would compare their first-block
-residual against the PREVIOUS prompt's final one -- a state production never runs.
-FBCache rows produced before this reset existed may overstate both the speedup and the
-quality cost.
+Every generation starts from a clean step cache, exactly like the production backend: diffusers keys FBCache residuals on the long-lived transformer and never resets them, so without the per-generation reset the measured prompts would compare their first-block residual against the PREVIOUS prompt's final one, a state production never runs. FBCache rows produced before this reset existed may overstate both the speedup and the quality cost.
 
-Lever isolation knobs (for before/after measurement of shipped fixes):
-  --no-epc         force torch._inductor.config.emulate_precision_casts back off after
-                   the speed layer enables it (the pre-fix compile numerics).
-  --unarm-cache    restore the cache hooks' eager inner forwards after the speed layer
-                   arms them (the pre-fix cache x compile composition).
+Lever isolation knobs for before/after measurement of shipped fixes: --no-epc forces torch._inductor.config.emulate_precision_casts back off after the speed layer enables it (the pre-fix compile numerics), and --unarm-cache restores the cache hooks' eager inner forwards after the speed layer arms them (the pre-fix cache x compile composition).
 
-Example:
-    CUDA_VISIBLE_DEVICES=3 python scripts/image_speedmem_bench.py --family flux.1-dev \\
-        --config compile --out outputs/image_speedmem
+Example: `CUDA_VISIBLE_DEVICES=3 python scripts/image_speedmem_bench.py --family flux.1-dev --config compile --out outputs/image_speedmem`
 """
 
 from __future__ import annotations
@@ -58,7 +40,6 @@ PROMPTS = [
     "A photograph of an astronaut riding a horse on the surface of the moon, detailed, 8k",
 ]
 
-# Production defaults per family (diffusion_families.default_generation_params).
 _FAMILIES: dict[str, dict[str, Any]] = {
     "qwen-image": {"repo": "Qwen/Qwen-Image", "family": "qwen-image"},
     "flux.1-dev": {"repo": "black-forest-labs/FLUX.1-dev", "family": "flux.1"},
@@ -66,7 +47,6 @@ _FAMILIES: dict[str, dict[str, Any]] = {
     "sdxl": {"repo": "stabilityai/stable-diffusion-xl-base-1.0", "family": "sdxl"},
 }
 
-#                       te        speed       attn       cache
 _CONFIGS: dict[str, dict[str, Any]] = {
     # bit-exact reference: everything off / native / dense
     "reference": dict(te = "none", speed = "off", attn = "native", cache = "off"),
@@ -177,8 +157,7 @@ def _apply_levers(
     unarm_cache: bool = False,
     logger = None,
 ) -> dict:
-    """Apply the configured levers with the loader's own argument values, in the loader's
-    order (diffusion.py): TE quant -> attention -> step cache -> eager patches -> speed."""
+    """Apply the configured levers with the loader's own argument values, in the loader's order (diffusion.py): TE quant, attention, step cache, eager patches, speed."""
     from core.inference.diffusion_precision import quantize_text_encoders
     from core.inference.diffusion_attention import (
         apply_attention_backend,
@@ -250,12 +229,7 @@ def _apply_levers(
 
 
 def _reset_step_cache(pipe) -> None:
-    """Clear stale FBCache residuals before a generation, mirroring the production
-    backend's ``_reset_step_cache`` (diffusion.py): diffusers keys the residuals on the
-    long-lived denoiser and never resets them itself, and the transformer-level entry
-    point in diffusers 0.39 is ``_reset_stateful_cache`` (``reset_stateful_hooks`` lives
-    only on the HookRegistry, so the getattr fallback is a silent no-op). Best-effort:
-    an uncached denoiser (or SDXL's unet, which has no FBCache path) is a no-op."""
+    """Clear stale FBCache residuals before a generation, mirroring the production backend's ``_reset_step_cache`` (diffusion.py): diffusers keys the residuals on the long-lived denoiser and never resets them itself, and the transformer-level entry point in diffusers 0.39 is ``_reset_stateful_cache`` (``reset_stateful_hooks`` lives only on the HookRegistry, so the getattr fallback is a silent no-op). Best-effort: an uncached denoiser, or SDXL's unet which has no FBCache path, is a no-op."""
     denoiser = getattr(pipe, "transformer", None) or getattr(pipe, "unet", None)
     reset = getattr(denoiser, "_reset_stateful_cache", None) or getattr(
         denoiser, "reset_stateful_hooks", None
@@ -408,7 +382,6 @@ def main() -> None:
     )
     gen_peak = _peak_gb()
 
-    # Persist / score against the reference.
     lpips_vals: list[float] = []
     if args.config == "reference" and not (args.no_epc or args.unarm_cache):
         np.savez_compressed(ref_npz, *arrs)

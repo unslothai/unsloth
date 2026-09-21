@@ -6,7 +6,7 @@ import { readFileSync } from "node:fs";
 import { register } from "node:module";
 import test from "node:test";
 
-import { installLocalStorageFake } from "./helpers/kit.ts";
+import { installLocalStorageFake, readSrc } from "./helpers/kit.ts";
 
 installLocalStorageFake();
 register("./store-settings-resolver.mjs", import.meta.url);
@@ -85,12 +85,8 @@ test("the Qwen3.8 Think toggle applies the matching live settings", () => {
 });
 
 test("every status merge is wired to the active Qwen thinking table", () => {
-  const source = readFileSync(
-    new URL(
-      "../src/features/chat/lib/apply-inference-status-to-store.ts",
-      import.meta.url,
-    ),
-    "utf8",
+  const source = readSrc(
+    "features/chat/lib/apply-inference-status-to-store.ts",
   );
   assert.match(
     source,

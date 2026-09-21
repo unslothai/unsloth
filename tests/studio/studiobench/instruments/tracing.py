@@ -43,9 +43,10 @@ from typing import Any, Callable, Sequence
 from ..analysis import CellFailure
 
 
-# L0 is the only level headline numbers may come from: nothing is attached beyond the renderer's own metrics counters.
 # --------------------------------------------------------------------- ladder
 
+# L0 is the only level headline numbers may come from: nothing is attached to the renderer beyond
+# the metrics counters it already maintains for itself.
 L0 = "L0"
 # L1 adds the timeline trace (task boundaries, frames, layout, user timing). No CPU profiler,
 # so no stacks and no naming, but the cheapest level giving a real task tree.

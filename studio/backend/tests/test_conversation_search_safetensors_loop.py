@@ -326,6 +326,38 @@ def test_the_orchestrator_gives_the_loop_a_holder_of_its_own(monkeypatch):
     assert seen["generation_stats_holder"] == {}
 
 
+def _tool_loop_max_tokens(monkeypatch, max_tokens):
+    import core.inference.safetensors_agentic as agentic
+    from core.inference.orchestrator import InferenceOrchestrator
+
+    seen = {}
+
+    def capture_loop(**kwargs):
+        seen.update(kwargs)
+        return iter(())
+
+    monkeypatch.setattr(agentic, "run_safetensors_tool_loop", capture_loop)
+    backend = InferenceOrchestrator.__new__(InferenceOrchestrator)
+    backend.active_model_name = "sf-model"
+    backend.models = {"sf-model": {"context_length": 4096}}
+
+    list(
+        backend.generate_chat_completion_with_tools(
+            messages = list(MESSAGES),
+            tools = [],
+            max_tokens = max_tokens,
+        )
+    )
+    return seen["max_tokens"]
+
+
+def test_an_absent_client_limit_stays_absent_through_the_loop(monkeypatch):
+    """Zero counts as absent too; only a positive limit is forwarded."""
+    assert _tool_loop_max_tokens(monkeypatch, None) is None
+    assert _tool_loop_max_tokens(monkeypatch, 0) is None
+    assert _tool_loop_max_tokens(monkeypatch, 512) == 512
+
+
 def test_the_loop_omits_the_budget_when_the_context_is_unknown():
     """An absent budget must not become a budget of zero, which would refuse every search."""
     seen = {}

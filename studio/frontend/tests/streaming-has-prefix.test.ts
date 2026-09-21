@@ -14,10 +14,11 @@
  */
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import { hasPrefix } from "../src/components/assistant-ui/streaming-render-schedule.ts";
+
+import { readSrc } from "./helpers/kit.ts";
 
 const CORPUS = [
   "",
@@ -121,12 +122,8 @@ test("hasPrefix agrees with startsWith under randomised growth", () => {
 // helper cannot express takes a start position and compares a fixed block, so
 // it does not grow with the reply and is left alone.
 test("the incremental cache tests prefixes without scanning the reply", () => {
-  const source = readFileSync(
-    new URL(
-      "../src/components/assistant-ui/streaming-render-schedule.ts",
-      import.meta.url,
-    ),
-    "utf8",
+  const source = readSrc(
+    "components/assistant-ui/streaming-render-schedule.ts",
   );
   const bare = [...source.matchAll(/\.startsWith\(([^)]*)\)/g)].filter(
     (match) => !match[1].includes(","),

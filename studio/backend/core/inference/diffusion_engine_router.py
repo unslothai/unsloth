@@ -21,6 +21,7 @@ Env knobs:
 from __future__ import annotations
 
 import os
+import sys
 import threading
 from typing import Any, Callable, Optional
 
@@ -49,7 +50,6 @@ logger = get_logger(__name__)
 _DISABLE_TOKENS = frozenset({"0", "off", "false", "no"})
 _ENABLE_TOKENS = frozenset({"1", "on", "true", "yes"})
 
-# without this the installer defaults to "cpu" and a forced ROCm/Intel generation silently runs on CPU
 # Resolved device backend -> the prebuilt sd-cli accelerator to install, used only for a force-native load on a GPU
 # host: without it the installer defaults to "cpu" and a forced ROCm/Intel generation silently runs on CPU. Unknown ->
 # "auto".
@@ -91,16 +91,49 @@ def get_active_diffusion_engine() -> Any:
     return engine_for(_active_engine_name)
 
 
+def cancel_generation_for_account(account_id: str) -> bool:
+    """Stop an in-flight image generation owned by ``account_id``; True when one was signalled.
+
+    Engines come from ``sys.modules`` (no import, no construction); both are checked because a
+    deselected engine can still be draining."""
+    cancelled = False
+    for module_name, attribute in (
+        ("core.inference.diffusion", "_diffusion_backend"),
+        ("core.inference.sd_cpp_backend", "_sd_cpp_backend"),
+    ):
+        module = sys.modules.get(module_name)
+        engine = getattr(module, attribute, None) if module is not None else None
+        if engine is None or engine._active_generate_account != account_id:
+            continue
+        # cancel_generate rechecks the owner under its lock.
+        if engine.cancel_generate(expected_account = account_id):
+            cancelled = True
+    return cancelled
+
+
+def retire_load_for_account(account_id: str) -> bool:
+    """Tear down an in-flight image load ``account_id`` started; True when one was found."""
+    from hub.services.models.account_access import retire_media_load
+
+    retired = False
+    for module_name, attribute in (
+        ("core.inference.diffusion", "_diffusion_backend"),
+        ("core.inference.sd_cpp_backend", "_sd_cpp_backend"),
+    ):
+        module = sys.modules.get(module_name)
+        engine = getattr(module, attribute, None) if module is not None else None
+        if retire_media_load("diffusion", account_id, engine):
+            retired = True
+    return retired
+
+
 def active_engine_name() -> str:
     return _active_engine_name
 
 
 def _activate(name: str, reason: Optional[str]) -> Any:
     global _active_engine_name, _fallback_reason
-    # without holding _lock across the slow unload()
     with _transition_lock:
-        # unload the deactivated engine first, else its model stays resident but unreachable (the evictor only targets
-        # the active one), leaking 10+ GB
         # Switching engines: unload the deactivated one first, else its model stays resident but unreachable (the
         # evictor only targets the active engine), leaking 10+ GB. The unload is slow, so resolve under _lock but run
         # unload() OUTSIDE it.
@@ -113,18 +146,16 @@ def _activate(name: str, reason: Optional[str]) -> Any:
             else:
                 _fallback_reason = reason if name == ENGINE_DIFFUSERS else None
         if engine_to_unload is not None:
-            # publish only AFTER the old engine unloads
-            # Publish the new engine only AFTER the old one unloads: the evictor unloads get_active_diffusion_engine(),
-            # so flipping the name first would let a concurrent acquire_for evict the new (empty) engine while the old
-            # model frees VRAM.
+            # Publish the new engine only AFTER the old one unloads: the evictor unloads
+            # get_active_diffusion_engine(), so flipping the name first would let a concurrent acquire_for evict the
+            # new (empty) engine while the old model frees VRAM.
             try:
                 engine_to_unload.unload()
             except Exception as exc:
-                # do NOT publish after a failed teardown: the old model still holds its memory
-                # Do NOT publish the new engine after a failed teardown. The old model (or the resident sd-server) still
-                # holds its memory, and flipping the name would hide it from get_active_diffusion_engine(), which the
-                # evictor, /images/unload and the next load all resolve through, so the leak would be permanent. Leaving
-                # the old engine active keeps it reclaimable and lets the caller retry.
+                # Do NOT publish the new engine after a failed teardown. The old model (or the resident sd-server)
+                # still holds its memory, and flipping the name would hide it from get_active_diffusion_engine(),
+                # which the evictor, /images/unload and the next load all resolve through, so the leak would be
+                # permanent. Leaving the old engine active keeps it reclaimable and lets the caller retry.
                 logger.error("failed to unload previous engine %s: %s", old_name, exc)
                 raise RuntimeError(
                     f"Could not switch the diffusion engine to {name}: unloading the current "
@@ -192,11 +223,9 @@ def select_and_activate_engine(
     binary = None
     server_binary = None
     if policy_eligible and fam_ok:
-        # probe the resident sd-server FIRST: a server-only install must route to native without paying an sd-cli
-        # download
-        # Probe the resident sd-server FIRST (the backend prefers it): a server-only install must still route to native
-        # and should not pay an sd-cli download. Install the accelerator-matched build so a forced-native GPU load gets
-        # the GPU server.
+        # Probe the resident sd-server FIRST (the backend prefers it): a server-only install must still route to
+        # native and should not pay an sd-cli download. Install the accelerator-matched build so a forced-native GPU
+        # load gets the GPU server.
         server_binary = ensure_sd_server_binary(
             allow_install = _install_allowed(),
             accelerator = _install_accelerator_for(backend),

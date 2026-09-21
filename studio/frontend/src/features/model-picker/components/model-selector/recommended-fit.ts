@@ -8,14 +8,21 @@ import { classifyGgufFit } from "../../../../lib/gguf-fit.ts";
 import { classifyMediaGgufFit } from "./model-catalog.ts";
 
 const GGUF_SUFFIX_RE = /-GGUF(?:$|-)/i;
-const MLX_RE = /-MLX(?:$|-)/i;
+// Mirrors the backend's _looks_like_mlx_repo: owner prefix, or a bounded mlx token in the leaf.
+const MLX_RE = /(?:^|[-_.])mlx(?:$|[-_.])/i;
+const MLX_OWNER_PREFIX = "mlx-community/";
+// Callers pass LocalModelInfo.id, a filesystem path, so a Windows one must split too.
+const PATH_SEP_RE = /[\\/]/;
 
 export function isGgufId(id: string, hintedIsGguf?: boolean): boolean {
   return Boolean(hintedIsGguf) || GGUF_SUFFIX_RE.test(id);
 }
 
 export function isMlxId(id: string): boolean {
-  return MLX_RE.test(id);
+  const trimmed = id.trim();
+  if (trimmed.toLowerCase().startsWith(MLX_OWNER_PREFIX)) return true;
+  const leaf = trimmed.split(PATH_SEP_RE).filter(Boolean).at(-1) ?? trimmed;
+  return MLX_RE.test(leaf);
 }
 
 // "mobile" build token (e.g. "gemma-4-E4B-it-qat-mobile-GGUF"); bounded so it never matches inside a longer word.

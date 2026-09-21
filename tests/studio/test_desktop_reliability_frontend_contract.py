@@ -5,6 +5,13 @@
 
 import re
 from pathlib import Path
+from tests.studio._js_source import (
+    attribute_expressions,
+    binding_joining,
+    boolean_table,
+    expand_bindings,
+    gates_the_markup,
+)
 
 
 REPO = Path(__file__).resolve().parents[2]
@@ -26,6 +33,7 @@ SHEET = FRONTEND / "components/ui/sheet.tsx"
 RESEARCH_ACTIVITY_PANEL = FRONTEND / "features/chat/components/research-activity-panel.tsx"
 RESPONSE_DETAILS_SHEET = FRONTEND / "components/assistant-ui/message-response-details-sheet.tsx"
 DOCUMENT_PREVIEW_SHEET = FRONTEND / "features/rag/components/document-preview-sheet.tsx"
+INTERFACE_SCALE_RUNTIME = FRONTEND / "features/settings/lib/interface-scale-runtime.ts"
 NATIVE_DIALOGS = REPO / "studio/src-tauri/src/native_file_dialogs.rs"
 NATIVE_CLIPBOARD = REPO / "studio/src-tauri/src/native_clipboard.rs"
 TAURI_MAIN = REPO / "studio/src-tauri/src/main.rs"
@@ -65,13 +73,46 @@ IMAGE = FRONTEND / "components/assistant-ui/image.tsx"
 AUDIO_PLAYER = FRONTEND / "components/assistant-ui/audio-player.tsx"
 
 
+def _scale_constants() -> dict[str, str]:
+    """The mac chrome constants, resolved to the strings provider.tsx puts in a style block.
+
+    ``NATIVE_MAC_TITLEBAR_HEIGHT_VAR`` is ``var(--studio-native-titlebar-height, 34px)``
+    built from ``NATIVE_MAC_TITLEBAR_HEIGHT_PX``. The runtime divides by the interface zoom
+    and provider.tsx uses the same constant as the CSS fallback, which is what keeps a
+    single 34 in the codebase, so read it from there rather than repeating it here.
+    """
+    source = INTERFACE_SCALE_RUNTIME.read_text(encoding = "utf-8")
+    numbers = dict(re.findall(r"export const (\w+_PX) = (\d+);", source))
+    return {
+        name: re.sub(r"\$\{(\w+)\}", lambda m: numbers.get(m.group(1), m.group(0)), body)
+        for name, body in re.findall(r"export const (\w+_VAR) = `([^`]+)`;", source)
+    }
+
+
 def _chrome_style_blocks(source: str) -> dict[str, dict[str, str]]:
     """Each ``const <NAME>_STYLE = { ... } as CSSProperties`` block as a var -> value map.
 
     Per block, so a value is only ever compared against the others that ship with it.
+
+    A value may be a string, a template, or one of the imported constants above. Before the
+    interface-scale setting they were all plain px strings; resolving the other two is what
+    keeps these contracts checking the same arithmetic instead of silently reading absent.
     """
+    constants = _scale_constants()
+
+    def resolve(raw: str) -> str:
+        raw = raw.strip()
+        if raw[:1] in ('"', "`"):
+            raw = raw[1:-1]
+        return re.sub(
+            r"\$\{(\w+)\}", lambda m: constants.get(m.group(1), m.group(0)), constants.get(raw, raw)
+        )
+
     return {
-        name: dict(re.findall(r'"(--[\w-]+)":\s*"([^"]+)"', body))
+        name: {
+            var: resolve(value)
+            for var, value in re.findall(r'"(--[\w-]+)":\s*(`[^`]*`|"[^"]*"|\w+)', body)
+        }
         for name, body in re.findall(
             r"const (\w+_STYLE) = \{(.*?)\} as CSSProperties;", source, re.S
         )
@@ -85,9 +126,24 @@ def _titlebar_nav_button_px(source: str) -> int | None:
 
 
 def _px(value: str | None) -> int | None:
-    """*value* as whole pixels, or None if it is not a px literal (rem, calc, absent)."""
-    match = re.fullmatch(r"(\d+)px", (value or "").strip())
-    return int(match.group(1)) if match else None
+    """*value* as whole pixels at 100% interface scale, or None if it is not pixel-valued.
+
+    **At 100%, and only there.** The mac chrome vars carry their own px fallback and the
+    runtime divides that number by the webview zoom, because macOS draws the titlebar and
+    traffic lights at a size zoom does not touch. So every sum below is the arithmetic as
+    it ships at 100%, which is the scale these contracts were written against and the only
+    one a static read of the source can see.
+    """
+    text = (value or "").strip()
+    for pattern in (
+        r"(\d+)px",
+        r"var\(--[\w-]+,\s*(\d+)px\)",
+    ):
+        match = re.fullmatch(pattern, text)
+        if match:
+            return int(match.group(1))
+    match = re.fullmatch(r"calc\((\d+)px\s*\+\s*var\(--[\w-]+,\s*(\d+)px\)\)", text)
+    return int(match.group(1)) + int(match.group(2)) if match else None
 
 
 def test_desktop_update_offer_remains_actionable_from_settings():
@@ -464,7 +520,7 @@ def test_desktop_manages_the_remote_password_through_the_account_dialog():
     assert "if (!(isTauri && status)) {" in row
     assert "initial={status.passwordPending}" in row
     assert "<RemotePasswordRow status={status} onDone={refreshStatus} />" in section
-    assert "{isTauri ? null : (" in GENERAL_TAB.read_text(encoding = "utf-8")
+    assert "{isTauri && isOwner ? null : (" in GENERAL_TAB.read_text(encoding = "utf-8")
     # A password change rotates credentials outside the polling requests.
     refresh = section.split("const refreshStatus = useCallback(", 1)[1].split("}, []);", 1)[0]
     assert "mutationEpoch.current += 1;" in refresh
@@ -488,7 +544,14 @@ def test_desktop_manages_the_remote_password_through_the_account_dialog():
 def test_desktop_startup_waits_for_auth_without_intermediate_handoff():
     source = APP_PROVIDER.read_text(encoding = "utf-8")
 
-    assert 'const showApp = status === "running" && desktopAuthReady;' in source
+    # The gate has been renamed once already (showApp -> canMountApp) and gained a second
+    # clause, so pin the CONDITION that makes the app wait for auth, not the name in front
+    # of it. A rename or a rewrap is a refactor; dropping desktopAuthReady is the regression.
+    gate = binding_joining(source, "&&", {'status === "running"', "desktopAuthReady"})
+    assert gate, "no binding requires both a running status and desktopAuthReady"
+    assert gates_the_markup(
+        source, gate
+    ), f"{gate} is computed but does not condition the mount in the markup"
     assert "Preparing Unsloth" not in source
     assert "Signing in to desktop session" not in source
     assert "desktopBooting" not in source
@@ -605,13 +668,28 @@ def test_collapsed_tauri_keeps_history_arrows_and_adds_new_chat_by_model_picker(
     assert "window.setTimeout(() =>" in titlebar
     assert "scheduleMaximizedRefresh();" in titlebar
 
-    assert '"pl-3"' in titlebar
+    # The navigation box's left inset is deliberately not asserted here. Whether that
+    # element ends up with one is a computed style: it depends on the tailwind-merge
+    # cascade, the important modifier, whether an arbitrary value is valid CSS, whether
+    # the class is hoisted into a const or interpolated into a template hole, and
+    # whether DesktopTitlebarNavigation applies it from its own className prop. None of
+    # that is decidable from this file, and the exact-value form this replaces failed
+    # #10321 for retuning 12px to 16px, which is what an alignment pass is for. A
+    # computed-style check belongs in a driver that renders the titlebar.
     assert 'isTauri && !isMobile && !pinned && view.mode !== "compare"' in chat_page
 
     assert "pl-[var(--studio-collapsed-chat-controls-inset,0.75rem)]" in chat_page
-    assert '"--studio-collapsed-chat-controls-inset": "188px"' in APP_PROVIDER.read_text(
-        encoding = "utf-8"
-    )
+    # 188 is the number, not the spelling. It ships as `calc(110px + var(...78px))` so the
+    # traffic-light half can be divided by the interface zoom while the content half is
+    # not, and asserting the literal string is what broke when that landed. The custom
+    # titlebar sets the same var to its own much smaller inset, hence the mac-only filter.
+    insets = {
+        name: _px(values["--studio-collapsed-chat-controls-inset"])
+        for name, values in _chrome_style_blocks(APP_PROVIDER.read_text(encoding = "utf-8")).items()
+        if "--studio-mac-traffic-light-inset" in values
+    }
+    assert insets, "no style block sets both the traffic-light and collapsed-controls insets"
+    assert set(insets.values()) == {188}, insets
     assert 'className="!size-[30px] rounded-[10px] text-muted-foreground"' in chat_page
     assert 'aria-label="New chat"' in chat_page
     new_chat_click = chat_page.index("onClick={handleDesktopNewChat}")
@@ -661,8 +739,28 @@ def test_tauri_collapse_removes_the_icon_rail_but_web_keeps_it():
         assert offset is not None and offset > 0, (name, values)
         assert titlebar is not None, (name, values)
         assert offset + button <= titlebar, (name, offset, button, titlebar)
-    assert "aria-hidden={(hasPinMode && !pinned && collapseToZero) || undefined}" in primitive
-    assert "inert={(hasPinMode && !pinned && collapseToZero) || undefined}" in primitive
+    # Read the CONDITION, not the text that spells it. The exact-string form this replaces
+    # pinned the inlined expression, so #10706 broke it by hoisting that expression into a
+    # named const and giving it a peek exception: a refactor that changed nothing this
+    # contract protects, and it left main and every open PR red for a day. What must hold is
+    # that a sidebar collapsing to nothing leaves the accessibility tree, and that it goes
+    # inert on exactly the same condition, since hidden-but-focusable is the actual bug.
+    hidden = attribute_expressions(primitive, "aria-hidden")
+    inert = attribute_expressions(primitive, "inert")
+    assert len(hidden) == 1 and len(inert) == 1, (hidden, inert)
+    assert hidden == inert, (hidden, inert)
+    # Asking only that the held-out condition still appears would accept dropping the peek
+    # exception with it, and a peeked sidebar is on screen: aria-hidden on a visible panel
+    # is the same defect this guards, pointing the other way. So state WHEN the panel leaves
+    # the accessibility tree, over every combination of the four inputs, and let any
+    # spelling that admits exactly those states pass.
+    inputs = ("hasPinMode", "pinned", "collapseToZero", "peeking")
+    table = boolean_table(expand_bindings(primitive, hidden[0], stop = inputs), inputs)
+    for combination, removed in table.items():
+        has_pin_mode, is_pinned, collapses_to_zero, is_peeking = combination
+        assert removed == (
+            has_pin_mode and not is_pinned and collapses_to_zero and not is_peeking
+        ), (combination, hidden[0])
 
 
 def test_fixed_sheets_start_below_the_custom_titlebar():
@@ -781,8 +879,9 @@ def test_media_pages_clear_the_custom_titlebar():
     """The chat-style layout gives the media pages no outer inset, so each applies its own."""
     root = ROOT_ROUTE.read_text(encoding = "utf-8")
 
-    assert (
-        "const isChatLike = isChatRoute || isImagesRoute || isVideoRoute || isAudioRoute;" in root
+    assert re.search(
+        r"const isChatLike =\s*isChatRoute \|\| isImagesRoute \|\| isVideoRoute \|\| isAudioRoute;",
+        root,
     )
     for page in (IMAGES_PAGE, VIDEO_PAGE):
         shell = page.read_text(encoding = "utf-8").split('"diffusion-surface', 1)[1].split(">", 1)[0]
@@ -864,6 +963,16 @@ def test_compact_media_link_keeps_accessible_name_and_truncation():
     assert "aria-label={label}" in button
     assert 'cn("min-w-0 truncate", labelClassName)' in button
     assert "arrowClassName" in button
+
+
+def test_media_page_link_tooltip_drops_below_titlebar_controls():
+    """unslothai/unsloth#10226: Images/Video park this link in the top-right header beside
+    Windows controls; a top tooltip blocks minimize/maximize/close."""
+    source = MEDIA_PAGE_LINK.read_text(encoding = "utf-8")
+    tooltip = source.split("<TooltipContent", 1)[1].split("</TooltipContent>", 1)[0]
+
+    assert 'side="bottom"' in tooltip
+    assert "sideOffset={6}" in tooltip
 
 
 def test_media_page_headers_out_stack_the_mac_drag_region():

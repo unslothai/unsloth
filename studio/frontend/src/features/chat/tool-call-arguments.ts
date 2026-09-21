@@ -418,3 +418,24 @@ export function mergedToolCallArgumentsText(
     return stringifyJson(mergedArgs ?? {});
   }
 }
+
+/**
+ * The argument text one streamed delta contributes to its call's slot.
+ *
+ * The API specifies `function.arguments` as a string fragment; llama-server has shipped an
+ * already-decoded object instead (ggml-org/llama.cpp#20198), and dropping it loses the call's
+ * whole payload. Any other non-string contributes nothing rather than `"undefined"`.
+ */
+export function streamedToolCallArguments(value: unknown): string {
+  if (typeof value === "string") {
+    return value;
+  }
+  if (value === null || typeof value !== "object") {
+    return "";
+  }
+  try {
+    return JSON.stringify(value) ?? "";
+  } catch {
+    return "";
+  }
+}

@@ -85,6 +85,8 @@ def _stub_torch(monkeypatch):
         cuda = types.SimpleNamespace(matmul = types.SimpleNamespace(allow_tf32 = False)),
         cudnn = types.SimpleNamespace(allow_tf32 = False, benchmark = False),
     )
+    # Said explicitly so the CUDA-graph arm refuses deterministically, whatever the host has.
+    torch.cuda = types.SimpleNamespace(is_available = lambda: False)
     # The VAE-decode compile wraps a bound method; identity wrap is enough for tests.
     torch.compile = lambda fn, **kwargs: fn
     monkeypatch.setitem(sys.modules, "torch", torch)
@@ -138,6 +140,7 @@ def test_compile_eligible_requires_bf16_cuda_friendly(monkeypatch):
 def test_snapshot_restore_backend_flags(monkeypatch):
     torch = _stub_torch(monkeypatch)
     snap = snapshot_backend_flags()
+    # The plain stub torch has no _inductor and no get_float32_matmul_precision, so none of those keys appear.
     assert snap == {"matmul_tf32": False, "cudnn_tf32": False, "cudnn_benchmark": False}
     # An opt-in max run flips the globals on...
     torch.backends.cuda.matmul.allow_tf32 = True
@@ -244,6 +247,7 @@ def test_speed_off_applies_nothing(monkeypatch):
         "compiled_dequant": False,
         "compiled_vae_decode": False,
         "fp16_accum": False,
+        "cuda_graph": False,
     }
     assert pipe.vae.mem_format is None and pipe.compiled is False
     # off must not touch any process-wide flag (the bit-identical reference path).
@@ -852,3 +856,264 @@ def test_linux_and_mac_are_not_asked_about_triton(monkeypatch):
         _clear_runtime_cache()
         assert ds_mod.torch_compile_runtime_available() is True
     _clear_runtime_cache()
+
+
+_TORCHAO_FLAGS = (
+    "coordinate_descent_tuning",
+    "coordinate_descent_check_all_directions",
+    "force_fuse_int_mm_with_mul",
+    "fx_graph_cache",
+)
+
+
+def _stub_full_inductor_config(torch):
+    cfg = types.SimpleNamespace(
+        emulate_precision_casts = False,
+        triton = types.SimpleNamespace(unique_kernel_names = False),
+        **{name: False for name in _TORCHAO_FLAGS},
+    )
+    torch._inductor = types.SimpleNamespace(config = cfg)
+    return cfg
+
+
+def _stub_matmul_precision(
+    torch,
+    calls: list,
+    initial = "highest",
+):
+    cell = {"v": initial}
+
+    def _get():
+        return cell["v"]
+
+    def _set(v):
+        calls.append(("precision", v))
+        cell["v"] = v
+
+    torch.get_float32_matmul_precision = _get
+    torch.set_float32_matmul_precision = _set
+    return cell
+
+
+def test_snapshot_restores_torchao_inductor_flags(monkeypatch):
+    torch = _stub_torch(monkeypatch)
+    cfg = _stub_full_inductor_config(torch)
+    snap = snapshot_backend_flags()
+    for name in _TORCHAO_FLAGS:
+        assert snap[f"inductor_{name}"] is False
+    assert snap["inductor_triton_unique_kernel_names"] is False
+    for name in _TORCHAO_FLAGS:
+        setattr(cfg, name, True)
+    cfg.triton.unique_kernel_names = True
+    cfg.emulate_precision_casts = True
+    restore_backend_flags(snap)
+    for name in _TORCHAO_FLAGS:
+        assert getattr(cfg, name) is False, name
+    assert cfg.triton.unique_kernel_names is False
+    assert cfg.emulate_precision_casts is False
+
+
+def test_snapshot_restores_float32_matmul_precision(monkeypatch):
+    torch = _stub_torch(monkeypatch)
+    calls: list = []
+    cell = _stub_matmul_precision(torch, calls, initial = "highest")
+    snap = snapshot_backend_flags()
+    assert snap["matmul_precision"] == "highest"
+    cell["v"] = "high"
+    restore_backend_flags(snap)
+    assert cell["v"] == "highest"
+
+
+def test_matmul_precision_is_restored_before_tf32(monkeypatch):
+    torch = _stub_torch(monkeypatch)
+    calls: list = []
+    _stub_matmul_precision(torch, calls, initial = "highest")
+
+    class _Matmul:
+        def __init__(self):
+            self._tf32 = False
+
+        @property
+        def allow_tf32(self):
+            return self._tf32
+
+        @allow_tf32.setter
+        def allow_tf32(self, v):
+            calls.append(("tf32", v))
+            self._tf32 = v
+
+    torch.backends.cuda.matmul = _Matmul()
+    snap = snapshot_backend_flags()
+    calls.clear()
+    restore_backend_flags(snap)
+    kinds = [k for k, _ in calls]
+    assert kinds.index("precision") < kinds.index("tf32"), calls
+
+
+def test_snapshot_skips_inductor_flags_a_build_lacks(monkeypatch):
+    torch = _stub_torch(monkeypatch)
+    cfg = _stub_inductor_config(monkeypatch, torch, emulate = False)
+    snap = snapshot_backend_flags()
+    assert snap["inductor_emulate_precision_casts"] is False
+    for name in _TORCHAO_FLAGS:
+        assert f"inductor_{name}" not in snap
+    assert "inductor_triton_unique_kernel_names" not in snap
+    assert "matmul_precision" not in snap
+    cfg.emulate_precision_casts = True
+    restore_backend_flags(snap)
+    assert cfg.emulate_precision_casts is False
+
+
+def test_video_snapshot_precedes_transformer_quant():
+    """A failed load and an unload must both restore the pre-quant backend flags."""
+    import ast
+    from pathlib import Path
+
+    path = Path(__file__).resolve().parents[1] / "core" / "inference" / "video.py"
+    tree = ast.parse(path.read_text(encoding = "utf-8"))
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.FunctionDef):
+            continue
+        snaps = [
+            c.lineno
+            for c in ast.walk(node)
+            if isinstance(c, ast.Call) and getattr(c.func, "id", None) == "snapshot_backend_flags"
+        ]
+        quants = [
+            c.lineno
+            for c in ast.walk(node)
+            if isinstance(c, ast.Call) and getattr(c.func, "id", None) == "quantize_transformer"
+        ]
+        if snaps and quants:
+            assert (
+                min(snaps) < min(quants)
+            ), f"{node.name}: snapshot_backend_flags at {snaps} must precede quantize_transformer at {quants}"
+            return
+    raise AssertionError(
+        "no video.py function calls both snapshot_backend_flags and quantize_transformer"
+    )
+
+
+def _stub_cuda_graph(
+    monkeypatch,
+    *,
+    eligible = True,
+    reason = "ok",
+):
+    """Replace ``core.inference.diffusion_cuda_graph`` with a recorder that captures nothing.
+
+    Into BOTH sys.modules and the package attribute: ``from . import X`` reads the attribute when
+    an earlier import already bound it, and falls back to sys.modules only when it has not."""
+    import core.inference as inference_pkg
+
+    calls = {"eligible": [], "installs": 0}
+
+    stub = types.ModuleType("core.inference.diffusion_cuda_graph")
+
+    def _graph_eligible(target, **kwargs):
+        calls["eligible"].append(kwargs)
+        return eligible, reason
+
+    def _install_cuda_graphs(pipe, *, logger = None):
+        calls["installs"] += 1
+        return ("h",)
+
+    stub.graph_eligible = _graph_eligible
+    stub.install_cuda_graphs = _install_cuda_graphs
+    monkeypatch.setitem(sys.modules, "core.inference.diffusion_cuda_graph", stub)
+    monkeypatch.setattr(inference_pkg, "diffusion_cuda_graph", stub, raising = False)
+    return calls
+
+
+@pytest.mark.parametrize("mode", [SPEED_DEFAULT, SPEED_MAX])
+def test_cuda_graph_engages_on_compile_tiers(monkeypatch, mode):
+    _stub_torch(monkeypatch)
+    _stub_gguf_accel(monkeypatch)
+    calls = _stub_cuda_graph(monkeypatch)
+    pipe = _Pipe(with_compile = True)
+    applied = apply_speed_optims(pipe, _target(), is_gguf = False, family = _family(), speed_mode = mode)
+    assert applied["cuda_graph"] is True
+    assert calls["installs"] == 1
+    assert pipe._unsloth_cuda_graph_reason == "ok"
+
+
+@pytest.mark.parametrize("mode", [SPEED_OFF, SPEED_EAGER])
+def test_cuda_graph_skipped_below_the_compile_tiers(monkeypatch, mode):
+    _stub_torch(monkeypatch)
+    _stub_gguf_accel(monkeypatch)
+    calls = _stub_cuda_graph(monkeypatch)
+    pipe = _Pipe(with_compile = True)
+    applied = apply_speed_optims(pipe, _target(), is_gguf = False, family = _family(), speed_mode = mode)
+    assert applied["cuda_graph"] is False
+    assert calls["installs"] == 0 and calls["eligible"] == []
+
+
+def test_cuda_graph_refusal_stashes_the_reason(monkeypatch):
+    _stub_torch(monkeypatch)
+    _stub_gguf_accel(monkeypatch)
+    calls = _stub_cuda_graph(monkeypatch, eligible = False, reason = "cpu offload active")
+    pipe = _Pipe(with_compile = True)
+    applied = apply_speed_optims(
+        pipe, _target(), is_gguf = False, family = _family(), speed_mode = SPEED_DEFAULT
+    )
+    assert applied["cuda_graph"] is False
+    assert calls["installs"] == 0
+    assert pipe._unsloth_cuda_graph_reason == "cpu offload active"
+
+
+def test_cuda_graph_default_is_forwarded_as_family_default(monkeypatch):
+    _stub_torch(monkeypatch)
+    _stub_gguf_accel(monkeypatch)
+    calls = _stub_cuda_graph(monkeypatch)
+    apply_speed_optims(
+        _Pipe(with_compile = True),
+        _target(),
+        is_gguf = False,
+        family = _family(),
+        speed_mode = SPEED_DEFAULT,
+        cuda_graph_default = False,
+    )
+    assert calls["eligible"][0]["family_default"] is False
+    apply_speed_optims(
+        _Pipe(with_compile = True),
+        _target(),
+        is_gguf = False,
+        family = _family(),
+        speed_mode = SPEED_DEFAULT,
+    )
+    assert calls["eligible"][1]["family_default"] is True
+
+
+def test_cuda_graph_cache_engaged_overrides_cache_active_for_the_graph_arm(monkeypatch):
+    _stub_torch(monkeypatch)
+    _stub_gguf_accel(monkeypatch)
+    calls = _stub_cuda_graph(monkeypatch)
+    common = dict(is_gguf = False, family = _family(), speed_mode = SPEED_DEFAULT)
+    apply_speed_optims(
+        _Pipe(with_compile = True), _target(), cache_active = True, cache_engaged = False, **common
+    )
+    assert calls["eligible"][0]["cache_active"] is False
+    apply_speed_optims(
+        _Pipe(with_compile = True), _target(), cache_active = False, cache_engaged = True, **common
+    )
+    assert calls["eligible"][1]["cache_active"] is True
+    apply_speed_optims(_Pipe(with_compile = True), _target(), cache_active = True, **common)
+    assert calls["eligible"][2]["cache_active"] is True
+
+
+def test_cuda_graph_install_failure_leaves_the_load_usable(monkeypatch):
+    _stub_torch(monkeypatch)
+    _stub_gguf_accel(monkeypatch)
+    calls = _stub_cuda_graph(monkeypatch)
+
+    def _boom(pipe, *, logger = None):
+        calls["installs"] += 1
+        raise RuntimeError("CUDA out of memory during capture")
+
+    sys.modules["core.inference.diffusion_cuda_graph"].install_cuda_graphs = _boom
+    pipe = _Pipe(with_compile = True)
+    applied = apply_speed_optims(
+        pipe, _target(), is_gguf = False, family = _family(), speed_mode = SPEED_DEFAULT
+    )
+    assert applied["cuda_graph"] is False and calls["installs"] == 1
+    assert applied["compiled"] is True  # the rest of the tier still engaged
