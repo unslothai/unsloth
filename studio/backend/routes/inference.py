@@ -40,6 +40,7 @@ from typing import (
     Union,
 )
 import functools
+import itertools
 import json
 import httpx
 from hub.services.models import account_access
@@ -38930,6 +38931,28 @@ def _note_queued_attempt(attempt_id, delta: int) -> None:
         _diffusion_queued_attempts.pop(attempt_id, None)
 
 
+# The serial of the newest execution that has FINISHED its run under each attempt id, so a
+# slower predecessor sharing that id cannot retain a failure over it. Persist runs after the
+# engine slot is released, so two executions of one retried POST can be persisting at once,
+# and the loser finishing last must not answer for the winner's saved images.
+_diffusion_execution_serial = itertools.count(1)
+_diffusion_attempt_last_run: dict[str, int] = {}
+
+
+def _note_attempt_run_finished(attempt_id, serial: int) -> None:
+    if not attempt_id:
+        return
+    if _diffusion_attempt_last_run.get(attempt_id, 0) < serial:
+        _diffusion_attempt_last_run[attempt_id] = serial
+
+
+def _attempt_run_was_superseded(attempt_id, serial: int) -> bool:
+    """Whether a LATER execution of *attempt_id* has already finished its run."""
+    if not attempt_id:
+        return False
+    return _diffusion_attempt_last_run.get(attempt_id, 0) > serial
+
+
 def _attempt_execution_is_live(attempt_id) -> bool:
     """Whether a generate request is holding *attempt_id* right now.
 
@@ -39075,6 +39098,7 @@ async def generate_diffusion_image(
         from core.inference.generate_outcomes import attempt_scope_key as _attempt_key
         from core.inference.generate_outcomes import clear_generate_failure
 
+        execution_serial = next(_diffusion_execution_serial)
         queued_attempt = _attempt_key(request.attempt_id)
         _note_queued_attempt(queued_attempt, 1)
         # This execution owns the id from here. The Tauri client retries a POST whose
@@ -39154,6 +39178,9 @@ async def generate_diffusion_image(
     from core.inference.generate_outcomes import clear_generate_failure as _clear_outcome
 
     _clear_outcome(request.attempt_id)
+    # This run is done, so a predecessor of the same retried POST that is still persisting is
+    # now the older execution, whatever order the two finish in.
+    _note_attempt_run_finished(queued_attempt, execution_serial)
 
     # Persist each image with its full recipe. BOTH engines batch with a distinct seed per image, returned in ``seeds``, so each is individually reproducible.
     created_at = time.time()
@@ -39248,11 +39275,16 @@ async def generate_diffusion_image(
         # images it never saved are not in the gallery either. Retained before the finally
         # drops the marker, so the progress poll can answer with the reason instead. Logged
         # just above, and the disk error is only there.
-        _retain_generate_failure(request.attempt_id, _PERSIST_FAILURE_MSG)
-        # And on the channel a RELOADED page has left: its mount probe polls without an
-        # attempt id, so the keyed record alone was invisible to it and the resumed poll saw
-        # an error-free idle state and refreshed an unchanged gallery.
-        _note_unscoped_generate_failure(backend, request.attempt_id, _PERSIST_FAILURE_MSG)
+        # Neither channel over a LATER execution of the same id: persist runs after the
+        # engine slot is released, so a retry of one lost POST can generate and persist while
+        # this one's persist stalls, and recording this failure afterwards told the client its
+        # attempt had failed while the retry's images sat in the gallery.
+        if not _attempt_run_was_superseded(persisting_attempt, execution_serial):
+            _retain_generate_failure(request.attempt_id, _PERSIST_FAILURE_MSG)
+            # The channel a RELOADED page has left: its mount probe polls without an attempt
+            # id, so the keyed record alone was invisible to it and the resumed poll saw an
+            # error-free idle state and refreshed an unchanged gallery.
+            _note_unscoped_generate_failure(backend, request.attempt_id, _PERSIST_FAILURE_MSG)
         raise HTTPException(status_code = 500, detail = _PERSIST_FAILURE_MSG)
     finally:
         _diffusion_persist_active -= 1

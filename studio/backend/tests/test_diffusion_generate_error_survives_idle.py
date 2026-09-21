@@ -645,7 +645,7 @@ def test_a_persist_failure_is_retained_for_the_client_that_cannot_read_the_respo
     """
     src = _src("routes/inference.py")
     at = src.index('logger.error("diffusion.persist_failed')
-    window = src[at : at + 900]
+    window = src[at : at + 1600]
     assert (
         "_retain_generate_failure(request.attempt_id, _PERSIST_FAILURE_MSG)" in window
     ), "a persist failure leaves the settling client reading its lost run as a success"
@@ -766,7 +766,7 @@ def test_a_reloaded_page_hears_about_a_persist_failure():
     # Wired at the persist failure, and before the marker that made the attempt active drops.
     src = _src("routes/inference.py")
     at = src.index('logger.error("diffusion.persist_failed')
-    window = src[at : at + 900]
+    window = src[at : at + 1600]
     assert "_note_unscoped_generate_failure(backend, request.attempt_id" in window
 
 
@@ -918,3 +918,53 @@ def test_a_live_execution_outranks_an_outcome_retained_under_its_id():
     assert (
         "_clear_outcome(request.attempt_id)" in src[persist_at - 900 : persist_at]
     ), "a retry that ran leaves its predecessor's failure to resurface"
+
+
+def test_a_stalled_persist_does_not_answer_for_a_retry_that_already_saved():
+    """Persist runs after the engine slot is released, so two executions can overlap.
+
+    A Tauri retry of one lost POST can generate and persist successfully while the original's
+    persist stalls; the original failing afterwards recorded that failure under the shared id,
+    so the settling client reported failure while the retry's images sat in the gallery.
+    """
+    import routes.inference as route
+
+    first = next(route._diffusion_execution_serial)
+    retry = next(route._diffusion_execution_serial)
+    key = "acct\x00attempt-overlapped"
+
+    assert (
+        route._attempt_run_was_superseded(key, first) is False
+    ), "nothing has finished yet, so nothing is superseded"
+    # The retry's run finishes first.
+    route._note_attempt_run_finished(key, retry)
+    try:
+        assert (
+            route._attempt_run_was_superseded(key, first) is True
+        ), "the original execution still answers after a later one finished its run"
+        assert (
+            route._attempt_run_was_superseded(key, retry) is False
+        ), "the newest execution was told it had been superseded by itself"
+        # An id nobody is sharing is unaffected, and no id at all is never superseded.
+        assert route._attempt_run_was_superseded("acct\x00attempt-alone", first) is False
+        assert route._attempt_run_was_superseded(None, first) is False
+        # An older serial cannot move the mark backwards.
+        route._note_attempt_run_finished(key, first)
+        assert route._diffusion_attempt_last_run[key] == retry
+    finally:
+        route._diffusion_attempt_last_run.pop(key, None)
+
+    # Wired: the persist failure records nothing on either channel once superseded.
+    src = _src("routes/inference.py")
+    at = src.index('logger.error("diffusion.persist_failed')
+    window = src[at : at + 1600]
+    assert (
+        "if not _attempt_run_was_superseded(persisting_attempt, execution_serial):" in window
+    ), "a stalled persist still answers for a retry that already saved its images"
+    guard = window.index("_attempt_run_was_superseded")
+    assert guard < window.index("_retain_generate_failure"), "the guard runs after the record"
+    assert guard < window.index(
+        "_note_unscoped_generate_failure"
+    ), "the unscoped slot is written even when a later execution has superseded this one"
+    # And a finished run marks itself, or nothing is ever superseded.
+    assert "_note_attempt_run_finished(queued_attempt, execution_serial)" in src
