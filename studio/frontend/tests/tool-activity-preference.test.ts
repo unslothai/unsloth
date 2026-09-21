@@ -46,7 +46,12 @@ store.set(
 const { useChatPreferencesStore } = await import(
   "../src/features/chat/stores/chat-preferences-store.ts"
 );
-const { resolveToolActivityOpen, syncToolActivityPreference, toolActivityOpen } =
+const {
+  resolveToolActivityOpen,
+  startsNewToolRound,
+  syncToolActivityPreference,
+  toolActivityOpen,
+} =
   await import("../src/components/assistant-ui/tool-activity-open-state.ts");
 const { foldIsActive } = await import(
   "../src/features/chat/utils/display-visibility.ts"
@@ -367,6 +372,45 @@ test("a hand-opened controlled card keeps its open when the answer starts", () =
 });
 
 
+test("the round boundary is the call starting again", () => {
+  // The reasoning block's rule, applied here: a round starts when the activity resumes.
+  assert.equal(startsNewToolRound(true, false), true);
+  assert.equal(startsNewToolRound(true, true), false);
+  assert.equal(startsNewToolRound(false, true), false);
+  assert.equal(startsNewToolRound(false, false), false);
+});
+
+test("a new round hands a controlled card back to the setting", () => {
+  // Regenerate reuses the card, so the previous round's hand-set state must not survive into
+  // the new one: the setting decides where the card starts again.
+  const rerun = (
+    visibility: "collapsed" | "auto" | "expanded",
+    override: boolean | null,
+  ) =>
+    resolveToolActivityOpen({
+      currentOpen: true,
+      visibility,
+      previousVisibility: visibility,
+      isRunning: true,
+      hasText: true,
+      override,
+      startedNewRound: true,
+    });
+  // The answer text arrived in the old round, so hasText is already true for this one too.
+  assert.equal(
+    rerun("auto", false),
+    true,
+    "a card closed in the old round stayed closed for the new run",
+  );
+  assert.equal(
+    rerun("collapsed", true),
+    false,
+    "a card opened in the old round stayed pinned open for the new run",
+  );
+  assert.equal(rerun("expanded", false), true);
+});
+
+
 test("fallback cards react to live preference changes", () => {
   const manuallyOpen = {
     visibility: "auto" as const,
@@ -584,6 +628,8 @@ test("the shared hook resolves through the preference and the shared policy", as
     "previousVisibility",
     "isRunning",
     "hasText",
+    // Without this the hook cannot clear the old round's manual state when a call re-runs.
+    "startedNewRound",
   ]) {
     assert.ok(passed.has(field), `the policy is called without ${field}`);
   }

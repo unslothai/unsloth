@@ -6,24 +6,30 @@ import { useChatPreferencesStore } from "@/features/chat/stores/chat-preferences
 // eslint-disable-next-line no-restricted-imports -- this file is in the startup cycle; the chat barrel closes it.
 import { defaultOpenFor } from "@/features/chat/utils/display-visibility";
 import { useEffect, useRef, useState } from "react";
-import { resolveToolActivityOpen } from "./tool-activity-open-state";
+import {
+  resolveToolActivityOpen,
+  startsNewToolRound,
+} from "./tool-activity-open-state";
 
 export function useToolActivityOpen(isRunning: boolean, hasText: boolean) {
   const visibility = useChatPreferencesStore((state) => state.toolVisibility);
   const [state, setState] = useState(() => ({
     open: defaultOpenFor(visibility, isRunning),
-    // null until the user clicks the trigger, so a controlled card can keep a manual open
-    // the same way the uncontrolled cards and groups do.
     override: null as boolean | null,
   }));
   const previousVisibility = useRef(visibility);
+  const previousRunning = useRef(isRunning);
 
   useEffect(() => {
     const previous = previousVisibility.current;
     previousVisibility.current = visibility;
+    // Regenerate reuses this card, so a re-run of the same call would otherwise inherit the
+    // previous round's hand-set state. Same rule the reasoning block applies to its round.
+    const startedNewRound = startsNewToolRound(isRunning, previousRunning.current);
+    previousRunning.current = isRunning;
     setState((current) => {
-      // A setting change hands the card back to the setting, matching the uncontrolled cards.
-      const override = previous === visibility ? current.override : null;
+      const override =
+        previous === visibility && !startedNewRound ? current.override : null;
       return {
         override,
         open: resolveToolActivityOpen({
@@ -33,6 +39,7 @@ export function useToolActivityOpen(isRunning: boolean, hasText: boolean) {
           isRunning,
           hasText,
           override,
+          startedNewRound,
         }),
       };
     });

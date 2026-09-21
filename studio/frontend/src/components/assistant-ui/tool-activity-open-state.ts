@@ -16,6 +16,9 @@ interface ToolActivityTransition {
   hasText: boolean;
   /** null until the user clicks this card's trigger. */
   override?: boolean | null;
+  /** True on the render where the call starts again. Regenerate reuses this card, so the
+   *  previous round's hand-set state is already stale when the new round begins. */
+  startedNewRound?: boolean;
 }
 
 /** Where a card sits after the setting, the run or the answer changed. Changing the setting
@@ -27,15 +30,15 @@ export function resolveToolActivityOpen({
   previousVisibility,
   isRunning,
   hasText,
+  startedNewRound = false,
   override = null,
 }: ToolActivityTransition) {
-  if (visibility !== previousVisibility) {
-    // A running call opens here for the same reason it opens below: Expand while running is
-    // about the call still going, not about whether the answer has started yet.
+  if (visibility !== previousVisibility || startedNewRound) {
+    // A new round re-runs the call in this same card, so it starts where the setting puts it:
+    // Expand while running opens it to watch the fresh call, and the old round's hand-set
+    // state is dropped rather than carried into a round the user never set it for.
     return defaultOpenFor(visibility, isRunning);
   }
-  // A click outranks the automatic rules until the setting changes, so a card the user opened
-  // stays open when the answer text arrives.
   if (override !== null) {
     return override;
   }
@@ -50,6 +53,15 @@ export function resolveToolActivityOpen({
     return false;
   }
   return currentOpen;
+}
+
+/** A new round starts when the call resumes. Regenerate reuses the card, so the previous
+ *  round's hand-set state has to clear on the render the new one begins, like Thinking. */
+export function startsNewToolRound(
+  isRunning: boolean,
+  wasRunning: boolean,
+): boolean {
+  return isRunning && !wasRunning;
 }
 
 export interface ToolActivityPreferenceState {
