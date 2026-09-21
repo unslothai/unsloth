@@ -1275,13 +1275,12 @@ test("a collapsed sidebar section is not published for the chords", async () => 
     APP_SIDEBAR,
     /folderChatItems\(true, \[row\.project\]\)/,
   );
-  // Only the Projects section answers to the organization: its folders are gone in one-list
-  // mode, while Pinned keeps drawing the folders pinned to it.
   assert.match(
     APP_SIDEBAR,
-    /folderChatItems\(\n\s*projectsOpen && projectsSectionConfigured,\n\s*visibleProjectRecords,\n\s*\)/,
+    /folderChatItems\(projectsOpen, visibleProjectRecords\)/,
   );
-  assert.match(APP_SIDEBAR, /if \(!chatListsOnScreen \|\| !open\) return \[\];/);
+  // In one list every project chat is a Recents row, so a folder must not list it again.
+  assert.match(APP_SIDEBAR, /if \(!chatListsOnScreen \|\| organizeBy !== "project" \|\| !open\)/);
   // And the published lists are the filtered ones.
   assert.match(APP_SIDEBAR, /pinnedItems: pinnedSectionChatItems,/);
   assert.match(APP_SIDEBAR, /recentItems: visibleRecentItems,/);
@@ -1600,7 +1599,7 @@ test("the published chat lists stop where the sidebar stops", async () => {
     /const chatListsOnScreen =\n\s*!isStudioRoute &&\n\s*!showTrainingRecents &&\n\s*\(isMobile \|\| sidebarState !== "collapsed"\);/,
   );
   for (const group of [
-    /if \(!chatListsOnScreen \|\| !open\) return \[\];/,
+    /if \(!chatListsOnScreen \|\| organizeBy !== "project" \|\| !open\) return \[\];/,
     /chatListsOnScreen && pinnedOpen\n\s*\? pinnedRows\.flatMap\([\s\S]*?: \[\],/,
     /\(chatListsOnScreen && chatOpen \? sortedRecentChatItems : \[\]\)/,
   ]) {

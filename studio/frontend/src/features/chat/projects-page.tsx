@@ -168,6 +168,7 @@ export function ProjectsPage() {
   );
   const pinnedChatIds = usePinnedChatsStore((s) => s.pinnedIds);
   const togglePinChat = usePinnedChatsStore((s) => s.togglePin);
+  const unpinChat = usePinnedChatsStore((s) => s.unpin);
   const pinnedChatIdSet = useMemo(() => new Set(pinnedChatIds), [pinnedChatIds]);
 
   const [creating, setCreating] = useState(false);
@@ -563,6 +564,8 @@ export function ProjectsPage() {
   async function deleteChat(chat: SidebarItem, deleteFiles: boolean) {
     try {
       await deleteChatItem(chat, activeThreadId(), () => {}, { deleteFiles });
+      // Pins are stored apart from the chats, so a deleted one leaves its id behind forever.
+      unpinChat(chat.id);
     } catch (err) {
       toast.error("Failed to delete chat", {
         description: err instanceof Error ? err.message : undefined,

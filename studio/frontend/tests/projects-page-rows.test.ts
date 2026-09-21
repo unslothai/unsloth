@@ -215,6 +215,12 @@ test("the chat menu writes through the shared chat helpers", () => {
     PAGE,
     /await deleteChatItem\(chat, activeThreadId\(\), \(\) => \{\}, \{ deleteFiles \}\);/,
   );
+  // Pins live apart from the chats, so a deleted one would leave its id stored for good.
+  assert.match(
+    PAGE,
+    /await deleteChatItem\([\s\S]{0,240}?\n\s*unpinChat\(chat\.id\);/,
+  );
+  assert.match(PAGE, /const unpinChat = usePinnedChatsStore\(\(s\) => s\.unpin\);/);
   // Deleting asks first only when the setting says so, as in the sidebar, and an unconfirmed
   // delete is the one that follows the preference on its own.
   assert.match(

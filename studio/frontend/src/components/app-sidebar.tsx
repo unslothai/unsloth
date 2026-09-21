@@ -1330,7 +1330,9 @@ export function AppSidebar() {
   // disclosure, not the Projects one, so each section collects its own.
   const folderChatItems = useCallback(
     (open: boolean, records: ProjectRecord[]) => {
-      if (!chatListsOnScreen || !open) return [];
+      // Not in one list: every project chat is a Recents row there, and a folder listing them
+      // again would draw and publish each one twice.
+      if (!chatListsOnScreen || organizeBy !== "project" || !open) return [];
       const out: SidebarItem[] = [];
       for (const project of records) {
         if (collapsedProjectIds.has(project.id)) continue;
@@ -1345,24 +1347,15 @@ export function AppSidebar() {
     },
     [
       chatListsOnScreen,
+      organizeBy,
       collapsedProjectIds,
       expandedChatProjectIds,
       sortedChatsByProjectId,
     ],
   );
-  // Only the Projects section answers to how the sidebar organizes; Pinned draws its folders either way.
   const sectionProjectChatItems = useMemo(
-    () =>
-      folderChatItems(
-        projectsOpen && projectsSectionConfigured,
-        visibleProjectRecords,
-      ),
-    [
-      folderChatItems,
-      projectsOpen,
-      projectsSectionConfigured,
-      visibleProjectRecords,
-    ],
+    () => folderChatItems(projectsOpen, visibleProjectRecords),
+    [folderChatItems, projectsOpen, visibleProjectRecords],
   );
   // A collapsed section is not on screen either, so its rows are not walked or
   // selected any more than a collapsed folder's are.
@@ -1473,12 +1466,10 @@ export function AppSidebar() {
   }, [sortedChatsByProjectId]);
   // Nested rows across both sections, so the bottom fade re-measures when the list height changes.
   const projectChatRowCount = useMemo(() => {
+    // Only folders list chats, and only this organization has folders that do.
+    if (organizeBy !== "project") return 0;
     let rows = 0;
-    // Pinned keeps its folders in either organization; the Projects section only has them in one.
-    const folders = projectsSectionConfigured
-      ? [...pinnedProjectRecords, ...visibleProjectRecords]
-      : pinnedProjectRecords;
-    for (const project of folders) {
+    for (const project of [...pinnedProjectRecords, ...visibleProjectRecords]) {
       if (collapsedProjectIds.has(project.id)) continue;
       const chats = sortedChatsByProjectId.get(project.id) ?? [];
       rows += expandedChatProjectIds.has(project.id)
@@ -1490,7 +1481,7 @@ export function AppSidebar() {
     }
     return rows;
   }, [
-    projectsSectionConfigured,
+    organizeBy,
     pinnedProjectRecords,
     visibleProjectRecords,
     collapsedProjectIds,
@@ -3721,7 +3712,10 @@ export function AppSidebar() {
       sortedChatsByProjectId.get(project.id) ?? [];
     const projectChatIds =
       projectChatRowIds.get(project.id) ?? [];
-    const expanded = !collapsedProjectIds.has(project.id);
+    // With the sidebar in one list there is nothing to expand into: the chats are already Recents
+    // rows. The folder row stays, as a way into the project, and opens it rather than toggling.
+    const listsChats = organizeBy === "project";
+    const expanded = listsChats && !collapsedProjectIds.has(project.id);
     const showAll = expandedChatProjectIds.has(project.id);
     const visibleChats =
       expanded && !showAll
@@ -3794,7 +3788,8 @@ export function AppSidebar() {
             )
               return;
             clearSelection();
-            toggleProjectCollapsed(project.id);
+            if (listsChats) toggleProjectCollapsed(project.id);
+            else openProject(project.id);
           }}
             // Same gutter whether hover or this row's menu revealed the actions.
             className="sidebar-nav-btn h-[33px] rounded-full gap-[8.5px] pl-3 pr-2.5 font-medium group-hover/recent-item:pr-16 group-has-[.sidebar-row-action[data-state=open]]/recent-item:pr-16 [@media(pointer:coarse)]:pr-16"

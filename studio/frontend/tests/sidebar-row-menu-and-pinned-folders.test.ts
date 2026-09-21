@@ -277,19 +277,15 @@ test("a pinned folder stays in Pinned when the sidebar is one list", () => {
     rows,
     /for \(const project of pinnedProjectBase\) \{\n\s*rows\.push\(\{ kind: "project", id: project\.id, project \}\);/,
   );
-  // Only the Projects section answers to the setting, and its rows leave the published lists,
-  // the folder ids and the row count with it.
+  // Pinned's own folder rows are selectable wherever they are drawn, while the Projects
+  // section's leave with the section.
   assert.match(
     APP_SIDEBAR,
-    /folderChatItems\(\n\s*projectsOpen && projectsSectionConfigured,\n\s*visibleProjectRecords,\n\s*\)/,
+    /if \(pinnedOpen\) \{\n\s*for \(const project of pinnedProjectRecords\) ids\.add\(project\.id\);/,
   );
   assert.match(
     APP_SIDEBAR,
     /if \(projectsOpen && projectsSectionConfigured\) \{\n\s*for \(const project of visibleProjectRecords\) ids\.add\(project\.id\);/,
-  );
-  assert.match(
-    APP_SIDEBAR,
-    /const folders = projectsSectionConfigured\n\s*\? \[\.\.\.pinnedProjectRecords, \.\.\.visibleProjectRecords\]\n\s*: pinnedProjectRecords;/,
   );
 });
 
@@ -334,5 +330,37 @@ test("the project page edits through the same dialog the sidebar opens", async (
   assert.match(
     page,
     /onDelete=\{\(\) => \{\n\s*setEditingProject\(false\);\n\s*setDeletingProject\(true\);/,
+  );
+});
+
+// A pinned folder stays in one-list mode, but its chats are already Recents rows there: expanding
+// it would draw each of them twice and publish both copies to the walk and the selection.
+test("a pinned folder in one list is a way in, not a second copy of its chats", () => {
+  assert.match(
+    APP_SIDEBAR,
+    /if \(!chatListsOnScreen \|\| organizeBy !== "project" \|\| !open\) return \[\];/,
+  );
+  assert.match(APP_SIDEBAR, /const listsChats = organizeBy === "project";/);
+  assert.match(
+    APP_SIDEBAR,
+    /const expanded = listsChats && !collapsedProjectIds\.has\(project\.id\);/,
+  );
+  // Nothing to expand into, so the row opens the project instead of toggling into an empty block.
+  assert.match(
+    APP_SIDEBAR,
+    /if \(listsChats\) toggleProjectCollapsed\(project\.id\);\n\s*else openProject\(project\.id\);/,
+  );
+  // Everything a folder draws under itself hangs off that one flag.
+  for (const gated of [
+    /\{expanded &&\n\s*visibleChats\.map\(/,
+    /\{expanded && projectChats\.length === 0 && \(/,
+    /\{expanded &&\n\s*projectChats\.length > PROJECT_CHAT_LIMIT && \(/,
+  ]) {
+    assert.match(APP_SIDEBAR, gated);
+  }
+  // And the row count the scroll fade measures counts nothing where nothing is drawn.
+  assert.match(
+    APP_SIDEBAR,
+    /const projectChatRowCount = useMemo\(\(\) => \{\n[^\n]*\n\s*if \(organizeBy !== "project"\) return 0;/,
   );
 });
