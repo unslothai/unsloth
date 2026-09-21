@@ -1310,8 +1310,9 @@ def test_a_blank_toolchain_override_is_dropped_on_a_spaced_root(monkeypatch, tmp
 
     sr._setup_cache_env()
 
-    assert (os.environ.get("TORCHINDUCTOR_CACHE_DIR") or "").strip() != ""  \
-        or "TORCHINDUCTOR_CACHE_DIR" not in os.environ
+    assert (
+        os.environ.get("TORCHINDUCTOR_CACHE_DIR") or ""
+    ).strip() != "" or "TORCHINDUCTOR_CACHE_DIR" not in os.environ
     _assert_no_unparseable_pin(sr, spaced)
 
 
