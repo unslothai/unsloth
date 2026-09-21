@@ -669,6 +669,22 @@ test("a row over itself claims the drag and paints nothing", () => {
   assert.match(HOOK, /if \(next !== STAY\) optionsRef\.current\.onDrop\(next, dragged\);/);
 });
 
+// A chat's row stays on screen while its move is written, so it can be dropped again before the
+// first move lands. Moves of one chat run in order, and only the latest drop commits its slot and
+// pin, so an earlier drop cannot land after a later one or park its order in a folder the chat
+// never finally joined.
+test("a chat dropped again before its move lands keeps only the latest drop", () => {
+  assert.match(
+    APP_SIDEBAR,
+    /const chatMovesRef = useRef\(\n\s*new Map<string, \{ generation: number; chain: Promise<unknown> \}>\(\),\n\s*\);/,
+  );
+  assert.match(
+    APP_SIDEBAR,
+    /const generation = \(previous\?\.generation \?\? 0\) \+ 1;\n\s*const chain = \(previous\?\.chain \?\? Promise\.resolve\(\)\)\n\s*\.then\(\(\) => moveChatToProject\(item, move\.projectId\)\)/,
+  );
+  assert.match(APP_SIDEBAR, /moves\.set\(item\.id, \{ generation, chain \}\);/);
+});
+
 // The menu keeps a 1px gap between rows. A pointer on it would hit the section, whose answer
 // is its last slot, so every draggable row's box reaches over the gap below it.
 test("rows cover the gap between them, so the section never answers for it", () => {
@@ -798,7 +814,7 @@ test("a drop that moves writes its slot and takes the pin off after the move", (
   );
   assert.match(
     APP_SIDEBAR,
-    /void moveChatToProject\(item, move\.projectId\)\.then\(\(moved\) => \{\n\s*if \(!moved\) return;\n\s*applyOrders\(ordersBefore\);\n\s*if \(unpinAfter\) usePinnedChatsStore\.getState\(\)\.unpin\(unpinAfter\);/,
+    /\.then\(\(\) => moveChatToProject\(item, move\.projectId\)\)\n\s*\.then\(\(moved\) => \{\n\s*if \(!moved \|\| moves\.get\(item\.id\)\?\.generation !== generation\) return;\n\s*applyOrders\(ordersBefore\);\n\s*if \(unpinAfter\) usePinnedChatsStore\.getState\(\)\.unpin\(unpinAfter\);/,
   );
   // And nothing else in commitDrop writes an order on its own.
   const commit = APP_SIDEBAR.slice(
@@ -810,7 +826,7 @@ test("a drop that moves writes its slot and takes the pin off after the move", (
   // the list as it stands then, not written from the snapshot taken at the drop.
   assert.match(
     APP_SIDEBAR,
-    /const ordersBefore = useSidebarOrganizationStore\.getState\(\)\.manualOrder;\n\s*void moveChatToProject\(item, move\.projectId\)\.then\(\(moved\) => \{\n\s*if \(!moved\) return;\n\s*applyOrders\(ordersBefore\);/,
+    /const ordersBefore = useSidebarOrganizationStore\.getState\(\)\.manualOrder;\n\s*const moves = chatMovesRef\.current;/,
   );
   assert.match(
     APP_SIDEBAR,

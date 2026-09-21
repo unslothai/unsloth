@@ -1939,6 +1939,12 @@ export function AppSidebar() {
     ],
   );
   const dropHintRef = useRef<HTMLDivElement | null>(null);
+  // A chat's row stays on screen while its move is written, so it can be dropped again before
+  // the first move lands. Moves of one chat run one after another, and only the latest drop
+  // commits its slot and pin, so an earlier drop cannot land after, or on top of, a later one.
+  const chatMovesRef = useRef(
+    new Map<string, { generation: number; chain: Promise<unknown> }>(),
+  );
   // A touch browser never fires dragstart, so its row menus keep Move up and Move down.
   const coarsePointer = useIsCoarsePointer();
   const dnd = useSidebarDrag({
@@ -2005,11 +2011,17 @@ export function AppSidebar() {
     // also be overtaken by a reorder of that list, so the slot is re-aimed once it lands.
     const unpinAfter = effects.unpinChat;
     const ordersBefore = useSidebarOrganizationStore.getState().manualOrder;
-    void moveChatToProject(item, move.projectId).then((moved) => {
-      if (!moved) return;
-      applyOrders(ordersBefore);
-      if (unpinAfter) usePinnedChatsStore.getState().unpin(unpinAfter);
-    });
+    const moves = chatMovesRef.current;
+    const previous = moves.get(item.id);
+    const generation = (previous?.generation ?? 0) + 1;
+    const chain = (previous?.chain ?? Promise.resolve())
+      .then(() => moveChatToProject(item, move.projectId))
+      .then((moved) => {
+        if (!moved || moves.get(item.id)?.generation !== generation) return;
+        applyOrders(ordersBefore);
+        if (unpinAfter) usePinnedChatsStore.getState().unpin(unpinAfter);
+      });
+    moves.set(item.id, { generation, chain });
   }
 
   /** The insertion line for a row, on the landing edge. */
