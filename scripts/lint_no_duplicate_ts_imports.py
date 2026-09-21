@@ -78,6 +78,18 @@ _OPERATOR_KEYWORDS = frozenset(
 )
 
 
+# Statements whose parentheses produce no value, so a `/` after the closing one opens a
+# regex rather than dividing.
+_CONTROL_KEYWORDS = frozenset({"catch", "for", "if", "switch", "while", "with"})
+
+# What the character before an `import` may be once trivia is skipped: nothing at all, the
+# end of a previous statement, or the closing quote of a module specifier, which is how the
+# previous import ends in a file that omits semicolons. Anything else means the text is not
+# starting a statement. `>` is the one that matters: it closes a JSX tag, and JSX text is
+# where import-shaped lines are not imports.
+_STATEMENT_END = frozenset(";}\"'`")
+
+
 def _bindings(clause: str) -> list[str]:
     """Local names a single import clause introduces, in source order."""
     # Prettier keeps comments inside a long import list. Left in, `piece.split()`
@@ -165,8 +177,22 @@ def _without_embedded_source(source: str) -> str:
         if cursor < 0:
             return True
         previous = source[cursor]
-        if previous in ")]":
-            # `(a + b) / 2` divides. `if (x) /re/.test(s)` does not, and is not written here.
+        if previous == ")":
+            # `(a + b) / 2` divides, but `if (ok) /re/.test(s)` does not: the parentheses of
+            # a control statement produce no value, so what follows them starts a statement.
+            # Walk back to the matching `(` and read the word in front of it.
+            depth, scan = 0, cursor
+            while scan >= 0:
+                if source[scan] == ")":
+                    depth += 1
+                elif source[scan] == "(":
+                    depth -= 1
+                    if depth == 0:
+                        break
+                scan -= 1
+            head = re.search(r"([A-Za-z_$][\w$]*)\s*$", source[:scan]) if scan >= 0 else None
+            return bool(head) and head.group(1) in _CONTROL_KEYWORDS
+        if previous == "]":
             return False
         if previous.isalnum() or previous in "_$":
             word = re.search(r"[A-Za-z_$][\w$]*$", source[: cursor + 1])
@@ -271,6 +297,15 @@ def duplicates_in(source: str) -> list[tuple[int, str]]:
     for match in _IMPORT.finditer(source):
         if not outside[match.start()]:
             continue
+        # And it has to be starting a statement. Bracket depth alone does not separate a
+        # module-level JSX initializer written without wrapping parentheses, because JSX tags
+        # are not brackets: `const sample = <pre>` followed by import-shaped text leaves the
+        # depth at zero. What precedes that text is `>`, which ends no statement.
+        cursor = match.start() - 1
+        while cursor >= 0 and source[cursor] in " \t\r\n":
+            cursor -= 1
+        if cursor >= 0 and source[cursor] not in _STATEMENT_END:
+            continue
         line = source.count("\n", 0, match.start()) + 1
         for name in _bindings(match.group("clause")):
             if name in seen:
@@ -311,6 +346,39 @@ def _self_test() -> int:
             'import {\n  type ExternalConnectionRef,\n} from "./model-selector/missing";\n'
             'import { HubModelPicker, hasDownloadedModels } from "./model-selector/pickers";\n',
             ["HubModelPicker", "hasDownloadedModels"],
+        ),
+        (
+            "a module-level JSX initializer without wrapping parentheses",
+            'import { Fragment } from "react";\n'
+            "const sample = <pre>\n"
+            'import Widget from "a";\n'
+            'import Widget from "b";\n'
+            "</pre>;\n",
+            [],
+        ),
+        (
+            "a regex after an unbraced control head is still a regex",
+            "if (ok) /`/.test(text);\n"
+            "const FIXTURE = `\n"
+            'import { A } from "m";\n'
+            'import { A } from "n";\n'
+            "`;\n",
+            [],
+        ),
+        (
+            "a division after a call still divides",
+            'const half = total() / 2;\nimport { A } from "m";\nimport { A } from "n";\n',
+            ["A"],
+        ),
+        (
+            "a file that omits semicolons still reports its duplicates",
+            'import { A } from "m"\nimport { A } from "n"\n',
+            ["A"],
+        ),
+        (
+            "an import after a function declaration is still an import",
+            'import { A } from "m";\nfunction f() {}\nimport { A } from "n";\n',
+            ["A"],
         ),
         (
             "a code sample rendered as JSX text is not a declaration",
