@@ -852,22 +852,66 @@ class _PinnedPublicTransport(httpx.AsyncBaseTransport):
             await transport.aclose()
 
 
+class _PinnedNonMetadataTransport(_PinnedPublicTransport):
+    """Managed-account egress once the owner has allowed private addresses.
+
+    Same machinery as the public pin, one rule looser: the address dialled may be private, so the
+    LAN model server the owner allowed is reachable, and may never be the host's cloud metadata
+    service. Keeping the re-resolve is the point. Handing these callers an ordinary transport would
+    let a name that passed validation answer 169.254.169.254 by the time the socket opens, which is
+    the one destination this switch is not allowed to open.
+    """
+
+    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+        from core.inference.providers import (
+            _public_registry_hostname,
+            provider_address_excluding_metadata,
+        )
+
+        host = request.url.host
+        if _public_registry_hostname(host):
+            return await self._pool(("registry",)).handle_async_request(request)
+        try:
+            address = await asyncio.to_thread(
+                provider_address_excluding_metadata, str(request.url)
+            )
+        except ValueError as exc:
+            raise httpx.ConnectError(str(exc), request = request) from exc
+        pinned = httpx.Request(
+            method = request.method,
+            url = request.url.copy_with(host = address),
+            headers = request.headers,
+            stream = request.stream,
+            extensions = {**request.extensions, "sni_hostname": host},
+        )
+        origin = (request.url.scheme, host, request.url.port)
+        return await self._pool(origin).handle_async_request(pinned)
+
+
 _managed_http_client: Optional[httpx.AsyncClient] = None
+_managed_private_http_client: Optional[httpx.AsyncClient] = None
 
 
 def _client() -> httpx.AsyncClient:
-    """The shared client for the owner; a pinning client for a managed account, unless the owner has
-    allowed managed accounts private addresses, which is the same client again."""
+    """The shared client for the owner; for a managed account one of two screening clients.
+
+    Never the owner's client: an ``httpx.AsyncClient`` keeps a cookie jar, so handing a managed
+    account the owner's object would let a Set-Cookie from one reach the other's requests to the
+    same host.
+    """
     from utils.account_context import is_owner_context
     from utils.managed_provider_url_settings import get_managed_private_provider_urls_allowed
 
     if is_owner_context():
         return _http_client
+    global _managed_http_client, _managed_private_http_client
     if get_managed_private_provider_urls_allowed():
-        # Pinning to a public address would refuse at connect time exactly what the owner allowed at
-        # save time. Read per call, so flipping the setting takes effect without a restart.
-        return _http_client
-    global _managed_http_client
+        # Read per call, so flipping the switch takes effect without a restart.
+        if _managed_private_http_client is None:
+            _managed_private_http_client = httpx.AsyncClient(
+                transport = _PinnedNonMetadataTransport(), trust_env = False
+            )
+        return _managed_private_http_client
     if _managed_http_client is None:
         _managed_http_client = httpx.AsyncClient(
             transport = _PinnedPublicTransport(), trust_env = False

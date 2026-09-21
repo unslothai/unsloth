@@ -15,6 +15,7 @@ import threading
 import pytest
 
 from core.inference import external_provider, providers
+from storage import studio_db
 from utils import managed_provider_url_settings as setting
 from utils.account_context import OWNER, AccountContext, bind_account, reset_account
 
@@ -32,11 +33,17 @@ METADATA_URLS = [
 
 
 @pytest.fixture(autouse = True)
-def _clean_resolver_state(monkeypatch):
+def _clean_resolver_state(monkeypatch, tmp_path):
+    # An isolated store per test. Without it the tests here that exercise the real setter write
+    # into whatever installation happens to be on the machine running them.
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
+    monkeypatch.setattr(studio_db, "_schema_ready", set())
     monkeypatch.delenv(setting.BLOCK_PRIVATE_ENV, raising = False)
+    setting.forget_cached_setting()
     providers._dns_cache.clear()
     providers._dns_in_flight = threading.BoundedSemaphore(providers._DNS_MAX_IN_FLIGHT)
     yield
+    setting.forget_cached_setting()
     providers._dns_cache.clear()
 
 
@@ -161,7 +168,21 @@ def test_the_recipe_endpoint_check_stands_down_with_the_setting_on(monkeypatch, 
     service._require_public_provider_endpoint("http://192.168.1.50:8000/v1")
 
 
-def test_the_recipe_egress_guard_is_not_installed_with_the_setting_on(monkeypatch, as_alice):
+@pytest.mark.parametrize("url", ["http://169.254.169.254/latest/meta-data/", "http://2852039166/v1"])
+def test_the_recipe_endpoint_check_still_refuses_metadata_with_the_setting_on(
+    monkeypatch, as_alice, url
+):
+    """The recipe path has no validator behind it, so what it waves through is dialled."""
+    from core.data_recipe import service
+
+    _allow(monkeypatch, True)
+    with pytest.raises(Exception) as refusal:
+        service._require_public_provider_endpoint(url)
+    assert "metadata" in str(getattr(refusal.value, "detail", refusal.value)).lower()
+
+
+def test_the_recipe_egress_guard_narrows_rather_than_standing_down(monkeypatch, as_alice):
+    """With the setting on the guard stays installed and keeps refusing the metadata service."""
     import socket
 
     from core.data_recipe import service
@@ -169,5 +190,46 @@ def test_the_recipe_egress_guard_is_not_installed_with_the_setting_on(monkeypatc
     original = socket.getaddrinfo
     monkeypatch.setattr(socket, "getaddrinfo", original)
     _allow(monkeypatch, True)
-    service.install_public_egress_guard()
-    assert socket.getaddrinfo is original
+    try:
+        service.install_public_egress_guard()
+        guarded = socket.getaddrinfo
+        assert guarded is not original
+
+        # A LAN answer is what the switch bought; the metadata answer is not.
+        monkeypatch.setattr(
+            service.socket if hasattr(service, "socket") else socket,
+            "getaddrinfo",
+            guarded,
+            raising = False,
+        )
+        assert guarded("192.168.1.50", 8000, type = socket.SOCK_STREAM)
+        with pytest.raises(socket.gaierror) as refusal:
+            guarded("169.254.169.254", 80, type = socket.SOCK_STREAM)
+        assert "metadata" in str(refusal.value).lower()
+    finally:
+        socket.getaddrinfo = original
+
+
+def test_the_recipe_guard_follows_a_later_flip(monkeypatch, as_alice):
+    """A worker outlives the switch it started under, so the guard asks per lookup."""
+    import socket
+
+    from core.data_recipe import service
+
+    original = socket.getaddrinfo
+    monkeypatch.setattr(socket, "getaddrinfo", original)
+    # The real store, not a stubbed helper: the guard closes over the function it imported at
+    # install time, so a test that rebinds that name proves nothing about a running worker.
+    setting.set_managed_private_provider_urls_allowed(True)
+    try:
+        service.install_public_egress_guard()
+        guarded = socket.getaddrinfo
+        assert guarded("192.168.1.50", 8000, type = socket.SOCK_STREAM)
+
+        # The owner turns it off while this worker is still running.
+        setting.set_managed_private_provider_urls_allowed(False)
+        with pytest.raises(socket.gaierror) as refusal:
+            guarded("192.168.1.50", 8000, type = socket.SOCK_STREAM)
+        assert "public-network" in str(refusal.value)
+    finally:
+        socket.getaddrinfo = original

@@ -940,6 +940,42 @@ def public_provider_address(url: str) -> str:
     return str(addresses[0])
 
 
+METADATA_REFUSED_REASON = "Cloud metadata endpoints cannot be used as a provider base URL."
+
+
+def provider_address_excluding_metadata(url: str) -> str:
+    """Resolve ``url``'s host now and return one address to dial, refusing only metadata services.
+
+    The address half of ``public_provider_address`` for a caller the owner has allowed private
+    addresses: private and LAN answers are fine, the host's credentials endpoint never is. Resolving
+    here rather than trusting the check made at save time is the point, since a name is free to
+    answer 169.254.169.254 afterwards.
+    """
+    import socket
+
+    parts = urlsplit(url)
+    hostname = (parts.hostname or "").rstrip(".")
+    if not hostname:
+        raise ValueError("Provider URL must contain a hostname.")
+    try:
+        addresses = [ipaddress.ip_address(_canonical_host(hostname))]
+    except ValueError:
+        try:
+            infos = socket.getaddrinfo(
+                _transport_host(hostname),
+                parts.port or (443 if parts.scheme == "https" else 80),
+                type = socket.SOCK_STREAM,
+            )
+        except (OSError, UnicodeError) as exc:
+            raise ValueError("Provider base URL hostname could not be resolved.") from exc
+        addresses = [ipaddress.ip_address(str(info[4][0]).split("%", 1)[0]) for info in infos]
+    if not addresses:
+        raise ValueError("Provider base URL hostname could not be resolved.")
+    if any(_metadata_address(str(ip)) or _metadata_host(str(ip)) for ip in addresses):
+        raise ValueError(METADATA_REFUSED_REASON)
+    return str(addresses[0])
+
+
 def validate_provider_base_url(base_url: str) -> str:
     """Return a normalized provider base URL, or raise ``ValueError``.
 

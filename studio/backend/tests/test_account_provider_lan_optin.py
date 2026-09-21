@@ -38,6 +38,9 @@ BLOCK_PRIVATE_ENV = providers_core._BLOCK_PRIVATE_ENV
 def isolated(monkeypatch, tmp_path):
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
     monkeypatch.delenv(BLOCK_PRIVATE_ENV, raising = False)
+    # Each test is a fresh installation, so nothing may be remembered from the previous one.
+    # In production the home is fixed for the life of the process and this cannot arise.
+    mpu.forget_cached_setting()
     monkeypatch.setattr(policy, "installation_is_multi_user", lambda: True)
     for module in (credential_secrets, providers_db, studio_db):
         monkeypatch.setattr(module, "_schema_ready", set(), raising = False)

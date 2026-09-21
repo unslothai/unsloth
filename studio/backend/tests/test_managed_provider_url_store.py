@@ -32,7 +32,11 @@ BOB = AccountContext("b" * 32, "bob")
 def isolated_home(monkeypatch, tmp_path):
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
     monkeypatch.setattr(studio_db, "_schema_ready", set())
+    # The helper holds its answer briefly; a value read from the previous test's home would
+    # otherwise be handed to this one, whose store is a different file entirely.
+    mpu.forget_cached_setting()
     yield
+    mpu.forget_cached_setting()
 
 
 @pytest.fixture
@@ -142,3 +146,74 @@ def test_setter_rejects_non_boolean(value):
         pytest.skip("accepted spelling")
     with pytest.raises(ValueError):
         mpu.set_managed_private_provider_urls_allowed(value)
+
+
+def test_the_held_answer_is_dropped_by_a_write(as_account):
+    """Turning the switch off has to bite the next request, not the next second."""
+    as_account(OWNER)
+    mpu.set_managed_private_provider_urls_allowed(True)
+    assert mpu.get_managed_private_provider_urls_allowed() is True
+
+    mpu.set_managed_private_provider_urls_allowed(False)
+    # No sleep: if this read came from the held answer it would still say True.
+    assert mpu.get_managed_private_provider_urls_allowed() is False
+
+
+def test_the_environment_lock_is_not_answered_from_the_cache(monkeypatch, as_account):
+    """The strict answer must never be the held one, whatever was read a moment ago."""
+    as_account(OWNER)
+    mpu.set_managed_private_provider_urls_allowed(True)
+    assert mpu.get_managed_private_provider_urls_allowed() is True
+
+    monkeypatch.setenv(mpu.BLOCK_PRIVATE_ENV, "1")
+    assert mpu.get_managed_private_provider_urls_allowed() is False
+    monkeypatch.delenv(mpu.BLOCK_PRIVATE_ENV)
+    assert mpu.get_managed_private_provider_urls_allowed() is True
+
+
+def test_a_read_failure_is_never_remembered(monkeypatch, as_account):
+    """A transient error fails closed per call; remembering it would pin the refusal."""
+    as_account(OWNER)
+    mpu.set_managed_private_provider_urls_allowed(True)
+    mpu.forget_cached_setting()
+
+    def _explode(*args, **kwargs):
+        raise OSError("settings db is gone")
+
+    import storage.studio_db as studio_db_module
+
+    real = studio_db_module.get_app_setting
+    studio_db_module.get_app_setting = _explode
+    try:
+        assert mpu.get_managed_private_provider_urls_allowed() is False
+        assert mpu._remembered() is None
+    finally:
+        # Restored by hand rather than with monkeypatch.undo(), which would also undo the
+        # isolated-home fixture and send the read that follows at a different store.
+        studio_db_module.get_app_setting = real
+    assert mpu.get_managed_private_provider_urls_allowed() is True
+
+
+def test_the_held_answer_expires(monkeypatch, as_account):
+    """A flip made in another process converges within the TTL rather than never."""
+    as_account(OWNER)
+    mpu.set_managed_private_provider_urls_allowed(False)
+    assert mpu.get_managed_private_provider_urls_allowed() is False
+
+    # Written behind this module's back, the way a second process would.
+    from storage.studio_db import upsert_app_settings
+    from utils.account_context import run_as
+
+    run_as(
+        OWNER,
+        upsert_app_settings,
+        {mpu.MANAGED_PRIVATE_PROVIDER_URLS_SETTING_KEY: True},
+    )
+    assert mpu.get_managed_private_provider_urls_allowed() is False  # still held
+
+    # Age the held entry rather than the clock: patching time.monotonic patches the module the
+    # cache itself calls, which recurses.
+    with mpu._cache_lock:
+        expiry, value = mpu._cached
+        mpu._cached = (expiry - mpu._CACHE_TTL_SECONDS - 1.0, value)
+    assert mpu.get_managed_private_provider_urls_allowed() is True

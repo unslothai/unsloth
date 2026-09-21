@@ -26,8 +26,10 @@ ALICE = AccountContext("a" * 32, "alice")
 @pytest.fixture(autouse = True)
 def fresh_singleton(monkeypatch):
     monkeypatch.setattr(external_provider, "_managed_http_client", None, raising = False)
+    monkeypatch.setattr(external_provider, "_managed_private_http_client", None, raising = False)
     yield
     external_provider._managed_http_client = None
+    external_provider._managed_private_http_client = None
 
 
 @pytest.fixture
@@ -54,7 +56,9 @@ def client_as(account):
 
 
 def is_pinned(client) -> bool:
-    return isinstance(getattr(client, "_transport", None), external_provider._PinnedPublicTransport)
+    """Held to public addresses only. Exact type: the allowed-private screen subclasses this one,
+    so isinstance would call that pinned too and every assertion below would stop meaning anything."""
+    return type(getattr(client, "_transport", None)) is external_provider._PinnedPublicTransport
 
 
 def test_owner_always_gets_the_shared_client(switch):
@@ -67,16 +71,22 @@ def test_managed_account_is_pinned_by_default(switch):
     assert is_pinned(client_as(ALICE))
 
 
-def test_managed_account_is_unpinned_when_allowed(switch):
+def test_managed_account_stops_being_held_to_public_when_allowed(switch):
+    """The public pin comes off; a screen that still refuses metadata replaces it."""
     switch["allowed"] = True
-    assert client_as(ALICE) is external_provider._http_client
+    client = client_as(ALICE)
+    assert not is_pinned(client)
+    assert isinstance(client._transport, external_provider._PinnedNonMetadataTransport)
+    assert client is not external_provider._http_client
 
 
 def test_the_choice_follows_a_live_flip(switch):
     """A stale module-level singleton must not outlive the setting that selected it."""
     assert is_pinned(client_as(ALICE))
     switch["allowed"] = True
-    assert client_as(ALICE) is external_provider._http_client
+    assert isinstance(
+        client_as(ALICE)._transport, external_provider._PinnedNonMetadataTransport
+    )
     switch["allowed"] = False
     assert is_pinned(client_as(ALICE))
 
@@ -105,3 +115,39 @@ def test_an_unbound_thread_defaults_to_owner(switch):
     finally:
         reset_account(token)
     assert seen[0] is external_provider._http_client
+
+
+def test_the_allowed_client_is_never_the_owners_object(switch):
+    """An httpx client carries a cookie jar, so sharing the object shares Set-Cookie across accounts."""
+    switch["allowed"] = True
+    managed = client_as(ALICE)
+    assert managed is not external_provider._http_client
+    assert managed.cookies is not external_provider._http_client.cookies
+
+    external_provider._http_client.cookies.set("owner_session", "SECRET", domain = "gw.example")
+    try:
+        assert managed.cookies.get("owner_session", domain = "gw.example") is None
+    finally:
+        external_provider._http_client.cookies.clear()
+
+
+def test_the_allowed_client_still_screens_every_connection(switch):
+    """The switch opens private addresses, not the host's credentials endpoint."""
+    switch["allowed"] = True
+    managed = client_as(ALICE)
+    transport = managed._transport
+    assert isinstance(transport, external_provider._PinnedNonMetadataTransport)
+
+    from core.inference.providers import provider_address_excluding_metadata
+
+    # Private is now fine, metadata never is, whichever spelling it arrives in.
+    assert provider_address_excluding_metadata("http://127.0.0.1:11434/v1") == "127.0.0.1"
+    assert provider_address_excluding_metadata("http://192.168.1.50:8000/v1") == "192.168.1.50"
+    for metadata in (
+        "http://169.254.169.254/v1",
+        "http://2852039166/v1",
+        "http://[fd00:ec2::254]/v1",
+    ):
+        with pytest.raises(ValueError) as refusal:
+            provider_address_excluding_metadata(metadata)
+        assert "metadata" in str(refusal.value).lower()

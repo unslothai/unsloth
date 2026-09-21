@@ -141,19 +141,31 @@ def _require_public_provider_endpoint(endpoint: str) -> None:
     transport: require HTTPS, which binds the peer to its certificate rather than to a DNS answer that
     may rebind to loopback or the LAN after this public-address check.
 
-    Skipped entirely once the owner has opened private addresses to managed accounts, so a
-    connection that saves in Settings > Connections is one a recipe can actually run on."""
+    Once the owner has opened private addresses to managed accounts the HTTPS and public-address
+    rules stand down, so a connection that saves in Settings > Connections is one a recipe can
+    actually run on. The metadata rule does not: it is not part of what that switch offers, and this
+    path has no validator behind it to catch what is waved through here."""
     if not managed_account():
         return
     from urllib.parse import urlsplit
 
-    from core.inference.providers import MANAGED_PRIVATE_URL_HINT, public_provider_address
+    from core.inference.providers import (
+        MANAGED_PRIVATE_URL_HINT,
+        provider_address_excluding_metadata,
+        public_provider_address,
+    )
     from utils.managed_provider_url_settings import get_managed_private_provider_urls_allowed
 
+    url = str(endpoint or "")
     if get_managed_private_provider_urls_allowed():
+        try:
+            provider_address_excluding_metadata(url)
+        except ValueError as exc:
+            raise HTTPException(
+                status_code = 403, detail = f"Recipe provider endpoint refused: {exc}"
+            ) from exc
         return
 
-    url = str(endpoint or "")
     try:
         if urlsplit(url).scheme != "https":
             raise ValueError(
@@ -171,25 +183,35 @@ def install_public_egress_guard() -> None:
     guard and a host that rebinds to loopback or the LAN after the endpoint check is refused at connect
     time rather than dialled. Process-wide, so it is installed only in the job subprocess.
 
-    Not installed when the owner has opened private addresses to managed accounts: the guard is the
-    connect-time half of the same rule the endpoint check states, and half a rule is worse than
-    neither, since the endpoint would pass and the dial would still fail."""
+    When the owner has opened private addresses to managed accounts the guard narrows to the cloud
+    metadata services rather than standing down: the private half of the rule is what the switch
+    lifts, the metadata half is not, and a worker whose engine dials for itself has nothing else
+    between it and that address."""
     if not managed_account():
         return
     from utils.managed_provider_url_settings import get_managed_private_provider_urls_allowed
 
-    # Read before socket is patched below; the setting is a SQLite read and resolves no names.
-    if get_managed_private_provider_urls_allowed():
-        return
     import ipaddress
     import socket
+
+    from core.inference.providers import _metadata_address
 
     resolve = socket.getaddrinfo
 
     def guarded_getaddrinfo(host, port, *args, **kwargs):
+        # Asked per lookup rather than captured at install: a worker can outlive the switch that
+        # was set when it started, and the owner turning it off means this job too, not the next
+        # one. The helper holds its answer briefly, so this costs a dictionary read in the common
+        # case. Read before resolving, so a refusal needs no name.
+        private_allowed = get_managed_private_provider_urls_allowed()
         infos = resolve(host, port, *args, **kwargs)
         for info in infos:
-            if not ipaddress.ip_address(str(info[4][0]).split("%", 1)[0]).is_global:
+            address = str(info[4][0]).split("%", 1)[0]
+            if _metadata_address(address):
+                raise socket.gaierror(
+                    f"Managed accounts may not reach cloud metadata services: {host!r}"
+                )
+            if not private_allowed and not ipaddress.ip_address(address).is_global:
                 raise socket.gaierror(
                     f"Managed accounts may only reach public-network addresses: {host!r}"
                 )
