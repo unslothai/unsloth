@@ -2953,24 +2953,15 @@ class VideoBackend:
         Only a component listed here may have its dense weights dropped from a plan or an
         estimate: an unpublished / gated / renamed artifact keeps its dense encoder, exactly as
         the load's own fallback does. Checked per source so one missing repo cannot sink the
-        whole plan."""
-        found: dict[str, list[tuple[str, int]]] = {}
-        for component, source in sources.items():
-            if getattr(source, "kind", None) != "repo" or not getattr(source, "filename", None):
-                continue
-            try:
-                info = api.model_info(source.location, files_metadata = True)
-            except Exception as exc:  # noqa: BLE001 -- unavailable pre-cast means the dense encoder
-                logger.warning("video.te_prequant_unavailable: %s: %s", source.location, exc)
-                continue
-            files = [
-                (s.rfilename, int(s.size or 0))
-                for s in (info.siblings or [])
-                if s.rfilename == source.filename
-            ]
-            if files:
-                found[component] = files
-        return found
+        whole plan.
+
+        Delegated rather than reimplemented. This was a second copy of the image-side logic
+        matching only the PRIMARY name, so the moment the resolver started preferring a
+        safetensors spelling every hosted encoder here read as absent, its dense shards went back
+        into the pull, and the load fetched the .pt on top of them. One implementation is what
+        keeps the plan and the resolver naming the same artifact."""
+        from .diffusion_te_prequant import te_prequant_hub_files
+        return te_prequant_hub_files(sources, api, logger)
 
     @staticmethod
     def _base_download_files(
@@ -3593,24 +3584,36 @@ class VideoBackend:
             # the dense download.
             if getattr(source, "kind", None) != "repo" or not getattr(source, "filename", None):
                 continue
-            try:
-                hf_hub_download_with_xet_fallback(
-                    source.location,
-                    source.filename,
-                    hf_token,
-                    cancel_event = cancel,
-                    reuse_other_cache_root = True,
-                    local_files_only = local_files_only,
-                )
-            except Exception as exc:  # noqa: BLE001 -- no pre-cast file just means the dense encoder
-                if cancel.is_set():
-                    raise
-                logger.warning(
-                    "video.te_prequant_fetch_failed: %s/%s: %s",
-                    source.location,
-                    source.filename,
-                    exc,
-                )
+            # Every candidate, in the resolver's order: the preferred name is now a safetensors
+            # spelling most repos do not host, so stopping at it would fail every fetch and report
+            # no skippable component, which is the dense encoder downloaded twice over.
+            from .diffusion_te_prequant import te_candidate_filenames, te_candidate_is_readable
+
+            names = [n for n in te_candidate_filenames(source) if te_candidate_is_readable(n)]
+            got = False
+            for name in names:
+                try:
+                    hf_hub_download_with_xet_fallback(
+                        source.location,
+                        name,
+                        hf_token,
+                        cancel_event = cancel,
+                        reuse_other_cache_root = True,
+                        local_files_only = local_files_only,
+                    )
+                except Exception as exc:  # noqa: BLE001 -- no pre-cast file means the dense encoder
+                    if cancel.is_set():
+                        raise
+                    logger.warning(
+                        "video.te_prequant_fetch_failed: %s/%s: %s",
+                        source.location,
+                        name,
+                        exc,
+                    )
+                    continue
+                got = True
+                break
+            if not got:
                 continue
             fetched.append(component)
         return tuple(fetched)

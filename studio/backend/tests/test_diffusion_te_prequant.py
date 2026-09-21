@@ -40,17 +40,17 @@ def _fam(
 # ── resolution ───────────────────────────────────────────────────────────────
 def test_repo_filename_convention():
     # safetensors first, the historical pickle second: both are live and the reader takes either.
-    assert (
-        te_prequant_repo_filenames("unsloth/LTX-2-FP8", "text_encoder", "fp8")
-        == ("LTX-2-text_encoder-FP8.safetensors", "LTX-2-text_encoder-FP8.pt")
+    assert te_prequant_repo_filenames("unsloth/LTX-2-FP8", "text_encoder", "fp8") == (
+        "LTX-2-text_encoder-FP8.safetensors",
+        "LTX-2-text_encoder-FP8.pt",
     )
-    assert (
-        te_prequant_repo_filenames("org/Some-Model-quantized", "text_encoder_2", "fp8")
-        == ("Some-Model-text_encoder_2-FP8.safetensors", "Some-Model-text_encoder_2-FP8.pt")
+    assert te_prequant_repo_filenames("org/Some-Model-quantized", "text_encoder_2", "fp8") == (
+        "Some-Model-text_encoder_2-FP8.safetensors",
+        "Some-Model-text_encoder_2-FP8.pt",
     )
-    assert (
-        te_prequant_repo_filenames("org/PlainRepo", "text_encoder", "fp8")
-        == ("PlainRepo-text_encoder-FP8.safetensors", "PlainRepo-text_encoder-FP8.pt")
+    assert te_prequant_repo_filenames("org/PlainRepo", "text_encoder", "fp8") == (
+        "PlainRepo-text_encoder-FP8.safetensors",
+        "PlainRepo-text_encoder-FP8.pt",
     )
 
 
@@ -111,7 +111,8 @@ def test_a_hosted_safetensors_encoder_is_asked_for_and_a_pickle_repo_still_resol
     monkeypatch.setattr("huggingface_hub.hf_hub_download", fake_download)
     src = resolve_te_prequant_source(
         _fam(te_prequant_repos = (("fp8", "text_encoder", "org/hosted-fp8"),)),
-        "text_encoder", "fp8",
+        "text_encoder",
+        "fp8",
     )
 
     # A safetensors repo is found first, with no wasted request for the pickle.
@@ -144,13 +145,15 @@ def test_a_transport_failure_is_not_mistaken_for_a_missing_file(monkeypatch):
     reported as an absent artifact: that would turn a fixable error into a silent 17.5 GB
     download on every load.
     """
+
     def fake_download(*, repo_id, filename, token, cache_dir, local_files_only):
         raise PermissionError("401 unauthorized")
 
     monkeypatch.setattr("huggingface_hub.hf_hub_download", fake_download)
     src = resolve_te_prequant_source(
         _fam(te_prequant_repos = (("fp8", "text_encoder", "org/hosted-fp8"),)),
-        "text_encoder", "fp8",
+        "text_encoder",
+        "fp8",
     )
     with pytest.raises(PermissionError):
         tpq._resolve_checkpoint_path(src, None, cache_dir = "/cache")
@@ -486,33 +489,33 @@ def test_hosted_te_prequant_entries():
         ("fp8", "text_encoder", "unsloth/LTX-2-FP8"),
     )
     # The hosted filenames follow the repo naming convention the resolver derives.
-    assert (
-        te_prequant_repo_filenames("unsloth/Qwen-Image-FP8", "text_encoder", "fp8")
-        == ("Qwen-Image-text_encoder-FP8.safetensors", "Qwen-Image-text_encoder-FP8.pt")
+    assert te_prequant_repo_filenames("unsloth/Qwen-Image-FP8", "text_encoder", "fp8") == (
+        "Qwen-Image-text_encoder-FP8.safetensors",
+        "Qwen-Image-text_encoder-FP8.pt",
     )
-    assert (
-        te_prequant_repo_filenames("unsloth/FLUX.2-dev-FP8", "text_encoder", "fp8")
-        == ("FLUX.2-dev-text_encoder-FP8.safetensors", "FLUX.2-dev-text_encoder-FP8.pt")
+    assert te_prequant_repo_filenames("unsloth/FLUX.2-dev-FP8", "text_encoder", "fp8") == (
+        "FLUX.2-dev-text_encoder-FP8.safetensors",
+        "FLUX.2-dev-text_encoder-FP8.pt",
     )
-    assert (
-        te_prequant_repo_filenames("unsloth/LTX-2-FP8", "text_encoder", "fp8")
-        == ("LTX-2-text_encoder-FP8.safetensors", "LTX-2-text_encoder-FP8.pt")
+    assert te_prequant_repo_filenames("unsloth/LTX-2-FP8", "text_encoder", "fp8") == (
+        "LTX-2-text_encoder-FP8.safetensors",
+        "LTX-2-text_encoder-FP8.pt",
     )
     # HiDream's heavyweight is TE4 (Llama-3.1-8B), engaged via hidream_te4_kwargs since the generic pass only covers text_encoder.._3.
     assert detect_family("HiDream-ai/HiDream-I1-Full").te_prequant_repos == (
         ("fp8", "text_encoder_4", "unsloth/HiDream-I1-Full-FP8"),
     )
-    assert (
-        te_prequant_repo_filenames("unsloth/HiDream-I1-Full-FP8", "text_encoder_4", "fp8")
-        == ("HiDream-I1-Full-text_encoder_4-FP8.safetensors", "HiDream-I1-Full-text_encoder_4-FP8.pt")
+    assert te_prequant_repo_filenames("unsloth/HiDream-I1-Full-FP8", "text_encoder_4", "fp8") == (
+        "HiDream-I1-Full-text_encoder_4-FP8.safetensors",
+        "HiDream-I1-Full-text_encoder_4-FP8.pt",
     )
     # Round 2: T5-XXL for every flux.1 base (byte-identical, one artifact), Gemma2-2B, Qwen3-4B, Qwen3-VL-4B, and hunyuanimage reusing the Qwen-Image artifact.
     assert detect_family("black-forest-labs/FLUX.1-schnell").te_prequant_repos == (
         ("fp8", "text_encoder_2", "unsloth/FLUX.1-schnell-FP8"),
     )
-    assert (
-        te_prequant_repo_filenames("unsloth/FLUX.1-schnell-FP8", "text_encoder_2", "fp8")
-        == ("FLUX.1-schnell-text_encoder_2-FP8.safetensors", "FLUX.1-schnell-text_encoder_2-FP8.pt")
+    assert te_prequant_repo_filenames("unsloth/FLUX.1-schnell-FP8", "text_encoder_2", "fp8") == (
+        "FLUX.1-schnell-text_encoder_2-FP8.safetensors",
+        "FLUX.1-schnell-text_encoder_2-FP8.pt",
     )
     assert detect_family("Alpha-VLLM/Lumina-Image-2.0").te_prequant_repos == (
         ("fp8", "text_encoder", "unsloth/Lumina-Image-2.0-FP8"),
@@ -877,3 +880,75 @@ def test_an_unrelated_custom_base_still_loses_it(monkeypatch):
         assert (
             tpq.te_prequant_sources_for_base(fam, base, te_quant_mode = "fp8", target = _target()) == {}
         ), base
+
+
+def test_the_plan_recognises_the_pt_repos_that_already_exist(monkeypatch):
+    """Preferring safetensors may only ADD a name, and the resolver is not the only reader.
+
+    Every pre-cast encoder repo published so far hosts a ``.pt``. The download plan matched the
+    PRIMARY name alone, so the moment the preferred spelling became safetensors it reported those
+    repos as having no pre-cast encoder: the dense shards went back into the pull AND the loader
+    still fetched the ``.pt``, so the user downloaded both. That is the opposite of what this
+    change is for, and no test covered it because the plan lives beside the resolver, not in it.
+    """
+    src = TePrequantSource(
+        kind = "repo",
+        location = "unsloth/LTX-2-FP8",
+        filename = "LTX-2-text_encoder-FP8.safetensors",
+        fallback_filenames = ("LTX-2-text_encoder-FP8.pt",),
+    )
+
+    class _Sib:
+        def __init__(self, name, size):
+            self.rfilename, self.size = name, size
+
+    class _Api:
+        def __init__(self, files):
+            self._files = files
+
+        def model_info(self, *a, **k):
+            outer = self
+
+            class _I:
+                siblings = outer._files
+
+            return _I()
+
+    def plan(hosted):
+        return tpq.te_prequant_hub_files({"text_encoder": src}, _Api(hosted), None)
+
+    pt, st = "LTX-2-text_encoder-FP8.pt", "LTX-2-text_encoder-FP8.safetensors"
+    # A .pt-only repo: recognised, and sized from the file that will really be fetched.
+    assert plan([_Sib(pt, 9_000_000_000)]) == {"text_encoder": [(pt, 9_000_000_000)]}
+    # A safetensors-only repo: the artifact this change exists for.
+    assert plan([_Sib(st, 9_400_000_000)]) == {"text_encoder": [(st, 9_400_000_000)]}
+    # Both hosted: the preferred one wins, matching the order the resolver downloads in.
+    assert plan([_Sib(pt, 9_000_000_000), _Sib(st, 9_400_000_000)]) == {
+        "text_encoder": [(st, 9_400_000_000)]
+    }
+    # Neither: no pre-cast, so the dense encoder stays in the plan.
+    assert plan([_Sib("unrelated.bin", 1)]) == {}
+
+    # An install that cannot read safetensors takes the pickle rather than planning for a file it
+    # would then refuse, which would leave the load with no encoder at all.
+    monkeypatch.setattr(tpq, "te_candidate_is_readable", lambda n: bool(n) and n.endswith(".pt"))
+    assert plan([_Sib(pt, 9_000_000_000), _Sib(st, 9_400_000_000)]) == {
+        "text_encoder": [(pt, 9_000_000_000)]
+    }
+
+
+def test_the_te_capability_question_is_not_the_transformers_one():
+    """A pre-cast encoder pickle is plain tensors read under a bare ``weights_only`` load, so it
+    needs no constructor allowlist. Asking the DiT's question would refuse a ``.pt`` encoder on
+    every install whose torchao lacks some DiT scheme's constructors."""
+    assert tpq.te_candidate_is_readable("X-text_encoder-FP8.pt") is True
+    assert tpq.te_candidate_is_readable(None) is False
+
+
+def test_the_candidate_accessor_tolerates_a_planner_stand_in():
+    """Planners pass lightweight objects carrying only ``filename``; reading the chain off one
+    must not raise, or the whole pre-cast plan is swallowed into a silent dense fallback."""
+    import types
+
+    assert tpq.te_candidate_filenames(types.SimpleNamespace(filename = "a.pt")) == ("a.pt",)
+    assert tpq.te_candidate_filenames(types.SimpleNamespace()) == ()
