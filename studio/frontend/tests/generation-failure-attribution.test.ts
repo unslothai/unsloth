@@ -288,28 +288,35 @@ test("a failure the user has already seen is not replayed on the next mount", ()
   // it is deliberately lost on reload, which is the case the retained reason exists for.
   assert.match(
     page,
-    /^let surfacedGenerateAttempt: string \| null = null;$/m,
-    "the already-surfaced attempt is not remembered across a remount",
+    /^let surfacedGenerateFailure: string \| null = null;$/m,
+    "the already-surfaced failure is not remembered across a remount",
   );
   // The backend keeps the reason until another run starts, so the idle probe answers with
   // it on every later mount.
   assert.match(
     page,
-    /if \(attempt && attempt === surfacedGenerateAttempt\) return;/,
+    /if \(key === surfacedGenerateFailure\) return;/,
     "a retained failure is replayed once per navigation back to Images",
+  );
+  // Not every failure carries an attempt: the OpenAI images route posts without one, so an
+  // id-keyed guard could never match its retained reason and replayed it on every mount.
+  assert.match(
+    page,
+    /return attemptId \? `attempt:\$\{attemptId\}` : `reason:\$\{reason\}`;/,
+    "an unattributed failure has no key, so it is replayed forever",
   );
   // And the run that posted it marks its own attempt, so the first mount after a failure
   // the user already saw in handleGenerate is silent too.
   assert.match(
     page,
-    /markGenerateFailureSurfaced\(postedAttemptId\);/,
+    /markGenerateFailureSurfaced\(generateFailureKey\(postedAttemptId, msg\)\);/,
     "the run that reported its own failure lets the next mount report it again",
   );
   const marks = page.match(/markGenerateFailureSurfaced\(/g);
   assert.equal(
     marks?.length,
     3,
-    "the surfaced-attempt slot is written from somewhere unaccounted for",
+    "the surfaced-failure slot is written from somewhere unaccounted for",
   );
 });
 

@@ -39142,7 +39142,7 @@ async def generate_diffusion_image(
 
     # Hold generate-progress "active" across the persist so a reload mount probe cannot refresh the gallery before these records exist.
     global _diffusion_persist_active
-    from core.inference.generate_outcomes import attempt_scope_key
+    from core.inference.generate_outcomes import _retain_generate_failure, attempt_scope_key
 
     persisting_attempt = attempt_scope_key(request.attempt_id)
     _diffusion_persist_active += 1
@@ -39152,6 +39152,12 @@ async def generate_diffusion_image(
             records = await asyncio.to_thread(_persist)
     except Exception as exc:
         logger.error("diffusion.persist_failed: %s", exc)
+        # The only failure raised after the attempt was reported ACTIVE, so a settling client
+        # whose POST was lost watches it go active-to-idle and takes that for success: the
+        # images it never saved are not in the gallery either. Retained before the finally
+        # drops the marker, so the progress poll can answer with the reason instead. Logged
+        # just above, and the disk error is only there.
+        _retain_generate_failure(request.attempt_id, "Failed to save the generated image.")
         raise HTTPException(status_code = 500, detail = "Failed to save the generated image.")
     finally:
         _diffusion_persist_active -= 1

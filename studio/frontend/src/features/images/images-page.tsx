@@ -554,7 +554,7 @@ async function settleLostGeneration(
   throw new Error("Timed out waiting for the image generation to finish.");
 }
 
-/** The attempt whose failure this page session has already put in front of the user.
+/** The failure this page session has already put in front of the user.
  *
  * The backend keeps a reason until another run starts, so the idle probe answers with the
  * same one on EVERY later mount: without this, coming back to Images replayed a failure the
@@ -562,10 +562,21 @@ async function settleLostGeneration(
  * deliberately lost on RELOAD, which is the case the retained reason exists for. One slot,
  * because the progress snapshot attributes at most one run at a time.
  */
-let surfacedGenerateAttempt: string | null = null;
+let surfacedGenerateFailure: string | null = null;
 
-function markGenerateFailureSurfaced(attemptId: string | null): void {
-  if (attemptId) surfacedGenerateAttempt = attemptId;
+/** The attempt if there is one, else the reason itself.
+ *
+ * Not every failure carries an attempt: the OpenAI images route posts without one, so its
+ * retained reason comes back unattributed and an id-keyed guard could never match it. The
+ * text is what the user is being shown, so showing it once per page session is the same
+ * promise made in the same terms.
+ */
+function generateFailureKey(attemptId: string | null, reason: string): string {
+  return attemptId ? `attempt:${attemptId}` : `reason:${reason}`;
+}
+
+function markGenerateFailureSurfaced(key: string): void {
+  surfacedGenerateFailure = key;
 }
 
 /** Toast a failure the backend RETAINED, for a run this page did not post itself.
@@ -580,9 +591,9 @@ function reportResumedGenerateFailure(progress: DiffusionGenerateProgress): void
   const reason = progress.error;
   if (!reason) return;
   if (!shouldReportGenerateError({ message: reason, stopRequested: false })) return;
-  const attempt = progress.generation_attempt ?? null;
-  if (attempt && attempt === surfacedGenerateAttempt) return;
-  markGenerateFailureSurfaced(attempt);
+  const key = generateFailureKey(progress.generation_attempt ?? null, reason);
+  if (key === surfacedGenerateFailure) return;
+  markGenerateFailureSurfaced(key);
   toast.error(reason, {
     action: retainedFailureWasLogged(progress)
       ? viewLogsAction("server")
@@ -3648,7 +3659,7 @@ export function ImagesPage({
       ) {
         // This run's failure is now in front of the user, so the reason the backend retains
         // for it must not be toasted again by the next mount's idle probe.
-        markGenerateFailureSurfaced(postedAttemptId);
+        markGenerateFailureSurfaced(generateFailureKey(postedAttemptId, msg));
         toast.error(msg, {
           // Only when the server logged it. A settled failure says so explicitly (the
           // retained reason is already classified, so its text cannot); anything else is

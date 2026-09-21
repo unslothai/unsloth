@@ -631,3 +631,26 @@ def test_the_route_marks_and_publishes_whether_the_failure_was_logged():
     body = src[at : at + 7000]
     assert '"error_logged"' in body, "the poll does not say whether the reason was logged"
     assert "generate_failure_was_logged(attempt_id)" in body
+
+
+def test_a_persist_failure_is_retained_for_the_client_that_cannot_read_the_response():
+    """The one failure raised AFTER the attempt was reported active.
+
+    A settling client whose POST was lost watches its attempt go active-to-idle and takes
+    that for success, and the images it never saved are not in the gallery to contradict it.
+    So the reason has to be readable from the progress poll, recorded before the finally
+    drops the persist marker.
+    """
+    src = _src("routes/inference.py")
+    at = src.index('logger.error("diffusion.persist_failed')
+    window = src[at : at + 900]
+    assert (
+        '_retain_generate_failure(request.attempt_id, "Failed to save the generated image.")'
+        in window
+    ), "a persist failure leaves the settling client reading its lost run as a success"
+    # Before the finally, which drops the marker this attempt was active under.
+    retained = src.index("_retain_generate_failure(request.attempt_id", at)
+    released = src.index("_note_persisting_attempt(persisting_attempt, -1)", at)
+    assert retained < released, "the failure is recorded after the attempt stops being active"
+    # Retained as LOGGED, since the line above is the log and the disk error is only there.
+    assert "logged = False" not in window
