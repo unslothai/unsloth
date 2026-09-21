@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { toast } from "@/lib/toast";
 import {
   AUTH_SESSION_CLEARED_EVENT,
   AUTH_SESSION_MARK_KEY,
   AUTH_SESSION_STORED_EVENT,
   hasAuthToken,
-} from "../auth/session";
+} from "@/features/auth";
+import { toast } from "@/lib/toast";
 import { createDeepLinkIntentGate } from "../deep-links/deep-link-intent";
 import { parseUnslothDeepLink } from "../deep-links/parse-deep-link";
 import { markModelConfigDraftEdited } from "../model-picker/model-config/model-config-draft";

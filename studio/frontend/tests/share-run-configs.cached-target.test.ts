@@ -339,8 +339,44 @@ test("an exact GGUF filename is checked without substituting a same-quant siblin
     cachedGguf,
     variants: [{ ...quant, filename: filenameTarget.meta.ggufVariant }],
   });
-  assert.equal((await app.resolve(filenameTarget)).meta.isDownloaded, true);
+  const resolved = await app.resolve(filenameTarget);
+  assert.equal(resolved.meta.isDownloaded, true);
+  assert.equal(resolved.meta.ggufVariant, quant.quant);
+  assert.equal(resolved.meta.ggufFilename, filenameTarget.meta.ggufVariant);
+  const handoff = modelConfigTarget(resolved.id, resolved.meta);
+  assert.equal(handoff.id, "/cache/pinned");
+  assert.equal(handoff.ggufVariant, quant.quant);
 });
+
+for (const identity of [
+  { quant: "Q4_K_M", filename: "model-Q4_K_M.gguf" },
+  { quant: "chosen/Q4_K_M", filename: "chosen/model-Q4_K_M.gguf" },
+  {
+    quant: "chosen/model-Q4_K_M",
+    filename: "chosen/model-Q4_K_M-00001-of-00002.gguf",
+  },
+]) {
+  test(`filename links hand off the listing's exact canonical identity: ${identity.quant}`, async () => {
+    const app = harness({
+      cachedGguf: [
+        { repo_id: model, load_id: "C:\\Models\\snapshot", size_bytes: 1024 },
+      ],
+      variants: [{ ...quant, ...identity }],
+    });
+    const resolved = await app.resolve({
+      ...target,
+      meta: { ...target.meta, ggufVariant: identity.filename },
+    });
+    const handoff = modelConfigTarget(resolved.id, resolved.meta);
+    assert.equal(handoff.ggufVariant, identity.quant);
+    assert.equal(handoff.meta.ggufFilename, identity.filename);
+    assert.equal(handoff.id, "C:\\Models\\snapshot");
+    assert.equal(
+      wantsDownloadManagerStaging({ id: resolved.id, ...resolved.meta }),
+      false,
+    );
+  });
+}
 
 test("unrelated and incomplete inventories do not mark a target downloaded", async () => {
   const app = harness({

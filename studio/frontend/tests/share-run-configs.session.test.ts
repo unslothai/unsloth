@@ -47,7 +47,7 @@ function harness() {
         "@/lib/toast": {
           toast: { error: (message: string) => errors.push(message) },
         },
-        "../auth/session": {
+        "@/features/auth": {
           ...events,
           AUTH_SESSION_MARK_KEY: sessionMark,
           hasAuthToken: () => signedIn,

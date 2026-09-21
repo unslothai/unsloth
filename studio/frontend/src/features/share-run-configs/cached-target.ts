@@ -139,7 +139,7 @@ export async function resolveCachedRunConfigTarget(
           ...target.meta,
           loadId: candidate.loadId,
           isDownloaded: true,
-          ggufVariant: target.meta.ggufVariant ?? variant.quant,
+          ggufVariant: variant.quant,
           ggufFilename: variant.filename,
         },
       };

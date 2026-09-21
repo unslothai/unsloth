@@ -1,0 +1,297 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+import type * as Lifecycle from "../src/features/share-run-configs/link-lifecycle.ts";
+import {
+  installLocalStorageFake,
+  registerBundlerResolver,
+} from "./helpers/kit.ts";
+import { loadWithStubs } from "./helpers/module-stubs.ts";
+
+registerBundlerResolver();
+installLocalStorageFake();
+const { createRunConfigInbox } = await import(
+  "../src/features/share-run-configs/inbox.ts"
+);
+const { modelConfigDraftKey } = await import(
+  "../src/features/model-picker/model-config/model-config-draft.ts"
+);
+const { resolveRunConfigTarget } = await import(
+  "../src/features/share-run-configs/target.ts"
+);
+
+type Target = NonNullable<ReturnType<typeof resolveRunConfigTarget>>;
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (error: Error) => void;
+  const promise = new Promise<T>((yes, no) => {
+    resolve = yes;
+    reject = no;
+  });
+  return { promise, resolve, reject };
+}
+const settle = () => new Promise<void>((resolve) => setImmediate(resolve));
+
+function harness() {
+  const inbox = createRunConfigInbox();
+  inbox.submit({
+    id: "first",
+    value: { model: "owner/Model-GGUF", config: { nParallel: 3 } },
+  });
+  const pending = inbox.getSnapshot();
+  assert.ok(pending);
+  const calls: unknown[] = [];
+  const errors: string[] = [];
+  const lookups: {
+    signal: AbortSignal;
+    result: ReturnType<typeof deferred<Target>>;
+  }[] = [];
+  const navigationResult = deferred<void>();
+  const navigation: { current: Lifecycle.RunConfigNavigation | null } = {
+    current: null,
+  };
+  const runtime = {
+    params: { checkpoint: "" },
+    activeGgufVariant: null,
+    loadedIsGguf: null,
+    activeNativePathToken: null,
+    activeLoadId: null,
+    models: [],
+    loras: [],
+    setActiveThreadId: (id: null) => calls.push(["thread", id]),
+    setActiveProjectId: (id: null) => calls.push(["project", id]),
+    setIncognito: (value: boolean) => calls.push(["incognito", value]),
+  };
+  const lifecycle = loadWithStubs<typeof Lifecycle>(
+    new URL(
+      "../src/features/share-run-configs/link-lifecycle.ts",
+      import.meta.url,
+    ),
+    {
+      "@/features/chat": {
+        clearNewChatDraft: () => calls.push("clear draft"),
+        useChatRuntimeStore: { getState: () => runtime },
+      },
+      "@/lib/toast": {
+        toast: { error: (message: string) => errors.push(message) },
+      },
+      "../model-picker/model-config/model-config-draft": {
+        modelConfigDraftKey,
+      },
+      "../model-picker/model-config/model-config-handoff": {
+        clearModelConfigHandoff: (id: string) =>
+          calls.push(["clear handoff", id]),
+        requestModelConfigHandoff: (target: Target & { requestId: string }) => {
+          assert.equal(
+            inbox.getSnapshot()?.draftKey,
+            modelConfigDraftKey(target.id, target.meta.ggufVariant),
+          );
+          calls.push(["handoff", target]);
+        },
+      },
+      "./cached-target": {
+        resolveCachedRunConfigTarget: (
+          _target: Target,
+          options: { signal: AbortSignal },
+        ) => {
+          const result = deferred<Target>();
+          lookups.push({ signal: options.signal, result });
+          return result.promise;
+        },
+      },
+      "./inbox": { runConfigInbox: inbox },
+      "./target": { resolveRunConfigTarget },
+    },
+  );
+  const context = {
+    pending,
+    canOpen: true,
+    settingsHydrated: true,
+    currentModel: "",
+    location: { href: "/hub", pathname: "/hub", searchStr: "" },
+  };
+  const destination = {
+    href: "/chat?new=first",
+    pathname: "/chat",
+    searchStr: "?new=first",
+  };
+  const nav = {
+    ...context,
+    navigation,
+    navigate: (options: unknown) => {
+      calls.push(["navigate", options]);
+      return navigationResult.promise;
+    },
+  };
+  const open = {
+    ...context,
+    location: destination,
+    routeReady: true,
+    inventoryVersion: 0,
+  };
+  const target: Target = {
+    id: pending.value.model!,
+    meta: {
+      source: "hub",
+      isLora: false,
+      isGguf: true,
+      ggufVariant: "Q4_K_M",
+      loadId: "/cache/snapshot",
+      isDownloaded: true,
+    },
+  };
+  return {
+    ...lifecycle,
+    inbox,
+    calls,
+    errors,
+    lookups,
+    navigationResult,
+    navigation,
+    nav,
+    open,
+    target,
+    destination,
+  };
+}
+
+for (const replaceHistory of [false, true]) {
+  test(`navigation clears chat context once and respects history replacement: ${replaceHistory}`, () => {
+    const app = harness();
+    app.nav.pending.replaceHistory = replaceHistory;
+    app.navigateRunConfig(app.nav);
+    app.navigateRunConfig(app.nav);
+    assert.deepEqual(app.calls, [
+      "clear draft",
+      ["thread", null],
+      ["project", null],
+      ["incognito", false],
+      [
+        "navigate",
+        { to: "/chat", search: { new: "first" }, replace: replaceHistory },
+      ],
+    ]);
+    assert.equal(app.lookups.length, 0);
+    app.navigateRunConfig({ ...app.nav, location: app.destination });
+    assert.equal(app.navigation.current?.from, app.destination.href);
+    app.navigateRunConfig(app.nav);
+    assert.equal(app.inbox.getSnapshot(), null);
+  });
+}
+
+for (const reason of [
+  "login",
+  "settings",
+  "model",
+  "bound",
+  "superseded",
+] as const) {
+  test(`navigation and lookup do nothing while ${reason} blocks the import`, () => {
+    const app = harness();
+    if (reason === "login") app.nav.canOpen = app.open.canOpen = false;
+    if (reason === "settings")
+      app.nav.settingsHydrated = app.open.settingsHydrated = false;
+    if (reason === "model") delete app.nav.pending.value.model;
+    if (reason === "bound") app.nav.pending.draftKey = "already bound";
+    if (reason === "superseded") app.inbox.clear("first");
+    app.navigateRunConfig(app.nav);
+    assert.equal(app.openRunConfigTarget(app.open), undefined);
+    assert.deepEqual(app.calls, []);
+    assert.deepEqual(app.lookups, []);
+  });
+}
+
+for (const reason of [
+  "route loading",
+  "another page",
+  "another chat",
+] as const) {
+  test(`availability waits at ${reason}`, () => {
+    const app = harness();
+    if (reason === "route loading") app.open.routeReady = false;
+    if (reason === "another page") app.open.location = app.nav.location;
+    if (reason === "another chat")
+      app.open.location = { ...app.destination, searchStr: "?new=other" };
+    assert.equal(app.openRunConfigTarget(app.open), undefined);
+    assert.deepEqual(app.lookups, []);
+  });
+}
+
+test("availability binds the canonical draft before handing off the editor", async () => {
+  const app = harness();
+  app.openRunConfigTarget(app.open);
+  assert.equal(app.inbox.getSnapshot()?.draftKey, undefined);
+  assert.deepEqual(app.calls, []);
+  app.lookups[0].result.resolve(app.target);
+  await settle();
+  assert.deepEqual(app.calls, [
+    ["handoff", { requestId: "first", ...app.target }],
+  ]);
+  assert.equal(
+    app.inbox.getSnapshot()?.draftKey,
+    modelConfigDraftKey(app.target.id, "Q4_K_M"),
+  );
+});
+
+for (const failure of [false, true]) {
+  test(`effect cleanup aborts stale availability ${failure ? "failures" : "successes"}`, async () => {
+    const app = harness();
+    const cancel = app.openRunConfigTarget(app.open);
+    cancel?.();
+    assert.equal(app.lookups[0].signal.aborted, true);
+    app.openRunConfigTarget(app.open);
+    if (failure) app.lookups[0].result.reject(new Error("stale"));
+    else app.lookups[0].result.resolve(app.target);
+    await settle();
+    assert.deepEqual(app.calls, []);
+    assert.deepEqual(app.errors, []);
+    app.lookups[1].result.resolve(app.target);
+    await settle();
+    assert.equal(app.calls.length, 1);
+  });
+
+  test(`newer links survive stale availability ${failure ? "failures" : "successes"}`, async () => {
+    const app = harness();
+    app.openRunConfigTarget(app.open);
+    app.inbox.submit({
+      id: "second",
+      value: { model: "owner/Other", config: {} },
+    });
+    if (failure) app.lookups[0].result.reject(new Error("stale"));
+    else app.lookups[0].result.resolve(app.target);
+    await settle();
+    assert.equal(app.inbox.getSnapshot()?.id, "second");
+    assert.deepEqual(app.calls, []);
+    assert.deepEqual(app.errors, []);
+  });
+}
+
+test("availability failures cancel with feedback and never hand off an uncached fallback", async () => {
+  const app = harness();
+  app.openRunConfigTarget(app.open);
+  app.lookups[0].result.reject(new Error("offline local backend"));
+  await settle();
+  assert.equal(app.inbox.getSnapshot(), null);
+  assert.equal(app.errors.length, 1);
+  assert.deepEqual(app.calls, []);
+});
+
+for (const superseded of [false, true]) {
+  test(`navigation failure only clears its own import: superseded=${superseded}`, async () => {
+    const app = harness();
+    app.navigateRunConfig(app.nav);
+    if (superseded) app.inbox.submit({ id: "second", value: { config: {} } });
+    app.navigationResult.reject(new Error("navigation failed"));
+    await settle();
+    assert.equal(
+      app.inbox.getSnapshot()?.id ?? null,
+      superseded ? "second" : null,
+    );
+    assert.equal(app.errors.length, superseded ? 0 : 1);
+    assert.equal(
+      app.calls.some(
+        (call) => Array.isArray(call) && call[0] === "clear handoff",
+      ),
+      !superseded,
+    );
+  });
+}

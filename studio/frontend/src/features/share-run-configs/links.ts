@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import type { PerModelConfig } from "../model-picker/model-config/per-model-config";
+import type { PerModelConfig } from "@/features/model-picker";
 import {
   SHARED_CONFIG_FIELDS,
   SHARED_CONFIG_KEYS,

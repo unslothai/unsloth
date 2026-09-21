@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import type { ModelConfigHandoffRequest } from "@/features/model-picker";
 import { isExternalModelId } from "../chat/external-providers";
 import type { ChatLoraSummary, ChatModelSummary } from "../chat/types/runtime";
-import type { ModelConfigHandoffRequest } from "../model-picker/model-config/model-config-handoff";
 import {
   ggufVariantsMatch,
   isStandaloneGgufPath,

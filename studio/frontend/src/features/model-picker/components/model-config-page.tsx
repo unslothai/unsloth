@@ -25,7 +25,9 @@ import {
 import { prepareHfTokenForUse } from "@/features/hf-auth";
 import {
   SharedRunConfigControls,
+  SharedRunConfigReview,
   cancelRunConfigImportForEdit,
+  isRunConfigEditorChange,
 } from "@/features/share-run-configs";
 import {
   type VramBudgetSettings,
@@ -2072,9 +2074,16 @@ export function ModelConfigPage({
   const [autoOpenAdvanced, setAutoOpenAdvanced] = useState(() =>
     hasNonDefaultAdvanced(configState),
   );
-  const handleSharedConfigImport = useCallback(() => {
-    setAutoOpenAdvanced(true);
-  }, []);
+  const [importedConfig, setImportedConfig] = useState<
+    Partial<PerModelConfig> | null
+  >(null);
+  const handleSharedConfigImport = useCallback(
+    (changes: Partial<PerModelConfig>) => {
+      setImportedConfig(changes);
+      setAutoOpenAdvanced(true);
+    },
+    [],
+  );
   // Frozen like the rest of the auto-open decision, so editing the width does not reopen the
   // section the user just closed.
   const [initialMlxKvBits] = useState(() => configState.mlxKvBits ?? null);
@@ -3106,7 +3115,11 @@ export function ModelConfigPage({
   return (
     <div
       className="hint-on-hover flex flex-col"
-      onChange={() => cancelRunConfigImportForEdit(draftKey)}
+      onChange={(event) => {
+        if (isRunConfigEditorChange(event)) {
+          cancelRunConfigImportForEdit(draftKey);
+        }
+      }}
     >
       {variant === "page" && showHeader && (
         // -ml-1.5 cancels the icon's inset in its 28px circle, so the chevron starts on
@@ -3136,6 +3149,7 @@ export function ModelConfigPage({
         </div>
       )}
 
+      <SharedRunConfigReview config={importedConfig} />
       <div className="space-y-5">
         {target.isGguf && (
           <>

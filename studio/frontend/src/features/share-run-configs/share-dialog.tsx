@@ -18,11 +18,11 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
+import type { ModelPickTarget } from "@/features/model-picker";
 import { isTauri } from "@/lib/api-base";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { toast } from "@/lib/toast";
 import { useId, useState } from "react";
-import type { ModelPickTarget } from "../model-picker/components/model-selector/types";
 import { formatExtraArgs } from "../model-picker/model-config/llama-extra-args";
 import {
   DEFAULT_PER_MODEL_CONFIG,

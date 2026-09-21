@@ -14,9 +14,9 @@ import { ApiProviderLogo } from "@/features/chat/api-provider-logo";
 import type { HfTaskFilter } from "@/features/hub/hooks/use-hub-model-search";
 // eslint-disable-next-line no-restricted-imports -- The settings barrel imports this feature back.
 import { useSettingsDialogStore } from "@/features/settings/stores/settings-dialog-store";
+import { keepSharedRunConfigOpen } from "@/features/share-run-configs";
 import { useT } from "@/i18n";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
-import { SHARED_RUN_CONFIG_FOCUS_SELECTOR } from "@/lib/shared-run-config-focus";
 import { cn } from "@/lib/utils";
 import {
   CheckmarkCircle02Icon,
@@ -532,7 +532,7 @@ function ModelSelectorContent({
       ref={contentRef}
       align="start"
       onFocusOutside={(event) => {
-        if (contentRef.current?.querySelector(SHARED_RUN_CONFIG_FOCUS_SELECTOR)) {
+        if (keepSharedRunConfigOpen(contentRef.current)) {
           event.preventDefault();
         }
       }}

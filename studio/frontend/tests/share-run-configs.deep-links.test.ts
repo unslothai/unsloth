@@ -65,7 +65,7 @@ function harness(sharedLinks = true) {
       "./inbox": { runConfigInbox: inbox },
       "./links": { parseRunConfigLink, createRunConfigLink },
       "../deep-links/deep-link-intent": { createDeepLinkIntentGate },
-      "../auth/session": { hasAuthToken: () => true },
+      "@/features/auth": { hasAuthToken: () => true },
     },
   );
   const { DeepLinkHandler } = loadWithStubs<{
