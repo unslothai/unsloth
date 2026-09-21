@@ -2041,6 +2041,10 @@ class TestPackageManagerPolicyOptOut:
         monkeypatch.setattr(ips, "_PIP_SYSTEM_CONFIG_DIRS", (str(tmp_path / "absent"),))
         monkeypatch.setattr(ips, "_PIP_SYSTEM_CONFIG_FILES", (str(tmp_path / "absent.conf"),))
         monkeypatch.delenv("VIRTUAL_ENV", raising = False)
+        # And off the macOS branch explicitly: this test is about the XDG locations, and on
+        # a Mac runner IS_MACOS is true, so it took the Apple branch and asserted nothing
+        # it meant to. The macOS locations have their own test below.
+        monkeypatch.setattr(ips, "IS_MACOS", False)
         monkeypatch.setenv("XDG_CONFIG_DIRS", str(tmp_path / "absent"))
         monkeypatch.setattr(ips.sys, "prefix", str(tmp_path / "absent"))
         monkeypatch.setattr(ips, "IS_WINDOWS", False)
@@ -2395,6 +2399,37 @@ class TestPackageManagerPolicyOptOut:
         body = _shell_function_source("_pip_config_files_present")
         assert "/Library/Application Support/pip/pip.conf" in body
         assert "$HOME/Library/Application Support/pip/pip.conf" in body
+
+    def test_the_shell_resolves_its_policy_after_the_target_venv_is_known(self):
+        """install.sh runs its policy block long before VENV_DIR exists.
+
+        The installs it protects go into that venv through `--python "$_VENV_PY"`, so
+        resolving at startup queried whichever pip was on PATH and could never see the
+        target environment's own site pip.conf -- the file `pip config debug` calls the
+        site configuration, and the one that actually governs those installs. Resolution is
+        memoised and driven from the two places that consume it instead.
+        """
+        text = INSTALL_SH.read_text(encoding = "utf-8")
+        ready = text.index("_pm_policy_ready() {")
+        venv_dir = text.index('VENV_DIR="$STUDIO_HOME/unsloth_studio"')
+        assert ready < venv_dir, "the helper is defined before VENV_DIR, which is why it is lazy"
+
+        # Driven from both consumers: the install chokepoint and the forced-pip AMD step.
+        for name in ("run_install_cmd", "_install_bnb_rocm"):
+            body = _shell_function_source(name)
+            assert "_pm_policy_ready" in body, f"{name} consumes the policy without resolving it"
+
+        # And the resolution itself must be able to reach the target interpreter and file.
+        listing = _shell_function_source("_load_pip_config_listing")
+        assert "_VENV_PY" in listing, "the target venv's own pip answers for its site config"
+        presence = _shell_function_source("_pip_config_files_present")
+        assert (
+            "$VENV_DIR/pip.conf" in presence
+        ), "the target's site file is not $VIRTUAL_ENV: this script creates that venv"
+
+        # Memoised, or every command in the run pays for a subprocess.
+        ready_body = _shell_function_source("_pm_policy_ready")
+        assert "_PM_POLICY_RESOLVED" in ready_body
 
     def test_the_shell_declines_the_forced_pip_amd_wheel_too(self):
         """install.sh runs the same direct-URL install through pip, for the same reason.

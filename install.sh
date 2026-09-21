@@ -234,6 +234,14 @@ _respect_pm_policy() {
 _PM_PIP_CONFIG_LISTING=""
 _PM_PIP_CONFIG_READABLE=0
 _load_pip_config_listing() {
+    # The target venv's own interpreter first: its site pip.conf is the file that governs
+    # the installs this protects, and a pip on PATH answers for a different environment.
+    if [ -n "${_VENV_PY:-}" ] && [ -x "${_VENV_PY:-}" ]; then
+        if _PM_PIP_CONFIG_LISTING=$("$_VENV_PY" -m pip config list 2>/dev/null); then
+            _PM_PIP_CONFIG_READABLE=1
+            return 0
+        fi
+    fi
     for _pm_pip in pip3 pip; do
         command -v "$_pm_pip" >/dev/null 2>&1 || continue
         if _PM_PIP_CONFIG_LISTING=$("$_pm_pip" config list 2>/dev/null); then
@@ -286,6 +294,9 @@ _pip_config_files_present() {
     [ -f "${XDG_CONFIG_HOME:-$HOME/.config}/pip/pip.conf" ] && return 0
     [ -f "$HOME/.pip/pip.conf" ] && return 0
     [ -n "${VIRTUAL_ENV:-}" ] && [ -f "$VIRTUAL_ENV/pip.conf" ] && return 0
+    # The target environment's site file, which is not $VIRTUAL_ENV here: this script
+    # creates or updates that venv rather than running inside it.
+    [ -n "${VENV_DIR:-}" ] && [ -f "$VENV_DIR/pip.conf" ] && return 0
     return 1
 }
 
@@ -516,7 +527,15 @@ _resolve_index_policy() {
     unset _pm_ni _pm_fl _pm_row
 }
 
-if _respect_pm_policy; then
+# Resolved on FIRST USE, not at startup. This file runs the whole policy block long before
+# VENV_DIR exists, and the installs it protects go into that venv via `--python "$_VENV_PY"`,
+# so resolving here would query whichever pip happens to be on PATH and would never see the
+# target environment's own site pip.conf. Memoised, so the probe still costs one subprocess.
+_PM_POLICY_RESOLVED=0
+_pm_policy_ready() {
+    [ "$_PM_POLICY_RESOLVED" = 1 ] && return 0
+    _PM_POLICY_RESOLVED=1
+    _respect_pm_policy || return 0
     _load_pip_config_listing
     _require_readable_pip_policy
     _require_carryable_pip_policy
@@ -528,8 +547,9 @@ if _respect_pm_policy; then
     # they had prohibited. Restrictive, so it is carried for pinned commands too.
     _carry_pip_index_into_uv PIP_CONSTRAINT UV_CONSTRAINT "constraint"
     _carry_pip_index_into_uv PIP_INDEX_URL UV_INDEX_URL "index[-_]url"
-    _carry_pip_index_into_uv PIP_EXTRA_INDEX_URL UV_EXTRA_INDEX_URL "extra[-_]index[-_]url"
-fi
+    return 0
+}
+
 
 # Policy that binds uv and that pip cannot be told about. The Python twin is
 # _uv_only_policy_active(); a uv configuration file counts by PRESENCE, unparsed, because
@@ -582,6 +602,7 @@ _uv_only_policy_active() {
 run_install_cmd() {
     _label="$1"
     shift
+    _pm_policy_ready
     # Before the index scrub below, which may prepend `env ...` and move uv out of $1.
     if [ -n "${_PM_ONLY_BINARY_ARGS:-}${_PM_INDEX_POLICY_ARGS:-}" ] && [ "$1" = "uv" ] && [ "$2" = "pip" ] \
         && { [ "$3" = "install" ] || [ "$3" = "sync" ]; }; then
@@ -750,6 +771,7 @@ _install_bnb_rocm() {
     # leave it as found. This is the shell twin of pip_install_try(force_pip=True): pip is
     # used here ON PURPOSE, so it reads no UV_ setting and no uv.toml, and under the opt-out
     # installing a direct URL past a uv-only policy is the substitution that gate exists for.
+    _pm_policy_ready
     if _respect_pm_policy && _uv_only_policy_active; then
         substep "[SKIP] $_label needs pip, which your uv policy cannot reach" "$C_WARN"
         substep "       unset UNSLOTH_RESPECT_PM_POLICY for one run to take it" "$C_WARN"
