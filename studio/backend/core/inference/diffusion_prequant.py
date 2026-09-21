@@ -407,7 +407,11 @@ def prequant_filename(scheme: str) -> str:
     return f"transformer_{scheme}.pt"
 
 
-def prequant_repo_filename(repo_id: str, scheme: str, suffix: str = ".pt") -> str:
+def prequant_repo_filename(
+    repo_id: str,
+    scheme: str,
+    suffix: str = ".pt",
+) -> str:
     """The model-name checkpoint filename for ``scheme`` in ``repo_id``: the hosted repos are named
     <Model>-FP8 (or -INT8 / -quantized) and carry <Model>-<SCHEME>.pt files, e.g.
     unsloth/Z-Image-Turbo-FP8 -> Z-Image-Turbo-INT8.pt / Z-Image-Turbo-FP8.pt.

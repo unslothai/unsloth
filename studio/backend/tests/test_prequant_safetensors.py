@@ -134,7 +134,9 @@ def test_a_cached_safetensors_artifact_is_evidence_enough(monkeypatch):
     fam = _family(prequant_repos = (("fp8", "org/model-fp8"),))
     monkeypatch.setattr(pq, "_register_prequant_safe_globals", lambda: False)
     monkeypatch.setattr(ps, "safetensors_prequant_supported", lambda: True)
-    monkeypatch.setattr(pq, "cached_checkpoint_path", lambda source, **kw: "/cache/model-FP8.safetensors")
+    monkeypatch.setattr(
+        pq, "cached_checkpoint_path", lambda source, **kw: "/cache/model-FP8.safetensors"
+    )
     src = pq.usable_prequant_source(fam, "fp8")
     assert src is not None and src.filename == "model-FP8.safetensors"
 
@@ -145,7 +147,9 @@ def test_the_derived_chain_puts_safetensors_first_and_keeps_the_pickles(monkeypa
     fam = _family(prequant_repos = (("fp8", "unsloth/Model-FP8"),))
     src = pq.resolve_prequant_source(fam, "fp8")
     assert src.candidate_filenames == (
-        "Model-FP8.safetensors", "Model-FP8.pt", "transformer_fp8.pt",
+        "Model-FP8.safetensors",
+        "Model-FP8.pt",
+        "transformer_fp8.pt",
     )
 
 

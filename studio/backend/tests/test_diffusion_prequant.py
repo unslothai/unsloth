@@ -72,7 +72,9 @@ def test_resolve_family_repo_by_scheme():
     # Model-name convention first (repo scheme suffix stripped), safetensors ahead of the pickle,
     # legacy name last.
     assert src.candidate_filenames == (
-        "hosted-INT8.safetensors", "hosted-INT8.pt", "transformer_int8.pt",
+        "hosted-INT8.safetensors",
+        "hosted-INT8.pt",
+        "transformer_int8.pt",
     )
 
 
@@ -139,14 +141,18 @@ def test_resolve_prefers_a_family_declared_filename():
     src = resolve_prequant_source(fam, "int8")
     assert src.filename == "Model-INT8-ConvRot.pt"
     assert src.fallback_filenames == (
-        "Model-INT8.safetensors", "Model-INT8.pt", "transformer_int8.pt",
+        "Model-INT8.safetensors",
+        "Model-INT8.pt",
+        "transformer_int8.pt",
     )
     # Only for the scheme that declares one; everything else keeps the plain derived chain.
     other = resolve_prequant_source(
         dataclasses.replace(fam, prequant_repos = (("fp8", "unsloth/Model-FP8"),)), "fp8"
     )
     assert other.candidate_filenames == (
-        "Model-FP8.safetensors", "Model-FP8.pt", "transformer_fp8.pt",
+        "Model-FP8.safetensors",
+        "Model-FP8.pt",
+        "transformer_fp8.pt",
     )
 
 

@@ -148,7 +148,9 @@ def test_h3_int8_keeps_the_plain_denoiser_as_its_fallback():
     src = resolve_prequant_source(fam, "int8")
     # The declared rotated name leads; the derived chain follows, safetensors before the pickle.
     assert src.fallback_filenames == (
-        "MiniMax-H3-INT8.safetensors", "MiniMax-H3-INT8.pt", "transformer_int8.pt",
+        "MiniMax-H3-INT8.safetensors",
+        "MiniMax-H3-INT8.pt",
+        "transformer_int8.pt",
     )
     assert all("/" not in n and "\\" not in n for n in src.candidate_filenames)
 
@@ -191,7 +193,8 @@ def test_the_names_are_built_from_the_repo_and_the_scheme():
     assert resolve_prequant_source(fam, "fp8").filename == "Test-FP8.safetensors"
     # The pickle spellings stay available for repos that host no safetensors artifact.
     assert resolve_prequant_source(fam, "int8").fallback_filenames == (
-        "Test-INT8.pt", "transformer_int8.pt",
+        "Test-INT8.pt",
+        "transformer_int8.pt",
     )
 
 
@@ -237,7 +240,10 @@ def test_a_task_specific_artifact_gets_no_filename_fallback():
     assert resolve_prequant_source(fam, "int8", task = "ref2va").fallback_filename is None
     # The task-agnostic pick keeps its fallback, unchanged.
     assert resolve_prequant_source(fam, "int8").candidate_filenames == (
-        "Test-INT8-ConvRot.pt", "Test-INT8.safetensors", "Test-INT8.pt", "transformer_int8.pt",
+        "Test-INT8-ConvRot.pt",
+        "Test-INT8.safetensors",
+        "Test-INT8.pt",
+        "transformer_int8.pt",
     )
 
 
