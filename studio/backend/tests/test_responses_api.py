@@ -1,18 +1,15 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""
-Tests for the OpenAI Responses API schemas and input normalisation.
-These tests do NOT require a running server or GPU -- they validate
-the Pydantic models and the _normalise_responses_input helper.
-"""
+"""Tests for OpenAI Responses API Pydantic schemas and the
+_normalise_responses_input helper. No server or GPU required."""
 
 import sys
 import os
 import json
 import re
 
-# Ensure backend is on path
+# Ensure backend is on path.
 _backend = os.path.join(os.path.dirname(__file__), "..")
 sys.path.insert(0, _backend)
 
@@ -33,34 +30,32 @@ from models.inference import (
 )
 
 
-# ── _normalise_responses_input: copied from routes/inference.py ──
-# We cannot import routes.inference directly because routes/__init__.py
-# pulls in heavy dependencies (structlog/twisted/torch). This is a
-# direct copy of the function for testing purposes.
+# Copied from routes/inference.py: can't import it directly because
+# routes/__init__.py pulls in heavy deps (structlog/twisted/torch).
 
 
 def _normalise_responses_input(payload: ResponsesRequest) -> list:
-    """Convert a ResponsesRequest into a list of ChatMessage for the completions backend."""
+    """Convert a ResponsesRequest into ChatMessages for the completions backend."""
     messages = []
 
-    # System / developer instructions
+    # System / developer instructions.
     if payload.instructions:
         messages.append(ChatMessage(role = "system", content = payload.instructions))
 
-    # Simple string input
+    # Simple string input.
     if isinstance(payload.input, str):
         if payload.input:
             messages.append(ChatMessage(role = "user", content = payload.input))
         return messages
 
-    # List of ResponsesInputMessage
+    # List of ResponsesInputMessage.
     for msg in payload.input:
         role = "system" if msg.role == "developer" else msg.role
 
         if isinstance(msg.content, str):
             messages.append(ChatMessage(role = role, content = msg.content))
         else:
-            # Convert Responses content parts -> Chat content parts
+            # Convert Responses content parts -> Chat content parts.
             parts = []
             for part in msg.content:
                 if isinstance(part, ResponsesInputTextPart):
@@ -130,7 +125,7 @@ class TestResponsesRequest:
         assert req.instructions == "You are a helpful assistant."
 
     def test_extra_fields_accepted(self):
-        """OpenAI SDK may send fields we don't model -- extra='allow' should pass."""
+        """OpenAI SDK may send unmodeled fields -- extra='allow' must pass."""
         req = ResponsesRequest(
             input = "test",
             tools = [{"type": "web_search_preview"}],
@@ -167,15 +162,13 @@ class TestResponsesRequest:
 
 
 class TestResponsesResponse:
-    """Validate response models serialise correctly."""
+    """Response models serialise correctly."""
 
     def test_basic_response(self):
         resp = ResponsesResponse(
             model = "test-model",
             output = [
-                ResponsesOutputMessage(
-                    content = [ResponsesOutputTextContent(text = "Hello!")]
-                ),
+                ResponsesOutputMessage(content = [ResponsesOutputTextContent(text = "Hello!")]),
             ],
             usage = ResponsesUsage(input_tokens = 10, output_tokens = 5, total_tokens = 15),
         )
@@ -226,7 +219,7 @@ class TestResponsesResponse:
 
 
 class TestNormaliseResponsesInput:
-    """Test _normalise_responses_input converts Responses input to ChatMessages."""
+    """_normalise_responses_input converts Responses input to ChatMessages."""
 
     def test_string_input(self):
         payload = ResponsesRequest(input = "Hello world")
@@ -322,7 +315,53 @@ class TestNormaliseResponsesInput:
         assert msgs[1].role == "user"
 
 
+class TestResponsesReasoning:
+    """`/v1/responses` parsed `reasoning` and dropped it, and never relayed
+    llama-server's `reasoning_content` back -- so Codex could neither turn
+    thinking on nor see it. Mirrors the /v1/messages fix."""
+
+    @staticmethod
+    def _chat_req(reasoning):
+        from routes.inference import _build_chat_request
+        payload = ResponsesRequest(input = "hi", reasoning = reasoning)
+        return _build_chat_request(payload, [ChatMessage(role = "user", content = "hi")], stream = False)
+
+    def test_effort_reaches_the_chat_request(self):
+        req = self._chat_req({"effort": "high"})
+        assert req.reasoning_effort == "high"
+        assert req.enable_thinking is True
+
+    def test_effort_none_disables_thinking(self):
+        """enable_thinking-style templates have no dial, only a boolean."""
+        req = self._chat_req({"effort": "none"})
+        assert req.enable_thinking is False
+
+    def test_absent_reasoning_leaves_model_default(self):
+        req = self._chat_req(None)
+        assert req.reasoning_effort is None
+        assert req.enable_thinking is None
+
+    def test_malformed_reasoning_is_ignored_not_fatal(self):
+        """Never 400 on a shape we don't recognise -- that regressed real
+        Claude Code traffic once already."""
+        for bad in ("high", {"effort": 3}, {}, {"summary": "auto"}, {"effort": "auto"}):
+            req = self._chat_req(bad)
+            assert req.enable_thinking is None
+
+    def test_reasoning_output_item_shape(self):
+        from models.inference import (
+            ResponsesOutputReasoning,
+            ResponsesOutputReasoningContent,
+        )
+
+        item = ResponsesOutputReasoning(
+            content = [ResponsesOutputReasoningContent(text = "because 2+2")]
+        ).model_dump()
+        assert item["type"] == "reasoning"
+        assert item["id"].startswith("rs_")
+        assert item["content"] == [{"type": "reasoning_text", "text": "because 2+2"}]
+
+
 if __name__ == "__main__":
     import pytest
-
     pytest.main([__file__, "-v"])

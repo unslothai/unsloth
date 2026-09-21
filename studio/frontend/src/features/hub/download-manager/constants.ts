@@ -1,0 +1,159 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+export const TRANSPORT = {
+  HTTP: "http",
+  XET: "xet",
+  AUTO: "auto",
+} as const;
+
+// The two transports a download can run on. "auto" is a preference, resolved to one of these
+// before a download starts; only these reach a `.transport` marker on disk, which records the
+// writer so a resume picks the right strategy.
+export const RESOLVED_TRANSPORTS = [TRANSPORT.HTTP, TRANSPORT.XET] as const;
+export type ResolvedTransport = (typeof RESOLVED_TRANSPORTS)[number];
+
+export const TRANSPORT_MODES = [
+  TRANSPORT.AUTO,
+  TRANSPORT.HTTP,
+  TRANSPORT.XET,
+] as const;
+export type TransportMode = (typeof TRANSPORT_MODES)[number];
+// Auto until someone picks otherwise: the backend chooses per machine (RAM, hf_xet build,
+// recent Xet failures) and effectiveTransportMode() resolves it before any download starts.
+// Only a floor, since the install's setting arrives from /api/settings/download-transport.
+export const DEFAULT_TRANSPORT_MODE: TransportMode = TRANSPORT.AUTO;
+
+/** The preference in force: this browser's own choice, else the install's setting, else Auto. */
+export function pickTransportMode(
+  stored: unknown,
+  installed: unknown,
+): TransportMode {
+  if (isTransportMode(stored)) {
+    return stored;
+  }
+  if (isTransportMode(installed)) {
+    return installed;
+  }
+  return DEFAULT_TRANSPORT_MODE;
+}
+
+export function isTransportMode(value: unknown): value is TransportMode {
+  return (
+    typeof value === "string" &&
+    (TRANSPORT_MODES as readonly string[]).includes(value)
+  );
+}
+
+/** The transport a started job is really running on.
+ *
+ * An accepted start can mean the backend attached this client to a job another
+ * one had already begun, which keeps the transport it started on. Trusting the
+ * locally requested value there offers Pause for a Xet run, or Cancel for a
+ * resumable HTTP one. */
+export function transportAfterStart(
+  requested: ResolvedTransport,
+  reported: unknown,
+): ResolvedTransport {
+  return isResolvedTransport(reported) ? reported : requested;
+}
+
+/** Whether a probe response describes the run a job is currently on.
+ *
+ * A cancel and restart between the request and its reply makes the answer
+ * about a different job, possibly on the other transport. A job with no
+ * generation recorded yet has nothing better to go on, so any generation the
+ * probe reports is taken (along with the generation itself). */
+export function probeDescribesCurrentRun(
+  known: unknown,
+  reported: unknown,
+): boolean {
+  return Number.isSafeInteger(known)
+    ? reported === known
+    : Number.isSafeInteger(reported);
+}
+
+export type AdoptedTransports = {
+  transport?: ResolvedTransport;
+  cancelTransport?: ResolvedTransport;
+};
+
+/** What a probe says about the pair. `cancelTransport: null` is the backend
+ * reporting no marker, which is not the same as a source that cannot report one
+ * at all (undefined). */
+export type ReportedTransports = {
+  transport?: ResolvedTransport;
+  cancelTransport?: ResolvedTransport | null;
+};
+
+/** What an adopted job records for its transport pair: what the backend just
+ * reported, else what was restored from storage.
+ *
+ * Both fields together, so a probe carrying only one cannot erase the other.
+ * `/download-status` has no cancel marker at all, and it can win the hydration
+ * race against `/active-downloads`, which does. A reported null still clears a
+ * stored marker: the run being adopted is the one the backend just described. */
+export function adoptedTransports(
+  reported: ReportedTransports,
+  existing: AdoptedTransports | undefined,
+): AdoptedTransports {
+  return {
+    transport: reported.transport ?? existing?.transport,
+    cancelTransport:
+      reported.cancelTransport === undefined
+        ? existing?.cancelTransport
+        : (reported.cancelTransport ?? undefined),
+  };
+}
+
+export function isResolvedTransport(
+  value: unknown,
+): value is ResolvedTransport {
+  return (
+    typeof value === "string" &&
+    (RESOLVED_TRANSPORTS as readonly string[]).includes(value)
+  );
+}
+
+export type MismatchStartAction = ResolvedTransport | "conflict";
+
+/** When a partial on disk was written by a different transport than this start
+ * resolved to, pick whether to continue or ask the user.
+ *
+ * Xet cannot byte-resume. Auto and HTTP follow the stall watchdog's HTTP
+ * fallback instead of parking the start on a Hub dialog Chat/Video cannot
+ * resolve. Only an explicit Xet preference versus a resumable HTTP partial is
+ * a real choice (keep resumable bytes, or restart on Xet). */
+export function mismatchStartAction(
+  preferred: TransportMode,
+  resolved: ResolvedTransport,
+  lastTransport: ResolvedTransport,
+  resumable = true,
+): MismatchStartAction {
+  if (lastTransport === resolved) return resolved;
+  if (lastTransport === TRANSPORT.HTTP) {
+    if (preferred === TRANSPORT.XET && resolved === TRANSPORT.XET) {
+      return resumable ? "conflict" : resolved;
+    }
+    return TRANSPORT.HTTP;
+  }
+  return TRANSPORT.HTTP;
+}
+
+export const DOWNLOAD_KIND = {
+  MODEL: "model",
+  DATASET: "dataset",
+} as const;
+
+export const DOWNLOAD_KINDS = [
+  DOWNLOAD_KIND.MODEL,
+  DOWNLOAD_KIND.DATASET,
+] as const;
+export type DownloadKind = (typeof DOWNLOAD_KINDS)[number];
+
+export function isDownloadKind(value: unknown): value is DownloadKind {
+  return (
+    typeof value === "string" &&
+    (DOWNLOAD_KINDS as readonly string[]).includes(value)
+  );
+}

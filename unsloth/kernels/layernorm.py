@@ -1,12 +1,9 @@
 # Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
 # Copyright 2024-present Andrej Karpathy & the llm.c team. All rights reserved.
-#
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
 # You may obtain a copy of the License at
-#
 #     http://www.apache.org/licenses/LICENSE-2.0
-#
 # Unless required by applicable law or agreed to in writing, software
 # distributed under the License is distributed on an "AS IS" BASIS,
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
@@ -45,17 +42,16 @@ def layernorm_forward(
     r += row_idx
     mu += row_idx
 
-    # According to https://pytorch.org/torchtune/stable/_modules/torchtune/modules/layer_norm.html#Fp32LayerNorm, all modules
-    # are in float32!
+    # Per torchtune's Fp32LayerNorm, all modules are in float32.
     X_row = tl.load(X + col_offsets, mask = mask, other = 0).to(tl.float32)
     W_row = tl.load(W + col_offsets, mask = mask, other = 0).to(tl.float32)
     b_row = tl.load(b + col_offsets, mask = mask, other = 0).to(tl.float32)
 
     mean_X = tl.sum(X_row, axis = 0) / n_cols
-    # (X[0] - mean) == -mean so we need to mask it out
+    # (X[0] - mean) == -mean, so mask it out.
     XX = tl.where(mask, X_row - mean_X, 0)
     row_var = tl.sum(XX * XX, axis = 0) / n_cols
-    # Explicit float32 scalar to ensure correct type promotion on HIP/ROCm
+    # Explicit float32 scalar to ensure correct type promotion on HIP/ROCm.
     eps_f32 = tl.full((), eps, tl.float32)
     inv_var = tl.math.rsqrt(row_var + eps_f32)
     tl.store(r, inv_var)
@@ -78,7 +74,7 @@ def layernorm_backward(
     eps: tl.constexpr,
     BLOCK_SIZE: tl.constexpr,
 ):
-    # Approximately follows https://github.com/karpathy/llm.c/blob/master/doc/layernorm/layernorm.md
+    # Approximately follows karpathy/llm.c doc/layernorm/layernorm.md
     row_idx = tl.program_id(0)
     col_offsets = tl.arange(0, BLOCK_SIZE)
     mask = col_offsets < n_cols
@@ -88,8 +84,7 @@ def layernorm_backward(
     r += row_idx
     mu += row_idx
 
-    # According to https://pytorch.org/torchtune/stable/_modules/torchtune/modules/layer_norm.html#Fp32LayerNorm, all modules
-    # are in float32!
+    # Per torchtune's Fp32LayerNorm, all modules are in float32.
     dY_row = tl.load(dY + col_offsets, mask = mask, other = 0).to(tl.float32)
     X_row = tl.load(X + col_offsets, mask = mask, other = 0).to(tl.float32)
     W_row = tl.load(W + col_offsets, mask = mask, other = 0).to(tl.float32)
@@ -99,11 +94,7 @@ def layernorm_backward(
     mean = tl.load(mu).to(tl.float32)
     normed = (X_row - mean) * inv_var
     dY_W = dY_row * W_row
-    dX_row = (
-        dY_W
-        - tl.sum(dY_W, axis = 0) / n_cols
-        - normed * tl.sum(dY_W * normed, axis = 0) / n_cols
-    )
+    dX_row = dY_W - tl.sum(dY_W, axis = 0) / n_cols - normed * tl.sum(dY_W * normed, axis = 0) / n_cols
     dX_row = dX_row * inv_var
     tl.store(dY + col_offsets, dX_row, mask = mask)
 
@@ -113,7 +104,10 @@ class Fast_Layernorm(torch.autograd.Function):
     def forward(ctx, X, W, b, eps):
         shape = X.shape
         dim = shape[-1]
-        X = X.view(-1, dim)
+        X = X.reshape(-1, dim).contiguous()
+        # The kernels read W and b at unit stride, and these are the ones saved for backward.
+        W = W.contiguous()
+        b = b.contiguous()
         n_rows, n_cols = X.shape
         BLOCK_SIZE, num_warps = calculate_settings(n_cols)
         device = X.device
@@ -146,7 +140,7 @@ class Fast_Layernorm(torch.autograd.Function):
     def backward(ctx, dY):
         shape = dY.shape
         dim = shape[-1]
-        dY = dY.view(-1, dim)
+        dY = dY.reshape(-1, dim).contiguous()
         X, W, b, r, mu = ctx.saved_tensors
         n_rows, n_cols = dY.shape
 
@@ -173,11 +167,7 @@ def fast_layernorm(layernorm, X):
     assert layernorm.elementwise_affine is True
     W = layernorm.weight
     bias = layernorm.bias
-    eps = (
-        layernorm.variance_epsilon
-        if hasattr(layernorm, "variance_epsilon")
-        else layernorm.eps
-    )
+    eps = layernorm.variance_epsilon if hasattr(layernorm, "variance_epsilon") else layernorm.eps
     out = Fast_Layernorm.apply(X, W, bias, eps)
     return out
 
@@ -205,7 +195,6 @@ def test_layernorm(
     YY = torch.randn((bsz, seqlen, dim), dtype = dtype, device = "cuda", requires_grad = True)
     Y.backward(YY)
     correct_grad = X.grad.clone()
-    # from unsloth.kernels import fast_layernorm
     Y = fast_layernorm(layernorm, XX)
     Y.backward(YY)
     assert torch.dist(correct_grad, XX.grad).item() <= 0.1

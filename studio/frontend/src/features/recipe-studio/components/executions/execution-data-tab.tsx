@@ -45,7 +45,7 @@ function formatGitHubSourceMessage(execution: RecipeExecutionRecord): string {
     return "Collecting repository threads before rows are available.";
   }
   if (source.status === "rate_limited") {
-    return source.message ?? "Waiting for GitHub rate limit. Studio will resume automatically.";
+    return source.message ?? "Waiting for GitHub rate limit. Unsloth will resume automatically.";
   }
   return source.message ?? "Collecting repository threads before rows are available.";
 }

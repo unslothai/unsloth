@@ -1,0 +1,3132 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Logic tests for studio/install_whisper_prebuilt.py -- the prebuilt whisper-server installer.
+# No network/GPU: release resolution is injected and archives are built on disk in a tmp dir.
+
+import importlib.util
+import io
+import contextlib
+import json
+import stat
+import os
+import sys
+import tarfile
+import zipfile
+from pathlib import Path
+
+import pytest
+
+
+PACKAGE_ROOT = Path(__file__).resolve().parents[3]
+MODULE_PATH = PACKAGE_ROOT / "studio" / "install_whisper_prebuilt.py"
+# The installer imports install_llama_prebuilt (same directory); make studio/ importable so that resolves under
+# spec-based loading.
+_STUDIO_DIR = str(MODULE_PATH.parent)
+if _STUDIO_DIR not in sys.path:
+    sys.path.insert(0, _STUDIO_DIR)
+SPEC = importlib.util.spec_from_file_location("studio_install_whisper_prebuilt", MODULE_PATH)
+assert SPEC is not None and SPEC.loader is not None
+M = importlib.util.module_from_spec(SPEC)
+sys.modules[SPEC.name] = M
+SPEC.loader.exec_module(M)
+
+HostInfo = M.HostInfo
+PrebuiltFallback = M.PrebuiltFallback
+ReleaseCompatibilityError = M.ReleaseCompatibilityError
+BusyInstallConflict = M.BusyInstallConflict
+
+RELEASE_TAG = "v1.9.1-unsloth.1"
+UPSTREAM_TAG = "v1.9.1"
+SOURCE_COMMIT = "0" * 40
+STUDIO_PROTOCOL = "inference/multipart-v1"
+
+
+def _host(
+    whisper_os: str,
+    whisper_arch: str,
+    *,
+    has_usable_nvidia: bool = False,
+    has_rocm: bool = False,
+    rocm_gfx: str | None = None,
+    macos_version: tuple[int, int] | None = None,
+) -> HostInfo:
+    ext = ".zip" if whisper_os == "windows" else ".tar.gz"
+    return HostInfo(
+        system = {"linux": "Linux", "macos": "Darwin", "windows": "Windows"}[whisper_os],
+        machine = whisper_arch,
+        whisper_os = whisper_os,
+        whisper_arch = whisper_arch,
+        archive_ext = ext,
+        is_windows = whisper_os == "windows",
+        is_macos = whisper_os == "macos",
+        is_apple_silicon = whisper_os == "macos" and whisper_arch == "arm64",
+        has_usable_nvidia = has_usable_nvidia,
+        has_rocm = has_rocm,
+        rocm_gfx = rocm_gfx,
+        macos_version = macos_version,
+    )
+
+
+def _artifact(os_: str, arch: str, backend: str, asset: str, sha256: str, **extra) -> dict:
+    art = {
+        "os": os_,
+        "arch": arch,
+        "backend": backend,
+        "asset": asset,
+        "sha256": sha256,
+        "runtime_line": extra.get("runtime_line"),
+    }
+    art.update(extra)
+    return art
+
+
+def _manifest(
+    artifacts: list[dict],
+    *,
+    component: str = "whisper.cpp",
+    schema_version: int = 1,
+) -> dict:
+    return {
+        "schema_version": schema_version,
+        "component": component,
+        "studio_protocol": STUDIO_PROTOCOL,
+        "upstream_tag": UPSTREAM_TAG,
+        "source_commit": SOURCE_COMMIT,
+        "artifacts": artifacts,
+    }
+
+
+# ── Host detection (probes come from install_llama_prebuilt.detect_host) ──
+def _llama_host(
+    system: str,
+    machine: str,
+    *,
+    has_usable_nvidia: bool = False,
+    compute_caps: list[str] | None = None,
+    driver_cuda_version: tuple[int, int] | None = None,
+    has_rocm: bool = False,
+    rocm_gfx: str | None = None,
+    macos_version: tuple[int, int] | None = None,
+):
+    """A fake install_llama_prebuilt HostInfo, as llama_detect_host would return."""
+    lowered = machine.lower()
+    return M.llama.HostInfo(
+        system = system,
+        machine = machine,
+        is_windows = system == "Windows",
+        is_linux = system == "Linux",
+        is_macos = system == "Darwin",
+        is_x86_64 = lowered in {"x86_64", "amd64"},
+        is_arm64 = lowered in {"arm64", "aarch64"},
+        nvidia_smi = None,
+        driver_cuda_version = driver_cuda_version,
+        compute_caps = list(compute_caps or []),
+        visible_cuda_devices = None,
+        has_physical_nvidia = has_usable_nvidia,
+        has_usable_nvidia = has_usable_nvidia,
+        has_rocm = has_rocm,
+        rocm_gfx_target = rocm_gfx,
+        macos_version = macos_version,
+    )
+
+
+@pytest.mark.parametrize(
+    "system,machine,exp_os,exp_arch,exp_ext",
+    [
+        ("Linux", "x86_64", "linux", "x64", ".tar.gz"),
+        ("Linux", "aarch64", "linux", "arm64", ".tar.gz"),
+        ("Darwin", "x86_64", "macos", "x64", ".tar.gz"),
+        ("Darwin", "arm64", "macos", "arm64", ".tar.gz"),
+        ("Windows", "AMD64", "windows", "x64", ".zip"),
+        ("Windows", "ARM64", "windows", "arm64", ".zip"),
+    ],
+)
+def test_detect_host(monkeypatch, system, machine, exp_os, exp_arch, exp_ext):
+    monkeypatch.setattr(M, "llama_detect_host", lambda: _llama_host(system, machine))
+    host = M.detect_host()
+    assert (host.whisper_os, host.whisper_arch, host.archive_ext) == (exp_os, exp_arch, exp_ext)
+    assert host.is_windows == (exp_os == "windows")
+    assert host.is_apple_silicon == (exp_os == "macos" and exp_arch == "arm64")
+
+
+def test_detect_host_maps_rocm_fields(monkeypatch):
+    monkeypatch.setattr(
+        M,
+        "llama_detect_host",
+        lambda: _llama_host("Linux", "x86_64", has_rocm = True, rocm_gfx = "gfx1100"),
+    )
+    host = M.detect_host()
+    assert host.has_rocm is True
+    assert host.rocm_gfx == "gfx1100"
+    assert host.has_usable_nvidia is False
+
+
+@pytest.mark.parametrize(
+    "system,machine",
+    [("Plan9", "x86_64"), ("Linux", "sparc64"), ("Linux", "armv7l")],
+)
+def test_detect_host_unsupported(monkeypatch, system, machine):
+    monkeypatch.setattr(M, "llama_detect_host", lambda: _llama_host(system, machine))
+    with pytest.raises(PrebuiltFallback):
+        M.detect_host()
+
+
+# ── Asset naming (pure) ──
+def test_whisper_asset_name():
+    assert (
+        M.whisper_asset_name(RELEASE_TAG, _host("linux", "x64"), "cpu")
+        == "whisper-v1.9.1-unsloth.1-linux-x64-cpu.tar.gz"
+    )
+    assert (
+        M.whisper_asset_name(RELEASE_TAG, _host("macos", "arm64"), "metal")
+        == "whisper-v1.9.1-unsloth.1-macos-arm64-metal.tar.gz"
+    )
+    assert (
+        M.whisper_asset_name(RELEASE_TAG, _host("windows", "x64"), "cuda12")
+        == "whisper-v1.9.1-unsloth.1-windows-x64-cuda12.zip"
+    )
+
+
+# ── Install layout ──
+def test_whisper_server_path_layout():
+    nix = _host("linux", "x64")
+    win = _host("windows", "x64")
+    assert M.whisper_server_path(Path("/w"), nix) == Path("/w/build/bin/whisper-server")
+    assert M.whisper_server_path(Path("/w"), win) == Path("/w/build/bin/Release/whisper-server.exe")
+
+
+# ── Manifest parse + basic selection (wiring pin; the rejection matrix,
+# extraction guards, resolver payload shape and macOS min_os gating are
+# asserted against the real whisper descriptor in
+# tests/studio/install/test_prebuilt_core.py) ──
+def test_parse_manifest_ok_and_basic_selection():
+    cpu_asset = "whisper-v1.9.1-unsloth.1-linux-x64-cpu.tar.gz"
+    manifest = M.parse_manifest(_manifest([_artifact("linux", "x64", "cpu", cpu_asset, "a" * 64)]))
+    assert manifest["component"] == "whisper.cpp"
+    assert manifest["studio_protocol"] == STUDIO_PROTOCOL
+    host = _host("linux", "x64")
+    # The pinned pre-slim escape hatch: only the fat CPU bundle ever matches.
+    assert M.select_artifact(manifest, host, "cpu")["asset"] == cpu_asset
+    assert M.select_artifact(manifest, host, "metal") is None
+
+
+def test_select_artifact_never_picks_fat_gpu_bundles():
+    # A pinned pre-slim release's fat GPU bundles are dead shapes: a cuda/rocm
+    # backend selects nothing (the core then retries with cpu), never the fat
+    # per-accelerator artifact.
+    manifest = M.parse_manifest(
+        _manifest(
+            [
+                _artifact("linux", "x64", "cpu", "whisper-linux-x64-cpu.tar.gz", "a" * 64),
+                _artifact("linux", "x64", "cuda", "whisper-linux-x64-cuda13.tar.gz", "b" * 64),
+                _artifact("linux", "x64", "rocm", "whisper-linux-x64-rocm.tar.gz", "c" * 64),
+            ]
+        )
+    )
+    cuda_host = _host("linux", "x64", has_usable_nvidia = True)
+    assert M.select_artifact(manifest, cuda_host, "cuda") is None
+    rocm_host = _host("linux", "x64", has_rocm = True, rocm_gfx = "gfx1100")
+    assert M.select_artifact(manifest, rocm_host, "rocm") is None
+    artifact, backend, used_fallback = M.select_artifact_with_fallback(manifest, cuda_host, "cuda")
+    assert artifact["asset"] == "whisper-linux-x64-cpu.tar.gz"
+    assert backend == "cpu" and used_fallback is True
+
+
+# ── Traversal-safe extraction ──
+def _add_file(
+    tar: tarfile.TarFile,
+    name: str,
+    data: bytes,
+    mode: int = 0o644,
+):
+    info = tarfile.TarInfo(name)
+    info.size = len(data)
+    info.mode = mode
+    tar.addfile(info, io.BytesIO(data))
+
+
+# ── Fixture archive + full staging/activate install ──
+def _build_cpu_bundle(tmp_path: Path, host: HostInfo) -> tuple[Path, str, str]:
+    """Build a fake CPU bundle archive with a dummy server + lib; return (path, name, sha256)."""
+    asset = M.whisper_asset_name(RELEASE_TAG, host, "cpu")
+    archive = tmp_path / asset
+    server_name = M.server_binary_name(host)
+    with tarfile.open(archive, "w:gz") as tar:
+        _add_file(tar, server_name, b"#!/bin/sh\necho whisper\n", mode = 0o755)
+        _add_file(tar, "libwhisper.so", b"dummy-libwhisper")
+        _add_file(tar, "libggml-base.so", b"dummy-libggml")
+    return archive, asset, M.sha256_file(archive)
+
+
+def _install_env(
+    monkeypatch,
+    tmp_path,
+    host,
+    *,
+    asset,
+    sha256,
+    backend_in_manifest = "cpu",
+):
+    """Wire monkeypatches so install_prebuilt runs fully offline against a local
+    archive, injecting the release bundle + checksum index (the checksum trust
+    model) via the single fetch_release_for_install seam."""
+    manifest = M.parse_manifest(
+        _manifest(
+            [_artifact(host.whisper_os, host.whisper_arch, backend_in_manifest, asset, sha256)]
+        )
+    )
+    bundle = M.ReleaseBundle(
+        repo = "unslothai/whisper.cpp",
+        release_tag = RELEASE_TAG,
+        manifest = manifest,
+        asset_urls = {asset: f"https://example.invalid/{asset}"},
+    )
+    checksums = {asset: sha256}
+    monkeypatch.setattr(
+        M,
+        "fetch_release_for_install",
+        lambda repo, *, published_release_tag = None: (bundle, checksums),
+    )
+    return bundle
+
+
+def test_install_produces_colocated_layout_and_marker(tmp_path, monkeypatch):
+    host = _host("linux", "x64")
+    archive, asset, sha256 = _build_cpu_bundle(tmp_path, host)
+
+    def fake_download(url, destination):
+        destination.parent.mkdir(parents = True, exist_ok = True)
+        destination.write_bytes(archive.read_bytes())
+
+    monkeypatch.setattr(M, "detect_host", lambda: host)
+    monkeypatch.setattr(M, "download_file", fake_download)
+    _install_env(monkeypatch, tmp_path, host, asset = asset, sha256 = sha256)
+
+    install_dir = tmp_path / "whisper.cpp"
+    rc = M.install_prebuilt(install_dir, backend = "cpu")
+    assert rc == M.EXIT_SUCCESS
+
+    server = install_dir / "build" / "bin" / "whisper-server"
+    assert server.is_file()
+    if sys.platform != "win32":
+        assert server.stat().st_mode & 0o111  # +x, POSIX only
+    # every shared lib from the archive is co-located next to the server
+    assert (install_dir / "build" / "bin" / "libwhisper.so").is_file()
+    assert (install_dir / "build" / "bin" / "libggml-base.so").is_file()
+    # marker written at the component root
+    marker = json.loads((install_dir / M.METADATA_FILENAME).read_text())
+    assert marker["component"] == "whisper.cpp"
+    assert marker["release_tag"] == RELEASE_TAG
+    assert marker["backend"] == "cpu"
+    assert marker["studio_protocol"] == STUDIO_PROTOCOL
+    assert marker["install_fingerprint"]
+
+
+def test_install_is_idempotent(tmp_path, monkeypatch):
+    host = _host("linux", "x64")
+    archive, asset, sha256 = _build_cpu_bundle(tmp_path, host)
+
+    calls = {"n": 0}
+
+    def fake_download(url, destination):
+        calls["n"] += 1
+        destination.parent.mkdir(parents = True, exist_ok = True)
+        destination.write_bytes(archive.read_bytes())
+
+    monkeypatch.setattr(M, "detect_host", lambda: host)
+    monkeypatch.setattr(M, "download_file", fake_download)
+    _install_env(monkeypatch, tmp_path, host, asset = asset, sha256 = sha256)
+
+    install_dir = tmp_path / "whisper.cpp"
+    assert M.install_prebuilt(install_dir, backend = "cpu") == M.EXIT_SUCCESS
+    assert calls["n"] == 1
+    # Second run: marker + binary already match -> "already matches", no download.
+    assert M.install_prebuilt(install_dir, backend = "cpu") == M.EXIT_SUCCESS
+    assert calls["n"] == 1
+
+
+def test_install_sha_mismatch_then_retry_fails_closed(tmp_path, monkeypatch):
+    host = _host("linux", "x64")
+    archive, asset, _real_sha = _build_cpu_bundle(tmp_path, host)
+    wrong_sha = "f" * 64  # the checksum index claims a different sha than the archive
+
+    def fake_download(url, destination):
+        destination.parent.mkdir(parents = True, exist_ok = True)
+        destination.write_bytes(archive.read_bytes())
+
+    monkeypatch.setattr(M, "detect_host", lambda: host)
+    monkeypatch.setattr(M, "download_file", fake_download)
+    _install_env(monkeypatch, tmp_path, host, asset = asset, sha256 = wrong_sha)
+
+    install_dir = tmp_path / "whisper.cpp"
+    with pytest.raises(PrebuiltFallback):
+        M.install_prebuilt(install_dir, backend = "cpu")
+    # A failed verify never activates a binary.
+    assert not (install_dir / "build" / "bin" / "whisper-server").exists()
+
+
+# ── Busy lock -> exit 3 ──
+def test_busy_lock_maps_to_exit_busy(tmp_path, monkeypatch):
+    host = _host("linux", "x64")
+    archive, asset, sha256 = _build_cpu_bundle(tmp_path, host)
+    monkeypatch.setattr(M, "detect_host", lambda: host)
+    monkeypatch.setattr(M, "download_file", lambda u, d: None)
+    _install_env(monkeypatch, tmp_path, host, asset = asset, sha256 = sha256)
+
+    from contextlib import contextmanager
+
+    @contextmanager
+    def busy_lock(_path):
+        raise BusyInstallConflict("held by another process")
+        yield  # pragma: no cover
+
+    monkeypatch.setattr(M, "install_lock", busy_lock)
+    rc = M.main(["--install-dir", str(tmp_path / "whisper.cpp"), "--backend", "cpu"])
+    assert rc == M.EXIT_BUSY
+
+
+# ── Resolver JSON shape ──
+def test_resolve_mode_keeps_stdout_json_only(tmp_path, monkeypatch, capsys):
+    # Even when the slim pairing emits diagnostics, --resolve-prebuilt must keep stdout to exactly the JSON line
+    # (setup.sh / whisper_cpp_update.py parse it);
+    # the slim_selection log noise belongs on stderr.
+    host = _cuda_host()
+    bin_dir = _fake_llama_bin(tmp_path)
+    monkeypatch.setattr(
+        M, "installed_llama_runtime", lambda: (bin_dir, SLIM_LLAMA_TAG, "cuda13-newer")
+    )
+    manifest = _slim_manifest()
+    bundle = M.ReleaseBundle(
+        repo = "unslothai/whisper.cpp",
+        release_tag = RELEASE_TAG,
+        manifest = manifest,
+        asset_urls = {
+            a["asset"]: f"https://example.invalid/{a['asset']}" for a in manifest["artifacts"]
+        },
+    )
+    monkeypatch.setattr(M, "detect_host", lambda: host)
+    monkeypatch.setattr(
+        M, "fetch_release_for_install", lambda repo, *, published_release_tag = None: (bundle, {})
+    )
+    # A prior install test may have left the module flag True; the resolver must force it back to stderr regardless.
+    monkeypatch.setattr(M, "_LOG_TO_STDOUT", True, raising = False)
+
+    rc = M.main(["--resolve-prebuilt", "--output-format", "json"])
+    assert rc == M.EXIT_SUCCESS
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out.strip())  # exactly one JSON line, parseable
+    assert payload["asset"] == SLIM_ASSET
+    assert "[whisper-prebuilt]" not in captured.out  # no log noise on stdout
+    assert "slim_selection:" in captured.err  # diagnostics routed to stderr
+
+
+def test_main_maps_prebuilt_fallback_to_exit_error(tmp_path, monkeypatch):
+    def boom(*a, **kw):
+        raise PrebuiltFallback("no prebuilt")
+
+    monkeypatch.setattr(M, "install_prebuilt", boom)
+    rc = M.main(["--install-dir", str(tmp_path / "whisper.cpp"), "--backend", "cpu"])
+    assert rc == M.EXIT_ERROR
+
+
+def test_main_forwards_requested_whisper_tags(tmp_path, monkeypatch):
+    seen = {}
+
+    def install(*args, **kwargs):
+        seen.update(kwargs)
+        return M.EXIT_SUCCESS
+
+    monkeypatch.setattr(M, "install_prebuilt", install)
+    rc = M.main(["--install-dir", str(tmp_path / "whisper.cpp"), "--whisper-tag", "v1.9.0"])
+    assert rc == M.EXIT_SUCCESS
+    assert seen["whisper_tag"] == "v1.9.0"
+
+    monkeypatch.setattr(M, "detect_host", lambda: _host("linux", "x64"))
+    monkeypatch.setattr(
+        M,
+        "resolve_prebuilt",
+        lambda host, **kwargs: (
+            seen.update(kwargs) or {"prebuilt_available": False, "repo": "unslothai/whisper.cpp"}
+        ),
+    )
+    assert M.main(["--resolve-prebuilt", "v1.8.0", "--output-format", "json"]) == 0
+    assert seen["whisper_tag"] == "v1.8.0"
+
+
+def test_main_reserves_exit_2_for_release_incompatibility(tmp_path, monkeypatch):
+    def boom(*a, **kw):
+        raise ReleaseCompatibilityError("slim bundle requires llama.cpp b2; installed b1")
+
+    monkeypatch.setattr(M, "install_prebuilt", boom)
+    rc = M.main(["--install-dir", str(tmp_path / "whisper.cpp"), "--backend", "cpu"])
+    assert rc == M.EXIT_INCOMPATIBLE
+
+
+def test_main_maps_unexpected_error_to_exit_error(tmp_path, monkeypatch):
+    def boom(*a, **kw):
+        raise RuntimeError("kaboom")
+
+    monkeypatch.setattr(M, "install_prebuilt", boom)
+    rc = M.main(["--install-dir", str(tmp_path / "whisper.cpp"), "--backend", "cpu"])
+    assert rc == M.EXIT_ERROR
+
+
+def test_resolve_mode_unexpected_error_reports_unavailable(monkeypatch, capsys):
+    # An unexpected failure inside the probe maps to prebuilt_available=False, not a traceback, so the caller falls back
+    # cleanly. It is reported as unresolved, since nothing was learned about whether a prebuilt exists.
+    host = _host("linux", "x64")
+    monkeypatch.setattr(M, "detect_host", lambda: host)
+
+    def boom(repo, *, published_release_tag = None):
+        raise RuntimeError("network down")
+
+    monkeypatch.setattr(M, "fetch_release_for_install", boom)
+    rc = M.main(["--resolve-prebuilt", "--output-format", "json"])
+    assert rc == M.EXIT_SUCCESS
+    payload = json.loads(capsys.readouterr().out.strip())
+    assert payload == {
+        "prebuilt_available": False,
+        "repo": "unslothai/whisper.cpp",
+        "unavailable_reason": "unresolved",
+    }
+
+
+def test_resolve_mode_separates_incompatible_from_unresolved(monkeypatch, capsys):
+    """The probe's negative answer must say WHY, as the install path already does
+    (exit 2 against exit 1). Flattened, a network blip reads as a pairing gap."""
+    monkeypatch.setattr(M, "detect_host", lambda: _host("linux", "x64"))
+
+    def incompatible(repo, *, published_release_tag = None):
+        raise ReleaseCompatibilityError("slim bundle requires llama.cpp b2; installed b1")
+
+    monkeypatch.setattr(M, "fetch_release_for_install", incompatible)
+    assert M.main(["--resolve-prebuilt", "--output-format", "json"]) == M.EXIT_SUCCESS
+    payload = json.loads(capsys.readouterr().out.strip())
+    assert payload["prebuilt_available"] is False
+    assert payload["unavailable_reason"] == "incompatible"
+
+
+def test_resolve_mode_reports_an_ordinary_fallback_as_unresolved(monkeypatch, capsys):
+    """An unsupported platform, a malformed manifest, a checksum failure:
+    _slim_release_incompatibility excludes those, so they are not a pairing gap."""
+    monkeypatch.setattr(M, "detect_host", lambda: _host("linux", "x64"))
+
+    def fallback(repo, *, published_release_tag = None):
+        raise M.PrebuiltFallback("manifest omitted an 'artifacts' list")
+
+    monkeypatch.setattr(M, "fetch_release_for_install", fallback)
+    assert M.main(["--resolve-prebuilt", "--output-format", "json"]) == M.EXIT_SUCCESS
+    payload = json.loads(capsys.readouterr().out.strip())
+    assert payload["unavailable_reason"] == "unresolved"
+
+
+# ── --rocm-gfx / --has-rocm overrides (llama parity) ──
+def test_rocm_gfx_override_implies_has_rocm():
+    # --rocm-gfx alone (no --has-rocm) must enable ROCm and clear NVIDIA, else the
+    # host stays on its CUDA/CPU path and never picks the ROCm bundle.
+    base = _host("linux", "x64", has_usable_nvidia = True)
+    out = M.apply_host_overrides(base, rocm_gfx = "gfx1100")
+    assert out.has_rocm is True
+    assert out.rocm_gfx == "gfx1100"
+    assert out.has_usable_nvidia is False
+    assert M.auto_detect_backend(out) == "rocm"
+
+
+# ── Slim bundles paired with the installed llama.cpp ggml runtime ──
+SLIM_LLAMA_TAG = "b10069-mix-fb3d4ca"
+SLIM_ASSET = "whisper-v1.9.1-unsloth.1-linux-x64-slim.tar.gz"
+CPU_ASSET = "whisper-v1.9.1-unsloth.1-linux-x64-cpu.tar.gz"
+
+
+def _fake_llama_bin(
+    tmp_path: Path,
+    *,
+    backend_module: str | None = "libggml-cuda.so",
+    sonames: tuple[str, ...] = ("libggml.so.0", "libggml-base.so.0"),
+) -> Path:
+    bin_dir = tmp_path / "llama.cpp" / "build" / "bin"
+    bin_dir.mkdir(parents = True, exist_ok = True)
+    for name in sonames:
+        (bin_dir / name).write_bytes(b"ggml-old-" + name.encode())
+    if backend_module:
+        (bin_dir / backend_module).write_bytes(b"ggml-backend-old")
+    (bin_dir / "libggml-cpu-x64.so").write_bytes(b"ggml-cpu-old")
+    (bin_dir / "libllama.so").write_bytes(b"not-ggml")  # must never be linked
+    return bin_dir
+
+
+def _slim_artifact(**extra) -> dict:
+    art = {
+        "os": "linux",
+        "arch": "x64",
+        "backend": "slim",
+        "asset": SLIM_ASSET,
+        "sha256": "c" * 64,
+        "install_kind": "slim",
+        "requires_llama_tag": SLIM_LLAMA_TAG,
+        "requires_ggml_version": "0.17.0",
+        "requires_ggml_sonames": ["libggml.so.0", "libggml-base.so.0"],
+        "min_os": None,
+    }
+    art.update(extra)
+    return art
+
+
+def _slim_manifest(slim_extra: dict | None = None) -> dict:
+    """The transition-release shape: a slim bundle beside the published fat CPU
+    bundle (the pinned pre-slim escape hatch)."""
+    artifacts = [
+        _artifact("linux", "x64", "cpu", CPU_ASSET, "a" * 64),
+        _slim_artifact(**(slim_extra or {})),
+    ]
+    return M.parse_manifest(_manifest(artifacts))
+
+
+def _cuda_host() -> HostInfo:
+    return _host("linux", "x64", has_usable_nvidia = True)
+
+
+def test_installed_llama_runtime_reads_marker(tmp_path):
+    root = tmp_path / "llama.cpp"
+    bin_dir = root / "build" / "bin"
+    if sys.platform == "win32":
+        bin_dir = bin_dir / "Release"  # the layout installed_llama_runtime resolves on nt
+    bin_dir.mkdir(parents = True)
+    (root / "UNSLOTH_PREBUILT_INFO.json").write_text(
+        json.dumps({"release_tag": SLIM_LLAMA_TAG, "bundle_profile": "cuda13-newer"})
+    )
+    assert M.llama.installed_llama_runtime(root) == (bin_dir, SLIM_LLAMA_TAG, "cuda13-newer")
+
+
+@pytest.mark.parametrize(
+    "prepare",
+    [
+        lambda root: None,  # no marker at all
+        lambda root: (root / "UNSLOTH_PREBUILT_INFO.json").write_text("{}"),  # no release_tag
+        lambda root: (root / "UNSLOTH_PREBUILT_INFO.json").write_text("not json"),
+    ],
+)
+def test_installed_llama_runtime_rejects_incomplete_installs(tmp_path, prepare):
+    root = tmp_path / "llama.cpp"
+    (root / "build" / "bin").mkdir(parents = True)
+    prepare(root)
+    assert M.llama.installed_llama_runtime(root) is None
+
+
+def test_installed_llama_runtime_requires_bin_dir(tmp_path):
+    root = tmp_path / "llama.cpp"
+    root.mkdir()
+    (root / "UNSLOTH_PREBUILT_INFO.json").write_text(json.dumps({"release_tag": SLIM_LLAMA_TAG}))
+    assert M.llama.installed_llama_runtime(root) is None  # marker but no build/bin
+
+
+def test_slim_selected_when_all_pairing_checks_pass(tmp_path, monkeypatch):
+    bin_dir = _fake_llama_bin(tmp_path)
+    monkeypatch.setattr(
+        M, "installed_llama_runtime", lambda: (bin_dir, SLIM_LLAMA_TAG, "cuda13-newer")
+    )
+    artifact, backend, used_fallback = M.select_artifact_with_fallback(
+        _slim_manifest(), _cuda_host(), "cuda"
+    )
+    assert artifact["asset"] == SLIM_ASSET
+    assert backend == "cuda" and used_fallback is False
+
+
+@pytest.mark.parametrize(
+    "runtime,slim_extra",
+    [
+        # No llama install at all.
+        (lambda bin_dir: None, None),
+        # Installed llama tag does not match requires_llama_tag.
+        (lambda bin_dir: (bin_dir, "b99999-mix-0000000", "cuda13-newer"), None),
+        # A required soname is missing from the llama bin dir.
+        (
+            lambda bin_dir: (bin_dir, SLIM_LLAMA_TAG, "cuda13-newer"),
+            {"requires_ggml_sonames": ["libggml.so.0", "libggml-base.so.0", "libggml-extra.so.9"]},
+        ),
+        # Manifest omits the soname contract entirely.
+        (lambda bin_dir: (bin_dir, SLIM_LLAMA_TAG, "cuda13-newer"), {"requires_ggml_sonames": []}),
+    ],
+)
+def test_slim_pairing_failure_falls_back_to_pinned_cpu(tmp_path, monkeypatch, runtime, slim_extra):
+    # With the fat per-accelerator chain gone, a failed pairing degrades to the one legacy shape: the release's
+    # published fat CPU bundle.
+    bin_dir = _fake_llama_bin(tmp_path)
+    monkeypatch.setattr(M, "installed_llama_runtime", lambda: runtime(bin_dir))
+    artifact, backend, used_fallback = M.select_artifact_with_fallback(
+        _slim_manifest(slim_extra), _cuda_host(), "cuda"
+    )
+    assert artifact["asset"] == CPU_ASSET
+    assert backend == "cpu" and used_fallback is True
+
+
+def test_slim_missing_accel_module_rides_the_cpu_module(tmp_path, monkeypatch):
+    # Sonames present but no libggml-cuda.so in the llama bin dir: the cuda pairing fails, and the cpu retry still
+    # serves the same slim bundle via the llama cpu modules.
+    bin_dir = _fake_llama_bin(tmp_path, backend_module = None)
+    monkeypatch.setattr(
+        M, "installed_llama_runtime", lambda: (bin_dir, SLIM_LLAMA_TAG, "cuda13-newer")
+    )
+    artifact, backend, used_fallback = M.select_artifact_with_fallback(
+        _slim_manifest(), _cuda_host(), "cuda"
+    )
+    assert artifact["asset"] == SLIM_ASSET
+    assert backend == "cpu" and used_fallback is True
+
+
+def test_slim_selected_for_cpu_backend_on_linux(tmp_path, monkeypatch):
+    # Slim-only releases must serve cpu too: with the llama cpu modules present the cpu backend rides the same slim
+    # bundle as the GPUs.
+    bin_dir = _fake_llama_bin(tmp_path)
+    monkeypatch.setattr(
+        M, "installed_llama_runtime", lambda: (bin_dir, SLIM_LLAMA_TAG, "cuda13-newer")
+    )
+    artifact, backend, _fb = M.select_artifact_with_fallback(
+        _slim_manifest(), _host("linux", "x64"), "cpu"
+    )
+    assert artifact["asset"] == SLIM_ASSET and backend == "cpu"
+
+
+def test_slim_cpu_requires_a_cpu_module(tmp_path, monkeypatch):
+    # Sonames present but no libggml-cpu* variant in the llama bin dir -> fat cpu.
+    bin_dir = tmp_path / "llama.cpp" / "build" / "bin"
+    bin_dir.mkdir(parents = True)
+    for name in ("libggml.so.0", "libggml-base.so.0"):
+        (bin_dir / name).write_bytes(b"ggml")
+    monkeypatch.setattr(
+        M, "installed_llama_runtime", lambda: (bin_dir, SLIM_LLAMA_TAG, "linux-cpu")
+    )
+    artifact, backend, _fb = M.select_artifact_with_fallback(
+        _slim_manifest(), _host("linux", "x64"), "cpu"
+    )
+    assert artifact["asset"] == CPU_ASSET and backend == "cpu"
+
+
+WIN_SLIM_ASSET = "whisper-v1.9.1-unsloth.1-windows-x64-slim.zip"
+
+
+def _windows_slim_manifest(*, requires_ggml_sonames: list[str]) -> dict:
+    return M.parse_manifest(
+        _manifest(
+            [
+                _slim_artifact(
+                    os = "windows",
+                    arch = "x64",
+                    asset = WIN_SLIM_ASSET,
+                    requires_ggml_sonames = requires_ggml_sonames,
+                )
+            ]
+        )
+    )
+
+
+def test_slim_selected_for_cpu_backend_on_windows(tmp_path, monkeypatch):
+    bin_dir = tmp_path / "llama.cpp" / "build" / "bin" / "Release"
+    bin_dir.mkdir(parents = True)
+    for name in ("ggml.dll", "ggml-base.dll", "ggml-cpu-haswell.dll"):
+        (bin_dir / name).write_bytes(b"ggml")
+    monkeypatch.setattr(
+        M, "installed_llama_runtime", lambda: (bin_dir, SLIM_LLAMA_TAG, "windows-cpu")
+    )
+    manifest = _windows_slim_manifest(requires_ggml_sonames = ["ggml.dll", "ggml-base.dll"])
+    artifact, backend, _fb = M.select_artifact_with_fallback(
+        manifest, _host("windows", "x64"), "cpu"
+    )
+    assert artifact["asset"] == WIN_SLIM_ASSET and backend == "cpu"
+
+
+WIN_LIBOMP_SONAMES = ["ggml.dll", "ggml-base.dll", "libomp140.x86_64.dll"]
+
+WIN_GPU_BUNDLES = [
+    ("rocm", "ggml-hip.dll", {"has_rocm": True, "rocm_gfx": "gfx1150"}),
+    ("cuda", "ggml-cuda.dll", {"has_usable_nvidia": True}),
+    ("vulkan", "ggml-vulkan.dll", {}),
+    # The cpu backend on a GPU bundle: the exemption keys on what the paired bin dir holds, not on the request, and that
+    # bundle's ggml-cpu.dll has no libomp to find either, so this must pair outright rather than via a cpu retry.
+    ("cpu", "ggml-hip.dll", {}),
+]
+
+
+@pytest.mark.parametrize("backend, module, host_kwargs", WIN_GPU_BUNDLES)
+def test_windows_gpu_slim_does_not_require_cpu_only_libomp(
+    tmp_path, monkeypatch, backend, module, host_kwargs
+):
+    # The shared Windows manifest lists the OpenMP runtime only the cpu llama bundle ships; the GPU bundles omit it
+    # and never import it, so they pair.
+    # The empty bundle_profile is what the published rocm artifacts carry.
+    bin_dir = tmp_path / "llama.cpp" / "build" / "bin" / "Release"
+    bin_dir.mkdir(parents = True)
+    for name in ("ggml.dll", "ggml-base.dll", "ggml-cpu.dll", module):
+        (bin_dir / name).write_bytes(b"ggml")
+    monkeypatch.setattr(M, "installed_llama_runtime", lambda: (bin_dir, SLIM_LLAMA_TAG, ""))
+    manifest = _windows_slim_manifest(requires_ggml_sonames = WIN_LIBOMP_SONAMES)
+
+    artifact, chosen, used_fallback = M.select_artifact_with_fallback(
+        manifest, _host("windows", "x64", **host_kwargs), backend
+    )
+
+    assert artifact["asset"] == WIN_SLIM_ASSET
+    assert chosen == backend and used_fallback is False
+
+
+# "" is the upstream-sourced install: install_llama_prebuilt builds those AssetChoices without a bundle_profile, so a
+# real cpu bundle reports no profile.
+@pytest.mark.parametrize("profile", ["windows-cpu-x64", ""])
+def test_windows_cpu_bundle_still_requires_manifest_libomp(tmp_path, monkeypatch, profile):
+    # A cpu bundle's ggml really does import libomp, so a runtime that lost the DLL must fail the pairing rather
+    # than install a whisper that cannot load.
+    bin_dir = tmp_path / "llama.cpp" / "build" / "bin" / "Release"
+    bin_dir.mkdir(parents = True)
+    for name in ("ggml.dll", "ggml-base.dll", "ggml-cpu-haswell.dll"):
+        (bin_dir / name).write_bytes(b"ggml")
+    monkeypatch.setattr(M, "installed_llama_runtime", lambda: (bin_dir, SLIM_LLAMA_TAG, profile))
+    artifact = _windows_slim_manifest(requires_ggml_sonames = WIN_LIBOMP_SONAMES)["artifacts"][0]
+
+    assert M.slim_pairing_for_artifact(artifact, _host("windows", "x64"), "cpu") is None
+
+    (bin_dir / "libomp140.x86_64.dll").write_bytes(b"omp")
+    assert M.slim_pairing_for_artifact(artifact, _host("windows", "x64"), "cpu") is not None
+
+
+def test_linux_slim_still_requires_manifest_libomp(tmp_path, monkeypatch):
+    # x64 ggml really imports its bundled libomp; the arm64 exemption must not widen here.
+    bin_dir = _fake_llama_bin(tmp_path, backend_module = "libggml-cuda.so")
+    monkeypatch.setattr(
+        M, "installed_llama_runtime", lambda: (bin_dir, SLIM_LLAMA_TAG, "linux-cuda")
+    )
+    artifact = _slim_artifact(
+        requires_ggml_sonames = ["libggml.so.0", "libggml-base.so.0", "libomp.so.5"],
+    )
+
+    assert M.slim_pairing_for_artifact(artifact, _host("linux", "x64"), "cuda") is None
+
+
+def test_linux_arm64_gpu_slim_drops_manifest_libomp(tmp_path, monkeypatch):
+    # The manifest names libomp for the *cpu* bundle's ggml; CUDA imports GNU libgomp.
+    bin_dir = _fake_llama_bin(tmp_path, backend_module = "libggml-cuda.so")
+    monkeypatch.setattr(
+        M, "installed_llama_runtime", lambda: (bin_dir, SLIM_LLAMA_TAG, "linux-cuda")
+    )
+    # Real CUDA bundle; without this the test would pass on "could not inspect".
+    monkeypatch.setattr(M, "_elf_needed", lambda path: {"libgomp.so.1", "libc.so.6"})
+    artifact = _slim_artifact(
+        arch = "arm64",
+        requires_ggml_sonames = ["libggml.so.0", "libggml-base.so.0", "libomp.so.5"],
+    )
+
+    assert M.slim_pairing_for_artifact(artifact, _host("linux", "arm64"), "cuda") is not None
+
+
+def test_linux_arm64_gpu_slim_keeps_libomp_when_ggml_really_imports_it(tmp_path, monkeypatch):
+    """The published arm64 Vulkan bundle really does import libomp, unlike CUDA."""
+    bin_dir = _fake_llama_bin(tmp_path, backend_module = "libggml-vulkan.so")
+    monkeypatch.setattr(
+        M, "installed_llama_runtime", lambda: (bin_dir, SLIM_LLAMA_TAG, "linux-vulkan")
+    )
+    monkeypatch.setattr(M, "_elf_needed", lambda path: {"libomp.so.5", "libc.so.6"})
+    artifact = _slim_artifact(
+        arch = "arm64",
+        requires_ggml_sonames = ["libggml.so.0", "libggml-base.so.0", "libomp.so.5"],
+    )
+
+    assert M.slim_pairing_for_artifact(artifact, _host("linux", "arm64"), "vulkan") is None
+
+
+def test_linux_arm64_gpu_slim_keeps_libomp_when_only_the_backend_module_imports_it(
+    tmp_path, monkeypatch
+):
+    """The module is dlopen'd after startup, so a core-only check calls this clean."""
+    bin_dir = _fake_llama_bin(tmp_path, backend_module = "libggml-cuda.so")
+    monkeypatch.setattr(
+        M, "installed_llama_runtime", lambda: (bin_dir, SLIM_LLAMA_TAG, "linux-cuda")
+    )
+    monkeypatch.setattr(
+        M,
+        "_elf_needed",
+        lambda path: (
+            {"libomp.so.5", "libc.so.6"}
+            if path.name.startswith("libggml-cuda")
+            else {"libgomp.so.1", "libc.so.6"}
+        ),
+    )
+    artifact = _slim_artifact(
+        arch = "arm64",
+        requires_ggml_sonames = ["libggml.so.0", "libggml-base.so.0", "libomp.so.5"],
+    )
+
+    assert M.slim_pairing_for_artifact(artifact, _host("linux", "arm64"), "cuda") is None
+
+
+def test_linux_arm64_exemption_fails_closed_without_elf_tools(tmp_path, monkeypatch):
+    """Dropping it here is unrecoverable: the loader error goes to DEVNULL."""
+    bin_dir = _fake_llama_bin(tmp_path, backend_module = "libggml-cuda.so")
+    monkeypatch.setattr(
+        M, "installed_llama_runtime", lambda: (bin_dir, SLIM_LLAMA_TAG, "linux-cuda")
+    )
+    monkeypatch.setattr(M, "_elf_needed", lambda path: None)
+    artifact = _slim_artifact(
+        arch = "arm64",
+        requires_ggml_sonames = ["libggml.so.0", "libggml-base.so.0", "libomp.so.5"],
+    )
+
+    assert M.slim_pairing_for_artifact(artifact, _host("linux", "arm64"), "cuda") is None
+
+
+def test_linux_arm64_exemption_fails_closed_on_partial_elf_inspection(tmp_path, monkeypatch):
+    # One unreadable library makes the answer unknown; the rest are not a clean bill.
+    bin_dir = _fake_llama_bin(tmp_path, backend_module = "libggml-cuda.so")
+    monkeypatch.setattr(
+        M, "installed_llama_runtime", lambda: (bin_dir, SLIM_LLAMA_TAG, "linux-cuda")
+    )
+    monkeypatch.setattr(
+        M,
+        "_elf_needed",
+        lambda path: None if path.name == "libggml-base.so.0" else {"libgomp.so.1"},
+    )
+    artifact = _slim_artifact(
+        arch = "arm64",
+        requires_ggml_sonames = ["libggml.so.0", "libggml-base.so.0", "libomp.so.5"],
+    )
+
+    assert M.slim_pairing_for_artifact(artifact, _host("linux", "arm64"), "cuda") is None
+
+
+def test_linux_arm64_libomptarget_is_not_llvm_openmp(tmp_path, monkeypatch):
+    # libomptarget is a different library; a prefix match would read it as libomp.
+    bin_dir = _fake_llama_bin(tmp_path, backend_module = "libggml-cuda.so")
+    monkeypatch.setattr(
+        M, "installed_llama_runtime", lambda: (bin_dir, SLIM_LLAMA_TAG, "linux-cuda")
+    )
+    monkeypatch.setattr(M, "_elf_needed", lambda path: {"libomptarget.so.1"})
+    artifact = _slim_artifact(
+        arch = "arm64",
+        requires_ggml_sonames = ["libggml.so.0", "libggml-base.so.0", "libomp.so.5"],
+    )
+
+    assert M.slim_pairing_for_artifact(artifact, _host("linux", "arm64"), "cuda") is not None
+
+
+def test_linux_arm64_exemption_does_not_drop_libomptarget_requirement(tmp_path, monkeypatch):
+    bin_dir = _fake_llama_bin(tmp_path, backend_module = "libggml-cuda.so")
+    monkeypatch.setattr(
+        M, "installed_llama_runtime", lambda: (bin_dir, SLIM_LLAMA_TAG, "linux-cuda")
+    )
+    monkeypatch.setattr(M, "_elf_needed", lambda path: {"libgomp.so.1"})
+    artifact = _slim_artifact(
+        arch = "arm64",
+        requires_ggml_sonames = [
+            "libggml.so.0",
+            "libggml-base.so.0",
+            "libomptarget.so.1",
+        ],
+    )
+
+    assert M.slim_pairing_for_artifact(artifact, _host("linux", "arm64"), "cuda") is None
+
+
+def test_linux_arm64_gpu_module_must_be_a_file(tmp_path, monkeypatch):
+    bin_dir = _fake_llama_bin(tmp_path, backend_module = None)
+    (bin_dir / "libggml-cuda.so").mkdir()
+    monkeypatch.setattr(M, "installed_llama_runtime", lambda: (bin_dir, SLIM_LLAMA_TAG, ""))
+    monkeypatch.setattr(M, "_elf_needed", lambda path: {"libgomp.so.1"})
+    artifact = _slim_artifact(
+        arch = "arm64",
+        requires_ggml_sonames = ["libggml.so.0", "libggml-base.so.0", "libomp.so.5"],
+    )
+
+    assert M.slim_pairing_for_artifact(artifact, _host("linux", "arm64"), "cpu") is None
+
+
+@pytest.mark.parametrize(
+    ("os_key", "arch"),
+    [("windows", "x64"), ("windows", "arm64"), ("macos", "arm64"), ("linux", "x64")],
+)
+def test_elf_inspection_never_runs_off_linux_arm64(tmp_path, monkeypatch, os_key, arch):
+    # readelf/objdump are usually absent off linux; this pins the short circuit.
+    bin_dir = _fake_llama_bin(tmp_path, backend_module = "libggml-cuda.so")
+    monkeypatch.setattr(M, "installed_llama_runtime", lambda: (bin_dir, SLIM_LLAMA_TAG, ""))
+    calls = []
+
+    def _spy(path):
+        calls.append(path)
+        return {"libgomp.so.1"}
+
+    monkeypatch.setattr(M, "_elf_needed", _spy)
+    artifact = _slim_artifact(
+        os = os_key,
+        arch = arch,
+        requires_ggml_sonames = ["libggml.so.0", "libggml-base.so.0"],
+    )
+
+    M.slim_pairing_for_artifact(artifact, _host(os_key, arch), "cuda")
+
+    assert calls == []
+
+
+def test_linux_arm64_cpu_bundle_still_requires_manifest_libomp(tmp_path, monkeypatch):
+    # No GPU module, so no exemption: a cpu bundle's ggml really does import libomp.
+    bin_dir = _fake_llama_bin(tmp_path, backend_module = None)
+    monkeypatch.setattr(M, "installed_llama_runtime", lambda: (bin_dir, SLIM_LLAMA_TAG, ""))
+    artifact = _slim_artifact(
+        arch = "arm64",
+        requires_ggml_sonames = ["libggml.so.0", "libggml-base.so.0", "libomp.so.5"],
+    )
+
+    assert M.slim_pairing_for_artifact(artifact, _host("linux", "arm64"), "cpu") is None
+
+
+@pytest.mark.parametrize(
+    "missing_name",
+    ["ggml.dll", "ggml-base.dll", "ggml-hip.dll"],
+)
+def test_windows_rocm_slim_still_requires_ggml_runtime(tmp_path, monkeypatch, missing_name):
+    bin_dir = tmp_path / "llama.cpp" / "build" / "bin" / "Release"
+    bin_dir.mkdir(parents = True)
+    for name in {"ggml.dll", "ggml-base.dll", "ggml-hip.dll"} - {missing_name}:
+        (bin_dir / name).write_bytes(b"ggml")
+    # The HIP DLLs every published ROCm bundle also ships: none of them is the
+    # ggml backend module, so their presence must not stand in for it.
+    for name in ("amdhip64_7.dll", "hipblas.dll", "libhipblaslt.dll"):
+        (bin_dir / name).write_bytes(b"runtime")
+    monkeypatch.setattr(M, "installed_llama_runtime", lambda: (bin_dir, SLIM_LLAMA_TAG, ""))
+    artifact = _windows_slim_manifest(
+        requires_ggml_sonames = [
+            "ggml.dll",
+            "ggml-base.dll",
+            "libomp140.x86_64.dll",
+        ]
+    )["artifacts"][0]
+
+    assert (
+        M.slim_pairing_for_artifact(
+            artifact,
+            _host("windows", "x64", has_rocm = True, rocm_gfx = "gfx1150"),
+            "rocm",
+        )
+        is None
+    )
+
+
+def test_windows_rocm_slim_rejects_decoy_hip_dlls_alone(tmp_path, monkeypatch):
+    # Same loss, but with libomp present so the soname gate cannot do the rejecting: only naming the ggml module
+    # rejects this, which is what the older *hip*.dll glob could not do.
+    bin_dir = tmp_path / "llama.cpp" / "build" / "bin" / "Release"
+    bin_dir.mkdir(parents = True)
+    for name in (
+        "ggml.dll",
+        "ggml-base.dll",
+        "ggml-cpu.dll",
+        "libomp140.x86_64.dll",
+        "amdhip64_7.dll",
+        "hipblas.dll",
+        "libhipblaslt.dll",
+    ):
+        (bin_dir / name).write_bytes(b"x")
+    monkeypatch.setattr(M, "installed_llama_runtime", lambda: (bin_dir, SLIM_LLAMA_TAG, ""))
+    artifact = _windows_slim_manifest(requires_ggml_sonames = WIN_LIBOMP_SONAMES)["artifacts"][0]
+
+    assert (
+        M.slim_pairing_for_artifact(
+            artifact,
+            _host("windows", "x64", has_rocm = True, rocm_gfx = "gfx1150"),
+            "rocm",
+        )
+        is None
+    )
+
+
+MAC_SLIM_ASSET = "whisper-v1.9.1-unsloth.1-macos-arm64-slim.tar.gz"
+
+
+def _fake_llama_bin_macos(tmp_path: Path) -> Path:
+    """The dylib names the live llama macos bundle ships (core + cpu + metal)."""
+    bin_dir = tmp_path / "llama.cpp" / "build" / "bin"
+    bin_dir.mkdir(parents = True, exist_ok = True)
+    for name in (
+        "libggml.dylib",
+        "libggml-base.dylib",
+        "libggml-cpu.dylib",
+        "libggml-metal.dylib",
+        "libggml-blas.dylib",
+    ):
+        (bin_dir / name).write_bytes(b"ggml-" + name.encode())
+    (bin_dir / "libllama.dylib").write_bytes(b"not-ggml")
+    return bin_dir
+
+
+def _macos_slim_manifest(arch: str = "arm64") -> dict:
+    return M.parse_manifest(
+        _manifest(
+            [
+                _slim_artifact(
+                    os = "macos",
+                    arch = arch,
+                    asset = MAC_SLIM_ASSET,
+                    requires_ggml_sonames = ["libggml.dylib", "libggml-base.dylib"],
+                )
+            ]
+        )
+    )
+
+
+@pytest.mark.parametrize("backend", ["metal", "cpu"])
+def test_slim_selected_for_metal_and_cpu_on_macos(tmp_path, monkeypatch, backend):
+    bin_dir = _fake_llama_bin_macos(tmp_path)
+    monkeypatch.setattr(
+        M, "installed_llama_runtime", lambda: (bin_dir, SLIM_LLAMA_TAG, "macos-metal-arm64")
+    )
+    host = _host("macos", "arm64", macos_version = (14, 0))
+    artifact, effective, _fb = M.select_artifact_with_fallback(
+        _macos_slim_manifest(), host, backend
+    )
+    assert artifact["asset"] == MAC_SLIM_ASSET
+    assert effective == backend  # the accel identity, never "slim"
+
+
+def test_macos_auto_backends_route_to_slim(tmp_path, monkeypatch):
+    # auto -> metal on Apple Silicon, cpu on Intel macs; both must pick slim.
+    bin_dir = _fake_llama_bin_macos(tmp_path)
+    monkeypatch.setattr(
+        M, "installed_llama_runtime", lambda: (bin_dir, SLIM_LLAMA_TAG, "macos-metal-arm64")
+    )
+    silicon = _host("macos", "arm64", macos_version = (14, 0))
+    assert M.resolve_backend(silicon, "auto", cpu_fallback = False) == "metal"
+    artifact, backend, _fb = M.select_artifact_with_fallback(
+        _macos_slim_manifest(), silicon, "metal"
+    )
+    assert artifact["asset"] == MAC_SLIM_ASSET and backend == "metal"
+
+    intel = _host("macos", "x64", macos_version = (14, 0))
+    assert M.resolve_backend(intel, "auto", cpu_fallback = False) == "cpu"
+    artifact, backend, _fb = M.select_artifact_with_fallback(
+        _macos_slim_manifest(arch = "x64"), intel, "cpu"
+    )
+    assert artifact["asset"] == MAC_SLIM_ASSET and backend == "cpu"
+
+
+def test_slim_metal_requires_the_metal_module(tmp_path, monkeypatch):
+    # A macos llama runtime without libggml-metal*.dylib cannot back metal; the cpu fallback still rides the same slim
+    # bundle via the cpu module.
+    bin_dir = tmp_path / "llama.cpp" / "build" / "bin"
+    bin_dir.mkdir(parents = True)
+    for name in ("libggml.dylib", "libggml-base.dylib", "libggml-cpu.dylib"):
+        (bin_dir / name).write_bytes(b"ggml")
+    monkeypatch.setattr(
+        M, "installed_llama_runtime", lambda: (bin_dir, SLIM_LLAMA_TAG, "macos-cpu-x64")
+    )
+    host = _host("macos", "arm64", macos_version = (14, 0))
+    artifact, backend, used_fallback = M.select_artifact_with_fallback(
+        _macos_slim_manifest(), host, "metal"
+    )
+    assert artifact["asset"] == MAC_SLIM_ASSET
+    assert backend == "cpu" and used_fallback is True
+
+
+def test_slim_only_release_pairing_failure_is_actionable(tmp_path, monkeypatch):
+    # A slim-only release with no llama install is an operational failure, not the narrowly handled installed-version
+    # skew.
+    lines: list[str] = []
+    monkeypatch.setattr(M, "log", lines.append)
+    monkeypatch.setattr(M, "installed_llama_runtime", lambda: None)
+    manifest = M.parse_manifest(_manifest([_slim_artifact()]))
+    with pytest.raises(PrebuiltFallback):
+        M.select_artifact_with_fallback(manifest, _cuda_host(), "cuda")
+    assert any(
+        f"slim bundle requires llama.cpp {SLIM_LLAMA_TAG}; "
+        "install or update llama.cpp first" in line
+        for line in lines
+    )
+
+
+def test_slim_release_tag_skew_has_distinct_compatibility_error(tmp_path, monkeypatch):
+    bin_dir = _fake_llama_bin(tmp_path)
+    monkeypatch.setattr(
+        M,
+        "installed_llama_runtime",
+        lambda: (bin_dir, "b10068-mix-old", "cuda13-newer"),
+    )
+    manifest = M.parse_manifest(_manifest([_slim_artifact()]))
+    with pytest.raises(ReleaseCompatibilityError, match = SLIM_LLAMA_TAG):
+        M.select_artifact_with_fallback(manifest, _cuda_host(), "cuda")
+
+
+# A newer llama build that keeps the same ggml commit as SLIM_LLAMA_TAG.
+NEWER_LLAMA_TAG = "b10079-mix-fb3d4ca"
+
+
+@pytest.mark.parametrize(
+    "installed,required,pairs",
+    [
+        (SLIM_LLAMA_TAG, SLIM_LLAMA_TAG, True),  # exact tag
+        (NEWER_LLAMA_TAG, SLIM_LLAMA_TAG, True),  # newer build, same ggml commit
+        ("b10069-mix-0000000", SLIM_LLAMA_TAG, False),  # same build, different ggml
+        (SLIM_LLAMA_TAG, None, False),  # no requirement recorded
+        ("b10069", "b10069", True),  # tag without -mix-, exact only
+        ("b10070", "b10069", False),  # tag without -mix-, no shared key
+    ],
+)
+def test_llama_runtime_pairs_falls_back_to_mix_suffix(installed, required, pairs):
+    # No tree ids either side, so the legacy suffix comparison applies.
+    assert M.llama_runtime_pairs(installed, required) is pairs
+
+
+LLAMA_REPO = "unslothai/llama.cpp"
+# A publisher that is NOT the default, so a lookup that dropped installed_repo and fell back to unslothai/llama.cpp
+# builds a different URL and gets caught.
+FORK_REPO = "acme-fork/llama.cpp"
+
+
+@pytest.fixture(autouse = True)
+def _offline_published_tree_lookup(monkeypatch):
+    """Keep llama_runtime_pairs offline and its per-tag cache test-local.
+
+    A missing tree sends published_llama_ggml_tree to the llama release, so
+    without this the pairing assertions below would depend on live release
+    assets and on this machine's own llama marker. The cache is module level
+    and outlives monkeypatch, so clear it too. Tests wanting the lookup stub
+    _download_host_json_once themselves, which wins because this fixture is
+    applied first."""
+    M._PUBLISHED_GGML_TREE_CACHE.clear()
+
+    def unreachable(url):
+        raise OSError(f"offline test tried to fetch {url}")
+
+    monkeypatch.setattr(M, "_download_host_json_once", unreachable)
+    # No marker to read, so installed_llama_tree_repo() stays None unless a test points it somewhere; the lookup then
+    # needs an explicit repo.
+    monkeypatch.setattr(M.llama, "default_managed_llama_dir", lambda: Path("/nonexistent-llama"))
+    yield
+    M._PUBLISHED_GGML_TREE_CACHE.clear()
+
+
+# The autouse fixture above replaces _download_host_json_once with an offline guard, so a test exercising the real
+# wrapper has to hold a reference taken at import, before any fixture runs.
+_REAL_DOWNLOAD_HOST_JSON_ONCE = M._download_host_json_once
+
+
+# Real releases: same -mix-2c8b9c1 suffix, but genuinely different ggml trees.
+SUFFIX_SHARED_A = "b10173-mix-2c8b9c1"
+SUFFIX_SHARED_B = "b10181-mix-2c8b9c1"
+TREE_A = "8f3c6e197debb027f500df9f76e710e137f9fe68"
+TREE_B = "e96ffb0e063f66952b0c54796a74755b6041c867"
+
+
+@pytest.mark.parametrize(
+    "installed,required,installed_tree,required_tree,pairs",
+    [
+        # The bug this fixes: a shared suffix is not a shared ggml.
+        (SUFFIX_SHARED_A, SUFFIX_SHARED_B, TREE_A, TREE_B, False),
+        # Different suffixes, same ggml: ABI-identical.
+        ("b10241-mix-89aa77b", "b10225-mix-345e1e3", TREE_A, TREE_A, True),
+        # A missing tree falls back to the suffix only when the release does not publish one either; the lookup is
+        # stubbed offline above.
+        (SUFFIX_SHARED_A, SUFFIX_SHARED_B, None, TREE_B, True),
+        (SUFFIX_SHARED_A, SUFFIX_SHARED_B, TREE_A, None, True),
+        (SUFFIX_SHARED_A, SUFFIX_SHARED_B, "", "", True),
+        # An exact tag pairs before trees are consulted.
+        (SUFFIX_SHARED_A, SUFFIX_SHARED_A, TREE_A, TREE_B, True),
+    ],
+)
+def test_llama_runtime_pairs_prefers_ggml_tree(
+    installed, required, installed_tree, required_tree, pairs
+):
+    assert (
+        M.llama_runtime_pairs(
+            installed,
+            required,
+            installed_ggml_tree = installed_tree,
+            required_ggml_tree = required_tree,
+        )
+        is pairs
+    )
+
+
+def test_llama_runtime_pairs_reads_the_published_tree_when_the_marker_has_none(monkeypatch):
+    # The case the fallback got wrong: one -mix- suffix, two ggml trees. An install predating ggml_tree has no local
+    # tree, so both come from the releases.
+    trees = {SUFFIX_SHARED_A: TREE_A, SUFFIX_SHARED_B: TREE_B}
+    fetched = []
+
+    def fake(url):
+        fetched.append(url)
+        return {"ggml_tree": trees[next(t for t in trees if t in url)]}
+
+    monkeypatch.setattr(M, "_download_host_json_once", fake)
+    assert (
+        M.llama_runtime_pairs(SUFFIX_SHARED_A, SUFFIX_SHARED_B, installed_repo = FORK_REPO) is False
+    )
+    assert len(fetched) == 2
+    # The installed tag is read from the repo that published it.
+    # FORK_REPO is not the default publisher, so a lookup ignoring installed_repo would build a unslothai/llama.cpp URL
+    # here and this would catch it.
+    assert any(f"/{FORK_REPO}/releases/download/{SUFFIX_SHARED_A}/" in url for url in fetched)
+
+
+def test_published_ggml_tree_is_fetched_once_per_tag(monkeypatch):
+    calls = []
+
+    def fake(url):
+        calls.append(url)
+        return {"ggml_tree": TREE_A}
+
+    monkeypatch.setattr(M, "_download_host_json_once", fake)
+    assert M.published_llama_ggml_tree(SUFFIX_SHARED_A) == TREE_A
+    assert M.published_llama_ggml_tree(SUFFIX_SHARED_A) == TREE_A
+    assert calls == [
+        f"https://github.com/unslothai/llama.cpp/releases/download/"
+        f"{SUFFIX_SHARED_A}/llama-prebuilt-manifest.json"
+    ]
+
+
+def test_the_manifest_probe_still_authenticates(monkeypatch):
+    """download_bytes falls back to auth_headers(url) only when headers are ABSENT, so a bare
+    User-Agent silently dropped auth. A private published repo then 404s and the caller falls
+    back to the -mix- suffix compare this probe exists to replace; an anonymous huggingface.co
+    fetch shares the per-IP limit that 429s CI fleets."""
+    seen = {}
+
+    def fake_download_bytes(
+        url,
+        timeout = None,
+        attempts = None,
+        headers = None,
+        **kwargs,
+    ):
+        seen["headers"] = headers
+        seen["attempts"] = attempts
+        return b'{"ggml_tree": "abc"}'
+
+    monkeypatch.setenv("GH_TOKEN", "gh-secret")
+    monkeypatch.delenv("GITHUB_TOKEN", raising = False)
+    monkeypatch.setattr(M, "download_bytes", fake_download_bytes)
+
+    assert _REAL_DOWNLOAD_HOST_JSON_ONCE("https://github.com/o/r/releases/download/t/m.json") == {
+        "ggml_tree": "abc"
+    }
+    assert seen["headers"].get("Authorization") == "Bearer gh-secret"
+    # The single-attempt policy is the ONLY thing this wrapper overrides.
+    assert seen["attempts"] == 1
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [{}, {"ggml_tree": ""}, {"ggml_tree": None}, {"ggml_tree": ["x"]}, ["not", "a", "dict"]],
+)
+def test_published_ggml_tree_ignores_a_manifest_without_a_usable_tree(monkeypatch, payload):
+    monkeypatch.setattr(M, "_download_host_json_once", lambda url: payload)
+    assert M.published_llama_ggml_tree(SUFFIX_SHARED_A) is None
+
+
+def test_published_ggml_tree_survives_an_unreachable_release(monkeypatch):
+    # Fail closed to the old comparison rather than stranding a valid install.
+    def boom(url):
+        raise OSError("network down")
+
+    monkeypatch.setattr(M, "_download_host_json_once", boom)
+    assert M.published_llama_ggml_tree(SUFFIX_SHARED_A) is None
+    assert (
+        M.llama_runtime_pairs(SUFFIX_SHARED_A, SUFFIX_SHARED_B, installed_repo = LLAMA_REPO) is True
+    )
+
+
+def test_published_tree_is_not_consulted_when_both_trees_are_known(monkeypatch):
+    def boom(url):
+        raise AssertionError(f"should not fetch {url}")
+
+    monkeypatch.setattr(M, "_download_host_json_once", boom)
+    assert (
+        M.llama_runtime_pairs(
+            SUFFIX_SHARED_A,
+            SUFFIX_SHARED_B,
+            installed_ggml_tree = TREE_A,
+            required_ggml_tree = TREE_B,
+        )
+        is False
+    )
+    assert M.llama_runtime_pairs(SUFFIX_SHARED_A, SUFFIX_SHARED_A) is True
+
+
+@pytest.mark.parametrize(
+    "marker,expected",
+    [
+        ({"published_repo": LLAMA_REPO}, LLAMA_REPO),
+        ({"published_repo": LLAMA_REPO, "binary_repo": LLAMA_REPO}, LLAMA_REPO),
+        # Binaries from another repo: the fork release's tree does not describe
+        # them, which is why the installer leaves the marker's tree unset.
+        ({"published_repo": LLAMA_REPO, "binary_repo": "ggml-org/llama.cpp"}, None),
+        ({"binary_repo": LLAMA_REPO}, None),
+        ({}, None),
+    ],
+)
+def test_installed_llama_tree_repo_follows_the_marker(monkeypatch, tmp_path, marker, expected):
+    root = tmp_path / "llama.cpp"
+    root.mkdir()
+    (root / "UNSLOTH_PREBUILT_INFO.json").write_text(json.dumps({"release_tag": "b1", **marker}))
+    monkeypatch.setattr(M.llama, "default_managed_llama_dir", lambda: root)
+    assert M.installed_llama_tree_repo() == expected
+
+
+def test_pairing_does_not_infer_a_tree_for_non_fork_binaries(monkeypatch):
+    # Without a repo the installed tag's tree is never fetched, so an upstream
+    # built runtime cannot be paired by a tree that does not describe it.
+    # A raising stub cannot police this: published_llama_ggml_tree() catches
+    # every exception, so the raise would be swallowed and the test would pass
+    # either way. Record the URLs instead, and give the two tags different
+    # trees so an inferred installed tree also flips the verdict.
+    trees = {SUFFIX_SHARED_A: TREE_A, SUFFIX_SHARED_B: TREE_B}
+    fetched = []
+
+    def record(url):
+        fetched.append(url)
+        return {"ggml_tree": trees[next(t for t in trees if t in url)]}
+
+    monkeypatch.setattr(M, "_download_host_json_once", record)
+    assert M.llama_runtime_pairs(SUFFIX_SHARED_A, SUFFIX_SHARED_B, installed_repo = None) is True
+    # Nothing at all is probed: the installed tag because there is no repo, and
+    # the required tag because a lone required tree cannot decide the pairing.
+    assert fetched == []
+
+
+def test_installed_llama_ggml_tree_reads_marker(tmp_path):
+    root = tmp_path / "llama.cpp"
+    root.mkdir()
+    (root / "UNSLOTH_PREBUILT_INFO.json").write_text(
+        json.dumps({"release_tag": SLIM_LLAMA_TAG, "ggml_tree": TREE_A})
+    )
+    assert M.llama.installed_llama_ggml_tree(root) == TREE_A
+
+
+@pytest.mark.parametrize(
+    "prepare",
+    [
+        lambda root: None,  # no marker: installs predating ggml_tree
+        lambda root: (root / "UNSLOTH_PREBUILT_INFO.json").write_text("{}"),
+        lambda root: (root / "UNSLOTH_PREBUILT_INFO.json").write_text(
+            json.dumps({"ggml_tree": ""})
+        ),
+        lambda root: (root / "UNSLOTH_PREBUILT_INFO.json").write_text("not json"),
+    ],
+)
+def test_installed_llama_ggml_tree_absent_is_none(tmp_path, prepare):
+    root = tmp_path / "llama.cpp"
+    root.mkdir()
+    prepare(root)
+    assert M.llama.installed_llama_ggml_tree(root) is None
+
+
+def test_slim_pairs_across_llama_build_bump_with_same_ggml(tmp_path, monkeypatch):
+    # The live failure: the llama installer advances to a newer build that keeps the same ggml commit, so the slim
+    # bundle's paired runtime is ABI-identical and must still select rather than degrade to CPU or report
+    # unavailable.
+    bin_dir = _fake_llama_bin(tmp_path)
+    monkeypatch.setattr(
+        M, "installed_llama_runtime", lambda: (bin_dir, NEWER_LLAMA_TAG, "cuda13-newer")
+    )
+    artifact, backend, used_fallback = M.select_artifact_with_fallback(
+        _slim_manifest(), _cuda_host(), "cuda"
+    )
+    assert artifact["asset"] == SLIM_ASSET
+    assert backend == "cuda" and used_fallback is False
+
+
+def test_slim_build_bump_same_ggml_is_not_a_compatibility_error(tmp_path, monkeypatch):
+    # A same-ggml build bump must not surface as a release incompatibility (the update path reports that as
+    # unavailable); only a real ggml skew does.
+    bin_dir = _fake_llama_bin(tmp_path)
+    monkeypatch.setattr(
+        M, "installed_llama_runtime", lambda: (bin_dir, NEWER_LLAMA_TAG, "cuda13-newer")
+    )
+    assert M._slim_release_incompatibility(_slim_manifest(), _cuda_host()) is None
+
+
+def test_link_ggml_runtime_hardlinks_every_ggml_library(tmp_path):
+    bin_dir = _fake_llama_bin(tmp_path)
+    whisper_bin = tmp_path / "whisper.cpp" / "build" / "bin"
+    linked = M.link_ggml_runtime(bin_dir, whisper_bin)
+    assert linked == [
+        "libggml-base.so.0",
+        "libggml-cpu-x64.so",
+        "libggml-cuda.so",
+        "libggml.so.0",
+    ]
+    for name in ("libggml.so.0", "libggml-base.so.0", "libggml-cuda.so", "libggml-cpu-x64.so"):
+        source, dest = bin_dir / name, whisper_bin / name
+        assert dest.is_file() and not dest.is_symlink()
+        assert dest.stat().st_ino == source.stat().st_ino  # a true hardlink
+    assert not (whisper_bin / "libllama.so").exists()  # only ggml libraries wire over
+
+
+def test_link_ggml_runtime_copy_fallback(tmp_path, monkeypatch):
+    def no_link(src, dst, **kwargs):
+        raise OSError("cross-device link")
+
+    monkeypatch.setattr(M.os, "link", no_link)
+    bin_dir = _fake_llama_bin(tmp_path)
+    whisper_bin = tmp_path / "whisper.cpp" / "build" / "bin"
+    assert len(M.link_ggml_runtime(bin_dir, whisper_bin)) == 4
+    dest = whisper_bin / "libggml.so.0"
+    assert dest.read_bytes() == (bin_dir / "libggml.so.0").read_bytes()
+    assert dest.stat().st_nlink == 1  # a copy, not a link
+
+
+def test_link_ggml_runtime_hardlinks_dylibs(tmp_path):
+    # macOS wiring: the libggml* glob must take the .dylib names too.
+    bin_dir = _fake_llama_bin_macos(tmp_path)
+    whisper_bin = tmp_path / "whisper.cpp" / "build" / "bin"
+    linked = M.link_ggml_runtime(bin_dir, whisper_bin)
+    assert linked == [
+        "libggml-base.dylib",
+        "libggml-blas.dylib",
+        "libggml-cpu.dylib",
+        "libggml-metal.dylib",
+        "libggml.dylib",
+    ]
+    for name in linked:
+        source, dest = bin_dir / name, whisper_bin / name
+        assert dest.is_file() and not dest.is_symlink()
+        assert dest.stat().st_ino == source.stat().st_ino  # a true hardlink
+    assert not (whisper_bin / "libllama.dylib").exists()
+
+
+def test_link_ggml_runtime_fails_closed_on_empty_runtime(tmp_path):
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    with pytest.raises(PrebuiltFallback):
+        M.link_ggml_runtime(empty, tmp_path / "whisper_bin")
+
+
+def test_link_ggml_runtime_wires_windows_libomp(tmp_path):
+    # llama's clang-built windows-arm64 ggml-base.dll imports libomp140.aarch64.dll (bundled, not a system DLL): the
+    # wiring must place it next to whisper-server.exe or the loader dies with DLL_NOT_FOUND.
+    bin_dir = tmp_path / "llama_bin"
+    bin_dir.mkdir()
+    for name in ("ggml.dll", "ggml-base.dll", "ggml-cpu.dll", "libomp140.aarch64.dll"):
+        (bin_dir / name).write_bytes(b"x")
+    (bin_dir / "llama.dll").write_bytes(b"x")  # never wired
+    whisper_bin = tmp_path / "whisper_bin"
+    linked = M.link_ggml_runtime(bin_dir, whisper_bin)
+    assert linked == ["ggml-base.dll", "ggml-cpu.dll", "ggml.dll", "libomp140.aarch64.dll"]
+    assert not (whisper_bin / "llama.dll").exists()
+
+
+def test_link_ggml_runtime_wires_linux_libomp(tmp_path):
+    # llama's clang-built linux-arm64 libggml-base.so NEEDS libomp.so.5, bundled and never on the host: without it
+    # whisper-server fails to load.
+    bin_dir = tmp_path / "llama_bin"
+    bin_dir.mkdir()
+    for name in ("libggml.so.0", "libggml-base.so.0", "libggml-cpu-armv8.0_1.so", "libomp.so.5"):
+        (bin_dir / name).write_bytes(b"x")
+    (bin_dir / "libllama.so").write_bytes(b"x")  # never wired
+    whisper_bin = tmp_path / "whisper_bin"
+    linked = M.link_ggml_runtime(bin_dir, whisper_bin)
+    assert linked == [
+        "libggml-base.so.0",
+        "libggml-cpu-armv8.0_1.so",
+        "libggml.so.0",
+        "libomp.so.5",
+    ]
+    assert (whisper_bin / "libomp.so.5").is_file()
+    assert not (whisper_bin / "libllama.so").exists()
+
+
+def test_link_ggml_runtime_linux_libomp_alone_is_not_a_pairing(tmp_path):
+    # Same fail-closed rule as the Windows case: OpenMP without ggml is not a usable llama runtime.
+    bin_dir = tmp_path / "llama_bin"
+    bin_dir.mkdir()
+    (bin_dir / "libomp.so.5").write_bytes(b"x")
+    with pytest.raises(PrebuiltFallback):
+        M.link_ggml_runtime(bin_dir, tmp_path / "whisper_bin")
+
+
+def test_rocm_runtime_wires_complete_windows_dll_overlay(tmp_path):
+    bin_dir = tmp_path / "llama_bin"
+    bin_dir.mkdir()
+    dlls = {
+        "ggml.dll",
+        "ggml-base.dll",
+        "ggml-hip.dll",
+        "amdhip64.dll",
+        "rocblas.dll",
+        "hipblaslt.dll",
+        "hsa-runtime64.dll",
+        # The llama Windows ROCm archive can carry transitive DLLs whose names do not contain hip/roc/amd.
+        # Its installer overlays every DLL.
+        "runtime-support.dll",
+    }
+    for name in dlls:
+        (bin_dir / name).write_bytes(name.encode())
+    (bin_dir / "not-a-runtime.txt").write_text("ignored")
+
+    whisper_bin = tmp_path / "whisper_bin"
+    linked = M.link_ggml_runtime(bin_dir, whisper_bin, backend = "rocm")
+    linked_dirs = M.link_runtime_directories(
+        bin_dir,
+        whisper_bin,
+        backend = "rocm",
+        host = _host("windows", "x64"),
+    )
+
+    assert set(linked) == dlls
+    assert linked_dirs == []
+    assert all((whisper_bin / name).is_file() for name in dlls)
+    assert not (whisper_bin / "not-a-runtime.txt").exists()
+
+
+def test_assemble_does_not_copy_packaging_marker_beside_server(tmp_path):
+    host = _host("linux", "x64")
+    bundle = tmp_path / "bundle"
+    bundle.mkdir()
+    (bundle / "whisper-server").write_text("server")
+    (bundle / M.METADATA_FILENAME).write_text('{"backend":"slim"}')
+    staged = tmp_path / "staged"
+    M.assemble_install_tree(bundle, staged, host)
+    assert not (staged / "build" / "bin" / M.METADATA_FILENAME).exists()
+
+
+def test_rocm_runtime_wires_packaged_dependency_closure_and_catalogs(tmp_path, monkeypatch):
+    llama_bin = _fake_llama_bin(tmp_path, backend_module = "libggml-hip.so")
+    for name in ("libamdhip64.so.6", "libhipblas.so.2", "libcustomrocm.so.1"):
+        (llama_bin / name).write_bytes(name.encode())
+    for directory in M.SLIM_ROCM_RUNTIME_DIRS:
+        catalog = llama_bin / directory / "library" / "gfx1100"
+        catalog.mkdir(parents = True)
+        (catalog / "kernel.dat").write_bytes(directory.encode())
+
+    dependencies = {
+        "libggml-hip.so": {"libamdhip64.so.6", "libcustomrocm.so.1"},
+        "libamdhip64.so.6": {"libhipblas.so.2"},
+    }
+    monkeypatch.setattr(M, "_elf_needed", lambda path: dependencies.get(path.name, set()))
+    whisper_bin = tmp_path / "whisper-bin"
+    linked = M.link_ggml_runtime(llama_bin, whisper_bin, backend = "rocm")
+    linked_dirs = M.link_runtime_directories(
+        llama_bin,
+        whisper_bin,
+        backend = "rocm",
+        host = _host("linux", "x64"),
+    )
+
+    assert "libcustomrocm.so.1" in linked
+    assert "libhipblas.so.2" in linked
+    assert linked_dirs == ["hipblaslt", "rocblas"]
+    for directory in linked_dirs:
+        linked_catalog = whisper_bin / directory / "library" / "gfx1100" / "kernel.dat"
+        source_catalog = llama_bin / directory / "library" / "gfx1100" / "kernel.dat"
+        assert linked_catalog.stat().st_ino == source_catalog.stat().st_ino
+
+
+def test_rocm_runtime_requires_the_rocblas_kernel_catalog(tmp_path):
+    # rocblas stays mandatory: libggml-hip.so lists librocblas.so.5 in its ELF NEEDED (checked on the published b10342
+    # linux-x64-rocm-gfx103X bundle).
+    llama_bin = _fake_llama_bin(tmp_path, backend_module = "libggml-hip.so")
+    (llama_bin / "hipblaslt").mkdir()
+    (llama_bin / "hipblaslt" / "kernel.dat").write_bytes(b"kernel")
+    with pytest.raises(PrebuiltFallback, match = "rocblas"):
+        M.link_runtime_directories(
+            llama_bin,
+            tmp_path / "whisper-bin",
+            backend = "rocm",
+            host = _host("linux", "x64"),
+        )
+
+
+def test_rocm_runtime_rejects_an_empty_rocblas_kernel_catalog(tmp_path):
+    llama_bin = _fake_llama_bin(tmp_path, backend_module = "libggml-hip.so")
+    (llama_bin / "rocblas" / "library").mkdir(parents = True)
+    with pytest.raises(PrebuiltFallback, match = "empty rocblas"):
+        M.link_runtime_directories(
+            llama_bin,
+            tmp_path / "whisper-bin",
+            backend = "rocm",
+            host = _host("linux", "x64"),
+        )
+
+
+def _gfx103x_llama_bin(tmp_path: Path) -> Path:
+    """The published linux-x64-rocm-gfx103X layout from #8364: librocblas plus
+    its Tensile catalog, and libhipblaslt.so.1 with no hipblaslt/ catalog at all.
+    hipBLASLt builds no kernels for gfx1030 (RDNA2), so nothing is missing here;
+    llama.cpp installs and runs inference on exactly this tree."""
+    llama_bin = _fake_llama_bin(tmp_path, backend_module = "libggml-hip.so")
+    for name in ("libamdhip64.so.7", "libhipblas.so.3", "librocblas.so.5", "libhipblaslt.so.1"):
+        (llama_bin / name).write_bytes(name.encode())
+    catalog = llama_bin / "rocblas" / "library"
+    catalog.mkdir(parents = True)
+    (catalog / "TensileLibrary_Type_HH_Contraction_gfx1030.dat").write_bytes(b"kernel")
+    return llama_bin
+
+
+def test_rocm_runtime_wires_rocblas_when_hipblaslt_ships_no_kernels(tmp_path):
+    # #8364: RX 6800 (gfx1030) on linux x64. The whisper update failed every startup on "missing its hipblaslt kernel
+    # catalog" while inference ran.
+    llama_bin = _gfx103x_llama_bin(tmp_path)
+    whisper_bin = tmp_path / "whisper-bin"
+
+    linked_dirs = M.link_runtime_directories(
+        llama_bin,
+        whisper_bin,
+        backend = "rocm",
+        host = _host("linux", "x64", has_rocm = True, rocm_gfx = "gfx1030"),
+    )
+
+    assert linked_dirs == ["rocblas"]
+    catalog = whisper_bin / "rocblas" / "library" / "TensileLibrary_Type_HH_Contraction_gfx1030.dat"
+    assert catalog.is_file()
+    assert catalog.stat().st_ino == (llama_bin / "rocblas" / "library" / catalog.name).stat().st_ino
+    # No empty stand-in directory: the sidecar treats an empty catalog as broken.
+    assert not (whisper_bin / "hipblaslt").exists()
+
+
+def test_rocm_runtime_treats_an_empty_hipblaslt_catalog_as_absent(tmp_path):
+    llama_bin = _gfx103x_llama_bin(tmp_path)
+    (llama_bin / "hipblaslt" / "library").mkdir(parents = True)
+    whisper_bin = tmp_path / "whisper-bin"
+
+    assert M.link_runtime_directories(
+        llama_bin,
+        whisper_bin,
+        backend = "rocm",
+        host = _host("linux", "x64", has_rocm = True, rocm_gfx = "gfx1030"),
+    ) == ["rocblas"]
+    assert not (whisper_bin / "hipblaslt").exists()
+
+
+@pytest.mark.parametrize(
+    "whisper_os, backend",
+    [
+        ("linux", "cpu"),
+        ("linux", "cuda"),
+        ("linux", "vulkan"),
+        ("macos", "cpu"),
+        ("macos", "metal"),
+        ("windows", "cpu"),
+        ("windows", "cuda"),
+        ("windows", "vulkan"),
+        ("windows", "rocm"),
+    ],
+)
+def test_runtime_directories_are_a_linux_rocm_concern_only(tmp_path, whisper_os, backend):
+    # Non-regression for the backends #8364 must not touch: no catalog is looked
+    # for, so a bundle without one is never rejected over it.
+    llama_bin = _fake_llama_bin(tmp_path, backend_module = None)
+    assert (
+        M.link_runtime_directories(
+            llama_bin,
+            tmp_path / f"whisper-bin-{whisper_os}-{backend}",
+            backend = backend,
+            host = _host(whisper_os, "x64"),
+        )
+        == []
+    )
+
+
+def test_rocm_runtime_catalog_copy_fallback(tmp_path, monkeypatch):
+    llama_bin = _fake_llama_bin(tmp_path, backend_module = "libggml-hip.so")
+    for directory in M.SLIM_ROCM_RUNTIME_DIRS:
+        catalog = llama_bin / directory
+        catalog.mkdir()
+        (catalog / "kernel.dat").write_bytes(directory.encode())
+    monkeypatch.setattr(M.os, "link", lambda *args: (_ for _ in ()).throw(OSError("xdev")))
+    whisper_bin = tmp_path / "whisper-bin"
+    M.link_runtime_directories(
+        llama_bin,
+        whisper_bin,
+        backend = "rocm",
+        host = _host("linux", "x64"),
+    )
+    for directory in M.SLIM_ROCM_RUNTIME_DIRS:
+        assert (whisper_bin / directory / "kernel.dat").read_bytes() == directory.encode()
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason = "os.access(X_OK) is always true on Windows, so the guard is POSIX only",
+)
+def test_existing_install_requires_executable_server(tmp_path, monkeypatch):
+    # A marker-matching install with a non-executable server must reinstall: the sidecar refuses it via os.access(X_OK),
+    # so "already matches" would otherwise leave dictation permanently broken.
+    host = _host("linux", "x64")
+    selection = object()
+    monkeypatch.setattr(M.core, "existing_install_matches", lambda *a: True)
+    server = tmp_path / "build" / "bin" / "whisper-server"
+    server.parent.mkdir(parents = True)
+    server.write_text("bin")
+    monkeypatch.setattr(M, "installed_server_path", lambda d, h: server)
+    monkeypatch.setattr(M, "load_prebuilt_metadata", lambda d: {})
+    server.chmod(0o644)
+    assert M.existing_install_matches(tmp_path, host, selection) is False
+    server.chmod(0o755)
+    assert M.existing_install_matches(tmp_path, host, selection) is True
+
+
+def test_existing_slim_install_requires_wired_libraries(tmp_path, monkeypatch):
+    # A slim install whose hardlinked ggml files vanished (llama dir deleted) must reinstall so update re-wires instead
+    # of reporting up to date.
+    host = _host("linux", "x64")
+    monkeypatch.setattr(M.core, "existing_install_matches", lambda *a: True)
+    server = tmp_path / "build" / "bin" / "whisper-server"
+    server.parent.mkdir(parents = True)
+    server.write_text("bin")
+    server.chmod(0o755)
+    monkeypatch.setattr(M, "installed_server_path", lambda d, h: server)
+    marker = {
+        "install_kind": "slim",
+        "runtime_wiring_version": M.SLIM_RUNTIME_WIRING_VERSION,
+        "linked_libraries": ["libggml.so.0"],
+    }
+    monkeypatch.setattr(M, "load_prebuilt_metadata", lambda d: marker)
+    marker.pop("runtime_wiring_version")
+    assert M.existing_install_matches(tmp_path, host, object()) is False
+    marker["runtime_wiring_version"] = M.SLIM_RUNTIME_WIRING_VERSION
+    assert M.existing_install_matches(tmp_path, host, object()) is False
+    (server.parent / "libggml.so.0").write_text("lib")
+    assert M.existing_install_matches(tmp_path, host, object()) is True
+    marker.update(backend = "rocm", linked_runtime_directories = [])
+    assert M.existing_install_matches(tmp_path, _host("windows", "x64"), object()) is True
+
+
+@pytest.mark.parametrize(
+    "runtime_dirs, current",
+    [
+        (["hipblaslt", "rocblas"], True),  # every target hipBLASLt has kernels for
+        (["rocblas"], True),  # gfx1030 and friends: #8364
+        ([], False),  # rocblas is load-bearing, never optional
+        (["hipblaslt"], False),
+        (["rocblas", "unexpected"], False),  # not a catalog this installer wires
+        ("rocblas", False),  # not a list: hand-edited or truncated marker
+    ],
+)
+def test_existing_rocm_install_accepts_the_catalogs_the_target_has(
+    tmp_path, monkeypatch, runtime_dirs, current
+):
+    # #8364: a gfx1030 install wires rocblas alone and is complete, so "already matches" must hold for it, while a
+    # marker with no rocblas still reinstalls.
+    host = _host("linux", "x64", has_rocm = True, rocm_gfx = "gfx1030")
+    monkeypatch.setattr(M.core, "existing_install_matches", lambda *a: True)
+    bin_dir = tmp_path / "build" / "bin"
+    bin_dir.mkdir(parents = True)
+    server = bin_dir / "whisper-server"
+    server.write_text("bin")
+    server.chmod(0o755)
+    (bin_dir / "libggml.so.0").write_text("lib")
+    for name in ("hipblaslt", "rocblas", "unexpected"):
+        (bin_dir / name).mkdir()
+        (bin_dir / name / "kernel.dat").write_text("kernel")
+    monkeypatch.setattr(M, "installed_server_path", lambda d, h: server)
+    monkeypatch.setattr(
+        M,
+        "load_prebuilt_metadata",
+        lambda d: {
+            "install_kind": "slim",
+            "backend": "rocm",
+            "runtime_wiring_version": M.SLIM_RUNTIME_WIRING_VERSION,
+            "linked_libraries": ["libggml.so.0"],
+            "linked_runtime_directories": runtime_dirs,
+        },
+    )
+
+    assert M.existing_install_matches(tmp_path, host, object()) is current
+
+
+@pytest.mark.parametrize("empty", ["hipblaslt", "rocblas"])
+def test_existing_rocm_install_reinstalls_over_an_empty_catalog_on_disk(
+    tmp_path, monkeypatch, empty
+):
+    # Relaxing the marker check to membership must not relax the on-disk check:
+    # a marker that names a catalog still has to find files in it, or dictation
+    # fails at launch with the marker insisting the install is current.
+    host = _host("linux", "x64", has_rocm = True, rocm_gfx = "gfx1030")
+    monkeypatch.setattr(M.core, "existing_install_matches", lambda *a: True)
+    bin_dir = tmp_path / "build" / "bin"
+    bin_dir.mkdir(parents = True)
+    server = bin_dir / "whisper-server"
+    server.write_text("bin")
+    server.chmod(0o755)
+    (bin_dir / "libggml.so.0").write_text("lib")
+    for name in ("hipblaslt", "rocblas"):
+        (bin_dir / name / "library").mkdir(parents = True)
+        if name != empty:
+            (bin_dir / name / "library" / "kernel.dat").write_text("kernel")
+    monkeypatch.setattr(M, "installed_server_path", lambda d, h: server)
+    monkeypatch.setattr(
+        M,
+        "load_prebuilt_metadata",
+        lambda d: {
+            "install_kind": "slim",
+            "backend": "rocm",
+            "runtime_wiring_version": M.SLIM_RUNTIME_WIRING_VERSION,
+            "linked_libraries": ["libggml.so.0"],
+            "linked_runtime_directories": ["hipblaslt", "rocblas"],
+        },
+    )
+
+    assert M.existing_install_matches(tmp_path, host, object()) is False
+
+
+def test_link_ggml_runtime_libomp_alone_is_not_a_pairing(tmp_path):
+    # A libomp without any ggml library is not a usable llama runtime.
+    bin_dir = tmp_path / "llama_bin"
+    bin_dir.mkdir()
+    (bin_dir / "libomp140.aarch64.dll").write_bytes(b"x")
+    with pytest.raises(PrebuiltFallback):
+        M.link_ggml_runtime(bin_dir, tmp_path / "whisper_bin")
+
+
+def _build_slim_bundle(tmp_path: Path, host: HostInfo) -> tuple[Path, str]:
+    """Slim archive per the CI contract: whisper-server + libwhisper only."""
+    archive = tmp_path / SLIM_ASSET
+    with tarfile.open(archive, "w:gz") as tar:
+        _add_file(tar, M.server_binary_name(host), b"#!/bin/sh\necho whisper\n", mode = 0o755)
+        _add_file(tar, "libwhisper.so.1", b"dummy-libwhisper")
+    return archive, M.sha256_file(archive)
+
+
+def _slim_install_env(monkeypatch, tmp_path, host, *, sha256: str) -> Path:
+    llama_bin = _fake_llama_bin(tmp_path)
+    monkeypatch.setattr(
+        M,
+        "installed_llama_runtime",
+        lambda install_dir = None: (llama_bin, SLIM_LLAMA_TAG, "cuda13-newer"),
+    )
+    manifest = M.parse_manifest(
+        _manifest(
+            [
+                _artifact("linux", "x64", "cpu", CPU_ASSET, "a" * 64),
+                _slim_artifact(sha256 = sha256),
+            ]
+        )
+    )
+    bundle = M.ReleaseBundle(
+        repo = "unslothai/whisper.cpp",
+        release_tag = RELEASE_TAG,
+        manifest = manifest,
+        asset_urls = {SLIM_ASSET: f"https://example.invalid/{SLIM_ASSET}"},
+    )
+    checksums = {SLIM_ASSET: sha256, CPU_ASSET: "a" * 64}
+    monkeypatch.setattr(
+        M,
+        "fetch_release_for_install",
+        lambda repo, *, published_release_tag = None: (bundle, checksums),
+    )
+    return llama_bin
+
+
+def test_slim_install_wires_links_and_marker(tmp_path, monkeypatch):
+    host = _cuda_host()
+    archive, sha256 = _build_slim_bundle(tmp_path, host)
+
+    def fake_download(url, destination):
+        destination.parent.mkdir(parents = True, exist_ok = True)
+        destination.write_bytes(archive.read_bytes())
+
+    monkeypatch.setattr(M, "detect_host", lambda: host)
+    monkeypatch.setattr(M, "download_file", fake_download)
+    llama_bin = _slim_install_env(monkeypatch, tmp_path, host, sha256 = sha256)
+
+    install_dir = tmp_path / "whisper.cpp"
+    assert M.install_prebuilt(install_dir, backend = "cuda") == M.EXIT_SUCCESS
+
+    whisper_bin = install_dir / "build" / "bin"
+    assert (whisper_bin / "whisper-server").is_file()
+    assert (whisper_bin / "libwhisper.so.1").is_file()
+    for name in ("libggml.so.0", "libggml-base.so.0", "libggml-cuda.so", "libggml-cpu-x64.so"):
+        dest = whisper_bin / name
+        assert dest.is_file() and not dest.is_symlink()
+        assert dest.stat().st_ino == (llama_bin / name).stat().st_ino
+
+    marker = json.loads((install_dir / M.METADATA_FILENAME).read_text())
+    assert marker["backend"] == "cuda"  # the accel identity, not "slim"
+    assert marker["asset"] == SLIM_ASSET
+    assert marker["install_kind"] == "slim"
+    assert marker["paired_llama_tag"] == SLIM_LLAMA_TAG
+    assert marker["linked_from"] == str(llama_bin)
+    # The wired filenames land in the marker; the sidecar launch guard verifies exactly these names instead of hardcoded
+    # per-OS globs.
+    assert marker["linked_libraries"] == [
+        "libggml-base.so.0",
+        "libggml-cpu-x64.so",
+        "libggml-cuda.so",
+        "libggml.so.0",
+    ]
+    assert marker["runtime_wiring_version"] == M.SLIM_RUNTIME_WIRING_VERSION
+    assert marker["linked_runtime_directories"] == []
+
+
+def test_slim_rocm_install_pairs_a_runtime_without_a_hipblaslt_catalog(tmp_path, monkeypatch):
+    # End to end over the #8364 tree: the install must complete and the marker
+    # must record the one catalog the gfx1030 bundle actually ships.
+    host = _host("linux", "x64", has_rocm = True, rocm_gfx = "gfx1030")
+    archive, sha256 = _build_slim_bundle(tmp_path, host)
+    llama_bin = _gfx103x_llama_bin(tmp_path)
+
+    def fake_download(url, destination):
+        destination.parent.mkdir(parents = True, exist_ok = True)
+        destination.write_bytes(archive.read_bytes())
+
+    monkeypatch.setattr(M, "detect_host", lambda: host)
+    monkeypatch.setattr(M, "download_file", fake_download)
+    monkeypatch.setattr(M, "_elf_needed", lambda path: set())
+    monkeypatch.setattr(
+        M,
+        "installed_llama_runtime",
+        lambda install_dir = None: (llama_bin, SLIM_LLAMA_TAG, "rocm-gfx103X"),
+    )
+    manifest = M.parse_manifest(_manifest([_slim_artifact(sha256 = sha256)]))
+    bundle = M.ReleaseBundle(
+        repo = "unslothai/whisper.cpp",
+        release_tag = RELEASE_TAG,
+        manifest = manifest,
+        asset_urls = {SLIM_ASSET: f"https://example.invalid/{SLIM_ASSET}"},
+    )
+    monkeypatch.setattr(
+        M,
+        "fetch_release_for_install",
+        lambda repo, *, published_release_tag = None: (bundle, {SLIM_ASSET: sha256}),
+    )
+
+    install_dir = tmp_path / "whisper.cpp"
+    assert M.install_prebuilt(install_dir, backend = "rocm") == M.EXIT_SUCCESS
+
+    whisper_bin = install_dir / "build" / "bin"
+    assert (whisper_bin / "libggml-hip.so").is_file()
+    assert (whisper_bin / "rocblas" / "library").is_dir()
+    assert not (whisper_bin / "hipblaslt").exists()
+    marker = json.loads((install_dir / M.METADATA_FILENAME).read_text())
+    assert marker["backend"] == "rocm"
+    assert marker["install_kind"] == "slim"
+    assert marker["linked_runtime_directories"] == ["rocblas"]
+    assert marker["runtime_wiring_version"] == M.SLIM_RUNTIME_WIRING_VERSION
+    # A second run is a no-op: the wiring the target can have is the wiring it has.
+    assert M.install_prebuilt(install_dir, backend = "rocm") == M.EXIT_SUCCESS
+
+
+def test_slim_links_survive_a_llama_dir_swap(tmp_path, monkeypatch):
+    # The whole point of hardlinks: replace the llama dir contents after wiring and whisper's links must still hold
+    # the OLD inodes/content.
+    host = _cuda_host()
+    archive, sha256 = _build_slim_bundle(tmp_path, host)
+
+    def fake_download(url, destination):
+        destination.parent.mkdir(parents = True, exist_ok = True)
+        destination.write_bytes(archive.read_bytes())
+
+    monkeypatch.setattr(M, "detect_host", lambda: host)
+    monkeypatch.setattr(M, "download_file", fake_download)
+    llama_bin = _slim_install_env(monkeypatch, tmp_path, host, sha256 = sha256)
+
+    install_dir = tmp_path / "whisper.cpp"
+    assert M.install_prebuilt(install_dir, backend = "cuda") == M.EXIT_SUCCESS
+    whisper_lib = install_dir / "build" / "bin" / "libggml.so.0"
+    old_inode = whisper_lib.stat().st_ino
+    old_content = whisper_lib.read_bytes()
+
+    # Simulate the llama updater swapping in a new release's libraries.
+    for path in llama_bin.iterdir():
+        path.unlink()
+    (llama_bin / "libggml.so.0").write_bytes(b"ggml-NEW")
+
+    assert whisper_lib.stat().st_ino == old_inode  # old inode survives the swap
+    assert whisper_lib.read_bytes() == old_content
+    assert whisper_lib.stat().st_nlink == 1  # the llama side is gone; ours remains
+
+
+# The exact resolver key set shipped before slim existed;
+# install_kind is the one additive field and must stay the only difference.
+_LEGACY_RESOLVER_KEYS = {
+    "prebuilt_available",
+    "repo",
+    "release_tag",
+    "upstream_tag",
+    "backend",
+    "requested_backend",
+    "cpu_fallback",
+    "asset",
+    "os",
+    "arch",
+    "runtime_line",
+}
+
+
+def _resolver_payload(monkeypatch, capsys, manifest, host) -> dict:
+    bundle = M.ReleaseBundle(
+        repo = "unslothai/whisper.cpp",
+        release_tag = RELEASE_TAG,
+        manifest = manifest,
+        asset_urls = {},
+    )
+    monkeypatch.setattr(M, "detect_host", lambda: host)
+    monkeypatch.setattr(
+        M, "fetch_release_for_install", lambda repo, *, published_release_tag = None: (bundle, {})
+    )
+    assert M.main(["--resolve-prebuilt", "--output-format", "json"]) == M.EXIT_SUCCESS
+    return json.loads(capsys.readouterr().out.strip())
+
+
+def test_resolver_reports_install_kind_fat_additively(monkeypatch, capsys):
+    # The pinned pre-slim escape hatch resolves the published fat CPU bundle.
+    manifest = M.parse_manifest(_manifest([_artifact("linux", "x64", "cpu", CPU_ASSET, "a" * 64)]))
+    payload = _resolver_payload(monkeypatch, capsys, manifest, _host("linux", "x64"))
+    assert set(payload) == _LEGACY_RESOLVER_KEYS | {"install_kind"}
+    assert payload["install_kind"] == "fat"
+    assert payload["asset"] == CPU_ASSET
+
+
+def _release_for_selection(release_tag: str, upstream_tag: str, artifact: dict) -> M.ReleaseBundle:
+    payload = _manifest([artifact])
+    payload["upstream_tag"] = upstream_tag
+    return M.ReleaseBundle(
+        repo = "unslothai/whisper.cpp",
+        release_tag = release_tag,
+        manifest = M.parse_manifest(payload),
+        asset_urls = {},
+    )
+
+
+def test_whisper_tag_selects_matching_published_upstream(monkeypatch):
+    latest_asset = "latest-linux-x64-cpu.tar.gz"
+    pinned_asset = "pinned-linux-x64-cpu.tar.gz"
+    latest = _release_for_selection(
+        "v1.9.2-unsloth.1",
+        "v1.9.2",
+        _artifact("linux", "x64", "cpu", latest_asset, "a" * 64),
+    )
+    pinned = _release_for_selection(
+        "v1.9.0-unsloth.3",
+        "v1.9.0",
+        _artifact("linux", "x64", "cpu", pinned_asset, "b" * 64),
+    )
+    monkeypatch.setattr(
+        M,
+        "fetch_release_for_install",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("an upstream pin consulted the unrelated newest release")
+        ),
+    )
+    monkeypatch.setattr(
+        M,
+        "_published_release_tags",
+        lambda repo: [latest.release_tag, pinned.release_tag],
+    )
+    monkeypatch.setattr(
+        M,
+        "_fetch_release_candidate",
+        lambda repo, tag: latest if tag == latest.release_tag else pinned,
+    )
+    monkeypatch.setattr(M, "fetch_release_checksums", lambda bundle: {pinned_asset: "b" * 64})
+
+    payload = M.resolve_prebuilt(
+        _host("linux", "x64"),
+        published_repo = "unslothai/whisper.cpp",
+        published_release_tag = None,
+        whisper_tag = "v1.9.0",
+        backend = "cpu",
+        cpu_fallback = False,
+    )
+    assert payload["prebuilt_available"] is True
+    assert payload["release_tag"] == pinned.release_tag
+    assert payload["upstream_tag"] == "v1.9.0"
+
+
+def test_macos_walks_back_to_newest_compatible_release(monkeypatch):
+    latest_asset = "latest-macos-arm64-cpu.tar.gz"
+    compatible_asset = "compatible-macos-arm64-cpu.tar.gz"
+    latest = _release_for_selection(
+        "v1.9.2-unsloth.1",
+        "v1.9.2",
+        _artifact(
+            "macos",
+            "arm64",
+            "cpu",
+            latest_asset,
+            "a" * 64,
+            min_os = "macos-15.0",
+        ),
+    )
+    compatible = _release_for_selection(
+        "v1.9.1-unsloth.1",
+        "v1.9.1",
+        _artifact(
+            "macos",
+            "arm64",
+            "cpu",
+            compatible_asset,
+            "b" * 64,
+            min_os = "macos-13.0",
+        ),
+    )
+    monkeypatch.setattr(
+        M,
+        "fetch_release_for_install",
+        lambda repo, *, published_release_tag = None: (latest, {latest_asset: "a" * 64}),
+    )
+    monkeypatch.setattr(
+        M,
+        "_published_release_tags",
+        lambda repo: [latest.release_tag, compatible.release_tag],
+    )
+    monkeypatch.setattr(M, "_fetch_release_candidate", lambda repo, tag: compatible)
+    monkeypatch.setattr(
+        M,
+        "fetch_release_checksums",
+        lambda bundle: {compatible_asset: "b" * 64},
+    )
+
+    payload = M.resolve_prebuilt(
+        _host("macos", "arm64", macos_version = (14, 7)),
+        published_repo = "unslothai/whisper.cpp",
+        published_release_tag = None,
+        backend = "cpu",
+        cpu_fallback = False,
+    )
+    assert payload["prebuilt_available"] is True
+    assert payload["release_tag"] == compatible.release_tag
+    # Recorded on the plan and its selection, so the marker carries it.
+    plan = M._release_plan_for_host(
+        _host("macos", "arm64", macos_version = (14, 7)),
+        published_repo = "unslothai/whisper.cpp",
+        published_release_tag = None,
+        whisper_tag = "latest",
+        requested_backend = "cpu",
+    )
+    assert plan.bundle.release_tag == compatible.release_tag
+    walk_back = M.core.WalkBack(release_tag = latest.release_tag, macos_version = "14.7")
+    assert plan.walk_back == walk_back
+    assert plan.selection is not None
+    assert plan.selection.walk_back == walk_back
+    assert "walked_back_from" not in plan.selection.coverage
+
+
+def test_macos_walkback_never_masks_checksum_failure(monkeypatch):
+    asset = "latest-macos-arm64-cpu.tar.gz"
+    latest = _release_for_selection(
+        "v1.9.2-unsloth.1",
+        "v1.9.2",
+        _artifact("macos", "arm64", "cpu", asset, "a" * 64, min_os = "macos-13.0"),
+    )
+    monkeypatch.setattr(
+        M,
+        "fetch_release_for_install",
+        lambda repo, *, published_release_tag = None: (latest, {asset: "b" * 64}),
+    )
+    monkeypatch.setattr(
+        M,
+        "_published_release_tags",
+        lambda repo: (_ for _ in ()).throw(AssertionError("integrity failure walked back")),
+    )
+
+    with pytest.raises(PrebuiltFallback, match = "disagrees"):
+        M._release_plan_for_host(
+            _host("macos", "arm64", macos_version = (14, 7)),
+            published_repo = "unslothai/whisper.cpp",
+            published_release_tag = None,
+            whisper_tag = "latest",
+            requested_backend = "cpu",
+        )
+
+
+def test_resolver_reports_install_kind_slim_when_paired(tmp_path, monkeypatch, capsys):
+    bin_dir = _fake_llama_bin(tmp_path)
+    monkeypatch.setattr(
+        M, "installed_llama_runtime", lambda: (bin_dir, SLIM_LLAMA_TAG, "cuda13-newer")
+    )
+    payload = _resolver_payload(monkeypatch, capsys, _slim_manifest(), _cuda_host())
+    assert set(payload) == _LEGACY_RESOLVER_KEYS | {"install_kind"}
+    assert payload["install_kind"] == "slim"
+    assert payload["asset"] == SLIM_ASSET
+    assert payload["backend"] == "cuda"
+
+
+def test_resolver_reports_metal_slim_on_macos(tmp_path, monkeypatch, capsys):
+    # Same contract shape on macs: backend stays the accel (metal), the one additive field says the asset installs
+    # slim.
+    bin_dir = _fake_llama_bin_macos(tmp_path)
+    monkeypatch.setattr(
+        M, "installed_llama_runtime", lambda: (bin_dir, SLIM_LLAMA_TAG, "macos-metal-arm64")
+    )
+    host = _host("macos", "arm64", macos_version = (14, 0))
+    payload = _resolver_payload(monkeypatch, capsys, _macos_slim_manifest(), host)
+    assert set(payload) == _LEGACY_RESOLVER_KEYS | {"install_kind"}
+    assert payload["install_kind"] == "slim"
+    assert payload["asset"] == MAC_SLIM_ASSET
+    assert payload["backend"] == "metal"
+    assert payload["requested_backend"] == "metal"
+
+
+# The no-network re-check: answers from the marker plus at most one HEAD, and still notices a llama
+# runtime that moved under a slim bundle whose own release did not.
+def _installed_cpu_tree(
+    tmp_path,
+    monkeypatch,
+    *,
+    backend = "cpu",
+):
+    host = _host("linux", "x64")
+    archive, asset, sha256 = _build_cpu_bundle(tmp_path, host)
+    calls = {"n": 0}
+
+    def fake_download(url, destination):
+        calls["n"] += 1
+        destination.parent.mkdir(parents = True, exist_ok = True)
+        destination.write_bytes(archive.read_bytes())
+
+    monkeypatch.setattr(M, "detect_host", lambda: host)
+    monkeypatch.setattr(M, "download_file", fake_download)
+    _install_env(monkeypatch, tmp_path, host, asset = asset, sha256 = sha256)
+    install_dir = tmp_path / "whisper.cpp"
+    assert M.install_prebuilt(install_dir, backend = backend) == M.EXIT_SUCCESS
+    assert calls["n"] == 1
+    monkeypatch.setattr(
+        M.llama, "_download_host_latest_release_tag", lambda _repo: RELEASE_TAG, raising = False
+    )
+    # The release list an upstream pin is answered from: one packaging of the tag.
+    monkeypatch.setattr(
+        M.llama,
+        "github_releases",
+        lambda _repo, max_pages = 1: [
+            {"tag_name": RELEASE_TAG, "published_at": "2026-01-01T00:00:00Z"}
+        ],
+    )
+    monkeypatch.delenv("UNSLOTH_PREBUILT_FULL_CHECK", raising = False)
+    return install_dir, host, calls
+
+
+def _whisper_check(install_dir, host, **overrides) -> bool:
+    kwargs = dict(
+        whisper_tag = "latest",
+        published_repo = M.DEFAULT_PUBLISHED_REPO,
+        published_release_tag = None,
+        requested_backend = "cpu",
+    )
+    kwargs.update(overrides)
+    return M.existing_install_current_without_plan(install_dir, host, **kwargs)
+
+
+def test_a_hyphenated_upstream_pin_keeps_its_suffix_when_matching_packagings(monkeypatch):
+    """v1.9.2-rc1-unsloth.2 packages v1.9.2-rc1, not v1.9.2: cutting the packaged tag at
+    its first hyphen left the newer revision out and reported the recorded one current."""
+    releases = [
+        {"tag_name": "v1.9.2-unsloth.5", "published_at": "2026-03-01T00:00:00Z"},
+        {"tag_name": "v1.9.2-rc1-unsloth.2", "published_at": "2026-02-01T00:00:00Z"},
+        {"tag_name": "v1.9.2-rc1-unsloth.1", "published_at": "2026-01-01T00:00:00Z"},
+    ]
+    monkeypatch.setattr(M.llama, "github_releases", lambda _repo, max_pages = 1: releases)
+    newest = M._api_newest_release_tag_for_upstream("r/w", "v1.9.2-rc1", "v1.9.2-rc1-unsloth.1")
+    assert newest == "v1.9.2-rc1-unsloth.2"
+    # A plain pin takes neither a longer tag starting with it nor a prerelease of it.
+    releases.append({"tag_name": "v1.9.20-unsloth.1", "published_at": "2026-04-01T00:00:00Z"})
+    releases.append({"tag_name": "v1.9.2-rc1-unsloth.9", "published_at": "2026-05-01T00:00:00Z"})
+    assert (
+        M._api_newest_release_tag_for_upstream("r/w", "v1.9.2", "v1.9.2-unsloth.5")
+        == "v1.9.2-unsloth.5"
+    )
+
+
+def test_whisper_current_install_needs_no_release_fetch(tmp_path, monkeypatch):
+    install_dir, host, _ = _installed_cpu_tree(tmp_path, monkeypatch)
+
+    def boom(*_a, **_k):
+        raise AssertionError("the no-network check must not fetch the release")
+
+    monkeypatch.setattr(M, "fetch_release_for_install", boom)
+    assert _whisper_check(install_dir, host) is True
+
+
+def test_whisper_keep_paths_reject_an_empty_server_and_a_marker_without_a_fingerprint(
+    tmp_path, monkeypatch
+):
+    """The lookup-failure keep and the marker-only check share one predicate. A zero-byte
+    server keeps its mode and its marker, and neither the POSIX execute-bit check nor
+    the Windows existence check saw it; a marker missing the fingerprint the full path
+    holds it to is not a record of a finished install."""
+    import json
+
+    install_dir, host, _ = _installed_cpu_tree(tmp_path, monkeypatch)
+    assert _whisper_check(install_dir, host) is True
+    server = M.installed_server_path(install_dir, host)
+    saved = server.read_bytes()
+    server.write_bytes(b"")
+    assert _whisper_check(install_dir, host) is False
+    server.write_bytes(saved)
+    assert _whisper_check(install_dir, host) is True
+
+    markers = [
+        p
+        for p in install_dir.rglob("*.json")
+        if "install_fingerprint" in p.read_text(encoding = "utf-8")
+    ]
+    assert markers, "the install wrote no marker carrying a fingerprint"
+    marker_path = markers[0]
+    original = marker_path.read_text(encoding = "utf-8")
+    payload = json.loads(original)
+    payload.pop("install_fingerprint")
+    marker_path.write_text(json.dumps(payload), encoding = "utf-8")
+    assert _whisper_check(install_dir, host) is False
+    marker_path.write_text(original, encoding = "utf-8")
+    assert _whisper_check(install_dir, host) is True
+
+
+def test_whisper_marker_fields_edited_under_a_kept_fingerprint_take_the_full_path(
+    tmp_path, monkeypatch
+):
+    """A release_tag edited to the current tag over an old binary and its old
+    fingerprint used to read as current from the marker alone; the full path compared
+    the fingerprint against the plan's and reinstalled. The marker-only path now
+    recomputes the fingerprint from the marker's own fields."""
+    install_dir, host, calls = _installed_cpu_tree(tmp_path, monkeypatch)
+    marker_path = install_dir / M.METADATA_FILENAME
+    original = marker_path.read_text(encoding = "utf-8")
+    payload = json.loads(original)
+    assert isinstance(payload.get("fingerprint_coverage"), dict)
+    assert M.core.marker_install_fingerprint(payload) == payload["install_fingerprint"]
+    # release_tag moved to the current latest over the old asset: the tag comparison alone passes
+    # this.
+    edited = dict(payload)
+    edited["release_tag"] = "v9.9.9-unsloth.1"
+    marker_path.write_text(json.dumps(edited), encoding = "utf-8")
+    monkeypatch.setattr(
+        M.llama,
+        "_download_host_latest_release_tag",
+        lambda _repo: "v9.9.9-unsloth.1",
+        raising = False,
+    )
+    assert _whisper_check(install_dir, host) is False
+    monkeypatch.setattr(
+        M.llama, "_download_host_latest_release_tag", lambda _repo: RELEASE_TAG, raising = False
+    )
+    for field, value in (("asset_sha256", "0" * 64), ("upstream_tag", "v0.0.1")):
+        edited = dict(payload)
+        edited[field] = value
+        marker_path.write_text(json.dumps(edited), encoding = "utf-8")
+        assert _whisper_check(install_dir, host) is False, field
+    marker_path.write_text(original, encoding = "utf-8")
+    assert _whisper_check(install_dir, host) is True
+    # A marker predating fingerprint_coverage: the full path keeps the install and settles the key.
+    legacy = dict(payload)
+    legacy.pop("fingerprint_coverage")
+    marker_path.write_text(json.dumps(legacy), encoding = "utf-8")
+    # A group-shared install's marker: the settle must not narrow its mode.
+    if os.name != "nt":
+        os.chmod(marker_path, 0o664)
+    assert _whisper_check(install_dir, host) is False
+    downloads = calls["n"]
+    assert M.install_prebuilt(install_dir, backend = "cpu") == M.EXIT_SUCCESS
+    assert calls["n"] == downloads
+    settled = json.loads(marker_path.read_text(encoding = "utf-8"))
+    assert settled.get("fingerprint_coverage") == payload["fingerprint_coverage"]
+    # Temp-and-replace: nothing left beside the marker, mode kept.
+    assert not list(install_dir.glob(M.METADATA_FILENAME + ".tmp-*"))
+    if os.name != "nt":
+        assert stat.S_IMODE(marker_path.stat().st_mode) == 0o664
+    assert settled["install_fingerprint"] == payload["install_fingerprint"]
+    assert _whisper_check(install_dir, host) is True
+
+
+def test_whisper_second_install_run_downloads_and_fetches_nothing(tmp_path, monkeypatch):
+    """The end-to-end shape: a repeat install_prebuilt is now a marker read, not a
+    release fetch followed by a fingerprint comparison."""
+    install_dir, host, calls = _installed_cpu_tree(tmp_path, monkeypatch)
+    fetches = {"n": 0}
+    real_fetch = M.fetch_release_for_install
+
+    def counting(*args, **kwargs):
+        fetches["n"] += 1
+        return real_fetch(*args, **kwargs)
+
+    monkeypatch.setattr(M, "fetch_release_for_install", counting)
+    assert M.install_prebuilt(install_dir, backend = "cpu") == M.EXIT_SUCCESS
+    assert calls["n"] == 1
+    assert fetches["n"] == 0
+    # --force is still the way to make it do the work anyway.
+    assert M.install_prebuilt(install_dir, backend = "cpu", force = True) == M.EXIT_SUCCESS
+    assert fetches["n"] == 1
+
+
+def test_whisper_newer_release_or_unreachable_lookup_is_not_current(tmp_path, monkeypatch):
+    install_dir, host, _ = _installed_cpu_tree(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        M.llama, "_download_host_latest_release_tag", lambda _repo: "v1.9.2-unsloth.1"
+    )
+    assert _whisper_check(install_dir, host) is False
+    monkeypatch.setattr(M.llama, "_download_host_latest_release_tag", lambda _repo: None)
+    assert _whisper_check(install_dir, host) is False
+
+    def raises(_repo):
+        raise OSError("github.com unreachable")
+
+    monkeypatch.setattr(M.llama, "_download_host_latest_release_tag", raises)
+    assert _whisper_check(install_dir, host) is False
+
+
+def test_whisper_a_pinned_release_tag_answers_without_a_lookup(tmp_path, monkeypatch):
+    install_dir, host, _ = _installed_cpu_tree(tmp_path, monkeypatch)
+
+    def boom(_repo):
+        raise AssertionError("a pinned tag names the answer outright")
+
+    monkeypatch.setattr(M.llama, "_download_host_latest_release_tag", boom)
+    assert _whisper_check(install_dir, host, published_release_tag = RELEASE_TAG) is True
+    assert _whisper_check(install_dir, host, published_release_tag = "v9.9.9") is False
+
+
+def test_whisper_an_upstream_pin_still_takes_a_newer_packaging_revision(tmp_path, monkeypatch):
+    """The fork publishes several packaging revisions of one upstream tag and the full
+    path takes the newest that matches, so an upstream pin is current only when the
+    installed release is also the newest one; a wrong pin is refused outright."""
+    install_dir, host, _ = _installed_cpu_tree(tmp_path, monkeypatch)
+    listed = {"tags": [RELEASE_TAG]}
+    monkeypatch.setattr(
+        M.llama,
+        "github_releases",
+        lambda _repo, max_pages = 1: [
+            {"tag_name": tag, "published_at": f"2026-01-0{i + 1}T00:00:00Z"}
+            for i, tag in enumerate(listed["tags"])
+        ],
+    )
+
+    def no_head(_repo):
+        raise AssertionError("an upstream pin is answered from the release list, not global latest")
+
+    monkeypatch.setattr(M.llama, "_download_host_latest_release_tag", no_head)
+    assert _whisper_check(install_dir, host, whisper_tag = UPSTREAM_TAG) is True
+    assert _whisper_check(install_dir, host, whisper_tag = "v1.0.0") is False
+    # A newer packaging revision of the same upstream tag is what the full path takes.
+    listed["tags"] = [RELEASE_TAG, RELEASE_TAG[:-1] + "2"]
+    assert _whisper_check(install_dir, host, whisper_tag = UPSTREAM_TAG) is False
+    # A newer UPSTREAM version being the repository's latest changes nothing for a pin.
+    listed["tags"] = [RELEASE_TAG, "v9.9.9-unsloth.1"]
+    assert _whisper_check(install_dir, host, whisper_tag = UPSTREAM_TAG) is True
+
+
+def test_whisper_a_different_repo_or_backend_is_not_current(tmp_path, monkeypatch):
+    install_dir, host, _ = _installed_cpu_tree(tmp_path, monkeypatch)
+    assert _whisper_check(install_dir, host, published_repo = "someone/else") is False
+    assert _whisper_check(install_dir, host, requested_backend = "cuda") is False
+
+
+def test_whisper_full_check_request_declines_the_fast_path(tmp_path, monkeypatch):
+    install_dir, host, _ = _installed_cpu_tree(tmp_path, monkeypatch)
+    monkeypatch.setenv("UNSLOTH_PREBUILT_FULL_CHECK", "1")
+    assert _whisper_check(install_dir, host) is False
+
+
+@pytest.mark.skipif(os.name == "nt", reason = "os.chmod cannot clear an execute bit Windows lacks")
+def test_whisper_a_damaged_tree_is_not_current(tmp_path, monkeypatch):
+    """installed_tree_is_intact is the shared on-disk half, so the fast path refuses
+    exactly what the slow path would have repaired."""
+    install_dir, host, _ = _installed_cpu_tree(tmp_path, monkeypatch)
+    server = M.installed_server_path(install_dir, host)
+    assert _whisper_check(install_dir, host) is True
+    server.chmod(0o644)
+    assert _whisper_check(install_dir, host) is False
+    server.chmod(0o755)
+    assert _whisper_check(install_dir, host) is True
+    server.unlink()
+    assert _whisper_check(install_dir, host) is False
+
+
+def test_whisper_no_marker_is_not_current(tmp_path, monkeypatch):
+    install_dir, host, _ = _installed_cpu_tree(tmp_path, monkeypatch)
+    (install_dir / M.METADATA_FILENAME).unlink()
+    assert _whisper_check(install_dir, host) is False
+
+
+def _wire_from_llama(install_dir: Path, name: str) -> Path:
+    """Give the slim marker the wiring it claims: one library hardlinked out of a llama bin
+    dir, which is what link_ggml_runtime really leaves behind. The pairing backfill verifies
+    the wiring before recording anything, so a marker that merely SAYS "slim" is not enough."""
+    source_dir = install_dir.parent / "llama.cpp" / "build" / "bin"
+    source_dir.mkdir(parents = True, exist_ok = True)
+    source = source_dir / name
+    if not source.exists():
+        source.write_bytes(b"ggml-payload")
+    ours = M.installed_server_path(install_dir, M.detect_host()).parent / name
+    ours.unlink(missing_ok = True)
+    os.link(source, ours)
+    return source_dir
+
+
+def _slim_marker(install_dir: Path, **overrides) -> None:
+    marker_path = install_dir / M.METADATA_FILENAME
+    payload = json.loads(marker_path.read_text(encoding = "utf-8"))
+    payload["install_kind"] = "slim"
+    payload["runtime_wiring_version"] = M.SLIM_RUNTIME_WIRING_VERSION
+    payload["linked_libraries"] = ["libggml-base.so"]
+    payload["linked_from"] = str(_wire_from_llama(install_dir, "libggml-base.so"))
+    payload["paired_llama_tag"] = "b9001"
+    payload["paired_llama_ggml_tree"] = "ggml-abc"
+    for key, value in overrides.items():
+        if value is None:
+            payload.pop(key, None)
+        else:
+            payload[key] = value
+    marker_path.write_text(json.dumps(payload, indent = 2), encoding = "utf-8")
+
+
+def test_a_slim_install_whose_llama_runtime_moved_is_not_current(tmp_path, monkeypatch):
+    """The reason this check cannot just be the llama one: whisper's slim bundle
+    hardlinks llama's ggml libraries, so a llama update invalidates a whisper install
+    at an unchanged whisper release. selection_from_artifact is what normally notices,
+    and it does not run on this path."""
+    install_dir, host, _ = _installed_cpu_tree(tmp_path, monkeypatch)
+    _slim_marker(install_dir)
+    monkeypatch.setattr(M, "installed_llama_ggml_tree", lambda: "ggml-abc")
+    assert _whisper_check(install_dir, host) is True
+    monkeypatch.setattr(M, "installed_llama_ggml_tree", lambda: "ggml-def")
+    assert _whisper_check(install_dir, host) is False
+    # A llama install that vanished entirely reads as no tree at all.
+    monkeypatch.setattr(M, "installed_llama_ggml_tree", lambda: None)
+    assert _whisper_check(install_dir, host) is False
+
+
+def test_a_slim_marker_written_before_the_tree_was_recorded_takes_the_full_path(
+    tmp_path, monkeypatch
+):
+    install_dir, host, _ = _installed_cpu_tree(tmp_path, monkeypatch)
+    _slim_marker(install_dir, paired_llama_ggml_tree = None)
+    monkeypatch.setattr(M, "installed_llama_ggml_tree", lambda: "ggml-abc")
+    assert _whisper_check(install_dir, host) is False
+
+
+def test_a_slim_install_missing_a_wired_library_is_not_current(tmp_path, monkeypatch):
+    install_dir, host, _ = _installed_cpu_tree(tmp_path, monkeypatch)
+    _slim_marker(install_dir)
+    monkeypatch.setattr(M, "installed_llama_ggml_tree", lambda: "ggml-abc")
+    assert _whisper_check(install_dir, host) is True
+    (M.installed_server_path(install_dir, host).parent / "libggml-base.so").unlink()
+    assert _whisper_check(install_dir, host) is False
+
+
+def test_installed_paired_runtime_tree_reads_the_live_llama_marker(monkeypatch):
+    monkeypatch.setattr(M, "installed_llama_ggml_tree", lambda: "ggml-abc")
+    assert M.installed_paired_runtime_tree() == "ggml-abc"
+    for empty in (None, "", 7):
+        monkeypatch.setattr(M, "installed_llama_ggml_tree", lambda: empty)
+        assert M.installed_paired_runtime_tree() is None
+
+
+def test_the_whisper_reuse_path_backfills_the_paired_ggml_tree(tmp_path, monkeypatch):
+    """A slim install made before the tree was recorded would otherwise fetch the
+    release, its manifest and its checksum index on EVERY update rather than once.
+
+    The reuse path is the only place that re-examines a slim install without
+    reinstalling it, and it gets there having just confirmed the fingerprint and the
+    wiring, so it is where the record is caught up."""
+    install_dir, host, calls = _installed_cpu_tree(tmp_path, monkeypatch)
+    _slim_marker(install_dir, paired_llama_ggml_tree = None)
+    monkeypatch.setattr(M, "installed_llama_ggml_tree", lambda: "ggml-abc")
+    assert _whisper_check(install_dir, host) is False
+    assert M.install_prebuilt(install_dir, backend = "cpu") == M.EXIT_SUCCESS
+    # Reused, not reinstalled: the archive is downloaded exactly once, at install time.
+    assert calls["n"] == 1
+    marker = json.loads((install_dir / M.METADATA_FILENAME).read_text(encoding = "utf-8"))
+    assert marker["paired_llama_ggml_tree"] == "ggml-abc"
+    assert _whisper_check(install_dir, host) is True
+
+
+def test_the_whisper_backfill_never_rewrites_a_recorded_tree(tmp_path, monkeypatch):
+    """Added, never corrected: a marker that already names a tree was written by the run
+    that installed against it, and a llama runtime that moved since is exactly what the
+    pre-check is supposed to notice."""
+    install_dir, _host, _ = _installed_cpu_tree(tmp_path, monkeypatch)
+    _slim_marker(install_dir)
+    monkeypatch.setattr(M, "installed_llama_ggml_tree", lambda: "ggml-def")
+    M._backfill_slim_pairing_record(install_dir)
+    marker = json.loads((install_dir / M.METADATA_FILENAME).read_text(encoding = "utf-8"))
+    assert marker["paired_llama_ggml_tree"] == "ggml-abc"
+
+
+def test_a_fat_install_gains_no_pairing_record(tmp_path, monkeypatch):
+    """Only slim bundles hardlink anything, so a fat marker must stay a fat marker."""
+    install_dir, host, _ = _installed_cpu_tree(tmp_path, monkeypatch)
+    monkeypatch.setattr(M, "installed_llama_ggml_tree", lambda: "ggml-abc")
+    M._backfill_slim_pairing_record(install_dir)
+    marker = json.loads((install_dir / M.METADATA_FILENAME).read_text(encoding = "utf-8"))
+    assert "paired_llama_ggml_tree" not in marker
+
+
+# A release lookup that could not answer, over an install that is fine. A strict offline update
+# exited 0 and changed nothing, yet setup printed "prebuilt install failed" for whisper while llama
+# printed "existing prebuilt kept". Only the EVIDENCE on disk decides.
+KEPT_LINE = "whisper.cpp update unavailable, existing prebuilt kept"
+# The substring setup.sh and setup.ps1 already grep to choose that wording for llama.cpp.
+KEPT_GREP = "keeping the existing complete install"
+FAILED_LINE = "prebuilt install failed"
+
+
+def _no_network(monkeypatch, *, release_error = None):
+    """No answer from anywhere: not the pre-check HEAD, not the release, not the listing.
+
+    The environment variables are cleared because main() reads its tag defaults from them,
+    and a pin is exactly what must NOT be answered by keeping a tree.
+    """
+
+    def no_head(_repo):
+        raise OSError("github.com unreachable")
+
+    def no_release(*_args, **_kwargs):
+        raise release_error or PrebuiltFallback(
+            "could not fetch release unslothai/whisper.cpp@latest: <urlopen error refused>"
+        )
+
+    def no_listing(_repo):
+        raise PrebuiltFallback("unexpected releases payload: <urlopen error refused>")
+
+    for name in ("UNSLOTH_WHISPER_TAG", "UNSLOTH_WHISPER_RELEASE_TAG", "UNSLOTH_WHISPER_BACKEND"):
+        monkeypatch.delenv(name, raising = False)
+    monkeypatch.setattr(M.llama, "_download_host_latest_release_tag", no_head)
+    monkeypatch.setattr(M, "fetch_release_for_install", no_release)
+    monkeypatch.setattr(M, "_published_release_tags", no_listing)
+
+
+def _cli_install(capsys, install_dir, *extra) -> tuple[int, str]:
+    """Through main(), so the exit status the setup scripts branch on is what is asserted:
+    the false failure line is printed by setup.sh for any status that is not 0, 2 or 3."""
+    rc = M.main(["--install-dir", str(install_dir), "--backend", "cpu", *extra])
+    captured = capsys.readouterr()
+    return rc, captured.out + captured.err
+
+
+def test_an_unreachable_lookup_keeps_a_validated_install(tmp_path, monkeypatch, capsys):
+    install_dir, host, calls = _installed_cpu_tree(tmp_path, monkeypatch)
+    marker_path = install_dir / M.METADATA_FILENAME
+    server = M.installed_server_path(install_dir, host)
+    before = (marker_path.read_bytes(), server.read_bytes(), server.stat().st_mtime_ns)
+    _no_network(monkeypatch)
+
+    rc, output = _cli_install(capsys, install_dir)
+
+    assert rc == M.EXIT_SUCCESS
+    assert KEPT_LINE in output
+    assert KEPT_GREP in output
+    # llama.cpp's wording for WHY, so update_flow reads both installers the same way.
+    assert "prebuilt update reason: could not fetch release" in output
+    assert FAILED_LINE not in output
+    # Kept, not reinstalled: one download, and the marker byte for byte as written.
+    assert calls["n"] == 1
+    assert (marker_path.read_bytes(), server.read_bytes(), server.stat().st_mtime_ns) == before
+
+
+def test_whisper_an_asset_for_another_architecture_is_not_current(tmp_path, monkeypatch):
+    """The marker's asset name carries the platform tokens; a bundle for another
+    architecture is not intact on this host whatever the tree looks like."""
+    install_dir, host, _ = _installed_cpu_tree(tmp_path, monkeypatch)
+    marker_path = install_dir / M.METADATA_FILENAME
+    marker = json.loads(marker_path.read_text(encoding = "utf-8"))
+    assert "-linux-x64-" in marker["asset"]
+    assert _whisper_check(install_dir, host) is True
+    marker["asset"] = marker["asset"].replace("-linux-x64-", "-linux-arm64-")
+    marker_path.write_text(json.dumps(marker, indent = 2), encoding = "utf-8")
+    assert _whisper_check(install_dir, host) is False
+
+
+def test_a_rate_limited_release_fetch_still_keeps_the_install(tmp_path, monkeypatch, capsys):
+    """fetch_json turns an HTTP 403/429 from api.github.com into RuntimeError, not
+    URLError; the keep path has to read that shape too."""
+    install_dir, host, calls = _installed_cpu_tree(tmp_path, monkeypatch)
+    _no_network(monkeypatch)
+
+    def limited(*_args, **_kwargs):
+        raise RuntimeError("GitHub API returned 403 for https://api.github.com/repos/x/releases")
+
+    monkeypatch.setattr(M, "fetch_release_for_install", M.fetch_release_for_install)
+    monkeypatch.setattr(M.core, "fetch_release_for_install", limited)
+
+    rc, output = _cli_install(capsys, install_dir)
+
+    assert rc == M.EXIT_SUCCESS
+    assert KEPT_LINE in output
+    assert "prebuilt update reason: could not fetch release" in output
+    assert "unexpected error" not in output
+    assert FAILED_LINE not in output
+    assert calls["n"] == 1
+
+
+def test_a_raw_network_error_from_the_release_fetch_still_keeps_the_install(
+    tmp_path, monkeypatch, capsys
+):
+    """The real fetch raises URLError, not PrebuiltFallback: a refused connection or a
+    proxy answering 403 reached install_prebuilt as "unexpected error" and the keep path
+    never ran. Patched at the shared core seam, so the wrapper in this module is what is
+    under test rather than a stand-in that already speaks PrebuiltFallback."""
+    import urllib.error
+
+    install_dir, host, calls = _installed_cpu_tree(tmp_path, monkeypatch)
+    marker_path = install_dir / M.METADATA_FILENAME
+    before = marker_path.read_bytes()
+    _no_network(monkeypatch)
+
+    def refused(*_args, **_kwargs):
+        raise urllib.error.URLError(ConnectionRefusedError(111, "Connection refused"))
+
+    monkeypatch.setattr(M, "fetch_release_for_install", M.fetch_release_for_install)
+    monkeypatch.setattr(M.core, "fetch_release_for_install", refused)
+
+    rc, output = _cli_install(capsys, install_dir)
+
+    assert rc == M.EXIT_SUCCESS
+    assert KEPT_LINE in output
+    assert "prebuilt update reason: could not fetch release" in output
+    assert "unexpected error" not in output
+    assert FAILED_LINE not in output
+    assert calls["n"] == 1
+    assert marker_path.read_bytes() == before
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason = "os.access(X_OK) is always true on Windows, so the unusable-tree half is POSIX only",
+)
+def test_an_unreachable_lookup_still_fails_on_a_broken_install(tmp_path, monkeypatch, capsys):
+    """Fail-open is the right answer for a tree that cannot serve dictation, and the
+    message that says so sends the user to browser and Transformers STT. Only the
+    evidence a previous run left behind may replace it."""
+    install_dir, host, _ = _installed_cpu_tree(tmp_path, monkeypatch)
+    marker_path = install_dir / M.METADATA_FILENAME
+    recorded = marker_path.read_bytes()
+    server = M.installed_server_path(install_dir, host)
+    _no_network(monkeypatch)
+
+    # (1) No marker: nothing on disk says this tree was ever installed and validated here.
+    marker_path.unlink()
+    rc, output = _cli_install(capsys, install_dir)
+    assert rc == M.EXIT_ERROR
+    assert FAILED_LINE in output
+    assert KEPT_LINE not in output
+
+    # (2) Marker back, but the server is not executable, the shape the sidecar refuses.
+    marker_path.write_bytes(recorded)
+    server.chmod(0o644)
+    rc, output = _cli_install(capsys, install_dir)
+    assert rc == M.EXIT_ERROR
+    assert FAILED_LINE in output
+    assert KEPT_LINE not in output
+
+    # (3) Both repaired, same unreachable lookup: now the tree answers for itself.
+    server.chmod(0o755)
+    rc, output = _cli_install(capsys, install_dir)
+    assert rc == M.EXIT_SUCCESS
+    assert KEPT_LINE in output
+
+
+def test_the_kept_path_refuses_a_mismatched_ggml_pairing(tmp_path, monkeypatch, capsys):
+    """A slim whisper tree hardlinks llama's ggml libraries, so a llama runtime that moved
+    underneath it is broken with every whisper byte still in place. The keep path has no
+    release in hand, so the paired tree this branch records on the whisper marker is the
+    only thing that can notice; a weaker "the wired files are present" check would keep a
+    pairing that no longer exists."""
+    install_dir, _host, _ = _installed_cpu_tree(tmp_path, monkeypatch)
+    _slim_marker(install_dir)
+    _no_network(monkeypatch)
+
+    monkeypatch.setattr(M, "installed_llama_ggml_tree", lambda: "ggml-abc")
+    rc, output = _cli_install(capsys, install_dir)
+    assert rc == M.EXIT_SUCCESS
+    assert KEPT_LINE in output
+
+    monkeypatch.setattr(M, "installed_llama_ggml_tree", lambda: "ggml-def")
+    rc, output = _cli_install(capsys, install_dir)
+    assert rc == M.EXIT_ERROR
+    assert FAILED_LINE in output
+    assert KEPT_LINE not in output
+
+    # A slim marker written before the pairing was recorded cannot claim one either.
+    _slim_marker(install_dir, paired_llama_ggml_tree = None)
+    monkeypatch.setattr(M, "installed_llama_ggml_tree", lambda: "ggml-abc")
+    rc, output = _cli_install(capsys, install_dir)
+    assert rc == M.EXIT_ERROR
+    assert KEPT_LINE not in output
+
+
+def test_a_pairing_gap_still_reports_itself(tmp_path, monkeypatch, capsys):
+    """The one lookup failure that ANSWERED. Exit 2 is how setup learns to print the
+    installed-versus-required tags and tell the user to publish the paired releases; a
+    keep would replace a release skew nobody would then fix with a soothing warning."""
+    install_dir, _host, _ = _installed_cpu_tree(tmp_path, monkeypatch)
+    _no_network(monkeypatch)
+    rc, output = _cli_install(capsys, install_dir)
+    assert rc == M.EXIT_SUCCESS
+    assert KEPT_LINE in output
+
+    _no_network(
+        monkeypatch,
+        release_error = ReleaseCompatibilityError(
+            "slim bundle requires llama.cpp b9002, installed b9001"
+        ),
+    )
+    rc, output = _cli_install(capsys, install_dir)
+    assert rc == M.EXIT_INCOMPATIBLE
+    assert "slim bundle requires llama.cpp b9002" in output
+    assert KEPT_LINE not in output
+
+
+def test_an_explicit_release_request_is_never_answered_by_keeping(tmp_path, monkeypatch, capsys):
+    """Keeping the tree silently ignores whatever this run asked for, so anything that
+    names a release -- or demands the work be done anyway -- takes the failure instead.
+    --has-rocm and --rocm-gfx are deliberately not on that list: both entrypoints forward
+    DETECTED hardware on every AMD host, and the observed failure was on one."""
+    install_dir, _host, _ = _installed_cpu_tree(tmp_path, monkeypatch)
+    _no_network(monkeypatch)
+    rc, output = _cli_install(capsys, install_dir, "--rocm-gfx", "gfx1151")
+    assert rc == M.EXIT_SUCCESS
+    assert KEPT_LINE in output
+
+    for extra in (
+        ["--published-release-tag", "v9.9.9"],
+        ["--whisper-tag", "v1.9.9"],
+        ["--force"],
+    ):
+        rc, output = _cli_install(capsys, install_dir, *extra)
+        assert rc == M.EXIT_ERROR, extra
+        assert KEPT_LINE not in output, extra
+
+
+def test_both_setup_scripts_report_the_kept_install_as_kept():
+    """The installer's exit status is 0 on the kept path, and a non-verbose run discards
+    its log, so without an arm of their own the shells print "prebuilt installed" for a
+    release nothing fetched. Wording and grep token are the llama arm's, verbatim, so a
+    strictly offline update reads the same for both components and one step matcher
+    covers them."""
+    kept = "update unavailable, existing prebuilt kept"
+    token = "keeping the existing complete install"
+    sh = (PACKAGE_ROOT / "studio" / "setup.sh").read_text(encoding = "utf-8")
+    ps1 = (PACKAGE_ROOT / "studio" / "setup.ps1").read_text(encoding = "utf-8")
+    # Two arms each now: llama's and whisper's.
+    assert sh.count(f'step "llama.cpp" "{kept}"') == 1
+    assert sh.count(f'step "whisper.cpp" "{kept}"') == 1
+    assert sh.count(f'grep -Fq "{token}" "$_WHISPER_LOG"') == 1
+    assert ps1.count(f'step "whisper.cpp" "{kept}"') == 1
+    assert ps1.count(f'$whisperOutput -match "{token}"') == 1
+    # ...and the installer really emits the token the shells select on.
+    source = MODULE_PATH.read_text(encoding = "utf-8")
+    assert token in source
+    assert kept in source
+
+
+def test_whisper_a_release_pin_does_not_excuse_a_wrong_upstream_pin(tmp_path, monkeypatch):
+    """The full path refuses a pinned release whose bundle targets another upstream
+    version, so the shortcut checks the upstream pin whether or not the release is
+    pinned too."""
+    install_dir, host, _ = _installed_cpu_tree(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        M.llama,
+        "_download_host_latest_release_tag",
+        lambda _repo: pytest.fail("a pinned tag names the answer outright"),
+    )
+    assert (
+        _whisper_check(
+            install_dir, host, published_release_tag = RELEASE_TAG, whisper_tag = UPSTREAM_TAG
+        )
+        is True
+    )
+    assert (
+        _whisper_check(install_dir, host, published_release_tag = RELEASE_TAG, whisper_tag = "v1.0.0")
+        is False
+    )
+
+
+def test_an_unreachable_lookup_keeps_a_cpu_install_asked_for_with_cpu_fallback(
+    tmp_path, monkeypatch, capsys
+):
+    """--cpu-fallback is a backend request (resolve_backend makes it "cpu"), and the
+    intact check compares the marker's backend against it, so a kept CPU tree honours
+    the flag exactly as --backend cpu does; treating it as an explicit release request
+    turned a recoverable offline update into a failure."""
+    install_dir, _host, calls = _installed_cpu_tree(tmp_path, monkeypatch)
+    _no_network(monkeypatch)
+    rc, output = _cli_install(capsys, install_dir, "--cpu-fallback")
+    assert rc == M.EXIT_SUCCESS
+    assert KEPT_GREP in output
+    assert calls["n"] == 1
+
+
+def test_the_whisper_backfill_is_written_under_the_install_lock(tmp_path, monkeypatch):
+    """The backfill is a read-modify-write of the marker. Outside the lock it raced a
+    concurrent installer swapping in a new release: old marker read, tree replaced, old
+    fields written over the new marker. The pre-lock keep now takes the lock, re-checks
+    the install and only then writes."""
+    install_dir, host, calls = _installed_cpu_tree(tmp_path, monkeypatch)
+    _slim_marker(install_dir, paired_llama_ggml_tree = None)
+    monkeypatch.setattr(M, "installed_llama_ggml_tree", lambda: "ggml-abc")
+    held = {"depth": 0, "writes_under_lock": 0, "writes_outside": 0}
+    real_lock = M.install_lock
+
+    @contextlib.contextmanager
+    def counting_lock(path, **kwargs):
+        with real_lock(path, **kwargs):
+            held["depth"] += 1
+            try:
+                yield
+            finally:
+                held["depth"] -= 1
+
+    real_backfill = M._backfill_slim_pairing_record
+
+    def counting_backfill(directory):
+        if held["depth"]:
+            held["writes_under_lock"] += 1
+        else:
+            held["writes_outside"] += 1
+        real_backfill(directory)
+
+    monkeypatch.setattr(M, "install_lock", counting_lock)
+    monkeypatch.setattr(M, "_backfill_slim_pairing_record", counting_backfill)
+    assert M.install_prebuilt(install_dir, backend = "cpu") == M.EXIT_SUCCESS
+    assert calls["n"] == 1
+    assert held == {"depth": 0, "writes_under_lock": 1, "writes_outside": 0}
+    marker = json.loads((install_dir / M.METADATA_FILENAME).read_text(encoding = "utf-8"))
+    assert marker["paired_llama_ggml_tree"] == "ggml-abc"
+    # Nothing left to settle: the second keep takes no lock for a write.
+    held["writes_under_lock"] = 0
+    assert M.install_prebuilt(install_dir, backend = "cpu") == M.EXIT_SUCCESS
+    assert held["writes_under_lock"] == 0 and held["writes_outside"] == 0
+
+
+def test_whisper_an_upstream_pin_without_the_v_prefix_is_the_same_pin(tmp_path, monkeypatch):
+    """The full selector treats v1.9.2 and 1.9.2 as one tag (_normalized_upstream_tag);
+    a raw comparison sent every such pin down the release listing on every update."""
+    install_dir, host, _ = _installed_cpu_tree(tmp_path, monkeypatch)
+    assert _whisper_check(install_dir, host, whisper_tag = UPSTREAM_TAG) is True
+    assert _whisper_check(install_dir, host, whisper_tag = UPSTREAM_TAG.lstrip("v")) is True
+
+
+def test_whisper_a_bundle_needing_a_newer_macos_is_not_intact(tmp_path, monkeypatch):
+    """An install restored onto an older same-architecture Mac has the right platform
+    tokens and the execute bit; the marker's recorded min_os is what the selector
+    would refuse it on, so the intact check refuses it too."""
+    install_dir, host, _ = _installed_cpu_tree(tmp_path, monkeypatch)
+    marker_path = install_dir / M.METADATA_FILENAME
+    marker = json.loads(marker_path.read_text(encoding = "utf-8"))
+    # Where write_prebuilt_metadata puts it: the marker's top level, not under coverage.
+    marker.pop("coverage", None)
+    marker["min_os"] = "15.0"
+    marker_path.write_text(json.dumps(marker), encoding = "utf-8")
+    calls = []
+
+    def min_os_ok(_host, min_os):
+        calls.append(min_os)
+        return False
+
+    monkeypatch.setattr(M, "_macos_min_os_ok", min_os_ok)
+    # A Linux host never asks.
+    assert _whisper_check(install_dir, host) is True
+    assert calls == []
+    mac = M.HostInfo(**{**host.__dict__, "system": "Darwin"}) if hasattr(host, "__dict__") else host
+    monkeypatch.setattr(M, "host_platform_tokens", lambda _h: ("linux", "x64"))
+    monkeypatch.setattr(type(mac), "is_macos", property(lambda self: True), raising = False)
+    assert _whisper_check(install_dir, mac) is False
+    assert calls == ["15.0"]
+
+
+def test_a_failing_compatibility_listing_keeps_an_intact_install(tmp_path, monkeypatch, capsys):
+    """On macOS the newest release can be fetched and still not pair with this host, and
+    the listing that follows is a second API seam; a 403 there is a lookup that could
+    not answer, not a failed update."""
+    install_dir, host, calls = _installed_cpu_tree(tmp_path, monkeypatch)
+    _no_network(monkeypatch)
+
+    def listing_denied(_repo):
+        raise RuntimeError("HTTP 403: rate limit")
+
+    monkeypatch.setattr(M, "_published_release_tags", listing_denied)
+    rc, output = _cli_install(capsys, install_dir)
+    assert rc == M.EXIT_SUCCESS
+    assert KEPT_GREP in output
+    assert calls["n"] == 1
+
+
+def test_force_compile_lets_a_lookup_failure_reach_the_source_build(tmp_path, monkeypatch, capsys):
+    """setup.sh runs the opt-in source build only after this installer exits nonzero; a
+    lookup failure kept as success under UNSLOTH_WHISPER_FORCE_COMPILE=1 would take that
+    path away, so the switch counts as an explicit request."""
+    install_dir, host, _calls = _installed_cpu_tree(tmp_path, monkeypatch)
+    _no_network(monkeypatch)
+
+    def listing_denied(_repo):
+        raise RuntimeError("HTTP 403: rate limit")
+
+    monkeypatch.setattr(M, "_published_release_tags", listing_denied)
+    monkeypatch.setenv("UNSLOTH_WHISPER_FORCE_COMPILE", "1")
+    rc, output = _cli_install(capsys, install_dir)
+    assert rc != M.EXIT_SUCCESS
+    assert KEPT_GREP not in output
+
+
+def test_whisper_fast_path_accepts_a_recorded_macos_walk_back(tmp_path, monkeypatch):
+    """A Mac below the newest release's OS floor installs an older release; the
+    marker-only re-check asks the download host for the newest and must recognise the
+    recorded walk-back rather than send every such install down the full path. A
+    release newer than the recorded one, a macOS upgrade since the walk-back (the
+    newest release may fit now), or any other OS still does."""
+    install_dir, _, _ = _installed_cpu_tree(tmp_path, monkeypatch)
+    marker = {
+        "release_tag": "old",
+        "walked_back_from": "new",
+        "walked_back_on_macos": "14.7",
+        "backend": "cpu",
+    }
+    monkeypatch.setattr(M, "_existing_install_is_intact", lambda *a, **k: dict(marker))
+    monkeypatch.setattr(M.llama, "_download_host_resolve_enabled", lambda: True, raising = False)
+    monkeypatch.setattr(
+        M.llama, "_download_host_latest_release_tag", lambda _repo: "new", raising = False
+    )
+    mac = _host("macos", "arm64", macos_version = (14, 7))
+    assert _whisper_check(install_dir, mac) is True
+    assert _whisper_check(install_dir, _host("macos", "arm64", macos_version = (15, 0))) is False
+    assert _whisper_check(install_dir, _host("linux", "x64")) is False
+    monkeypatch.setattr(
+        M.llama, "_download_host_latest_release_tag", lambda _repo: "newer", raising = False
+    )
+    assert _whisper_check(install_dir, mac) is False
+    monkeypatch.setattr(
+        M.llama, "_download_host_latest_release_tag", lambda _repo: "old", raising = False
+    )
+    assert _whisper_check(install_dir, mac) is True
+    # A marker predating the host version record takes the full path once, which settles it.
+    del marker["walked_back_on_macos"]
+    monkeypatch.setattr(
+        M.llama, "_download_host_latest_release_tag", lambda _repo: "new", raising = False
+    )
+    assert _whisper_check(install_dir, mac) is False
+
+
+def _rewrite_marker(install_dir: Path, **overrides) -> dict:
+    marker_path = install_dir / M.METADATA_FILENAME
+    payload = json.loads(marker_path.read_text(encoding = "utf-8"))
+    for key, value in overrides.items():
+        if value is None:
+            payload.pop(key, None)
+        else:
+            payload[key] = value
+    # Self-consistent: the fast path recomputes the fingerprint from the recorded fields.
+    payload["install_fingerprint"] = M.core.marker_install_fingerprint(payload)
+    marker_path.write_text(json.dumps(payload, indent = 2), encoding = "utf-8")
+    return payload
+
+
+def test_the_marker_records_the_platform_it_was_selected_for(tmp_path, monkeypatch):
+    install_dir, host, _ = _installed_cpu_tree(tmp_path, monkeypatch)
+    marker = json.loads((install_dir / M.METADATA_FILENAME).read_text(encoding = "utf-8"))
+    assert (marker["os"], marker["arch"]) == M.host_platform_tokens(host)
+
+
+def test_a_custom_repository_asset_name_is_judged_by_the_recorded_platform(tmp_path, monkeypatch):
+    """A custom --published-repo's manifest may name its assets freely; the platform
+    check reads the os/arch the marker records and only falls back to the fork's
+    asset naming for a marker written before they were recorded. Otherwise every such
+    install took the full path on every update, and the keep-existing path (which runs
+    when the newest release cannot be looked up) dropped a valid install."""
+    install_dir, host, _ = _installed_cpu_tree(tmp_path, monkeypatch)
+    os_token, arch_token = M.host_platform_tokens(host)
+    _rewrite_marker(install_dir, asset = "server-bundle.tar.gz")
+    assert _whisper_check(install_dir, host) is True
+    # ...and the recorded platform is what is checked: another one is not intact here.
+    _rewrite_marker(
+        install_dir, asset = "server-bundle.tar.gz", arch = "arm64" if arch_token != "arm64" else "x64"
+    )
+    assert _whisper_check(install_dir, host) is False
+    # No recorded platform: the fork's naming is the only evidence, and this has none.
+    _rewrite_marker(install_dir, asset = "server-bundle.tar.gz", os = None, arch = None)
+    assert _whisper_check(install_dir, host) is False
+    _rewrite_marker(
+        install_dir, asset = f"whisper-v1.9.1-{os_token}-{arch_token}-cpu.tar.gz", os = None, arch = None
+    )
+    assert _whisper_check(install_dir, host) is True

@@ -1,32 +1,19 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team.
-"""
-CPU-only smoke imports for the unsloth_zoo modules that interact with
-vLLM and GRPO + fast_inference=True. Asserts each module imports
-cleanly under the existing tests/_zoo_aggressive_cuda_spoof harness.
+"""CPU-only smoke imports for unsloth_zoo modules touching vLLM / GRPO +
+fast_inference, under the tests/_zoo_aggressive_cuda_spoof harness.
 
-Two modules in scope are vllm-free by design (verified by the
-upstream survey: rl_replacements has zero `import vllm` lines;
-empty_model operates on already-built vllm_internals objects passed
-in). Those two MUST import on CPU with no vllm installed -- this
-file proves it.
+rl_replacements and empty_model are vllm-free and MUST import on CPU with no
+vllm; the three vllm-hard-import modules are skipped without it (covered
+statically by test_vllm_pinned_symbols.py).
 
-The remaining three modules (vllm_utils, vllm_lora_request,
-vllm_lora_worker_manager) hard-import multiple vllm submodules at
-module top. We do not attempt to import them on a runner without
-vllm; the symbol-presence test in test_vllm_pinned_symbols.py
-covers that path against pinned vLLM source.
-
-Cross-references:
-- unsloth_zoo PRs that fixed bugs surfaced here:
+Cross-references (unsloth_zoo commits that fixed bugs surfaced here):
   e3072a23 (WorkerLoRAManager.supports_tower_connector_lora missing),
   0c95753a (_call_create_lora_manager TypeError on vLLM 0.9.x),
   2a80d543 (vLLM 0.15 LoRA manager compat),
   ec186187 (vLLM PR #30253 vllm.lora.models split),
-  e915bca1 (LoRA embeddings= arg removed; lora_extra_vocab_size
-  optional),
-  fa82dcc2 / 664e52ea (UNSLOTH_VLLM_STANDBY hard-error windows on
-  vLLM 0.10.x and 0.14.x).
+  e915bca1 (LoRA embeddings= arg removed; lora_extra_vocab_size optional),
+  fa82dcc2 / 664e52ea (UNSLOTH_VLLM_STANDBY hard-error on vLLM 0.10/0.14).
 """
 
 from __future__ import annotations
@@ -34,15 +21,14 @@ from __future__ import annotations
 import importlib
 import importlib.util
 import os
+import subprocess
 import sys
 from pathlib import Path
 
 import pytest
 
 
-# Apply the consolidated CPU spoof at module import time, mirroring how
-# .github/workflows/consolidated-tests-ci.yml shims unsloth before any
-# unsloth-touching import (lines 309/417/536/626/826/1081/1586/1998).
+# Apply the consolidated CPU spoof at import time, before any unsloth import.
 _SPOOF_DIR = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(_SPOOF_DIR))
 import _zoo_aggressive_cuda_spoof as _spoof  # noqa: E402
@@ -50,9 +36,7 @@ import _zoo_aggressive_cuda_spoof as _spoof  # noqa: E402
 _spoof.apply()
 
 
-# Some unsloth_zoo modules read pynvml at import for memory probes.
-# pynvml may not be installed on the runner; stub it here. Same for
-# triton (vLLM transitively expects it for kernel JIT).
+# Some unsloth_zoo modules read pynvml at import; stub it for the runner.
 def _stub_module(name: str, attrs: dict | None = None) -> None:
     if name in sys.modules:
         return
@@ -82,8 +66,7 @@ _stub_module(
 
 @pytest.fixture(autouse = True)
 def _torch_distributed_safe(monkeypatch):
-    """unsloth_zoo + vllm path occasionally probes torch.distributed.
-    Make is_available()/is_initialized()/get_world_size() safe defaults."""
+    """Give torch.distributed probes safe single-process defaults."""
     try:
         import torch.distributed as dist
 
@@ -103,66 +86,81 @@ def _has_vllm() -> bool:
     return importlib.util.find_spec("vllm") is not None
 
 
-# -------------------------------------------------------------------------
-# rl_replacements: zero direct vllm imports; must import on a vllm-less
-# CPU runner. This is the GRPO + fast_inference user-facing surface.
-# -------------------------------------------------------------------------
+def _pulls_in_vllm(module_name: str, *exports: str) -> tuple[bool, list[str]]:
+    """(did importing `module_name` pull in vllm, which of `exports` it has).
+
+    Asked in a FRESH interpreter, because `"vllm" in sys.modules` is a property
+    of the process, not of the import under test. In-process this answers "has
+    anything in this pytest worker ever imported vllm" -- the vllm-hard-import
+    tests in this same file do exactly that, and popping the module under test
+    from sys.modules cannot undo it, because its already-cached dependencies are
+    not re-imported on the second import either. So the check passed or failed on
+    test ordering and never observed what it claimed to.
+
+    The subprocess re-applies the same CPU spoof this module applies at import,
+    so a CPU-only runner is still covered. subprocess + sys.executable keeps this
+    working on Linux, macOS and Windows alike.
+    """
+    probe = (
+        "import sys\n"
+        f"sys.path.insert(0, {str(_SPOOF_DIR)!r})\n"
+        "import _zoo_aggressive_cuda_spoof as s\n"
+        "s.apply()\n"
+        f"m = __import__({module_name!r}, fromlist=['_'])\n"
+        "print('VLLM' if 'vllm' in sys.modules else 'NOVLLM')\n"
+        f"print(','.join(n for n in {list(exports)!r} if hasattr(m, n)))\n"
+    )
+    proc = subprocess.run(
+        [sys.executable, "-c", probe],
+        capture_output = True,
+        text = True,
+    )
+    if proc.returncode != 0:
+        pytest.fail(
+            f"importing {module_name} in a clean interpreter failed:\n"
+            f"{proc.stdout}\n{proc.stderr}"
+        )
+    lines = proc.stdout.strip().split("\n")
+    found = [n for n in (lines[-1].split(",") if lines[-1] else [])]
+    return lines[-2] == "VLLM", found
 
 
+# rl_replacements: zero direct vllm imports;
+# the GRPO + fast_inference surface.
 @pytest.mark.skipif(not _has_unsloth_zoo(), reason = "unsloth_zoo not installed")
 def test_rl_replacements_imports_without_vllm():
-    """unsloth_zoo.rl_replacements must NOT pull in vllm at import time.
-    The user-facing GRPOConfig / GRPOTrainer surface depends only on the
-    use_vllm / vllm_importance_sampling_* keyword flags, which are
-    re-exported as plain Python and never touch the vllm package on a
-    fast_inference=False training run."""
-    sys.modules.pop("unsloth_zoo.rl_replacements", None)
-    rl = importlib.import_module("unsloth_zoo.rl_replacements")
-    # If vllm WAS imported as a side-effect, the rl path on Colab without
-    # vllm installed crashes at GRPOTrainer construction. Refuse a
-    # transitive import.
-    assert "vllm" not in sys.modules, (
+    """unsloth_zoo.rl_replacements must NOT pull in vllm at import time."""
+    # A transitive vllm import crashes GRPOTrainer construction on Colab.
+    pulled, exports = _pulls_in_vllm(
+        "unsloth_zoo.rl_replacements",
+        "RL_REPLACEMENTS",
+        "RL_FUNCTIONS",
+    )
+    assert not pulled, (
         "unsloth_zoo.rl_replacements imported vllm transitively; this breaks "
         "GRPO on environments without vllm installed (the use_vllm=False path "
         "is supposed to work without vllm)."
     )
-    # Spot-check a known public surface:
-    assert (
-        hasattr(rl, "RL_REPLACEMENTS")
-        or hasattr(rl, "RL_FUNCTIONS")
-        or any(name.startswith("grpo_") for name in dir(rl))
-    ), "expected at least one GRPO-related export in rl_replacements"
+    assert exports, "expected at least one GRPO-related export in rl_replacements"
 
 
-# -------------------------------------------------------------------------
-# empty_model: no vllm import either; pure builder for the
-# fast_inference=True path that creates an empty TRL/PEFT model and
-# fills it from a vLLM internals dict passed in by patch_vllm.
-# -------------------------------------------------------------------------
-
-
+# empty_model: no vllm import;
+# pure builder for the fast_inference=True path.
 @pytest.mark.skipif(not _has_unsloth_zoo(), reason = "unsloth_zoo not installed")
 def test_empty_model_imports_without_vllm():
-    sys.modules.pop("unsloth_zoo.empty_model", None)
-    em = importlib.import_module("unsloth_zoo.empty_model")
+    pulled, exports = _pulls_in_vllm(
+        "unsloth_zoo.empty_model",
+        "create_empty_causal_lm",
+        "create_empty_model",
+    )
     assert (
-        "vllm" not in sys.modules
+        not pulled
     ), "unsloth_zoo.empty_model imported vllm transitively; expected to be vllm-free"
-    # Public function the GRPO + fast_inference path relies on:
-    assert (
-        hasattr(em, "create_empty_causal_lm")
-        or hasattr(em, "create_empty_model")
-        or any(n.startswith("create_empty") for n in dir(em))
-    ), "expected a create_empty_* helper in empty_model"
+    assert exports, "expected a create_empty_* helper in empty_model"
 
 
-# -------------------------------------------------------------------------
-# vllm_lora_request / vllm_lora_worker_manager / vllm_utils: hard-import
-# vllm. Skip if vllm isn't on the runner. The pinned-symbols test below
-# covers the version compatibility statically without needing pip install.
-# -------------------------------------------------------------------------
-
-
+# vllm_lora_request / vllm_lora_worker_manager / vllm_utils: hard-import vllm,
+# so skip without it (pinned-symbols test covers version compat statically).
 @pytest.mark.skipif(
     not (_has_unsloth_zoo() and _has_vllm()), reason = "vllm not installed on this runner"
 )
@@ -177,9 +175,8 @@ def test_vllm_lora_request_imports():
 def test_vllm_lora_worker_manager_imports():
     sys.modules.pop("unsloth_zoo.vllm_lora_worker_manager", None)
     mod = importlib.import_module("unsloth_zoo.vllm_lora_worker_manager")
-    # commit e3072a23 added supports_tower_connector_lora to handle
-    # vLLM 0.14's gpu_model_runner that calls it unconditionally on
-    # any LoRA-VLM. Assert the patched class exposes it.
+    # e3072a23 added supports_tower_connector_lora for vLLM 0.14's gpu_model_runner; assert the patched class exposes
+    # it.
     cls = getattr(mod, "WorkerLoRAManager", None)
     if cls is not None:
         assert (

@@ -1,0 +1,1279 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+"""Cross-platform Node.js prebuilt installer for Unsloth Studio.
+
+Downloads an official Node.js archive from nodejs.org into an isolated
+``<UNSLOTH_HOME>/node`` and never touches the system Node/npm. Pinning Node 24+
+LTS clears the Unsloth frontend build floor (Vite 8: Node ^20.19 || >=22.12,
+npm >= 11) with the npm it bundles.
+
+Archives are verified against sha256 digests pinned in ``node_prebuilt_pins.json``
+(committed in-tree), not a checksum re-fetched from the same origin as the archive.
+
+Mirrors ``install_llama_prebuilt.py`` so the setup scripts drive it the same way.
+Exit codes: 0 success, 1 error, 2 fallback, 3 busy, 4 access denied. A re-run that already matches
+logs "already matches" and returns 0 without downloading (the scripts grep it).
+"""
+
+from __future__ import annotations
+
+import argparse
+import errno
+import hashlib
+import json
+import os
+import stat
+import platform
+import random
+import shutil
+import socket
+import subprocess
+import sys
+import tarfile
+import tempfile
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+import zipfile
+from contextlib import contextmanager
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Iterator
+
+try:
+    from filelock import FileLock, Timeout as FileLockTimeout
+except ImportError:
+    FileLock = None
+    FileLockTimeout = None
+
+
+EXIT_SUCCESS = 0
+EXIT_ERROR = 1
+EXIT_FALLBACK = 2
+EXIT_BUSY = 3
+# The install directory cannot be written. Separate from EXIT_ERROR because the
+# caller's advice for that one is "install Node yourself or check your network",
+# which is wrong here and sends people to look at the wrong thing.
+EXIT_DENIED = 4
+# setup.ps1 reads these back out to diagnose the object that was actually
+# refused. The install lock and the .staging root live in the install
+# directory's parent, so "delete or rename the Node cache" is the wrong advice
+# for half of the denials that reach exit 4, and the directory it names may not
+# even exist. Classified here, where the install directory is known, rather than
+# re-derived from a path string on the PowerShell side.
+DENIED_PATH_MARKER = "denied-path: "
+DENIED_SCOPE_MARKER = "denied-scope: "
+DENIED_SCOPE_INSTALL_DIR = "install-dir"
+DENIED_SCOPE_PARENT = "parent"
+
+# Node 24 LTS bundles npm 11, clearing Vite 8's floor (Node ^20.19 || >=22.12, npm >= 11).
+NODE_MIN_LTS_MAJOR = 24
+NPM_MIN_MAJOR = 11
+
+NODE_DIST_BASE = "https://nodejs.org/dist"
+NODE_DIST_INDEX = f"{NODE_DIST_BASE}/index.json"
+
+RETRYABLE_HTTP_STATUS = {408, 429, 500, 502, 503, 504}
+HTTP_FETCH_ATTEMPTS = 4
+HTTP_FETCH_BASE_DELAY_SECONDS = 0.75
+INSTALL_LOCK_TIMEOUT_SECONDS = 300
+# The runtime-verification record is an optimisation, so it waits for the lock only briefly:
+# blocking a launch for the full install timeout to write a record that merely saves two
+# subprocess spawns next time is a worse outcome than never writing it.
+RECORD_LOCK_TIMEOUT_SECONDS = 5
+INSTALL_STAGING_ROOT_NAME = ".staging"
+METADATA_FILENAME = "UNSLOTH_NODE_PREBUILT_INFO.json"
+METADATA_SCHEMA_VERSION = 1
+
+# Trust anchor: verify archives against sha256 pins committed in
+# node_prebuilt_pins.json (in-tree, code-reviewed), not a same-origin checksum.
+PINS_FILENAME = "node_prebuilt_pins.json"
+PINS_SCHEMA_VERSION = 1
+DEFAULT_NODE_CHANNEL = "pinned"
+# Opt-in to install an unpinned version, trusting the same-origin SHASUMS256.txt.
+ALLOW_UNVERIFIED_ENV = "UNSLOTH_NODE_ALLOW_UNVERIFIED"
+
+# PowerShell renders stderr as NativeCommandError noise; main() flips logs to stdout.
+_LOG_TO_STDOUT = False
+
+
+class PrebuiltFallback(RuntimeError):
+    """Recoverable failure -- caller should fall back (exit code 2)."""
+
+
+class UnpinnedNodeRefused(PrebuiltFallback):
+    """Unpinned Node requested without opt-in. Distinct type so the orchestrator
+    re-raises it instead of letting the keep-existing path swallow the refusal."""
+
+
+class BusyInstallConflict(RuntimeError):
+    """Another process holds the install lock (exit code 3)."""
+
+
+def log(message: str) -> None:
+    print(f"[node-prebuilt] {message}", file = sys.stdout if _LOG_TO_STDOUT else sys.stderr)
+
+
+# ── Host detection ──
+@dataclass(frozen = True)
+class HostInfo:
+    system: str
+    machine: str
+    node_os: str
+    node_arch: str
+    archive_ext: str  # .tar.gz | .zip
+    is_windows: bool
+
+
+def detect_host() -> HostInfo:
+    system = platform.system()
+    machine = platform.machine().lower()
+    is_windows = system == "Windows"
+
+    if system == "Linux":
+        node_os = "linux"
+    elif system == "Darwin":
+        node_os = "darwin"
+    elif is_windows:
+        node_os = "win"
+    else:
+        raise PrebuiltFallback(f"unsupported operating system for Node prebuilt: {system}")
+
+    if machine in {"x86_64", "amd64", "x64"}:
+        node_arch = "x64"
+    elif machine in {"arm64", "aarch64"}:
+        node_arch = "arm64"
+    else:
+        # 32-bit ARM (armv7l) is intentionally unsupported: Node 24 LTS ships no
+        # linux-armv7l build, so there is nothing at/above the floor to install.
+        raise PrebuiltFallback(f"unsupported CPU architecture for Node prebuilt: {machine}")
+
+    # .tar.gz (not .tar.xz) on Unix so the extractor needs no xz; .zip on Windows.
+    archive_ext = ".zip" if is_windows else ".tar.gz"
+    return HostInfo(
+        system = system,
+        machine = machine,
+        node_os = node_os,
+        node_arch = node_arch,
+        archive_ext = archive_ext,
+        is_windows = is_windows,
+    )
+
+
+# ── URL / asset construction (pure, unit tested) ──
+def node_asset_stem(version: str, host: HostInfo) -> str:
+    """e.g. node-v24.4.1-linux-x64 (no extension)."""
+    return f"node-v{version}-{host.node_os}-{host.node_arch}"
+
+
+def node_asset_name(version: str, host: HostInfo) -> str:
+    return f"{node_asset_stem(version, host)}{host.archive_ext}"
+
+
+def node_download_url(version: str, asset_name: str) -> str:
+    return f"{NODE_DIST_BASE}/v{version}/{asset_name}"
+
+
+def node_shasums_url(version: str) -> str:
+    return f"{NODE_DIST_BASE}/v{version}/SHASUMS256.txt"
+
+
+def expected_sha256_for(shasums_text: str, asset_name: str) -> str | None:
+    """Parse a nodejs.org SHASUMS256.txt ('<hex>  <filename>' per line)."""
+    for line in shasums_text.splitlines():
+        parts = line.split()
+        if len(parts) == 2 and parts[1] == asset_name:
+            digest = parts[0].lower()
+            if len(digest) == 64 and all(c in "0123456789abcdef" for c in digest):
+                return digest
+    return None
+
+
+def _version_tuple(value: str) -> tuple[int, ...]:
+    try:
+        return tuple(int(p) for p in value.lstrip("v").split("."))
+    except ValueError:
+        return ()
+
+
+def _meets_node_floor(version: str) -> bool:
+    """True iff version clears the setup floor (^20.19 || >=22.12 || >=23)."""
+    parts = _version_tuple(version)
+    if not parts:
+        return False
+    major = parts[0]
+    minor = parts[1] if len(parts) > 1 else 0
+    return (major == 20 and minor >= 19) or (major == 22 and minor >= 12) or major >= 23
+
+
+def select_node_version(index: list[dict], *, channel: str, min_major: int) -> str:
+    """Pick a concrete Node version from nodejs.org index.json.
+
+    channel='lts'    -> newest LTS release line whose major >= min_major.
+    channel='latest' -> newest release overall whose major >= min_major.
+    Otherwise the channel is treated as an explicit version string.
+    """
+    if channel not in {"lts", "latest"}:
+        return channel.lstrip("v")
+
+    best: tuple[int, ...] | None = None
+    best_version: str | None = None
+    for entry in index:
+        version = str(entry.get("version", "")).lstrip("v")
+        parsed = _version_tuple(version)
+        if not parsed or parsed[0] < min_major:
+            continue
+        if channel == "lts" and not entry.get("lts"):
+            continue
+        if best is None or parsed > best:
+            best = parsed
+            best_version = version
+    if best_version is None:
+        raise PrebuiltFallback(
+            f"no Node '{channel}' release found at or above major {min_major} in {NODE_DIST_INDEX}"
+        )
+    return best_version
+
+
+# ── HTTP (retry/backoff) ──
+def _auth_headers() -> dict[str, str]:
+    # A User-Agent keeps some proxies/CDNs happy; nodejs.org needs no auth.
+    return {"User-Agent": "unsloth-studio-node-prebuilt"}
+
+
+def is_retryable_url_error(exc: Exception) -> bool:
+    if isinstance(exc, urllib.error.HTTPError):
+        return exc.code in RETRYABLE_HTTP_STATUS
+    if isinstance(exc, (urllib.error.URLError, TimeoutError, socket.timeout)):
+        return True
+    return False
+
+
+def sleep_backoff(attempt: int) -> None:
+    delay = HTTP_FETCH_BASE_DELAY_SECONDS * (2 ** max(attempt - 1, 0))
+    delay += random.uniform(0.0, 0.2)
+    time.sleep(delay)
+
+
+def download_bytes(url: str, *, timeout: int = 60) -> bytes:
+    last_exc: Exception | None = None
+    for attempt in range(1, HTTP_FETCH_ATTEMPTS + 1):
+        try:
+            request = urllib.request.Request(url, headers = _auth_headers())
+            with urllib.request.urlopen(request, timeout = timeout) as response:
+                return response.read()
+        except Exception as exc:  # noqa: BLE001
+            last_exc = exc
+            if attempt >= HTTP_FETCH_ATTEMPTS or not is_retryable_url_error(exc):
+                raise
+            log(f"fetch failed ({attempt}/{HTTP_FETCH_ATTEMPTS}) for {url}: {exc}; retrying")
+            sleep_backoff(attempt)
+    assert last_exc is not None
+    raise last_exc
+
+
+def fetch_json(url: str) -> object:
+    return json.loads(download_bytes(url, timeout = 30).decode("utf-8"))
+
+
+def atomic_replace_from_tempfile(tmp_path: Path, destination: Path) -> None:
+    # The same retry the directory renames use: rename-over needs DELETE access on the destination,
+    # so a scanner holding the marker fails the swap outright. A no-op off Windows.
+    destination.parent.mkdir(parents = True, exist_ok = True)
+    _replace_with_retry(tmp_path, destination)
+
+
+def download_file(url: str, destination: Path) -> None:
+    destination.parent.mkdir(parents = True, exist_ok = True)
+    last_exc: Exception | None = None
+    for attempt in range(1, HTTP_FETCH_ATTEMPTS + 1):
+        tmp_path: Path | None = None
+        try:
+            request = urllib.request.Request(url, headers = _auth_headers())
+            with tempfile.NamedTemporaryFile(
+                prefix = destination.name + ".tmp-",
+                dir = destination.parent,
+                delete = False,
+            ) as handle:
+                tmp_path = Path(handle.name)
+                with urllib.request.urlopen(request, timeout = 120) as response:
+                    while True:
+                        chunk = response.read(1024 * 1024)
+                        if not chunk:
+                            break
+                        handle.write(chunk)
+                handle.flush()
+                os.fsync(handle.fileno())
+            if not tmp_path.exists() or tmp_path.stat().st_size == 0:
+                raise RuntimeError(f"downloaded empty file from {url}")
+            atomic_replace_from_tempfile(tmp_path, destination)
+            return
+        except Exception as exc:  # noqa: BLE001
+            last_exc = exc
+            if tmp_path is not None:
+                try:
+                    tmp_path.unlink(missing_ok = True)
+                except Exception:  # noqa: BLE001
+                    pass
+            if attempt >= HTTP_FETCH_ATTEMPTS or not is_retryable_url_error(exc):
+                raise
+            log(f"download failed ({attempt}/{HTTP_FETCH_ATTEMPTS}) for {url}: {exc}; retrying")
+            sleep_backoff(attempt)
+    assert last_exc is not None
+    raise last_exc
+
+
+def sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def download_file_verified(
+    url: str, destination: Path, *, expected_sha256: str, label: str
+) -> None:
+    for attempt in range(1, 3):
+        download_file(url, destination)
+        actual = sha256_file(destination)
+        if actual == expected_sha256:
+            log(f"verified {label} sha256={actual}")
+            return
+        log(f"{label} checksum mismatch {attempt}/2: expected={expected_sha256} actual={actual}")
+        destination.unlink(missing_ok = True)
+        if attempt == 2:
+            raise PrebuiltFallback(f"{label} checksum mismatch after retry")
+
+
+# ── Pinned digest manifest (trust anchor) ──
+def pins_path() -> Path:
+    return Path(__file__).resolve().parent / PINS_FILENAME
+
+
+def load_pins() -> dict:
+    path = pins_path()
+    try:
+        data = json.loads(path.read_text(encoding = "utf-8"))
+    except FileNotFoundError as exc:
+        raise PrebuiltFallback(f"pinned Node manifest missing: {path}") from exc
+    except (json.JSONDecodeError, OSError) as exc:
+        raise PrebuiltFallback(f"pinned Node manifest unreadable ({path}): {exc}") from exc
+    if not isinstance(data, dict) or data.get("schema_version") != PINS_SCHEMA_VERSION:
+        raise PrebuiltFallback(f"pinned Node manifest has an unexpected schema: {path}")
+    return data
+
+
+def pinned_default_version(pins: dict) -> str:
+    version = str(pins.get("default_version", "")).lstrip("v")
+    if not _version_tuple(version):
+        raise PrebuiltFallback("pinned Node manifest is missing a valid 'default_version'")
+    return version
+
+
+def pinned_sha256(pins: dict, version: str, asset_name: str) -> str | None:
+    versions = pins.get("versions")
+    if not isinstance(versions, dict):
+        return None
+    entry = versions.get(version.lstrip("v"))
+    if not isinstance(entry, dict):
+        return None
+    digest = entry.get(asset_name)
+    if not isinstance(digest, str):
+        return None
+    digest = digest.strip().lower()
+    if len(digest) == 64 and all(c in "0123456789abcdef" for c in digest):
+        return digest
+    return None
+
+
+def allow_unverified_node() -> bool:
+    return os.environ.get(ALLOW_UNVERIFIED_ENV, "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def resolve_expected_sha256(pins: dict, version: str, asset: str, *, allow_unverified: bool) -> str:
+    """Sha256 to verify the archive against: the committed pin, or (only with explicit
+    opt-in) the same-origin SHASUMS256.txt. Unpinned without opt-in is refused."""
+    pinned = pinned_sha256(pins, version, asset)
+    if pinned is not None:
+        log(f"verifying {asset} against pinned sha256 from {PINS_FILENAME}")
+        return pinned
+
+    if not allow_unverified:
+        raise UnpinnedNodeRefused(
+            f"refusing to install Node v{version}: {asset} is not in the pinned manifest "
+            f"({PINS_FILENAME}); its only checksum would arrive over the same channel as the "
+            f"archive. Use the pinned default version (unset UNSLOTH_NODE_VERSION), add a pin "
+            f"for {asset}, or set {ALLOW_UNVERIFIED_ENV}=1 to trust the upstream SHASUMS256.txt "
+            f"at your own risk."
+        )
+
+    log(
+        f"WARNING: {asset} is not pinned; trusting upstream SHASUMS256.txt because "
+        f"{ALLOW_UNVERIFIED_ENV} is set. This checksum shares the archive's origin and is "
+        f"not an independent integrity guarantee."
+    )
+    # A non-UTF8 body just yields no hex match below -> clean PrebuiltFallback.
+    shasums = download_bytes(node_shasums_url(version), timeout = 30).decode("utf-8", "replace")
+    expected = expected_sha256_for(shasums, asset)
+    if not expected:
+        raise PrebuiltFallback(f"no sha256 for {asset} in SHASUMS256.txt (v{version})")
+    return expected
+
+
+# ── Safe archive extraction (zip + tar.gz, traversal/symlink guarded) ──
+def _safe_extract_path(base: Path, member_name: str) -> Path:
+    member_path = Path(member_name.replace("\\", "/"))
+    if member_path.is_absolute():
+        raise PrebuiltFallback(f"archive member used an absolute path: {member_name}")
+    target = (base / member_path).resolve()
+    try:
+        target.relative_to(base.resolve())
+    except ValueError as exc:
+        raise PrebuiltFallback(f"archive member escaped destination: {member_name}") from exc
+    return target
+
+
+def _extract_zip_safely(source: Path, base: Path) -> None:
+    with zipfile.ZipFile(source) as archive:
+        for member in archive.infolist():
+            target = _safe_extract_path(base, member.filename)
+            mode = (member.external_attr >> 16) & 0o170000
+            if mode == 0o120000:
+                raise PrebuiltFallback(f"zip archive contained a symlink entry: {member.filename}")
+            if member.is_dir():
+                target.mkdir(parents = True, exist_ok = True)
+                continue
+            target.parent.mkdir(parents = True, exist_ok = True)
+            with archive.open(member, "r") as src, target.open("wb") as dst:
+                shutil.copyfileobj(src, dst)
+
+
+def _extract_tar_safely(source: Path, base: Path) -> None:
+    # Node Unix tarballs ship bin/npm, bin/npx, bin/corepack as relative
+    # symlinks into lib/node_modules; defer links and resolve after files.
+    pending_links: list[tuple[tarfile.TarInfo, Path]] = []
+    with tarfile.open(source, "r:gz") as archive:
+        for member in archive.getmembers():
+            target = _safe_extract_path(base, member.name)
+            if member.isdir():
+                target.mkdir(parents = True, exist_ok = True)
+                continue
+            if member.islnk() or member.issym():
+                pending_links.append((member, target))
+                continue
+            if not member.isfile():
+                raise PrebuiltFallback(f"tar archive contained an unsupported entry: {member.name}")
+            target.parent.mkdir(parents = True, exist_ok = True)
+            extracted = archive.extractfile(member)
+            if extracted is None:
+                raise PrebuiltFallback(f"tar archive entry could not be read: {member.name}")
+            with extracted, target.open("wb") as dst:
+                shutil.copyfileobj(extracted, dst)
+            if member.mode & 0o111:
+                os.chmod(target, target.stat().st_mode | 0o111)
+
+    for member, target in pending_links:
+        link_name = member.linkname.replace("\\", "/")
+        link_path = Path(link_name)
+        if link_path.is_absolute() or not link_name:
+            raise PrebuiltFallback(
+                f"archive link used an unsafe target: {member.name} -> {link_name}"
+            )
+        # tar symlink names are link-parent relative; hard-link names are archive-root relative.
+        resolved = (target.parent / link_path if member.issym() else base / link_path).resolve()
+        try:
+            resolved.relative_to(base.resolve())
+        except ValueError as exc:
+            raise PrebuiltFallback(
+                f"archive link escaped destination: {member.name} -> {link_name}"
+            ) from exc
+        target.parent.mkdir(parents = True, exist_ok = True)
+        if target.exists() or target.is_symlink():
+            target.unlink()
+        if member.issym():
+            target.symlink_to(link_name)
+        else:
+            shutil.copy2(resolved, target)
+
+
+def extract_archive(archive_path: Path, destination: Path) -> None:
+    destination.mkdir(parents = True, exist_ok = True)
+    if archive_path.name.endswith(".zip"):
+        _extract_zip_safely(archive_path, destination)
+    elif archive_path.name.endswith(".tar.gz"):
+        _extract_tar_safely(archive_path, destination)
+    else:
+        raise PrebuiltFallback(f"unsupported archive format: {archive_path.name}")
+
+
+# ── Install lock (concurrent setup runs share one UNSLOTH_HOME) ──
+def install_lock_path(install_dir: Path) -> Path:
+    return install_dir.parent / f".{install_dir.name}.install.lock"
+
+
+def _pid_is_alive(pid: int) -> bool:
+    """Best-effort process liveness check that never signals the process on Windows."""
+    if pid <= 0:
+        return False
+    if sys.platform == "win32":
+        try:
+            result = subprocess.run(
+                ["tasklist", "/FI", f"PID eq {pid}", "/FO", "CSV", "/NH"],
+                capture_output = True,
+                text = True,
+                encoding = "utf-8",
+                errors = "replace",
+                timeout = 5,
+                **_windows_hidden_kwargs(),
+            )
+        except (OSError, ValueError, subprocess.SubprocessError):
+            # Be conservative if tasklist itself is unavailable.
+            return True
+        return f'"{pid}"' in result.stdout
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except ValueError:
+        return False
+    return True
+
+
+@contextmanager
+def install_lock(lock_path: Path, *, timeout: float | None = None) -> Iterator[None]:
+    seconds = INSTALL_LOCK_TIMEOUT_SECONDS if timeout is None else timeout
+    lock_path.parent.mkdir(parents = True, exist_ok = True)
+    if FileLock is None:
+        fd: int | None = None
+        deadline = time.monotonic() + seconds
+        while True:
+            try:
+                fd = os.open(str(lock_path), os.O_CREAT | os.O_EXCL | os.O_RDWR)
+                os.write(fd, f"{os.getpid()}\n".encode())
+                os.fsync(fd)
+                break
+            except FileExistsError:
+                try:
+                    # errors="replace" so an undecodable lock reaches the int()
+                    # below and is treated as a stale PID, not retried forever.
+                    raw = lock_path.read_text(encoding = "utf-8", errors = "replace").strip()
+                except FileNotFoundError:
+                    continue
+                stale = False
+                if raw:
+                    try:
+                        stale = not _pid_is_alive(int(raw))
+                    except ValueError:
+                        stale = True
+                if stale:
+                    # Atomically rename before unlinking so only one racer removes
+                    # the stale lock; a process recreating it loses the rename and waits.
+                    try:
+                        stale_path = lock_path.with_name(f"{lock_path.name}.stale.{os.getpid()}")
+                        os.replace(str(lock_path), str(stale_path))
+                        stale_path.unlink(missing_ok = True)
+                    except (OSError, ValueError):
+                        pass
+                    continue
+                if time.monotonic() >= deadline:
+                    raise BusyInstallConflict(
+                        f"timed out after {seconds}s waiting for install lock: {lock_path}"
+                    )
+                time.sleep(0.5)
+        try:
+            yield
+        finally:
+            if fd is not None:
+                os.close(fd)
+            lock_path.unlink(missing_ok = True)
+        return
+
+    try:
+        with FileLock(str(lock_path), timeout = seconds):
+            yield
+    except FileLockTimeout as exc:
+        raise BusyInstallConflict(
+            f"timed out after {seconds}s waiting for install lock: {lock_path}"
+        ) from exc
+
+
+# ── Install layout / metadata / health ──
+def node_binary_path(install_dir: Path, host: HostInfo) -> Path:
+    return install_dir / "node.exe" if host.is_windows else install_dir / "bin" / "node"
+
+
+def npm_cli_path(install_dir: Path, host: HostInfo) -> Path:
+    # Windows ships npm at <root>\node_modules\npm; Unix at <root>/lib/node_modules/npm.
+    if host.is_windows:
+        return install_dir / "node_modules" / "npm" / "bin" / "npm-cli.js"
+    return install_dir / "lib" / "node_modules" / "npm" / "bin" / "npm-cli.js"
+
+
+def _windows_hidden_kwargs() -> dict[str, object]:
+    if sys.platform != "win32":
+        return {}
+    kwargs: dict[str, object] = {}
+    flag = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    if flag:
+        kwargs["creationflags"] = flag
+    return kwargs
+
+
+def _run_node(
+    install_dir: Path,
+    host: HostInfo,
+    args: list[str],
+    *,
+    timeout: int = 120,
+) -> str:
+    node_bin = node_binary_path(install_dir, host)
+    env = os.environ.copy()
+    # Keep any `npm -g` writes inside the isolated prefix: Windows npm otherwise defaults its global
+    # prefix to %APPDATA%\npm and touches the system install.
+    env["NPM_CONFIG_PREFIX"] = str(install_dir)
+    env["npm_config_prefix"] = str(install_dir)
+    env.pop("NODE_PATH", None)
+    result = subprocess.run(
+        [str(node_bin), *args],
+        capture_output = True,
+        text = True,
+        encoding = "utf-8",
+        errors = "replace",
+        timeout = timeout,
+        env = env,
+        **_windows_hidden_kwargs(),
+    )
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"node {' '.join(args)} failed: {result.stderr.strip() or result.stdout.strip()}"
+        )
+    return result.stdout.strip()
+
+
+def installed_node_version(install_dir: Path, host: HostInfo) -> str | None:
+    node_bin = node_binary_path(install_dir, host)
+    if not node_bin.exists():
+        return None
+    try:
+        return _run_node(install_dir, host, ["-v"], timeout = 30).lstrip("v")
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def installed_npm_major(install_dir: Path, host: HostInfo) -> int | None:
+    cli = npm_cli_path(install_dir, host)
+    if not cli.exists():
+        return None
+    try:
+        out = _run_node(install_dir, host, [str(cli), "--version"], timeout = 60)
+        return _version_tuple(out)[0]
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def metadata_path(install_dir: Path) -> Path:
+    return install_dir / METADATA_FILENAME
+
+
+def _write_metadata_payload(install_dir: Path, payload: dict) -> None:
+    """Replace the marker atomically, or leave the previous one exactly as it was.
+
+    load_metadata reads a truncated or unparseable file as "no install", so a crash,
+    a full disk or a killed installer partway through a plain write_text retires the
+    install the marker described: the next run refetches ~110 MB of Node. Same shape as
+    download_file -- a sibling temp file, flushed and fsynced, then os.replace, which is
+    atomic within a directory on POSIX and Windows alike.
+
+    The temp file is removed on every failure path. A stranded `.tmp-` sibling would sit
+    inside the install directory forever, and _swap_into_place would carry one written
+    here into the live tree.
+
+    Raises: the caller decides. write_metadata is writing into a staging tree that is
+    discarded on failure, so a raise there aborts an install that never landed.
+    """
+    destination = metadata_path(install_dir)
+    destination.parent.mkdir(parents = True, exist_ok = True)
+    try:
+        original: os.stat_result | None = destination.stat()
+    except OSError:
+        original = None
+    original_mode: int | None = stat.S_IMODE(original.st_mode) if original is not None else None
+    # newline at the default, as write_text had it: the marker's bytes must not change on Windows.
+    handle = tempfile.NamedTemporaryFile(
+        prefix = destination.name + ".tmp-",
+        dir = destination.parent,
+        delete = False,
+        mode = "w",
+        encoding = "utf-8",
+    )
+    tmp_path: Path | None = Path(handle.name)
+    try:
+        with handle:
+            handle.write(json.dumps(payload, indent = 2) + "\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        # NamedTemporaryFile is 0600 and os.replace keeps it, so a refresh left a shared marker
+        # unreadable to other users.
+        replacing_an_existing_marker = original_mode is not None
+        if original_mode is None:
+            mask = os.umask(0)
+            os.umask(mask)
+            original_mode = 0o666 & ~mask
+        try:
+            os.chmod(tmp_path, original_mode)
+        except OSError:
+            # Only the REFRESH abandons: it is the one with another reader and a mode worth
+            # keeping. Raising on a FIRST write aborts a whole Node install over a cosmetic
+            # chmod, reachable on Windows through the sharing violation the swap already retries.
+            if replacing_an_existing_marker:
+                raise
+        if original is not None:
+            # Owner then group, as prebuilt_core.write_live_marker explains: neither call
+            # alone is right for both root and a non-root member of a shared group.
+            try:
+                os.chown(tmp_path, original.st_uid, original.st_gid)
+            except (OSError, AttributeError):
+                try:
+                    os.chown(tmp_path, -1, original.st_gid)
+                except (OSError, AttributeError):
+                    pass
+        atomic_replace_from_tempfile(tmp_path, destination)
+        tmp_path = None
+    finally:
+        if tmp_path is not None:
+            try:
+                tmp_path.unlink(missing_ok = True)
+            except Exception:  # noqa: BLE001
+                pass
+
+
+def write_metadata(install_dir: Path, *, version: str, asset: str, sha256: str) -> None:
+    payload = {
+        "schema_version": METADATA_SCHEMA_VERSION,
+        "kind": "node",
+        "version": version,
+        "asset": asset,
+        "sha256": sha256,
+    }
+    _write_metadata_payload(install_dir, payload)
+
+
+def load_metadata(install_dir: Path) -> dict | None:
+    path = metadata_path(install_dir)
+    if not path.exists():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding = "utf-8"))
+    except (json.JSONDecodeError, OSError, UnicodeDecodeError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+_PREBUILT_FULL_CHECK_ENV = "UNSLOTH_PREBUILT_FULL_CHECK"
+
+
+def prebuilt_full_check_requested() -> bool:
+    """The escape hatch for the recorded-runtime shortcut, spelled as llama and whisper spell it.
+
+    Defined here rather than imported: this installer bootstraps the managed Node runtime and must
+    not depend on the llama module. A user told to set one variable to force a full revalidation
+    would otherwise still get Node answered from its marker.
+    """
+    return os.environ.get(_PREBUILT_FULL_CHECK_ENV, "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
+
+
+def _file_record(path: Path) -> dict | None:
+    """size, mtime_ns and sha256 for one file, or None when it cannot be read."""
+    # Streamed: node is ~110 MB.
+    try:
+        info = path.stat()
+        digest = sha256_file(path)
+    except (OSError, MemoryError):
+        return None
+    return {"size": info.st_size, "mtime_ns": info.st_mtime_ns, "sha256": digest}
+
+
+def _file_record_matches(path: Path, recorded: object) -> bool:
+    """Whether *path* is still the file *recorded* describes.
+
+    size and mtime_ns only. The digest is recorded too, and deliberately not compared here:
+    this runs on every launch of the installer and node is ~110 MB, so hashing it would cost
+    more than the `node -v` spawn the record exists to avoid. The digest is there so a support
+    log can say which binary this is.
+
+    What that gives up is narrower than it looks, in both directions. A node that no longer
+    RUNS is still caught, because npm-cli.js is run BY the node binary and that probe is never
+    skipped, so the case an update can actually repair is not the case being skipped. And the
+    record was never a tamper defence: it sits in a marker beside the binary, writable by
+    anyone who could rewrite the binary in place, so an edit careful enough to restore the
+    byte count and the nanosecond timestamp is an edit that can restore the record too. The
+    check before this one, `node -v`, could not prove any more than that either.
+    """
+    if not isinstance(recorded, dict):
+        return False
+    try:
+        info = path.stat()
+    except OSError:
+        return False
+    return info.st_size == recorded.get("size") and info.st_mtime_ns == recorded.get("mtime_ns")
+
+
+def record_runtime_verification(
+    install_dir: Path, host: HostInfo, *, version: str, npm_major: int
+) -> None:
+    """Remember that THESE bytes answered `node -v` and `npm --version`.
+
+    Only the node half is later trusted in place of a spawn: npm_major_checked records that
+    the npm probe cleared the floor at the time, not that it still would. See
+    _recorded_runtime_matches.
+
+    Read-modify-write, never raises, and never leaves a half-written marker: this
+    rewrites a file that already describes a good install, so a torn write here is
+    strictly worse than not writing at all.
+    """
+    meta = load_metadata(install_dir)
+    if meta is None:
+        return
+    node_record = _file_record(node_binary_path(install_dir, host))
+    npm_record = _file_record(npm_cli_path(install_dir, host))
+    if node_record is None or npm_record is None:
+        return
+    fresh = {
+        "node_binary": node_record,
+        "npm_cli": npm_record,
+        "node_version_checked": version,
+        "npm_major_checked": npm_major,
+    }
+    if all(meta.get(key) == value for key, value in fresh.items()):
+        # Nothing learned, so nothing is published. Reached on every run under
+        # UNSLOTH_PREBUILT_FULL_CHECK, which re-proves what the record already says: rewriting
+        # the marker there would move its mtime and inode, and re-apply its mode and owner,
+        # forever, for bytes that do not change.
+        return
+    meta.update(fresh)
+    try:
+        _write_metadata_payload(install_dir, meta)
+    except Exception:  # noqa: BLE001
+        # An unrefreshable marker costs the two spawns again, never a torn read of "nothing installed".
+        pass
+
+
+def _recorded_runtime_matches(install_dir: Path, host: HostInfo, meta: dict, version: str) -> bool:
+    """Whether a previous run already proved this exact node binary reports this version.
+
+    `node -v` is an interpreter start of a 110 MB runtime, re-run on every install and
+    every update to re-derive an answer that cannot have changed while the binary has not.
+    Absent records mean an install made before this existed, so it pays the spawn once and
+    then records it.
+
+    What this deliberately does NOT prove is npm. The npm record covers npm-cli.js alone,
+    a launcher that bootstraps thousands of files under npm/lib: deleting npm/lib/cli.js
+    leaves the recorded launcher byte-identical while `npm --version` fails. So the npm
+    record is only used as "this file is still the one the last probe ran", and
+    npm_major_checked only as "that probe cleared the floor" -- the caller still pays the
+    npm probe, because only npm can show npm's own module tree still loads.
+    """
+    if prebuilt_full_check_requested():
+        return False
+    if meta.get("node_version_checked") != version:
+        return False
+    npm_major = meta.get("npm_major_checked")
+    if not isinstance(npm_major, int) or npm_major < NPM_MIN_MAJOR:
+        return False
+    if not _file_record_matches(node_binary_path(install_dir, host), meta.get("node_binary")):
+        return False
+    if not _file_record_matches(npm_cli_path(install_dir, host), meta.get("npm_cli")):
+        return False
+    # chmod -x moves ctime only, so the records still match a node that cannot run. npm-cli.js is
+    # read by node, not executed; Windows has no execute bit.
+    return host.is_windows or os.access(node_binary_path(install_dir, host), os.X_OK)
+
+
+def _record_runtime_verification_under_lock(
+    install_dir: Path, host: HostInfo, meta: dict, *, version: str, npm_major: int
+) -> bool:
+    """record_runtime_verification for a caller that does not hold the install lock.
+
+    The record is a read-modify-write of the marker, and the pre-lock check in
+    install_prebuilt is exactly where another installer can be mid-swap: it reads the
+    old marker, the other process swaps a new tree into place, and the old version and
+    checksum are written over the new tree's marker. So the write takes the lock and
+    goes ahead only if the marker is still the one that was read.
+
+    Returns whether the marker was still the one that was read. False means another
+    installer replaced the tree while this one waited, so what was just verified is no
+    longer what is installed; the caller re-checks rather than reporting it current.
+    A write that failed for any other reason still answers True: the install is the one
+    that was verified, and the record merely costs the two spawns again next time.
+    """
+    try:
+        with install_lock(install_lock_path(install_dir), timeout = RECORD_LOCK_TIMEOUT_SECONDS):
+            current = load_metadata(install_dir)
+            if current is None:
+                return False
+            if any(current.get(key) != meta.get(key) for key in ("version", "sha256", "asset")):
+                return False
+            record_runtime_verification(install_dir, host, version = version, npm_major = npm_major)
+    except BusyInstallConflict:
+        # Busy is not evidence. The marker still being the one that was read IS evidence, and
+        # that is the False above; failing to look at it says only that nothing was written.
+        # Answering False here would send a legacy install on to the outer install lock, which
+        # the same holder also fails, so the first launch beside a running installer would exit
+        # busy where the pre-record path reported the install current and exited 0.
+        log("another installer holds the lock; keeping the verified install without a record")
+    except Exception:  # noqa: BLE001
+        pass
+    return True
+
+
+def existing_install_matches(
+    install_dir: Path,
+    host: HostInfo,
+    *,
+    version: str,
+    expected_sha: str | None = None,
+    under_lock: bool = False,
+) -> bool:
+    """True iff the on-disk install is exactly this version, runs, and (when
+    expected_sha is given) was recorded with that digest, so a non-pinned or
+    tampered artifact is not kept just because its version string matches."""
+    meta = load_metadata(install_dir)
+    if not meta or meta.get("version") != version:
+        return False
+    if expected_sha is not None and meta.get("sha256") != expected_sha:
+        return False
+    if _recorded_runtime_matches(install_dir, host, meta, version):
+        # Stands in for `node -v` only: npm-cli.js bootstraps thousands of files, so npm is still probed.
+        npm_major = installed_npm_major(install_dir, host)
+        return npm_major is not None and npm_major >= NPM_MIN_MAJOR
+    if installed_node_version(install_dir, host) != version:
+        return False
+    npm_major = installed_npm_major(install_dir, host)
+    if npm_major is None or npm_major < NPM_MIN_MAJOR:
+        return False
+    # Written under the install lock either way: the caller's, or one taken here.
+    if under_lock:
+        record_runtime_verification(install_dir, host, version = version, npm_major = npm_major)
+        return True
+    # A marker that changed hands under the lock is another installer's tree, whose re-check decides.
+    return _record_runtime_verification_under_lock(
+        install_dir, host, meta, version = version, npm_major = npm_major
+    )
+
+
+def existing_install_usable(install_dir: Path, host: HostInfo) -> bool:
+    """True iff the on-disk install runs and clears the npm floor, ignoring version."""
+    if not load_metadata(install_dir):
+        return False
+    if installed_node_version(install_dir, host) is None:
+        return False
+    npm_major = installed_npm_major(install_dir, host)
+    return npm_major is not None and npm_major >= NPM_MIN_MAJOR
+
+
+def _replace_with_retry(
+    src: Path,
+    dst: Path,
+    *,
+    attempts: int = 8,
+) -> None:
+    """os.replace, retried against transient Windows sharing violations.
+
+    A directory rename fails with WinError 5/32 while any process holds a handle inside
+    it, and Defender or the indexer routinely does right after extraction (seen in CI on
+    a fresh install, with no existing directory to conflict with). Handles clear in a
+    second or two, so a bounded backoff turns the failure into a pause; other errors
+    raise immediately rather than stalling on a real problem.
+    """
+    delay = 0.25
+    for attempt in range(attempts):
+        try:
+            os.replace(src, dst)
+            return
+        except OSError as exc:
+            transient = os.name == "nt" and getattr(exc, "winerror", None) in (5, 32, 145)
+            if not transient or attempt == attempts - 1:
+                raise
+            log(
+                f"rename blocked ({exc.winerror}), retrying in {delay:.2f}s "
+                f"-- a scanner is likely still holding the extracted files"
+            )
+            time.sleep(delay)
+            delay = min(delay * 2, 4.0)
+
+
+def _swap_into_place(extracted_root: Path, install_dir: Path) -> None:
+    """Atomically replace install_dir with extracted_root (same filesystem)."""
+    install_dir.parent.mkdir(parents = True, exist_ok = True)
+    backup: Path | None = None
+    if install_dir.exists():
+        backup = install_dir.parent / f".{install_dir.name}.old-{os.getpid()}"
+        _replace_with_retry(install_dir, backup)
+    try:
+        _replace_with_retry(extracted_root, install_dir)
+    except OSError:
+        # The forward rename retries ~16s, ample time for a scanner to grab the backup too.
+        # A plain os.replace would raise over the original error and leave no install_dir at all, so the rollback gets
+        # the same backoff and never masks it.
+        if backup is not None and not install_dir.exists():
+            try:
+                _replace_with_retry(backup, install_dir)
+            except OSError as rollback_exc:
+                log(f"could not restore the previous Node install from {backup}: {rollback_exc}")
+        raise
+    if backup is not None:
+        shutil.rmtree(backup, ignore_errors = True)
+
+
+def _ensure_npm_floor(install_dir: Path, host: HostInfo) -> None:
+    """Self-upgrade npm inside the isolated prefix if a pinned build ships npm < 11 (no-op on Node 24+)."""
+    npm_major = installed_npm_major(install_dir, host)
+    if npm_major is not None and npm_major >= NPM_MIN_MAJOR:
+        return
+    log(f"bundled npm {npm_major} below {NPM_MIN_MAJOR}; upgrading npm inside the isolated prefix")
+    cli = npm_cli_path(install_dir, host)
+    _run_node(install_dir, host, [str(cli), "install", "-g", f"npm@^{NPM_MIN_MAJOR}"], timeout = 300)
+
+
+# ── Orchestration ──
+def install_prebuilt(install_dir: Path, *, channel: str, min_major: int, force: bool) -> int:
+    host = detect_host()
+    pins = load_pins()
+
+    if channel in {"", "pinned", "default"}:
+        # Default path: the committed pin, no index.json round-trip.
+        version = pinned_default_version(pins)
+    elif channel in {"lts", "latest"}:
+        try:
+            index = fetch_json(NODE_DIST_INDEX)
+        except Exception as exc:  # noqa: BLE001
+            # nodejs.org unreachable: keep a working isolated Node instead of aborting.
+            if not force and existing_install_usable(install_dir, host):
+                log(f"Node dist index unreachable ({exc}); keeping existing isolated Node")
+                return EXIT_SUCCESS
+            raise
+        if not isinstance(index, list):
+            raise PrebuiltFallback(f"unexpected index.json payload from {NODE_DIST_INDEX}")
+        version = select_node_version(index, channel = channel, min_major = min_major)
+    else:
+        version = channel.lstrip("v")
+        # Explicit version bypasses min_major; reject anything Vite/OXC cannot use.
+        if not _meets_node_floor(version):
+            raise PrebuiltFallback(
+                f"requested Node v{version} is below the floor (^20.19 || >=22.12 || >=23)"
+            )
+
+    asset = node_asset_name(version, host)
+    log(f"target Node v{version} ({asset})")
+
+    # Only keep an existing install if it matches the committed pin (or the caller
+    # opted out of pinning); an unpinned target without opt-in falls through to the
+    # refusal in resolve_expected_sha256 rather than short-circuiting on it.
+    pin = pinned_sha256(pins, version, asset)
+    allow_unverified = allow_unverified_node()
+    may_keep = pin is not None or allow_unverified
+
+    if (
+        not force
+        and may_keep
+        and existing_install_matches(install_dir, host, version = version, expected_sha = pin)
+    ):
+        log(f"existing Node install already matches v{version}; nothing to do")
+        return EXIT_SUCCESS
+
+    with install_lock(install_lock_path(install_dir)):
+        # Re-check under the lock: a concurrent run may have just finished.
+        if (
+            not force
+            and may_keep
+            and existing_install_matches(
+                install_dir, host, version = version, expected_sha = pin, under_lock = True
+            )
+        ):
+            log(f"existing Node install already matches v{version}; nothing to do")
+            return EXIT_SUCCESS
+
+        try:
+            expected_sha = resolve_expected_sha256(
+                pins, version, asset, allow_unverified = allow_unverified
+            )
+
+            staging_root = install_dir.parent / INSTALL_STAGING_ROOT_NAME
+            staging_root.mkdir(parents = True, exist_ok = True)
+            staging = Path(
+                tempfile.mkdtemp(prefix = f"{install_dir.name}.staging-", dir = staging_root)
+            )
+            try:
+                archive_path = staging / asset
+                log(f"downloading {node_download_url(version, asset)}")
+                download_file_verified(
+                    node_download_url(version, asset),
+                    archive_path,
+                    expected_sha256 = expected_sha,
+                    label = asset,
+                )
+                extract_dir = staging / "extracted"
+                extract_archive(archive_path, extract_dir)
+
+                roots = [p for p in extract_dir.iterdir() if p.is_dir()]
+                if len(roots) != 1:
+                    raise PrebuiltFallback(f"unexpected archive layout: {[p.name for p in roots]}")
+                extracted_root = roots[0]
+
+                _ensure_npm_floor(extracted_root, host)
+                write_metadata(extracted_root, version = version, asset = asset, sha256 = expected_sha)
+                _swap_into_place(extracted_root, install_dir)
+            finally:
+                shutil.rmtree(staging, ignore_errors = True)
+                try:
+                    staging_root.rmdir()
+                except OSError:
+                    pass
+        except UnpinnedNodeRefused:
+            # A policy refusal, not a transient failure: fail closed, never keep-existing.
+            raise
+        except Exception as exc:  # noqa: BLE001
+            # Transient download/verify failure: keep an existing usable Node, but never keep a same-version
+            # install whose recorded digest is not the pin (the artifact the short-circuit above just
+            # rejected). A different usable version is still kept for offline resilience.
+            meta = load_metadata(install_dir)
+            pin_mismatch = (
+                pin is not None
+                and bool(meta)
+                and meta.get("version") == version
+                and meta.get("sha256") != pin
+            )
+            if not force and not pin_mismatch and existing_install_usable(install_dir, host):
+                log(f"Node download failed ({exc}); keeping existing isolated Node")
+                return EXIT_SUCCESS
+            raise
+
+    final_version = installed_node_version(install_dir, host)
+    npm_major = installed_npm_major(install_dir, host)
+    if final_version != version or npm_major is None or npm_major < NPM_MIN_MAJOR:
+        raise PrebuiltFallback(
+            f"post-install verification failed: node={final_version} npm_major={npm_major}"
+        )
+    # After the swap, since _ensure_npm_floor rewrites npm in the staged tree. The lock was released
+    # above, so the write retakes it and proceeds only over the marker this install wrote.
+    installed_meta = load_metadata(install_dir) or {}
+    _record_runtime_verification_under_lock(
+        install_dir, host, installed_meta, version = final_version, npm_major = npm_major
+    )
+    log(f"installed isolated Node v{final_version} (npm {npm_major}.x) at {install_dir}")
+    return EXIT_SUCCESS
+
+
+def main(argv: list[str] | None = None) -> int:
+    global _LOG_TO_STDOUT
+    _LOG_TO_STDOUT = True
+
+    parser = argparse.ArgumentParser(description = "Install an isolated Node.js for Unsloth Studio")
+    parser.add_argument(
+        "--install-dir", required = True, help = "isolated Node directory, e.g. <UNSLOTH_HOME>/node"
+    )
+    parser.add_argument(
+        "--node-version",
+        default = os.environ.get("UNSLOTH_NODE_VERSION", DEFAULT_NODE_CHANNEL),
+        help = (
+            f"'pinned' (default; installs the digest-pinned version from {PINS_FILENAME}), "
+            f"'lts', 'latest', or an explicit version like 24.4.1. Non-pinned versions require "
+            f"{ALLOW_UNVERIFIED_ENV}=1."
+        ),
+    )
+    parser.add_argument("--min-major", type = int, default = NODE_MIN_LTS_MAJOR)
+    parser.add_argument(
+        "--force", action = "store_true", help = "reinstall even if the version matches"
+    )
+    args = parser.parse_args(argv)
+
+    install_dir = Path(args.install_dir).expanduser().resolve()
+    try:
+        return install_prebuilt(
+            install_dir,
+            channel = args.node_version,
+            min_major = args.min_major,
+            force = args.force,
+        )
+    except BusyInstallConflict as exc:
+        log(str(exc))
+        return EXIT_BUSY
+    except UnpinnedNodeRefused as exc:
+        # Catch before PrebuiltFallback so the refusal logs its own message.
+        log(str(exc))
+        return EXIT_FALLBACK
+    except PrebuiltFallback as exc:
+        log(f"prebuilt unavailable: {exc}")
+        return EXIT_FALLBACK
+    except PermissionError as exc:
+        return _report_access_denied(exc, install_dir)
+    except OSError as exc:
+        # Windows reports the ACL and filter-driver denials that matter here as
+        # winerror 5, which does not always arrive as PermissionError.
+        if getattr(exc, "winerror", None) == 5 or exc.errno == errno.EACCES:
+            return _report_access_denied(exc, install_dir)
+        log(f"unexpected error: {exc}")
+        return EXIT_ERROR
+    except Exception as exc:  # noqa: BLE001
+        log(f"unexpected error: {exc}")
+        return EXIT_ERROR
+
+
+def _report_access_denied(exc: OSError, install_dir: Path) -> int:
+    """Log the denial, and say which object was refused so the caller can name it."""
+    path = getattr(exc, "filename", None) or ""
+    if path:
+        log(f"{DENIED_PATH_MARKER}{path}")
+        scope = DENIED_SCOPE_INSTALL_DIR if _within(path, install_dir) else DENIED_SCOPE_PARENT
+        log(f"{DENIED_SCOPE_MARKER}{scope}")
+    log(_access_denied_message(exc))
+    return EXIT_DENIED
+
+
+def _within(path: str, root: Path) -> bool:
+    """Whether path is root or sits under it, by spelling alone.
+
+    Both sides come from the same --install-dir string, so normalizing without
+    resolving links keeps them comparable; resolving would need the very access
+    that was just denied.
+    """
+    normalized = os.path.normcase(os.path.abspath(path))
+    base = os.path.normcase(os.path.abspath(root))
+    return normalized == base or normalized.startswith(base.rstrip(os.sep) + os.sep)
+
+
+def _access_denied_message(exc: OSError) -> str:
+    """Say that this is a permission problem, and that elevation may not fix it.
+
+    Reported as "unexpected error" before, which the caller then followed with
+    "install Node yourself, or check your network". Neither is the fix, and a
+    user whose antivirus is holding the folder can spend a long time on the
+    second one. Antivirus ransomware protection and Controlled folder access
+    both deny regardless of privilege, so running elevated is not the answer
+    either.
+    """
+    path = getattr(exc, "filename", None) or ""
+    where = f" writing {path}" if path else ""
+    return (
+        f"access denied{where}. This is a permissions or security-software block, "
+        "not a download problem. Antivirus ransomware protection (Bitdefender Safe Files, "
+        "Defender Controlled folder access and the like) denies this whatever your "
+        "privileges are, so running elevated may not clear it. Allow or exclude the "
+        "Unsloth folder in your antivirus, or delete or rename it (it is a managed cache "
+        "and setup reinstalls it), then re-run setup."
+    )
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

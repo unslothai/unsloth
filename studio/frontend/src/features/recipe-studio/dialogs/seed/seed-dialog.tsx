@@ -45,10 +45,19 @@ import {
 import { cn } from "@/lib/utils";
 import { UnstructuredDropZone, type FileEntry } from "./unstructured-drop-zone";
 import {
+  LOCAL_SEED_UPLOAD_MAX_BYTES,
+  LOCAL_SEED_UPLOAD_MAX_LABEL,
+} from "./upload-limits";
+import {
   getGithubEnvTokenStatus,
   inspectSeedDataset,
   inspectSeedUpload,
 } from "../../api";
+import { useRecipeStudioStore } from "../../stores/recipe-studio";
+import {
+  makeUnstructuredUploadUid,
+  resolveUnstructuredUploadBlockId,
+} from "../../utils/config-factories";
 import { resolveImagePreview } from "../../utils/image-preview";
 import type {
   GithubItemType,
@@ -73,7 +82,6 @@ const SELECTION_OPTIONS: Array<{ value: SeedSelectionType; label: string }> = [
 ];
 
 const LOCAL_ACCEPT = ".csv,.json,.jsonl";
-const MAX_UPLOAD_BYTES = 50 * 1024 * 1024;
 const DEFAULT_CHUNK_SIZE = 1200;
 const DEFAULT_CHUNK_OVERLAP = 200;
 const MAX_CHUNK_SIZE = 20000;
@@ -311,7 +319,7 @@ export function GithubRepoSeedForm({
             hint="Prefer the server GH_TOKEN / GITHUB_TOKEN env var. Use public_repo for public repos or repo for private repos."
           />
           {usingEnvToken && (
-            <span className="shrink-0 rounded-md border border-emerald-500/40 bg-emerald-500/10 px-1.5 py-0.5 text-[10px] font-medium text-emerald-700 dark:text-emerald-300">
+            <span className="shrink-0 rounded-md border border-emerald-500/40 bg-emerald-500/10 px-1.5 py-0.5 text-ui-10 font-medium text-emerald-700 dark:text-emerald-300">
               Using server env var
             </span>
           )}
@@ -331,8 +339,8 @@ export function GithubRepoSeedForm({
         />
         <p id={tokenHelpId} className="text-xs text-muted-foreground">
           {usingEnvToken
-            ? "Studio detected a server env token, so saved/shared recipes can leave this blank."
-            : "Blank is safest for saved/shared recipes because Studio will read the server environment at run time."}
+            ? "Unsloth detected a server env token, so saved/shared recipes can leave this blank."
+            : "Blank is safest for saved/shared recipes because Unsloth will read the server environment at run time."}
         </p>
         {hasToken && (
           <p className="rounded-md bg-amber-500/10 px-2 py-1.5 text-xs text-amber-700 dark:text-amber-300">
@@ -447,7 +455,7 @@ export function GithubRepoSeedForm({
       </fieldset>
 
       <p className="text-xs text-muted-foreground">
-        Backed by Studio's built-in <code>github_repo</code> seed reader. Large
+        Backed by Unsloth's built-in <code>github_repo</code> seed reader. Large
         repos can take minutes, so start with small limits for previews.
       </p>
     </div>
@@ -594,6 +602,41 @@ export function SeedDialog({
   const mode = config.seed_source_type ?? "hf";
   const previewEmpty = getPreviewEmptyStateCopy(mode);
 
+  const queueUploadCleanup = useRecipeStudioStore(
+    (state) => state.queueUploadCleanup,
+  );
+
+  // config.id collides across recipes (ids reset to n1 on import); use a
+  // stable per-block uid instead. Generate one synchronously so the first
+  // rendered drop zone cannot upload under a legacy node id.
+  const uploadUid = config.unstructured_upload_uid?.trim() ?? "";
+  const unstructuredFileCount = config.unstructured_file_ids?.length ?? 0;
+  const generatedUploadUidRef = useRef<string | null>(null);
+  if (
+    mode === "unstructured" &&
+    !uploadUid &&
+    unstructuredFileCount === 0 &&
+    generatedUploadUidRef.current === null
+  ) {
+    generatedUploadUidRef.current = makeUnstructuredUploadUid();
+  }
+  const uploadBlockId = resolveUnstructuredUploadBlockId({
+    configId: config.id,
+    uploadUid,
+    generatedUploadUid: generatedUploadUidRef.current,
+    unstructuredFileCount,
+  });
+
+  useEffect(() => {
+    if (mode !== "unstructured") return;
+    if (uploadUid) return;
+    if (unstructuredFileCount > 0) return;
+    const nextUid =
+      generatedUploadUidRef.current ?? makeUnstructuredUploadUid();
+    generatedUploadUidRef.current = nextUid;
+    onUpdate({ unstructured_upload_uid: nextUid });
+  }, [mode, uploadUid, unstructuredFileCount, onUpdate]);
+
   const prevModeRef = useRef(mode);
   useEffect(() => {
     const prevMode = prevModeRef.current;
@@ -717,6 +760,11 @@ export function SeedDialog({
             subset: config.hf_subset?.trim() || undefined,
             preview_size: 10,
           });
+          // Queue the block's upload directory for deletion after the next
+          // save; only uid-namespaced directories qualify (single owner).
+          if (uploadUid && unstructuredFileCount > 0) {
+            queueUploadCleanup(uploadUid);
+          }
           onUpdate({
             hf_path: response.resolved_path,
             seed_columns: response.columns,
@@ -727,6 +775,7 @@ export function SeedDialog({
             hf_split: response.split ?? "",
             hf_subset: response.subset ?? "",
             local_file_name: "",
+            unstructured_upload_uid: "",
             unstructured_file_ids: [],
             unstructured_file_names: [],
             unstructured_file_sizes: [],
@@ -740,8 +789,10 @@ export function SeedDialog({
           if (!localFile) {
             throw new Error("Select a local CSV/JSON/JSONL file first.");
           }
-          if (localFile.size > MAX_UPLOAD_BYTES) {
-            throw new Error("File too large (max 50MB).");
+          if (localFile.size > LOCAL_SEED_UPLOAD_MAX_BYTES) {
+            throw new Error(
+              `File too large (max ${LOCAL_SEED_UPLOAD_MAX_LABEL}).`,
+            );
           }
           const payload = await fileToBase64Payload(localFile);
           const response = await inspectSeedUpload({
@@ -749,6 +800,11 @@ export function SeedDialog({
             content_base64: payload,
             preview_size: 10,
           });
+          // Queue the block's upload directory for deletion after the next
+          // save; only uid-namespaced directories qualify (single owner).
+          if (uploadUid && unstructuredFileCount > 0) {
+            queueUploadCleanup(uploadUid);
+          }
           onUpdate({
             hf_path: response.resolved_path,
             seed_columns: response.columns,
@@ -760,6 +816,7 @@ export function SeedDialog({
             hf_subset: "",
             hf_split: "",
             local_file_name: localFile.name,
+            unstructured_upload_uid: "",
             unstructured_file_ids: [],
             unstructured_file_names: [],
             unstructured_file_sizes: [],
@@ -784,7 +841,7 @@ export function SeedDialog({
 
           const { chunkSize, chunkOverlap } = resolveChunking(config);
           const response = await inspectSeedUpload({
-            block_id: config.id,
+            block_id: uploadBlockId,
             file_ids: fileIds,
             file_names: fileNames,
             preview_size: 10,
@@ -822,7 +879,18 @@ export function SeedDialog({
         setIsInspecting(false);
       }
     },
-    [config, getCurrentLoadKey, localFile, mode, onUpdate, unstructuredFiles],
+    [
+      config,
+      getCurrentLoadKey,
+      localFile,
+      mode,
+      onUpdate,
+      queueUploadCleanup,
+      unstructuredFiles,
+      unstructuredFileCount,
+      uploadBlockId,
+      uploadUid,
+    ],
   );
 
   useEffect(() => {
@@ -936,6 +1004,7 @@ export function SeedDialog({
                 <Input
                   id={tokenId}
                   className="nodrag"
+                  data-reload-snapshot-sensitive
                   placeholder="hf_..."
                   value={config.hf_token ?? ""}
                   onChange={(event) =>
@@ -980,11 +1049,14 @@ export function SeedDialog({
                 </Button>
               </div>
               <p className="text-xs text-muted-foreground">
-                Max 50MB per file.
+                Max {LOCAL_SEED_UPLOAD_MAX_LABEL} per file.
               </p>
               {(localFile?.name || config.local_file_name?.trim()) && (
                 <p className="text-xs text-muted-foreground">
-                  Selected: {localFile?.name ?? config.local_file_name?.trim()}
+                  Selected:{" "}
+                  <span data-reload-snapshot-sensitive>
+                    {localFile?.name ?? config.local_file_name?.trim()}
+                  </span>
                 </p>
               )}
             </div>
@@ -992,7 +1064,7 @@ export function SeedDialog({
 
           {mode === "unstructured" && (
             <UnstructuredDropZone
-              blockId={config.id}
+              blockId={uploadBlockId}
               files={unstructuredFiles}
               onFilesChange={handleUnstructuredFilesChange}
               disabled={isInspecting}

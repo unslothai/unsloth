@@ -20,7 +20,7 @@ def permute(X: torch.Tensor, gather_indices: torch.Tensor, topk: int):
     """
     assert gather_indices.ndim == 1
     X = X.view(-1, X.shape[-1])
-    # Shortcut for topk == 1
+    # Shortcut for topk == 1.
     if topk == 1:
         return X[gather_indices]
 
@@ -52,13 +52,9 @@ def calculate_topk(
 
     def _activation(gating_output: torch.Tensor):
         if use_sigmoid:
-            scores = torch.sigmoid(gating_output.to(torch.float32)).to(
-                gating_output.dtype
-            )
+            scores = torch.sigmoid(gating_output.to(torch.float32)).to(gating_output.dtype)
         else:
-            scores = F.softmax(gating_output.to(torch.float32), dim = 1).to(
-                gating_output.dtype
-            )
+            scores = F.softmax(gating_output.to(torch.float32), dim = 1).to(gating_output.dtype)
 
         return scores
 
@@ -73,16 +69,16 @@ def calculate_topk(
         topk_weights = _activation(topk_weights)
 
     if renormalize:
-        topk_weights /= torch.sum(topk_weights, dim = -1, keepdim = True).to(
-            gating_output.dtype
-        )
+        topk_weights /= torch.sum(topk_weights, dim = -1, keepdim = True).to(gating_output.dtype)
 
     return topk_weights, topk_ids
 
 
 @torch.no_grad()
 def get_routing_indices(
-    selected_experts, num_experts, return_scatter_indices: bool = False
+    selected_experts,
+    num_experts,
+    return_scatter_indices: bool = False,
 ):
     """
     Returns:
@@ -98,7 +94,7 @@ def get_routing_indices(
         min = 0,
         max = num_experts,
     )
-    # token_indices_experts_sorted shape (bs*slen*top_k,)
+    # token_indices_experts_sorted has shape (bs * slen * top_k,).
     gather_indices = torch.argsort(selected_experts.view(-1), stable = True)
     if return_scatter_indices:
         scatter_indices = gather_indices.argsort()
@@ -107,7 +103,12 @@ def get_routing_indices(
         return token_counts_by_expert, gather_indices
 
 
-def torch_grouped_gemm(X, W, m_sizes, transpose = True):
+def torch_grouped_gemm(
+    X,
+    W,
+    m_sizes,
+    transpose = True,
+):
     """
     X: [M, K] if forward, else [M, N]
     W: [E, N, K]
@@ -135,13 +136,11 @@ def torch_grouped_gemm(X, W, m_sizes, transpose = True):
         if m_size > 0:
             m_end = m_start + m_size
 
-            # Extract group input
-            # m_size x K
+            # Extract group input m_size x K
             X_g = X[m_start:m_end]
-            # N x K
             W_g = W[g]
 
-            # Y_g = X_g @ W_g.T -> [m_size, N]
+            # Y_g = X_g @ W_g.T -> [m_size, N].
             W_g = W_g.T if transpose else W_g
             Y_g = X_g @ W_g
 

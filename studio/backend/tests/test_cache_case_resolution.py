@@ -5,8 +5,7 @@ from pathlib import Path
 import sys
 import types
 
-# Keep this test runnable in lightweight environments where optional logging
-# deps are not installed.
+# Stub structlog so this test runs where the optional dep is absent.
 if "structlog" not in sys.modules:
 
     class _DummyLogger:
@@ -111,10 +110,10 @@ def test_resolve_cached_repo_id_case_late_cache_population(tmp_path, monkeypatch
     first = resolve_cached_repo_id_case("org/model")
     assert first == "org/model"
 
-    # Simulate cache being populated after first miss (e.g. another code path/download).
+    # Cache populated after first miss (e.g. another code path/download).
     _mk_cache_repo(tmp_path, "Org/Model")
 
     second = resolve_cached_repo_id_case("org/model")
 
-    # Desired behavior: second lookup should pick up the now-existing variant.
+    # Second lookup should pick up the now-existing variant.
     assert second == "Org/Model"

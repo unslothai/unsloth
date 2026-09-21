@@ -1,0 +1,105 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
+import {
+  useDownloadTransportCapabilities,
+  useTransportMode,
+} from "@/features/hub/download-manager";
+import { cn } from "@/lib/utils";
+import { useEffect } from "react";
+
+const OPTIONS: { value: "auto" | "http" | "xet"; label: string; hint: string }[] =
+  [
+    {
+      value: "auto",
+      label: "Auto",
+      hint: "Picks the transport for this machine and switches to HTTP if Xet stalls or fails.",
+    },
+    {
+      value: "http",
+      label: "HTTP",
+      hint: "Resumes from where it stopped if you cancel.",
+    },
+    {
+      value: "xet",
+      label: "Xet",
+      hint: "Usually faster on a fresh download, but starts over if you cancel.",
+    },
+  ];
+
+export function TransportToggle() {
+  const [mode, setMode] = useTransportMode();
+  const { capabilities, isLoading } = useDownloadTransportCapabilities();
+  // Two questions. Xet cannot be CHOSEN until we know it runs here; the fallback may only fire
+  // once we know it does NOT, or a loading tab shows HTTP for a stored Xet that was fine.
+  const xetKnownUnavailable = capabilities?.xet.available === false;
+  const xetUnavailable = isLoading || xetKnownUnavailable;
+  const autoResolvesTo = capabilities?.auto_resolves_to ?? "xet";
+  const autoReason = capabilities?.auto_reason;
+
+  useEffect(() => {
+    if (mode === "xet" && xetKnownUnavailable) {
+      // Reflected, never stored: a fallback stored here would outrank the install setting and
+      // survive hf_xet being installed later.
+      setMode("http", { persist: false });
+    }
+  }, [mode, setMode, xetKnownUnavailable]);
+
+  return (
+    <fieldset
+      aria-label="Download transport"
+      className="hub-tag-soft m-0 inline-flex h-[26px] min-w-0 items-center gap-0.5 rounded-full border-0 p-0.5 text-ui-11"
+    >
+      {OPTIONS.map((opt) => {
+        const active = mode === opt.value;
+        const disabled = opt.value === "xet" && xetUnavailable;
+        let hint = opt.hint;
+        if (disabled && capabilities?.xet.reason) {
+          hint = capabilities.xet.reason;
+        } else if (opt.value === "auto") {
+          // Say what Auto is doing right now and why, so "Auto" is never an opaque choice.
+          const label = autoResolvesTo === "http" ? "HTTP" : "Xet";
+          hint = autoReason
+            ? `${opt.hint} Currently: ${label} (${autoReason}).`
+            : `${opt.hint} Currently: ${label}.`;
+        }
+        return (
+          <Tooltip key={opt.value}>
+            <TooltipTrigger asChild={true}>
+              <button
+                type="button"
+                aria-disabled={disabled || undefined}
+                aria-pressed={active}
+                onClick={() => {
+                  if (!disabled) setMode(opt.value);
+                }}
+                className={cn(
+                  "inline-flex h-[22px] items-center justify-center rounded-full px-2 font-medium tracking-tight transition-colors",
+                  disabled
+                    ? "cursor-not-allowed text-muted-foreground/45"
+                    : active
+                      ? "hub-tab-toggle-pill cursor-pointer text-foreground"
+                      : "cursor-pointer text-muted-foreground hover:text-foreground/80",
+                )}
+              >
+                {opt.label}
+              </button>
+            </TooltipTrigger>
+            <TooltipContent
+              side="bottom"
+              sideOffset={6}
+              className="tooltip-compact"
+            >
+              {hint}
+            </TooltipContent>
+          </Tooltip>
+        );
+      })}
+    </fieldset>
+  );
+}

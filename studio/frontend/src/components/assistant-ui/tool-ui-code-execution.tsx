@@ -3,22 +3,29 @@
 
 "use client";
 
-import { type ToolCallMessagePartComponent, useAuiState } from "@assistant-ui/react";
-import { FileTextIcon, LoaderIcon, TerminalIcon } from "lucide-react";
-import { memo, useEffect, useState } from "react";
+import { stringifyToolResult } from "@/lib/strip-ansi";
+import {
+  type ToolCallMessagePartComponent,
+  useAuiState,
+} from "@assistant-ui/react";
+import { FileTextIcon, TerminalIcon } from "lucide-react";
+import { Spinner } from "@/components/ui/spinner";
+import { isToolCallRunning, toolArgText } from "./tool-arg-text";
+import { memo, useMemo } from "react";
+import { useToolAwaitingApproval } from "@/features/chat";
 import {
   ToolFallbackContent,
   ToolFallbackRoot,
   ToolFallbackTrigger,
 } from "./tool-fallback";
+import { useToolActivityOpen } from "./use-tool-activity-open";
+import { ScrollPane } from "./scroll-pane";
+import { CopyBtn } from "./tool-code-cell";
 
 /**
- * Renders the synthetic `_toolEvent` chunks emitted by
- * `_stream_anthropic` when Anthropic's `code_execution_20250825` tool
- * fires. The backend collapses Anthropic's two sub-tools
- * (`bash_code_execution`, `text_editor_code_execution`) into a single
- * `tool_name: "code_execution"`, with `arguments.kind` ("bash" or
- * "text_editor") and a per-kind argument shape:
+ * Renders synthetic `_toolEvent` chunks from `_stream_anthropic` for the
+ * `code_execution_20250825` tool. The backend collapses Anthropic's two
+ * sub-tools into `tool_name: "code_execution"` with `arguments.kind`:
  *
  *   kind=bash:        { command: "<shell command>" }
  *   kind=text_editor: { command: "view"|"create"|"str_replace", path, ... }
@@ -32,20 +39,73 @@ import {
  */
 interface CodeExecutionArgs {
   kind?: "bash" | "text_editor";
-  command?: string;
-  path?: string;
+  // Straight off the wire: the model, not the schema, decides the JSON type.
+  command?: unknown;
+  path?: unknown;
 }
+
+const MAX_COMMAND_LABEL = 80;
+const MAX_RESULT_DISPLAY = 10_000;
+
+function truncateCommandLabel(text: string): string {
+  const normalized = text.replace(/\s+/g, " ").trim();
+  if (normalized.length <= MAX_COMMAND_LABEL) {
+    return normalized;
+  }
+  const head = Math.ceil((MAX_COMMAND_LABEL - 3) * 0.65);
+  const tail = MAX_COMMAND_LABEL - head - 3;
+  return `${normalized.slice(0, head)}...${normalized.slice(-tail)}`;
+}
+
+function truncateResult(text: string): string {
+  return text.length <= MAX_RESULT_DISPLAY
+    ? text
+    : `${text.slice(0, MAX_RESULT_DISPLAY)}\n... (truncated)`;
+}
+
+export function CodeExecutionResultOutput({ result }: { result: unknown }) {
+  const resultText = useMemo(
+    () => (result == null ? "" : stringifyToolResult(result)),
+    [result],
+  );
+  const displayedResult = useMemo(
+    () => truncateResult(resultText),
+    [resultText],
+  );
+
+  if (!resultText) {
+    return null;
+  }
+  return (
+    <div>
+      <div className="flex justify-end">
+        <CopyBtn text={resultText} />
+      </div>
+      <ScrollPane
+        className="mt-1 rounded bg-muted/50 p-2"
+        scrollerClassName="max-h-64 overflow-auto whitespace-pre-wrap break-words text-xs"
+      >
+        {displayedResult}
+      </ScrollPane>
+    </div>
+  );
+}
+
+
 
 const CodeExecutionToolUIImpl: ToolCallMessagePartComponent = ({
   args,
   result,
   status,
+  toolCallId,
 }) => {
   const parsedArgs = (args as CodeExecutionArgs) ?? {};
   const kind = parsedArgs.kind ?? "bash";
-  const command = parsedArgs.command ?? "";
-  const path = parsedArgs.path ?? "";
-  const isRunning = status?.type === "running";
+  const command = toolArgText(parsedArgs.command);
+  const path = toolArgText(parsedArgs.path);
+  const isRunning = isToolCallRunning(status);
+
+  const commandLabel = command ? truncateCommandLabel(command) : "";
 
   let runningLabel: string;
   let completedLabel: string;
@@ -67,12 +127,11 @@ const CodeExecutionToolUIImpl: ToolCallMessagePartComponent = ({
     }
   } else {
     runningLabel = "Running command…";
-    completedLabel = command ? `Ran \`${command}\`` : "Ran command";
+    completedLabel = commandLabel ? `Ran \`${commandLabel}\`` : "Ran command";
   }
 
-  // Collapse the card once the model has resumed streaming prose after
-  // the tool call. Mirrors WebSearchToolUI's behavior so the tool-card
-  // doesn't crowd the final answer once the run is done.
+  // Collapse the card once the model resumes streaming prose after the tool
+  // call (mirrors WebSearchToolUI) so it doesn't crowd the final answer.
   const hasText = useAuiState(({ message }) =>
     message.content.some(
       (p) =>
@@ -81,24 +140,17 @@ const CodeExecutionToolUIImpl: ToolCallMessagePartComponent = ({
         (p as { text: string }).text.length > 0,
     ),
   );
-  const [open, setOpen] = useState(isRunning);
-  useEffect(() => {
-    if (isRunning) {
-      setOpen(true);
-    } else if (hasText) {
-      setOpen(false);
-    }
-  }, [isRunning, hasText]);
-
-  const resultText =
-    typeof result === "string"
-      ? result
-      : result != null
-        ? JSON.stringify(result, null, 2)
-        : "";
+  // Ask permission gates every local tool call, and what is being approved
+  // lives inside the content while Allow/Deny render outside it.
+  const awaitingApproval = useToolAwaitingApproval(toolCallId);
+  const [open, setOpen] = useToolActivityOpen(isRunning, hasText);
 
   return (
-    <ToolFallbackRoot open={open} onOpenChange={setOpen}>
+    <ToolFallbackRoot
+      open={open}
+      onOpenChange={setOpen}
+      awaitingApproval={awaitingApproval}
+    >
       <ToolFallbackTrigger
         toolName={isRunning ? runningLabel : completedLabel}
         status={status}
@@ -107,14 +159,12 @@ const CodeExecutionToolUIImpl: ToolCallMessagePartComponent = ({
       <ToolFallbackContent>
         {isRunning ? (
           <div className="flex items-center gap-2 text-sm text-muted-foreground">
-            <LoaderIcon className="size-3.5 animate-spin" />
+            <Spinner className="size-3.5" />
             <span>{runningLabel}</span>
           </div>
-        ) : resultText ? (
-          <pre className="max-h-64 overflow-auto whitespace-pre-wrap break-words rounded bg-muted/50 p-2 text-xs">
-            {resultText}
-          </pre>
-        ) : null}
+        ) : (
+          <CodeExecutionResultOutput result={result} />
+        )}
       </ToolFallbackContent>
     </ToolFallbackRoot>
   );
