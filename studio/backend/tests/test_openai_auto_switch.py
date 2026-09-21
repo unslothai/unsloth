@@ -12928,3 +12928,46 @@ def test_an_unreadable_ollama_path_is_reported_but_an_absent_one_is_not():
     with collecting_scan_incidents() as incidents:
         assert ollama_service._safe_is_file(pathlib.Path("/no/such/ollama/manifest")) is False
     assert incidents == [], f"an absent path was reported as a gap: {incidents}"
+
+
+def test_a_hermes_per_file_stat_failure_that_is_a_gap_is_reported(monkeypatch):
+    """Which per-file stat failures Path.is_file answers, and which it lets through.
+
+    pathlib swallows exactly ENOENT, ENOTDIR, EBADF and ELOOP (pathlib._abc._IGNORED_ERRNOS)
+    and returns False; every other errno propagates. That split is the rule this PR applies:
+    the swallowed four are answers, and the ones that mean the scan could not look -- EACCES,
+    EIO, a stale NFS handle -- reach the directory handler, which notes an incident, so the
+    pass cannot publish as complete over a file it never saw.
+    """
+    import pathlib
+
+    from core.inference.scan_incidents import collecting_scan_incidents
+    from hub.services.models import hermes as hermes_service
+
+    with tempfile.TemporaryDirectory() as root:
+        directory = pathlib.Path(root)
+        (directory / "model-Q4_K_M.gguf").write_bytes(b"GGUF")
+        real_stat = pathlib.Path.stat
+
+        def stat_fails(self, *args, **kwargs):
+            if self.name.endswith(".gguf"):
+                raise PermissionError(13, "Permission denied")
+            return real_stat(self, *args, **kwargs)
+
+        monkeypatch.setattr(pathlib.Path, "stat", stat_fails)
+        with collecting_scan_incidents() as incidents:
+            assert hermes_service.staged_gguf_files(directory) == []
+        assert any(
+            "hermes" in note for note in incidents
+        ), f"a GGUF the scan could not stat was dropped silently: {incidents}"
+
+        # A racing delete is an answer: the row is gone, and the pass still saw the folder.
+        def stat_absent(self, *args, **kwargs):
+            if self.name.endswith(".gguf"):
+                raise FileNotFoundError(2, "No such file or directory")
+            return real_stat(self, *args, **kwargs)
+
+        monkeypatch.setattr(pathlib.Path, "stat", stat_absent)
+        with collecting_scan_incidents() as incidents:
+            assert hermes_service.staged_gguf_files(directory) == []
+        assert incidents == [], f"a file deleted mid-scan was reported as a gap: {incidents}"
