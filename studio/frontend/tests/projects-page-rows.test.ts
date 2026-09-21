@@ -16,10 +16,14 @@ test("a project row opens its chats in place", () => {
   assert.match(PAGE, /aria-expanded=\{chatsOpen\}/);
   // Loaded the first time the row is opened, and again when chat history changes.
   // Only an open loads; a close after a failed load must not.
-  assert.match(PAGE, /if \(!opening\) return;\n\s*const cached = projectChats\[projectId\];\n\s*if \(cached !== undefined && cached !== "error"\) return;\n\s*loadProjectChats\(projectId\);/);
+  assert.match(PAGE, /if \(!opening\) return;\n\s*const cached = projectChats\[projectId\];\n\s*const loaded = cached !== undefined && cached !== "error";\n\s*if \(loaded && !staleProjectIds\.has\(projectId\)\) return;\n[^\n]*\n\s*loadProjectChats\(projectId, loaded\);/);
   // A failed reload keeps loaded rows, when there are some: an empty folder may have just gained
   // the chat the reload was for. A pending or failed first load becomes a retryable error.
-  assert.match(PAGE, /const rows = prev\[projectId\];\n\s*return silent && Array\.isArray\(rows\) && rows\.length > 0\n\s*\? prev\n\s*: \{ \.\.\.prev, \[projectId\]: "error" \};/);
+  assert.match(PAGE, /const rows = prev\[projectId\];\n\s*if \(silent && Array\.isArray\(rows\) && rows\.length > 0\) \{\n\s*setStale\(projectId, true\);\n\s*return prev;\n\s*\}\n\s*return \{ \.\.\.prev, \[projectId\]: "error" \};/);
+  // Kept rows are marked stale: the row says so, offers a retry, and its next open asks again.
+  assert.match(PAGE, /setStale\(projectId, false\);\n\s*setProjectChats/);
+  assert.match(PAGE, /\{staleProjectIds\.has\(project\.id\) && \(/);
+  assert.match(PAGE, /Could not refresh chats\. Retry/);
   assert.match(PAGE, /Could not load chats\. Retry/);
   assert.ok(!PAGE.includes("[projectId]: [] }"), "a failed load is still cached as an empty list");
   assert.match(
@@ -33,7 +37,7 @@ test("a project row opens its chats in place", () => {
   // A closed project's pending load is invalidated with its cache entry.
   assert.match(PAGE, /for \(const \[id, seq\] of loadSeqRef\.current\) \{\n\s*if \(!open\.has\(id\)\) loadSeqRef\.current\.set\(id, seq \+ 1\);/);
   // A response a newer request overtook is dropped.
-  assert.match(PAGE, /if \(loadSeqRef\.current\.get\(projectId\) !== seq\) return;\n\s*setProjectChats/);
+  assert.match(PAGE, /if \(loadSeqRef\.current\.get\(projectId\) !== seq\) return;\n\s*setStale\(projectId, false\);\n\s*setProjectChats/);
   // Grouped as the sidebar groups them, newest first, and a row with none says so.
   assert.match(PAGE, /groupThreads\(threads\)\.sort\(\n\s*\(a, b\) => b\.updatedAt - a\.updatedAt,/);
   assert.match(PAGE, /No chats<\/p>/);

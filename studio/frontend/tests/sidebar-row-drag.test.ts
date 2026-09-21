@@ -779,16 +779,27 @@ test("a closed folder or section opens under a resting pointer", () => {
   assert.match(APP_SIDEBAR, /springOpen: dragOpensFolders,/);
 });
 
-// A pinned chat dropped into a folder or Recents is moved, and the move can fail. The pin comes
-// off only once the move has gone through, or a failed drop would leave the chat unpinned.
-test("a drop that moves and unpins takes the pin off after the move", () => {
+// A chat dropped into a folder or Recents is moved, and the move can fail. Its slot in the new
+// list and the pin it sheds both wait for the move, or a failed drop would leave the chat
+// unpinned, or parked in the manual order of a list it never reached.
+test("a drop that moves writes its slot and takes the pin off after the move", () => {
   assert.match(
     APP_SIDEBAR,
     /if \(effects\.unpinChat && !effects\.moveChat && pinnedIdSet\.has\(effects\.unpinChat\)\)/,
   );
   assert.match(
     APP_SIDEBAR,
-    /void moveChatToProject\(item, move\.projectId\)\.then\(\(moved\) => \{\n\s*if \(moved && unpinAfter\) usePinnedChatsStore\.getState\(\)\.unpin\(unpinAfter\);/,
+    /const move = effects\.moveChat;\n\s*if \(!move\) \{\n\s*applyOrders\(\);\n\s*return;\n\s*\}/,
   );
+  assert.match(
+    APP_SIDEBAR,
+    /void moveChatToProject\(item, move\.projectId\)\.then\(\(moved\) => \{\n\s*if \(!moved\) return;\n\s*applyOrders\(\);\n\s*if \(unpinAfter\) usePinnedChatsStore\.getState\(\)\.unpin\(unpinAfter\);/,
+  );
+  // And nothing else in commitDrop writes an order on its own.
+  const commit = APP_SIDEBAR.slice(
+    APP_SIDEBAR.indexOf("function commitDrop("),
+    APP_SIDEBAR.indexOf("function dropCueClass("),
+  );
+  assert.equal((commit.match(/setManualOrder\(/g) ?? []).length, 1);
   assert.match(APP_SIDEBAR, /\): Promise<boolean> \{\n\s*if \(item\.projectId === projectId\) return true;/);
 });

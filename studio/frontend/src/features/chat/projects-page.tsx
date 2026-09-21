@@ -162,6 +162,20 @@ export function ProjectsPage() {
   const [projectChats, setProjectChats] = useState<
     Record<string, SidebarItem[] | "loading" | "error">
   >({});
+  // Rows kept on screen after a reload failed: they may miss a chat or show one that is gone,
+  // so the row says so, and its next open asks again.
+  const [staleProjectIds, setStaleProjectIds] = useState<ReadonlySet<string>>(
+    () => new Set(),
+  );
+  const setStale = useCallback((projectId: string, stale: boolean) => {
+    setStaleProjectIds((prev) => {
+      if (prev.has(projectId) === stale) return prev;
+      const next = new Set(prev);
+      if (stale) next.add(projectId);
+      else next.delete(projectId);
+      return next;
+    });
+  }, []);
 
   // One sequence per project: a response that a newer request overtook is dropped, so a chat
   // moved or deleted mid-flight cannot come back.
@@ -176,6 +190,7 @@ export function ProjectsPage() {
     void listStoredChatThreads({ projectId, includeArchived: false })
       .then((threads) => {
         if (loadSeqRef.current.get(projectId) !== seq) return;
+        setStale(projectId, false);
         setProjectChats((prev) => ({
           ...prev,
           [projectId]: groupThreads(threads).sort(
@@ -185,17 +200,19 @@ export function ProjectsPage() {
       })
       .catch(() => {
         if (loadSeqRef.current.get(projectId) !== seq) return;
-        // A failed reload keeps rows already showing; anything else becomes a retryable error,
-        // including a first load this reload overtook while it was still pending, and a folder
-        // loaded as empty, which the reload may have been about to fill.
+        // A failed reload keeps rows already showing, marked stale; anything else becomes a
+        // retryable error, including a first load this reload overtook while it was still
+        // pending, and a folder loaded as empty, which the reload may have been about to fill.
         setProjectChats((prev) => {
           const rows = prev[projectId];
-          return silent && Array.isArray(rows) && rows.length > 0
-            ? prev
-            : { ...prev, [projectId]: "error" };
+          if (silent && Array.isArray(rows) && rows.length > 0) {
+            setStale(projectId, true);
+            return prev;
+          }
+          return { ...prev, [projectId]: "error" };
         });
       });
-  }, []);
+  }, [setStale]);
 
   // A loaded list goes stale when chats are imported, moved or deleted. Streaming fires the
   // event per chunk, so the reload is debounced: open rows reload in place, the rest load
@@ -408,8 +425,10 @@ export function ProjectsPage() {
     // then waits on.
     if (!opening) return;
     const cached = projectChats[projectId];
-    if (cached !== undefined && cached !== "error") return;
-    loadProjectChats(projectId);
+    const loaded = cached !== undefined && cached !== "error";
+    if (loaded && !staleProjectIds.has(projectId)) return;
+    // Stale rows stay on screen while the retry runs.
+    loadProjectChats(projectId, loaded);
   }
 
   function openChat(item: SidebarItem, projectId: string) {
@@ -872,21 +891,32 @@ export function ProjectsPage() {
                 ) : chats.length === 0 ? (
                   <p className="py-1 text-sm text-muted-foreground">No chats</p>
                 ) : (
-                  chats.map((chat) => (
-                    <button
-                      key={chat.id}
-                      type="button"
-                      onClick={() => openChat(chat, project.id)}
-                      className="flex cursor-pointer items-center gap-2 truncate rounded-lg px-2 py-1.5 text-left text-sm text-muted-foreground transition-colors hover:bg-muted/70 hover:text-foreground dark:hover:bg-white/[0.055]"
-                    >
-                      <HugeiconsIcon
-                        icon={MessageCircleIcon}
-                        strokeWidth={1.75}
-                        className="size-4 shrink-0"
-                      />
-                      <span className="truncate">{chat.title}</span>
-                    </button>
-                  ))
+                  <>
+                    {chats.map((chat) => (
+                      <button
+                        key={chat.id}
+                        type="button"
+                        onClick={() => openChat(chat, project.id)}
+                        className="flex cursor-pointer items-center gap-2 truncate rounded-lg px-2 py-1.5 text-left text-sm text-muted-foreground transition-colors hover:bg-muted/70 hover:text-foreground dark:hover:bg-white/[0.055]"
+                      >
+                        <HugeiconsIcon
+                          icon={MessageCircleIcon}
+                          strokeWidth={1.75}
+                          className="size-4 shrink-0"
+                        />
+                        <span className="truncate">{chat.title}</span>
+                      </button>
+                    ))}
+                    {staleProjectIds.has(project.id) && (
+                      <button
+                        type="button"
+                        onClick={() => loadProjectChats(project.id, true)}
+                        className="cursor-pointer self-start py-1 text-left text-sm text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
+                      >
+                        Could not refresh chats. Retry
+                      </button>
+                    )}
+                  </>
                 )}
               </div>
             )}

@@ -1963,23 +1963,31 @@ export function AppSidebar() {
     if (effects.unpinProject && pinnedProjectIdSet.has(effects.unpinProject)) {
       toggleProjectPin(effects.unpinProject);
     }
-    for (const order of effects.orders) setManualOrder(order.scope, order.ids);
-    if (effects.switchSort === "chats" && chatSort !== "manual") {
-      setChatSort("manual");
-      toast.info(t("shell.organize.switchedToManual"));
-    }
-    if (effects.switchSort === "pinned" && pinnedSort !== "manual") {
-      setPinnedSort("manual");
-      toast.info(t("shell.organize.switchedToManual"));
-    }
+    const applyOrders = () => {
+      for (const order of effects.orders) setManualOrder(order.scope, order.ids);
+      if (effects.switchSort === "chats" && chatSort !== "manual") {
+        setChatSort("manual");
+        toast.info(t("shell.organize.switchedToManual"));
+      }
+      if (effects.switchSort === "pinned" && pinnedSort !== "manual") {
+        setPinnedSort("manual");
+        toast.info(t("shell.organize.switchedToManual"));
+      }
+    };
     const move = effects.moveChat;
-    if (!move) return;
+    if (!move) {
+      applyOrders();
+      return;
+    }
     const item = allChatItems.find((candidate) => candidate.id === move.chatId);
     if (!item) return;
-    // The move can fail; the pin comes off only once it has not.
+    // The move can fail. Its slot in the new list and the pin it sheds both wait for it, so a
+    // failed move leaves nothing behind in the list the chat never reached.
     const unpinAfter = effects.unpinChat;
     void moveChatToProject(item, move.projectId).then((moved) => {
-      if (moved && unpinAfter) usePinnedChatsStore.getState().unpin(unpinAfter);
+      if (!moved) return;
+      applyOrders();
+      if (unpinAfter) usePinnedChatsStore.getState().unpin(unpinAfter);
     });
   }
 
