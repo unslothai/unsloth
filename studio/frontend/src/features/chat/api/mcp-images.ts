@@ -44,7 +44,7 @@ export function splitMcpImages(result: string): {
   return { text: result.slice(0, idx), images };
 }
 
-// An unparseable envelope used to replay whole as tool text; fail closed instead.
+// Fail-closed stand-in for an envelope that does not parse.
 // Mirrors MCP_IMAGE_PARSE_ERROR_TEXT in mcp_images.py.
 export const MCP_IMAGE_PARSE_ERROR_TEXT = "[MCP image could not be parsed]";
 

@@ -134,16 +134,15 @@ def mentions_images(result: str) -> bool:
     return ("\n" + SENTINEL) in result
 
 
-# An unparseable envelope used to replay whole as tool text; fail closed instead.
+# Fail-closed stand-in when an envelope does not parse; it is never replayed as tool text.
 MCP_IMAGE_PARSE_ERROR_TEXT = "[MCP image could not be parsed]"
 
 
 def sanitize_tool_text(result: str, tool_name: "str | None" = None) -> str:
-    """A valid envelope's payload comes off (it is IMAGE input, decided in
-    _promote); a result that mentions the sentinel but the parser rejects is
-    replaced by a one-line notice. The whole result is discarded, head included:
-    gigabytes of base64 can sit before the sentinel. Do not "fix" that by
-    preserving the prefix. The strip must stay suffix-only."""
+    """Strip a valid envelope's payload; it is image input, resolved in _promote.
+    A result that merely mentions the sentinel but does not parse fails closed to
+    a one-line notice -- the whole result goes, head included, because an
+    unparseable envelope gives no trustworthy place to cut."""
     text, images = split_images(result)
     if images:
         return text
