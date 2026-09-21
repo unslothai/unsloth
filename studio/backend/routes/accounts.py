@@ -146,8 +146,10 @@ def set_account_active(account_id: str, payload: AccountActiveRequest):
         result = storage.set_account_active(account_id, payload.is_active)
         if payload.is_active:
             # A delete that failed after retiring the jobs left the id tombstoned in-process.
+            from core.inference.external_provider import restore_account_clients
             from core.training.account_jobs import restore_account_jobs
             restore_account_jobs(account_id)
+            restore_account_clients(account_id)
             active_generations.lift_fence(account_id)
         else:
             from routes.inference import retire_account_loads

@@ -11,6 +11,8 @@ than being decided once at import.
 from pathlib import Path
 import sys
 
+import time
+
 import pytest
 
 _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
@@ -204,3 +206,61 @@ def test_a_request_after_retirement_is_served_but_not_cached(switch):
     assert not [key for key in external_provider._managed_clients if key[0] == ALICE.account_id]
     # And it is a fresh object each time rather than a cached one.
     assert client_as(ALICE) is not late
+
+
+def test_retirement_from_a_worker_thread_closes_on_the_owning_loop(switch):
+    """Deletion is a synchronous route, so it runs with no loop of its own. Dropping the last
+    reference does not close an httpx pool; the close has to reach the loop that opened it."""
+    import asyncio
+    import threading
+
+    loop = asyncio.new_event_loop()
+    ready = threading.Event()
+
+    def run_loop():
+        asyncio.set_event_loop(loop)
+        loop.call_soon(ready.set)
+        loop.run_forever()
+
+    thread = threading.Thread(target = run_loop, daemon = True)
+    thread.start()
+    ready.wait(5)
+    try:
+        # Built ON the loop, as a request would be.
+        client = asyncio.run_coroutine_threadsafe(
+            _make_client_as(ALICE), loop
+        ).result(timeout = 10)
+        assert not client.is_closed
+
+        # Retired from a thread with no running loop, like the delete route.
+        assert external_provider.retire_account_clients(ALICE.account_id) == 1
+        deadline = time.time() + 10
+        while time.time() < deadline and not client.is_closed:
+            time.sleep(0.05)
+        assert client.is_closed, "the client was dropped rather than closed"
+    finally:
+        loop.call_soon_threadsafe(loop.stop)
+        thread.join(timeout = 5)
+
+
+async def _make_client_as(account):
+    return client_as(account)
+
+
+def test_reactivation_lifts_the_tombstone(switch):
+    """A delete that failed leaves the account disabled and reactivatable; a tombstone left
+    behind would mean a fresh client per request forever after."""
+    client_as(ALICE)
+    external_provider.retire_account_clients(ALICE.account_id)
+    assert client_as(ALICE) is not client_as(ALICE)
+
+    external_provider.restore_account_clients(ALICE.account_id)
+    assert client_as(ALICE) is client_as(ALICE)
+
+
+def test_reactivation_route_calls_it(switch):
+    import inspect
+
+    import routes.accounts as accounts_routes
+
+    assert "restore_account_clients" in inspect.getsource(accounts_routes.set_account_active)

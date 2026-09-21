@@ -13,6 +13,7 @@ import random
 import re
 import threading
 import time
+import weakref
 import wave
 from typing import Any, AsyncGenerator, Literal, NamedTuple, Optional, Union
 from urllib.parse import urlparse, urlsplit, urlunsplit
@@ -894,6 +895,10 @@ _managed_clients_lock = threading.Lock()
 # already in flight when the account went away.
 _retired_accounts: set[str] = set()
 _RETIRED_ACCOUNTS_MAX = 1024
+# client -> the loop it was created on. Weak, so it never keeps a client alive by itself.
+_client_loops: "weakref.WeakKeyDictionary[httpx.AsyncClient, asyncio.AbstractEventLoop]" = (
+    weakref.WeakKeyDictionary()
+)
 
 
 def retire_account_clients(account_id: str) -> int:
@@ -914,12 +919,27 @@ def retire_account_clients(account_id: str) -> int:
         while len(_retired_accounts) > _RETIRED_ACCOUNTS_MAX:
             _retired_accounts.pop()
     for client in retired:
+        loop = _client_loops.get(client)
         try:
-            asyncio.get_running_loop().create_task(client.aclose())
+            running = asyncio.get_running_loop()
         except RuntimeError:
-            # No loop in this thread: dropping the last reference is what closes it.
-            pass
+            running = None
+        if running is not None and (loop is None or loop is running):
+            running.create_task(client.aclose())
+        elif loop is not None and not loop.is_closed():
+            # Deletion is a synchronous route, so it runs in a worker thread with no loop. Hand
+            # the close to the loop that owns the connections rather than dropping the reference,
+            # which does not close a pool.
+            asyncio.run_coroutine_threadsafe(client.aclose(), loop)
     return len(retired)
+
+
+def restore_account_clients(account_id: str) -> None:
+    """Lift the retirement tombstone. A delete that failed leaves the account disabled and
+    reactivatable, and a reactivated account whose tombstone stayed would never be cached
+    again: a fresh client per request, no pooling, no cookie continuity."""
+    with _managed_clients_lock:
+        _retired_accounts.discard(account_id)
 
 
 def _client() -> httpx.AsyncClient:
@@ -939,6 +959,13 @@ def _client() -> httpx.AsyncClient:
             return client
         transport = _PinnedNonMetadataTransport() if allowed else _PinnedPublicTransport()
         client = httpx.AsyncClient(transport = transport, trust_env = False)
+        # The loop this client's connections belong to. Closing an httpx client from a DIFFERENT
+        # loop is not equivalent: its pool holds streams bound to the one that opened them, and
+        # deletion runs in a worker thread with no loop of its own.
+        try:
+            _client_loops[client] = asyncio.get_running_loop()
+        except RuntimeError:
+            pass
         # A retired account's request is served but not cached: retirement has already swept,
         # and nothing would sweep an entry made after it.
         if account_id not in _retired_accounts:
