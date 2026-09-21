@@ -1171,8 +1171,7 @@ def _parseable_toolchain_fallback(key: str, intended: str) -> str | None:
     if not base or toolchain_path_unparseable(base):
         return None
     account = str(os.geteuid()) if hasattr(os, "geteuid") else (os.environ.get("USERNAME") or "")
-    digest = hashlib.sha256(
-        f"{account}\0{intended}".encode("utf-8", "replace")).hexdigest()[:12]
+    digest = hashlib.sha256(f"{account}\0{intended}".encode("utf-8", "replace")).hexdigest()[:12]
     candidate = str(Path(base) / f"unsloth-{key.lower().replace('_', '-')}-{digest}")
     # The join can still reintroduce one: gettempdir() is parseable but Path may normalise.
     return None if toolchain_path_unparseable(candidate) else candidate

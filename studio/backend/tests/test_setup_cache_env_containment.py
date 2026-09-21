@@ -505,9 +505,20 @@ def test_a_sticky_parent_owned_by_somebody_else_is_still_refused(monkeypatch, tm
     def lying_stat(path, *args, **kwargs):
         info = real_stat(path, *args, **kwargs)
         if str(path) == str(shared):
-            return os.stat_result((info.st_mode, info.st_ino, info.st_dev, info.st_nlink,
-                                   foreign, info.st_gid, info.st_size,
-                                   int(info.st_atime), int(info.st_mtime), int(info.st_ctime)))
+            return os.stat_result(
+                (
+                    info.st_mode,
+                    info.st_ino,
+                    info.st_dev,
+                    info.st_nlink,
+                    foreign,
+                    info.st_gid,
+                    info.st_size,
+                    int(info.st_atime),
+                    int(info.st_mtime),
+                    int(info.st_ctime),
+                )
+            )
         return info
 
     monkeypatch.setattr(sr.os, "stat", lying_stat)
