@@ -6339,8 +6339,6 @@ export function createOpenAIStreamAdapter(
             ...ggufCompactionRequestFields({
               isGguf: isGgufForCompaction,
               autoCompactEnabled: runtime.autoCompactEnabled,
-              contextPolicy: runtime.contextPolicy,
-              compactionHeadroomRatio: runtime.compactionHeadroomRatio,
             }),
             temperature: params.temperature,
             top_p: params.topP,

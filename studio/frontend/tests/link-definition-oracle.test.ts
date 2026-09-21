@@ -151,6 +151,37 @@ test("a reply whose reference only resolves in one piece is never split into blo
   );
 });
 
+test("a reference is never split into blocks because its label is long", () => {
+  // Every case above uses a one-character label. Length is the one dimension the probes bound and
+  // the only one this file never varied, which is why #9540 and #9645's half-fix were invisible.
+  // In scope only when the two paths really differ, so past 999 drops out and this cannot pass
+  // vacuously.
+  const failures: string[] = [];
+  let inScope = 0;
+  for (const length of [1, 2, 199, 200, 201, 400, 998, 999, 1000, 1001, 2000]) {
+    const label = "L".repeat(length);
+    for (const reply of [
+      `See [guide][${label}].\n\nplain prose between them\n\n[${label}]: /guide\n`,
+      `[${label}]: /guide\n\nplain prose between them\n\nSee [guide][${label}].\n`,
+    ]) {
+      if (asOneDocument(reply) <= asBlocks(reply)) {
+        continue;
+      }
+      inScope += 1;
+      if (markdownRenderScope(reply) !== "document") {
+        failures.push(`label length ${length}`);
+      }
+    }
+  }
+  assert.ok(inScope > 0, "no length lost an anchor when split, so this test proved nothing");
+  assert.deepEqual(
+    failures,
+    [],
+    "these labels resolve their reference only when the reply is rendered in one piece, but the " +
+      `scan split them into blocks, so the reference renders as literal text: ${failures.join(", ")}`,
+  );
+});
+
 test("line endings other than LF do not hide the definition", () => {
   for (const reply of [
     "~~~ts\rconst x = 1;\r~~~\r\rSee [guide][g].\r\r[g]: /guide\r",

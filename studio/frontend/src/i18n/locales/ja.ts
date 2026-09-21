@@ -215,17 +215,10 @@ export const ja = {
       priority: "優先度",
       lastUpdated: "最終更新",
       manualOrder: "手動で並べ替え",
-      priorityHint: "実行中・未読が先頭",
-      lastUpdatedHint: "新しい順",
-      manualOrderHint: "行をドラッグして並べ替えます",
       switchedToManual: "手動の並び順に切り替えました。行をドラッグして並べ替えます",
       organizeChats: "チャットを整理",
       organizeProjects: "プロジェクトを整理",
       sortPinnedChats: "ピン留めチャットを並べ替え",
-      dragDrop: "ドラッグ＆ドロップ",
-      dragHints: "ドラッグ中にヒントを表示",
-      reorderSwitchesSort: "並べ替えると手動順序に切り替える",
-      dragOpensFolders: "ポインターの下のフォルダーを開く",
       moveUp: "上へ移動",
       moveDown: "下へ移動",
     },
@@ -887,6 +880,16 @@ export const ja = {
         revoked: "すべてのプレビューリンクを失効させました",
         revokeError: "プレビューリンクを失効させることができませんでした",
       },
+      managedProviderUrls: {
+        sectionTitle: "管理対象アカウント",
+        enableLabel: "ローカルおよびネットワーク接続",
+        enableDescription:
+          "管理対象アカウントが、このコンピューターや LAN 上の Ollama や llama.cpp サーバーなど、ローカルまたはネットワークのアドレスに接続を向けられるようにします。既定ではオフです。オンにすると、これらのアカウントがお使いのコンピューターやネットワークで動作しているサービスに到達できるようになるためです。",
+        lockedByEnvironment:
+          "このサーバーの UNSLOTH_STUDIO_BLOCK_PRIVATE_PROVIDER_URLS=1 によって決まります。すべてのアカウントでプライベートアドレスが拒否されます。",
+        loadError: "管理対象アカウントの接続設定を読み込めませんでした。",
+        saveError: "管理対象アカウントの接続設定を保存できませんでした。",
+      },
       notifications: {
         sectionTitle: "通知",
         showLlamaUpdates: "llama.cpp のアップデート通知",
@@ -1520,10 +1523,6 @@ export const ja = {
         "{count}文字以上の貼り付けテキストは .txt 添付ファイルになります。短いテキストは入力欄に残ります。",
       pastedTextOffDescription:
         "長さに関係なく、貼り付けたテキストはすべて入力欄に残ります。",
-      compactionDescriptionInherit: "サーバーのコンテキストポリシーに従います。",
-      compactionDescriptionCheckpoint: "最新のやり取りと、収まる範囲の継続的な指示を保持し、残りは検索できるようアーカイブします。",
-      compactionDescriptionRolling:
-        "古いターンをアーカイブし、最近の履歴と選択した余裕分の空きを確保します。",
       projectsSection: "プロジェクトセクションを表示",
       projectsSectionDescription:
         "プロジェクトのチャットを「プロジェクト」の見出しにまとめます。オフにすると「最近」に表示されます。",
@@ -1570,21 +1569,19 @@ export const ja = {
       autoCompact: "長いチャットを自動圧縮",
       autoCompactDescription:
         "チャットの文脈が満杯になると、古いターンは検索可能なアーカイブに移ります。",
-      compactionStyle: "コンテキストが満杯になったとき",
-      compactionStyleDescription:
-        "サーバー既定値を使うと UNSLOTH_CONTEXT_POLICY が維持されます。会話をリセットすると最新ターンと、収まる範囲の継続指示が残ります。スライディングウィンドウは古いターンを削除し、より多くの最近の履歴を残せます。",
-      compactionStyleInherit: "サーバー既定値を使用",
-      compactionStyleCheckpoint: "会話をリセット",
-      compactionStyleRollingDefault: "古いターンをアーカイブ（約 25% の追加余裕）",
-      compactionStyleRolling10: "古いターンをアーカイブ（約 10% の追加余裕）",
-      compactionStyleRolling5: "古いターンをアーカイブ（約 5% の追加余裕）",
-      compactionStyleRollingNone: "古いターンをアーカイブ（追加の切り詰めなし）",
       autoCompactKeywords:
         "圧縮 自動圧縮 コンテキスト ウィンドウ 切り詰め スライディング チェックポイント 余裕 アーカイブ 検索 取得 compaction rolling headroom archive retrieval rag",
+      visibility: {
+        collapsed: "折りたたむ",
+        auto: "実行中は展開",
+        expanded: "常に展開",
+      },
+      visibilityKeywords:
+        "折りたたむ 展開 開く 閉じる 思考 推論 ツール呼び出し ツールの動作 グループ ストリーミング",
       thinking: {
-        collapseByDefault: "思考をデフォルトで折りたたむ",
-        collapseByDefaultDescription:
-          "モデルの思考中も自動で展開せず、折りたたんだままにします。読みたいときはブロックを展開してください。",
+        visibility: "思考",
+        visibilityDescription:
+          "思考の開き方。個々のブロックは手動で展開・折りたたみできます。",
       },
       currentDate: {
         label: "今日の日付をモデルに伝える",
@@ -1594,12 +1591,14 @@ export const ja = {
         saveError: "現在の日付の設定を更新できませんでした",
       },
       tools: {
-        collapseByDefault: "ツールの動作をデフォルトで折りたたむ",
-        collapseByDefaultDescription:
-          "ツールの実行中は入力と出力を折りたたんだままにします。確認するにはツール行を展開してください。",
-        foldIntoThinking: "ツール呼び出しを思考に折りたたむ",
+        visibility: "ツール呼び出し",
+        visibilityDescription:
+          "ツールの動作の開き方。個々の呼び出しは手動で展開・折りたたみできます。",
+        foldIntoThinking: "ツール呼び出しを思考にまとめる",
         foldIntoThinkingDescription:
-          "思考ブロックを開くまで、そのターンのツール呼び出しを隠します。",
+          "そのターンのツール呼び出しを独立した行ではなく思考ブロック内に表示します。",
+        foldIntoThinkingBlocked:
+          "ツール呼び出しが「常に展開」の間は使えません。その設定では独立した行に表示されます。",
       },
       webSearch: {
         title: "ウェブ検索",

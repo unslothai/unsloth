@@ -213,17 +213,10 @@ export const ar = {
       priority: "الأولوية",
       lastUpdated: "آخر تحديث",
       manualOrder: "ترتيب يدوي",
-      priorityHint: "النشطة وغير المقروءة أولاً",
-      lastUpdatedHint: "الأحدث أولاً",
-      manualOrderHint: "اسحب الصفوف لإعادة ترتيبها",
       switchedToManual: "الترتيب يدوي الآن: اسحب الصفوف لإعادة ترتيبها",
       organizeChats: "تنظيم المحادثات",
       organizeProjects: "تنظيم المشاريع",
       sortPinnedChats: "ترتيب المحادثات المثبتة",
-      dragDrop: "السحب والإفلات",
-      dragHints: "إظهار تلميح أثناء السحب",
-      reorderSwitchesSort: "إعادة الترتيب تبدّل إلى الترتيب اليدوي",
-      dragOpensFolders: "فتح المجلدات أسفل المؤشر",
       moveUp: "تحريك لأعلى",
       moveDown: "تحريك لأسفل",
     },
@@ -895,6 +888,16 @@ export const ar = {
         revoked: "تم إلغاء جميع روابط المعاينة",
         revokeError: "تعذّر إلغاء روابط المعاينة",
       },
+      managedProviderUrls: {
+        sectionTitle: "الحسابات المُدارة",
+        enableLabel: "الاتصالات المحلية والشبكية",
+        enableDescription:
+          "اسمح للحسابات المُدارة بتوجيه اتصالاتها إلى عناوين محلية أو عناوين على الشبكة، مثل خادم Ollama أو llama.cpp على هذا الجهاز أو على شبكتك المحلية. معطّل افتراضيًا، لأنه يتيح لتلك الحسابات الوصول إلى الخدمات التي تعمل على جهازك وعلى شبكتك.",
+        lockedByEnvironment:
+          "محدَّد عبر UNSLOTH_STUDIO_BLOCK_PRIVATE_PROVIDER_URLS=1 على هذا الخادم، وهو يرفض العناوين الخاصة لكل الحسابات.",
+        loadError: "تعذّر تحميل إعدادات اتصال الحسابات المُدارة.",
+        saveError: "تعذّر حفظ إعدادات اتصال الحسابات المُدارة.",
+      },
       notifications: {
         sectionTitle: "الإشعارات",
         showLlamaUpdates: "إشعارات تحديث llama.cpp",
@@ -1535,11 +1538,6 @@ export const ar = {
         "يصبح النص الملصق الذي يبلغ {count} حرفًا أو أكثر مرفقًا بصيغة .txt. يبقى النص الأقصر في مربع الرسالة.",
       pastedTextOffDescription:
         "يبقى كل النص الملصق في مربع الرسالة، مهما كان طوله.",
-      compactionDescriptionInherit: "يتبع سياسة السياق المحددة على الخادم.",
-      compactionDescriptionCheckpoint:
-        "يحتفظ بآخر تبادل للرسائل وبما يتّسع من التعليمات الدائمة، ويؤرشف البقية ليتسنى استرجاعها.",
-      compactionDescriptionRolling:
-        "يؤرشف أقدم التبادلات للاحتفاظ بالسجل الحديث والمساحة الإضافية المحددة.",
       projectsSection: "إظهار قسم المشاريع",
       projectsSectionDescription:
         "يجمع محادثات المشروع تحت عنوان المشاريع. أوقف هذا الخيار لعرضها ضمن الأخيرة بدلاً من ذلك.",
@@ -1587,21 +1585,19 @@ export const ar = {
       autoCompact: "ضغط المحادثات الطويلة تلقائيًا",
       autoCompactDescription:
         "تنتقل الأدوار الأقدم إلى أرشيف قابل للبحث عندما تمتلئ نافذة سياق المحادثة.",
-      compactionStyle: "عند امتلاء السياق",
-      compactionStyleDescription:
-        "يُبقي الخيار الافتراضي للخادم UNSLOTH_CONTEXT_POLICY. تحتفظ إعادة ضبط المحادثة بأحدث دور وبما يتّسع من التعليمات الدائمة. تحذف النافذة المنزلقة الأدوار الأقدم ويمكنها الاحتفاظ بمزيد من السجل الحديث.",
-      compactionStyleInherit: "استخدام إعداد الخادم الافتراضي",
-      compactionStyleCheckpoint: "إعادة ضبط المحادثة",
-      compactionStyleRollingDefault: "أرشفة الأدوار الأقدم (مساحة إضافية نحو 25%)",
-      compactionStyleRolling10: "أرشفة الأدوار الأقدم (مساحة إضافية نحو 10%)",
-      compactionStyleRolling5: "أرشفة الأدوار الأقدم (مساحة إضافية نحو 5%)",
-      compactionStyleRollingNone: "أرشفة الأدوار الأقدم (دون اقتطاع إضافي)",
       autoCompactKeywords:
         "ضغط تلقائي سياق نافذة اقتطاع منزلقة نقطة تحقق هامش أرشيف استرجاع بحث compaction rolling checkpoint headroom archive retrieval rag",
+      visibility: {
+        collapsed: "مطوي",
+        auto: "التوسيع أثناء التشغيل",
+        expanded: "موسّع دائمًا",
+      },
+      visibilityKeywords:
+        "طي مطوي توسيع موسّع فتح مغلق تفكير استدعاءات الأدوات نشاط الأدوات تجميع بث",
       thinking: {
-        collapseByDefault: "طيّ التفكير افتراضيًا",
-        collapseByDefaultDescription:
-          "إبقاء التفكير مطويًا أثناء تفكير النموذج بدلًا من فتحه تلقائيًا. وسّع أي كتلة لقراءتها.",
+        visibility: "التفكير",
+        visibilityDescription:
+          "كيفية فتح التفكير. لا يزال بإمكانك توسيع أو طي أي كتلة بنفسك.",
       },
       currentDate: {
         label: "إخبار النموذج بتاريخ اليوم",
@@ -1611,12 +1607,14 @@ export const ar = {
         saveError: "تعذّر تحديث إعدادات التاريخ الحالي",
       },
       tools: {
-        collapseByDefault: "طيّ نشاط الأدوات افتراضيًا",
-        collapseByDefaultDescription:
-          "إبقاء مدخلات الأدوات ومخرجاتها مطوية أثناء التشغيل. وسّع أي صف أداة لفحصه.",
-        foldIntoThinking: "طيّ استدعاءات الأدوات داخل التفكير",
+        visibility: "استدعاءات الأدوات",
+        visibilityDescription:
+          "كيفية فتح نشاط الأدوات. لا يزال بإمكانك توسيع أو طي أي استدعاء بنفسك.",
+        foldIntoThinking: "تجميع استدعاءات الأدوات ضمن التفكير",
         foldIntoThinkingDescription:
-          "إخفاء استدعاءات الأدوات في الدور حتى فتح كتلة التفكير.",
+          "عرض استدعاءات الأدوات في الدور داخل كتلة التفكير بدلًا من صفوف مستقلة.",
+        foldIntoThinkingBlocked:
+          "غير متاح بينما تكون استدعاءات الأدوات مضبوطة على «موسّع دائمًا»، وهو ما يبقيها في صفوف مستقلة.",
       },
       webSearch: {
         title: "البحث على الويب",

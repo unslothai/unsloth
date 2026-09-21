@@ -62,9 +62,6 @@ export interface SidebarDropContext {
     recents: string[];
     projectChats: (projectId: string) => string[];
   };
-  /** Whether a reorder in a Priority or Last updated list is taken (switching it to Manual)
-   *  or refused. */
-  reorderSwitchesSort: boolean;
 }
 
 /** What the drop does, for the hint. */
@@ -207,7 +204,6 @@ function planPinnedDrop(
   if (!target) return null;
   if (target.id === drag.id) return STAY;
   const resorts = ctx.pinnedSort !== "manual";
-  if (inList && resorts && !ctx.reorderSwitchesSort) return null;
   const next = inList
     ? insertIdAt(ids, drag.id, target.id, target.edge)
     : placeIdAt(ids, drag.id, target.id, target.edge);
@@ -417,8 +413,8 @@ function landingIn(
   };
 }
 
-/** Reorders a chat within its list. A sorted list switches to Manual, or refuses when the
- *  user turned that off. */
+/** Reorders a chat within its list. A sorted list switches to Manual, or the sort would undo
+ *  the drop. */
 function reorder(
   drag: SidebarDragItem,
   scope: string,
@@ -429,7 +425,6 @@ function reorder(
   ctx: SidebarDropContext,
 ): SidebarDropOutcome {
   const sort = sortKey === "pinned" ? ctx.pinnedSort : ctx.chatSort;
-  if (sort !== "manual" && !ctx.reorderSwitchesSort) return null;
   const next = insertIdAt(ids, drag.id, targetId, edge);
   if (next === ids) return STAY;
   return {

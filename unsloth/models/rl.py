@@ -541,6 +541,8 @@ pass
 _UNSLOTH_PATCHED_CONFIG_FLAG = "_unsloth_patched_rl_config"
 # Set on the PRISTINE config class, pointing at the Unsloth subclass that has taken over its module attribute.
 _UNSLOTH_CONFIG_PICKLE_TARGET = "_unsloth_config_pickle_target"
+# Marks the SFTConfig stand-in whose isinstance test also accepts the pristine class, so a second pass does not stack another one.
+_UNSLOTH_SFT_CONFIG_SHIM_FLAG = "_unsloth_sft_config_widened_instance_check"
 
 
 def _is_unsloth_patched_config(config_class):
@@ -1001,6 +1003,66 @@ def _pin_pristine_sft_loss_type(config_cls):
     field.default = "nll"
     # The class attribute is the other copy of the default: dataclasses seeds it at class creation and a later subclass reads the field, so leave the two agreeing rather than half-patched.
     setattr(config_cls, "loss_type", "nll")
+    return True
+
+
+def _widen_sft_config_instance_check(patched_config):
+    """Keep a config that subclasses TRL's own ``SFTConfig`` from being downcast to one.
+
+    Replacing ``trl.trainer.sft_trainer.SFTConfig`` leaves two live classes of that name: ours, and the pristine one every ``SFTConfig`` subclass in TRL still derives from (``GKDConfig``, and any other trainer whose config builds on SFT). ``SFTTrainer.__init__`` guards with ``isinstance(args, TrainingArguments) and not isinstance(args, SFTConfig)`` and rebuilds ``args = SFTConfig(**args.to_dict())`` when it fires. Against our class that test is true for a ``GKDConfig``, so the config is rebuilt as a plain SFT one and every field the subclass added is dropped: ``lmbda``, ``beta``, ``temperature``, ``teacher_model_name_or_path``, ``teacher_model_init_kwargs``, ``disable_dropout`` and ``seq_kd`` all vanish with only an "is not a valid SFTConfig argument" line each, and the rebuilt config carries the mirrored ``eos_token`` placeholder, which then raises. See unslothai/unsloth#1941.
+
+    The guard exists to convert a plain ``TrainingArguments``; a subclass of ``SFTConfig`` already is an SFT config, so widen the test to accept the pristine class while calling the name still builds ours. A plain ``TrainingArguments`` is still converted, so SFT itself is untouched.
+    """
+    import trl.trainer.sft_trainer as sft_trainer_module
+
+    installed = getattr(sft_trainer_module, "SFTConfig", None)
+    if installed is None or getattr(installed, _UNSLOTH_SFT_CONFIG_SHIM_FLAG, False):
+        return False
+    # Only the class we just installed needs widening; if the module still holds the pristine class the guard already behaves.
+    if installed is not patched_config:
+        return False
+    pristine = None
+    for base in getattr(installed, "__mro__", ())[1:]:
+        if not _is_unsloth_patched_config(base) and base.__name__ == installed.__name__:
+            pristine = base
+            break
+    if pristine is None:
+        return False
+
+    class _WidenedInstanceCheck(type(installed)):
+        def __instancecheck__(cls, instance):
+            return isinstance(instance, (pristine, installed))
+
+        def __subclasscheck__(cls, subclass):
+            return issubclass(subclass, (pristine, installed))
+
+    shim = _WidenedInstanceCheck(
+        installed.__name__,
+        (installed,),
+        # Carry the patched-config marker in the shim's OWN __dict__, not only by
+        # inheritance. Callers that walk back to TRL's pristine class do it with
+        # `while "_unsloth_patched_rl_config" in cls.__dict__`, which is the right
+        # test because the generated subclass is renamed onto TRL's own name; a
+        # shim without the marker stops that walk on itself and answers with
+        # Unsloth's field set (tests/version_compat/test_trl_padding_free_max_length.py).
+        {
+            _UNSLOTH_SFT_CONFIG_SHIM_FLAG: True,
+            _UNSLOTH_PATCHED_CONFIG_FLAG: True,
+        },
+    )
+    # Answer to the module the shim is actually installed at, NOT to the module
+    # the class it stands in for calls home. Pickle stores a class as __module__
+    # plus __qualname__ and refuses unless the object living there IS the class,
+    # so a shim claiming `trl.trainer.sft_config` while the patched class still
+    # sits there is unpicklable, and `torch.save(trainer.args, ...)` from
+    # Trainer._save raises PicklingError. That is the failure
+    # _patch_config_pickle_identity exists to prevent, so point the shim at its
+    # own home and leave the patched class's home alone: both then pickle, and
+    # every other binding of the name keeps resolving exactly as it did before.
+    shim.__qualname__ = installed.__name__
+    shim.__name__ = installed.__name__
+    shim.__module__ = getattr(sft_trainer_module, "__name__", installed.__module__)
+    sft_trainer_module.SFTConfig = shim
     return True
 
 
@@ -1964,6 +2026,34 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
         extra_args += warnings_issued_check
 
     if "model" in call_args:
+        model_length_default = "model.max_seq_length"
+        explicit_max_length = ""
+        if trainer_file == "sft_trainer":
+            # A model limit must not widen a limit the CALLER asked for, and `SFTConfig.max_length`
+            # defaults to 1024 on every TRL from 0.22 to 1.x, so capping on "positive" instead
+            # would cap every run that named no length at all down to 1024.
+            explicit_max_length = (
+                "_unsloth_explicit_max_length = None\n"
+                "try:\n"
+                "    import dataclasses as _unsloth_dc\n"
+                "    _unsloth_cfg_cls = type(args)\n"
+                # Back off the generated subclass to TRL's own dataclass, where the default lives.
+                "    while '_unsloth_patched_rl_config' in _unsloth_cfg_cls.__dict__ or _unsloth_cfg_cls.__name__.startswith('Unsloth'):\n"
+                "        _unsloth_cfg_cls = _unsloth_cfg_cls.__bases__[0]\n"
+                "    _unsloth_default_max_length = None\n"
+                "    for _unsloth_field in _unsloth_dc.fields(_unsloth_cfg_cls):\n"
+                "        if _unsloth_field.name == 'max_length': _unsloth_default_max_length = _unsloth_field.default\n"
+                "    _unsloth_given_max_length = getattr(args, 'max_length', None)\n"
+                "    if (_unsloth_given_max_length or 0) > 0 and _unsloth_given_max_length != _unsloth_default_max_length:\n"
+                "        _unsloth_explicit_max_length = _unsloth_given_max_length\n"
+                "except Exception:\n"
+                "    _unsloth_explicit_max_length = None\n"
+            )
+            model_length_default = (
+                "min(model.max_seq_length, _unsloth_explicit_max_length) "
+                "if _unsloth_explicit_max_length else model.max_seq_length"
+            )
+        extra_args += explicit_max_length
         length_check = (
             "if 'max_seq_length' not in locals() and not hasattr(args, 'max_seq_length'):\n"
             "    pass\n"
@@ -1971,7 +2061,7 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
             "    model_max_seq_length = getattr(model, 'max_seq_length', None)\n"
             "    args_max_seq_length  = getattr(args,  'max_seq_length', None)\n"
             "    if args_max_seq_length is None and model_max_seq_length is not None:\n"
-            "        max_seq_length = model.max_seq_length\n"
+            f"        max_seq_length = {model_length_default}\n"
             "        if hasattr(args, 'max_seq_length'): args.max_seq_length = max_seq_length\n"
             "    elif args_max_seq_length is not None and model_max_seq_length is not None:\n"
             "        if args_max_seq_length > model_max_seq_length:\n"
@@ -1994,7 +2084,7 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
                 "        model_max_length = getattr(model, 'max_seq_length', None)\n"
                 "        if model_max_length is None: model_max_length = getattr(model, 'max_length', None)\n"
                 "        if model_max_length is not None:\n"
-                "            args.max_length = model_max_length\n"
+                "            args.max_length = min(_unsloth_explicit_max_length, model_max_length) if _unsloth_explicit_max_length else model_max_length\n"
                 "            max_length = args.max_length\n"
                 "        elif hasattr(args, 'max_length') and args.max_length is not None:\n"
                 "            max_length = args.max_length\n"
@@ -2939,6 +3029,10 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
                     break
         except Exception as e:
             logger.info(f"Unsloth: Could not pin the {RLConfig_name} loss_type: {e}")
+        try:
+            _widen_sft_config_instance_check(_patched_config)
+        except Exception as e:
+            logger.info(f"Unsloth: Could not widen the {RLConfig_name} isinstance check: {e}")
         try:
             _wrap_sft_evaluate_cap(getattr(created_module, f"Unsloth{RLTrainer_name}"))
         except Exception as e:
