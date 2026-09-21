@@ -1947,6 +1947,85 @@ class TestPackageManagerPolicyOptOut:
         assert "/etc/uv" not in body, "system paths belong to _uv_config_files(), not here"
         assert "PROGRAMDATA" not in body
 
+    @pytest.mark.parametrize(
+        ("pip_value", "expected"),
+        [
+            ("/wheelhouse/a /wheelhouse/b", "/wheelhouse/a,/wheelhouse/b"),
+            ("/only/one", "/only/one"),
+            ("/a,/b", "/a,/b"),
+            ("  /a   /b  ", "/a,/b"),
+            ("/a\n/b\n", "/a,/b"),  # a pip.conf value spread over lines
+            ("", ""),
+        ],
+    )
+    def test_find_links_is_re_encoded_for_uv(self, pip_value, expected):
+        """pip splits find-links on whitespace; uv's environment spelling wants commas.
+
+        Measured on uv 0.10.7 with two real wheelhouses: the comma form resolves, and the
+        space form fails with `Failed to read --find-links directory: /a /b`, taking the
+        whole string as a single path. Carrying pip's value unchanged therefore produced a
+        setting that looked right and could not resolve anything.
+        """
+        assert ips._uv_find_links_value(pip_value) == expected
+
+    def test_an_unreadable_pip_policy_stops_the_install(self, monkeypatch, capsys, tmp_path):
+        """ "No answer" must not be indistinguishable from "no policy".
+
+        uv can create an environment with no pip in it, so a failing `pip config list` is an
+        ordinary condition here rather than an exotic one. Treating it as an unconfigured
+        host is the single outcome the opt-out must never produce: it installs past the very
+        settings the operator asked to keep, and reports success while doing so.
+        """
+        monkeypatch.setattr(ips, "_PINNED_PIP_CONFIG_LISTING", None)
+        monkeypatch.setattr(ips, "_pinned_pip_config_overrides", lambda *a, **k: {})
+        monkeypatch.setattr(ips, "_POLICY_UNREADABLE_REPORTED", False)
+
+        # A host with a pip.conf we cannot read: stop.
+        monkeypatch.setattr(ips, "_pip_config_files_present", lambda: True)
+        with self._environment({}, opt_out = "1"):
+            with pytest.raises(SystemExit) as stopped:
+                ips._pip_policy_requires_hashes()
+        assert stopped.value.code == 1
+        assert ips._POLICY_OPT_OUT_ENV in capsys.readouterr().out
+
+        # A host with no pip configuration at all: nothing was missed, so carry on.
+        monkeypatch.setattr(ips, "_pip_config_files_present", lambda: False)
+        with self._environment({}, opt_out = "1"):
+            assert ips._pip_policy_requires_hashes() is False
+            assert ips._pip_policy_only_binary() == []
+            assert ips._pip_policy_no_index() is False
+
+        # And without the opt-out nothing changes, however unreadable pip is.
+        monkeypatch.setattr(ips, "_pip_config_files_present", lambda: True)
+        with self._environment({}):
+            assert ips._pip_policy_requires_hashes() is False
+
+    def test_the_pip_config_presence_check_knows_pips_own_locations(self, monkeypatch, tmp_path):
+        """PIP_CONFIG_FILE=os.devnull is pip's own way of saying "no files".
+
+        The pinned default path sets exactly that, so reading it as a configured host would
+        stop every pinned install on a machine that has no policy at all.
+        """
+        monkeypatch.setattr(ips, "IS_WINDOWS", False)
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setattr(ips.Path, "home", staticmethod(lambda: tmp_path))
+        monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+
+        monkeypatch.setenv("PIP_CONFIG_FILE", os.devnull)
+        assert ips._pip_config_files_present() is False
+
+        real = tmp_path / "pip.conf"
+        real.write_text("[global]\n")
+        monkeypatch.setenv("PIP_CONFIG_FILE", str(real))
+        assert ips._pip_config_files_present() is True
+
+        monkeypatch.delenv("PIP_CONFIG_FILE")
+        assert ips._pip_config_files_present() is False
+        nested = tmp_path / "xdg" / "pip"
+        nested.mkdir(parents = True)
+        (nested / "pip.conf").write_text("[global]\n")
+        assert ips._pip_config_files_present() is True
+
     def test_the_shell_declines_the_forced_pip_amd_wheel_too(self):
         """install.sh runs the same direct-URL install through pip, for the same reason.
 

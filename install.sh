@@ -232,13 +232,45 @@ _respect_pm_policy() {
 # to express them in pip.conf than in the environment and two probes would cost twice. Only
 # ever reached once the opt-out is on, so the default path pays nothing.
 _PM_PIP_CONFIG_LISTING=""
+_PM_PIP_CONFIG_READABLE=0
 _load_pip_config_listing() {
     for _pm_pip in pip3 pip; do
         command -v "$_pm_pip" >/dev/null 2>&1 || continue
-        _PM_PIP_CONFIG_LISTING=$("$_pm_pip" config list 2>/dev/null || true)
+        if _PM_PIP_CONFIG_LISTING=$("$_pm_pip" config list 2>/dev/null); then
+            _PM_PIP_CONFIG_READABLE=1
+        fi
         break
     done
     unset _pm_pip
+}
+
+# Does this host have a pip configuration file at all? Documented locations, existence only.
+# It separates "there is nothing to read" from "there is something we could not read", which
+# an empty listing on its own cannot do.
+_pip_config_files_present() {
+    if [ -n "${PIP_CONFIG_FILE:-}" ]; then
+        [ "$PIP_CONFIG_FILE" = /dev/null ] && return 1
+        [ -f "$PIP_CONFIG_FILE" ] && return 0
+        return 1
+    fi
+    [ -f /etc/pip.conf ] && return 0
+    [ -f "${XDG_CONFIG_HOME:-$HOME/.config}/pip/pip.conf" ] && return 0
+    [ -f "$HOME/.pip/pip.conf" ] && return 0
+    return 1
+}
+
+# Under the opt-out, an unanswerable policy question stops the run. uv can create an
+# environment with no pip in it, so `pip config list` failing is an ordinary condition here,
+# and treating it as "no policy" is the one outcome this feature must never produce: it is
+# indistinguishable from success while installing past whatever the file said. Only when a
+# file actually exists, so a uv-only host with no pip.conf is not punished for a question
+# that had no answer to begin with.
+_require_readable_pip_policy() {
+    [ "$_PM_PIP_CONFIG_READABLE" = 1 ] && return 0
+    _pip_config_files_present || return 0
+    step "error" "cannot read your pip configuration, and cannot proceed past it" "$C_ERR" >&2
+    substep "UNSLOTH_RESPECT_PM_POLICY is set and this host has a pip configuration file, but pip config list did not answer, so the policy in it cannot be carried to uv. Continuing would install exactly past the settings you asked to keep. Install pip, or unset UNSLOTH_RESPECT_PM_POLICY for one run to proceed without it." "$C_ERR" >&2
+    exit 1
 }
 
 # uv reads no PIP_ variable, and this script runs many uv commands directly, so a
@@ -330,7 +362,11 @@ _resolve_index_policy() {
             done
         fi
         if [ -n "$_pm_fl" ]; then
-            UV_FIND_LINKS="$_pm_fl"
+            # Measured on uv 0.10.7: a space-separated UV_FIND_LINKS fails with
+            # "Failed to read --find-links directory: /a /b", taking the whole string as one
+            # path. pip splits on whitespace and allows a multi-line pip.conf value, so the
+            # list is re-encoded rather than carried across verbatim.
+            UV_FIND_LINKS=$(printf '%s' "$_pm_fl" | tr ',' ' ' | tr -s ' \t\n' ',' | sed 's/^,//; s/,$//')
             export UV_FIND_LINKS
         fi
     fi
@@ -339,6 +375,7 @@ _resolve_index_policy() {
 
 if _respect_pm_policy; then
     _load_pip_config_listing
+    _require_readable_pip_policy
     _carry_pip_policy_into_uv
     _resolve_only_binary_policy
     _resolve_index_policy

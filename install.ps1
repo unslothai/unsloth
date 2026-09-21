@@ -4162,13 +4162,59 @@ exit 1
     function Get-PmPipConfigListing {
         if ($null -ne $script:PmPipConfigListing) { return $script:PmPipConfigListing }
         $script:PmPipConfigListing = @()
+        $script:PmPipConfigReadable = $false
         foreach ($exe in @('pip3', 'pip')) {
             $found = Get-Command $exe -ErrorAction SilentlyContinue
             if (-not $found) { continue }
-            try { $script:PmPipConfigListing = @(& $found.Source config list 2>$null) } catch { }
+            try {
+                $script:PmPipConfigListing = @(& $found.Source config list 2>$null)
+                if ($LASTEXITCODE -eq 0) { $script:PmPipConfigReadable = $true }
+            } catch { }
             break
         }
         return $script:PmPipConfigListing
+    }
+
+    # Does this host have a pip configuration file at all? Documented locations, existence only.
+    # It separates "there is nothing to read" from "there is something we could not read", which
+    # an empty listing on its own cannot do.
+    function Test-PipConfigFilesPresent {
+        $explicit = "$env:PIP_CONFIG_FILE".Trim()
+        if ($explicit) {
+            if ($explicit -eq 'nul' -or $explicit -eq 'NUL') { return $false }
+            return (Test-Path -LiteralPath $explicit -PathType Leaf)
+        }
+        foreach ($base in @("$env:PROGRAMDATA", "$env:APPDATA")) {
+            if (-not $base) { continue }
+            if (Test-Path -LiteralPath (Join-Path $base 'pip\pip.ini') -PathType Leaf) { return $true }
+        }
+        return (Test-Path -LiteralPath (Join-Path $HOME 'pip\pip.ini') -PathType Leaf)
+    }
+
+    # Under the opt-out, an unanswerable policy question stops the run. uv can create an
+    # environment with no pip in it, so a failing `pip config list` is an ordinary condition
+    # here, and treating it as "no policy" is the one outcome this feature must never produce:
+    # it is indistinguishable from success while installing past whatever the file said. Only
+    # when a file actually exists, so a uv-only host with no pip.ini is not punished for a
+    # question that had no answer to begin with.
+    function Assert-ReadablePipPolicy {
+        $null = Get-PmPipConfigListing
+        if ($script:PmPipConfigReadable) { return }
+        if (-not (Test-PipConfigFilesPresent)) { return }
+        throw ("UNSLOTH_RESPECT_PM_POLICY is set and this host has a pip configuration file, " +
+            "but pip config list did not answer, so the policy in it cannot be carried to uv. " +
+            "Continuing would install exactly past the settings you asked to keep. Install pip, " +
+            "or unset UNSLOTH_RESPECT_PM_POLICY for one run to proceed without it.")
+    }
+
+    # pip splits find-links on whitespace and allows a multi-line pip.conf value; uv's
+    # environment spelling is comma separated. Measured on uv 0.10.7: a space-separated
+    # UV_FIND_LINKS fails with "Failed to read --find-links directory: /a /b", taking the whole
+    # string as one path, so carrying pip's value unchanged produced a setting that looked right
+    # and could not resolve anything.
+    function ConvertTo-UvFindLinks {
+        param([string]$PipValue)
+        return (($PipValue -split '[\s,]+' | Where-Object { $_ }) -join ',')
     }
 
     function Test-PipPolicyRequiresHashes {
@@ -4232,7 +4278,9 @@ exit 1
             }
         }
         if (-not $noIndex) { $noIndex = "$fileNoIndex" }
-        if ($links -and -not "$env:UV_FIND_LINKS".Trim()) { $env:UV_FIND_LINKS = $links }
+        if ($links -and -not "$env:UV_FIND_LINKS".Trim()) {
+            $env:UV_FIND_LINKS = ConvertTo-UvFindLinks $links
+        }
         if ($off -contains $noIndex.ToLowerInvariant()) { return @() }
         return @('--no-index')
     }
@@ -4240,6 +4288,7 @@ exit 1
     # Empty by default, so every splat at the uv call sites is a no-op unless opted in.
     $script:PmPolicyArgs = @()
     if (Test-RespectPmPolicy) {
+        Assert-ReadablePipPolicy
         $script:PmPolicyArgs = @(Get-PipPolicyOnlyBinary) + @(Get-PipPolicyIndexArgs)
     }
 

@@ -8970,6 +8970,7 @@ def _effective_pip_policy(
 
 def _pip_policy_requires_hashes(subcommand: str = "install") -> bool:
     """Is a hash requirement in force for pip, by environment or by configuration?"""
+    _require_readable_pip_policy()
     value = _effective_pip_policy("PIP_REQUIRE_HASHES", "require-hashes", subcommand)
     if value is None:
         return False
@@ -8988,6 +8989,7 @@ def _pip_policy_only_binary(subcommand: str = "install") -> "list[str]":
     `:all:` and named packages carry verbatim: uv spells the same restriction --only-binary,
     so the values cross unchanged and no mapping table is needed.
     """
+    _require_readable_pip_policy()
     targets: "list[str]" = []
     sources = list(_pip_config_values("only-binary", subcommand))
     sources.append(os.environ.get("PIP_ONLY_BINARY", ""))
@@ -9035,6 +9037,88 @@ def _uv_config_file_present() -> bool:
         return True
 
 
+def _pip_config_files_present() -> bool:
+    """Does this host have a pip configuration file at all?
+
+    The documented locations only, and existence only. It answers one question: if
+    `pip config list` cannot be run, is there a policy we are failing to see, or is there
+    genuinely nothing to see? Without it, an unreadable pip is indistinguishable from an
+    unconfigured host, and the opt-out would quietly install past a policy it could not read
+    -- the exact outcome it exists to prevent.
+
+    PIP_CONFIG_FILE pointing at os.devnull is pip's own way of saying "no files", which the
+    pinned default path sets itself, so it must not read as a configured host.
+    """
+    explicit = os.environ.get("PIP_CONFIG_FILE", "").strip()
+    if explicit:
+        return Path(explicit) != Path(os.devnull) and Path(explicit).is_file()
+    candidates: "list[Path]" = []
+    if IS_WINDOWS:
+        for base in (os.environ.get("PROGRAMDATA", ""), os.environ.get("APPDATA", "")):
+            if base:
+                candidates.append(Path(base) / "pip" / "pip.ini")
+        candidates.append(Path.home() / "pip" / "pip.ini")
+    else:
+        candidates.append(Path("/etc/pip.conf"))
+        xdg = os.environ.get("XDG_CONFIG_HOME", "") or str(Path.home() / ".config")
+        candidates.append(Path(xdg) / "pip" / "pip.conf")
+        candidates.append(Path.home() / ".pip" / "pip.conf")
+    try:
+        return any(candidate.is_file() for candidate in candidates)
+    except OSError:
+        return True
+
+
+_POLICY_UNREADABLE_REPORTED = False
+
+
+def _require_readable_pip_policy() -> None:
+    """Under the opt-out, an unanswerable policy question stops the install.
+
+    `pip config list` can fail: no pip in a uv-created environment, a wedged pip that eats
+    its timeout budget, a permissions error on the file. Treating that as "no policy" is the
+    one outcome this feature must never produce, because it is indistinguishable from
+    success while installing past whatever the file said.
+
+    Only when a configuration file actually exists, so a uv-only host with no pip.conf is
+    not punished for a question that had no answer to begin with. Nothing is guessed at:
+    the operator is told which condition stopped the run and what to do about it.
+    """
+    global _POLICY_UNREADABLE_REPORTED
+    if not _respect_pm_policy():
+        return
+    _pinned_pip_config_overrides()
+    if _PINNED_PIP_CONFIG_LISTING is not None:
+        return
+    if not _pip_config_files_present():
+        return
+    if not _POLICY_UNREADABLE_REPORTED:
+        _POLICY_UNREADABLE_REPORTED = True
+        _step("error", "cannot read your pip configuration, and cannot proceed past it", _red)
+        _safe_print(
+            _red(
+                f"   {_POLICY_OPT_OUT_ENV} is set and this host has a pip configuration file, "
+                "but `pip config list` did not answer, so the policy in it cannot be carried "
+                "to uv. Continuing would install exactly past the settings you asked to keep. "
+                "Install pip into the environment, or unset "
+                f"{_POLICY_OPT_OUT_ENV} for one run to proceed without it."
+            )
+        )
+    sys.exit(1)
+
+
+def _uv_find_links_value(pip_value: str) -> str:
+    """pip's find-links list re-encoded as uv's.
+
+    pip splits on whitespace, and a pip.conf value may be spread over several lines; uv's
+    environment spelling is comma separated. Measured on uv 0.10.7: a space-separated
+    UV_FIND_LINKS fails with `Failed to read --find-links directory: /a /b`, treating the
+    whole string as one path, so carrying pip's value unchanged produced a confident-looking
+    setting that could not resolve anything.
+    """
+    return ",".join(part for part in re.split(r"[\s,]+", pip_value.strip()) if part)
+
+
 def _pip_policy_no_index() -> bool:
     """Has the operator told pip to ignore the registry indexes?
 
@@ -9042,6 +9126,7 @@ def _pip_policy_no_index() -> bool:
     --find-links, which reads UV_FIND_LINKS. So keeping PIP_NO_INDEX in the child's
     environment, which is what the opt-out arm did, left uv reaching pypi.org regardless.
     """
+    _require_readable_pip_policy()
     value = _effective_pip_policy("PIP_NO_INDEX", "no-index")
     if value is None:
         return False
@@ -9075,7 +9160,7 @@ def _pip_policy_as_uv_env() -> "dict[str, str]":
     if not os.environ.get("UV_FIND_LINKS", "").strip():
         links = _effective_pip_policy("PIP_FIND_LINKS", "find-links")
         if links:
-            carried["UV_FIND_LINKS"] = links
+            carried["UV_FIND_LINKS"] = _uv_find_links_value(links)
     return carried
 
 
