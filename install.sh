@@ -972,24 +972,6 @@ _configure_uv_cache() {
     esac
 }
 
-# Outside _configure_uv_cache, not inside it: the ranking is pinned across install.sh, install.ps1, studio/setup.sh and unsloth_cli/commands/studio.py (tests/python/test_uv_cache_selector_agreement.py), and tests/sh/test_install_uv_cache_root.sh extracts that one function and runs it on its own, so it stays exactly what those two pin. The ranking is therefore NOT reordered to prefer a co-located cache; what is added is saying what the winner costs. Across a filesystem boundary uv copies every wheel rather than hardlinking it, so the new environment is a second full copy rather than a handful of megabytes -- the whole of the "a reinstall doubles the disk" report (#11313).
-_warn_if_uv_cache_is_off_volume() {
-    # Nothing to say about a cache that does not outlive the command: --no-cache / UV_NO_CACHE hands uv a temporary one, and where it sits is not something the user can usefully change.
-    _uv_no_cache_requested && return 0
-    _wov_mode=$(printf '%s' "${UV_LINK_MODE:-}" | tr '[:upper:]' '[:lower:]')
-    [ -n "${UV_CACHE_DIR:-}" ] || return 0
-    # A symlink crosses a filesystem boundary happily, so everything below is the wrong story under that mode: the venv holds links into the cache wherever the cache is, nothing is copied, and the old environment goes on sharing it. Warning here would be a cost that does not exist and an opt-out that frees nothing.
-    [ "$_wov_mode" = symlink ] && return 0
-    _same_volume "$UV_CACHE_DIR" "$STUDIO_HOME" && return 0
-    # A caller's own UV_CACHE_DIR wins in _configure_uv_cache and returns before --isolated-uv-cache is ever read, so naming that flag here sends the user back for a byte-identical run that prints this same line again. Name the thing that would actually change the answer.
-    if [ "${_UV_CACHE_MODE:-}" = custom ]; then
-        _wov_remedy="unset UV_CACHE_DIR, or point it at a path on the same filesystem, to keep the cache beside the environment"
-    else
-        _wov_remedy="use --isolated-uv-cache to keep the cache beside the environment"
-    fi
-    step "uv cache" "$UV_CACHE_DIR is on a different filesystem from $STUDIO_HOME, so wheels are copied into the venv rather than hardlinked, costing extra disk; $_wov_remedy" "$C_WARN"
-}
-
 _prepare_studio_uv_cache_for_launch() {
     [ "${_UV_CACHE_MODE:-}" = shared ] || return 0
     # Only to a cache the backend can fill. shared is reachable exactly when the early block
@@ -1100,11 +1082,6 @@ _start_studio_venv_replacement() {
     _VENV_ROLLBACK_DIR="$_candidate"
     _VENV_ROLLBACK_TARGET="$_existing_dir"
     _VENV_ROLLBACK_ACTIVE=true
-    # uv hardlinks a wheel only within one filesystem, so a cache on another volume makes every file a real copy and the install needs room for two whole environments (#11313). Warn before the space is gone; never abort, since the estimate is a guess and being wrong must not cost a working install. `|| true` for the same reason install.ps1 guards its twin.
-    # One gate, on --no-rollback: the warning names the opt-out, so printing it to a caller who already passed that flag is noise. There is no gate on this run's cache and link modes, because _dir_size_kb asks st_nlink, which answers for the tree the previous run actually built.
-    if [ "${_NO_ROLLBACK:-false}" != true ]; then
-        _warn_if_rollback_needs_space "$_existing_dir" || true
-    fi
     # Publish the rollback state before the atomic rename so a signal cannot land after mv but before the exit handlers know where the old venv went.
     if ! mv "$_existing_dir" "$_candidate"; then
         _VENV_ROLLBACK_ACTIVE=false
@@ -1128,66 +1105,8 @@ _start_studio_venv_replacement() {
     substep "previous environment preserved for rollback"
 }
 
-# du/df in KiB, printing nothing when the answer is not available: an estimate this warning cannot make is a warning it does not print.
-_dir_size_kb() {  # dir
-    [ -d "$1" ] || return 0
-    # Blocks only THIS tree owns, which is the question the warning is really asking: will removing it give the space back. A venv whose wheels are hardlinked to a cache that outlives the install shares those blocks with it, so deleting the tree frees none of them, while `du` over the tree alone bills every one and would recommend an opt-out that reclaims nothing. st_nlink answers it directly and answers it for every reason the sharing might exist, this run's cache mode included, which the mode flags cannot: they describe THIS run, and the tree was built by a previous one.
-    if find "$1" -maxdepth 0 -links 1 >/dev/null 2>&1; then
-        # Nothing unique is a real answer (everything is shared), not a reason to fall back.
-        if [ -z "$(find "$1" -type f -links 1 -print 2>/dev/null | head -n 1)" ]; then
-            echo 0
-            return 0
-        fi
-        # xargs may split into several du runs, so sum the totals rather than taking the last.
-        find "$1" -type f -links 1 -print0 2>/dev/null \
-            | xargs -0 du -ck 2>/dev/null \
-            | awk '$2 == "total" { total += $1 } END { if (total) print total }'
-        return 0
-    fi
-    # No -links support: the whole-tree figure, which over-counts shared blocks and so can warn where a discard would free little. That is the direction that costs a line of advice rather than an install.
-    du -sk "$1" 2>/dev/null | awk 'NR == 1 { print $1 }'
-}
-
 _free_space_kb() {  # path
     df -Pk "$1" 2>/dev/null | awk 'NR == 2 { print $4 }'
-}
-
-# Same volume? Compare the device the two paths live on. A path that does not exist yet is answered for by its nearest existing parent, which is the volume it would be created on.
-_same_volume() {  # a b
-    _sv_a="$1"
-    _sv_b="$2"
-    while [ -n "$_sv_a" ] && [ ! -e "$_sv_a" ]; do _sv_a=$(dirname "$_sv_a"); done
-    while [ -n "$_sv_b" ] && [ ! -e "$_sv_b" ]; do _sv_b=$(dirname "$_sv_b"); done
-    # Cannot tell: answer "same volume", which is the quiet direction and what install.ps1's Test-StudioSameVolume already does. Answering "different" would make an unreadable path print a cost warning nobody can act on.
-    [ -n "$_sv_a" ] && [ -n "$_sv_b" ] || return 0
-    # st_dev, not the df source. The question this decides is whether uv can hardlink, and that is st_dev: btrfs gives every subvolume its own anonymous st_dev precisely so (st_dev, st_ino) stays unique, and `ln` across two of them fails EXDEV while `df` reports one shared device for both. Same for two mounts of one source. GNU takes -c, BSD and macOS take -f.
-    _sv_da=$(_path_device_id "$_sv_a")
-    _sv_db=$(_path_device_id "$_sv_b")
-    if [ -n "$_sv_da" ] && [ -n "$_sv_db" ]; then
-        [ "$_sv_da" = "$_sv_db" ]
-        return
-    fi
-    # No usable stat: the df source is coarser -- it cannot separate two mounts of one device -- but it is better than refusing to answer, and erring towards "same" stays quiet.
-    _sv_da=$(df -P "$_sv_a" 2>/dev/null | awk 'NR == 2 { print $1 }')
-    _sv_db=$(df -P "$_sv_b" 2>/dev/null | awk 'NR == 2 { print $1 }')
-    [ -n "$_sv_da" ] && [ -n "$_sv_db" ] || return 0
-    [ "$_sv_da" = "$_sv_db" ]
-}
-
-_path_device_id() {  # path that exists
-    # -L: stat reports the LINK's device without it, so a UV_CACHE_DIR that is a symlink beside the studio home pointing at another filesystem would answer with the studio home's device, and a symlinked STUDIO_HOME the other way round. The question is where the bytes land, which is the target.
-    stat -L -c %d "$1" 2>/dev/null || stat -L -f %d "$1" 2>/dev/null
-}
-
-# One line, before the move, naming both figures and the opt-out. Warn only: du over a tree full of hardlinks already counts shared blocks once, so the estimate is conservative, and a wrong guess must never stop an install that would have fitted.
-_warn_if_rollback_needs_space() {  # existing_dir
-    _wrs_existing="$1"
-    _wrs_size=$(_dir_size_kb "$_wrs_existing")
-    _wrs_free=$(_free_space_kb "$STUDIO_HOME")
-    [ -n "$_wrs_size" ] && [ -n "$_wrs_free" ] || return 0
-    [ "$_wrs_free" -lt "$_wrs_size" ] 2>/dev/null || return 0
-    echo "[WARN] Keeping the previous environment for rollback needs about $((_wrs_size / 1024)) MB, and $STUDIO_HOME has $((_wrs_free / 1024)) MB free." >&2
-    echo "       The install continues. If it runs out of space, re-run with --no-rollback (or UNSLOTH_INSTALL_NO_ROLLBACK=1) to discard the old environment instead of keeping it." >&2
 }
 
 # uv creates only into a path that is absent or an empty directory. Everything else is occupied, hidden entries and non-resolving symlinks included.
@@ -3566,7 +3485,6 @@ if ! command -v uv >/dev/null 2>&1 || ! _uv_version_ok uv; then
 fi
 
 _configure_uv_cache
-_warn_if_uv_cache_is_off_volume
 
 # ── Create venv (migrate old layout if possible, otherwise fresh) ──
 tauri_log "STEP" "Creating virtual environment"
