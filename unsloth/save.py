@@ -1616,6 +1616,12 @@ def _llm_compressor_version_is_supported():
         return True
 
 
+# What the last probe actually imported, for an error message that can name it. A pip
+# install cannot fix a checkout shadowing an in-range wheel, so the export has to say which
+# module the subprocess resolved rather than report a failed install.
+_LLM_COMPRESSOR_PROBE_RESULT: dict = {"imported": None, "version": None, "location": None}
+
+
 def _llm_compressor_imports_cleanly():
     """Is llm-compressor usable in the conditions the compressed export actually runs in?
 
@@ -1644,7 +1650,8 @@ def _llm_compressor_imports_cleanly():
         "from llmcompressor import oneshot\n"
         "from llmcompressor.modifiers.quantization import QuantizationModifier\n"
         "import llmcompressor\n"
-        "print(getattr(llmcompressor, '__version__', '') or '', end = '')\n"
+        "print(getattr(llmcompressor, '__version__', '') or '')\n"
+        "print(getattr(llmcompressor, '__file__', '') or '', end = '')\n"
     )
     import tempfile
 
@@ -1663,16 +1670,21 @@ def _llm_compressor_imports_cleanly():
             )
     except Exception:
         return True
+    _LLM_COMPRESSOR_PROBE_RESULT["imported"] = completed.returncode == 0
     if completed.returncode != 0:
         return False
     # The version of the code the import RESOLVED, not of a same-named distribution
     # elsewhere on the path. Unreadable or unparseable is unknown, which stays usable.
     reported = (completed.stdout or b"").decode("utf8", "replace").strip()
-    if not reported:
+    version, _, location = reported.partition("\n")
+    version, location = version.strip(), location.strip()
+    _LLM_COMPRESSOR_PROBE_RESULT["version"] = version or None
+    _LLM_COMPRESSOR_PROBE_RESULT["location"] = location or None
+    if not version:
         return True
     try:
         from packaging.requirements import Requirement
-        return Requirement(_LLM_COMPRESSOR_SPEC).specifier.contains(reported, prereleases = True)
+        return Requirement(_LLM_COMPRESSOR_SPEC).specifier.contains(version, prereleases = True)
     except Exception:
         return True
 
@@ -1845,6 +1857,22 @@ def install_llm_compressor():
                 pass
 
     importlib.invalidate_caches()
+    # pip leaves an already-satisfied requirement alone, and the requirement is satisfied by
+    # the DISTRIBUTION's metadata, so an out-of-range checkout shadowing an in-range wheel
+    # survives the install untouched and the export would resolve it again. Verified rather
+    # than assumed, and named in the error, since no reinstall can fix a shadow.
+    if not _llm_compressor_imports_cleanly() and _LLM_COMPRESSOR_PROBE_RESULT.get("imported"):
+        # Imported, and still not one the pin allows: that is the shadow, not a failed
+        # install. A probe that could not import at all is the case below.
+        shadow = _LLM_COMPRESSOR_PROBE_RESULT
+        raise RuntimeError(
+            "Unsloth: llm-compressor is installed, but the copy this Python actually "
+            f"imports is {shadow.get('version') or 'an unknown version'} at "
+            f"{shadow.get('location') or 'an unknown location'}, which "
+            f"{_LLM_COMPRESSOR_SPEC} does not allow. It comes earlier on sys.path than the "
+            "installed distribution, so reinstalling cannot replace it: remove it from "
+            "PYTHONPATH (or from the current directory) and try again."
+        )
     try:
         from llmcompressor import oneshot
         from llmcompressor.modifiers.quantization import QuantizationModifier

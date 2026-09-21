@@ -428,3 +428,56 @@ def test_the_fast_path_asks_before_returning_its_symbols():
     assert (
         "if _llm_compressor_module_is_usable(llmcompressor):" in src
     ), "the fast path returns its symbols without asking whether the runner can use them"
+
+
+def test_a_shadow_pip_cannot_replace_is_named_rather_than_reinstalled(monkeypatch):
+    """pip leaves an already-satisfied requirement alone.
+
+    The requirement is satisfied by the DISTRIBUTION's metadata, so an out-of-range checkout
+    shadowing an in-range wheel survives `pip install llmcompressor>=...,<=...` untouched
+    and the export would resolve it again. No reinstall can fix a shadow, so the install
+    path verifies afterwards and says which module the subprocess actually imported.
+    """
+    import unsloth.save as save
+
+    calls: list[list[str]] = []
+    real_version = md.version
+
+    def fake_version(dist: str) -> str:
+        # The wheel's metadata: in range, which is what makes pip a no-op here.
+        if dist == "llmcompressor":
+            return "0.12.0"
+        return real_version(dist)
+
+    monkeypatch.setattr(md, "version", fake_version)
+    monkeypatch.setattr(subprocess, "check_call", lambda cmd, *a, **k: calls.append(list(cmd)))
+    # The probe imports the CHECKOUT: exit 0, version 0.13.0, and a path to name.
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda cmd, *a, **k: subprocess.CompletedProcess(
+            cmd, 0, stdout = b"0.13.0\n/srv/checkout/llmcompressor/__init__.py"
+        ),
+    )
+    try:
+        import llmcompressor  # noqa: F401
+    except Exception:
+        pass
+    else:
+        pytest.skip("llmcompressor imports in this interpreter, so the guard is unreachable")
+
+    with pytest.raises(RuntimeError) as excinfo:
+        install_llm_compressor()
+    message = str(excinfo.value)
+    assert (
+        "0.13.0" in message and "/srv/checkout/llmcompressor" in message
+    ), f"the error does not name the module the export would resolve: {message}"
+    assert "reinstalling cannot replace it" in message, message
+    assert calls, "the install was skipped entirely, so a genuinely broken one is not repaired"
+
+
+def test_a_probe_that_cannot_import_is_still_a_failed_install(monkeypatch):
+    """The other half, kept apart: nothing imported is not a shadow."""
+    outcome = _install_outcome(monkeypatch, subprocess_import = 1)
+    assert isinstance(outcome, RuntimeError), outcome
+    assert "could not be imported" in str(outcome), str(outcome)
