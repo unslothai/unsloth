@@ -12063,3 +12063,88 @@ def test_an_unreadable_registered_scan_folder_is_a_skipped_source(monkeypatch):
         assert resolver._scan_sources_skipped == 0, (
             f"a readable registered folder {readable} was reported as skipped"
         )
+
+
+def test_an_additions_only_invalidation_cannot_confirm_an_absence(monkeypatch):
+    """The one snapshot state that answers positives but must not answer negatives.
+
+    invalidate_index(additions_only=True) keeps the retained entries trusted, with a negative
+    stamp, so a known model still answers while the rebuild runs. It fires because something
+    was ADDED, which is precisely when an absence is likely to be wrong; and a rebuild that
+    raises leaves the stamp negative, so the caller's "did a scan run during my pass?" test
+    is False and this is the only thing left to consult. Trusting it memoizes the miss for
+    good, and the new model or alias is never probed for again.
+    """
+    path = "/elsewhere/unscanned-model.gguf"
+    backend = _FakeBackend(path)
+    rec = _LoadRecorder(backend)
+    monkeypatch.setattr(settings, "get_openai_auto_switch_enabled", lambda: True)
+    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: backend)
+    monkeypatch.setattr(inference_route, "_load_model_impl", rec)
+    monkeypatch.setattr(inference_route, "_auto_switch_waiters", {})
+    monkeypatch.setattr(inference_route, "_alias_probed_load_paths", set())
+    monkeypatch.setattr(inference_route, "_alias_probe_inflight", {})
+    monkeypatch.setattr(inference_route, "_alias_probe_generation", -1)
+    monkeypatch.setattr(resolver, "warm_index_soon", lambda *a, **k: None)
+
+    # A complete scan, so completeness is not what this case turns on.
+    monkeypatch.setattr(resolver, "_build_index", lambda: {})
+    monkeypatch.setattr(resolver, "_CACHE_TTL_S", 300)
+    resolver._index()
+    assert resolver.index_last_scan_was_complete() is True
+
+    # A download adds a model: entries stay trusted, stamp goes negative.
+    resolver.invalidate_index(additions_only = True)
+    assert resolver.index_scan_stamp() < 0.0, "the harness did not produce an additions-only stamp"
+    assert resolver.index_answer_is_trustworthy() is False, (
+        "an additions-only snapshot was read as able to confirm an absence"
+    )
+
+    # The rebuild keeps failing, so no scan lands during the request's own pass either.
+    def boom():
+        raise OSError("scan root vanished mid-rebuild")
+
+    monkeypatch.setattr(resolver, "_build_index", boom)
+    try:
+        _run_hook(path)
+    except Exception:
+        pass
+    assert inference_route._alias_probed_load_paths == set(), (
+        "a miss read from an additions-only snapshot was memoized as a confirmed absence"
+    )
+    assert inference_route._alias_probe_inflight == {}, "and the claim was not given back"
+
+
+def test_a_registered_scan_folder_that_cannot_be_searched_is_a_skipped_source(monkeypatch):
+    """Readable is not traversable.
+
+    A directory with r-- lists its names and fails every child stat. The scanners suppress
+    those per-child errors and return an empty list, so only R_OK being checked left the pass
+    published as complete over a folder nothing could be read out of.
+    """
+    import routes.models as routes_models
+    import storage.studio_db as studio_db
+
+    for name in ("_scan_models_dir", "_scan_lmstudio_dir", "_scan_ollama_dir"):
+        monkeypatch.setattr(routes_models, name, lambda *a, **k: [])
+    monkeypatch.setattr(routes_models, "_scan_hf_cache", lambda *a, **k: [])
+    monkeypatch.setattr(routes_models, "_resolve_hf_cache_dir", lambda: "/nonexistent-hf")
+    monkeypatch.setattr(routes_models, "_is_hidden_model", lambda *a, **k: False)
+
+    with tempfile.TemporaryDirectory() as folder:
+        # The real permission, not a stub: os.access is what the guard calls, and a fake one
+        # would pass whatever the guard happens to ask for.
+        os.chmod(folder, 0o400)
+        if os.access(folder, os.X_OK):
+            pytest.skip("running as a user that bypasses directory permissions")
+        try:
+            monkeypatch.setattr(
+                studio_db, "list_scan_folders", lambda *a, **k: [{"path": folder}]
+            )
+            monkeypatch.setattr(resolver, "_scan_sources_skipped", 0)
+            resolver._build_index()
+            assert resolver._scan_sources_skipped >= 1, (
+                "a registered folder that cannot be searched was counted as readable"
+            )
+        finally:
+            os.chmod(folder, 0o700)

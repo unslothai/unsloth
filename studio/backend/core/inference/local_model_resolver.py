@@ -847,7 +847,11 @@ def _build_index() -> dict[str, _LocalGgufEntry]:
                 # without this the pass publishes as complete and a miss is memoized as a
                 # confirmed absence. Unlike the discovered roots above, which are absent on
                 # most hosts by nature and would make every scan incomplete forever.
-                if not (fp.is_dir() and os.access(fp, os.R_OK)):
+                # X_OK as well as R_OK: a directory can be readable and not searchable,
+                # which lists names and fails every child stat. The scanners suppress those
+                # per-child errors and hand back an empty list, so nothing below would
+                # notice.
+                if not (fp.is_dir() and os.access(fp, os.R_OK | os.X_OK)):
                     _note_scan_source_skipped()
                     logger.debug("auto-switch: scan folder %r not readable", folder)
                     continue
@@ -1067,8 +1071,17 @@ def index_answer_is_trustworthy() -> bool:
     ask "was that None a real absence?" without reaching into the snapshot itself. A scan
     that landed during the caller's own pass is the other way to earn that, and
     ``index_scan_stamp`` answers it; an index that was already fresh never needed one.
+
+    Narrower than that rule in one respect: an additions-only invalidation keeps a NEGATIVE
+    stamp trusted so known positive hits still answer while the rebuild runs, and a
+    negative answer is exactly what such a snapshot cannot give. Something was just added,
+    and a rebuild that then raises leaves the stamp where it was, so an absence read here
+    would be memoized against an index already known to be behind the disk.
     """
-    return _snapshot_is_trusted(_snapshot()[0], time.monotonic())
+    stamp = _snapshot()[0]
+    if stamp <= 0.0:
+        return False
+    return _snapshot_is_trusted(stamp, time.monotonic())
 
 
 def index_is_built() -> bool:
