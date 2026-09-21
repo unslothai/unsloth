@@ -1529,6 +1529,13 @@ def install_llm_compressor():
         from llmcompressor import oneshot
         from llmcompressor.modifiers.quantization import QuantizationModifier
     except Exception as e:
+        # Same two causes as before the install, and the same way of telling them apart. A
+        # good install can still fail to import HERE, because Unsloth's transformers patches
+        # are in this process and not in the subprocess that does the quantizing; raising on
+        # that would kill an export that was about to work. Only a clean subprocess that
+        # also cannot import it means the install is genuinely unusable.
+        if _llm_compressor_imports_cleanly():
+            return None, None
         raise RuntimeError(
             "Unsloth: llm-compressor was installed but could not be imported. "
             "Please restart your Python session and try again.\n"

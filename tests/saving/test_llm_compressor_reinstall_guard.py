@@ -166,3 +166,51 @@ def test_the_pin_the_guard_compares_against_is_a_bounded_range():
     ops = {s.operator for s in spec}
     assert ops & {">=", ">", "=="}, f"no floor in {_LLM_COMPRESSOR_SPEC}"
     assert ops & {"<=", "<", "=="}, f"no ceiling in {_LLM_COMPRESSOR_SPEC}"
+
+
+def _install_outcome(monkeypatch, *, subprocess_import: int):
+    """Run the guard through the INSTALL path, answering "what did it do afterwards?".
+
+    Returns the function's result, or the exception it raised.
+    """
+    real_version = md.version
+
+    def fake_version(dist: str) -> str:
+        if dist == "llmcompressor":
+            raise md.PackageNotFoundError(dist)
+        return real_version(dist)
+
+    monkeypatch.setattr(md, "version", fake_version)
+    # The install "succeeds" without installing anything, so the re-import after it fails --
+    # which is exactly what it does in the environment this guard is about.
+    monkeypatch.setattr(subprocess, "check_call", lambda cmd, *a, **k: None)
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda cmd, *a, **k: subprocess.CompletedProcess(cmd, subprocess_import),
+    )
+    try:
+        import llmcompressor  # noqa: F401
+    except Exception:
+        pass
+    else:
+        pytest.skip("llmcompressor imports in this interpreter, so the guard is unreachable")
+    try:
+        return install_llm_compressor()
+    except Exception as exc:
+        return exc
+
+
+def test_a_repaired_install_is_validated_where_the_export_will_use_it(monkeypatch):
+    """The import after the install runs in THIS process, with Unsloth's transformers patches
+    in it, while the quantizing happens in a subprocess that has none. Raising on that killed
+    an export whose environment was by then perfectly good."""
+    assert _install_outcome(monkeypatch, subprocess_import = 0) == (None, None)
+
+
+def test_an_install_that_fixed_nothing_still_fails_loudly(monkeypatch):
+    """The other half: if a clean subprocess cannot import it either, the install genuinely
+    did not work and proceeding would waste the whole model merge before saying so."""
+    outcome = _install_outcome(monkeypatch, subprocess_import = 1)
+    assert isinstance(outcome, RuntimeError), outcome
+    assert "could not be imported" in str(outcome)
