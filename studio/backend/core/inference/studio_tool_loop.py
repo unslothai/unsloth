@@ -1088,14 +1088,12 @@ def _mcp_provenance_by_id(
 ) -> dict[str, Any]:
     """Provenance for MCP calls whose id and whole name have both arrived.
 
-    The provider's tool_calls delta is relayed as it came and carries none, so the
-    client labels the card it paints from that delta with the internal server id
-    until the real tool_start lands, which is only after the turn finished
-    streaming. Riding along on the same chunk relabels it immediately, and unlike
-    a second card event it cannot disturb the arguments still accumulating there.
+    The relayed tool_calls delta carries none, so the card it paints shows the internal
+    server id until tool_start lands after the turn finishes streaming. Riding the same
+    chunk relabels it at once without disturbing the arguments still accumulating there.
 
-    The declared catalog is what says a streamed name is complete: ``mcp__srv__cre``
-    is well formed too, and would name the wrong server. Once per id.
+    The declared catalog is what says a streamed name is complete: ``mcp__srv__cre`` is well
+    formed too, and would name the wrong server. Once per id.
     """
     stamps: dict[str, Any] = {}
     for call in turn.by_index.values():
@@ -1106,12 +1104,11 @@ def _mcp_provenance_by_id(
         name = function.get("name") if isinstance(function, dict) else None
         if not isinstance(name, str) or name not in declared_names:
             continue
-        # Declared means the name is whole, so this call has now been judged either way.
-        # Mark it before asking whether it resolves: mcp_display_parts is a SQLite lookup
-        # (storage.mcp_servers_db.get_server_for_tool) and answers falsy for a server with
-        # no display_name or no row at all, so stamping only on success re-ran that query
-        # on every later chunk of the same turn. The real tool_start still carries the
-        # authoritative provenance, which is what an unnameable server relied on anyway.
+        # Declared means the name is whole, so the call is judged either way. Mark it BEFORE
+        # asking whether it resolves: mcp_display_parts is a SQLite lookup that answers falsy
+        # for a server with no display_name or no row, so stamping only on success re-ran it
+        # on every later chunk of the turn. tool_start still carries the authoritative
+        # provenance, which is what an unnameable server relied on anyway.
         stamped.add(call_id)
         if not mcp_display_parts(name):
             continue
@@ -1326,9 +1323,8 @@ async def stream_with_studio_tools(
             break
         provider_turns += 1
         turn = _Turn(round = provider_turns)
-        # Per turn, not per run: providers restart tool ids every turn, and the
-        # client drops its id mapping at tool_end, so the second call_0 is a new
-        # card that still needs naming.
+        # Per turn, not per run: ids restart each turn and the client drops its mapping at
+        # tool_end, so the second call_0 is a new card that still needs naming.
         mcp_stamped_ids: set[str] = set()
         healer = StreamToolCallHealer(heal_names, tools) if heal_names else None
         # A healed text-form call never reaches the wire as a tool_calls key, so a headerless caller's stripper cannot

@@ -49,8 +49,7 @@ _CONTROL_KEYS = (
     "_toolStatus",
     "_diffusionFrame",
     "_reasoningDurationMs",
-    # The loop stamps this itself after sanitising; a provider that sends its own
-    # would otherwise name any server it likes on the card.
+    # Stamped by the loop after sanitising; a provider's own would name any server it likes.
     "_mcp_provenance",
 )
 

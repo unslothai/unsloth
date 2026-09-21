@@ -7609,9 +7609,8 @@ export function createOpenAIStreamAdapter(
                     addedToolCall = true;
                   }
                 }
-                // The Unsloth tool loop stamps the MCP display name onto the same
-                // chunk that completes the name, so the card never has to show the
-                // internal server id while it waits for tool_start.
+                // The loop stamps the MCP display name onto the chunk that completes
+                // the name, so the card never shows the internal server id.
                 const mcpStamps = (
                   chunk as { _mcp_provenance?: Record<string, unknown> }
                 )._mcp_provenance;
@@ -7640,9 +7639,8 @@ export function createOpenAIStreamAdapter(
                   // Ending the turn drops cards, so the publish below must see it rather than wait for the pacing gate.
                   replayStateChanged ||= endProviderTurn();
                 }
-                // A relabel adds no card and no characters, so the pacing gate
-                // alone would hold back a name that completes on a later
-                // fragment.
+                // A relabel adds no card and no characters, so the pacing gate alone
+                // would hold back a name completing on a later fragment.
                 const forcePublish =
                   addedToolCall || replayStateChanged || stampedProvenance;
                 if (forcePublish || canPublish(streamedChars)) {
