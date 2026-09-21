@@ -20,6 +20,7 @@ from typing import List, Optional
 
 from loggers import get_logger
 
+from core.inference.scan_incidents import note_scan_incident
 from hub.schemas.inventory import LocalModelInfo
 from hub.services.models.common import (
     _classify_local_path,
@@ -51,6 +52,9 @@ def staged_gguf_files(hermes_dir: Path) -> List[Path]:
         files = sorted(p for p in hermes_dir.glob("*.gguf") if p.is_file())
     except OSError as exc:
         logger.warning("Error scanning Hermes directory %s: %s", hermes_dir, exc)
+        # An empty list here is indistinguishable from a directory holding nothing, and a
+        # caller memoizing a MISS as a confirmed absence needs the difference.
+        note_scan_incident(f"hermes dir unreadable: {hermes_dir}")
         return []
 
     names = {p.name for p in files}

@@ -12281,3 +12281,40 @@ def test_the_transformers_load_clears_the_probe_with_the_alias():
     assert "\n        backend._openai_advertised_id = None" not in src, (
         "the alias is cleared without the probe, so a reload keeps a settled negative"
     )
+
+
+def test_the_hermes_and_ollama_scanners_report_a_directory_they_could_not_walk(monkeypatch):
+    """The two scanners that swallow a traversal error inside their OWN module.
+
+    The per-child notes added in routes/models.py do not reach these: Hermes catches an
+    OSError around its glob and returns [], and the Ollama scan catches one around its
+    rglob and returns whatever it had. Both are indistinguishable from a directory holding
+    nothing, so a resident split GGUF served out of a Hermes dir that blinked would have
+    its miss memoized and go on being reported by its part filename after the dir came
+    back.
+    """
+    from core.inference.scan_incidents import collecting_scan_incidents
+    from hub.services.models import hermes, ollama
+
+    def boom(self, *a, **k):
+        raise OSError("mount went away mid-walk")
+
+    with tempfile.TemporaryDirectory() as root:
+        hermes_dir = pathlib.Path(root) / "hermes"
+        hermes_dir.mkdir()
+        monkeypatch.setattr(pathlib.Path, "glob", boom)
+        with collecting_scan_incidents() as incidents:
+            assert hermes.staged_gguf_files(hermes_dir) == []
+        assert any("hermes" in note for note in incidents), (
+            f"the Hermes scanner reported an unreadable directory as empty: {incidents}"
+        )
+        monkeypatch.undo()
+
+        ollama_dir = pathlib.Path(root) / "ollama"
+        (ollama_dir / "manifests").mkdir(parents = True)
+        monkeypatch.setattr(pathlib.Path, "rglob", boom)
+        with collecting_scan_incidents() as incidents:
+            assert ollama.scan_ollama_dir(ollama_dir) == []
+        assert any("ollama" in note for note in incidents), (
+            f"the Ollama scanner reported an unreadable directory as empty: {incidents}"
+        )

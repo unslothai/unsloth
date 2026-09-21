@@ -25,6 +25,7 @@ from urllib.parse import quote, unquote
 
 from loggers import get_logger
 
+from core.inference.scan_incidents import note_scan_incident
 from hub.schemas.inventory import LocalModelInfo
 from hub.services.models.common import (
     _capabilities_for_format,
@@ -552,6 +553,9 @@ def scan_ollama_dir(
                 return found
     except OSError as e:
         logger.warning("Error scanning Ollama directory %s: %s", ollama_dir, e)
+        # A partial list reads exactly like a complete one from outside, so say so for the
+        # caller that treats a miss as a confirmed absence.
+        note_scan_incident(f"ollama dir unreadable: {ollama_dir}")
     return found
 
 
