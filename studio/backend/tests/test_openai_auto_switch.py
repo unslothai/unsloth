@@ -12567,3 +12567,58 @@ def test_an_unreadable_ollama_manifest_is_reported_but_a_malformed_one_is_not(mo
         assert any("manifest unreadable" in note for note in incidents), (
             f"an unreadable manifest was indistinguishable from a malformed one: {incidents}"
         )
+
+
+def test_a_miss_is_settled_against_the_snapshot_it_was_read_from(monkeypatch):
+    """The marker records WHICH index answered, not whichever is current at settle time.
+
+    _resolve_and_switch awaits more work between reading its miss and the finally that
+    settles, so a warmer publishing a new snapshot in that window would have its state
+    recorded against an answer the previous one gave: the marker then looks valid for an
+    index that may already hold the alias, and later requests shortcut to the filename.
+    """
+    path = "/elsewhere/unscanned-model.gguf"
+    backend = _FakeBackend(path)
+    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: backend)
+    monkeypatch.setattr(inference_route, "_alias_probed_load_paths", set())
+    monkeypatch.setattr(inference_route, "_alias_probe_answered_at", {})
+    monkeypatch.setattr(inference_route, "_alias_probe_inflight", {})
+    monkeypatch.setattr(inference_route, "_alias_probe_generation", -1)
+    monkeypatch.setattr(resolver, "_build_index", lambda: {})
+    monkeypatch.setattr(resolver, "_CACHE_TTL_S", 0)
+
+    resolver._index()
+    assert inference_route._loaded_identity_satisfies(path) is False
+    answered_state = inference_route._alias_probe_index_state()
+
+    # A warmer publishes another snapshot before this request reaches its finally.
+    resolver._index()
+    assert inference_route._alias_probe_index_state() != answered_state, (
+        "the harness did not publish a second snapshot"
+    )
+
+    inference_route._alias_probe_settle(path, answered_state)
+    assert inference_route._alias_probed_load_paths == set(), (
+        "a miss read from an older snapshot was settled against the newer one"
+    )
+    assert inference_route._alias_probe_inflight == {}, "and the claim was not given back"
+    assert inference_route._loaded_identity_satisfies(path) is False
+
+    # Settled against the state it was actually read from, it holds.
+    monkeypatch.setattr(inference_route, "_alias_probed_load_paths", set())
+    monkeypatch.setattr(inference_route, "_alias_probe_answered_at", {})
+    monkeypatch.setattr(inference_route, "_alias_probe_inflight", {})
+    assert inference_route._loaded_identity_satisfies(path) is False
+    inference_route._alias_probe_settle(path, inference_route._alias_probe_index_state())
+    assert inference_route._loaded_identity_satisfies(path) is True
+
+    # A concurrent claim on the same path is not lost when the stale one hands its back.
+    monkeypatch.setattr(inference_route, "_alias_probed_load_paths", set())
+    monkeypatch.setattr(inference_route, "_alias_probe_answered_at", {})
+    monkeypatch.setattr(inference_route, "_alias_probe_inflight", {})
+    assert inference_route._loaded_identity_satisfies(path) is False
+    assert inference_route._loaded_identity_satisfies(path) is False
+    inference_route._alias_probe_settle(path, answered_state)
+    assert inference_route._alias_probe_inflight == {KEY(path): 1}, (
+        "a stale settle took a concurrent request's claim with it"
+    )

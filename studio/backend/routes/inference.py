@@ -9109,6 +9109,15 @@ def _alias_probe_taken(identifier: str) -> bool:
         return True
 
 
+def _alias_probe_release_locked(key: str) -> None:
+    """Give back ONE claim on *key*; caller holds ``_alias_probe_lock``."""
+    held = _alias_probe_inflight.get(key, 0) - 1
+    if held > 0:
+        _alias_probe_inflight[key] = held
+    else:
+        _alias_probe_inflight.pop(key, None)
+
+
 def _alias_probe_release(identifier: str) -> None:
     """Give back ONE claim on *identifier*, so the next request probes rather than shortcut.
 
@@ -9126,7 +9135,7 @@ def _alias_probe_release(identifier: str) -> None:
             _alias_probe_inflight.pop(key, None)
 
 
-def _alias_probe_settle(identifier: str) -> None:
+def _alias_probe_settle(identifier: str, answered_state = None) -> None:
     """Record that the pass which claimed *identifier* completed and found no alias.
 
     Only the claimer's own path, never everything in flight: any request at all runs a
@@ -9134,16 +9143,27 @@ def _alias_probe_settle(identifier: str) -> None:
     claim whose switch had not recorded its alias yet. A later request naming that path
     would then take the shortcut with ``_openai_advertised_id`` still None and report the
     filename for the rest of the load.
+
+    *answered_state* is the index state the miss was actually READ from. The caller can
+    await more work between its resolution and this call, and a warmer publishing a new
+    snapshot in that window would otherwise have its state recorded against an answer it
+    never gave, so the marker would look valid for an index that may already hold the
+    alias. Mismatched, the claim is given back and the next request probes again.
     """
     key = _alias_probe_key(identifier)
     with _alias_probe_lock:
         _alias_probe_forget_stale_locked()
-        if key in _alias_probe_inflight:
-            # The whole entry: the answer is established now, so a request still mid-pass on
-            # the same path has nothing left to contribute.
-            _alias_probe_inflight.pop(key, None)
-            _alias_probed_load_paths.add(key)
-            _alias_probe_answered_at[key] = _alias_probe_index_state()
+        if key not in _alias_probe_inflight:
+            return
+        state = _alias_probe_index_state()
+        if answered_state is not None and answered_state != state:
+            _alias_probe_release_locked(key)
+            return
+        # The whole entry: the answer is established now, so a request still mid-pass on
+        # the same path has nothing left to contribute.
+        _alias_probe_inflight.pop(key, None)
+        _alias_probed_load_paths.add(key)
+        _alias_probe_answered_at[key] = state
 
 
 def _clear_advertised_alias(backend) -> None:
@@ -9876,9 +9896,11 @@ async def _maybe_auto_switch_model(
     # scan itself can fail and return None as a best effort; settling on either would mark
     # the path answered when nothing had actually looked for an alias.
     alias_probe_answered = False
+    # The index state that answer was read from; see _alias_probe_settle.
+    alias_probe_state = None
 
     async def _resolve_and_switch() -> None:
-        nonlocal alias_probe_answered
+        nonlocal alias_probe_answered, alias_probe_state
         from core.inference.openai_auto_download import looks_like_quant, split_model_ref
 
         _raise_if_generation_cancelled()
@@ -9934,6 +9956,10 @@ async def _maybe_auto_switch_model(
                     or index_answer_is_trustworthy()
                 )
             )
+            # WHICH index that answer came from. There is awaited work between here and the
+            # finally below, so a warmer can publish another snapshot in between, and the
+            # marker must not be recorded against an index this miss was never read from.
+            alias_probe_state = _alias_probe_index_state()
         if resolved is None:
             # Not on disk. Opt-in: fetch in the background and ask the caller to retry.
             if auto_switch_on and not reload_only:
@@ -10436,7 +10462,7 @@ async def _maybe_auto_switch_model(
             # than shortcutting to the filename for the rest of the load.
             for claimed_path in alias_probe_claimed:
                 if alias_probe_answered:
-                    _alias_probe_settle(claimed_path)
+                    _alias_probe_settle(claimed_path, alias_probe_state)
                 else:
                     _alias_probe_release(claimed_path)
     except HTTPException as exc:
