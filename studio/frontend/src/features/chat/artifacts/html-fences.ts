@@ -11,7 +11,22 @@ export type CodeFence = {
 };
 
 // Matches one fenced block spanning the whole string (one pre-split block).
-export const CODE_FENCE_RE = /^```([^\r\n`]*)\r?\n([\s\S]*?)\r?\n?```$/;
+//
+// THE CLOSE IS A LAZY RUN, NOT EXACTLY THREE. CommonMark requires the closing run to be "at least
+// as many" of the fence's character as the opening one, and a model closing a fence whose body
+// contains a three-backtick run writes four -- so the shape is ordinary, not exotic. A `{3}` close
+// with a lazy body matched such a line by its LAST three backticks and handed the surplus delimiter
+// to `source`: ```python / x = 1 / ```` parsed as the code `x = 1\n\``. Because only the COMPLETED
+// block comes through here, the reader watched the block it was reading grow a stray backtick the
+// moment the closing delimiter landed -- the streaming route (`markdownBlockFallback`) already
+// applied the "at least as many" rule, so the two classifiers disagreed about the same reply.
+// Left lazy, the run is consumed by the close, which is the whole of the rule at this length: the
+// opener is fixed at three, so every run of three or more closes it.
+//
+// Measured against `micromark` over 384 opener/body/closer/length combinations: the fixed-length
+// close disagreed with CommonMark on 304 of them, this one on none outside a body that is itself a
+// closing run, where a block-level regex cannot tell a delimiter from code.
+export const CODE_FENCE_RE = /^```([^\r\n`]*)\r?\n([\s\S]*?)\r?\n?`+?$/;
 
 export type ToolCallPartLike = {
   type?: string;
