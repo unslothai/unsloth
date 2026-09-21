@@ -1480,9 +1480,8 @@ export function resolveResidentInitialConfig(
   if (direct.remembered) {
     return direct;
   }
-  // The bare path first, then the label, is the order the backend reads its own override
-  // candidates in. A picker before #7473 keyed the label, so those records are still out
-  // there; dropping them would blank a control the model is running with.
+  // A loose .gguf load names no variant, so override_lookup_candidates reads the bare path
+  // then the label; a picker before #7473 keyed the label, and those records still exist.
   if (standalone && ggufVariant) {
     const labelled = resolveInitialConfig(modelId, ggufVariant);
     if (labelled.remembered) {

@@ -108,8 +108,7 @@ for (const modelId of [
     store.clear();
     savePerModelConfig(modelId, "Q4_K_M", config(5));
 
-    // The bare path first, then the label: the order the backend reads its own override
-    // candidates in. Only the label is on disk here, so it is what answers.
+    // Only the label is on disk, so the fallback is what answers.
     const resolved = resolveResidentInitialConfig(modelId, "Q4_K_M");
     assert.equal(resolved.remembered, true);
     assert.equal(resolved.config.nParallel, 5);
