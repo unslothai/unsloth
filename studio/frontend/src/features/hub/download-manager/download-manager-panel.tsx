@@ -249,7 +249,7 @@ export function DownloadManagerPanel({
         </Tooltip>
       ) : (
         <div className="hub-download-panel pointer-events-auto flex min-h-0 w-[min(400px,calc(100vw-2rem))] flex-col overflow-hidden">
-          <div className="flex items-center gap-2 border-b border-foreground/[0.07] py-2 pl-4 pr-3">
+          <div className="flex items-center gap-2 border-b border-[color-mix(in_oklab,var(--foreground)_calc(7%*var(--contrast-edge-gain,1)),transparent)] py-2 pl-4 pr-3">
             <span className="min-w-0 flex-1 truncate text-ui-12p5 font-semibold text-foreground">
               {headerLabel}
             </span>
