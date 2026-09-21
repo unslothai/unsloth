@@ -1048,24 +1048,45 @@ def upstream_web_release_tags(repo: str, *, limit: int = 30) -> list[str]:
 
 
 def latest_upstream_release_tag() -> str:
+    """The newest upstream build tag, which the source-build fallback compiles.
+
+    The REST answer is taken only when it names a build. /releases/latest resolves by
+    make_latest, and upstream currently points it at v0.4.1, a pointer release that
+    packages no prebuilt, so returning it would have the source build compile a
+    different version from the one the prebuilt path installs, which is the whole
+    point of resolving it here.
+    """
+    rest_tag = ""
     try:
         payload = fetch_json(UPSTREAM_RELEASES_API)
         tag = payload.get("tag_name")
         if isinstance(tag, str) and tag:
-            return tag
-        reason: Exception = RuntimeError(
-            f"latest release tag was missing from {UPSTREAM_RELEASES_API}"
-        )
+            rest_tag = tag
+            if is_release_tag_like(tag):
+                return tag
+            reason: Exception = RuntimeError(
+                f"{UPSTREAM_RELEASES_API} named {tag}, which is not a build release"
+            )
+        else:
+            reason = RuntimeError(
+                f"latest release tag was missing from {UPSTREAM_RELEASES_API}"
+            )
     except (urllib.error.URLError, RuntimeError) as exc:
         # A tokenless 403 surfaces as the RuntimeError fetch_json raises for a rate limit.
         reason = exc
     try:
         tags = upstream_web_release_tags(UPSTREAM_REPO, limit = 10)
     except Exception as exc:  # noqa: BLE001 - the REST cause is the one worth reporting
+        if rest_tag:
+            log(f"could not resolve a build tag from the release feed ({exc}); using {rest_tag}")
+            return rest_tag
         raise RuntimeError(f"{reason}; release feed fallback also failed: {exc}") from reason
     if tags:
-        log(f"resolved the latest upstream release tag {tags[0]} without the GitHub API")
+        log(f"resolved the latest upstream build tag {tags[0]} from the release feed")
         return tags[0]
+    if rest_tag:
+        log(f"the release feed listed no build tag; using {rest_tag}")
+        return rest_tag
     raise reason
 
 

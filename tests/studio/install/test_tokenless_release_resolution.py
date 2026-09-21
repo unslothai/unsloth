@@ -695,3 +695,32 @@ class TestFreshnessAgreesWithSelection:
         ]
         monkeypatch.setattr(MOD, "github_releases", lambda repo, **kw: releases)
         assert MOD._api_newest_release_tag(UPSTREAM) == "b11071"
+
+
+class TestLatestTagNamesABuild:
+    """The source build must compile the version the prebuilt path would install.
+
+    /releases/latest resolves by make_latest, and upstream points it at v0.4.1, a
+    pointer release that packages no prebuilt.
+    """
+
+    def test_a_non_build_rest_tag_consults_the_feed(self, monkeypatch):
+        monkeypatch.setattr(MOD, "fetch_json", lambda url: {"tag_name": "v0.4.1"})
+        _install_web(monkeypatch, {"releases.atom": _atom(UPSTREAM, ["v0.4.1", "b11071"])})
+        assert MOD.latest_upstream_release_tag() == "b11071"
+
+    def test_a_build_rest_tag_is_taken_without_consulting_the_feed(self, monkeypatch):
+        monkeypatch.setattr(MOD, "fetch_json", lambda url: {"tag_name": "b11071"})
+        monkeypatch.setattr(MOD, "web_release_tags", _boom)
+        assert MOD.latest_upstream_release_tag() == "b11071"
+
+    def test_the_rest_tag_is_kept_when_the_feed_cannot_answer(self, monkeypatch):
+        # Better a released version than no source ref at all.
+        monkeypatch.setattr(MOD, "fetch_json", lambda url: {"tag_name": "v0.4.1"})
+        _install_web(monkeypatch, {})
+        assert MOD.latest_upstream_release_tag() == "v0.4.1"
+
+    def test_the_rest_tag_is_kept_when_the_feed_lists_no_build(self, monkeypatch):
+        monkeypatch.setattr(MOD, "fetch_json", lambda url: {"tag_name": "v0.4.1"})
+        _install_web(monkeypatch, {"releases.atom": _atom(UPSTREAM, ["v0.4.1", "v0.4.0"])})
+        assert MOD.latest_upstream_release_tag() == "v0.4.1"
