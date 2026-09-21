@@ -2355,9 +2355,12 @@ def test_remembered_slots_are_read_through_the_cached_repo_alias():
     blanks on the model change and the next Save writes the blank over the saved
     ``n_parallel``, locally and through the server mirror."""
     config = " ".join(_read("features/model-picker/model-config/per-model-config.ts").split())
-    # The raw identifier still wins, so a path-keyed record is never shadowed.
+    # The raw identifier still wins, so a path-keyed record is never shadowed. A
+    # standalone file drops the reported quant first: its settings are saved with no
+    # variant, so reading one would key the direct lookup where nothing is written.
     assert (
-        "const direct = resolveInitialConfig(modelId, ggufVariant); "
+        "const direct = resolveInitialConfig( modelId, "
+        "isStandaloneGgufPath(modelId) ? null : ggufVariant, ); "
         "if (direct.remembered) {" in config
     )
     assert "const alias = publicModelId(modelId);" in config
