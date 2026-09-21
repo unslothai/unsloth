@@ -15869,6 +15869,16 @@ def _check_signal_escape_patterns(code: str):
             "httpx.delete",
         }
     )
+    # Where the destination sits in a recognised egress call: the positional index, then the keyword
+    # spellings that carry it instead. Reading only the first positional left the rule below
+    # sidesteppable by one word, `requests.get(url = "http://evil.example/")`, which is the spelling
+    # a caller reaches for the moment there is a `timeout =` next to it.
+    _NETWORK_DESTINATION_ARG = {
+        fq: (0, ("url", "fullurl", "host", "address")) for fq in _NETWORK_URL_ARG0_FQ
+    }
+    # `requests.request(method, url)` and its httpx twin carry the destination second.
+    _NETWORK_DESTINATION_ARG["requests.request"] = (1, ("url",))
+    _NETWORK_DESTINATION_ARG["httpx.request"] = (1, ("url",))
     _UPLOAD_HTTP_METHODS = (
         "requests.post",
         "requests.put",
@@ -16637,13 +16647,34 @@ def _check_signal_escape_patterns(code: str):
                         }
                     )
 
-                # 2) Extract the host (URL string or (host, port) tuple) from the first argument,
-                # once per value that argument can hold: a name reused for two destinations is read
-                # as both, so one allowlisted spelling never vouches for the other.
+                # 2) Extract the host (URL string or (host, port) tuple) from wherever this call
+                # carries it, once per value that argument can hold: a name reused for two
+                # destinations is read as both, so one allowlisted spelling never vouches for
+                # the other.
                 hosts: list[str] = []
                 unreadable = False
-                if node.args:
-                    a0 = _unwrapped_url_arg(node.args[0])
+                spec = _NETWORK_DESTINATION_ARG.get(fq)
+                destination = None
+                if spec is not None:
+                    index, keywords = spec
+                    if len(node.args) > index:
+                        destination = node.args[index]
+                    else:
+                        destination = next(
+                            (kw.value for kw in node.keywords or [] if kw.arg in keywords), None
+                        )
+                    # A splat can carry the destination past both spellings, and its contents are
+                    # not here to read: `requests.get(**{"url": "http://evil.example/"})`.
+                    if any(isinstance(a, ast.Starred) for a in node.args or []) or any(
+                        kw.arg is None for kw in node.keywords or []
+                    ):
+                        unreadable = True
+                elif node.args:
+                    # Not a call whose destination this screen knows how to locate, so arg0 is read
+                    # for a literal host only and never made to fail closed.
+                    destination = node.args[0]
+                if destination is not None:
+                    a0 = _unwrapped_url_arg(destination)
                     is_tuple = isinstance(a0, ast.Tuple)
                     read = None if is_tuple and not a0.elts else (a0.elts[0] if is_tuple else a0)
                     candidates = (
@@ -16671,7 +16702,7 @@ def _check_signal_escape_patterns(code: str):
                 # 3) A recognised egress call whose host cannot be read is untrusted, not absent.
                 # `urlopen("http://" + h)` reaches the attacker's host exactly as the spelled-out literal
                 # does, and no later screen sees python-tool code.
-                if unreadable and node.args and fq in _NETWORK_URL_ARG0_FQ:
+                if unreadable and spec is not None and (node.args or node.keywords):
                     network_calls.append(
                         {
                             "type": "unreadable_host_blocked",

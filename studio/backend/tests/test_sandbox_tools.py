@@ -331,6 +331,75 @@ class TestRebindingDropsStaleAliases:
         _ok(code)
 
 
+class TestDestinationWhereverTheCallCarriesIt:
+    """The destination is read from the argument that actually holds it. Reading only the first
+    positional made the fail-closed rule sidesteppable by one word: `requests.get(url = ...)`
+    walked past the same check that refuses `requests.get(...)`, so the screen cost legitimate
+    callers a refusal and stopped nobody who wrote the keyword."""
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            pytest.param(
+                'import requests\nrequests.get(url = "https://evil.example/x")',
+                id = "keyword_url_blocked",
+            ),
+            pytest.param(
+                'import urllib.request\nurllib.request.urlopen(url = "http://evil.example/x")',
+                id = "keyword_url_urlopen_blocked",
+            ),
+            pytest.param(
+                'import requests\nrequests.request("GET", "https://evil.example/x")',
+                id = "second_positional_blocked",
+            ),
+            pytest.param(
+                'import requests\nrequests.request("GET", url = "https://evil.example/x")',
+                id = "request_keyword_url_blocked",
+            ),
+        ],
+    )
+    def test_destination_outside_the_first_positional_blocked(self, code):
+        _blocked(code, expect_phrase = "Blocked: host not in sandbox allowlist")
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            pytest.param(
+                "import requests\nrequests.get(url = target)", id = "keyword_unreadable_blocked"
+            ),
+            # A splat carries the destination past both spellings and its contents are not here.
+            pytest.param("import requests\nrequests.get(**opts)", id = "kwargs_splat_blocked"),
+            pytest.param("import requests\nrequests.get(*args)", id = "args_splat_blocked"),
+        ],
+    )
+    def test_destination_hidden_from_the_screen_fails_closed(self, code):
+        _blocked(code, expect_phrase = "Blocked: network destination is not a literal")
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            pytest.param(
+                'import requests\nrequests.get(url = "https://huggingface.co/a")',
+                id = "keyword_trusted_allowed",
+            ),
+            pytest.param(
+                'import requests\nU = "https://huggingface.co/a"\nrequests.get(url = U)',
+                id = "keyword_trusted_via_name_allowed",
+            ),
+            pytest.param(
+                'import requests\nrequests.get("https://huggingface.co/a", timeout = 5)',
+                id = "other_keywords_ignored",
+            ),
+            pytest.param(
+                'import requests\nrequests.request("GET", "https://huggingface.co/a")',
+                id = "second_positional_trusted_allowed",
+            ),
+        ],
+    )
+    def test_destination_read_from_a_keyword_does_not_overblock(self, code):
+        _ok(code)
+
+
 class TestStarImportedNetworkFunctions:
     """A star import binds the same bare callee an explicit `from X import f` does, under no name
     the screen can enumerate, so the callee is resolved against the star-imported modules. Without
