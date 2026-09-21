@@ -738,7 +738,7 @@ export function ProjectsPage() {
                   openProject(project.id);
                 }
               }}
-              className="group/project-row relative flex cursor-pointer items-center gap-3 rounded-xl px-5 py-4 text-left transition-colors duration-150 hover:bg-muted/70 dark:hover:bg-white/[0.055] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+              className="group/project-row relative flex cursor-pointer items-center gap-3 rounded-xl px-5 py-4 text-left transition-colors duration-150 hover:bg-muted/70 dark:hover:bg-[rgb(255_255_255_/_calc(0.055*var(--contrast-wash-gain,1)))] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
             >
               <span className="mr-1 flex size-9 shrink-0 items-center justify-center rounded-[10px] bg-muted text-foreground/70 transition-colors group-hover/project-row:bg-primary/10 group-hover/project-row:text-primary">
                 <HugeiconsIcon
@@ -760,7 +760,7 @@ export function ProjectsPage() {
                   toggleProjectChats(project.id);
                 }}
                 className={cn(
-                  "flex size-7 shrink-0 items-center justify-center rounded-full text-muted-foreground transition hover:bg-black/5 hover:text-foreground focus-visible:opacity-100 group-hover/project-row:opacity-100 dark:hover:bg-white/10",
+                  "flex size-7 shrink-0 items-center justify-center rounded-full text-muted-foreground transition hover:bg-[rgb(0_0_0_/_calc(0.05*var(--contrast-wash-gain,1)))] hover:text-foreground focus-visible:opacity-100 group-hover/project-row:opacity-100 dark:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))]",
                   chatsOpen ? "opacity-100" : "opacity-0",
                 )}
               >
@@ -784,7 +784,7 @@ export function ProjectsPage() {
                   togglePinProject(project.id);
                 }}
                 className={cn(
-                  "flex size-7 shrink-0 items-center justify-center rounded-full text-muted-foreground transition hover:bg-black/5 hover:text-foreground focus-visible:opacity-100 group-hover/project-row:opacity-100 dark:hover:bg-white/10",
+                  "flex size-7 shrink-0 items-center justify-center rounded-full text-muted-foreground transition hover:bg-[rgb(0_0_0_/_calc(0.05*var(--contrast-wash-gain,1)))] hover:text-foreground focus-visible:opacity-100 group-hover/project-row:opacity-100 dark:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))]",
                   pinned ? "opacity-100" : "opacity-0",
                 )}
               >
@@ -804,7 +804,7 @@ export function ProjectsPage() {
                       type="button"
                       onClick={(e) => e.stopPropagation()}
                       aria-label="Project options"
-                      className="absolute right-0 flex size-7 shrink-0 items-center justify-center rounded-full text-muted-foreground opacity-0 transition hover:bg-black/5 hover:text-foreground focus-visible:opacity-100 group-hover/project-row:opacity-100 data-[state=open]:bg-black/5 data-[state=open]:opacity-100 dark:hover:bg-white/10 dark:data-[state=open]:bg-white/10"
+                      className="absolute right-0 flex size-7 shrink-0 items-center justify-center rounded-full text-muted-foreground opacity-0 transition hover:bg-[rgb(0_0_0_/_calc(0.05*var(--contrast-wash-gain,1)))] hover:text-foreground focus-visible:opacity-100 group-hover/project-row:opacity-100 data-[state=open]:bg-[rgb(0_0_0_/_calc(0.05*var(--contrast-wash-gain,1)))] data-[state=open]:opacity-100 dark:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))] dark:data-[state=open]:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))]"
                     >
                       <MoreHorizontalIcon strokeWidth={1.75} className="size-icon" />
                     </button>
@@ -897,7 +897,7 @@ export function ProjectsPage() {
                         key={chat.id}
                         type="button"
                         onClick={() => openChat(chat, project.id)}
-                        className="flex cursor-pointer items-center gap-2 truncate rounded-lg px-2 py-1.5 text-left text-sm text-muted-foreground transition-colors hover:bg-muted/70 hover:text-foreground dark:hover:bg-white/[0.055]"
+                        className="flex cursor-pointer items-center gap-2 truncate rounded-lg px-2 py-1.5 text-left text-sm text-muted-foreground transition-colors hover:bg-muted/70 hover:text-foreground dark:hover:bg-[rgb(255_255_255_/_calc(0.055*var(--contrast-wash-gain,1)))]"
                       >
                         <HugeiconsIcon
                           icon={MessageCircleIcon}

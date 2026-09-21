@@ -34,7 +34,7 @@ export function DownloadProgressBar({
   const etaLabel = etaSeconds > 0 ? formatEta(etaSeconds) : "";
   return (
     <div className="flex flex-col gap-1.5 pb-1">
-      <div className="relative h-[3px] overflow-hidden rounded-full bg-foreground/[0.06] dark:bg-white/[0.06]">
+      <div className="relative h-[3px] overflow-hidden rounded-full bg-foreground/[0.06] dark:bg-[rgb(255_255_255_/_calc(0.06*var(--contrast-wash-gain,1)))]">
         {indeterminate ? (
           <div className="loading-bar-slide h-full w-1/3 rounded-full bg-status-warning/80" />
         ) : (

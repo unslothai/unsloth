@@ -1197,7 +1197,7 @@ export const ko = {
         },
         contrast: {
           label: "대비",
-          description: "테두리와 보조 텍스트의 강도입니다.",
+          description: "버튼, 상자, 선이 배경에서 얼마나 두드러지는지 설정합니다.",
         },
         reduceMotion: {
           label: "동작 줄이기",

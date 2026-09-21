@@ -283,7 +283,7 @@ export const ModelCard = memo(function ModelCard({
         <OwnerAvatar
           owner={row.owner}
           repoName={row.repo}
-          className="size-11 shrink-0 rounded-[14px] text-ui-17 ring-1 ring-white/10"
+          className="size-11 shrink-0 rounded-[14px] text-ui-17 ring-1 ring-[rgb(255_255_255_/_calc(0.1*var(--contrast-edge-gain,1)))]"
           remote={false}
         />
         <div className="min-w-0 flex-1 space-y-0.5">

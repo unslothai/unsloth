@@ -65,11 +65,11 @@ export function DatasetUploadField({ uploads }: { uploads: DatasetUploads }) {
         onDragLeave={() => uploads.setIsDatasetDragOver(false)}
         className={cn(
           "group relative flex h-9 w-full select-none items-center justify-center gap-2 rounded-[12px] border border-dashed px-3 text-center transition-colors",
-          "border-foreground/15 dark:border-white/15",
-          "hover:border-foreground/30 hover:bg-foreground/[0.02] dark:hover:border-white/30 dark:hover:bg-white/[0.025]",
+          "border-foreground/15 dark:border-[rgb(255_255_255_/_calc(0.15*var(--contrast-edge-gain,1)))]",
+          "hover:border-foreground/30 hover:bg-foreground/[0.02] dark:hover:border-white/30 dark:hover:bg-[rgb(255_255_255_/_calc(0.025*var(--contrast-wash-gain,1)))]",
           PICKER_FOCUS_VISIBLE_CLASS,
           uploads.isDatasetDragOver &&
-            "border-foreground/45 bg-foreground/[0.04] dark:border-white/40 dark:bg-white/[0.05]",
+            "border-foreground/45 bg-foreground/[0.04] dark:border-white/40 dark:bg-[rgb(255_255_255_/_calc(0.05*var(--contrast-wash-gain,1)))]",
           uploads.isUploading && "cursor-progress opacity-80",
         )}
       >

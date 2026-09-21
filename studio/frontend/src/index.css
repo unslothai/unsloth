@@ -181,25 +181,25 @@
 	/* Slightly warm off white; every page (and the chat surface) shares it. */
 	--background: #fefefd;
 	--foreground: oklch(0.2686 0 0);
-	--card: oklch(1 0 0);
+	--card-base: oklch(1 0 0);
 	--card-foreground: oklch(0.1281 0.0179 169.2764);
-	--popover: oklch(1 0 0);
+	--popover-base: oklch(1 0 0);
 	--popover-foreground: oklch(0.1281 0.0179 169.2764);
 	--primary: #17b88b;
 	--primary-foreground: oklch(1 0 0);
-	--secondary: oklch(0.9596 0.0275 167.8295);
+	--secondary-base: oklch(0.9596 0.0275 167.8295);
 	--secondary-foreground: oklch(0.2868 0.0649 159.9823);
-	--muted: oklch(0.9702 0 0);
+	--muted-base: oklch(0.9702 0 0);
 	--muted-foreground: oklch(0.5486 0 0);
 	/* Hover/active washes are neutral grey (matches the sidebar), not the
 	   brand green; green stays on primary controls only. */
-	--accent: #ececec;
+	--accent-base: #ececec;
 	--accent-foreground: #262626;
 	--destructive: oklch(0.6368 0.2078 25.3313);
 	/* Bypass permissions accent: bright, saturated yellow (not dark gold). */
 	--bypass: #c99d00;
-	--border: oklch(0.9208 0.0101 164.8536);
-	--input: oklch(0.9208 0.0101 164.8536);
+	--border-base: oklch(0.9208 0.0101 164.8536);
+	--input-base: oklch(0.9208 0.0101 164.8536);
 	--ring: #262626;
 	/* Focus and selection indicators: the element's own border, darker.
 	   Derived from the live border/foreground tokens so every palette and
@@ -221,7 +221,7 @@
 	--sidebar-primary-foreground: oklch(1 0 0);
 	--sidebar-accent: #ececec;
 	--sidebar-accent-foreground: #262626;
-	--sidebar-border: #f2f2f2;
+	--sidebar-border-base: #f2f2f2;
 	--sidebar-ring: #262626;
 	--destructive-foreground: oklch(1 0 0);
 	--font-sans: "Inter Variable", ui-sans-serif, sans-serif, system-ui;
@@ -259,10 +259,10 @@
 	/* Hex (not OKLCH) so the rendered surface matches the design mockup pixel-for-pixel. */
 	--nav-fg: #383835;
 	--nav-fg-muted: #858279;
-	--nav-surface-hover: #f0f0f0;
+	--nav-surface-hover-base: #f0f0f0;
 	--nav-icon-idle: #8f8f8f;
 	--nav-beta-border: #e0ded6;
-	--panel-surface-hover: #ebebeb;
+	--panel-surface-hover-base: #ebebeb;
 	/* Right-side chat-parameters panel: matches the chat content
 	   surface in both themes — distinction from the left sidebar
 	   (#f9faf9) is handled by the left border alone. Tracks
@@ -270,7 +270,7 @@
 	   through automatically. */
 	--panel-surface: var(--background);
 	--panel-surface-fg: var(--foreground);
-	--panel-input-surface: #f5f5f5;
+	--panel-input-surface-base: #f5f5f5;
 	--panel-input-surface-hover: #efefef;
 	/* Muted gray with a one-step warmer-blue last channel (#779 vs flat #777)
 	   so the tone has a faint hue rather than pure neutral — keeps text and
@@ -355,18 +355,18 @@
 	   tokens so dark mode stays consistent across themes. */
 	--background: #181818;
 	--foreground: #ffffff;
-	--card: #212121;
+	--card-base: #212121;
 	--card-foreground: #ffffff;
-	--popover: #212121;
+	--popover-base: #212121;
 	--popover-foreground: #ffffff;
 	--primary: #17b88b;
 	--primary-foreground: oklch(1 0 0);
-	--secondary: #242424;
+	--secondary-base: #242424;
 	--secondary-foreground: #ffffff;
-	--muted: #242424;
+	--muted-base: #242424;
 	--muted-foreground: #a3a3a3;
 	/* One step lighter than --popover so menu item hover reads clearly. */
-	--accent: #2e2e2e;
+	--accent-base: #2e2e2e;
 	--accent-foreground: #ffffff;
 	--destructive: oklch(0.6368 0.2078 25.3313);
 	/* Bypass permissions accent: bright, saturated neon yellow on dark. */
@@ -374,8 +374,8 @@
 	/* --border / --input one step lighter than --muted so outlines and form
 	   borders stay visible on muted surfaces (right config panel, export
 	   tiles, quant chips) and keep subtle contrast on card. */
-	--border: #303030;
-	--input: #303030;
+	--border-base: #303030;
+	--input-base: #303030;
 	--ring: #ececec;
 	--chart-1: oklch(0.7511 0.1407 166.2284);
 	--chart-2: oklch(0.75 0.14 136.5572);
@@ -390,7 +390,7 @@
 	--sidebar-primary-foreground: oklch(1 0 0);
 	--sidebar-accent: #2a2a2a;
 	--sidebar-accent-foreground: #ffffff;
-	--sidebar-border: #2a2a2a;
+	--sidebar-border-base: #2a2a2a;
 	--sidebar-ring: #ececec;
 	--destructive-foreground: oklch(1 0 0);
 	/* Match light's radius so every rounded-* element is the same in both themes. */
@@ -417,10 +417,10 @@
 
 	--nav-fg: #c9c9c9;
 	--nav-fg-muted: #969696;
-	--nav-surface-hover: #2a2a2a;
+	--nav-surface-hover-base: #2a2a2a;
 	--nav-icon-idle: #5c5c5c;
 	--nav-beta-border: #333333;
-	--panel-surface-hover: #333333;
+	--panel-surface-hover-base: #333333;
 	/* Right-side chat-parameters panel: matches the chat content
 	   surface in both themes — distinction from the left sidebar
 	   is handled by the left border alone. Tracks `--background` so
@@ -430,7 +430,7 @@
 	--panel-surface-fg: var(--foreground);
 	/* Translucent white so the same fill reads correctly on the #181818
 	   page AND on #212121 cards/dialogs. */
-	--panel-input-surface: rgba(255, 255, 255, 0.07);
+	--panel-input-surface-base: rgba(255, 255, 255, 0.07);
 	--panel-input-surface-hover: rgba(255, 255, 255, 0.11);
 	/* Soft neutral gray for muted text and sliders. Pure-ish #ababab
 	   reads as quiet on the dark panel without going colored. */
@@ -469,9 +469,9 @@
 :root[data-palette="classic"]:not(.dark) {
 	--background: #ffffff;
 	--foreground: #1a1c1f;
-	--card: #ffffff;
+	--card-base: #ffffff;
 	--card-foreground: #1a1c1f;
-	--popover: #ffffff;
+	--popover-base: #ffffff;
 	--popover-foreground: #1a1c1f;
 	/* Neutral black primary; blue is reserved for small controls via
 	   --control-accent (toggles, badges, focus rings). */
@@ -479,15 +479,15 @@
 	--primary-foreground: #ffffff;
 	--control-accent: #339cff;
 	--control-accent-foreground: #ffffff;
-	--secondary: #f5f5f5;
+	--secondary-base: #f5f5f5;
 	--secondary-foreground: #1a1c1f;
-	--muted: #f7f7f7;
+	--muted-base: #f7f7f7;
 	--muted-foreground: #8f8f8f;
-	--accent: #ececec;
+	--accent-base: #ececec;
 	--accent-foreground: #1a1c1f;
 	--bypass: #9a7b1e;
-	--border: #e6e6e6;
-	--input: #e6e6e6;
+	--border-base: #e6e6e6;
+	--input-base: #e6e6e6;
 	--ring: #1a1c1f;
 	--chart-1: #339cff;
 	--chart-2: #8fa3b8;
@@ -502,16 +502,16 @@
 	--sidebar-primary-foreground: #ffffff;
 	--sidebar-accent: #ececec;
 	--sidebar-accent-foreground: #1a1c1f;
-	--sidebar-border: #f2f2f2;
+	--sidebar-border-base: #f2f2f2;
 	--sidebar-ring: #1a1c1f;
 
 	--nav-fg: #2d2f31;
 	--nav-fg-muted: #8f8f8f;
-	--nav-surface-hover: #ececec;
+	--nav-surface-hover-base: #ececec;
 	--nav-icon-idle: #8f8f8f;
 	--nav-beta-border: #e0e0e0;
-	--panel-surface-hover: #ececec;
-	--panel-input-surface: #f4f4f4;
+	--panel-surface-hover-base: #ececec;
+	--panel-input-surface-base: #f4f4f4;
 	--panel-input-surface-hover: #ededed;
 	--panel-surface-fg-muted: #7a7c7e;
 	--panel-slider-fg: #9b9d9f;
@@ -543,21 +543,21 @@
 :root[data-palette="minimal"]:not(.dark) {
 	--background: #ffffff;
 	--foreground: #171717;
-	--card: #ffffff;
+	--card-base: #ffffff;
 	--card-foreground: #171717;
-	--popover: #ffffff;
+	--popover-base: #ffffff;
 	--popover-foreground: #171717;
 	--primary: #171717;
 	--primary-foreground: #ffffff;
-	--secondary: #f5f5f5;
+	--secondary-base: #f5f5f5;
 	--secondary-foreground: #262626;
-	--muted: #f5f5f5;
+	--muted-base: #f5f5f5;
 	--muted-foreground: #6f6f6f;
-	--accent: #ebebeb;
+	--accent-base: #ebebeb;
 	--accent-foreground: #171717;
 	--bypass: #6f6f6f;
-	--border: #e2e2e2;
-	--input: #e2e2e2;
+	--border-base: #e2e2e2;
+	--input-base: #e2e2e2;
 	--ring: #171717;
 	--chart-1: #171717;
 	--chart-2: #4d4d4d;
@@ -571,16 +571,16 @@
 	--sidebar-primary-foreground: #ffffff;
 	--sidebar-accent: #ebebeb;
 	--sidebar-accent-foreground: #171717;
-	--sidebar-border: #e8e8e8;
+	--sidebar-border-base: #e8e8e8;
 	--sidebar-ring: #171717;
 
 	--nav-fg: #333333;
 	--nav-fg-muted: #8a8a8a;
-	--nav-surface-hover: #efefef;
+	--nav-surface-hover-base: #efefef;
 	--nav-icon-idle: #8f8f8f;
 	--nav-beta-border: #dddddd;
-	--panel-surface-hover: #ececec;
-	--panel-input-surface: #f4f4f4;
+	--panel-surface-hover-base: #ececec;
+	--panel-input-surface-base: #f4f4f4;
 	--panel-input-surface-hover: #ededed;
 	--panel-surface-fg-muted: #757575;
 	--panel-slider-fg: #9b9b9b;
@@ -614,18 +614,53 @@
    Custom colors/fonts are applied as inline CSS variables on <html> (inline
    wins over every :root/.dark/palette block), so they need no rules here. */
 
-/* Contrast slider: remap border and muted-text tokens by mixing their base
-   values toward the foreground (higher contrast) or background (lower).
-   --input mirrors --border in every palette, so it serves as the untouched
-   base for --border; --panel-surface-fg-muted is the closest stable base for
-   --muted-foreground. --contrast-mix / --contrast-target are set inline. */
+/* Contrast slider (Settings > Appearance).
+
+   The palettes above author their surfaces and lines as --*-base; these two
+   rules are what the app reads, so the slider retunes every card, menu row,
+   button, input pill and hairline from one place. At the default the store
+   sets nothing, this rule is the identity, and the palettes render as
+   authored. */
+:root {
+	/* Boxes and buttons: the fill that lifts a surface off the page. */
+	--card: var(--card-base);
+	--popover: var(--popover-base);
+	--secondary: var(--secondary-base);
+	--muted: var(--muted-base);
+	--accent: var(--accent-base);
+	--nav-surface-hover: var(--nav-surface-hover-base);
+	--panel-surface-hover: var(--panel-surface-hover-base);
+	--panel-input-surface: var(--panel-input-surface-base);
+	/* Lines: borders, dividers, control outlines. */
+	--border: var(--border-base);
+	--input: var(--input-base);
+	--sidebar-border: var(--sidebar-border-base);
+}
+
+/* Off the default, each token is mixed toward --contrast-target (foreground
+   above 50, background below) by the amount its group takes. See
+   applyCustomizationToDocument for the curves. Beats the palette blocks on
+   specificity, so it reaches all three palettes. */
 html[data-contrast-adjust] {
-	--border: color-mix(in oklab, var(--input), var(--contrast-target) var(--contrast-mix));
-	--sidebar-border: color-mix(in oklab, var(--input), var(--contrast-target) var(--contrast-mix));
+	--card: color-mix(in oklab, var(--card-base), var(--contrast-target) var(--contrast-surface-mix));
+	--popover: color-mix(in oklab, var(--popover-base), var(--contrast-target) var(--contrast-surface-mix));
+	--secondary: color-mix(in oklab, var(--secondary-base), var(--contrast-target) var(--contrast-surface-mix));
+	--muted: color-mix(in oklab, var(--muted-base), var(--contrast-target) var(--contrast-surface-mix));
+	--accent: color-mix(in oklab, var(--accent-base), var(--contrast-target) var(--contrast-surface-mix));
+	--nav-surface-hover: color-mix(in oklab, var(--nav-surface-hover-base), var(--contrast-target) var(--contrast-surface-mix));
+	--panel-surface-hover: color-mix(in oklab, var(--panel-surface-hover-base), var(--contrast-target) var(--contrast-surface-mix));
+	--panel-input-surface: color-mix(in oklab, var(--panel-input-surface-base), var(--contrast-target) var(--contrast-surface-mix));
+	--border: color-mix(in oklab, var(--border-base), var(--contrast-target) var(--contrast-line-mix));
+	/* Control outlines and switch tracks stop short of the hairlines: an
+	   affordance still has to be findable at the bottom of the range. */
+	--input: color-mix(in oklab, var(--input-base), var(--contrast-target) var(--contrast-control-mix));
+	--sidebar-border: color-mix(in oklab, var(--sidebar-border-base), var(--contrast-target) var(--contrast-line-mix));
+	/* Secondary text keeps a gentler curve, it has to stay readable at both
+	   ends. --panel-surface-fg-muted is its stable base. */
 	--muted-foreground: color-mix(
 		in oklab,
 		var(--panel-surface-fg-muted),
-		var(--contrast-target) var(--contrast-mix)
+		var(--contrast-target) var(--contrast-text-mix)
 	);
 }
 
@@ -1364,8 +1399,16 @@ html[data-chat-font] .aui-root {
 	   default. Light mode only, since dark mode draws these controls borderless.
 	   Overrides the token, so every derived shade stays in step. */
 	html:not(.dark) .diffusion-surface {
-		--border: #e9e9e9;
-		--input: #e9e9e9;
+		--border-base: #e9e9e9;
+		--input-base: #e9e9e9;
+		--border: var(--border-base);
+		--input: var(--input-base);
+	}
+	/* A scoped base has to redo the derivation: the :root one is already
+	   substituted, so otherwise the slider stops at these panels. */
+	html[data-contrast-adjust]:not(.dark) .diffusion-surface {
+		--border: color-mix(in oklab, var(--border-base), var(--contrast-target) var(--contrast-line-mix));
+		--input: color-mix(in oklab, var(--input-base), var(--contrast-target) var(--contrast-control-mix));
 	}
 
 	/* Settings columns on Images and Video: content dissolves at whichever edge it runs

@@ -1224,7 +1224,7 @@ export const fr = {
         },
         contrast: {
           label: "Contraste",
-          description: "Intensité des bordures et du texte secondaire.",
+          description: "À quel point les boutons, les blocs et les traits ressortent du fond.",
         },
         reduceMotion: {
           label: "Réduire les animations",

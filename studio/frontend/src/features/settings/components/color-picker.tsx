@@ -158,15 +158,15 @@ export function ColorPickerSwatch({
           className={cn(
             "flex h-8 min-w-24 cursor-pointer items-center gap-1.5 rounded-full border px-2.5 font-mono text-xs uppercase transition-colors",
             light
-              ? "border-black/10 text-black/80"
-              : "border-white/15 text-white",
+              ? "border-[rgb(0_0_0_/_calc(0.1*var(--contrast-edge-gain,1)))] text-black/80"
+              : "border-[rgb(255_255_255_/_calc(0.15*var(--contrast-edge-gain,1)))] text-white",
           )}
           style={{ backgroundColor: value }}
         >
           <span
             className={cn(
               "size-3.5 shrink-0 rounded-full border",
-              light ? "border-black/20" : "border-white/40",
+              light ? "border-[rgb(0_0_0_/_calc(0.2*var(--contrast-edge-gain,1)))]" : "border-white/40",
             )}
           />
           {value.toUpperCase()}
@@ -247,7 +247,7 @@ export function ColorPickerSwatch({
               }}
               aria-label={t("settings.appearance.custom.colorPicker.hex")}
               spellCheck={false}
-              className="h-8 w-full min-w-0 rounded-full border border-border bg-background px-3 font-mono text-xs text-foreground uppercase outline-none focus-visible:border-ring dark:focus-visible:border-transparent dark:focus-visible:bg-white/[0.12] dark:border-transparent dark:bg-white/[0.06]"
+              className="h-8 w-full min-w-0 rounded-full border border-border bg-background px-3 font-mono text-xs text-foreground uppercase outline-none focus-visible:border-ring dark:focus-visible:border-transparent dark:focus-visible:bg-[rgb(255_255_255_/_calc(0.12*var(--contrast-wash-gain,1)))] dark:border-transparent dark:bg-[rgb(255_255_255_/_calc(0.06*var(--contrast-wash-gain,1)))]"
             />
             {eyeDropperCtor && (
               <button

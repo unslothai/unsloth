@@ -140,7 +140,7 @@ export function StartTrainingCta() {
           "h-11 w-full justify-center rounded-xl text-ui-13p5 font-semibold tracking-tight",
           "bg-primary text-primary-foreground shadow-sm",
           "hover:bg-primary/90",
-          "disabled:bg-foreground/[0.08] disabled:text-muted-foreground disabled:shadow-none dark:disabled:bg-white/[0.06]",
+          "disabled:bg-foreground/[0.08] disabled:text-muted-foreground disabled:shadow-none dark:disabled:bg-[rgb(255_255_255_/_calc(0.06*var(--contrast-wash-gain,1)))]",
           "transition-colors duration-200",
         )}
         onClick={() => {

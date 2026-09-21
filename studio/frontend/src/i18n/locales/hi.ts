@@ -1204,7 +1204,7 @@ export const hi = {
         },
         contrast: {
           label: "कंट्रास्ट",
-          description: "बॉर्डर और सेकंडरी टेक्स्ट की तीव्रता।",
+          description: "बटन, बॉक्स और लाइनें बैकग्राउंड से कितनी अलग दिखें।",
         },
         reduceMotion: {
           label: "एनिमेशन कम करें",

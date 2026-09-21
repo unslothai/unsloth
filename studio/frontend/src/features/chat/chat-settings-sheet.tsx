@@ -328,7 +328,7 @@ function CollapsibleSection({
   return (
     <div
       className={cn(
-        !first && "border-t border-black/[0.13] dark:border-white/[0.09]",
+        !first && "border-t border-[rgb(0_0_0_/_calc(0.13*var(--contrast-edge-gain,1)))] dark:border-[rgb(255_255_255_/_calc(0.09*var(--contrast-edge-gain,1)))]",
       )}
     >
       {labelHref ? (
@@ -1272,7 +1272,7 @@ export function ChatSettingsPanel({
                     </DropdownMenuItem>
                     {index === BUILTIN_PRESETS.length - 1 &&
                       presets.length > BUILTIN_PRESETS.length && (
-                        <DropdownMenuSeparator className="mx-3 my-1.5 h-px bg-black/8 dark:bg-white/8" />
+                        <DropdownMenuSeparator className="mx-3 my-1.5 h-px bg-[rgb(0_0_0_/_calc(0.08*var(--contrast-wash-gain,1)))] dark:bg-[rgb(255_255_255_/_calc(0.08*var(--contrast-wash-gain,1)))]" />
                       )}
                   </Fragment>
                 ))}

@@ -1181,7 +1181,7 @@ export const ja = {
         },
         contrast: {
           label: "コントラスト",
-          description: "枠線と補助テキストの強さ。",
+          description: "ボタン・ボックス・罫線を背景からどれだけ際立たせるか。",
         },
         reduceMotion: {
           label: "モーションを減らす",

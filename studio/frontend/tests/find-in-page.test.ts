@@ -1459,8 +1459,8 @@ test("dark mode sits above the cards it floats over", async () => {
   const grey = (hex: string) => Number.parseInt(hex.slice(1, 3), 16);
   // A bar at `--card` dissolves into what scrolls under it; past `--border` it reads as an edge.
   const bar = grey(value(".dark .find-bar-surface", "background-color"));
-  const card = grey(value(".dark", "--card"));
-  const border = grey(value(".dark", "--border"));
+  const card = grey(value(".dark", "--card-base"));
+  const border = grey(value(".dark", "--border-base"));
   assert.ok(bar > card, `bar ${bar} is not lighter than --card ${card}`);
   assert.ok(bar < border, `bar ${bar} is not darker than --border ${border}`);
   assert.match(
@@ -2441,7 +2441,12 @@ test("the bar has no border, and its buttons have a hover that shows", async () 
     "the bar took a border back",
   );
   // The ghost variant's own `--muted/50` hover lands within a shade of this surface.
-  assert.match(FIND_BAR, /hover:bg-black\/\[0\.06\] dark:hover:bg-white\/10/);
+  // The hover washes carry their authored alpha times the contrast gain, so the
+  // slider can fade or strengthen them (appearance-custom-store.ts).
+  assert.match(
+    FIND_BAR,
+    /hover:bg-\[rgb\(0_0_0_\/_calc\(0\.06\*var\(--contrast-wash-gain,1\)\)\)\] dark:hover:bg-\[rgb\(255_255_255_\/_calc\(0\.1\*var\(--contrast-wash-gain,1\)\)\)\]/,
+  );
   assert.equal(
     (FIND_BAR.match(/className=\{FIND_BUTTON_CLASS\}/g) ?? []).length,
     3,

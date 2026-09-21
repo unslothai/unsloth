@@ -1201,7 +1201,7 @@ export const ar = {
         },
         contrast: {
           label: "التباين",
-          description: "مدى وضوح الحدود والنصوص الثانوية.",
+          description: "مدى بروز الأزرار والمربعات والخطوط عن الخلفية.",
         },
         reduceMotion: {
           label: "تقليل الحركة",

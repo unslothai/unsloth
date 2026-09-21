@@ -241,7 +241,7 @@ export function ProfilePersonalizationPanel() {
                 type="button"
                 aria-label={t("settings.profile.pictureOptions")}
                 title={t("settings.profile.pictureOptions")}
-                className="absolute top-[85.36%] left-[85.36%] flex size-9 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full border border-border bg-background text-foreground shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] transition-colors hover:bg-muted focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring dark:border-transparent dark:bg-white/[0.14] dark:hover:bg-white/20"
+                className="absolute top-[85.36%] left-[85.36%] flex size-9 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full border border-border bg-background text-foreground shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] transition-colors hover:bg-muted focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring dark:border-transparent dark:bg-[rgb(255_255_255_/_calc(0.14*var(--contrast-wash-gain,1)))] dark:hover:bg-white/20"
               >
                 <HugeiconsIcon
                   icon={Edit03Icon}

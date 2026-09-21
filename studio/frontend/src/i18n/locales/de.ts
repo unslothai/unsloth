@@ -1225,7 +1225,7 @@ export const de = {
         },
         contrast: {
           label: "Kontrast",
-          description: "Intensität von Rahmen und sekundärem Text.",
+          description: "Wie stark sich Schaltflächen, Flächen und Linien vom Hintergrund abheben.",
         },
         reduceMotion: {
           label: "Bewegung reduzieren",

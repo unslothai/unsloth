@@ -877,7 +877,7 @@ export function GgufDownloadFootprintExplanation({
 
 function QuantChip({ label }: { label: string }) {
   return (
-    <span className="inline-flex h-[18px] max-w-full items-center overflow-hidden rounded-md bg-black/[0.06] px-1 font-mono text-ui-9 text-muted-foreground dark:bg-white/[0.1]">
+    <span className="inline-flex h-[18px] max-w-full items-center overflow-hidden rounded-md bg-[rgb(0_0_0_/_calc(0.06*var(--contrast-wash-gain,1)))] px-1 font-mono text-ui-9 text-muted-foreground dark:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))]">
       {label}
     </span>
   );
@@ -958,7 +958,7 @@ const ROW_ACTIONS_PINNED_CLASS = cn(ROW_ACTIONS_CLASS, "opacity-100");
 // Same box and glyph size as ModelLoadSettingsAction, so a heading's buttons sit in the same
 // column and hover the same size as the ones on the rows under it.
 const HEADING_ACTION_CLASS =
-  "flex size-5 shrink-0 items-center justify-center rounded-md text-muted-foreground/60 transition hover:bg-black/5 hover:text-foreground dark:hover:bg-white/10";
+  "flex size-5 shrink-0 items-center justify-center rounded-md text-muted-foreground/60 transition hover:bg-[rgb(0_0_0_/_calc(0.05*var(--contrast-wash-gain,1)))] hover:text-foreground dark:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))]";
 
 /** A Connected group label. Wider than the On Device section labels, since nothing divides these
  *  groups but the gap, and foldable the same way. */
@@ -1217,7 +1217,7 @@ function ModelRow({
             />
           )}
           {alignMeta !== "device" && quantChip ? (
-            <span className="ml-2 shrink-0 rounded-md bg-black/[0.06] px-1.5 py-px font-mono text-ui-10 text-muted-foreground dark:bg-white/[0.1]">
+            <span className="ml-2 shrink-0 rounded-md bg-[rgb(0_0_0_/_calc(0.06*var(--contrast-wash-gain,1)))] px-1.5 py-px font-mono text-ui-10 text-muted-foreground dark:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))]">
               {quantChip}
             </span>
           ) : null}
