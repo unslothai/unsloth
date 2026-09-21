@@ -166,6 +166,44 @@ Check "an ambiguous status still reaches the force-reinstall" {
     # repaired by reinstalling the same family in place.
     $setupText.Contains('$_blockRulesOutDamage = $_probeBlockReason -and')
 }
+# The closing sentence has to match what setup does next, since this notice is emitted
+# from a kept environment, from one whose wheels are about to be force-reinstalled, and
+# from the rebuild path.
+. ([scriptblock]::Create((Get-FunctionText -Path $setup -Name "Write-CodeIntegrityTorchNotice")))
+function substep { param([string]$Text, [string]$Colour) $script:said += $Text }
+
+Check "a kept environment is the only one told it is kept" {
+    $script:said = @()
+    Write-CodeIntegrityTorchNotice -Reason "code integrity blocked the image" -Action "kept"
+    ($script:said -join " ").Contains("kept as it is")
+}
+Check "a forced reinstall says the wheels are being replaced, not kept" {
+    $script:said = @()
+    Write-CodeIntegrityTorchNotice -Reason "the image failed code integrity validation (invalid or missing signature)" -Action "reinstall"
+    $joined = $script:said -join " "
+    $joined.Contains("reinstall the same wheels in place") -and (-not $joined.Contains("kept as it is"))
+}
+Check "the rebuild path says the environment is being rebuilt" {
+    $script:said = @()
+    Write-CodeIntegrityTorchNotice -Reason "code integrity blocked the image" -Action "rebuild"
+    $joined = $script:said -join " "
+    $joined.Contains("rebuild this environment") -and (-not $joined.Contains("kept as it is"))
+}
+Check "an unknown action is refused rather than guessed" {
+    $script:said = @()
+    $refused = $false
+    try { Write-CodeIntegrityTorchNotice -Reason "x" -Action "wipe" } catch { $refused = $true }
+    $refused
+}
+Check "the rebuild call site passes rebuild, and the CUDA arm decides before it speaks" {
+    $setupText.Contains('Write-CodeIntegrityTorchNotice -Reason $_rebuildBlockReason -Action "rebuild"') -and
+    $setupText.Contains('Write-CodeIntegrityTorchNotice -Reason $_probeBlockReason -Action $_blockAction')
+}
+Check "no PowerShell 7 only if-expression reached the argument" {
+    # 5.1 cannot parse `-Action (if ...)`, and this file runs on both engines.
+    -not ($setupText -match 'Action \(\s*if ')
+}
+
 Check "the notice does not tell a user with no importable torch that the CPU is fine" {
     (-not $setupText.Contains("Training on the CPU is unaffected")) -and
     $setupText.Contains("it cannot run on the CPU either")

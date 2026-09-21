@@ -1632,7 +1632,13 @@ function Test-CodeIntegrityReasonIsAmbiguous {
 }
 
 function Write-CodeIntegrityTorchNotice {
-    param([string]$Reason)
+    param(
+        [string]$Reason,
+        # What setup does next, since this notice is emitted from paths that keep the
+        # environment, reinstall the wheels into it, and rebuild it outright.
+        [ValidateSet("kept", "reinstall", "rebuild")]
+        [string]$Action = "kept"
+    )
     # Said once, in the three places the driver advice used to be.
     substep "Windows refused part of the PyTorch GPU runtime: $Reason." "Yellow"
     if (Test-CodeIntegrityReasonIsAmbiguous -Reason $Reason) {
@@ -1648,7 +1654,13 @@ function Write-CodeIntegrityTorchNotice {
     # Not "CPU training is unaffected": this venv's own `import torch` is what just failed,
     # so nothing in it runs, on any device, until the wheels load or are replaced.
     substep "This environment holds a GPU build whose import Windows is refusing, so it cannot run on the CPU either. A separate CPU-only install is unaffected, and UNSLOTH_TORCH_INDEX_URL moves this one onto CPU wheels on purpose." "DarkGray"
-    substep "The environment is kept as it is." "DarkGray"
+    switch ($Action) {
+        "reinstall" {
+            substep "Setup will reinstall the same wheels in place, which clears the damaged case; a policy will refuse them again the same way." "DarkGray"
+        }
+        "rebuild" { substep "Setup will rebuild this environment." "DarkGray" }
+        default   { substep "The environment is kept as it is." "DarkGray" }
+    }
 }
 
 function Invoke-BoundedPythonProbe {
@@ -6273,16 +6285,21 @@ if ((Test-Path -LiteralPath $VenvDir -PathType Container) -and -not $NoTorchMode
             # below saw no cu* wheel to preserve. Keep the FAMILY, not a generic "cuda".
             $installedTorchTag = Get-VenvTorchCudaTag -VenvPath $VenvDir
             substep "PyTorch did not respond but this venv holds a $installedTorchTag build -- keeping it." "Yellow"
-            if ($_probeBlockReason) {
-                Write-CodeIntegrityTorchNotice -Reason $_probeBlockReason
-            } else {
-                substep "If training fails, reboot and update the NVIDIA driver." "Yellow"
-            }
             # A half-written torch also leaves a +cu* version.py behind, and the matched
             # install below would write a completion manifest over it. Force the reinstall.
             $_blockRulesOutDamage = $_probeBlockReason -and
                 -not (Test-CodeIntegrityReasonIsAmbiguous -Reason $_probeBlockReason)
-            if ($_verProbe -and -not $_verProbe.TimedOut -and -not $_blockRulesOutDamage) {
+            $_willForceReinstall = $_verProbe -and -not $_verProbe.TimedOut -and -not $_blockRulesOutDamage
+            # Assigned, not an inline if-expression: Windows PowerShell 5.1 cannot parse one
+            # as an argument, and this file has to run on both engines.
+            $_blockAction = "kept"
+            if ($_willForceReinstall) { $_blockAction = "reinstall" }
+            if ($_probeBlockReason) {
+                Write-CodeIntegrityTorchNotice -Reason $_probeBlockReason -Action $_blockAction
+            } else {
+                substep "If training fails, reboot and update the NVIDIA driver." "Yellow"
+            }
+            if ($_willForceReinstall) {
                 $script:TorchImportDefinitivelyFailed = $true
                 substep "PyTorch failed to import rather than timing out -- reinstalling the same family in place." "Yellow"
             }
@@ -6466,7 +6483,9 @@ if ((Test-Path -LiteralPath $VenvDir -PathType Container) -and -not $NoTorchMode
                 Where-Object { $_.Trim() } | Select-Object -Last 1
             if ($_probeErrLine) { substep "PyTorch reported: $($_probeErrLine.Trim())" "DarkGray" }
             $_rebuildBlockReason = Get-CodeIntegrityBlockReason -Text $_verProbe.Error
-            if ($_rebuildBlockReason) { Write-CodeIntegrityTorchNotice -Reason $_rebuildBlockReason }
+            if ($_rebuildBlockReason) {
+                Write-CodeIntegrityTorchNotice -Reason $_rebuildBlockReason -Action "rebuild"
+            }
         }
     }
 
