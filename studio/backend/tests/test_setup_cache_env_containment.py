@@ -5,6 +5,7 @@
 
 import contextlib
 import errno
+import hashlib
 import importlib.util
 import json
 import os
@@ -314,6 +315,47 @@ def test_a_refused_root_gets_a_parseable_cache_rather_than_torchs_own(monkeypatc
         monkeypatch.delenv(key, raising = False)
     sr._setup_cache_env()
     assert os.environ["TORCHINDUCTOR_CACHE_DIR"] == first
+
+
+@pytest.mark.parametrize(
+    "occupy",
+    [
+        pytest.param("file", id = "the name is already a regular file"),
+        pytest.param("readonly", id = "the directory exists but cannot be written"),
+    ],
+)
+def test_an_unusable_fallback_is_not_published_either(occupy, monkeypatch, tmp_path):
+    """The fallback gets the same probe as any other toolchain path.
+
+    torch treats the value as authoritative and never reconsiders, so publishing a name that is
+    a regular file, or a directory it cannot write into, fails every build rather than the one
+    case this branch exists to prevent. mkdir(exist_ok = True) cannot answer it: it raises
+    FileExistsError for the file and says nothing at all about writability."""
+    refused = tmp_path / "o'brien" / "studio"
+    refused.mkdir(parents = True)
+    temp_root = tmp_path / "tmp"
+    temp_root.mkdir()
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(refused))
+    sr = _load_storage_roots()
+    monkeypatch.setattr(sr.tempfile, "gettempdir", lambda: str(temp_root))
+
+    # Occupy the exact name the fallback will choose, derived the way the resolver derives it.
+    intended = str(sr.cache_root() / "torchinductor")
+    digest = hashlib.sha256(intended.encode("utf-8", "replace")).hexdigest()[:12]
+    squatter = temp_root / f"unsloth-torchinductor-cache-dir-{digest}"
+    if occupy == "file":
+        squatter.write_text("not a directory", encoding = "utf-8")
+    else:
+        squatter.mkdir()
+        squatter.chmod(0o500)
+
+    try:
+        sr._setup_cache_env()
+    finally:
+        if occupy == "readonly":
+            squatter.chmod(0o700)
+
+    assert "TORCHINDUCTOR_CACHE_DIR" not in os.environ
 
 
 def test_a_refused_root_with_no_usable_temp_root_still_publishes_nothing(monkeypatch, tmp_path):

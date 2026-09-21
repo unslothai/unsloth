@@ -1147,6 +1147,14 @@ def _setup_cache_env() -> None:
                 # temporary directory itself is.
                 fallback = _parseable_toolchain_fallback(key, value)
                 if fallback is not None:
+                    with contextlib.suppress(OSError):
+                        Path(fallback).mkdir(parents = True, exist_ok = True)
+                # Created and probed BEFORE it is published, which the ordinary path below does
+                # too: torch treats the value as authoritative and never reconsiders, so a name
+                # already taken by a regular file, or a directory it cannot write, fails every
+                # build instead of the one thing this branch exists to prevent. The mkdir cannot
+                # answer that on its own, since exist_ok swallows the file case.
+                if fallback is not None and _usable_dir(fallback):
                     logger.debug(
                         "%s holds a character the C++ builders cannot paste into a command "
                         "line unquoted; pinning %s to %s instead",
@@ -1155,8 +1163,6 @@ def _setup_cache_env() -> None:
                         fallback,
                     )
                     os.environ[key] = fallback
-                    with contextlib.suppress(OSError):
-                        Path(fallback).mkdir(parents = True, exist_ok = True)
                     continue
                 logger.debug(
                     "leaving %s unset: %s holds a character the C++ builders cannot paste "
