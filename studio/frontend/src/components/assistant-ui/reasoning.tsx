@@ -259,7 +259,7 @@ function ReasoningContent({
   ...props
 }: ComponentProps<typeof CollapsibleContent> & { streaming?: boolean }) {
   const shared = cn(
-    "aui-reasoning-content relative overflow-hidden text-foreground/75 outline-none",
+    "aui-reasoning-content relative overflow-hidden text-[#0d0d0d] dark:text-foreground outline-none",
     "group/collapsible-content ease-out",
     "data-[state=closed]:pointer-events-none",
   );
@@ -817,7 +817,7 @@ const FoldedReasoningRound: ReasoningGroupComponent = ({
     <div
       ref={reasoningContentRef}
       data-slot="reasoning-folded-round"
-      className={cn("text-foreground/75", !open && "hidden")}
+      className={cn(!open && "hidden")}
     >
       <ReasoningBody
         pages={pages}

@@ -287,7 +287,7 @@ function ToolFallbackContent({
       )}
       {...props}
     >
-      <div className="mt-1 flex flex-col gap-2 pl-5">{children}</div>
+      <div className="mt-2 flex flex-col gap-2 pl-5">{children}</div>
     </CollapsibleContent>
   );
 }
