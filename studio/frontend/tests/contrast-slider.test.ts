@@ -211,8 +211,8 @@ test("a light wash follows the slider as its dark twin does", () => {
   assert.deepEqual(hits, [], "these washes ignore the contrast setting");
 
   // Hairlines are the part of a control the eye reads first, so they follow
-  // the edge gain the same way.
-  const FIXED_LINE = /border-foreground\/(\[[\d.]+\]|\d+)/;
+  // the edge gain the same way, drawn as a border or as a ring.
+  const FIXED_LINE = /(border|ring)-foreground\/(\[[\d.]+\]|\d+)/;
   const lines = SOURCES.filter((file) => FIXED_LINE.test(readSrc(file)));
   assert.deepEqual(lines, [], "these outlines ignore the contrast setting");
 });
