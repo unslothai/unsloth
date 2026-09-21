@@ -896,9 +896,28 @@ def test_chat_sidebar_row_actions_visible_on_coarse_pointers():
         # here sit on opposite branches of a ternary: a string naming the other variant is on
         # the branch that did not render, and a string naming neither is unconditional.
         others = [name for name in ("project-chat-item", "recent-item") if name != variant]
+        # Only the arguments of the cn() that builds THIS row. Ranging over every quoted
+        # literal in the function let an unrelated element further down supply the gutter for
+        # a row that had lost its own, which is the same borrowed-vouching hole one level out.
+        anchor = block.index(hovered[-1])
+        opens = block.rfind("cn(", 0, anchor)
+        assert opens != -1, (
+            f"the {variant} row's classes are no longer built by a cn() call this guard can "
+            f"find, so it cannot tell which arguments render together"
+        )
+        depth, closes = 0, None
+        for index in range(opens + 2, len(block)):
+            if block[index] == "(":
+                depth += 1
+            elif block[index] == ")":
+                depth -= 1
+                if depth == 0:
+                    closes = index
+                    break
+        assert closes is not None, f"unbalanced cn() around the {variant} row classes"
         applicable = [
             cls
-            for cls in re.findall(r'"[^"]*"', block)
+            for cls in re.findall(r'"[^"]*"', block[opens:closes])
             if variant in cls or not any(other in cls for other in others)
         ]
         trailing = [

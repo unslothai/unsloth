@@ -74,7 +74,14 @@ def _class_list(source: str, marker: str) -> str | None:
     expression = re.search(r"className=\{", opening)
     if not expression:
         return None
-    pieces = re.findall(r'"([^"]*)"', opening[expression.end() :])
+    body = opening[expression.end() :]
+    # A conditional picks ONE branch, and concatenating both then resolving last-wins reads
+    # the wrong one: `wide ? "min-w-max" : "min-w-0"` flattens to a list ending in min-w-0
+    # and looks fine, while the `wide` branch renders min-w-max. Reading each branch
+    # separately is a real expression evaluator; saying so is not.
+    if "?" in re.sub(r'"[^"]*"', "", body):
+        return _UNREADABLE
+    pieces = re.findall(r'"([^"]*)"', body)
     return " ".join(pieces) if pieces else _UNREADABLE
 
 
