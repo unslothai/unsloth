@@ -3388,6 +3388,21 @@ def project_workspace_incarnation_exists(project_id: str) -> bool:
         conn.close()
 
 
+def managed_root_is_owned(project_id: str, root_path: "str | None") -> bool:
+    """Whether this project really made the managed root sitting at *root_path*.
+
+    An external project only RESERVES the pathname; Studio neither creates nor marks
+    it, so anything can be there later. A delete that trusts the pathname removes
+    whatever it finds, and the name-suffix guard cannot tell the difference.
+
+    A root Studio created before markers existed reads as not ours, which keeps its
+    files instead of removing them: the safe direction for a question about deleting.
+    """
+    if not root_path:
+        return False
+    return _project_workspace_marker_owner(Path(root_path).expanduser()) == str(project_id)
+
+
 def project_thread_ids(id: str) -> list[str]:
     """The chats that belong to this project."""
     conn = get_connection()

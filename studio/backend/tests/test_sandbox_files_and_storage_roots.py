@@ -5014,6 +5014,9 @@ def test_external_project_delete_cleans_only_its_old_managed_workspace(tmp_path,
     project_id = "external1"
     managed_root = tmp_path / "Notes-external"
     (managed_root / "sandbox").mkdir(parents = True)
+    # Marked, because Studio made this one. A reserved pathname somebody else filled
+    # looks identical without it, and this delete is entitled to remove only its own.
+    (managed_root / ".unsloth-project-workspace").write_text(project_id, encoding = "utf-8")
     external = tmp_path / "user-folder"
     external.mkdir()
     external_file = external / "keep.txt"
@@ -5070,6 +5073,7 @@ def test_external_project_failed_managed_cleanup_stays_pending(tmp_path, monkeyp
     managed_root = tmp_path / "Notes-external"
     managed_sandbox = managed_root / "sandbox"
     managed_sandbox.mkdir(parents = True)
+    (managed_root / ".unsloth-project-workspace").write_text(project_id, encoding = "utf-8")
     external = tmp_path / "user-folder"
     external.mkdir()
     project = {
@@ -5731,6 +5735,7 @@ def test_a_retired_managed_workspace_is_recorded_when_files_are_kept(tmp_path, m
     managed_root = tmp_path / "Notes-retired1"
     managed_sandbox = managed_root / "sandbox"
     managed_sandbox.mkdir(parents = True)
+    (managed_root / ".unsloth-project-workspace").write_text(project_id, encoding = "utf-8")
     (managed_sandbox / "notes.txt").write_text("written while managed", encoding = "utf-8")
     selected = tmp_path / "selected"
     selected.mkdir()

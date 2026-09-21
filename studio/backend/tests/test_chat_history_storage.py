@@ -2704,3 +2704,43 @@ def test_two_accounts_with_the_same_project_id_do_not_fence_each_other(
         with tools._sessions_free:
             tools._removing_sessions.discard(held)
             tools._sessions_free.notify_all()
+
+
+def test_deleting_an_external_project_spares_a_reserved_root_it_never_made(
+    tmp_path, monkeypatch, workspace_projects_home
+):
+    """`rootPath` on an external project reserves a pathname; Studio never creates it.
+
+    Anything can be sitting there by the time the project is deleted, and
+    `_delete_project_workspace` decides by the pathname's suffix, so without proof of
+    ownership a delete with files removes whatever it finds.
+    """
+    import asyncio
+
+    from routes import chat_history
+
+    _reset_studio_db(tmp_path, monkeypatch, projects_home = workspace_projects_home)
+    chosen = workspace_projects_home / "the-users-folder"
+    chosen.mkdir()
+
+    project = studio_db.upsert_chat_project(_project(), external_workspace_path = str(chosen))
+    reserved = Path(project["rootPath"])
+    assert not reserved.exists(), "the managed root is reserved, not created"
+
+    # Something else puts a directory there, dressed as a workspace but unmarked.
+    (reserved / "sandbox").mkdir(parents = True)
+    precious = reserved / "someone-elses-work.txt"
+    precious.write_text("not Studio's", encoding = "utf-8")
+    assert not (reserved / ".unsloth-project-workspace").exists()
+
+    monkeypatch.setattr(chat_history, "_cancel_research_runs", lambda request, ids: None)
+    monkeypatch.setattr(chat_history, "_cancel_active_generations", lambda ids: None)
+    monkeypatch.setattr(chat_history, "_delete_project_rag_sources", lambda pid: None)
+    asyncio.new_event_loop().run_until_complete(
+        chat_history.delete_project(
+            project["id"], request = None, delete_files = True, current_subject = "t")
+    )
+
+    assert precious.exists(), "the delete removed a directory Studio never created"
+    # The folder the user chose is never touched either, which is the feature's promise.
+    assert chosen.exists()

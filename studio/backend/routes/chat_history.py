@@ -1369,6 +1369,7 @@ async def delete_project(
         from storage.studio_db import (
             _project_workspace_identity,
             delete_chat_project_workspace,
+            managed_root_is_owned,
             record_orphaned_project_if_unowned,
         )
 
@@ -1391,8 +1392,15 @@ async def delete_project(
             managed_sandbox_path,
             managed_root_path,
         )
-        managed_remains = managed_sandbox_path is not None and await run_in_threadpool(
-            _managed_workspace_remains, managed_sandbox_path, managed_root_path
+        # Proven ours, not merely present. This project's managed pathname was only
+        # RESERVED while it used a folder of the user's, so a directory somebody else
+        # put there is not the workspace this delete is entitled to remove.
+        managed_remains = (
+            managed_sandbox_path is not None
+            and await run_in_threadpool(managed_root_is_owned, project_id, managed_root_path)
+            and await run_in_threadpool(
+                _managed_workspace_remains, managed_sandbox_path, managed_root_path
+            )
         )
         # A project that started managed and switched later left the folder it
         # filled before the switch on disk, and the row that knew where it was has
