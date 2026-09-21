@@ -42,10 +42,10 @@ D_IN, D_OUT, R, ROWS, S = 32, 48, 8, 16, 2.0
 
 def _operands(x_dtype, w_dtype, lora_dtype):
     g = torch.Generator().manual_seed(0)
-    X = (torch.randn(ROWS, D_IN, generator=g) * 0.5).cuda().to(x_dtype)
-    W = (torch.randn(D_OUT, D_IN, generator=g) * 0.02).cuda().to(w_dtype)
-    A = (torch.randn(R, D_IN, generator=g) * 0.05).cuda().to(lora_dtype)
-    B = (torch.randn(D_OUT, R, generator=g) * 0.05).cuda().to(lora_dtype)
+    X = (torch.randn(ROWS, D_IN, generator = g) * 0.5).cuda().to(x_dtype)
+    W = (torch.randn(D_OUT, D_IN, generator = g) * 0.02).cuda().to(w_dtype)
+    A = (torch.randn(R, D_IN, generator = g) * 0.05).cuda().to(lora_dtype)
+    B = (torch.randn(D_OUT, R, generator = g) * 0.05).cuda().to(lora_dtype)
     return X, W, A, B
 
 
@@ -55,19 +55,19 @@ def _reference(X, W, A, B):
     return X32 @ W32.t() + (X32 @ A32.t()) @ B32.t() * S
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="needs a real accelerator")
+@pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs a real accelerator")
 @pytest.mark.parametrize("w_dtype", [torch.float16, torch.bfloat16])
 def test_fp32_activation_into_16bit_weight(w_dtype):
     """An fp32 activation must not crash against a 16-bit base weight."""
     X, W, A, B = _operands(torch.float32, w_dtype, torch.float32)
-    with torch.autocast("cuda", enabled=False):
+    with torch.autocast("cuda", enabled = False):
         out = matmul_lora(X, W, None, A, B, S)
     assert out.dtype == w_dtype, "output follows the base weight compute dtype"
     ref = _reference(X, W, A, B)
-    torch.testing.assert_close(out.float(), ref, rtol=2e-2, atol=2e-2)
+    torch.testing.assert_close(out.float(), ref, rtol = 2e-2, atol = 2e-2)
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="needs a real accelerator")
+@pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs a real accelerator")
 @pytest.mark.parametrize(
     "w_dtype,amp_dtype",
     [(torch.bfloat16, torch.float16), (torch.float16, torch.bfloat16)],
@@ -80,20 +80,20 @@ def test_autocast_dtype_differs_from_weight(w_dtype, amp_dtype):
     raises `self and mat2 must have the same dtype`.
     """
     X, W, A, B = _operands(amp_dtype, w_dtype, torch.float32)
-    with torch.autocast("cuda", dtype=amp_dtype, enabled=True):
+    with torch.autocast("cuda", dtype = amp_dtype, enabled = True):
         out = matmul_lora(X, W, None, A, B, S)
     assert out.dtype == amp_dtype, "under autocast the compute dtype is the autocast dtype"
     ref = _reference(X, W, A, B)
-    torch.testing.assert_close(out.float(), ref, rtol=5e-2, atol=5e-2)
+    torch.testing.assert_close(out.float(), ref, rtol = 5e-2, atol = 5e-2)
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="needs a real accelerator")
+@pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs a real accelerator")
 @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16, torch.float32])
 def test_matching_dtypes_unchanged(dtype):
     """The ordinary path, where every operand already agrees, still works."""
     X, W, A, B = _operands(dtype, dtype, dtype)
-    with torch.autocast("cuda", enabled=False):
+    with torch.autocast("cuda", enabled = False):
         out = matmul_lora(X, W, None, A, B, S)
     assert out.dtype == dtype
     ref = _reference(X, W, A, B)
-    torch.testing.assert_close(out.float(), ref, rtol=2e-2, atol=2e-2)
+    torch.testing.assert_close(out.float(), ref, rtol = 2e-2, atol = 2e-2)
