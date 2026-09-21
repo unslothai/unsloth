@@ -387,9 +387,8 @@ def _is_model_directory(d: Path) -> bool:
             return False
         return any(_is_weight_file(f) for f in _dir_entries(d) if f.is_file())
     except OSError as exc:
-        # False here says "not a model directory", which is indistinguishable from a
-        # directory that genuinely holds no weights, so the scanner drops a row it never
-        # got to classify and the pass would still publish as complete.
+        # False says "not a model directory", indistinguishable from one holding no
+        # weights, so a row this pass never classified is dropped silently.
         note_scan_incident(f"model directory unreadable: {d} ({type(exc).__name__})")
         return False
 
@@ -597,10 +596,10 @@ def _scan_hf_cache(
 
     found: List[LocalModelInfo] = []
     try:
-        # A root that stats as a directory but cannot be enumerated answered ``glob`` with no
-        # rows, so the empty result was certified as a complete scan and a probe could memoize a
-        # miss against a cache it never managed to read. Prefix compared case-insensitively
-        # because that is how the pattern matched on Windows.
+        # A root that stats as a directory but cannot be enumerated answered ``glob`` with
+        # no rows, so the empty result was certified complete and a probe could memoize a
+        # miss against a cache it never read. The prefix is compared case-insensitively,
+        # which is how the pattern matched on Windows.
         repo_dirs = [p for p in _dir_entries(cache_dir) if p.name.lower().startswith("models--")]
     except OSError as exc:
         note_scan_incident(f"hf cache root unreadable: {cache_dir} ({type(exc).__name__})")

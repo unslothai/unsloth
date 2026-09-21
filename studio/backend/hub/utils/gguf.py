@@ -232,9 +232,8 @@ def iter_gguf_files(directory: Path, recursive: bool = False):
         seen = 0
 
         def _walk_error(exc) -> None:
-            # os.walk skips an unreadable subdir instead of raising (e.g. /proc), which is
-            # what keeps this usable, but a truncated walk yields fewer variants and looks
-            # exactly like a directory holding fewer: a caller memoizing a miss has to know.
+            # os.walk skips an unreadable subdir instead of raising, which keeps this
+            # usable, but a truncated walk looks exactly like a directory holding fewer.
             note_scan_incident(f"gguf walk truncated: {getattr(exc, 'filename', directory)}")
 
         for dirpath, dirnames, filenames in os.walk(directory, onerror = _walk_error):
@@ -246,9 +245,8 @@ def iter_gguf_files(directory: Path, recursive: bool = False):
                     yield path
             seen += len(dirnames) + len(filenames)
             if seen > _MAX_LOCAL_SCAN_ENTRIES:
-                # The cap keeps a pathological root from stalling the request path, and it
-                # truncates the walk exactly like an unreadable subtree does: whatever is
-                # past it was not looked at, so a miss from this pass is not an absence.
+                # The cap keeps a pathological root off the request path, and truncates the
+                # walk like an unreadable subtree does: past it was never looked at.
                 note_scan_incident(f"gguf walk hit the entry cap: {directory} ({seen} entries)")
                 return
         return
@@ -963,8 +961,8 @@ def select_gguf_cache_snapshot_for_repo_dir(
                 note_scan_incident(f"cache snapshot unreadable: {snapshot}")
     except OSError as exc:
         logger.debug("Stopping at unreadable cache snapshots dir %s: %s", snapshots_dir, exc)
-        # Selecting among fewer snapshots than exist looks exactly like selecting among all
-        # of them, so a caller memoizing a miss has to be told this pass came back short.
+        # Selecting among fewer snapshots than exist looks like selecting among all of
+        # them, so say that this pass came back short.
         note_scan_incident(f"cache snapshots dir unreadable: {snapshots_dir}")
     snapshots.sort(key = snapshot_selection_key, reverse = True)
     return _select_gguf_snapshot(snapshots)

@@ -447,8 +447,7 @@ def test_auto_switch_reads_an_additions_only_snapshot_without_rebuilding_it(monk
     assert resolver.index_is_built() is False
 
     def _resolve(name, **kwargs):
-        # index_state is the sink the route hands in for the alias probe; it is an out
-        # parameter rather than part of WHAT was asked, so it is recorded separately.
+        # index_state is an out parameter, not part of WHAT was asked.
         recorded = {k: v for k, v in kwargs.items() if k != "index_state"}
         calls.append((name, recorded))
         return real_resolve(name, **kwargs)
@@ -512,8 +511,7 @@ def test_an_expired_positive_hit_refreshes_before_switching(monkeypatch):
     monkeypatch.setattr(resolver, "_build_index", lambda: scans.append(1) or {})
 
     def _resolve(name, **kwargs):
-        # index_state is the sink the route hands in for the alias probe; it is an out
-        # parameter rather than part of WHAT was asked, so it is recorded separately.
+        # index_state is an out parameter, not part of WHAT was asked.
         recorded = {k: v for k, v in kwargs.items() if k != "index_state"}
         calls.append((name, recorded))
         return real_resolve(name, **kwargs)
@@ -556,8 +554,7 @@ def test_a_stale_miss_refreshes_before_the_resident_model_can_answer(monkeypatch
     )
 
     def _resolve(name, **kwargs):
-        # index_state is the sink the route hands in for the alias probe; it is an out
-        # parameter rather than part of WHAT was asked, so it is recorded separately.
+        # index_state is an out parameter, not part of WHAT was asked.
         recorded = {k: v for k, v in kwargs.items() if k != "index_state"}
         calls.append((name, recorded))
         return real_resolve(name, **kwargs)
@@ -3049,9 +3046,8 @@ def test_already_serving_requested_by_path_records_advertised_alias(monkeypatch)
 
 
 def test_a_load_path_no_scan_root_indexes_is_only_resolved_once(monkeypatch):
-    # The deferral above costs a rebuild, and is only worth it while there is an alias
-    # to record. A model loaded from outside every scan root has none, so it must not
-    # pay for the attempt on every message.
+    # The deferral above costs a rebuild, worth it only while there is an alias to record:
+    # a model outside every scan root has none, and must not pay per message.
     path = "/elsewhere/unscanned-model.gguf"
     backend = _FakeBackend(path)
     rec = _LoadRecorder(backend)
@@ -3066,9 +3062,8 @@ def test_a_load_path_no_scan_root_indexes_is_only_resolved_once(monkeypatch):
     # The warmer's daemon thread also calls _build_index, so counting it here would read a
     # background rebuild as a second request-path probe.
     monkeypatch.setattr(resolver, "warm_index_soon", lambda *a, **k: None)
-    # A lapsed TTL, which is how it actually lapses: _snapshot_is_trusted compares the
-    # snapshot age against _CACHE_TTL_S. NOT invalidate_index(), which additionally means
-    # the scan roots may have changed and so deliberately re-opens the probe.
+    # A lapsed TTL, which is how it actually lapses. NOT invalidate_index(), which also
+    # means the scan roots may have changed and so deliberately re-opens the probe.
     monkeypatch.setattr(resolver, "_CACHE_TTL_S", 0)
     for _ in range(4):
         _run_hook(path)
@@ -3077,10 +3072,9 @@ def test_a_load_path_no_scan_root_indexes_is_only_resolved_once(monkeypatch):
 
 
 def test_a_scan_root_change_reopens_the_alias_probe(monkeypatch):
-    # The probe is a NEGATIVE answer -- this path has no alias -- and it is only true of
-    # the scan roots it was taken under. Add the model's parent as a scan folder and the
-    # alias exists, so a probe that outlived the change would keep the shortcut answering
-    # and /v1/models would report the filename for the rest of the load.
+    # The probe is a NEGATIVE answer, and only true of the scan roots it was taken under:
+    # add the model's parent as a scan folder and the alias exists, so a probe outliving the
+    # change would keep answering with the filename.
     path = "/elsewhere/unscanned-model.gguf"
     backend = _FakeBackend(path)
     rec = _LoadRecorder(backend)
@@ -3112,9 +3106,8 @@ def test_a_scan_root_change_reopens_the_alias_probe(monkeypatch):
 
 def test_a_cancelled_generation_gives_the_probe_back(monkeypatch):
     # _resolve_and_switch raises out of its first _raise_if_generation_cancelled(), before
-    # either resolver is called. Settling there would mark the path answered though nothing
-    # looked, and every later request would shortcut to the filename for the rest of the
-    # load. An unanswered claim goes back instead.
+    # either resolver is called. Settling there marks a path answered that nothing looked
+    # for, so an unanswered claim goes back instead.
     path = "/elsewhere/unscanned-model.gguf"
     backend = _FakeBackend(path)
     rec = _LoadRecorder(backend)
@@ -3130,9 +3123,8 @@ def test_a_cancelled_generation_gives_the_probe_back(monkeypatch):
     monkeypatch.setattr(resolver, "warm_index_soon", lambda *a, **k: None)
     monkeypatch.setattr(resolver, "_CACHE_TTL_S", 0)
 
-    # Cancelled the way a stopped generation cancels: the event on request.state, which is
-    # the only thing _raise_if_generation_cancelled reads. The claim is taken before that
-    # check (_loaded_identity_satisfies runs first), so the real finally has to give it back.
+    # Cancelled the way a stopped generation cancels: the event on request.state. The claim
+    # is taken before that check, so the real finally has to give it back.
     cancelled = threading.Event()
     cancelled.set()
     request = SimpleNamespace(
@@ -3154,10 +3146,9 @@ def test_a_cancelled_generation_gives_the_probe_back(monkeypatch):
 
 
 def test_a_concurrent_request_waits_for_a_probe_still_in_flight(monkeypatch):
-    # The first request CLAIMS the probe and then runs the slow scan. A second naming the
-    # same path while that is in flight must also reach the resolver: taking the shortcut
-    # there answers with _openai_advertised_id still None, so the response reports the
-    # filename even though the first request is about to record the alias.
+    # The first request CLAIMS the probe, then runs the slow scan. A second naming the same
+    # path must also reach the resolver: the shortcut would answer with the advertised id
+    # still None, reporting the filename while the alias is about to be recorded.
     path = "/elsewhere/unscanned-model.gguf"
     backend = _FakeBackend(path)
     monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: backend)
@@ -3180,10 +3171,9 @@ def test_a_concurrent_request_waits_for_a_probe_still_in_flight(monkeypatch):
 
 
 def test_a_request_for_another_model_does_not_spend_the_probe(monkeypatch):
-    # The probe exists so the request that names the load path reaches the resolver and
-    # the alias gets recorded. A request naming something else resolves elsewhere, so it
-    # records nothing for the resident model; spending the single probe on it would leave
-    # the path answered from the shortcut forever, reported by its filename.
+    # The probe exists so the request NAMING the load path reaches the resolver and the
+    # alias gets recorded. One naming something else records nothing for the resident model,
+    # and spending the probe on it would leave the path answered by its filename.
     path = "/models/lmstudio/TheBloke/weights-file-01.gguf"
     backend = _FakeBackend(path)
     rec = _LoadRecorder(backend)
@@ -3208,9 +3198,8 @@ def test_a_request_for_another_model_does_not_spend_the_probe(monkeypatch):
 
 
 def test_a_reload_of_the_same_path_probes_for_the_alias_again(monkeypatch):
-    # Every load clears the advertised id, so the alias has to be recorded again. A
-    # marker held over from the previous load would send the next request straight to
-    # the resident shortcut, and /v1/models and responses would revert to the filename.
+    # Every load clears the advertised id, so the alias has to be recorded again; a marker
+    # held over would send the next request to the shortcut and back to the filename.
     path = "/models/lmstudio/TheBloke/weights-file-01.gguf"
     backend = _FakeBackend(path)
     rec = _LoadRecorder(backend)
@@ -3238,9 +3227,8 @@ def test_the_load_route_clears_the_probe_with_the_advertised_id():
 
     src = inspect.getsource(inference_route._load_model_impl)
     assert "_clear_advertised_alias(llama_backend)" in src
-    # Scoped to the GGUF path's backend name. The transformers path clears the alias
-    # before its load for a different reason, off `backend`, and restores it if the
-    # load fails, so a bare reset there is correct and must stay allowed.
+    # Scoped to the GGUF path's backend name: the transformers path clears the alias off
+    # `backend` for its own reason and restores it on failure, so that reset stays allowed.
     assert "llama_backend._openai_advertised_id = None" not in src
 
 
@@ -11711,10 +11699,8 @@ def test_preset_reasoning_budget_rejects_booleans():
 
 def test_an_unrelated_request_cannot_settle_someone_elses_claim(monkeypatch):
     # Every request runs a resolver pass, but only the one NAMING the load path claims the
-    # probe. Settling the whole in-flight set let an unrelated model's request answer that
-    # claim before the switch it belongs to had recorded its alias, and the next request for
-    # the path then shortcut with _openai_advertised_id still None -- the filename, for the
-    # rest of the load.
+    # probe. Settling the whole in-flight set let an unrelated request answer that claim
+    # before its switch had recorded the alias, and the next request took the shortcut.
     path = "/elsewhere/unscanned-model.gguf"
     backend = _FakeBackend(path)
     rec = _LoadRecorder(backend)

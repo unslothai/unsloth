@@ -9025,15 +9025,13 @@ def _loaded_satisfies(requested: str) -> bool:
     )
 
 
-# Load paths whose resolver pass has COMPLETED without recording an alias, so asking
-# again would rebuild the index for an answer we already have. Scoped to the current
-# load: a fresh one clears the advertised id, so the recording has to happen again.
+# Load paths whose resolver pass COMPLETED with no alias to record, so asking again would
+# rebuild the index for an answer we already have. A fresh load clears the advertised id, so
+# it clears these too.
 _alias_probed_load_paths: set[str] = set()
-# Paths handed to the resolver whose pass has not finished yet, and HOW MANY requests hold
-# each. Held apart from the set above because a concurrent request must still reach the
-# resolver rather than take the shortcut and report the filename while the first pass is
-# mid-scan. Counted rather than a set because two requests can name the same path, and one
-# releasing would otherwise take the other's claim away with it.
+# Paths still mid-pass, and how many requests hold each: a concurrent request must reach the
+# resolver rather than shortcut to the filename, and two requests naming one path must not
+# release each other's claim.
 _alias_probe_inflight: dict[str, int] = {}
 # The resolver index generation the two collections describe.
 _alias_probe_generation = -1
@@ -9045,12 +9043,10 @@ _alias_probe_lock = threading.Lock()
 def _alias_probe_key(identifier: str) -> str:
     """The probe key for *identifier* under the ACTING account.
 
-    The resolver keeps a snapshot per managed account because their scan roots are private
-    (``local_model_resolver._managed_scans``), so a negative answer is only negative for the
-    account that took it: another account whose roots DO index that path has an alias to
-    record, and letting it inherit the marker would report the filename for the rest of the
-    load. The account id travels here because ``asyncio.to_thread`` copies the context this
-    lives in.
+    The resolver keeps a snapshot per managed account (private scan roots), so a negative
+    answer is only negative for the account that took it: another whose roots DO index that
+    path has an alias to record, and inheriting the marker would report the filename for the
+    rest of the load.
     """
     from utils.account_context import current_account_id
     return f"{current_account_id()}\x00{identifier}"
@@ -9059,13 +9055,11 @@ def _alias_probe_key(identifier: str) -> str:
 def _alias_probe_index_state() -> tuple[int, float]:
     """Which index a negative answer was read from: its configuration and its snapshot.
 
-    The generation alone is not enough. ``invalidate_index`` bumps it on every scan-root
-    change, but a model added externally under an LM Studio, Hermes, Ollama or HF root is
-    picked up by an ordinary TTL or background scan, which publishes a fresh stamp and
-    leaves the generation where it was. A marker that survived that kept the resident
-    shortcut answering with the filename until a reload, even though the alias was by then
-    indexed. Paired with the stamp, a probe costs one resolver pass per scan rather than
-    one per message, which is the cost it exists to remove.
+    The generation alone is not enough: it moves on a scan-root change, but a model added
+    externally is picked up by an ordinary TTL or background scan, which publishes a fresh
+    stamp and leaves the generation alone. A marker surviving that kept the shortcut
+    answering with the filename until a reload. Paired with the stamp, a probe costs one
+    resolver pass per scan instead of one per message.
     """
     from core.inference.local_model_resolver import index_generation, index_scan_stamp
     return (index_generation(), index_scan_stamp())
@@ -9074,11 +9068,9 @@ def _alias_probe_index_state() -> tuple[int, float]:
 def _alias_probe_forget_stale_locked() -> None:
     """Drop probes recorded against a scan-root configuration that no longer exists.
 
-    ``invalidate_index`` bumps the generation on every scan-root change, and a path that
-    had no alias under the old roots can have one under the new ones, so nothing taken
-    under the old configuration survives, in flight or settled. A new SNAPSHOT under the
-    same roots retires a settled marker too, but per marker rather than wholesale: see
-    ``_alias_probe_taken``.
+    A path with no alias under the old roots can have one under the new, so nothing taken
+    under the old configuration survives, in flight or settled. A new SNAPSHOT under the same
+    roots retires settled markers too, but per marker: see ``_alias_probe_taken``.
     """
     global _alias_probe_generation
     from core.inference.local_model_resolver import index_generation
@@ -9099,8 +9091,7 @@ def _alias_probe_taken(identifier: str) -> bool:
         if key in _alias_probed_load_paths:
             if _alias_probe_answered_at.get(key) == _alias_probe_index_state():
                 return False
-            # Answered against a snapshot that has since been replaced, so the answer is
-            # not this index's. Ask again rather than keep it.
+            # Answered against a snapshot since replaced, so ask again rather than keep it.
             _alias_probed_load_paths.discard(key)
             _alias_probe_answered_at.pop(key, None)
         _alias_probe_inflight[key] = _alias_probe_inflight.get(key, 0) + 1
@@ -9136,17 +9127,14 @@ def _alias_probe_release(identifier: str) -> None:
 def _alias_probe_settle(identifier: str, answered_state = None) -> None:
     """Record that the pass which claimed *identifier* completed and found no alias.
 
-    Only the claimer's own path, never everything in flight: any request at all runs a
-    resolver pass, so promoting the whole set let an unrelated model's request answer a
-    claim whose switch had not recorded its alias yet. A later request naming that path
-    would then take the shortcut with ``_openai_advertised_id`` still None and report the
-    filename for the rest of the load.
+    Only the claimer's own path, never everything in flight: any request runs a resolver
+    pass, so promoting the whole set let an unrelated request answer a claim whose switch had
+    not recorded its alias yet, and the next request naming that path would shortcut to the
+    filename.
 
-    *answered_state* is the index state the miss was actually READ from. The caller can
-    await more work between its resolution and this call, and a warmer publishing a new
-    snapshot in that window would otherwise have its state recorded against an answer it
-    never gave, so the marker would look valid for an index that may already hold the
-    alias. Mismatched, the claim is given back and the next request probes again.
+    *answered_state* is the index state the miss was READ from. The caller can await more
+    work before this call, and a warmer publishing in that window would otherwise stamp this
+    answer with a snapshot that never gave it. Mismatched, the claim is given back.
     """
     key = _alias_probe_key(identifier)
     with _alias_probe_lock:
@@ -9154,13 +9142,13 @@ def _alias_probe_settle(identifier: str, answered_state = None) -> None:
         if key not in _alias_probe_inflight:
             return
         state = _alias_probe_index_state()
-        # Sliced: the state carries the pass's completeness verdict too, which the caller
-        # reads for ITSELF and which is not part of a marker's identity.
+        # Sliced: the completeness verdict the state also carries is the caller's to read,
+        # and is not part of a marker's identity.
         if answered_state is not None and tuple(answered_state[:2]) != state:
             _alias_probe_release_locked(key)
             return
-        # The whole entry: the answer is established now, so a request still mid-pass on
-        # the same path has nothing left to contribute.
+        # The whole entry: the answer is established, so a request still mid-pass on the
+        # same path has nothing left to contribute.
         _alias_probe_inflight.pop(key, None)
         _alias_probed_load_paths.add(key)
         _alias_probe_answered_at[key] = state
@@ -9169,13 +9157,10 @@ def _alias_probe_settle(identifier: str, answered_state = None) -> None:
 def _clear_advertised_alias(backend) -> None:
     """Drop the advertised id, and with it the probe that recorded it.
 
-    A load advertises its own identifier until auto-switch overwrites it with the
-    repo id. Keeping the marker across that reset would let the resident shortcut
-    answer the first request after a reload, so the alias would never be recorded
-    again and the model would be reported by its filename.
-
-    Takes whichever backend is being loaded: the transformers path resets the same field
-    for the same reason, and the probe set is keyed by path, not by engine.
+    A load advertises its own identifier until auto-switch overwrites it with the repo id.
+    Keeping the marker across that reset let the shortcut answer the first request after a
+    reload, so the alias was never recorded and the model kept its filename. Takes whichever
+    backend is loading: the probe set is keyed by path, not by engine.
     """
     backend._openai_advertised_id = None
     with _alias_probe_lock:
@@ -9204,15 +9189,12 @@ def _loaded_identity_satisfies(requested: str, claimed: Optional[list] = None) -
     if getattr(llama_backend, "is_loaded", False):
         identifier = getattr(llama_backend, "model_identifier", None)
         advertised = getattr(llama_backend, "_openai_advertised_id", None)
-        # A manual load of a local path advertises nothing, so answering here would skip
-        # the recording and /v1/models and every response would report the filename. Send
-        # the first such request to the resolver instead. Once per path: one that no scan
-        # root indexes has no alias to record, and must not pay for the attempt again.
-        # Only a request naming the path can be answered from here, and only it resolves
-        # to the resident model, so only it spends the probe. One naming anything else
-        # already falls through to the resolver, and records no alias for this model.
-        # _alias_probe_taken CLAIMS the probe, so it stays last: a request failing any
-        # condition above must not spend it.
+        # A manual load of a local path advertises nothing, so answering here would skip the
+        # recording and every response would report the filename. The first such request goes
+        # to the resolver instead, once per path: a path no scan root indexes has no alias to
+        # record and must not pay again. Only a request naming the path resolves to the
+        # resident model, so only it spends the probe; _alias_probe_taken CLAIMS, so it stays
+        # last and a request failing any condition above does not spend it.
         if (
             advertised is None
             and identifier
@@ -9245,11 +9227,10 @@ def _loaded_identity_satisfies(requested: str, claimed: Optional[list] = None) -
     if not active:
         return False
     advertised = getattr(backend, "_openai_advertised_id", None)
-    # Same rule as the llama branch, and the same bound on it: answering from the path alone
-    # skips the recording, so the first request naming it goes to the resolver, and a path no
-    # scan root indexes has no alias to record and must not pay for the multi-root scan
-    # again. A request naming anything else falls through to the final match, which is False
-    # here anyway with nothing advertised. _alias_probe_taken CLAIMS, so it stays last.
+    # Same rule and same bound as the llama branch: answering from the path alone skips the
+    # recording, so the first request naming it goes to the resolver, and a path no scan root
+    # indexes must not pay for the multi-root scan again. _alias_probe_taken CLAIMS, so it
+    # stays last.
     if (
         advertised is None
         and _looks_like_local_path(active)
@@ -9891,9 +9872,8 @@ async def _maybe_auto_switch_model(
             return
 
     # Whether a resolver pass both began and produced a CONFIRMED absence. A cancelled
-    # generation raises out of _resolve_and_switch before either resolver is called, and the
-    # scan itself can fail and return None as a best effort; settling on either would mark
-    # the path answered when nothing had actually looked for an alias.
+    # generation raises before either resolver is called, and a failed scan returns None as a
+    # best effort; settling on either marks a path answered that nothing looked for.
     alias_probe_answered = False
     # The index state that answer was read from; see _alias_probe_settle.
     alias_probe_state = None
@@ -9924,9 +9904,8 @@ async def _maybe_auto_switch_model(
                 warm_index_soon()
             else:
                 # The resolver reports WHICH index answered, taken beside the snapshot it
-                # resolved against: a separate read afterwards would label this answer with
-                # the identity of a snapshot published since, and the marker would look
-                # valid for an index that may already hold the alias.
+                # resolved against: a read afterwards would label this answer with a snapshot
+                # published since, which may already hold the alias.
                 resolved_from: list = []
                 resolved = await asyncio.to_thread(
                     functools.partial(
@@ -9937,31 +9916,24 @@ async def _maybe_auto_switch_model(
                     )
                 )
                 alias_probe_state = resolved_from[0] if resolved_from else None
-            # The marker means "this load path has no alias to record", so only a
-            # CONFIRMED ABSENCE earns it. A positive resolution is the opposite claim and
-            # must not settle: the switch may still abort before recording the alias
-            # (_already_serving false, then a refusal or a failed load), and once it does
-            # record one _openai_advertised_id is set and the shortcut is unreachable
-            # anyway, so the marker buys nothing there and a stale one is wrong.
+            # The marker means "this load path has no alias to record", so only a CONFIRMED
+            # ABSENCE earns it. A positive resolution is the opposite claim: the switch may
+            # still abort before recording the alias, and once it records one the shortcut is
+            # unreachable anyway, so the marker buys nothing and a stale one is wrong.
             #
-            # And an absence is only confirmed by an index that answered for real:
-            # resolve_local_gguf swallows a failed scan and returns None, which at this
-            # level looks exactly like "no such model". A scan that landed during the pass
-            # says so through its published stamp (_build_index raising never reaches
-            # _publish), and an index that was already trustworthy never needed one.
+            # An absence is only confirmed by an index that answered for real, since
+            # resolve_local_gguf swallows a failed scan and returns None, which here looks
+            # exactly like "no such model". A scan that landed says so through its published
+            # stamp; an index already trustworthy never needed one.
             #
-            # Fresh is still not the same as complete. Every source in the scan is guarded
-            # on its own so one bad root does not crash the index, so a transient LM Studio
-            # or scan-folder failure publishes a fresh PARTIAL snapshot, and a miss read
-            # from that is only what this pass could see. Memoizing it would keep the
-            # shortcut answering with the filename after the scan recovered.
-            # From the pair read WITH the resolution, never a fresh read.
+            # Fresh is still not complete: every source is guarded on its own, so a transient
+            # LM Studio or scan-folder failure publishes a fresh PARTIAL snapshot, and a miss
+            # read from it is only what this pass could see. Read WITH the resolution.
             scan_stamp_after = alias_probe_state[1] if alias_probe_state else 0.0
             alias_probe_answered = (
                 resolved is None
-                # From the same state as the stamp: read separately, a warmer replacing
-                # an incomplete snapshot with a complete one lets this pass's miss be
-                # paired with the next pass's verdict.
+                # From the same state as the stamp: read separately, a warmer publishing a
+                # complete snapshot pairs this pass's miss with the next pass's verdict.
                 and bool(alias_probe_state and alias_probe_state[2])
                 and (
                     (scan_stamp_after > 0.0 and scan_stamp_after != scan_stamp_before)
@@ -10462,12 +10434,9 @@ async def _maybe_auto_switch_model(
         try:
             await _resolve_and_switch()
         finally:
-            # Only this request's own claim, and only if its pass confirmed the absence:
-            # in the finally so a refusal or a failed load does not leave the path claimed
-            # forever, which would rebuild the index for every later message. A pass that
-            # never started (a cancelled generation raises above both resolvers) or whose
-            # scan failed gives the claim back, so the next request probes again rather
-            # than shortcutting to the filename for the rest of the load.
+            # Only this request's own claim, and only if its pass confirmed the absence. In
+            # the finally, so a refusal or a failed load does not leave the path claimed for
+            # good; a pass that never started or whose scan failed gives the claim back.
             for claimed_path in alias_probe_claimed:
                 if alias_probe_answered:
                     _alias_probe_settle(claimed_path, alias_probe_state)

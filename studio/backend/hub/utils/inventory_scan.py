@@ -466,7 +466,7 @@ def resolve_hf_cache_realpath(repo_dir: Path) -> Optional[str]:
             return str(latest.resolve())
         return str(repo_dir.resolve())
     except OSError as exc:
-        # None drops the row, which is indistinguishable from a repo that is not there.
+        # None drops the row, indistinguishable from a repo that is not there.
         note_scan_incident(f"hf cache realpath unreadable: {repo_dir} ({type(exc).__name__})")
         return None
     except Exception:

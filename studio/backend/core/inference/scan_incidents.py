@@ -3,16 +3,14 @@
 
 """Whether a local-model scan actually saw everything it walked.
 
-The scanners are deliberately forgiving: a child that cannot be read is skipped so one bad
-entry does not cost the whole listing. For a LISTING that is right, but a caller memoizing a
-MISS as a confirmed absence needs to know the difference between "not there" and "could not
-look", and a suppressed per-child error is invisible from the outside -- the pass returns a
-shorter list and no exception.
+The scanners are deliberately forgiving: an unreadable child is skipped so one bad entry
+does not cost the whole listing. Right for a LISTING, but a caller memoizing a MISS as a
+confirmed absence needs "not there" apart from "could not look", and a suppressed per-child
+error is invisible from outside: a shorter list and no exception.
 
-So a scanner notes it here, and only a caller that opened a collector pays any attention.
-Scoped with a ContextVar rather than a module global because the same scanners serve the
-models route concurrently: the pass that opened the collector is the only one whose
-incidents it sees, and any other caller's note is a no-op.
+So a scanner notes it here, and only a caller that opened a collector pays attention. A
+ContextVar rather than a global because the same scanners serve the models route
+concurrently, so another caller's note is a no-op.
 """
 
 from __future__ import annotations
@@ -35,8 +33,7 @@ def note_scan_incident(reason: str) -> None:
 def collecting_scan_incidents() -> Iterator[list[str]]:
     """Collect the incidents noted by the scans run inside this block.
 
-    The list is live: read it after the block and it holds what happened. Reset on exit, so
-    a nested or later pass starts clean.
+    The list is live, and is reset on exit so a nested or later pass starts clean.
     """
     incidents: list[str] = []
     token = _collector.set(incidents)

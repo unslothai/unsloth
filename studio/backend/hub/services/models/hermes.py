@@ -49,19 +49,18 @@ def staged_gguf_files(hermes_dir: Path) -> List[Path]:
     never rows of their own; llama.cpp opens the whole set from part one.
     """
     try:
-        # iterdir, not glob: glob SWALLOWS the OSError from enumerating the directory and
-        # yields nothing, so an unreadable or stale-mounted Hermes folder reached the
-        # caller as an empty one and the pass published as complete over it. Verified
-        # against CPython: a directory with no search permission makes glob return [] while
-        # iterdir raises. The suffix is compared case-INSENSITIVELY, which is what glob does
-        # on Windows, where a staged MODEL.GGUF was discovered and must stay so.
+        # iterdir, not glob: glob SWALLOWS the enumeration OSError and yields nothing, so an
+        # unreadable or stale-mounted folder reached the caller as an empty one and the pass
+        # published as complete over it (verified against CPython: no search permission makes
+        # glob return [] while iterdir raises). The suffix is compared case-INSENSITIVELY,
+        # which is what glob does on Windows, where a staged MODEL.GGUF was discovered.
         files = sorted(
             p for p in hermes_dir.iterdir() if p.suffix.lower() == ".gguf" and p.is_file()
         )
     except OSError as exc:
         logger.warning("Error scanning Hermes directory %s: %s", hermes_dir, exc)
-        # An empty list here is indistinguishable from a directory holding nothing, and a
-        # caller memoizing a MISS as a confirmed absence needs the difference.
+        # An empty list is indistinguishable from a directory holding nothing, which a
+        # caller memoizing a MISS needs told apart.
         note_scan_incident(f"hermes dir unreadable: {hermes_dir}")
         return []
 

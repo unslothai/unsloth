@@ -151,11 +151,10 @@ def _resolve_gguf_load_snapshot(p):
         if not snapshots.is_dir():
             return p
     except OSError:
-        # None here drops the repo from the index, and from outside that reads exactly like
-        # a cache holding nothing for it, so the pass would publish as complete over a repo
-        # it could not look inside. An incident rather than the skipped-source counter: this
-        # helper is also reached off a scan, where note_scan_incident is a no-op and the
-        # counter would charge the next pass for it.
+        # None drops the repo, which from outside reads like a cache holding nothing for it,
+        # so the pass would publish as complete over a repo it could not look inside. An
+        # incident rather than the skipped-source counter: this helper is also reached off a
+        # scan, where the counter would charge the next pass.
         note_scan_incident(f"hf cache repo unreadable: {p}")
         return None
 
@@ -359,8 +358,8 @@ def _local_gguf_entry(
         )
     except OSError as exc:
         # A read that FAILED, not a model that is not servable: the entry is dropped, and
-        # published as complete that omission is memoized as an absence. Anything else
-        # here is a classification refusal, which is an answer rather than a gap.
+        # published as complete that omission is memoized as an absence. Anything else is a
+        # classification refusal, which is an answer.
         note_scan_incident(f"gguf entry unreadable: {path} ({type(exc).__name__})")
         return None
     except Exception:
@@ -460,8 +459,8 @@ def _has_safetensors_weights(load_dir) -> bool:
             re.fullmatch(r"model-\d+-of-\d+\.safetensors", f.name) for f in load_dir.iterdir()
         )
     except OSError as exc:
-        # False here means "no weights", which is what a caller acts on, so the fact that
-        # the directory could not be listed has to be said separately.
+        # False means "no weights", which a caller acts on, so an unlistable directory has
+        # to be said separately.
         note_scan_incident(f"weights listing unreadable: {load_dir} ({type(exc).__name__})")
         return False
 
@@ -732,13 +731,11 @@ def local_load_dir(path: Optional[str]) -> Optional[str]:
 
 
 # How many sources the scan in progress had to skip. Each source is guarded on its own, so a
-# published snapshot can be fresh and incomplete at once, and a caller reading a miss from it
-# as a confirmed ABSENCE would memoize what the recovered scan contradicts. Written only in
-# ``_index``, which holds ``_lock`` for the whole pass.
+# snapshot can be fresh and incomplete at once, and a miss read from it as a confirmed
+# ABSENCE memoizes what the recovered scan contradicts. Written only under ``_lock``.
 _scan_sources_skipped = 0
-# The verdict for the OWNER's snapshot, and one per managed account, selected exactly like
-# ``_snapshot``: scan roots are account private, so one tenant's partial scan says nothing
-# about another's, and a single global would let the last account to scan answer for all.
+# The verdict per account, selected like ``_snapshot``: scan roots are account private, so
+# one tenant's partial scan says nothing about another's.
 _scan_complete = False
 _managed_scans_complete: dict[str, bool] = {}
 
@@ -871,14 +868,11 @@ def _build_index() -> dict[str, _LocalGgufEntry]:
         for folder in list_scan_folders():
             try:
                 fp = Path(folder["path"])
-                # A REGISTERED folder was configured explicitly, so its absence is a
-                # source this pass could not read rather than an empty one, and every scan
-                # below answers an unreachable path with an empty list and no exception.
-                # Unlike the discovered roots above, absent on most hosts by nature.
-                # X_OK as well as R_OK: a directory can be readable and not searchable,
-                # which lists names and fails every child stat. The scanners suppress those
-                # per-child errors and hand back an empty list, so nothing below would
-                # notice.
+                # A REGISTERED folder was configured explicitly, so its absence is a source
+                # this pass could not read rather than an empty one, unlike the discovered
+                # roots above; the scans answer an unreachable path with an empty list and no
+                # exception. X_OK as well as R_OK: a readable but unsearchable directory
+                # lists names and fails every child stat, suppressed per child.
                 if not (fp.is_dir() and os.access(fp, os.R_OK | os.X_OK)):
                     _note_scan_source_skipped()
                     logger.debug("auto-switch: scan folder %r not readable", folder)
@@ -970,9 +964,8 @@ def _sibling_revision_entries(raw_id: str, loader_id: str):
     try:
         siblings = [p for p in snapshots.iterdir() if p.is_dir() and p.name != Path(raw_id).name]
     except OSError:
-        # A revision omitted because the cache blinked, not because it is not there. Left
-        # unreported, the pass publishes as complete and a caller memoizes the absence of a
-        # sibling that comes back.
+        # A revision omitted because the cache blinked, not because it is absent: left
+        # unreported, a caller memoizes the absence of a sibling that comes back.
         _note_scan_source_skipped()
         return
     for sibling in siblings:
@@ -1080,18 +1073,17 @@ def _index_with_state() -> tuple[dict[str, _LocalGgufEntry], tuple[int, float, b
         global _scan_sources_skipped
         from core.inference.scan_incidents import collecting_scan_incidents
 
-        # Around the call, not inside it, so the verdict belongs to whatever actually built
-        # this snapshot. Reset first: the count is per pass.
+        # Around the call, so the verdict belongs to what built this snapshot. Reset first:
+        # the count is per pass.
         _scan_sources_skipped = 0
         # A whole source dropping is not the only way to come back short: a suppressed
-        # per-child OSError hands back a shorter list, which from out here looks like a
-        # root that holds less. Collected rather than counted globally, so a concurrent
-        # models-route scan's incidents are not charged to this pass.
+        # per-child OSError hands back a shorter list, which out here looks like a root
+        # holding less. Collected, not counted globally, so a concurrent models-route scan is
+        # not charged to this pass.
         with collecting_scan_incidents() as incidents:
             fresh = _build_index()
-        # Only after it returned, and published beside the snapshot it describes. A build
-        # that raised publishes nothing and must not leave a verdict standing over the
-        # snapshot that is still there.
+        # Published beside the snapshot it describes: a build that raised publishes nothing
+        # and must not leave a verdict over the snapshot still there.
         complete = _scan_sources_skipped == 0 and not incidents
         _publish_scan_completeness(complete)
         # Stamp AFTER the scan, not with the pre-scan ``now``: a multi-root scan on an install with many local models
@@ -1100,8 +1092,8 @@ def _index_with_state() -> tuple[dict[str, _LocalGgufEntry], tuple[int, float, b
         _publish((time.monotonic(), fresh))
         # The scan supersedes the notes: whatever landed is in the index now.
         _just_downloaded.clear()
-        # Still under the lock, of the snapshot just published: this is the index being
-        # returned, so it cannot be labelled with a later snapshot's identity.
+        # Still under the lock, so the index returned cannot be labelled with a later
+        # snapshot's identity.
         return fresh, (_generation, _snapshot()[0], complete)
 
 
@@ -1251,16 +1243,14 @@ def resolve_local_gguf(
     requested = requested.strip()
     try:
         if allow_scan:
-            # Mapping and identity from the same pass: re-reading the published
-            # snapshot afterwards answers for a different index, and an invalidation
-            # landing in between retains the old entries under a revoked stamp, which
-            # would resolve a model from a scan root that was just removed.
+            # Mapping and identity from the same pass: re-reading afterwards answers for a
+            # different index, and an invalidation landing in between keeps the old entries
+            # under a revoked stamp, resolving a model from a removed scan root.
             index, state = _index_with_state()
         else:
-            # Never the scan mutex: this mode is the non-blocking snapshot read the
-            # request path relies on, and that lock is held for a whole multi-root scan.
-            # The published tuple is immutable and carries its own stamp, so one read is
-            # enough; a generation that moves alongside only makes a marker read stale.
+            # Never the scan mutex: this is the non-blocking read the request path relies
+            # on, and that lock is held for a whole multi-root scan. The published tuple is
+            # immutable and carries its own stamp, so one read is enough.
             snapshot = _snapshot()
             index = snapshot[1]
             state = (_generation, snapshot[0], index_last_scan_was_complete())

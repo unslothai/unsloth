@@ -148,8 +148,8 @@ def _safe_is_file(path: Path) -> bool:
     try:
         return path.is_file()
     except OSError:
-        # False drops the manifest or the blob, which reads exactly like one that is not
-        # there, so the pass would publish as complete over a row it never got to see.
+        # False drops the manifest or blob, which reads like one that is not there, so the
+        # pass would publish as complete over a row it never saw.
         note_scan_incident(f"ollama path unreadable: {path}")
         return False
 
@@ -338,8 +338,8 @@ def _ollama_model_info_from_manifest(
         try:
             manifest = json.loads(tag_file.read_text(encoding = "utf-8-sig"))
         except OSError as e:
-            # Unreadable, not malformed: this manifest will parse once the file is
-            # readable again, so a miss from this pass is not a confirmed absence.
+            # Unreadable, not malformed: it will parse once readable, so a miss from this
+            # pass is not a confirmed absence.
             note_scan_incident(f"ollama manifest unreadable: {tag_file}")
             return invalid_manifest(str(e))
         except (json.JSONDecodeError, UnicodeDecodeError) as e:
@@ -583,8 +583,7 @@ def scan_ollama_dir(
                 return found
     except OSError as e:
         logger.warning("Error scanning Ollama directory %s: %s", ollama_dir, e)
-        # A partial list reads exactly like a complete one from outside, so say so for the
-        # caller that treats a miss as a confirmed absence.
+        # A partial list reads like a complete one from outside, so say so.
         note_scan_incident(f"ollama dir unreadable: {ollama_dir}")
     return found
 
