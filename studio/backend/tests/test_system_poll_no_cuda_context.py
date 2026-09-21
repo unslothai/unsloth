@@ -1771,8 +1771,12 @@ def test_the_measured_strix_halo_is_not_reported_as_having_no_vram(monkeypatch):
     """
     total = _MEASURED_STRIX_HALO_TOTAL_BYTES
     mod = _apu_mod(gtt_total = total, carve_out = total)
-    for var in ("HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES",
-                "CUDA_VISIBLE_DEVICES", "GPU_DEVICE_ORDINAL"):
+    for var in (
+        "HIP_VISIBLE_DEVICES",
+        "ROCR_VISIBLE_DEVICES",
+        "CUDA_VISIBLE_DEVICES",
+        "GPU_DEVICE_ORDINAL",
+    ):
         monkeypatch.delenv(var, raising = False)
     monkeypatch.setattr(hw, "IS_ROCM", True)
     monkeypatch.setattr(hw.platform, "system", lambda: "Linux")
@@ -1781,7 +1785,8 @@ def test_the_measured_strix_halo_is_not_reported_as_having_no_vram(monkeypatch):
     monkeypatch.setattr(hw, "_torch_get_device_module", lambda: (mod, "cuda"))
     monkeypatch.setattr(hw, "_rocm_kfd_gpu_pci_ids", lambda: {0: "0000:03:00.0"})
     monkeypatch.setattr(
-        hw, "_rocm_linux_sysfs_vram_by_pci_gb",
+        hw,
+        "_rocm_linux_sysfs_vram_by_pci_gb",
         lambda: {"0000:03:00.0": (9.06, total / (1024**3))},
     )
 
@@ -1789,8 +1794,7 @@ def test_the_measured_strix_halo_is_not_reported_as_having_no_vram(monkeypatch):
 
     assert device["memory_total_gb"] == 64.0
     assert device["shared_memory_host_backed_gb"] == 0.0, (
-        "a readable sysfs total that torch does not exceed is a measured zero, "
-        "not an unknown"
+        "a readable sysfs total that torch does not exceed is a measured zero, not an unknown"
     )
     # Still a unified-memory part for every rule that cares; only the SPLIT is known.
     assert device["unified_memory"] is True
