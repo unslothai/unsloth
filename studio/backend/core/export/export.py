@@ -127,7 +127,6 @@ def _llama_cpp_scripts_pin():
 
     try:
         from unsloth_zoo.llama_cpp import _converter_dir_is_incomplete
-
         incomplete = _converter_dir_is_incomplete(LLAMA_CPP_DEFAULT_DIR)
     except Exception:
         # An older unsloth_zoo has no such check, and it only ever skips the pin.

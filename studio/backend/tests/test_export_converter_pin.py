@@ -42,7 +42,12 @@ def _export_mod(monkeypatch):
     )
 
 
-def _zoo(monkeypatch, *, internal_pin = True, incomplete = False):
+def _zoo(
+    monkeypatch,
+    *,
+    internal_pin = True,
+    incomplete = False,
+):
     """The installed unsloth_zoo, with the pieces the pin looks for."""
     llama_cpp = sys.modules["unsloth_zoo.llama_cpp"]
     calls = {"internal": [], "incomplete": []}
