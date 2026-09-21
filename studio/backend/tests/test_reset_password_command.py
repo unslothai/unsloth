@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import ast
 import importlib.util
+import os
 import sys
 from pathlib import Path
 
@@ -138,6 +139,11 @@ def test_the_prefix_check_locates_rather_than_imports(auth, tmp_path, monkeypatc
     assert not auth._cli_is_inside(str(tmp_path / "venv"))
 
 
+@pytest.mark.skipif(
+    os.name == "nt",
+    reason = "spoofs os.name=posix, but tmp_path is then a real Windows path and shlex.quote "
+    "escapes its backslashes, so the assertion compares POSIX quoting against a Windows path",
+)
 def test_posix_is_untouched(auth, monkeypatch, tmp_path):
     """The console script is what a POSIX user should run; nothing here changes."""
     monkeypatch.setattr(auth.os, "name", "posix")
