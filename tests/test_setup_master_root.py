@@ -1090,9 +1090,17 @@ def test_the_refused_windows_cache_path_is_taken_away_on_upgrade():
     assert "GetEnvironmentVariable('TORCHINDUCTOR_CACHE_DIR', 'User')" in code, code
     assert "[NullString]::Value, 'User'" in code, code
     assert "Remove-Item -LiteralPath Env:TORCHINDUCTOR_CACHE_DIR" in code, code
-    # Guarded on the same characters the refusal itself uses, both times. An unguarded clear
-    # would throw away a directory the user chose on purpose.
-    assert code.count("-match '[\\s'']'") == 2, code
+    # Both clears go through the one predicate, so shape and provenance cannot drift apart.
+    assert code.count("Test-UnparseableManagedTorchCache") == 2, code
+    predicate = _slice(ps, "function Test-UnparseableManagedTorchCache", "\nfunction Clear-Unparseable")
+    rule = "\n".join(l for l in predicate.splitlines() if not l.lstrip().startswith("#"))
+    # Shape: a path the builders can read belongs to whoever set it.
+    assert "-notmatch '[\\s'']'" in rule, rule
+    # Provenance: and so does an unparseable path this installer never wrote. Comparing against
+    # the contained path this run computes is the only evidence available, since nothing records
+    # who set the variable.
+    assert "$Managed" in rule and "-ieq" in rule, rule
+    assert '$managedTorchCache = Join-Path (Join-Path $StudioHome "cache") "torchinductor"' in code
     # A staged run never writes the real account's environment, as the persist below does not.
     assert "-not $StageRoot" in code, code
 

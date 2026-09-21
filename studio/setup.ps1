@@ -7390,15 +7390,29 @@ if ($script:PinChangedForceReinstall -or $script:TorchImportDefinitivelyFailed) 
 # dependency pass. Taking it away needs none of that block's work, only the value's own
 # characters, so it runs on every launch. Only a value the builders cannot read is cleared: a
 # parseable path is somebody's decision and stays.
+function Test-UnparseableManagedTorchCache {
+    param([string]$Value, [string]$Managed)
+    if (-not $Value) { return $false }
+    $trimmed = $Value.Trim().Replace('/', '\').TrimEnd('\')
+    # Shape first: a path the builders CAN read is working for somebody and is never touched.
+    if ($trimmed -notmatch '[\s'']') { return $false }
+    # Then provenance. The only unparseable value any setup has ever persisted is the contained
+    # path this same run computes, so anything else was configured by something we did not
+    # install and is not ours to delete: an older Torch quoted its compiler arguments, and such a
+    # value can still be working there.
+    return $trimmed -ieq $Managed.Trim().Replace('/', '\').TrimEnd('\')
+}
+
 function Clear-UnparseableTorchCacheEnv {
+    $managedTorchCache = Join-Path (Join-Path $StudioHome "cache") "torchinductor"
     if (-not $StageRoot) {
         $persisted = [Environment]::GetEnvironmentVariable('TORCHINDUCTOR_CACHE_DIR', 'User')
-        if ($persisted -and $persisted -match '[\s'']') {
+        if (Test-UnparseableManagedTorchCache $persisted $managedTorchCache) {
             [Environment]::SetEnvironmentVariable('TORCHINDUCTOR_CACHE_DIR', [NullString]::Value, 'User')
             substep "cleared the persisted TORCHINDUCTOR_CACHE_DIR ($persisted): an earlier setup wrote it before the character was refused"
         }
     }
-    if ($env:TORCHINDUCTOR_CACHE_DIR -and $env:TORCHINDUCTOR_CACHE_DIR -match '[\s'']') {
+    if (Test-UnparseableManagedTorchCache $env:TORCHINDUCTOR_CACHE_DIR $managedTorchCache) {
         Remove-Item -LiteralPath Env:TORCHINDUCTOR_CACHE_DIR -ErrorAction SilentlyContinue
     }
 }

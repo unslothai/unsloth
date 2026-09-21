@@ -1170,20 +1170,31 @@ def _holding_dir_is_safe(parent: Path) -> bool:
     the whole root through /shared substitutes a tree containing the predictable cache name just
     as effectively as swapping the leaf. The walk is bounded by the path's own depth.
 
+    BOTH chains are walked, the names given and the names resolved. Resolving first threw the
+    lexical path away, so TMPDIR=/shared/tmp-link pointing at a 0700 /private/tmp was judged on
+    /private/tmp alone; /shared stays 0777, the link is a name another account can replace after
+    the answer is given, and the next mkdir lands wherever it now points. The resolved chain is
+    still needed for the reverse, a link in a safe directory aimed into a shared one. A symlink is
+    not refused outright: /tmp and /var are symlinks on macOS, so refusing them would decline every
+    fallback there without making anything safer.
+
     On Windows there are no POSIX bits to read, so the per-account default root answers instead.
     """
     if os.name == "nt":
         return _windows_temp_root_is_private(parent)
     try:
-        current = parent.resolve()
+        chains = (Path(os.path.abspath(parent)), parent.resolve())
     except (OSError, ValueError):
         return False
-    while True:
-        if not _dir_is_not_swappable(current):
-            return False
-        if current.parent == current:
-            return True
-        current = current.parent
+    for start in chains:
+        current = start
+        while True:
+            if not _dir_is_not_swappable(current):
+                return False
+            if current.parent == current:
+                break
+            current = current.parent
+    return True
 
 
 def _parseable_toolchain_fallback(key: str, intended: str) -> str | None:

@@ -486,6 +486,51 @@ def test_the_holding_directory_decides_whether_the_fallback_can_be_swapped(
     assert ("TORCH_EXTENSIONS_DIR" in os.environ) is published
 
 
+@pytest.mark.skipif(os.name == "nt", reason = "POSIX symlink and mode semantics")
+def test_a_temporary_root_reached_through_a_swappable_link_is_refused(tmp_path, monkeypatch):
+    """A symlink is a name, and a name in a directory another account can write is not ours.
+
+    Resolving the holding directory before walking it threw the lexical path away, so
+    TMPDIR=/shared/tmp-link was judged on the 0700 directory it happened to point at while
+    /shared stayed 0777. The link is replaceable after the answer is given, and the mkdir that
+    follows lands wherever it now points, which is the whole attack the ancestor walk was added
+    to stop. Both chains are walked now, so the reverse also fails: a link in a safe directory
+    aimed into a shared tree.
+
+    A symlinked temporary root is NOT refused outright. /tmp and /var are symlinks on macOS, so
+    that would decline every fallback there without making anything safer, and the third case
+    below is the one that has to keep passing.
+    """
+    from utils.paths.storage_roots import _holding_dir_is_safe
+
+    shared = tmp_path / "shared"
+    shared.mkdir()
+    os.chmod(shared, 0o777)
+    private = tmp_path / "private"
+    private.mkdir()
+    os.chmod(private, 0o700)
+    safe = tmp_path / "safe"
+    safe.mkdir()
+    os.chmod(safe, 0o755)
+
+    swappable = shared / "tmp-link"
+    swappable.symlink_to(private)
+    assert _holding_dir_is_safe(swappable) is False
+
+    aimed_at_shared = safe / "bad-link"
+    target = shared / "target"
+    target.mkdir()
+    os.chmod(target, 0o700)
+    aimed_at_shared.symlink_to(target)
+    assert _holding_dir_is_safe(aimed_at_shared) is False
+
+    held_safely = safe / "ok-link"
+    held_safely.symlink_to(private)
+    assert _holding_dir_is_safe(held_safely) is True, (
+        "a symlinked temporary root in a directory nobody else can write is still usable"
+    )
+
+
 @pytest.mark.skipif(os.name == "nt", reason = "POSIX rename permissions")
 def test_a_private_temp_root_inside_a_shared_parent_is_refused(monkeypatch, tmp_path):
     """Checking one level is not enough.
