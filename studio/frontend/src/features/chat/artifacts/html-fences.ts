@@ -62,7 +62,9 @@ export function getCodeFence(blockContent: string): CodeFence | null {
   // A block can hold MORE than one fence (a reply with a footnote is one block) and the greedy body
   // would then span both, prose included. A delimiter-shaped LINE inside the body is ordinary code,
   // so this rejects only a real close (bare run on its own line) followed by another opener.
-  if (/^ {0,3}`{3,}[\t ]*\r?$[\s\S]*^ {0,3}(?:`{3,}|~{3,})[^\r\n`]/m.test(match[2])) {
+  // A follow-on opener is a run at the start of a line: it MAY carry an info string, and a bare
+  // run (no info string) is still an opener, not a close, because the body continues after it.
+  if (/^ {0,3}`{3,}[\t ]*\r?$[\s\S]*^ {0,3}(?:`{3,}|~{3,})/m.test(match[2])) {
     return null;
   }
 

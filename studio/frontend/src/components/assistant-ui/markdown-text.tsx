@@ -368,15 +368,18 @@ function findMermaidFence(blockContent: string): MermaidFence {
 }
 
 function getMermaidSource(blockContent: string): string | null {
+  // The shared walk decides first: an UNCLOSED mermaid fence has no source yet, and
+  // `markdownBlockFallback` reports it as `fenced` (it treats a fence that never closes as the
+  // whole block), so consulting it first would hand back a partial body as copyable source.
+  const found = findMermaidFence(blockContent);
+  if (found.open) return null;
+  if (found.body.trim().length > 0) return found.body.trim();
   const fence = markdownBlockFallback(blockContent);
   if (fence.fenced && fence.language === "mermaid") {
     const source = fence.text.trim();
     return source.length > 0 ? source : null;
   }
-  const found = findMermaidFence(blockContent);
-  if (found.open) return null;
-  const source = found.body.trim();
-  return source.length > 0 ? source : null;
+  return null;
 }
 
 /** True while a mermaid fence is still streaming, when there is no source to extract yet. */
