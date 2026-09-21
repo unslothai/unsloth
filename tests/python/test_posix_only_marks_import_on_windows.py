@@ -45,9 +45,9 @@ TESTS = REPO_ROOT / "tests"
 
 
 def _is_os_geteuid(node: ast.AST) -> bool:
-    """A lookup of os.geteuid that raises on Windows. Both spellings: the attribute, and
-    the two-argument getattr, which has no fallback and so raises exactly the same way.
-    Three-argument getattr does not, and is the form already used in the tree."""
+    """A lookup of os.geteuid that fails on Windows. Three spellings: the attribute, the
+    two-argument getattr, which has no fallback and raises exactly the same way, and the
+    three-argument form with a fallback that cannot be called."""
     if (
         isinstance(node, ast.Attribute)
         and node.attr == "geteuid"
@@ -55,17 +55,26 @@ def _is_os_geteuid(node: ast.AST) -> bool:
         and node.value.id == "os"
     ):
         return True
-    return (
+    if not (
         isinstance(node, ast.Call)
         and isinstance(node.func, ast.Name)
         and node.func.id == "getattr"
-        and len(node.args) == 2
         and not node.keywords
+        and len(node.args) in (2, 3)
         and isinstance(node.args[0], ast.Name)
         and node.args[0].id == "os"
         and isinstance(node.args[1], ast.Constant)
         and node.args[1].value == "geteuid"
-    )
+    ):
+        return False
+    if len(node.args) == 2:
+        return True  # no fallback: raises AttributeError exactly as the attribute does
+    # A fallback saves the lookup, but only if it can then be called: getattr(os,
+    # "geteuid", None)() picks None on Windows and raises TypeError instead, which Linux
+    # never shows because the real function is picked there. A literal is never callable;
+    # a name, attribute, call or lambda is taken at its word, since whether it accepts no
+    # arguments is not decidable from this file.
+    return isinstance(node.args[2], ast.Constant)
 
 
 def _geteuid_sites(expr: ast.AST):
@@ -206,29 +215,61 @@ def _has_future_annotations(tree: ast.Module) -> bool:
 
 
 def _import_time_expressions(tree: ast.Module):
-    """Yield the expressions evaluated when the module is imported: the module body,
-    class bodies (which run on import too), and the decorators, defaults and eager
-    annotations of every definition reached at import."""
+    """Yield the expressions evaluated when the module is imported.
+
+    Walked as statements rather than as one flat tree, because control flow decides what
+    runs: a lookup under `if os.name == "posix":` is never reached on Windows, and a
+    function body is never reached at import however deeply it is nested. Yielding whole
+    statements and walking those would report both."""
     eager_annotations = not _has_future_annotations(tree)
 
-    def walk(node: ast.AST, import_time: bool):
-        for child in ast.iter_child_nodes(node):
-            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-                if import_time:
-                    # A `def` nested in another function is not evaluated until the outer
-                    # one runs, so its decorators and defaults cannot break collection and
-                    # are not flagged. Only a definition reached at import counts.
-                    yield from _definition_expressions(child, eager_annotations)
-                yield from walk(child, isinstance(child, ast.ClassDef) and import_time)
-            else:
-                if import_time:
-                    # the WHOLE statement, never its subexpressions as well: a guard
-                    # lives in the enclosing `or`, and yielding the bare call too would
-                    # report every guarded site as unguarded
-                    yield child
-                yield from walk(child, False)
+    def block(statements):
+        for statement in statements:
+            yield from walk(statement)
 
-    yield from walk(tree, True)
+    def walk(statement):
+        if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            # the body is runtime, whatever encloses the def
+            yield from _definition_expressions(statement, eager_annotations)
+            return
+        if isinstance(statement, ast.ClassDef):
+            yield from _definition_expressions(statement, eager_annotations)
+            yield from block(statement.body)
+            return
+        if isinstance(statement, ast.If):
+            yield statement.test
+            reached = _windows_value(statement.test)
+            if reached is not False:
+                yield from block(statement.body)
+            if reached is not True:
+                yield from block(statement.orelse)
+            return
+        if isinstance(statement, ast.ExceptHandler):
+            if statement.type is not None:
+                yield statement.type
+            yield from block(statement.body)
+            return
+        nested = [
+            child
+            for child in ast.iter_child_nodes(statement)
+            if isinstance(child, (ast.stmt, ast.ExceptHandler))
+        ]
+        if not nested:
+            # a plain statement holds only expressions, and the WHOLE statement is
+            # yielded rather than its parts: a guard lives in the enclosing `or`, and
+            # yielding the bare call too would report every guarded site as unguarded
+            yield statement
+            return
+        # a compound statement whose header runs at import (for/while/with/try/match):
+        # the header expressions here, the blocks through walk
+        for _, value in ast.iter_fields(statement):
+            for item in value if isinstance(value, list) else [value]:
+                if isinstance(item, (ast.stmt, ast.ExceptHandler)):
+                    yield from walk(item)
+                elif isinstance(item, ast.AST):
+                    yield item
+
+    yield from block(tree.body)
 
 
 def test_no_test_module_calls_os_geteuid_unguarded_at_import():
@@ -412,3 +453,48 @@ def test_a_lambda_body_is_not_import_time():
     lambda, so those still count."""
     assert not _flagged("import os\nhelper = lambda: os.geteuid()\n")
     assert _flagged("import os\nhelper = lambda uid = os.geteuid(): uid\n")
+
+
+def test_a_statement_level_platform_guard_is_honoured():
+    """`if os.name == "posix":` decides what runs, so a lookup in its body is not reached
+    on Windows. Yielding the whole `if` and walking it would report the body regardless."""
+    assert not _flagged('import os\nif os.name == "posix":\n    ROOT = os.geteuid() == 0\n')
+    assert not _flagged(
+        'import os\nif os.name == "nt":\n    pass\nelse:\n    ROOT = os.geteuid() == 0\n'
+    )
+    # the wrong polarity is still reached, and so is an undecidable test
+    assert _flagged('import os\nif os.name == "nt":\n    ROOT = os.geteuid() == 0\n')
+    assert _flagged("import os\nif is_ci():\n    ROOT = os.geteuid() == 0\n")
+
+
+def test_a_function_body_under_a_compound_statement_is_still_runtime():
+    """A def nested in a `try` or a `for` is reached at import, but its BODY is not, so a
+    lookup there cannot break collection however deep the statement nesting goes."""
+    assert not _flagged(
+        "import os\n"
+        "try:\n"
+        "    for _ in range(1):\n"
+        "        def helper():\n"
+        "            return os.geteuid()\n"
+        "except Exception:\n"
+        "    pass\n"
+    )
+    # the def's own decorator under the same nesting IS reached
+    assert _flagged(
+        "import os, pytest\n"
+        "try:\n"
+        '    @pytest.mark.skipif(os.geteuid() == 0, reason = "x")\n'
+        "    def test_a(): pass\n"
+        "except Exception:\n"
+        "    pass\n"
+    )
+
+
+def test_a_getattr_fallback_has_to_be_callable():
+    """getattr(os, "geteuid", None)() picks None on Windows and raises TypeError there,
+    which Linux never shows because the real function is picked. A literal fallback is
+    no fallback."""
+    assert _flagged('import os\nROOT = getattr(os, "geteuid", None)() == 0\n')
+    assert _flagged('import os\nROOT = getattr(os, "geteuid", 1)() == 0\n')
+    assert not _flagged('import os\nROOT = getattr(os, "geteuid", lambda: 1)() == 0\n')
+    assert not _flagged('import os\nROOT = getattr(os, "geteuid", _fallback)() == 0\n')
