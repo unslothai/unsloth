@@ -600,6 +600,37 @@ class TestRequestWrapperMustProveItsCallee:
                 'import requests\nimport shim\nrequests.get(shim.Request("https://huggingface.co/x"))',
                 id = "Request_off_an_unknown_module",
             ),
+            # Unwrapping reads PAST a call, so unlike alias recognition it has to fail closed on a
+            # binding in ANY scope: the nested `def Request` really decides what the call inside
+            # that function reaches.
+            pytest.param(
+                "from urllib.request import Request, urlopen\n"
+                "def f():\n"
+                "    def Request(_):\n"
+                '        return "https://evil.example/x"\n'
+                '    urlopen(Request("https://huggingface.co/x"))',
+                id = "Request_shadowed_inside_a_function",
+            ),
+            pytest.param(
+                "from urllib.request import Request, urlopen\n"
+                "def Request(_):\n"
+                '    return "https://evil.example/x"\n'
+                'urlopen(Request("https://huggingface.co/x"))',
+                id = "Request_shadowed_at_module_level",
+            ),
+            pytest.param(
+                "import urllib.request as u\n"
+                "def f():\n"
+                "    import aiohttp as u\n"
+                'u.urlopen(u.Request("https://huggingface.co/x"))',
+                id = "module_alias_rebound_in_a_nested_scope",
+            ),
+            pytest.param(
+                "from urllib.request import Request, urlopen\n"
+                "from evil import *\n"
+                'urlopen(Request("https://huggingface.co/x"))',
+                id = "a_star_import_could_have_supplied_Request",
+            ),
         ],
     )
     def test_an_unproven_wrapper_is_not_unwrapped(self, code):

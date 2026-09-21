@@ -16530,6 +16530,39 @@ def _check_signal_escape_patterns(code: str):
             ]
         return []
 
+    # What a name may be bound to and still be trusted to name `urllib.request.Request` or the
+    # module path leading to it.
+    _REQUEST_SAFE_BINDINGS = frozenset({"urllib", "urllib.request", "urllib.request.Request"})
+
+    def _names_bound_to_something_else(tree) -> "set[str]":
+        """Every name bound ANYWHERE in the tree, in ANY scope, to something that is not part of
+        `urllib.request.Request`, plus `"*"` when a star import could have supplied it.
+
+        Unwrapping `urlopen(Request(url))` READS PAST a call, which is the one place where adding
+        a candidate makes the screen weaker rather than stronger, so it cannot use the accumulating
+        alias maps: a nested `def Request(_): return "https://evil.example/x"` really does decide
+        what the call inside that function reaches. Scope is ignored in the strict direction here,
+        so a binding anywhere is enough to refuse the unwrap and leave the argument reading as a
+        call, which the fail-closed rule then refuses.
+        """
+        out: set[str] = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    if alias.name not in _REQUEST_SAFE_BINDINGS:
+                        out.add(alias.asname or alias.name.split(".")[0])
+            elif isinstance(node, ast.ImportFrom):
+                module = node.module or ""
+                for alias in node.names:
+                    if alias.name == "*":
+                        if module != "urllib.request":
+                            out.add("*")
+                    elif f"{module}.{alias.name}" not in _REQUEST_SAFE_BINDINGS:
+                        out.add(alias.asname or alias.name)
+            else:
+                out.update(_binding_names(node))
+        return out
+
     def _collect_literal_names(tree) -> "dict[str, frozenset[str] | None]":
         """Name -> every string literal it is bound to anywhere in the tree, or None once any
         binding is something this screen cannot read. Order and scope are ignored on purpose: the
@@ -16613,6 +16646,9 @@ def _check_signal_escape_patterns(code: str):
             # Name -> every string literal it can hold, None when unreadable. `url =
             # "https://huggingface.co/x"; requests.get(url)` is still a host this screen can read.
             self.literal_names = _collect_literal_names(tree)
+            # Names bound anywhere, in any scope, to something other than `urllib.request.Request`
+            # or the module path to it. Read only by `_unwrapped_url_arg`: see the note there.
+            self.rebound_anywhere = _names_bound_to_something_else(tree)
             # Network modules star-imported, and the names rebound since. `from requests import *`
             # binds `get` under no name this file can enumerate, so the callee is resolved against
             # the star modules instead; without it one character (`*` for `get`) turned the screen
@@ -16788,8 +16824,15 @@ def _check_signal_escape_patterns(code: str):
             fail-closed rule refuses it.
             """
             if isinstance(node, ast.Call) and node.args:
-                if "urllib.request.Request" in self._fq_candidates(node.func):
-                    return node.args[0]
+                if "urllib.request.Request" not in self._fq_candidates(node.func):
+                    return node
+                cur = node.func
+                while isinstance(cur, ast.Attribute):
+                    cur = cur.value
+                root = cur.id if isinstance(cur, ast.Name) else None
+                if root is None or root in self.rebound_anywhere or "*" in self.rebound_anywhere:
+                    return node
+                return node.args[0]
             return node
 
         def visit_Call(self, node):
