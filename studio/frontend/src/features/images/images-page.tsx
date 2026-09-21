@@ -175,6 +175,7 @@ import {
 } from "./lib/generation-stop";
 import { useNavigate, useSearch } from "@tanstack/react-router";
 import { useStagedDownload, type StagedDownloadEntry } from "@/features/hub/download-manager";
+import { generationFailureForAttempt } from "./lib/generation-failure";
 import { DiffusionTrainPanel } from "./train/diffusion-train-panel";
 import { viewLogsAction } from "@/features/settings/lib/view-logs-action";
 import {
@@ -482,6 +483,11 @@ const SETTLE_MAX_FAILS = 5; // consecutive progress failures before calling the 
 async function settleLostGeneration(
   isCurrent: () => boolean,
   baseline: NewRecordProbeBaseline,
+  // The engine's run counter as it stood BEFORE this POST. A retained reason is only this
+  // attempt's if a run started after that; without the comparison a previous failure is
+  // attributed to a request that never reached the backend, and the gallery probe that
+  // would have said so is skipped.
+  seqBeforePost: number,
 ): Promise<void> {
   const start = Date.now();
   let fails = 0;
@@ -494,7 +500,7 @@ async function settleLostGeneration(
     try {
       const p = await getGenerateProgress();
       fails = 0;
-      reported = p.error ?? null;
+      reported = generationFailureForAttempt(p, seqBeforePost);
       if (p.active) sawActive = true;
       else idle = true;
     } catch {
@@ -1376,6 +1382,10 @@ export function ImagesPage({
   const cancelAcked = useRef(false);
   // Bumped once per handleGenerate call, so a cancel can tell its own run from a later one.
   const runToken = useRef(0);
+  // The engine's run counter as last seen by the progress poll. Only used to date a
+  // retained failure reason against the moment before a POST; an unanswered poll leaves
+  // it 0, which admits fewer reasons rather than more.
+  const lastGenerationSeq = useRef(0);
   // The run token owning the Stop on the wire, or null: without it each extra click posts again
   // and a late duplicate stops whichever generation is running by then. A token, not a flag,
   // because the clear is asynchronous.
@@ -3448,6 +3458,8 @@ export function ImagesPage({
       pollInFlight = true;
       try {
         const p = await getGenerateProgress();
+        if (typeof p.generation_seq === "number")
+          lastGenerationSeq.current = p.generation_seq;
         // Skip the state update (and re-render) when nothing the bar shows moved.
         setGenStep((prev) => {
           if (!p.active) return null;
@@ -3489,6 +3501,12 @@ export function ImagesPage({
           galleryCache.hasMore,
           knownIds,
         );
+        // Frozen with the baseline, and for the same reason: both halves have to describe
+        // the moment before THIS post. A reason retained from an earlier failed run
+        // carries a sequence at or below this, so it cannot be mistaken for this
+        // attempt's. Read through the poll already running, so the happy path pays
+        // nothing; 0 when it has not answered yet, which only ever admits fewer reasons.
+        const seqBeforePost = lastGenerationSeq.current;
         let res: DiffusionGenerateResponse;
         try {
           res = await generateDiffusionImage({
@@ -3536,7 +3554,11 @@ export function ImagesPage({
           if (!(err instanceof GenerateResponseLostError)) throw err;
           // A record outside the baseline proves the request reached the backend. Taken per attempt, so
           // it reflects what the client could see when THIS post went out.
-          await settleLostGeneration(() => isMounted.current, probeBaseline);
+          await settleLostGeneration(
+            () => isMounted.current,
+            probeBaseline,
+            seqBeforePost,
+          );
           if (!isMounted.current) break;
           await loadGallery();
           // loadGallery refreshes the module cache synchronously, so this run's records are folded in

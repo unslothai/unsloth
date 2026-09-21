@@ -105,3 +105,39 @@ def test_the_progress_route_puts_the_classified_reason_on_the_response():
     assert '"error": _generate_failure_detail(raw_error) if raw_error else None' in body, (
         "the progress route no longer classifies the retained reason"
     )
+
+
+@pytest.mark.parametrize("engine", ENGINES)
+def test_an_engine_dates_the_reason_with_a_run_counter(engine):
+    """A retained reason is only useful if a caller can tell WHICH run it belongs to.
+
+    A generation whose POST never reached the backend started no run, so the counter has not
+    moved since before that POST; without it the client attributes the previous run's failure
+    to its own lost request and skips the gallery probe that would have said the request
+    never arrived.
+    """
+    src = _src(engine)
+    assert 'self._generate_seq = getattr(self, "_generate_seq", 0) + 1' in src, (
+        f"{engine} does not advance a run counter, so a reason cannot be dated"
+    )
+    assert '"generation_seq": getattr(self, "_generate_seq", 0),' in src, (
+        f"{engine} does not publish the run counter beside the reason"
+    )
+    # Bumped where the run STARTS, beside the clear, or the counter and the reason would
+    # describe different moments.
+    bump = src.index('self._generate_seq = getattr(self, "_generate_seq", 0) + 1')
+    clear = src.index("self._last_generate_error = None")
+    assert 0 < bump - clear < 400, (
+        f"{engine} bumps the counter away from where the reason is cleared"
+    )
+
+
+def test_the_route_sends_the_counter_only_beside_a_reason():
+    """On its own it is an internal counter with no meaning to a client, and shipping it
+    unconditionally invites exactly the correlation this is meant to make possible to be
+    done against a number that was never qualified."""
+    src = _src("routes/inference.py")
+    at = src.index("async def diffusion_generate_progress")
+    body = src[at : at + 2500]
+    assert 'if not progress.get("error"):' in body
+    assert 'progress.pop("generation_seq", None)' in body

@@ -6789,6 +6789,10 @@ class DiffusionBackend:
                 # Cleared at the START, not only on success, so the retained reason can
                 # never be read as belonging to the run that is now in flight.
                 self._last_generate_error = None
+                # Bumped per run so a caller can tell WHICH generation a retained reason
+                # belongs to. A lost POST that never reached the backend leaves this
+                # unchanged, which is how a stale reason is told from this attempt's.
+                self._generate_seq = getattr(self, "_generate_seq", 0) + 1
             try:
                 self._state_device_target(state)
                 # The local `state` ref keeps the pipe alive even if unload() nulls _state. Resolve the per-image
@@ -7295,6 +7299,10 @@ class DiffusionBackend:
                 # Idle is not the same as fine. Carried only while it is the LAST thing that
                 # happened: the next generation clears it on success.
                 "error": getattr(self, "_last_generate_error", None),
+                # Which run that reason belongs to, so a caller settling a LOST post can
+                # reject one from a previous generation: its own attempt never started, so
+                # this never moved.
+                "generation_seq": getattr(self, "_generate_seq", 0),
             }
         return {
             "active": True,

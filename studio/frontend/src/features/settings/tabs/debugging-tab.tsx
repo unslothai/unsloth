@@ -111,6 +111,17 @@ export function DebuggingTab() {
         // both await this, so an unanswered /sources would freeze both.
         // Sent with the listing so the backend can canonicalise it against the same
         // realpaths it is about to report; the spellings do not match as strings.
+        //
+        // Captured for the WHOLE fetch, not re-read from the store afterwards. A refresh
+        // already in flight when the user clicks "View logs" would otherwise answer the
+        // newly pending request from a listing fetched without its path, pick the
+        // family's newest file, and consume the request; consuming it then aborts the
+        // newer exact-path refresh through this effect's cleanup, so after a failed switch
+        // and rollback the panel lands on the rollback's log, the one the path exists to
+        // avoid.
+        const requestedFor = pendingLogRequestKey(
+          useSettingsDialogStore.getState(),
+        );
         const pendingPath =
           useSettingsDialogStore.getState().logSourcePathRequested;
         const result = await withRequestTimeout(
@@ -138,8 +149,13 @@ export function DebuggingTab() {
           (requested
             ? result.sources.find((source) => source.family === requested)
             : undefined);
-        if (fromFailure)
+        // Only the request this fetch was made for. A newer one is left pending, so the
+        // refresh it triggered is what answers it.
+        const stillTheSameRequest =
+          pendingLogRequestKey(dialog) === requestedFor;
+        if (fromFailure && stillTheSameRequest)
           useSettingsDialogStore.getState().consumeLogFamilyRequest();
+        if (fromFailure && !stillTheSameRequest) return;
         setSourceId((current) =>
           fromFailure
             ? fromFailure.id

@@ -39550,6 +39550,11 @@ async def diffusion_generate_progress(current_subject: str = Depends(get_current
         **progress,
         "error": _generate_failure_detail(raw_error) if raw_error else None,
     }
+    # Only meaningful beside the reason, and only when there is one: on its own it is an
+    # internal counter, and a caller that cannot tell which run a reason belongs to would
+    # attribute a previous failure to its own lost request.
+    if not progress.get("error"):
+        progress.pop("generation_seq", None)
     log_media_generation_progress("image", progress)
     # A finished generation still persisting its gallery record counts as active, so a reload probe keeps polling.
     if _diffusion_persist_active > 0 and not progress["active"]:

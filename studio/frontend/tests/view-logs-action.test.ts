@@ -15,6 +15,7 @@
  */
 
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 import { en } from "../src/i18n/locales/en.ts";
@@ -339,4 +340,55 @@ test("a request arriving while Logs is already open is visible to a subscriber",
     pendingLogRequestKey(store.getState()),
     NO_PENDING_LOG_REQUEST,
   );
+});
+
+test("an older in-flight refresh does not consume a newer request", async () => {
+  // The panel captures the request key its fetch was made FOR and compares it to the store
+  // when the response lands. Without that, a pathless refresh already in flight answers a
+  // request that arrived after it, picks the family's newest file, and consumes it; the
+  // consumption then aborts the newer exact-path refresh, so after a failed switch and
+  // rollback the panel opens the rollback's log -- the thing carrying the path prevents.
+  const { pendingLogRequestKey, NO_PENDING_LOG_REQUEST } = await import(
+    "../src/features/settings/stores/settings-dialog-store.ts"
+  );
+  reset();
+
+  // What the older fetch captured: nothing pending.
+  const capturedByOlderFetch = pendingLogRequestKey(store.getState());
+  assert.equal(capturedByOlderFetch, NO_PENDING_LOG_REQUEST);
+
+  // The click lands while that fetch is still out.
+  store.getState().openLogs("llama-server", "/logs/llama-failed.log");
+  const nowPending = pendingLogRequestKey(store.getState());
+  assert.notEqual(
+    nowPending,
+    capturedByOlderFetch,
+    "the older fetch would be unable to tell it was answering someone else's request",
+  );
+
+  // The refresh triggered BY the click captured the pending one, so it is the one allowed
+  // to consume it.
+  const capturedByNewerFetch = pendingLogRequestKey(store.getState());
+  assert.equal(capturedByNewerFetch, nowPending);
+  store.getState().consumeLogFamilyRequest();
+  assert.equal(pendingLogRequestKey(store.getState()), NO_PENDING_LOG_REQUEST);
+
+  // And that the panel actually performs that comparison. A wiring check, because the
+  // guard lives in an async callback the static render of this component never runs, so
+  // the store properties above would keep passing with it deleted.
+  const tab = await readFile(
+    new URL("../src/features/settings/tabs/debugging-tab.tsx", import.meta.url),
+    "utf8",
+  );
+  for (const needle of [
+    "const requestedFor = pendingLogRequestKey(",
+    "pendingLogRequestKey(dialog) === requestedFor",
+    "if (fromFailure && stillTheSameRequest)",
+    "if (fromFailure && !stillTheSameRequest) return;",
+  ]) {
+    assert.ok(
+      tab.includes(needle),
+      `the panel no longer guards consumption on the request it fetched for: ${needle}`,
+    );
+  }
 });

@@ -75,6 +75,13 @@ export interface DiffusionGenerateProgress {
    * from a finished one. Already classified by the backend, so it is safe to show.
    * Optional: an older backend omits it. */
   error?: string | null;
+  /** Which run the `error` belongs to, sent only alongside one.
+   *
+   * A caller settling a generation whose POST was lost cannot assume the reason is its
+   * own: if that POST never reached the backend, no run started, and this has not moved
+   * since before it was sent. Comparing against a value read BEFORE the POST is what tells
+   * this attempt's failure from a previous one's. */
+  generation_seq?: number | null;
 }
 
 export interface DiffusionLoadProgress {
