@@ -13521,8 +13521,10 @@ class LlamaCppBackend:
                 + ", ".join(f"VK{idx}={free}MiB" for idx, free, _total in gpus)
             )
         # A snapshot only when every row was actually classified. None is "not
-        # measured", which the RAM guard treats as unknown rather than as "no iGPUs":
-        # the probe reports all-False on a failed type query, so the two share a value.
+        # measured", which is NOT the same claim as "no iGPUs": the probe reports
+        # all-False on a failed type query, so the two would otherwise share a value.
+        # Only the page-lock classifier reads the difference; the pricing consumers
+        # coerce None to the empty set and are unchanged either way.
         known_vulkan_igpus = (
             {row["index"] for row in rows if row["is_igpu"]}
             if rows and all(row.get("type_known", True) for row in rows)
@@ -29105,74 +29107,95 @@ class LlamaCppBackend:
                                 env = _mem_env,
                             ):
                                 if _mem_managed:
-                                    # Rebuilt for the placement this retry really has, rather
-                                    # than merely deleting the managed pair: the policy hands
-                                    # back what the first launch stripped, and a restored
-                                    # RESERVING mode puts a host copy back, where the lock
-                                    # still applies exactly as it did on the initial build.
-                                    # Dropping it unconditionally left nothing able to satisfy
-                                    # "keep resident", so every load rebuilt the same child.
-                                    _retry_managed, _retry_extras = apply_model_memory_policy(
-                                        extra_args,
-                                        supports_load_mode = bool(
-                                            server_caps.get("supports_load_mode")
-                                        ),
-                                        weights_in_host_memory = False,
-                                        gpu_offload_confirmed = _mem_gpu_offload_confirmed,
-                                        env = _fit_load_mode_env_view,
-                                        settings = _mem_settings,
-                                    )
-                                    _retry_load_mode, _retry_extras = apply_load_mode_policy(
-                                        _retry_extras,
-                                        supports_load_mode = bool(
-                                            server_caps.get("supports_load_mode")
-                                        ),
-                                        weights_in_host_memory = False,
-                                        requested_load_mode = load_mode,
-                                        settings = _mem_settings,
-                                    )
-                                    # Over the rebuilt extras: this retry hands back what the
-                                    # first launch stripped. The scrub still counts, same env.
-                                    _retry_touched = bool(_mem_scrubbed) or _retry_extras != list(
-                                        extra_args or []
-                                    )
                                     if not _contains_subsequence(run_cmd, _mem_policy_argv):
                                         # Nothing to rewrite, so the child keeps the lock;
                                         # recording it as dropped would describe an argv
-                                        # that never launched.
+                                        # that never launched. Asked BEFORE the rebuild,
+                                        # which logs each decision as it makes it and would
+                                        # otherwise narrate a policy nothing here applies.
                                         logger.info(
                                             "Model Memory: the policy block is no longer on "
                                             "the argv, so the --fit off retry keeps the "
                                             "page-lock it was built with."
                                         )
-                                    elif not resolve_effective_memory_state(
-                                        [*_retry_load_mode, *_retry_extras],
-                                        _fit_load_mode_env_view,
-                                    )[1]:
-                                        if gpu_ids is not None:
-                                            _retry_extras = self._strip_device_extra_args(
-                                                _retry_extras
+                                    else:
+                                        # Rebuilt for the placement this retry really has,
+                                        # rather than merely deleting the managed pair: the
+                                        # policy hands back what the first launch stripped,
+                                        # and a restored RESERVING mode puts a host copy
+                                        # back, where the lock still applies exactly as it
+                                        # did on the initial build. Dropping it
+                                        # unconditionally left nothing able to satisfy "keep
+                                        # resident", so every load rebuilt the same child.
+                                        _retry_managed, _retry_extras = (
+                                            apply_model_memory_policy(
+                                                extra_args,
+                                                supports_load_mode = bool(
+                                                    server_caps.get("supports_load_mode")
+                                                ),
+                                                weights_in_host_memory = False,
+                                                gpu_offload_confirmed = (
+                                                    _mem_gpu_offload_confirmed
+                                                ),
+                                                env = _fit_load_mode_env_view,
+                                                settings = _mem_settings,
                                             )
-                                        _retry_policy_argv = [
-                                            *_retry_managed,
-                                            *_retry_load_mode,
-                                            *(str(arg) for arg in _retry_extras),
-                                        ]
-                                        run_cmd = _replace_subsequence(
-                                            run_cmd,
-                                            _mem_policy_argv,
-                                            _retry_policy_argv,
                                         )
-                                        _mem_host_resident = False
-                                        # The managed flag was the policy's only mark on
-                                        # this child unless it also scrubbed or stripped,
-                                        # and a child equal to an unmanaged one must not
-                                        # be torn down when the toggles go off.
-                                        self._memory_policy_active = _retry_touched
-                                        logger.info(
-                                            "Model Memory: dropping the page-lock for "
-                                            "the --fit off retry; it offloads every layer."
+                                        _retry_load_mode, _retry_extras = (
+                                            apply_load_mode_policy(
+                                                _retry_extras,
+                                                supports_load_mode = bool(
+                                                    server_caps.get("supports_load_mode")
+                                                ),
+                                                weights_in_host_memory = False,
+                                                requested_load_mode = load_mode,
+                                                settings = _mem_settings,
+                                            )
                                         )
+                                        # Over the rebuilt extras: this retry hands back what
+                                        # the first launch stripped. The scrub still counts,
+                                        # same env.
+                                        _retry_touched = bool(
+                                            _mem_scrubbed
+                                        ) or _retry_extras != list(extra_args or [])
+                                        if resolve_effective_memory_state(
+                                            [*_retry_load_mode, *_retry_extras],
+                                            _fit_load_mode_env_view,
+                                        )[1]:
+                                            # Said out loud: without it this retry is
+                                            # indistinguishable in the log from one where the
+                                            # policy emitted nothing at all, and the two lead
+                                            # to opposite conclusions about the child.
+                                            logger.info(
+                                                "Model Memory: the rebuilt policy still "
+                                                "reserves host RAM, so the --fit off retry "
+                                                "keeps the page-lock."
+                                            )
+                                        else:
+                                            if gpu_ids is not None:
+                                                _retry_extras = self._strip_device_extra_args(
+                                                    _retry_extras
+                                                )
+                                            _retry_policy_argv = [
+                                                *_retry_managed,
+                                                *_retry_load_mode,
+                                                *(str(arg) for arg in _retry_extras),
+                                            ]
+                                            run_cmd = _replace_subsequence(
+                                                run_cmd,
+                                                _mem_policy_argv,
+                                                _retry_policy_argv,
+                                            )
+                                            _mem_host_resident = False
+                                            # The managed flag was the policy's only mark on
+                                            # this child unless it also scrubbed or stripped,
+                                            # and a child equal to an unmanaged one must not
+                                            # be torn down when the toggles go off.
+                                            self._memory_policy_active = _retry_touched
+                                            logger.info(
+                                                "Model Memory: dropping the page-lock for "
+                                                "the --fit off retry; it offloads every layer."
+                                            )
                                 else:
                                     # Nothing emitted, so there is no block to rewrite and
                                     # nothing to keep: the retry simply has no host copy.

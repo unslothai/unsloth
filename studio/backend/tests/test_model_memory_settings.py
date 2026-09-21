@@ -3376,7 +3376,10 @@ class TestFitOffRetryClearsPolicyActivity:
         assert end != -1
         tail = src[branch:end]
         # Recomputed over the retry's own extras; the env scrub still counts.
-        assert "_retry_touched = bool(_mem_scrubbed) or _retry_extras != list(" in tail
+        # Whitespace-normalised: the expression is reflowed by line length, and a
+        # reflow is not a behaviour change.
+        flat_tail = "".join(tail.split())
+        assert "_retry_touched=bool(_mem_scrubbed)or_retry_extras!=list(extra_argsor[])" in flat_tail
         assert "self._memory_policy_active = _retry_touched" in tail
         assert "self._memory_policy_active = _mem_policy_touched_extras" not in tail
 
