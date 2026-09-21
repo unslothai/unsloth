@@ -408,21 +408,23 @@ def _offending_sites(tree: ast.Module):
     module gives os.geteuid a definition of its own."""
     # Only a definition in the module body counts. One inside an `if` the scan cannot
     # decide is not guaranteed on Windows, and treating it as one would silence every
-    # lookup after it.
-    defined_at = next(
-        (
-            statement.lineno
-            for statement in tree.body
-            if isinstance(statement, (ast.Assign, ast.AnnAssign)) and _assigns_os_geteuid(statement)
-        ),
-        None,
-    )
+    # lookup after it. Aliases are normalised first, or `_os.geteuid = ...` is not seen
+    # to be the same attribute as the reads it settles.
+    _normalise_os_aliases(tree)
+    definers = {
+        statement
+        for statement in tree.body
+        if isinstance(statement, ast.Assign)
+        or (isinstance(statement, ast.AnnAssign) and statement.value is not None)
+        if _assigns_os_geteuid(statement)
+    }
     for expr in _import_time_expressions(tree):
-        if _is_guarded(expr):
-            continue
-        for node in _geteuid_sites(expr):
-            if defined_at is None or node.lineno < defined_at:
-                yield node
+        if not _is_guarded(expr):
+            # the definer's own right-hand side is scanned before it settles anything:
+            # `os.geteuid = wrap(os.geteuid)` reads the attribute to wrap it
+            yield from _geteuid_sites(expr)
+        if expr in definers:
+            return  # from here on the attribute exists, even on Windows
 
 
 def _import_time_expressions(tree: ast.Module):
@@ -898,3 +900,22 @@ def test_a_conditional_definition_does_not_count():
         "import os\nif is_ci():\n    os.geteuid = lambda: 0\nROOT = os.geteuid() == 0\n"
     )
     assert not _flagged("import os\nos.geteuid = lambda: 0\nROOT = os.geteuid() == 0\n")
+
+
+def test_an_annotation_without_a_value_defines_nothing():
+    """`os.geteuid: int` states a type and binds nothing, so a later read still fails."""
+    assert _flagged("import os\nos.geteuid: int\nROOT = os.geteuid() == 0\n")
+    assert not _flagged("import os\nos.geteuid: object = lambda: 0\nROOT = os.geteuid() == 0\n")
+
+
+def test_the_defining_assignment_reads_before_it_settles_anything():
+    """`os.geteuid = wrap(os.geteuid)` looks the attribute up to wrap it, and that lookup
+    is the one that fails on Windows."""
+    assert _flagged("import os\nos.geteuid = wrap(os.geteuid)\nROOT = os.geteuid() == 0\n")
+    assert not _flagged("import os\nos.geteuid = lambda: 0\nROOT = os.geteuid() == 0\n")
+
+
+def test_the_definition_is_found_through_an_alias():
+    """`import os as _os` then `_os.geteuid = lambda: 0` settles the same attribute."""
+    assert not _flagged("import os as _os\n_os.geteuid = lambda: 0\nROOT = _os.geteuid() == 0\n")
+    assert _flagged("import os as _os\nROOT = _os.geteuid() == 0\n")
