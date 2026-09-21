@@ -1053,6 +1053,17 @@ def invalidate_index(*, additions_only: bool = False) -> None:
 
 
 def _index() -> dict[str, _LocalGgufEntry]:
+    return _index_with_state()[0]
+
+
+def _index_with_state() -> tuple[dict[str, _LocalGgufEntry], tuple[int, float]]:
+    """The index, and the ``(generation, stamp)`` identifying where it came from.
+
+    Both inside the one critical section, so the pair describes the mapping being returned
+    rather than whatever has been published by the time a caller reads it. A caller that
+    memoizes a MISS needs that; one that merely resolves a name does not, and calls
+    ``_index``.
+    """
     # Build under the lock so concurrent callers with an expired cache don't all run the (multi-dir) scan at once; the
     # rest wait and reuse the fresh result.
     with _lock:
@@ -1061,7 +1072,7 @@ def _index() -> dict[str, _LocalGgufEntry]:
         # `ts > 0`: monotonic() counts from boot, so under a TTL of uptime an invalidated stamp reads as recent and
         # would serve what was just revoked
         if ts > 0.0 and now - ts < _CACHE_TTL_S:
-            return cached
+            return cached, (_generation, ts)
         global _scan_sources_skipped
         from core.inference.scan_incidents import collecting_scan_incidents
 
@@ -1085,7 +1096,10 @@ def _index() -> dict[str, _LocalGgufEntry]:
         _publish((time.monotonic(), fresh))
         # The scan supersedes the notes: whatever landed is in the index now.
         _just_downloaded.clear()
-        return fresh
+        # Read here, still holding the lock, and of the snapshot just published: this is the
+        # index being returned, so its identity cannot be the one belonging to a snapshot
+        # published after this pass.
+        return fresh, (_generation, _snapshot()[0])
 
 
 def index_scan_stamp() -> float:
@@ -1235,21 +1249,25 @@ def resolve_local_gguf(
     requested = requested.strip()
     try:
         if allow_scan:
-            _index()
-        # The snapshot and its identity, read under one acquisition of the lock the scan
-        # holds for its whole pass. A caller memoizing a MISS has to know which index said
-        # so, and resolving first and reading the identity afterwards labels an answer from
-        # the old index with the new one's identity when an invalidation and a rebuild land
-        # in between -- so the marker looks valid for a snapshot that may hold the alias.
-        # Resolving outside the lock is still atomic in the sense that matters: published
-        # snapshots are rebound, never mutated, so this dict is the one the identity names.
-        with _lock:
-            generation, snapshot = _generation, _snapshot()
+            # The mapping and its identity from the same pass: a caller memoizing a MISS has
+            # to know which index said so, and re-reading the published snapshot afterwards
+            # answers for a different one -- an invalidation landing in between retains the
+            # old entries under a revoked stamp, which would resolve a model from a scan
+            # root that was just removed.
+            index, state = _index_with_state()
+        else:
+            # Never the scan mutex here: this mode is the non-blocking snapshot read the
+            # request path relies on, and the lock is held for a whole multi-root scan. The
+            # published tuple is immutable and carries its own stamp, so reading it once is
+            # enough; a generation that moves alongside only ever makes a marker read stale,
+            # which declines a memoized answer rather than inventing one.
+            snapshot = _snapshot()
+            index, state = snapshot[1], (_generation, snapshot[0])
         if index_state is not None:
-            index_state.append((generation, snapshot[0]))
+            index_state.append(state)
         return _resolve_from_index(
             requested,
-            snapshot[1],
+            index,
             include_companion_scope = include_companion_scope,
         )
     except Exception:
