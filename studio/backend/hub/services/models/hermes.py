@@ -30,9 +30,9 @@ from hub.services.models.common import (
 
 logger = get_logger(__name__)
 
-# llama.cpp's split naming, e.g. Model-00001-of-00005.gguf. Case-insensitive, like the suffix
-# filter below: an upper-case shard that matched the filter but not this bypassed grouping
-# altogether and every part, continuations and half-finished downloads included, became a row.
+# llama.cpp's split naming, e.g. Model-00001-of-00005.gguf. Case-insensitive like the suffix
+# filter below: a shard that matched the filter but not this bypassed grouping, so every part,
+# continuations and half-finished downloads included, became a row.
 _SPLIT_PART = re.compile(r"-(\d{5})-of-(\d{5})\.gguf$", re.IGNORECASE)
 
 
@@ -66,8 +66,8 @@ def staged_gguf_files(hermes_dir: Path) -> List[Path]:
         note_scan_incident(f"hermes dir unreadable: {hermes_dir}")
         return []
 
-    # Folded, because the shard names are compared against it and the suffix filter above
-    # accepts any casing: on Windows the parts of one split can differ in case.
+    # Folded: the shard names are compared against it, and the filter above accepts any
+    # casing, so the parts of one split can differ in case.
     names = {p.name.lower() for p in files}
     staged: List[Path] = []
     for path in files:

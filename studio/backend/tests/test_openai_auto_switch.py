@@ -13417,8 +13417,7 @@ def test_an_uppercase_hermes_split_is_still_grouped_as_one_model():
             hermes_service.staged_gguf_files(staged) == []
         ), "a half-downloaded upper-case split was offered as loadable"
 
-    # A mixed-case set is one split too: the filter accepts either casing, so the membership
-    # check cannot be case-sensitive.
+    # A mixed-case set is one split too, so the membership check cannot be case-sensitive.
     with tempfile.TemporaryDirectory() as root:
         staged = pathlib.Path(root)
         (staged / "Model-00001-of-00002.gguf").write_bytes(b"GGUF")
