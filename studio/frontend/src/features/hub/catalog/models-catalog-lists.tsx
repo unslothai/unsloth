@@ -41,7 +41,11 @@ import {
   SkeletonList,
 } from "./catalog-states";
 import { useUiSpaceScale } from "@/hooks/use-ui-space-scale";
-import { InventoryRow, VirtualRows } from "./models-catalog-rows";
+import {
+  CATALOG_COLUMN_GAP_PX,
+  InventoryRow,
+  VirtualRows,
+} from "./models-catalog-rows";
 import {
   type AllModelsView,
   type InventorySort,
@@ -396,6 +400,7 @@ export function DownloadedList({
   const pinnedScale = useUiSpaceScale();
   const pinnedRowHeightPx = Math.round(rowHeightPx * pinnedScale);
   const pinnedCellHeightPx = Math.round(cellHeightPx * pinnedScale);
+  const pinnedColumnGapPx = Math.round(CATALOG_COLUMN_GAP_PX * pinnedScale);
   const renderInventoryRow = (item: InventoryItem) => (
     <InventoryRow
       row={item.row}
@@ -481,7 +486,7 @@ export function DownloadedList({
             style={{
               display: "grid",
               gridTemplateColumns: `repeat(${Math.max(1, columns)}, minmax(0, 1fr))`,
-              columnGap: 12,
+              columnGap: pinnedColumnGapPx,
               rowGap: pinnedRowHeightPx - pinnedCellHeightPx,
               paddingBottom: pinnedRowHeightPx - pinnedCellHeightPx,
             }}

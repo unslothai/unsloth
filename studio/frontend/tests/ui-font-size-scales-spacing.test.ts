@@ -109,6 +109,13 @@ test("fixed slots that hold scaled content scale with it", () => {
 
   const lists = readSrc("features/hub/catalog/models-catalog-lists.tsx");
   assert.ok(lists.includes(HOOK), "the pinned grid ignores it");
+  // The pinned block sits directly above the virtualized rows in the same
+  // lanes, so a gutter of its own would step the card widths.
+  assert.match(
+    lists,
+    /Math\.round\(CATALOG_COLUMN_GAP_PX \* pinnedScale\)/,
+  );
+  assert.doesNotMatch(lists, /columnGap: 12,/);
 });
 
 test("the titlebar reserves room for its controls, which stay in the band", () => {

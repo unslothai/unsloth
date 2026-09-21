@@ -894,6 +894,8 @@ export const InventoryRow = memo(function InventoryRow({
 });
 
 export const CATALOG_ROW_HEIGHT_PX = 57;
+/** Gutter between lanes, shared with the hand-laid grids beside these rows. */
+export const CATALOG_COLUMN_GAP_PX = 12;
 
 export function VirtualRows<T>({
   items,
@@ -904,7 +906,7 @@ export function VirtualRows<T>({
   columns = 1,
   rowHeight = CATALOG_ROW_HEIGHT_PX,
   cellHeight = rowHeight,
-  columnGap = 12,
+  columnGap = CATALOG_COLUMN_GAP_PX,
 }: {
   items: readonly T[];
   scrollElement: HTMLDivElement | null;
