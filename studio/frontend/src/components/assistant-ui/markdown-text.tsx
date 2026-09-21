@@ -123,6 +123,18 @@ const STREAMDOWN_SHIKI_THEME = [
   unslothLightTheme,
   unslothDarkTheme,
 ] satisfies NonNullable<StreamdownProps["shikiTheme"]>;
+// Streamdown ships its own copy glyph for the table controls; swap in copy-01 like everywhere else.
+// `strokeWidth` is dropped, not forwarded: SVG types it `string | number`, HugeiconsIcon wants a number.
+function StreamdownCopyIcon({
+  size,
+  strokeWidth: _strokeWidth,
+  ...props
+}: ComponentProps<"svg"> & { size?: number }) {
+  return <HugeiconsIcon icon={Copy01Icon} size={size} {...props} />;
+}
+const STREAMDOWN_ICONS = {
+  CopyIcon: StreamdownCopyIcon,
+} satisfies NonNullable<StreamdownProps["icons"]>;
 const { withSmoothContextProvider } = INTERNAL;
 
 // Streamdown 2.5 schedules ordinary streaming blocks in an interruptible React transition, and a continuous token
@@ -926,6 +938,7 @@ function MarkdownTextRenderer({
             rehypePlugins={rehypePlugins}
             urlTransform={safeMarkdownUrl}
             controls={STREAMDOWN_CONTROLS}
+            icons={STREAMDOWN_ICONS}
             shikiTheme={STREAMDOWN_SHIKI_THEME}
             BlockComponent={StreamdownBlock}
           >
