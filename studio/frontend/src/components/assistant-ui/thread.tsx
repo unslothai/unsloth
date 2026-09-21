@@ -8486,7 +8486,7 @@ const EditComposer: FC = () => {
       return;
     }
     resendAfterCancelRef.current = false;
-    aui.composer().send();
+    aui.composer().send({ startRun: true });
   });
 
   return (
@@ -8515,23 +8515,17 @@ const EditComposer: FC = () => {
                 event.preventDefault();
                 return;
               }
-              const newText = aui.composer().getState().text;
-              const originalText = aui.message().getCopyText();
-
-              if (newText === originalText) {
-                aui.composer().cancel();
-                return;
-              }
-
               if (aui.thread().getState().isRunning) {
                 resendAfterCancelRef.current = true;
                 aui.thread().cancelRun();
                 return;
               }
-              aui.composer().send();
+              // startRun forces a run when nothing was typed: the edit composer's send
+              // drops a message whose text and attachments are unchanged.
+              aui.composer().send({ startRun: true });
             }}
           >
-            Update
+            Send
           </Button>
         </div>
       </ComposerPrimitive.Root>
