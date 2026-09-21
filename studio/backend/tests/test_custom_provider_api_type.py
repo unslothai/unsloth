@@ -6,6 +6,7 @@
 import asyncio
 import json
 import sqlite3
+from types import SimpleNamespace
 
 import httpx
 import pytest
@@ -13,6 +14,7 @@ from pydantic import ValidationError
 
 from core.inference import external_provider as ep
 from core.inference.external_provider import ExternalProviderClient
+from models.inference import ChatCompletionRequest
 from models.providers import ProviderCreate, ProviderUpdate
 from storage import providers_db
 
@@ -181,7 +183,11 @@ def test_responses_non_streaming_translation(monkeypatch):
                     "input_tokens": 4,
                     "output_tokens": 2,
                     "total_tokens": 6,
-                    "input_tokens_details": {"cached_tokens": 1},
+                    "input_tokens_details": {
+                        "cached_tokens": 1,
+                        "cache_write_tokens": 2,
+                    },
+                    "output_tokens_details": {"reasoning_tokens": 1},
                 },
             },
         )
@@ -227,8 +233,105 @@ def test_responses_non_streaming_translation(monkeypatch):
         "prompt_tokens": 4,
         "completion_tokens": 2,
         "total_tokens": 6,
-        "prompt_tokens_details": {"cached_tokens": 1},
+        "prompt_tokens_details": {"cached_tokens": 1, "cache_write_tokens": 2},
+        "completion_tokens_details": {"reasoning_tokens": 1},
     }
+
+
+@pytest.mark.parametrize("stream", [False, True])
+def test_responses_content_filter_finish_reason(monkeypatch, stream):
+    response_payload = {
+        "id": "resp_filtered",
+        "status": "incomplete",
+        "incomplete_details": {"reason": "content_filter"},
+        "output": [
+            {
+                "type": "message",
+                "content": [{"type": "output_text", "text": "partial"}],
+            }
+        ],
+    }
+
+    def handle(request):
+        if stream:
+            event = {"type": "response.incomplete", "response": response_payload}
+            return httpx.Response(200, text = f"data: {json.dumps(event)}\n\n")
+        return httpx.Response(200, json = response_payload)
+
+    async def run():
+        async with httpx.AsyncClient(transport = httpx.MockTransport(handle)) as transport:
+            monkeypatch.setattr(ep, "_http_client", transport)
+            client = ExternalProviderClient(
+                "custom", "https://gateway.example/v1", "test-key", api_type = "responses"
+            )
+            return [
+                line
+                async for line in client.stream_chat_completion(
+                    messages = [{"role": "user", "content": "Hi"}],
+                    model = "gateway-model",
+                    stream = stream,
+                )
+            ]
+
+    lines = asyncio.run(run())
+    if stream:
+        chunks = [
+            json.loads(line.removeprefix("data: "))
+            for line in lines
+            if line.startswith("data: {")
+        ]
+        assert chunks[-1]["choices"][0]["finish_reason"] == "content_filter"
+    else:
+        assert json.loads(lines[0])["choices"][0]["finish_reason"] == "content_filter"
+
+
+def test_responses_non_streaming_route_returns_json(monkeypatch):
+    def handle(request):
+        assert json.loads(request.content)["stream"] is False
+        return httpx.Response(
+            200,
+            json = {
+                "id": "resp_route",
+                "status": "completed",
+                "model": "gateway-model",
+                "output": [
+                    {
+                        "type": "message",
+                        "content": [{"type": "output_text", "text": "Hello"}],
+                    }
+                ],
+            },
+        )
+
+    async def run():
+        from routes import inference
+
+        async with httpx.AsyncClient(transport = httpx.MockTransport(handle)) as transport:
+            monkeypatch.setattr(ep, "_http_client", transport)
+            payload = ChatCompletionRequest(
+                messages = [{"role": "user", "content": "Hi"}],
+                stream = False,
+                provider_type = "custom",
+                provider_base_url = "https://gateway.example/v1",
+                provider_api_type = "responses",
+                external_model = "gateway-model",
+            )
+
+            async def disconnected():
+                return False
+
+            request = SimpleNamespace(
+                headers = {},
+                state = SimpleNamespace(skip_api_monitor = True),
+                is_disconnected = disconnected,
+            )
+            return await inference._proxy_to_external_provider(payload, request)
+
+    response = asyncio.run(run())
+    assert response.media_type == "application/json"
+    completion = json.loads(response.body)
+    assert completion["object"] == "chat.completion"
+    assert completion["choices"][0]["message"]["content"] == "Hello"
 
 
 def test_responses_non_streaming_failure_is_not_reported_as_completion(monkeypatch):

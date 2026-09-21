@@ -22579,12 +22579,12 @@ async def _proxy_to_external_provider(
     payload: ChatCompletionRequest,
     request: Request,
     current_subject: Optional[str] = None,
-) -> StreamingResponse:
+) -> Response:
     """
     Proxy a chat completion request to an external LLM provider.
 
-    Resolves provider config (DB or registry), decrypts the API key, and
-    streams the response back in OpenAI SSE format.
+    Resolves provider config (DB or registry), decrypts the API key, and returns
+    either one Chat Completion JSON object or an OpenAI-compatible SSE stream.
     """
     # Resolve provider type and base URL
     provider_type = payload.provider_type
@@ -23230,6 +23230,9 @@ async def _proxy_to_external_provider(
         api_key = api_key,
         api_type = api_type,
     )
+    _non_stream_custom_responses = (
+        provider_type == "custom" and api_type == "responses" and payload.stream is False
+    )
 
     # Schema defaults are non-None (20, 0.01, 1.0) for the local path, so only
     # `model_fields_set` separates "asked for 20" from "said nothing", and the provider keeps
@@ -23402,6 +23405,9 @@ async def _proxy_to_external_provider(
                         )
                     except Exception:
                         pass
+                if _non_stream_custom_responses:
+                    yield line
+                    continue
                 if monitor_event == "error":
                     stream_failed = True
                 # The monitor has read it by now. Providers are asked for usage on the
@@ -23427,6 +23433,8 @@ async def _proxy_to_external_provider(
                 # trusting it would append a second [DONE] after the provider's.
                 if _is_openai_sse_done(line):
                     sent_done = True
+            if _non_stream_custom_responses:
+                return
             # The loop can end without opening the turn a withheld call promised, and the
             # reason removed with that call was this stream's last one. Before [DONE], where
             # the GGUF passthrough places its own synthetic finish.
@@ -23444,6 +23452,11 @@ async def _proxy_to_external_provider(
         except Exception as exc:
             logger.error("external_provider.stream_error", error = str(exc))
             api_monitor.fail(monitor_id, _friendly_error(exc))
+            if _non_stream_custom_responses:
+                yield json.dumps(
+                    {"error": {"message": _friendly_error(exc), "type": "server_error"}}
+                )
+                return
             # Surface the failure: a bare EOF (e.g. after a read timeout) is treated
             # by the chat client as success, saving a partial answer with no error.
             yield (
@@ -23482,6 +23495,24 @@ async def _proxy_to_external_provider(
                     yield chunk
 
         return _wrapped()
+
+    if _non_stream_custom_responses:
+        body = "".join([chunk async for chunk in _stream()])
+        try:
+            content = json.loads(body)
+        except json.JSONDecodeError:
+            logger.error("external_provider.non_stream_invalid_json")
+            return JSONResponse(
+                status_code = 502,
+                content = openai_error_body(
+                    "External provider returned an invalid non-streaming response.",
+                    status = 502,
+                ),
+            )
+        return JSONResponse(
+            status_code = 502 if isinstance(content, dict) and "error" in content else 200,
+            content = content,
+        )
 
     return StreamingResponse(
         _tracked_stream(),

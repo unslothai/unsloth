@@ -25,6 +25,7 @@ from core.inference.openai_responses_shared import (
     normalize_function_schema,
     responses_function_call,
     responses_function_output,
+    responses_usage_to_chat,
     response_event_type,
 )
 from core.inference.sse_control_frames import sanitize_provider_sse_line
@@ -221,6 +222,15 @@ def _openai_response_error_message(event: Any) -> str:
     response_id = response.get("id")
     suffix = f" (response {response_id})" if isinstance(response_id, str) else ""
     return f"OpenAI response failed without error details{suffix}."
+
+
+def _openai_response_finish_reason(response: Any, *, has_tool_calls: bool = False) -> str:
+    """Map a completed Responses object to the closest Chat Completions finish reason."""
+    if isinstance(response, dict) and response.get("status") == "incomplete":
+        details = response.get("incomplete_details")
+        reason = details.get("reason") if isinstance(details, dict) else None
+        return "content_filter" if reason == "content_filter" else "length"
+    return "tool_calls" if has_tool_calls else "stop"
 
 
 def _openai_image_replay_requires_reasoning(model: str) -> bool:
@@ -5433,12 +5443,13 @@ class ExternalProviderClient:
                             retried = True
                             attempt_container_id = None
                             continue
-                        yield _error_sse_line(
+                        error_line = _error_sse_line(
                             response.status_code,
                             error_text,
                             self.provider_type,
                             response.headers.get("Retry-After"),
                         )
+                        yield error_line if stream else error_line.removeprefix("data: ")
                         return
 
                     if not stream:
@@ -5513,31 +5524,16 @@ class ExternalProviderClient:
                                 {
                                     "index": 0,
                                     "message": message,
-                                    "finish_reason": (
-                                        "tool_calls"
-                                        if tool_calls
-                                        else "length"
-                                        if status == "incomplete"
-                                        else "stop"
+                                    "finish_reason": _openai_response_finish_reason(
+                                        response_payload,
+                                        has_tool_calls = bool(tool_calls),
                                     ),
                                 }
                             ],
                         }
-                        usage = response_payload.get("usage")
-                        if isinstance(usage, dict):
-                            prompt_tokens = usage.get("input_tokens") or 0
-                            completion_tokens = usage.get("output_tokens") or 0
-                            details = usage.get("input_tokens_details")
-                            cached_tokens = (
-                                details.get("cached_tokens") if isinstance(details, dict) else 0
-                            ) or 0
-                            completion["usage"] = {
-                                "prompt_tokens": prompt_tokens,
-                                "completion_tokens": completion_tokens,
-                                "total_tokens": usage.get("total_tokens")
-                                or prompt_tokens + completion_tokens,
-                                "prompt_tokens_details": {"cached_tokens": cached_tokens},
-                            }
+                        usage = responses_usage_to_chat(response_payload.get("usage"))
+                        if usage is not None:
+                            completion["usage"] = usage
                         yield _json.dumps(completion)
                         return
 
@@ -6312,7 +6308,9 @@ class ExternalProviderClient:
                                     yield usage_line
 
                             elif event_type == "response.incomplete":
-                                incomplete_usage = (event.get("response") or {}).get("usage")
+                                incomplete_response = dict(event.get("response") or {})
+                                incomplete_response.setdefault("status", "incomplete")
+                                incomplete_usage = incomplete_response.get("usage")
                                 if isinstance(incomplete_usage, dict):
                                     last_usage = incomplete_usage
                                 # Same flush as response.completed -- truncated streams can leave a half-marker in the
@@ -6375,7 +6373,9 @@ class ExternalProviderClient:
                                         {
                                             "index": 0,
                                             "delta": {},
-                                            "finish_reason": "length",
+                                            "finish_reason": _openai_response_finish_reason(
+                                                incomplete_response
+                                            ),
                                         }
                                     ],
                                 }
