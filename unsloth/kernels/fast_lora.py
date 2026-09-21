@@ -92,10 +92,11 @@ class LoRA_MLP(torch.autograd.Function):
         h = _forward_function(e, g)
         i = matmul_lora(h, downW, downW_quant, downA, downB, downS)
 
-        # custom_fwd disables autocast, so X may mismatch the compute dtype (e.g.
-        # fp32 fast_rms_layernorm output meeting fp16/bf16 base weights). Pin the
-        # saved activation to the compute dtype (== e.dtype) so backward stays
-        # consistent; remember the incoming dtype to restore it on the dX grad.
+        # X can reach here in a dtype the projections do not compute in, and the
+        # in-place addmm_ below is not autocast-eligible, so it would not be
+        # reconciled for us. Pin the saved activation to the compute dtype
+        # (== e.dtype) so backward stays consistent; remember the incoming dtype
+        # to restore it on the dX grad.
         ctx.input_dtype = dtype
         X = X.to(e.dtype)
 
@@ -398,9 +399,9 @@ class LoRA_QKV(torch.autograd.Function):
             K = K.view(orig_shape[0], orig_shape[1], -1)
             V = V.view(orig_shape[0], orig_shape[1], -1)
 
-        # custom_fwd disables autocast; matmul_lora computed in the base weight
-        # (compute) dtype == Q.dtype. Pin the saved activation to it so backward
-        # is dtype-consistent, and remember the incoming dtype for the dX grad.
+        # matmul_lora computed in the projection compute dtype == Q.dtype, which
+        # X need not share. Pin the saved activation to it so backward is
+        # dtype-consistent, and remember the incoming dtype for the dX grad.
         ctx.input_dtype = dtype
         X = X.to(Q.dtype)
 
@@ -594,9 +595,9 @@ class LoRA_W(torch.autograd.Function):
     def forward(ctx, X: torch.Tensor, W, W_quant, A, B, S):
         dtype = X.dtype
         XW = matmul_lora(X, W, W_quant, A, B, S)
-        # custom_fwd disables autocast; pin the saved activation to the compute
-        # dtype (== XW.dtype) so backward is dtype-consistent, and remember the
-        # incoming dtype for the returned dX grad.
+        # Pin the saved activation to the compute dtype (== XW.dtype), which X
+        # need not share, so backward is dtype-consistent; remember the incoming
+        # dtype for the returned dX grad.
         ctx.input_dtype = dtype
         X = X.to(XW.dtype)
         ctx.custom_saved_tensors = (

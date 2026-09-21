@@ -298,6 +298,7 @@ torch_mm = torch.mm
 torch_mv = torch.mv
 torch_matmul = torch.matmul
 torch_addmm = torch.addmm
+torch_is_autocast_enabled = torch.is_autocast_enabled
 torch_empty = torch.empty
 torch_float32 = torch.float32
 torch_float16 = torch.float16
@@ -1091,8 +1092,6 @@ def matmul_lora(
     s,
     out = None,
 ):
-    dtype = X.dtype
-
     if X.dim() == 3:
         batch, seq_len, d = X.shape
         X = X.view(-1, X.shape[-1])
@@ -1107,28 +1106,35 @@ def matmul_lora(
             W = W.dequantize()
         else:
             W = W.contiguous()
-        # custom_fwd disables autocast, so reconcile the activation dtype to the
-        # weight (compute) dtype as autocast would (e.g. fp32 fast_rms_layernorm
-        # output meeting fp16/bf16 base weights).
-        if X.dtype != W.dtype:
+        # torch.matmul never promotes a mixed-precision pair, so reconcile the
+        # activation to the weight dtype the way a plain Linear would. Under
+        # autocast the matmul is reconciled for us, and pre-casting would only
+        # round X through a second dtype, so leave it alone there.
+        if X.dtype != W.dtype and not torch_is_autocast_enabled(DEVICE_TYPE):
             X = X.to(W.dtype)
-            dtype = W.dtype
         out = torch_matmul(X, W.t(), out = out)
     elif W.dtype == torch.float8_e4m3fn:
         out = fp8_linear(X, W, W_quant)
     else:
         W = fast_dequantize(W, W_quant, use_global_buffer = True)
         # See note above: align the activation dtype to the base weight dtype.
-        if X.dtype != W.dtype:
+        if X.dtype != W.dtype and not torch_is_autocast_enabled(DEVICE_TYPE):
             X = X.to(W.dtype)
-            dtype = W.dtype
         out = torch_matmul(X, W.t(), out = out)
     if W_quant is not None:
         del W
 
     if A is not None:
+        # The base matmul above fixes the compute dtype for this call, and under
+        # autocast that is the autocast dtype rather than W's. `addmm_` is in-place
+        # and so is not autocast-eligible, so both LoRA operands must follow `out`.
+        dtype = out.dtype
+        if X.dtype != dtype:
+            X = X.to(dtype)
         A, B = A.t(), B.t()
         XA = torch_matmul(X, A.to(dtype))
+        if XA.dtype != dtype:
+            XA = XA.to(dtype)
         out.addmm_(XA, B.to(dtype), alpha = s)
 
     return out.view(batch, seq_len, -1) if reshape else out
