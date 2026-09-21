@@ -21,6 +21,12 @@ import { getCodeFence } from "../src/features/chat/artifacts/html-fences.ts";
  * through here, so a reader watching a reply stream saw the block they were reading grow a stray
  * backtick the moment its closing delimiter landed.
  *
+ * The other direction matters just as much: a bare lazy run would accept ONE or TWO backticks as a
+ * close, so a stream that had written only its first delimiter backtick would already parse as a
+ * completed fence with that backtick deleted, and an aborted reply ending in a short backtick run
+ * would be permanently misread. A run shorter than the opener is code, so the close is `{3,}` --
+ * "at least as many" as the opener, which is three.
+ *
  * These rows are RUN rather than described, and each one names the parser's answer so the
  * expectation is CommonMark's and not this file's.
  */
@@ -123,4 +129,25 @@ test("the close is at least three, not exactly three", () => {
   );
   const five = getCodeFence("```python\nx = 1\n`````\n");
   assert.equal(five?.source, "x = 1");
+});
+
+test("a run shorter than three does not close the fence", () => {
+  // A one- or two-backtick run is CODE, so the block is still open and the collapse must decline
+  // it -- exactly what `micromark` says, and what the streaming route already did.
+  for (const short of ["`", "``"]) {
+    const markdown = `\`\`\`python\nx = 1\n${short}`;
+    assert.equal(
+      getCodeFence(markdown),
+      null,
+      `${JSON.stringify(markdown)} is not a closed fence; the short run is code, not a delimiter`,
+    );
+  }
+  assert.equal(
+    getCodeFence("```python\nx = 1\n`\n`"),
+    null,
+    "two separate one-backtick lines are still not a close",
+  );
+  // The same run one line higher is a body line, and must survive both a short and a long close.
+  assert.equal(getCodeFence("```\nfoo `\n```\n")?.source, "foo `");
+  assert.equal(getCodeFence("```\nfoo ``\n```\n")?.source, "foo ``");
 });
