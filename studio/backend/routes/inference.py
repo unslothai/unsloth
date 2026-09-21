@@ -39560,7 +39560,21 @@ async def diffusion_generate_progress(
         from core.inference.generate_outcomes import generate_failure_for_attempt
 
         raw_error = generate_failure_for_attempt(engine, attempt_id)
-        progress = {**progress, "error": raw_error, "generation_attempt": attempt_id}
+        # Active is per attempt too, not just the reason. A generation running for someone
+        # else says nothing about this one, and a settling caller that counted it as its own
+        # treated that run going idle as its own success, skipping the gallery proof.
+        mine_is_running = bool(progress.get("active")) and (
+            progress.get("generation_attempt") == attempt_id
+        )
+        progress = {
+            **progress,
+            "error": raw_error,
+            "generation_attempt": attempt_id,
+            "active": mine_is_running,
+        }
+        if not mine_is_running:
+            # Another run's step counter is not this caller's progress either.
+            progress.update(step = 0, total_steps = 0, fraction = 0.0, eta_seconds = None)
     # Classified HERE, where every other client-visible generation message is built, so
     # this stays the only place deciding what a caller may see and engine text with its
     # local paths and argv never escapes.

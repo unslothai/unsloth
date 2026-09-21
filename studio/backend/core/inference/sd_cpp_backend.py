@@ -3663,6 +3663,10 @@ class SdCppDiffusionBackend:
             "total_steps": gen.total_steps,
             "fraction": min(gen.step / gen.total_steps, 1.0),
             "eta_seconds": gen.eta_seconds,
+            # WHOSE run this is. A caller settling a lost POST that never arrived would
+            # otherwise read a concurrent client's activity as its own and take the run
+            # going idle for its own success.
+            "generation_attempt": getattr(self, "_last_generate_attempt", None),
         }
 
     def cancel_generate(self, expected_account: Optional[str] = None) -> bool:

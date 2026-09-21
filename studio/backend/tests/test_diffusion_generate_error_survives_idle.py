@@ -250,3 +250,92 @@ def test_the_native_cancel_branch_records_its_attempt_too():
     )
     # Before the re-raise, or it never runs.
     assert branch.index("_retain_generate_failure") < branch.index("raise RuntimeError(")
+
+
+@pytest.mark.parametrize("engine", ENGINES)
+def test_an_engine_says_whose_run_is_active(engine):
+    """On the active branch as well as the idle one.
+
+    A caller settling a lost POST asks whether ITS generation is running. Told only that
+    SOMETHING is, it counts a concurrent client's run as its own and reads that run going
+    idle as its own success.
+    """
+    src = _src(engine)
+    at = src.index("def generate_progress")
+    body = src[at : at + 2200]
+    assert body.count('"generation_attempt": getattr(self, "_last_generate_attempt", None),') == 2, (
+        f"{engine} does not publish the running attempt on both progress branches"
+    )
+
+
+def test_an_attempt_specific_progress_answer_is_only_about_that_attempt():
+    """The route narrows active, the step counter and the reason to the attempt asked about.
+
+    Driven rather than read: the failure mode is a field left over from the global answer,
+    which source-shape assertions are bad at catching.
+    """
+    import asyncio
+
+    import routes.inference as route
+
+    class _Engine:
+        def __init__(self, payload):
+            self.payload = payload
+
+        def generate_progress(self):
+            return dict(self.payload)
+
+        def status(self):
+            return {"loaded": True, "repo_id": "someone/model"}
+
+    running_for_someone_else = {
+        "active": True,
+        "step": 7,
+        "total_steps": 30,
+        "fraction": 7 / 30,
+        "eta_seconds": 12.0,
+        "generation_attempt": "attempt-theirs",
+    }
+
+    def answer(payload, attempt_id):
+        engine = _Engine(payload)
+        original = route.account_access
+        try:
+            route.account_access = types.SimpleNamespace(
+                managed_account = lambda: False,
+                generation_is_foreign = lambda *_a, **_k: False,
+                generation_is_mine = lambda *_a, **_k: True,
+                resident_hidden = lambda *_a, **_k: False,
+                hidden_generate_progress_response = lambda cls: cls(),
+            )
+            import core.inference.diffusion_engine_router as router
+
+            original_get = router.get_active_diffusion_engine
+            router.get_active_diffusion_engine = lambda: engine
+            try:
+                return asyncio.run(
+                    route.diffusion_generate_progress(
+                        attempt_id = attempt_id, current_subject = "owner"
+                    )
+                )
+            finally:
+                router.get_active_diffusion_engine = original_get
+        finally:
+            route.account_access = original
+
+    mine = answer(running_for_someone_else, "attempt-mine")
+    assert mine.active is False, (
+        "a run belonging to another attempt was reported as this caller's"
+    )
+    assert (mine.step, mine.total_steps, mine.eta_seconds) == (0, 0, None), (
+        "another attempt's step counter was reported as this caller's progress"
+    )
+
+    theirs = answer(running_for_someone_else, "attempt-theirs")
+    assert theirs.active is True, "the attempt that IS running must be told so"
+    assert theirs.step == 7
+
+    # And an unnamed poll still gets the global answer, which is what the progress bar and
+    # an older client read.
+    unnamed = answer(running_for_someone_else, None)
+    assert unnamed.active is True and unnamed.step == 7
