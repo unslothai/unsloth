@@ -218,6 +218,19 @@ export const zhCN = {
       organizeChats: "整理对话",
       organizeProjects: "整理项目",
       sortPinnedChats: "对置顶对话排序",
+      dragDrop: "拖放",
+      dragHints: "拖动时显示提示",
+      reorderSwitchesSort: "重新排序时切换为手动排序",
+      dragOpensFolders: "打开指针下方的文件夹",
+      moveUp: "上移",
+      moveDown: "下移",
+    },
+    drag: {
+      reorder: "重新排序",
+      pin: "固定",
+      unpin: "取消固定",
+      moveTo: "移动到 {name}",
+      moveToRecents: "移动到最近",
     },
     dialog: {
       deleteChat: {

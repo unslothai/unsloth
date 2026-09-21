@@ -223,6 +223,19 @@ export const fr = {
       organizeChats: "Organiser les discussions",
       organizeProjects: "Organiser les projets",
       sortPinnedChats: "Trier les discussions épinglées",
+      dragDrop: "Glisser-déposer",
+      dragHints: "Afficher une indication pendant le glissement",
+      reorderSwitchesSort: "Réordonner passe en ordre manuel",
+      dragOpensFolders: "Ouvrir les dossiers sous le pointeur",
+      moveUp: "Monter",
+      moveDown: "Descendre",
+    },
+    drag: {
+      reorder: "Réordonner",
+      pin: "Épingler",
+      unpin: "Désépingler",
+      moveTo: "Déplacer vers {name}",
+      moveToRecents: "Déplacer vers Récents",
     },
     dialog: {
       deleteChat: {

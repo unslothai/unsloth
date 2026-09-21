@@ -109,6 +109,23 @@ export {
   useReasoningRoundStore,
   type ReasoningRoundState,
 } from "./stores/reasoning-round-store";
+export {
+  folderRingKey,
+  planKey,
+  planSidebarDrop,
+  rowKey,
+  sectionRingKey,
+  type DropEdge,
+  type SidebarDragItem,
+  type SidebarDropAction,
+  type SidebarDropContext,
+  type SidebarDropCue,
+  type SidebarDropEffects,
+  type SidebarDropPlan,
+  type SidebarDropZone,
+  type SidebarSection,
+} from "./lib/sidebar-drag";
+export { useSidebarDrag, SPRING_OPEN_DELAY_MS } from "./hooks/use-sidebar-drag";
 export { usePinnedChatsStore } from "./stores/pinned-chats-store";
 export { usePinnedProjectsStore } from "./stores/pinned-projects-store";
 export {

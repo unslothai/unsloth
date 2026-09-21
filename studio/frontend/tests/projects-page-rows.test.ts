@@ -14,17 +14,33 @@ const PAGE = await readSrcAsync("features/chat/projects-page.tsx");
 test("a project row opens its chats in place", () => {
   assert.match(PAGE, /aria-label=\{chatsOpen \? "Hide chats" : "Show chats"\}/);
   assert.match(PAGE, /aria-expanded=\{chatsOpen\}/);
-  // Loaded once, the first time the row is opened.
-  assert.match(PAGE, /if \(projectChats\[projectId\] !== undefined\) return;/);
+  // Loaded the first time the row is opened, and again when chat history changes.
+  // Only an open loads; a close after a failed load must not.
+  assert.match(PAGE, /if \(!opening\) return;\n\s*const cached = projectChats\[projectId\];\n\s*if \(cached !== undefined && cached !== "error"\) return;\n\s*loadProjectChats\(projectId\);/);
+  // A failed reload keeps loaded rows; a pending or failed first load becomes a retryable error.
+  assert.match(PAGE, /silent && Array\.isArray\(prev\[projectId\]\)\n\s*\? prev\n\s*: \{ \.\.\.prev, \[projectId\]: "error" \}/);
+  assert.match(PAGE, /Could not load chats\. Retry/);
+  assert.ok(!PAGE.includes("[projectId]: [] }"), "a failed load is still cached as an empty list");
   assert.match(
     PAGE,
     /listStoredChatThreads\(\{ projectId, includeArchived: false \}\)/,
   );
-  // Newest first, and a row with none says so rather than showing an empty gap.
-  assert.match(PAGE, /\(b\.updatedAt \?\? b\.createdAt\) - \(a\.updatedAt \?\? a\.createdAt\)/);
+  assert.match(PAGE, /window\.addEventListener\(CHAT_HISTORY_UPDATED_EVENT, refresh\);/);
+  // Debounced, since streaming fires the event per chunk, and open rows reload in place.
+  assert.match(PAGE, /timer = setTimeout\(\(\) => \{[\s\S]*?for \(const id of open\) loadProjectChats\(id, true\);\n\s*\}, PROJECT_CHATS_REFRESH_DEBOUNCE_MS\);/);
+  assert.match(PAGE, /if \(!silent\) \{\n\s*setProjectChats\(\(prev\) => \(\{ \.\.\.prev, \[projectId\]: "loading" \}\)\);/);
+  // A closed project's pending load is invalidated with its cache entry.
+  assert.match(PAGE, /for \(const \[id, seq\] of loadSeqRef\.current\) \{\n\s*if \(!open\.has\(id\)\) loadSeqRef\.current\.set\(id, seq \+ 1\);/);
+  // A response a newer request overtook is dropped.
+  assert.match(PAGE, /if \(loadSeqRef\.current\.get\(projectId\) !== seq\) return;\n\s*setProjectChats/);
+  // Grouped as the sidebar groups them, newest first, and a row with none says so.
+  assert.match(PAGE, /groupThreads\(threads\)\.sort\(\n\s*\(a, b\) => b\.updatedAt - a\.updatedAt,/);
   assert.match(PAGE, /No chats<\/p>/);
-  // Each one opens the chat it names.
-  assert.match(PAGE, /onClick=\{\(\) => openChat\(chat\.id, project\.id\)\}/);
+  // Each one opens the chat it names; a comparison opens as one.
+  assert.match(PAGE, /onClick=\{\(\) => openChat\(chat, project\.id\)\}/);
+  assert.match(PAGE, /search: \{ compare: item\.id, project: projectId \}/);
+  // A key on a control inside the row is that control's, not the row's.
+  assert.match(PAGE, /if \(e\.target !== e\.currentTarget\) return;\n\s*if \(e\.key === "Enter" \|\| e\.key === " "\)/);
 });
 
 test("pinning a project takes one click, and says which way it goes", () => {

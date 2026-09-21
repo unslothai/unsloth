@@ -640,10 +640,12 @@ test("list header actions end where a hovered row's action does", () => {
 test("all three list headers take the same alignment", () => {
   // Pinned and Projects share one class string; Recents has its own because of
   // the translate. Two of the first, one of the second.
-  const shared =
-    SIDEBAR.split(
-      '"sidebar-sticky-label sidebar-sticky-label-following group/sidebar-header gap-1", headerRightPadding,',
-    ).length - 1;
+  // Both headers are drop zones now, so the class list is spread over lines.
+  const shared = (
+    SIDEBAR.match(
+      /"sidebar-sticky-label sidebar-sticky-label-following group\/sidebar-header gap-1",\n\s*headerRightPadding,/g,
+    ) ?? []
+  ).length;
   assert.equal(shared, 2, "Pinned and Projects");
   assert.ok(
     SIDEBAR.includes("recentsHeaderRightPadding,"),

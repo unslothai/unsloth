@@ -220,6 +220,19 @@ export const ar = {
       organizeChats: "تنظيم المحادثات",
       organizeProjects: "تنظيم المشاريع",
       sortPinnedChats: "ترتيب المحادثات المثبتة",
+      dragDrop: "السحب والإفلات",
+      dragHints: "إظهار تلميح أثناء السحب",
+      reorderSwitchesSort: "إعادة الترتيب تبدّل إلى الترتيب اليدوي",
+      dragOpensFolders: "فتح المجلدات أسفل المؤشر",
+      moveUp: "تحريك لأعلى",
+      moveDown: "تحريك لأسفل",
+    },
+    drag: {
+      reorder: "إعادة ترتيب",
+      pin: "تثبيت",
+      unpin: "إلغاء التثبيت",
+      moveTo: "نقل إلى {name}",
+      moveToRecents: "نقل إلى الأخيرة",
     },
     dialog: {
       deleteChat: {

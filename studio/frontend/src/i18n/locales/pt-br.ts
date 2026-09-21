@@ -222,6 +222,19 @@ export const ptBR = {
       organizeChats: "Organizar conversas",
       organizeProjects: "Organizar projetos",
       sortPinnedChats: "Ordenar conversas fixadas",
+      dragDrop: "Arrastar e soltar",
+      dragHints: "Mostrar uma dica ao arrastar",
+      reorderSwitchesSort: "Reordenar muda para ordem manual",
+      dragOpensFolders: "Abrir pastas sob o ponteiro",
+      moveUp: "Mover para cima",
+      moveDown: "Mover para baixo",
+    },
+    drag: {
+      reorder: "Reordenar",
+      pin: "Fixar",
+      unpin: "Desafixar",
+      moveTo: "Mover para {name}",
+      moveToRecents: "Mover para Recentes",
     },
     dialog: {
       deleteChat: {

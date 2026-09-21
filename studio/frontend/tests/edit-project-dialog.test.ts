@@ -116,7 +116,7 @@ test("the dialog commits on Enter and on the chord", () => {
   );
   assert.match(
     DIALOG,
-    /onKeyDown=\{\(e\) => \{\n\s*if \(e\.key === "Enter"\) \{\n\s*e\.preventDefault\(\);\n\s*void save\(\);/,
+    /onKeyDown=\{\(e\) => \{\n\s*if \(e\.key === "Enter"\) \{\n\s*e\.preventDefault\(\);\n(?:\s*\/\/.*\n)*\s*e\.stopPropagation\(\);\n\s*void save\(\);/,
   );
 });
 
