@@ -14,6 +14,8 @@ interface ToolActivityTransition {
   isRunning: boolean;
   /** The answer has started, so the call is finished and no longer worth watching. */
   hasText: boolean;
+  /** null until the user clicks this card's trigger. */
+  override?: boolean | null;
 }
 
 /** Where a card sits after the setting, the run or the answer changed. Changing the setting
@@ -25,9 +27,15 @@ export function resolveToolActivityOpen({
   previousVisibility,
   isRunning,
   hasText,
+  override = null,
 }: ToolActivityTransition) {
   if (visibility !== previousVisibility) {
     return defaultOpenFor(visibility, isRunning && !hasText);
+  }
+  // A click outranks the automatic rules until the setting changes, so a card the user opened
+  // stays open when the answer text arrives.
+  if (override !== null) {
+    return override;
   }
   // Only auto keeps moving on its own; the other two stay where the user last put them.
   if (visibility !== "auto") {

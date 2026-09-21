@@ -10,24 +10,36 @@ import { resolveToolActivityOpen } from "./tool-activity-open-state";
 
 export function useToolActivityOpen(isRunning: boolean, hasText: boolean) {
   const visibility = useChatPreferencesStore((state) => state.toolVisibility);
-  const [open, setOpen] = useState(() =>
-    defaultOpenFor(visibility, isRunning && !hasText),
-  );
+  const [state, setState] = useState(() => ({
+    open: defaultOpenFor(visibility, isRunning && !hasText),
+    // null until the user clicks the trigger, so a controlled card can keep a manual open
+    // the same way the uncontrolled cards and groups do.
+    override: null as boolean | null,
+  }));
   const previousVisibility = useRef(visibility);
 
   useEffect(() => {
     const previous = previousVisibility.current;
     previousVisibility.current = visibility;
-    setOpen((currentOpen) =>
-      resolveToolActivityOpen({
-        currentOpen,
-        visibility,
-        previousVisibility: previous,
-        isRunning,
-        hasText,
-      }),
-    );
+    setState((current) => {
+      // A setting change hands the card back to the setting, matching the uncontrolled cards.
+      const override = previous === visibility ? current.override : null;
+      return {
+        override,
+        open: resolveToolActivityOpen({
+          currentOpen: current.open,
+          visibility,
+          previousVisibility: previous,
+          isRunning,
+          hasText,
+          override,
+        }),
+      };
+    });
   }, [isRunning, hasText, visibility]);
 
-  return [open, setOpen] as const;
+  return [
+    state.open,
+    (open: boolean) => setState({ open, override: open }),
+  ] as const;
 }

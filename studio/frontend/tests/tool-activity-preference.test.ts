@@ -315,6 +315,30 @@ test("changing the setting hands the card back to the automatic rules", () => {
   );
 });
 
+test("a hand-opened controlled card keeps its open when the answer starts", () => {
+  const transition = (hasText: boolean, override?: boolean | null) =>
+    resolveToolActivityOpen({
+      currentOpen: true,
+      visibility: "auto",
+      previousVisibility: "auto",
+      isRunning: false,
+      hasText,
+      override,
+    });
+  assert.equal(transition(false, true), true);
+  assert.equal(
+    transition(true, true),
+    true,
+    "the answer arriving closed a controlled card the user opened",
+  );
+  assert.equal(
+    transition(true),
+    false,
+    "an untouched card must still close when the answer starts",
+  );
+});
+
+
 test("fallback cards react to live preference changes", () => {
   const manuallyOpen = {
     visibility: "auto" as const,
