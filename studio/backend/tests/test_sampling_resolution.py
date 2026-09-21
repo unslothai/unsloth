@@ -142,16 +142,6 @@ def test_qwen38_reuses_qwen36_sampling_defaults():
     }
 
 
-
-
-
-
-
-
-
-
-
-
 def test_repetition_penalty_not_auto_recommended(monkeypatch):
     # The Chat UI's mergeBackendRecommendedInference never adopts a backend repetition_penalty
     # (e.g. lfm2's family value 1.05), so the server must not auto-apply one either. It stays at
@@ -276,12 +266,8 @@ def test_fill_recommended_sampling_openai_operator_pin_overrides_client(monkeypa
     assert payload.temperature == 0.9  # operator pin wins even over an explicit client value
 
 
-
-
 @pytest.mark.parametrize("thinking_mode", [True, False])
-def test_chat_route_lifts_harness_template_kwargs_before_sampling(
-    monkeypatch, thinking_mode
-):
+def test_chat_route_lifts_harness_template_kwargs_before_sampling(monkeypatch, thinking_mode):
     """Exercise the DeepSeek Harness request shape through the real chat route.
 
     The route must lift the extra-body ``chat_template_kwargs`` onto the typed field
@@ -387,11 +373,7 @@ def test_chat_route_lifts_harness_template_kwargs_before_sampling(
     ],
 )
 def test_chat_route_normalizes_reasoning_effort_before_generation(
-    monkeypatch,
-    request_kwargs,
-    expected_thinking,
-    expected_effort,
-    expected_preserve,
+    monkeypatch, request_kwargs, expected_thinking, expected_effort, expected_preserve
 ):
     import asyncio
     from types import SimpleNamespace
@@ -517,24 +499,6 @@ def test_fill_recommended_sampling_completions_operator_pin(monkeypatch):
     assert "repetition_penalty" not in body  # never leak the schema field name into the body
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 @pytest.mark.parametrize("effort", ["hihg", ""])
 def test_count_tokens_rejects_an_effort_the_chat_endpoint_would_reject(effort):
     from models.inference import ChatCountTokensRequest
@@ -543,10 +507,6 @@ def test_count_tokens_rejects_an_effort_the_chat_endpoint_would_reject(effort):
         ChatCountTokensRequest.model_validate(
             {"messages": [{"role": "user", "content": "hi"}], "reasoning_effort": effort}
         )
-
-
-
-
 
 
 @pytest.mark.parametrize(
@@ -707,5 +667,3 @@ def test_an_anthropic_derived_boolean_stays_out_of_the_explicit_field_set():
     inference_route._normalize_chat_reasoning_controls(payload)
     # The nested control is the higher-priority source, so it wins over the derived one.
     assert payload.enable_thinking is False
-
-
