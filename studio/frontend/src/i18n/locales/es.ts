@@ -215,17 +215,10 @@ export const es = {
       priority: "Prioridad",
       lastUpdated: "Última actualización",
       manualOrder: "Orden manual",
-      priorityHint: "Activos y no leídos primero",
-      lastUpdatedHint: "Más recientes primero",
-      manualOrderHint: "Arrastra las filas para reordenarlas",
       switchedToManual: "Orden manual: arrastra las filas para reordenarlas",
       organizeChats: "Organizar chats",
       organizeProjects: "Organizar proyectos",
       sortPinnedChats: "Ordenar chats fijados",
-      dragDrop: "Arrastrar y soltar",
-      dragHints: "Mostrar una pista al arrastrar",
-      reorderSwitchesSort: "Reordenar cambia a orden manual",
-      dragOpensFolders: "Abrir carpetas bajo el puntero",
       moveUp: "Subir",
       moveDown: "Bajar",
     },
@@ -910,6 +903,18 @@ export const es = {
         revoked: "Todos los enlaces de vista previa revocados",
         revokeError: "No se pudieron revocar los enlaces de vista previa",
       },
+      managedProviderUrls: {
+        sectionTitle: "Cuentas gestionadas",
+        enableLabel: "Conexiones locales y de red",
+        enableDescription:
+          "Permite que las cuentas gestionadas apunten sus conexiones a direcciones locales o de red, como un servidor Ollama o llama.cpp en este equipo o en tu red local. Desactivado de forma predeterminada, porque permite a esas cuentas alcanzar servicios que se ejecutan en tu equipo y en tu red.",
+        lockedByEnvironment:
+          "Definido por UNSLOTH_STUDIO_BLOCK_PRIVATE_PROVIDER_URLS=1 en este servidor, que rechaza las direcciones privadas para todas las cuentas.",
+        loadError:
+          "No se pudo cargar la configuración de conexiones de las cuentas gestionadas.",
+        saveError:
+          "No se pudo guardar la configuración de conexiones de las cuentas gestionadas.",
+      },
       notifications: {
         sectionTitle: "Notificaciones",
         showLlamaUpdates: "Notificaciones de actualización de llama.cpp",
@@ -1562,11 +1567,6 @@ export const es = {
         "El texto pegado de {count} caracteres o más se convierte en un adjunto .txt. El texto más corto queda en el cuadro de mensaje.",
       pastedTextOffDescription:
         "Todo el texto pegado queda en el cuadro de mensaje, sin importar su longitud.",
-      compactionDescriptionInherit: "Sigue la política de contexto del servidor.",
-      compactionDescriptionCheckpoint:
-        "Conserva el último intercambio y las instrucciones permanentes que quepan, y archiva el resto para poder consultarlo.",
-      compactionDescriptionRolling:
-        "Archiva los turnos más antiguos para conservar el historial reciente y el espacio adicional seleccionado.",
       projectsSection: "Mostrar la sección Proyectos",
       projectsSectionDescription:
         "Agrupa los chats de proyecto bajo un encabezado Proyectos. Desactívalo para listarlos en Recientes.",
@@ -1614,25 +1614,19 @@ export const es = {
       autoCompact: "Compactar automáticamente chats largos",
       autoCompactDescription:
         "Los turnos antiguos pasan a un archivo consultable al llenarse el contexto de un chat.",
-      compactionStyle: "Cuando se llena el contexto",
-      compactionStyleDescription:
-        "Usar el valor del servidor conserva UNSLOTH_CONTEXT_POLICY. Restablecer la conversación mantiene el último turno y las instrucciones permanentes que quepan. Una ventana deslizante descarta los turnos más antiguos y puede conservar más historial reciente.",
-      compactionStyleInherit: "Usar valor del servidor",
-      compactionStyleCheckpoint: "Restablecer conversación",
-      compactionStyleRollingDefault:
-        "Archivar turnos antiguos (~25% de espacio extra)",
-      compactionStyleRolling10:
-        "Archivar turnos antiguos (~10% de espacio extra)",
-      compactionStyleRolling5:
-        "Archivar turnos antiguos (~5% de espacio extra)",
-      compactionStyleRollingNone:
-        "Archivar turnos antiguos (sin recorte adicional)",
       autoCompactKeywords:
         "compactación compactar automáticamente contexto ventana truncar deslizante checkpoint margen archivo recuperación búsqueda compaction rolling headroom archive retrieval rag",
+      visibility: {
+        collapsed: "Contraído",
+        auto: "Expandir mientras se ejecuta",
+        expanded: "Siempre expandido",
+      },
+      visibilityKeywords:
+        "contraer contraído expandir expandido abierto cerrado razonamiento pensamiento llamadas de herramientas actividad agrupar streaming",
       thinking: {
-        collapseByDefault: "Contraer el razonamiento de forma predeterminada",
-        collapseByDefaultDescription:
-          "Mantén el razonamiento contraído mientras el modelo piensa, en lugar de abrirlo automáticamente. Expande cualquier bloque para leerlo.",
+        visibility: "Razonamiento",
+        visibilityDescription:
+          "Cómo se abre el razonamiento. Puedes expandir o contraer cualquier bloque por tu cuenta.",
       },
       currentDate: {
         label: "Indicar al modelo la fecha de hoy",
@@ -1642,12 +1636,14 @@ export const es = {
         saveError: "No se pudieron actualizar los ajustes de fecha actual",
       },
       tools: {
-        collapseByDefault: "Contraer la actividad de herramientas por defecto",
-        collapseByDefaultDescription:
-          "Mantén contraídas las entradas y salidas de las herramientas mientras se ejecutan. Expande cualquier fila para inspeccionarla.",
-        foldIntoThinking: "Plegar las llamadas de herramientas en Pensamiento",
+        visibility: "Llamadas de herramientas",
+        visibilityDescription:
+          "Cómo se abre la actividad de herramientas. Puedes expandir o contraer cualquier llamada por tu cuenta.",
+        foldIntoThinking: "Agrupar las llamadas de herramientas en Razonamiento",
         foldIntoThinkingDescription:
-          "Oculta las llamadas de herramientas de un turno hasta abrir su bloque de Pensamiento.",
+          "Muestra las llamadas de herramientas de un turno dentro de su bloque de Razonamiento en lugar de en filas propias.",
+        foldIntoThinkingBlocked:
+          "No disponible mientras las llamadas de herramientas estén en «Siempre expandido», que las mantiene en filas propias.",
       },
       webSearch: {
         title: "Búsqueda web",

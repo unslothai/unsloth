@@ -39,8 +39,6 @@ export interface UseSidebarDragOptions {
   onDrop: (plan: SidebarDropPlan, drag: SidebarDragItem) => void;
   /** Opens the closed folder or section the pointer rested on. */
   onSpringOpen?: (zone: SidebarDropZone) => void;
-  /** Whether resting on a closed folder or section opens it. */
-  springOpen: boolean;
   /** The hint element. Positioned directly, so pointer moves do not re-render the sidebar. */
   hintRef?: React.RefObject<HTMLDivElement | null>;
 }
@@ -176,7 +174,7 @@ export function useSidebarDrag(options: UseSidebarDragOptions): SidebarDragApi {
             return;
           }
           showPlan(next);
-          if (zoneOptions?.closed && optionsRef.current.springOpen) {
+          if (zoneOptions?.closed) {
             if (spring.current?.key !== springKey) {
               cancelSpring();
               spring.current = {

@@ -215,17 +215,10 @@ export const ptBR = {
       priority: "Prioridade",
       lastUpdated: "Última atualização",
       manualOrder: "Ordem manual",
-      priorityHint: "Ativos e não lidos primeiro",
-      lastUpdatedHint: "Mais recentes primeiro",
-      manualOrderHint: "Arraste as linhas para reordenar",
       switchedToManual: "Ordem manual: arraste as linhas para reordenar",
       organizeChats: "Organizar conversas",
       organizeProjects: "Organizar projetos",
       sortPinnedChats: "Ordenar conversas fixadas",
-      dragDrop: "Arrastar e soltar",
-      dragHints: "Mostrar uma dica ao arrastar",
-      reorderSwitchesSort: "Reordenar muda para ordem manual",
-      dragOpensFolders: "Abrir pastas sob o ponteiro",
       moveUp: "Mover para cima",
       moveDown: "Mover para baixo",
     },
@@ -901,6 +894,18 @@ export const ptBR = {
         revoked: "Todos os links de pré-visualização foram revogados",
         revokeError: "Não foi possível revogar os links de pré-visualização",
       },
+      managedProviderUrls: {
+        sectionTitle: "Contas gerenciadas",
+        enableLabel: "Conexões locais e de rede",
+        enableDescription:
+          "Permite que contas gerenciadas apontem suas conexões para endereços locais ou de rede, como um servidor Ollama ou llama.cpp neste computador ou na sua rede local. Desativado por padrão, porque permite que essas contas alcancem serviços em execução no seu computador e na sua rede.",
+        lockedByEnvironment:
+          "Definido por UNSLOTH_STUDIO_BLOCK_PRIVATE_PROVIDER_URLS=1 neste servidor, que recusa endereços privados para todas as contas.",
+        loadError:
+          "Não foi possível carregar as configurações de conexão das contas gerenciadas.",
+        saveError:
+          "Não foi possível salvar as configurações de conexão das contas gerenciadas.",
+      },
       notifications: {
         sectionTitle: "Notificações",
         showLlamaUpdates: "Notificações de atualização do llama.cpp",
@@ -1549,11 +1554,6 @@ export const ptBR = {
         "Texto colado com {count} caracteres ou mais vira um anexo .txt. Textos menores ficam na caixa de mensagem.",
       pastedTextOffDescription:
         "Todo o texto colado fica na caixa de mensagem, independentemente do tamanho.",
-      compactionDescriptionInherit: "Segue a política de contexto do servidor.",
-      compactionDescriptionCheckpoint:
-        "Mantém a última troca de mensagens e as instruções permanentes que couberem, e arquiva o restante para consulta.",
-      compactionDescriptionRolling:
-        "Arquiva os turnos mais antigos para manter o histórico recente e o espaço extra selecionado.",
       projectsSection: "Mostrar a seção Projetos",
       projectsSectionDescription:
         "Agrupa as conversas de projeto sob um título Projetos. Desative para listá-las em Recentes.",
@@ -1601,25 +1601,19 @@ export const ptBR = {
       autoCompact: "Compactar automaticamente chats longos",
       autoCompactDescription:
         "Os turnos antigos vão para um arquivo pesquisável quando um chat enche o contexto.",
-      compactionStyle: "Quando o contexto estiver cheio",
-      compactionStyleDescription:
-        "Usar o padrão do servidor preserva UNSLOTH_CONTEXT_POLICY. Redefinir a conversa mantém o turno mais recente e as instruções permanentes que couberem. Uma janela deslizante descarta os turnos mais antigos e pode manter mais histórico recente.",
-      compactionStyleInherit: "Usar padrão do servidor",
-      compactionStyleCheckpoint: "Redefinir conversa",
-      compactionStyleRollingDefault:
-        "Arquivar turnos antigos (~25% de espaço extra)",
-      compactionStyleRolling10:
-        "Arquivar turnos antigos (~10% de espaço extra)",
-      compactionStyleRolling5:
-        "Arquivar turnos antigos (~5% de espaço extra)",
-      compactionStyleRollingNone:
-        "Arquivar turnos antigos (sem corte extra)",
       autoCompactKeywords:
         "compactação compactar automaticamente contexto janela truncar deslizante checkpoint margem arquivo recuperação busca compaction rolling headroom archive retrieval rag",
+      visibility: {
+        collapsed: "Recolhido",
+        auto: "Expandir durante a execução",
+        expanded: "Sempre expandido",
+      },
+      visibilityKeywords:
+        "recolher recolhido expandir expandido aberto fechado raciocínio pensamento chamadas de ferramentas atividade agrupar streaming",
       thinking: {
-        collapseByDefault: "Recolher o raciocínio por padrão",
-        collapseByDefaultDescription:
-          "Mantém o raciocínio recolhido enquanto o modelo pensa, em vez de abri-lo automaticamente. Expanda um bloco para lê-lo.",
+        visibility: "Raciocínio",
+        visibilityDescription:
+          "Como o raciocínio abre. Você ainda pode expandir ou recolher qualquer bloco.",
       },
       currentDate: {
         label: "Informar a data de hoje ao modelo",
@@ -1629,12 +1623,14 @@ export const ptBR = {
         saveError: "Não foi possível atualizar as configurações de data atual",
       },
       tools: {
-        collapseByDefault: "Recolher atividade de ferramentas por padrão",
-        collapseByDefaultDescription:
-          "Mantém entradas e saídas das ferramentas recolhidas durante a execução. Expanda uma linha para inspecioná-la.",
-        foldIntoThinking: "Recolher chamadas de ferramentas no Pensamento",
+        visibility: "Chamadas de ferramentas",
+        visibilityDescription:
+          "Como a atividade de ferramentas abre. Você ainda pode expandir ou recolher qualquer chamada.",
+        foldIntoThinking: "Agrupar chamadas de ferramentas no Raciocínio",
         foldIntoThinkingDescription:
-          "Oculta as chamadas de ferramentas de um turno até abrir o bloco de Pensamento.",
+          "Mostra as chamadas de ferramentas de um turno dentro do bloco de Raciocínio em vez de em linhas próprias.",
+        foldIntoThinkingBlocked:
+          "Indisponível enquanto as chamadas de ferramentas estiverem em «Sempre expandido», que as mantém em linhas próprias.",
       },
       webSearch: {
         title: "Busca na web",
