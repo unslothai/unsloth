@@ -895,6 +895,33 @@ class TestEffectiveLoadIn4bit(unittest.TestCase):
             cfg = SimpleNamespace(is_lora = True, path = d, base_model = "meta/Llama-3-8B")
             self.assertFalse(self.route._effective_load_in_4bit(cfg, True))
 
+    def test_cpt_method_non_bnb_base_flips_to_16bit(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            self._write_adapter(d, {"unsloth_training_method": "CPT"})
+            cfg = SimpleNamespace(is_lora = True, path = d, base_model = "unsloth/Qwen3-4B")
+            self.assertFalse(self.route._effective_load_in_4bit(cfg, True))
+
+    def test_cpt_method_bnb_base_keeps_4bit(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            self._write_adapter(d, {"unsloth_training_method": "CPT"})
+            cfg = SimpleNamespace(
+                is_lora = True, path = d, base_model = "unsloth/Qwen3-4B-unsloth-bnb-4bit"
+            )
+            self.assertTrue(self.route._effective_load_in_4bit(cfg, True))
+
+    def test_recorded_precision_wins(self):
+        import tempfile
+        for recorded in (True, False):
+            for requested in (True, False):
+                with tempfile.TemporaryDirectory() as d:
+                    self._write_adapter(
+                        d, {"unsloth_training_method": "CPT", "unsloth_load_in_4bit": recorded}
+                    )
+                    cfg = SimpleNamespace(is_lora = True, path = d, base_model = "unsloth/Qwen3-4B")
+                    self.assertIs(self.route._effective_load_in_4bit(cfg, requested), recorded)
+
     def test_malformed_adapter_config_returns_request(self):
         import tempfile
         with tempfile.TemporaryDirectory() as d:

@@ -207,8 +207,9 @@ def _needs_nemotron_trust(model_name: str, hf_token: str | None = None) -> bool:
 def _resolve_lora_4bit(mc, load_in_4bit: bool) -> bool:
     """Reconcile load_in_4bit with a LoRA adapter's recorded training method.
 
-    lora -> base is full precision (4bit off); qlora -> base is quantized (4bit
-    on); unknown method -> force off only when the base is not a -bnb-4bit repo.
+    A recorded unsloth_load_in_4bit wins; otherwise lora -> base is full precision
+    (4bit off); qlora -> base is quantized (4bit on); any other method -> force off
+    only when the base is not a -bnb-4bit repo.
     A missing or unreadable adapter_config.json leaves the value unchanged.
     """
     if not (mc.is_lora and mc.path):
@@ -223,6 +224,15 @@ def _resolve_lora_4bit(mc, load_in_4bit: bool) -> bool:
     try:
         with open(adapter_cfg_path, encoding = "utf-8-sig") as f:
             adapter_cfg = json.load(f)
+        trained_in_4bit = adapter_cfg.get("unsloth_load_in_4bit")
+        if isinstance(trained_in_4bit, bool):
+            if trained_in_4bit != load_in_4bit:
+                logger.info(
+                    "adapter_config.json says unsloth_load_in_4bit=%s — setting load_in_4bit=%s",
+                    trained_in_4bit,
+                    trained_in_4bit,
+                )
+            return trained_in_4bit
         training_method = adapter_cfg.get("unsloth_training_method")
         if training_method == "lora" and load_in_4bit:
             logger.info("adapter_config.json says lora — setting load_in_4bit=False")
@@ -231,13 +241,14 @@ def _resolve_lora_4bit(mc, load_in_4bit: bool) -> bool:
             logger.info("adapter_config.json says qlora — setting load_in_4bit=True")
             return True
         if (
-            not training_method
+            training_method != "qlora"
             and mc.base_model
             and "-bnb-4bit" not in mc.base_model.lower()
             and load_in_4bit
         ):
             logger.info(
-                "No training method, base model has no -bnb-4bit — setting load_in_4bit=False"
+                "Training method %r, base model has no -bnb-4bit — setting load_in_4bit=False",
+                training_method,
             )
             return False
     except Exception as e:

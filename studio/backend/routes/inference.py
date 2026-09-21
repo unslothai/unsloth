@@ -10612,12 +10612,15 @@ def _effective_load_in_4bit(config: ModelConfig, requested: bool) -> bool:
     except Exception as e:
         logger.warning(f"Could not read adapter_config.json: {e}")
         return load_in_4bit
+    trained_in_4bit = adapter_cfg.get("unsloth_load_in_4bit")
+    if isinstance(trained_in_4bit, bool):
+        return trained_in_4bit
     training_method = adapter_cfg.get("unsloth_training_method")
     if training_method == "lora":
         return False
     if training_method == "qlora":
         return True
-    if not training_method and config.base_model and "-bnb-4bit" not in config.base_model.lower():
+    if config.base_model and "-bnb-4bit" not in config.base_model.lower():
         return False
     return load_in_4bit
 
