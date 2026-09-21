@@ -147,3 +147,28 @@ def test_posix_is_untouched(auth, monkeypatch, tmp_path):
     monkeypatch.setattr(auth.sys, "executable", str(bin_dir / "python"))
 
     assert auth._reset_password_command() == f"{bin_dir / 'unsloth'} studio reset-password"
+
+
+def test_the_unauthenticated_401_body_names_no_host_path(auth, monkeypatch, tmp_path):
+    """The console hint may name the install; the login failure body may not.
+
+    POST /api/auth/login takes no credential and the browser-served default resolves CORS to
+    ["*"], so any page the user has open can read this body. An absolute path built from
+    sys.executable hands it the OS account name and the install layout.
+    """
+    monkeypatch.setattr(auth.os, "name", "posix")
+    bin_dir = tmp_path / "home" / "alice" / "unsloth" / ".venv" / "bin"
+    bin_dir.mkdir(parents = True)
+    (bin_dir / "unsloth").write_text("", encoding = "utf-8")
+    monkeypatch.setattr(auth.sys, "executable", str(bin_dir / "python"))
+
+    # The console form is unchanged: that is the one the person at the machine reads.
+    assert str(bin_dir) in auth._reset_password_command()
+
+    for multi_user in (False, True):
+        monkeypatch.setattr(auth.policy, "installation_is_multi_user", lambda: multi_user)
+        detail = auth._login_failure_detail()
+        assert str(bin_dir) not in detail, multi_user
+        assert "alice" not in detail, multi_user
+        # Still actionable, which is the whole point of the hint.
+        assert "unsloth studio reset-password" in detail, multi_user

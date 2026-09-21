@@ -94,6 +94,17 @@ def _cli_is_inside(prefix: str) -> bool:
         return False
 
 
+def _reset_password_command_on_path() -> str:
+    """The reset command in its PATH form, naming nothing about this host.
+
+    The absolute forms below are for the person sitting at the machine. This one is the only
+    shape safe to put in a response body, since an unauthenticated 401 is readable by any origin.
+    """
+    if os.name == "nt":
+        return "unsloth.cmd studio reset-password"
+    return "unsloth studio reset-password"
+
+
 def _reset_password_command() -> str:
     """Shell command shown in the 'incorrect password' hint.
 
@@ -132,9 +143,7 @@ def _reset_password_command() -> str:
                 return f"{shlex.quote(exe)} studio reset-password"
     except Exception:
         pass
-    if os.name == "nt":
-        return "unsloth.cmd studio reset-password"
-    return "unsloth studio reset-password"
+    return _reset_password_command_on_path()
 
 
 # Per-(ip, username) bucket + per-IP aggregate. Account bucket stops one user's typos from blocking others; the
@@ -433,16 +442,21 @@ def auth_status() -> AuthStatusResponse:
 
 
 def _login_failure_detail() -> str:
-    """Recovery hint for a rejected login. The name shown is a placeholder, not the submitted."""
+    """Recovery hint for a rejected login. The name shown is a placeholder, not the submitted.
+
+    PATH form only: this body is produced before any credential is verified and the browser-served
+    default resolves CORS to ["*"], so an absolute path built from ``sys.executable`` would hand the
+    local account name and the install layout to any page the user happens to have open. The 429
+    beside this one withholds the client IP for the same reason.
+    """
+    command = _reset_password_command_on_path()
     if policy.installation_is_multi_user():
         return (
             "Incorrect username, password or setup code. Ask the installation owner to reset "
-            f"the account, by running this on the Unsloth Studio host: {_reset_password_command()} "
+            f"the account, by running this on the Unsloth Studio host: {command} "
             "--username <name>"
         )
-    return (
-        f"Incorrect password. To reset it, run this in your terminal: {_reset_password_command()}"
-    )
+    return f"Incorrect password. To reset it, run this in your terminal: {command}"
 
 
 @router.post("/login", response_model = Token)
