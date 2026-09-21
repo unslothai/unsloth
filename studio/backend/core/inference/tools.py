@@ -16850,8 +16850,12 @@ def _check_signal_escape_patterns(code: str):
                         )
 
             if recognised:
-                # 1) Upload-shape check (host-independent).
-                if _call_is_upload_shape(node, fq):
+                # 1) Upload-shape check (host-independent), against EVERY recognised candidate for
+                # the same reason the destination signature is: `from requests import post as
+                # fetch` with an uncalled `from requests import get as fetch` really calls
+                # `requests.post`, and checking only the sorted-first `requests.get` let a file
+                # upload to an allowlisted host through.
+                if any(_call_is_upload_shape(node, c) for c in recognised):
                     network_calls.append(
                         {
                             "type": "upload_blocked",

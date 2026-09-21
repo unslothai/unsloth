@@ -545,6 +545,33 @@ class TestAliasResolutionOnlyEverAddsCandidates:
     def test_each_candidate_is_read_with_its_own_signature(self, code):
         _blocked(code, expect_phrase = "Blocked: host not in sandbox allowlist")
 
+    def test_the_upload_shape_is_checked_against_every_candidate(self):
+        # `requests.post` with `files=` is an upload; the sorted-first `requests.get` is not, and
+        # checking only that one let the file through to an allowlisted host.
+        _blocked(
+            "from requests import post as fetch\n"
+            "def unused():\n"
+            "    from requests import get as fetch\n"
+            'fetch("https://huggingface.co/api/x", files = {"f": open("x")})',
+            expect_phrase = "Blocked: file upload disallowed in sandbox",
+        )
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            pytest.param(
+                'import requests\nrequests.post("https://huggingface.co/api/x", json = {"a": 1})',
+                id = "post_without_a_file",
+            ),
+            pytest.param(
+                'from requests import get as fetch\nfetch("https://huggingface.co/x")',
+                id = "alias_with_only_a_get_candidate",
+            ),
+        ],
+    )
+    def test_the_upload_check_does_not_overblock(self, code):
+        _ok(code)
+
     def test_candidates_disagreeing_on_the_signature_do_not_overblock(self):
         _ok(
             "from requests import request as fetch\n"
