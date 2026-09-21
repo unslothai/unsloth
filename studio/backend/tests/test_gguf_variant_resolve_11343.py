@@ -19,6 +19,18 @@ def test_pq2_0_is_not_advertised_as_q2_0():
     assert gguf_variant_key(_BONSAI_FILE) == "PQ2_0"
 
 
+def test_packed_and_grouped_q2_labels_stay_distinct():
+    assert extract_quant_token("Ternary-Bonsai-1.7B-PQ2_0.gguf") == "PQ2_0"
+    assert extract_quant_token("Ternary-Bonsai-1.7B-Q2_0.gguf") == "Q2_0"
+    assert extract_quant_token("Ternary-Bonsai-1.7B-Q2_0_g64.gguf") == "Q2_0_g64"
+    keys = {
+        gguf_variant_key("Ternary-Bonsai-1.7B-PQ2_0.gguf").casefold(),
+        gguf_variant_key("Ternary-Bonsai-1.7B-Q2_0.gguf").casefold(),
+        gguf_variant_key("Ternary-Bonsai-1.7B-Q2_0_g64.gguf").casefold(),
+    }
+    assert keys == {"pq2_0", "q2_0", "q2_0_g64"}
+
+
 def test_resolve_pq2_0_from_live_listing(monkeypatch):
     monkeypatch.setattr(
         "huggingface_hub.list_repo_files",

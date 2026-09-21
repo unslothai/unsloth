@@ -84,7 +84,7 @@ export function ggufVariantFromStorageKey(key: string): string | null {
 const BPW_SUFFIX = /-[0-9]+(?:\.[0-9]+)?bpw$/i;
 // One source for the anchored test and the scan below. Mirrors _GGUF_QUANT_RE in gguf.py.
 const QUANT_TOKEN_SOURCE =
-  "(UD-)?(MXFP[0-9]+(?:_[A-Z0-9]+)*|IQ[0-9]+_[A-Z]+(?:_[A-Z0-9]+)?|TQ[0-9]+_[0-9]+|PQ[0-9]+_[0-9]+|Q[0-9]+_K_[A-Z]+|Q[0-9]+_[0-9]+|Q[0-9]+_K|BF16|F16|F32)";
+  "(UD-)?(MXFP[0-9]+(?:_[A-Z0-9]+)*|IQ[0-9]+_[A-Z]+(?:_[A-Z0-9]+)?|TQ[0-9]+_[0-9]+|Q[0-9]+_K_[A-Z]+|P?Q[0-9]+_[0-9]+(?:_G[0-9]+)?|Q[0-9]+_K|BF16|F16|F32)";
 const KNOWN_QUANT = new RegExp(`^${QUANT_TOKEN_SOURCE}$`, "i");
 const QUANT_TOKEN = new RegExp(QUANT_TOKEN_SOURCE, "gi");
 const MAX_QUANT_SUFFIX_LEN = 64;
