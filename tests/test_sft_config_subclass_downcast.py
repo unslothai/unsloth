@@ -18,8 +18,10 @@ Lifted out of ``unsloth/models/rl.py`` with ``ast`` the same way
 from __future__ import annotations
 
 import ast
+import copyreg
 import inspect
 import logging
+import sys
 from pathlib import Path
 
 import pytest
@@ -27,7 +29,13 @@ import pytest
 
 SOURCE_PATH = Path(__file__).resolve().parents[1] / "unsloth" / "models" / "rl.py"
 
-NAMES = ("_is_unsloth_patched_config", "_widen_sft_config_instance_check")
+NAMES = (
+    "_is_unsloth_patched_config",
+    "_reduce_pristine_rl_config",
+    "_config_reduction_is_safe",
+    "_register_config_pickle_fallback",
+    "_widen_sft_config_instance_check",
+)
 CONSTANTS = (
     "_UNSLOTH_PATCHED_CONFIG_FLAG",
     "_UNSLOTH_CONFIG_PICKLE_TARGET",
@@ -50,7 +58,12 @@ def _load():
     missing = set(NAMES) - found
     if missing:
         raise AssertionError(f"missing module-level defs in {SOURCE_PATH}: {sorted(missing)}")
-    namespace: dict = {"inspect": inspect, "logger": logging.getLogger("unsloth-repro")}
+    namespace: dict = {
+        "inspect": inspect,
+        "logger": logging.getLogger("unsloth-repro"),
+        "sys": sys,
+        "copyreg": copyreg,
+    }
     exec(compile(ast.Module(body = wanted, type_ignores = []), str(SOURCE_PATH), "exec"), namespace)
     return namespace
 
@@ -84,26 +97,44 @@ def trl_like(monkeypatch):
             self.lmbda = lmbda
             self.beta = beta
 
-    # What the compiler installs over the pristine class.
+    # What the compiler installs over the pristine class. `_patch_config_pickle_identity`
+    # gives it the pristine class's module and name so `torch.save(trainer.args, ...)`
+    # keeps working, and binds it wherever the pristine class used to live.
     patched = type(
         "SFTConfig",
         (SFTConfig,),
         {NS["_UNSLOTH_PATCHED_CONFIG_FLAG"]: True},
     )
+    # The pristine class's home is `trl.trainer.sft_config`, a DIFFERENT module
+    # from `trl.trainer.sft_trainer` where the guard reads the name. Model both,
+    # or a shim installed only at the guard's module looks reachable by pickle
+    # when it is not.
+    patched.__module__ = "trl.trainer.sft_config"
+    patched.__qualname__ = "SFTConfig"
 
     module = types.ModuleType("trl.trainer.sft_trainer")
     module.SFTConfig = patched
+    config_module = types.ModuleType("trl.trainer.sft_config")
+    config_module.SFTConfig = patched
     trainer_pkg = types.ModuleType("trl.trainer")
     trainer_pkg.__path__ = []
     trainer_pkg.sft_trainer = module
+    trainer_pkg.sft_config = config_module
     trl_pkg = types.ModuleType("trl")
     trl_pkg.__path__ = []
     trl_pkg.trainer = trainer_pkg
+    # The top level name is the same object, exactly as after patching.
+    trl_pkg.SFTConfig = patched
 
     monkeypatch.setitem(sys.modules, "trl", trl_pkg)
     monkeypatch.setitem(sys.modules, "trl.trainer", trainer_pkg)
     monkeypatch.setitem(sys.modules, "trl.trainer.sft_trainer", module)
-    return TrainingArguments, SFTConfig, GKDConfig, patched, module
+    monkeypatch.setitem(sys.modules, "trl.trainer.sft_config", config_module)
+    try:
+        yield TrainingArguments, SFTConfig, GKDConfig, patched, module, trl_pkg
+    finally:
+        for cls in (SFTConfig, GKDConfig, patched):
+            copyreg.dispatch_table.pop(cls, None)
 
 
 def _guard_fires(args, module):
@@ -113,7 +144,7 @@ def _guard_fires(args, module):
 
 
 def test_subclass_config_is_downcast_without_the_fix(trl_like):
-    TrainingArguments, pristine, GKDConfig, patched, module = trl_like
+    TrainingArguments, pristine, GKDConfig, patched, module, trl_pkg = trl_like
     gkd = GKDConfig(lmbda = 0.25, beta = 0.75)
     assert isinstance(gkd, TrainingArguments)
     # This is the bug: a GKDConfig is not an instance of the installed SFTConfig.
@@ -121,7 +152,7 @@ def test_subclass_config_is_downcast_without_the_fix(trl_like):
 
 
 def test_widening_stops_the_downcast(trl_like):
-    TrainingArguments, pristine, GKDConfig, patched, module = trl_like
+    TrainingArguments, pristine, GKDConfig, patched, module, trl_pkg = trl_like
     assert NS["_widen_sft_config_instance_check"](patched) is True
 
     gkd = GKDConfig(lmbda = 0.25, beta = 0.75)
@@ -132,13 +163,13 @@ def test_widening_stops_the_downcast(trl_like):
 
 def test_plain_training_arguments_are_still_converted(trl_like):
     """The guard exists to convert a bare TrainingArguments; keep that working."""
-    TrainingArguments, pristine, GKDConfig, patched, module = trl_like
+    TrainingArguments, pristine, GKDConfig, patched, module, trl_pkg = trl_like
     NS["_widen_sft_config_instance_check"](patched)
     assert not isinstance(TrainingArguments(), module.SFTConfig)
 
 
 def test_instances_of_the_installed_config_still_match(trl_like):
-    TrainingArguments, pristine, GKDConfig, patched, module = trl_like
+    TrainingArguments, pristine, GKDConfig, patched, module, trl_pkg = trl_like
     NS["_widen_sft_config_instance_check"](patched)
     assert isinstance(patched(), module.SFTConfig)
     assert isinstance(pristine(), module.SFTConfig)
@@ -146,7 +177,7 @@ def test_instances_of_the_installed_config_still_match(trl_like):
 
 def test_calling_the_name_still_builds_the_unsloth_config(trl_like):
     """Widening must not cost the generated config: SFTConfig(...) is still ours."""
-    TrainingArguments, pristine, GKDConfig, patched, module = trl_like
+    TrainingArguments, pristine, GKDConfig, patched, module, trl_pkg = trl_like
     NS["_widen_sft_config_instance_check"](patched)
     built = module.SFTConfig()
     assert isinstance(built, patched)
@@ -155,7 +186,7 @@ def test_calling_the_name_still_builds_the_unsloth_config(trl_like):
 
 def test_is_idempotent(trl_like):
     """``patch_trl_rl_trainers`` can run more than once; do not stack shims."""
-    TrainingArguments, pristine, GKDConfig, patched, module = trl_like
+    TrainingArguments, pristine, GKDConfig, patched, module, trl_pkg = trl_like
     assert NS["_widen_sft_config_instance_check"](patched) is True
     first = module.SFTConfig
     assert NS["_widen_sft_config_instance_check"](patched) is False
@@ -164,22 +195,62 @@ def test_is_idempotent(trl_like):
 
 def test_noop_when_the_module_still_holds_the_pristine_class(trl_like):
     """Nothing was replaced, so the guard already behaves and we leave it alone."""
-    TrainingArguments, pristine, GKDConfig, patched, module = trl_like
+    TrainingArguments, pristine, GKDConfig, patched, module, trl_pkg = trl_like
     module.SFTConfig = pristine
     assert NS["_widen_sft_config_instance_check"](patched) is False
     assert module.SFTConfig is pristine
 
 
 def test_shim_keeps_the_module_and_name_it_stands_in_for(trl_like):
-    TrainingArguments, pristine, GKDConfig, patched, module = trl_like
+    TrainingArguments, pristine, GKDConfig, patched, module, trl_pkg = trl_like
     NS["_widen_sft_config_instance_check"](patched)
     assert module.SFTConfig.__name__ == patched.__name__
     assert module.SFTConfig.__qualname__ == patched.__qualname__
     assert module.SFTConfig.__module__ == patched.__module__
 
 
+def test_the_shim_is_reachable_by_pickle_under_its_own_module_and_name(trl_like):
+    """``torch.save(trainer.args, ...)`` must keep working.
+
+    Pickle stores a class as ``__module__`` + ``__qualname__`` and refuses unless
+    the object living there IS the class, which is why
+    ``_patch_config_pickle_identity`` exists. A shim that advertises the displaced
+    class's home while the displaced class still sits there makes
+    ``Trainer._save_checkpoint`` raise ``PicklingError``, so the shim has to take
+    that attribute over.
+    """
+    TrainingArguments, pristine, GKDConfig, patched, module, trl_pkg = trl_like
+    NS["_widen_sft_config_instance_check"](patched)
+    shim = module.SFTConfig
+    home = sys.modules[shim.__module__]
+    # Exactly the identity check pickle performs before it will save the class.
+    assert getattr(home, shim.__qualname__) is shim
+
+
+def test_every_binding_of_the_displaced_class_moves_to_the_shim(trl_like):
+    """``trl.SFTConfig`` and ``trl.trainer.sft_trainer.SFTConfig`` must agree.
+
+    Leaving the top level name on the displaced class makes the two spellings
+    answer ``isinstance`` differently for the same object.
+    """
+    TrainingArguments, pristine, GKDConfig, patched, module, trl_pkg = trl_like
+    NS["_widen_sft_config_instance_check"](patched)
+    assert trl_pkg.SFTConfig is module.SFTConfig
+    gkd = GKDConfig()
+    assert isinstance(gkd, trl_pkg.SFTConfig) == isinstance(gkd, module.SFTConfig)
+
+
+def test_instances_of_the_displaced_class_still_pickle(trl_like):
+    """Anything holding the class the shim displaced reduces through the shim."""
+    TrainingArguments, pristine, GKDConfig, patched, module, trl_pkg = trl_like
+    NS["_widen_sft_config_instance_check"](patched)
+    assert copyreg.dispatch_table.get(patched) is NS["_reduce_pristine_rl_config"]
+    reconstructor, args, _state = NS["_reduce_pristine_rl_config"](patched())
+    assert args[0] is module.SFTConfig
+
+
 def test_subclasscheck_is_widened_too(trl_like):
-    TrainingArguments, pristine, GKDConfig, patched, module = trl_like
+    TrainingArguments, pristine, GKDConfig, patched, module, trl_pkg = trl_like
     NS["_widen_sft_config_instance_check"](patched)
     assert issubclass(GKDConfig, module.SFTConfig)
     assert not issubclass(TrainingArguments, module.SFTConfig)
