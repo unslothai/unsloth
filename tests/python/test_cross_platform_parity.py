@@ -1609,34 +1609,58 @@ class TestDiskFullDiagnosisCoversTheBiggestWrites:
         assert '"${_DISK_FULL_REPORTED:-false}" != true' in text
 
 
-class TestDiskFullRemedyIsNotTheFlagAlreadyGiven:
-    """A run that already passed --no-rollback and still ran out of space must not be told to
-    re-run with --no-rollback: that copy was discarded before the install began, so the re-run
-    fails identically. Same rule as the pre-move space warning, at the other end of the install."""
+class TestDiskFullRemedyDescribesWhatHappened:
+    """A run that ran out of space must be told what would actually help, and that depends on what
+    became of the old environment rather than on which flag was passed. The case that matters is a
+    discard that FAILED: the tree is still on disk, deleting it is very likely what makes the retry
+    fit, and "there is nothing further to reclaim" points the user away from it."""
 
     @pytest.mark.parametrize(
-        "path, flag",
+        "path, leftover",
         [
-            (INSTALL_SH, '[ "${_NO_ROLLBACK:-false}" = true ]'),
-            (INSTALL_PS1, "if ($script:StudioNoRollback)"),
+            (INSTALL_SH, "_VENV_DISCARD_LEFTOVER"),
+            (INSTALL_PS1, "$script:StudioVenvDiscardLeftover"),
         ],
         ids = ["install.sh", "install.ps1"],
     )
-    def test_the_remedy_varies_on_the_flag(self, path, flag):
+    def test_a_failed_discard_names_the_tree_it_left(self, path, leftover):
         text = path.read_text(encoding = "utf-8")
-        block = text.split("is very likely the cause", 1)[0][-1400:]
-        assert flag in block, f"{path.name} gives the same remedy whether or not the flag is set"
+        block = text.split("is very likely the cause", 1)[0][-2200:]
+        assert leftover in block, f"{path.name} does not consult what the discard actually left"
+        assert (
+            "deleting it will reclaim that space" in text
+        ), f"{path.name} never points at the tree the user can delete"
+
+    @pytest.mark.parametrize(
+        "path, succeeded",
+        [
+            (INSTALL_SH, "_VENV_DISCARDED"),
+            (INSTALL_PS1, "$script:StudioVenvDiscardSucceeded"),
+        ],
+        ids = ["install.sh", "install.ps1"],
+    )
+    def test_the_already_discarded_case_reads_the_outcome_not_the_flag(self, path, succeeded):
+        """Inferring it from the flag also claims a fresh install discarded something."""
+        text = path.read_text(encoding = "utf-8")
+        block = text.split("is very likely the cause", 1)[0][-2200:]
+        assert succeeded in block, f"{path.name} infers the discard from the request"
+        assert "already discarded by --no-rollback" in text
 
     @pytest.mark.parametrize(
         "path",
         [INSTALL_SH, INSTALL_PS1],
         ids = ["install.sh", "install.ps1"],
     )
-    def test_the_already_discarded_case_says_so(self, path):
+    def test_the_flag_is_not_advised_to_a_run_that_used_it(self, path):
+        """The remedy's payload is the opt-out's name, so offering it to someone who already
+        passed it describes a re-run that fails the same way."""
         text = path.read_text(encoding = "utf-8")
+        block = text.split("is very likely the cause", 1)[0][-2200:]
         assert (
-            "already discarded by --no-rollback" in text
-        ), f"{path.name} does not tell an opted-out run that there is nothing left to reclaim"
+            "UNSLOTH_INSTALL_NO_ROLLBACK=1) drops the previous environment" in block
+        ), f"{path.name} lost the remedy for a run that never opted out"
+        flag = '_NO_ROLLBACK' if path is INSTALL_SH else "StudioNoRollback"
+        assert flag in block, f"{path.name} offers the flag unconditionally"
 
 
 class TestVolumeLookupsResolveLinks:
@@ -1650,7 +1674,7 @@ class TestVolumeLookupsResolveLinks:
         assert "function Resolve-StudioVolumeQueryPath" in text
         for name, end in (
             ("function Get-StudioMountedVolume", "function Get-StudioFreeSpaceBytes"),
-            ("function Get-StudioFreeSpaceBytes", "function Get-StudioTreeSizeBytes"),
+            ("function Get-StudioFreeSpaceBytes", "function Remove-StudioVenvTreeWithRetry"),
         ):
             helper = text.split(name, 1)[1].split(end, 1)[0]
             assert (

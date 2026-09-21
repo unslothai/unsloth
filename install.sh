@@ -40,6 +40,9 @@ _NO_TORCH_FLAG=false
 _SKIP_AUTOSTART=false
 _ISOLATE_UV_CACHE=false
 _NO_ROLLBACK=false
+# Set by the discard itself, so the disk-full remedy can describe what happened rather than what was requested.
+_VENV_DISCARDED=false
+_VENV_DISCARD_LEFTOVER=""
 _VERBOSE=false
 _SHORTCUTS_ONLY=false
 _next_is_package=false
@@ -1095,9 +1098,11 @@ _start_studio_venv_replacement() {
         rm -rf "$_candidate" 2>/dev/null || true
         # -f exempts a missing path from the exit status, not a real unlink failure: an immutable entry, a busy mount point, a sticky-bit parent. Reporting "discarded" there promises space that was never freed, in the one situation this flag exists for. The state above stays cleared either way -- re-arming the rollback would hand an interrupt a half-deleted backup -- so say what is actually on disk.
         if [ -e "$_candidate" ] || [ -L "$_candidate" ]; then
+            _VENV_DISCARD_LEFTOVER="$_candidate"
             substep "could not discard the previous environment at $_candidate" "$C_WARN"
             substep "it is no longer used for rollback; remove it by hand to reclaim the space." "$C_WARN"
         else
+            _VENV_DISCARDED=true
             substep "previous environment discarded (--no-rollback); a failed install cannot be undone"
         fi
         return 0
@@ -1119,9 +1124,14 @@ _set_disk_full_suffix() {
     [ -n "$_dfs_free" ] || return 0
     [ "$_dfs_free" -lt 65536 ] 2>/dev/null || return 0
     _DISK_FULL_MB=$((_dfs_free / 1024))
-    # Naming the opt-out to someone who already used it describes a re-run that fails the same way: that copy was discarded before the install began, so there is nothing left here for the installer to give back.
-    if [ "${_NO_ROLLBACK:-false}" = true ]; then
+    # What to advise depends on what actually happened to the old environment, not on what was asked for. A discard that failed left a tree behind, and deleting that tree is very likely what makes the retry fit; telling that user there is nothing left to reclaim sends them away from the one thing that would help.
+    if [ -n "${_VENV_DISCARD_LEFTOVER:-}" ]; then
+        _DISK_FULL_REMEDY="Free some space and re-run. The previous environment could not be removed and is still at $_VENV_DISCARD_LEFTOVER; deleting it will reclaim that space."
+    elif [ "${_VENV_DISCARDED:-false}" = true ]; then
         _DISK_FULL_REMEDY="Free some space and re-run. The previous environment was already discarded by --no-rollback, so the installer has nothing further of its own to reclaim."
+    elif [ "${_NO_ROLLBACK:-false}" = true ]; then
+        # Asked for, but nothing was there to discard: a first install, or a failure before the replacement began. Naming the flag again would describe a re-run that changes nothing.
+        _DISK_FULL_REMEDY="Free some space and re-run."
     else
         _DISK_FULL_REMEDY="Free some space and re-run. --no-rollback (UNSLOTH_INSTALL_NO_ROLLBACK=1) drops the previous environment instead of keeping a copy of it during the install."
     fi

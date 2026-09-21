@@ -715,6 +715,51 @@ else
     ok "a failure with room to spare does not blame the disk"
 fi
 
+echo "=== the disk-full remedy describes what happened, not what was asked for (#11313) ==="
+# A discard that failed left a tree on disk, and deleting it is very likely what makes the retry
+# fit. Telling that user there is nothing left to reclaim points them away from the one thing that
+# would help, which is the worst of the four answers to give in the one case it is given.
+remedy_case() {  # label  state_lines  expected_grep  unexpected_grep
+    _rc_label="$1"; _rc_state="$2"; _rc_want="$3"; _rc_not="$4"
+    _rc_out=$(
+        {
+            printf '%s\n' 'substep() { :; }'
+            printf '%s\n' 'step() { :; }'
+            printf '%s\n' 'C_WARN=""'
+            printf "STUDIO_HOME='%s'\n" "$WORK"
+            printf '%s\n' "$ROLLBACK_BLOCK"
+            printf '%s\n' '_free_space_kb() { echo 1024; }'
+            printf '%s\n' "$_rc_state"
+            printf '%s\n' '_set_disk_full_suffix'
+            printf '%s\n' 'printf "%s\n" "$_DISK_FULL_REMEDY"'
+        } | dash 2>&1
+    )
+    if printf '%s\n' "$_rc_out" | grep -q "$_rc_want"; then
+        ok "$_rc_label names the right remedy"
+    else
+        bad "$_rc_label said: $_rc_out"
+    fi
+    if [ -n "$_rc_not" ]; then
+        if printf '%s\n' "$_rc_out" | grep -q "$_rc_not"; then
+            bad "$_rc_label still says the wrong thing: $_rc_out"
+        else
+            ok "$_rc_label does not say the wrong thing"
+        fi
+    fi
+}
+remedy_case "a discard that left a tree behind" \
+    '_NO_ROLLBACK=true; _VENV_DISCARD_LEFTOVER="/tmp/left-behind"' \
+    "still at /tmp/left-behind" "nothing further"
+remedy_case "a discard that really happened" \
+    '_NO_ROLLBACK=true; _VENV_DISCARDED=true' \
+    "nothing further of its own to reclaim" ""
+remedy_case "the flag with nothing to discard" \
+    '_NO_ROLLBACK=true' \
+    "Free some space and re-run." "already discarded"
+remedy_case "an install that never passed the flag" \
+    '_NO_ROLLBACK=false' \
+    "drops the previous environment" "already discarded"
+
 echo ""
 echo "  PASS: $PASS"
 echo "  FAIL: $FAIL"

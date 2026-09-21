@@ -1594,10 +1594,19 @@ function Install-UnslothStudio {
                 $_diskFree = Get-StudioFreeSpaceBytes -Path $StudioHome
                 if ($null -ne $_diskFree -and $_diskFree -lt 64MB) {
                     $_diskMb = [math]::Round($_diskFree / 1MB)
-                    # Naming the opt-out to someone who already used it describes a re-run that
-                    # fails the same way: that copy was discarded before the install began.
-                    $_diskRemedy = if ($script:StudioNoRollback) {
+                    # What to advise depends on what actually happened to the old environment,
+                    # not on what was asked for. A discard that failed left a tree behind, and
+                    # deleting it is very likely what makes the retry fit; telling that user
+                    # there is nothing left to reclaim sends them away from the one thing that
+                    # would help. install.sh chooses between the same four.
+                    $_diskRemedy = if ($script:StudioVenvDiscardLeftover) {
+                        "Free some space and re-run. The previous environment could not be removed and is still at $($script:StudioVenvDiscardLeftover); deleting it will reclaim that space."
+                    } elseif ($script:StudioVenvDiscardSucceeded) {
                         "Free some space and re-run. The previous environment was already discarded by --no-rollback, so the installer has nothing further of its own to reclaim."
+                    } elseif ($script:StudioNoRollback) {
+                        # Asked for, but nothing was there to discard: a first install, or a
+                        # failure before the replacement began.
+                        "Free some space and re-run."
                     } else {
                         "Free some space and re-run. --no-rollback (UNSLOTH_INSTALL_NO_ROLLBACK=1) drops the previous environment instead of keeping a copy of it during the install."
                     }
@@ -7019,6 +7028,10 @@ exit 0
     # Set only by --no-rollback, so a branch that needs the previous tree can tell
     # "already deleted on purpose" from "not moved aside yet".
     $script:StudioVenvRollbackDiscarded = $false
+    # Set by the discard itself, so the disk-full remedy describes what happened rather than what
+    # was requested.
+    $script:StudioVenvDiscardSucceeded = $false
+    $script:StudioVenvDiscardLeftover = $null
     $script:StudioVenvRollbackPartial = $false
     # Reset per run: under `irm | iex` the script scope IS the caller's session.
     $script:PrevTorchVer = ""
@@ -7247,8 +7260,10 @@ exit 0
             # report success anyway: a tree left behind by an open handle, a reparse point or a
             # long path frees none of the space this flag exists to free.
             if (Remove-StudioVenvTreeWithRetry -Path $discard -Label "previous environment" -LinkAware) {
+                $script:StudioVenvDiscardSucceeded = $true
                 substep "previous environment discarded (--no-rollback); a failed install cannot be undone"
             } else {
+                $script:StudioVenvDiscardLeftover = $discard
                 substep "it is no longer used for rollback; remove $discard by hand to reclaim the space." "Yellow"
             }
             return
