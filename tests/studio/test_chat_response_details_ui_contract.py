@@ -617,17 +617,35 @@ def test_reasoning_clears_manual_open_on_a_new_stream():
         "reasoning.tsx no longer asks whether a new reasoning round started, so nothing "
         "distinguishes a fresh stream from the end of the last one"
     )
+    # Used positively, and as the whole condition. Locating the call and then reading the block
+    # after it says nothing about the sense in which it was asked:
+    # `if (!startsNewReasoningRound(...)) { setOverride(null); }` clears the override on every
+    # transition EXCEPT a new round, which is the exact inverse of the contract, and it read as
+    # green. Requiring `if (` to sit immediately before the call rejects the negation and any
+    # other prefix; a condition that grows a second term has to teach this guard about it
+    # rather than slipping past.
+    assert re.search(r"if\s*\(\s*$", src[:round_at]), (
+        "the new reasoning round is not asked as `if (startsNewReasoningRound(...))`. Negated "
+        "or combined with another term it can clear the override on the transitions that are "
+        "not a new round, and leave the one that is untouched, which is the inverse of what "
+        "this guards"
+    )
     # The brace has to be this condition's own. `_without_block_comments` strips the braces
     # around a comment along with it, so a branch whose body is only a comment loses its `{}`
     # entirely, and a scan for the next `{` then runs on into whatever block follows and reads
     # that one instead. Found by sabotage: emptying the new-round branch left this guard
     # reading the visibility-change branch, which clears the override too, so the guard passed
     # while the reset it exists for was gone.
+    # Nothing between the call and the brace but the `)` that closes the `if`. That rejects the
+    # other way to invert it, `if (startsNewReasoningRound(...) === false) {`, which the older
+    # form of this check let through because it only refused a statement or block boundary.
     opened = src.find("{", round_at)
-    assert opened != -1 and not re.search(r"[};]", src[round_at:opened]), (
+    assert opened != -1 and re.fullmatch(
+        r"startsNewReasoningRound\([^()]*\)\s*\)\s*", src[round_at:opened]
+    ), (
         "the branch taken when a new reasoning round starts is not a block this guard can "
-        "read: a statement or block boundary comes between the condition and the next brace, "
-        "so what follows would be some other branch"
+        "read: something sits between the predicate and the brace, so the block that follows "
+        "runs under a condition other than the plain question this expects"
     )
     depth, closed = 0, None
     for index in range(opened, len(src)):

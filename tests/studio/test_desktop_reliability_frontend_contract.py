@@ -1060,7 +1060,11 @@ def _labelled_actions(
         # Where it sits, read from the stylesheet. A `right-*` utility or a modifier the CSS
         # does not define is positioning this guard has not modelled, and recording it as
         # flush right would understate the reach of an action that renders further in.
-        utility = [token for token in worn if re.fullmatch(r"right-\S+", token)]
+        # Under any variant, not bare. `[@media(pointer:coarse)]:right-40` positions the action
+        # on exactly the path this test is about, and matching only the unqualified spelling
+        # let it through: the reach would then be taken from the CSS modifier, or from zero,
+        # while the action rendered far into the title on every touch device.
+        utility = [token for token in worn if re.fullmatch(r"(?:\S*:)?right-\S+", token)]
         assert not utility, (
             f"the {name} action is positioned with {utility}, which this guard does not model: "
             f"it reads the row's action offsets from index.css, so state the offset there"
