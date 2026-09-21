@@ -906,8 +906,9 @@ def retire_account_clients(account_id: str) -> int:
     and idle sockets outlive it for the life of the process.
     """
     with _managed_clients_lock:
-        retired = [_managed_clients.pop(key) for key in list(_managed_clients)
-                   if key[0] == account_id]
+        retired = [
+            _managed_clients.pop(key) for key in list(_managed_clients) if key[0] == account_id
+        ]
         # Tombstoned: a request that authenticated before deactivation can reach `_client()` after
         # this sweep, and would otherwise re-insert an entry nothing sweeps again.
         _retired_accounts.add(account_id)

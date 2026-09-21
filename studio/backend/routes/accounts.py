@@ -148,6 +148,7 @@ def set_account_active(account_id: str, payload: AccountActiveRequest):
             # A delete that failed after retiring the jobs left the id tombstoned in-process.
             from core.inference.external_provider import restore_account_clients
             from core.training.account_jobs import restore_account_jobs
+
             restore_account_jobs(account_id)
             restore_account_clients(account_id)
             active_generations.lift_fence(account_id)

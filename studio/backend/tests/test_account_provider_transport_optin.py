@@ -227,9 +227,7 @@ def test_retirement_from_a_worker_thread_closes_on_the_owning_loop(switch):
     ready.wait(5)
     try:
         # Built ON the loop, as a request would be.
-        client = asyncio.run_coroutine_threadsafe(
-            _make_client_as(ALICE), loop
-        ).result(timeout = 10)
+        client = asyncio.run_coroutine_threadsafe(_make_client_as(ALICE), loop).result(timeout = 10)
         assert not client.is_closed
 
         # Retired from a thread with no running loop, like the delete route.
@@ -262,5 +260,4 @@ def test_reactivation_route_calls_it(switch):
     import inspect
 
     import routes.accounts as accounts_routes
-
     assert "restore_account_clients" in inspect.getsource(accounts_routes.set_account_active)
