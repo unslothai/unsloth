@@ -1534,16 +1534,15 @@ class TestPackageManagerPolicyOptOut:
             for node in ast.walk(fn)
             if isinstance(node, ast.BoolOp)
             and isinstance(node.op, ast.And)
-            and {
-                getattr(getattr(v, "func", None), "id", "") for v in node.values
-            } == {"_respect_pm_policy", "_uv_is_offline"}
+            and {getattr(getattr(v, "func", None), "id", "") for v in node.values}
+            == {"_respect_pm_policy", "_uv_is_offline"}
         ]
         assert guards, "pip_install no longer refuses the fallback while uv is offline"
         body = ast.get_source_segment(STACK_SOURCE, fn) or ""
         refusal = body[body.index("_uv_is_offline()") :]
-        assert "_report_failed_command" in refusal.split("falling back to pip")[0], (
-            "the offline refusal must exit, not fall through to the pip fallback"
-        )
+        assert (
+            "_report_failed_command" in refusal.split("falling back to pip")[0]
+        ), "the offline refusal must exit, not fall through to the pip fallback"
 
     def test_a_uv_command_is_not_given_pip_variables(self):
         """uv reads UV_ itself; restating them as PIP_ for a uv command would be noise."""

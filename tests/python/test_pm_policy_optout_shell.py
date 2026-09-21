@@ -47,6 +47,7 @@ requires_sh = pytest.mark.skipif(not HAVE_SH, reason = "needs a POSIX /bin/sh")
 # Lifting the real text out of install.sh
 # ---------------------------------------------------------------------------
 
+
 def _extract_sh_function(name: str) -> str:
     """The shipped text of a top-level `name() { ... }` in install.sh.
 
@@ -72,7 +73,7 @@ _CASE_MATCH = re.search(
     RUN_INSTALL_CMD_SH,
     re.MULTILINE | re.DOTALL,
 )
-assert _CASE_MATCH is not None, "run_install_cmd's `case \" $* \" in` block not found"
+assert _CASE_MATCH is not None, 'run_install_cmd\'s `case " $* " in` block not found'
 DEFAULT_INDEX_CASE_SH = _CASE_MATCH.group(0)
 
 
@@ -82,12 +83,12 @@ def test_lifted_text_is_the_real_thing():
     assert RESPECT_FN_SH.count("\n") >= 4
     assert RESPECT_FN_SH.rstrip().endswith("}")
     assert "--default-index" in DEFAULT_INDEX_CASE_SH
-    assert DEFAULT_INDEX_CASE_SH.count("set -- env") == 2, (
-        "expected exactly two arms (opt-out and default) in run_install_cmd's scrub"
-    )
-    assert "_respect_pm_policy" in DEFAULT_INDEX_CASE_SH, (
-        "the scrub no longer consults the opt-out predicate"
-    )
+    assert (
+        DEFAULT_INDEX_CASE_SH.count("set -- env") == 2
+    ), "expected exactly two arms (opt-out and default) in run_install_cmd's scrub"
+    assert (
+        "_respect_pm_policy" in DEFAULT_INDEX_CASE_SH
+    ), "the scrub no longer consults the opt-out predicate"
 
 
 # ---------------------------------------------------------------------------
@@ -99,26 +100,77 @@ MATRIX: tuple[object, ...] = (
     None,
     "",
     # The allowlist, and the near misses that must stay off.
-    "1", "0", "true", "TRUE", "True", "TrUe", "yes", "YES", "on", "ON", "On",
-    "false", "no", "off", "garbage", "2", "-1", "enabled", "onn", "ye",
+    "1",
+    "0",
+    "true",
+    "TRUE",
+    "True",
+    "TrUe",
+    "yes",
+    "YES",
+    "on",
+    "ON",
+    "On",
+    "false",
+    "no",
+    "off",
+    "garbage",
+    "2",
+    "-1",
+    "enabled",
+    "onn",
+    "ye",
     # 't' and 'y' are deliberately NOT members, though setup.ps1's neighbouring boolish
     # predicates take them. A copy-paste between the two would widen the opt-out silently.
-    "t", "T", "y", "Y", "n", "f",
+    "t",
+    "T",
+    "y",
+    "Y",
+    "n",
+    "f",
     # Leading / trailing / tab / newline padding. An exported value picks these up from a
     # heredoc, a CI matrix cell or a copy-paste, so they are not hypothetical.
-    " 1", "1 ", " 1 ", "  yes  ", "\ttrue", "true\t", "\t on \t", "\n1", "true\n",
-    "on\n", "\non\n", "\r\n1", "1\r\n", "1\r", "\v1", "\f1",
+    " 1",
+    "1 ",
+    " 1 ",
+    "  yes  ",
+    "\ttrue",
+    "true\t",
+    "\t on \t",
+    "\n1",
+    "true\n",
+    "on\n",
+    "\non\n",
+    "\r\n1",
+    "1\r\n",
+    "1\r",
+    "\v1",
+    "\f1",
     # INTERNAL whitespace. An earlier revision of the shell side expanded the variable
     # unquoted, which let the shell word-split and collapse the inside of a value; "t rue"
     # and "o n" then matched the allowlist in sh while Python rejected them, and "1 1"
     # became two words. Quoted now -- these cases exist to keep it that way.
-    "t rue", "o n", "1 1", "y es", "tr ue", "1  1", "t\true", "o\nn", "y e s",
+    "t rue",
+    "o n",
+    "1 1",
+    "y es",
+    "tr ue",
+    "1  1",
+    "t\true",
+    "o\nn",
+    "y e s",
     # UNICODE whitespace. str.strip() and .NET Trim() remove these; POSIX sh cannot
     # portably, so all three trim an explicit ASCII set instead and these read as
     # unrecognised, hence OFF, everywhere. Before that they were ON to Python and
     # PowerShell and OFF to sh, so the shell phase relaxed a policy the Python phase
     # withheld. A pasted non-breaking space is the realistic one.
-    "\xa01", "1\xa0", "\xa0true\xa0", "\u20021", "1\u3000", "\u200a1", "\u20281",
+    "\xa01",
+    "1\xa0",
+    "\xa0true\xa0",
+    "\u20021",
+    "1\u3000",
+    "\u200a1",
+    "\u20281",
 )
 
 
@@ -200,16 +252,16 @@ def test_sh_predicate_matches_its_own_documented_semantics(value):
     collapsing internal whitespace again, this is the assertion that names the cause instead
     of just reporting a mismatch with Python.
     """
-    assert _sh_predicate_status(value) == _sh_semantics(value), (
-        f"install.sh's _respect_pm_policy() did not behave as its text reads for {_label(value)}"
-    )
+    assert _sh_predicate_status(value) == _sh_semantics(
+        value
+    ), f"install.sh's _respect_pm_policy() did not behave as its text reads for {_label(value)}"
 
 
 @pytest.mark.parametrize("value", MATRIX, ids = [_label(v) for v in MATRIX])
 def test_python_predicate_matches_its_own_documented_semantics(value):
-    assert _python_predicate_status(value) == _python_semantics(value), (
-        f"ips._respect_pm_policy() did not behave as its text reads for {_label(value)}"
-    )
+    assert _python_predicate_status(value) == _python_semantics(
+        value
+    ), f"ips._respect_pm_policy() did not behave as its text reads for {_label(value)}"
 
 
 @requires_sh
@@ -237,7 +289,9 @@ def test_internal_whitespace_is_off_on_both_sides():
     """Explicit, non-parametrised restatement of the historical bug, so it reads in a log."""
     for value in ("t rue", "o n", "1 1", "y es", "tr ue", "1  1", "t\true", "y e s"):
         assert _sh_predicate_status(value) == 1, f"sh accepted internal-whitespace {value!r}"
-        assert _python_predicate_status(value) == 1, f"Python accepted internal-whitespace {value!r}"
+        assert (
+            _python_predicate_status(value) == 1
+        ), f"Python accepted internal-whitespace {value!r}"
 
 
 @requires_sh
@@ -254,8 +308,7 @@ def test_the_two_predicates_never_disagree():
     disagreed = {
         value: (_sh_predicate_status(value), _python_predicate_status(value))
         for value in MATRIX
-        if value is not None
-        and _sh_predicate_status(value) != _python_predicate_status(value)
+        if value is not None and _sh_predicate_status(value) != _python_predicate_status(value)
     }
     assert not disagreed, (
         "install.sh and install_python_stack.py disagree on the opt-out for:\n"
@@ -270,7 +323,13 @@ def test_the_two_predicates_never_disagree():
 # run_install_cmd's --default-index scrub: the arm the opt-out must NOT have changed
 # ---------------------------------------------------------------------------
 
-ADDITIVE_SCRUB = ("UV_DEFAULT_INDEX", "UV_INDEX_URL", "UV_INDEX", "UV_EXTRA_INDEX_URL", "UV_TORCH_BACKEND")
+ADDITIVE_SCRUB = (
+    "UV_DEFAULT_INDEX",
+    "UV_INDEX_URL",
+    "UV_INDEX",
+    "UV_EXTRA_INDEX_URL",
+    "UV_TORCH_BACKEND",
+)
 POLICY_BEARING_SCRUB = ("UV_FIND_LINKS", "UV_CONFIG_FILE")
 
 
@@ -292,9 +351,9 @@ def test_default_arm_of_run_install_cmd_is_unchanged():
     """The pre-existing behaviour, quoted flag for flag. The opt-out is additive or it is a bug."""
     _, default_arm = _case_arms()
     flags = re.findall(r"-u (\w+)", default_arm)
-    assert flags == list(ADDITIVE_SCRUB) + list(POLICY_BEARING_SCRUB), (
-        f"default arm's -u flags changed: {flags!r}"
-    )
+    assert flags == list(ADDITIVE_SCRUB) + list(
+        POLICY_BEARING_SCRUB
+    ), f"default arm's -u flags changed: {flags!r}"
     assert len(flags) == 7, f"default arm must carry seven -u flags, carries {len(flags)}"
     assert "UV_NO_CONFIG=1" in default_arm, "default arm no longer forces UV_NO_CONFIG=1"
 
@@ -312,7 +371,15 @@ def test_opt_out_arm_carries_only_the_additive_five():
 @requires_sh
 @pytest.mark.parametrize(
     ("policy_value", "expect_policy_bearing_scrubbed"),
-    [(None, True), ("", True), ("0", True), ("garbage", True), ("1", False), ("TRUE", False), ("on", False)],
+    [
+        (None, True),
+        ("", True),
+        ("0", True),
+        ("garbage", True),
+        ("1", False),
+        ("TRUE", False),
+        ("on", False),
+    ],
     ids = ["unset", "empty", "0", "garbage", "1", "TRUE", "on"],
 )
 def test_run_install_cmd_case_executes_as_written(policy_value, expect_policy_bearing_scrubbed):
@@ -326,7 +393,7 @@ def test_run_install_cmd_case_executes_as_written(policy_value, expect_policy_be
         + "\n_scrub_argv() {\n"
         + "    shift\n"
         + DEFAULT_INDEX_CASE_SH
-        + "    for _a in \"$@\"; do printf '%s\\n' \"$_a\"; done\n"
+        + '    for _a in "$@"; do printf \'%s\\n\' "$_a"; done\n'
         + "}\n"
         + "_scrub_argv 'install torch' uv pip install --default-index https://example.invalid/simple torch\n"
     )
@@ -344,16 +411,19 @@ def test_run_install_cmd_case_executes_as_written(policy_value, expect_policy_be
     for name in ADDITIVE_SCRUB:
         assert name in unset, f"{name} must be scrubbed on every arm; argv={argv!r}"
     for name in POLICY_BEARING_SCRUB:
-        assert (name in unset) is expect_policy_bearing_scrubbed, (
-            f"{name} scrub={name in unset}, expected {expect_policy_bearing_scrubbed}; argv={argv!r}"
-        )
-    assert ("UV_NO_CONFIG=1" in argv) is expect_policy_bearing_scrubbed, (
-        f"UV_NO_CONFIG=1 presence wrong for {_label(policy_value)}; argv={argv!r}"
-    )
+        assert (
+            (name in unset) is expect_policy_bearing_scrubbed
+        ), f"{name} scrub={name in unset}, expected {expect_policy_bearing_scrubbed}; argv={argv!r}"
+    assert (
+        ("UV_NO_CONFIG=1" in argv) is expect_policy_bearing_scrubbed
+    ), f"UV_NO_CONFIG=1 presence wrong for {_label(policy_value)}; argv={argv!r}"
     # The command itself must survive intact on both arms.
-    assert argv[-4:] == ["install", "--default-index", "https://example.invalid/simple", "torch"], (
-        f"the scrub mangled the command: {argv!r}"
-    )
+    assert argv[-4:] == [
+        "install",
+        "--default-index",
+        "https://example.invalid/simple",
+        "torch",
+    ], f"the scrub mangled the command: {argv!r}"
 
 
 @requires_sh
@@ -363,13 +433,16 @@ def test_non_default_index_commands_are_left_alone():
         RESPECT_FN_SH
         + "\n_scrub_argv() {\n    shift\n"
         + DEFAULT_INDEX_CASE_SH
-        + "    for _a in \"$@\"; do printf '%s\\n' \"$_a\"; done\n}\n"
+        + '    for _a in "$@"; do printf \'%s\\n\' "$_a"; done\n}\n'
         + "_scrub_argv 'install x' uv pip install --index-url https://example.invalid/simple torch\n"
     )
     for value in (None, "1", "0"):
         proc = subprocess.run(
-            ["sh", "-c", script], env = _env_for(value),
-            capture_output = True, text = True, timeout = 60,
+            ["sh", "-c", script],
+            env = _env_for(value),
+            capture_output = True,
+            text = True,
+            timeout = 60,
         )
         assert proc.returncode == 0, proc.stderr
         argv = proc.stdout.splitlines()

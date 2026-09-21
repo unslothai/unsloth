@@ -103,6 +103,14 @@ Describe 'Fast-Download forwards the destination through to pip' {
     BeforeAll {
         $src = Get-FunctionSource -Path $script:SetupPs1 -Name 'Fast-Download'
         if (-not $src) { throw "Function 'Fast-Download' not found in $script:SetupPs1 - cannot test the real code." }
+        # Its dependencies, by name. Fast-Download asks the opt-out which variables to keep,
+        # and dot-sourcing the wrapper alone left that call unresolved: CommandNotFoundException
+        # at run time, not at load, so the suite failed on Windows with nothing to say why.
+        foreach ($dep in @('Test-RespectPmPolicy')) {
+            $depSrc = Get-FunctionSource -Path $script:SetupPs1 -Name $dep
+            if (-not $depSrc) { throw "Function '$dep' not found in $script:SetupPs1 - Fast-Download cannot run without it." }
+            . ([scriptblock]::Create($depSrc))
+        }
         . ([scriptblock]::Create($src))
     }
 

@@ -8873,9 +8873,7 @@ def _relaxed_pip_policy_env(cmd: "list[str]") -> "dict[str, str]":
 # has one -- _UNSLOTH_ZOO_GIT_URL, `unsloth-zoo @ git+https://github.com/...`. Mapping it
 # would have claimed an offline guarantee pip cannot give. Offline refuses the fallback
 # instead; see pip_install().
-_UV_TO_PIP_POLICY = (
-    ("UV_REQUIRE_HASHES", "PIP_REQUIRE_HASHES"),
-)
+_UV_TO_PIP_POLICY = (("UV_REQUIRE_HASHES", "PIP_REQUIRE_HASHES"),)
 
 
 def _uv_policy_as_pip_env() -> "dict[str, str]":
