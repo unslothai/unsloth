@@ -11,6 +11,8 @@ owns an explicit cache snapshot for each operation instead of trying to refresh
 from __future__ import annotations
 
 import os
+import stat
+import sys
 import shutil
 import tempfile
 import threading
@@ -91,7 +93,10 @@ def _environment_paths() -> Optional[HuggingFaceCachePaths]:
     default_home = _default_cache_home()
     hf_home = _canonical(explicit_home) if explicit_home else default_home
     hub = _canonical(explicit_hub) if explicit_hub else hf_home / "hub"
-    xet = _canonical(explicit_xet) if explicit_xet else hf_home / "xet"
+    # huggingface_hub derives HF_XET_CACHE from HF_HOME, never from HF_HUB_CACHE, so a hub-only
+    # override would leave the chunk and shard caches in the host home.
+    xet_home = hf_home if explicit_home else (_portable_cache_home() or hf_home)
+    xet = _canonical(explicit_xet) if explicit_xet else xet_home / "xet"
     controlling = next(
         key
         for key in ("HF_HUB_CACHE", "HUGGINGFACE_HUB_CACHE", "HF_HOME")
@@ -108,10 +113,58 @@ def _environment_paths() -> Optional[HuggingFaceCachePaths]:
     return HuggingFaceCachePaths(display_home, hub, xet, "environment", controlling)
 
 
+def _absence_is_real(path: Path) -> bool:
+    """Whether a FileNotFoundError for *path* proves the file is not there.
+
+    On POSIX it always does: a parent component that is a file raises NotADirectoryError, and a
+    parent that cannot be traversed raises PermissionError, both of which are their own types.
+    Windows collapses every one of those into ERROR_PATH_NOT_FOUND, which Python surfaces as
+    FileNotFoundError, so on Windows the exception means "not there, OR somewhere above it is not
+    a directory, OR I could not look" -- and the caller must only skip its read for the first.
+
+    Decided by the nearest ancestor that can actually be stat'ed: a directory means the tree is
+    real and the file genuinely is not in it; anything else means a component is a file or a
+    reparse point and the path could never have existed; an ancestor that cannot be inspected at
+    all is not proof either way, so it reads as "not proven". Running out of ancestors means
+    nothing along the path exists, which is the machine that has never opened Studio -- the case
+    the skip is FOR, so the absence is real there.
+    """
+    current = os.path.dirname(os.fspath(path))
+    while current:
+        try:
+            info = os.stat(current)
+        except FileNotFoundError:
+            parent = os.path.dirname(current)
+            if parent == current:
+                return True
+            current = parent
+            continue
+        except OSError:
+            return False
+        return stat.S_ISDIR(info.st_mode)
+    return True
+
+
 def _stored_cache_home() -> Optional[Path]:
+    # get_app_setting CREATES and migrates studio.db, so an unconditional read built one on
+    # machines that had never opened Studio. os.stat, not Path.exists: only a positively observed
+    # absence may skip the read, and from 3.14 the predicates report EACCES and EIO as False.
+    # stat, not lstat: sqlite follows symlinks.
+    try:
+        if "storage.studio_db" not in sys.modules:
+            from utils.paths.storage_roots import studio_db_path
+            database = studio_db_path()
+            try:
+                os.stat(database)
+            except FileNotFoundError:
+                if _absence_is_real(database):
+                    return None
+    except Exception:  # noqa: BLE001 - fall through to the read on any doubt
+        pass
     try:
         from storage.studio_db import get_app_setting
-        value = get_app_setting(CACHE_HOME_SETTING_KEY, None)
+        from utils.account_context import OWNER, run_as
+        value = run_as(OWNER, get_app_setting, CACHE_HOME_SETTING_KEY, None)
     except Exception:  # noqa: BLE001 - the shim is optional; a spawn must never depend on it
         return None
     if not isinstance(value, str) or not value.strip():
@@ -137,12 +190,29 @@ def configured_cache_key() -> str:
         return "env:" + explicit
     try:
         from storage.studio_db import get_app_setting
-        value = get_app_setting(CACHE_HOME_SETTING_KEY, None)
+        from utils.account_context import OWNER, run_as
+        value = run_as(OWNER, get_app_setting, CACHE_HOME_SETTING_KEY, None)
     except Exception:
         return "default"
     if isinstance(value, str) and value.strip():
         return "studio:" + value.strip()
     return "default"
+
+
+def _portable_cache_home() -> Optional[Path]:
+    """The HF cache home a portable install uses, else None: a normal install keeps the platform
+    default so models shared with other tools are not re-downloaded. Lazy import, since
+    storage_roots reaches into this module during startup."""
+    try:
+        from utils.paths.storage_roots import cache_root, portable_mode
+    except ImportError:
+        return None
+    if not portable_mode():
+        return None
+    try:
+        return _canonical(cache_root() / "huggingface")
+    except (OSError, RuntimeError, ValueError):
+        return None
 
 
 def get_hf_cache_paths() -> HuggingFaceCachePaths:
@@ -158,7 +228,8 @@ def get_hf_cache_paths() -> HuggingFaceCachePaths:
             _canonical(xet) if xet else stored / "xet",
             "studio",
         )
-    home = _default_cache_home()
+    # Ranks below env vars and Settings: portable mode is a default, not an override.
+    home = _portable_cache_home() or _default_cache_home()
     xet = _EXPLICIT_CACHE_ENV.get("HF_XET_CACHE")
     return HuggingFaceCachePaths(
         home,
@@ -285,7 +356,8 @@ def _validate_cache_home(raw_path: str) -> Path:
 def _stored_history() -> list[Path]:
     try:
         from storage.studio_db import get_app_setting
-        raw = get_app_setting(CACHE_HISTORY_SETTING_KEY, [])
+        from utils.account_context import OWNER, run_as
+        raw = run_as(OWNER, get_app_setting, CACHE_HISTORY_SETTING_KEY, [])
     except Exception:
         raw = []
     if not isinstance(raw, list):

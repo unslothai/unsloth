@@ -22,6 +22,13 @@ from types import SimpleNamespace
 import pytest
 
 
+def _shared_setup_1(__file__):
+    import sys
+    backend = str(Path(__file__).resolve().parent.parent)
+    if backend not in sys.path:
+        sys.path.insert(0, backend)
+
+
 BACKEND_ROOT = Path(__file__).resolve().parent.parent
 
 # Not runtime source. Shipped plugins under plugins/*/src are, so only builds are skipped.
@@ -550,11 +557,7 @@ def test_an_undecodable_transport_marker_reads_as_unknown(tmp_path: Path) -> Non
     simply read as an unknown value and the caller safely purged and restarted
     the partial download; letting the error escape aborts the transfer instead.
     """
-    import sys
-
-    backend = str(Path(__file__).resolve().parent.parent)
-    if backend not in sys.path:
-        sys.path.insert(0, backend)
+    _shared_setup_1(__file__)
     from hub.utils import download_registry as registry
 
     marker = tmp_path / ".transport"
@@ -570,11 +573,7 @@ def test_a_torn_cache_ref_reads_as_not_cached(tmp_path: Path, monkeypatch) -> No
     offline embedding checks turn a raise into a 500. A refs/main holding a byte
     the codepage used to decode into a nonsense commit simply missed the snapshot
     dir before the pin; it has to keep missing it."""
-    import sys
-
-    backend = str(Path(__file__).resolve().parent.parent)
-    if backend not in sys.path:
-        sys.path.insert(0, backend)
+    _shared_setup_1(__file__)
     from utils import utils as backend_utils
 
     good_root = tmp_path / "good"
@@ -596,11 +595,7 @@ def test_a_torn_cache_ref_reads_as_not_cached(tmp_path: Path, monkeypatch) -> No
 def test_a_corrupt_pid_file_does_not_abort_shutdown(tmp_path: Path, monkeypatch) -> None:
     """_remove_pid_file runs first in _graceful_shutdown, so a raise there leaves
     the inference, export, training and tunnel children alive."""
-    import sys
-
-    backend = str(Path(__file__).resolve().parent.parent)
-    if backend not in sys.path:
-        sys.path.insert(0, backend)
+    _shared_setup_1(__file__)
     import run as studio_run
 
     pid_file = tmp_path / "studio.pid"
@@ -622,11 +617,7 @@ def test_a_corrupt_pid_file_does_not_abort_shutdown(tmp_path: Path, monkeypatch)
 def test_the_legacy_pid_record_is_handed_to_a_live_sibling(tmp_path: Path, monkeypatch) -> None:
     """Only one server owns studio.pid, so deleting it while a sibling still serves would leave
     that sibling unstoppable from an older CLI that reads no other file."""
-    import sys
-
-    backend = str(Path(__file__).resolve().parent.parent)
-    if backend not in sys.path:
-        sys.path.insert(0, backend)
+    _shared_setup_1(__file__)
     import run as studio_run
 
     pid_file = tmp_path / "studio.pid"
@@ -715,11 +706,7 @@ def test_an_undecodable_bootstrap_password_does_not_stop_startup(
     """ensure_default_admin calls _load_bootstrap_password for every existing
     admin and the lifespan calls that with no handler, so a raise here takes the
     whole backend down instead of ignoring an unusable file."""
-    import sys
-
-    backend = str(Path(__file__).resolve().parent.parent)
-    if backend not in sys.path:
-        sys.path.insert(0, backend)
+    _shared_setup_1(__file__)
     from auth import storage
 
     pw_file = tmp_path / ".bootstrap_password"

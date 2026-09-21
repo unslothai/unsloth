@@ -38,9 +38,8 @@ function refusing(messages: {
   };
 }
 
-test("landing on the Hub applies the whole status, not just the checkpoint", () => {
-  // Nothing else on /hub hydrates the runtime store, so pinning only the checkpoint
-  // leaves useActiveModelConfig at its defaults and the settings page offers those.
+test("landing on the Hub synchronizes the full resident status", () => {
+  // Cache mutation guards read the same resident store as Chat.
   const { calls, actions } = spies();
   const adopted = adoptResidentModelStatus(RESIDENT, emptyStore(), actions);
   assert.equal(adopted, true);
@@ -107,7 +106,7 @@ test("nothing is adopted when no model is loaded", () => {
 });
 
 test("an external-provider selection is left alone", () => {
-  // No local mirror, so the resident GGUF's settings would describe the wrong model.
+  // An external selection has no local runtime mirror.
   const { calls, actions } = spies();
   const adopted = adoptResidentModelStatus(
     RESIDENT,
@@ -134,8 +133,7 @@ test("a load in flight is not fought", () => {
 });
 
 test("an empty status drops the checkpoint when idle unload is disarmed", () => {
-  // Nothing will bring the model back, so it really is gone. Leaving the row resident would
-  // seed the settings editor from a launch config nothing is running.
+  // Nothing will bring the model back, so it really is gone.
   const cleared: string[] = [];
   const adopted = adoptResidentModelStatus(
     { checkpointId: null, ggufVariant: null },
@@ -174,8 +172,6 @@ test("an empty status leaves the checkpoint pinned while idle unload is armed", 
 });
 
 test("a speech model in the slot clears the pick even while idle unload is armed", () => {
-  // Not the idle eviction the rule above is about: an Audio load took the single slot and
-  // no stash reloads the chat model, so holding the pick left the Hub calling it Loaded.
   const cleared: string[] = [];
   const adopted = adoptResidentModelStatus(
     { checkpointId: null, ggufVariant: null, speechOnly: true },
@@ -217,7 +213,7 @@ test("an empty status leaves an external pick alone", () => {
     }),
     refusing({
       setCheckpoint: "an external pick is not a local model",
-      applyStatus: "the resident GGUF's status describes another model",
+      applyStatus: "the resident GGUF belongs to another runtime",
     }),
   );
   assert.equal(adopted, false);
@@ -268,10 +264,7 @@ test("a tab going hidden does not read", () => {
   assert.equal(reads, 1);
 });
 
-test("an auto-switch under a mounted Hub stops hiding the live config", () => {
-  // End to end: an API request swaps the resident model under a mounted Hub. Without a second
-  // read settingsTargetIsResident says it is not resident, so the editor seeds from saved
-  // values that Apply then reloads over the API's choice.
+test("an auto-switch under a mounted Hub updates the mutation guard", () => {
   const store = emptyStore({
     checkpoint: "unsloth/Qwen3-8B-GGUF",
     activeGgufVariant: "Q4_K_M",
@@ -295,8 +288,7 @@ test("an auto-switch under a mounted Hub stops hiding the live config", () => {
     );
   };
 
-  // hub-page.tsx's settingsTargetIsResident, for the model the API just loaded.
-  const settingsTargetIsResident = () =>
+  const selectedModelIsResident = () =>
     residentModelIdMatches(store.checkpoint, serverStatus.checkpointId) &&
     ggufVariantsMatch(store.activeGgufVariant, serverStatus.ggufVariant);
 
@@ -304,12 +296,12 @@ test("an auto-switch under a mounted Hub stops hiding the live config", () => {
   subscribeResidentStatusRefresh(readStatusAndAdopt, targets);
 
   assert.equal(
-    settingsTargetIsResident(),
+    selectedModelIsResident(),
     false,
     "precondition: the mount-time read predates the switch",
   );
   targets.fire("window", "focus");
-  assert.equal(settingsTargetIsResident(), true);
+  assert.equal(selectedModelIsResident(), true);
 
   // A load this tab started owns the store until it settles, so a mid-switch refresh
   // must not re-pin the model being moved away from.

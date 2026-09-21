@@ -17,12 +17,37 @@ import threading
 
 import pytest
 
+from core.inference import passthrough_healing
 from core.inference import studio_tool_loop as loop_mod
 from core.inference.studio_tool_loop import (
     ToolLoopPolicy,
     ToolLoopRun,
     stream_with_studio_tools,
 )
+
+
+def _shared_setup_1():
+    transport = FakeTransport(
+        [
+            [
+                _sse(
+                    {
+                        "tool_calls": [
+                            {
+                                "index": 0,
+                                "id": "c1",
+                                "function": {"name": "python", "arguments": "{}"},
+                            }
+                        ]
+                    }
+                ),
+                _sse(finish = "tool_calls"),
+                _DONE,
+            ],
+            [_sse({"content": "ok"}), _sse(finish = "stop"), _DONE],
+        ]
+    )
+    return transport
 
 
 def _sse(
@@ -111,6 +136,7 @@ def _run(
     tools = None,
     tool_choice = None,
     messages = None,
+    supports_vision = False,
     **policy_kwargs,
 ):
     policy_fields = {
@@ -134,6 +160,7 @@ def _run(
                 session_id = "s1",
                 thread_id = "t1",
                 tool_choice = tool_choice,
+                supports_vision = supports_vision,
             ),
             policy = ToolLoopPolicy(**policy_fields),
             cancel_event = cancel_event,
@@ -575,52 +602,14 @@ def test_auto_mode_prompts_only_for_high_risk_calls(executed, monkeypatch):
 
 
 def test_full_access_disables_the_sandbox_at_execution(executed):
-    transport = FakeTransport(
-        [
-            [
-                _sse(
-                    {
-                        "tool_calls": [
-                            {
-                                "index": 0,
-                                "id": "c1",
-                                "function": {"name": "python", "arguments": "{}"},
-                            }
-                        ]
-                    }
-                ),
-                _sse(finish = "tool_calls"),
-                _DONE,
-            ],
-            [_sse({"content": "ok"}), _sse(finish = "stop"), _DONE],
-        ]
-    )
+    transport = _shared_setup_1()
     _run(transport, tools = [PY], bypass_permissions = True)
 
     assert executed[0]["disable_sandbox"] is True
 
 
 def test_sandbox_stays_on_by_default(executed):
-    transport = FakeTransport(
-        [
-            [
-                _sse(
-                    {
-                        "tool_calls": [
-                            {
-                                "index": 0,
-                                "id": "c1",
-                                "function": {"name": "python", "arguments": "{}"},
-                            }
-                        ]
-                    }
-                ),
-                _sse(finish = "tool_calls"),
-                _DONE,
-            ],
-            [_sse({"content": "ok"}), _sse(finish = "stop"), _DONE],
-        ]
-    )
+    transport = _shared_setup_1()
     _run(transport, tools = [PY])
 
     assert executed[0]["disable_sandbox"] is False
@@ -779,8 +768,11 @@ def test_a_stalled_model_is_nudged_to_act(executed):
     assert second[-1]["role"] == "user"
 
 
-def test_a_stalled_model_is_not_nudged_by_default(executed):
+def test_a_stalled_model_is_not_nudged_by_default(executed, monkeypatch):
     """The external loop must not invent a retry for an omitted opt-in flag."""
+    # Pin it: _NUDGE_DEFAULT is import-time, so otherwise this passes only where
+    # UNSLOTH_TOOL_CALL_NUDGE happens to be unset.
+    monkeypatch.setattr(passthrough_healing, "_NUDGE_DEFAULT", False)
     transport = FakeTransport(
         [
             [_sse({"content": "I'll search for that now."}), _sse(finish = "stop"), _DONE],
@@ -792,6 +784,53 @@ def test_a_stalled_model_is_not_nudged_by_default(executed):
     assert executed == []
     assert len(transport.requests) == 1
     assert "SHOULD NOT APPEAR" not in _visible_text(lines)
+
+
+def test_an_explicit_false_beats_a_process_default_of_on(executed, monkeypatch):
+    """What chat-adapter.ts sends externally, and it must beat a default of on."""
+    monkeypatch.setattr(passthrough_healing, "_NUDGE_DEFAULT", True)
+    transport = FakeTransport(
+        [
+            [_sse({"content": "I'll search for that now."}), _sse(finish = "stop"), _DONE],
+            [_sse({"content": "SHOULD NOT APPEAR"}), _sse(finish = "stop"), _DONE],
+        ]
+    )
+    lines = _run(transport, nudge_tool_calls = False)
+
+    assert executed == []
+    assert len(transport.requests) == 1
+    assert "SHOULD NOT APPEAR" not in _visible_text(lines)
+
+
+def test_an_omitted_flag_still_follows_a_process_default_of_on(executed, monkeypatch):
+    """The contract the explicit false works around: if omission ever stops
+    following the process default, this fails and the false can be reconsidered."""
+    monkeypatch.setattr(passthrough_healing, "_NUDGE_DEFAULT", True)
+    transport = FakeTransport(
+        [
+            [_sse({"content": "I'll search for that now."}), _sse(finish = "stop"), _DONE],
+            [
+                _sse(
+                    {
+                        "tool_calls": [
+                            {
+                                "index": 0,
+                                "id": "c1",
+                                "function": {"name": "web_search", "arguments": "{}"},
+                            }
+                        ]
+                    }
+                ),
+                _sse(finish = "tool_calls"),
+                _DONE,
+            ],
+            [_sse({"content": "answer"}), _sse(finish = "stop"), _DONE],
+        ]
+    )
+    _run(transport)
+
+    assert [c["name"] for c in executed] == ["web_search"]
+    assert len(transport.requests) == 3
 
 
 def test_a_finished_answer_is_not_nudged(executed):
@@ -863,26 +902,7 @@ def test_tool_stdout_streams_while_the_call_runs(executed, monkeypatch):
         return "final"
 
     monkeypatch.setattr(loop_mod, "execute_tool", _execute)
-    transport = FakeTransport(
-        [
-            [
-                _sse(
-                    {
-                        "tool_calls": [
-                            {
-                                "index": 0,
-                                "id": "c1",
-                                "function": {"name": "python", "arguments": "{}"},
-                            }
-                        ]
-                    }
-                ),
-                _sse(finish = "tool_calls"),
-                _DONE,
-            ],
-            [_sse({"content": "ok"}), _sse(finish = "stop"), _DONE],
-        ]
-    )
+    transport = _shared_setup_1()
     lines = _run(transport, tools = [PY])
 
     progress = [line for line in lines if line.startswith("data: ") and "partial line" in line]
@@ -1240,3 +1260,80 @@ def test_a_fragment_naming_its_call_goes_back_to_that_call(executed):
     _run(transport)
 
     assert [call["arguments"] for call in executed] == [{"query": "first"}, {"query": "second"}]
+
+
+# ── MCP images ────────────────────────────────────────────────────
+
+
+def _mcp_image_transport() -> FakeTransport:
+    return FakeTransport(
+        [
+            [
+                _sse(
+                    {
+                        "tool_calls": [
+                            {
+                                "index": 0,
+                                "id": "call_img",
+                                "function": {
+                                    "name": "mcp__fs__read_media_file",
+                                    "arguments": '{"path":"cat.png"}',
+                                },
+                            }
+                        ]
+                    }
+                ),
+                _sse(finish = "tool_calls"),
+                _DONE,
+            ],
+            [_sse({"content": "A tabby cat."}), _sse(finish = "stop"), _DONE],
+        ]
+    )
+
+
+@pytest.fixture
+def mcp_image_result(monkeypatch):
+    import base64
+    import io
+
+    from PIL import Image
+
+    from core.inference import mcp_images
+
+    buffer = io.BytesIO()
+    Image.new("RGB", (6, 6), (10, 120, 200)).save(buffer, format = "PNG")
+    envelope = json.dumps(
+        [{"data": base64.b64encode(buffer.getvalue()).decode(), "mimeType": "image/png"}]
+    )
+    monkeypatch.setattr(
+        loop_mod,
+        "execute_tool",
+        lambda name, arguments, **kwargs: "[1 image returned]\n" + mcp_images.SENTINEL + envelope,
+    )
+    monkeypatch.setattr(loop_mod, "build_rag_autoinject", lambda *a, **k: None)
+    monkeypatch.setattr(loop_mod, "is_high_risk_tool_call", lambda name, args: False)
+
+
+def test_mcp_images_reach_a_vision_provider_as_their_own_user_turn(mcp_image_result):
+    transport = _mcp_image_transport()
+
+    _run(
+        transport,
+        tools = [_tool("mcp__fs__read_media_file")],
+        supports_vision = True,
+    )
+
+    follow_up = transport.requests[1]["messages"]
+    assert [message["role"] for message in follow_up[-3:]] == ["assistant", "tool", "user"]
+    assert "__MCP_IMAGES__" not in follow_up[-2]["content"]
+    assert follow_up[-1]["content"][1]["image_url"]["url"].startswith("data:image/png;base64,")
+
+
+def test_mcp_images_are_not_sent_to_a_text_only_provider(mcp_image_result):
+    transport = _mcp_image_transport()
+
+    _run(transport, tools = [_tool("mcp__fs__read_media_file")])
+
+    follow_up = transport.requests[1]["messages"]
+    assert follow_up[-1]["role"] == "tool"
+    assert "__MCP_IMAGES__" not in follow_up[-1]["content"]

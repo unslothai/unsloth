@@ -2,18 +2,15 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 // Harness page for tests/studio/playwright_tool_activity.py.
-//
 // The node suite reaches the open-state reducers and the store, but not a
 // rendered Radix Collapsible, so aria-expanded, whether closed content is in
 // the DOM, and scroll movement are only answerable here.
-//
 // Four disclosure paths reach the same primitive by different routes, and a fix
 // landing in one can miss the others:
 //   controlled    useToolActivityOpen -- web search, knowledge base, code exec
 //   uncontrolled  <ToolFallbackRoot defaultOpen> -- terminal, generic/MCP
 //   approval      the same card with awaitingApproval, which must stay open
 //   group         <ToolGroupRoot>, whose open state is its own
-//
 // The explicit `overflow-y: auto` ancestor exists because that is what
 // useCollapseScrollLock walks up to find.
 
@@ -35,15 +32,15 @@ import { useChatPreferencesStore } from "@/features/chat/stores/chat-preferences
 import { TerminalIcon } from "lucide-react";
 import { StrictMode, useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
+import { AuiProvider, type AssistantClient } from "@assistant-ui/react";
 
 const params = new URLSearchParams(window.location.search);
 const fillers = Number.parseInt(params.get("fillers") ?? "60", 10);
 const strict = params.get("strict") === "1";
 const rtl = params.get("rtl") === "1";
-// `?only=uncontrolled` renders a single card. The scroll scene needs it: the
-// preference closes every card at once and a chevron closes one, so measuring
-// them against each other on the full page compares different amounts of
-// content collapsing, not different code paths.
+// `?only=uncontrolled` renders a single card. The scroll scene needs it: the preference closes
+// every card at once and a chevron closes one, so measuring them against each other on the full
+// page compares different amounts of content collapsing, not different code paths.
 const only = params.get("only") ?? "";
 const shows = (name: string) => only === "" || only === name;
 
@@ -268,6 +265,25 @@ function App() {
   );
 }
 
+// ToolGroupRoot reads `message.status` through useAuiState, which throws outside an AuiProvider,
+// so rendering this page bare crashes before it can publish __probeReady. The page has no
+// message and no runtime: it renders the disclosure primitives on their own, and "no message is
+// running" is the scene it wants. useAuiState needs two things from the client, a subscribe it
+// can hand to useSyncExternalStore and the symbol-keyed state its selector reads, so that is all
+// this provides. Anything else a component reaches for should fail loudly rather than be faked
+// here: the assertion belongs in the app, not in the harness.
+const HARNESS_STATE = { message: { status: undefined } };
+const harnessAui = new Proxy(
+  {},
+  {
+    get(_target, prop) {
+      if (prop === "subscribe" || prop === "on") return () => () => {};
+      if (typeof prop === "symbol") return HARNESS_STATE;
+      return () => ({ getState: () => undefined });
+    },
+  },
+) as unknown as AssistantClient;
+
 const root = document.getElementById("root");
 if (!root) {
   throw new Error("missing #root");
@@ -277,11 +293,13 @@ if (!root) {
 // what the render-phase setState in ToolFallbackRoot/ToolGroupRoot has to
 // survive, but it also doubles every effect and would muddy the measurements.
 createRoot(root).render(
-  strict ? (
-    <StrictMode>
+  <AuiProvider value={harnessAui}>
+    {strict ? (
+      <StrictMode>
+        <App />
+      </StrictMode>
+    ) : (
       <App />
-    </StrictMode>
-  ) : (
-    <App />
-  ),
+    )}
+  </AuiProvider>,
 );

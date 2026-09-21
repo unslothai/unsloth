@@ -130,24 +130,19 @@ class TestIsAppleSilicon:
     def test_returns_bool(self):
         assert isinstance(is_apple_silicon(), bool)
 
-    def test_true_on_darwin_arm64(self):
+    @pytest.mark.parametrize(
+        "system, machine, expected",
+        [
+            pytest.param("Darwin", "arm64", True, id = "true_on_darwin_arm64"),
+            pytest.param("Linux", "x86_64", False, id = "false_on_linux_x86"),
+            pytest.param("Darwin", "x86_64", False, id = "false_on_darwin_x86"),
+        ],
+    )
+    def test_is_apple_silicon_cases(self, system, machine, expected):
         with patch("utils.hardware.hardware.platform") as mock_plat:
-            mock_plat.system.return_value = "Darwin"
-            mock_plat.machine.return_value = "arm64"
-            assert is_apple_silicon() is True
-
-    def test_false_on_linux_x86(self):
-        with patch("utils.hardware.hardware.platform") as mock_plat:
-            mock_plat.system.return_value = "Linux"
-            mock_plat.machine.return_value = "x86_64"
-            assert is_apple_silicon() is False
-
-    def test_false_on_darwin_x86(self):
-        """Intel Mac should return False."""
-        with patch("utils.hardware.hardware.platform") as mock_plat:
-            mock_plat.system.return_value = "Darwin"
-            mock_plat.machine.return_value = "x86_64"
-            assert is_apple_silicon() is False
+            mock_plat.system.return_value = system
+            mock_plat.machine.return_value = machine
+            assert is_apple_silicon() is expected
 
 
 # ========== clear_gpu_cache() ==========
@@ -714,3 +709,184 @@ class TestFormatErrorMessage:
         err = Exception("Something completely unexpected")
         msg = format_error_message(err, "any/model")
         assert msg == "Something completely unexpected"
+
+
+class TestAuthSafeRedirectHandler:
+    """A Hub token must not leave the origin the operator configured.
+
+    Origin cases run over loopback sockets; scheme cases go through redirect_request
+    directly, since a loopback TLS server would need a cert this suite does not carry.
+    """
+
+    TOKEN = "Bearer hf_FAKE_TOKEN_FOR_TESTS"
+
+    @staticmethod
+    def _serve(plan):
+        """A throwaway loopback server that records the Authorization it was sent."""
+        import http.server
+        import threading
+
+        class _Recorder(http.server.BaseHTTPRequestHandler):
+            protocol_version = "HTTP/1.0"
+            # Defaults to None: a connection that sends nothing wedges serve_forever in
+            # readline(), and shutdown() waits on that loop with no timeout of its own.
+            timeout = 5
+
+            def _handle(self):
+                self.server.seen.append(
+                    {"path": self.path, "auth": self.headers.get("Authorization")}
+                )
+                code, location = self.server.plan(self.path)
+                self.send_response(code)
+                if location:
+                    self.send_header("Location", location)
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+
+            # do_GET is NOT dead: 3.13 preserves HEAD across a redirect, 3.12 downgrades
+            # it to GET, so HEAD-only answers 501 on every 3.12 runner.
+            do_GET = _handle
+            do_HEAD = _handle
+
+            def log_message(self, *args):
+                pass
+
+        class _Server(http.server.HTTPServer):
+            def server_bind(self):
+                # HTTPServer.server_bind calls socket.getfqdn(), which conftest's network
+                # guard does not patch: a real PTR query on Windows, and it can stall.
+                import socketserver
+
+                socketserver.TCPServer.server_bind(self)
+                self.server_name = "127.0.0.1"
+                self.server_port = self.server_address[1]
+
+        srv = _Server(("127.0.0.1", 0), _Recorder)
+        srv.seen = []
+        srv.plan = plan
+        threading.Thread(target = srv.serve_forever, daemon = True).start()
+        return srv
+
+    @staticmethod
+    def _stop(*servers):
+        """Stop the loop AND close the listening socket, which shutdown() does not."""
+        for srv in servers:
+            srv.shutdown()
+            srv.server_close()
+
+    def _get(self, url):
+        import urllib.request
+        from utils.utils import auth_safe_open
+
+        req = urllib.request.Request(url, method = "HEAD", headers = {"Authorization": self.TOKEN})
+        auth_safe_open(req, timeout = 5).close()
+
+    def test_same_origin_redirect_keeps_the_token(self):
+        srv = self._serve(lambda p: (302, "/final") if p == "/start" else (200, None))
+        try:
+            self._get(f"http://127.0.0.1:{srv.server_port}/start")
+        finally:
+            self._stop(srv)
+        hop2 = [r for r in srv.seen if r["path"] == "/final"]
+        assert hop2 and hop2[0]["auth"] == self.TOKEN
+
+    def test_cross_origin_redirect_drops_the_token(self):
+        """Another port on the same host is another origin, and gets no token."""
+        dest = self._serve(lambda p: (200, None))
+        src = self._serve(lambda p: (302, f"http://127.0.0.1:{dest.server_port}/final"))
+        try:
+            self._get(f"http://127.0.0.1:{src.server_port}/start")
+        finally:
+            self._stop(src, dest)
+        assert src.seen and src.seen[0]["auth"] == self.TOKEN
+        assert dest.seen and dest.seen[0]["auth"] is None
+
+    def test_token_does_not_come_back_on_the_return_hop(self):
+        ports = {}
+        first = self._serve(
+            lambda p: (302, f"http://127.0.0.1:{ports['b']}/via") if p == "/start" else (200, None)
+        )
+        second = self._serve(lambda p: (302, f"http://127.0.0.1:{first.server_port}/back"))
+        ports["b"] = second.server_port
+        try:
+            self._get(f"http://127.0.0.1:{first.server_port}/start")
+        finally:
+            self._stop(first, second)
+        back = [r for r in first.seen if r["path"] == "/back"]
+        assert second.seen and second.seen[0]["auth"] is None
+        assert back and back[0]["auth"] is None
+
+    # --- scheme and host rules, at the handler ---
+
+    def _redirect(
+        self,
+        start,
+        newurl,
+        code = 302,
+    ):
+        import urllib.request
+        from utils.utils import AuthSafeRedirectHandler
+
+        req = urllib.request.Request(start, method = "HEAD", headers = {"Authorization": self.TOKEN})
+        return AuthSafeRedirectHandler().redirect_request(req, None, code, "Found", {}, newurl)
+
+    def test_tls_downgrade_is_not_followed(self):
+        assert self._redirect("https://hub.example/a", "http://hub.example/a") is None
+
+    def test_scheme_change_alone_drops_the_token(self):
+        """Explicit port on both sides, so this cannot pass on http/https's port gap."""
+        new = self._redirect("http://hub.example:8443/a", "https://hub.example:8443/a")
+        assert new is not None
+        assert new.headers.get("Authorization") is None
+
+    def test_explicit_default_port_is_the_same_origin(self):
+        new = self._redirect("https://hub.example/a", "https://hub.example:443/b")
+        assert new is not None
+        assert new.headers.get("Authorization") == self.TOKEN
+
+    def test_lookalike_host_drops_the_token(self):
+        new = self._redirect("https://hub.example/a", "https://hub.example.evil.test/a")
+        assert new is not None
+        assert new.headers.get("Authorization") is None
+
+    def test_the_strip_lands_on_the_redirected_request_not_the_callers(self):
+        """So a caller that reuses its Request still has a token to send."""
+        import urllib.request
+        from utils.utils import AuthSafeRedirectHandler
+
+        req = urllib.request.Request(
+            "https://hub.example/a", method = "HEAD", headers = {"Authorization": self.TOKEN}
+        )
+        new = AuthSafeRedirectHandler().redirect_request(
+            req, None, 302, "Found", {}, "https://other.example/b"
+        )
+        assert new.headers.get("Authorization") is None
+        assert req.headers.get("Authorization") == self.TOKEN
+
+    def test_a_refused_redirect_reaches_the_caller_as_an_http_error(self):
+        """Stubs the refusal rather than driving it, since that needs an https origin.
+
+        Settles the caller contract only: returning None raises HTTPError on the 3xx.
+        """
+        import urllib.error
+        import urllib.request
+
+        class _Refuse(urllib.request.HTTPRedirectHandler):
+            def redirect_request(self, *a, **k):
+                return None
+
+        dest = self._serve(lambda p: (200, None))
+        src = self._serve(lambda p: (302, f"http://127.0.0.1:{dest.server_port}/final"))
+        opener = urllib.request.build_opener(_Refuse())
+        try:
+            with pytest.raises(urllib.error.HTTPError) as excinfo:
+                opener.open(
+                    urllib.request.Request(
+                        f"http://127.0.0.1:{src.server_port}/start", method = "HEAD"
+                    ),
+                    timeout = 5,
+                )
+        finally:
+            self._stop(src, dest)
+        assert excinfo.value.code == 302
+        assert dest.seen == []

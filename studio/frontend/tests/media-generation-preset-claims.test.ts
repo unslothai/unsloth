@@ -12,17 +12,13 @@
 // assert on the source, like the other page-wiring tests here.
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
-import { fileURLToPath } from "node:url";
 
-function read(path: string) {
-  return readFileSync(fileURLToPath(new URL(path, import.meta.url)), "utf8");
-}
+import { readText } from "./helpers/kit.ts";
 
-const IMAGES = read("../src/features/images/images-page.tsx");
-const VIDEO = read("../src/features/video/video-page.tsx");
-const HOOK = read(
+const IMAGES = readText("../src/features/images/images-page.tsx");
+const VIDEO = readText("../src/features/video/video-page.tsx");
+const HOOK = readText(
   "../src/features/generation-presets/use-media-generation-presets.ts",
 );
 
