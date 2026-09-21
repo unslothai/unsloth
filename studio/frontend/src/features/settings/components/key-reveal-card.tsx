@@ -8,7 +8,12 @@ import { Tick02Icon } from "@/lib/tick-icon";
 import { cn } from "@/lib/utils";
 import { Copy01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
+
+function selectToken(input: HTMLInputElement | null) {
+  input?.focus();
+  input?.select();
+}
 
 export function KeyRevealCard({
   rawKey,
@@ -19,11 +24,19 @@ export function KeyRevealCard({
 }) {
   const t = useT();
   const [copied, setCopied] = useState(false);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  // Plain-HTTP Studio has no clipboard API, so leave the token selected for Ctrl+C.
+  useEffect(() => {
+    selectToken(inputRef.current);
+  }, []);
 
   const handleCopy = async () => {
     if (await copyToClipboard(rawKey)) {
       setCopied(true);
       setTimeout(() => setCopied(false), 1800);
+    } else {
+      selectToken(inputRef.current);
     }
   };
 
@@ -38,31 +51,44 @@ export function KeyRevealCard({
           {t("settings.apiKeys.newTokenCreated")}
         </span>
       </div>
-      <button
-        type="button"
-        onClick={handleCopy}
+      <div
         className={cn(
-          "flex w-full items-center justify-between gap-3 rounded-md border border-border bg-muted/40 px-3 py-2.5 font-mono text-sm transition-colors hover:bg-muted/60",
-          "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
+          "flex w-full items-center gap-3 rounded-md border border-border bg-muted/40 px-3 py-2.5 font-mono text-sm transition-colors",
+          "has-[input:focus-visible]:ring-1 has-[input:focus-visible]:ring-ring",
           copied && "border-emerald-500/40 bg-emerald-500/10",
         )}
-        aria-label={
-          copied
-            ? t("settings.apiKeys.accessTokenCopied")
-            : t("settings.apiKeys.copyAccessToken")
-        }
       >
-        <code
-          className="min-w-0 flex-1 break-all text-left text-foreground"
-          data-reload-snapshot-sensitive
-        >
-          {rawKey}
-        </code>
-        <HugeiconsIcon
-          icon={copied ? Tick02Icon : Copy01Icon}
-          className={cn("size-4 shrink-0", copied && "text-emerald-600")}
+        <input
+          ref={inputRef}
+          type="text"
+          readOnly={true}
+          value={rawKey}
+          onFocus={(event) => event.currentTarget.select()}
+          aria-label={t("settings.apiKeys.newTokenCreated")}
+          className="min-w-0 flex-1 bg-transparent text-foreground outline-none"
+          data-reload-snapshot-sensitive={true}
         />
-      </button>
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon-xs"
+          onClick={handleCopy}
+          className={cn(
+            "-my-1 shrink-0",
+            copied && "text-emerald-600 hover:text-emerald-600",
+          )}
+          aria-label={
+            copied
+              ? t("settings.apiKeys.accessTokenCopied")
+              : t("settings.apiKeys.copyAccessToken")
+          }
+        >
+          <HugeiconsIcon
+            icon={copied ? Tick02Icon : Copy01Icon}
+            className="size-4"
+          />
+        </Button>
+      </div>
       <div className="flex items-center justify-between gap-3 pt-0.5">
         <p className="text-ui-11 text-muted-foreground">
           {t("settings.apiKeys.copyNow")}
