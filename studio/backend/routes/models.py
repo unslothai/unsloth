@@ -538,8 +538,7 @@ def _scan_models_dir(models_dir: Path, *, limit: int | None = None) -> List[Loca
         )
     if limit is None or len(found) < limit:
         # Raising, like the iterdir above: a root that went unreadable after the children
-        # loop answered glob with nothing, so the loose GGUFs were dropped while the caller
-        # was told the source had been read.
+        # loop answered glob with nothing, so the loose GGUFs were dropped silently.
         for gguf_file in _suffixed(models_dir, ".gguf"):
             if limit is not None and len(found) >= limit:
                 break
@@ -674,8 +673,8 @@ def _dir_model_format(path: Path, recursive: bool = False) -> Optional[str]:
             return _is_main_gguf_filename(p.name) and not is_appledouble_metadata(p)
 
         # Raising helpers, so the handler below is reachable for an enumeration failure and
-        # not only for a stat: glob answers an unreadable directory with no matches, and the
-        # classification then said "not GGUF" about a directory it never read.
+        # not only a stat: glob's empty answer made this say "not GGUF" about a directory it
+        # never read.
         if not any(_servable(p) for p in _suffixed(path, ".gguf")):
             if not recursive:
                 return None
@@ -765,10 +764,9 @@ def _scan_lmstudio_dir(lm_dir: Path) -> List[LocalModelInfo]:
                         has_model = (
                             bool(_servable_gguf_names(model_dir))
                             or (model_dir / "config.json").exists()
-                            # Through the raising helper, like every other weight check in
-                            # this pass: glob answers a directory that went unreadable
-                            # between the two calls with no matches, so the handler below
-                            # never fired and the row was dropped as if it held nothing.
+                            # Through the raising helper, like the check above: a directory
+                            # that goes unreadable between the two answers glob with
+                            # nothing, and the row was dropped as if it held nothing.
                             or any(
                                 not is_appledouble_metadata(p)
                                 for p in _suffixed(model_dir, ".safetensors")

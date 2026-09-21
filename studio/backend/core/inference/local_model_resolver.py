@@ -60,10 +60,9 @@ def _snapshot() -> tuple[float, dict[str, _LocalGgufEntry]]:
 
 def _publish(snapshot: tuple[float, dict[str, _LocalGgufEntry]]) -> None:
     global _scan
-    # The stamp is this snapshot's IDENTITY as well as its age, and time.monotonic() steps in
-    # ~16ms on Windows: two scans inside one tick published the SAME stamp, so a settled
-    # negative was never reopened by the pass that would have contradicted it. Nudged past
-    # the previous stamp, which moves the TTL arithmetic by a microsecond.
+    # The stamp is a snapshot's IDENTITY as well as its age, and time.monotonic() steps in
+    # ~16ms on Windows: two scans in one tick published the SAME stamp, so a settled negative
+    # was never reopened. Nudged past the previous one, a microsecond of TTL.
     previous = _snapshot()[0]
     if snapshot[0] <= previous:
         snapshot = (previous + 1e-6, snapshot[1])
@@ -675,10 +674,9 @@ def _local_servable_entry(loader_id: str, info) -> Optional[_LocalGgufEntry]:
         try:
             ollama_model_ref_files(raw_id)
         except (OSError, ValueError) as exc:
-            # A row the scan already built, dropped on a SECOND read of the same manifest.
-            # Unreadable is a gap, and the read failure arrives wrapped as a ValueError with
-            # the OSError as its cause. Unsupported layers or malformed JSON is an answer:
-            # the next pass gives the same one.
+            # A row the scan already built, dropped on a SECOND read of the same manifest,
+            # where the read failure arrives wrapped as a ValueError. Unreadable is a gap;
+            # unsupported layers or malformed JSON is an answer the next pass repeats.
             cause = exc if isinstance(exc, OSError) else exc.__cause__
             if isinstance(cause, OSError):
                 note_scan_incident(f"ollama manifest unreadable on recheck: {raw_id}")
