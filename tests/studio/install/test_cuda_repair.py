@@ -2329,9 +2329,7 @@ class TestADefinitiveImportFailureIsNotADriverHang:
     def test_the_cuda_rescue_forces_a_reinstall_on_a_definitive_failure(self):
         # The timeout distinction is decided once, above the family chain, because all
         # three arms need it; the arm is what acts on it.
-        assert (
-            "$_willForceReinstall = $_verProbe -and -not $_verProbe.TimedOut" in self._SOURCE
-        )
+        assert "$_willForceReinstall = $_verProbe -and -not $_verProbe.TimedOut" in self._SOURCE
         arm = self._cuda_arm()
         assert "if ($_willForceReinstall) {" in arm
         assert "$script:TorchImportDefinitivelyFailed = $true" in arm
