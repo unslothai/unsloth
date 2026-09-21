@@ -164,6 +164,8 @@ export const ptBR = {
       export: "Exportar",
       recents: "Recentes",
       noChatsYet: "Nenhum chat ainda",
+      // Shown under an empty project folder in the sidebar.
+      noChats: "Nenhum chat",
       showMore: "Mostrar mais",
       showLess: "Mostrar menos",
       settings: "Configurações",
@@ -194,6 +196,7 @@ export const ptBR = {
       unpinChats: "Desafixar conversas",
       archiveChats: "Arquivar conversas",
       markUnread: "Marcar como não lida",
+      markRead: "Marcar como lida",
       deleteChats: "Excluir conversas",
       deleteTitle: "Excluir conversas",
       deleteDescription: "Excluir {count} conversas? Esta ação não pode ser desfeita.",
@@ -212,11 +215,26 @@ export const ptBR = {
       priority: "Prioridade",
       lastUpdated: "Última atualização",
       manualOrder: "Ordem manual",
-      moveUp: "Mover para cima",
-      moveDown: "Mover para baixo",
+      priorityHint: "Ativos e não lidos primeiro",
+      lastUpdatedHint: "Mais recentes primeiro",
+      manualOrderHint: "Arraste as linhas para reordenar",
+      switchedToManual: "Ordem manual: arraste as linhas para reordenar",
       organizeChats: "Organizar conversas",
       organizeProjects: "Organizar projetos",
       sortPinnedChats: "Ordenar conversas fixadas",
+      dragDrop: "Arrastar e soltar",
+      dragHints: "Mostrar uma dica ao arrastar",
+      reorderSwitchesSort: "Reordenar muda para ordem manual",
+      dragOpensFolders: "Abrir pastas sob o ponteiro",
+      moveUp: "Mover para cima",
+      moveDown: "Mover para baixo",
+    },
+    drag: {
+      reorder: "Reordenar",
+      pin: "Fixar",
+      unpin: "Desafixar",
+      moveTo: "Mover para {name}",
+      moveToRecents: "Mover para Recentes",
     },
     dialog: {
       deleteChat: {
@@ -1267,7 +1285,11 @@ export const ptBR = {
       },
       gpu: {
         title: "Dispositivos de GPU",
-        ggufInference: "Inferência com GGUF",
+        memory: "Memória da GPU",
+        sharedWithSystemRam: "Compartilhada com a RAM do sistema",
+        estimatedAvailable: "Disponibilidade estimada: {value}",
+        sharedEstimatedAvailable: "RAM compartilhada do sistema: disponibilidade estimada de {value}",
+        ggufInference: "Memória para modelos GGUF",
         unavailable: "indisponível",
         detecting: "Procurando GPUs...",
         unreadable: "Não foi possível ler o hardware deste servidor.",
@@ -1610,6 +1632,9 @@ export const ptBR = {
         collapseByDefault: "Recolher atividade de ferramentas por padrão",
         collapseByDefaultDescription:
           "Mantém entradas e saídas das ferramentas recolhidas durante a execução. Expanda uma linha para inspecioná-la.",
+        foldIntoThinking: "Recolher chamadas de ferramentas no Pensamento",
+        foldIntoThinkingDescription:
+          "Oculta as chamadas de ferramentas de um turno até abrir o bloco de Pensamento.",
       },
       webSearch: {
         title: "Busca na web",

@@ -586,7 +586,25 @@ def run_library_locales(page):
         text = page.evaluate(
             """async locale => {
             const api = await import('/src/i18n/index.ts');
-            await api.setLocale(locale);
+            let result = await api.setLocale(locale);
+            // Every catalog but `en` is a lazy import of its own, so a hiccup fetching
+            // one leaves setLocale reporting the failure and `messages[locale]` unset.
+            // Reaching straight into it then threw "Cannot read properties of undefined
+            // (reading 'settings')", a TypeError out of an eval naming neither the
+            // locale nor the cause, and the leg failed with nothing to act on
+            // (Frontend CI 35478582784, Windows Chromium, on main). The loader keeps a
+            // retry URL for exactly this case, so ask once more before giving up, and
+            // give up with something that says which locale and what the store thinks.
+            if (api.messages[locale] === undefined) {
+                result = await api.setLocale(locale);
+            }
+            if (api.messages[locale] === undefined) {
+                throw new Error(
+                    'locale ' + locale + ': catalog never loaded (catalogFailed='
+                    + api.getLocaleCatalogFailed() + ', active=' + api.getLocale()
+                    + ', setLocale=' + JSON.stringify(result) + ')'
+                );
+            }
             return {
                 ...api.messages[locale].settings.data.library,
                 manage: api.translate('settings.data.manageChats'),

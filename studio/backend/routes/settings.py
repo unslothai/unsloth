@@ -3450,20 +3450,23 @@ def _default_sidebar_menu() -> "list[PersonalizationSidebarMenuItem]":
     ]
 
 
+SidebarNavItemId = Literal[
+    "hub",
+    "projects",
+    "images",
+    "video",
+    "audio",
+    "train",
+    "recipes",
+    "export",
+    "api",
+]
+
+
 class PersonalizationSidebarNavItem(BaseModel):
     model_config = ConfigDict(extra = "ignore")
 
-    id: Literal[
-        "hub",
-        "projects",
-        "images",
-        "video",
-        "audio",
-        "train",
-        "recipes",
-        "export",
-        "api",
-    ]
+    id: SidebarNavItemId
     pinned: bool = True
 
 
@@ -3517,6 +3520,20 @@ class PersonalizationCustomization(BaseModel):
         default_factory = _default_sidebar_nav,
         max_length = MAX_SIDEBAR_NAV_INPUT_ITEMS,
     )
+    # Rows still following an automatic rule rather than a choice the user made. None means the
+    # record predates the field, which the client tells apart from an explicit empty list: a
+    # server-filled default would reapply a rule the user had already overruled.
+    sidebarNavAuto: Optional[list[SidebarNavItemId]] = Field(
+        None, max_length = MAX_SIDEBAR_NAV_INPUT_ITEMS
+    )
+
+    @field_validator("sidebarNavAuto")
+    @classmethod
+    def _validate_sidebar_nav_auto(cls, value: Optional[list[str]]) -> Optional[list[str]]:
+        if value is None:
+            return None
+        seen: set[str] = set()
+        return [item for item in value if not (item in seen or seen.add(item))]
 
     @field_validator("sidebarMenu")
     @classmethod

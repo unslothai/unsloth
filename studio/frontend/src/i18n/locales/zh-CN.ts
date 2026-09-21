@@ -160,6 +160,8 @@ export const zhCN = {
       export: "导出",
       recents: "最近",
       noChatsYet: "暂无对话",
+      // Shown under an empty project folder in the sidebar.
+      noChats: "无对话",
       showMore: "显示更多",
       showLess: "显示更少",
       settings: "设置",
@@ -190,6 +192,7 @@ export const zhCN = {
       unpinChats: "取消置顶",
       archiveChats: "归档对话",
       markUnread: "标记为未读",
+      markRead: "标记为已读",
       deleteChats: "删除对话",
       deleteTitle: "删除对话",
       deleteDescription: "删除 {count} 个对话？此操作无法撤销。",
@@ -208,11 +211,26 @@ export const zhCN = {
       priority: "优先级",
       lastUpdated: "最近更新",
       manualOrder: "手动排序",
-      moveUp: "上移",
-      moveDown: "下移",
+      priorityHint: "进行中和未读优先",
+      lastUpdatedHint: "最新优先",
+      manualOrderHint: "拖动行即可重新排序",
+      switchedToManual: "已改为手动排序，拖动行即可重新排序",
       organizeChats: "整理对话",
       organizeProjects: "整理项目",
       sortPinnedChats: "对置顶对话排序",
+      dragDrop: "拖放",
+      dragHints: "拖动时显示提示",
+      reorderSwitchesSort: "重新排序时切换为手动排序",
+      dragOpensFolders: "打开指针下方的文件夹",
+      moveUp: "上移",
+      moveDown: "下移",
+    },
+    drag: {
+      reorder: "重新排序",
+      pin: "固定",
+      unpin: "取消固定",
+      moveTo: "移动到 {name}",
+      moveToRecents: "移动到最近",
     },
     dialog: {
       deleteChat: {
@@ -1231,7 +1249,11 @@ export const zhCN = {
       },
       gpu: {
         title: "GPU 设备",
-        ggufInference: "GGUF 推理",
+        memory: "GPU 内存",
+        sharedWithSystemRam: "与系统 RAM 共享",
+        estimatedAvailable: "预计可用：{value}",
+        sharedEstimatedAvailable: "共享系统 RAM：预计可用 {value}",
+        ggufInference: "GGUF 模型内存",
         unavailable: "不可用",
         detecting: "正在检查 GPU...",
         unreadable: "无法读取此服务器的硬件信息。",
@@ -1556,6 +1578,9 @@ export const zhCN = {
         collapseByDefault: "默认折叠工具活动",
         collapseByDefaultDescription:
           "工具运行时保持输入和输出折叠。需要检查时展开对应工具行。",
+        foldIntoThinking: "将工具调用折叠进思考",
+        foldIntoThinkingDescription:
+          "在展开思考块之前隐藏该轮的工具调用。",
       },
       webSearch: {
         title: "网页搜索",

@@ -165,6 +165,8 @@ export const de = {
       export: "Exportieren",
       recents: "Zuletzt verwendet",
       noChatsYet: "Noch keine Chats",
+      // Shown under an empty project folder in the sidebar.
+      noChats: "Keine Chats",
       showMore: "Mehr anzeigen",
       showLess: "Weniger anzeigen",
       settings: "Einstellungen",
@@ -195,6 +197,7 @@ export const de = {
       unpinChats: "Chats lösen",
       archiveChats: "Chats archivieren",
       markUnread: "Als ungelesen markieren",
+      markRead: "Als gelesen markieren",
       deleteChats: "Chats löschen",
       deleteTitle: "Chats löschen",
       deleteDescription: "{count} Chats löschen? Das lässt sich nicht rückgängig machen.",
@@ -213,11 +216,26 @@ export const de = {
       priority: "Priorität",
       lastUpdated: "Zuletzt aktualisiert",
       manualOrder: "Manuelle Reihenfolge",
-      moveUp: "Nach oben",
-      moveDown: "Nach unten",
+      priorityHint: "Aktive und ungelesene zuerst",
+      lastUpdatedHint: "Neueste zuerst",
+      manualOrderHint: "Zeilen zum Umordnen ziehen",
+      switchedToManual: "Manuell sortiert: Zeilen zum Umordnen ziehen",
       organizeChats: "Chats organisieren",
       organizeProjects: "Projekte organisieren",
       sortPinnedChats: "Angeheftete Chats sortieren",
+      dragDrop: "Ziehen und Ablegen",
+      dragHints: "Hinweis beim Ziehen anzeigen",
+      reorderSwitchesSort: "Umordnen wechselt zu manueller Reihenfolge",
+      dragOpensFolders: "Ordner unter dem Zeiger öffnen",
+      moveUp: "Nach oben",
+      moveDown: "Nach unten",
+    },
+    drag: {
+      reorder: "Umordnen",
+      pin: "Anheften",
+      unpin: "Lösen",
+      moveTo: "Verschieben nach {name}",
+      moveToRecents: "Zu Zuletzt verschieben",
     },
     dialog: {
       deleteChat: {
@@ -1283,7 +1301,11 @@ export const de = {
       },
       gpu: {
         title: "GPU-Geräte",
-        ggufInference: "GGUF-Inferenz",
+        memory: "GPU-Speicher",
+        sharedWithSystemRam: "Mit dem System-RAM geteilt",
+        estimatedAvailable: "Geschätzt verfügbar: {value}",
+        sharedEstimatedAvailable: "Gemeinsamer System-RAM: geschätzt {value} verfügbar",
+        ggufInference: "Speicher für GGUF-Modelle",
         unavailable: "nicht verfügbar",
         detecting: "Suche nach GPUs...",
         unreadable: "Die Hardware dieses Servers konnte nicht gelesen werden.",
@@ -1632,6 +1654,9 @@ export const de = {
         collapseByDefault: "Tool-Aktivität standardmäßig einklappen",
         collapseByDefaultDescription:
           "Tool-Eingaben und -Ausgaben bleiben während der Ausführung eingeklappt. Zum Prüfen eine Tool-Zeile ausklappen.",
+        foldIntoThinking: "Tool-Aufrufe ins Denken einklappen",
+        foldIntoThinkingDescription:
+          "Tool-Aufrufe eines Zuges ausblenden, bis der Denken-Block geöffnet wird.",
       },
       webSearch: {
         title: "Websuche",

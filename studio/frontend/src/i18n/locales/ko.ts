@@ -162,6 +162,8 @@ export const ko = {
       export: "내보내기",
       recents: "최근 항목",
       noChatsYet: "아직 채팅이 없습니다",
+      // Shown under an empty project folder in the sidebar.
+      noChats: "채팅 없음",
       showMore: "더 보기",
       showLess: "간략히 보기",
       settings: "설정",
@@ -192,6 +194,7 @@ export const ko = {
       unpinChats: "채팅 고정 해제",
       archiveChats: "채팅 보관",
       markUnread: "읽지 않음으로 표시",
+      markRead: "읽음으로 표시",
       deleteChats: "채팅 삭제",
       deleteTitle: "채팅 삭제",
       deleteDescription: "채팅 {count}개를 삭제할까요? 되돌릴 수 없습니다.",
@@ -210,11 +213,26 @@ export const ko = {
       priority: "우선순위",
       lastUpdated: "최근 업데이트",
       manualOrder: "수동 정렬",
-      moveUp: "위로 이동",
-      moveDown: "아래로 이동",
+      priorityHint: "진행 중·읽지 않음 우선",
+      lastUpdatedHint: "최신순",
+      manualOrderHint: "행을 끌어 순서를 바꾸세요",
+      switchedToManual: "수동 정렬로 전환됨: 행을 끌어 순서를 바꾸세요",
       organizeChats: "채팅 정리",
       organizeProjects: "프로젝트 정리",
       sortPinnedChats: "고정된 채팅 정렬",
+      dragDrop: "드래그 앤 드롭",
+      dragHints: "드래그 중 힌트 표시",
+      reorderSwitchesSort: "순서 변경 시 수동 정렬로 전환",
+      dragOpensFolders: "포인터 아래 폴더 열기",
+      moveUp: "위로 이동",
+      moveDown: "아래로 이동",
+    },
+    drag: {
+      reorder: "순서 변경",
+      pin: "고정",
+      unpin: "고정 해제",
+      moveTo: "{name}(으)로 이동",
+      moveToRecents: "최근으로 이동",
     },
     dialog: {
       deleteChat: {
@@ -1253,7 +1271,11 @@ export const ko = {
       },
       gpu: {
         title: "GPU 장치",
-        ggufInference: "GGUF 추론",
+        memory: "GPU 메모리",
+        sharedWithSystemRam: "시스템 RAM과 공유",
+        estimatedAvailable: "예상 사용 가능: {value}",
+        sharedEstimatedAvailable: "공유 시스템 RAM: 예상 사용 가능 {value}",
+        ggufInference: "GGUF 모델 메모리",
         unavailable: "사용할 수 없음",
         detecting: "GPU를 확인하는 중...",
         unreadable: "이 서버의 하드웨어를 읽을 수 없습니다.",
@@ -1587,6 +1609,9 @@ export const ko = {
         collapseByDefault: "기본적으로 도구 활동 접기",
         collapseByDefaultDescription:
           "도구가 실행되는 동안 입력과 출력을 접어 둡니다. 확인하려면 도구 행을 펼치세요.",
+        foldIntoThinking: "도구 호출을 생각 안으로 접기",
+        foldIntoThinkingDescription:
+          "생각 블록을 열기 전까지 해당 턴의 도구 호출을 숨깁니다.",
       },
       webSearch: {
         title: "웹 검색",

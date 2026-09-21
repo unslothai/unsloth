@@ -3966,12 +3966,31 @@ exit 1
             (Get-CanonicalDir -Path (Join-Path $env:USERPROFILE ".unsloth\studio")))
     }
 
-    # Explicit staging root, shared default cache, or the custom Unsloth home's tree.
+    # The master root storage_roots.unsloth_home() reads. llama.cpp, node and whisper.cpp sit
+    # BESIDE studio\ under it, so deriving them from $StudioHome would put them one level below
+    # where every runtime resolver looks.
+    function Get-MasterRootOverride {
+        if ([string]::IsNullOrWhiteSpace($env:UNSLOTH_HOME)) { return $null }
+        $value = $env:UNSLOTH_HOME.Trim()
+        if ($value -eq "~") {
+            $value = $env:USERPROFILE
+        } elseif ($value -like "~/*" -or $value -like "~\*") {
+            $value = (Join-Path $env:USERPROFILE $value.Substring(1).TrimStart('/', '\'))
+        }
+        return (Get-CanonicalDir -Path $value)
+    }
+
+    # Explicit staging root, the master root, the shared default cache, or the custom Unsloth
+    # home's tree.
     function Get-ManagedLlamaCppDir {
         param([AllowNull()][string]$StagingRoot = $null)
 
         if ($StagingRoot) {
             return (Join-Path $StagingRoot "llama.cpp")
+        }
+        $masterRoot = Get-MasterRootOverride
+        if ($masterRoot) {
+            return (Join-Path $masterRoot "llama.cpp")
         }
         if (-not (Test-StudioHomeIsCustom)) {
             return (Join-Path $env:USERPROFILE ".unsloth\llama.cpp")
@@ -3988,8 +4007,9 @@ exit 1
         $dir = Get-ManagedLlamaCppDir -StagingRoot $StagingRoot
         if ((Get-LlamaCppInstallReadState -Path $dir) -ne "Denied") { return $null }
         Write-StudioLine ""
-        # A denied custom home cannot be claimed as an Unsloth-managed cache.
-        $homeIsCustom = Test-StudioHomeIsCustom
+        # A denied custom home cannot be claimed as an Unsloth-managed cache. Computed rather
+        # than read off $RuntimeRootIsCustom: this runs beside the line that defines it.
+        $homeIsCustom = (Test-StudioHomeIsCustom) -or [bool](Get-MasterRootOverride)
         # Preserve user-supplied wording when either override names this tree, or
         # names a build inside it: moving or deleting this folder takes that build
         # with it, and the later --with-llama-cpp-dir check then aborts on a path

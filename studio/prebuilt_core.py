@@ -51,6 +51,16 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Iterable, Iterator
 
+# Bootstrap studio/ like install_llama_prebuilt.py: an importlib spec load prepares no
+# path, so the absolute branch cannot rely on the caller. auth_safe imports only urllib.
+if __package__:
+    from .backend.utils.auth_safe import AuthSafeRedirectHandler
+else:
+    _STUDIO_DIR = os.path.dirname(os.path.abspath(__file__))
+    if _STUDIO_DIR not in sys.path:
+        sys.path.insert(0, _STUDIO_DIR)
+    from backend.utils.auth_safe import AuthSafeRedirectHandler
+
 try:
     from filelock import FileLock, Timeout as FileLockTimeout
 except ImportError:
@@ -389,23 +399,8 @@ def auth_headers(ops: ModuleOps, url: str | None = None) -> dict[str, str]:
     return headers
 
 
-class _CrossHostAuthStrippingRedirectHandler(urllib.request.HTTPRedirectHandler):
-    """Drop Authorization when a redirect leaves the original host.
-
-    huggingface.co redirects downloads to CDN hosts whose signed URLs can reject
-    a foreign Authorization header; urllib forwards headers across redirects by
-    default (requests/huggingface_hub strip them).
-    """
-
-    def redirect_request(self, req, fp, code, msg, headers, newurl):
-        new_request = super().redirect_request(req, fp, code, msg, headers, newurl)
-        if new_request is not None and parsed_hostname(newurl) != parsed_hostname(req.full_url):
-            new_request.headers.pop("Authorization", None)
-            new_request.unredirected_hdrs.pop("Authorization", None)
-        return new_request
-
-
-_URL_OPENER = urllib.request.build_opener(_CrossHostAuthStrippingRedirectHandler())
+_CrossHostAuthStrippingRedirectHandler = AuthSafeRedirectHandler
+_URL_OPENER = urllib.request.build_opener(AuthSafeRedirectHandler())
 
 
 def github_api_headers(ops: ModuleOps, url: str | None = None) -> dict[str, str]:

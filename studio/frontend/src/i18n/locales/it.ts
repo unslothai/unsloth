@@ -129,6 +129,8 @@ export const it = {
       export: "Esporta",
       recents: "Recenti",
       noChatsYet: "Ancora nessuna chat",
+      // Shown under an empty project folder in the sidebar.
+      noChats: "Nessuna chat",
       showMore: "Mostra altro",
       showLess: "Mostra meno",
       settings: "Impostazioni",
@@ -159,6 +161,7 @@ export const it = {
       unpinChats: "Rimuovi le chat fissate",
       archiveChats: "Archivia le chat",
       markUnread: "Segna come non letta",
+      markRead: "Segna come letta",
       deleteChats: "Elimina le chat",
       deleteTitle: "Elimina le chat",
       deleteDescription: "Eliminare {count} chat? L'operazione non è reversibile.",
@@ -177,11 +180,26 @@ export const it = {
       priority: "Priorità",
       lastUpdated: "Ultimo aggiornamento",
       manualOrder: "Ordine manuale",
-      moveUp: "Sposta su",
-      moveDown: "Sposta giù",
+      priorityHint: "Prima attive e non lette",
+      lastUpdatedHint: "Prima le più recenti",
+      manualOrderHint: "Trascina le righe per riordinarle",
+      switchedToManual: "Ordinamento manuale: trascina le righe per riordinarle",
       organizeChats: "Organizza le chat",
       organizeProjects: "Organizza i progetti",
       sortPinnedChats: "Ordina le chat fissate",
+      dragDrop: "Trascina e rilascia",
+      dragHints: "Mostra un suggerimento durante il trascinamento",
+      reorderSwitchesSort: "Riordinare passa all'ordine manuale",
+      dragOpensFolders: "Apri le cartelle sotto il puntatore",
+      moveUp: "Sposta su",
+      moveDown: "Sposta giù",
+    },
+    drag: {
+      reorder: "Riordina",
+      pin: "Fissa",
+      unpin: "Sblocca",
+      moveTo: "Sposta in {name}",
+      moveToRecents: "Sposta in Recenti",
     },
     dialog: {
       deleteChat: {
@@ -1249,7 +1267,11 @@ export const it = {
       },
       gpu: {
         title: "Dispositivi GPU",
-        ggufInference: "Inferenza GGUF",
+        memory: "Memoria GPU",
+        sharedWithSystemRam: "Condivisa con la RAM di sistema",
+        estimatedAvailable: "Disponibilità stimata: {value}",
+        sharedEstimatedAvailable: "RAM di sistema condivisa: disponibilità stimata di {value}",
+        ggufInference: "Memoria per i modelli GGUF",
         unavailable: "non disponibile",
         detecting: "Ricerca di GPU...",
         unreadable: "Impossibile leggere l'hardware di questo server.",
@@ -1597,6 +1619,9 @@ export const it = {
         collapseByDefault: "Comprimi l’attività degli strumenti per impostazione predefinita",
         collapseByDefaultDescription:
           "Mantieni compressi input e output degli strumenti durante l’esecuzione. Espandi una riga per esaminarla.",
+        foldIntoThinking: "Comprimi le chiamate agli strumenti nel Ragionamento",
+        foldIntoThinkingDescription:
+          "Nasconde le chiamate agli strumenti di un turno finché non si apre il blocco Ragionamento.",
       },
       webSearch: {
         title: "Ricerca web",
