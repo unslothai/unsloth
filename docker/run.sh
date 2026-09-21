@@ -353,6 +353,7 @@ declare -a ENV_FORWARD=(-e HF_HUB_ENABLE_HF_TRANSFER=1)
 [[ -n "${WANDB_API_KEY:-}"     ]] && ENV_FORWARD+=(-e WANDB_API_KEY)
 [[ -n "${UNSLOTH_LICENSE:-}"   ]] && ENV_FORWARD+=(-e UNSLOTH_LICENSE)
 [[ -n "${UNSLOTH_ALLOW_CPU:-}" ]] && ENV_FORWARD+=(-e UNSLOTH_ALLOW_CPU)
+[[ -n "${UNSLOTH_SKIP_GPU_CHECK:-}" ]] && ENV_FORWARD+=(-e UNSLOTH_SKIP_GPU_CHECK)
 # gfx overrides for cards the installed ROCm build has no kernels for
 [[ -n "${HSA_OVERRIDE_GFX_VERSION:-}" ]] && ENV_FORWARD+=(-e HSA_OVERRIDE_GFX_VERSION)
 [[ -n "${UNSLOTH_ROCM_GFX_ARCH:-}"    ]] && ENV_FORWARD+=(-e UNSLOTH_ROCM_GFX_ARCH)

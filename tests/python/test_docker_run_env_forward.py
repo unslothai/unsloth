@@ -19,8 +19,8 @@ pytestmark = pytest.mark.skipif(
 )
 
 
-def _documented():
-    table = (DOCKER / "DOCKERHUB.md").read_text().split("## Environment variables", 1)[1]
+def _documented(page, heading):
+    table = (DOCKER / page).read_text().split(f"\n{heading}\n", 1)[1]
     names = []
     for row in table.split("\n## ", 1)[0].splitlines():
         if row.startswith("| `"):
@@ -28,7 +28,10 @@ def _documented():
     return names
 
 
-DOCUMENTED = _documented()
+ROCM_DOCUMENTED = _documented("DOCKERHUB-ROCM.md", "## Environment")
+DOCUMENTED = list(
+    dict.fromkeys(_documented("DOCKERHUB.md", "## Environment variables") + ROCM_DOCUMENTED)
+)
 
 
 def _forwarded(tmp_path, **env_extra):
@@ -59,8 +62,9 @@ def _forwarded(tmp_path, **env_extra):
     return [spec for flag, spec in zip(argv, argv[1:]) if flag == "-e"]
 
 
-def test_the_hub_page_still_has_a_variable_table():
+def test_the_hub_pages_still_have_a_variable_table():
     assert "JUPYTER_PORT" in DOCUMENTED and len(DOCUMENTED) >= 10, DOCUMENTED
+    assert "UNSLOTH_SKIP_GPU_CHECK" in ROCM_DOCUMENTED, ROCM_DOCUMENTED
 
 
 @pytest.mark.parametrize("name", DOCUMENTED)
