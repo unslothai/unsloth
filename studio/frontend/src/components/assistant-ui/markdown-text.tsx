@@ -69,11 +69,14 @@ import {
 } from "streamdown";
 import {
   DeferredFenceShell,
+  FenceBody,
+  type FenceTokens,
   fenceMode,
   trimmedLength,
   trimTrailingNewlines,
   useFenceReached,
 } from "./code-fence-defer";
+import { markdownBlockFallback } from "./markdown-block-fallback";
 import { createCodePlugin } from "./code-plugin";
 import { withMathBlockMarker } from "./math-block-marker";
 import {
@@ -613,7 +616,6 @@ function StreamdownBlockContent(props: BlockProps) {
     return (
       <>
         <FenceBlock
-          blockProps={blockProps}
           isIncomplete={props.isIncomplete}
           language={codeFence.language}
           source={codeFence.source}
@@ -633,6 +635,30 @@ function StreamdownBlockContent(props: BlockProps) {
      * boundary existed, 0 copy and 0 download buttons on both. Guarding it keeps the failure inside the renderer
      * boundary, so the completed block mounts `FenceBlock` normally and keeps its controls.
      */
+  /*
+     * THE STREAMING FENCE, which used to fall through to the bare `Block` below.
+     * `getCodeFence` needs the CLOSING fence, so a fence that is still arriving has no `codeFence`
+     * and never reached `FenceBlock`. That route is what #10769 measured as unusable, and PR #10779
+     * fixed it by rendering the plain shell, which cost the colours a reader watches a model write.
+     * `FenceBody` keeps them: it is the same per-line rendering the completed fence gets, so the
+     * block does not change shape when its closing delimiter lands, and the line window bounds what
+     * a 140K-character fence can cost while it grows.
+     * `markdownBlockFallback` rather than `getCodeFence` because it recognises every CommonMark
+     * fence -- tildes, four or more backticks, up to three spaces of indent -- and this route must
+     * not hand a fence it failed to recognise back to the renderer that cannot afford it.
+     */
+  if (props.isIncomplete) {
+    const openFence = markdownBlockFallback(props.content);
+    if (openFence.fenced) {
+      return (
+        <StreamingFenceBlock
+          language={openFence.language}
+          source={openFence.text}
+        />
+      );
+    }
+  }
+
   return (
     <MarkdownRendererBoundary
       fallback={<MarkdownBlockFallbackView content={props.content} />}
@@ -642,19 +668,91 @@ function StreamdownBlockContent(props: BlockProps) {
   );
 }
 
+/**
+ * This fence's tokens, or `null` while its grammar chunk is still loading.
+ *
+ * The same shape streamdown's own `HighlightedCodeBlockBody` uses -- ask the plugin, take the
+ * synchronous answer when the grammar is already in hand, take the callback's when it is not --
+ * because `latchNow` in `code-fence-defer.tsx` is built around exactly that shape. Its nested
+ * `flushSync` exists to make React run this passive effect inside the task that latched the fence,
+ * so a jump or a print swaps straight to a COLOURED block rather than painting a plain one first.
+ *
+ * The guard on `wanted` is what a streamed fence needs and a settled one does not: the callback for
+ * chunk N can arrive after chunk N+1 has already been rendered, and letting it through would walk
+ * the fence backwards by a frame.
+ */
+function useFenceTokens(
+  source: string,
+  languageToken: string | null,
+  enabled: boolean,
+): FenceTokens | null {
+  const [tokens, setTokens] = useState<FenceTokens | null>(null);
+  const wanted = useRef("");
+  useEffect(() => {
+    if (!enabled) return;
+    const body = trimTrailingNewlines(source);
+    wanted.current = body;
+    const settled = code.highlight(
+      {
+        code: body,
+        language: (languageToken ?? "text") as never,
+        themes: STREAMDOWN_SHIKI_THEME,
+      },
+      (late) => {
+        if (wanted.current === body) setTokens(late);
+      },
+    );
+    if (settled) setTokens(settled);
+  }, [enabled, source, languageToken]);
+  return tokens;
+}
+
+/**
+ * A fence that is still being written.
+ *
+ * No reach latch and no deferral: the block being written is the one the reader is looking at, so
+ * it is highlighted from its first character, which is the rule `useFenceReached` already spells
+ * for a streaming fence. No action bar either, because the bare `Block` this replaces never had
+ * one and a performance change is the wrong place to add controls.
+ */
+function StreamingFenceBlock({
+  language,
+  source,
+}: {
+  language: string | null;
+  source: string;
+}) {
+  const languageToken = language?.trim().split(/\s+/)[0] || null;
+  const tokens = useFenceTokens(source, languageToken, true);
+  return (
+    <MarkdownRendererBoundary
+      fallback={<DeferredFenceShell language={languageToken} source={source} />}
+    >
+      <FenceBody
+        language={languageToken}
+        result={tokens}
+        source={source}
+        windowing={fenceMode() === "window"}
+      />
+    </MarkdownRendererBoundary>
+  );
+}
+
 /*
  * The fence branch, extracted so the reach latch can be a hook. With the flag off this renders exactly what the
- * branch rendered before: the same `relative isolate` wrapper, the same `<Block>`, the same action bar. The
- * wrapper is reused as the intersection target rather than a new one being introduced, so the DOM the off arm
- * produces is byte-for-byte what main produces and the on arm differs only in what is INSIDE the wrapper.
+ * branch rendered before: the same `relative isolate` wrapper, the same action bar, and inside them a body
+ * whose elements and classes are streamdown's own. The wrapper is reused as the intersection target rather
+ * than a new one being introduced, so the DOM the off arm produces is byte-for-byte what main produces and
+ * the on arm differs only in what is INSIDE the wrapper.
+ * `<Block>` is gone from this branch. It maps the WHOLE token array on every render and memoizes on the
+ * identity of a result object the plugin rebuilds every frame, so the fence re-rendered end to end sixty
+ * times a second. See `FenceBody` in `code-fence-defer.tsx` for what replaced it and why.
  */
 function FenceBlock({
-  blockProps,
   isIncomplete,
   language,
   source,
 }: {
-  blockProps: BlockProps;
   isIncomplete: boolean | undefined;
   language: string | null;
   source: string;
@@ -714,6 +812,11 @@ function FenceBlock({
   // MEASUREMENT ARM ONLY. See `FenceMode`: this puts the tokenizer work back while leaving the document at the
   // deferred size, so the two costs can be told apart. `code.highlight` caches on the source string, so the work
   // happens exactly once and the discarded result is the same object the real path would have used.
+  // Asked for only once the fence is reached, so a deferred fence still tokenizes nothing. The
+  // latch calls `warm(true)` synchronously on the way in, so this is a cache hit rather than the
+  // first tokenization of the body.
+  const tokens = useFenceTokens(source, languageToken, reached);
+
   const pretokenize = mode === "tokenize" && !reached;
   useEffect(() => {
     if (!pretokenize) return;
@@ -744,7 +847,12 @@ function FenceBlock({
         }
       >
         {reached ? (
-          <Block {...blockProps} />
+          <FenceBody
+            language={languageToken}
+            result={tokens}
+            source={source}
+            windowing={mode === "window"}
+          />
         ) : (
           <DeferredFenceShell language={languageToken} source={source} />
         )}
