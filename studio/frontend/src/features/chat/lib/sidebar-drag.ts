@@ -8,7 +8,6 @@ import {
   dropEdgeAt,
   insertIdAt,
   PINNED_ORDER_SCOPE,
-  PINNED_PROJECT_ORDER_SCOPE,
   placeIdAt,
   PROJECT_ORDER_SCOPE,
   projectOrderScope,
@@ -42,9 +41,10 @@ export interface SidebarDropZone {
   folderId?: string;
   /** For a chat under a folder: its place in the folder's block. */
   block?: { index: number; count: number };
-  /** The section header. It stands for the top of its first row (given as `row`) for a drag
-   *  of the same kind, so the gap above the first row is not dead space, and takes a drop
-   *  while the section is collapsed. */
+  /** The last row drawn in that folder's block, where a line landing below the block goes. */
+  blockEnd?: { scope: string; id: string };
+  /** The section header. It stands for the top of its first row (given as `row`), so the gap
+   *  above the first row is not dead space, and takes a drop while the section is collapsed. */
   header?: boolean;
 }
 
@@ -55,10 +55,9 @@ export interface SidebarDropContext {
   pinnedSort: SidebarChatSort;
   pinnedChatIds: ReadonlySet<string>;
   pinnedProjectIds: ReadonlySet<string>;
-  /** Row ids per list, in drawn order. */
+  /** Row ids per list, in drawn order. Pinned is one list of folders and chats. */
   orders: {
-    pinnedChats: string[];
-    pinnedProjects: string[];
+    pinned: string[];
     projects: string[];
     recents: string[];
     projectChats: (projectId: string) => string[];
@@ -120,7 +119,11 @@ export function planSidebarDrop(
   ctx: SidebarDropContext,
 ): SidebarDropPlan | null {
   if (zone.header) {
-    const first = zone.row?.kind === drag.kind ? zone.row : undefined;
+    // Pinned holds both kinds in one order; the other sections hold one each.
+    const first =
+      zone.row && (zone.section === "pinned" || zone.row.kind === drag.kind)
+        ? zone.row
+        : undefined;
     zone = {
       section: zone.section,
       header: true,
@@ -129,12 +132,81 @@ export function planSidebarDrop(
     };
     edge = "top";
   }
+  if (zone.section === "pinned") return planPinnedDrop(drag, zone, edge, ctx);
   return drag.kind === "project"
     ? planFolderDrop(drag, zone, edge, ctx)
     : planChatDrop(drag, zone, edge, ctx);
 }
 
-// Folders reorder within Projects or Pinned, and cross between them to pin or unpin. A folder's
+/** The line for landing against a folder: above its row, or below the last row of its block. */
+function folderLine(
+  scope: string,
+  folderId: string,
+  edge: DropEdge,
+  zone: SidebarDropZone,
+): SidebarDropCue {
+  if (edge === "bottom" && zone.blockEnd) {
+    return line(zone.blockEnd.scope, zone.blockEnd.id, "bottom");
+  }
+  return line(scope, folderId, edge);
+}
+
+// Pinned is one list: folders and chats in the order they were dropped into. A row of either
+// kind lands in the slot the line shows. A chat still files into a pinned folder by landing on
+// that folder's chats, or on the lower half of its row.
+function planPinnedDrop(
+  drag: SidebarDragItem,
+  zone: SidebarDropZone,
+  edge: DropEdge,
+  ctx: SidebarDropContext,
+): SidebarDropPlan | null {
+  if (zone.folderId === drag.id) return null;
+  if (
+    drag.kind === "chat" &&
+    zone.folderId &&
+    (zone.row?.kind !== "project" || edge === "bottom")
+  ) {
+    return planChatDrop(drag, zone, edge, ctx);
+  }
+  const ids = ctx.orders.pinned;
+  const inList =
+    drag.kind === "project"
+      ? ctx.pinnedProjectIds.has(drag.id)
+      : ctx.pinnedChatIds.has(drag.id);
+  let target: { id: string; edge: DropEdge } | null = null;
+  if (zone.row) {
+    if (zone.folderId && zone.row.kind === "chat" && zone.block) {
+      // A folder over another folder's chats aims at that folder; the block's middle decides.
+      target = { id: zone.folderId, edge: blockEdge(zone.block, edge) };
+    } else {
+      target = { id: zone.row.id, edge };
+    }
+  } else if (ids.length > 0) {
+    // The section's own space: last.
+    target = { id: ids[ids.length - 1], edge: "bottom" };
+  }
+  if (!target || target.id === drag.id) return null;
+  const resorts = ctx.pinnedSort !== "manual";
+  if (inList && resorts && !ctx.reorderSwitchesSort) return null;
+  const next = inList
+    ? insertIdAt(ids, drag.id, target.id, target.edge)
+    : placeIdAt(ids, drag.id, target.id, target.edge);
+  if (next === ids) return null;
+  const cue =
+    zone.folderId && target.id === zone.folderId
+      ? folderLine(PINNED_ORDER_SCOPE, target.id, target.edge, zone)
+      : line(PINNED_ORDER_SCOPE, target.id, target.edge);
+  const effects: SidebarDropEffects = {
+    orders: [{ scope: PINNED_ORDER_SCOPE, ids: next }],
+    switchSort: resorts ? "pinned" : undefined,
+  };
+  if (inList) return { action: { kind: "reorder" }, cue, effects };
+  if (drag.kind === "project") effects.pinProject = drag.id;
+  else effects.pinChat = drag.id;
+  return { action: { kind: "pin" }, cue, effects };
+}
+
+// A folder over Projects: reorders among its folders, or comes back out of Pinned. A folder's
 // block (its row plus its chats) is one target, aimed at the folder.
 function planFolderDrop(
   drag: SidebarDragItem,
@@ -144,10 +216,7 @@ function planFolderDrop(
 ): SidebarDropPlan | null {
   if (zone.section === "recents") return null;
   if (zone.folderId === drag.id) return null;
-  const toPinned = zone.section === "pinned";
-  const fromPinned = ctx.pinnedProjectIds.has(drag.id);
-  const scope = toPinned ? PINNED_PROJECT_ORDER_SCOPE : PROJECT_ORDER_SCOPE;
-  const ids = toPinned ? ctx.orders.pinnedProjects : ctx.orders.projects;
+  const ids = ctx.orders.projects;
   let target: { id: string; edge: DropEdge } | null = null;
   if (zone.folderId) {
     target =
@@ -155,33 +224,29 @@ function planFolderDrop(
         ? { id: zone.folderId, edge: blockEdge(zone.block, edge) }
         : { id: zone.folderId, edge };
   }
-  if (fromPinned === toPinned) {
+  if (!ctx.pinnedProjectIds.has(drag.id)) {
     // Same list: only a folder is a slot to land against.
     if (!target) return null;
     const next = insertIdAt(ids, drag.id, target.id, target.edge);
     if (next === ids) return null;
     return {
       action: { kind: "reorder" },
-      cue: line(scope, target.id, target.edge),
-      effects: { orders: [{ scope, ids: next }] },
+      cue: folderLine(PROJECT_ORDER_SCOPE, target.id, target.edge, zone),
+      effects: { orders: [{ scope: PROJECT_ORDER_SCOPE, ids: next }] },
     };
   }
-  // Crossing lists pins or unpins, landing against a folder or last.
+  // Out of Pinned: unpinned, landing against a folder or last.
   const next = placeIdAt(ids, drag.id, target?.id ?? null, target?.edge ?? "bottom");
-  const cue = target
-    ? line(scope, target.id, target.edge)
-    : ring(sectionRingKey(zone.section));
-  return toPinned
-    ? {
-        action: { kind: "pin" },
-        cue,
-        effects: { orders: [{ scope, ids: next }], pinProject: drag.id },
-      }
-    : {
-        action: { kind: "unpin" },
-        cue,
-        effects: { orders: [{ scope, ids: next }], unpinProject: drag.id },
-      };
+  return {
+    action: { kind: "unpin" },
+    cue: target
+      ? folderLine(PROJECT_ORDER_SCOPE, target.id, target.edge, zone)
+      : ring(sectionRingKey("projects")),
+    effects: {
+      orders: [{ scope: PROJECT_ORDER_SCOPE, ids: next }],
+      unpinProject: drag.id,
+    },
+  };
 }
 
 /** Which end of a folder the pointer aims at from inside its block: the line flips once, at
@@ -238,40 +303,6 @@ function planChatDrop(
       "chats",
       ctx,
     );
-  }
-
-  if (zone.section === "pinned") {
-    if (pinned) {
-      if (zone.row?.kind !== "chat") return null;
-      return reorder(
-        drag,
-        PINNED_ORDER_SCOPE,
-        ctx.orders.pinnedChats,
-        zone.row.id,
-        edge,
-        "pinned",
-        ctx,
-      );
-    }
-    // Pin in the slot it dropped on, or last.
-    const target = zone.row?.kind === "chat" ? { id: zone.row.id, edge } : null;
-    const next = placeIdAt(
-      ctx.orders.pinnedChats,
-      drag.id,
-      target?.id ?? null,
-      target?.edge ?? "bottom",
-    );
-    return {
-      action: { kind: "pin" },
-      cue: target
-        ? line(PINNED_ORDER_SCOPE, target.id, target.edge)
-        : ring(sectionRingKey("pinned")),
-      effects: {
-        orders: [{ scope: PINNED_ORDER_SCOPE, ids: next }],
-        pinChat: drag.id,
-        switchSort: ctx.pinnedSort === "manual" ? undefined : "pinned",
-      },
-    };
   }
 
   if (zone.section === "recents") {

@@ -136,7 +136,7 @@ test("folders range-select within the list the row is in", async () => {
   assert.match(sidebar, /rangeBetween\(orderedIds, anchorId, projectId\)/);
   assert.match(
     sidebar,
-    /handleProjectSelectionClick\(event, project\.id, order\.orderedIds\)/,
+    /handleProjectSelectionClick\(\n\s*event,\n\s*project\.id,\n\s*order\.selectionIds \?\? order\.orderedIds,\n\s*\)/,
   );
   // Nothing reaches for the Projects list from inside the handler any more.
   const handler = sidebar.slice(

@@ -93,7 +93,7 @@ test("a folder row's icon follows its disclosure", () => {
 test("an empty open folder says it is empty", () => {
   assert.match(
     APP_SIDEBAR,
-    /\{expanded && projectChats\.length === 0 && \(\n\s*<SidebarMenuItem\n\s*\{\.\.\.dnd\.dropZoneProps\(\{ section: order\.section, folderId: project\.id \}\)\}\n\s*>\n\s*<p className="[^"]*text-nav-fg-muted">\n\s*\{t\("shell\.navigation\.noChats"\)\}/,
+    /\{expanded && projectChats\.length === 0 && \(\n\s*<SidebarMenuItem\n\s*\{\.\.\.dnd\.dropZoneProps\(\{ section: order\.section, folderId: project\.id, blockEnd \}\)\}\n\s*>\n\s*<p className="[^"]*text-nav-fg-muted">\n\s*\{t\("shell\.navigation\.noChats"\)\}/,
   );
   // And it is a row, so the bottom fade has to count it like the "Show more" one.
   assert.match(APP_SIDEBAR, /if \(chats\.length === 0\) rows \+= 1;/);
@@ -171,10 +171,10 @@ test("the folder menu leads with where to go, then what to change", async () => 
 
 // Pinning a folder used to sort it to the top of Projects, beside a Pinned section of chats.
 test("a pinned folder is a row of Pinned, not of Projects", () => {
-  // Pinned renders the folders, in the Pinned section's own order scope.
+  // Pinned renders the folders among its chats, in the Pinned section's own order scope.
   assert.match(
     APP_SIDEBAR,
-    /pinnedProjectRecords\.map\(\(project\) =>\n\s*renderProjectFolderRow\(project, \{\n\s*scope: PINNED_PROJECT_ORDER_SCOPE,\n\s*orderedIds: pinnedProjectRowIds,/,
+    /row\.kind === "project"\n\s*\? renderProjectFolderRow\(row\.project, \{\n\s*scope: PINNED_ORDER_SCOPE,\n\s*orderedIds: pinnedRowIds,/,
   );
   // Projects renders what is left, in its own.
   assert.match(
