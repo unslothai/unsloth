@@ -1224,6 +1224,31 @@ def test_chat_sidebar_row_actions_visible_on_coarse_pointers():
         f"would go on reporting a value that no longer renders"
     )
 
+    # And under a qualifier it reads. Being numeric is not enough: the three shapes below are
+    # the ones the comparison looks at, and a padding under any other variant was matched by
+    # none of them and so left out of the answer entirely while still rendering.
+    # `focus:[@media(pointer:coarse)]:pr-0` is the case, effective on a focused touch row and
+    # invisible here. Refusing it is the same rule already applied to importance markers and
+    # arbitrary values: this guard does not adjudicate what it cannot read.
+    readable_padding = re.compile(
+        r"pr-\d+(?:\.\d+)?"
+        r"|\[@media\(pointer:coarse\)\]:pr-\d+(?:\.\d+)?"
+        r"|[\w:\[\]().,=^-]*/(?:project-chat-item|recent-item):pr-\d+(?:\.\d+)?"
+    )
+    unqualified = sorted(
+        {
+            cls
+            for cls in every_class
+            if re.search(r"(?:^|:)pr-\d", cls) and not readable_padding.fullmatch(cls)
+        }
+    )
+    assert not unqualified, (
+        f"buttonClass states a right padding under a qualifier this guard does not read: "
+        f"{unqualified}. It renders in the state that qualifier names, and the comparison "
+        f"below reports the gutters it does read, so the row would be credited with padding "
+        f"that state does not have"
+    )
+
     coarse_prefix = r"\[@media\(pointer:coarse\)\]:"
     variants = ("project-chat-item", "recent-item")
     # Every rendering is some row, and a rendering that claims no gutter at all was being
