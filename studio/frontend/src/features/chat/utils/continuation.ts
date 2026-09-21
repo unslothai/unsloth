@@ -884,8 +884,11 @@ export function createAutoContinueLeaseKeeper({
         //
         // `ownsTheKey` is the other half of that. Unarmed means "never streamed" only if a
         // true reading of the key would have belonged to this hold; when the key was ALREADY
-        // busy as the hold was taken, arming cannot happen at all, so a continuation that
-        // streamed the whole way through looks identical to one that was stopped. The bar
+        // busy as the hold was taken, arming cannot happen off this hold's own run, so a
+        // continuation that streamed the whole way through looks identical to one that was
+        // stopped. (It can still arm LATER, off a run that starts after the key has been seen
+        // idle -- the thread-wide mis-arm #9425 declined to close, which this does not move.)
+        // The bar
         // reaches that state on its own: its `!isRunning` gate reads the selected branch,
         // not `runningByThreadId`, so it fires while `scheduleGenerationRecovery` follows a
         // durable run on the same key, and a continuation keeps the legacy stream rather than

@@ -1912,12 +1912,68 @@ test("the run that ends is the one the hold was taken for, not the round before 
   assert.equal(keeper.held(), 0);
 });
 
+test("a settled hold is read before the thread is, not after it", async () => {
+  // The settled check sits AHEAD of the arming check, and this is the window where that
+  // position is the whole answer. The hold was taken on an idle key, so it owns it, and its
+  // own run ended without ever streaming: Stop during preflight. By the time the keeper looks,
+  // the key already reads busy -- the store's notification for the run that replaced this one
+  // has not been delivered yet, and the settle callback observes on its own -- so a single
+  // pass sees `settled`, `!armed` and `isRunning` all true at once.
+  //
+  // Below the arming check, that pass arms the hold on somebody else's run and the end of THAT
+  // run releases it, writing a `done` marker for a message that produced not one token. Ahead
+  // of it, the hold is discarded and the lease lapses on its own TTL.
+  const { storage } = storageFake();
+  const tab = createAutoContinueTab({ storage, locks: null });
+  const start = 1_000;
+  const pending: Promise<void>[] = [];
+  const running = new Set<string>();
+  const runs = runSignalFake(running);
+  const issued = issuedRunFake();
+  const released: string[] = [];
+  const keeper = createAutoContinueLeaseKeeper({
+    signal: runs.signal,
+    renew: (messageId: string, holder: string, now: number) => {
+      pending.push(tab.renew(messageId, holder, { now }));
+    },
+    release: (messageId: string, holder: string, now: number) => {
+      released.push(messageId);
+      pending.push(tab.release(messageId, holder, { now }));
+    },
+    now: () => start,
+  });
+
+  await tab.claim("m1", { now: start, holder: "thread-A" });
+  keeper.hold("m1", "thread-A");
+  keeper.settleOn("m1", "thread-A", issued.issued);
+
+  // The key turns busy without the keeper having been told, then this hold's own run settles.
+  running.add("thread-A");
+  issued.settle();
+  assert.equal(
+    keeper.held(),
+    0,
+    "a stopped preflight armed on whatever was on the thread when it was read",
+  );
+
+  // Whatever that other run was, its ending records nothing against this message.
+  running.delete("thread-A");
+  runs.change();
+  await Promise.all(pending);
+  assert.deepEqual(
+    released,
+    [],
+    "a message that streamed nothing was marked continued",
+  );
+});
+
 test("a hold on a key that was already busy is left alone, not guessed at", async () => {
   // The keeper watches the whole store, so a hold taken while the thread already reads busy
   // -- `scheduleGenerationRecovery` follows a durable run from outside the adapter and holds
-  // its own owner on the same key -- has not seen the thread idle and can never arm: the flag
-  // was somebody else's before the hold existed. Unarmed therefore stops meaning "streamed
-  // nothing" here, and the two outcomes are indistinguishable from the flag alone.
+  // its own owner on the same key -- has not seen the thread idle, so nothing it reads there
+  // can be its own run: the flag was somebody else's before the hold existed. Unarmed
+  // therefore stops meaning "streamed nothing" here, and the two outcomes are
+  // indistinguishable from the flag alone.
   //
   // The bar reaches this on its own. Its `!isRunning` gate reads the SELECTED BRANCH, not
   // `runningByThreadId`, so switching to a truncated sibling while a durable run is followed
