@@ -39277,6 +39277,10 @@ async def generate_diffusion_image(
     try:
         with account_access.media_generation("diffusion"):
             records = await asyncio.to_thread(_persist)
+        # Saved: nothing retained under this id is a failure of this request any more. A
+        # duplicate execution of one retried POST can fail while this one is still writing,
+        # and its reason would otherwise answer a settling client whose images now exist.
+        _clear_outcome(request.attempt_id)
     except Exception as exc:
         logger.error("diffusion.persist_failed: %s", exc)
         # The only failure raised after the attempt was reported ACTIVE, so a settling client

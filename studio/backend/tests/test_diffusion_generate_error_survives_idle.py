@@ -124,9 +124,10 @@ def test_an_engine_identifies_the_reason_with_the_attempt_that_caused_it(engine)
         "attempt_id: Optional[str] = None," in src
     ), f"{engine} does not accept an attempt id from the route"
     # Recorded where the run STARTS, beside the clear, or the id and the reason would
-    # describe different moments.
-    recorded = src.index("self._last_generate_attempt = attempt_id")
+    # describe different moments. Searched from the clear, since the pre-admission handler
+    # writes the same field earlier in the file for the raises that never reach the start.
     clear = src.index("self._last_generate_error = None")
+    recorded = src.index("self._last_generate_attempt = attempt_id", clear)
     assert (
         0 < recorded - clear < 600
     ), f"{engine} records the attempt id away from where the reason is cleared"
@@ -1020,3 +1021,88 @@ def test_clearing_a_retained_outcome_takes_the_same_lock():
     assert generate_outcomes.generate_failure_for_attempt("attempt-locked-clear") == "boom"
     generate_outcomes.clear_generate_failure("attempt-locked-clear")
     assert generate_outcomes.generate_failure_for_attempt("attempt-locked-clear") is None
+
+
+@pytest.mark.parametrize("engine", ENGINES)
+def test_a_failure_before_the_run_starts_is_retained_too(engine):
+    """The handler inside generate cannot see the raises that precede it.
+
+    Cancelled while queued for the generation slot, no model loaded, a dead resident server,
+    a superseding load: each raises before the try that retains, so a client whose POST was
+    lost found nothing recorded and settleLostGeneration reported that its request never
+    reached the server rather than the cancellation that actually happened.
+    """
+    src = _src(engine)
+    assert (
+        "def _retained_generate_failure(self, exc, attempt_id):" in src
+    ), f"{engine} has no way to record a failure raised before the run starts"
+    helper = src[src.index("def _retained_generate_failure") :][:900]
+    assert "_retain_generate_failure(attempt_id, self._last_generate_error)" in helper
+    # The attempt too, or the reason is attributed to whichever attempt ran last.
+    assert (
+        "self._last_generate_attempt = attempt_id" in helper
+    ), f"{engine} records a pre-run reason without the attempt it belongs to"
+    # Every pre-run raise goes through it: a bare one would be the hole again.
+    body = src[src.index("    def generate(") :]
+    body = body[: body.index("    def generate_progress(")]
+    head = body[: body.index("            try:")]
+    # The slot's own admission raises count as pre-run too, and are where the cancelled-in-
+    # queue case actually lives.
+    if "def _generation_slot(" in src:
+        at = src.index("def _generation_slot(")
+        head += src[at : src.index("    def ", at + 10)]
+    for bare in (
+        "raise RuntimeError(DIFFUSION_NOT_LOADED_MSG)",
+        "raise RuntimeError(DIFFUSION_CANCELLED_MSG)",
+        "raise DiffusionModelReplacedError(",
+    ):
+        assert bare not in head, f"{engine} still raises {bare} without retaining it"
+
+
+def test_the_cancelled_slot_wait_records_the_reason():
+    """Driven: a generation cancelled while queued for the slot leaves its reason behind."""
+    import threading
+
+    from core.inference import diffusion as diffusion_module
+    from core.inference.generate_outcomes import (
+        clear_generate_failure,
+        generate_failure_for_attempt,
+    )
+
+    engine = diffusion_module.DiffusionBackend.__new__(diffusion_module.DiffusionBackend)
+    engine._generation_cancel_lock = threading.Lock()
+    engine._queued_generate_cancels = set()
+    engine._generate_lock = threading.Lock()
+    engine._lock = threading.Lock()
+    cancel = threading.Event()
+    cancel.set()
+
+    clear_generate_failure("attempt-cancelled-in-queue")
+    with pytest.raises(RuntimeError):
+        with engine._generation_slot(cancel, attempt_id = "attempt-cancelled-in-queue"):
+            pass
+    try:
+        assert (
+            generate_failure_for_attempt("attempt-cancelled-in-queue")
+            == diffusion_module.DIFFUSION_CANCELLED_MSG
+        ), "a generation cancelled while queued recorded nothing for its attempt"
+        assert engine._last_generate_attempt == "attempt-cancelled-in-queue"
+    finally:
+        clear_generate_failure("attempt-cancelled-in-queue")
+
+
+def test_a_saved_generation_clears_what_was_retained_under_its_id():
+    """Images exist, so nothing under this id is a failure of this request any more.
+
+    A duplicate execution of one retried POST can fail while this one is still writing, and
+    its reason would then answer a settling client whose images are already in the gallery.
+    """
+    src = _src("routes/inference.py")
+    at = src.index("records = await asyncio.to_thread(_persist)")
+    window = src[at : at + 600]
+    assert (
+        "_clear_outcome(request.attempt_id)" in window
+    ), "a successful save leaves a duplicate execution's failure to answer for it"
+    # After the save, not before it: clearing first would drop the reason of the execution
+    # that is still the newest if this save then fails.
+    assert window.index("_clear_outcome") > window.index("_persist)")

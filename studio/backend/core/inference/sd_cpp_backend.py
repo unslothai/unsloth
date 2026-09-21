@@ -3116,6 +3116,17 @@ class SdCppDiffusionBackend:
             )
             return _with_mirrors(repos)
 
+    def _retained_generate_failure(self, exc, attempt_id):
+        """Record *exc* against *attempt_id* and hand it back, for the raises the handler
+        below cannot see: no model loaded, a dead resident server, or a superseding load.
+        With nothing retained, a client whose POST was lost was told its request never
+        reached the server."""
+        self._last_generate_error = str(exc) or type(exc).__name__
+        # The attempt too: the block that normally sets this has not run.
+        self._last_generate_attempt = attempt_id
+        _retain_generate_failure(attempt_id, self._last_generate_error)
+        return exc
+
     def generate(
         self,
         *,
@@ -3186,7 +3197,9 @@ class SdCppDiffusionBackend:
             with self._lock:
                 state = self._state
                 if state is None:
-                    raise RuntimeError(DIFFUSION_NOT_LOADED_MSG)
+                    raise self._retained_generate_failure(
+                        RuntimeError(DIFFUSION_NOT_LOADED_MSG), attempt_id
+                    )
                 # A resident server can exit while idle; drop stale state and report not-loaded so the client gets the
                 # reload path
                 if (
@@ -3195,11 +3208,15 @@ class SdCppDiffusionBackend:
                     and not state.server.is_alive()
                 ):
                     self._state = None
-                    raise RuntimeError(DIFFUSION_NOT_LOADED_MSG)
+                    raise self._retained_generate_failure(
+                        RuntimeError(DIFFUSION_NOT_LOADED_MSG), attempt_id
+                    )
                 # Same window as the diffusers engine: a replacement can commit while this waits (#9448)
                 loaded_id = load_identity(state.repo_id, state.base_repo, state.family.name)
                 if expected_load is not None and expected_load != loaded_id:
-                    raise DiffusionModelReplacedError(expected_load, loaded_id)
+                    raise self._retained_generate_failure(
+                        DiffusionModelReplacedError(expected_load, loaded_id), attempt_id
+                    )
                 self._active_generate_cancel = cancel
                 self._active_generate_account = current_account_id()
                 # Publish an active (step 0) state before the slow pre-generate setup so a reload probe does not read
