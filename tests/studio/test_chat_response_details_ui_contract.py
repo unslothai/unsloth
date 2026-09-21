@@ -123,14 +123,29 @@ def test_response_model_badge_is_user_configurable_and_rendered_once_per_message
     # left the shrinking on the trigger. Pinning the old pair asserted the layout of that one
     # commit rather than the property, so this reads the property: the trigger can shrink,
     # and it sits in a flex row that can shrink too.
-    # Whole class tokens, not a substring. `\b` treats the colon in `md:min-w-0` as a
-    # boundary, so a variant-qualified utility satisfied the match while leaving the trigger
-    # unable to shrink on every viewport it was not qualified for.
-    trigger = re.search(r'<ReasoningTrigger\s+className="([^"]*)"', reasoning_src)
-    assert trigger, "the reasoning trigger no longer carries a className this can read"
-    assert "min-w-0" in trigger.group(1).split(), (
+    # What has to hold is that the trigger CAN shrink, not where the utility is written. It
+    # currently appears twice, in ReasoningTrigger's own base classes and again on the call
+    # site, so demanding the call-site copy would fail a harmless deduplication while the
+    # trigger still shrank. Both are read and either one satisfies it.
+    #
+    # Whole class tokens, not a substring: `\b` treats the colon in `md:min-w-0` as a
+    # boundary, so a variant-qualified utility would satisfy a loose match while leaving the
+    # trigger unable to shrink at every width it was not qualified for.
+    base = re.search(r'"(aui-reasoning-trigger[^"]*)"', reasoning_src)
+    call_site = re.search(r'<ReasoningTrigger\s+className="([^"]*)"', reasoning_src)
+    assert base or call_site, (
+        "neither ReasoningTrigger's base classes nor its call site carries a class list this "
+        "can read, so this guard cannot see the trigger's layout at all"
+    )
+    effective = set()
+    for found in (base, call_site):
+        if found:
+            effective.update(found.group(1).split())
+    assert "min-w-0" in effective, (
         f"the reasoning trigger can no longer shrink below its content at every width, so a "
-        f"long summary widens the row past the thread: {trigger.group(1)!r}"
+        f"long summary widens the row past the thread. Base classes: "
+        f"{base.group(1) if base else None!r}. Call site: "
+        f"{call_site.group(1) if call_site else None!r}"
     )
     header = re.search(r'data-slot="reasoning-header"\s+className="([^"]*)"', reasoning_src)
     assert header, "the reasoning header row no longer carries a className this can read"
