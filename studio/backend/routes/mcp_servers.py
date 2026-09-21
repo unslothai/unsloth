@@ -707,13 +707,14 @@ def _ui_stdio_scope(thread_id: Optional[str], session_id: Optional[str]) -> Opti
 UI_TOOL_APPROVAL_REQUIRED = "approval_required"
 
 
-def _ui_call_needs_approval(mode: Optional[str], server_id: str, tool_name: str, args: dict) -> bool:
+def _ui_call_needs_approval(
+    mode: Optional[str], server_id: str, tool_name: str, args: dict
+) -> bool:
     """The chat loop's confirm gate, for a call a widget makes instead of the model."""
     if mode in ("off", "full"):
         return False
     if mode == "auto":
         from core.inference.tools import MCP_TOOL_PREFIX, is_potentially_unsafe_tool_call
-
         return is_potentially_unsafe_tool_call(f"{MCP_TOOL_PREFIX}{server_id}__{tool_name}", args)
     return True
 
