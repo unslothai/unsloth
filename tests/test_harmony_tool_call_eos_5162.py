@@ -141,10 +141,39 @@ def test_a_scalar_stop_set_is_widened_not_replaced(ns, harmony_tokenizer):
     assert model.generation_config.eos_token_id == [RETURN_ID, CALL_ID]
 
 
-def test_a_missing_stop_set_is_created(ns, harmony_tokenizer):
+def test_a_missing_stop_set_is_left_alone(ns, harmony_tokenizer):
+    """No stop set means there is nothing to widen, so do not invent one.
+
+    Creating `[CALL_ID]` here would make `<|call|>` the only terminator and drop
+    `<|return|>`, so an ordinary reply would run past its own end: the reported
+    defect pointed the other way. A real repo hits this, reaperdoesntknow/Mini-oss-0.6b.
+    """
     model = _Model(None)
     ns["patch_harmony_tool_call_eos"](model, harmony_tokenizer)
-    assert model.generation_config.eos_token_id == [CALL_ID]
+    assert model.generation_config.eos_token_id is None
+
+
+@pytest.mark.parametrize(
+    "shape",
+    [
+        ["<|return|>"],          # str entries, int() would raise ValueError
+        [200002, None],          # None entry, int() would raise TypeError
+        [[200002], 199999],      # nested list, int() would raise TypeError
+        True,                    # bool is an int subclass
+        [True, 199999],
+    ],
+)
+def test_an_unparseable_stop_set_declines_instead_of_raising(ns, harmony_tokenizer, shape):
+    """This runs inside patch_tokenizer during from_pretrained.
+
+    llama.py wraps that call in no `except`, and vision.py responds to a raise by
+    re-fetching the tokenizer over the network. Declining to widen costs a user the
+    tool-call stop token; raising costs them the model load.
+    """
+    model = _Model(shape)
+    before = model.generation_config.eos_token_id
+    ns["patch_harmony_tool_call_eos"](model, harmony_tokenizer)
+    assert model.generation_config.eos_token_id == before
 
 
 def test_a_tuple_keeps_its_entries(ns, harmony_tokenizer):
@@ -226,12 +255,22 @@ def test_a_tokenizer_whose_conversion_raises_is_safe(ns):
 
 
 def test_patch_tokenizer_applies_the_harmony_fix():
+    """The wiring must be a real call, not the name appearing in the source text.
+
+    A substring check over the function body is satisfied by a comment such as
+    `# TODO: wire up patch_harmony_tool_call_eos(...)`, so it cannot fail in the one
+    way that matters. Walk for an `ast.Call` whose callee is actually that name.
+    """
     src = open(UTILS, encoding = "utf-8").read()
     mod = ast.parse(src)
     for node in mod.body:
         if isinstance(node, ast.FunctionDef) and node.name == "patch_tokenizer":
-            body = ast.get_source_segment(src, node)
-            assert "patch_harmony_tool_call_eos" in body, body
+            called = {
+                sub.func.id
+                for sub in ast.walk(node)
+                if isinstance(sub, ast.Call) and isinstance(sub.func, ast.Name)
+            }
+            assert "patch_harmony_tool_call_eos" in called, sorted(called)
             return
     raise AssertionError("patch_tokenizer not found in _utils.py")
 

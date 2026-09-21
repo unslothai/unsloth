@@ -3497,11 +3497,27 @@ def patch_harmony_tool_call_eos(model, tokenizer):
 
     current = getattr(generation_config, "eos_token_id", None)
     if current is None:
-        eos_ids = []
+        # No stop set at all. Adding `<|call|>` here would make it the ONLY terminator,
+        # dropping `<|return|>`, so generation would run past the end of an ordinary
+        # reply instead of past a tool call: the same defect pointed the other way.
+        # Widening an existing set is this function's whole remit.
+        return model
+    elif isinstance(current, bool):
+        # bool is an int subclass and would otherwise become a token id of 0 or 1.
+        return model
     elif isinstance(current, int):
         eos_ids = [current]
     elif isinstance(current, (list, tuple)):
-        eos_ids = [int(token_id) for token_id in current]
+        # Anything that is not plainly an int id means this is a shape we do not
+        # understand. Bail out rather than raise: this runs inside patch_tokenizer
+        # during from_pretrained, llama.py wraps it in no except, and vision.py
+        # responds by re-fetching the tokenizer over the network. Declining to widen
+        # costs a user the tool-call stop token; raising costs them the load.
+        eos_ids = []
+        for token_id in current:
+            if isinstance(token_id, bool) or not isinstance(token_id, int):
+                return model
+            eos_ids.append(token_id)
     else:
         # An unrecognised shape is left exactly as it is rather than guessed at.
         return model
