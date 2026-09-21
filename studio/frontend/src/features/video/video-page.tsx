@@ -154,6 +154,10 @@ import {
 import { ReferenceImageEditor } from "./reference-image-editor";
 import { type ReferenceMedia, ReferenceMediaPicker } from "./reference-picker";
 import { viewLogsAction } from "@/features/settings/lib/view-logs-action";
+
+// The prefix every classified video failure carries, and every branch that produces one
+// calls logger.error first. Mirrors GENERATE_FAILURE_LOGGED_PREFIX on the image side.
+const VIDEO_FAILURE_LOGGED_PREFIX = "Video generation failed.";
 import {
   defaultReferenceVideoTrim,
   H3_REFERENCE_MAX_SECONDS,
@@ -3220,7 +3224,16 @@ function VideoGenerator({
       });
     } catch (err) {
       if (!isMounted.current) return;
-      toast.error(err instanceof Error ? err.message : "Video generation failed");
+      // A refusal the backend CLASSIFIED carries the fallback prefix, and every branch that
+      // produces one logs the exception first; a 400 answers with the raw validation text
+      // and logs nothing. Polling never starts for either, so this is the only place the
+      // action can be offered for a synchronous failure.
+      const refusal = err instanceof Error ? err.message : "Video generation failed";
+      toast.error(refusal, {
+        action: refusal.startsWith(VIDEO_FAILURE_LOGGED_PREFIX)
+          ? viewLogsAction("server")
+          : undefined,
+      });
       setBusy(null);
       setGenStep(null);
       // The refusal can be "No video model is loaded": re-read rather than leave Generate enabled

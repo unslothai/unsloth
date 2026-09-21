@@ -252,3 +252,60 @@ test("a load that never reached the server offers no logs action", () => {
     "a failure before the request was sent still offers the server log",
   );
 });
+
+test("a run that failed across a reload is reported, not taken for finished", () => {
+  const page = readFileSync(
+    new URL("../src/features/images/images-page.tsx", import.meta.url),
+    "utf8",
+  );
+  // Both resume paths: the poll that finds the run already idle, and the mount probe that
+  // never saw it active at all. A reload leaves no POST to reject and no settling loop, so
+  // the retained reason is the only channel left.
+  const calls = page.match(/reportResumedGenerateFailure\(/g);
+  assert.equal(
+    calls?.length,
+    3,
+    "a failure spanning a reload is still silently read as a finished run",
+  );
+  // And it is gated like every other site, on what the server logged.
+  assert.match(
+    page,
+    /action: retainedFailureWasLogged\(progress\)\s*\?\s*viewLogsAction\("server"\)/,
+  );
+  // A cancellation is still not an error.
+  assert.match(page, /shouldReportGenerateError\(\{ message: reason, stopRequested: false \}\)/);
+});
+
+test("a synchronous video refusal the backend logged offers its log", () => {
+  const page = readFileSync(
+    new URL("../src/features/video/video-page.tsx", import.meta.url),
+    "utf8",
+  );
+  // Polling never starts for a rejected POST, so neither progress branch can attach the
+  // action: this is the only place it can be offered. Classified refusals carry the
+  // fallback prefix and are logged first; a 400 carries the raw validation text.
+  assert.match(
+    page,
+    /refusal\.startsWith\(VIDEO_FAILURE_LOGGED_PREFIX\)\s*\?\s*viewLogsAction\("server"\)\s*:\s*undefined/,
+    "a logged video refusal still has no way back to its log",
+  );
+  assert.match(page, /VIDEO_FAILURE_LOGGED_PREFIX = "Video generation failed\."/);
+});
+
+test("the load-issued flag is set at the send boundary, not before it", () => {
+  const runtime = readFileSync(
+    new URL("../src/features/chat/hooks/use-chat-model-runtime.ts", import.meta.url),
+    "utf8",
+  );
+  // loadModel does its own token preparation and abort check before sending, so a flag set
+  // before the call is still set when that inner prompt is declined and the backend
+  // received nothing. onRequestStart fires at the actual send.
+  const viaCallback = runtime.match(
+    /onRequestStart: \(\) => \{\s*loadRequestIssued = true;\s*\},/g,
+  );
+  assert.equal(viaCallback?.length, 2, "the flag no longer rides the send boundary");
+  assert.ok(
+    !/loadRequestIssued = true;\n\s*const (loadResponse|rollbackResponse)/.test(runtime),
+    "the flag is still set before the call rather than at the send",
+  );
+});

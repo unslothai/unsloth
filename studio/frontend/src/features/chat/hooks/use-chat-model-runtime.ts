@@ -1813,7 +1813,6 @@ export function useChatModelRuntime() {
             if (lifecycleLease !== null) {
               chatModelLifecycleGate.markLoading(lifecycleLease);
             }
-            loadRequestIssued = true;
             const loadResponse = await loadModel({
               model_path: loadPath,
               nativePathLease: loadNativePathLease,
@@ -1860,6 +1859,12 @@ export function useChatModelRuntime() {
 
               force_reload: forceReload,
             }, {
+              // The true send boundary. loadModel does its own token preparation and abort
+              // check first, so a flag set before this call is still set when that inner
+              // prompt is declined and the backend received nothing.
+              onRequestStart: () => {
+                loadRequestIssued = true;
+              },
             });
             cpuFallbackReason = loadResponse.cpu_fallback_reason ?? null;
             mmprojFallbackReason = loadResponse.mmproj_fallback_reason ?? null;
@@ -2180,7 +2185,6 @@ export function useChatModelRuntime() {
                 }
               }
               try {
-                loadRequestIssued = true;
                 const rollbackResponse = await loadModel({
                   // The pin it loaded from: without it this retries the ref that needed pinning.
                   model_path: previousActiveLoadId || previousCheckpoint,
@@ -2244,6 +2248,10 @@ export function useChatModelRuntime() {
                   gpu_ids: stateBeforeUnload.loadedGpuIds ?? undefined,
                   // The failed swap already unloaded the server those runs used.
                   force_cancel_active: true,
+                }, {
+                  onRequestStart: () => {
+                    loadRequestIssued = true;
+                  },
                 });
                 const rollbackSpeculativeType = normalizeSpeculativeType(
                   rollbackResponse.speculative_type,

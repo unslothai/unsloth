@@ -554,6 +554,23 @@ async function settleLostGeneration(
   throw new Error("Timed out waiting for the image generation to finish.");
 }
 
+/** Toast a failure the backend RETAINED, for a run this page did not post itself.
+ *
+ * A reload during a generation leaves no POST to reject and no settling loop, so the
+ * retained reason is the only channel left; an idle answer carrying one is a failure, not a
+ * finished run. The action is offered only where the server logged it, as everywhere else.
+ */
+function reportResumedGenerateFailure(progress: DiffusionGenerateProgress): void {
+  const reason = progress.error;
+  if (!reason) return;
+  if (!shouldReportGenerateError({ message: reason, stopRequested: false })) return;
+  toast.error(reason, {
+    action: retainedFailureWasLogged(progress)
+      ? viewLogsAction("server")
+      : undefined,
+  });
+}
+
 // The chat tab model-load toast styling, reused verbatim so the diffusion load toast is identical.
 const LOAD_TOAST_CLASSNAMES = {
   toast: "chat-model-load-toast items-center gap-2.5",
@@ -2299,6 +2316,10 @@ export function ImagesPage({
           if (!isMounted.current) return;
           setBusy(null);
           setGenStep(null);
+          // A run resumed after a reload has no POST to reject and no settling loop, so the
+          // retained reason is the ONLY channel left: without this the page refreshed the
+          // gallery as if it had finished, which is what going idle also looks like.
+          reportResumedGenerateFailure(p);
           // Re-fetch the first page to merge images the finished run saved, and resync status.
           void loadGallery();
           void refreshStatus();
@@ -2344,6 +2365,10 @@ export function ImagesPage({
           setBusy("generating");
           setGenStep(g);
           resumeGeneratePoll();
+        } else {
+          // The failure may have landed before this page mounted, in which case the probe
+          // is where it surfaces. Mirrors the video page's mount-time resume.
+          reportResumedGenerateFailure(g);
         }
       } catch {
         // Resume is best-effort; a failed probe just leaves the idle view.
