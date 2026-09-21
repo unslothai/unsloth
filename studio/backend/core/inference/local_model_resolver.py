@@ -176,11 +176,8 @@ def local_gguf_companion_roots(load_path: str, *, repo_level: bool = False) -> t
             return ()
     except OSError:
         return ()
-    # A sibling has to resolve back inside this repo dir. `is_dir()` follows symlinks and
-    # `follow_symlinks=False` is 3.13+, so a sibling that is a directory symlink would
-    # otherwise be returned as a trusted root: access was validated for the snapshot the
-    # caller named, not for wherever a link under `snapshots/` happens to point. Resolving
-    # the repo too keeps a cache reached through a symlinked path working.
+    # A sibling must resolve back inside this repo dir: `is_dir()` follows symlinks
+    # (`follow_symlinks=False` is 3.13+) and only the named snapshot was authorized.
     try:
         repo_resolved = repo.resolve()
     except OSError as exc:
@@ -207,20 +204,10 @@ def local_gguf_companion_roots(load_path: str, *, repo_level: bool = False) -> t
 
 
 def local_path_gguf_companion_roots(load_path: str) -> tuple[str, ...]:
-    """Companion roots for a load that names a snapshot DIRECTORY rather than a repo id.
+    """Companion roots for a load naming a snapshot DIRECTORY, not a repo id (#10599).
 
-    A model chosen in the chat picker reaches /load as a concrete path, so the
-    auto-switch route's repo-level widening never runs for it: that route only widens
-    when the request named the repo. A companion published after the weights (an MTP
-    head, an mmproj) lands in a different ``snapshots/<revision>/`` folder of the same
-    repo dir, and searching only the weights' snapshot never finds it, so the model is
-    served without its head or projector until the whole repo is deleted and refetched.
-
-    Widened only when this exact directory is the one a repo-level selection would
-    itself hand out for that repo dir, which is what the picker offers. A caller naming
-    any other revision pinned it and keeps the single root it asked for, so this never
-    reaches a directory the repo-level path would not already have reached. Sibling
-    revisions of one ``models--`` dir only: never another repo, never outside the cache.
+    Widened only when this directory is the one a repo-level selection would hand out
+    anyway, so any other revision counts as pinned; siblings of one ``models--`` dir only.
     """
     from pathlib import Path
     from hub.utils.gguf import select_gguf_cache_snapshot_for_repo_dir
@@ -232,8 +219,7 @@ def local_path_gguf_companion_roots(load_path: str) -> tuple[str, ...]:
         return ()
     snapshots = selected.parent
     repo = snapshots.parent
-    # Same predicate as local_gguf_companion_roots, so the two cannot disagree about
-    # what counts as an HF cache snapshot.
+    # Same predicate as local_gguf_companion_roots, or the two disagree on what a snapshot is.
     if snapshots.name != "snapshots" or not repo.name.startswith("models--"):
         return ()
     try:
@@ -246,17 +232,12 @@ def local_path_gguf_companion_roots(load_path: str) -> tuple[str, ...]:
     except OSError as exc:
         logger.debug("Stopping at unreadable repo dir %s: %s", repo, exc)
         return ()
-    # samefile, not string equality: the caller's spelling may differ from the
-    # selector's by symlink or, on Windows, by case.
+    # samefile, not string equality: spellings differ by symlink, or by case on Windows.
     if chosen is None or not same_existing_path(chosen[3], selected):
         return ()
     roots = local_gguf_companion_roots(load_path, repo_level = True)
-    # One root is the snapshot the caller already named, so there is nothing to widen to.
-    # Returning it anyway is not inert: callers read `roots is not None` as
-    # `allow_disjoint_search_root`, which makes detect_mmproj_file's scan recursive and
-    # defeats the single-directory guard at model_config.py:2062. Measured on a repo whose
-    # weights are in UD-IQ1_S/ and whose projector is only in BF16/: a one-root return
-    # turns `"mmproj": null` into `"mmproj": "mmproj-model-BF16.gguf"`.
+    # A lone root is not inert: callers read `roots is not None` as
+    # `allow_disjoint_search_root`, defeating the guard at model_config.py:2062.
     return roots if len(roots) > 1 else ()
 
 

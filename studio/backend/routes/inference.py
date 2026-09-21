@@ -7447,14 +7447,9 @@ def _drafter_for_path(
 def _path_load_companion_roots(model_identifier: str, native_grant_backed: bool) -> tuple[str, ...]:
     """Companion roots for a request that named a local snapshot path, else ``()``.
 
-    The chat picker loads by path, so _maybe_auto_switch_model's repo-level widening
-    never ran for it and a head or projector published into a later revision of the
-    same repo dir stays invisible. Recomputed here so the path route sees what the
-    repo-id route already sees.
-
-    A native grant covers ONE directory, so a load backed by one is never widened: a
-    projector or drafter must only ever come from the directory the user granted, and
-    refusing the candidate after discovery has read its header is already too late.
+    _maybe_auto_switch_model widens only a repo-id request. A native grant covers ONE
+    directory and is never widened: refusing a candidate after discovery read its header
+    is already too late.
     """
     if native_grant_backed or not model_identifier:
         return ()
@@ -15827,9 +15822,8 @@ async def _load_model_impl(
 
         # Keep the inventory ref public while loading the materialized artifact.
         public_model_identifier = _public_model_identifier(request.model_path, model_identifier)
-        # Only when the caller left them empty: the auto-switch route sets these from the
-        # repo it resolved, and the idle stash restores what the last load actually used,
-        # so neither may be recomputed from the path. Off-loop: this walks snapshots/.
+        # Only when unset: auto-switch and the idle stash own their own scope. Walks
+        # snapshots/, so off-loop.
         if not request._gguf_companion_roots and not request._gguf_companion_roots_set:
             request._gguf_companion_roots = await asyncio.to_thread(
                 _path_load_companion_roots, model_identifier, native_grant_backed
@@ -17065,9 +17059,8 @@ async def validate_model(
         if native_access_deferred:
             await asyncio.to_thread(account_access.require_model_access, model_identifier)
 
-        # Same roots /load will use, or the answer describes a different set of files
-        # than the load: a projector in a sibling revision would make this report the
-        # model as text-only and the load then serve it with vision.
+        # Same roots /load will use, or a sibling-revision projector reads as text-only here
+        # and the load then serves vision.
         _validate_companion_roots = await asyncio.to_thread(
             _path_load_companion_roots, model_identifier, native_grant_backed
         )
@@ -17960,8 +17953,7 @@ def _cached_estimate_config(
         return _ESTIMATE_NOT_ON_DISK
     from core.inference.llama_cpp import _hf_offline_if_unreachable_for
 
-    # Same roots /load will use: an MTP head or projector in a sibling revision is
-    # weight the load will map, so an estimate blind to it prices the wrong model.
+    # Same roots /load will use: a sibling-revision head or projector is weight it maps.
     _estimate_companion_roots = _path_load_companion_roots(model_identifier, native_grant_backed)
 
     def _resolve():
