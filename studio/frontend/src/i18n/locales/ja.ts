@@ -1593,6 +1593,9 @@ export const ja = {
         collapseByDefault: "ツールの動作をデフォルトで折りたたむ",
         collapseByDefaultDescription:
           "ツールの実行中は入力と出力を折りたたんだままにします。確認するにはツール行を展開してください。",
+        foldIntoThinking: "ツール呼び出しを思考に折りたたむ",
+        foldIntoThinkingDescription:
+          "思考ブロックを開くまで、そのターンのツール呼び出しを隠します。",
       },
       webSearch: {
         title: "ウェブ検索",

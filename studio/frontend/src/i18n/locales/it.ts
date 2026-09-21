@@ -1615,6 +1615,9 @@ export const it = {
         collapseByDefault: "Comprimi l’attività degli strumenti per impostazione predefinita",
         collapseByDefaultDescription:
           "Mantieni compressi input e output degli strumenti durante l’esecuzione. Espandi una riga per esaminarla.",
+        foldIntoThinking: "Comprimi le chiamate agli strumenti nel Ragionamento",
+        foldIntoThinkingDescription:
+          "Nasconde le chiamate agli strumenti di un turno finché non si apre il blocco Ragionamento.",
       },
       webSearch: {
         title: "Ricerca web",

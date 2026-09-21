@@ -1647,6 +1647,9 @@ export const fr = {
         collapseByDefault: "Replier l’activité des outils par défaut",
         collapseByDefaultDescription:
           "Garde les entrées et sorties des outils repliées pendant leur exécution. Dépliez une ligne d’outil pour l’examiner.",
+        foldIntoThinking: "Replier les appels d'outils dans la Réflexion",
+        foldIntoThinkingDescription:
+          "Masque les appels d'outils d'un tour jusqu'à l'ouverture de son bloc de Réflexion.",
       },
       webSearch: {
         title: "Recherche web",

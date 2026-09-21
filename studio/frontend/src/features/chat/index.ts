@@ -104,6 +104,12 @@ export {
   type SidebarRowKind,
 } from "./stores/sidebar-drag-source";
 export {
+  clearReasoningRound,
+  setReasoningRoundOpen,
+  useReasoningRoundStore,
+  type ReasoningRoundState,
+} from "./stores/reasoning-round-store";
+export {
   folderRingKey,
   planKey,
   planSidebarDrop,

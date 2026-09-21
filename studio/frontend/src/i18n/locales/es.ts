@@ -1641,6 +1641,9 @@ export const es = {
         collapseByDefault: "Contraer la actividad de herramientas por defecto",
         collapseByDefaultDescription:
           "Mantén contraídas las entradas y salidas de las herramientas mientras se ejecutan. Expande cualquier fila para inspeccionarla.",
+        foldIntoThinking: "Plegar las llamadas de herramientas en Pensamiento",
+        foldIntoThinkingDescription:
+          "Oculta las llamadas de herramientas de un turno hasta abrir su bloque de Pensamiento.",
       },
       webSearch: {
         title: "Búsqueda web",

@@ -1617,6 +1617,9 @@ export const hi = {
         collapseByDefault: "टूल गतिविधि को डिफ़ॉल्ट रूप से संक्षिप्त रखें",
         collapseByDefaultDescription:
           "टूल चलते समय उनके इनपुट और आउटपुट संक्षिप्त रखें। जाँचने के लिए किसी भी टूल पंक्ति को विस्तृत करें।",
+        foldIntoThinking: "टूल कॉल को थिंकिंग में समेटें",
+        foldIntoThinkingDescription:
+          "किसी टर्न के टूल कॉल तब तक छिपाएँ जब तक उसका थिंकिंग ब्लॉक न खोला जाए।",
       },
       webSearch: {
         title: "वेब खोज",
