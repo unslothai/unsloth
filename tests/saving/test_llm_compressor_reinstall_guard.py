@@ -251,9 +251,7 @@ def _with_importable_llmcompressor(monkeypatch, reported: str):
 
     calls: list[list[str]] = []
     monkeypatch.setattr(subprocess, "check_call", lambda cmd, *a, **k: calls.append(list(cmd)))
-    monkeypatch.setattr(
-        subprocess, "run", lambda cmd, *a, **k: subprocess.CompletedProcess(cmd, 0)
-    )
+    monkeypatch.setattr(subprocess, "run", lambda cmd, *a, **k: subprocess.CompletedProcess(cmd, 0))
     return calls
 
 
@@ -267,9 +265,7 @@ def test_a_supported_version_that_imports_is_used_directly(monkeypatch):
 
 
 @pytest.mark.parametrize("version", ["0.5.0", "1.0.0", "0.13.0"])
-def test_an_out_of_range_version_is_not_accepted_just_because_it_imports(
-    monkeypatch, version
-):
+def test_an_out_of_range_version_is_not_accepted_just_because_it_imports(monkeypatch, version):
     """The gap: importability is not support. Returning the symbols here would quantize
     against a release _LLM_COMPRESSOR_SPEC explicitly excludes, and the pin would be
     decorative for exactly the installs it was written for."""
