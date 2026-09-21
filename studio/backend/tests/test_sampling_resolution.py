@@ -142,62 +142,14 @@ def test_qwen38_reuses_qwen36_sampling_defaults():
     }
 
 
-@pytest.mark.parametrize(
-    "thinking_mode, expected_temperature, expected_top_p, expected_presence_penalty",
-    [
-        (True, 1.0, 0.95, 0.0),
-        (False, 0.7, 0.8, 1.5),
-        (None, 0.7, 0.8, 1.5),
-    ],
-)
-def test_qwen38_sampling_presets_follow_explicit_thinking_mode(
-    thinking_mode, expected_temperature, expected_top_p, expected_presence_penalty
-):
-    eff = resolve_effective_sampling(
-        "unsloth/Qwen3.8-27B-GGUF",
-        _all_omitted(),
-        thinking_mode = thinking_mode,
-    )
-
-    assert eff["temperature"] == expected_temperature
-    assert eff["top_p"] == expected_top_p
-    assert eff["top_k"] == 20
-    assert eff["min_p"] == 0.0
-    assert eff["presence_penalty"] == expected_presence_penalty
 
 
-def test_mode_absent_keeps_qwen38_historical_flat_config():
-    assert ic.load_inference_config("unsloth/Qwen3.8-27B-GGUF") == ic.load_inference_config(
-        "unsloth/Qwen3.8-27B-GGUF", thinking_mode = None
-    )
 
 
-def test_family_without_mode_presets_keeps_historical_config():
-    model = "unsloth/Gemma-4-E4B-GGUF"
-    historical = ic.load_inference_config(model)
-    assert ic.load_inference_config(model, thinking_mode = True) == historical
-    assert ic.load_inference_config(model, thinking_mode = False) == historical
 
 
-def test_qwen38_explicit_client_value_beats_thinking_preset():
-    eff = resolve_effective_sampling(
-        "unsloth/Qwen3.8-27B-GGUF",
-        {**_all_omitted(), "temperature": 0.2},
-        thinking_mode = True,
-    )
-    assert eff["temperature"] == 0.2
-    assert eff["top_p"] == 0.95
 
 
-def test_qwen38_operator_pin_beats_client_and_non_thinking_preset(monkeypatch):
-    monkeypatch.setenv("UNSLOTH_SAMPLING_TEMPERATURE", "0.9")
-    eff = resolve_effective_sampling(
-        "unsloth/Qwen3.8-27B-GGUF",
-        {**_all_omitted(), "temperature": 0.2},
-        thinking_mode = False,
-    )
-    assert eff["temperature"] == 0.9
-    assert eff["top_p"] == 0.8
 
 
 def test_repetition_penalty_not_auto_recommended(monkeypatch):
@@ -324,45 +276,16 @@ def test_fill_recommended_sampling_openai_operator_pin_overrides_client(monkeypa
     assert payload.temperature == 0.9  # operator pin wins even over an explicit client value
 
 
-@pytest.mark.parametrize(
-    "request_kwargs, expected_temperature, expected_top_p",
-    [
-        ({"enable_thinking": True}, 1.0, 0.95),
-        ({"enable_thinking": False}, 0.7, 0.8),
-        ({}, 0.7, 0.8),
-        ({"thinking": {"type": "enabled"}}, 1.0, 0.95),
-        ({"reasoning_effort": "none"}, 0.7, 0.8),
-        ({"reasoning_effort": "high"}, 1.0, 0.95),
-    ],
-)
-def test_fill_recommended_sampling_openai_uses_normalized_request_mode(
-    request_kwargs, expected_temperature, expected_top_p
-):
-    from models.inference import ChatCompletionRequest
-    from routes.inference import _fill_recommended_sampling_openai
-
-    payload = ChatCompletionRequest(
-        model = "m",
-        messages = [{"role": "user", "content": "hi"}],
-        **request_kwargs,
-    )
-    _fill_recommended_sampling_openai(payload, "unsloth/Qwen3.8-27B-GGUF")
-
-    assert payload.temperature == expected_temperature
-    assert payload.top_p == expected_top_p
 
 
-@pytest.mark.parametrize(
-    "thinking_mode, expected_temperature, expected_top_p",
-    [(True, 1.0, 0.95), (False, 0.7, 0.8)],
-)
+@pytest.mark.parametrize("thinking_mode", [True, False])
 def test_chat_route_lifts_harness_template_kwargs_before_sampling(
-    monkeypatch, thinking_mode, expected_temperature, expected_top_p
+    monkeypatch, thinking_mode
 ):
     """Exercise the DeepSeek Harness request shape through the real chat route.
 
-    The route must lift the extra-body ``chat_template_kwargs`` before filling
-    mode-specific sampling; testing the two helpers apart would not pin that order.
+    The route must lift the extra-body ``chat_template_kwargs`` onto the typed field
+    before sampling is filled; testing the two helpers apart would not pin that order.
     """
     import asyncio
     from types import SimpleNamespace
@@ -411,38 +334,14 @@ def test_chat_route_lifts_harness_template_kwargs_before_sampling(
     with pytest.raises(_StopAfterSampling):
         asyncio.run(inference_route.openai_chat_completions(payload, request, "test-user"))
 
-    assert payload.temperature == expected_temperature
-    assert payload.top_p == expected_top_p
-
 
 @pytest.mark.parametrize(
-    "request_kwargs, expected_thinking, expected_effort, expected_preserve, expected_temperature, expected_top_p",
+    "request_kwargs, expected_thinking, expected_effort, expected_preserve",
     [
-        ({"reasoning_effort": "none"}, False, "none", None, 0.7, 0.8),
-        (
-            {"enable_thinking": True, "reasoning_effort": "none"},
-            True,
-            None,
-            None,
-            1.0,
-            0.95,
-        ),
-        (
-            {"enable_thinking": False, "reasoning_effort": "high"},
-            False,
-            None,
-            None,
-            0.7,
-            0.8,
-        ),
-        (
-            {"thinking": {"type": "enabled"}, "reasoning_effort": "none"},
-            False,
-            "none",
-            None,
-            0.7,
-            0.8,
-        ),
+        ({"reasoning_effort": "none"}, False, "none", None),
+        ({"enable_thinking": True, "reasoning_effort": "none"}, True, None, None),
+        ({"enable_thinking": False, "reasoning_effort": "high"}, False, None, None),
+        ({"thinking": {"type": "enabled"}, "reasoning_effort": "none"}, False, "none", None),
         (
             {
                 "chat_template_kwargs": {
@@ -454,8 +353,6 @@ def test_chat_route_lifts_harness_template_kwargs_before_sampling(
             True,
             "medium",
             True,
-            1.0,
-            0.95,
         ),
         (
             {
@@ -470,56 +367,31 @@ def test_chat_route_lifts_harness_template_kwargs_before_sampling(
             True,
             "high",
             False,
-            1.0,
-            0.95,
         ),
         (
-            {
-                "chat_template_kwargs": {
-                    "enable_thinking": True,
-                    "reasoning_effort": "none",
-                }
-            },
+            {"chat_template_kwargs": {"enable_thinking": True, "reasoning_effort": "none"}},
             True,
             None,
             None,
-            1.0,
-            0.95,
         ),
-        # The invalid nested type is ignored, so nothing is sent to generation
-        # (enable_thinking None) and the template renders in its own thinking-on
-        # default -- which is the row sampling has to pick.
+        # bool("false") used to be True here, so the string turned thinking ON. The invalid
+        # nested type is now ignored: nothing reaches generation and the template renders in
+        # its own default.
+        ({"chat_template_kwargs": {"enable_thinking": "false"}}, None, None, None),
         (
-            {"chat_template_kwargs": {"enable_thinking": "false"}},
-            None,
-            None,
-            None,
-            1.0,
-            0.95,
-        ),
-        (
-            {
-                "chat_template_kwargs": {
-                    "enable_thinking": False,
-                    "reasoning_effort": {},
-                }
-            },
+            {"chat_template_kwargs": {"enable_thinking": False, "reasoning_effort": {}}},
             False,
             None,
             None,
-            0.7,
-            0.8,
         ),
     ],
 )
-def test_chat_route_normalizes_reasoning_effort_before_sampling_and_generation(
+def test_chat_route_normalizes_reasoning_effort_before_generation(
     monkeypatch,
     request_kwargs,
     expected_thinking,
     expected_effort,
     expected_preserve,
-    expected_temperature,
-    expected_top_p,
 ):
     import asyncio
     from types import SimpleNamespace
@@ -574,8 +446,6 @@ def test_chat_route_normalizes_reasoning_effort_before_sampling_and_generation(
     )
 
     assert response.status_code == 200
-    assert payload.temperature == expected_temperature
-    assert payload.top_p == expected_top_p
     assert captured["enable_thinking"] is expected_thinking
     assert captured["reasoning_effort"] == expected_effort
     assert captured["preserve_thinking"] is expected_preserve
@@ -647,281 +517,22 @@ def test_fill_recommended_sampling_completions_operator_pin(monkeypatch):
     assert "repetition_penalty" not in body  # never leak the schema field name into the body
 
 
-@pytest.mark.parametrize("thinking_type", ["DISABLED", "Disabled", "adaptive", "enabled"])
-def test_anthropic_sampling_mode_matches_the_generation_resolver(thinking_type):
-    """Sampling and generation must read the same sentinel.
-
-    resolved_enable_thinking() treats only the exact "disabled" as off, so
-    lowercasing here made a case variant generate in thinking mode while sampling
-    picked the non-thinking preset.
-    """
-    from models.inference import AnthropicMessagesRequest
-    from routes.inference import _normalized_sampling_thinking_mode
-
-    payload = AnthropicMessagesRequest.model_validate(
-        {
-            "model": "unsloth/Qwen3.8-27B-GGUF",
-            "messages": [{"role": "user", "content": "hi"}],
-            "thinking": {"type": thinking_type},
-        }
-    )
-    assert _normalized_sampling_thinking_mode(payload) == payload.resolved_enable_thinking()
 
 
-def test_anthropic_disabled_sentinel_still_selects_the_non_thinking_preset():
-    from models.inference import AnthropicMessagesRequest
-    from routes.inference import _normalized_sampling_thinking_mode
-
-    payload = AnthropicMessagesRequest.model_validate(
-        {
-            "model": "unsloth/Qwen3.8-27B-GGUF",
-            "messages": [{"role": "user", "content": "hi"}],
-            "thinking": {"type": "disabled"},
-        }
-    )
-    assert _normalized_sampling_thinking_mode(payload) is False
 
 
-def _loaded_qwen38_backend(**overrides):
-    """A llama.cpp backend stub loaded the way Studio launches Qwen3.8."""
-    from types import SimpleNamespace
-
-    fields = {
-        "is_loaded": True,
-        "model_identifier": "unsloth/Qwen3.8-27B-GGUF",
-        "supports_reasoning": True,
-        "reasoning_always_on": False,
-        "reasoning_default": True,
-        "_is_audio": False,
-    }
-    fields.update(overrides)
-    return SimpleNamespace(**fields)
 
 
-@pytest.mark.parametrize(
-    "backend_kwargs, expected_temperature, expected_presence_penalty",
-    [
-        # Qwen3.8 launches with enable_thinking=true, so a silent request generates
-        # in thinking mode and must be priced on the thinking row.
-        ({}, 1.0, 0.0),
-        # Loaded with thinking off: the launch default is what llama-server uses.
-        ({"reasoning_default": False}, 0.7, 1.5),
-        # Always-on templates ignore the kwarg and always think.
-        ({"reasoning_always_on": True, "reasoning_default": False}, 1.0, 0.0),
-        # An always-on template with reasoning support switched off is not a
-        # reasoning model at all, so no mode is knowable.
-        ({"supports_reasoning": False, "reasoning_always_on": False}, 0.7, 1.5),
-        # Not a reasoning model / not loaded / a different model is loaded: no mode
-        # is knowable, so the historical flat row stands.
-        ({"supports_reasoning": False}, 0.7, 1.5),
-        ({"is_loaded": False}, 0.7, 1.5),
-        ({"model_identifier": "unsloth/Qwen3.6-35B-A3B-GGUF"}, 0.7, 1.5),
-    ],
-)
-def test_silent_request_is_priced_on_the_loaded_launch_mode(
-    monkeypatch, backend_kwargs, expected_temperature, expected_presence_penalty
-):
-    """A request that selects no mode still generates in the launch-time mode.
-
-    Studio pins it with --chat-template-kwargs at launch, so sampling that ignored it
-    served Qwen3.8's non-thinking row (presence_penalty 1.5, which its card warns causes
-    language mixing) to a thinking-mode generation, and disagreed with the Chat UI.
-    """
-    from models.inference import ChatCompletionRequest
-    from routes import inference as inference_route
-
-    monkeypatch.setattr(
-        inference_route, "get_llama_cpp_backend", lambda: _loaded_qwen38_backend(**backend_kwargs)
-    )
-    payload = ChatCompletionRequest(
-        model = "unsloth/Qwen3.8-27B-GGUF",
-        messages = [{"role": "user", "content": "hi"}],
-    )
-    inference_route._fill_recommended_sampling_openai(payload, "unsloth/Qwen3.8-27B-GGUF")
-
-    assert payload.temperature == expected_temperature
-    assert payload.presence_penalty == expected_presence_penalty
 
 
-@pytest.mark.parametrize(
-    "request_kwargs, expected_temperature",
-    [
-        ({"enable_thinking": False}, 0.7),
-        ({"reasoning_effort": "none"}, 0.7),
-        ({"thinking": {"type": "disabled"}}, 0.7),
-        ({"chat_template_kwargs": {"enable_thinking": False}}, 0.7),
-    ],
-)
-def test_an_explicit_mode_still_beats_the_launch_default(
-    monkeypatch, request_kwargs, expected_temperature
-):
-    """The launch default is the lowest-priority source, not an override."""
-    from models.inference import ChatCompletionRequest
-    from routes import inference as inference_route
-
-    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: _loaded_qwen38_backend())
-    payload = ChatCompletionRequest(
-        model = "unsloth/Qwen3.8-27B-GGUF",
-        messages = [{"role": "user", "content": "hi"}],
-        **request_kwargs,
-    )
-    inference_route._normalize_chat_reasoning_controls(payload)
-    inference_route._fill_recommended_sampling_openai(payload, "unsloth/Qwen3.8-27B-GGUF")
-
-    assert payload.temperature == expected_temperature
 
 
-def test_the_launch_default_never_reaches_a_family_without_mode_presets(monkeypatch):
-    """Only a family that opts into sampling_modes can be re-priced by the mode."""
-    from models.inference import ChatCompletionRequest
-    from routes import inference as inference_route
-
-    model_id = "unsloth/Qwen3.6-35B-A3B-GGUF"
-    monkeypatch.setattr(
-        inference_route,
-        "get_llama_cpp_backend",
-        lambda: _loaded_qwen38_backend(model_identifier = model_id),
-    )
-    payload = ChatCompletionRequest(model = model_id, messages = [{"role": "user", "content": "hi"}])
-    inference_route._fill_recommended_sampling_openai(payload, model_id)
-
-    assert (payload.temperature, payload.top_p, payload.presence_penalty) == (0.7, 0.8, 1.5)
 
 
-@pytest.mark.parametrize(
-    "request_kwargs, expected_mode",
-    [
-        ({}, True),  # silent: the launch default
-        ({"thinking": {"type": "disabled"}}, False),  # native block still wins
-        ({"enable_thinking": False}, False),
-        ({"reasoning_effort": "none"}, False),
-    ],
-)
-def test_anthropic_silent_request_follows_the_launch_default(
-    monkeypatch, request_kwargs, expected_mode
-):
-    """/v1/messages prices on the launch default too.
-
-    _anthropic_reasoning_args returns enable_thinking=None for a silent request, which
-    makes llama-server fall back to the launch kwargs, so sampling has to name that same
-    mode instead of the flat row.
-    """
-    from models.inference import AnthropicMessagesRequest
-    from routes import inference as inference_route
-
-    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: _loaded_qwen38_backend())
-    payload = AnthropicMessagesRequest.model_validate(
-        {
-            "model": "unsloth/Qwen3.8-27B-GGUF",
-            "messages": [{"role": "user", "content": "hi"}],
-            "max_tokens": 16,
-            **request_kwargs,
-        }
-    )
-    mode = inference_route._sampling_thinking_mode(payload, "unsloth/Qwen3.8-27B-GGUF")
-    assert mode is expected_mode
-
-    generation = inference_route._anthropic_reasoning_args(payload)["enable_thinking"]
-    # None means "send no kwarg", i.e. generate in the launch default the mode names.
-    effective_generation = True if generation is None else generation
-    assert mode is effective_generation
 
 
-@pytest.mark.parametrize(
-    "backend_kwargs, request_kwargs, expected_temperature, expected_presence_penalty",
-    [
-        # An always-on template ignores enable_thinking / reasoning_effort entirely
-        # (_request_reasoning_kwargs skips the block), so the reply reasons whatever the
-        # request asked and the off row would be the wrong sampling.
-        ({"reasoning_always_on": True}, {"enable_thinking": False}, 1.0, 0.0),
-        ({"reasoning_always_on": True}, {"reasoning_effort": "none"}, 1.0, 0.0),
-        # Effort-dial templates cannot disable: enable_thinking=False maps onto a
-        # low-but-thinking effort, so the reply still reasons.
-        (
-            {"_reasoning_style": "reasoning_effort"},
-            {"enable_thinking": False},
-            1.0,
-            0.0,
-        ),
-        # The same family genuinely disables on the "none" sentinel.
-        (
-            {"_reasoning_style": "reasoning_effort"},
-            {"reasoning_effort": "none"},
-            0.7,
-            1.5,
-        ),
-    ],
-)
-def test_a_template_that_cannot_disable_is_never_priced_as_non_thinking(
-    monkeypatch, backend_kwargs, request_kwargs, expected_temperature, expected_presence_penalty
-):
-    """Sampling follows the effective template kwargs, not the raw request flags."""
-    from core.inference.llama_cpp import LlamaCppBackend
-    from models.inference import ChatCompletionRequest
-    from routes import inference as inference_route
-
-    backend = _loaded_qwen38_backend(
-        _supports_reasoning = True,
-        _reasoning_always_on = backend_kwargs.get("reasoning_always_on", False),
-        _reasoning_style = backend_kwargs.get("_reasoning_style", "enable_thinking"),
-        _reasoning_effort_levels = ["low", "medium", "high"],
-        _supports_preserve_thinking = False,
-        _architecture = None,
-        **{k: v for k, v in backend_kwargs.items() if not k.startswith("_")},
-    )
-    backend._request_reasoning_kwargs = LlamaCppBackend._request_reasoning_kwargs.__get__(backend)
-    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: backend)
-
-    payload = ChatCompletionRequest(
-        model = "unsloth/Qwen3.8-27B-GGUF",
-        messages = [{"role": "user", "content": "hi"}],
-        **request_kwargs,
-    )
-    inference_route._normalize_chat_reasoning_controls(payload)
-    inference_route._fill_recommended_sampling_openai(payload, "unsloth/Qwen3.8-27B-GGUF")
-
-    assert payload.temperature == expected_temperature
-    assert payload.presence_penalty == expected_presence_penalty
 
 
-@pytest.mark.parametrize(
-    "request_kwargs", [{"enable_thinking": True}, {"reasoning_effort": "high"}]
-)
-def test_a_loaded_template_that_cannot_reason_keeps_the_flat_preset(monkeypatch, request_kwargs):
-    """supports_reasoning=False is an answer, not a missing one.
-
-    _request_reasoning_kwargs drops both controls when the template cannot reason, so
-    honoring the request here would price a non-thinking generation on the thinking row.
-    """
-    from core.inference.llama_cpp import LlamaCppBackend
-    from models.inference import ChatCompletionRequest
-    from routes import inference as inference_route
-
-    backend = _loaded_qwen38_backend(
-        supports_reasoning = False,
-        _supports_reasoning = False,
-        _reasoning_always_on = False,
-        _reasoning_style = "enable_thinking",
-        _reasoning_effort_levels = [],
-        _supports_preserve_thinking = False,
-        _architecture = None,
-    )
-    backend._request_reasoning_kwargs = LlamaCppBackend._request_reasoning_kwargs.__get__(backend)
-    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: backend)
-
-    payload = ChatCompletionRequest(
-        model = "unsloth/Qwen3.8-27B-GGUF",
-        messages = [{"role": "user", "content": "hi"}],
-        **request_kwargs,
-    )
-    inference_route._normalize_chat_reasoning_controls(payload)
-    inference_route._fill_recommended_sampling_openai(payload, "unsloth/Qwen3.8-27B-GGUF")
-
-    assert (
-        backend._request_reasoning_kwargs(payload.enable_thinking, payload.reasoning_effort, None)
-        is None
-    )
-    assert (payload.temperature, payload.presence_penalty) == (0.7, 1.5)
 
 
 @pytest.mark.parametrize("effort", ["hihg", ""])
@@ -934,46 +545,8 @@ def test_count_tokens_rejects_an_effort_the_chat_endpoint_would_reject(effort):
         )
 
 
-def test_raw_completions_are_never_priced_on_the_launch_mode(monkeypatch):
-    """/v1/completions keeps the flat row even when the load is thinking by default.
-
-    The raw endpoint renders no chat template, so the launch --chat-template-kwargs that
-    decide whether a chat request reasons never apply to it. Pricing a raw continuation on
-    the launch mode would re-price it on the strength of how the model happens to be loaded.
-    The two endpoints therefore disagree for one loaded model, deliberately.
-    """
-    from models.inference import ChatCompletionRequest
-    from routes import inference as inference_route
-
-    model_id = "unsloth/Qwen3.8-27B-GGUF"
-    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: _loaded_qwen38_backend())
-
-    body = {"model": model_id, "prompt": "hi"}
-    inference_route._fill_recommended_sampling_completions(body, model_id)
-
-    chat = ChatCompletionRequest(model = model_id, messages = [{"role": "user", "content": "hi"}])
-    inference_route._normalize_chat_reasoning_controls(chat)
-    inference_route._fill_recommended_sampling_openai(chat, model_id)
-
-    # The same loaded model, the same silent request shape, two different rows.
-    assert (body["temperature"], body["top_p"], body["presence_penalty"]) == (0.7, 0.8, 1.5)
-    assert (chat.temperature, chat.top_p, chat.presence_penalty) == (1.0, 0.95, 0.0)
 
 
-def test_the_status_inference_block_is_not_the_mode_aware_one():
-    """/inference/status still answers with the flat family row.
-
-    The Chat UI reaches the thinking row by layering resolveQwenThinkingParams over this
-    block, not because the block itself resolves a mode. Pinned so a later change to
-    load_inference_config's callers has to decide this on purpose.
-    """
-    from utils.inference.inference_config import load_inference_config
-
-    model_id = "unsloth/Qwen3.8-27B-GGUF"
-    status_block = load_inference_config(model_id)
-    assert (status_block["temperature"], status_block["presence_penalty"]) == (0.7, 1.5)
-    mode_aware = load_inference_config(model_id, thinking_mode = True)
-    assert (mode_aware["temperature"], mode_aware["presence_penalty"]) == (1.0, 0.0)
 
 
 @pytest.mark.parametrize(
@@ -1015,12 +588,10 @@ def test_the_status_inference_block_is_not_the_mode_aware_one():
 def test_contradictory_controls_are_resolved_for_every_family(
     reasoning_style, request_kwargs, expected_kwargs
 ):
-    """The conflict rule is not Qwen3.8's; it changes generation for every model.
+    """The conflict rule changes generation for every model, not one family.
 
     `_resolve_reasoning_controls` runs before the model-specific translation, so an
-    effort-dial family (gpt-oss and friends) is affected too, and no sampling_modes
-    block is involved. Pinned here because it is the part of this branch that reaches
-    clients that never load a Qwen.
+    effort-dial family (gpt-oss and friends) is affected too.
     """
     from types import SimpleNamespace
 
@@ -1138,39 +709,3 @@ def test_an_anthropic_derived_boolean_stays_out_of_the_explicit_field_set():
     assert payload.enable_thinking is False
 
 
-def test_a_non_gguf_load_keeps_the_flat_preset_for_a_silent_request(monkeypatch):
-    """transformers and MLX loads are deliberately not priced on a launch mode.
-
-    Studio picks the llama.cpp mode itself at launch and records it as
-    reasoning_default, which is why that path can resolve a silent request. Nothing
-    records the equivalent for a locally served transformers or MLX model:
-    detect_reasoning_flags reports whether a template CAN reason, never what it does
-    when the kwarg is absent, and apply_chat_template_for_generation omits the kwarg
-    entirely in that case. Giving this path a mode means declaring a per-family
-    default or detecting the template's own, which changes every reasoning family.
-    Until then the historical flat row stands here, and this pins that it is a choice.
-    """
-    from models.inference import ChatCompletionRequest
-    from routes import inference as inference_route
-
-    model_id = "unsloth/Qwen3.8-27B"
-    # No llama.cpp backend is serving this id: the MLX / transformers shape.
-    monkeypatch.setattr(
-        inference_route, "get_llama_cpp_backend", lambda: _loaded_qwen38_backend(is_loaded = False)
-    )
-    payload = ChatCompletionRequest(model = model_id, messages = [{"role": "user", "content": "hi"}])
-    inference_route._normalize_chat_reasoning_controls(payload)
-
-    assert inference_route._sampling_thinking_mode(payload, model_id) is None
-    inference_route._fill_recommended_sampling_openai(payload, model_id)
-    assert (payload.temperature, payload.top_p, payload.presence_penalty) == (0.7, 0.8, 1.5)
-
-    # An explicit control still reaches the mode-specific row on the same load.
-    explicit = ChatCompletionRequest(
-        model = model_id,
-        messages = [{"role": "user", "content": "hi"}],
-        enable_thinking = True,
-    )
-    inference_route._normalize_chat_reasoning_controls(explicit)
-    inference_route._fill_recommended_sampling_openai(explicit, model_id)
-    assert (explicit.temperature, explicit.presence_penalty) == (1.0, 0.0)

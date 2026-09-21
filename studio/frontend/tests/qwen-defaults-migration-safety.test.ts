@@ -36,13 +36,6 @@ const LEGACY_SNAPSHOT = {
   systemVariables: "",
   fastMode: false,
 };
-const QWEN38_THINKING_DEFAULTS = {
-  temperature: 1,
-  topP: 0.95,
-  topK: 20,
-  minP: 0,
-  presencePenalty: 0,
-};
 
 function resetHttp(settings: Record<string, unknown>): void {
   settingsHttp.settings = settings;
@@ -78,7 +71,7 @@ const sleep = (ms: number): Promise<void> =>
 async function adoptQwenDefaults(): Promise<void> {
   const active = useChatRuntimeStore.getState();
   active.setParams(
-    { ...active.params, ...QWEN38_THINKING_DEFAULTS },
+    { ...active.params, minP: 0, presencePenalty: 1.5 },
     { fromModelDefaults: true },
   );
   await sleep(50);
@@ -123,10 +116,10 @@ test("a rejected retry leaves local sampling on the value the server kept", asyn
   assert.equal(serverRow().presencePenalty, 0.4);
   // The local store must not advertise the rejected values.
   const after = useChatRuntimeStore.getState();
-  assert.notEqual(after.params.temperature, 1);
+  assert.notEqual(after.params.presencePenalty, 1.5);
   assert.notEqual(
-    (after.paramsByModel[QWEN38] as Record<string, unknown>).temperature,
-    1,
+    (after.paramsByModel[QWEN38] as Record<string, unknown>).presencePenalty,
+    1.5,
   );
 });
 
@@ -137,12 +130,10 @@ test("an accepted retry still applies the migration locally", async () => {
   await adoptQwenDefaults();
 
   assert.equal(settingsHttp.puts.length, 1);
-  assert.equal(serverRow().temperature, 1);
-  assert.equal(serverRow().presencePenalty, 0);
+  assert.equal(serverRow().presencePenalty, 1.5);
   assert.equal(serverRow().minP, 0);
   const after = useChatRuntimeStore.getState();
-  assert.equal(after.params.temperature, 1);
-  assert.equal(after.params.presencePenalty, 0);
+  assert.equal(after.params.presencePenalty, 1.5);
   assert.equal(after.params.minP, 0);
 });
 
@@ -159,7 +150,7 @@ test("a backend without the conditional route persists nothing and shows nothing
   assert.equal(serverRow().presencePenalty, 0);
   assert.equal(serverRow().minP, 0.01);
   const after = useChatRuntimeStore.getState();
-  assert.notEqual(after.params.temperature, 1);
+  assert.notEqual(after.params.presencePenalty, 1.5);
 });
 
 test("the browser build's 405 is treated the same as an absent route", async () => {
@@ -171,7 +162,7 @@ test("the browser build's 405 is treated the same as an absent route", async () 
 
   assert.equal(settingsHttp.puts.length, 0);
   assert.equal(serverRow().presencePenalty, 0);
-  assert.notEqual(useChatRuntimeStore.getState().params.temperature, 1);
+  assert.notEqual(useChatRuntimeStore.getState().params.presencePenalty, 1.5);
 });
 
 test("a preset modified during hydration is not migrated on a stale read", async () => {
@@ -241,8 +232,7 @@ test("a model id containing slashes stays one absence-fence path segment", async
   await adoptQwenDefaults();
 
   // Nothing raced it, so the normalization applies under the exact spelling.
-  assert.equal(serverRow(QWEN38).temperature, 1);
-  assert.equal(serverRow(QWEN38).presencePenalty, 0);
+  assert.equal(serverRow(QWEN38).presencePenalty, 1.5);
 });
 
 test("the loaded model's reasoning mode survives hydration", async () => {
@@ -416,7 +406,7 @@ test("a checkpoint switch during the conditional write is not migrated", async (
 
   const active = useChatRuntimeStore.getState();
   active.setParams(
-    { ...active.params, ...QWEN38_THINKING_DEFAULTS },
+    { ...active.params, minP: 0, presencePenalty: 1.5 },
     { fromModelDefaults: true },
   );
   await sleep(60);
@@ -499,11 +489,9 @@ test("selecting an external Qwen migrates its dormant row", async () => {
   await sleep(60);
 
   const row = serverRow(external);
-  assert.equal(row.temperature, 1);
-  assert.equal(row.presencePenalty, 0);
+  assert.equal(row.presencePenalty, 1.5);
   assert.equal(row.minP, 0);
-  assert.equal(useChatRuntimeStore.getState().params.temperature, 1);
-  assert.equal(useChatRuntimeStore.getState().params.presencePenalty, 0);
+  assert.equal(useChatRuntimeStore.getState().params.presencePenalty, 1.5);
 });
 
 test("the send barrier waits for a migration a model pick just scheduled", async () => {
@@ -549,19 +537,17 @@ test("an edit racing the conditional write does not strand local on legacy", asy
 
   const active = useChatRuntimeStore.getState();
   active.setParams(
-    { ...active.params, ...QWEN38_THINKING_DEFAULTS },
+    { ...active.params, minP: 0, presencePenalty: 1.5 },
     { fromModelDefaults: true },
   );
   await sleep(60);
 
   // The server took the migration, so the tab must not keep generating from the
   // values it no longer holds.
-  assert.equal(serverRow().temperature, 1);
-  assert.equal(serverRow().presencePenalty, 0);
+  assert.equal(serverRow().presencePenalty, 1.5);
   const after = useChatRuntimeStore.getState();
   assert.equal(after.activePresetSource, "modified");
-  assert.equal(after.params.temperature, 1);
-  assert.equal(after.params.presencePenalty, 0);
+  assert.equal(after.params.presencePenalty, 1.5);
   assert.equal(after.params.minP, 0);
 });
 
@@ -573,7 +559,7 @@ test("a decision field that sanitizes away blocks the write", async () => {
 
   const active = useChatRuntimeStore.getState();
   active.setParams(
-    { ...active.params, ...QWEN38_THINKING_DEFAULTS },
+    { ...active.params, minP: 0, presencePenalty: 1.5 },
     { fromModelDefaults: true },
   );
   await sleep(60);
@@ -617,7 +603,7 @@ test("a case-distinct external switch during the write is not migrated", async (
 
   const active = useChatRuntimeStore.getState();
   active.setParams(
-    { ...active.params, ...QWEN38_THINKING_DEFAULTS },
+    { ...active.params, minP: 0, presencePenalty: 1.5 },
     { fromModelDefaults: true },
   );
   await sleep(60);
@@ -662,7 +648,7 @@ test("an earlier retry settling does not clear a later retry's barrier", async (
 
   const first = useChatRuntimeStore.getState();
   first.setParams(
-    { ...first.params, ...QWEN38_THINKING_DEFAULTS },
+    { ...first.params, minP: 0, presencePenalty: 1.5 },
     { fromModelDefaults: true },
   );
   await sleep(0);
@@ -717,7 +703,7 @@ test("the send barrier follows a retry that replaces the one it captured", async
 
   const first = useChatRuntimeStore.getState();
   first.setParams(
-    { ...first.params, ...QWEN38_THINKING_DEFAULTS },
+    { ...first.params, minP: 0, presencePenalty: 1.5 },
     { fromModelDefaults: true },
   );
   await sleep(0);
@@ -758,7 +744,7 @@ test("a write outlasting the flush timeout rearms the migration", async () => {
 
   const active = useChatRuntimeStore.getState();
   active.setParams(
-    { ...active.params, ...QWEN38_THINKING_DEFAULTS },
+    { ...active.params, minP: 0, presencePenalty: 1.5 },
     { fromModelDefaults: true },
   );
   // Past the 2000 ms flush timeout with the ordinary write still outstanding.
@@ -772,8 +758,7 @@ test("a write outlasting the flush timeout rearms the migration", async () => {
     awaitPendingQwenDefaultsMigration(),
     new Promise((resolve) => setTimeout(resolve, 5000)),
   ]);
-  assert.equal(serverRow().temperature, 1);
-  assert.equal(serverRow().presencePenalty, 0);
+  assert.equal(serverRow().presencePenalty, 1.5);
 });
 
 test("a status-only reasoning marker does not pick the migration table", async () => {
@@ -792,7 +777,7 @@ test("a status-only reasoning marker does not pick the migration table", async (
 
   const active = useChatRuntimeStore.getState();
   active.setParams(
-    { ...active.params, ...QWEN38_THINKING_DEFAULTS },
+    { ...active.params, minP: 0, presencePenalty: 1.5 },
     { fromModelDefaults: true },
   );
   await sleep(60);
@@ -866,7 +851,7 @@ test("a wedged backend does not hold a send open forever", async () => {
 
   const active = useChatRuntimeStore.getState();
   active.setParams(
-    { ...active.params, ...QWEN38_THINKING_DEFAULTS },
+    { ...active.params, minP: 0, presencePenalty: 1.5 },
     { fromModelDefaults: true },
   );
   await sleep(20);
@@ -912,7 +897,7 @@ test("adopting the startup model clears the unowned pre-hydration mark", async (
   useChatRuntimeStore.getState().setCheckpoint(QWEN38);
   const adopting = useChatRuntimeStore.getState();
   adopting.setParams(
-    { ...adopting.params, ...QWEN38_THINKING_DEFAULTS, checkpoint: QWEN38 },
+    { ...adopting.params, ...LEGACY_SNAPSHOT, checkpoint: QWEN38 },
     { fromModelDefaults: true, migrateOwnedGlobalQwenDefaults: true },
   );
 
@@ -924,9 +909,7 @@ test("adopting the startup model clears the unowned pre-hydration mark", async (
     string,
     number
   >;
-  assert.equal(global.temperature, 1);
-  assert.equal(global.presencePenalty, 0);
-  assert.equal(global.minP, 0);
+  assert.equal(global.presencePenalty, 1.5);
 });
 
 test("a thread pin survives the race recovery path", async () => {
@@ -946,7 +929,7 @@ test("a thread pin survives the race recovery path", async () => {
 
   const active = useChatRuntimeStore.getState();
   active.setParams(
-    { ...active.params, ...QWEN38_THINKING_DEFAULTS },
+    { ...active.params, minP: 0, presencePenalty: 1.5 },
     { fromModelDefaults: true },
   );
   await sleep(80);
@@ -971,7 +954,7 @@ test("an unreachable backend does not spin the migration rearm", async () => {
 
   const active = useChatRuntimeStore.getState();
   active.setParams(
-    { ...active.params, ...QWEN38_THINKING_DEFAULTS },
+    { ...active.params, minP: 0, presencePenalty: 1.5 },
     { fromModelDefaults: true },
   );
   await sleep(1500);
@@ -1043,13 +1026,12 @@ test("a custom preset chosen mid-write keeps its own legacy-valued fields", asyn
 
   const active = useChatRuntimeStore.getState();
   active.setParams(
-    { ...active.params, ...QWEN38_THINKING_DEFAULTS },
+    { ...active.params, minP: 0, presencePenalty: 1.5 },
     { fromModelDefaults: true },
   );
   await sleep(80);
 
   const after = useChatRuntimeStore.getState().params;
-  assert.equal(after.temperature, 0.6);
   assert.equal(after.presencePenalty, 0);
   assert.equal(after.minP, 0.01);
 });

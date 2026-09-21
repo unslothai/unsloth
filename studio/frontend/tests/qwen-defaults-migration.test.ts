@@ -27,11 +27,6 @@ const LEGACY_SNAPSHOT = {
   systemVariables: "",
   fastMode: false,
 };
-const PREVIOUS_QWEN38_THINKING_SNAPSHOT = {
-  ...LEGACY_SNAPSHOT,
-  minP: 0,
-  presencePenalty: 1.5,
-};
 
 function settingsFor(
   modelId: string,
@@ -62,66 +57,16 @@ test("migrates the complete legacy Qwen3.8 default snapshot", () => {
   assert.deepEqual(migrated.migratedModelIds, [QWEN38]);
   assert.equal(
     migrated.settings.inferenceParamsByModel?.[QWEN38]?.presencePenalty,
-    0,
-  );
-  assert.equal(
-    migrated.settings.inferenceParamsByModel?.[QWEN38]?.temperature,
-    1,
+    1.5,
   );
   assert.equal(migrated.settings.inferenceParamsByModel?.[QWEN38]?.minP, 0);
   assert.equal(migrated.settings.inferenceParams?.presencePenalty, 0);
   assert.equal(migrated.settings.inferenceParams?.minP, 0.01);
   assert.deepEqual(migrated.patch, {
     inferenceParamsByModel: {
-      [QWEN38]: { temperature: 1, minP: 0 },
+      [QWEN38]: { minP: 0, presencePenalty: 1.5 },
     },
   });
-});
-
-test("migrates only the Qwen3.8 thinking snapshot produced by the previous migration", () => {
-  const settings = settingsFor(QWEN38, PREVIOUS_QWEN38_THINKING_SNAPSHOT);
-  settings.inferenceParams = {
-    temperature: 0.6,
-    topP: 0.95,
-    minP: 0,
-    presencePenalty: 1.5,
-    maxTokens: 8192,
-  };
-  const migrated = migrateLegacyQwenDefaults(
-    settings,
-    QWEN38,
-    true,
-    true,
-    true,
-  );
-
-  assert.deepEqual(migrated.patch, {
-    inferenceParamsByModel: {
-      [QWEN38]: { temperature: 1, presencePenalty: 0 },
-    },
-    inferenceParams: { temperature: 1, presencePenalty: 0 },
-  });
-
-  const customized = settingsFor(QWEN38, {
-    ...PREVIOUS_QWEN38_THINKING_SNAPSHOT,
-    temperature: 0.61,
-  });
-  assert.equal(migrateLegacyQwenDefaults(customized, QWEN38, true).patch, null);
-
-  for (const modelId of [
-    "unsloth/Qwen3.5-9B-GGUF",
-    "unsloth/Qwen3.6-27B-MTP-GGUF",
-    "unsloth/Qwen3-8B-GGUF",
-  ]) {
-    const otherFamily = settingsFor(
-      modelId,
-      PREVIOUS_QWEN38_THINKING_SNAPSHOT,
-    );
-    assert.equal(
-      migrateLegacyQwenDefaults(otherFamily, modelId, true).patch,
-      null,
-    );
-  }
 });
 
 test("preserves context-derived token budgets while migrating sampling", () => {
@@ -142,8 +87,8 @@ test("preserves context-derived token budgets while migrating sampling", () => {
       maxTokens,
     );
     assert.deepEqual(migrated.patch?.inferenceParamsByModel?.[QWEN38], {
-      temperature: 1,
       minP: 0,
+      presencePenalty: 1.5,
     });
   }
 });
@@ -203,7 +148,7 @@ test("migrates only the active model when several legacy Qwen rows are saved", (
   assert.deepEqual(migrated.migratedModelIds, [QWEN38]);
   assert.equal(
     migrated.settings.inferenceParamsByModel?.[QWEN38]?.presencePenalty,
-    0,
+    1.5,
   );
   assert.deepEqual(
     migrated.settings.inferenceParamsByModel?.[qwen36Small],
@@ -226,25 +171,25 @@ test("normalizes a case-insensitive saved key to the active checkpoint", () => {
   assert.deepEqual(migrated.migratedModelIds, [QWEN38]);
   assert.equal(
     migrated.settings.inferenceParamsByModel?.[QWEN38]?.presencePenalty,
-    0,
+    1.5,
   );
   // The alias is migrated rather than dropped. The server merge only sets keys,
   // so a spelling removed here would stay legacy there and a later status
   // naming it would replay the stale row.
   assert.equal(
     migrated.settings.inferenceParamsByModel?.[lowerCaseKey]?.presencePenalty,
-    0,
+    1.5,
   );
   assert.deepEqual(migrated.patch?.inferenceParamsByModel?.[lowerCaseKey], {
-    temperature: 1,
     minP: 0,
+    presencePenalty: 1.5,
   });
   assert.deepEqual(
     migrated.patch?.inferenceParamsByModel?.[QWEN38],
     {
       ...LEGACY_SNAPSHOT,
-      temperature: 1,
       minP: 0,
+      presencePenalty: 1.5,
     },
   );
 });
@@ -311,10 +256,10 @@ test("external checkpoints are decoded before the family is matched", () => {
 
   const settings = settingsFor(encoded);
   const migrated = migrateLegacyQwenDefaults(settings, encoded, true);
-  assert.deepEqual(migrated.patch?.inferenceParamsByModel?.[encoded], {
-    temperature: 1,
-    minP: 0,
-  });
+  assert.equal(
+    migrated.patch?.inferenceParamsByModel?.[encoded]?.presencePenalty,
+    1.5,
+  );
 });
 
 test("matches presence-bump versions only at model-id boundaries", () => {
@@ -366,10 +311,7 @@ test("preserves a global-only install's context-derived token budget", () => {
 
   assert.equal(migrated.settings.inferenceParams?.maxTokens, 32768);
   assert.equal(migrated.patch?.inferenceParams?.maxTokens, undefined);
-  assert.deepEqual(migrated.patch?.inferenceParams, {
-    temperature: 1,
-    minP: 0,
-  });
+  assert.equal(migrated.patch?.inferenceParams?.presencePenalty, 1.5);
 });
 
 test("preserves customized optional fields in a global-only snapshot", () => {
@@ -521,51 +463,5 @@ test("a space or bracket ends the Qwen family name", () => {
   // Still a future family and a parameter count, not this one.
   for (const id of ["/models/Qwen3.80 27B", "/models/Qwen3.8B", "Qwen3.85"]) {
     assert.equal(isPresenceBumpQwen(id), false, id);
-  }
-});
-
-test("the prior Qwen3.8 thinking snapshot is recognized with Think off", () => {
-  // The snapshot was written in thinking mode, so recognizing it cannot depend on the
-  // row the session resolves now: keying on that left 0.6/0.95 standing against 0.7/0.8.
-  const off = migrateLegacyQwenDefaults(
-    settingsFor(QWEN38, PREVIOUS_QWEN38_THINKING_SNAPSHOT),
-    QWEN38,
-    false,
-    true,
-  );
-  assert.deepEqual(off.migratedModelIds, [QWEN38]);
-  assert.deepEqual(off.patch?.inferenceParamsByModel?.[QWEN38], {
-    temperature: 0.7,
-    topP: 0.8,
-  });
-  assert.equal(
-    off.settings.inferenceParamsByModel?.[QWEN38]?.presencePenalty,
-    1.5,
-  );
-
-  const on = migrateLegacyQwenDefaults(
-    settingsFor(QWEN38, PREVIOUS_QWEN38_THINKING_SNAPSHOT),
-    QWEN38,
-    true,
-    true,
-  );
-  assert.deepEqual(on.patch?.inferenceParamsByModel?.[QWEN38], {
-    temperature: 1,
-    presencePenalty: 0,
-  });
-});
-
-test("only the family that had the zero-presence thinking row is migrated", () => {
-  // Qwen3.6 never generated 0.6/0.95/1.5 with minP 0, so an identical stored row
-  // there is the user's own and stays untouched in either mode.
-  const QWEN36 = "unsloth/Qwen3.6-27B-GGUF";
-  for (const thinkingOn of [true, false]) {
-    const result = migrateLegacyQwenDefaults(
-      settingsFor(QWEN36, PREVIOUS_QWEN38_THINKING_SNAPSHOT),
-      QWEN36,
-      thinkingOn,
-      true,
-    );
-    assert.deepEqual(result.migratedModelIds, [], String(thinkingOn));
   }
 });

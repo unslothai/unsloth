@@ -23932,55 +23932,6 @@ def _normalize_chat_reasoning_controls(payload) -> None:
         payload.preserve_thinking = nested["preserve_thinking"]
 
 
-def _loaded_llama_backend_for(model_id):
-    """The live llama.cpp backend serving ``model_id``, or None. The id must match, or a transformers/MLX request is answered from the llama.cpp launch state."""
-    if not model_id:
-        return None
-    backend = get_llama_cpp_backend()
-    if backend is None or not getattr(backend, "is_loaded", False):
-        return None
-    if getattr(backend, "model_identifier", None) != model_id:
-        return None
-    return backend
-
-
-def _normalized_sampling_thinking_mode(payload) -> Optional[bool]:
-    """Three-valued reasoning mode read from the request alone: ``enable_thinking``, then effort (``none`` means off), then the Anthropic ``thinking`` block, whose fallback also covers /v1/messages. None means the request picked nothing, leaving the mode to the loaded template."""
-    enable_thinking, reasoning_effort = _resolve_reasoning_controls(
-        getattr(payload, "enable_thinking", None),
-        getattr(payload, "reasoning_effort", None),
-    )
-    if enable_thinking is not None or reasoning_effort is not None:
-        return enable_thinking
-    thinking = getattr(payload, "thinking", None)
-    thinking_type = getattr(thinking, "type", None)
-    if thinking_type is not None:
-        # Not .lower(): resolved_enable_thinking() treats only the exact "disabled" as off.
-        return str(thinking_type) != "disabled"
-    return None
-
-
-def _sampling_thinking_mode(payload, model_id) -> Optional[bool]:
-    """The mode generation will actually run in, used to pick sampling recommendations.
-
-    Defers to ``_think_parsing_expected``, the same resolver the think-markup gate uses, so
-    sampling cannot disagree with generation: always-on templates that ignore an off control,
-    effort-dial families that map "off" onto a low-but-thinking effort, and -- when the request
-    sends nothing -- the mode Studio launched the model in. Without a live backend only the
-    request can speak, so the historical flat preset stands.
-
-    The ``.inference`` block of load/status is NOT this: it is ``load_inference_config`` with no
-    mode and still answers with the flat family row. The Chat UI matches only because
-    apply-inference-status-to-store.ts layers resolveQwenThinkingParams over it.
-    """
-    backend = _loaded_llama_backend_for(model_id)
-    # supports_reasoning=False is an answer (this template never reasons); its ABSENCE is not,
-    # and only then does the request become the sole source.
-    if backend is None or getattr(backend, "supports_reasoning", None) is None:
-        return _normalized_sampling_thinking_mode(payload)
-    return _think_parsing_expected(backend, payload)
-
-
 def _fill_recommended_sampling_openai(payload, model_id) -> None:
     """Apply per-model recommended sampling (and any operator UNSLOTH_SAMPLING_* pin) to a
     ChatCompletionRequest in place.
@@ -23996,11 +23947,7 @@ def _fill_recommended_sampling_openai(payload, model_id) -> None:
         f: (getattr(payload, f) if f in payload.model_fields_set else None)
         for f in SAMPLING_FIELD_NAMES
     }
-    effective = resolve_effective_sampling(
-        model_id,
-        explicit,
-        thinking_mode = _sampling_thinking_mode(payload, model_id),
-    )
+    effective = resolve_effective_sampling(model_id, explicit)
     for field, value in effective.items():
         setattr(payload, field, value)
 
@@ -24021,12 +23968,6 @@ def _fill_recommended_sampling_completions(body: dict, model_id) -> None:
     (``fill_defaults = False``) so llama-server keeps its own default rather than being forced onto
     this schema's value. llama-server names the repetition knob ``repeat_penalty``, so read and
     write that alias for the client-sent value and any pin.
-
-    Deliberately NOT mode-aware, unlike :func:`_fill_recommended_sampling_openai`: this endpoint
-    renders no chat template, so a per-mode row would price a raw continuation as a reasoning turn
-    on the strength of how the model happens to be loaded. The two endpoints answering with
-    different sampling for one loaded model is that difference, not a gap. Pinned by
-    test_raw_completions_are_never_priced_on_the_launch_mode.
     """
     from utils.inference.inference_config import resolve_effective_sampling, SAMPLING_FIELD_NAMES
 
@@ -34282,7 +34223,6 @@ async def anthropic_messages(
             "repetition_penalty": payload.repetition_penalty,
             "presence_penalty": payload.presence_penalty,
         },
-        thinking_mode = _sampling_thinking_mode(payload, _anthropic_model_id),
     )
     temperature = _anthropic_sampling["temperature"]
     top_p = _anthropic_sampling["top_p"]

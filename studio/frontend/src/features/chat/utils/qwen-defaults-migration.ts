@@ -35,24 +35,6 @@ const LEGACY_OPTIONAL_GLOBAL_QWEN_DEFAULTS = {
   repetitionPenalty: 1.0,
 } as const;
 
-// Exact output of the immediately preceding migration for Qwen3.8 thinking.
-// Matching every sampling field keeps user-tuned rows out of this migration.
-const PREVIOUS_QWEN38_THINKING_DEFAULTS = {
-  temperature: 0.6,
-  topP: 0.95,
-  topK: 20,
-  minP: 0.0,
-  repetitionPenalty: 1.0,
-  presencePenalty: 1.5,
-} as const;
-
-const PREVIOUS_QWEN38_THINKING_GLOBAL_DEFAULTS = {
-  temperature: 0.6,
-  topP: 0.95,
-  minP: 0.0,
-  presencePenalty: 1.5,
-} as const;
-
 /**
  * The replacement table, read from the same resolver load and the Think toggle
  * use, so this file cannot drift into a second source of truth. Null whenever
@@ -84,44 +66,22 @@ export function isPresenceBumpQwen(modelId: string): boolean {
   );
 }
 
-function matchesDefaults(
-  params: PersistedInferenceParams,
-  defaults: Partial<PersistedInferenceParams>,
-): boolean {
-  return Object.entries(defaults).every(
-    ([key, value]) => params[key as keyof PersistedInferenceParams] === value,
-  );
-}
-
-/**
- * The family the prior migration wrote its thinking row for: Qwen3.8 alone. Asked of
- * the model, not of the row the session currently resolves to, because the snapshot was
- * written in thinking mode and a session can come up with Think off.
- */
-function wrotePriorQwen38ThinkingSnapshot(modelId: string): boolean {
-  return resolveQwenThinkingParams(modelId, true)?.presencePenalty === 0;
-}
-
 function isLegacyQwenDefaultSnapshot(
   params: PersistedInferenceParams,
-  modelId: string,
 ): boolean {
-  return (
-    matchesDefaults(params, LEGACY_QWEN_DEFAULTS) ||
-    (wrotePriorQwen38ThinkingSnapshot(modelId) &&
-      matchesDefaults(params, PREVIOUS_QWEN38_THINKING_DEFAULTS))
+  return Object.entries(LEGACY_QWEN_DEFAULTS).every(
+    ([key, value]) => params[key as keyof PersistedInferenceParams] === value,
   );
 }
 
 function isLegacyGlobalQwenDefaultSnapshot(
   params: PersistedInferenceParams | undefined,
-  modelId: string,
 ): boolean {
   return (
     params !== undefined &&
-    (matchesDefaults(params, LEGACY_GLOBAL_QWEN_DEFAULTS) ||
-      (wrotePriorQwen38ThinkingSnapshot(modelId) &&
-        matchesDefaults(params, PREVIOUS_QWEN38_THINKING_GLOBAL_DEFAULTS))) &&
+    Object.entries(LEGACY_GLOBAL_QWEN_DEFAULTS).every(
+      ([key, value]) => params[key as keyof PersistedInferenceParams] === value,
+    ) &&
     Object.entries(LEGACY_OPTIONAL_GLOBAL_QWEN_DEFAULTS).every(
       ([key, value]) => {
         const stored = params[key as keyof PersistedInferenceParams];
@@ -199,7 +159,7 @@ function migrateStoredModelDefaults(
     if (
       isActiveCheckpoint &&
       isPresenceBumpQwen(modelId) &&
-      isLegacyQwenDefaultSnapshot(entry, modelId)
+      isLegacyQwenDefaultSnapshot(entry)
     ) {
       const normalizedModelId = activeCheckpoint;
       const migratedEntry = { ...entry, ...currentDefaults };
@@ -223,7 +183,7 @@ function migrateStoredModelDefaults(
 }
 
 /**
- * Upgrade the generated Qwen snapshots Studio used to remember for Qwen3.5/3.6/3.8.
+ * Upgrade the generic-Qwen snapshot Studio used to remember for Qwen3.5/3.6/3.8.
  * Matching every sampling field leaves a partial override untouched, including
  * a deliberate presencePenalty=0, and the context-derived maxTokens is kept.
  * Globals are eligible only when the caller can show they describe the active
@@ -265,10 +225,7 @@ export function migrateLegacyQwenDefaults(
     (stored === undefined || migrateOwnedGlobalAlongsideModelMemory) &&
     globalBelongsToActiveCheckpoint &&
     isPresenceBumpQwen(activeCheckpoint) &&
-    isLegacyGlobalQwenDefaultSnapshot(
-      settings.inferenceParams,
-      activeCheckpoint,
-    );
+    isLegacyGlobalQwenDefaultSnapshot(settings.inferenceParams);
   const globalChanges = migrateGlobal
     ? changedDefaults(settings.inferenceParams ?? {}, currentGlobalDefaults)
     : null;

@@ -2,7 +2,6 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import { register } from "node:module";
 import test from "node:test";
 
@@ -11,58 +10,34 @@ import { installLocalStorageFake, readSrc } from "./helpers/kit.ts";
 installLocalStorageFake();
 register("./store-settings-resolver.mjs", import.meta.url);
 
-const { applyQwenThinkingParams } =
-  await import("../src/features/chat/utils/qwen-params.ts");
-const { resolveQwenThinkingParams } =
-  await import("../src/features/chat/utils/qwen-sampling-table.ts");
-const { useChatRuntimeStore } =
-  await import("../src/features/chat/stores/chat-runtime-store.ts");
+const { applyQwenThinkingParams } = await import(
+  "../src/features/chat/utils/qwen-params.ts"
+);
+const { resolveQwenThinkingParams } = await import(
+  "../src/features/chat/utils/qwen-sampling-table.ts"
+);
+const { useChatRuntimeStore } = await import(
+  "../src/features/chat/stores/chat-runtime-store.ts"
+);
 
-test("the Qwen3.8 frontend table matches the backend recommendations", () => {
-  const defaults = JSON.parse(
-    readFileSync(
-      new URL(
-        "../../backend/assets/configs/inference_defaults.json",
-        import.meta.url,
-      ),
-      "utf8",
-    ),
-  ) as {
-    families: Record<
-      string,
-      { sampling_modes: Record<string, Record<string, number>> }
-    >;
-  };
-  const modes = defaults.families["qwen3.8"].sampling_modes;
-
-  for (const [thinkingOn, mode] of [
-    [true, "thinking"],
-    [false, "non_thinking"],
-  ] as const) {
-    const backend = modes[mode];
-    assert.deepEqual(
-      resolveQwenThinkingParams("unsloth/Qwen3.8-27B-GGUF", thinkingOn),
-      {
-        temperature: backend.temperature,
-        topP: backend.top_p,
-        topK: backend.top_k,
-        minP: backend.min_p,
-        presencePenalty: backend.presence_penalty,
-      },
+test("Qwen3.8 reuses the Qwen3.6 sampling table in both modes", () => {
+  for (const thinkingOn of [true, false]) {
+    const qwen36 = resolveQwenThinkingParams(
+      "unsloth/Qwen3.6-27B-GGUF",
+      thinkingOn,
     );
-  }
+    const qwen38 = resolveQwenThinkingParams(
+      "unsloth/Qwen3.8-27B-GGUF",
+      thinkingOn,
+    );
 
-  assert.deepEqual(
-    resolveQwenThinkingParams("unsloth/Qwen3.6-27B-GGUF", true),
-    { temperature: 0.6, topP: 0.95, topK: 20, minP: 0.0, presencePenalty: 1.5 },
-  );
+    assert.deepEqual(qwen38, qwen36);
+    assert.equal(qwen38?.presencePenalty, 1.5);
+  }
 });
 
-test("the Qwen3.8 Think toggle applies the matching live settings", () => {
-  for (const [thinkingOn, temperature, presencePenalty] of [
-    [true, 1.0, 0.0],
-    [false, 0.7, 1.5],
-  ] as const) {
+test("the Qwen3.8 Think toggle puts 1.5 in the live chat settings", () => {
+  for (const thinkingOn of [true, false]) {
     const store = useChatRuntimeStore.getState();
     useChatRuntimeStore.setState({
       params: {
@@ -75,9 +50,7 @@ test("the Qwen3.8 Think toggle applies the matching live settings", () => {
 
     applyQwenThinkingParams(thinkingOn);
 
-    const params = useChatRuntimeStore.getState().params;
-    assert.equal(params.temperature, temperature);
-    assert.equal(params.presencePenalty, presencePenalty);
+    assert.equal(useChatRuntimeStore.getState().params.presencePenalty, 1.5);
   }
 });
 
@@ -96,60 +69,4 @@ test("Qwen3.8 does not change the generic Qwen3 presence penalty", () => {
     resolveQwenThinkingParams("unsloth/Qwen3-8B-GGUF", true)?.presencePenalty,
     undefined,
   );
-});
-
-test("an id naming two Qwen families resolves to Qwen3.8, as the backend does", () => {
-  // The backend scans its family patterns longest-first, so "qwen3.8" wins wherever it
-  // appears; String.match would take the leftmost. Both tables have to name one row.
-  for (const id of [
-    "Qwen3.5-Draft/Qwen3.8-27B-Q4_K_M.gguf",
-    "/models/qwen3.6/qwen3.8-27b.gguf",
-    "unsloth/Qwen3.8-27B-Draft-Qwen3.5-0.8B",
-    "qwen3.6-router/QWEN3.8-27B",
-  ]) {
-    assert.deepEqual(
-      resolveQwenThinkingParams(id, true),
-      {
-        temperature: 1.0,
-        topP: 0.95,
-        topK: 20,
-        minP: 0.0,
-        presencePenalty: 0.0,
-      },
-      id,
-    );
-  }
-
-  // The families that do not name Qwen3.8 keep their own row, whichever order
-  // they appear in.
-  for (const id of [
-    "unsloth/Qwen3.6-27B-GGUF",
-    "Qwen3.6-Draft/Qwen3.5-9B-GGUF",
-  ]) {
-    assert.deepEqual(
-      resolveQwenThinkingParams(id, true),
-      {
-        temperature: 0.6,
-        topP: 0.95,
-        topK: 20,
-        minP: 0.0,
-        presencePenalty: 1.5,
-      },
-      id,
-    );
-  }
-
-  // Still boundary-anchored: a future family and a parameter count are not Qwen3.8.
-  assert.deepEqual(resolveQwenThinkingParams("Qwen3.80-27B", true), {
-    temperature: 0.6,
-    topP: 0.95,
-    topK: 20,
-    minP: 0.0,
-  });
-  assert.deepEqual(resolveQwenThinkingParams("Qwen3.8B", true), {
-    temperature: 0.6,
-    topP: 0.95,
-    topK: 20,
-    minP: 0.0,
-  });
 });

@@ -20,12 +20,7 @@ export type QwenThinkingParams = {
 // Boundary-anchored: "Qwen3.80" and "Qwen3.8B" are a future family and a
 // parameter count, and a substring test would bump both. Any non-alphanumeric
 // ends the family, since a path can separate it with a space as readily as "-".
-const PRESENCE_BUMP_QWEN = /(?:^|[^a-z0-9])qwen3\.(5|6|8)(?:$|[^a-z0-9])/;
-
-// Which family an id naming two ("Qwen3.5-Draft/Qwen3.8-27B") belongs to. Tested
-// separately because String.match answers with the LEFTMOST, while the backend scans
-// _FAMILY_PATTERNS longest-first and lets "qwen3.8" win wherever it appears.
-const QWEN38_FAMILY = /(?:^|[^a-z0-9])qwen3\.8(?:$|[^a-z0-9])/;
+const PRESENCE_BUMP_QWEN = /(?:^|[^a-z0-9])qwen3\.(?:5|6|8)(?:$|[^a-z0-9])/;
 
 const OLLAMA_MANIFEST_REF_PREFIX = "ollama-manifest:";
 
@@ -72,17 +67,9 @@ export function resolveQwenThinkingParams(
     return null;
   }
 
-  const presenceBumpFamily = PRESENCE_BUMP_QWEN.test(normalized);
-  const qwen38Thinking = thinkingOn && QWEN38_FAMILY.test(normalized);
+  const needsPresencePenalty = PRESENCE_BUMP_QWEN.test(normalized);
   const base = thinkingOn
-    ? {
-        temperature: qwen38Thinking ? 1.0 : 0.6,
-        topP: 0.95,
-        topK: 20,
-        minP: 0.0,
-      }
+    ? { temperature: 0.6, topP: 0.95, topK: 20, minP: 0.0 }
     : { temperature: 0.7, topP: 0.8, topK: 20, minP: 0.0 };
-  return presenceBumpFamily
-    ? { ...base, presencePenalty: qwen38Thinking ? 0.0 : 1.5 }
-    : base;
+  return needsPresencePenalty ? { ...base, presencePenalty: 1.5 } : base;
 }

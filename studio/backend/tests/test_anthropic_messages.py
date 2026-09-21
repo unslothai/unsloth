@@ -248,8 +248,8 @@ def test_anthropic_reasoning_args_maps_effort_only_to_enable_thinking():
         is True
     )
     assert _anthropic_reasoning_args(_basic_payload())["enable_thinking"] is None
-    # An explicit boolean always wins; a contradictory effort is removed so
-    # sampling and model-specific template resolution see the same request.
+    # An explicit boolean always wins; a contradictory effort is removed rather than
+    # riding along into model-specific template resolution.
     assert _anthropic_reasoning_args(
         _basic_payload(enable_thinking = True, reasoning_effort = "none")
     ) == {
