@@ -2598,9 +2598,8 @@ def _unsloth_resolve_logit_scales(model_config):
 
     Only reached when the installed unsloth_zoo predates that helper. Must stay in step with ``resolve_logit_transforms`` in unsloth/models/llama.py: if the forward applies a transform GRPO does not, the policy log-probabilities come from different logits than the ones generated, which silently shifts every importance ratio.
     """
-    # ``logits_scaling`` is not one knob: Granite divides by it, HyperCLOVA X multiplies
-    # (MuP), and MiniCPM3 scales the hidden states before the head, so it is not a logit
-    # transform at all.
+    # ``logits_scaling`` is not one knob: Granite divides, HyperCLOVA X multiplies (MuP),
+    # MiniCPM3 scales the hidden states so it is not a logit transform.
     overrides = {
         ("logits_scaling", "hyperclovax"): "multiply",
         ("logits_scaling", "minicpm3"): None,

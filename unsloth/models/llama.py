@@ -1340,9 +1340,7 @@ def _LlamaModel_fast_forward_inference(
 LlamaModel_fast_forward_inference = _LlamaModel_fast_forward_inference()
 
 
-# Mirrors unsloth_zoo.device_map_planner's tables. Only consulted when the installed
-# unsloth_zoo predates detect_logit_transforms; kept here so that arm does not silently
-# drop a family the planner knows about.
+# Copy of unsloth_zoo.device_map_planner's tables, for zoos predating detect_logit_transforms.
 _FALLBACK_TRANSFORM_FIELDS = (
     ("logit_softcapping", ("final_logit_softcapping", "logits_soft_cap", "output_logit_soft_cap")),
     ("logit_scale_multiply", ("logit_scale", "lm_head_multiplier", "output_multiplier")),
@@ -1370,18 +1368,15 @@ def resolve_logit_transforms(config):
             transforms["logit_scale_multiply"],
             transforms["logit_scale_divide"],
         )
-    # Same field table and same overrides as detect_logit_transforms, so the two arms
-    # answer alike: an old unsloth_zoo must not train a different loss than a new one.
+    # Same table as detect_logit_transforms: the zoo version must not pick the loss.
     found = dict.fromkeys(_FALLBACK_TRANSFORM_BUCKETS, 0)
     model_type = getattr(config, "model_type", "") or ""
     for bucket, names in _FALLBACK_TRANSFORM_FIELDS:
         for name in names:
-            # Same spelling, different meaning in some families.
             target = _FALLBACK_BUCKET_OVERRIDES.get((name, model_type), bucket)
             if target is None or found[target]:
                 continue
-            # These fields are all nullable, and a None reaches the kernel and raises
-            # instead of reading as "off".
+            # Nullable: a None reaches the kernel and raises instead of reading as "off".
             value = getattr(config, name, 0) or 0
             if value:
                 found[target] = value
@@ -1524,8 +1519,7 @@ def CausalLM_fast_forward(fast_forward_inference):
                 if n_items is None:
                     n_items = kwargs.get("n_items", None)
 
-                # Without these the fused branch optimizes a different loss than both the
-                # reference implementation and the materialized branch below.
+                # Without these the fused branch optimizes a different loss than the branch below.
                 logit_softcapping, logit_scale_multiply, logit_scale_divide = (
                     resolve_logit_transforms(self.config)
                 )

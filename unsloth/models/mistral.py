@@ -330,8 +330,7 @@ def MistralForCausalLM_fast_forward(
             n_items = kwargs.get("num_items_in_batch", None)
             if n_items is None:
                 n_items = kwargs.get("n_items", None)
-            # Same source as llama.py's fused branch. No Mistral config carries any of the
-            # three today, so all of them resolve to 0.
+            # Same source as llama.py's fused branch.
             logit_softcapping, logit_scale_multiply, logit_scale_divide = resolve_logit_transforms(
                 self.config
             )
