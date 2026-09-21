@@ -1014,17 +1014,46 @@ def _own_declarations(live_css: str, selector: str) -> str | None:
     reading part of a different rule as if it belonged to this one.
     """
     start = re.search(rf"{re.escape(selector)}\s*\{{", live_css)
-    if not start:
-        return None
-    depth, body_at = 0, start.end() - 1
-    for index in range(body_at, len(live_css)):
+    return None if not start else _declarations_at(live_css, start.end() - 1)
+
+
+def _declarations_at(live_css: str, brace: str | int) -> str | None:
+    """The body of the rule whose opening brace is at *brace*, minus any nested rule."""
+    depth = 0
+    for index in range(brace, len(live_css)):
         if live_css[index] == "{":
             depth += 1
         elif live_css[index] == "}":
             depth -= 1
             if depth == 0:
-                return re.sub(r"[^{}]*\{[^{}]*\}", " ", live_css[body_at + 1 : index])
+                return re.sub(r"[^{}]*\{[^{}]*\}", " ", live_css[brace + 1 : index])
     return None
+
+
+def _modifier_rules(live_css: str) -> dict[str, str]:
+    """Every `.sidebar-row-action.is-*` rule the stylesheet defines, as its own declarations."""
+    rules = {}
+    for match in re.finditer(r"\.sidebar-row-action\.(is-[\w-]+)\s*\{", live_css):
+        body = _declarations_at(live_css, match.end() - 1)
+        if body is not None:
+            rules[match.group(1)] = body
+    return rules
+
+
+def _sole_measure(body: str, utility: str, prop: str) -> float | None | str:
+    """One rule's value for a measure: the number, None if unreadable, "" if it states none.
+
+    Every declaration is collected, because CSS resolves a repeat to the last and a
+    first-match read reports the first. Two readable values are refused rather than resolved:
+    which one wins also depends on specificity and on where Tailwind emits the utility, and
+    this guard models neither.
+    """
+    values = _stated_units(body, utility, prop)
+    if not values:
+        return ""
+    if len(values) > 1 or values[0] is None:
+        return None
+    return values[0]
 
 
 def _stated_units(body: str, utility: str, prop: str) -> list[float | None]:
@@ -1043,7 +1072,7 @@ def _stated_units(body: str, utility: str, prop: str) -> list[float | None]:
     for match in re.finditer(rf"(?<![\w-]){re.escape(utility)}-(\S+?)(?=[\s;]|$)", body):
         raw = match.group(1)
         found.append(float(raw) if re.fullmatch(r"\d+(?:\.\d+)?", raw) else None)
-    for match in re.finditer(rf"\b{re.escape(prop)}:\s*([^;]+);", body):
+    for match in re.finditer(rf"(?<![\w-]){re.escape(prop)}:\s*([^;]+);", body):
         value = match.group(1).strip()
         rem = re.fullmatch(r"([\d.]+)rem", value)
         px = re.fullmatch(r"([\d.]+)px", value)
@@ -1061,48 +1090,46 @@ def _stated_units(body: str, utility: str, prop: str) -> list[float | None]:
 def _base_row_action_offset(live_css: str) -> float | None:
     """The right edge `.sidebar-row-action` itself sets, in units, or None if unreadable.
 
-    A modifier that states no `right` leaves the base rule's in force, and this reader used to
-    call that zero without ever looking. It is `right-0` today, so the answer was right by
-    luck: change the base to `right-8` and every action slides eight units into the title while
-    the floors, all measured from an assumed zero, do not move at all and the contract stays
-    green. Read it, and refuse a spelling this cannot.
+    Every action's position is measured from this. It is `right-0` today, so an assumed zero
+    was right by luck; and returning on the first `@apply right-*` ignored a later
+    `right: 5rem` in the same rule, which is what CSS would render, so the reader went on
+    saying zero while every action extended into the title.
     """
-    rule = re.search(r"\.sidebar-row-action\s*\{([^}]*)\}", live_css)
-    if not rule:
+    body = _own_declarations(live_css, ".sidebar-row-action")
+    if body is None:
         return None
-    body = rule.group(1)
-    applied = re.search(r"@apply[^;]*(?<![\w-])right-(\d+(?:\.\d+)?)(?![\w.-])", body)
-    if applied:
-        return float(applied.group(1))
-    stated = re.search(r"\bright:\s*([\d.]+)rem\s*;", body)
-    if stated:
-        return float(stated.group(1)) / _SPACING_REM
-    if re.search(r"(?<![\w-])right-0(?![\w.-])", body) or re.search(r"\bright:\s*0", body):
-        return 0.0
-    return None
+    measure = _sole_measure(body, "right", "right")
+    return None if measure == "" or not isinstance(measure, float) else measure
 
 
-def _row_action_offsets(live_css: str) -> dict[str, float | None]:
-    """Each `.sidebar-row-action.is-*` modifier the stylesheet defines, and the right edge it
-    sets, in Tailwind spacing units.
+def _row_action_offsets(live_css: str, base: float) -> dict[str, float | None]:
+    """Each `.sidebar-row-action.is-*` modifier, and the right edge it renders with.
 
     Read from CSS rather than named here, so an action positioned by a modifier this file has
-    never heard of is refused instead of being recorded as flush right. A modifier that the
-    stylesheet defines without moving `right` contributes 0, which is what it does.
+    never heard of is refused instead of being recorded as flush right. A modifier that states
+    no edge leaves the base rule's in force, which is what CSS does, so it gets *base* rather
+    than zero. None means the rule states one this cannot resolve, and the caller refuses it.
     """
-    offsets: dict[str, float | None] = {}
-    for match in re.finditer(r"\.sidebar-row-action\.(is-[\w-]+)\s*\{([^}]*)\}", live_css):
-        body = match.group(2)
-        readable = re.search(r"\bright:\s*([\d.]+)rem\s*;", body)
-        if readable:
-            offsets[match.group(1)] = float(readable.group(1)) / 0.25
-            continue
-        # Says nothing about `right` at all, so it moves the action nowhere. A rule that DOES
-        # state one in another spelling, `30px`, a `calc(...)`, or an `@apply right-*`, is
-        # unreadable rather than absent, and the caller refuses it.
-        states_an_edge = re.search(r"\bright:", body) or re.search(r"@apply[^;]*\bright-", body)
-        offsets[match.group(1)] = None if states_an_edge else 0.0
-    return offsets
+    return {
+        name: base if (measure := _sole_measure(body, "right", "right")) == "" else
+        (measure if isinstance(measure, float) else None)
+        for name, body in _modifier_rules(live_css).items()
+    }
+
+
+def _row_action_paddings(live_css: str, base: float) -> dict[str, float | None]:
+    """Each modifier, and the right padding it renders with, in units.
+
+    The base `pr-1.5` is not what every action gets: the container is justify-end, so its
+    right padding decides where the glyph sits, and `.is-unpin-action` overrides it to
+    `0.125rem` to close the gap to the options button. Applying the base to every action put
+    the pin's reach at 15 when it is 14, and that false floor rejected a sufficient `pr-14`.
+    """
+    return {
+        name: base if (measure := _sole_measure(body, "pr", "padding-right")) == "" else
+        (measure if isinstance(measure, float) else None)
+        for name, body in _modifier_rules(live_css).items()
+    }
 
 
 def _labelled_actions(
@@ -1220,10 +1247,11 @@ def _labelled_actions(
             f"padding. Which one applies is a question of source order in index.css, and "
             f"this guard does not adjudicate it: state the padding on one modifier"
         )
+        # No modifier at all means the base rule is the whole answer.
         padding = paddings[stated[0]] if stated else base_padding
         # A modifier that states no edge leaves the base rule's in force, so that is the
         # fallback, not zero.
-        shift = max((offsets[token] or 0.0 for token in modifiers), default = base_offset)
+        shift = max((offsets[token] for token in modifiers), default = base_offset)
         found[at] = (name, shift + padding)
     # Both rows carry an action that no `variant === "..."` gate guards, and every assertion
     # below is written about a row that has one. Without this the per-variant pins alone keep
@@ -1486,6 +1514,15 @@ def test_chat_sidebar_row_actions_visible_on_coarse_pointers():
         for tag in _opening_jsx_tags(applied, "<SidebarMenuButton")
         if re.search(r"(?:^|[\s{])className=\{buttonClass\}", tag)
     ]
+    # An inline style outranks every Tailwind utility, and none of them is read here.
+    # `style={{ paddingRight: 0 }}` on the carrier puts the always-visible touch actions
+    # straight back over the title while every gutter assertion below stays green, because
+    # only buttonClass is analysed.
+    styled = [tag for tag in carriers if re.search(r"(?:^|[\s{])style=", tag)]
+    assert not styled, (
+        f"a row carrier sets an inline style, which outranks the pr-N gutters this guard "
+        f"compares, so the room it computes is not the room that renders: {styled!r}"
+    )
     assert carriers, (
         "no <SidebarMenuButton> in renderChatSidebarItem receives className={buttonClass}, so "
         "the classes checked below do not reach the row button and say nothing about the row "
@@ -1691,14 +1728,14 @@ def test_chat_sidebar_row_actions_visible_on_coarse_pointers():
         "guard can read. Every action's position is measured from it, so reading it as flush "
         "would understate every reach below by however far the base rule moves them"
     )
-    offsets = _row_action_offsets(live_css)
+    offsets = _row_action_offsets(live_css, base_offset)
     actions = {
         name: _labelled_actions(
             sidebar_source,
             applied,
             name,
             offsets,
-            _row_action_paddings(live_css),
+            _row_action_paddings(live_css, inner_padding),
             inner_padding,
             base_offset,
         )

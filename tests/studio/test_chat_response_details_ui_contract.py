@@ -271,13 +271,18 @@ def _opening_tag(source: str, marker: str) -> str | None:
 
 
 def _without_block_comments(source: str) -> str:
-    """`source` with `/* ... */` and its JSX `{...}` wrapper removed.
+    """The source with comments removed, block and line alike.
 
-    Kept separate from `_without_comments`, which takes a single opening tag: this one runs
-    over whole files, where a commented-out element has to disappear entirely rather than
-    have its attributes tidied.
+    Line comments matter as much as block ones here: everything below locates JSX by
+    searching the text, so a stale `// <ReasoningBody isStreaming={...} ...>` left above the
+    render is found by `_opening_tags` and read as the live element. The contract then
+    describes a tag that renders nothing while the real one has lost both props.
+
+    `(?<!:)` keeps `https://` out of it, which is the one `//` in this file that is not a
+    comment.
     """
-    return re.sub(r"\{?\s*/\*.*?\*/\s*\}?", " ", source, flags = re.S)
+    source = re.sub(r"\{?\s*/\*.*?\*/\s*\}?", " ", source, flags = re.S)
+    return "\n".join(re.sub(r"(?<!:)//.*$", "", line) for line in source.splitlines())
 
 
 def _spread_overrides(tag: str, attribute: str) -> bool:
@@ -445,6 +450,16 @@ def test_response_model_badge_is_user_configurable_and_rendered_once_per_message
         "ReasoningTrigger is no longer rendered, so the shrinking this test is about belongs "
         "to an element that is not on the page"
     )
+    # An inline style beats every utility below it in the cascade, and none of them is read
+    # here. `style={{ minWidth: "max-content" }}` on the trigger leaves both min-w-0 checks
+    # green while long summaries widen the row again, which is the whole defect.
+    for element in ("<ReasoningTrigger", "<ReasoningHeader"):
+        for tag in _opening_tags(_without_block_comments(reasoning_src), element):
+            assert not re.search(r"(?:^|[\s{])style=", tag), (
+                f"{element} carries an inline style, which outranks the min-w utilities this "
+                f"guard compares, so the width it computes is not the width that renders: "
+                f"{tag!r}"
+            )
     call_site = _class_list(reasoning_src, "<ReasoningTrigger")
     assert call_site != _UNREADABLE, (
         "the ReasoningTrigger call site passes a className this guard cannot resolve, so it "
@@ -609,9 +624,21 @@ def test_reasoning_clears_manual_open_on_a_new_stream():
     toggle_at = src.find("resolveReasoningToggle(")
     assert toggle_at != -1, "reasoning.tsx no longer resolves its open toggle, so nothing here "
     handler = src[src.rfind("useCallback(", 0, toggle_at) : src.find("\n  );", toggle_at)]
-    assert f"{writes}(" in handler, (
-        f"the open toggle does not write {held!r}, so that state is not where a hand toggle's "
-        f"answer is kept and clearing it would not unpin anything"
+    # With the value the toggle RESOLVED, not merely called with something. `setOverride(null)`
+    # in the handler satisfies "the setter is invoked" while no hand toggle is ever remembered,
+    # which makes the new-round reset below guard nothing at all.
+    resolved = re.search(rf"{re.escape(writes)}\(\s*([A-Za-z_$][\w$.]*)\s*\)", handler)
+    assert resolved and resolved.group(1) != "null", (
+        f"the open toggle does not store the override it resolved: it writes "
+        f"{resolved.group(1) if resolved else 'something this guard cannot read'!r}. A hand "
+        f"toggle is then never remembered, and clearing the override on a new round guards "
+        f"nothing"
+    )
+    answer = re.search(r"const (\w+) = resolveReasoningToggle\(", handler)
+    assert answer and resolved.group(1).startswith(f"{answer.group(1)}."), (
+        f"the open toggle writes {resolved.group(1)!r}, which is not the answer "
+        f"resolveReasoningToggle returned, so what the reader asked for and what is stored "
+        f"can differ"
     )
 
     # And a new round clears it. Regenerate reuses this component instance, so without this a
