@@ -1412,13 +1412,6 @@ export const ja = {
             hfHub: "Hugging Faceモデルキャッシュ",
           },
         },
-        lowDisk: {
-          title: "ディスクの空き容量が少なくなっています",
-          criticalTitle: "ディスクの空き容量が非常に少なくなっています",
-          description:
-            "{total}中{free}が空きです。キャッシュを削除すると空き容量を増やせます。",
-          action: "キャッシュを確認",
-        },
         futureDownloads: "新規ダウンロードのみ",
         environmentManaged: "環境変数 {variable} で管理されています。",
         locationFree: "{free} 空き",

@@ -1453,13 +1453,6 @@ export const es = {
             hfHub: "Caché de modelos de Hugging Face",
           },
         },
-        lowDisk: {
-          title: "Queda poco espacio en disco",
-          criticalTitle: "El espacio en disco es críticamente bajo",
-          description:
-            "{free} libres de {total}. Borrar las cachés puede liberar espacio.",
-          action: "Revisar cachés",
-        },
         futureDownloads: "Solo las descargas nuevas",
         environmentManaged: "Gestionado por la variable de entorno {variable}.",
         locationFree: "{free} libres",

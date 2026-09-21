@@ -1431,13 +1431,6 @@ export const ar = {
             hfHub: "ذاكرة نماذج Hugging Face المؤقتة",
           },
         },
-        lowDisk: {
-          title: "مساحة القرص على وشك النفاد",
-          criticalTitle: "مساحة القرص منخفضة بشكل حرج",
-          description:
-            "{free} متاحة من أصل {total}. مسح ذاكرات التخزين المؤقت يمكن أن يحرّر مساحة.",
-          action: "مراجعة ذاكرات التخزين المؤقت",
-        },
         futureDownloads: "التنزيلات الجديدة فقط",
         environmentManaged: "يُدار عبر متغيّر البيئة {variable}.",
         locationFree: "{free} متاح",

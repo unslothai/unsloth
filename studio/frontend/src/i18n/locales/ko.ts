@@ -1427,13 +1427,6 @@ export const ko = {
             hfHub: "Hugging Face 모델 캐시",
           },
         },
-        lowDisk: {
-          title: "디스크 공간이 부족합니다",
-          criticalTitle: "디스크 공간이 매우 부족합니다",
-          description:
-            "{total} 중 {free} 남음. 캐시를 정리하면 공간을 확보할 수 있습니다.",
-          action: "캐시 확인",
-        },
         futureDownloads: "새 다운로드만",
         environmentManaged: "{variable} 환경 변수로 관리됩니다.",
         locationFree: "{free} 남음",

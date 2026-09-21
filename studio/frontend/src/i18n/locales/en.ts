@@ -1441,12 +1441,6 @@ export const en = {
             hfHub: "Hugging Face model cache",
           },
         },
-        lowDisk: {
-          title: "Disk space is running low",
-          criticalTitle: "Disk space is critically low",
-          description: "{free} free of {total}. Clearing caches can free space.",
-          action: "Review caches",
-        },
       },
       environment: {
         title: "Environment",
