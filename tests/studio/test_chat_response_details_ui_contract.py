@@ -24,6 +24,22 @@ CHAT_TAB_TSX = REPO / "studio/frontend/src/features/settings/tabs/chat-tab.tsx"
 EN_LOCALE_TS = REPO / "studio/frontend/src/i18n/locales/en.ts"
 
 
+def _class_list(source: str, marker: str) -> str | None:
+    """The className of the JSX element whose opening tag contains `marker`.
+
+    The opening tag is found first and the attribute read out of it, rather than matching
+    `marker` and `className` as neighbours. JSX attribute order carries no meaning, so a
+    `ref`, an `aria-*` or a test id inserted between them changes nothing about the element
+    and must not fail a guard that is here to stop unrelated refactors reddening main.
+    """
+    start = source.find(marker)
+    if start == -1:
+        return None
+    opening = source[start : source.find(">", start) + 1]
+    found = re.search(r'className="([^"]*)"', opening)
+    return found.group(1) if found else None
+
+
 def test_assistant_more_menu_exposes_response_details_action():
     src = THREAD_TSX.read_text(encoding = "utf-8")
     assert "MessageResponseDetailsSheet" in src
@@ -117,41 +133,38 @@ def test_response_model_badge_is_user_configurable_and_rendered_once_per_message
     assert "group/assistant-message aui-assistant-message-root" in thread_src
     assert "pointer-events-none relative h-0" in thread_src
     assert "MessageResponseModelBadge" not in reasoning_src
-    # The trigger has to be able to shrink below its content, or a long summary pushes the
-    # row wider than the thread. `min-w-0` is what grants that; it used to be written
-    # `min-w-0 flex-1` on one element, and #11373 moved the filling to a header wrapper and
-    # left the shrinking on the trigger. Pinning the old pair asserted the layout of that one
-    # commit rather than the property, so this reads the property: the trigger can shrink,
-    # and it sits in a flex row that can shrink too.
-    # What has to hold is that the trigger CAN shrink, not where the utility is written. It
-    # currently appears twice, in ReasoningTrigger's own base classes and again on the call
-    # site, so demanding the call-site copy would fail a harmless deduplication while the
-    # trigger still shrank. Both are read and either one satisfies it.
+    # The trigger has to be able to shrink below its content, or a long summary pushes the row
+    # wider than the thread. `min-w-0` grants that. It used to be written `min-w-0 flex-1` on
+    # one element; #11373 moved the filling to a header wrapper and left the shrinking on the
+    # trigger, so pinning the old pair asserted one commit's layout rather than the property.
+    #
+    # Where the utility is written is not the property either. It currently appears twice, in
+    # ReasoningTrigger's base classes and again on the call site, so demanding the call-site
+    # copy would fail a harmless deduplication while the trigger still shrank. Both are read
+    # and either satisfies it.
     #
     # Whole class tokens, not a substring: `\b` treats the colon in `md:min-w-0` as a
     # boundary, so a variant-qualified utility would satisfy a loose match while leaving the
     # trigger unable to shrink at every width it was not qualified for.
     base = re.search(r'"(aui-reasoning-trigger[^"]*)"', reasoning_src)
-    call_site = re.search(r'<ReasoningTrigger\s+className="([^"]*)"', reasoning_src)
-    assert base or call_site, (
+    call_site = _class_list(reasoning_src, "<ReasoningTrigger")
+    assert base or call_site is not None, (
         "neither ReasoningTrigger's base classes nor its call site carries a class list this "
         "can read, so this guard cannot see the trigger's layout at all"
     )
-    effective = set()
-    for found in (base, call_site):
-        if found:
-            effective.update(found.group(1).split())
+    effective = set(call_site.split() if call_site else ())
+    if base:
+        effective.update(base.group(1).split())
     assert "min-w-0" in effective, (
         f"the reasoning trigger can no longer shrink below its content at every width, so a "
         f"long summary widens the row past the thread. Base classes: "
-        f"{base.group(1) if base else None!r}. Call site: "
-        f"{call_site.group(1) if call_site else None!r}"
+        f"{base.group(1) if base else None!r}. Call site: {call_site!r}"
     )
-    header = re.search(r'data-slot="reasoning-header"\s+className="([^"]*)"', reasoning_src)
-    assert header, "the reasoning header row no longer carries a className this can read"
-    assert {"flex", "min-w-0"} <= set(header.group(1).split()), (
+    header = _class_list(reasoning_src, 'data-slot="reasoning-header"')
+    assert header is not None, "the reasoning header row no longer carries a className"
+    assert {"flex", "min-w-0"} <= set(header.split()), (
         f"the header row holding the trigger can no longer shrink either, which puts the "
-        f"overflow back one level up: {header.group(1)!r}"
+        f"overflow back one level up: {header!r}"
     )
 
 

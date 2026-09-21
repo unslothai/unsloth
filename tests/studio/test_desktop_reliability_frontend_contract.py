@@ -884,21 +884,27 @@ def test_chat_sidebar_row_actions_visible_on_coarse_pointers():
             f"no {variant} row left that widens its padding to make room for the action, so "
             f"this guard can no longer tell whether the touch case is covered"
         )
-        reserved = []
+        # EVERY such class list, not any of them. Each one is an element that makes room for
+        # the action on hover, so each one owes the same room on touch. Asking for one match
+        # anywhere let a second padded element vouch for the row that had lost its gutter.
+        missing, short = [], []
         for cls in hovered:
             gutter = int(re.search(rf"group-hover/{variant}:pr-(\d+)", cls).group(1))
             coarse = re.search(r"\[@media\(pointer:coarse\)\]:pr-(\d+)", cls)
-            reserved.append((gutter, int(coarse.group(1)) if coarse else None))
-        assert any(coarse is not None for _, coarse in reserved), (
-            f"the {variant} row reserves room for its action on hover but not on a coarse "
-            f"pointer, so the kebab overlaps the title on a touch device (#7276)"
+            if coarse is None:
+                missing.append((gutter, cls))
+            elif int(coarse.group(1)) < gutter:
+                short.append((gutter, int(coarse.group(1)), cls))
+        assert not missing, (
+            f"a {variant} element reserves room for its action on hover but not on a coarse "
+            f"pointer, so the kebab overlaps the title on a touch device (#7276): "
+            f"{[cls for _, cls in missing]}"
         )
-        short = [(g, c) for g, c in reserved if c is not None and c < g]
         assert not short, (
-            f"the {variant} row reserves less room on a coarse pointer than it does on hover: "
-            f"{short} as (hover, coarse). The action is always visible on touch, so it needs "
-            f"at least the gutter the hover case already says it needs, or it sits over the "
-            f"title (#7276)"
+            f"a {variant} element reserves less room on a coarse pointer than it does on "
+            f"hover: {[(g, c) for g, c, _ in short]} as (hover, coarse). The action is always "
+            f"visible on touch, so it needs at least the gutter the hover case already says "
+            f"it needs, or it sits over the title (#7276)"
         )
     assert "sidebar-touch-reveal" in block
     # Coarse-pointer visibility must come after .sidebar-row-action { opacity-0 }.
