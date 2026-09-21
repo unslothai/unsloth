@@ -3,6 +3,8 @@
 
 import { authFetch } from "@/features/auth";
 import { readFastApiError } from "@/lib/format-fastapi-error";
+
+import { SettingsRouteAbsentError } from "./settings-route-absent";
 import { invalidateOpenAIAutoSwitchSettings } from "./openai-auto-switch";
 
 const MODEL_MEMORY_EVENT = "unsloth-model-memory-change";
@@ -38,6 +40,9 @@ type ApiModelMemorySettings = {
 };
 
 let inFlightModelMemory: Promise<ModelMemorySettings> | null = null;
+// Bumped by every forced read, so a displaced one can tell it is no longer the current
+// answer. It still resolves for its own caller; it just stops speaking for everyone else.
+let modelMemoryGeneration = 0;
 
 export function subscribeModelMemorySettings(
   listener: (settings: ModelMemorySettings) => void,
@@ -73,6 +78,11 @@ function publishModelMemory(settings: ModelMemorySettings) {
 
 async function fetchModelMemorySettings(): Promise<ModelMemorySettings> {
   const res = await authFetch("/api/settings/model-memory");
+  if (res.status === 404) {
+    // Told apart from a failed read: a caller deciding whether it may skip a load has to
+    // treat "this backend has no such setting" and "could not ask" oppositely.
+    throw new SettingsRouteAbsentError("/api/settings/model-memory");
+  }
   if (!res.ok) {
     throw new Error(
       await readFastApiError(res, "Failed to load model memory settings"),
@@ -85,12 +95,35 @@ async function fetchModelMemorySettings(): Promise<ModelMemorySettings> {
  * Always refetches: `reloadRequired` and `memlockLimitBytes` describe the
  * currently loaded process, so a cached copy goes stale as soon as a model is
  * loaded or swapped. Concurrent calls still share one request.
+ *
+ * `force` drops that sharing, as the VRAM budget's reader does: a read that started
+ * before a save or a model transition answers about the state being replaced, and a
+ * caller deciding whether to reload for a policy change must not be handed it.
  */
-export async function loadModelMemorySettings() {
+export async function loadModelMemorySettings(
+  options: { force?: boolean } = {},
+) {
+  if (options.force) {
+    inFlightModelMemory = null;
+    modelMemoryGeneration += 1;
+  }
+  const generation = modelMemoryGeneration;
   inFlightModelMemory ??= fetchModelMemorySettings()
-    .then(publishModelMemory)
+    .then((settings) =>
+      // A displaced read describes the state its replacement was issued because of, so
+      // publishing it would repaint every subscriber with the answer that was already
+      // known to be stale, and in whichever order the two land.
+      generation === modelMemoryGeneration
+        ? publishModelMemory(settings)
+        : settings,
+    )
     .finally(() => {
-      inFlightModelMemory = null;
+      // Only the current request owns the slot. Clearing it from a displaced one drops
+      // the newer promise's sharing handle while it is still in flight, so the next
+      // caller opens a third request rather than joining the second.
+      if (generation === modelMemoryGeneration) {
+        inFlightModelMemory = null;
+      }
     });
   return inFlightModelMemory;
 }

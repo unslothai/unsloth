@@ -1,14 +1,14 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { DiagnosticsCopyActions } from "@/components/tauri/diagnostics-copy-actions";
+import { LogDetails } from "@/components/tauri/log-details";
+import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
 import type { UpdateStatus } from "@/hooks/use-tauri-update";
 import type { CopySupportDiagnosticsResult } from "@/lib/tauri-diagnostics";
 
-import { ChevronDown as ChevronDownIcon } from "@hugeicons/core-free-icons";
-import { HugeiconsIcon } from "@hugeicons/react";
 import { AnimatePresence, motion } from "motion/react";
-import { useState } from "react";
 
 interface UpdateScreenProps {
   status: UpdateStatus;
@@ -71,30 +71,6 @@ function statusSubtext(status: UpdateStatus, progress: number): string {
   }
 }
 
-function UpdateDetails({ logs }: { logs: string[] }) {
-  if (logs.length === 0) {
-    return null;
-  }
-
-  return (
-    <details className="group mt-2 w-full max-w-sm text-left">
-      <summary className="mx-auto flex w-fit cursor-pointer list-none items-center gap-1 rounded-md px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring [&::-webkit-details-marker]:hidden">
-        <span className="group-open:hidden">Show update details</span>
-        <span className="hidden group-open:inline">Hide update details</span>
-        <HugeiconsIcon
-          icon={ChevronDownIcon}
-          aria-hidden="true"
-          strokeWidth={1.5}
-          className="size-[13px] shrink-0 transition-transform group-open:rotate-180"
-        />
-      </summary>
-      <pre className="mt-2 max-h-28 overflow-auto whitespace-pre-wrap break-words rounded-lg border border-border/50 bg-muted/30 p-3 font-mono text-ui-10 leading-relaxed text-muted-foreground">
-        {logs.join("\n")}
-      </pre>
-    </details>
-  );
-}
-
 export function UpdateScreen({
   status,
   logs,
@@ -105,31 +81,6 @@ export function UpdateScreen({
   onCopyDiagnostics,
 }: UpdateScreenProps) {
   const isError = status === "error";
-  const [copying, setCopying] = useState(false);
-  const [manualReport, setManualReport] = useState<string | null>(null);
-  const [manualMessage, setManualMessage] = useState<string | null>(null);
-
-  async function handleCopyDiagnostics() {
-    setCopying(true);
-    try {
-      const result = await onCopyDiagnostics();
-      if (result.ok) {
-        setManualReport(null);
-        setManualMessage(null);
-      } else {
-        setManualReport(result.report);
-        setManualMessage(
-          result.error ??
-            "Clipboard copy failed. Select and copy the diagnostics below.",
-        );
-      }
-    } catch (copyError) {
-      setManualReport(null);
-      setManualMessage(`Diagnostics copy failed: ${String(copyError)}`);
-    } finally {
-      setCopying(false);
-    }
-  }
 
   return (
     <div className="box-border flex h-full w-full flex-col items-center overflow-y-auto bg-background pb-6 pt-[var(--studio-startup-top-inset,0px)]">
@@ -184,46 +135,17 @@ export function UpdateScreen({
             </AnimatePresence>
 
             {isError && (
-              <div className="mt-2 flex flex-wrap items-center justify-center gap-2">
-                <button
-                  type="button"
-                  className="rounded-lg bg-muted px-5 py-2.5 text-sm font-medium text-foreground transition-colors hover:bg-muted/80"
-                  onClick={() => void handleCopyDiagnostics()}
-                >
-                  {copying ? "Copying..." : "Copy Diagnostics"}
-                </button>
-                <button
-                  type="button"
-                  className="rounded-lg bg-primary px-5 py-2.5 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/80"
-                  onClick={onRetry}
-                >
+              <DiagnosticsCopyActions onCopyDiagnostics={onCopyDiagnostics}>
+                <Button size="hero" onClick={onRetry}>
                   Retry
-                </button>
-                <button
-                  type="button"
-                  className="rounded-lg bg-muted px-5 py-2.5 text-sm font-medium text-foreground transition-colors hover:bg-muted/80"
-                  onClick={onSkipRestart}
-                >
+                </Button>
+                <Button variant="muted" size="hero" onClick={onSkipRestart}>
                   Skip & Restart
-                </button>
-              </div>
+                </Button>
+              </DiagnosticsCopyActions>
             )}
 
-            {manualMessage && (
-              <p className="mt-1 max-w-md text-xs text-destructive">
-                {manualMessage}
-              </p>
-            )}
-            {manualReport && (
-              <textarea
-                readOnly
-                value={manualReport}
-                onFocus={(event) => event.currentTarget.select()}
-                className="mt-1 h-32 w-full max-w-md resize-none rounded-lg border border-border/50 bg-muted/30 p-2 text-left font-mono text-ui-10 text-muted-foreground"
-              />
-            )}
-
-            <UpdateDetails logs={logs} />
+            <LogDetails label="update details" lines={logs} />
           </div>
         </motion.div>
       </div>

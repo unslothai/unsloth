@@ -10,9 +10,6 @@ from pydantic import BaseModel, Field
 MAX_JSON_SAFE_INTEGER = 9_007_199_254_740_991
 
 
-# ── Registry (static provider info) ───────────────────────────────
-
-
 class ProviderRegistryEntry(BaseModel):
     """A supported provider type with its default configuration."""
 
@@ -35,7 +32,7 @@ class ProviderRegistryEntry(BaseModel):
     )
     supports_studio_tools: bool = Field(
         False,
-        description = "Whether Studio runs its own tool loop (search/code/MCP/RAG) against this provider",
+        description = "Whether Unsloth runs its own tool loop (search/code/MCP/RAG) against this provider",
     )
     hidden: bool = Field(
         False,
@@ -49,9 +46,6 @@ class ProviderRegistryEntry(BaseModel):
         "remote",
         description = "remote = fetch /models; curated = huge catalogs — UI uses defaults + manual IDs only",
     )
-
-
-# ── Provider config CRUD ──────────────────────────────────────────
 
 
 class ProviderCreate(BaseModel):
@@ -76,7 +70,7 @@ class ProviderCreate(BaseModel):
         strict = True,
         ge = 64,
         le = MAX_JSON_SAFE_INTEGER,
-        description = "Optional maximum Max Tokens cap for a generic Custom connection",
+        description = "Optional maximum Max Tokens cap for this connection",
     )
 
     encrypted_api_key: Optional[str] = Field(
@@ -101,7 +95,7 @@ class ProviderUpdate(BaseModel):
         strict = True,
         ge = 64,
         le = MAX_JSON_SAFE_INTEGER,
-        description = "Optional maximum Max Tokens cap for a generic Custom connection",
+        description = "Optional maximum Max Tokens cap for this connection",
     )
 
     encrypted_api_key: Optional[str] = Field(
@@ -147,13 +141,10 @@ class ProviderResponse(BaseModel):
     )
     max_output_tokens: Optional[int] = Field(
         None,
-        description = "Configured maximum Max Tokens cap for a generic Custom connection",
+        description = "Configured maximum Max Tokens cap for this connection",
     )
     created_at: str = Field(..., description = "ISO 8601 creation timestamp")
     updated_at: str = Field(..., description = "ISO 8601 last-update timestamp")
-
-
-# ── Model listing ─────────────────────────────────────────────────
 
 
 class ProviderModelInfo(BaseModel):
@@ -163,6 +154,26 @@ class ProviderModelInfo(BaseModel):
     display_name: str = Field("", description = "Human-readable model name")
     context_length: Optional[int] = Field(None, description = "Maximum context length in tokens")
     owned_by: Optional[str] = Field(None, description = "Model owner/organization")
+
+
+class ProviderModelReasoningInfo(BaseModel):
+    supported_efforts: Optional[list[str]] = None
+    mandatory: bool = False
+    default_effort: Optional[str] = None
+    default_enabled: Optional[bool] = None
+
+
+class ProviderModelCapabilityInfo(BaseModel):
+    id: str
+    input_modalities: Optional[list[str]] = None
+    reasoning: Optional[ProviderModelReasoningInfo] = None
+    max_output_tokens: Optional[int] = None
+    supported_parameters: Optional[list[str]] = None
+
+
+class ModelCatalogResponse(BaseModel):
+    fetched_at: float
+    providers: dict[str, dict[str, dict]]
 
 
 class ProviderModelsRequest(BaseModel):
@@ -180,9 +191,6 @@ class ProviderModelsRequest(BaseModel):
     base_url: Optional[str] = Field(
         None, description = "Custom base URL (overrides registry default)"
     )
-
-
-# ── Connection testing ────────────────────────────────────────────
 
 
 class ProviderTestRequest(BaseModel):

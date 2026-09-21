@@ -13,28 +13,69 @@ Mirrors the conftest harness in unslothai/unsloth-zoo PR #624.
 
 from __future__ import annotations
 
+# --- torch.compile cache isolation -------------------------------------------------
+# Must run before torch is imported anywhere below, so it is here rather than in a
+# fixture. See tests/_shared/compile_cache_isolation.py for what it does and why.
+import importlib.util as _ilu  # noqa: E402
+import pathlib as _pathlib  # noqa: E402
+
+_iso = _pathlib.Path(__file__).resolve()
+for _up in _iso.parents:
+    _candidate = _up / "tests" / "_shared" / "compile_cache_isolation.py"
+    if _candidate.is_file():
+        _spec = _ilu.spec_from_file_location("_unsloth_compile_cache_isolation", _candidate)
+        _mod = _ilu.module_from_spec(_spec)
+        _spec.loader.exec_module(_mod)  # sets the env vars on import
+        break
+
+# --- shared test helpers on sys.path -----------------------------------------------
+# tests/_shared holds no package marker and pytest only puts a *test file's* own
+# directory on sys.path, so tests/python/, tests/studio/install/ and tests/security/
+# cannot reach it by import. Adding it here (this conftest is collected for anything
+# under tests/) is what lets all four levels share one module rather than each growing
+# a private copy -- see tests/_shared/unsloth_pwsh_runner.py for the case that forced it.
+import sys as _sys  # noqa: E402
+
+_shared_dir = _iso.parent / "_shared"
+if _shared_dir.is_dir() and str(_shared_dir) not in _sys.path:
+    _sys.path.insert(0, str(_shared_dir))
+
+# -----------------------------------------------------------------------------------
+
 import importlib.util
 import os
 import sys
 import types
 
+import pytest
+
+# A test that hides nvidia-smi to fake a CPU host must not find the real GPUs through NVML.
+os.environ.setdefault("UNSLOTH_NVIDIA_LIBRARY_PROBE", "0")
+
+
+@pytest.fixture(autouse = True)
+def _contain_installer_venv_root(tmp_path_factory, monkeypatch):
+    """Mechanism: tests/_shared/installer_venv_root.py.
+
+    Imported inside the body because tests/_shared reaches sys.path further down this file,
+    and an autouse fixture must not depend on where in the module it is defined.
+    """
+    from installer_venv_root import contain_installer_venv_root
+    contain_installer_venv_root(monkeypatch, tmp_path_factory)
+
 
 def _has_real_accelerator() -> bool:
-    try:
-        import torch
-    except Exception:
-        return False
-    for probe in (
-        lambda: hasattr(torch, "cuda") and torch.cuda.is_available(),
-        lambda: hasattr(torch, "xpu") and torch.xpu.is_available(),
-        lambda: hasattr(torch, "accelerator") and torch.accelerator.is_available(),
-    ):
-        try:
-            if probe():
-                return True
-        except Exception:
-            pass
-    return False
+    """Mechanism: tests/_shared/real_accelerator.py.
+
+    The probe moved there so test modules can ask the same question, and so the
+    answer is recorded once. Calling it here, before the pre-load window below and
+    long before any test module imports the aggressive spoof, is what makes the
+    recorded answer the pre-spoof one for everybody. Kept as a function of this
+    name because tests/python/test_conftest_bitsandbytes_preimport.py reads the
+    `if not _has_real_accelerator():` block out of this file's AST.
+    """
+    from real_accelerator import has_real_accelerator
+    return has_real_accelerator()
 
 
 def _preload_device_type(package: str, prereqs: tuple[str, ...] = ()) -> bool:
@@ -98,8 +139,7 @@ def _patch_torch_cuda_for_import() -> None:
     try:
         import torch.cuda.memory as _cuda_memory  # type: ignore
 
-        # (free, total). Zero free is an exhausted card, which callers that size
-        # against it treat as fatal.
+        # (free, total). Zero free is an exhausted card, which callers that size against it treat as fatal.
         _cuda_memory.mem_get_info = lambda *a, **k: (60 * 1024**3, 80 * 1024**3)
     except Exception:
         pass
@@ -123,6 +163,10 @@ def _install_device_type_stub(name: str) -> None:
     stub.device_synchronize = lambda *a, **k: None
     stub.device_empty_cache = lambda *a, **k: None
     stub.device_is_bf16_supported = lambda *a, **k: False
+    stub.arch_lacks_bf16 = lambda arch: (
+        str(arch or "").split(":", 1)[0].strip().lower().startswith("gfx10")
+    )
+    stub.hip_visible_archs = lambda: []
     sys.modules[name] = stub
 
 

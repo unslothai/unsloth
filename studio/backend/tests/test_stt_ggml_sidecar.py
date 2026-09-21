@@ -35,6 +35,14 @@ from core.inference.stt_sidecar import (
 )
 
 
+def _shared_setup_1(monkeypatch):
+    monkeypatch.setattr(
+        GgmlSttSidecar,
+        "_wait_for_server",
+        staticmethod(lambda process, port, cancel_event = None: None),
+    )
+
+
 @pytest.fixture(autouse = True)
 def isolate_runtime_and_stub_audio_decoder(monkeypatch, tmp_path):
     """Unit tests exercise orchestration, not PyAV container parsing."""
@@ -658,11 +666,7 @@ def test_server_pid_is_tracked_for_parent_lifetime(monkeypatch):
     monkeypatch.setattr(ggml_module.subprocess, "Popen", FakeProcess)
     monkeypatch.setattr(ggml_module, "adopt_pid", lambda pid: events.append(("adopt", pid)))
     monkeypatch.setattr(ggml_module, "forget_pid", lambda pid: events.append(("forget", pid)))
-    monkeypatch.setattr(
-        GgmlSttSidecar,
-        "_wait_for_server",
-        staticmethod(lambda process, port, cancel_event = None: None),
-    )
+    _shared_setup_1(monkeypatch)
 
     sidecar = GgmlSttSidecar()
     sidecar.load("small")
@@ -696,11 +700,7 @@ def test_training_forces_whisper_server_off_gpu(monkeypatch):
     monkeypatch.setattr(ggml_module.subprocess, "Popen", FakeProcess)
     monkeypatch.setattr(ggml_module, "adopt_pid", lambda pid: None)
     monkeypatch.setattr(ggml_module, "forget_pid", lambda pid: None)
-    monkeypatch.setattr(
-        GgmlSttSidecar,
-        "_wait_for_server",
-        staticmethod(lambda process, port, cancel_event = None: None),
-    )
+    _shared_setup_1(monkeypatch)
 
     monkeypatch.setattr(ggml_module, "_training_active", lambda: False)
     idle = GgmlSttSidecar()
@@ -745,11 +745,7 @@ def test_cpu_root_marker_forces_no_gpu_despite_inner_packaging_marker(monkeypatc
     monkeypatch.setattr(ggml_module, "adopt_pid", lambda pid: None)
     monkeypatch.setattr(ggml_module, "forget_pid", lambda pid: None)
     monkeypatch.setattr(ggml_module, "_training_active", lambda: False)
-    monkeypatch.setattr(
-        GgmlSttSidecar,
-        "_wait_for_server",
-        staticmethod(lambda process, port, cancel_event = None: None),
-    )
+    _shared_setup_1(monkeypatch)
 
     sidecar = GgmlSttSidecar()
     sidecar.load("small")
@@ -1158,3 +1154,75 @@ def test_free_stt_frees_gguf_even_when_transformers_unload_raises(monkeypatch):
     # The Transformers failure must not skip GGUF eviction.
     assert ggml.unloaded is True
     assert any("small" in entry for entry in freed)
+
+
+def test_unload_without_a_resident_backend_does_not_crash(monkeypatch):
+    """Unload before anything has loaded used to raise TypeError, so the route 500'd.
+
+    _stt_lifecycle() hands back the orchestrator's unload_stt_model when a backend is
+    resident and stt_registry.unload when one is not. Only the first takes
+    expected_model positionally; on the registry it is keyword-only, and the route
+    passed it positionally. A fresh process is in exactly that state, so the two
+    unload tests above only passed because an earlier test in the full suite had left
+    a backend resident. Pin the no-backend path directly so neither the signature nor
+    the call site can drift back.
+    """
+    import routes.inference as ri
+    from core.inference import orchestrator, stt_registry
+
+    seen: dict = {}
+
+    def _unload(
+        engines = None,
+        *,
+        wait = True,
+        expected_model = None,
+    ):
+        seen["engines"] = engines
+        seen["expected_model"] = expected_model
+        return []
+
+    monkeypatch.setattr(orchestrator, "peek_inference_backend", lambda: None)
+    monkeypatch.setattr(stt_registry, "unload", _unload)
+
+    asyncio.run(ri.stt_unload(engine = None, model = "whisper-small", current_subject = "tester"))
+
+    assert seen["engines"] is None
+    assert seen["expected_model"] == "whisper-small"
+
+
+def test_both_unload_callables_accept_the_arguments_the_route_passes(monkeypatch):
+    """_stt_lifecycle returns two DIFFERENT callables, and the route has one call site.
+
+    That is the shape of the bug the test above covers: the orchestrator's
+    unload_stt_model takes expected_model positionally, the registry's unload keeps it
+    behind a `*`, and the route gets whichever branch is live. A call that suits one is a
+    TypeError on the other, and which one runs depends on whether a backend happens to be
+    resident, so the broken half only shows on a fresh process.
+
+    Binding both real signatures against the route's actual call keeps them compatible
+    without demanding they be identical. If either grows a parameter the other cannot
+    accept in the same position, this fails here rather than as a 500 in dictation.
+    """
+    import inspect
+    import routes.inference as ri
+    from core.inference import orchestrator, stt_registry
+    from core.inference.orchestrator import InferenceOrchestrator
+
+    class _Resident:
+        load_stt_model = InferenceOrchestrator.load_stt_model
+        unload_stt_model = InferenceOrchestrator.unload_stt_model
+
+    monkeypatch.setattr(orchestrator, "peek_inference_backend", lambda: None)
+    registry_unload = ri._stt_lifecycle()[1]
+    monkeypatch.setattr(orchestrator, "peek_inference_backend", lambda: _Resident())
+    orchestrator_unload = ri._stt_lifecycle()[1]
+
+    assert registry_unload is stt_registry.unload
+    assert (
+        registry_unload is not orchestrator_unload
+    ), "both branches resolved to the same callable, so this proves nothing"
+
+    for unload in (registry_unload, orchestrator_unload):
+        # Exactly how routes/inference.py::stt_unload calls it.
+        inspect.signature(unload).bind(["whisper"], expected_model = "whisper-small")

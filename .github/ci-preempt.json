@@ -15,7 +15,8 @@
     "way to reach one leg of a matrix. So a mixed-platform workflow filed under",
     "one class only is invisible to a pause naming the others, and its jobs on",
     "the class being held keep refilling the pool the pause is paying for.",
-    "clean-machine-install-ci.yml alone is 6 linux and 7 windows legs.",
+    "clean-machine-install-ci.yml alone is 6 linux and 7 windows legs on its nightly",
+    "(a PR runs 2 linux and 1 windows; see .github/ci/clean-machine-matrix.yml).",
     "",
     "The cost of the rule is the converse: a linux pause now also takes that",
     "workflow's 7 macOS legs down. That is the right way round. Losing coverage",
@@ -45,7 +46,11 @@
     "orphaned kernel bills the account's weekly GPU quota to its own 45-minute",
     "ceiling with nobody left to read the result. It holds one ubuntu runner",
     "that spends almost all of its time asleep on a poll loop, so preempting it",
-    "frees close to nothing and costs quota that is not the pool's to spend."
+    "frees close to nothing and costs quota that is not the pool's to spend.",
+    "",
+    "kaggle-t4-studio-gpu-ci.yml is in 'never' for exactly the same reason, and",
+    "more so: its kernel ceiling is 70 minutes rather than 45, so an orphaned",
+    "one wastes correspondingly more of the account's weekly quota."
   ],
   "heavy": {
     "macos": [
@@ -81,6 +86,7 @@
     "ci-capacity.yml",
     "ossf.yml",
     "stale.yml",
-    "kaggle-t4-notebook-ci.yml"
+    "kaggle-t4-notebook-ci.yml",
+    "kaggle-t4-studio-gpu-ci.yml"
   ]
 }

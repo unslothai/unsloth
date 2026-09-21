@@ -1,40 +1,39 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""
-Static registry of supported external LLM providers.
-
-All providers expose OpenAI-compatible /v1/chat/completions endpoints
-with Bearer token auth and SSE streaming.
-"""
+"""Static registry of supported external LLM providers. All expose OpenAI-compatible
+/v1/chat/completions endpoints with Bearer token auth and SSE streaming."""
 
 import ipaddress
 import os
 import re
+import threading
+import time
 from typing import Any
-from urllib.parse import urlsplit
+from urllib.parse import quote, urlsplit
 
 PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
     "openai_codex": {
         "display_name": "ChatGPT / Codex subscription",
         "base_url": "https://chatgpt.com/backend-api",
+        # Only seeds the picker; /codex/models is the truth once connected.
         "default_models": [
-            "gpt-5.3-codex-spark",
             "gpt-5.4",
             "gpt-5.4-mini",
             "gpt-5.5",
             "gpt-5.6-luna",
             "gpt-5.6-sol",
             "gpt-5.6-terra",
+            "gpt-6-astra",
         ],
         "model_capabilities": {
-            "gpt-5.3-codex-spark": {"vision": False, "studio_tools": True},
             "gpt-5.4": {"vision": True, "studio_tools": True},
             "gpt-5.4-mini": {"vision": True, "studio_tools": True},
             "gpt-5.5": {"vision": True, "studio_tools": True},
             "gpt-5.6-luna": {"vision": True, "studio_tools": True},
             "gpt-5.6-sol": {"vision": True, "studio_tools": True},
             "gpt-5.6-terra": {"vision": True, "studio_tools": True},
+            "gpt-6-astra": {"vision": True, "studio_tools": True},
         },
         "supports_streaming": True,
         "supports_vision": True,
@@ -67,11 +66,43 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
         "hosted_tools": ("web_search", "code_execution", "image_generation"),
         "auth_header": "Authorization",
         "auth_prefix": "Bearer ",
-        # Scope the picker to the current generation. /v1/models returns many
-        # historical snapshots, fine-tunes, and non-chat models we don't want.
-        "model_id_allowlist": re.compile(r"^(gpt-5\.[3456]|gpt-4\.5|o3)(?:[-.]|$)"),
-        # Hide dated snapshots and the retired plain gpt-5.3 id.
-        "model_id_denylist": re.compile(r"^(gpt-5\.3)$|-\d{4}-\d{2}-\d{2}$"),
+        # Deny non-chat rather than allowlist chat families: the allowlist
+        # silently dropped every new family until someone widened it.
+        # The bar is not "chat model" but "servable on /v1/responses with
+        # stream: true", Studio's only OpenAI transport (`_stream_openai_
+        # responses`), so a family whose model page marks `v1/responses` Not
+        # supported is denied even though it chats fine over chat/completions.
+        # Feature words match mid-id because OpenAI qualifies every variant
+        # with them (`tts-1`, `gpt-4o-mini-tts`) and never uses them inside a
+        # chat id; bases stay ^-anchored so `gpt-7-davinci-edition` survives.
+        "model_id_denylist": re.compile(
+            r"(?:^|-)(?:embedding|tts|whisper|moderation|image|"
+            r"transcribe|translate|instruct|sora)\b"
+            # Chat Completions only, per developers.openai.com/api/docs/models/
+            # {gpt-audio, gpt-4o-search-preview, o1-mini, o1-preview}.
+            # `-search-api` is the standalone search endpoint.
+            r"|(?:^|-)(?:audio|realtime)\b"
+            r"|(?:^|-)search-(?:preview|api)\b"
+            # Needs a data source and a Studio turn sends no tools.
+            # https://developers.openai.com/api/docs/guides/deep-research
+            r"|(?:^|-)deep-research\b"
+            r"|^o1-(?:mini|preview)\b"
+            # Retired canonical id retained by /v1/models.
+            r"|^gpt-5\.3$"
+            # Legacy bases and the first-generation embedding / search line.
+            # `^(?:text|code)-` needs the hyphen, so `codex-mini-latest` stays.
+            r"|^(?:babbage|davinci|ada|curie)\b"
+            r"|^(?:text|code)-(?:embedding|moderation|search|similarity"
+            r"|davinci|curie|babbage|ada|cushman)\b"
+            r"|^dall-e\b"
+            r"|^computer-use\b"
+            # Fine-tunes carry the user's tenant in the id.
+            r"|^ft:"
+            # Snapshots hide behind the canonical id the listing also returns:
+            # modern `-YYYY-MM-DD` and legacy `-MMDD` (`gpt-4-1106-preview`).
+            r"|-\d{4}-\d{2}-\d{2}$"
+            r"|-\d{4}(?:-preview)?$"
+        ),
     },
     "anthropic": {
         "display_name": "Anthropic",
@@ -84,12 +115,14 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
             "claude-opus-4-7",
             "claude-opus-4-6",
             "claude-sonnet-4-6",
-            "claude-opus-4-5",
-            "claude-sonnet-4-5",
-            "claude-haiku-4-5",
+            "claude-opus-4-5-20251101",
+            "claude-sonnet-4-5-20250929",
+            "claude-haiku-4-5-20251001",
         ],
-        # Hide YYYYMMDD-suffixed snapshot ids (e.g. claude-3-5-sonnet-20241022).
-        "model_id_denylist": re.compile(r"-\d{8}$"),
+        # No denylist: a `-YYYYMMDD` id IS the canonical name for the whole
+        # pre-4.6 generation, not a snapshot to hide, so the old `-\d{8}$`
+        # rule hid 6 of the 9 live models. `pruneProviderModelIds` in
+        # sync-external-providers.ts held a copy and had to go with it.
         "supports_streaming": True,
         "supports_vision": True,
         "supports_tool_calling": False,
@@ -174,8 +207,8 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
         "display_name": "DeepSeek",
         "base_url": "https://api.deepseek.com/v1",
         "default_models": [
-            "deepseek-chat",
-            "deepseek-reasoner",
+            "deepseek-flash",
+            "deepseek-v4-pro",
         ],
         "supports_streaming": True,
         "supports_vision": False,
@@ -183,7 +216,7 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
         "studio_tools": True,
         "auth_header": "Authorization",
         "auth_prefix": "Bearer ",
-        "notes": "OpenAI-compatible API. deepseek-chat = V3, deepseek-reasoner = R1 thinking mode.",
+        "notes": "OpenAI-compatible API. deepseek-flash and deepseek-v4-pro take thinking on/off plus reasoning_effort low/high/max.",
     },
     "mistral": {
         "display_name": "Mistral AI",
@@ -309,6 +342,7 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
         # through the chat template, 400ing on strict-alternation templates
         # (Gemma 3). The chat-completions path takes messages verbatim.
         "notes": "Self-hosted vLLM server. Always routed to /v1/chat/completions.",
+        "supports_chat_template_kwargs": True,
         # Surfaced via the frontend's CUSTOM_PROVIDER_PRESETS, not the dropdown.
         "hidden": True,
     },
@@ -327,6 +361,10 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
             "User-supplied OpenAI-compatible server. Routed to "
             "/v1/chat/completions; /models is optional."
         ),
+        # A strict gateway 400s on an unknown key, and a pre-upgrade tab still spreads top_k. Same reason this entry
+        # does not set supports_chat_template_kwargs: a base_url is not evidence of what serves it, and Deep Research
+        # sends enable_thinking=False on every planner call, so the key would break runs nobody asked to change.
+        "body_omit": ("top_k", "min_p", "repetition_penalty"),
         # Surfaced by the frontend's generic Custom option, not the dropdown.
         "hidden": True,
     },
@@ -345,6 +383,8 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
             "/v1/chat/completions; API key optional (required by Ollama "
             "cloud). Surfaced via CUSTOM_PROVIDER_PRESETS in the frontend."
         ),
+        # Ollama's /v1 silently drops these (native /api/chat options); this route is public.
+        "body_omit": ("top_k", "min_p", "repetition_penalty"),
         "hidden": True,
     },
     "llama_cpp": {
@@ -361,6 +401,8 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
             "Local llama.cpp server (llama-server). OpenAI-compatible "
             "/v1/chat/completions. Surfaced via CUSTOM_PROVIDER_PRESETS."
         ),
+        # llama-server reads chat_template_kwargs when started with --jinja, and ignores it otherwise.
+        "supports_chat_template_kwargs": True,
         "hidden": True,
     },
     "openrouter": {
@@ -406,31 +448,27 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
 
 
 def get_provider_info(provider_type: str) -> dict[str, Any] | None:
-    """Return the registry entry for a provider type, or None if unknown."""
     return PROVIDER_REGISTRY.get(provider_type)
 
 
 def get_base_url(provider_type: str) -> str | None:
-    """Return the default base URL for a provider type."""
     info = PROVIDER_REGISTRY.get(provider_type)
     return info["base_url"] if info else None
 
 
 def provider_runs_local_tools(provider_type: str | None) -> bool:
-    """Whether Studio may run its own tool loop against this provider type.
+    """Whether Unsloth may run its own tool loop against this provider type.
 
-    Studio's tools (web_search, python, terminal, MCP, knowledge-base search)
-    execute on the Studio host, so any provider whose wire format can carry a
-    tool schema out and a tool result back can use them. That is the whole
-    OpenAI-compatible family plus Gemini, whose native shape is translated to
-    and from OpenAI chunks in ``external_provider.py``.
+    Unsloth's tools (web_search, python, terminal, MCP, knowledge-base search) execute on the
+    Unsloth host, so any provider whose wire format can carry a tool schema out and a tool result
+    back can use them: the whole OpenAI-compatible family plus Gemini, whose native shape is
+    translated to and from OpenAI chunks in ``external_provider.py``.
 
-    Anthropic is deliberately absent: ``_stream_anthropic`` only appends
-    Anthropic's own hosted builtins and never forwards a caller's function-tool
-    schemas, so the loop would advertise a catalog the model never sees.
-    Enabling it needs OpenAI -> Anthropic schema translation plus tool_use /
-    tool_result message replay, which is separate work. Anthropic keeps its
-    hosted web_search, web_fetch and code_execution meanwhile.
+    Anthropic is deliberately absent: ``_stream_anthropic`` only appends Anthropic's own hosted
+    builtins and never forwards a caller's function-tool schemas, so the loop would advertise a
+    catalog the model never sees. Enabling it needs OpenAI -> Anthropic schema translation plus
+    tool_use / tool_result message replay, which is separate work. Anthropic keeps its hosted
+    web_search, web_fetch and code_execution meanwhile.
     """
     # isinstance, not a truthiness check: the value reaches here straight from a
     # request body, and a list or dict key raises TypeError inside dict.get, which
@@ -464,14 +502,14 @@ def provider_model_runs_local_tools(provider_type: str | None, model: str | None
 def provider_hosted_tools(provider_type: str | None) -> frozenset[str]:
     """Built-in tool names this provider executes on its own side.
 
-    These are not Studio's tools: they are body flags (`tools: [{type:
+    These are not Unsloth's tools: they are body flags (`tools: [{type:
     "web_search"}]`, `plugins: [{id: "web"}]`, `codeExecution`) that the provider
     runs and bills, and the only thing this server does with them is forward the
     name. `provider_runs_local_tools` is orthogonal -- most providers do both,
     and a request picks a side by which names it lists.
 
     Empty for the self-hosted presets (llama.cpp, vLLM, Ollama, custom) and for
-    openai_codex, whose `web_search` is Studio's own tool run by the Codex loop.
+    openai_codex, whose `web_search` is Unsloth's own tool run by the Codex loop.
     """
     if not isinstance(provider_type, str):
         return frozenset()
@@ -493,10 +531,10 @@ HOSTED_TOOL_NAMES: frozenset[str] = frozenset(
 # and bills for it.
 #
 # Which side a request wants is the request's to say, not this server's to
-# assume. web_search is unambiguous -- the hosted name and Studio's own tool are
-# spelled the same, so naming it while the loop runs can only mean Studio's.
+# assume. web_search is unambiguous -- the hosted name and Unsloth's own tool are
+# spelled the same, so naming it while the loop runs can only mean Unsloth's.
 # code_execution is a different name from python/terminal precisely because it
-# is a different thing: it runs in the provider's sandbox, and Studio has no
+# is a different thing: it runs in the provider's sandbox, and Unsloth has no
 # implementation of it at all (see ALL_TOOLS). Treating it as "already replaced"
 # therefore substitutes nothing, it just drops the tool while its pill stays lit.
 LOCAL_STANDINS_FOR_HOSTED_TOOLS: dict[str, frozenset[str]] = {
@@ -506,11 +544,11 @@ LOCAL_STANDINS_FOR_HOSTED_TOOLS: dict[str, frozenset[str]] = {
 
 
 def hosted_only_tools(provider_type: str | None, enabled_tools: Any) -> list[str]:
-    """The requested hosted tools Studio is not running in their place.
+    """The requested hosted tools Unsloth is not running in their place.
 
     image_generation and web_fetch have no local implementation, and their UI
     pills are independent of Search / Code / RAG, so a request that mixes one of
-    them with a Studio tool has to carry it through to the provider or the tool
+    them with an Unsloth tool has to carry it through to the provider or the tool
     silently disappears while its toggle stays on. code_execution has no local
     implementation either, and rides along unless the same request also asked
     for the local tools that would duplicate it.
@@ -554,6 +592,11 @@ _METADATA_IPS = frozenset(
         "fd20:ce::254",
         "100.100.100.200",
         "100.100.100.110",
+        # metadata.tencentyun.com, on VPC and on the classic network. Listed
+        # exactly because the resolved-address check reads this set rather than
+        # the link-local network below.
+        "169.254.0.23",
+        "169.254.10.10",
     )
 )
 # Link-local, where the IPv4 metadata services live. Matched as a network so a
@@ -561,7 +604,7 @@ _METADATA_IPS = frozenset(
 # not mistaken for one.
 _METADATA_NETWORK = ipaddress.ip_network("169.254.0.0/16")
 
-# Opt-in for operators who expose Studio on a shared host: also refuse provider
+# Opt-in for operators who expose Unsloth on a shared host: also refuse provider
 # URLs that resolve to a non-public address. Off by default, because loopback and
 # LAN endpoints are the normal case (Ollama, llama.cpp, vLLM, custom gateways).
 _BLOCK_PRIVATE_ENV = "UNSLOTH_STUDIO_BLOCK_PRIVATE_PROVIDER_URLS"
@@ -611,27 +654,269 @@ def _metadata_host(hostname: str) -> bool:
     return ip in _METADATA_IPS or (ip.version == 4 and ip in _METADATA_NETWORK)
 
 
-def _reject_non_public(hostname: str, port: int | None, scheme: str) -> None:
-    """Raise when ``hostname`` is, or resolves to, a non-public address."""
+# The block above only reads the hostname text, so a caller-controlled name (metadata-alias.attacker.test IN A
+# 169.254.169.254) dials the very service it exists to refuse. Names are resolved on the default path too, but only
+# far enough to answer "is this metadata"; refusing other private addresses stays opt-in. Three things keep that
+# lookup off the endpoints people configure: registry hosts and IP literals skip it, so a real provider or
+# http://127.0.0.1:11434 touches no resolver; a name that does not resolve is allowed, since http://my_ollama:11434
+# may only resolve in the client's network namespace; and it is bounded and cached, so a dead resolver cannot stall
+# each request. The deadline is short on purpose: this validator is sync and called from async handlers, so the wait
+# is the event loop's wait, shared by every concurrent request. A provider hostname a resolver can answer at all is
+# answered well inside it; past it the answer is treated as unknown, which the default path allows and the opt-in path
+# re-asks for without a bound.
+_DNS_TIMEOUT_SECONDS = 0.5
+_DNS_CACHE_TTL_SECONDS = 300.0
+_DNS_CACHE_MAX_ENTRIES = 512
+# hostname -> (expiry, addresses). Only answers land here; a failure and a
+# timeout are both cheap to repeat and wrong to remember.
+_dns_cache: dict[str, tuple[float, tuple[str, ...]]] = {}
+_dns_cache_lock = threading.Lock()
+# A lookup that times out is abandoned, not cancelled, so its thread lives until the platform resolver gives up.
+# Rotating hostnames defeat the cache and would otherwise pile those up one per request, so the number in flight is
+# capped and a caller waits its turn up to the same deadline rather than being waved through the moment the pool is
+# busy. Saturating the pool still ends in "no answer", which the default path allows: refusing instead would mean any
+# resolver trouble, or any caller willing to stall a few lookups, could stop the operator configuring a provider at
+# all. The check is a bound on what a caller-supplied URL may resolve to, not a guarantee about what the socket will
+# later connect to; see the transport note on _resolve_host.
+_DNS_MAX_IN_FLIGHT = 32
+_dns_in_flight = threading.BoundedSemaphore(_DNS_MAX_IN_FLIGHT)
+
+# Hostnames of the providers this build ships. They are hard-coded destinations,
+# not caller-controlled names, so learning their addresses buys nothing.
+_REGISTRY_HOSTNAMES = frozenset(
+    host
+    for host in (
+        urlsplit(info["base_url"]).hostname
+        for info in PROVIDER_REGISTRY.values()
+        if info.get("base_url")
+    )
+    if host
+)
+
+
+def _public_registry_hostname(host: str) -> bool:
+    """A shipped public vendor hostname, usable by a managed account without a lookup."""
+    host = (host or "").lower().rstrip(".")
+    if host not in _REGISTRY_HOSTNAMES:
+        return False
+    if host == "localhost" or host.endswith(".localhost"):
+        return False
+    try:
+        return ipaddress.ip_address(_canonical_host(host)).is_global
+    except ValueError:
+        return True
+
+
+def _metadata_address(address: str) -> bool:
+    """``_metadata_host`` for a RESOLVED address: the exact services, no net.
+
+    The 169.254.0.0/16 clause exists to catch a caller who types a link-local
+    address at the metadata service directly, and it stays for that. It cannot
+    be applied to a resolved address: 169.254/16 is the general IPv4 link-local
+    range (RFC 3927), so a self-assigned host, an mDNS .local name on a network
+    without DHCP, or a captive portal answering every query would all read as
+    the metadata service. Those are refused today by nobody, and this change is
+    not the place to start.
+    """
+    try:
+        ip = ipaddress.ip_address(address.split("%", 1)[0])
+    except ValueError:
+        return False
+    for candidate in (getattr(ip, "ipv4_mapped", None), getattr(ip, "sixtofour", None)):
+        if candidate is not None and _metadata_address(candidate.compressed):
+            return True
+    return ip in _METADATA_IPS
+
+
+# What httpx leaves unescaped in a host: RFC 3986 sub-delims plus the WHATWG
+# set. Kept in step with its `_urlparse.encode_host`.
+_HOST_SAFE_CHARS = "!$&'()*+,;=" + '"`{}%|\\'
+
+
+def _transport_host(hostname: str) -> str:
+    """The ASCII host httpx will dial, so the checked name is the dialled name.
+
+    ``socket.getaddrinfo`` encodes a Unicode host with the stdlib ``idna`` codec
+    (IDNA 2003), httpx with the ``idna`` package (IDNA 2008), and the two differ
+    on the deviation characters: straße.de resolves as strasse.de through the
+    resolver and as xn--strae-oqa.de through httpx, which are different hosts
+    owned by different people. Mirrors httpx's `_urlparse.encode_host`.
+    """
+    try:
+        # An address is dialled as written; quoting one would corrupt IPv6.
+        ipaddress.ip_address(hostname)
+        return hostname
+    except ValueError:
+        pass
+    if hostname.isascii():
+        # httpx percent-encodes what RFC 3986 does not allow in a reg-name, so
+        # safe^alias.example is dialled as safe%5Ealias.example, a name whose
+        # parent zone can answer differently. Same quoting, same name.
+        return quote(hostname.lower(), safe = _HOST_SAFE_CHARS)
+    try:
+        import idna
+        return idna.encode(hostname.lower()).decode("ascii")
+    except Exception:
+        # httpx raises InvalidURL here, so the request cannot happen at all;
+        # resolving the name as written is then as good an answer as any.
+        return hostname
+
+
+def _cached_addresses(hostname: str) -> tuple[str, ...] | None:
+    """What ``_resolve_host`` already learned about ``hostname``, if anything."""
+    now = time.monotonic()
+    with _dns_cache_lock:
+        cached = _dns_cache.get(_transport_host(hostname))
+    return cached[1] if cached is not None and cached[0] > now else None
+
+
+def _resolve_host(hostname: str, port: int | None, scheme: str) -> tuple[str, ...] | None:
+    """Addresses for ``hostname``, or ``None`` when the resolver did not answer.
+
+    One lookup and one cache entry serve both callers, which read "no answer" in
+    opposite directions: the metadata check has nothing to refuse, the opt-in
+    private-address check refuses.
+    """
     import socket
 
-    try:
-        addresses = [ipaddress.ip_address(hostname)]
-    except ValueError:
+    hostname = _transport_host(hostname)
+    cached = _cached_addresses(hostname)
+    if cached is not None:
+        return cached
+    now = time.monotonic()
+
+    # Bound to a local: a worker abandoned at the deadline may outlive the
+    # global, and BoundedSemaphore raises if it releases one it never took.
+    in_flight = _dns_in_flight
+    if not in_flight.acquire(timeout = _DNS_TIMEOUT_SECONDS):
+        return None
+
+    resolved: list[str] = []
+    answered = False
+
+    def _resolve() -> None:
+        nonlocal answered
         try:
             infos = socket.getaddrinfo(
                 hostname,
                 port or (443 if scheme == "https" else 80),
                 type = socket.SOCK_STREAM,
             )
+        except (OSError, UnicodeError, ValueError):
+            return
+        finally:
+            # Released by the worker, not the caller, so an abandoned lookup
+            # frees its slot only once the resolver actually lets it go.
+            in_flight.release()
+        resolved.extend(str(info[4][0]) for info in infos)
+        answered = True
+
+    # Daemon thread, so a resolver that never answers cannot hold up shutdown;
+    # the validator abandons it after the timeout and treats the name the same
+    # way it treats any other lookup failure.
+    thread = threading.Thread(target = _resolve, daemon = True)
+    thread.start()
+    thread.join(_DNS_TIMEOUT_SECONDS)
+    if thread.is_alive():
+        # A timeout is not an answer, so it is not remembered as one: the
+        # transport waits longer than this and would still get the address a
+        # deliberately slow authoritative server sends after the deadline.
+        return None
+    if not answered:
+        # A failure is not cached either. It is cheap to repeat (the resolver
+        # says so immediately), and remembering it would turn one transient
+        # SERVFAIL into five minutes of refusal on the opt-in path.
+        return None
+
+    addresses = tuple(resolved)
+    with _dns_cache_lock:
+        if len(_dns_cache) >= _DNS_CACHE_MAX_ENTRIES:
+            _dns_cache.clear()
+        _dns_cache[hostname] = (now + _DNS_CACHE_TTL_SECONDS, addresses)
+    return addresses
+
+
+def _resolves_to_metadata(hostname: str, port: int | None, scheme: str) -> bool:
+    """True when ``hostname`` resolves to a cloud metadata address."""
+    hostname = hostname.translate(_IDNA_DOTS).rstrip(".").split("%")[0]
+    if not hostname or hostname in _REGISTRY_HOSTNAMES:
+        return False
+    try:
+        # Literals were already classified by _metadata_host; no lookup needed.
+        ipaddress.ip_address(_canonical_host(hostname))
+        return False
+    except ValueError:
+        pass
+    return any(
+        _metadata_address(address) for address in _resolve_host(hostname, port, scheme) or ()
+    )
+
+
+def _managed_account_caller() -> bool:
+    """True when this validation runs for a managed (non-owner) account."""
+    from utils.account_context import is_owner_context
+    return not is_owner_context()
+
+
+def _reject_non_public(hostname: str, port: int | None, scheme: str, reason: str) -> None:
+    """Raise when ``hostname`` is, or resolves to, a non-public address."""
+    try:
+        addresses = [ipaddress.ip_address(hostname)]
+    except ValueError:
+        # The metadata check ran a moment ago and cached whatever it learned, so
+        # this reads that rather than starting a second bounded lookup: on a
+        # slow resolver the pair of them would each spend a deadline before the
+        # fallback below spent a third.
+        resolved = _cached_addresses(hostname)
+        if resolved is None:
+            # This path blocked on an unbounded getaddrinfo before the metadata
+            # check existed, and a resolver slower than that check's deadline is
+            # ordinary (the Linux default is 5s per server, twice). Falling back
+            # to the same unbounded call keeps a slow-but-working resolver from
+            # turning into a refusal here, where "no answer" fails closed.
+            import socket
+            try:
+                infos = socket.getaddrinfo(
+                    _transport_host(hostname),
+                    port or (443 if scheme == "https" else 80),
+                    type = socket.SOCK_STREAM,
+                )
+            except (OSError, UnicodeError) as exc:
+                raise ValueError("Provider base URL hostname could not be resolved.") from exc
+            resolved = tuple(str(info[4][0]) for info in infos)
+        addresses = [ipaddress.ip_address(address.split("%", 1)[0]) for address in resolved]
+    if not addresses or any(not ip.is_global for ip in addresses):
+        raise ValueError(reason)
+
+
+def public_provider_address(url: str) -> str:
+    """Resolve ``url``'s host now and return one public address to dial, or raise ``ValueError``.
+
+    Re-resolving per connection stops a name rebinding to loopback or the LAN after the
+    cached check.
+    """
+    import socket
+
+    parts = urlsplit(url)
+    hostname = (parts.hostname or "").rstrip(".")
+    if not hostname:
+        raise ValueError("Provider URL must contain a hostname.")
+    reason = "Managed accounts may only use public-network provider base URLs."
+    try:
+        addresses = [ipaddress.ip_address(_canonical_host(hostname))]
+    except ValueError:
+        try:
+            infos = socket.getaddrinfo(
+                _transport_host(hostname),
+                parts.port or (443 if parts.scheme == "https" else 80),
+                type = socket.SOCK_STREAM,
+            )
         except (OSError, UnicodeError) as exc:
             raise ValueError("Provider base URL hostname could not be resolved.") from exc
         addresses = [ipaddress.ip_address(str(info[4][0]).split("%", 1)[0]) for info in infos]
     if not addresses or any(not ip.is_global for ip in addresses):
-        raise ValueError(
-            "Provider base URL points at a private address, which is disabled on this "
-            f"server ({_BLOCK_PRIVATE_ENV}=1)."
-        )
+        raise ValueError(reason)
+    return str(addresses[0])
 
 
 def validate_provider_base_url(base_url: str) -> str:
@@ -642,8 +927,10 @@ def validate_provider_base_url(base_url: str) -> str:
     that can never be a real provider endpoint are refused: a non-http(s) scheme,
     control characters, a missing host, and cloud metadata services. Plain http,
     loopback, LAN hosts, odd ports, query strings and basic-auth userinfo all
-    stay valid -- Ollama, llama.cpp, vLLM and custom gateways rely on them. No
-    DNS lookup happens unless the private-address opt-in is set.
+    stay valid -- Ollama, llama.cpp, vLLM and custom gateways rely on them. A
+    caller-supplied hostname is resolved far enough to apply the metadata block
+    to DNS aliases of it; rejecting other private addresses stays opt-in for the
+    owner, and is always on for a managed account (as managed MCP servers are).
 
     Normalization is strip + trailing-slash removal only (what the client did
     before), so validating an already-validated URL returns it unchanged.
@@ -671,11 +958,25 @@ def validate_provider_base_url(base_url: str) -> str:
         raise ValueError("Provider base URL must contain a hostname.")
 
     hostname = hostname.rstrip(".")
-    if _metadata_host(hostname):
+    if _metadata_host(hostname) or _resolves_to_metadata(hostname, port, scheme):
         raise ValueError("Cloud metadata endpoints cannot be used as a provider base URL.")
 
     if os.environ.get(_BLOCK_PRIVATE_ENV) == "1":
-        _reject_non_public(hostname, port, scheme)
+        _reject_non_public(
+            hostname,
+            port,
+            scheme,
+            "Provider base URL points at a private address, which is disabled on this "
+            f"server ({_BLOCK_PRIVATE_ENV}=1).",
+        )
+    elif _managed_account_caller() and not _public_registry_hostname(hostname):
+        # Caller-controlled egress must not reach the owner's loopback models or LAN.
+        _reject_non_public(
+            hostname,
+            port,
+            scheme,
+            "Managed accounts may only use public-network provider base URLs.",
+        )
 
     return raw.rstrip("/")
 
@@ -684,15 +985,14 @@ def list_available_providers(include_hidden: bool = False) -> list[dict[str, Any
     """Return registered providers (for the /registry endpoint).
 
     Hidden entries exist only for backend lookups and are surfaced by the UI via
-    ``CUSTOM_PROVIDER_PRESETS`` instead of the dropdown, so they stay filtered
-    out by default. That default is load-bearing for upgrades: a browser holding
-    a cached bundle from before this capability existed has no idea to filter on
-    ``hidden``, and would render the self-hosted presets as duplicate dropdown
-    entries.
+    ``CUSTOM_PROVIDER_PRESETS`` instead of the dropdown, so they stay filtered out by default. That
+    default is load-bearing for upgrades: a browser holding a cached bundle from before this
+    capability existed has no idea to filter on ``hidden``, and would render the self-hosted presets
+    as duplicate dropdown entries.
 
-    ``include_hidden`` is how a client that does know says so. The self-hosted
-    presets are exactly the ones that run Studio's tools, so their capability
-    has to reach a frontend that asks for it, and asking is opt-in.
+    ``include_hidden`` is how a client that does know says so. The self-hosted presets are exactly
+    the ones that run Unsloth's tools, so their capability has to reach a frontend that asks for it,
+    and asking is opt-in.
     """
     result = []
     for provider_type, info in PROVIDER_REGISTRY.items():

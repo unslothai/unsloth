@@ -15,9 +15,10 @@ import sys
 import threading
 import types as _types
 from contextlib import contextmanager, nullcontext
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import pytest
 
@@ -84,6 +85,7 @@ from core.inference.llama_cpp import (
     gguf_load_in_flight,
     hf_gguf_load_in_flight,
 )
+from core.inference.openai_auto_download import _DISK_RESERVE_BYTES
 
 
 REPO = "unsloth/gemma-test-GGUF"
@@ -128,6 +130,53 @@ def _fail_download(*_args, **_kwargs):
 
 def _fail_get_paths_info(*_args, **_kwargs):
     raise AssertionError("cached reuse must return before the sizing preflight")
+
+
+GIB = 1024**3
+_LOW_DISK_SIZES = {
+    "gemma-test-UD-IQ1_S.gguf": GIB,
+    "gemma-test-Q4_K_M.gguf": 2 * GIB,
+    "gemma-test-Q6_K.gguf": 6 * GIB,
+    "gemma-test-Q8_0.gguf": 8 * GIB,
+}
+
+
+@contextmanager
+def _low_disk_hub(
+    free: int,
+    *,
+    snap: Path | None = None,
+    served: str | None = None,
+    sizes: dict[str, int] | None = None,
+):
+    sizes = sizes or _LOW_DISK_SIZES
+    downloaded: list[str] = []
+
+    def fake_get_paths_info(
+        _repo,
+        paths,
+        *,
+        revision = None,
+        token = None,
+    ):
+        on_disk = snap is not None and revision == snap.name
+        return [
+            _types.SimpleNamespace(path = path, size = 4 if on_disk else sizes[path]) for path in paths
+        ]
+
+    def fake_download(_repo, filename, *_args, **_kwargs):
+        downloaded.append(filename)
+        return served or f"/fake/{REPO}/{filename}"
+
+    usage = _types.SimpleNamespace(total = 100 * GIB, used = 100 * GIB - free, free = free)
+    with (
+        patch("huggingface_hub.list_repo_files", lambda *_a, **_k: list(sizes)),
+        patch("huggingface_hub.get_paths_info", fake_get_paths_info),
+        patch("huggingface_hub.try_to_load_from_cache", lambda *_a, **_k: None),
+        patch("shutil.disk_usage", lambda *_a, **_k: usage),
+        patch("core.inference.llama_cpp.hf_hub_download_with_xet_fallback", fake_download),
+    ):
+        yield downloaded
 
 
 def _load_route_module(name: str, relative_path: str):
@@ -528,7 +577,7 @@ class TestLoadReusesCachedCopy:
             patch("shutil.disk_usage", lambda *_a, **_k: _types.SimpleNamespace(free = 10)),
             patch.object(
                 backend,
-                "_find_smallest_fitting_variant",
+                "_find_fitting_variant",
                 lambda *_a, **_k: (fallback, 4, []),
             ),
             patch("core.inference.llama_cpp.hf_hub_download_with_xet_fallback", _fail_download),
@@ -536,6 +585,136 @@ class TestLoadReusesCachedCopy:
             out = backend._download_gguf(hf_repo = REPO, hf_variant = VARIANT)
 
         assert out == str(snap / fallback)
+
+    def test_low_disk_fallback_picks_largest_variant_leaving_reserve(self, hf_cache):
+        backend = LlamaCppBackend()
+        with _low_disk_hub(_DISK_RESERVE_BYTES + 5 * GIB // 2) as downloaded:
+            out = backend._download_gguf(hf_repo = REPO, hf_variant = "Q8_0")
+
+        assert downloaded == ["gemma-test-Q4_K_M.gguf"]
+        assert out == f"/fake/{REPO}/gemma-test-Q4_K_M.gguf"
+        variant, notice = backend._pending_variant_fallback
+        assert variant == "Q4_K_M"
+        assert notice == (
+            "Not enough disk space to download Q8_0 (8.6 GB needed, 8.1 GB free), "
+            "so Q4_K_M (2.1 GB) was loaded instead."
+        )
+
+    def test_low_disk_fallback_keeps_smallest_when_none_leaves_reserve(self, hf_cache):
+        backend = LlamaCppBackend()
+        with _low_disk_hub(_DISK_RESERVE_BYTES + GIB // 2) as downloaded:
+            backend._download_gguf(hf_repo = REPO, hf_variant = "Q8_0")
+
+        assert downloaded == ["gemma-test-UD-IQ1_S.gguf"]
+        assert backend._pending_variant_fallback[0] == "UD-IQ1_S"
+
+    def test_low_disk_fallback_reuses_cached_variant_before_downloading(self, hf_cache):
+        backend = LlamaCppBackend()
+        snap = _build_cache(hf_cache, REPO, {"gemma-test-Q4_K_M.gguf": 4})
+        with _low_disk_hub(_DISK_RESERVE_BYTES + GIB // 2, snap = snap) as downloaded:
+            out = backend._download_gguf(hf_repo = REPO, hf_variant = "Q8_0")
+
+        assert downloaded == []
+        assert out == str(snap / "gemma-test-Q4_K_M.gguf")
+
+    def test_low_disk_fallback_prefers_the_largest_cached_variant_under_the_reserve(self, hf_cache):
+        backend = LlamaCppBackend()
+        snap = _build_cache(
+            hf_cache, REPO, {"gemma-test-Q4_K_M.gguf": 4, "gemma-test-Q6_K.gguf": 4}
+        )
+        with _low_disk_hub(GIB // 2, snap = snap) as downloaded:
+            out = backend._download_gguf(hf_repo = REPO, hf_variant = "Q8_0")
+
+        assert downloaded == []
+        assert out == str(snap / "gemma-test-Q6_K.gguf")
+
+    def test_low_disk_fallback_never_picks_a_larger_cached_variant(self, hf_cache):
+        backend = LlamaCppBackend()
+        snap = _build_cache(hf_cache, REPO, {"gemma-test-Q8_0.gguf": 4})
+        with _low_disk_hub(_DISK_RESERVE_BYTES + GIB // 2, snap = snap) as downloaded:
+            backend._download_gguf(hf_repo = REPO, hf_variant = "Q6_K")
+
+        assert downloaded == ["gemma-test-UD-IQ1_S.gguf"]
+
+    def test_low_disk_fallback_stays_on_the_requested_checkpoint(self, hf_cache):
+        backend = LlamaCppBackend()
+        sizes = {
+            "gemma-test-Q4_K_M.gguf": 2 * GIB,
+            "gemma-test-Q8_0.gguf": 16 * GIB,
+            "distilled/gemma-test-distilled-Q6_K.gguf": 6 * GIB,
+        }
+        with _low_disk_hub(_DISK_RESERVE_BYTES + 13 * GIB // 2, sizes = sizes) as downloaded:
+            backend._download_gguf(hf_repo = REPO, hf_variant = "Q8_0")
+
+        assert downloaded == ["gemma-test-Q4_K_M.gguf"]
+        assert backend._pending_variant_fallback[0] == "Q4_K_M"
+
+    def test_low_disk_fallback_ignores_a_truncated_cached_variant(self, hf_cache):
+        backend = LlamaCppBackend()
+        _build_cache(hf_cache, REPO, {"gemma-test-Q6_K.gguf": 4})
+        with _low_disk_hub(_DISK_RESERVE_BYTES + GIB // 2) as downloaded:
+            backend._download_gguf(hf_repo = REPO, hf_variant = "Q8_0")
+
+        assert downloaded == ["gemma-test-UD-IQ1_S.gguf"]
+
+    def test_low_disk_without_any_fitting_variant_refuses(self, hf_cache):
+        backend = LlamaCppBackend()
+        with _low_disk_hub(GIB // 2), pytest.raises(RuntimeError, match = "any variant"):
+            backend._download_gguf(hf_repo = REPO, hf_variant = "Q8_0")
+
+    def test_a_fallback_and_a_memory_notice_are_both_reported(self):
+        backend = LlamaCppBackend()
+        backend._variant_fallback_warning = "Q4_K_M was loaded instead."
+        backend._record_load_warning("The model does not fit in GPU memory.")
+
+        assert backend.last_load_warning == (
+            "Q4_K_M was loaded instead. The model does not fit in GPU memory."
+        )
+
+        # The arch-crash retry calls this again after the download; the teardown clears both.
+        backend._begin_load_warnings()
+        assert backend.last_load_warning == "Q4_K_M was loaded instead."
+
+    def test_low_disk_fallback_load_records_the_served_variant(self, hf_cache, tmp_path):
+        backend = LlamaCppBackend()
+        served = tmp_path / "gemma-test-Q4_K_M.gguf"
+        served.write_bytes(b"GGUF" + b"\0" * 4096)
+        backend._find_llama_server_binary = lambda *_a, **_k: "/usr/bin/true"
+        backend._remote_non_chat_gguf_refusal = lambda **_k: None
+        backend._non_chat_gguf_refusal_for_path = lambda *_a, **_k: None
+        backend._non_chat_gguf_refusal = lambda *_a, **_k: None
+        backend._kill_process = lambda *_a, **_k: None
+        backend._wait_for_health = lambda timeout = 600.0, interval = 0.5, cancelled = None: True
+
+        def _start(cmd, env, **_kwargs):
+            backend._process = Mock(pid = 424242, returncode = None)
+            backend._process.poll.return_value = None
+            backend._stdout_lines = ["build: 6543", "main: loading model"]
+            return backend._process
+
+        backend._start_llama_process = _start
+        requested = GgufLoadIntent(
+            model_identifier = REPO,
+            hf_repo = REPO,
+            hf_variant = "Q8_0",
+            speculative_type = "none",
+            n_ctx = 4096,
+        )
+        with _low_disk_hub(_DISK_RESERVE_BYTES + 5 * GIB // 2, served = str(served)):
+            assert backend.load_model(requested) is True
+
+        assert backend.hf_variant == "Q4_K_M"
+        assert "Q4_K_M" in (backend.last_load_warning or "")
+        assert not backend.matches_load_source(requested)
+        assert backend.matches_load_source(replace(requested, hf_variant = "Q4_K_M"))
+        # Replayed by the crash respawn, so it must name the quant that is running.
+        assert backend.last_load_intent.hf_variant == "Q4_K_M"
+
+        with _low_disk_hub(100 * GIB, served = str(served)):
+            assert backend.load_model(requested) is True
+
+        assert backend.hf_variant == "Q8_0"
+        assert backend.last_load_warning is None
 
     def test_companion_prefers_main_snapshot_sibling(self, hf_cache):
         """A cached mmproj is reused from the main model's snapshot."""
@@ -646,6 +825,37 @@ class TestCachedGgufForLoadProbe:
 
 
 class TestLoadHubDownloadExclusion:
+    def test_remote_intent_carries_the_verified_cache_hint(self):
+        from models.inference import LoadRequest
+
+        route = _load_route_module(
+            "inference_route_module_for_verified_cache_hint",
+            "routes/inference.py",
+        )
+        verified = (REPO, VARIANT, "/cached/model.gguf", ((MAIN, 123),))
+        config = SimpleNamespace(
+            identifier = REPO,
+            gguf_hf_repo = REPO,
+            gguf_variant = VARIANT,
+            gguf_verified = verified,
+            is_vision = False,
+        )
+
+        intent = route._resolve_gguf_load_intent(
+            config,
+            LoadRequest(model_path = REPO, gguf_variant = VARIANT),
+            native_grant_backed = False,
+            chat_template_override = None,
+            extra_args = None,
+            placement = SimpleNamespace(
+                resolved_gpu_ids = None,
+                gpu_ids_are_vulkan_ordinals = None,
+            ),
+            n_parallel = 1,
+        )
+
+        assert intent.verified_gguf == verified
+
     def test_resident_local_directory_intent_uses_variant_until_path_is_resolved(self):
         from models.inference import LoadRequest
 
@@ -679,7 +889,8 @@ class TestLoadHubDownloadExclusion:
         assert intent.gguf_path is None
         assert intent.hf_variant == "Q8_0"
 
-    def test_resident_gguf_reuse_precedes_model_metadata_resolution(self):
+    @pytest.mark.parametrize("reuse_case", ["unchanged", "new_roots", "completed_file"])
+    def test_resident_gguf_reuse_precedes_model_metadata_resolution(self, reuse_case, tmp_path):
         from models.inference import LoadRequest
 
         route = _load_route_module(
@@ -697,6 +908,16 @@ class TestLoadHubDownloadExclusion:
             holds_no_vram = False,
         )
         request = LoadRequest(model_path = REPO, gguf_variant = VARIANT)
+        if reuse_case == "new_roots":
+            request._gguf_companion_roots = ("weights-revision", "companion-revision")
+        elif reuse_case == "completed_file":
+            request._gguf_companion_roots = (str(tmp_path),)
+            backend._openai_gguf_companion_roots = request._gguf_companion_roots
+            backend._openai_gguf_companion_state = ()
+            (tmp_path / "mmproj-F16.gguf").write_bytes(b"GGUF companion")
+
+        class MetadataReached(BaseException):
+            pass
 
         with (
             _reuse_route(route, backend, response),
@@ -704,13 +925,15 @@ class TestLoadHubDownloadExclusion:
                 route,
                 "ModelConfig",
                 SimpleNamespace(
-                    from_identifier = lambda **_kwargs: (_ for _ in ()).throw(
-                        AssertionError("resident reuse must not resolve model metadata")
-                    )
+                    from_identifier = lambda **_kwargs: (_ for _ in ()).throw(MetadataReached())
                 ),
             ),
             patch.object(route, "_active_gguf_intent", return_value = object()),
         ):
+            if reuse_case != "unchanged":
+                with pytest.raises(MetadataReached):
+                    _run_route_load(route, request)
+                return
             result = _run_route_load(route, request)
 
         assert result is response
@@ -834,6 +1057,11 @@ class TestLoadHubDownloadExclusion:
             "mlx_kv_quant_reason",
             "mlx_kv_quant_note",
             "chat_template_override_reason",
+            # Constant True: llama.cpp allocates the window it reports.
+            "context_length_enforced",
+            # Read from requested_extra_args, which is what the load was invoked
+            # with rather than the rewritten launch list.
+            "requested_llama_extra_args",
         }
         unresolved = sorted(
             name

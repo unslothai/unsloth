@@ -82,13 +82,16 @@
     },
     "linux": {
       "appimage": {
-        "bundleMediaFramework": false,
+        "bundleMediaFramework": true,
         "files": {
           "/usr/lib/libappindicator3.so.1": "/usr/lib/x86_64-linux-gnu/libappindicator3.so.1"
         }
       },
       "deb": {
         "desktopTemplate": "./linux/unsloth.desktop",
+        "files": {
+          "/usr/share/polkit-1/actions/ai.unsloth.studio.update.policy": "./linux/ai.unsloth.studio.update.policy"
+        },
         "provides": ["unsloth-studio-desktop"],
         "conflicts": ["unsloth-studio-desktop"],
         "replaces": ["unsloth-studio-desktop"],

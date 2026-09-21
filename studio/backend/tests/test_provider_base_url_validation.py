@@ -13,6 +13,7 @@ embedded credentials, cloud metadata services -- are refused.
 
 import importlib.util
 import socket
+import threading
 from pathlib import Path
 
 import pytest
@@ -62,6 +63,17 @@ def _default_policy(monkeypatch):
     """Default deployment: the private-address opt-in is off."""
     monkeypatch.delenv(BLOCK_PRIVATE_ENV, raising = False)
 
+    # The lookup caches its answer per hostname and caps how many can be in
+    # flight; a stale entry or a slot still held by an abandoned stub would
+    # carry one test's stubbed resolver into the next.
+    def _reset():
+        _providers._dns_cache.clear()
+        _providers._dns_in_flight = threading.BoundedSemaphore(_providers._DNS_MAX_IN_FLIGHT)
+
+    _reset()
+    yield
+    _reset()
+
 
 @pytest.mark.parametrize("url", _SUPPORTED)
 def test_supported_base_urls_are_unchanged(url):
@@ -78,12 +90,291 @@ def test_trailing_slash_and_whitespace_are_normalized():
     assert validate_provider_base_url("  http://127.0.0.1:8080/v1/  ") == "http://127.0.0.1:8080/v1"
 
 
-def test_no_dns_lookup_on_the_default_path(monkeypatch):
-    def _fail(*args, **kwargs):
-        raise AssertionError("validation must not resolve DNS by default")
+def test_no_dns_lookup_for_shipped_providers_or_ip_literals(monkeypatch):
+    """The common path stays resolver-free: shipped hosts and IP literals."""
+    # Recorded rather than raised: the lookup runs on a worker thread, where an
+    # exception is swallowed into a warning and would never fail this test.
+    calls = []
 
-    monkeypatch.setattr(socket, "getaddrinfo", _fail)
+    def _record(host, port, *args, **kwargs):
+        calls.append(host)
+        return []
+
+    monkeypatch.setattr(socket, "getaddrinfo", _record)
     assert validate_provider_base_url("https://api.openai.com/v1") == "https://api.openai.com/v1"
+    assert validate_provider_base_url("http://127.0.0.1:11434/v1") == "http://127.0.0.1:11434/v1"
+    assert validate_provider_base_url("http://[fd00:ec2::255]/v1") == "http://[fd00:ec2::255]/v1"
+    assert calls == []
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://metadata-alias.attacker.test/latest/meta-data",
+        "https://metadata-alias.attacker.test/v1",
+        # Userinfo and a trailing dot do not hide the name that gets resolved.
+        "http://api.openai.com@metadata-alias.attacker.test/v1",
+        "http://metadata-alias.attacker.test./v1",
+    ],
+)
+def test_dns_alias_of_a_metadata_address_is_refused(url, monkeypatch):
+    """A caller-controlled name pointing at the metadata service is metadata."""
+    monkeypatch.setattr(
+        socket,
+        "getaddrinfo",
+        lambda *a, **k: [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("169.254.169.254", 80))],
+    )
+    with pytest.raises(ValueError, match = "metadata"):
+        validate_provider_base_url(url)
+
+
+def test_dns_alias_verdict_is_cached(monkeypatch):
+    """Repeat validation of the same host does not re-resolve it."""
+    calls = []
+
+    def _record(host, port, *args, **kwargs):
+        calls.append(host)
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 443))]
+
+    monkeypatch.setattr(socket, "getaddrinfo", _record)
+    for _ in range(3):
+        assert validate_provider_base_url("https://gw.example/v1") == "https://gw.example/v1"
+    assert len(calls) == 1
+
+
+def test_the_opt_in_path_shares_the_one_lookup(monkeypatch):
+    """Turning the private-address flag on does not double the resolver load."""
+    calls = []
+
+    def _record(host, port, *args, **kwargs):
+        calls.append(host)
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 443))]
+
+    monkeypatch.setenv(BLOCK_PRIVATE_ENV, "1")
+    monkeypatch.setattr(socket, "getaddrinfo", _record)
+    assert validate_provider_base_url("https://gw.example/v1") == "https://gw.example/v1"
+    assert len(calls) == 1
+
+
+def test_unresolvable_names_are_refused_only_under_the_opt_in(monkeypatch):
+    """The same "no answer" reads as allow by default and refuse when opted in.
+
+    docker-compose and service-discovery names resolve in the client's network
+    namespace, not this one, so the default path cannot read silence as guilt.
+    """
+
+    def _unresolvable(*args, **kwargs):
+        raise socket.gaierror("not resolvable here")
+
+    monkeypatch.setattr(socket, "getaddrinfo", _unresolvable)
+    assert validate_provider_base_url("http://my_ollama:11434/v1") == "http://my_ollama:11434/v1"
+
+    monkeypatch.setenv(BLOCK_PRIVATE_ENV, "1")
+    with pytest.raises(ValueError, match = "could not be resolved"):
+        validate_provider_base_url("http://my_ollama:11434/v1")
+
+
+@pytest.mark.parametrize(
+    "address",
+    [
+        # A self-assigned host, an mDNS .local name on a network without DHCP,
+        # and a captive portal answering every query all land in 169.254/16.
+        "169.254.3.7",
+        "169.254.1.1",
+        # A LAN gateway and an ordinary public answer are equally none of our
+        # business on the default path.
+        "192.168.1.50",
+        "93.184.216.34",
+    ],
+)
+def test_a_name_resolving_to_a_non_metadata_address_stays_allowed(address, monkeypatch):
+    """Only the metadata services themselves, not the whole link-local range."""
+    monkeypatch.setattr(
+        socket,
+        "getaddrinfo",
+        lambda *a, **k: [(socket.AF_INET, socket.SOCK_STREAM, 6, "", (address, 80))],
+    )
+    assert validate_provider_base_url("http://box.local:11434/v1") == "http://box.local:11434/v1"
+
+
+def test_a_link_local_literal_is_still_refused():
+    """Typing the address stays refused, which is what main already did."""
+    with pytest.raises(ValueError, match = "metadata"):
+        validate_provider_base_url("http://169.254.1.1/v1")
+
+
+@pytest.mark.parametrize("address", ["169.254.0.23", "169.254.10.10"])
+def test_a_dns_alias_of_tencents_metadata_service_is_refused(address, monkeypatch):
+    """metadata.tencentyun.com lives on link-local, so it is listed exactly."""
+    monkeypatch.setattr(
+        socket,
+        "getaddrinfo",
+        lambda *a, **k: [(socket.AF_INET, socket.SOCK_STREAM, 6, "", (address, 80))],
+    )
+    with pytest.raises(ValueError, match = "metadata"):
+        validate_provider_base_url("http://alias.attacker.test/latest/meta-data")
+
+
+def test_the_opt_in_path_does_not_re_resolve_after_a_timeout(monkeypatch):
+    """One slow host, one deadline, then the unbounded fallback. Not three."""
+    import time as _time
+
+    monkeypatch.setenv(BLOCK_PRIVATE_ENV, "1")
+    monkeypatch.setattr(_providers, "_DNS_TIMEOUT_SECONDS", 0.05)
+    calls = []
+
+    def _slow(host, port, *args, **kwargs):
+        calls.append(host)
+        _time.sleep(0.2)
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 443))]
+
+    monkeypatch.setattr(socket, "getaddrinfo", _slow)
+    assert validate_provider_base_url("https://slowdns.example/v1") == "https://slowdns.example/v1"
+    assert len(calls) == 2
+
+
+def test_an_ascii_host_is_resolved_the_way_httpx_dials_it(monkeypatch):
+    """httpx percent-encodes what a reg-name may not hold; so does the lookup."""
+    seen = []
+
+    def _record(host, port, *args, **kwargs):
+        seen.append(host)
+        if host == "safe%5Ealias.attacker.test":
+            return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("169.254.169.254", 80))]
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 80))]
+
+    monkeypatch.setattr(socket, "getaddrinfo", _record)
+    with pytest.raises(ValueError, match = "metadata"):
+        validate_provider_base_url("http://safe^alias.attacker.test/v1")
+    assert seen == ["safe%5Ealias.attacker.test"]
+
+
+def test_the_resolved_name_matches_what_httpx_would_dial():
+    """Pins _transport_host against httpx itself, for the shapes that differ."""
+    httpx = pytest.importorskip("httpx")
+    for host in [
+        "safe^alias.attacker.test",
+        "faß.attacker.test",
+        "例え.テスト",
+        "API.OpenAI.com",
+        "my_ollama",
+        "192.168.1.50",
+        "gw.example",
+    ]:
+        dialled = httpx.URL(f"http://{host}/").raw_host.decode("ascii")
+        assert _providers._transport_host(host) == dialled, host
+
+
+def test_a_unicode_host_is_resolved_the_way_httpx_dials_it(monkeypatch):
+    """getaddrinfo speaks IDNA 2003, httpx IDNA 2008, and they differ on ß."""
+    seen = []
+
+    def _record(host, port, *args, **kwargs):
+        seen.append(host)
+        if host == "xn--fa-hia.attacker.test":
+            return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("169.254.169.254", 80))]
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 80))]
+
+    monkeypatch.setattr(socket, "getaddrinfo", _record)
+    with pytest.raises(ValueError, match = "metadata"):
+        validate_provider_base_url("http://faß.attacker.test/v1")
+    # Not fass.attacker.test, which is what the resolver would have been asked
+    # for and is a different host with a different owner.
+    assert seen == ["xn--fa-hia.attacker.test"]
+
+
+def test_a_timed_out_lookup_is_not_remembered(monkeypatch):
+    """A slow authoritative server cannot buy a 300s window of "safe"."""
+    import time as _time
+
+    monkeypatch.setattr(_providers, "_DNS_TIMEOUT_SECONDS", 0.1)
+    calls = []
+
+    def _slow(host, port, *args, **kwargs):
+        calls.append(host)
+        _time.sleep(30)
+        return []
+
+    monkeypatch.setattr(socket, "getaddrinfo", _slow)
+    for _ in range(2):
+        assert validate_provider_base_url("http://slow.example/v1") == "http://slow.example/v1"
+    assert len(calls) == 2
+
+
+def test_a_resolver_slower_than_the_deadline_still_works_under_the_opt_in(monkeypatch):
+    """The opt-in path blocked unboundedly before; a slow answer is not a refusal."""
+    import time as _time
+
+    monkeypatch.setenv(BLOCK_PRIVATE_ENV, "1")
+    monkeypatch.setattr(_providers, "_DNS_TIMEOUT_SECONDS", 0.05)
+
+    def _slow(host, port, *args, **kwargs):
+        _time.sleep(0.2)
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 443))]
+
+    monkeypatch.setattr(socket, "getaddrinfo", _slow)
+    assert validate_provider_base_url("https://slowdns.example/v1") == "https://slowdns.example/v1"
+
+
+def test_a_transient_failure_is_not_remembered(monkeypatch):
+    """One SERVFAIL must not refuse the same host for the next 300 seconds."""
+    attempts = []
+
+    def _flaky(host, port, *args, **kwargs):
+        attempts.append(host)
+        if len(attempts) == 1:
+            raise socket.gaierror("temporary failure in name resolution")
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 443))]
+
+    monkeypatch.setenv(BLOCK_PRIVATE_ENV, "1")
+    monkeypatch.setattr(socket, "getaddrinfo", _flaky)
+    # The first failure is retried by the opt-in fallback rather than cached,
+    # so it costs one extra lookup instead of five minutes of refusal.
+    for _ in range(2):
+        assert validate_provider_base_url("https://flaky.example/v1") == "https://flaky.example/v1"
+    assert len(attempts) > 1
+
+
+def test_stalled_lookups_do_not_pile_up(monkeypatch):
+    """Past the in-flight cap the check reports no answer instead of a thread.
+
+    The workers this leaves behind wake up long after the fixture has replaced
+    the semaphore, which is why each releases the instance it took.
+    """
+    import time as _time
+
+    monkeypatch.setattr(_providers, "_DNS_TIMEOUT_SECONDS", 0.05)
+    started = []
+
+    def _slow(host, port, *args, **kwargs):
+        started.append(host)
+        _time.sleep(30)
+        return []
+
+    monkeypatch.setattr(socket, "getaddrinfo", _slow)
+    for n in range(_providers._DNS_MAX_IN_FLIGHT + 5):
+        url = f"http://slow{n}.example/v1"
+        assert validate_provider_base_url(url) == url
+    assert len(started) == _providers._DNS_MAX_IN_FLIGHT
+
+
+def test_a_slow_resolver_does_not_stall_validation(monkeypatch):
+    """A resolver that never answers is abandoned, and the URL is allowed."""
+    import time as _time
+
+    monkeypatch.setattr(_providers, "_DNS_TIMEOUT_SECONDS", 0.1)
+
+    def _never_answers(*args, **kwargs):
+        # Returns a real (empty) answer rather than None: the abandoned daemon
+        # thread wakes up long after this test and would otherwise raise inside
+        # an unrelated later one.
+        _time.sleep(30)
+        return []
+
+    monkeypatch.setattr(socket, "getaddrinfo", _never_answers)
+    started = _time.monotonic()
+    assert validate_provider_base_url("http://slow.example/v1") == "http://slow.example/v1"
+    assert _time.monotonic() - started < 5
 
 
 @pytest.mark.parametrize(
