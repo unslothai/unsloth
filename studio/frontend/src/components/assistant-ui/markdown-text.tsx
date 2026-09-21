@@ -353,7 +353,25 @@ function getMermaidSource(blockContent: string): string | null {
 
 /** True while a mermaid fence is still streaming, when there is no source to extract yet. */
 function isMermaidFenceOpener(blockContent: string): boolean {
-  return MERMAID_INFO_RE.test(blockContent);
+  const lines = blockContent.split("\n");
+  let open: { char: string; run: number } | null = null;
+  for (const line of lines) {
+    const match = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(line);
+    if (!match) continue;
+    const [, marker, rest] = match;
+    if (open === null) {
+      if (marker[0] === "`" && rest.includes("`")) continue;
+      if (/^[\t ]*mermaid\b/i.test(rest)) return true;
+      open = { char: marker[0], run: marker.length };
+    } else if (
+      marker[0] === open.char &&
+      marker.length >= open.run &&
+      rest.replace(/[\t ]*\r?$/, "") === ""
+    ) {
+      open = null;
+    }
+  }
+  return false;
 }
 
 function getCodeFilename(language: string | null) {

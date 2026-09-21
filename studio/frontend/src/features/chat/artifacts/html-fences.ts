@@ -59,9 +59,10 @@ export function getCodeFence(blockContent: string): CodeFence | null {
   if (!match) {
     return null;
   }
-  // A block can hold MORE than one fence (a reply with a footnote is one block), and a greedy
-  // body would then span both of them, prose included. Only a single fence may be treated as one.
-  if (/^ {0,3}(?:`{3,}|~{3,})\S*\s*$/m.test(match[2])) {
+  // A block can hold MORE than one fence (a reply with a footnote is one block) and the greedy body
+  // would then span both, prose included. A delimiter-shaped LINE inside the body is ordinary code,
+  // so this rejects only a real close (bare run on its own line) followed by another opener.
+  if (/^ {0,3}`{3,}[\t ]*\r?$[\s\S]*^ {0,3}(?:`{3,}|~{3,})[^\r\n`]/m.test(match[2])) {
     return null;
   }
 
