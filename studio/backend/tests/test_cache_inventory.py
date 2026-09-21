@@ -1547,6 +1547,65 @@ def test_a_whole_hub_clear_waits_for_a_loaded_model(monkeypatch, isolated_caches
     assert result["freed_bytes"] == 0
 
 
+def _idle_dictation(monkeypatch, **state):
+    """Point the guard's dictation probe at a stated load state."""
+    from core.inference import stt_registry
+
+    resident = {"model": None, "engine": None, "device": None, "loading": False}
+    resident.update(state)
+    monkeypatch.setattr(stt_registry, "resident", lambda: resident)
+
+
+def test_a_whole_hub_clear_waits_for_a_loaded_dictation_model(monkeypatch):
+    """Dictation is the fifth backend, and stt_sidecar keeps its checkpoints in the same hub
+    cache this clear empties. The four backends the guard already asks cannot see it, so a
+    resident Whisper worker would have had its snapshot unlinked from under it."""
+    from hub.services.models.deletion import any_model_load_blocks_cache_clear
+
+    _idle_dictation(monkeypatch, model = "openai/whisper-large-v3", engine = "transformers")
+
+    assert any_model_load_blocks_cache_clear() == (
+        "Unload the dictation model before clearing the model cache"
+    )
+
+
+def test_a_whole_hub_clear_waits_for_a_loading_dictation_model(monkeypatch):
+    """A sidecar still starting is the worse case, not the safer one: the snapshot is being read
+    right now. Mirrors the Images / Video loading_repo_ids branch."""
+    from hub.services.models.deletion import any_model_load_blocks_cache_clear
+
+    _idle_dictation(monkeypatch, loading = True)
+
+    assert any_model_load_blocks_cache_clear() == (
+        "A dictation model load is using the cache; wait for it to finish"
+    )
+
+
+def test_idle_dictation_does_not_block_a_hub_clear(monkeypatch):
+    """The negative control. Without it the two tests above pass against a guard that refuses
+    every clear, which is the opposite of the behaviour being added."""
+    from hub.services.models.deletion import any_model_load_blocks_cache_clear
+
+    _idle_dictation(monkeypatch)
+
+    assert any_model_load_blocks_cache_clear() is None
+
+
+def test_an_unreachable_dictation_probe_does_not_block_a_hub_clear(monkeypatch):
+    """Fail open on ACQUIRE, like every other backend here: a sidecar that cannot be asked is not
+    holding anything this process can see. cache_inventory still fails CLOSED on a raising guard,
+    which test_an_unverifiable_load_state_refuses_rather_than_clears covers."""
+    from core.inference import stt_registry
+    from hub.services.models.deletion import any_model_load_blocks_cache_clear
+
+    def _raise():
+        raise RuntimeError("sidecar wedged")
+
+    monkeypatch.setattr(stt_registry, "resident", _raise)
+
+    assert any_model_load_blocks_cache_clear() is None
+
+
 def test_an_unverifiable_load_state_refuses_rather_than_clears(monkeypatch, isolated_caches):
     """Not being able to tell whether weights are in use is not permission to unlink them.
     The per-repo path answers 503 for the same reason."""

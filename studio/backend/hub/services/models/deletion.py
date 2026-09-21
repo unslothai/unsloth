@@ -748,6 +748,22 @@ def any_model_load_blocks_cache_clear() -> Optional[str]:
             return "Unload the model before clearing the model cache"
         if any(getattr(held, "loading_repo_ids", tuple)()):
             return f"An {label} model load is using the cache; wait for it to finish"
+
+    # Dictation is the fifth backend and the one none of the four above reports. Its sidecars are
+    # managed by stt_registry, and stt_sidecar resolves their checkpoints under the SAME hub cache
+    # this clear empties (_find_complete_cached_snapshot -> _repo_cache_dir -> hub_cache), so a
+    # resident Whisper / Parakeet worker re-reading its snapshot is exactly the case the docstring
+    # above says is enough on its own.
+    try:
+        from core.inference import stt_registry
+        dictation = stt_registry.resident()
+    except Exception as exc:  # noqa: BLE001 - unavailable is not "in use", as above
+        logger.debug(f"Dictation unavailable during the cache-clear guard: {exc}")
+    else:
+        if dictation.get("model"):
+            return "Unload the dictation model before clearing the model cache"
+        if dictation.get("loading"):
+            return "A dictation model load is using the cache; wait for it to finish"
     return None
 
 
