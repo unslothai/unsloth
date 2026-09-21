@@ -354,20 +354,20 @@
 	   sidebar, #212121 cards. Palette dark blocks override only accent
 	   tokens so dark mode stays consistent across themes. */
 	--background: #181818;
-	--foreground: #ececec;
+	--foreground: #ffffff;
 	--card: #212121;
-	--card-foreground: #ececec;
+	--card-foreground: #ffffff;
 	--popover: #212121;
-	--popover-foreground: #ececec;
+	--popover-foreground: #ffffff;
 	--primary: #17b88b;
 	--primary-foreground: oklch(1 0 0);
 	--secondary: #242424;
-	--secondary-foreground: #ececec;
+	--secondary-foreground: #ffffff;
 	--muted: #242424;
-	--muted-foreground: #9b9b9b;
+	--muted-foreground: #a3a3a3;
 	/* One step lighter than --popover so menu item hover reads clearly. */
 	--accent: #2e2e2e;
-	--accent-foreground: #ececec;
+	--accent-foreground: #ffffff;
 	--destructive: oklch(0.6368 0.2078 25.3313);
 	/* Bypass permissions accent: bright, saturated neon yellow on dark. */
 	--bypass: #ffd60a;
@@ -385,11 +385,11 @@
 	/* Elevated a step lighter than --background; the tone difference is
 	   the separator. */
 	--sidebar: #1f1f1f;
-	--sidebar-foreground: #ececec;
+	--sidebar-foreground: #ffffff;
 	--sidebar-primary: #17b88b;
 	--sidebar-primary-foreground: oklch(1 0 0);
 	--sidebar-accent: #2a2a2a;
-	--sidebar-accent-foreground: #ececec;
+	--sidebar-accent-foreground: #ffffff;
 	--sidebar-border: #2a2a2a;
 	--sidebar-ring: #ececec;
 	--destructive-foreground: oklch(1 0 0);
@@ -1181,10 +1181,28 @@ html[data-chat-font] .aui-root {
 	.sidebar-row-action.is-disclosure-open {
 		@apply opacity-100 pointer-events-auto;
 	}
-	/* Secondary row action (the pinned-chat unpin button) sits just left of
-	   the primary "…" options button. */
+	/* The pin sits just left of the "…" options button, and the 14px trough
+	   between their ~16px icons is the two paddings that face each other: the
+	   pin's pr-1.5 and the options button's pl-2. Drop those, and the pin's
+	   right edge lands exactly on the options button's left edge (30px = its
+	   pr-1.5 plus a size-6 glyph). Closing the gap by moving the pin instead
+	   would slide it under that pl-2, and the options button, later in the DOM,
+	   would take the clicks over the pin's own glyph. What is left of the pin's
+	   own padding-right is the whole gap: the glyph boxes meet at 30px, so 2px
+	   here is 2px between them and 10px between the drawn icons. */
 	.sidebar-row-action.is-unpin-action {
 		right: 1.875rem;
+		padding-right: 0.125rem;
+		/* The base pl-2 faces the options button, which is what opens the gap between the two
+		   icons. On the pin there is nothing to its left but the title, so that padding is
+		   dead space: invisible, but inside the button, and sidebar-touch-reveal makes the
+		   button clickable on a coarse pointer. It put 8px of the title under the pin on
+		   project rows, where a tap pinned the chat instead of opening it. Nothing moves
+		   visually; the glyph is positioned from the right. */
+		padding-left: 0;
+	}
+	.sidebar-row-action.is-unpin-action + .sidebar-row-action {
+		padding-left: 0;
 	}
 
 	/* Branch picker chevron buttons sit beside action bar icon buttons
@@ -1437,21 +1455,32 @@ html[data-chat-font] .aui-root {
 		);
 	}
 
-	/* Images and Video: a field's "i" only appears with the row it belongs to. Matched on the
-	   InfoHint itself so every field style is covered, including the shared chat slider.
-	   Two levels up is the field container; higher ancestors deliberately do not match. */
-	.diffusion-surface [data-slot="info-hint"] {
-		opacity: 0;
-		pointer-events: none;
-		transition: opacity 150ms;
-	}
-	.diffusion-surface *:hover > [data-slot="info-hint"],
-	.diffusion-surface *:hover > * > [data-slot="info-hint"],
-	.diffusion-surface *:focus-within > [data-slot="info-hint"],
-	.diffusion-surface *:focus-within > * > [data-slot="info-hint"],
-	.diffusion-surface [data-slot="info-hint"]:focus-visible {
-		opacity: 1;
-		pointer-events: auto;
+	/* Images, Video and Run settings: a field's "i" only appears with the row it belongs to.
+	   Matched on the InfoHint itself so every field style is covered, including the shared
+	   chat slider. Two levels up is the field container; higher ancestors deliberately do
+	   not match. Opacity, not display, so revealing one never reflows its row. */
+	/* Hover-capable pointers only. A tap is not hover and does not raise :focus-visible, so
+	   on a touch screen this would hide a control that has no other way to be reached. */
+	@media (hover: hover) {
+		:is(.diffusion-surface, .hint-on-hover) [data-slot="info-hint"] {
+			opacity: 0;
+			pointer-events: none;
+			transition: opacity 150ms;
+		}
+		/* :has(:focus-visible), not :focus-within: a select hands focus back to its trigger
+		   on close, which left the "i" up until something else was clicked. */
+		:is(.diffusion-surface, .hint-on-hover)
+			:is(*:hover, *:has(:focus-visible))
+			> [data-slot="info-hint"],
+		:is(.diffusion-surface, .hint-on-hover)
+			:is(*:hover, *:has(:focus-visible))
+			> *
+			> [data-slot="info-hint"],
+		:is(.diffusion-surface, .hint-on-hover)
+			[data-slot="info-hint"]:focus-visible {
+			opacity: 1;
+			pointer-events: auto;
+		}
 	}
 
 	/* Inline numeric input — used for slider values and Context Length.
@@ -1461,11 +1490,40 @@ html[data-chat-font] .aui-root {
 	   an inline width that hugs the value. Hover/focus: very light bg
 	   fade-in, just enough to read as interactive without competing
 	   with the slider row's quiet aesthetic. */
+	/* Wider right gutter: the value is right-aligned on the panel's own edge. */
+	/* 32px like every other inline control on the panel. */
 	.panel-number-input {
-		@apply h-7 min-w-8 shrink-0 rounded-full border-0 bg-transparent px-2 text-right text-ui-13! font-medium tabular-nums text-nav-fg shadow-none transition-colors hover:bg-black/[0.04] focus:bg-black/[0.05] focus-visible:ring-0! focus-visible:outline-none md:text-ui-13!;
+		@apply h-8 min-w-8 shrink-0 rounded-full border-0 bg-transparent pl-2 pr-3 text-right text-ui-13! font-medium tabular-nums text-nav-fg shadow-none transition-colors hover:bg-black/[0.04] focus:bg-black/[0.05] focus-visible:ring-0! focus-visible:outline-none md:text-ui-13!;
 	}
 	.dark .panel-number-input {
 		@apply hover:bg-white/[0.04] focus:bg-white/[0.06];
+	}
+
+	/* Select trigger on the panel: the surface and padding the model rows
+	   use. Height and width stay with the caller, since an inline select
+	   is 32px and a full-width one 36px. */
+	/* Inline field on the panel: the filled box a row's value is typed
+	   into. These share one width, so a left-aligned value puts them all
+	   on a single edge. Width and height stay with the caller. */
+	.panel-field {
+		@apply rounded-full border-transparent bg-[var(--panel-input-surface)] px-3.5 py-0 text-left text-ui-13 font-medium text-nav-fg outline-none hover:bg-[var(--panel-input-surface-hover)] focus-visible:ring-0;
+	}
+
+	/* Important like .panel-input-group: these all override a base
+	   SelectTrigger class of the same weight. 14px each side optically:
+	   the chevron's stroke fills 14 of its 24 viewBox units, so its box
+	   carries ~3px of slack and pr-[11px] pays that back. */
+	.panel-select-trigger {
+		@apply rounded-full! border-transparent! bg-[var(--panel-input-surface)]! py-0! pl-3.5! pr-[11px]! text-ui-13! font-medium! text-nav-fg shadow-none! hover:bg-[var(--panel-input-surface-hover)]! focus-visible:ring-0!;
+	}
+
+	/* These controls suppress the ring, so keyboard focus would otherwise
+	   land with nothing drawn. Same soft 1px halo as .composer-pill-btn. */
+	.panel-field:focus-visible,
+	.panel-select-trigger:focus-visible,
+	.panel-number-input:focus-visible {
+		outline: none;
+		box-shadow: 0 0 0 1px var(--ring-soft) !important;
 	}
 
 	/* Switch — unsloth-green track when active, slider-gray thumb in
@@ -2746,6 +2804,19 @@ html[data-chat-font] .aui-root {
 	.aui-assistant-message-content > *:last-child > *:last-child > *:last-child > *:last-child > *:last-child,
 	.aui-assistant-message-content > *:last-child > *:last-child > *:last-child > *:last-child > *:last-child > *:last-child {
 		margin-bottom: 0 !important;
+	}
+
+	/* One vertical rhythm for everything stacked inside an assistant reply: text, thinking
+	   headers, tool-call groups and single tool rows all sit 1rem apart, the same gap
+	   streamdown puts between two paragraphs. The parts themselves own no outer margin or
+	   padding, so a header next to a paragraph reads the same as a paragraph next to a
+	   paragraph. `:where()` keeps this at zero specificity so a part that does set its own
+	   `mt-*` still wins. The first real child follows a zero-height badge anchor and gets none. */
+	:where(.aui-assistant-message-content > * + *) {
+		margin-top: 1rem;
+	}
+	:where(.aui-assistant-message-content > .h-0 + *) {
+		margin-top: 0;
 	}
 
 	/* The streamdown code-block wrapper carries `my-4` (16px top + 16px

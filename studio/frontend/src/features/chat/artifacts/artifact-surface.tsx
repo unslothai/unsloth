@@ -15,8 +15,12 @@ import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { downloadFile, isDownloadCancelled } from "@/lib/native-files";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
-import { CopyIcon, EyeIcon, Maximize2Icon, XIcon } from "lucide-react";
-import { Download01Icon } from "@hugeicons/core-free-icons";
+import { EyeIcon, XIcon } from "lucide-react";
+import {
+  Copy01Icon,
+  Download01Icon,
+  ExpandIcon,
+} from "@hugeicons/core-free-icons";
 import { Tick02Icon } from "@/lib/tick-icon";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
@@ -296,7 +300,7 @@ export function ArtifactSurface({
             {copied ? (
               <HugeiconsIcon icon={Tick02Icon} strokeWidth={2} className="size-4" />
             ) : (
-              <CopyIcon className="size-4" />
+              <HugeiconsIcon icon={Copy01Icon} className="size-4" />
             )}
           </Button>
           {variant === "panel" && onOpenFullscreen ? (
@@ -308,7 +312,7 @@ export function ArtifactSurface({
               onClick={onOpenFullscreen}
               aria-label="Open canvas fullscreen"
             >
-              <Maximize2Icon className="size-4" />
+              <HugeiconsIcon icon={ExpandIcon} className="size-4" />
             </Button>
           ) : null}
           <Button

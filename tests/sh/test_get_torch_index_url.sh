@@ -33,6 +33,8 @@ _FAKE_ROCM_DIR=$(mktemp -d)
     # references a helper that is not extracted here, the ROCm branch hits an
     # undefined function, silently falls through to the CPU wheel index, and the
     # ROCm assertions below fail.
+    sed -n '/^_rocm_torch_explicitly_requested()/,/^}/p' "$INSTALL_SH"
+    echo ""
     sed -n '/^_ensure_rocm_probe_env()/,/^}/p' "$INSTALL_SH"
     echo ""
     sed -n '/^_probe_amd_gfx_arch()/,/^}/p' "$INSTALL_SH"
