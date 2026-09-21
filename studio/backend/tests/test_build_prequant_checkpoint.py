@@ -102,3 +102,46 @@ def test_a_safetensors_build_refuses_a_declared_name_that_reads_as_a_pickle():
     # that has nothing to do with the real mistake. Refuse at build time and say which name to fix.
     with pytest.raises(ValueError, match = "not a safetensors name"):
         build.upload_destination(h3, "int8", rotated = False, safetensors = True)
+
+
+def test_an_override_still_has_to_match_the_container_it_is_naming():
+    """The escape hatch skips the family table, not the extension.
+
+    Every loader dispatches on the extension alone, so a safetensors build published as ``.pt`` is
+    read as a pickle and a pickle published as ``.safetensors`` is read from a header it does not
+    have. Both upload cleanly and neither can ever be opened, after the hours the quantization
+    took, which is why this is refused before the upload rather than reported after it.
+    """
+    build = _script()
+    zimage = detect_family("Tongyi-MAI/Z-Image-Turbo", override = "z-image")
+    assert zimage is not None
+
+    with pytest.raises(ValueError, match = r"does not end in '\.safetensors'"):
+        build.upload_destination(
+            zimage, "fp8", rotated = False, safetensors = True, override = "Z-Image-Turbo-FP8.pt"
+        )
+    with pytest.raises(ValueError, match = r"does not end in '\.pt'"):
+        build.upload_destination(
+            zimage,
+            "fp8",
+            rotated = True,
+            safetensors = False,
+            override = "Z-Image-Turbo-FP8.safetensors",
+        )
+    # The matching pairs are untouched, including the rotated escape hatch above.
+    assert (
+        build.upload_destination(
+            zimage, "fp8", rotated = True, override = "Z-Image-Turbo-FP8-ConvRot.pt"
+        )
+        == "Z-Image-Turbo-FP8-ConvRot.pt"
+    )
+    assert (
+        build.upload_destination(
+            zimage,
+            "fp8",
+            rotated = False,
+            safetensors = True,
+            override = "Z-Image-Turbo-FP8.safetensors",
+        )
+        == "Z-Image-Turbo-FP8.safetensors"
+    )

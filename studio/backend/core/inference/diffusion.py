@@ -2921,7 +2921,7 @@ class DiffusionBackend:
                         base_repo = kwargs.get("base_repo"),
                         path_override = kwargs.get("transformer_prequant_path"),
                     )
-                return self._prequant_source_hub_entry(source, hf_token)
+                return self._prequant_source_hub_entry(source, hf_token, scheme = planned)
             raw = kwargs.get("transformer_quant")
             auto = raw is None or str(raw).strip().lower() in ("", "auto")
             # An AUTO quant under an explicit Speed="off" is forced to "off" by load_pipeline, which normalizes to
@@ -2990,7 +2990,12 @@ class DiffusionBackend:
                             path_override = kwargs.get("transformer_prequant_path"),
                             base_repo = kwargs.get("base_repo"),
                         )
-                return self._prequant_source_hub_entry(source, hf_token, failures_out)
+                        # The retry REPLACED the pick, so the readability question below is about
+                        # the rung actually being planned, not the one the ladder started on.
+                        scheme = retry
+                return self._prequant_source_hub_entry(
+                    source, hf_token, failures_out, scheme = scheme
+                )
         except Exception as exc:  # noqa: BLE001 -- an unsizable prequant must not fail the plan
             logger.warning("diffusion.dit_prequant_plan_failed: %s", exc)
             # Best-effort for the UI, but NOT for a caller that must not download afterwards: the
@@ -3006,8 +3011,18 @@ class DiffusionBackend:
         source: Any,
         hf_token: Optional[str],
         failures_out: Optional[list] = None,
+        scheme: Optional[str] = None,
     ) -> Optional[tuple[str, str, int]]:
-        """``(repo, filename, declared_size)`` for a hosted checkpoint that exists, else None."""
+        """``(repo, filename, declared_size)`` for a hosted checkpoint that exists AND that this
+        install can open, else None.
+
+        Both halves matter, and only the first is obvious. This is the call that drops the released
+        dense shards from the pull, and the candidate chain now spans two containers, so the name
+        that EXISTS and the name that is READABLE are no longer the same question: a repo still
+        serving only the legacy pickle is answered by an install whose torch or torchao cannot
+        restrict that load, and committing to it here would spend the download and then refuse it
+        with no dense weights left to fall back to. Skipping an unreadable name lets a later
+        candidate answer, and skipping them all reports the miss, which keeps the shards."""
         if source is None or getattr(source, "kind", None) != "repo":
             return None
         from huggingface_hub import HfApi
@@ -3016,10 +3031,10 @@ class DiffusionBackend:
         sizes = {s.rfilename: int(getattr(s, "size", 0) or 0) for s in (info.siblings or [])}
         # Every candidate, in the order the loader tries them: safetensors first, then the pickle
         # spellings. Reading only two of them would miss the artifact on a repo that hosts the third.
-        from .diffusion_prequant import candidate_filenames_of
+        from .diffusion_prequant import candidate_filenames_of, restricted_prequant_load_supported
 
         for name in candidate_filenames_of(source):
-            if name and name in sizes:
+            if name and name in sizes and restricted_prequant_load_supported(scheme, name):
                 return (source.location, name, int(sizes[name]))
         # The repo answered and holds NEITHER name. Not "no prequant is used": this pick is configured to
         # use one and its dense shards are already excluded, so the plan has no transformer and is partial.

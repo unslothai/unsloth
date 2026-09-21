@@ -13,6 +13,7 @@ entire risk is in the metadata contract.
 from __future__ import annotations
 
 import json
+import sys
 
 import pytest
 
@@ -330,3 +331,29 @@ def test_quantized_round_trip_is_exact(tmp_path, scheme):
         assert torch.equal(got, want)
 
     build().load_state_dict(loaded, strict = True, assign = True)
+
+
+def test_the_windows_rocm_torchao_stub_is_not_safetensors_support(monkeypatch):
+    """The stub answers every ``torchao.*`` import with a fabricated callable, so importing the
+    flatten/unflatten pair proves nothing on Windows ROCm: both names bind, both return None, and
+    an install that reported support here would have planning drop the dense shards for a
+    checkpoint the loader can never rebuild. The pickle probe already asks the same question."""
+    import core._torchao_stub as stub
+    from core.inference import prequant_safetensors as ps
+    from core.inference.diffusion_prequant import restricted_prequant_load_supported
+
+    for name in [k for k in list(sys.modules) if k == "torchao" or k.startswith("torchao.")]:
+        monkeypatch.delitem(sys.modules, name, raising = False)
+    monkeypatch.setattr(stub, "_is_windows_rocm", lambda: True)
+    stub.install_torchao_windows_rocm_stub()
+    assert stub.is_stubbed("torchao"), "the stub did not install, so this proves nothing"
+    # The negative control: the import really does succeed against the stub.
+    from torchao.prototype.safetensors.safetensors_support import (  # noqa: F401
+        unflatten_tensor_state_dict,
+    )
+
+    assert ps._torchao_helpers() is None
+    assert ps.safetensors_prequant_supported() is False
+    # And the capability the planners ask is False for a safetensors name too, not only the pickle.
+    assert restricted_prequant_load_supported("fp8", "Model-FP8.safetensors") is False
+    assert restricted_prequant_load_supported("fp8", "Model-FP8.pt") is False
