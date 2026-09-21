@@ -3127,9 +3127,9 @@ def test_a_cancelled_generation_gives_the_probe_back(monkeypatch):
         asyncio.run(inference_route._maybe_auto_switch_model(path, request, "tester"))
     assert excinfo.value.status_code == 409
     assert scans == [], "cancelled above both resolvers, so nothing looked for an alias"
-    assert inference_route._alias_probed_load_paths == set(), (
-        "a pass that never started was recorded as answered"
-    )
+    assert (
+        inference_route._alias_probed_load_paths == set()
+    ), "a pass that never started was recorded as answered"
     assert inference_route._alias_probe_inflight == set(), "the claim was not given back"
 
     # And so the next request still reaches the resolver, rather than shortcutting to the
