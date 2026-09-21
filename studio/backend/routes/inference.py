@@ -8639,14 +8639,20 @@ def disable_openai_auto_switch_for_request(scope) -> None:
         scope[_DISABLE_OPENAI_AUTO_SWITCH_SCOPE_KEY] = True
 
 
-def _keyless_caller_held_back(fastapi_request) -> bool:
-    """A keyless caller that may not POST /api/inference/load itself, so it gets only the serving model or the idle-unloaded one it names."""
+async def _keyless_caller_held_back(fastapi_request) -> bool:
+    """A keyless caller that may not POST /api/inference/load itself, so it gets only the serving model or the idle-unloaded one it names.
+
+    The load-route probe re-enters the whole admission predicate, which refreshes the
+    scope from SQLite on a cache miss and resolves a hostname ``bind_host`` through
+    ``socket.getaddrinfo``; both block, which is why the middleware runs the same
+    predicate in a worker thread. Only a keyless caller pays the hop.
+    """
     from auth.authentication import request_admitted_without_credential
     from utils.keyless_api_access import keyless_request_may_load_models
 
-    return request_admitted_without_credential(
-        fastapi_request
-    ) and not keyless_request_may_load_models(fastapi_request)
+    if not request_admitted_without_credential(fastapi_request):
+        return False
+    return not await asyncio.to_thread(keyless_request_may_load_models, fastapi_request)
 
 
 def _automatic_model_load_may_run() -> bool:
@@ -8835,7 +8841,7 @@ async def _no_model_loaded_error(
             # Resident but on a backend this endpoint can't use, so "not downloaded" is false.
             return status, _no_model_loaded_detail(base)
         if await asyncio.to_thread(resolve_local_gguf, named) is not None:
-            if fastapi_request is not None and _keyless_caller_held_back(fastapi_request):
+            if fastapi_request is not None and await _keyless_caller_held_back(fastapi_request):
                 return status, (
                     f"No model is loaded, and keyless API access cannot load '{named}' by "
                     "request. Load it in Unsloth Studio, or send an Unsloth API key."
@@ -9443,7 +9449,11 @@ async def _reject_unservable_model(
         gguf_hub_repo = await asyncio.to_thread(_resident_id_is_namespaced)
     if not (quantified or here or gguf_hub_repo):
         return
-    if switchable and fastapi_request is not None and _keyless_caller_held_back(fastapi_request):
+    if (
+        switchable
+        and fastapi_request is not None
+        and await _keyless_caller_held_back(fastapi_request)
+    ):
         # Switching is on but not for this caller, so a retry can never succeed.
         status_code, code = 404, "model_not_found"
         message = (
@@ -9712,7 +9722,7 @@ async def _maybe_auto_switch_model(
             _claim_slot_for_non_preview(fastapi_request)
         return
 
-    keyless_held_back = _keyless_caller_held_back(fastapi_request)
+    keyless_held_back = await _keyless_caller_held_back(fastapi_request)
     if auto_switch_on and keyless_held_back:
         auto_switch_on = False
         if not idle_unload_is_configured():

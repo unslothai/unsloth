@@ -1102,4 +1102,24 @@ def test_a_held_back_keyless_caller_is_told_it_cannot_switch(monkeypatch, loaded
     assert "keyless api access" in str(excinfo.value.detail).lower() and not excinfo.value.headers
     set_keyless_api_access("full")
     assert asyncio.run(auto.inference_route._no_model_loaded_error("No model loaded.", "org/A-GGUF", request, status = 400)) == (400, "No model loaded.")
+
+
+def test_the_keyless_load_probe_runs_off_the_event_loop(monkeypatch):
+    """The probe refreshes the scope from SQLite and may resolve the bind host, so it must
+    not run on the loop: a slow resolver would stall every in-flight generation, not just
+    this request. Same invariant as test_auth_lookup_off_event_loop.py."""
+    from routes import inference
+    from utils import keyless_api_access as keyless
+    seed_user(); set_keyless_api_access("full")
+    request = request_for(headers = {"Host": "localhost:8888"})
+    assert admitted_without_session(request)
+    threads: list[int] = []
+    def _probe(_request):
+        threads.append(threading.get_ident()); return True
+    monkeypatch.setattr(keyless, "keyless_request_may_load_models", _probe)
+    async def _drive():
+        return await inference._keyless_caller_held_back(request), threading.get_ident()
+    held_back, loop_thread = asyncio.run(_drive())
+    assert held_back is False
+    assert threads and all(thread != loop_thread for thread in threads)
 # fmt: on
