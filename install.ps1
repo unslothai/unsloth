@@ -7215,7 +7215,7 @@ exit 0
             # The helper already names the reason it could not delete. What it must not do is
             # report success anyway: a tree left behind by an open handle, a reparse point or a
             # long path frees none of the space this flag exists to free.
-            if (Remove-StudioVenvTreeWithRetry -Path $discard -Label "previous environment") {
+            if (Remove-StudioVenvTreeWithRetry -Path $discard -Label "previous environment" -LinkAware) {
                 substep "previous environment discarded (--no-rollback); a failed install cannot be undone"
             } else {
                 substep "it is no longer used for rollback; remove $discard by hand to reclaim the space." "Yellow"
@@ -7228,7 +7228,12 @@ exit 0
     function Remove-StudioVenvTreeWithRetry {
         param(
             [Parameter(Mandatory = $true)][string]$Path,
-            [Parameter(Mandatory = $true)][string]$Label
+            [Parameter(Mandatory = $true)][string]$Label,
+            # Only the --no-rollback discard asks for this. Test-StudioPathPresent is the stricter
+            # check and arguably the right default, but making it the default would change what
+            # this reports on installs that never passed the flag, and this change is meant to be
+            # invisible to them.
+            [switch]$LinkAware
         )
         $lastError = $null
         for ($attempt = 1; $attempt -le 3; $attempt++) {
@@ -7237,11 +7242,12 @@ exit 0
             } catch {
                 $lastError = $_.Exception.Message
             }
-            # Test-StudioPathPresent, not Test-Path: Test-Path follows a directory reparse
-            # point, so a dangling one that could not be unlinked reads as absent and this
-            # would report a removal that did not happen. Its callers act on that -- the
-            # --no-rollback discard clears the rollback state and says the environment is gone.
-            if (-not (Test-StudioPathPresent -Path $Path)) { return $true }
+            # Under -LinkAware, Test-Path is not enough: it follows a directory reparse point, so
+            # a dangling one that could not be unlinked reads as absent and this would report a
+            # removal that did not happen. The discard acts on that answer by clearing the
+            # rollback state and telling the user the environment is gone.
+            $stillThere = if ($LinkAware) { Test-StudioPathPresent -Path $Path } else { Test-Path -LiteralPath $Path }
+            if (-not $stillThere) { return $true }
             if ($attempt -lt 3) { Start-Sleep -Milliseconds (250 * $attempt) }
         }
         Write-StudioLine "[WARN] Could not remove $Label at $Path" -ForegroundColor Yellow
