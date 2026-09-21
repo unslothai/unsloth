@@ -40,13 +40,18 @@ def seed_user(*, must_change_password = False):
     )
 
 
-def auth_client():
+def auth_route_module():
+    """A fresh copy of routes/auth.py, so its in-memory rate-limit buckets start empty."""
     route_path = Path(__file__).resolve().parents[1] / "routes" / "auth.py"
     spec = importlib.util.spec_from_file_location("_desktop_auth_route", route_path)
     auth_route = importlib.util.module_from_spec(spec)
     assert spec.loader is not None
     spec.loader.exec_module(auth_route)
+    return auth_route
 
+
+def auth_client(auth_route = None):
+    auth_route = auth_route or auth_route_module()
     app = FastAPI()
     app.include_router(auth_route.router, prefix = "/api/auth")
     return TestClient(app)
@@ -1116,3 +1121,50 @@ def test_the_router_stub_covers_every_router_main_imports():
         f"main.py imports from routes.{{{','.join(unstubbed)}}}, which this file never "
         f"registers in sys.modules, so the real package would be imported instead"
     )
+
+
+def test_desktop_login_validates_off_the_event_loop():
+    """A sync def hands the 100k-iteration PBKDF2 to the threadpool.
+
+    As an ``async def`` the KDF ran on the single uvicorn event loop, so unauthenticated callers
+    could stall every other request the server was serving. /identity is sync for the same reason.
+    """
+    auth_route = auth_route_module()
+
+    assert not asyncio.iscoroutinefunction(auth_route.desktop_login)
+
+
+def test_desktop_login_throttles_unauthenticated_attempts():
+    """The route takes no credential and pays the KDF before it can reject the secret."""
+    seed_user(must_change_password = False)
+    auth_route = auth_route_module()
+    client = auth_client(auth_route)
+
+    codes = [
+        client.post("/api/auth/desktop-login", json = {"secret": "desktop-invalid"}).status_code
+        for _ in range(auth_route._LOGIN_MAX_FAILS + 3)
+    ]
+
+    assert codes[0] == 401
+    assert 429 in codes
+    blocked = client.post("/api/auth/desktop-login", json = {"secret": "desktop-invalid"})
+    assert blocked.status_code == 429
+    assert blocked.headers["Retry-After"]
+
+
+def test_desktop_login_still_admits_the_real_shell_after_a_miss():
+    """A stale secret from a restarted shell must not lock the retry out."""
+    seed_user(must_change_password = False)
+    auth_route = auth_route_module()
+    client = auth_client(auth_route)
+
+    assert (
+        client.post("/api/auth/desktop-login", json = {"secret": "desktop-stale"}).status_code
+        == 401
+    )
+    raw = storage.create_desktop_secret()
+    admitted = client.post("/api/auth/desktop-login", json = {"secret": raw})
+    assert admitted.status_code == 200
+    assert admitted.json()["access_token"]
+    # The success clears the bucket, so the shell is not throttled by its own earlier miss.
+    assert client.post("/api/auth/desktop-login", json = {"secret": raw}).status_code == 200

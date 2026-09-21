@@ -520,16 +520,34 @@ async def logout(
     return Response(status_code = status.HTTP_204_NO_CONTENT)
 
 
+# Sync def (not async), as /identity is: validating the secret spends a 100k-iteration PBKDF2 and a
+# SQLite transaction, and on the event loop that is the thread serving every other request.
 @router.post("/desktop-login", response_model = Token)
-async def desktop_login(payload: DesktopLoginRequest) -> Token | Response:
-    """Exchange a local desktop secret for normal admin-subject tokens."""
+def desktop_login(payload: DesktopLoginRequest, request: Request) -> Token | Response:
+    """Exchange a local desktop secret for normal admin-subject tokens. Per-IP rate-limited.
+
+    Throttled on the same bucket as /login's unknown usernames: the route takes no credential and
+    the KDF runs before an attacker-chosen secret can be rejected, so without it one unauthenticated
+    request buys unbounded work.
+    """
+    key = _unknown_user_key(request)
+    blocked_for = _login_blocked(key)
+    if blocked_for > 0:
+        raise HTTPException(
+            status_code = status.HTTP_429_TOO_MANY_REQUESTS,
+            detail = (f"Too many failed login attempts. " f"Try again in {blocked_for} seconds."),
+            headers = {"Retry-After": str(blocked_for)},
+        )
+
     verified = storage.validate_desktop_secret_with_credential(payload.secret)
     if verified is None:
+        _record_login_failure(key)
         raise HTTPException(
             status_code = status.HTTP_401_UNAUTHORIZED,
             detail = "Desktop authentication failed",
         )
     username, jwt_secret = verified
+    _clear_login_bucket(key)
 
     from auth.policy import installation_is_multi_user
 
