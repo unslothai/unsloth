@@ -418,6 +418,7 @@ export function RunPreviewCard({
 
   return (
     <aside
+      data-tour="studio-run-preview"
       className={cn(
         "elevated-card elevated-card-dark-border flex flex-col gap-7 bg-foreground/[0.012] p-6",
         "dark:bg-white/[0.018]",
@@ -512,7 +513,7 @@ export function RunPreviewCard({
           label={t("studio.preview.hardware")}
           value={
             gpu.available
-              ? `${gpu.name} · ${gpu.memoryTotalGb} GB`
+              ? `${gpu.name} · ${gpu.memoryTotalGb} GiB`
               : t("studio.preview.noGpu")
           }
         />

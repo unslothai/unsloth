@@ -22,6 +22,7 @@ from .llama_backend_double import FakeLlamaCppBackend
 
 class _ToolGgufBackend(FakeLlamaCppBackend):
     supports_tools = True
+    context_length = 8192
 
     def generate_chat_completion_with_tools(self, **kwargs):
         # The agentic loop runs one tool, then the model answers. Event shapes
@@ -91,8 +92,13 @@ def test_non_streaming_tool_call_returns_single_json(monkeypatch):
 
 
 def test_streaming_tool_call_still_streams(monkeypatch):
-    # The parallel path is untouched: stream:true keeps returning SSE.
-    response = _client(monkeypatch).post("/chat/completions", json = _payload(stream = True))
+    # The parallel path is untouched: stream:true keeps returning SSE. An unrestricted
+    # enable_tools arms the confirm gate, which asks over the control frames.
+    response = _client(monkeypatch).post(
+        "/chat/completions",
+        json = _payload(stream = True),
+        headers = {"X-Unsloth-Events": "1"},
+    )
 
     assert response.status_code == 200
     assert response.headers["content-type"].startswith("text/event-stream")
@@ -167,3 +173,37 @@ def test_non_streaming_preserves_cached_tokens(monkeypatch):
 
     assert response.status_code == 200
     assert response.json()["usage"]["prompt_tokens_details"]["cached_tokens"] == 16
+
+
+def test_non_streaming_preserves_accumulated_context_truncation(monkeypatch):
+    events = [
+        {
+            "type": "context_truncated",
+            "dropped_messages": 2,
+            "prompt_tokens_before": 9000,
+            "prompt_tokens_after": 7000,
+            "context_length": 8192,
+            "fits": True,
+        },
+        {
+            "type": "context_truncated",
+            "dropped_messages": 3,
+            "prompt_tokens_before": 8100,
+            "prompt_tokens_after": 6500,
+            "context_length": 8192,
+            "fits": True,
+        },
+        {"type": "content", "text": "hi"},
+    ]
+    response = _client(monkeypatch, _EventsBackend(events)).post(
+        "/chat/completions", json = _payload(stream = False)
+    )
+
+    assert response.status_code == 200
+    assert response.json()["context_truncated"] == {
+        "dropped_messages": 5,
+        "prompt_tokens_before": 9000,
+        "prompt_tokens_after": 6500,
+        "context_length": 8192,
+        "fits": True,
+    }

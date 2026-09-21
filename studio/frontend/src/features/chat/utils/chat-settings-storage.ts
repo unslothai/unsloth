@@ -4,10 +4,13 @@
 import {
   getChatSettings,
   saveChatSettingsPatch,
+  saveChatSettingsPatchIfCurrent,
+  type ChatSettingsPath,
   type PersistedChatPreset,
   type PersistedChatSettings,
   type PersistedInferenceParams,
 } from "../api/chat-settings-api";
+import { isMinPMode, normalizeSavedMinP } from "../lib/min-p-policy";
 import { normalizePresetLoadConfig } from "../presets/preset-load-config";
 import {
   BUILTIN_PRESETS,
@@ -19,6 +22,11 @@ import {
   type Preset,
 } from "../presets/preset-policy";
 import type { ReasoningEffort } from "../stores/chat-runtime-store";
+import { MAX_SAMPLING_SEED } from "../types/runtime";
+import {
+  sanitizeCompactionHeadroomRatio,
+  sanitizeContextPolicy,
+} from "./auto-compaction";
 import {
   assignSanitizedMirroredSettings,
   hasNoMirroredSettings,
@@ -137,6 +145,7 @@ function sanitizeInferenceParams(
   if (!isRecord(value)) return undefined;
 
   const params: PersistedInferenceParams = {};
+  if (isMinPMode(value.minPMode)) params.minPMode = value.minPMode;
   for (const field of NUMERIC_INFERENCE_FIELDS) {
     const fieldValue = value[field];
     if (typeof fieldValue === "number" && Number.isFinite(fieldValue)) {
@@ -153,13 +162,24 @@ function sanitizeInferenceParams(
   if (typeof value.fastMode === "boolean") {
     params.fastMode = value.fastMode;
   }
+  // Bounded here as well as in the panel: this gates the hydration read and the outgoing PUT alike.
+  if (value.seed === null) {
+    // Kept, not dropped: the server merge overwrites the keys it receives and removes none.
+    params.seed = null;
+  } else if (
+    typeof value.seed === "number" &&
+    Number.isInteger(value.seed) &&
+    value.seed >= 0 &&
+    value.seed <= MAX_SAMPLING_SEED
+  ) {
+    params.seed = value.seed;
+  }
   return hasKeys(params) ? params : undefined;
 }
 
-// Not capped. The server merge never removes keys and keeps an existing key in
-// its original position, so a load-time trim would permanently hide the oldest
-// entries: editing one of those models would write an update that the next
-// reload silently drops again. Entries are a dozen numbers each.
+// Not capped. The server merge never removes keys and keeps an existing key in its original
+// position, so a load-time trim would permanently hide the oldest entries: editing one of those
+// models would write an update the next reload silently drops. Entries are a dozen numbers each.
 function sanitizeInferenceParamsByModel(
   value: unknown,
 ): Record<string, PersistedInferenceParams> | undefined {
@@ -179,7 +199,7 @@ function toFullPreset(preset: PersistedChatPreset): Preset {
     name: preset.name,
     params: {
       ...defaultInferenceParams,
-      ...preset.params,
+      ...normalizeSavedMinP(preset.params),
       checkpoint: defaultInferenceParams.checkpoint,
     },
     ...(loadConfig ? { loadConfig } : {}),
@@ -239,7 +259,30 @@ function sanitizeInt(value: unknown, min: number): number | undefined {
     : undefined;
 }
 
-function sanitizeChatSettings(value: unknown): PersistedChatSettings {
+/** Read-only migration; outgoing numeric patches do not imply user intent. */
+export function normalizeSavedChatSettings(value: unknown): PersistedChatSettings {
+  const settings = sanitizeChatSettings(value);
+  if (settings.inferenceParams) {
+    settings.inferenceParams = normalizeSavedMinP(settings.inferenceParams);
+  }
+  if (settings.inferenceParamsByModel) {
+    settings.inferenceParamsByModel = Object.fromEntries(
+      Object.entries(settings.inferenceParamsByModel).map(([id, params]) => [
+        id,
+        normalizeSavedMinP(params),
+      ]),
+    );
+  }
+  if (settings.customPresets) {
+    settings.customPresets = settings.customPresets.map((preset) => ({
+      ...preset,
+      params: normalizeSavedMinP(preset.params),
+    }));
+  }
+  return settings;
+}
+
+export function sanitizeChatSettings(value: unknown): PersistedChatSettings {
   if (!isRecord(value)) return {};
 
   const settings: PersistedChatSettings = {};
@@ -259,7 +302,12 @@ function sanitizeChatSettings(value: unknown): PersistedChatSettings {
   );
   const autoHealToolCalls = sanitizeBool(value.autoHealToolCalls);
   const nudgeToolCalls = sanitizeBool(value.nudgeToolCalls);
-  const maxToolCallsPerMessage = sanitizeInt(value.maxToolCallsPerMessage, 1);
+  const autoCompactEnabled = sanitizeBool(value.autoCompactEnabled);
+  const contextPolicy = sanitizeContextPolicy(value.contextPolicy);
+  const compactionHeadroomRatio = sanitizeCompactionHeadroomRatio(
+    value.compactionHeadroomRatio,
+  );
+  const maxToolCallsPerMessage = sanitizeInt(value.maxToolCallsPerMessage, 0);
   const toolCallTimeout = sanitizeInt(value.toolCallTimeout, 1);
 
   if (inferenceParams) settings.inferenceParams = inferenceParams;
@@ -289,6 +337,13 @@ function sanitizeChatSettings(value: unknown): PersistedChatSettings {
   }
   if (nudgeToolCalls !== undefined) {
     settings.nudgeToolCalls = nudgeToolCalls;
+  }
+  if (autoCompactEnabled !== undefined) {
+    settings.autoCompactEnabled = autoCompactEnabled;
+  }
+  if (contextPolicy) settings.contextPolicy = contextPolicy;
+  if (compactionHeadroomRatio !== undefined) {
+    settings.compactionHeadroomRatio = compactionHeadroomRatio;
   }
   if (maxToolCallsPerMessage !== undefined) {
     settings.maxToolCallsPerMessage = maxToolCallsPerMessage;
@@ -354,6 +409,9 @@ export function isEmptyChatSettings(settings: PersistedChatSettings): boolean {
     settings.allowArtifactNetworkAccess === undefined &&
     settings.autoHealToolCalls === undefined &&
     settings.nudgeToolCalls === undefined &&
+    settings.autoCompactEnabled === undefined &&
+    settings.contextPolicy === undefined &&
+    settings.compactionHeadroomRatio === undefined &&
     settings.maxToolCallsPerMessage === undefined &&
     settings.toolCallTimeout === undefined &&
     hasNoMirroredSettings(settings)
@@ -386,7 +444,7 @@ export function loadLegacyChatSettings(): PersistedChatSettings {
   const allowArtifactNetworkAccess = loadBool(ALLOW_ARTIFACT_NETWORK_ACCESS_KEY);
   const autoHealToolCalls = loadBool(AUTO_HEAL_TOOL_CALLS_KEY);
   const nudgeToolCalls = loadBool(NUDGE_TOOL_CALLS_KEY);
-  const maxToolCallsPerMessage = loadInt(MAX_TOOL_CALLS_KEY, 1);
+  const maxToolCallsPerMessage = loadInt(MAX_TOOL_CALLS_KEY, 0);
   const toolCallTimeout = loadInt(TOOL_CALL_TIMEOUT_KEY, 1);
   const allCustomPresets = sanitizeCustomPresets([
     ...(customPresets ?? []),
@@ -420,30 +478,34 @@ export function loadLegacyChatSettings(): PersistedChatSettings {
   }
   if (toolCallTimeout !== undefined) settings.toolCallTimeout = toolCallTimeout;
 
-  return settings;
+  return normalizeSavedChatSettings(settings);
 }
 
 export interface LoadedChatSettings {
   settings: PersistedChatSettings;
-  /**
-   * The GET answered, so a mirrored field missing from `settings` is missing on
-   * the server too. False when the read fell back to this browser's legacy
-   * storage: nothing is then known about the server, and treating every field
-   * as absent would back this browser's stale values over another's.
-   */
+  /** The GET answered, so a mirrored field missing from `settings` is missing on the server too.
+   *  False when the read fell back to this browser's legacy storage: nothing is then known about the
+   *  server, and treating every field as absent would back this browser's stale values over another's. */
   fromServer: boolean;
+  /**
+   * Whether these values are what the server holds. False when a legacy import
+   * merged local values but failed to save them: the server answered, so
+   * absence is still authoritative, but the merge exists only in this session
+   * and a later re-read would silently drop it.
+   */
+  persisted: boolean;
 }
 
 export async function loadChatSettingsWithLegacyImport(): Promise<LoadedChatSettings> {
   let dbSettings: PersistedChatSettings;
   try {
-    dbSettings = sanitizeChatSettings(await getChatSettings());
+    dbSettings = normalizeSavedChatSettings(await getChatSettings());
   } catch (error) {
     const legacySettings = loadLegacyChatSettings();
     if (isEmptyChatSettings(legacySettings)) {
       throw error;
     }
-    return { settings: legacySettings, fromServer: false };
+    return { settings: legacySettings, fromServer: false, persisted: false };
   }
 
   const legacySettings = loadLegacyChatSettings();
@@ -452,24 +514,25 @@ export async function loadChatSettingsWithLegacyImport(): Promise<LoadedChatSett
       !isEmptyChatSettings(dbSettings) ||
       isEmptyChatSettings(legacySettings)
     ) {
-      return { settings: dbSettings, fromServer: true };
+      return { settings: dbSettings, fromServer: true, persisted: true };
     }
     try {
       return {
-        settings: sanitizeChatSettings(
+        settings: normalizeSavedChatSettings(
           await saveChatSettingsPatch(legacySettings),
         ),
         fromServer: true,
+        persisted: true,
       };
     } catch {
       // The GET still answered (empty), so absence remains authoritative.
-      return { settings: legacySettings, fromServer: true };
+      return { settings: legacySettings, fromServer: true, persisted: false };
     }
   }
 
   if (isEmptyChatSettings(legacySettings)) {
     markLegacySettingsImportDone();
-    return { settings: dbSettings, fromServer: true };
+    return { settings: dbSettings, fromServer: true, persisted: true };
   }
 
   const mergedSettings = {
@@ -481,13 +544,13 @@ export async function loadChatSettingsWithLegacyImport(): Promise<LoadedChatSett
     },
   };
   try {
-    const savedSettings = sanitizeChatSettings(
+    const savedSettings = normalizeSavedChatSettings(
       await saveChatSettingsPatch(mergedSettings),
     );
     markLegacySettingsImportDone();
-    return { settings: savedSettings, fromServer: true };
+    return { settings: savedSettings, fromServer: true, persisted: true };
   } catch {
-    return { settings: mergedSettings, fromServer: true };
+    return { settings: mergedSettings, fromServer: true, persisted: false };
   }
 }
 
@@ -495,7 +558,25 @@ export async function savePersistedChatSettingsPatch(
   patch: PersistedChatSettings,
   options: { keepalive?: boolean } = {},
 ): Promise<PersistedChatSettings> {
-  return sanitizeChatSettings(
+  return normalizeSavedChatSettings(
     await saveChatSettingsPatch(sanitizeChatSettings(patch), options),
   );
+}
+
+export async function savePersistedChatSettingsPatchIfCurrent(
+  expected: PersistedChatSettings,
+  patch: PersistedChatSettings,
+  expectedAbsent: Array<keyof PersistedChatSettings> = [],
+  expectedAbsentPaths: ChatSettingsPath[] = [],
+): Promise<{ settings: PersistedChatSettings; applied: boolean }> {
+  const result = await saveChatSettingsPatchIfCurrent(
+    sanitizeChatSettings(expected),
+    sanitizeChatSettings(patch),
+    expectedAbsent,
+    expectedAbsentPaths,
+  );
+  return {
+    settings: normalizeSavedChatSettings(result.settings),
+    applied: result.applied,
+  };
 }

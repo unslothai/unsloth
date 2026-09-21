@@ -99,7 +99,8 @@ def run(mode, steps, seed, res):
     torch.cuda.empty_cache()
 
     if mode == "prequant":
-        # Local checkpoints are refused unless allowlisted; CKPT is operator-supplied and trusted.
+        # Local checkpoints are refused unless allowlisted;
+        # CKPT is operator-supplied and trusted.
         ckpt_dir = os.path.dirname(os.path.realpath(CKPT))
         existing = os.environ.get(ALLOW_LOCAL_PREQUANT_PATH_ENV, "")
         os.environ[ALLOW_LOCAL_PREQUANT_PATH_ENV] = (
@@ -140,7 +141,7 @@ def run(mode, steps, seed, res):
         # Persist the dense reference peak so a later prequant run can enforce its VRAM win.
         _RUNTIME_PEAK_FILE.write_text(f"{load_peak:.6f}")
 
-    img, dt = _gen(pipe, steps, seed, res)  # warmup
+    img, dt = _gen(pipe, steps, seed, res)
     img, dt = _gen(pipe, steps, seed, res)
     img.save(OUT / f"{mode}.png")
     print(f"[{mode}] gen={dt:.3f}s saved {mode}.png", flush = True)

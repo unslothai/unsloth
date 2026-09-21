@@ -9,11 +9,11 @@
  * this one, which put this panel's header, its Close button and its drag
  * handle underneath a window the user can resize across the whole viewport.
  *
- * Avoidance rather than a z-index, because it is what Studio already does in
- * this corner: the notification stack does not outrank the monitor, it steps
- * over it (monitor-frame-store's stackGeometry, whose gap and inset this file
- * matches so the three surfaces line up on one grid). This panel reads the same
- * published boxes and does the same thing one rung further in.
+ * Avoidance rather than a z-index, because both are windows the user drags,
+ * resizes and closes, and the one underneath loses controls it needs. The
+ * notification rail is the opposite case, settled by z-order: it is passive
+ * status, it never moves, and the panels paint over it. The gap and inset here
+ * match the rail's so the three surfaces line up on one grid.
  *
  * Pure, and separate from the component, because the interesting part is what
  * happens when there is nowhere clear to go.
@@ -127,12 +127,11 @@ function candidates(
   const steps = [...obstacles]
     .sort((a, b) => b.top - a.top)
     .map((box) => ({ left: right, top: box.top - PANEL_GAP - size.height }));
-  // The corner each candidate came from, kept rather than inferred back out of
-  // its coordinates. A 400px panel in a 768px window is anchored right at
-  // left=352, which is left of the midpoint, so reading the side off `left`
-  // ranked the right-hand corner as a left-hand refuge. Being first, it then
-  // won the tie and the panel stayed exactly where it was, over the Close
-  // button and the resize grip this fallback exists to keep reachable.
+  // The corner each candidate came from, kept rather than inferred back out of its coordinates. A
+  // 400px panel in a 768px window is anchored right at left=352, which is left of the midpoint, so
+  // reading the side off `left` ranked the right-hand corner as a left-hand refuge. Being first, it
+  // then won the tie and the panel stayed exactly where it was, over the Close button and the
+  // resize grip this fallback exists to keep reachable.
   const ordered: Array<PanelAnchor & { rightSide: boolean }> = [
     { left: right, top: bottom, rightSide: true },
     ...steps.map((step) => ({ ...step, rightSide: true })),
@@ -145,9 +144,8 @@ function candidates(
     return {
       anchor: placed,
       clearRank: index,
-      // Left half first, and within a half the bottom first: this panel and
-      // the stack both live along the bottom edge, so a refuge up top is the
-      // bigger surprise.
+      // Left half first, and within a half the bottom first: this panel and the stack both live
+      // along the bottom edge, so a refuge up top is the bigger surprise.
       refugeRank:
         (anchor.rightSide ? 2 : 0) +
         (placed.top > viewport.height / 2 ? 0 : 1),

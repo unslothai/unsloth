@@ -25,6 +25,221 @@ from pathlib import Path
 
 import pytest
 
+from .thread_drain import join_when_started
+
+
+def _shared_setup_1(monkeypatch, tmp_path):
+    monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(tmp_path / "sb"))
+
+    from core.inference import tools
+
+    tools._workdirs.clear()
+    return tools
+
+
+def _shared_setup_2(monkeypatch, tmp_path):
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
+
+    from core.inference import tools
+
+    _forget_sandbox_state(tools)
+    return tools
+
+
+def _shared_setup_3(monkeypatch, root):
+    monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(root))
+
+    from core.inference import tools
+
+    tools._workdirs.clear()
+    return tools
+
+
+def _shared_setup_4(monkeypatch, tmp_path):
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
+
+    from core.inference import tools
+    from storage import studio_db
+
+    _forget_sandbox_state(tools)
+    return studio_db, tools
+
+
+def _shared_setup_5(monkeypatch, tmp_path):
+    root = _shared_root(tmp_path, monkeypatch)
+
+    from core.inference import tools
+
+    _forget_sandbox_state(tools)
+    return root, tools
+
+
+def _shared_setup_6():
+    from core.inference import tools
+
+    tools._workdirs.clear()
+    tools._legacy_sandbox_migrated = False
+    return tools
+
+
+def _shared_setup_7(monkeypatch):
+    monkeypatch.delenv("UNSLOTH_STUDIO_SANDBOX_HOME", raising = False)
+
+    from core.inference import tools
+
+    tools._workdirs.clear()
+    return tools
+
+
+def _shared_setup_8(monkeypatch, tmp_path):
+    import asyncio
+
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
+
+    from core.inference import tools
+    from routes import chat_history
+
+    return asyncio, chat_history, tools
+
+
+def _shared_setup_9():
+    import inspect
+
+    from routes import chat_history
+
+    route = inspect.getsource(chat_history.delete_project)
+    return route
+
+
+def _shared_setup_10(monkeypatch, studio_db, workspace):
+    monkeypatch.setattr(
+        studio_db,
+        "ensure_chat_project_workspace",
+        lambda pid: {
+            "id": pid,
+            "rootPath": str(workspace),
+            "sandboxPath": str(workspace / "sandbox"),
+        },
+    )
+
+
+def _shared_setup_11(fake_home, monkeypatch, tmp_path):
+    monkeypatch.setenv("HOME", str(fake_home))
+    monkeypatch.setenv("USERPROFILE", str(fake_home))
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
+    monkeypatch.delenv("UNSLOTH_STUDIO_SANDBOX_HOME", raising = False)
+
+
+def _shared_setup_12(inference, monkeypatch, sandbox):
+    monkeypatch.setattr(inference, "_authenticate_header_or_query", _noop_async)
+    monkeypatch.setattr(
+        inference,
+        "_sandbox_dir_for",
+        lambda session_id, create = False: str(sandbox),
+    )
+
+
+def _shared_setup_13(monkeypatch):
+    monkeypatch.delenv("UNSLOTH_COMPILE_LOCATION", raising = False)
+
+    from utils import cache_cleanup
+    from utils.paths import storage_roots
+
+    storage_roots.setup_cache_env()
+    pinned = Path(os.environ["UNSLOTH_COMPILE_LOCATION"])
+    return cache_cleanup, pinned
+
+
+def _shared_setup_14():
+    import asyncio
+
+    from fastapi import HTTPException
+
+    from routes import inference
+
+    return HTTPException, asyncio, inference
+
+
+def _shared_setup_15(monkeypatch, tmp_path):
+    import asyncio
+
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
+
+    from routes import inference
+
+    return asyncio, inference
+
+
+def _shared_setup_16(monkeypatch, tmp_path):
+    monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(tmp_path / "sb"))
+
+    from core.inference import tools
+    from routes import inference
+
+    tools._workdirs.clear()
+    return inference, tools
+
+
+def _shared_setup_17():
+    import inspect
+
+    from routes import chat_history
+    from storage import studio_db
+
+    return chat_history, inspect, studio_db
+
+
+def _shared_setup_18(HTTPException, asyncio, inference):
+    with pytest.raises(HTTPException) as caught:
+        asyncio.new_event_loop().run_until_complete(
+            inference.reveal_sandbox_dir("thread-1", request = None, token = None, session = None)
+        )
+    return caught
+
+
+def _shared_setup_19(monkeypatch, tmp_path):
+    monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(tmp_path / "sb"))
+
+    from fastapi import HTTPException
+
+    from core.inference import tools
+
+    return HTTPException, tools
+
+
+def _shared_setup_20(monkeypatch, opened, path_utils):
+    monkeypatch.setattr(
+        path_utils,
+        "reveal_in_file_manager",
+        lambda path, expect_dir = False: opened.append(path),
+    )
+
+
+def _shared_setup_21(launch_dir, monkeypatch):
+    monkeypatch.chdir(launch_dir)
+    monkeypatch.delenv("UNSLOTH_COMPILE_LOCATION", raising = False)
+
+    from utils import cache_cleanup
+
+    return cache_cleanup
+
+
+def _shared_setup_22(monkeypatch, tmp_path):
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("UNSLOTH_STUDIO_PROJECTS_HOME", str(tmp_path / "projects"))
+
+    from core.inference import tools
+
+    return tools
+
+
+def _shared_setup_23(tmp_path):
+    from utils.paths import path_utils
+
+    sandbox = tmp_path / "sandbox" / "thread-1"
+    sandbox.mkdir(parents = True)
+    return path_utils, sandbox
+
 
 _FRONTEND_SRC = Path(__file__).resolve().parents[2] / "frontend" / "src"
 
@@ -127,16 +342,13 @@ def test_legacy_sandbox_is_migrated(tmp_path, monkeypatch):
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(studio_home))
     monkeypatch.delenv("UNSLOTH_STUDIO_SANDBOX_HOME", raising = False)
 
-    from core.inference import tools
-
-    tools._workdirs.clear()
-    tools._legacy_sandbox_migrated = False
+    tools = _shared_setup_6()
     wd = Path(tools.get_sandbox_workdir("__LOCALID_new5678"))
     # Another chat's folder rides the background pass, so a first call never
     # waits on the whole tree.
     for thread in threading.enumerate():
         if thread.name == "sandbox-migrate":
-            thread.join(30)
+            join_when_started(thread, timeout = 30)
     moved = wd.parent / "__LOCALID_old1234" / "results.csv"
     print(f"\nmigrated to {moved}")
     assert moved.is_file()
@@ -151,10 +363,22 @@ def test_images_stay_inline_and_everything_else_downloads():
 
     The allowlist is deliberately NOT just widened: the model picks these
     filenames, so an inline text/html would be same-origin script execution.
+
+    `.avif` joined because it is a raster codec, not a document type -- `nosniff`
+    pins the type either way, and a model that writes `photo.avif` should get an
+    image rather than an attachment it cannot see. `.svg` stays out for exactly
+    that document-type reason: inline SVG is same-origin script execution.
     """
+    from core.inference import tools as _t
     from routes.inference import _SANDBOX_MEDIA_TYPES
 
-    for ext in (".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"):
+    # One set, two jobs: what the route serves inline and what a tool call reports inline must not
+    # drift apart, or a model's photo previews in chat but hides on the tool card (or vice versa).
+    assert (
+        set(_SANDBOX_MEDIA_TYPES) == _t._IMAGE_EXTS
+    ), "the route's inline map and the tool-result classifier drifted apart"
+
+    for ext in (".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".avif"):
         assert ext in _SANDBOX_MEDIA_TYPES
     for ext in (".csv", ".txt", ".py", ".json", ".pdf", ".zip", ".html", ".svg"):
         assert ext not in _SANDBOX_MEDIA_TYPES, ext
@@ -194,11 +418,7 @@ def test_sandbox_listing_route_exists():
 # ---------------------------------------------------------------------------
 def test_both_executors_report_created_files(tmp_path, monkeypatch):
     """A file is reported whether it came from python or from bash."""
-    monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(tmp_path / "sb"))
-
-    from core.inference import tools
-
-    tools._workdirs.clear()
+    tools = _shared_setup_1(monkeypatch, tmp_path)
     session = "__LOCALID_exec123"
     workdir = tools.get_sandbox_workdir(session)
 
@@ -225,11 +445,7 @@ def test_both_executors_report_created_files(tmp_path, monkeypatch):
 
 def test_internal_temp_files_are_not_reported(tmp_path, monkeypatch):
     """The executor's own scratch script is not a user-facing artifact."""
-    monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(tmp_path / "sb"))
-
-    from core.inference import tools
-
-    tools._workdirs.clear()
+    tools = _shared_setup_1(monkeypatch, tmp_path)
     result = tools._python_exec("print('hi')", session_id = "__LOCALID_tmp999")
     assert "studio_exec_" not in result
     assert "__FILES__" not in result
@@ -292,11 +508,7 @@ def test_cache_cleanup_finds_the_configured_and_cwd_caches(tmp_path, monkeypatch
 # ---------------------------------------------------------------------------
 def test_deleting_a_chat_cleans_up_its_sandbox(tmp_path, monkeypatch):
     """An empty sandbox always goes; files need an explicit opt-in."""
-    monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(tmp_path / "sb"))
-
-    from core.inference import tools
-
-    tools._workdirs.clear()
+    tools = _shared_setup_1(monkeypatch, tmp_path)
     empty = Path(tools.get_sandbox_workdir("__LOCALID_empty11"))
     assert tools.remove_session_sandbox("__LOCALID_empty11") is True
     assert not empty.exists()
@@ -326,11 +538,7 @@ def test_sandbox_removal_cannot_escape_the_root(tmp_path, monkeypatch):
 def test_a_windows_device_name_never_becomes_a_directory(tmp_path, monkeypatch):
     """CON, NUL and friends are reserved on Windows even as folder names, and
     the session id comes from the caller."""
-    monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(tmp_path / "sb"))
-
-    from core.inference import tools
-
-    tools._workdirs.clear()
+    tools = _shared_setup_1(monkeypatch, tmp_path)
     seen = set()
     for reserved in ("con", "NUL", "aux", "COM1", "lpt9", "nul.txt"):
         workdir = Path(tools.get_sandbox_workdir(reserved))
@@ -343,11 +551,7 @@ def test_a_windows_device_name_never_becomes_a_directory(tmp_path, monkeypatch):
 def test_reading_a_sandbox_never_creates_it(tmp_path, monkeypatch):
     """A GET must not leave a folder behind for every id it is asked about."""
     root = tmp_path / "sb"
-    monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(root))
-
-    from core.inference import tools
-
-    tools._workdirs.clear()
+    tools = _shared_setup_3(monkeypatch, root)
     resolved = Path(tools.resolve_sandbox_workdir("__LOCALID_ghost"))
     assert resolved == root / "__LOCALID_ghost"
     assert not resolved.exists()
@@ -376,11 +580,7 @@ def test_clearing_the_compiled_cache_covers_the_configured_location(tmp_path, mo
 def test_a_file_in_a_subdirectory_is_reported_and_servable(tmp_path, monkeypatch):
     """`df.to_csv("outputs/report.csv")` is ordinary; a top-level listing saw
     only the directory and dropped it, so no chip and no download."""
-    monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(tmp_path / "sb"))
-
-    from core.inference import tools
-
-    tools._workdirs.clear()
+    tools = _shared_setup_1(monkeypatch, tmp_path)
     workdir = Path(tools.get_sandbox_workdir("__LOCALID_nested1"))
     before = tools._snapshot_workdir_files(str(workdir))
     (workdir / "outputs").mkdir()
@@ -394,11 +594,7 @@ def test_a_file_in_a_subdirectory_is_reported_and_servable(tmp_path, monkeypatch
 
 def test_the_walk_is_bounded(tmp_path, monkeypatch):
     """A chat that unpacked an archive must not turn a tool call into a crawl."""
-    monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(tmp_path / "sb"))
-
-    from core.inference import tools
-
-    tools._workdirs.clear()
+    tools = _shared_setup_1(monkeypatch, tmp_path)
     workdir = Path(tools.get_sandbox_workdir("__LOCALID_deep111"))
     deep = workdir
     for level in range(8):
@@ -412,11 +608,7 @@ def test_the_walk_is_bounded(tmp_path, monkeypatch):
 
 def test_files_written_before_a_timeout_are_still_reported(tmp_path, monkeypatch):
     """`printf data > report.csv; sleep 999` produced that file."""
-    monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(tmp_path / "sb"))
-
-    from core.inference import tools
-
-    tools._workdirs.clear()
+    tools = _shared_setup_1(monkeypatch, tmp_path)
     result = tools._bash_exec(
         "printf data > report.csv; sleep 30",
         timeout = 3,
@@ -428,11 +620,7 @@ def test_files_written_before_a_timeout_are_still_reported(tmp_path, monkeypatch
 
 
 def test_the_image_list_is_capped_like_the_file_list(tmp_path, monkeypatch):
-    monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(tmp_path / "sb"))
-
-    from core.inference import tools
-
-    tools._workdirs.clear()
+    tools = _shared_setup_1(monkeypatch, tmp_path)
     workdir = Path(tools.get_sandbox_workdir("__LOCALID_manyimg"))
     before = tools._snapshot_workdir_files(str(workdir))
     for i in range(80):
@@ -457,18 +645,14 @@ def test_a_tool_printing_the_files_marker_keeps_its_output():
 
 def test_clearing_all_chats_cleans_up_their_sandboxes(tmp_path, monkeypatch):
     """The UI's "Clear all chats" is the common bulk delete."""
-    monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(tmp_path / "sb"))
-
-    from core.inference import tools
-
-    tools._workdirs.clear()
+    tools = _shared_setup_1(monkeypatch, tmp_path)
     empty = Path(tools.get_sandbox_workdir("__LOCALID_bulk111"))
     assert empty.is_dir()
 
     import routes.chat_history as chat_history
 
     monkeypatch.setattr(chat_history, "list_chat_threads", lambda: [{"id": "__LOCALID_bulk111"}])
-    monkeypatch.setattr(chat_history, "clear_chat_history", lambda: ([], []))
+    monkeypatch.setattr(chat_history, "clear_chat_history", lambda **_kwargs: ([], [], []))
     monkeypatch.setattr(chat_history, "_cancel_active_research", lambda request, ids: None)
 
     import asyncio
@@ -493,10 +677,7 @@ def test_the_legacy_migration_is_startup_work(tmp_path, monkeypatch):
     legacy.mkdir(parents = True)
     (legacy / "sales.csv").write_text("a,b\n")
 
-    from core.inference import tools
-
-    tools._workdirs.clear()
-    tools._legacy_sandbox_migrated = False
+    tools = _shared_setup_6()
     # A read does not move anything.
     Path(tools.resolve_sandbox_workdir("__LOCALID_upgrade"))
     assert (legacy / "sales.csv").is_file()
@@ -516,20 +697,14 @@ def test_the_migration_is_serialised(tmp_path, monkeypatch):
 
     fake_home = tmp_path / "userprofile"
     fake_home.mkdir()
-    monkeypatch.setenv("HOME", str(fake_home))
-    monkeypatch.setenv("USERPROFILE", str(fake_home))
-    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
-    monkeypatch.delenv("UNSLOTH_STUDIO_SANDBOX_HOME", raising = False)
+    _shared_setup_11(fake_home, monkeypatch, tmp_path)
 
     for index in range(6):
         session = fake_home / "studio_sandbox" / f"__LOCALID_race{index}"
         session.mkdir(parents = True)
         (session / "data.csv").write_text("a\n")
 
-    from core.inference import tools
-
-    tools._workdirs.clear()
-    tools._legacy_sandbox_migrated = False
+    tools = _shared_setup_6()
     results = []
 
     def first_tool_call(index):
@@ -546,14 +721,391 @@ def test_the_migration_is_serialised(tmp_path, monkeypatch):
         assert (workdir / "data.csv").is_file(), f"{workdir} lost its files"
 
 
+def test_a_first_tool_call_waits_out_a_move_already_in_staging(tmp_path, monkeypatch):
+    """The window above, forced rather than raced for.
+
+    ``_staged_move`` renames the tree aside into staging before renaming it into place, so in
+    between the legacy copy is gone and the destination does not exist yet. A first tool call
+    landing there used to read the missing source as nothing to do, create an empty sandbox
+    under the name the pending rename needs, and hand the chat a directory with none of its
+    files in it. The test above only hits this when the scheduler happens to line the two up,
+    which on CI was about one run in a hundred; this one blocks the mover inside the window."""
+    import shutil
+    import threading
+
+    fake_home = tmp_path / "userprofile"
+    fake_home.mkdir()
+    _shared_setup_11(fake_home, monkeypatch, tmp_path)
+
+    session = fake_home / "studio_sandbox" / "__LOCALID_staged"
+    session.mkdir(parents = True)
+    (session / "data.csv").write_text("a\n")
+
+    tools = _shared_setup_6()
+
+    staged = threading.Event()
+    release = threading.Event()
+    real_move = shutil.move
+
+    def gated_move(source, destination, *args, **kwargs):
+        moved = real_move(source, destination, *args, **kwargs)
+        if "__LOCALID_staged" in str(destination):
+            staged.set()  # the source is gone and the destination is not in place yet
+            release.wait(10)
+        return moved
+
+    monkeypatch.setattr(tools.shutil, "move", gated_move)
+
+    mover = threading.Thread(
+        target = lambda: tools._migrate_legacy_sandbox(tools.sandbox_root()),
+        daemon = True,
+    )
+    mover.start()
+    assert staged.wait(10), "the migration never reached the staging window"
+
+    result = {}
+    caller = threading.Thread(
+        target = lambda: result.update(
+            workdir = Path(tools.get_sandbox_workdir("__LOCALID_staged")),
+        ),
+        daemon = True,
+    )
+    caller.start()
+    caller.join(1.0)
+    # The point of the test: answering from inside the window is what loses the files.
+    returned_early = not caller.is_alive()
+    release.set()
+    caller.join(10)
+    mover.join(10)
+
+    assert not returned_early, "the first tool call answered from inside the staging window"
+    assert "workdir" in result, "the first tool call never returned"
+    assert (result["workdir"] / "data.csv").is_file(), f"{result['workdir']} lost its files"
+
+
+def test_the_migrated_flag_cannot_be_set_over_a_move_still_in_staging(tmp_path, monkeypatch):
+    """A whole-tree pass must not call the migration finished over a move still in staging.
+
+    While one session sits in staging, neither root holds it, so a pass that lists the legacy
+    root right then finds it empty and moves nothing. Reporting that as finished retires the
+    retry a rollback would need, and removes the legacy root a rollback renames back into. The
+    first tool call underneath has to come back with the files either way."""
+    import shutil
+    import threading
+
+    fake_home = tmp_path / "userprofile"
+    fake_home.mkdir()
+    _shared_setup_11(fake_home, monkeypatch, tmp_path)
+
+    session = fake_home / "studio_sandbox" / "__LOCALID_flag"
+    session.mkdir(parents = True)
+    (session / "data.csv").write_text("a\n")
+
+    tools = _shared_setup_6()
+
+    staged = threading.Event()
+    release = threading.Event()
+    real_move = shutil.move
+
+    def gated_move(source, destination, *args, **kwargs):
+        moved = real_move(source, destination, *args, **kwargs)
+        if "__LOCALID_flag" in str(destination):
+            staged.set()
+            release.wait(10)
+        return moved
+
+    monkeypatch.setattr(tools.shutil, "move", gated_move)
+
+    root = tools.sandbox_root()
+    mover = threading.Thread(
+        target = lambda: tools._migrate_one_legacy_session(root, "__LOCALID_flag"),
+        daemon = True,
+    )
+    mover.start()
+    assert staged.wait(10), "the per-session move never reached the staging window"
+
+    tools._migrate_legacy_sandbox(root)  # sees an empty legacy root while this one is in staging
+    assert (
+        not tools._legacy_sandbox_migrated
+    ), "a pass that ran through another session's staging window called the migration finished"
+
+    result = {}
+    caller = threading.Thread(
+        target = lambda: result.update(
+            workdir = Path(tools.get_sandbox_workdir("__LOCALID_flag")),
+        ),
+        daemon = True,
+    )
+    caller.start()
+    caller.join(1.0)
+    returned_early = not caller.is_alive()
+    release.set()
+    caller.join(10)
+    mover.join(10)
+
+    assert not returned_early, "the first tool call answered from inside the staging window"
+    assert "workdir" in result, "the first tool call never returned"
+    assert (result["workdir"] / "data.csv").is_file(), f"{result['workdir']} lost its files"
+
+
+def test_a_rolled_back_move_puts_the_migration_back_on_the_table(tmp_path, monkeypatch):
+    """_staged_move restores the legacy copy when the final rename fails, and says so in its
+    own comment: put it back and let the next pass retry. With the done flag already set by a
+    pass that ran while this sat in staging there is no next pass, and every later call short
+    circuits on the flag, so the chat keeps an empty sandbox until the process restarts."""
+    import os
+    import shutil
+    import threading
+
+    fake_home = tmp_path / "userprofile"
+    fake_home.mkdir()
+    _shared_setup_11(fake_home, monkeypatch, tmp_path)
+
+    legacy = fake_home / "studio_sandbox" / "__LOCALID_rollback"
+    legacy.mkdir(parents = True)
+    (legacy / "data.csv").write_text("a\n")
+
+    tools = _shared_setup_6()
+
+    staged = threading.Event()
+    release = threading.Event()
+    real_move = shutil.move
+    real_rename = os.rename
+    rename_failed = []
+
+    def gated_move(source, destination, *args, **kwargs):
+        moved = real_move(source, destination, *args, **kwargs)
+        if "__LOCALID_rollback" in str(destination):
+            staged.set()
+            release.wait(10)
+        return moved
+
+    def failing_rename(source, destination, *args, **kwargs):
+        # Only the staging -> target step, which is the one that fails on a live handle.
+        if str(destination).endswith("__LOCALID_rollback") and not rename_failed:
+            rename_failed.append(True)
+            raise OSError(39, "Directory not empty")
+        return real_rename(source, destination, *args, **kwargs)
+
+    monkeypatch.setattr(tools.shutil, "move", gated_move)
+    monkeypatch.setattr(tools.os, "rename", failing_rename)
+
+    root = tools.sandbox_root()
+    mover = threading.Thread(
+        target = lambda: tools._migrate_one_legacy_session(root, "__LOCALID_rollback"),
+        daemon = True,
+    )
+    mover.start()
+    assert staged.wait(10), "the per-session move never reached the staging window"
+
+    # The pass itself now declines to finish over a move in staging, so the flag is set by hand
+    # here: it stands for the one gap that check cannot close, between a pass reading an empty
+    # in-flight set and assigning the flag, during which a request-path move can start.
+    tools._migrate_legacy_sandbox(root)
+    tools._legacy_sandbox_migrated = True
+
+    release.set()
+    mover.join(10)
+
+    assert rename_failed, "the rename was never made to fail"
+    assert (legacy / "data.csv").is_file(), "the rollback did not restore the legacy copy"
+    assert (
+        not tools._legacy_sandbox_migrated
+    ), "a restored legacy copy left the migration marked finished, so nothing retries it"
+
+    # And the retry the rollback asked for actually happens on the next call.
+    workdir = Path(tools.get_sandbox_workdir("__LOCALID_rollback"))
+    assert (workdir / "data.csv").is_file(), f"{workdir} never got the restored files"
+
+
+def test_a_move_that_begins_and_ends_inside_the_pass_still_counts(tmp_path, monkeypatch):
+    """The reversed interleaving: the rollback finishes before the pass looks.
+
+    Asking what is in flight only answers "right now". A move that starts after the pass has
+    listed the legacy root and rolls back before the pass reaches its check leaves nothing in
+    flight to find, yet the listing never saw it and the restored source is sitting at the
+    legacy root unlisted. The pass would call the migration done over it."""
+    import os
+    import shutil
+
+    fake_home = tmp_path / "userprofile"
+    fake_home.mkdir()
+    _shared_setup_11(fake_home, monkeypatch, tmp_path)
+
+    legacy = fake_home / "studio_sandbox" / "__LOCALID_inside"
+    legacy.mkdir(parents = True)
+    (legacy / "data.csv").write_text("a\n")
+
+    tools = _shared_setup_6()
+    root = tools.sandbox_root()
+
+    real_listdir = os.listdir
+    real_rename = os.rename
+    rename_failed = []
+    ran = []
+
+    def failing_rename(source, destination, *args, **kwargs):
+        if str(destination).endswith("__LOCALID_inside") and not rename_failed:
+            rename_failed.append(True)
+            raise OSError(39, "Directory not empty")
+        return real_rename(source, destination, *args, **kwargs)
+
+    def listdir_then_move(path, *args, **kwargs):
+        entries = real_listdir(path, *args, **kwargs)
+        # Once, right after the pass reads the legacy root: a whole move, start to rollback,
+        # inside the pass and invisible to it.
+        if not ran and os.path.realpath(str(path)) == os.path.realpath(
+            str(fake_home / "studio_sandbox")
+        ):
+            ran.append(True)
+            monkeypatch.setattr(tools.os, "rename", failing_rename)
+            try:
+                tools._migrate_one_legacy_session(root, "__LOCALID_inside")
+            except OSError:
+                pass
+            monkeypatch.setattr(tools.os, "rename", real_rename)
+            return [e for e in entries if e != "__LOCALID_inside"]
+        return entries
+
+    monkeypatch.setattr(tools.os, "listdir", listdir_then_move)
+    monkeypatch.setattr(tools.shutil, "move", shutil.move)
+
+    tools._migrate_legacy_sandbox(root)
+
+    assert ran, "the nested move never ran"
+    assert rename_failed, "the rename was never made to fail"
+    assert (legacy / "data.csv").is_file(), "the rollback did not restore the legacy copy"
+    assert (
+        not tools._legacy_sandbox_migrated
+    ), "the pass finished over a move it never listed, so the restored copy is stranded"
+
+    workdir = Path(tools.get_sandbox_workdir("__LOCALID_inside"))
+    assert (workdir / "data.csv").is_file(), f"{workdir} never got the restored files"
+
+
+def test_a_rollback_between_the_two_reads_is_not_read_as_nothing_to_do(tmp_path, monkeypatch):
+    """Whether the session directory is there and whether a move is running are two reads.
+
+    A failing rename between them restores the tree, so the absence the first read saw and the
+    quiet the second saw describe different instants and neither is now. A caller splitting its
+    decision across that pair leaves without the files, which are back at the legacy root, and
+    caches an empty sandbox in their place. Nothing else picks it up either: the rolled-back
+    mover is the live background migration, so _start_legacy_migration hands back that same
+    thread rather than starting the pass that would have found it."""
+    import os
+    import shutil
+    import threading
+
+    fake_home = tmp_path / "userprofile"
+    fake_home.mkdir()
+    _shared_setup_11(fake_home, monkeypatch, tmp_path)
+
+    legacy = fake_home / "studio_sandbox" / "__LOCALID_split"
+    legacy.mkdir(parents = True)
+    (legacy / "data.csv").write_text("a\n")
+
+    tools = _shared_setup_6()
+    root = tools.sandbox_root()
+
+    real_isdir = os.path.isdir
+    real_rename = os.rename
+    real_move = shutil.move
+    staged = threading.Event()
+    release = threading.Event()
+    rolled_back = threading.Event()
+    finish = threading.Event()
+    rename_failed = []
+    split = []
+
+    def failing_rename(source, destination, *args, **kwargs):
+        if str(destination).endswith("__LOCALID_split") and not rename_failed:
+            rename_failed.append(True)
+            raise OSError(39, "Directory not empty")
+        return real_rename(source, destination, *args, **kwargs)
+
+    def gated_move(source, destination, *args, **kwargs):
+        moved = real_move(source, destination, *args, **kwargs)
+        if "__LOCALID_split" in str(destination):
+            staged.set()
+            release.wait(10)
+        return moved
+
+    monkeypatch.setattr(tools.os, "rename", failing_rename)
+    monkeypatch.setattr(tools.shutil, "move", gated_move)
+
+    def run_mover():
+        try:
+            tools._migrate_one_legacy_session(root, "__LOCALID_split")
+        finally:
+            rolled_back.set()
+            finish.wait(10)  # stay alive, so this is still the running background migration
+
+    mover = threading.Thread(target = run_mover, daemon = True)
+    mover.start()
+    monkeypatch.setattr(tools, "_legacy_background", mover, raising = False)
+    assert staged.wait(10), "the move never reached the staging window"
+
+    def isdir_then_roll_back(path, *args, **kwargs):
+        answer = real_isdir(path, *args, **kwargs)
+        # The caller has just read the staged-away session. Let the rollback finish before it
+        # asks anything else, so its two reads straddle the restore.
+        if not split and str(path).endswith("__LOCALID_split") and not answer:
+            split.append(True)
+            release.set()
+            rolled_back.wait(10)
+        return answer
+
+    monkeypatch.setattr(tools.os.path, "isdir", isdir_then_roll_back)
+
+    workdir = Path(tools.get_sandbox_workdir("__LOCALID_split"))
+
+    monkeypatch.setattr(tools.os.path, "isdir", real_isdir)
+    finish.set()
+    mover.join(10)
+
+    assert rename_failed, "the rename was never made to fail"
+    assert split, "the caller never split its reads across the rollback"
+    assert (workdir / "data.csv").is_file(), f"{workdir} lost its files across the rollback"
+
+
+def test_a_stalled_migration_does_not_grow_a_lock_per_chat(tmp_path, monkeypatch):
+    """The legacy root staying put is the normal shape of a migration that keeps failing, and
+    every uncached session consults it. _legacy_session_locks is documented as bounded by the
+    chats that had a legacy folder, so a chat with nothing there must not leave an entry, or a
+    stalled migration turns the table into a per-chat cache that only a restart clears."""
+    fake_home = tmp_path / "userprofile"
+    fake_home.mkdir()
+    _shared_setup_11(fake_home, monkeypatch, tmp_path)
+
+    legacy = fake_home / "studio_sandbox"
+    legacy.mkdir(parents = True)
+    (legacy / "__LOCALID_had_one").mkdir()
+    (legacy / "__LOCALID_had_one" / "data.csv").write_text("a\n")
+    # Left behind so the root itself survives, the way a migration that cannot finish leaves it.
+    (legacy / "_invalid").mkdir()
+
+    tools = _shared_setup_6()
+    tools._legacy_session_locks.clear()
+    root = tools.sandbox_root()
+
+    for index in range(25):
+        tools._migrate_one_legacy_session(root, f"__LOCALID_never_there{index}")
+
+    assert legacy.is_dir(), "this test needs the legacy root to still be there"
+    assert (
+        set(tools._legacy_session_locks) == set()
+    ), f"chats with nothing at the legacy root left locks behind: {sorted(tools._legacy_session_locks)}"
+
+    # The chat that does have one still migrates, and is still allowed its entry.
+    tools._migrate_one_legacy_session(root, "__LOCALID_had_one")
+    assert (Path(root) / "__LOCALID_had_one" / "data.csv").is_file(), "the real move did not happen"
+    assert set(tools._legacy_session_locks) == {"__LOCALID_had_one"}
+
+
 def test_every_reported_file_is_downloadable(tmp_path, monkeypatch):
     """The walk and the download route must agree, or the card advertises a
     file that always 404s."""
-    monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(tmp_path / "sb"))
-
-    from fastapi import HTTPException
-
-    from core.inference import tools
+    HTTPException, tools = _shared_setup_19(monkeypatch, tmp_path)
     from routes.inference import _contained_sandbox_path
 
     tools._workdirs.clear()
@@ -580,11 +1132,7 @@ def test_every_reported_file_is_downloadable(tmp_path, monkeypatch):
 
 def test_a_same_timestamp_overwrite_is_still_reported(tmp_path, monkeypatch):
     """Coarse-resolution volumes (FAT/exFAT) can repeat mtime_ns."""
-    monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(tmp_path / "sb"))
-
-    from core.inference import tools
-
-    tools._workdirs.clear()
+    tools = _shared_setup_1(monkeypatch, tmp_path)
     workdir = Path(tools.get_sandbox_workdir("__LOCALID_coarse1"))
     target = workdir / "report.csv"
     target.write_text("a")
@@ -617,11 +1165,7 @@ def test_a_malformed_files_envelope_is_left_as_text(payload):
 def test_a_dotfile_a_tool_creates_is_reported(tmp_path, monkeypatch):
     """.gitignore is a real artifact and the route serves it; only the noisy
     dot-DIRECTORIES stay out."""
-    monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(tmp_path / "sb"))
-
-    from core.inference import tools
-
-    tools._workdirs.clear()
+    tools = _shared_setup_1(monkeypatch, tmp_path)
     workdir = Path(tools.get_sandbox_workdir("__LOCALID_dotfile"))
     before = tools._snapshot_workdir_files(str(workdir))
     (workdir / ".gitignore").write_text("*.pyc\n")
@@ -639,11 +1183,7 @@ def test_a_dotfile_a_tool_creates_is_reported(tmp_path, monkeypatch):
 def test_a_name_the_route_would_refuse_is_never_reported(tmp_path, monkeypatch):
     """A backslash or control character is legal in a POSIX filename but the
     download route rejects it, so the card must not offer it."""
-    monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(tmp_path / "sb"))
-
-    from core.inference import tools
-
-    tools._workdirs.clear()
+    tools = _shared_setup_1(monkeypatch, tmp_path)
     workdir = Path(tools.get_sandbox_workdir("__LOCALID_badname"))
     before = tools._snapshot_workdir_files(str(workdir))
     for name in ("back\\slash.csv", "bell\x07.csv", "ok.csv"):
@@ -662,19 +1202,13 @@ def test_deleting_a_chat_right_after_an_upgrade_finds_its_legacy_sandbox(tmp_pat
     """The first thing a user does may be a delete, before any tool has run."""
     fake_home = tmp_path / "userprofile"
     fake_home.mkdir()
-    monkeypatch.setenv("HOME", str(fake_home))
-    monkeypatch.setenv("USERPROFILE", str(fake_home))
-    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
-    monkeypatch.delenv("UNSLOTH_STUDIO_SANDBOX_HOME", raising = False)
+    _shared_setup_11(fake_home, monkeypatch, tmp_path)
 
     legacy = fake_home / "studio_sandbox" / "__LOCALID_oldchat"
     legacy.mkdir(parents = True)
     (legacy / "sales.csv").write_text("a,b\n")
 
-    from core.inference import tools
-
-    tools._workdirs.clear()
-    tools._legacy_sandbox_migrated = False
+    tools = _shared_setup_6()
     assert tools.remove_session_sandbox("__LOCALID_oldchat", delete_files = True) is True
     assert not legacy.exists()
     assert not (Path(tools.sandbox_root()) / "__LOCALID_oldchat").exists()
@@ -720,19 +1254,13 @@ def test_a_symlinked_session_cannot_serve_files_outside_the_sandbox(tmp_path, mo
     outside.mkdir()
     (outside / "secret.txt").write_text("TOPSECRET")
 
-    monkeypatch.setenv("HOME", str(fake_home))
-    monkeypatch.setenv("USERPROFILE", str(fake_home))
-    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
-    monkeypatch.delenv("UNSLOTH_STUDIO_SANDBOX_HOME", raising = False)
+    _shared_setup_11(fake_home, monkeypatch, tmp_path)
 
     legacy = fake_home / "studio_sandbox"
     legacy.mkdir(parents = True)
     (legacy / "__LOCALID_evil").symlink_to(outside)
 
-    from core.inference import tools
-
-    tools._workdirs.clear()
-    tools._legacy_sandbox_migrated = False
+    tools = _shared_setup_6()
     tools._migrate_legacy_sandbox(tools.sandbox_root())
     resolved = tools.resolve_sandbox_workdir("__LOCALID_evil")
     # The link is left at the legacy root rather than carried across, so the
@@ -746,33 +1274,95 @@ def test_a_symlinked_session_cannot_serve_files_outside_the_sandbox(tmp_path, mo
 
 def test_the_executor_leaves_nothing_in_the_sandbox(tmp_path, monkeypatch):
     """Its scratch script lives outside the sandbox, so a chat whose tools only
-    printed is still an empty folder and removable without the opt-in."""
-    monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(tmp_path / "sb"))
-
-    from core.inference import tools
-
-    tools._workdirs.clear()
+    printed holds just our bookkeeping and the empty TMPDIR dir, and is
+    removable without the opt-in."""
+    tools = _shared_setup_1(monkeypatch, tmp_path)
     workdir = Path(tools.get_sandbox_workdir("__LOCALID_scratch"))
     tools._python_exec("print('hi')", session_id = "__LOCALID_scratch")
-    assert [p.name for p in workdir.iterdir()] == [tools._SANDBOX_MARKER]
+    assert sorted(p.name for p in workdir.iterdir()) == [
+        tools._SANDBOX_MARKER,
+        tools._SANDBOX_TEMP_DIRNAME,
+    ]
+    assert list((workdir / tools._SANDBOX_TEMP_DIRNAME).iterdir()) == []
 
     assert tools.remove_session_sandbox("__LOCALID_scratch") is True
     assert not workdir.exists()
 
 
+def test_a_file_under_the_scratch_dir_is_listed_and_blocks_removal(tmp_path, monkeypatch):
+    """On Windows the scratch dir is what /tmp resolves to, so /tmp/report.csv
+    lands here and has to keep its listing and its delete prompt."""
+    inference, tools = _shared_setup_16(monkeypatch, tmp_path)
+    session = "__LOCALID_scratch3"
+    workdir = Path(tools.get_sandbox_workdir(session))
+    scratch = Path(tools._sandbox_temp_dir(str(workdir)))
+    (scratch / "report.csv").write_text("x")
+
+    assert inference._sandbox_listing_names(str(workdir)) == [
+        f"{tools._SANDBOX_TEMP_DIRNAME}/report.csv"
+    ]
+    assert tools.session_sandbox_has_files(session) is True
+    assert tools.remove_session_sandbox(session) is False
+    assert (scratch / "report.csv").is_file()
+
+
 def test_a_real_file_still_blocks_removal(tmp_path, monkeypatch):
     """Only scratch is ignored; the user's own files still need the opt-in."""
-    monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(tmp_path / "sb"))
-
-    from core.inference import tools
-
-    tools._workdirs.clear()
+    tools = _shared_setup_1(monkeypatch, tmp_path)
     workdir = Path(tools.get_sandbox_workdir("__LOCALID_keepit"))
     (workdir / "studio_exec_abc123.py").write_text("print(1)")
     (workdir / "sales.csv").write_text("a,b\n")
 
     assert tools.remove_session_sandbox("__LOCALID_keepit") is False
     assert (workdir / "sales.csv").is_file()
+
+
+def test_the_download_route_serves_the_full_depth_under_the_scratch_dir(tmp_path, monkeypatch):
+    """The card and the route enforce the same segment cap, so the route has to
+    discount the scratch container exactly as the snapshot walk does."""
+    HTTPException, tools = _shared_setup_19(monkeypatch, tmp_path)
+    from routes.inference import _contained_sandbox_path
+
+    tools._workdirs.clear()
+    session = "__LOCALID_depth1"
+    workdir = Path(tools.get_sandbox_workdir(session))
+    scratch = Path(tools._sandbox_temp_dir(str(workdir)))
+    (scratch / "a/b/c").mkdir(parents = True)
+    (scratch / "a/b/c/result.csv").write_bytes(b"x")
+
+    _, path = _contained_sandbox_path(session, f"{tools._SANDBOX_TEMP_DIRNAME}/a/b/c/result.csv")
+    assert Path(path) == scratch / "a/b/c/result.csv"
+    with pytest.raises(HTTPException):
+        _contained_sandbox_path(session, f"{tools._SANDBOX_TEMP_DIRNAME}/a/b/c/d/toodeep.csv")
+
+
+def test_only_the_real_scratch_dir_skips_a_path_segment(tmp_path, monkeypatch):
+    """The walks read the stored spelling off os.walk and never follow links, so
+    the discount is the resolved directory's, not the name's. A model-made link
+    would otherwise serve a file neither walk lists, as a wrong-case entry does
+    on NTFS or APFS."""
+    HTTPException, tools = _shared_setup_19(monkeypatch, tmp_path)
+    from routes import inference
+
+    tools._workdirs.clear()
+    session = "__LOCALID_depth2"
+    workdir = Path(tools.get_sandbox_workdir(session))
+    (workdir / "out/a/b/c").mkdir(parents = True)
+    (workdir / "out/a/b/c/deep.csv").write_bytes(b"x")
+    (workdir / "out/a/b/shallow.csv").write_bytes(b"x")
+    try:
+        (workdir / tools._SANDBOX_TEMP_DIRNAME).symlink_to(
+            workdir / "out", target_is_directory = True
+        )
+    except (OSError, NotImplementedError):
+        pytest.skip("symlinks unavailable (Windows without developer mode)")
+
+    name = tools._SANDBOX_TEMP_DIRNAME
+    assert f"{name}/a/b/c/deep.csv" not in inference._sandbox_listing_names(str(workdir))
+    with pytest.raises(HTTPException):
+        inference._contained_sandbox_path(session, f"{name}/a/b/c/deep.csv")
+    # Only the extra segment is withdrawn; four still resolve through the link.
+    inference._contained_sandbox_path(session, f"{name}/a/b/shallow.csv")
 
 
 def test_the_listing_drops_a_directory_the_route_would_refuse(tmp_path, monkeypatch):
@@ -798,11 +1388,7 @@ def test_the_listing_drops_a_directory_the_route_would_refuse(tmp_path, monkeypa
 
 def test_a_user_file_named_like_scratch_is_kept(tmp_path, monkeypatch):
     """No filename is reserved: everything in the sandbox is the user's."""
-    monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(tmp_path / "sb"))
-
-    from core.inference import tools
-
-    tools._workdirs.clear()
+    tools = _shared_setup_1(monkeypatch, tmp_path)
     workdir = Path(tools.get_sandbox_workdir("__LOCALID_prefix1"))
     (workdir / "studio_exec_results.csv").write_text("a,b\n")
     (workdir / "studio_exec_ab12cd.py").write_text("print(1)")
@@ -859,7 +1445,7 @@ def test_a_directory_of_plain_python_files_is_not_a_cache(tmp_path, monkeypatch)
 
 
 def test_a_marked_directory_is_cleared(tmp_path, monkeypatch):
-    """Studio writes the marker when it creates the location."""
+    """Unsloth writes the marker when it creates the location."""
     cache = tmp_path / "compiled_cache"
     cache.mkdir()
     (cache / "helper.py").write_text("print(1)\n")
@@ -893,13 +1479,7 @@ def test_generated_modules_identify_a_cache_without_a_marker(tmp_path, monkeypat
 
 def test_studio_writes_the_marker_when_it_creates_the_location(tmp_path, monkeypatch):
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
-    monkeypatch.delenv("UNSLOTH_COMPILE_LOCATION", raising = False)
-
-    from utils import cache_cleanup
-    from utils.paths import storage_roots
-
-    storage_roots.setup_cache_env()
-    pinned = Path(os.environ["UNSLOTH_COMPILE_LOCATION"])
+    cache_cleanup, pinned = _shared_setup_13(monkeypatch)
     assert (pinned / cache_cleanup.CACHE_MARKER).is_file()
 
 
@@ -910,11 +1490,7 @@ def test_a_cached_sandbox_path_is_re_checked(tmp_path, monkeypatch):
     outside = tmp_path / "outside"
     outside.mkdir()
     (outside / "secret.txt").write_text("TOPSECRET")
-    monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(root))
-
-    from core.inference import tools
-
-    tools._workdirs.clear()
+    tools = _shared_setup_3(monkeypatch, root)
     workdir = Path(tools.get_sandbox_workdir("__LOCALID_swapped"))
     assert workdir.is_dir()
 
@@ -969,7 +1545,7 @@ def test_a_shared_compile_location_keeps_preserved_patterns(tmp_path, monkeypatc
 
 
 def test_a_marked_shared_directory_is_still_cleared_whole(tmp_path, monkeypatch):
-    """The marker means Studio made the directory, so the old behaviour stands."""
+    """The marker means Unsloth made the directory, so the old behaviour stands."""
     cache = tmp_path / "marked"
     cache.mkdir()
 
@@ -985,11 +1561,7 @@ def test_a_marked_shared_directory_is_still_cleared_whole(tmp_path, monkeypatch)
 
 def test_many_empty_directories_do_not_stall_the_snapshot(tmp_path, monkeypatch):
     """Directories never hit the file cap, so the walk needs its own budget."""
-    monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(tmp_path / "sb"))
-
-    from core.inference import tools
-
-    tools._workdirs.clear()
+    tools = _shared_setup_1(monkeypatch, tmp_path)
     workdir = Path(tools.get_sandbox_workdir("__LOCALID_manydirs"))
     monkeypatch.setattr(tools, "_MAX_SNAPSHOT_DIRS", 5)
     for i in range(40):
@@ -1086,10 +1658,7 @@ def test_a_failed_legacy_move_is_retried(tmp_path, monkeypatch):
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "studio_home"))
     monkeypatch.delenv("UNSLOTH_STUDIO_SANDBOX_HOME", raising = False)
 
-    from core.inference import tools
-
-    tools._workdirs.clear()
-    tools._legacy_sandbox_migrated = False
+    tools = _shared_setup_6()
 
     attempts = []
     real_move = tools.shutil.move
@@ -1123,10 +1692,7 @@ def test_a_collision_is_not_a_retryable_failure(tmp_path, monkeypatch):
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "studio_home"))
     monkeypatch.delenv("UNSLOTH_STUDIO_SANDBOX_HOME", raising = False)
 
-    from core.inference import tools
-
-    tools._workdirs.clear()
-    tools._legacy_sandbox_migrated = False
+    tools = _shared_setup_6()
     root = Path(tools.sandbox_root())
     existing = root / "__LOCALID_dupe123"
     existing.mkdir(parents = True)
@@ -1142,11 +1708,7 @@ def test_deleting_a_symlinked_session_spares_the_chat_it_points_at(tmp_path, mon
     """realpath containment passes for a sibling, so a link left in the sandbox
     could take another chat's files."""
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
-    monkeypatch.delenv("UNSLOTH_STUDIO_SANDBOX_HOME", raising = False)
-
-    from core.inference import tools
-
-    tools._workdirs.clear()
+    tools = _shared_setup_7(monkeypatch)
     victim = Path(tools.get_sandbox_workdir("__LOCALID_victim1"))
     (victim / "report.csv").write_text("a,b\n")
     link = victim.parent / "__LOCALID_link111"
@@ -1162,13 +1724,7 @@ def test_the_marker_survives_a_cache_clear(tmp_path, monkeypatch):
     """Startup clears the cache it just created, and nothing else rewrites the
     marker, so without this our own cache is demoted to 'shared'."""
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
-    monkeypatch.delenv("UNSLOTH_COMPILE_LOCATION", raising = False)
-
-    from utils import cache_cleanup
-    from utils.paths import storage_roots
-
-    storage_roots.setup_cache_env()
-    pinned = Path(os.environ["UNSLOTH_COMPILE_LOCATION"])
+    cache_cleanup, pinned = _shared_setup_13(monkeypatch)
     (pinned / "unsloth_compiled_module_gemma3.py").write_text("x = 1\n", encoding = "utf-8")
 
     cache_cleanup.clear_unsloth_compiled_cache()
@@ -1185,16 +1741,13 @@ def test_the_marker_survives_a_cache_clear(tmp_path, monkeypatch):
 
 
 def test_an_unrelated_cache_named_folder_in_the_cwd_is_not_ours(tmp_path, monkeypatch):
-    """Studio is launched from wherever the shell happens to be, so the name
+    """Unsloth is launched from wherever the shell happens to be, so the name
     alone cannot license an rmtree."""
     launch_dir = tmp_path / "someproject"
     cache = launch_dir / "unsloth_compiled_cache"
     cache.mkdir(parents = True)
     (cache / "notes.txt").write_text("keep me")
-    monkeypatch.chdir(launch_dir)
-    monkeypatch.delenv("UNSLOTH_COMPILE_LOCATION", raising = False)
-
-    from utils import cache_cleanup
+    cache_cleanup = _shared_setup_21(launch_dir, monkeypatch)
 
     cache_cleanup.clear_unsloth_compiled_cache()
     assert (cache / "notes.txt").read_text() == "keep me"
@@ -1204,10 +1757,7 @@ def test_a_marked_cwd_cache_is_still_cleared(tmp_path, monkeypatch):
     launch_dir = tmp_path / "studioproject"
     cache = launch_dir / "unsloth_compiled_cache"
     cache.mkdir(parents = True)
-    monkeypatch.chdir(launch_dir)
-    monkeypatch.delenv("UNSLOTH_COMPILE_LOCATION", raising = False)
-
-    from utils import cache_cleanup
+    cache_cleanup = _shared_setup_21(launch_dir, monkeypatch)
 
     (cache / cache_cleanup.CACHE_MARKER).touch()
     (cache / "unsloth_compiled_module_gemma3.py").write_text("x = 1\n")
@@ -1218,12 +1768,7 @@ def test_a_marked_cwd_cache_is_still_cleared(tmp_path, monkeypatch):
 def test_a_user_python_file_is_never_executor_scratch(tmp_path, monkeypatch):
     """The executor's own file no longer lives in the sandbox, so no filename
     is reserved and studio_exec_results.py is just a file."""
-    monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(tmp_path / "sb"))
-
-    from core.inference import tools
-    from routes import inference
-
-    tools._workdirs.clear()
+    inference, tools = _shared_setup_16(monkeypatch, tmp_path)
     session = "__LOCALID_userpy1"
     result = tools._python_exec(
         "open('studio_exec_results.py','w').write('x = 1\\n')", session_id = session
@@ -1233,7 +1778,9 @@ def test_a_user_python_file_is_never_executor_scratch(tmp_path, monkeypatch):
     workdir = Path(tools.get_sandbox_workdir(session))
     # The executor left nothing of its own behind.
     assert sorted(
-        p.name for p in workdir.iterdir() if p.name not in tools._INTERNAL_SANDBOX_FILES
+        p.name
+        for p in workdir.iterdir()
+        if p.name not in tools._INTERNAL_SANDBOX_FILES and p.name != tools._SANDBOX_TEMP_DIRNAME
     ) == ["studio_exec_results.py"]
     assert inference._sandbox_listing_names(str(workdir)) == ["studio_exec_results.py"]
     # And a delete without the opt-in will not quietly take it.
@@ -1272,12 +1819,7 @@ def test_containment_is_not_fooled_by_a_shared_name_prefix(tmp_path):
 def test_studios_own_sandbox_bookkeeping_is_not_a_user_file(tmp_path, monkeypatch):
     """The remap sidecar the sandbox sitecustomize writes is ours, and reporting
     it also made a streamed result differ from a non-streamed one."""
-    monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(tmp_path / "sb"))
-
-    from core.inference import tools
-    from routes import inference
-
-    tools._workdirs.clear()
+    inference, tools = _shared_setup_16(monkeypatch, tmp_path)
     workdir = Path(tools.get_sandbox_workdir("__LOCALID_remap01"))
     (workdir / ".unsloth_sandbox_remap.json").write_text("{}")
     (workdir / ".gitignore").write_text("*.pyc\n")
@@ -1292,11 +1834,7 @@ def test_studios_own_sandbox_bookkeeping_is_not_a_user_file(tmp_path, monkeypatc
 def test_a_module_written_by_an_earlier_call_is_importable(tmp_path, monkeypatch):
     """The scratch script is what Python puts on sys.path[0], so moving it out
     of the sandbox broke `import helper` and sent __file__ outside."""
-    monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(tmp_path / "sb"))
-
-    from core.inference import tools
-
-    tools._workdirs.clear()
+    tools = _shared_setup_1(monkeypatch, tmp_path)
     session = "__LOCALID_import1"
     tools._python_exec('open("helper.py", "w").write("VALUE = 42")', session_id = session)
     result = tools._python_exec("import helper; print(helper.VALUE)", session_id = session)
@@ -1310,11 +1848,7 @@ def test_a_module_written_by_an_earlier_call_is_importable(tmp_path, monkeypatch
 def test_the_scratch_script_is_never_reported_as_a_file(tmp_path, monkeypatch):
     """Excluded by its exact name for this one call, so a tool writing
     studio_exec_results.py still keeps it."""
-    monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(tmp_path / "sb"))
-
-    from core.inference import tools
-
-    tools._workdirs.clear()
+    tools = _shared_setup_1(monkeypatch, tmp_path)
     session = "__LOCALID_scratch2"
     result = tools._python_exec(
         'open("studio_exec_results.py", "w").write("x = 1")', session_id = session
@@ -1324,7 +1858,9 @@ def test_the_scratch_script_is_never_reported_as_a_file(tmp_path, monkeypatch):
     workdir = Path(tools.get_sandbox_workdir(session))
     # Only the user's file is left; the executor cleaned up after itself.
     assert sorted(
-        p.name for p in workdir.iterdir() if p.name not in tools._INTERNAL_SANDBOX_FILES
+        p.name
+        for p in workdir.iterdir()
+        if p.name not in tools._INTERNAL_SANDBOX_FILES and p.name != tools._SANDBOX_TEMP_DIRNAME
     ) == ["studio_exec_results.py"]
     assert json.loads(files) == [{"name": "studio_exec_results.py", "size": 5}]
 
@@ -1332,11 +1868,7 @@ def test_the_scratch_script_is_never_reported_as_a_file(tmp_path, monkeypatch):
 def test_a_turn_without_a_chat_id_reports_no_files(tmp_path, monkeypatch):
     """Every such turn shares the _default workdir, so a card pinned to it
     would later download whatever the next new chat wrote there."""
-    monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(tmp_path / "sb"))
-
-    from core.inference import tools
-
-    tools._workdirs.clear()
+    tools = _shared_setup_1(monkeypatch, tmp_path)
     result = tools._python_exec('open("first.csv", "w").write("a")')
     assert "__FILES__" not in result, result
     assert "__IMAGES__" not in result
@@ -1369,10 +1901,7 @@ def test_a_marked_cwd_cache_is_still_registered(tmp_path, monkeypatch):
     launch_dir = tmp_path / "studioproject"
     cache = launch_dir / "unsloth_compiled_cache"
     cache.mkdir(parents = True)
-    monkeypatch.chdir(launch_dir)
-    monkeypatch.delenv("UNSLOTH_COMPILE_LOCATION", raising = False)
-
-    from utils import cache_cleanup
+    cache_cleanup = _shared_setup_21(launch_dir, monkeypatch)
 
     (cache / cache_cleanup.CACHE_MARKER).touch()
     before = list(sys.path)
@@ -1388,11 +1917,7 @@ def test_a_chat_deleted_mid_call_keeps_its_sandbox(tmp_path, monkeypatch):
     was unlinked fails every relative write with ENOENT."""
     import threading
 
-    monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(tmp_path / "sb"))
-
-    from core.inference import tools
-
-    tools._workdirs.clear()
+    tools = _shared_setup_1(monkeypatch, tmp_path)
     session = "__LOCALID_busy111"
     workdir = Path(tools.get_sandbox_workdir(session))
     started, may_finish = threading.Event(), threading.Event()
@@ -1439,7 +1964,7 @@ def test_a_pre_existing_compile_directory_is_never_marked_as_ours(tmp_path, monk
     from utils import cache_cleanup
     from utils.paths import storage_roots
 
-    # Where Studio would pin it, already there and holding someone else's files.
+    # Where Unsloth would pin it, already there and holding someone else's files.
     pinned = Path(storage_roots.cache_root()).parent / "compiled_cache"
     pinned.mkdir(parents = True)
     (pinned / "someones_notes.txt").write_text("keep me")
@@ -1454,13 +1979,7 @@ def test_a_pre_existing_compile_directory_is_never_marked_as_ours(tmp_path, monk
 
 def test_a_directory_studio_creates_is_marked(tmp_path, monkeypatch):
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "fresh"))
-    monkeypatch.delenv("UNSLOTH_COMPILE_LOCATION", raising = False)
-
-    from utils import cache_cleanup
-    from utils.paths import storage_roots
-
-    storage_roots.setup_cache_env()
-    pinned = Path(os.environ["UNSLOTH_COMPILE_LOCATION"])
+    cache_cleanup, pinned = _shared_setup_13(monkeypatch)
     assert (pinned / cache_cleanup.CACHE_MARKER).is_file()
 
 
@@ -1470,11 +1989,7 @@ def test_removal_and_the_busy_check_are_one_decision(tmp_path, monkeypatch):
     import threading
     import time
 
-    monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(tmp_path / "sb"))
-
-    from core.inference import tools
-
-    tools._workdirs.clear()
+    tools = _shared_setup_1(monkeypatch, tmp_path)
     session = "__LOCALID_race111"
     workdir = Path(tools.get_sandbox_workdir(session))
     started = threading.Event()
@@ -1528,11 +2043,7 @@ def test_the_delete_dialog_offers_the_same_choice_for_a_chat():
 def test_a_delete_during_a_call_happens_once_the_call_ends(tmp_path, monkeypatch):
     """The thread is gone from history by then, so a dropped request would
     strand the folder for good."""
-    monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(tmp_path / "sb"))
-
-    from core.inference import tools
-
-    tools._workdirs.clear()
+    tools = _shared_setup_1(monkeypatch, tmp_path)
     tools._pending_removals.clear()
     session = "__LOCALID_defer11"
     workdir = Path(tools.get_sandbox_workdir(session))
@@ -1547,11 +2058,7 @@ def test_a_delete_during_a_call_happens_once_the_call_ends(tmp_path, monkeypatch
 
 
 def test_a_queued_delete_keeps_the_strongest_request(tmp_path, monkeypatch):
-    monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(tmp_path / "sb"))
-
-    from core.inference import tools
-
-    tools._workdirs.clear()
+    tools = _shared_setup_1(monkeypatch, tmp_path)
     tools._pending_removals.clear()
     session = "__LOCALID_defer22"
     workdir = Path(tools.get_sandbox_workdir(session))
@@ -1639,11 +2146,7 @@ def test_the_invalid_fallback_cannot_be_pointed_out_of_the_sandbox(tmp_path, mon
     root = tmp_path / "sb"
     root.mkdir()
     (root / "_invalid").symlink_to(outside, target_is_directory = True)
-    monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(root))
-
-    from core.inference import tools
-
-    tools._workdirs.clear()
+    tools = _shared_setup_3(monkeypatch, root)
     resolved = Path(tools.resolve_sandbox_workdir("../escape"))
     assert not (resolved / "id_rsa").exists(), resolved
     assert outside.is_dir() and (outside / "id_rsa").is_file(), "the target was touched"
@@ -1659,11 +2162,7 @@ def test_the_default_fallback_is_contained_too(tmp_path, monkeypatch):
     root = tmp_path / "sb"
     root.mkdir()
     (root / "_default").symlink_to(outside, target_is_directory = True)
-    monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(root))
-
-    from core.inference import tools
-
-    tools._workdirs.clear()
+    tools = _shared_setup_3(monkeypatch, root)
     resolved = Path(tools.resolve_sandbox_workdir(None))
     assert not (resolved / "secret.txt").exists(), resolved
 
@@ -1674,11 +2173,7 @@ def test_deleting_a_big_sandbox_does_not_hold_the_tool_lock(tmp_path, monkeypatc
     import threading
     import time
 
-    monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(tmp_path / "sb"))
-
-    from core.inference import tools
-
-    tools._workdirs.clear()
+    tools = _shared_setup_1(monkeypatch, tmp_path)
     session = "__LOCALID_bigdel1"
     workdir = Path(tools.get_sandbox_workdir(session))
     (workdir / "data.bin").write_bytes(b"x" * 1024)
@@ -1706,11 +2201,7 @@ def test_deleting_a_big_sandbox_does_not_hold_the_tool_lock(tmp_path, monkeypatc
 def test_a_chat_whose_id_looks_like_a_project_is_still_cleaned(tmp_path, monkeypatch):
     """An imported chat can carry that prefix without a project behind it, and
     _get_workdir gives it an ordinary directory."""
-    monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(tmp_path / "sb"))
-
-    from core.inference import tools
-
-    tools._workdirs.clear()
+    tools = _shared_setup_1(monkeypatch, tmp_path)
     monkeypatch.setattr(tools, "_get_project_workdir", lambda session_id: None)
     session = f"{tools._PROJECT_SESSION_PREFIX}notreal123"
     workdir = Path(tools.get_sandbox_workdir(session))
@@ -1721,11 +2212,7 @@ def test_a_chat_whose_id_looks_like_a_project_is_still_cleaned(tmp_path, monkeyp
 
 
 def test_a_real_project_workspace_is_still_left_alone(tmp_path, monkeypatch):
-    monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(tmp_path / "sb"))
-
-    from core.inference import tools
-
-    tools._workdirs.clear()
+    tools = _shared_setup_1(monkeypatch, tmp_path)
     shared = tmp_path / "project_workspace"
     shared.mkdir()
     monkeypatch.setattr(tools, "_get_project_workdir", lambda session_id: str(shared))
@@ -1735,7 +2222,7 @@ def test_a_real_project_workspace_is_still_left_alone(tmp_path, monkeypatch):
 
 
 def test_a_foreign_tool_result_keeps_its_own_fields():
-    """Studio's wrapper always carries images; anything else with text and
+    """Unsloth's wrapper always carries images; anything else with text and
     sessionId is someone else's result and must not be reduced to its text."""
     # The predicate lives beside the rest of the sandbox contract, and the
     # adapter and both tool cards share that one copy.
@@ -1759,11 +2246,7 @@ def test_a_shared_roots_own_folder_is_never_deleted(tmp_path, monkeypatch):
     theirs = root / "invoices"
     theirs.mkdir()
     (theirs / "2026.pdf").write_text("money", encoding = "utf-8")
-    monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(root))
-
-    from core.inference import tools
-
-    tools._workdirs.clear()
+    tools = _shared_setup_3(monkeypatch, root)
     assert tools.remove_session_sandbox("invoices", delete_files = True) is False
     assert (theirs / "2026.pdf").is_file()
 
@@ -1776,11 +2259,7 @@ def test_a_shared_roots_own_folder_is_never_deleted(tmp_path, monkeypatch):
 def test_a_sandbox_we_created_in_a_shared_root_is_still_removable(tmp_path, monkeypatch):
     root = tmp_path / "shared"
     root.mkdir()
-    monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(root))
-
-    from core.inference import tools
-
-    tools._workdirs.clear()
+    tools = _shared_setup_3(monkeypatch, root)
     workdir = Path(tools.get_sandbox_workdir("__LOCALID_mine11"))
     assert (workdir / tools._SANDBOX_MARKER).is_file()
     # Nothing but our marker in it, so it counts as empty.
@@ -1795,11 +2274,7 @@ def test_a_sandbox_we_created_in_a_shared_root_is_still_removable(tmp_path, monk
 def test_two_ids_differing_only_in_case_share_the_busy_check(tmp_path, monkeypatch):
     """They are one directory on Windows and on a default macOS volume, so a
     delete of one must not land while the other is running a tool in it."""
-    monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(tmp_path / "sb"))
-
-    from core.inference import tools
-
-    tools._workdirs.clear()
+    tools = _shared_setup_1(monkeypatch, tmp_path)
     tools._pending_removals.clear()
     workdir = Path(tools.get_sandbox_workdir("ChatCase"))
     (workdir / "report.csv").write_text("a,b\n", encoding = "utf-8")
@@ -1820,11 +2295,7 @@ def test_an_existing_folder_in_a_shared_root_is_never_claimed(tmp_path, monkeypa
     theirs = root / "taxes"
     theirs.mkdir()
     (theirs / "2026.pdf").write_text("money", encoding = "utf-8")
-    monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(root))
-
-    from core.inference import tools
-
-    tools._workdirs.clear()
+    tools = _shared_setup_3(monkeypatch, root)
     workdir = Path(tools.get_sandbox_workdir("taxes"))
     assert workdir != theirs, "ran the tool inside a folder we did not create"
     assert workdir.name.startswith("taxes-")
@@ -1839,11 +2310,7 @@ def test_both_case_variants_are_removed_when_their_calls_end(tmp_path, monkeypat
     directories, so neither may be dropped."""
     import time
 
-    monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(tmp_path / "sb"))
-
-    from core.inference import tools
-
-    tools._workdirs.clear()
+    tools = _shared_setup_1(monkeypatch, tmp_path)
     tools._pending_removals.clear()
     lower = Path(tools.get_sandbox_workdir("casepair"))
     upper = Path(tools.get_sandbox_workdir("CasePair"))
@@ -1872,11 +2339,7 @@ def test_a_foreign_fallback_link_is_left_where_it_stands(tmp_path, monkeypatch):
     outside.mkdir()
     (outside / "secret.txt").write_text("TOPSECRET", encoding = "utf-8")
     (root / "_default").symlink_to(outside, target_is_directory = True)
-    monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(root))
-
-    from core.inference import tools
-
-    tools._workdirs.clear()
+    tools = _shared_setup_3(monkeypatch, root)
     resolved = Path(tools.resolve_sandbox_workdir(None))
     assert not (resolved / "secret.txt").exists(), resolved
     assert (root / "_default").is_symlink(), "an entry we do not own was unlinked"
@@ -1890,11 +2353,7 @@ def test_our_own_fallback_link_is_still_dropped(tmp_path, monkeypatch):
     """At our own root nothing else put it there, so the link goes and the
     fallback keeps its name."""
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
-    monkeypatch.delenv("UNSLOTH_STUDIO_SANDBOX_HOME", raising = False)
-
-    from core.inference import tools
-
-    tools._workdirs.clear()
+    tools = _shared_setup_7(monkeypatch)
     root = Path(tools.sandbox_root())
     root.mkdir(parents = True, exist_ok = True)
     outside = tmp_path / "elsewhere"
@@ -1915,11 +2374,7 @@ def test_a_pre_existing_folder_keeps_its_permissions(tmp_path, monkeypatch):
     theirs = root / "team"
     theirs.mkdir()
     os.chmod(theirs, 0o755)
-    monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(root))
-
-    from core.inference import tools
-
-    tools._workdirs.clear()
+    tools = _shared_setup_3(monkeypatch, root)
     assert Path(tools.get_sandbox_workdir("team")) != theirs
     assert oct(theirs.stat().st_mode)[-3:] == "755", "an unowned folder was locked down"
 
@@ -1936,11 +2391,7 @@ def test_a_link_in_a_shared_root_is_left_alone_by_a_delete(tmp_path, monkeypatch
     elsewhere = tmp_path / "elsewhere"
     elsewhere.mkdir()
     (root / "notes").symlink_to(elsewhere, target_is_directory = True)
-    monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(root))
-
-    from core.inference import tools
-
-    tools._workdirs.clear()
+    tools = _shared_setup_3(monkeypatch, root)
     assert tools.remove_session_sandbox("notes", delete_files = True) is False
     assert (root / "notes").is_symlink(), "an entry we did not create was unlinked"
     assert elsewhere.is_dir()
@@ -1949,11 +2400,7 @@ def test_a_link_in_a_shared_root_is_left_alone_by_a_delete(tmp_path, monkeypatch
 def test_a_case_variant_chat_gets_its_own_directory(tmp_path, monkeypatch):
     """One name on Windows and on a default macOS volume: sharing it means
     either chat's delete takes the other's files."""
-    monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(tmp_path / "sb"))
-
-    from core.inference import tools
-
-    tools._workdirs.clear()
+    tools = _shared_setup_1(monkeypatch, tmp_path)
     first = Path(tools.get_sandbox_workdir("CaseOwn"))
     (first / "report.csv").write_text("a,b\n", encoding = "utf-8")
     assert (first / tools._SANDBOX_MARKER).read_text(encoding = "utf-8") == "CaseOwn"
@@ -1998,11 +2445,7 @@ def test_a_tool_cannot_forge_its_way_into_owning_a_folder(tmp_path, monkeypatch)
     theirs = root / "photos"
     theirs.mkdir()
     (theirs / "wedding.jpg").write_text("jpeg", encoding = "utf-8")
-    monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(root))
-
-    from core.inference import tools
-
-    tools._workdirs.clear()
+    tools = _shared_setup_3(monkeypatch, root)
     workdir = Path(tools.get_sandbox_workdir("photos"))
     assert workdir != theirs, "ran the tool inside a folder we did not create"
     assert not (theirs / tools._SANDBOX_MARKER).exists()
@@ -2019,11 +2462,7 @@ def test_a_tool_cannot_forge_its_way_into_owning_a_folder(tmp_path, monkeypatch)
 
 def test_two_ids_racing_for_one_name_do_not_share_it(tmp_path, monkeypatch):
     """Both can see an unowned name before either writes its marker."""
-    monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(tmp_path / "sb"))
-
-    from core.inference import tools
-
-    tools._workdirs.clear()
+    tools = _shared_setup_1(monkeypatch, tmp_path)
     root = tools.sandbox_root()
     os.makedirs(root, exist_ok = True)
     first = Path(tools._ensure_session_dir(root, "RaceId"))
@@ -2050,11 +2489,7 @@ def test_a_migrated_sandbox_stays_deletable_in_an_overridden_root(tmp_path, monk
     (legacy / "notes.txt").write_text("mine", encoding = "utf-8")
     root = tmp_path / "shared"
     root.mkdir()
-    monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(root))
-
-    from core.inference import tools
-
-    tools._workdirs.clear()
+    tools = _shared_setup_3(monkeypatch, root)
     tools._legacy_sandbox_migrated = False
     tools._migrate_legacy_sandbox(str(root))
 
@@ -2078,11 +2513,7 @@ def test_a_tool_writing_over_the_marker_does_not_lose_its_files(tmp_path, monkey
     """The file sits in a directory the tool can write, so a restart must not
     send that chat somewhere else and strand what it made."""
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
-    monkeypatch.delenv("UNSLOTH_STUDIO_SANDBOX_HOME", raising = False)
-
-    from core.inference import tools
-
-    tools._workdirs.clear()
+    tools = _shared_setup_7(monkeypatch)
     workdir = Path(tools.get_sandbox_workdir("__LOCALID_clob11"))
     (workdir / "results.csv").write_text("a,b\n", encoding = "utf-8")
     (workdir / tools._SANDBOX_MARKER).write_text("Traceback: not an id\n", encoding = "utf-8")
@@ -2112,11 +2543,7 @@ def test_a_legacy_name_taken_in_a_shared_root_moves_beside_it(tmp_path, monkeypa
     theirs = root / "notes"
     theirs.mkdir()
     (theirs / "theirs.txt").write_text("theirs", encoding = "utf-8")
-    monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(root))
-
-    from core.inference import tools
-
-    tools._workdirs.clear()
+    tools = _shared_setup_3(monkeypatch, root)
     tools._legacy_sandbox_migrated = False
     tools._migrate_legacy_sandbox(str(root))
 
@@ -2145,11 +2572,7 @@ def test_an_id_the_filesystem_cannot_hold_still_gets_its_own_directory(tmp_path,
     """These come from API clients. One shared bucket meant every such chat
     could read, and delete, every other one's files."""
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
-    monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(tmp_path / "sb"))
-
-    from core.inference import tools
-
-    tools._workdirs.clear()
+    tools = _shared_setup_1(monkeypatch, tmp_path)
     first = Path(tools.get_sandbox_workdir("chat.one"))
     second = Path(tools.get_sandbox_workdir("chat.two"))
     assert first != second
@@ -2181,11 +2604,7 @@ def test_a_foreign_folder_is_not_taken_for_an_interrupted_move(tmp_path, monkeyp
     theirs.mkdir()
     # A subset of the legacy names, which used to be enough to look partial.
     (theirs / "notes.txt").write_text("theirs", encoding = "utf-8")
-    monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(root))
-
-    from core.inference import tools
-
-    tools._workdirs.clear()
+    tools = _shared_setup_3(monkeypatch, root)
     tools._legacy_sandbox_migrated = False
     tools._migrate_legacy_sandbox(str(root))
 
@@ -2197,11 +2616,7 @@ def test_a_literal_id_cannot_take_a_derived_name(tmp_path, monkeypatch):
     """_id-<hash> is the name an unusable id resolves to, so a chat called that
     must not land on the same directory."""
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
-    monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(tmp_path / "sb"))
-
-    from core.inference import tools
-
-    tools._workdirs.clear()
+    tools = _shared_setup_1(monkeypatch, tmp_path)
     derived = tools._sandbox_name("chat.one")
     assert derived.startswith(tools._DERIVED_PREFIX)
     assert tools._sandbox_name(derived) != derived, "a literal id took a derived name"
@@ -2223,11 +2638,7 @@ def test_a_link_inside_the_root_is_stepped_around(tmp_path, monkeypatch):
     (foreign / "theirs.txt").write_text("theirs", encoding = "utf-8")
     (root / "chat").symlink_to(foreign, target_is_directory = True)
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
-    monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(root))
-
-    from core.inference import tools
-
-    tools._workdirs.clear()
+    tools = _shared_setup_3(monkeypatch, root)
     workdir = Path(tools.get_sandbox_workdir("chat"))
     assert workdir.resolve() != foreign.resolve(), workdir
     assert not (foreign / tools._SANDBOX_MARKER).exists(), "claimed through a link"
@@ -2315,11 +2726,7 @@ def test_a_sandbox_of_empty_directories_is_still_reclaimed(tmp_path, monkeypatch
     """A tool that only ran mkdir, or deleted what it wrote, leaves a folder no
     chat can reach once its record is gone."""
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
-    monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(tmp_path / "sb"))
-
-    from core.inference import tools
-
-    tools._workdirs.clear()
+    tools = _shared_setup_1(monkeypatch, tmp_path)
     session = "__LOCALID_dirs111"
     workdir = Path(tools.get_sandbox_workdir(session))
     (workdir / "outputs" / "runs").mkdir(parents = True)
@@ -2375,11 +2782,7 @@ def test_a_marker_replaced_by_a_link_is_not_written_through(tmp_path, monkeypatc
     """The file sits where tool code runs, so a link there would send our write
     to whatever it points at."""
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
-    monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(tmp_path / "sb"))
-
-    from core.inference import tools
-
-    tools._workdirs.clear()
+    tools = _shared_setup_1(monkeypatch, tmp_path)
     session = "__LOCALID_link911"
     workdir = Path(tools.get_sandbox_workdir(session))
     victim = tmp_path / "notes.txt"
@@ -2400,11 +2803,7 @@ def test_a_cached_path_swapped_for_another_chats_directory_is_dropped(tmp_path, 
     """cd .., mv, ln -s is all a tool needs, and containment accepts a link to
     a sibling."""
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
-    monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(tmp_path / "sb"))
-
-    from core.inference import tools
-
-    tools._workdirs.clear()
+    tools = _shared_setup_1(monkeypatch, tmp_path)
     victim = Path(tools.get_sandbox_workdir("__LOCALID_victim2"))
     (victim / "private.csv").write_text("theirs", encoding = "utf-8")
     attacker = Path(tools.get_sandbox_workdir("__LOCALID_attack2"))
@@ -2428,11 +2827,7 @@ def test_a_default_folder_that_was_already_there_is_not_run_in(tmp_path, monkeyp
     theirs.mkdir()
     (theirs / "notes.txt").write_text("theirs", encoding = "utf-8")
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
-    monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(root))
-
-    from core.inference import tools
-
-    tools._workdirs.clear()
+    tools = _shared_setup_3(monkeypatch, root)
     workdir = Path(tools.get_sandbox_workdir(None))
     assert workdir != theirs, workdir
     assert not (workdir / "notes.txt").exists()
@@ -2464,18 +2859,17 @@ def test_an_id_a_path_segment_cannot_carry_rides_in_the_query():
 def test_clearing_every_chat_reports_what_it_deleted(tmp_path, monkeypatch):
     """A thread added between the listing and the delete is gone too, and its
     sandbox has to be cleaned up with the rest."""
-    import inspect
+    chat_history, inspect, studio_db = _shared_setup_17()
 
-    from routes import chat_history
-    from storage import studio_db
-
-    source = inspect.getsource(studio_db.clear_chat_history)
+    # The body lives in the _with_replay_status variant; clear_chat_history drops its
+    # third element for callers that do not need it. Same transaction either way.
+    source = inspect.getsource(studio_db.clear_chat_history_with_replay_status)
     assert "SELECT id FROM chat_threads" in source
     assert source.index("SELECT id FROM chat_threads") < source.index("DELETE FROM chat_threads")
-    assert "return removed, active_runs" in source
+    assert "return removed, active_runs, False" in source
 
     route = inspect.getsource(chat_history.clear_history)
-    assert "cleared, cleared_runs = clear_chat_history()" in route
+    assert "cleared, cleared_runs, cleared_chat_runs = clear_chat_history(" in route
     assert "cleared" in route.split("_remove_sandboxes(", 1)[1].split(")", 1)[0]
 
 
@@ -2499,7 +2893,7 @@ def test_a_symlinked_cache_marker_does_not_license_a_delete(tmp_path, monkeypatc
 
 
 def test_a_real_cache_marker_still_counts(tmp_path):
-    """The other half: a directory Studio made is still cleaned out."""
+    """The other half: a directory Unsloth made is still cleaned out."""
     from utils import cache_cleanup
 
     ours = tmp_path / "unsloth_compiled_cache"
@@ -2512,11 +2906,7 @@ def test_an_id_with_a_lone_surrogate_still_gets_a_directory(tmp_path, monkeypatc
     """An API client can send one in JSON, and a POSIX name decoded with
     surrogateescape carries them too; a strict encode raises instead."""
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
-    monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(tmp_path / "sb"))
-
-    from core.inference import tools
-
-    tools._workdirs.clear()
+    tools = _shared_setup_1(monkeypatch, tmp_path)
     odd = "chat-\ud800-one"
     name = tools._sandbox_name(odd)
     assert name.startswith(tools._DERIVED_PREFIX)
@@ -2542,15 +2932,9 @@ def test_a_legacy_entry_that_is_a_symlink_is_left_alone(tmp_path, monkeypatch):
     (legacy / "__LOCALID_real111").mkdir()
     (legacy / "__LOCALID_real111" / "results.csv").write_text("a,b\n", encoding = "utf-8")
 
-    monkeypatch.setenv("HOME", str(fake_home))
-    monkeypatch.setenv("USERPROFILE", str(fake_home))
-    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
-    monkeypatch.delenv("UNSLOTH_STUDIO_SANDBOX_HOME", raising = False)
+    _shared_setup_11(fake_home, monkeypatch, tmp_path)
 
-    from core.inference import tools
-
-    tools._workdirs.clear()
-    tools._legacy_sandbox_migrated = False
+    tools = _shared_setup_6()
     root = Path(tools.sandbox_root())
     tools._migrate_legacy_sandbox(str(root))
 
@@ -2570,15 +2954,9 @@ def test_a_first_tool_call_does_not_wait_for_the_whole_legacy_tree(tmp_path, mon
     (legacy / "__LOCALID_mine111" / "results.csv").write_text("a,b\n", encoding = "utf-8")
     (legacy / "__LOCALID_huge111").mkdir()
 
-    monkeypatch.setenv("HOME", str(fake_home))
-    monkeypatch.setenv("USERPROFILE", str(fake_home))
-    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
-    monkeypatch.delenv("UNSLOTH_STUDIO_SANDBOX_HOME", raising = False)
+    _shared_setup_11(fake_home, monkeypatch, tmp_path)
 
-    from core.inference import tools
-
-    tools._workdirs.clear()
-    tools._legacy_sandbox_migrated = False
+    tools = _shared_setup_6()
     held = threading.Event()
     monkeypatch.setattr(
         tools,
@@ -2606,9 +2984,6 @@ def test_deleting_a_chat_stops_a_generation_that_would_recreate_it(monkeypatch):
     import routes.chat_history as chat_history
 
     cancelled = []
-    monkeypatch.setattr(chat_history, "delete_chat_threads", lambda ids: None)
-    monkeypatch.setattr(chat_history, "_cancel_active_research", lambda request, ids: None)
-
     from state import active_generations
 
     monkeypatch.setattr(active_generations, "cancel_thread", lambda tid: cancelled.append(tid) or 1)
@@ -2642,11 +3017,7 @@ def test_a_large_file_is_streamed_rather_than_buffered():
 def test_a_same_size_overwrite_is_still_reported(tmp_path, monkeypatch):
     """On a coarse-timestamp volume a rewrite of the same length inside one tick
     matches on mtime and size, and the call reported no file at all."""
-    monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(tmp_path / "sb"))
-
-    from core.inference import tools
-
-    tools._workdirs.clear()
+    tools = _shared_setup_1(monkeypatch, tmp_path)
     workdir = Path(tools.get_sandbox_workdir("__LOCALID_same111"))
     # The premise: where mtime alone separates the writes there is no digest.
     monkeypatch.setattr(tools, "_volume_timestamps_finely", lambda _: False)
@@ -2668,11 +3039,7 @@ def test_a_same_size_overwrite_is_still_reported(tmp_path, monkeypatch):
 def test_a_file_too_big_to_read_is_still_snapshotted(tmp_path, monkeypatch):
     """The digest is bounded: reading every artifact twice per call is not the
     price for a case that needs a coarse clock and an exact length match."""
-    monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(tmp_path / "sb"))
-
-    from core.inference import tools
-
-    tools._workdirs.clear()
+    tools = _shared_setup_1(monkeypatch, tmp_path)
     workdir = Path(tools.get_sandbox_workdir("__LOCALID_big1111"))
     big = workdir / "model.bin"
     big.write_bytes(b"0" * (tools._MAX_HASHED_SNAPSHOT_BYTES + 1))
@@ -2685,11 +3052,7 @@ def test_a_file_too_big_to_read_is_still_snapshotted(tmp_path, monkeypatch):
 def test_deleting_a_big_sandbox_does_not_hold_up_other_chats(tmp_path, monkeypatch):
     """Every tool start takes this lock, so an rmtree in here stops calls in
     every unrelated chat for as long as it runs."""
-    monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(tmp_path / "sb"))
-
-    from core.inference import tools
-
-    tools._workdirs.clear()
+    tools = _shared_setup_1(monkeypatch, tmp_path)
     session = "__LOCALID_big2222"
     workdir = Path(tools.get_sandbox_workdir(session))
     (workdir / "data.csv").write_text("a,b\n", encoding = "utf-8")
@@ -2738,15 +3101,9 @@ def test_an_interrupted_move_is_not_read_as_a_collision(tmp_path, monkeypatch):
     (legacy / "results.csv").write_text("a,b\n", encoding = "utf-8")
     (legacy / "second.csv").write_text("c,d\n", encoding = "utf-8")
 
-    monkeypatch.setenv("HOME", str(fake_home))
-    monkeypatch.setenv("USERPROFILE", str(fake_home))
-    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
-    monkeypatch.delenv("UNSLOTH_STUDIO_SANDBOX_HOME", raising = False)
+    _shared_setup_11(fake_home, monkeypatch, tmp_path)
 
-    from core.inference import tools
-
-    tools._workdirs.clear()
-    tools._legacy_sandbox_migrated = False
+    tools = _shared_setup_6()
     root = Path(tools.sandbox_root())
     root.mkdir(parents = True, exist_ok = True)
 
@@ -2775,11 +3132,7 @@ def test_an_interrupted_move_is_not_read_as_a_collision(tmp_path, monkeypatch):
 def test_a_delete_without_the_switch_says_what_it_kept(tmp_path, monkeypatch):
     """Surfaces other than the sidebar never offer the choice, and after the
     delete the folder is unreachable, so the route reports it."""
-    monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(tmp_path / "sb"))
-
-    from core.inference import tools
-
-    tools._workdirs.clear()
+    tools = _shared_setup_1(monkeypatch, tmp_path)
     kept = "__LOCALID_keeps11"
     empty = "__LOCALID_empty11"
     workdir = Path(tools.get_sandbox_workdir(kept))
@@ -2827,11 +3180,7 @@ def test_a_fallback_name_already_in_a_shared_root_is_not_taken(tmp_path, monkeyp
     root = tmp_path / "shared"
     root.mkdir()
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
-    monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(root))
-
-    from core.inference import tools
-
-    tools._workdirs.clear()
+    tools = _shared_setup_3(monkeypatch, root)
     session = "__LOCALID_both111"
     name = tools._sandbox_name(session)
     theirs = root / name
@@ -2859,11 +3208,7 @@ def test_a_symlinked_sandbox_marker_does_not_make_a_directory_ours(tmp_path, mon
     root = tmp_path / "shared"
     root.mkdir()
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
-    monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(root))
-
-    from core.inference import tools
-
-    tools._workdirs.clear()
+    tools = _shared_setup_3(monkeypatch, root)
     session = "__LOCALID_fake111"
     theirs = root / tools._sandbox_name(session)
     theirs.mkdir()
@@ -2882,11 +3227,7 @@ def test_a_chat_that_owns_nothing_never_reads_from_the_shared_root(tmp_path, mon
     root = tmp_path / "shared"
     root.mkdir()
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
-    monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(root))
-
-    from core.inference import tools
-
-    tools._workdirs.clear()
+    tools = _shared_setup_3(monkeypatch, root)
     session = "__LOCALID_none111"
     theirs = root / tools._sandbox_name(session)
     theirs.mkdir()
@@ -2922,11 +3263,7 @@ def test_a_request_path_move_lands_where_the_resolver_says(tmp_path, monkeypatch
     monkeypatch.setenv("HOME", str(fake_home))
     monkeypatch.setenv("USERPROFILE", str(fake_home))
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
-    monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(root))
-
-    from core.inference import tools
-
-    tools._workdirs.clear()
+    tools = _shared_setup_3(monkeypatch, root)
     tools._legacy_sandbox_migrated = False
     theirs = root / "__LOCALID_taken11"
     theirs.mkdir()
@@ -2984,11 +3321,7 @@ def _shared_root(tmp_path, monkeypatch):
 def test_a_fallback_with_a_random_name_is_found_again(tmp_path, monkeypatch):
     """Nothing can recompute that name, so without the marker the chat gets a
     new folder every launch and a delete never reaches the old ones."""
-    root = _shared_root(tmp_path, monkeypatch)
-
-    from core.inference import tools
-
-    _forget_sandbox_state(tools)
+    root, tools = _shared_setup_5(monkeypatch, tmp_path)
     session = "__LOCALID_rand111"
     name = tools._sandbox_name(session)
     for taken in (root / name, root / f"{name}-{tools._name_suffix(session)}"):
@@ -3010,11 +3343,7 @@ def test_a_fallback_with_a_random_name_is_found_again(tmp_path, monkeypatch):
 def test_a_marker_a_tool_deleted_is_written_again(tmp_path, monkeypatch):
     """Tool code runs in this directory. Reading the missing marker as somebody
     else's strands the files already written and restarts the chat elsewhere."""
-    root = _shared_root(tmp_path, monkeypatch)
-
-    from core.inference import tools
-
-    _forget_sandbox_state(tools)
+    root, tools = _shared_setup_5(monkeypatch, tmp_path)
     session = "__LOCALID_clob111"
     workdir = Path(tools.get_sandbox_workdir(session))
     (workdir / "plot.png").write_bytes(b"x")
@@ -3117,11 +3446,7 @@ def test_clearing_every_chat_reports_the_files_it_kept():
 def test_a_lone_surrogate_id_can_still_step_aside(tmp_path, monkeypatch):
     """The collision path encodes the id a second time, and a strict encode
     there raises before the chat can be given a name of its own."""
-    root = _shared_root(tmp_path, monkeypatch)
-
-    from core.inference import tools
-
-    _forget_sandbox_state(tools)
+    root, tools = _shared_setup_5(monkeypatch, tmp_path)
     session = "chat-\udce2-1"  # what an API client can send, and what os.listdir returns
     theirs = root / tools._sandbox_name(session)
     theirs.mkdir()
@@ -3143,11 +3468,7 @@ def test_a_legacy_move_lands_when_both_names_are_taken(tmp_path, monkeypatch):
 
     monkeypatch.setenv("HOME", str(fake_home))
     monkeypatch.setenv("USERPROFILE", str(fake_home))
-    root = _shared_root(tmp_path, monkeypatch)
-
-    from core.inference import tools
-
-    _forget_sandbox_state(tools)
+    root, tools = _shared_setup_5(monkeypatch, tmp_path)
     tools._legacy_sandbox_migrated = False
     taken = [root / session, root / f"{session}-{tools._name_suffix(session)}"]
     for directory in taken:
@@ -3165,11 +3486,7 @@ def test_a_legacy_move_lands_when_both_names_are_taken(tmp_path, monkeypatch):
 def test_a_read_finds_the_marked_fallback_after_a_restart(tmp_path, monkeypatch):
     """Only creation and deletion scanned for the marker, so every file card in
     the transcript 404s until some later tool call refills the cache."""
-    root = _shared_root(tmp_path, monkeypatch)
-
-    from core.inference import tools
-
-    _forget_sandbox_state(tools)
+    root, tools = _shared_setup_5(monkeypatch, tmp_path)
     session = "__LOCALID_read111"
     name = tools._sandbox_name(session)
     for taken in (root / name, root / f"{name}-{tools._name_suffix(session)}"):
@@ -3193,9 +3510,9 @@ def test_a_chat_started_during_the_clear_is_cancelled_too():
 
     source = inspect.getsource(chat_history.clear_history)
     assert "late" in source
-    assert source.index("cleared, cleared_runs = clear_chat_history()") < source.index(
-        "_cancel_active_generations(late)"
-    )
+    assert source.index(
+        "cleared, cleared_runs, cleared_chat_runs = clear_chat_history("
+    ) < source.index("_cancel_active_generations(late)")
     assert source.index("_cancel_active_generations(late)") < source.index("_remove_sandboxes(")
 
 
@@ -3250,12 +3567,7 @@ def test_a_program_cannot_print_its_own_file_envelope(tmp_path, monkeypatch):
 def test_a_delete_that_waited_for_a_tool_call_says_it_kept_the_files(tmp_path, monkeypatch):
     """The sandbox can be empty at the moment of the check and hold a file a
     second later, and the deferred removal keeps it with nobody left to ask."""
-    import asyncio
-
-    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
-
-    from core.inference import tools
-    from routes import chat_history
+    asyncio, chat_history, tools = _shared_setup_8(monkeypatch, tmp_path)
 
     _forget_sandbox_state(tools)
     session = "__LOCALID_busy111"
@@ -3283,11 +3595,7 @@ def test_a_completed_move_is_never_the_thing_that_gets_deleted(tmp_path, monkeyp
     monkeypatch.setenv("HOME", str(fake_home))
     monkeypatch.setenv("USERPROFILE", str(fake_home))
     root = tmp_path / "home" / "studio_sandbox"
-    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
-
-    from core.inference import tools
-
-    _forget_sandbox_state(tools)
+    tools = _shared_setup_2(monkeypatch, tmp_path)
     root.mkdir(parents = True)
 
     real_rename = os.rename
@@ -3309,11 +3617,7 @@ def test_a_completed_move_is_never_the_thing_that_gets_deleted(tmp_path, monkeyp
 def test_a_symlinked_directory_counts_as_a_file_of_the_users(tmp_path, monkeypatch):
     """os.walk lists it in dirs, and a check that reads only files called the
     sandbox empty and removed the link the tool made."""
-    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
-
-    from core.inference import tools
-
-    _forget_sandbox_state(tools)
+    tools = _shared_setup_2(monkeypatch, tmp_path)
     session = "__LOCALID_link111"
     workdir = Path(tools.get_sandbox_workdir(session))
     elsewhere = tmp_path / "data"
@@ -3329,10 +3633,7 @@ def test_a_symlinked_directory_counts_as_a_file_of_the_users(tmp_path, monkeypat
 def test_a_project_delete_uses_the_membership_it_really_deleted():
     """A chat moved in after the listing is deleted by the transaction, and its
     generation would keep running and rebuild a sandbox nothing can reach."""
-    import inspect
-
-    from routes import chat_history
-    from storage import studio_db
+    chat_history, inspect, studio_db = _shared_setup_17()
 
     storage = inspect.getsource(studio_db.delete_chat_project)
     assert 'project["memberIds"] = sorted(thread_ids)' in storage
@@ -3443,11 +3744,7 @@ def test_a_read_serves_the_legacy_files_while_the_move_is_still_running(tmp_path
 
     monkeypatch.setenv("HOME", str(fake_home))
     monkeypatch.setenv("USERPROFILE", str(fake_home))
-    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
-
-    from core.inference import tools
-
-    _forget_sandbox_state(tools)
+    tools = _shared_setup_2(monkeypatch, tmp_path)
     tools._legacy_sandbox_migrated = False
 
     served = Path(tools.resolve_sandbox_workdir(session))
@@ -3459,11 +3756,7 @@ def test_a_read_serves_the_legacy_files_while_the_move_is_still_running(tmp_path
 def test_a_case_variant_id_cannot_delete_a_markerless_sandbox(tmp_path, monkeypatch):
     """On Windows and a default macOS volume `Foo` and `foo` are one directory,
     and with the marker gone the default root said yes to either."""
-    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
-
-    from core.inference import tools
-
-    _forget_sandbox_state(tools)
+    tools = _shared_setup_2(monkeypatch, tmp_path)
     workdir = Path(tools.get_sandbox_workdir("Foo_chat1"))
     (workdir / "notes.txt").write_text("theirs", encoding = "utf-8")
     (workdir / tools._SANDBOX_MARKER).unlink()  # a tool wrote over it
@@ -3501,11 +3794,7 @@ def test_a_delete_moves_only_its_own_session_up(tmp_path, monkeypatch):
 
     monkeypatch.setenv("HOME", str(fake_home))
     monkeypatch.setenv("USERPROFILE", str(fake_home))
-    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
-
-    from core.inference import tools
-
-    _forget_sandbox_state(tools)
+    tools = _shared_setup_2(monkeypatch, tmp_path)
     tools._legacy_sandbox_migrated = False
     monkeypatch.setattr(tools, "_start_legacy_migration", lambda: None)
     whole_tree = []
@@ -3522,11 +3811,7 @@ def test_a_delete_moves_only_its_own_session_up(tmp_path, monkeypatch):
 def test_a_deferred_removal_runs_outside_the_global_lock(tmp_path, monkeypatch):
     """It walks the tree to decide whether to keep the files, and every tool
     call in every other chat waits on that lock to start."""
-    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
-
-    from core.inference import tools
-
-    _forget_sandbox_state(tools)
+    tools = _shared_setup_2(monkeypatch, tmp_path)
     session = "__LOCALID_defer11"
     tools.get_sandbox_workdir(session)
 
@@ -3561,11 +3846,7 @@ def test_only_the_sandbox_tools_have_their_file_line_read(tmp_path):
 def test_a_migration_that_could_not_move_in_is_adopted(tmp_path, monkeypatch):
     """The rename failed after the tree had already moved, so the marked
     staging directory is the only copy of the user's files there is."""
-    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
-
-    from core.inference import tools
-
-    _forget_sandbox_state(tools)
+    tools = _shared_setup_2(monkeypatch, tmp_path)
     session = "__LOCALID_stage11"
     root = Path(tools.sandbox_root())
     root.mkdir(parents = True, exist_ok = True)
@@ -3584,11 +3865,7 @@ def test_a_migration_that_could_not_move_in_is_adopted(tmp_path, monkeypatch):
 def test_bulk_deletes_share_one_sweeper(tmp_path, monkeypatch):
     """A clear-all can hand over every chat at once, and a thread with a
     recursive walk per chat is what exhausts the process."""
-    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
-
-    from core.inference import tools
-
-    _forget_sandbox_state(tools)
+    tools = _shared_setup_2(monkeypatch, tmp_path)
     started = []
     real_thread = threading.Thread
 
@@ -3629,11 +3906,7 @@ def test_one_chats_legacy_copy_does_not_hold_up_another(tmp_path, monkeypatch):
 
     monkeypatch.setenv("HOME", str(fake_home))
     monkeypatch.setenv("USERPROFILE", str(fake_home))
-    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
-
-    from core.inference import tools
-
-    _forget_sandbox_state(tools)
+    tools = _shared_setup_2(monkeypatch, tmp_path)
     tools._legacy_sandbox_migrated = False
     getattr(tools, "_legacy_session_locks", {}).clear()
 
@@ -3672,11 +3945,7 @@ def test_one_chats_legacy_copy_does_not_hold_up_another(tmp_path, monkeypatch):
 def test_an_absolute_session_id_cannot_reach_outside_the_sentinel(tmp_path, monkeypatch):
     """The id comes straight from the query, and os.path.join drops the root it
     is given when the second half is absolute."""
-    root = _shared_root(tmp_path, monkeypatch)
-
-    from core.inference import tools
-
-    _forget_sandbox_state(tools)
+    root, tools = _shared_setup_5(monkeypatch, tmp_path)
     tools._NOTHING_ROOT = None
 
     for hostile in ("/etc", "/", os.path.join("..", "..", "etc")):
@@ -3704,11 +3973,7 @@ def test_a_legacy_copy_of_a_folder_we_already_moved_is_left_alone(tmp_path, monk
 
     monkeypatch.setenv("HOME", str(fake_home))
     monkeypatch.setenv("USERPROFILE", str(fake_home))
-    root = _shared_root(tmp_path, monkeypatch)
-
-    from core.inference import tools
-
-    _forget_sandbox_state(tools)
+    root, tools = _shared_setup_5(monkeypatch, tmp_path)
     tools._legacy_sandbox_migrated = False
     getattr(tools, "_legacy_session_locks", {}).clear()
     # What an earlier move left: the destination, marked, already in place.
@@ -3727,11 +3992,7 @@ def test_a_legacy_copy_of_a_folder_we_already_moved_is_left_alone(tmp_path, monk
 def test_an_interrupted_delete_is_swept_even_without_its_marker(tmp_path, monkeypatch):
     """A tool can remove the marker before the delete, and nothing but this code
     names a directory that way in our own root."""
-    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
-
-    from core.inference import tools
-
-    _forget_sandbox_state(tools)
+    tools = _shared_setup_2(monkeypatch, tmp_path)
     root = Path(tools.sandbox_root())
     root.mkdir(parents = True, exist_ok = True)
     tombstone = root / f"__LOCALID_gone222{tools._DETACHED_SUFFIX}0123abcd"
@@ -3753,11 +4014,7 @@ def test_the_startup_pass_lands_a_chat_whose_names_are_taken(tmp_path, monkeypat
 
     monkeypatch.setenv("HOME", str(fake_home))
     monkeypatch.setenv("USERPROFILE", str(fake_home))
-    root = _shared_root(tmp_path, monkeypatch)
-
-    from core.inference import tools
-
-    _forget_sandbox_state(tools)
+    root, tools = _shared_setup_5(monkeypatch, tmp_path)
     tools._legacy_sandbox_migrated = False
     for taken in (root / session, root / f"{session}-{tools._name_suffix(session)}"):
         taken.mkdir()
@@ -3773,11 +4030,7 @@ def test_the_startup_pass_lands_a_chat_whose_names_are_taken(tmp_path, monkeypat
 def test_a_fallback_is_found_in_a_root_full_of_other_folders(tmp_path, monkeypatch):
     """The scan is bounded and sorted, so a big enough root hid the fallback and
     the next launch made another one beside it."""
-    root = _shared_root(tmp_path, monkeypatch)
-
-    from core.inference import tools
-
-    _forget_sandbox_state(tools)
+    root, tools = _shared_setup_5(monkeypatch, tmp_path)
     session = "zz_LOCALID_late11"
     name = tools._sandbox_name(session)
     for taken in (root / name, root / f"{name}-{tools._name_suffix(session)}"):
@@ -3808,11 +4061,7 @@ def test_a_staged_move_is_marked_before_the_rename(tmp_path, monkeypatch):
 
     monkeypatch.setenv("HOME", str(fake_home))
     monkeypatch.setenv("USERPROFILE", str(fake_home))
-    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
-
-    from core.inference import tools
-
-    _forget_sandbox_state(tools)
+    tools = _shared_setup_2(monkeypatch, tmp_path)
     root = Path(tools.sandbox_root())
     root.mkdir(parents = True, exist_ok = True)
 
@@ -3840,11 +4089,7 @@ def test_a_staged_move_is_marked_before_the_rename(tmp_path, monkeypatch):
 def test_a_delete_finds_the_folder_this_run_made(tmp_path, monkeypatch):
     """A tool can remove the marker, and after that neither name resolves to the
     directory: the delete left it behind without even saying it kept anything."""
-    root = _shared_root(tmp_path, monkeypatch)
-
-    from core.inference import tools
-
-    _forget_sandbox_state(tools)
+    root, tools = _shared_setup_5(monkeypatch, tmp_path)
     session = "__LOCALID_cache11"
     (root / tools._sandbox_name(session)).mkdir()  # the user's, so we fall back
     workdir = Path(tools.get_sandbox_workdir(session))
@@ -3859,11 +4104,7 @@ def test_a_delete_finds_the_folder_this_run_made(tmp_path, monkeypatch):
 def test_a_chat_moved_out_of_a_project_survives_its_deletion():
     """The transaction decides membership, and an earlier listing would have
     stopped that chat's generation and deleted the files it wrote."""
-    import inspect
-
-    from routes import chat_history
-
-    route = inspect.getsource(chat_history.delete_project)
+    route = _shared_setup_9()
     assert "list_chat_threads(project_id" not in route
     assert 'member_ids = list(project.get("memberIds") or [])' in route
     assert route.index("delete_chat_project(") < route.index("member_ids = list(")
@@ -3895,11 +4136,7 @@ def test_the_old_shared_bucket_is_read_but_never_moved(tmp_path, monkeypatch):
 
     monkeypatch.setenv("HOME", str(fake_home))
     monkeypatch.setenv("USERPROFILE", str(fake_home))
-    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
-
-    from core.inference import tools
-
-    _forget_sandbox_state(tools)
+    tools = _shared_setup_2(monkeypatch, tmp_path)
     tools._legacy_sandbox_migrated = False
     session = "client.v1"  # what the old regex rejected
     assert tools._usable_session_id(session) is False
@@ -3917,11 +4154,7 @@ def test_the_old_shared_bucket_is_read_but_never_moved(tmp_path, monkeypatch):
 def test_a_chat_cannot_claim_another_chats_directory(tmp_path, monkeypatch):
     """Tool code runs inside the sandbox and can write anything into the marker,
     so adopting on the marker alone hands one chat another chat's files."""
-    root = _shared_root(tmp_path, monkeypatch)
-
-    from core.inference import tools
-
-    _forget_sandbox_state(tools)
+    root, tools = _shared_setup_5(monkeypatch, tmp_path)
     attacker, victim = "__LOCALID_aaa1111", "__LOCALID_bbb2222"
     theirs = Path(tools.get_sandbox_workdir(attacker))
     (theirs / "private.csv").write_text("the attacker's own", encoding = "utf-8")
@@ -3949,11 +4182,7 @@ def test_a_users_own_marker_file_survives_the_migration(tmp_path, monkeypatch):
 
     monkeypatch.setenv("HOME", str(fake_home))
     monkeypatch.setenv("USERPROFILE", str(fake_home))
-    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
-
-    from core.inference import tools
-
-    _forget_sandbox_state(tools)
+    tools = _shared_setup_2(monkeypatch, tmp_path)
     tools._legacy_sandbox_migrated = False
 
     landed = Path(tools.get_sandbox_workdir(session))
@@ -3966,11 +4195,7 @@ def test_a_users_own_marker_file_survives_the_migration(tmp_path, monkeypatch):
 def test_a_project_workspace_goes_after_its_tools_are_stopped():
     """The member chats' calls run with their cwd in there, and pulling it out
     from under a live subprocess strands whatever it writes next."""
-    import inspect
-
-    from routes import chat_history
-
-    route = inspect.getsource(chat_history.delete_project)
+    route = _shared_setup_9()
     assert "delete_chat_project(project_id, delete_files = False)" in route
     assert route.index("_cancel_active_generations(member_ids)") < route.index(
         "delete_project_workspace"
@@ -3980,12 +4205,7 @@ def test_a_project_workspace_goes_after_its_tools_are_stopped():
 def test_a_forked_chat_keeps_the_files_its_cards_point_at(tmp_path, monkeypatch):
     """Forking clones the message content verbatim, so the fork's cards still
     name the source chat's sandbox."""
-    import asyncio
-
-    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
-
-    from core.inference import tools
-    from routes import chat_history
+    asyncio, chat_history, tools = _shared_setup_8(monkeypatch, tmp_path)
 
     _forget_sandbox_state(tools)
     source = "__LOCALID_source1"
@@ -4022,11 +4242,7 @@ def test_the_research_loop_keeps_a_pages_file_line():
 def test_a_workspace_delete_waits_for_the_tool_calls_in_it(tmp_path, monkeypatch):
     """Cancelling only asks. A call already in the executor still has its cwd
     in there, and removing it underneath strands whatever it writes next."""
-    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
-
-    from core.inference import tools
-
-    _forget_sandbox_state(tools)
+    tools = _shared_setup_2(monkeypatch, tmp_path)
     session = "project-abc123"
     assert tools.project_session_id("abc123") == session
 
@@ -4034,11 +4250,7 @@ def test_a_workspace_delete_waits_for_the_tool_calls_in_it(tmp_path, monkeypatch
         assert tools.wait_for_sessions_idle([session], timeout = 0.2) is False
     assert tools.wait_for_sessions_idle([session], timeout = 0.2) is True
 
-    import inspect
-
-    from routes import chat_history
-
-    route = inspect.getsource(chat_history.delete_project)
+    route = _shared_setup_9()
     assert route.index("run_in_threadpool(wait_for_sessions_idle") < route.index(
         "run_in_threadpool(delete_project_workspace, project)"
     )
@@ -4090,11 +4302,7 @@ def test_a_reference_is_a_session_id_not_a_piece_of_prose(tmp_path, monkeypatch)
 def test_a_project_workspace_a_fork_still_shows_is_kept():
     """A chat forked out of the project keeps cards for the shared workspace,
     and it is not one of the ids the project delete removes."""
-    import inspect
-
-    from routes import chat_history
-
-    route = inspect.getsource(chat_history.delete_project)
+    route = _shared_setup_9()
     assert "project_session_id(project_id)" in route
     assert "sandbox_is_referenced_elsewhere, shared" in route
     assert route.index("sandbox_is_referenced_elsewhere, shared") < route.index(
@@ -4105,10 +4313,7 @@ def test_a_project_workspace_a_fork_still_shows_is_kept():
 def test_a_project_delete_cancels_the_research_it_removed():
     """The rows cascade with the threads, so after the transaction there is
     nothing left to look the runs up by."""
-    import inspect
-
-    from routes import chat_history
-    from storage import studio_db
+    chat_history, inspect, studio_db = _shared_setup_17()
 
     storage = inspect.getsource(studio_db.delete_chat_project)
     assert 'project["activeResearchRunIds"] = active_runs' in storage
@@ -4122,11 +4327,7 @@ def test_a_project_delete_cancels_the_research_it_removed():
 def test_the_wait_covers_the_session_a_project_tool_runs_as():
     """A tool call in a project runs as project-<id>, not as the chat, so
     waiting on the member ids returned at once and the cwd went underneath."""
-    import inspect
-
-    from routes import chat_history
-
-    route = inspect.getsource(chat_history.delete_project)
+    route = _shared_setup_9()
     assert "wait_for_sessions_idle, [shared, *member_ids]" in route
     assert route.index("shared = project_session_id(project_id)") < route.index(
         "run_in_threadpool(wait_for_sessions_idle"
@@ -4136,11 +4337,7 @@ def test_the_wait_covers_the_session_a_project_tool_runs_as():
 def test_a_new_call_cannot_start_in_a_sandbox_being_removed(tmp_path, monkeypatch):
     """The deferred removal runs with the lock released, and a call starting in
     that window was handed the directory the removal then renamed away."""
-    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
-
-    from core.inference import tools
-
-    _forget_sandbox_state(tools)
+    tools = _shared_setup_2(monkeypatch, tmp_path)
     session = "__LOCALID_race111"
     tools.get_sandbox_workdir(session)
 
@@ -4196,11 +4393,7 @@ def test_a_note_named_like_the_marker_is_kept(tmp_path, monkeypatch):
 
     monkeypatch.setenv("HOME", str(fake_home))
     monkeypatch.setenv("USERPROFILE", str(fake_home))
-    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
-
-    from core.inference import tools
-
-    _forget_sandbox_state(tools)
+    tools = _shared_setup_2(monkeypatch, tmp_path)
     tools._legacy_sandbox_migrated = False
 
     landed = Path(tools.get_sandbox_workdir(session))
@@ -4213,10 +4406,7 @@ def test_a_note_named_like_the_marker_is_kept(tmp_path, monkeypatch):
 def test_a_kept_project_workspace_still_resolves(tmp_path, monkeypatch):
     """It is kept because a chat forked out of the project still shows its
     cards, and those cards resolve through the project row that is now gone."""
-    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
-    monkeypatch.setenv("UNSLOTH_STUDIO_PROJECTS_HOME", str(tmp_path / "projects"))
-
-    from core.inference import tools
+    tools = _shared_setup_22(monkeypatch, tmp_path)
     from utils.paths import project_workspaces_root
 
     _forget_sandbox_state(tools)
@@ -4235,12 +4425,9 @@ def test_a_kept_project_workspace_still_resolves(tmp_path, monkeypatch):
 def test_clearing_every_chat_cancels_the_research_it_removed():
     """The runs cascade with the threads, so afterwards there is nothing left
     to look them up by and the worker keeps going."""
-    import inspect
+    chat_history, inspect, studio_db = _shared_setup_17()
 
-    from routes import chat_history
-    from storage import studio_db
-
-    storage = inspect.getsource(studio_db.clear_chat_history)
+    storage = inspect.getsource(studio_db.clear_chat_history_with_replay_status)
     assert "SELECT id FROM research_runs" in storage
     assert storage.index("SELECT id FROM research_runs") < storage.index("DELETE FROM chat_threads")
 
@@ -4256,7 +4443,7 @@ def test_the_supervisor_is_told_even_with_no_row_left():
     from routes import chat_history
 
     source = inspect.getsource(chat_history._cancel_research_runs)
-    assert source.index("supervisor.cancel(run_id)") < source.index(
+    assert source.index("cancel_account_run(request, run_id,") < source.index(
         "research_runs_db.request_cancel(run_id)"
     )
 
@@ -4264,11 +4451,7 @@ def test_the_supervisor_is_told_even_with_no_row_left():
 def test_a_workspace_is_kept_when_the_wait_ran_out():
     """The bound exists so the request cannot hang, and past it the tool call
     is still there: removing its working directory is the worse outcome."""
-    import inspect
-
-    from routes import chat_history
-
-    route = inspect.getsource(chat_history.delete_project)
+    route = _shared_setup_9()
     assert "run_in_threadpool(wait_for_sessions_idle, [shared, *member_ids])" in route
     assert "if delete_files and idle and not referenced and not recreated:" in route
     assert route.index(
@@ -4281,10 +4464,7 @@ def test_a_workspace_is_kept_when_the_wait_ran_out():
 def test_a_kept_workspace_the_user_moved_still_resolves(tmp_path, monkeypatch):
     """A custom rootPath is not derivable from the id, and the row that knew it
     is what the delete just removed."""
-    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
-    monkeypatch.setenv("UNSLOTH_STUDIO_PROJECTS_HOME", str(tmp_path / "projects"))
-
-    from core.inference import tools
+    tools = _shared_setup_22(monkeypatch, tmp_path)
 
     _forget_sandbox_state(tools)
     project_id = "proj98765"
@@ -4305,12 +4485,7 @@ def test_a_kept_workspace_the_user_moved_still_resolves(tmp_path, monkeypatch):
 def test_the_last_fork_going_takes_the_kept_workspace(tmp_path, monkeypatch):
     """The user asked for the files on both surfaces, and nothing else would
     ever come back to that workspace."""
-    import asyncio
-
-    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
-
-    from core.inference import tools
-    from routes import chat_history
+    asyncio, chat_history, tools = _shared_setup_8(monkeypatch, tmp_path)
     from storage import studio_db
 
     _forget_sandbox_state(tools)
@@ -4340,11 +4515,7 @@ def test_the_last_fork_going_takes_the_kept_workspace(tmp_path, monkeypatch):
 def test_a_tool_renaming_the_marker_does_not_move_the_chat(tmp_path, monkeypatch):
     """A valid-looking id in that file is still something a tool wrote, and the
     chat abandoning its own directory strands what the same call just made."""
-    root = _shared_root(tmp_path, monkeypatch)
-
-    from core.inference import tools
-
-    _forget_sandbox_state(tools)
+    root, tools = _shared_setup_5(monkeypatch, tmp_path)
     session = "__LOCALID_owned11"
     (root / tools._sandbox_name(session)).mkdir()  # the user's, so we fall back
     workdir = Path(tools.get_sandbox_workdir(session))
@@ -4361,11 +4532,7 @@ def test_a_tool_renaming_the_marker_does_not_move_the_chat(tmp_path, monkeypatch
 def test_an_empty_sandbox_scan_does_not_hold_the_global_lock(tmp_path, monkeypatch):
     """It walks up to 2,000 directories to decide, and every unrelated chat
     waits on that lock to start a tool call."""
-    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
-
-    from core.inference import tools
-
-    _forget_sandbox_state(tools)
+    tools = _shared_setup_2(monkeypatch, tmp_path)
     session = "__LOCALID_scan111"
     tools.get_sandbox_workdir(session)
 
@@ -4401,11 +4568,7 @@ def test_a_cache_directory_needs_a_generated_file_not_a_name(tmp_path, monkeypat
 def test_a_kept_workspace_is_recorded_even_when_nothing_was_deleted():
     """The row that held a custom path is gone either way, and a fork's cards
     still name that session."""
-    import inspect
-
-    from routes import chat_history
-
-    route = inspect.getsource(chat_history.delete_project)
+    route = _shared_setup_9()
     assert 'if project.get("sandboxPath"):' in route
     assert "if not delete_files:" in route
     body = route[route.index("if not delete_files:") :]
@@ -4416,12 +4579,7 @@ def test_a_kept_workspace_is_recorded_even_when_nothing_was_deleted():
 def test_only_a_pending_record_is_ever_collected(tmp_path, monkeypatch):
     """One written down so a fork's cards resolve is not something anybody
     asked to delete."""
-    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
-
-    from core.inference import tools
-    from storage import studio_db
-
-    _forget_sandbox_state(tools)
+    studio_db, tools = _shared_setup_4(monkeypatch, tmp_path)
     monkeypatch.setattr(studio_db, "sandbox_is_referenced_elsewhere", lambda s, e = None: False)
 
     keep, go = tmp_path / "Keep-projkeep", tmp_path / "Go-projgone"
@@ -4439,12 +4597,7 @@ def test_only_a_pending_record_is_ever_collected(tmp_path, monkeypatch):
 def test_a_workspace_delete_finishes_once_the_tool_call_ends(tmp_path, monkeypatch):
     """Past the wait the delete dialog's promise is still outstanding, and
     nothing else would come back to it."""
-    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
-
-    from core.inference import tools
-    from storage import studio_db
-
-    _forget_sandbox_state(tools)
+    studio_db, tools = _shared_setup_4(monkeypatch, tmp_path)
     monkeypatch.setattr(studio_db, "sandbox_is_referenced_elsewhere", lambda s, e = None: False)
 
     project_id = "projbusy1"
@@ -4474,12 +4627,7 @@ def test_a_workspace_delete_finishes_once_the_tool_call_ends(tmp_path, monkeypat
 def test_a_pending_workspace_is_collected_by_a_plain_delete(tmp_path, monkeypatch):
     """The last chat referencing it can be deleted without the switch, and the
     workspace the user already asked to delete would wait for ever."""
-    import asyncio
-
-    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
-
-    from core.inference import tools
-    from routes import chat_history
+    asyncio, chat_history, tools = _shared_setup_8(monkeypatch, tmp_path)
     from storage import studio_db
 
     _forget_sandbox_state(tools)
@@ -4504,11 +4652,7 @@ def test_a_pending_workspace_is_collected_by_a_plain_delete(tmp_path, monkeypatc
 def test_a_nested_file_named_like_the_marker_is_a_file(tmp_path, monkeypatch):
     """Only the sandbox's own bookkeeping is hidden: a tool that wrote
     archive/.unsloth_sandbox made an ordinary file."""
-    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
-
-    from core.inference import tools
-
-    _forget_sandbox_state(tools)
+    tools = _shared_setup_2(monkeypatch, tmp_path)
     session = "__LOCALID_nested1"
     workdir = Path(tools.get_sandbox_workdir(session))
     before = tools._snapshot_workdir_files(str(workdir))
@@ -4584,11 +4728,7 @@ def test_an_ordinary_chat_never_reads_the_old_shared_bucket(tmp_path, monkeypatc
 
     monkeypatch.setenv("HOME", str(fake_home))
     monkeypatch.setenv("USERPROFILE", str(fake_home))
-    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
-
-    from core.inference import tools
-
-    _forget_sandbox_state(tools)
+    tools = _shared_setup_2(monkeypatch, tmp_path)
     tools._legacy_sandbox_migrated = False
 
     ordinary = "__LOCALID_plain11"
@@ -4606,11 +4746,7 @@ def test_an_ordinary_chat_never_reads_the_old_shared_bucket(tmp_path, monkeypatc
 def test_a_case_variant_cannot_read_a_markerless_sandbox(tmp_path, monkeypatch):
     """With the marker gone the name is the only evidence, and `Foo` and `foo`
     are one directory on Windows and on a default macOS volume."""
-    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
-
-    from core.inference import tools
-
-    _forget_sandbox_state(tools)
+    tools = _shared_setup_2(monkeypatch, tmp_path)
     workdir = Path(tools.get_sandbox_workdir("Bar_chat1"))
     (workdir / "notes.txt").write_text("theirs", encoding = "utf-8")
     (workdir / tools._SANDBOX_MARKER).unlink()
@@ -4622,12 +4758,7 @@ def test_a_case_variant_cannot_read_a_markerless_sandbox(tmp_path, monkeypatch):
 def test_a_failed_workspace_delete_stays_pending(tmp_path, monkeypatch):
     """A locked file on Windows must not lose both the path and the fact that
     the user asked for it."""
-    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
-
-    from core.inference import tools
-    from storage import studio_db
-
-    _forget_sandbox_state(tools)
+    studio_db, tools = _shared_setup_4(monkeypatch, tmp_path)
     monkeypatch.setattr(studio_db, "sandbox_is_referenced_elsewhere", lambda s, e = None: False)
 
     workspace = tmp_path / "Stuck-projstuc"
@@ -4658,10 +4789,7 @@ def test_a_failed_workspace_delete_stays_pending(tmp_path, monkeypatch):
 def test_a_deferred_delete_removes_the_whole_workspace(tmp_path, monkeypatch):
     """The dialog offers the project workspace, and the sandbox is one folder
     inside it: the immediate path removes the root, so this one must too."""
-    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
-    monkeypatch.setenv("UNSLOTH_STUDIO_PROJECTS_HOME", str(tmp_path / "projects"))
-
-    from core.inference import tools
+    tools = _shared_setup_22(monkeypatch, tmp_path)
     from storage import studio_db
 
     _forget_sandbox_state(tools)
@@ -4714,12 +4842,7 @@ def _deleted_project(tmp_path, monkeypatch, project_id, workspace):
 def test_a_workspace_delete_that_declined_can_still_be_retried(tmp_path, monkeypatch):
     """The rows have gone by then, so a delete that stops at a locked file
     leaves a workspace nothing names and no way to ask for it again."""
-    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
-
-    from core.inference import tools
-    from storage import studio_db
-
-    _forget_sandbox_state(tools)
+    studio_db, tools = _shared_setup_4(monkeypatch, tmp_path)
     project_id = "proj31415"
     workspace = tmp_path / "Notes-proj3141"
     (workspace / "sandbox").mkdir(parents = True)
@@ -4753,11 +4876,7 @@ def test_a_workspace_delete_that_declined_can_still_be_retried(tmp_path, monkeyp
 def test_a_half_deleted_workspace_keeps_its_record(tmp_path, monkeypatch):
     """The sandbox went and something else in the workspace did not: dropping
     the record here loses the path and the user's request with it."""
-    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
-
-    from core.inference import tools
-
-    _forget_sandbox_state(tools)
+    tools = _shared_setup_2(monkeypatch, tmp_path)
     project_id = "proj27182"
     workspace = tmp_path / "Notes-proj2718"
     sandbox = workspace / "sandbox"
@@ -4796,11 +4915,7 @@ def test_a_database_that_will_not_answer_keeps_the_files(monkeypatch):
 def test_the_default_sandbox_never_lands_in_a_directory_of_theirs(tmp_path, monkeypatch):
     """A session-less call falls back to _default, and in a shared root both
     that name and the derived one can already be the user's."""
-    root = _shared_root(tmp_path, monkeypatch)
-
-    from core.inference import tools
-
-    _forget_sandbox_state(tools)
+    root, tools = _shared_setup_5(monkeypatch, tmp_path)
     (root / "_default").mkdir()
     theirs = root / f"_default_{tools._name_suffix('_default')}"
     theirs.mkdir()
@@ -4817,11 +4932,7 @@ def test_the_default_sandbox_never_lands_in_a_directory_of_theirs(tmp_path, monk
 def test_the_default_sandbox_is_not_created_through_a_link(tmp_path, monkeypatch):
     """makedirs(exist_ok) follows a directory symlink, and the marker and the
     tool call would both land in whatever it points at."""
-    root = _shared_root(tmp_path, monkeypatch)
-
-    from core.inference import tools
-
-    _forget_sandbox_state(tools)
+    root, tools = _shared_setup_5(monkeypatch, tmp_path)
     (root / "_default").mkdir()
     outside = tmp_path / "elsewhere"
     outside.mkdir()
@@ -4865,19 +4976,13 @@ def test_revealing_a_sandbox_opens_the_directory_it_resolved(tmp_path, monkeypat
     from pathlib import Path as _Path
 
     from routes import inference
-    from utils.paths import path_utils
 
-    sandbox = tmp_path / "sandbox" / "thread-1"
-    sandbox.mkdir(parents = True)
+    path_utils, sandbox = _shared_setup_23(tmp_path)
     opened = []
 
     monkeypatch.setattr(inference, "_sandbox_dir_for", lambda session_id, create: str(sandbox))
     monkeypatch.setattr(inference, "_authenticate_header_or_query", _noop_async)
-    monkeypatch.setattr(
-        path_utils,
-        "reveal_in_file_manager",
-        lambda path, expect_dir = False: opened.append(path),
-    )
+    _shared_setup_20(monkeypatch, opened, path_utils)
 
     result = asyncio.new_event_loop().run_until_complete(
         inference.reveal_sandbox_dir("thread-1", request = None, token = None, session = None)
@@ -4889,11 +4994,7 @@ def test_revealing_a_sandbox_opens_the_directory_it_resolved(tmp_path, monkeypat
 def test_a_sandbox_deleted_mid_request_does_not_reveal_the_root(tmp_path, monkeypatch):
     """The Linux branch opens the parent when the target is not a directory, and
     a sandbox's parent is the root holding every other chat's."""
-    import asyncio
-
-    from fastapi import HTTPException
-
-    from routes import inference
+    HTTPException, asyncio, inference = _shared_setup_14()
 
     root = tmp_path / "sandbox"
     sandbox = root / "thread-1"
@@ -4909,10 +5010,7 @@ def test_a_sandbox_deleted_mid_request_does_not_reveal_the_root(tmp_path, monkey
     monkeypatch.setattr(inference, "_authenticate_header_or_query", _noop_async)
     monkeypatch.setattr(subprocess, "Popen", lambda cmd, **kw: opened.append(list(cmd)))
 
-    with pytest.raises(HTTPException) as caught:
-        asyncio.new_event_loop().run_until_complete(
-            inference.reveal_sandbox_dir("thread-1", request = None, token = None, session = None)
-        )
+    caught = _shared_setup_18(HTTPException, asyncio, inference)
     assert caught.value.status_code == 404
     assert opened == [], "the parent directory must never be opened"
 
@@ -4920,11 +5018,7 @@ def test_a_sandbox_deleted_mid_request_does_not_reveal_the_root(tmp_path, monkey
 def test_revealing_a_sandbox_that_was_never_created_is_a_404(tmp_path, monkeypatch):
     """A chat whose tools never ran has no folder, and opening one for it would
     materialise a directory the user never asked for."""
-    import asyncio
-
-    from fastapi import HTTPException
-
-    from routes import inference
+    HTTPException, asyncio, inference = _shared_setup_14()
     from utils.paths import path_utils
 
     missing = tmp_path / "sandbox" / "thread-1"
@@ -4932,16 +5026,9 @@ def test_revealing_a_sandbox_that_was_never_created_is_a_404(tmp_path, monkeypat
 
     monkeypatch.setattr(inference, "_sandbox_dir_for", lambda session_id, create: str(missing))
     monkeypatch.setattr(inference, "_authenticate_header_or_query", _noop_async)
-    monkeypatch.setattr(
-        path_utils,
-        "reveal_in_file_manager",
-        lambda path, expect_dir = False: opened.append(path),
-    )
+    _shared_setup_20(monkeypatch, opened, path_utils)
 
-    with pytest.raises(HTTPException) as caught:
-        asyncio.new_event_loop().run_until_complete(
-            inference.reveal_sandbox_dir("thread-1", request = None, token = None, session = None)
-        )
+    caught = _shared_setup_18(HTTPException, asyncio, inference)
     assert caught.value.status_code == 404
     assert not missing.exists()
     assert opened == []
@@ -4951,15 +5038,8 @@ def test_a_missing_file_manager_is_not_reported_as_a_missing_folder(tmp_path, mo
     """``xdg-open`` is absent on a headless host, and ``Popen`` then raises the
     same ``FileNotFoundError`` as a missing target. Conflating them tells a user
     whose files are right there that the chat has no folder."""
-    import asyncio
-
-    from fastapi import HTTPException
-
-    from routes import inference
-    from utils.paths import path_utils
-
-    sandbox = tmp_path / "sandbox" / "thread-1"
-    sandbox.mkdir(parents = True)
+    HTTPException, asyncio, inference = _shared_setup_14()
+    path_utils, sandbox = _shared_setup_23(tmp_path)
 
     def no_launcher(path, expect_dir = False):
         raise FileNotFoundError(2, "No such file or directory", "xdg-open")
@@ -4968,10 +5048,7 @@ def test_a_missing_file_manager_is_not_reported_as_a_missing_folder(tmp_path, mo
     monkeypatch.setattr(inference, "_authenticate_header_or_query", _noop_async)
     monkeypatch.setattr(path_utils, "reveal_in_file_manager", no_launcher)
 
-    with pytest.raises(HTTPException) as caught:
-        asyncio.new_event_loop().run_until_complete(
-            inference.reveal_sandbox_dir("thread-1", request = None, token = None, session = None)
-        )
+    caught = _shared_setup_18(HTTPException, asyncio, inference)
     assert caught.value.status_code == 500
     assert sandbox.is_dir(), "the folder was there the whole time"
 
@@ -4985,10 +5062,8 @@ def test_revealing_a_sandbox_demands_a_directory(tmp_path, monkeypatch):
     import inspect
 
     from routes import inference
-    from utils.paths import path_utils
 
-    sandbox = tmp_path / "sandbox" / "thread-1"
-    sandbox.mkdir(parents = True)
+    path_utils, sandbox = _shared_setup_23(tmp_path)
     seen = []
 
     monkeypatch.setattr(inference, "_sandbox_dir_for", lambda session_id, create: str(sandbox))
@@ -5041,11 +5116,7 @@ def test_revealing_reads_the_session_query_the_frontend_falls_back_to(tmp_path, 
 def test_revealing_authenticates_before_it_touches_the_filesystem(tmp_path, monkeypatch):
     """Resolution scans the sandbox root, so an unauthenticated caller must not
     reach it -- and must certainly not reach the file manager."""
-    import asyncio
-
-    from fastapi import HTTPException
-
-    from routes import inference
+    HTTPException, asyncio, inference = _shared_setup_14()
 
     resolved = []
     opened = []
@@ -5057,10 +5128,7 @@ def test_revealing_authenticates_before_it_touches_the_filesystem(tmp_path, monk
     monkeypatch.setattr(inference, "_sandbox_dir_for", lambda *a, **k: resolved.append(a) or "")
     monkeypatch.setattr(subprocess, "Popen", lambda cmd, **kw: opened.append(list(cmd)))
 
-    with pytest.raises(HTTPException) as caught:
-        asyncio.new_event_loop().run_until_complete(
-            inference.reveal_sandbox_dir("thread-1", request = None, token = None, session = None)
-        )
+    caught = _shared_setup_18(HTTPException, asyncio, inference)
     assert caught.value.status_code == 401
     assert resolved == [] and opened == []
 
@@ -5141,11 +5209,7 @@ def test_the_cached_model_reveal_still_goes_through_the_moved_helper(tmp_path, m
 
     opened = []
     monkeypatch.setattr(models, "_resolve_cached_model_path", lambda repo_id, variant: link)
-    monkeypatch.setattr(
-        path_utils,
-        "reveal_in_file_manager",
-        lambda path, expect_dir = False: opened.append(path),
-    )
+    _shared_setup_20(monkeypatch, opened, path_utils)
 
     result = asyncio.new_event_loop().run_until_complete(
         models.reveal_cached_model(
@@ -5180,11 +5244,7 @@ def test_a_read_waits_for_the_move_of_the_tree_it_would_return(tmp_path, monkeyp
 
     monkeypatch.setenv("HOME", str(tmp_path / "userprofile"))
     monkeypatch.setenv("USERPROFILE", str(tmp_path / "userprofile"))
-    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
-
-    from core.inference import tools
-
-    _forget_sandbox_state(tools)
+    tools = _shared_setup_2(monkeypatch, tmp_path)
     session = "chat-moving-1"
     legacy = Path(tools._legacy_sandbox_root()) / session
     legacy.mkdir(parents = True)
@@ -5217,11 +5277,7 @@ def test_a_read_waits_for_the_move_of_the_tree_it_would_return(tmp_path, monkeyp
 def test_a_detached_tree_that_would_not_delete_is_retried(tmp_path, monkeypatch):
     """ignore_errors leaves a locked file's tree behind, and the route has
     already told the user those files went."""
-    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
-
-    from core.inference import tools
-
-    _forget_sandbox_state(tools)
+    tools = _shared_setup_2(monkeypatch, tmp_path)
     monkeypatch.setattr(tools, "_DETACHED_RETRY_DELAY", 0.02)
 
     target = tmp_path / "chat-1.deleting-abcdef12"
@@ -5250,11 +5306,7 @@ def test_a_detached_tree_that_would_not_delete_is_retried(tmp_path, monkeypatch)
 def test_a_marker_a_tool_wrote_over_counts_as_the_user_s_file(tmp_path, monkeypatch):
     """The name is not reserved on an old install, so that file can hold the
     only copy of what a tool wrote, and this decides whether the tree goes."""
-    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
-
-    from core.inference import tools
-
-    _forget_sandbox_state(tools)
+    tools = _shared_setup_2(monkeypatch, tmp_path)
     session = "chat-marker-1"
     workdir = Path(tools.get_sandbox_workdir(session))
     assert tools._holds_no_user_files(str(workdir), tools._sandbox_name(session)) is True
@@ -5286,11 +5338,7 @@ def test_clearing_every_chat_builds_the_listed_set_once():
 def test_a_call_that_starts_during_the_snapshot_costs_the_card(tmp_path, monkeypatch):
     """The walk takes as long as the directory is big, and a call starting
     inside it writes files this one would then name and offer for download."""
-    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
-
-    from core.inference import tools
-
-    _forget_sandbox_state(tools)
+    tools = _shared_setup_2(monkeypatch, tmp_path)
     workdir = str(tmp_path / "shared")
     os.makedirs(workdir)
     token = tools._call_started(workdir)
@@ -5314,11 +5362,7 @@ def test_a_chat_called_default_does_not_take_the_anonymous_sandbox(tmp_path, mon
     session-less call's files, which this chat's delete would take."""
     monkeypatch.setenv("HOME", str(tmp_path / "userprofile"))
     monkeypatch.setenv("USERPROFILE", str(tmp_path / "userprofile"))
-    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
-
-    from core.inference import tools
-
-    _forget_sandbox_state(tools)
+    tools = _shared_setup_2(monkeypatch, tmp_path)
     anonymous = Path(tools.get_sandbox_workdir(None))
     (anonymous / "scratch.csv").write_text("a,b\n", encoding = "utf-8")
 
@@ -5335,11 +5379,7 @@ def test_a_chat_called_default_is_not_served_the_old_shared_folder(tmp_path, mon
     """Before the upgrade every call with no session id ran in that directory."""
     monkeypatch.setenv("HOME", str(tmp_path / "userprofile"))
     monkeypatch.setenv("USERPROFILE", str(tmp_path / "userprofile"))
-    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
-
-    from core.inference import tools
-
-    _forget_sandbox_state(tools)
+    tools = _shared_setup_2(monkeypatch, tmp_path)
     for name in ("_default", "_invalid"):
         legacy = Path(tools._legacy_sandbox_root()) / name
         legacy.mkdir(parents = True, exist_ok = True)
@@ -5350,12 +5390,7 @@ def test_a_chat_called_default_is_not_served_the_old_shared_folder(tmp_path, mon
 def test_a_chat_recreated_under_the_same_id_keeps_its_sandbox(tmp_path, monkeypatch):
     """The row goes first, so another tab can upsert the same id before the
     cleanup runs, and that chat may have a tool call in there right now."""
-    import asyncio
-
-    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
-
-    from core.inference import tools
-    from routes import chat_history
+    asyncio, chat_history, tools = _shared_setup_8(monkeypatch, tmp_path)
 
     _forget_sandbox_state(tools)
     thread_id = "chat-recreated-1"
@@ -5373,11 +5408,7 @@ def test_a_chat_recreated_under_the_same_id_keeps_its_sandbox(tmp_path, monkeypa
 def test_a_listing_follows_a_tree_moved_out_from_under_it(tmp_path, monkeypatch):
     """The legacy move renames the tree between resolving and walking it, and
     the chat's own files would show as an empty sandbox."""
-    import asyncio
-
-    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
-
-    from routes import inference
+    asyncio, inference = _shared_setup_15(monkeypatch, tmp_path)
 
     moved = tmp_path / "moved-in"
     moved.mkdir()
@@ -5400,12 +5431,7 @@ def test_a_listing_follows_a_tree_moved_out_from_under_it(tmp_path, monkeypatch)
 def test_a_record_never_deletes_what_the_helper_refused(tmp_path, monkeypatch):
     """A record is a file on disk: a stale or edited one naming an unrelated
     directory must not turn into an rmtree of it."""
-    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
-
-    from core.inference import tools
-    from storage import studio_db
-
-    _forget_sandbox_state(tools)
+    studio_db, tools = _shared_setup_4(monkeypatch, tmp_path)
     project_id = "proj16180"
     innocent = tmp_path / "Documents"
     innocent.mkdir()
@@ -5429,12 +5455,7 @@ def test_a_record_never_deletes_what_the_helper_refused(tmp_path, monkeypatch):
 def test_the_last_fork_going_takes_the_source_chat_s_files(tmp_path, monkeypatch):
     """The source's delete asked for its files and kept them for the fork, and
     nothing else ever comes back to that folder."""
-    import asyncio
-
-    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
-
-    from core.inference import tools
-    from routes import chat_history
+    asyncio, chat_history, tools = _shared_setup_8(monkeypatch, tmp_path)
     from storage import studio_db
 
     _forget_sandbox_state(tools)
@@ -5464,23 +5485,10 @@ def test_the_last_fork_going_takes_the_source_chat_s_files(tmp_path, monkeypatch
 def test_a_chat_called_like_a_project_session_keeps_its_own_sandbox(tmp_path, monkeypatch):
     """An API client picks its own thread ids, and one shaped like the
     synthetic project session would run in that project's workspace."""
-    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
-
-    from core.inference import tools
-    from storage import studio_db
-
-    _forget_sandbox_state(tools)
+    studio_db, tools = _shared_setup_4(monkeypatch, tmp_path)
     workspace = tmp_path / "Notes-proj7777"
     (workspace / "sandbox").mkdir(parents = True)
-    monkeypatch.setattr(
-        studio_db,
-        "ensure_chat_project_workspace",
-        lambda pid: {
-            "id": pid,
-            "rootPath": str(workspace),
-            "sandboxPath": str(workspace / "sandbox"),
-        },
-    )
+    _shared_setup_10(monkeypatch, studio_db, workspace)
     session = tools.project_session_id("proj7777")
     assert Path(tools.get_sandbox_workdir(session)) == (workspace / "sandbox").resolve()
 
@@ -5495,24 +5503,11 @@ def test_a_chat_called_like_a_project_session_keeps_its_own_sandbox(tmp_path, mo
 def test_a_long_project_id_still_reaches_its_workspace(tmp_path, monkeypatch):
     """`project-` plus the id can be longer than a directory name may be, and
     the workspace comes from the row, not from the id."""
-    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
-
-    from core.inference import tools
-    from storage import studio_db
-
-    _forget_sandbox_state(tools)
+    studio_db, tools = _shared_setup_4(monkeypatch, tmp_path)
     project_id = "p" * 60
     workspace = tmp_path / "Long-pppppppp"
     (workspace / "sandbox").mkdir(parents = True)
-    monkeypatch.setattr(
-        studio_db,
-        "ensure_chat_project_workspace",
-        lambda pid: {
-            "id": pid,
-            "rootPath": str(workspace),
-            "sandboxPath": str(workspace / "sandbox"),
-        },
-    )
+    _shared_setup_10(monkeypatch, studio_db, workspace)
     session = tools.project_session_id(project_id)
     assert not tools._usable_session_id(session), "the prefixed id fits after all"
     assert Path(tools.get_sandbox_workdir(session)) == (workspace / "sandbox").resolve()
@@ -5544,11 +5539,7 @@ def test_a_project_recreated_under_the_same_id_keeps_its_workspace(tmp_path, mon
 def test_a_download_serves_the_file_it_checked(tmp_path, monkeypatch):
     """Tool code runs in that directory: between the containment check and the
     open it can put a link there, and the response would follow it."""
-    import asyncio
-
-    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
-
-    from routes import inference
+    asyncio, inference = _shared_setup_15(monkeypatch, tmp_path)
 
     sandbox = tmp_path / "sandbox"
     sandbox.mkdir()
@@ -5556,12 +5547,7 @@ def test_a_download_serves_the_file_it_checked(tmp_path, monkeypatch):
     secret = tmp_path / "secret.txt"
     secret.write_text("passwords", encoding = "utf-8")
 
-    monkeypatch.setattr(inference, "_authenticate_header_or_query", _noop_async)
-    monkeypatch.setattr(
-        inference,
-        "_sandbox_dir_for",
-        lambda session_id, create = False: str(sandbox),
-    )
+    _shared_setup_12(inference, monkeypatch, sandbox)
 
     loop = asyncio.new_event_loop()
     response = loop.run_until_complete(
@@ -5603,12 +5589,7 @@ def test_a_download_refuses_a_file_swapped_for_a_link(tmp_path, monkeypatch):
     secret.write_text("passwords", encoding = "utf-8")
     (sandbox / "report.csv").symlink_to(secret)
 
-    monkeypatch.setattr(inference, "_authenticate_header_or_query", _noop_async)
-    monkeypatch.setattr(
-        inference,
-        "_sandbox_dir_for",
-        lambda session_id, create = False: str(sandbox),
-    )
+    _shared_setup_12(inference, monkeypatch, sandbox)
 
     with pytest.raises(HTTPException) as raised:
         asyncio.new_event_loop().run_until_complete(
@@ -5651,12 +5632,7 @@ def test_a_linked_sandbox_root_is_not_ours_to_delete_from(tmp_path, monkeypatch)
 def test_a_collection_failure_names_the_record_it_was_on(tmp_path, monkeypatch):
     """The handler runs before the loop's own name is bound, and an
     UnboundLocalError there turns a finished delete into a 500."""
-    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
-
-    from core.inference import tools
-    from storage import studio_db
-
-    _forget_sandbox_state(tools)
+    studio_db, tools = _shared_setup_4(monkeypatch, tmp_path)
     workspace = tmp_path / "Notes-projfail"
     (workspace / "sandbox").mkdir(parents = True)
     tools.record_orphaned_project("projfail1", str(workspace / "sandbox"), True, str(workspace))
@@ -5671,12 +5647,7 @@ def test_a_collection_failure_names_the_record_it_was_on(tmp_path, monkeypatch):
 
 def test_a_project_created_again_keeps_the_recorded_workspace(tmp_path, monkeypatch):
     """The collection runs minutes later, and the id is the client's to reuse."""
-    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
-
-    from core.inference import tools
-    from storage import studio_db
-
-    _forget_sandbox_state(tools)
+    studio_db, tools = _shared_setup_4(monkeypatch, tmp_path)
     project_id = "projagain"
     workspace = tmp_path / "Notes-projagai"
     (workspace / "sandbox").mkdir(parents = True)
@@ -5706,12 +5677,7 @@ def test_a_project_created_again_keeps_the_recorded_workspace(tmp_path, monkeypa
 def test_a_chat_recreated_while_its_tool_ran_keeps_its_files(tmp_path, monkeypatch):
     """The delete was queued behind a running call, and by the time it fires
     the id can belong to a chat the user did not delete."""
-    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
-
-    from core.inference import tools
-    from storage import studio_db
-
-    _forget_sandbox_state(tools)
+    studio_db, tools = _shared_setup_4(monkeypatch, tmp_path)
     session = "chat-requeued-1"
     workdir = Path(tools.get_sandbox_workdir(session))
     (workdir / "report.csv").write_text("a,b\n", encoding = "utf-8")
@@ -5729,11 +5695,7 @@ def test_a_chat_recreated_while_its_tool_ran_keeps_its_files(tmp_path, monkeypat
 def test_a_file_outside_the_hash_budget_is_not_reported_as_written(tmp_path, monkeypatch):
     """Hashing stops at a byte budget, so a file written earlier in the walk
     pushes an untouched later one out of it."""
-    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
-
-    from core.inference import tools
-
-    _forget_sandbox_state(tools)
+    tools = _shared_setup_2(monkeypatch, tmp_path)
     monkeypatch.setattr(tools, "_volume_timestamps_finely", lambda _: False)
     workdir = tmp_path / "sandbox"
     workdir.mkdir()
@@ -5764,11 +5726,7 @@ def test_the_file_download_button_refreshes_the_session_first():
 def test_the_download_route_answers_the_probe_the_button_sends(tmp_path, monkeypatch):
     """FastAPI does not add HEAD to a GET route, so the probe would 405 and no
     sandbox file could be saved at all."""
-    import asyncio
-
-    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
-
-    from routes import inference
+    asyncio, inference = _shared_setup_15(monkeypatch, tmp_path)
 
     methods = {
         frozenset(r.methods)
@@ -5780,12 +5738,7 @@ def test_the_download_route_answers_the_probe_the_button_sends(tmp_path, monkeyp
     sandbox = tmp_path / "sandbox"
     sandbox.mkdir()
     (sandbox / "report.csv").write_text("a,b\n", encoding = "utf-8")
-    monkeypatch.setattr(inference, "_authenticate_header_or_query", _noop_async)
-    monkeypatch.setattr(
-        inference,
-        "_sandbox_dir_for",
-        lambda session_id, create = False: str(sandbox),
-    )
+    _shared_setup_12(inference, monkeypatch, sandbox)
 
     class _Head:
         method = "HEAD"
@@ -5807,11 +5760,7 @@ def test_the_download_route_answers_the_probe_the_button_sends(tmp_path, monkeyp
 def test_a_project_id_a_filename_cannot_hold_is_still_recorded(tmp_path, monkeypatch):
     """Project ids are the client's, and a record refused here loses both the
     deferred delete and the cards of a fork that kept the files."""
-    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
-
-    from core.inference import tools
-
-    _forget_sandbox_state(tools)
+    tools = _shared_setup_2(monkeypatch, tmp_path)
     project_id = "Ünsloth/Notes " + "x" * 80
     workspace = tmp_path / "Notes-project"
     (workspace / "sandbox").mkdir(parents = True)
@@ -5828,11 +5777,7 @@ def test_a_project_id_a_filename_cannot_hold_is_still_recorded(tmp_path, monkeyp
 def test_a_chat_and_a_project_with_one_id_keep_their_own_records(tmp_path, monkeypatch):
     """They are different tables, so the same client-supplied id can name both,
     and one record overwriting the other stranded a folder."""
-    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
-
-    from core.inference import tools
-
-    _forget_sandbox_state(tools)
+    tools = _shared_setup_2(monkeypatch, tmp_path)
     shared_id = "notes1234"
     workspace = tmp_path / "Notes-notes123"
     (workspace / "sandbox").mkdir(parents = True)
@@ -5854,11 +5799,7 @@ def test_a_chat_and_a_project_with_one_id_keep_their_own_records(tmp_path, monke
 def test_a_kept_workspace_is_found_past_a_crowd_of_records(tmp_path, monkeypatch):
     """A bounded listing meant a busy install could never see the newest
     records, so their folders were unreachable and their deletes never ran."""
-    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
-
-    from core.inference import tools
-
-    _forget_sandbox_state(tools)
+    tools = _shared_setup_2(monkeypatch, tmp_path)
     crowd = tmp_path / "crowd"
     crowd.mkdir()
     for n in range(50):
@@ -5888,12 +5829,18 @@ def test_a_project_created_during_the_record_write_keeps_its_files(tmp_path, mon
     (workspace / "sandbox").mkdir(parents = True)
     (workspace / "sandbox" / "fresh.csv").write_text("a,b\n", encoding = "utf-8")
 
-    answers = [None, {"id": project_id}]
-    monkeypatch.setattr(
-        chat_history,
-        "get_chat_project",
-        lambda pid: answers.pop(0) if answers else None,
-    )
+    # Created once the delete has looked, and never removed again. A list popped per call has
+    # it come back and then vanish, which no registry does, and points the scenario at whichever
+    # probe is second: one added ownership read upstream moved it past every surviving check.
+    looked = {"once": False}
+
+    def created_after_the_first_look(pid):
+        if not looked["once"]:
+            looked["once"] = True
+            return None
+        return {"id": pid}
+
+    monkeypatch.setattr(chat_history, "get_chat_project", created_after_the_first_look)
     monkeypatch.setattr(
         studio_db,
         "get_chat_project",
@@ -5910,15 +5857,60 @@ def test_a_project_created_during_the_record_write_keeps_its_files(tmp_path, mon
     assert tools.list_orphaned_projects() == [], "a live project was left recorded"
 
 
-def test_a_kept_workspace_resolves_for_any_project_id(tmp_path, monkeypatch):
-    """The record is keyed by a digest, so the id it holds needs to be nothing
-    in particular; only the guessed directory name does."""
+def test_a_project_created_inside_the_record_write_itself_keeps_its_files(tmp_path, monkeypatch):
+    """The same rescue, pinned to the window the name describes rather than to a call count.
+
+    The test above is satisfied by the `recreated` probe, well before the record write, so it
+    never reached the last check. Here the project appears during `record_orphaned_project`
+    itself, so only that check can save the files.
+    """
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
 
     from core.inference import tools
+    from routes import chat_history
     from storage import studio_db
 
     _forget_sandbox_state(tools)
+    project_id = "proj14141"
+    workspace = tmp_path / "Notes-proj1414"
+    (workspace / "sandbox").mkdir(parents = True)
+    (workspace / "sandbox" / "fresh.csv").write_text("a,b\n", encoding = "utf-8")
+
+    recreated = {"yet": False}
+    real_record = tools.record_orphaned_project
+
+    def record_then_recreate(*args, **kwargs):
+        result = real_record(*args, **kwargs)
+        recreated["yet"] = True
+        return result
+
+    monkeypatch.setattr(tools, "record_orphaned_project", record_then_recreate)
+    monkeypatch.setattr(
+        chat_history,
+        "get_chat_project",
+        lambda pid: {"id": pid} if recreated["yet"] else None,
+    )
+    monkeypatch.setattr(
+        studio_db,
+        "get_chat_project",
+        lambda pid: {
+            "id": pid,
+            "rootPath": str(workspace),
+            "sandboxPath": str(workspace / "sandbox"),
+        },
+    )
+    monkeypatch.setattr(studio_db, "sandbox_is_referenced_elsewhere", lambda s, e = None: False)
+    _deleted_project(tmp_path, monkeypatch, project_id, workspace)
+
+    assert recreated["yet"], "the record was never written, so this proves nothing"
+    assert (workspace / "sandbox" / "fresh.csv").is_file(), "the new project's files went"
+    assert tools.list_orphaned_projects() == [], "a live project was left recorded"
+
+
+def test_a_kept_workspace_resolves_for_any_project_id(tmp_path, monkeypatch):
+    """The record is keyed by a digest, so the id it holds needs to be nothing
+    in particular; only the guessed directory name does."""
+    studio_db, tools = _shared_setup_4(monkeypatch, tmp_path)
     project_id = "Ünsloth/Notes " + "y" * 80
     workspace = tmp_path / "Notes-kept"
     (workspace / "sandbox").mkdir(parents = True)
@@ -5934,11 +5926,7 @@ def test_a_kept_workspace_resolves_for_any_project_id(tmp_path, monkeypatch):
 def test_a_marker_rewritten_with_another_name_keeps_the_chat_s_files(tmp_path, monkeypatch):
     """That file is tool-writable, and a valid-looking name in it made the
     directory unreachable: no download, and a delete that reported nothing."""
-    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
-
-    from core.inference import tools
-
-    _forget_sandbox_state(tools)
+    tools = _shared_setup_2(monkeypatch, tmp_path)
     session = "chat-marker-2"
     workdir = Path(tools.get_sandbox_workdir(session))
     (workdir / "report.csv").write_text("a,b\n", encoding = "utf-8")
@@ -5954,11 +5942,7 @@ def test_a_marker_rewritten_with_another_name_keeps_the_chat_s_files(tmp_path, m
 def test_a_sandbox_lookup_lists_the_root_once(tmp_path, monkeypatch):
     """There are 33 candidate names, and a scan each turned one first call into
     33 walks of a root that holds a folder per chat."""
-    root = _shared_root(tmp_path, monkeypatch)
-
-    from core.inference import tools
-
-    _forget_sandbox_state(tools)
+    root, tools = _shared_setup_5(monkeypatch, tmp_path)
     scans = []
     real_listdir = os.listdir
 
@@ -5974,12 +5958,7 @@ def test_a_sandbox_lookup_lists_the_root_once(tmp_path, monkeypatch):
 def test_a_deferred_delete_keeps_the_files_when_the_check_cannot_be_made(tmp_path, monkeypatch):
     """The queued delete fires with no request around it, and the row check is
     the only thing standing between it and a recreated chat's files."""
-    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
-
-    from core.inference import tools
-    from storage import studio_db
-
-    _forget_sandbox_state(tools)
+    studio_db, tools = _shared_setup_4(monkeypatch, tmp_path)
     session = "chat-unknown-1"
     workdir = Path(tools.get_sandbox_workdir(session))
     (workdir / "report.csv").write_text("a,b\n", encoding = "utf-8")
@@ -6014,12 +5993,7 @@ def test_only_a_sandbox_tool_s_result_is_unwrapped_for_replay():
 def test_a_project_remade_somewhere_else_does_not_strand_the_old_workspace(tmp_path, monkeypatch):
     """The default root carries the project's name, so a project remade under
     that id can sit somewhere else entirely."""
-    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
-
-    from core.inference import tools
-    from storage import studio_db
-
-    _forget_sandbox_state(tools)
+    studio_db, tools = _shared_setup_4(monkeypatch, tmp_path)
     project_id = "projmoved"
     old = tmp_path / "Notes-projmove"
     (old / "sandbox").mkdir(parents = True)
@@ -6045,24 +6019,11 @@ def test_a_project_remade_somewhere_else_does_not_strand_the_old_workspace(tmp_p
 def test_a_chat_named_like_a_project_session_still_loses_its_files(tmp_path, monkeypatch):
     """Its row is deleted before the cleanup runs, so the id reads as the
     project's from then on and its own folder was left behind."""
-    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
-
-    from core.inference import tools
-    from storage import studio_db
-
-    _forget_sandbox_state(tools)
+    studio_db, tools = _shared_setup_4(monkeypatch, tmp_path)
     workspace = tmp_path / "Shared-foo12345"
     (workspace / "sandbox").mkdir(parents = True)
     (workspace / "sandbox" / "shared.csv").write_text("a,b\n", encoding = "utf-8")
-    monkeypatch.setattr(
-        studio_db,
-        "ensure_chat_project_workspace",
-        lambda pid: {
-            "id": pid,
-            "rootPath": str(workspace),
-            "sandboxPath": str(workspace / "sandbox"),
-        },
-    )
+    _shared_setup_10(monkeypatch, studio_db, workspace)
 
     session = tools.project_session_id("foo12345")
     monkeypatch.setattr(studio_db, "get_chat_thread", lambda tid: {"id": tid})
@@ -6080,21 +6041,12 @@ def test_a_chat_named_like_a_project_session_still_loses_its_files(tmp_path, mon
 def test_a_download_sends_no_more_than_it_promised(tmp_path, monkeypatch):
     """Another call can append to the file after the length is captured, and a
     body longer than Content-Length is cut off or refused."""
-    import asyncio
-
-    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
-
-    from routes import inference
+    asyncio, inference = _shared_setup_15(monkeypatch, tmp_path)
 
     sandbox = tmp_path / "sandbox"
     sandbox.mkdir()
     (sandbox / "report.csv").write_text("a,b\n", encoding = "utf-8")
-    monkeypatch.setattr(inference, "_authenticate_header_or_query", _noop_async)
-    monkeypatch.setattr(
-        inference,
-        "_sandbox_dir_for",
-        lambda session_id, create = False: str(sandbox),
-    )
+    _shared_setup_12(inference, monkeypatch, sandbox)
 
     loop = asyncio.new_event_loop()
     response = loop.run_until_complete(
@@ -6126,11 +6078,7 @@ def test_an_interrupted_delete_is_finished_when_studio_starts(tmp_path, monkeypa
     listing and a download never make one."""
     import inspect
 
-    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
-
-    from core.inference import tools
-
-    _forget_sandbox_state(tools)
+    tools = _shared_setup_2(monkeypatch, tmp_path)
     tools._swept_detached = False
     root = Path(tools.sandbox_root())
     root.mkdir(parents = True, exist_ok = True)
@@ -6159,11 +6107,7 @@ def test_a_retry_that_still_keeps_the_files_offers_again():
 def test_a_finely_timestamped_volume_is_not_read_twice_per_call(tmp_path, monkeypatch):
     """Hashing every artifact was ~90% of a snapshot, and two snapshots run per
     tool call. Where mtime already separates the writes, nothing is read."""
-    monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(tmp_path / "sb"))
-
-    from core.inference import tools
-
-    tools._workdirs.clear()
+    tools = _shared_setup_1(monkeypatch, tmp_path)
     workdir = Path(tools.get_sandbox_workdir("__LOCALID_fine1"))
     if not tools._volume_timestamps_finely(str(workdir)):
         pytest.skip("this filesystem records whole seconds, where digests are the point")
@@ -6185,11 +6129,7 @@ def test_a_finely_timestamped_volume_is_not_read_twice_per_call(tmp_path, monkey
 def test_one_whole_second_stamp_is_not_taken_for_a_coarse_volume(tmp_path, monkeypatch):
     """A directory that happens to land on a whole second is chance. Reading
     only mtime would pin the volume to hashing for the life of the process."""
-    monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(tmp_path / "sb"))
-
-    from core.inference import tools
-
-    tools._workdirs.clear()
+    tools = _shared_setup_1(monkeypatch, tmp_path)
     workdir = Path(tools.get_sandbox_workdir("__LOCALID_stamp1"))
     if not tools._volume_timestamps_finely(str(workdir)):
         pytest.skip("this filesystem records whole seconds")
@@ -6217,6 +6157,28 @@ class _WholeSecondMtime:
 
     def __getattr__(self, name):
         return getattr(self._stat, name)
+
+
+def test_session_in_flight_does_not_swallow_tool_exceptions(tmp_path, monkeypatch):
+    """A tool that raises must surface, not be reported as an unknown tool."""
+    monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(tmp_path / "sb"))
+
+    from core.inference import tools
+
+    session = "__LOCALID_raises1"
+    with pytest.raises(ValueError, match = "boom"):
+        with tools._session_in_flight(session):
+            raise ValueError("boom")
+
+    assert tools._session_key(session) not in tools._active_sessions
+
+
+def test_execute_tool_reports_a_bad_arg_instead_of_unknown_tool(tmp_path, monkeypatch):
+    monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(tmp_path / "sb"))
+
+    from core.inference import tools
+    with pytest.raises(AttributeError):
+        tools.execute_tool("python", {"code": 42}, session_id = "__LOCALID_badarg1")
 
 
 if __name__ == "__main__":

@@ -12,6 +12,7 @@ RULE=$(printf '\342\224\200%.0s' {1..52})
 # --local: install from the local repo checkout (overlays unsloth as editable
 # and unsloth-zoo from git main). Mirrors install.sh --local for the Colab
 # path that runs setup.sh directly without going through install.sh.
+# ── Parse flags ──
 if [ "$#" -gt 0 ]; then
     for _arg in "$@"; do
         case "$_arg" in
@@ -26,7 +27,6 @@ fi
 # ── Maintainer-editable defaults ──────────────────────────────────────────
 # Change these in the GitHub-hosted script so all users get updated defaults.
 # User environment variables always override these baked-in values.
-#
 #   _DEFAULT_LLAMA_PR_FORCE : PR number to build by default ("" = normal path)
 #   _DEFAULT_LLAMA_SOURCE   : git clone URL for source builds
 #   _DEFAULT_LLAMA_TAG      : llama.cpp ref to build ("latest" = newest release,
@@ -36,11 +36,10 @@ fi
 #                             forces a source build, and causes HTTP 422 errors.
 #                             Only use "master" temporarily when the latest release
 #                             is missing support for a new model architecture.
-#
 #   UNSLOTH_LLAMA_CPP_BACKEND : "auto" (default), "cpu", "cuda", "vulkan",
 #                           "hip", or "rocm". Concrete values select and persist a
 #                           backend across updates; "auto" restores detection.
-#                           Overrides Studio's Settings > System selection.
+#                           Overrides Unsloth's Settings > System selection.
 # ──────────────────────────────────────────────────────────────────────────
 _DEFAULT_LLAMA_PR_FORCE=""
 _DEFAULT_LLAMA_SOURCE="https://github.com/ggml-org/llama.cpp"
@@ -259,6 +258,19 @@ _nvcc_meets_llama_minimum() {
 # UNSLOTH_LLAMA_CUDA_ARCHS) wins verbatim; else parse+dedupe compute_cap text
 # ($1). Empty means "no arch detected", so the caller builds CPU instead of a
 # PTX-only binary that fails on an old driver (#5854).
+# Every GPU's capability from nvidia_probe.py, one per line; nothing when the probe is off or
+# absent, or when one listed GPU has no readable capability (a partial list would build kernels
+# for part of the machine).
+_probe_compute_caps() {
+    [ -f "$SCRIPT_DIR/nvidia_probe.py" ] && command -v python3 >/dev/null 2>&1 || return 0
+    _setup_run_smi python3 -I "$SCRIPT_DIR/nvidia_probe.py" 2>/dev/null | awk '
+        /^GPU [0-9]+:/ {
+            if (match($0, /\(compute [0-9]+\.[0-9]+\)$/)) caps = caps substr($0, RSTART + 9, RLENGTH - 10) "\n"
+            else bad = 1
+        }
+        END { if (!bad) printf "%s", caps }' || true
+}
+
 _resolve_cuda_archs() {
     local _raw_caps=$1
     local _arch_override=$2
@@ -638,10 +650,11 @@ _setup_cvd_hides_nvidia() {
 # via CUDA_VISIBLE_DEVICES=""/-1 counts as NOT usable (matches
 # install_llama_prebuilt.py has_usable_nvidia), so the AMD probes still run
 # and a mixed host steered to its AMD card keeps the ROCm route.
-_setup_has_usable_nvidia_gpu() {
-    if _setup_cvd_hides_nvidia; then
-        return 1
-    fi
+# Present, mask or no mask. The usable probe is this plus the CUDA_VISIBLE_DEVICES check.
+_setup_has_physical_nvidia_gpu() {
+    # Reset here rather than in the usable wrapper: this is where the bounded -L call
+    # lives, and both entry points reach the probe through it.
+    _setup_nv_smi_wedged=""
     _setup_nvsmi=""
     if command -v nvidia-smi >/dev/null 2>&1; then
         _setup_nvsmi="nvidia-smi"
@@ -649,7 +662,15 @@ _setup_has_usable_nvidia_gpu() {
         _setup_nvsmi="/usr/bin/nvidia-smi"
     fi
     if [ -n "$_setup_nvsmi" ]; then
-        if _setup_run_smi "$_setup_nvsmi" -L 2>/dev/null \
+        # Captured rather than piped so `timeout`'s own 124 stays visible. A wedged
+        # driver still detects as a GPU through /proc below, and the banner must not
+        # then pay the 10s bound a second time asking a hung nvidia-smi for a name.
+        _setup_nv_l_rc=0
+        _setup_nv_l_out=$(_setup_run_smi "$_setup_nvsmi" -L 2>/dev/null) || _setup_nv_l_rc=$?
+        if [ "$_setup_nv_l_rc" = "124" ]; then
+            _setup_nv_smi_wedged=1
+        fi
+        if printf '%s\n' "$_setup_nv_l_out" \
            | awk '/^GPU[[:space:]]+[0-9]+:/{found=1} END{exit !found}'; then
             return 0
         fi
@@ -658,7 +679,134 @@ _setup_has_usable_nvidia_gpu() {
        [ -n "$(ls -A /proc/driver/nvidia/gpus 2>/dev/null)" ]; then
         return 0
     fi
+    # Last: NVML / the CUDA driver API, which ship with the driver and not with nvidia-smi.
+    if [ "${UNSLOTH_NVIDIA_LIBRARY_PROBE:-1}" != "0" ] && [ -f "$SCRIPT_DIR/nvidia_probe.py" ] \
+            && command -v python3 >/dev/null 2>&1; then
+        _setup_run_smi python3 -I "$SCRIPT_DIR/nvidia_probe.py" >/dev/null 2>&1 && return 0
+    fi
     return 1
+}
+
+# Row index of the GPU whose UUID starts with $1, or empty. NVIDIA allows a UUID to
+# be abbreviated to any unique leading portion, hence the prefix match.
+_setup_nv_idx_from_uuid() {
+    # NVIDIA accepts an abbreviation only when it is a UNIQUE leading portion, so a
+    # prefix matching two cards selects NO device. Counting instead of stopping at the
+    # first hit keeps the banner from naming one of them.
+    _setup_run_smi "$_setup_nvsmi" --query-gpu=uuid --format=csv,noheader 2>/dev/null \
+        | awk -v want="$1" '
+            NF { gsub(/^[[:space:]]+|[[:space:]]+$/,""); if (index($0, want) == 1) { hits++; idx = NR-1 } }
+            END { if (hits == 1) print idx }' || true
+}
+
+# Resolves the banner's NVIDIA fields into _setup_nv_name / _setup_nv_sm /
+# _setup_nv_driver, each empty when it could not be read. Mirrors install.sh's
+# _nv_banner_fields. Bounded, and fed the executable _setup_has_usable_nvidia_gpu
+# already resolved into $_setup_nvsmi: a wedged driver blocks nvidia-smi indefinitely,
+# and detection also succeeds via /usr/bin/nvidia-smi off PATH or via
+# /proc/driver/nvidia/gpus with no nvidia-smi at all.
+_setup_nv_banner_fields() {
+    _setup_nv_name=""; _setup_nv_sm=""; _setup_nv_driver=""
+    _setup_nv_row=""; _setup_nv_cc=""; _setup_nv_ambiguous=""
+    [ -n "${_setup_nvsmi:-}" ] || return 0
+    # Detection already waited out the full bound on this binary. Asking again cannot
+    # succeed and would double the stall, so the banner keeps the vendor-only wording.
+    [ -z "${_setup_nv_smi_wedged:-}" ] || return 0
+    # nvidia-smi ignores CUDA_VISIBLE_DEVICES, so its rows are the physical devices and
+    # the mask has to be resolved against them by hand.
+    _setup_nv_idx=0
+    # Set while nothing has IDENTIFIED a device: an ordinal, or a failed identity lookup
+    # that fell back to one. Only an ordinal is order-dependent.
+    _setup_nv_by_ordinal=1
+    _setup_nv_vis="${CUDA_VISIBLE_DEVICES:-}"
+    # Only the FIRST entry selects the device, and only IT decides the form of the mask.
+    # CUDA truncates enumeration at the first invalid index, so the documented `2,-1`
+    # means "device 2, then stop"; classifying the whole string would see the `-1`, call
+    # it non-numeric, and send a plain ordinal down the UUID path.
+    _setup_nv_tok="${_setup_nv_vis%%,*}"
+    case "$_setup_nv_tok" in
+        '') ;;
+        *[!0-9]*)
+            _setup_nv_by_ordinal=""
+            case "$_setup_nv_tok" in
+                MIG-GPU-*)
+                    # Pre-R470 MIG name, MIG-<GPU-UUID>/<gi>/<ci>: the parent UUID is
+                    # embedded, so it still matches a --query-gpu=uuid row.
+                    _setup_nv_tok="${_setup_nv_tok#MIG-}"; _setup_nv_tok="${_setup_nv_tok%%/*}"
+                    _setup_nv_idx=$(_setup_nv_idx_from_uuid "$_setup_nv_tok") ;;
+                MIG-*)
+                    # R470 and later give each MIG instance its OWN opaque UUID, which
+                    # carries nothing of the parent, so --query-gpu=uuid can never match
+                    # it. `nvidia-smi -L` nests the instances under their GPU.
+                    _setup_nv_idx=$(_setup_run_smi "$_setup_nvsmi" -L 2>/dev/null | awk -v want="$_setup_nv_tok" '
+                        /^GPU[[:space:]]+[0-9]+:/ { cur = $2 + 0 }
+                        index($0, want) > 0 { print cur; exit }' || true) ;;
+                *)
+                    _setup_nv_idx=$(_setup_nv_idx_from_uuid "$_setup_nv_tok") ;;
+            esac
+            # An identity mask that does not resolve means CUDA selected NO device: an
+            # abbreviation short enough to match two cards, or a UUID for a card that is
+            # not here. Row 0 is not a fallback for that -- it is a different card.
+            case "$_setup_nv_idx" in ''|*[!0-9]*) _setup_nv_idx=0; _setup_nv_ambiguous=1 ;; esac
+            ;;
+        *) _setup_nv_idx="$_setup_nv_tok" ;;
+    esac
+    # Canonicalise the ordinal before anything compares or subscripts with it.
+    # `[` parses with strtol and ERRORS on a value wider than a long, printing a
+    # shell diagnostic and skipping the range check below, so an absurd ordinal
+    # would have named row 0. Clamped rather than rejected: 9999 is past any real
+    # host, so it stays out of range and declines, which is the right answer.
+    _setup_nv_idx=$(printf '%s' "$_setup_nv_idx" \
+        | awk '{ n = $0 + 0; if (n < 0) n = 0; if (n > 9999) n = 9999; printf "%d", n }')
+    _setup_nv_all=$(_setup_run_smi "$_setup_nvsmi" --query-gpu=name,compute_cap,driver_version --format=csv,noheader 2>/dev/null || true)
+    _setup_nv_row=$(printf '%s\n' "$_setup_nv_all" \
+        | awk -v idx="$_setup_nv_idx" 'NF { a[n++]=$0 } END { if(idx>=n) idx=0; if(n>0) print a[idx+0] }')
+    [ -n "$_setup_nv_row" ] || return 0
+    # A numeric entry is a CUDA ordinal, and CUDA's default CUDA_DEVICE_ORDER=FASTEST_FIRST
+    # puts the fastest card at 0 and leaves the rest "unspecified", while nvidia-smi always
+    # lists in PCI order. So an ordinal identifies an nvidia-smi row only when the order is
+    # pinned to PCI_BUS_ID, or when the cards are interchangeable and every row gives the
+    # same answer anyway. Compared on name and compute_cap, not the driver, which is
+    # host-wide and identical on every row.
+    # CUDA stops enumerating at the first invalid index, so an ordinal past the last
+    # row exposes NO device at all. The awk above clamps to row 0 so the driver still
+    # reads, but row 0 is not the selected card -- nothing is.
+    _setup_nv_rowcount=$(printf '%s\n' "$_setup_nv_all" | awk 'NF { n++ } END { print n+0 }')
+    if [ -n "$_setup_nv_by_ordinal" ] && [ "$_setup_nv_idx" -ge "$_setup_nv_rowcount" ]; then
+        _setup_nv_ambiguous=1
+    fi
+    if [ -n "$_setup_nv_by_ordinal" ]; then
+        _setup_nv_order=$(printf '%s' "${CUDA_DEVICE_ORDER:-}" | tr '[:lower:]' '[:upper:]' | tr -d '[:space:]')
+        _setup_nv_models=$(printf '%s\n' "$_setup_nv_all" \
+            | awk -F, 'NF { k=$0; sub(/,[^,]*$/,"",k); if (!(k in s)) { s[k]; n++ } } END { print n+0 }')
+        if [ "$_setup_nv_order" != "PCI_BUS_ID" ] && [ "$_setup_nv_models" -gt 1 ]; then
+            _setup_nv_ambiguous=1
+        fi
+    fi
+    # Split from the right: nvidia-smi does not quote, so a comma in a device name
+    # would otherwise shift every field.
+    _setup_nv_driver=$(printf '%s' "$_setup_nv_row" | awk -F, 'NF>=3 { gsub(/^[[:space:]]+|[[:space:]]+$/,"",$NF); print $NF }')
+    _setup_nv_cc=$(printf '%s' "$_setup_nv_row" | awk -F, 'NF>=3 { gsub(/^[[:space:]]+|[[:space:]]+$/,"",$(NF-1)); print $(NF-1) }')
+    _setup_nv_name=$(printf '%s' "$_setup_nv_row" | awk -F, 'NF>=3 { out=$1; for(i=2;i<=NF-2;i++) out=out","$i; gsub(/^[[:space:]]+|[[:space:]]+$/,"",out); print out }')
+    # Short row: keep field 1 only, or the compute capability lands in the name.
+    [ -n "$_setup_nv_name" ] || _setup_nv_name=$(printf '%s' "$_setup_nv_row" | awk -F, '{ gsub(/^[[:space:]]+|[[:space:]]+$/,"",$1); print $1 }')
+    # An nvidia-smi too old for a field answers with a placeholder rather than failing.
+    case "$_setup_nv_name"   in '[N/A]'|'[Not Supported]'|'[Unknown Error]') _setup_nv_name="" ;; esac
+    case "$_setup_nv_driver" in '[N/A]'|'[Not Supported]'|'[Unknown Error]') _setup_nv_driver="" ;; esac
+    # Keep the driver, drop the identity: the banner falls back to the vendor-only wording
+    # rather than claiming a card that may not be the one CUDA will use.
+    if [ -n "$_setup_nv_ambiguous" ]; then _setup_nv_name=""; _setup_nv_cc=""; fi
+    case "$_setup_nv_cc" in
+        [0-9]*.[0-9]*) _setup_nv_sm="sm_$(printf '%s' "$_setup_nv_cc" | awk -F. '{ print ($1*10)+$2 }')" ;;
+    esac
+    return 0
+}
+
+_setup_has_usable_nvidia_gpu() {
+    if _setup_cvd_hides_nvidia; then
+        return 1
+    fi
+    _setup_has_physical_nvidia_gpu
 }
 
 _cuda_driver_max_version() {
@@ -775,6 +923,7 @@ installed_llama_prebuilt_release() {
     [ -f "$metadata_path" ] || return 0
     python - "$metadata_path" <<'PY' 2>/dev/null || true
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -792,6 +941,10 @@ llama_tag = str(payload.get("tag") or "").strip()
 source = str(payload.get("source") or "").strip()
 binary_repo = str(payload.get("binary_repo") or "").strip()
 binary_tag = str(payload.get("binary_release_tag") or "").strip()
+_backend_raw = payload.get("backend")
+# Absent before #8520, and null when backend_for_install_kind() had no answer. str() on a
+# non-string would diverge from the setup.ps1 twin (Python "[1, 2]" vs PowerShell "1 2").
+backend = _backend_raw.strip() if isinstance(_backend_raw, str) else ""
 if not repo or not release_tag:
     raise SystemExit(0)
 
@@ -804,6 +957,10 @@ else:
     message = f"installed release: {repo}@{release_tag}"
     if llama_tag and llama_tag != release_tag:
         message += f" (tag {llama_tag})"
+# Name the backend: a Vulkan and a ROCm bundle print an identical line without it. The
+# shape check keeps the line single-line and matches the setup.ps1 twin byte for byte.
+if re.fullmatch(r"[A-Za-z0-9._+-]{1,32}", backend):
+    message += f" -- {backend} backend"
 print(message)
 PY
 }
@@ -938,16 +1095,336 @@ else
     STUDIO_HOME="$HOME/.unsloth/studio"
 fi
 
-VENV_DIR="$STUDIO_HOME/unsloth_studio"
-VENV_T5_530_DIR="$STUDIO_HOME/.venv_t5_530"
-VENV_T5_550_DIR="$STUDIO_HOME/.venv_t5_550"
-VENV_T5_510_DIR="$STUDIO_HOME/.venv_t5_510"
+STAGE_ROOT="${UNSLOTH_STUDIO_STAGE_ROOT:-}"
+RUNTIME_ROOT="${STAGE_ROOT:-$STUDIO_HOME}"
+VENV_DIR="$RUNTIME_ROOT/unsloth_studio"
+
+# Same uv cache install.sh chose, for the same reasons.
+#
+# This script is also the standalone entry point: `unsloth studio update` runs it
+# directly, without install.sh, so an export made only there covers the first install and
+# nothing after it. A redirected STUDIO_HOME would then download a SECOND cache to
+# $HOME/.cache/uv on the very first update and copy every wheel across the filesystem
+# boundary, which is exactly the disk cost the co-location exists to avoid -- deferred by
+# one run rather than fixed. Pointing at the same path also means the update reuses the
+# cache the install filled instead of refetching it.
+#
+# STUDIO_HOME, not RUNTIME_ROOT: the cache has to be the one install.sh created, and the
+# two agree whenever UNSLOTH_STUDIO_STAGE_ROOT is unset, which is every non-staged run.
+# The LIVE marker, even under a stage root: the CLI promotes its parked choice on acceptance,
+# so an unactivated stage cannot move the live cache. setup.sh only infers; it never writes.
+_uv_no_cache_requested() {
+    # --no-cache outranks --cache-dir. Same spelling as install.sh's _uv_no_cache_requested.
+    case "$(printf '%s' "${UV_NO_CACHE:-}" | tr '[:upper:]' '[:lower:]')" in
+        1|y|yes|t|true|on) return 0 ;;
+    esac
+    return 1
+}
+
+_uv_is_bucket_name() {
+    # install.sh's _uv_is_bucket_name, verbatim: the two have to call the same directories uv's.
+    case "$1" in
+        *-v[0-9]*) ;;
+        *) return 1 ;;
+    esac
+    case "${1##*-v}" in
+        ''|*[!0-9]*) return 1 ;;
+    esac
+    case "${1%-v*}" in
+        archive|binaries|builds|built-wheels|environments|flat-index) ;;
+        git|interpreter|osv|python|sdists|simple|wheels) ;;
+        *) return 1 ;;
+    esac
+    return 0
+}
+
+_uv_cache_probe_writable() {
+    # As install.sh's _uv_cache_root_is_writable: a real create, and mktemp (O_EXCL) not $$,
+    # since a predictable name can be pre-created as a symlink.
+    _uv_cache_probe=""
+    if ! mkdir -p "$1" 2>/dev/null \
+       || ! _uv_cache_probe=$(mktemp "$1/.unsloth-write-probe.XXXXXX" 2>/dev/null); then
+        [ -z "$_uv_cache_probe" ] || rm -f "$_uv_cache_probe" 2>/dev/null || true
+        unset _uv_cache_probe
+        return 1
+    fi
+    # Creating is not enough: an ACL granting create but denying unlink leaves uv's renames to
+    # fail later. GONE is the answer, not rm's exit status, since a scanner holding the handle
+    # makes one delete fail and the next succeed. Retry, then believe the filesystem. Same
+    # bounded loop as install.sh's _uv_cache_root_is_writable.
+    _uv_cache_tries=0
+    while :; do
+        rm -f "$_uv_cache_probe" 2>/dev/null || true
+        [ -e "$_uv_cache_probe" ] || break
+        _uv_cache_tries=$((_uv_cache_tries + 1))
+        if [ "$_uv_cache_tries" -ge 3 ]; then
+            unset _uv_cache_probe _uv_cache_tries
+            return 1
+        fi
+        sleep 1
+    done
+    unset _uv_cache_probe _uv_cache_tries
+    return 0
+}
+
+_uv_cache_folds_case() {  # <dir>
+    # Measured on the cache filesystem, not assumed from the platform, as install.sh does it:
+    # default APFS folds and ext4 does not, and a Mac can have either mounted. A cache we
+    # cannot write answers "no", which is the conservative reading.
+    _uvf_probe="$1/.unsloth-case-probe.$$-A"
+    mkdir "$_uvf_probe" 2>/dev/null || { unset _uvf_probe; return 1; }
+    if [ -d "$1/.unsloth-case-probe.$$-a" ]; then
+        rmdir "$_uvf_probe" 2>/dev/null || true
+        unset _uvf_probe
+        return 0
+    fi
+    rmdir "$_uvf_probe" 2>/dev/null || true
+    unset _uvf_probe
+    return 1
+}
+
+_uv_store_key() {  # <entry name> <folds:1|0>  -> the name uv opens it as, or nonzero
+    # Only the NAME folds; what the entry IS is the caller's business. Both scans go through
+    # here so they cannot disagree about which entries are uv's.
+    if _uv_is_bucket_name "$1"; then
+        printf '%s' "$1"
+        return 0
+    fi
+    [ "$2" = 1 ] || return 1
+    case "$1" in *[[:upper:]]*) ;; *) return 1 ;; esac
+    _uvk_lower=$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')
+    if _uv_is_bucket_name "$_uvk_lower"; then
+        printf '%s' "$_uvk_lower"
+        unset _uvk_lower
+        return 0
+    fi
+    unset _uvk_lower
+    return 1
+}
+
+_uv_cache_usable() {
+    # The stores uv owns: a 0555 archive-* or interpreter-v4 aborts uv. Not every subdirectory,
+    # or an unrelated read-only one disqualifies a usable cache. install.sh's
+    # _uv_cache_is_writable is the same check.
+    _uv_cache_probe_writable "$1" || return 1
+    _uv_cache_folds_case "$1" && _uvu_fold=1 || _uvu_fold=0
+    for _uvu_bucket in "$1"/*; do
+        _uvu_name=$(_uv_store_key "${_uvu_bucket##*/}" "$_uvu_fold") || continue
+        # Only the stores `uv pip install` CREATES, which is the one uv command this file runs
+        # (line 2053). The rule is what uv is measured to write, not what a 0555 directory
+        # happens to survive: a `git+` requirement creates git-v0 and builds-v0, so those stay,
+        # while flat-index-v2 is not created even by `--find-links --no-index`, and binaries,
+        # environments, osv and python belong to uv self-update, uv venv and uv python.
+        #
+        # A store is probed even where one trivial install tolerates it read-only, because that
+        # tolerance is the WORKLOAD, not the cache. On the pinned uv 0.12.1 a 0555 sdists-v9
+        # passes a wheel-only install and aborts the moment a source build needs it, and a 0555
+        # interpreter-v4 passes while its entry is cached and aborts on a new interpreter. An
+        # update installs a large, varying set, so a store it cannot write is a cache that
+        # breaks later rather than one that is fine. Re-measure on a pin bump.
+        case "${_uvu_name%-v*}" in
+            archive|builds|built-wheels|git|interpreter|sdists|simple|wheels) ;;
+            *) continue ;;
+        esac
+        if [ ! -d "$_uvu_bucket" ]; then
+            # A file, or a symlink dangling or not, is an existing path to mkdir(2), so uv
+            # cannot make the store and aborts. Measured on uv 0.10.7: a plain file at any of
+            # archive-v0, interpreter-v4, sdists-v9, simple-v20 or wheels-v6 exits 1 or 2.
+            if [ -e "$_uvu_bucket" ] || [ -L "$_uvu_bucket" ]; then
+                unset _uvu_bucket
+                return 1
+            fi
+            continue
+        fi
+        if ! _uv_cache_probe_writable "$_uvu_bucket"; then
+            unset _uvu_bucket _uvu_name _uvu_fold _uvu_ctl
+            return 1
+        fi
+        # Inside the store, and only inside one uv owns: a `*-v[0-9]*` glob also reaches
+        # `unused-v999/.git`, and a read-only file there condemned a cache real uv uses fine.
+        # sdists-* only: that is the one store measured to abort on a read-only .git, and
+        # rejecting a cache uv accepts costs the warm cache this path exists to find.
+        # One level inside the index stores, and only those. uv REWRITES this metadata on every
+        # resolve, so a shard another account owns aborts it. Measured on BOTH the pinned uv
+        # 0.12.1 and 0.10.7: a 0555 `simple-*/pypi` or `wheels-*/pypi` gives "Failed to write to
+        # the client cache", exit 2. One level is the leaf on both: 0.12.1 lays this out as
+        # `simple-v24/pypi`, not `simple-v24/index/<hash>`, and a 0555 `wheels-v6/pypi/requests`
+        # one level deeper installs fine. Bounded on purpose: the index level holds one entry per
+        # index, while the level below it grows with every package.
+        case "$_uvu_name" in
+            simple-* | wheels-*)
+                for _uvu_shard in "$_uvu_bucket"/* "$_uvu_bucket"/index/*; do
+                    # `index/<hash>`, one per CUSTOM index, is where uv puts metadata when
+                    # --index-url is set, which Studio does for the torch wheels. Measured on
+                    # the pinned uv 0.12.1: a 0555 `simple-v24/index/<hash>` is adopted by a
+                    # one-level probe and then aborts `uv pip install --refresh` with "Failed
+                    # to write to the client cache". The literal `index` level is still bounded:
+                    # one entry per index, where the level below THAT is one per package.
+                    [ "${_uvu_shard#"$_uvu_bucket"/index/}" != "*" ] || continue
+                    if [ ! -d "$_uvu_shard" ]; then
+                        # Same rule as the store level: a file, or a symlink dangling or not, is
+                        # an existing path uv can neither open nor mkdir. Measured on the pinned
+                        # uv 0.12.1, a plain file OR a dangling symlink at simple-v24/pypi or
+                        # wheels-v6/pypi aborts with "Failed to write to the client cache",
+                        # exit 2. A `*/` glob skips both, which called the cache usable.
+                        { [ -e "$_uvu_shard" ] || [ -L "$_uvu_shard" ]; } || continue
+                        unset _uvu_bucket _uvu_name _uvu_fold _uvu_ctl _uvu_shard
+                        return 1
+                    fi
+                    if ! _uv_cache_probe_writable "$_uvu_shard"; then
+                        unset _uvu_bucket _uvu_name _uvu_fold _uvu_ctl _uvu_shard
+                        return 1
+                    fi
+                done
+                unset _uvu_shard
+                ;;
+        esac
+        case "$_uvu_name" in sdists-*) _uvu_ctl=.git ;; *) _uvu_ctl="" ;; esac
+        if [ -n "$_uvu_ctl" ] && ! _uv_control_files_writable "$_uvu_bucket" "$_uvu_ctl"; then
+            unset _uvu_bucket _uvu_name _uvu_fold _uvu_ctl
+            return 1
+        fi
+    done
+    unset _uvu_bucket _uvu_name _uvu_fold _uvu_ctl _uvu_shard
+    _uv_control_files_writable "$1" .lock || return 1
+    return 0
+}
+
+_uv_control_files_writable() {  # <dir> <name>...
+    # Only the names uv is measured to need writable, because rejecting more throws away the
+    # warm cache this whole path exists to find. Every control file at 0444 against uv 0.10.7:
+    # root .lock ABORTS (exit 2) and sdists-v9/.git ABORTS (exit 2); root CACHEDIR.TAG and
+    # .gitignore, and .git/.gitignore/.lock under archive-v0, interpreter-v4, simple-v20 and
+    # wheels-v6, all install fine. uv itself creates only the three root files, so a per-store
+    # .git is someone else's, and one of them is proven to break uv. Re-measure on a pin bump.
+    _uvc_dir=$1
+    shift
+    for _uvc_name in "$@"; do
+        _uvc_path="$_uvc_dir/$_uvc_name"
+        { [ -e "$_uvc_path" ] || [ -L "$_uvc_path" ]; } || continue
+        # Not a regular file, so uv cannot open it at all: measured on uv 0.10.7, a `.lock`
+        # DIRECTORY (or a symlink to one) exits 2 with "Could not acquire lock ... Is a
+        # directory". `-f` alone skipped it and called the cache usable.
+        if [ ! -f "$_uvc_path" ] || [ ! -r "$_uvc_path" ] || [ ! -w "$_uvc_path" ]; then
+            unset _uvc_dir _uvc_name _uvc_path
+            return 1
+        fi
+    done
+    unset _uvc_dir _uvc_name _uvc_path
+    return 0
+}
+
+_uv_cache_warm() {
+    # Package BYTES, not metadata (wheels-* is .msgpack/.http after a bare resolve). Mirrors
+    # install.sh's scan and unsloth_cli's _uv_cache_has_packages.
+    [ -n "${1:-}" ] && [ -d "$1" ] && [ -r "$1" ] || return 1
+    # One pass over the entries, not five lowercase globs: on a folding filesystem `Archive-V0`
+    # IS the store uv opens as `archive-v0`, and a glob does not fold, so a cache holding every
+    # wheel read as cold and the offline update failed. _uv_cache_usable normalises the same way.
+    _uv_cache_folds_case "$1" && _uvw_fold=1 || _uvw_fold=0
+    for _uvw_bucket in "$1"/*; do
+        [ -d "$_uvw_bucket" ] || continue
+        # Stricter than the probe, deliberately, and exactly as install.sh's scan: `archive-*`
+        # also matches `archive-v0.backup`, whose bytes uv cannot reuse. Counting those reads a
+        # cache as warm that then fails an offline update (measured: uv exit 1, not in cache).
+        _uvw_base=$(_uv_store_key "${_uvw_bucket##*/}" "$_uvw_fold") || continue
+        case "${_uvw_base%-v*}" in
+            archive|builds|built-wheels|wheels|sdists) ;;
+            *) continue ;;
+        esac
+        # Unreadable is not empty, but it is also not proof of warmth.
+        [ -r "$_uvw_bucket" ] && [ -x "$_uvw_bucket" ] || continue
+        # -L: a bucket can be a symlink, as Get-ChildItem -Recurse follows. -print -quit, never
+        # `| head -n 1`: under this file's pipefail head's early exit SIGPIPEs find on a bucket
+        # over 64K of names, and the warm cache then reads as cold.
+        _uvw_hit=$(find -L "$_uvw_bucket" -type f \
+            ! -name CACHEDIR.TAG ! -name .git ! -name .gitignore \
+            ! -name '*.lock' ! -name '*.msgpack' ! -name '*.http' ! -name '*.rev' \
+            -print -quit 2>/dev/null) || true
+        # `|| true`: find exits nonzero after an unreadable leaf even once it printed the hit,
+        # and the hit is already assigned.
+        if [ -n "$_uvw_hit" ]; then
+            unset _uvw_bucket _uvw_hit _uvw_base _uvw_fold
+            return 0
+        fi
+    done
+    unset _uvw_bucket _uvw_hit _uvw_base _uvw_fold
+    return 1
+}
+
+_recorded_uv_cache() {
+    # The marker as unsloth_cli writes it: one absolute path, one trailing newline. Tolerates a
+    # BOM (PowerShell 5.1) and a CR, otherwise byte-for-byte. The sentinel keeps the bytes, and
+    # exactly one delimiter is removed, so a pathname ending in a newline round-trips.
+    _ruc_raw=$(cat "$STUDIO_HOME/cache/uv-cache-dir" 2>/dev/null && printf x) || return 1
+    _ruc_raw=${_ruc_raw%x}
+    _ruc_raw=${_ruc_raw%"$_UV_MARKER_LF"}
+    _ruc_raw=${_ruc_raw#"$_UV_MARKER_BOM"}
+    _ruc_raw=${_ruc_raw%"$_UV_MARKER_CR"}
+    case "$_ruc_raw" in
+        # Absolute only, as install.sh records (_absolutize_uv_cache_dir): setup.sh has already
+        # changed directory. No [:print:] filter: in the C locale it rejects every non-ASCII home.
+        "") unset _ruc_raw; return 1 ;;
+        /*) ;;
+        *) unset _ruc_raw; return 1 ;;
+    esac
+    printf '%s' "$_ruc_raw"
+    unset _ruc_raw
+    return 0
+}
+_UV_MARKER_BOM=$(printf '\357\273\277')
+_UV_MARKER_CR=$(printf '\r')
+_UV_MARKER_LF=$(printf '\n.')
+_UV_MARKER_LF=${_UV_MARKER_LF%.}
+
+# Three tiers: a caller value, --no-cache, then the recorded marker or the Studio cache. No
+# "uv's default if warm" tier, unlike install.sh, which decides before anything is recorded:
+# here it would move an update off the installer's cache with nothing recording the change.
+_uv_caller_value=false
+# `*[![:space:]]*`, not `-n`: install.sh's test, so an all-whitespace value is not a caller's
+# choice here and `--cache-dir '   '` there. The two selectors have to answer alike.
+case "${UV_CACHE_DIR-}" in
+    *[![:space:]]*) _uv_caller_value=true ;;
+esac
+if [ "$_uv_caller_value" = true ]; then
+    # A caller value wins outright, here as in install.sh and in the CLI.
+    :
+elif _uv_no_cache_requested; then
+    # Unset, not left alone: uv parses an exported EMPTY value as `--cache-dir ''` and fails.
+    unset UV_CACHE_DIR
+else
+    # Same sentinel as the reader: substitution would strip the newline it preserved.
+    _uv_recorded=$(_recorded_uv_cache && printf x) || _uv_recorded=""
+    _uv_recorded=${_uv_recorded%x}
+    if [ -n "$_uv_recorded" ] && _uv_cache_warm "$_uv_recorded" \
+       && _uv_cache_usable "$_uv_recorded"; then
+        # Only while it holds packages and uv can write to it: an emptied cache would refetch
+        # everything, and uv aborts on a read-only one (a share remounted since the install).
+        UV_CACHE_DIR="$_uv_recorded"
+        export UV_CACHE_DIR
+    else
+        UV_CACHE_DIR="$STUDIO_HOME/cache/uv"
+        export UV_CACHE_DIR
+        # The whole cache, not just its root, and the same check the recorded branch gets: a
+        # Studio cache whose archive-v0 went read-only passes a root probe and then aborts uv
+        # (measured: exit 1, "Permission denied"). Leaving it unset lets uv use its own.
+        if ! _uv_cache_usable "$UV_CACHE_DIR"; then
+            echo "[WARN] Cannot write to $UV_CACHE_DIR -- using uv's default cache." >&2
+            unset UV_CACHE_DIR
+        fi
+    fi
+    unset _uv_recorded
+fi
+unset _uv_caller_value
+VENV_T5_530_DIR="$RUNTIME_ROOT/.venv_t5_530"
+VENV_T5_550_DIR="$RUNTIME_ROOT/.venv_t5_550"
+VENV_T5_510_DIR="$RUNTIME_ROOT/.venv_t5_510"
 
 # The override is validated, so a typo can no longer cost the cache. Venv-gated because
 # a writable-but-empty override still aborts at the venv check below, and clearing first
 # would cost the cache for a run that then does nothing; a fresh install has neither venv
 # nor cache. Still before any install work, while the old frontend is the one on disk.
-if [ -x "$VENV_DIR/bin/python" ]; then
+if [ -z "$STAGE_ROOT" ] && [ -x "$VENV_DIR/bin/python" ]; then
     _clear_webview_caches
 fi
 
@@ -965,6 +1442,63 @@ fi
 _STUDIO_HOME_IS_CUSTOM=false
 if [ "$_studio_home_canon" != "$_LEGACY_STUDIO_HOME" ]; then
     _STUDIO_HOME_IS_CUSTOM=true
+fi
+# The master root storage_roots.unsloth_home() reads. llama.cpp, node and whisper.cpp sit BESIDE
+# studio/ under it, so installing them under $STUDIO_HOME would put them one level below where
+# every runtime resolver looks. Captured here because section 7 assigns over UNSLOTH_HOME.
+# Stripped before anything else, like _studio_override above: " " counts as unset and " /opt/uns "
+# names /opt/uns, which is what the Python resolver and the CLI both see.
+_MASTER_ROOT=$(printf '%s' "${UNSLOTH_HOME:-}" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
+if [ -n "$_MASTER_ROOT" ]; then
+    case "$_MASTER_ROOT" in
+        "~") _MASTER_ROOT="$HOME" ;;
+        "~/"*) _MASTER_ROOT="$HOME/${_MASTER_ROOT#'~/'}" ;;
+    esac
+    # Absolute against the CALLER's directory even when it does not exist yet, as Path.resolve()
+    # does: node is chosen before the first `cd "$SCRIPT_DIR"` and llama.cpp after it, so a
+    # relative value names two different directories and matches the backend's neither.
+    case "$_MASTER_ROOT" in
+        /*) ;;
+        *) _MASTER_ROOT="$PWD/$_MASTER_ROOT" ;;
+    esac
+    if [ -d "$_MASTER_ROOT" ]; then
+        # Keep the expanded value when it cannot be canonicalized, as the Python resolver does:
+        # dropping it here would send the runtimes to a root nothing else agrees on.
+        _master_root_canon=$(CDPATH= cd -P -- "$_MASTER_ROOT" 2>/dev/null && pwd -P) || _master_root_canon=""
+        [ -z "$_master_root_canon" ] || _MASTER_ROOT="$_master_root_canon"
+        unset _master_root_canon
+    fi
+fi
+
+# Ownership applies to node/, llama.cpp/ and whisper.cpp/ whenever a master root moves them,
+# even with STUDIO_HOME left at the legacy path, where _STUDIO_HOME_IS_CUSTOM is false and
+# "false" licenses the installers to os.replace() and rm -rf unmarked trees. The Studio home
+# and its venvs keep the other flag.
+_RUNTIME_ROOT_IS_CUSTOM="$_STUDIO_HOME_IS_CUSTOM"
+# Keyed on where the runtimes LAND, not on whether a master root was named: UNSLOTH_HOME set to
+# the root an install already uses moves nothing, and calling that custom would demand an owner
+# marker from a legacy source-built ~/.unsloth/llama.cpp that predates markers.
+#
+# Staging is excluded for the same reason, not as an exception to it: the placement below gives
+# STAGE_ROOT precedence over the master root, so during a staged update the master root is not
+# where anything lands and must not decide ownership. Assigned rather than raised, or a custom
+# STUDIO_HOME kept the flag true while the runtimes went to the legacy root, which demanded
+# markers from exactly the pre-marker trees this comparison exists to spare.
+if [ -z "${STAGE_ROOT:-}" ] && [ -n "$_MASTER_ROOT" ]; then
+    # Canonicalised like _MASTER_ROOT, or a symlinked $HOME compares unequal to itself and the
+    # legacy root reads as custom after all.
+    _rrc_legacy="$HOME/.unsloth"
+    if [ -d "$_rrc_legacy" ]; then
+        _rrc_canon=$(CDPATH= cd -P -- "$_rrc_legacy" 2>/dev/null && pwd -P) || _rrc_canon=""
+        [ -z "$_rrc_canon" ] || _rrc_legacy="$_rrc_canon"
+        unset _rrc_canon
+    fi
+    if [ "$_MASTER_ROOT" = "$_rrc_legacy" ]; then
+        _RUNTIME_ROOT_IS_CUSTOM=false
+    else
+        _RUNTIME_ROOT_IS_CUSTOM=true
+    fi
+    unset _rrc_legacy
 fi
 # Directory-local evidence Unsloth created "$1": only prebuilt-installer metadata
 # counts (UNSLOTH_PREBUILT_INFO.json for llama.cpp, UNSLOTH_NODE_PREBUILT_INFO.json
@@ -1050,11 +1584,37 @@ _report_denied_ancestor() {
     fi
 }
 
+# What is at "$1", for the refusal message. A user told the path is "not an Unsloth install"
+# when it is their own dangling symlink has no idea what to move aside.
+_studio_path_shape() {
+    if [ -L "$1" ]; then
+        if [ -e "$1" ]; then printf 'a symlink'; else printf 'a dangling symlink'; fi
+    elif [ -f "$1" ]; then printf 'a regular file'
+    elif [ -d "$1" ]; then printf 'a directory'
+    else printf 'an existing path'
+    fi
+}
+
+# $3 is the ownership flag: the runtime children pass _RUNTIME_ROOT_IS_CUSTOM, everything
+# under the Studio home keeps _STUDIO_HOME_IS_CUSTOM.
 _assert_studio_owned_or_absent() {
     _aso_dir="$1"
     _aso_label="$2"
-    [ -d "$_aso_dir" ] || return 0
-    if [ "$_STUDIO_HOME_IS_CUSTOM" = true ] && [ ! -f "$_aso_dir/$_STUDIO_OWNED_MARKER" ]; then
+    _aso_custom="${3:-$_STUDIO_HOME_IS_CUSTOM}"
+    # -d alone read a dangling symlink or a regular file as "nothing is here", and the caller
+    # then rm -rf'd it or os.replace()d over it. A dangling link is the ordinary case: its
+    # volume is simply not mounted, and following it later installs onto somebody's other disk.
+    if [ ! -d "$_aso_dir" ] && [ ! -e "$_aso_dir" ] && [ ! -L "$_aso_dir" ]; then
+        return 0
+    fi
+    if [ "$_aso_custom" = true ] && [ ! -f "$_aso_dir/$_STUDIO_OWNED_MARKER" ]; then
+        # Only a directory can carry the marker or the prebuilt metadata, so anything else here
+        # is unowned by construction and the adoption path below cannot apply to it.
+        if [ ! -d "$_aso_dir" ]; then
+            echo "ERROR: $_aso_dir already exists and is not an Unsloth-owned $_aso_label." >&2
+            echo "       It is $(_studio_path_shape "$_aso_dir"). Move it aside before re-running." >&2
+            setup_fail 1 "$_aso_label path is not an Unsloth-owned install: $_aso_dir"
+        fi
         if _studio_owned_adoptable "$_aso_dir"; then
             : > "$_aso_dir/$_STUDIO_OWNED_MARKER" 2>/dev/null || true
             return 0
@@ -1162,7 +1722,11 @@ decide_node_source() {
 }
 
 # Mirror the llama.cpp UNSLOTH_HOME derivation; the frontend build runs first.
-if [ "$_STUDIO_HOME_IS_CUSTOM" = true ]; then
+if [ -n "$STAGE_ROOT" ]; then
+    _NODE_PARENT="$RUNTIME_ROOT"
+elif [ -n "$_MASTER_ROOT" ]; then
+    _NODE_PARENT="$_MASTER_ROOT"
+elif [ "$_STUDIO_HOME_IS_CUSTOM" = true ]; then
     _NODE_PARENT="$STUDIO_HOME"
 else
     _NODE_PARENT="$HOME/.unsloth"
@@ -1180,8 +1744,8 @@ elif [ "$NODE_SOURCE" = bundled ]; then
     mkdir -p "$_NODE_PARENT"
     # install_node_prebuilt.py uses os.replace(); guard a custom-home dir so we
     # never displace a user-owned $UNSLOTH_STUDIO_HOME/node.
-    if [ "$_STUDIO_HOME_IS_CUSTOM" = true ]; then
-        _assert_studio_owned_or_absent "$NODE_DIR" "Node install"
+    if [ "$_RUNTIME_ROOT_IS_CUSTOM" = true ]; then
+        _assert_studio_owned_or_absent "$NODE_DIR" "Node install" "$_RUNTIME_ROOT_IS_CUSTOM"
     fi
     substep "installing isolated Node (system Node/npm left untouched)..."
     # Runs before the venv is activated, so bare `python` may be absent; resolve
@@ -1216,7 +1780,7 @@ elif [ "$NODE_SOURCE" = bundled ]; then
     fi
     grep -Fq "already matches" "$_NODE_LOG" && verbose_substep "isolated Node already up to date"
     rm -f "$_NODE_LOG"
-    if [ "$_STUDIO_HOME_IS_CUSTOM" = true ] && [ -d "$NODE_DIR" ]; then
+    if [ "$_RUNTIME_ROOT_IS_CUSTOM" = true ] && [ -d "$NODE_DIR" ]; then
         : > "$NODE_DIR/$_STUDIO_OWNED_MARKER" 2>/dev/null || true
     fi
     # Prepend the isolated bin (this process only) so node/npm/bun resolve here.
@@ -1436,6 +2000,12 @@ if [ ! -x "$VENV_DIR/bin/python" ]; then
         substep "curl -fsSL https://unsloth.ai/install.sh | sh"
         setup_fail 1 "Virtual environment not found at $VENV_DIR"
     fi
+elif [ -n "$STAGE_ROOT" ]; then
+    VIRTUAL_ENV="$VENV_DIR"
+    PATH="$VENV_DIR/bin:$PATH"
+    export VIRTUAL_ENV PATH
+    unset PYTHONHOME
+    hash -r 2>/dev/null || true
 else
     source "$VENV_DIR/bin/activate"
 fi
@@ -1480,6 +2050,7 @@ _setup_http_get_timed() {
 # ── uv from a pinned release ──
 # Same archive and destination as astral's installer, but it fetches a data file with a
 # pinned SHA-256 instead of piping remote script text into a shell. Mirrors install.sh.
+# See tests/studio/test_installer_av_shapes.py (AV_SHAPES_RECORD)
 # Bumping the version means bumping every hash:
 #   curl -sL https://github.com/astral-sh/uv/releases/download/<ver>/<asset>.sha256
 #
@@ -1549,14 +2120,121 @@ _setup_uv_sha256() {
     fi
 }
 
-# Bounded liveness probe: no stdin, so a build that prompts reads EOF, and a ceiling where
-# `timeout` exists (stock macOS has none).
-_setup_uv_probe_exec() {
-    if command -v timeout >/dev/null 2>&1; then
-        timeout 20 "$1" --version >/dev/null 2>&1 </dev/null
+_SETUP_UV_PROBE_TARGET=""
+_SETUP_UV_PROBE_PID=""
+_SETUP_UV_PROBE_PREV_TRAP=""
+
+# A process group is signalled as a negative pid, and the two shells that get here disagree about
+# how to write one: bash reads a bare `-123` as a signal spec and refuses it, dash refuses the
+# `--` that fixes bash. Only a shell that made a group can produce a negative target, so the sign
+# picks the spelling. Measured both ways: the wrong one fails silently under 2>/dev/null and the
+# group survives the ceiling.
+_setup_uv_signal_target() {
+    case "$2" in
+        -*) kill "-$1" -- "$2" 2>/dev/null || : ;;
+        *)  kill "-$1" "$2" 2>/dev/null || : ;;
+    esac
+}
+
+# TERM, then KILL what ignored it, exactly as `timeout -k` does on the hosts that have it.
+# $1 target (a group when one was made, else the pid), $2 pid to watch, $3 seconds of grace.
+_setup_uv_probe_terminate() {
+    _supt_grace=0
+    _setup_uv_signal_target TERM "$1"
+    while [ "$_supt_grace" -lt "$3" ] && kill -0 "$2" 2>/dev/null; do
+        sleep 1
+        _supt_grace=$((_supt_grace + 1))
+    done
+    # Only if it is still there: the loop also ends when TERM worked, and an unconditional KILL
+    # then goes to a number this shell no longer owns. Narrows the window, not closes it.
+    if kill -0 "$2" 2>/dev/null; then _setup_uv_signal_target KILL "$1"; fi
+    unset _supt_grace
+}
+
+# The watchdog's ceiling lives in the calling shell, so a cancel during the wait would leave the
+# candidate, and under monitor mode its whole group, running with nobody left to stop it. These
+# two chain rather than replace: the pinned installer's own handlers still have to run.
+_setup_uv_probe_restore_trap() {
+    _SETUP_UV_PROBE_TARGET=""
+    _SETUP_UV_PROBE_PID=""
+    if [ -n "${_SETUP_UV_PROBE_PREV_TRAP:-}" ]; then
+        eval "$_SETUP_UV_PROBE_PREV_TRAP"
     else
-        "$1" --version >/dev/null 2>&1 </dev/null
+        trap - HUP INT TERM
     fi
+    _SETUP_UV_PROBE_PREV_TRAP=""
+}
+
+_setup_uv_probe_on_signal() {
+    # The same TERM/KILL the ceiling uses, on a shorter leash: a cancel that waited the full five
+    # seconds for a binary ignoring TERM would read as a setup that ignored the cancel.
+    if [ -n "${_SETUP_UV_PROBE_TARGET:-}" ] && [ -n "${_SETUP_UV_PROBE_PID:-}" ]; then
+        _setup_uv_probe_terminate "$_SETUP_UV_PROBE_TARGET" "$_SETUP_UV_PROBE_PID" 2
+        wait "$_SETUP_UV_PROBE_PID" 2>/dev/null || :
+    fi
+    _setup_uv_probe_restore_trap
+    # Hand the signal back to whoever had it: the installer's handler, or the default action.
+    kill -s "$1" "$$" 2>/dev/null || :
+}
+
+# Bounded liveness probe: no stdin (a prompting build reads EOF), 20 s ceiling held by GNU
+# timeout or, without it (stock macOS), a background job killed when the ceiling passes.
+# $2 takes the binary's stdout, /dev/null by default: reuse needs the version line, and running
+# the binary again to read it would be a second chance to hang.
+_setup_uv_probe_exec() {
+    _supe_secs="${_SETUP_UV_PROBE_SECONDS:-20}"
+    _supe_out="${2:-/dev/null}"
+    # KILL after TERM (TERM can be ignored): `timeout -k` where supported, else the watchdog below.
+    if command -v timeout >/dev/null 2>&1 && timeout -k 1 5 true >/dev/null 2>&1; then
+        timeout -k 5 "$_supe_secs" "$1" --version >"$_supe_out" 2>/dev/null </dev/null
+        return $?
+    fi
+    # Monitor mode gives the probe a process group of its own, so the signals below reach what IT
+    # started, as `timeout`'s setpgid does. Off again at once: it changes how later jobs report.
+    _supe_monitor=off
+    case "$-" in *m*) _supe_monitor=on ;; esac
+    [ "$_supe_monitor" = on ] || set -m 2>/dev/null || :
+    "$1" --version >"$_supe_out" 2>/dev/null </dev/null &
+    _supe_pid=$!
+    [ "$_supe_monitor" = on ] || set +m 2>/dev/null || :
+    # The group only where it is provably not this shell's own (zsh shares them, and a group TERM
+    # there kills setup); otherwise the single pid, as before. Parameter expansion, not `tr`: this
+    # branch has to hold on a PATH as bare as the shell and sleep.
+    _supe_target="$_supe_pid"
+    if command -v ps >/dev/null 2>&1; then
+        _supe_pgid=$(ps -o pgid= -p "$_supe_pid" 2>/dev/null)
+        _supe_self=$(ps -o pgid= -p $$ 2>/dev/null)
+        _supe_pgid=${_supe_pgid##* }
+        _supe_self=${_supe_self##* }
+        case "$_supe_pgid$_supe_self" in
+            ''|*[!0-9]*) : ;;
+            *) [ "$_supe_pgid" = "$_supe_self" ] || _supe_target="-$_supe_pgid" ;;
+        esac
+    fi
+    _SETUP_UV_PROBE_TARGET="$_supe_target"
+    _SETUP_UV_PROBE_PID="$_supe_pid"
+    _SETUP_UV_PROBE_PREV_TRAP=$(trap -p HUP INT TERM 2>/dev/null) || _SETUP_UV_PROBE_PREV_TRAP=""
+    trap '_setup_uv_probe_on_signal HUP' HUP
+    trap '_setup_uv_probe_on_signal INT' INT
+    trap '_setup_uv_probe_on_signal TERM' TERM
+    _supe_waited=0
+    while kill -0 "$_supe_pid" 2>/dev/null; do
+        if [ "$_supe_waited" -ge "$_supe_secs" ]; then
+            # Escalate as timeout -k does: a binary ignoring TERM would hold the wait.
+            _setup_uv_probe_terminate "$_supe_target" "$_supe_pid" 5
+            wait "$_supe_pid" 2>/dev/null
+            _setup_uv_probe_restore_trap
+            unset _supe_pid _supe_waited _supe_target _supe_pgid _supe_self
+            return 124
+        fi
+        sleep 1
+        _supe_waited=$((_supe_waited + 1))
+    done
+    wait "$_supe_pid"
+    _supe_rc=$?
+    _setup_uv_probe_restore_trap
+    unset _supe_pid _supe_waited _supe_target _supe_pgid _supe_self
+    return $_supe_rc
 }
 
 # The function's own cleanup only runs when it returns, so an interrupt left the unpacked
@@ -1693,6 +2371,60 @@ _setup_path_has_dir() {
     return "$_sphd_found"
 }
 
+# Is a conda environment ACTIVE in this shell? Both variables, matching install.ps1: a hook
+# exporting only CONDA_DEFAULT_ENV still leaves the caller inside conda's PATH ordering.
+# A prepend a previous run persisted is repositioned, not accepted: otherwise a rerun
+# inside conda leaves our directory ahead of it for ever (#5871).
+# Only an exact whole-line match on what this writer writes is touched, and the content is
+# copied back into the ORIGINAL file so a symlinked rc keeps its link, mode and owner.
+_unsloth_repoint_rc_line() {
+    [ -f "$1" ] || return 1
+    # OURS, not merely matching: a hand-written `export PATH="$HOME/.local/bin:$PATH"` is a
+    # line users have too, and demoting theirs would move that whole directory behind the
+    # rest of PATH for good. The `# Added by Unsloth` marker above the line is the ownership
+    # record, so a line without one is left alone.
+    _URRL_OLD="$2" awk '
+        $0 == ENVIRON["_URRL_OLD"] && prev ~ /^# Added by Unsloth/ { found = 1 }
+        { prev = $0 }
+        END { exit(found ? 0 : 1) }
+    ' "$1" 2>/dev/null || return 1
+    # Staged and renamed, because `cat tmp > file` truncates the profile first and an
+    # interrupt leaves wreckage. Onto the RESOLVED path: renaming over a chezmoi or stow
+    # symlink would replace it with a regular file. `readlink -f` is GNU-only, hence the walk.
+    _urrl_real="$1"
+    _urrl_hops=0
+    while [ -L "$_urrl_real" ] && [ "$_urrl_hops" -lt 40 ]; do
+        _urrl_hops=$((_urrl_hops + 1))
+        _urrl_target="$(readlink -- "$_urrl_real" 2>/dev/null)" || break
+        [ -n "$_urrl_target" ] || break
+        case "$_urrl_target" in
+            /*) _urrl_real="$_urrl_target" ;;
+            *) _urrl_real="$(dirname -- "$_urrl_real")/$_urrl_target" ;;
+        esac
+    done
+    [ -f "$_urrl_real" ] || return 1
+    _urrl_tmp="$_urrl_real.unsloth-tmp.$$"
+    # `cp -p` keeps the original's mode; without it the umask masks it and a 0644 .bashrc
+    # comes back 0600. ENVIRON, not `-v`: POSIX awk decodes backslash escapes in `-v`, so an
+    # escaped path arrived as something else and renamed an unchanged file.
+    if { cp -p -- "$_urrl_real" "$_urrl_tmp" 2>/dev/null \
+        || cp -- "$_urrl_real" "$_urrl_tmp" 2>/dev/null; } \
+        && _URRL_OLD="$2" _URRL_NEW="$3" awk '
+            $0 == ENVIRON["_URRL_OLD"] && prev ~ /^# Added by Unsloth/ { print ENVIRON["_URRL_NEW"]; prev = $0; next }
+            { print; prev = $0 }
+        ' "$_urrl_real" > "$_urrl_tmp" 2>/dev/null \
+        && mv -f -- "$_urrl_tmp" "$_urrl_real" 2>/dev/null; then
+        return 0
+    fi
+    # The original is untouched on every failure above; only the staged copy needs removing.
+    rm -f -- "$_urrl_tmp" 2>/dev/null
+    return 1
+}
+
+_unsloth_conda_env_active() {
+    [ -n "${CONDA_PREFIX:-}" ] || [ -n "${CONDA_DEFAULT_ENV:-}" ]
+}
+
 _setup_persist_uv_path() {
     _supp_dir="$1"
     [ -n "$_supp_dir" ] || return 0
@@ -1701,7 +2433,15 @@ _setup_persist_uv_path() {
     [ -z "${UV_UNMANAGED_INSTALL:-}" ] || return 0
     # The PATH a new shell inherits, not the one this process has already prepended to, and
     # compared entry by entry: a directory holding *, ? or [ is a glob inside a case pattern.
-    _setup_path_has_dir "${_SETUP_LOGIN_PATH:-$PATH}" "$_supp_dir" && return 0
+    # Already on the login PATH BECAUSE a previous run wrote the line, and inside a conda
+    # environment that line is in the wrong place, so the repointing pass has to run before
+    # this early return rather than after it. `_setup_repoint_only` makes the rest of the
+    # function a no-op: it repositions what is there and adds nothing.
+    _setup_repoint_only=false
+    if _setup_path_has_dir "${_SETUP_LOGIN_PATH:-$PATH}" "$_supp_dir"; then
+        _unsloth_conda_env_active || return 0
+        _setup_repoint_only=true
+    fi
     # ~/.config, not XDG_CONFIG_HOME, because that is where astral's installer put its own fish
     # file, and it is written regardless of the current shell for the same reason.
     _supp_fish_dir="$HOME/.config/fish/conf.d"
@@ -1709,10 +2449,35 @@ _setup_persist_uv_path() {
         _supp_fish="$_supp_fish_dir/unsloth.fish"
         # Single-quoted: an unquoted path with a space is two arguments to fish_add_path.
         _supp_quoted=$(printf '%s' "$_supp_dir" | sed "s/\\\\/\\\\\\\\/g; s/'/\\\\'/g")
-        # The exact line, not any occurrence: /opt/uv-old must not pass for /opt/uv.
-        if ! grep -v '^[[:space:]]*#' "$_supp_fish" 2>/dev/null | grep -qxF "fish_add_path '$_supp_quoted'"; then
+        # fish_add_path PREPENDS, and that ordering outlives the conda activation (#5871),
+        # so the conda arm appends. All three flags are load-bearing:
+        #   -a alone appends to $fish_user_paths, which fish prepends to PATH, so -P is what
+        #      makes it an append to PATH at all
+        #   -P edits $PATH for the session, right for a conf.d drop-in read after conda.fish
+        #   -m moves an entry a bare `fish_add_path` from an older install already put in
+        #      the universal $fish_user_paths; without it the append is a no-op
+        # https://fishshell.com/docs/current/cmds/fish_add_path.html
+        _supp_fish_line="fish_add_path '$_supp_quoted'"
+        if _unsloth_conda_env_active; then
+            _supp_fish_line="fish_add_path -a -P -m '$_supp_quoted'"
+            # Every earlier spelling puts the directory in front of PATH, the bare -a by way of
+            # $fish_user_paths, and the -a -P line without -m cannot move an entry already in PATH,
+            # so any of them left by a previous run is repointed rather than accepted as present.
+            for _supp_stale in "fish_add_path '$_supp_quoted'" "fish_add_path -a '$_supp_quoted'" \
+                               "fish_add_path -a -P '$_supp_quoted'"; do
+                _unsloth_repoint_rc_line "$_supp_fish" "$_supp_stale" "$_supp_fish_line" || true
+            done
+        fi
+        # The exact line, not any occurrence: /opt/uv-old must not pass for /opt/uv. EVERY
+        # spelling counts as present, or a run outside conda adds a second line for a
+        # directory a run inside it already registered; the bare -a one is kept because an
+        # install from before this fix wrote it.
+        if [ "$_setup_repoint_only" != true ] && ! grep -v '^[[:space:]]*#' "$_supp_fish" 2>/dev/null \
+            | grep -qxF -e "fish_add_path '$_supp_quoted'" -e "fish_add_path -a '$_supp_quoted'" \
+                        -e "fish_add_path -a -P '$_supp_quoted'" \
+                        -e "fish_add_path -a -P -m '$_supp_quoted'"; then
             echo "# Added by Unsloth setup" >> "$_supp_fish"
-            echo "fish_add_path '$_supp_quoted'" >> "$_supp_fish"
+            echo "$_supp_fish_line" >> "$_supp_fish"
         fi
     fi
     # An entry has to be active, whole and on a line that SETS PATH: a commented-out export,
@@ -1723,6 +2488,43 @@ _setup_persist_uv_path() {
     # Escaped: the line is double-quoted, so a path holding $, ` or " would be expanded or
     # terminated by the shell that reads it.
     _supp_literal=$(printf '%s' "$_supp_dir" | sed 's/[\\"$`]/\\&/g')
+    # A persisted PREPEND outlives the activation and leaves conda resolving out of our
+    # directory in every later shell (#5871). Inside one, write the same line as an APPEND;
+    # the grep below matches either spelling, so no second line is added. install.ps1 makes
+    # the same choice for the Windows registry.
+    _supp_export_line="export PATH=\"$_supp_literal:\$PATH\""
+    _supp_export_prepend="$_supp_export_line"
+    # And the $HOME-relative spelling of the same prepend, because install.sh writes the shim
+    # line that way and this script runs standalone on an update: _SETUP_LOGIN_PATH holds the
+    # EXPANDED directory, which is what selects the repoint-only branch below, while the line
+    # sitting in the profile says $HOME. Matching only the expanded form meant the rewrite
+    # never fired and the stale prepend stayed ahead of the active conda environment. $HOME is
+    # left unexpanded on purpose; only the rest of the path is escaped.
+    _supp_export_home_prepend=""
+    case "$_supp_dir" in
+        "$HOME"/*)
+            _supp_home_literal='$HOME'$(printf '%s' "${_supp_dir#$HOME}" | sed 's/[\\"$`]/\\&/g')
+            _supp_export_home_prepend="export PATH=\"$_supp_home_literal:\$PATH\""
+            ;;
+    esac
+    if _unsloth_conda_env_active; then
+        _supp_export_line="export PATH=\"\$PATH:$_supp_literal\""
+    fi
+    if [ "$_setup_repoint_only" = true ]; then
+        # The POSIX repointing pass, then out: nothing here may append a line the caller's
+        # guard decided against.
+        for _supp_profile in "$HOME/.profile" "$HOME/.bashrc" "$HOME/.bash_profile" \
+                             "$HOME/.bash_login" "${ZDOTDIR:-$HOME}/.zshrc" "${ZDOTDIR:-$HOME}/.zshenv"; do
+            [ -f "$_supp_profile" ] || continue
+            _unsloth_repoint_rc_line "$_supp_profile" "$_supp_export_prepend" \
+                "$_supp_export_line" || true
+            if [ -n "$_supp_export_home_prepend" ]; then
+                _unsloth_repoint_rc_line "$_supp_profile" "$_supp_export_home_prepend" \
+                    "$_supp_export_line" || true
+            fi
+        done
+        return 0
+    fi
     # Every startup file astral's installer wired, because it is the installer this replaced:
     # ~/.profile always, each bash file that exists, and zsh under ZDOTDIR. Writing only the
     # file for the shell that happens to be running would leave a bash user whose .bash_profile
@@ -1730,21 +2532,151 @@ _setup_persist_uv_path() {
     for _supp_profile in "$HOME/.profile" "$HOME/.bashrc" "$HOME/.bash_profile" \
                          "$HOME/.bash_login" "${ZDOTDIR:-$HOME}/.zshrc" "${ZDOTDIR:-$HOME}/.zshenv"; do
         if [ "$_supp_profile" != "$HOME/.profile" ] && [ ! -f "$_supp_profile" ]; then continue; fi
+        # Repointing comes BEFORE the presence check, not inside it. The check below matches
+        # the EXPANDED directory, so it cannot see the $HOME-relative prepend install.sh
+        # writes: gating the rewrite on it left that spelling in place and appended a second
+        # line underneath it, which is both a duplicate entry and the original ordering bug,
+        # since the surviving prepend still resolves ahead of the active conda environment.
+        # Rewriting first also makes the check find the append it just produced.
+        if _unsloth_conda_env_active; then
+            _unsloth_repoint_rc_line "$_supp_profile" "$_supp_export_prepend" \
+                "$_supp_export_line" || true
+            if [ -n "$_supp_export_home_prepend" ]; then
+                _unsloth_repoint_rc_line "$_supp_profile" "$_supp_export_home_prepend" \
+                    "$_supp_export_line" || true
+            fi
+        fi
         # Only lines that actually set PATH count: `UV_CACHE=/opt/uv` and `PYTHONPATH=/opt/uv`
         # are not PATH entries, and taking one for an entry leaves the next shell without uv.
         if grep -v '^[[:space:]]*#' "$_supp_profile" 2>/dev/null \
             | grep -E "$_supp_path_line" \
-            | grep -qE "(^|[^[:alnum:]_.~/-])$_supp_grep([^[:alnum:]_.~/-]|\$)"; then continue; fi
+            | grep -qE "(^|[^[:alnum:]_.~/-])$_supp_grep([^[:alnum:]_.~/-]|\$)"; then
+            continue
+        fi
         echo '' >> "$_supp_profile"
         echo '# Added by Unsloth setup' >> "$_supp_profile"
-        echo "export PATH=\"$_supp_literal:\$PATH\"" >> "$_supp_profile"
+        echo "$_supp_export_line" >> "$_supp_profile"
     done
+}
+
+_SETUP_UV_PROBE_MISS=""
+_SETUP_UV_LOOKED=""
+_SETUP_UV_DIR=""
+_SETUP_UV_TOO_OLD=""
+# install.sh's UV_MIN_VERSION, for its reason: below it uv's managed-Python manifest tops out at
+# a CPython that cannot import torch, which the installer refuses to build on.
+_SETUP_UV_MIN_VERSION="0.9.3"
+
+# True when uv's --version line names a release at least as new as $2. Unreadable is false: the
+# candidate is left alone and the download runs, as it did before this search existed.
+_setup_uv_version_at_least() {
+    [ -n "$1" ] || return 1
+    printf '%s\n' "$1" | awk -v floor="$2" '
+        NR == 1 {
+            # It has to be uv saying it. Another binary that runs and prints a version of its
+            # own ("curl 8.9.1") would otherwise clear a floor of 0.9.3 on the strength of
+            # being curl 8.
+            if ($1 != "uv") { exit 1 }
+            # A prerelease is the version it precedes minus something, so it is compared as that
+            # version and refused when that lands exactly on the floor, as install.sh does.
+            core = $2
+            pre = (sub(/[-+].*$/, "", core) > 0)
+            split(core, have, ".")
+            if (have[1] !~ /^[0-9]+$/) { exit 1 }
+            split(floor, want, ".")
+            for (i = 1; i <= 3; i++) {
+                h = (have[i] ~ /^[0-9]+$/) ? have[i] + 0 : 0
+                w = (want[i] ~ /^[0-9]+$/) ? want[i] + 0 : 0
+                if (h > w) { exit 0 }
+                if (h < w) { exit 1 }
+            }
+            if (pre) { exit 1 }
+            # Braced, like every other exit in this program: setup.sh is allowed exactly two
+            # exits of its own (tests/sh/test_tauri_retry_failure_context.sh counts the lines),
+            # and an awk exit indented on a line of its own reads as a third.
+            { exit 0 }
+        }
+        { exit 1 }
+    '
+}
+
+# Answers in _SETUP_UV_DIR: under command substitution the miss diagnostics above would die
+# with the subshell.
+_setup_find_installed_uv() {
+    # The uv a previous run installed but this process's PATH lacks (a desktop shell launched
+    # before the install, a CI step, an unread profile line): the miss re-downloaded the pinned
+    # archive on every update, 42 of a 53 s Windows no-op. Same priority list
+    # _setup_install_uv_pinned writes to; it has to run, not merely exist.
+    # Cleared on entry: a second search would otherwise report the first one's destinations.
+    _SETUP_UV_PROBE_MISS=""
+    _SETUP_UV_LOOKED=""
+    _SETUP_UV_DIR=""
+    _SETUP_UV_TOO_OLD=""
+    _sfu_seen=""
+    # A file, not a command substitution: whatever the candidate starts inherits the probe's
+    # stdout, so a pipe holds this open until the last descendant lets go, which is the hang the
+    # ceiling exists to prevent. No file means no version, so no reuse: the old download path.
+    _sfu_ver_file=""
+    if command -v mktemp >/dev/null 2>&1; then
+        _sfu_ver_file=$(mktemp 2>/dev/null) || _sfu_ver_file=""
+    fi
+    for _sfu_dir in "${UV_INSTALL_DIR:-}" "${UV_UNMANAGED_INSTALL:-}" "${XDG_BIN_HOME:-}" \
+        "${XDG_DATA_HOME:+$XDG_DATA_HOME/../bin}" "${HOME:+$HOME/.local/bin}"; do
+        [ -n "$_sfu_dir" ] || continue
+        # Once per directory however many variables name it, as the PowerShell finder does: a
+        # hanging candidate costs the ceiling once per name (126 s over four tiers, 42 s for one).
+        case "$_sfu_seen" in *"|$_sfu_dir|"*) continue ;; esac
+        _sfu_seen="$_sfu_seen|$_sfu_dir|"
+        _SETUP_UV_LOOKED="${_SETUP_UV_LOOKED:+$_SETUP_UV_LOOKED, }$_sfu_dir/uv"
+        [ -x "$_sfu_dir/uv" ] || continue
+        # Bounded, like the pinned installer's probe. Asked twice: one miss (an antivirus scan
+        # holding a fresh binary) sent setup to the pinned download, which put an OLDER uv
+        # over this one and moved the manifest's uv_version on the next pass.
+        if _setup_uv_probe_exec "$_sfu_dir/uv" "${_sfu_ver_file:-/dev/null}" ||
+           { sleep 2; _setup_uv_probe_exec "$_sfu_dir/uv" "${_sfu_ver_file:-/dev/null}"; }; then
+            # `read`, not `cat`: this branch has to hold on a bare PATH, and an empty file
+            # returning non-zero is not a reason for `set -e` to end setup.
+            _sfu_ver=""
+            if [ -n "$_sfu_ver_file" ]; then
+                read -r _sfu_ver < "$_sfu_ver_file" 2>/dev/null || _sfu_ver=""
+            fi
+            if _setup_uv_version_at_least "$_sfu_ver" "$_SETUP_UV_MIN_VERSION"; then
+                _SETUP_UV_DIR="$_sfu_dir"
+                if [ -n "$_sfu_ver_file" ]; then rm -f "$_sfu_ver_file" 2>/dev/null || :; fi
+                unset _sfu_dir _sfu_ver _sfu_seen _sfu_ver_file
+                return 0
+            fi
+            _SETUP_UV_TOO_OLD="$_sfu_dir/uv"
+            continue
+        fi
+        _SETUP_UV_PROBE_MISS="$_sfu_dir/uv"
+    done
+    if [ -n "$_sfu_ver_file" ]; then rm -f "$_sfu_ver_file" 2>/dev/null || :; fi
+    unset _sfu_dir _sfu_ver _sfu_seen _sfu_ver_file
+    return 1
 }
 
 USE_UV=false
 if command -v uv &>/dev/null; then
     USE_UV=true
+elif _setup_find_installed_uv; then
+    _setup_uv_dir="$_SETUP_UV_DIR"
+    # Read-only reuse, fine under a stage root. Appended: a python beside uv (~/.local/bin
+    # often has one) must not step in front of the staged $VENV_DIR/bin/python.
+    export PATH="$PATH:$_setup_uv_dir"
+    step "uv" "reusing the uv installed at $_setup_uv_dir (it was not on PATH)"
+    USE_UV=true
+    unset _setup_uv_dir
+elif [ -n "$STAGE_ROOT" ]; then
+    step "uv" "using pip inside the staged environment"
 elif {
+    if [ -n "${_SETUP_UV_TOO_OLD:-}" ]; then
+        step "uv" "the uv at $_SETUP_UV_TOO_OLD is older than $_SETUP_UV_MIN_VERSION; installing the pinned release"
+    elif [ -n "${_SETUP_UV_PROBE_MISS:-}" ]; then
+        step "uv" "the uv at $_SETUP_UV_PROBE_MISS did not answer --version twice; installing the pinned release"
+    elif [ -n "${_SETUP_UV_LOOKED:-}" ]; then
+        step "uv" "no installed uv at $_SETUP_UV_LOOKED; installing the pinned release"
+    fi
     _SETUP_UV_PINNED_OK=false
     if _setup_install_uv_pinned; then
         _SETUP_UV_PINNED_OK=true
@@ -1787,30 +2719,62 @@ fi
 # Skip all Python dependency work if versions match (fast update path).
 # On Colab (no venv), skip this version check (it needs $VENV_DIR/bin/python)
 # but still run install_python_stack below (it uses sys.executable).
-_SKIP_PYTHON_DEPS=false
-_SKIP_VERSION_CHECK=false
-if [ "$_COLAB_NO_VENV" = true ]; then
-    _SKIP_VERSION_CHECK=true
-fi
-_PKG_NAME="${STUDIO_PACKAGE_NAME:-unsloth}"
-if [ "$_SKIP_VERSION_CHECK" != true ] && [ "${SKIP_STUDIO_BASE:-0}" != "1" ] && [ "${STUDIO_LOCAL_INSTALL:-0}" != "1" ]; then
-    # Only check when NOT called from install.sh (which just installed the package)
-    INSTALLED_VER=$("$VENV_DIR/bin/python" -c "
-import sys; from importlib.metadata import version
-print(version(sys.argv[1]))
-" "$_PKG_NAME" 2>/dev/null || echo "")
+_setup_install_is_verified() {
+    # Does the venv prove a finished install? Exit 0 yes, 1 no. One implementation for the
+    # incomplete-install guard and the offline rule, so they cannot disagree about "complete".
+    "$VENV_DIR/bin/python" -c "
+import os, sys
+sys.path.insert(0, sys.argv[1])
+try:
+    import install_manifest
+except Exception:
+    # Present but unimportable is damage, not an old release, and this is the
+    # one file whose damage silences every check below. Absent keeps the old
+    # escape: separating it from an old tree needs a RECORD walk here, and the
+    # CLI already reports studio_install_manifest_missing.
+    sys.exit(1 if os.path.isfile(os.path.join(sys.argv[1], 'install_manifest.py')) else 0)
+import inspect
+# Only skip the payload scan on a tree too old to offer it. Catching TypeError instead
+# also swallowed one raised inside verify_install, and retried shallow on real damage.
+deep = {'deep': True} if 'deep' in inspect.signature(install_manifest.verify_install).parameters else {}
+sys.exit(0 if install_manifest.verify_install(**deep)['ok'] else 1)
+" "$SCRIPT_DIR" 2>/dev/null
+}
 
-    LATEST_VER=$(_setup_http_get_timed "https://pypi.org/pypi/$_PKG_NAME/json" 2>/dev/null \
-        | "$VENV_DIR/bin/python" -c "import sys,json; print(json.load(sys.stdin)['info']['version'])" 2>/dev/null \
-        || echo "")
+_uv_offline_requested() {
+    # UV_OFFLINE is uv's own "no network" switch, and every install here goes through uv. uv's
+    # boolish spellings (uv 0.10.7): y, yes, t, true, on, 1.
+    _uvo=${UV_OFFLINE:-}
+    _uvo=${_uvo#"${_uvo%%[![:space:]]*}"}
+    _uvo=${_uvo%"${_uvo##*[![:space:]]}"}
+    case "$_uvo" in
+        1 | [Tt] | [Tt][Rr][Uu][Ee] | [Yy] | [Yy][Ee][Ss] | [Oo][Nn]) unset _uvo; return 0 ;;
+    esac
+    unset _uvo
+    return 1
+}
 
-    if [ -n "$INSTALLED_VER" ] && [ -n "$LATEST_VER" ] && [ "$INSTALLED_VER" = "$LATEST_VER" ]; then
-        step "python" "$_PKG_NAME $INSTALLED_VER is up to date"
-        _SKIP_PYTHON_DEPS=true
-        # A pre-#6483-fix install can be stuck on anyio>=4.14 even though
-        # $_PKG_NAME itself is current; the fast path above would otherwise
-        # never reach install_python_stack's anyio repair (#6797).
-        if "$VENV_DIR/bin/python" -c "
+_fast_path_escapes() {
+    # Every reason an "up to date" package is still not a working install. Both fast-path
+    # callers run it, so an offline skip meets the online bar. The incomplete-install check
+    # stays out: each caller words it differently.
+
+    # First, costing no probe: the user asked by hand. This branch never starts
+    # install_python_stack.py, whose hatch this is, so the variable did nothing here. Values are
+    # that module's ("1", "true", "yes", "on"), NOT _uv_offline_requested's bare `t` and `y`.
+    _fpe_full=${UNSLOTH_STUDIO_FULL_DEPS:-}
+    _fpe_full=${_fpe_full#"${_fpe_full%%[![:space:]]*}"}
+    _fpe_full=${_fpe_full%"${_fpe_full##*[![:space:]]}"}
+    case "$_fpe_full" in
+        1 | [Tt][Rr][Uu][Ee] | [Yy][Ee][Ss] | [Oo][Nn])
+            substep "UNSLOTH_STUDIO_FULL_DEPS is set -- forcing dependency pass..."
+            _SKIP_PYTHON_DEPS=false
+            ;;
+    esac
+    unset _fpe_full
+
+    # A pre-#6483 install stuck on anyio>=4.14 would never reach the anyio repair (#6797).
+    if "$VENV_DIR/bin/python" -c "
 import re, sys
 from importlib.metadata import version, PackageNotFoundError
 try:
@@ -1821,115 +2785,278 @@ except (PackageNotFoundError, ValueError, IndexError):
     sys.exit(1)
 sys.exit(0 if (major, minor) >= (4, 14) else 1)
 " 2>/dev/null; then
-            substep "anyio >=4.14 found (#6483) -- forcing dependency pass to repair..."
+        substep "anyio >=4.14 found (#6483) -- forcing dependency pass to repair..."
+        _SKIP_PYTHON_DEPS=false
+    fi
+    # Same shape: a pre-pin tokenizers the installed transformers rejects breaks every `import
+    # transformers` while $_PKG_NAME is current. Ask the metadata, not the broken import.
+    if "$VENV_DIR/bin/python" -c "
+import sys
+from importlib.metadata import PackageNotFoundError, requires, version
+try:
+    from packaging.requirements import Requirement
+    installed = version('tokenizers')
+    windows = [
+        req.specifier
+        for req in (Requirement(raw) for raw in (requires('transformers') or []))
+        if req.name == 'tokenizers' and req.marker is None
+    ]
+except (PackageNotFoundError, ImportError, ValueError, IndexError):
+    sys.exit(1)
+sys.exit(0 if windows and installed not in windows[0] else 1)
+" 2>/dev/null; then
+        substep "installed transformers rejects the installed tokenizers -- forcing dependency pass to repair..."
+        _SKIP_PYTHON_DEPS=false
+    fi
+    # Failures and timeouts keep the fast path, as for the ROCm probe below.
+    _fpe_missing_torch=false
+    if command -v timeout >/dev/null 2>&1; then
+        timeout -k 5 180 "$VENV_DIR/bin/python" \
+            "$SCRIPT_DIR/install_python_stack.py" --missing-torch-needs-dependency-pass \
+            >/dev/null 2>&1 && _fpe_missing_torch=true
+    elif "$VENV_DIR/bin/python" "$SCRIPT_DIR/install_python_stack.py" \
+            --missing-torch-needs-dependency-pass >/dev/null 2>&1; then
+        _fpe_missing_torch=true
+    fi
+    if [ "$_fpe_missing_torch" = true ]; then
+        # Offline the pass can only fail, and failing it loses the verified install.
+        if [ "${_OFFLINE_FAST_PATH:-false}" = true ] || _uv_offline_requested; then
+            # Silent once another escape forced the pass: torch comes back with it.
+            if [ "$_SKIP_PYTHON_DEPS" = true ]; then
+                substep "PyTorch is not installed but UV_OFFLINE is set -- left for the next online update"
+            fi
+        else
+            substep "PyTorch is not installed -- forcing dependency pass to reinstall it..."
             _SKIP_PYTHON_DEPS=false
         fi
-        # An interrupted install leaves $_PKG_NAME current while studio.txt
-        # never finished, so the compare above says "up to date" and update --
-        # plus the desktop Repair button -- no-ops on a venv that cannot boot.
+    fi
+    unset _fpe_missing_torch
+    # If the desktop app specifies a minimum required backend version and the installed
+    # package is older than that requirement, force the dependency pass to upgrade it.
+    if [ -n "${UNSLOTH_DESKTOP_BACKEND_VERSION:-}" ]; then
         if ! "$VENV_DIR/bin/python" -c "
-import sys
-sys.path.insert(0, sys.argv[1])
+import re, sys
 try:
-    import install_manifest
-except Exception:
-    sys.exit(0)  # older tree without the manifest helper: leave the fast path alone
-sys.exit(0 if install_manifest.verify_install()['ok'] else 1)
-" "$SCRIPT_DIR" 2>/dev/null; then
+    from packaging.version import parse as parse_v
+except ImportError:
+    def parse_v(v):
+        match = re.fullmatch(r'(\d+)\.(\d+)\.(\d+)', (v or '').strip())
+        return (int(match.group(1)), int(match.group(2)), int(match.group(3))) if match else None
+installed = parse_v(sys.argv[1])
+required = parse_v(sys.argv[2])
+sys.exit(0 if installed is not None and required is not None and installed >= required else 1)
+" "$INSTALLED_VER" "$UNSLOTH_DESKTOP_BACKEND_VERSION" 2>/dev/null; then
+            substep "$_PKG_NAME $INSTALLED_VER < $UNSLOTH_DESKTOP_BACKEND_VERSION (required by desktop app) -- forcing dependency pass to update..."
+            _SKIP_PYTHON_DEPS=false
+        fi
+    fi
+    # An XPU pin the venv does not satisfy: only the dependency pass acts on it, so a CPU install
+    # switched to UNSLOTH_TORCH_INDEX_FAMILY=xpu kept its wheel forever. Mirrors setup.ps1.
+    _setup_pin="${UNSLOTH_TORCH_INDEX_URL:-${UNSLOTH_TORCH_INDEX_FAMILY:-}}"
+    # Strip query/fragment first: an authenticated mirror (…/whl/xpu?token=...) is a supported pin.
+    _setup_pin="${_setup_pin%%\#*}"
+    _setup_pin="${_setup_pin%%\?*}"
+    # ALL trailing slashes, like the shared leaf parsers: a single %/ leaves "…/xpu/" behind.
+    while [ "${_setup_pin%/}" != "$_setup_pin" ]; do _setup_pin="${_setup_pin%/}"; done
+    # Exact, lowercased leaf, like every other leaf parser: a suffix match (…/private-xpu) would
+    # force a pass _ensure_xpu_torch declines to act on.
+    _setup_pin_leaf=$(printf '%s' "${_setup_pin##*/}" | tr '[:upper:]' '[:lower:]')
+    # Disk, no interpreter: a wedged Intel driver cannot hang `import torch`. Read unconditionally:
+    # the pin is one-shot, the installed wheel is the durable signal.
+    _setup_pin_ok=false
+    _setup_pin_is_xpu=false
+    for _setup_pin_tv in "$VENV_DIR"/lib/python*/site-packages/torch/version.py; do
+        [ -f "$_setup_pin_tv" ] || continue
+        _setup_pin_ver=$(sed -n "s/^__version__ = '\([^']*\)'.*/\1/p" "$_setup_pin_tv" | head -1)
+        case "$_setup_pin_ver" in
+            *+xpu)
+                _setup_pin_is_xpu=true
+                _setup_pin_maj=${_setup_pin_ver%%.*}
+                _setup_pin_rest=${_setup_pin_ver#*.}
+                _setup_pin_min=${_setup_pin_rest%%.*}
+                case "$_setup_pin_maj$_setup_pin_min" in
+                    *[!0-9]*) ;;
+                    *) [ "$_setup_pin_maj" -eq 2 ] && [ "$_setup_pin_min" -ge 6 ] && \
+                       [ "$_setup_pin_min" -lt 11 ] && _setup_pin_ok=true ;;
+                esac
+                ;;
+        esac
+        break
+    done
+    # Correct torch is not enough: a leftover generic triton shadows the XPU build and only the
+    # pass swaps it. Non-XPU leaves matched EXACTly, as install_python_stack does: a prefixed leaf
+    # (cu128-private) is a custom pin it never repairs.
+    _setup_known_nonxpu_leaf() {
+        case "$1" in
+            cpu|gfx[0-9]*) return 0 ;;
+            cu[0-9]*) case "${1#cu}" in *[!0-9]*) return 1 ;; esac ;;
+            rocm[0-9]*)
+                # Both parts non-empty all-digits: rocm7., rocm7.2.1 are custom pins.
+                _setup_rocm_rest="${1#rocm}"
+                case "$_setup_rocm_rest" in
+                    *.*.*) return 1 ;;
+                    *.*)
+                        case "${_setup_rocm_rest%%.*}" in *[!0-9]*) return 1 ;; esac
+                        case "${_setup_rocm_rest#*.}" in "" | *[!0-9]*) return 1 ;; esac
+                        ;;
+                    *[!0-9]*) return 1 ;;
+                esac
+                ;;
+            *) return 1 ;;
+        esac
+        return 0
+    }
+    _setup_pin_known_nonxpu=false
+    _setup_known_nonxpu_leaf "$_setup_pin_leaf" && _setup_pin_known_nonxpu=true
+    _setup_generic_triton=false
+    if [ "$_setup_pin_is_xpu" = true ] || [ "$_setup_pin_leaf" = "xpu" ]; then
+        for _setup_tri in "$VENV_DIR"/lib/python*/site-packages/triton-*.dist-info; do
+            [ -d "$_setup_tri" ] && _setup_generic_triton=true && break
+        done
+    fi
+    if [ "$_setup_pin_leaf" = "xpu" ] && [ "$_setup_pin_ok" = false ]; then
+        substep "XPU index pinned but torch does not match -- forcing dependency pass to repair..."
+        _SKIP_PYTHON_DEPS=false
+    elif [ "$_setup_pin_is_xpu" = true ] && [ "$_setup_generic_triton" = true ]; then
+        substep "generic triton shadows the XPU build -- forcing dependency pass to repair..."
+        _SKIP_PYTHON_DEPS=false
+    elif [ "$_setup_pin_is_xpu" = true ] && [ "$_setup_pin_known_nonxpu" = true ]; then
+        # Migrating AWAY from XPU: only install_python_stack acts on the pin.
+        substep "$_setup_pin_leaf pinned over an XPU wheel -- forcing dependency pass to migrate..."
+        _SKIP_PYTHON_DEPS=false
+    fi
+    # An explicit cu*/rocm*/cpu pin over a torch labelled with ANOTHER family: only the
+    # dependency pass reinstalls from the pin, and the compare above would keep the old wheel.
+    # Labelled wheels only (an untagged torch names no family), custom leaves left alone.
+    _setup_pin_have_family=""
+    case "${_setup_pin_ver:-}" in
+        *+cu[0-9]*) _setup_pin_have_family=cu ;;
+        *+rocm*) _setup_pin_have_family=rocm ;;
+        *+cpu) _setup_pin_have_family=cpu ;;
+        *+xpu) _setup_pin_have_family=xpu ;;
+    esac
+    _setup_pin_want_family=""
+    if [ "$_setup_pin_known_nonxpu" = true ]; then
+        case "$_setup_pin_leaf" in
+            cu[0-9]*) _setup_pin_want_family=cu ;;
+            rocm[0-9]* | gfx[0-9]*) _setup_pin_want_family=rocm ;;
+            cpu) _setup_pin_want_family=cpu ;;
+        esac
+    fi
+    if [ "$_SKIP_PYTHON_DEPS" = true ] && [ -n "$_setup_pin_want_family" ] \
+        && [ -n "$_setup_pin_have_family" ] && [ "$_setup_pin_have_family" != xpu ] \
+        && [ "$_setup_pin_have_family" != "$_setup_pin_want_family" ]; then
+        substep "$_setup_pin_leaf pinned over a +$_setup_pin_have_family torch wheel -- forcing dependency pass to reinstall torch from the pin..."
+        _SKIP_PYTHON_DEPS=false
+    fi
+    # Explicit under `set -e`: an arm ending in a false command would abort the update. The decision
+    # is in _SKIP_PYTHON_DEPS; the exit status carries nothing.
+    return 0
+}
+
+_SKIP_PYTHON_DEPS=false
+_SKIP_VERSION_CHECK=false
+# Set here, not left to `${_OFFLINE_FAST_PATH:-false}`, so an exported value from the caller's
+# environment cannot reach it. setup.ps1 already initialises $script:OfflineFastPath the same way.
+_OFFLINE_FAST_PATH=false
+if [ "$_COLAB_NO_VENV" = true ]; then
+    _SKIP_VERSION_CHECK=true
+fi
+_PKG_NAME="${STUDIO_PACKAGE_NAME:-unsloth}"
+if [ "$_SKIP_VERSION_CHECK" != true ] && [ "${SKIP_STUDIO_BASE:-0}" != "1" ] && [ "${STUDIO_LOCAL_INSTALL:-0}" != "1" ]; then
+    # Only check when NOT called from install.sh (which just installed the package)
+    _INSTALLED_VERSION_PROBE_EXIT=0
+    if INSTALLED_VER=$("$VENV_DIR/bin/python" -c "
+import sys
+sys.path.insert(0, sys.argv[2])
+import install_manifest
+version, conflict = install_manifest.installed_version_probe(sys.argv[1], ('unsloth-zoo',))
+print(version)
+sys.exit(2 if conflict else (0 if version else 1))
+" "$_PKG_NAME" "$SCRIPT_DIR" 2>/dev/null); then
+        :
+    else
+        _INSTALLED_VERSION_PROBE_EXIT=$?
+        INSTALLED_VER=""
+    fi
+
+    LATEST_VER=$(_setup_http_get_timed "https://pypi.org/pypi/$_PKG_NAME/json" 2>/dev/null \
+        | "$VENV_DIR/bin/python" -c "import sys,json; print(json.load(sys.stdin)['info']['version'])" 2>/dev/null \
+        || echo "")
+
+    if [ "$_INSTALLED_VERSION_PROBE_EXIT" -eq 2 ]; then
+        substep "duplicate metadata found for a core package -- forcing package repair..."
+    elif [ -n "$INSTALLED_VER" ] && [ -n "$LATEST_VER" ] && [ "$INSTALLED_VER" = "$LATEST_VER" ]; then
+        step "python" "$_PKG_NAME $INSTALLED_VER is up to date"
+        _SKIP_PYTHON_DEPS=true
+        # An interrupted install leaves $_PKG_NAME current while studio.txt never finished, so
+        # update and the Repair button no-op on a venv that cannot boot.
+        if ! _setup_install_is_verified; then
             substep "studio install incomplete -- forcing dependency pass to repair..."
             _SKIP_PYTHON_DEPS=false
         fi
-        # An XPU pin the venv does not satisfy. Only the dependency pass acts on it
-        # (install_python_stack's _ensure_xpu_torch), so without this escape a CPU install
-        # switched to UNSLOTH_TORCH_INDEX_FAMILY=xpu keeps its CPU wheel forever: the package
-        # version is current, so the fast path calls it up to date. Mirrors setup.ps1.
-        _setup_pin="${UNSLOTH_TORCH_INDEX_URL:-${UNSLOTH_TORCH_INDEX_FAMILY:-}}"
-        # Strip query/fragment first: an authenticated mirror (…/whl/xpu?token=...) is a
-        # supported pin shape, and missing it reads as "no XPU pin" and skips the repair.
-        _setup_pin="${_setup_pin%%\#*}"
-        _setup_pin="${_setup_pin%%\?*}"
-        # ALL trailing slashes, like the shared leaf parsers: a single %/ leaves "…/xpu/" behind.
-        while [ "${_setup_pin%/}" != "$_setup_pin" ]; do _setup_pin="${_setup_pin%/}"; done
-        # Exact, lowercased leaf, like every other leaf parser: a *xpu suffix match (…/private-xpu)
-        # would force a pass every update that _ensure_xpu_torch then declines to act on, and an
-        # uncased match would miss UNSLOTH_TORCH_INDEX_FAMILY=XPU that those parsers do accept.
-        _setup_pin_leaf=$(printf '%s' "${_setup_pin##*/}" | tr '[:upper:]' '[:lower:]')
-        # Disk first, no interpreter: version.py carries the local label, so a wedged Intel
-        # driver cannot hang `studio update` inside `import torch`. Read unconditionally, not
-        # only under a pin: the pin is one-shot, so the installed wheel is the only durable
-        # signal -- the same one _ensure_xpu_triton keys on.
-        _setup_pin_ok=false
-        _setup_pin_is_xpu=false
-        for _setup_pin_tv in "$VENV_DIR"/lib/python*/site-packages/torch/version.py; do
-            [ -f "$_setup_pin_tv" ] || continue
-            _setup_pin_ver=$(sed -n "s/^__version__ = '\([^']*\)'.*/\1/p" "$_setup_pin_tv" | head -1)
-            case "$_setup_pin_ver" in
-                *+xpu)
-                    _setup_pin_is_xpu=true
-                    _setup_pin_maj=${_setup_pin_ver%%.*}
-                    _setup_pin_rest=${_setup_pin_ver#*.}
-                    _setup_pin_min=${_setup_pin_rest%%.*}
-                    case "$_setup_pin_maj$_setup_pin_min" in
-                        *[!0-9]*) ;;
-                        *) [ "$_setup_pin_maj" -eq 2 ] && [ "$_setup_pin_min" -ge 6 ] && \
-                           [ "$_setup_pin_min" -lt 11 ] && _setup_pin_ok=true ;;
-                    esac
-                    ;;
-            esac
-            break
-        done
-        # Correct torch is not enough: the Triton swap also lives in install_python_stack, so a
-        # migrated +xpu venv with a leftover generic triton keeps the CUDA build shadowing the
-        # XPU one. The dist-info glob below matches only generic "triton-<ver>" -- the XPU builds
-        # are pytorch_triton_xpu-* / triton_xpu-*.
-        # Leaves the shared classifiers recognise as a non-XPU family. EXACT families, mirroring
-        # install.sh _is_pip_rocm_family_leaf and install_python_stack _is_cuda_family_leaf: a
-        # merely prefixed leaf (cu128-private) is a custom verbatim pin they never repair, so
-        # escaping on one would force a pass every update that changes nothing.
-        _setup_known_nonxpu_leaf() {
-            case "$1" in
-                cpu|gfx[0-9]*) return 0 ;;
-                cu[0-9]*) case "${1#cu}" in *[!0-9]*) return 1 ;; esac ;;
-                rocm[0-9]*)
-                    # Both parts non-empty all-digits: rocm7., rocm7.2.1 are custom pins.
-                    _setup_rocm_rest="${1#rocm}"
-                    case "$_setup_rocm_rest" in
-                        *.*.*) return 1 ;;
-                        *.*)
-                            case "${_setup_rocm_rest%%.*}" in *[!0-9]*) return 1 ;; esac
-                            case "${_setup_rocm_rest#*.}" in "" | *[!0-9]*) return 1 ;; esac
-                            ;;
-                        *[!0-9]*) return 1 ;;
-                    esac
-                    ;;
-                *) return 1 ;;
-            esac
-            return 0
-        }
-        _setup_pin_known_nonxpu=false
-        _setup_known_nonxpu_leaf "$_setup_pin_leaf" && _setup_pin_known_nonxpu=true
-        _setup_generic_triton=false
-        if [ "$_setup_pin_is_xpu" = true ] || [ "$_setup_pin_leaf" = "xpu" ]; then
-            for _setup_tri in "$VENV_DIR"/lib/python*/site-packages/triton-*.dist-info; do
-                [ -d "$_setup_tri" ] && _setup_generic_triton=true && break
-            done
-        fi
-        if [ "$_setup_pin_leaf" = "xpu" ] && [ "$_setup_pin_ok" = false ]; then
-            substep "XPU index pinned but torch does not match -- forcing dependency pass to repair..."
-            _SKIP_PYTHON_DEPS=false
-        elif [ "$_setup_pin_is_xpu" = true ] && [ "$_setup_generic_triton" = true ]; then
-            substep "generic triton shadows the XPU build -- forcing dependency pass to repair..."
-            _SKIP_PYTHON_DEPS=false
-        elif [ "$_setup_pin_is_xpu" = true ] && [ "$_setup_pin_known_nonxpu" = true ]; then
-            # Migrating AWAY from XPU: the pin is authoritative, but only install_python_stack
-            # acts on it, so an up-to-date install kept its +xpu wheel over the requested family.
-            substep "$_setup_pin_leaf pinned over an XPU wheel -- forcing dependency pass to migrate..."
-            _SKIP_PYTHON_DEPS=false
-        fi
+        # ...and every remaining escape, shared with the offline rule below.
+        _fast_path_escapes
     elif [ -n "$INSTALLED_VER" ] && [ -n "$LATEST_VER" ]; then
         substep "$_PKG_NAME $INSTALLED_VER -> $LATEST_VER available, updating..."
     elif [ -z "$LATEST_VER" ]; then
-        substep "could not reach PyPI, updating to be safe..."
+        # PyPI unreachable: updating to be safe stays the default, since it is usually a blip.
+        # UV_OFFLINE is not a blip, so a verified tree is kept instead, on the incomplete-install
+        # guard's evidence and held to the up-to-date branch's escapes (it can still be below the
+        # floor).
+        if [ -n "$INSTALLED_VER" ] && _uv_offline_requested && _setup_install_is_verified; then
+            substep "PyPI is unreachable and UV_OFFLINE is set -- keeping the verified install"
+            _SKIP_PYTHON_DEPS=true
+            _OFFLINE_FAST_PATH=true
+            _fast_path_escapes
+        else
+            substep "could not reach PyPI, updating to be safe..."
+        fi
+    fi
+fi
+
+# A current package can still have CPU/CUDA torch because the fast path skips ROCm repair.
+# Exit 0 forces the dependency pass; failures and timeouts keep the fast path.
+if [ "$_SKIP_PYTHON_DEPS" = true ] && [ -x "$VENV_DIR/bin/python" ]; then
+    _setup_amd_torch_stale=false
+    if command -v timeout >/dev/null 2>&1; then
+        timeout -k 5 180 "$VENV_DIR/bin/python" \
+            "$SCRIPT_DIR/install_python_stack.py" --amd-torch-needs-dependency-pass \
+            >/dev/null 2>&1 && _setup_amd_torch_stale=true
+    elif "$VENV_DIR/bin/python" "$SCRIPT_DIR/install_python_stack.py" \
+            --amd-torch-needs-dependency-pass >/dev/null 2>&1; then
+        _setup_amd_torch_stale=true
+    fi
+    if [ "$_setup_amd_torch_stale" = true ]; then
+        substep "installed PyTorch is not a ROCm build on this AMD host -- forcing dependency pass to repair..."
+        substep "   (set UNSLOTH_TORCH_BACKEND=cpu to keep a deliberate CPU install)"
+        _SKIP_PYTHON_DEPS=false
+    fi
+fi
+
+# Same for an NVIDIA host left on a CPU wheel (GPU hidden or driver broken when it was
+# installed, a dependency step that resolved torch from PyPI, or a GPU added since). The
+# CUDA repair is inside the pass too, so without this the wheel survives every "up to
+# date" update. setup.ps1 heals this at its stale-venv check; this is the POSIX half.
+if [ "$_SKIP_PYTHON_DEPS" = true ] && [ -x "$VENV_DIR/bin/python" ]; then
+    _setup_cuda_torch_stale=false
+    if command -v timeout >/dev/null 2>&1; then
+        timeout -k 5 180 "$VENV_DIR/bin/python" \
+            "$SCRIPT_DIR/install_python_stack.py" --cuda-torch-needs-dependency-pass \
+            >/dev/null 2>&1 && _setup_cuda_torch_stale=true
+    elif "$VENV_DIR/bin/python" "$SCRIPT_DIR/install_python_stack.py" \
+            --cuda-torch-needs-dependency-pass >/dev/null 2>&1; then
+        _setup_cuda_torch_stale=true
+    fi
+    if [ "$_setup_cuda_torch_stale" = true ]; then
+        # Offline the pass can only fail, and failing it loses the verified install.
+        if [ "${_OFFLINE_FAST_PATH:-false}" = true ] || _uv_offline_requested; then
+            substep "installed PyTorch cannot use this NVIDIA GPU but UV_OFFLINE is set -- left for the next online update"
+        else
+            substep "installed PyTorch cannot use this NVIDIA GPU -- forcing dependency pass to repair..."
+            substep "   (set UNSLOTH_TORCH_BACKEND=cpu to keep a deliberate CPU install)"
+            _SKIP_PYTHON_DEPS=false
+        fi
     fi
 fi
 
@@ -1960,52 +3087,230 @@ _target_has_pkg_version() {
     done
     return 1
 }
-_NEED_T5_INSTALL=false
-if [ -d "$STUDIO_HOME/.venv_t5" ]; then
-    # Legacy layout — migrate
-    _assert_studio_owned_or_absent "$STUDIO_HOME/.venv_t5" "legacy transformers sidecar venv"
-    rm -rf "$STUDIO_HOME/.venv_t5"
-    _NEED_T5_INSTALL=true
+# Audited AND installed from here: a name the audit cannot reach on disk reads stale forever.
+_SIDECAR_COMMON_PINS="huggingface_hub==1.8.0 hf_xet==1.4.2"
+
+# Remnants of a failed tiktoken install shadow the ambient copy and nothing else clears them.
+_sidecar_drop_tiktoken() {
+    for _sdt_entry in "$1"/tiktoken "$1"/tiktoken_ext "$1"/tiktoken.libs "$1"/tiktoken-*.dist-info; do
+        [ -e "$_sdt_entry" ] && rm -rf "$_sdt_entry" 2>/dev/null
+    done
+    _sdt_left=0
+    for _sdt_entry in "$1"/tiktoken "$1"/tiktoken_ext "$1"/tiktoken.libs "$1"/tiktoken-*.dist-info; do
+        [ -e "$_sdt_entry" ] && _sdt_left=1
+    done
+    unset _sdt_entry
+    if [ "$_sdt_left" = 1 ]; then
+        unset _sdt_left
+        return 1
+    fi
+    unset _sdt_left
+    return 0
+}
+
+_sidecar_retire_after_failed_tiktoken() {
+    # `|| true`: best effort under `set -e`, or an undeletable file fails an otherwise fine update.
+    rm -rf "$1" 2>/dev/null || true
+    substep "the $2 sidecar kept part of a failed tiktoken install; retired, rebuilt on the next update"
+}
+
+_sidecar_top_up_tiktoken() {
+    _stt_dir="$1"
+    _stt_label="$2"
+    # Under the offline keep this would reach the network through fast_install's pip fallback,
+    # and give a deferred tier a directory holding tiktoken alone.
+    [ "${_OFFLINE_FAST_PATH:-false}" = true ] && return 0
+    # And under UV_OFFLINE without the fast path: the pip fallback would reach for the network.
+    _uv_offline_requested && return 0
+    # Payload AND dist-info (RECORD is written last): an interrupted install leaves one without the
+    # other. A recordless dist-info goes first; uv cannot uninstall it, metadata still reads it.
+    for _stt_info in "$_stt_dir"/tiktoken-*.dist-info; do
+        if [ -d "$_stt_info" ] && [ ! -f "$_stt_info/RECORD" ]; then
+            rm -rf "$_stt_info" || true   # `|| true`: set -e; the reinstall below handles a leftover
+        fi
+    done
+    unset _stt_info
+    for _stt_meta in "$_stt_dir"/tiktoken-*.dist-info/METADATA; do
+        if [ -f "$_stt_meta" ] && [ -f "${_stt_meta%METADATA}RECORD" ] && [ -f "$_stt_dir/tiktoken/__init__.py" ]; then
+            unset _stt_meta
+            return 0
+        fi
+    done
+    unset _stt_meta
+    # Dropping the metadata is what makes uv reinstall instead of calling the pin satisfied.
+    for _stt_info in "$_stt_dir"/tiktoken-*.dist-info; do
+        [ -d "$_stt_info" ] && { rm -rf "$_stt_info" || true; }
+    done
+    unset _stt_info
+    if ! fast_install_sidecar --target "$_stt_dir" --no-deps --upgrade "tiktoken" >/dev/null 2>&1; then
+        if _sidecar_drop_tiktoken "$_stt_dir"; then
+            substep "could not install tiktoken into the $_stt_label sidecar -- Qwen tokenizers may fail"
+        else
+            _sidecar_retire_after_failed_tiktoken "$_stt_dir" "$_stt_label"
+        fi
+    fi
+    return 0
+}
+
+_sidecar_current() {
+    # One predicate for both shells: the version grep called a half-written sidecar current.
+    _sc_dir="$1"
+    _sc_ver="$2"
+    [ -d "$_sc_dir" ] || return 1
+    # No shim: answer from the grep, as setup.ps1 does, or every tier reads stale.
+    if [ ! -f "$SCRIPT_DIR/install_manifest.py" ]; then
+        _target_has_pkg_version "$_sc_dir" "transformers" "$_sc_ver"
+        return $?
+    fi
+    # Colab has no venv interpreter but the stdlib-only shim runs under its own python.
+    _sc_python="$VENV_DIR/bin/python"
+    if [ ! -x "$_sc_python" ]; then
+        _sc_python=$(command -v python 2>/dev/null || command -v python3 2>/dev/null || true)
+    fi
+    if [ -z "$_sc_python" ]; then
+        unset _sc_python
+        _target_has_pkg_version "$_sc_dir" "transformers" "$_sc_ver"
+        return $?
+    fi
+    # Bounded where timeout exists: the shim cannot interrupt a stalled read. A timeout is stale.
+    # shellcheck disable=SC2086  # the pins are a deliberate word-split list
+    if command -v timeout >/dev/null 2>&1; then
+        _sc_out=$(timeout -k 5 60 "$_sc_python" "$SCRIPT_DIR/install_manifest.py" sidecar "$_sc_dir" \
+            "transformers==$_sc_ver" $_SIDECAR_COMMON_PINS 2>/dev/null)
+        _sc_rc=$?
+    else
+        _sc_out=$("$_sc_python" "$SCRIPT_DIR/install_manifest.py" sidecar "$_sc_dir" \
+            "transformers==$_sc_ver" $_SIDECAR_COMMON_PINS 2>/dev/null)
+        _sc_rc=$?
+    fi
+    # 124 is timeout's TERM, 137 its KILL.
+    if [ "$_sc_rc" -eq 124 ] || [ "$_sc_rc" -eq 137 ]; then
+        _sc_out="sidecar: audit did not answer within 60 seconds"
+    fi
+    unset _sc_python
+    case "$_sc_out" in
+        "sidecar: current")
+            unset _sc_out _sc_rc
+            return 0
+            ;;
+        sidecar:*)
+            verbose_substep "sidecar $_sc_dir: ${_sc_out#sidecar: }"
+            unset _sc_out _sc_rc
+            return 1
+            ;;
+    esac
+    unset _sc_out
+    # A failure with no marker is a dead audit, not the legacy silent exit 0.
+    if [ "$_sc_rc" -ne 0 ]; then
+        verbose_substep "sidecar $_sc_dir: audit failed (exit $_sc_rc)"
+        unset _sc_rc
+        return 1
+    fi
+    unset _sc_rc
+    # An old shim exits 0 silently: fall back to the grep this replaced.
+    _target_has_pkg_version "$_sc_dir" "transformers" "$_sc_ver"
+}
+
+_install_sidecar() {
+    _is_dir="$1"
+    _is_ver="$2"
+    _is_label="$3"
+    _assert_studio_owned_or_absent "$_is_dir" "transformers $_is_label sidecar venv"
+    [ -d "$_is_dir" ] && rm -rf "$_is_dir"
+    mkdir -p "$_is_dir"
+    : > "$_is_dir/$_STUDIO_OWNED_MARKER" 2>/dev/null || true
+    run_quiet "install transformers $_is_ver" fast_install_sidecar --target "$_is_dir" --no-deps "transformers==$_is_ver"
+    # From $_SIDECAR_COMMON_PINS, not a copy: a pin demanded but never installed reads stale forever.
+    for _is_pin in $_SIDECAR_COMMON_PINS; do
+        run_quiet "install ${_is_pin%%==*} for $_is_label" fast_install_sidecar --target "$_is_dir" --no-deps "$_is_pin"
+    done
+    unset _is_pin
+    # Optional, as in setup.ps1; _sidecar_top_up_tiktoken retries it later.
+    if ! run_quiet_no_exit "install tiktoken for $_is_label" fast_install_sidecar --target "$_is_dir" --no-deps "tiktoken"; then
+        if _sidecar_drop_tiktoken "$_is_dir"; then
+            substep "could not install tiktoken into the $_is_label sidecar -- Qwen tokenizers may fail"
+        else
+            _sidecar_retire_after_failed_tiktoken "$_is_dir" "$_is_label"
+        fi
+    fi
+    step "transformers" "$_is_ver pre-installed"
+}
+
+_NEED_T5_530=false
+_NEED_T5_550=false
+_NEED_T5_510=false
+# The migration is a wipe and three rebuilds from a cache that may be cold, and the legacy tree is
+# the only sidecar, so under UV_OFFLINE it waits for the next online update.
+if [ -d "$STUDIO_HOME/.venv_t5" ] && { [ "${_OFFLINE_FAST_PATH:-false}" = true ] || _uv_offline_requested; }; then
+    substep "legacy transformers sidecar left in place -- UV_OFFLINE is set, migration waits for the next online update"
+elif [ -d "$STUDIO_HOME/.venv_t5" ]; then
+    # Legacy layout. A staged run's venvs may never be activated, so only the live update migrates.
+    if [ -z "$STAGE_ROOT" ]; then
+        _assert_studio_owned_or_absent "$STUDIO_HOME/.venv_t5" "legacy transformers sidecar venv"
+        rm -rf "$STUDIO_HOME/.venv_t5"
+    fi
+    _NEED_T5_530=true
+    _NEED_T5_550=true
+    _NEED_T5_510=true
 fi
-[ ! -d "$VENV_T5_530_DIR" ] && _NEED_T5_INSTALL=true
-[ ! -d "$VENV_T5_550_DIR" ] && _NEED_T5_INSTALL=true
-[ ! -d "$VENV_T5_510_DIR" ] && _NEED_T5_INSTALL=true
-_target_has_pkg_version "$VENV_T5_530_DIR" "transformers" "5.3.0" || _NEED_T5_INSTALL=true
-_target_has_pkg_version "$VENV_T5_550_DIR" "transformers" "5.5.0" || _NEED_T5_INSTALL=true
-_target_has_pkg_version "$VENV_T5_510_DIR" "transformers" "5.10.2" || _NEED_T5_INSTALL=true
-# Also reinstall when python deps were updated (packages may need rebuild)
-[ "$_SKIP_PYTHON_DEPS" = false ] && _NEED_T5_INSTALL=true
+_sidecar_current "$VENV_T5_530_DIR" "5.3.0" || _NEED_T5_530=true
+_sidecar_current "$VENV_T5_550_DIR" "5.5.0" || _NEED_T5_550=true
+_sidecar_current "$VENV_T5_510_DIR" "5.10.2" || _NEED_T5_510=true
+# A sidecar rebuild is a wipe and four fetches, through a pip fallback that reaches the network,
+# so under the offline keep it waits for the next online update; the runtime self-heal covers a
+# missing tier meanwhile. A deferred tier keeps its own flag so it is not reported "current".
+_DEFER_T5_530=false
+_DEFER_T5_550=false
+_DEFER_T5_510=false
+# UV_OFFLINE without the fast path: the same wipe and fetches, through a pip fallback that does not
+# read UV_OFFLINE. Every stale or missing tier is left for the next online update.
+if [ "${_OFFLINE_FAST_PATH:-false}" != true ] && _uv_offline_requested; then
+    for _ofp in "530 5.3.0" "550 5.5.0" "510 5.10.2"; do
+        # Not `set --`: this runs at top-level scope, where that overwrites the script's own "$@".
+        _ofp_key=${_ofp%% *}; _ofp_ver=${_ofp#* }
+        if eval "[ \"\$_NEED_T5_$_ofp_key\" = true ]"; then
+            substep "transformers $_ofp_ver sidecar is stale or missing but UV_OFFLINE is set -- left for the next online update"
+            eval "_NEED_T5_$_ofp_key=false"
+            eval "_DEFER_T5_$_ofp_key=true"
+        fi
+    done
+    unset _ofp _ofp_key _ofp_ver
+fi
+if [ "${_OFFLINE_FAST_PATH:-false}" = true ]; then
+    for _ofp in "530 5.3.0" "550 5.5.0" "510 5.10.2"; do
+        _ofp_key=${_ofp%% *}; _ofp_ver=${_ofp#* }
+        if eval "[ \"\$_NEED_T5_$_ofp_key\" = true ]"; then
+            substep "transformers $_ofp_ver sidecar is stale but UV_OFFLINE is set -- left for the next online update"
+            eval "_NEED_T5_$_ofp_key=false"
+            eval "_DEFER_T5_$_ofp_key=true"
+        fi
+    done
+    unset _ofp _ofp_key _ofp_ver
+fi
 
-if [ "$_NEED_T5_INSTALL" = true ]; then
-    _assert_studio_owned_or_absent "$VENV_T5_530_DIR" "transformers 5.3 sidecar venv"
-    [ -d "$VENV_T5_530_DIR" ] && rm -rf "$VENV_T5_530_DIR"
-    mkdir -p "$VENV_T5_530_DIR"
-    : > "$VENV_T5_530_DIR/$_STUDIO_OWNED_MARKER" 2>/dev/null || true
-    run_quiet "install transformers 5.3.0" fast_install_sidecar --target "$VENV_T5_530_DIR" --no-deps "transformers==5.3.0"
-    run_quiet "install huggingface_hub for t5_530" fast_install_sidecar --target "$VENV_T5_530_DIR" --no-deps "huggingface_hub==1.8.0"
-    run_quiet "install hf_xet for t5_530" fast_install_sidecar --target "$VENV_T5_530_DIR" --no-deps "hf_xet==1.4.2"
-    run_quiet "install tiktoken for t5_530" fast_install_sidecar --target "$VENV_T5_530_DIR" --no-deps "tiktoken"
-    step "transformers" "5.3.0 pre-installed"
-
-    _assert_studio_owned_or_absent "$VENV_T5_550_DIR" "transformers 5.5 sidecar venv"
-    [ -d "$VENV_T5_550_DIR" ] && rm -rf "$VENV_T5_550_DIR"
-    mkdir -p "$VENV_T5_550_DIR"
-    : > "$VENV_T5_550_DIR/$_STUDIO_OWNED_MARKER" 2>/dev/null || true
-    run_quiet "install transformers 5.5.0" fast_install_sidecar --target "$VENV_T5_550_DIR" --no-deps "transformers==5.5.0"
-    run_quiet "install huggingface_hub for t5_550" fast_install_sidecar --target "$VENV_T5_550_DIR" --no-deps "huggingface_hub==1.8.0"
-    run_quiet "install hf_xet for t5_550" fast_install_sidecar --target "$VENV_T5_550_DIR" --no-deps "hf_xet==1.4.2"
-    run_quiet "install tiktoken for t5_550" fast_install_sidecar --target "$VENV_T5_550_DIR" --no-deps "tiktoken"
-    step "transformers" "5.5.0 pre-installed"
-
-    _assert_studio_owned_or_absent "$VENV_T5_510_DIR" "transformers 5.10 sidecar venv"
-    [ -d "$VENV_T5_510_DIR" ] && rm -rf "$VENV_T5_510_DIR"
-    mkdir -p "$VENV_T5_510_DIR"
-    : > "$VENV_T5_510_DIR/$_STUDIO_OWNED_MARKER" 2>/dev/null || true
-    run_quiet "install transformers 5.10.2" fast_install_sidecar --target "$VENV_T5_510_DIR" --no-deps "transformers==5.10.2"
-    run_quiet "install huggingface_hub for t5_510" fast_install_sidecar --target "$VENV_T5_510_DIR" --no-deps "huggingface_hub==1.8.0"
-    run_quiet "install hf_xet for t5_510" fast_install_sidecar --target "$VENV_T5_510_DIR" --no-deps "hf_xet==1.4.2"
-    run_quiet "install tiktoken for t5_510" fast_install_sidecar --target "$VENV_T5_510_DIR" --no-deps "tiktoken"
-    step "transformers" "5.10.2 pre-installed"
+if [ "$_NEED_T5_530" = true ]; then
+    _install_sidecar "$VENV_T5_530_DIR" "5.3.0" "5.3"
+elif [ "$_DEFER_T5_530" = true ]; then
+    step "transformers" "5.3.0 sidecar stale -- left for the next online update"
+else
+    step "transformers" "5.3.0 sidecar current"
+    _sidecar_top_up_tiktoken "$VENV_T5_530_DIR" "5.3"
+fi
+if [ "$_NEED_T5_550" = true ]; then
+    _install_sidecar "$VENV_T5_550_DIR" "5.5.0" "5.5"
+elif [ "$_DEFER_T5_550" = true ]; then
+    step "transformers" "5.5.0 sidecar stale -- left for the next online update"
+else
+    step "transformers" "5.5.0 sidecar current"
+    _sidecar_top_up_tiktoken "$VENV_T5_550_DIR" "5.5"
+fi
+if [ "$_NEED_T5_510" = true ]; then
+    _install_sidecar "$VENV_T5_510_DIR" "5.10.2" "5.10"
+elif [ "$_DEFER_T5_510" = true ]; then
+    step "transformers" "5.10.2 sidecar stale -- left for the next online update"
+else
+    step "transformers" "5.10.2 sidecar current"
+    _sidecar_top_up_tiktoken "$VENV_T5_510_DIR" "5.10"
 fi
 fi
 
@@ -2020,8 +3325,124 @@ if ! command -v rocminfo >/dev/null 2>&1 && [ -x /opt/rocm/bin/rocminfo ]; then
 fi
 _setup_amd_detected=false
 _setup_nvidia_usable=false
+_setup_nvidia_physical=false
 _setup_gfx_all=""
+_setup_gfx=""
+_setup_hip_map_missing=0
 _setup_mkt=""
+_setup_amd_records=""
+
+# Pair each rocminfo GPU gfx id with its marketing name instead of using the CPU-first
+# global name (#7307). Blank names keep device ordinals; no GPU keeps the old fallback.
+# Keep in sync with install.sh.
+_setup_rocminfo_gpu_records() {
+    awk '
+        # Split at the first colon so embedded colons survive.
+        function value(line,   v) {
+            v = line
+            sub(/^[^:]*:[[:space:]]*/, "", v)
+            gsub(/^[[:space:]]+|[[:space:]]+$/, "", v)
+            return v
+        }
+        /^[[:space:]]*Name:/ {
+            # Keep a slot for a nameless GPU.
+            if (gfx != "" && !named) { print gfx "|"; gpus++ }
+            gfx = ""; named = 0
+            name = value($0)
+            # Accept target suffixes such as gfx90a:sramecc+, but reject ISA names.
+            if (match(name, /^gfx[1-9][0-9a-z][0-9a-z][0-9a-z]?/)) {
+                rest = substr(name, RLENGTH + 1)
+                if (rest == "" || rest ~ /^[^0-9a-z]/) gfx = substr(name, 1, RLENGTH)
+            }
+            next
+        }
+        /^[[:space:]]*Marketing Name:/ {
+            mkt = value($0)
+            if (gfx != "" && !named) { print gfx "|" mkt; gpus++; named = 1 }
+            else if (first == "") first = mkt
+            next
+        }
+        END {
+            if (gfx != "" && !named) { print gfx "|"; gpus++ }
+            if (gpus == 0 && first != "") print "|" first
+        }
+    '
+}
+
+# amd-smi enumerates in discovery order over its KFD view; HIP_VISIBLE_DEVICES and
+# ROCR_VISIBLE_DEVICES index HIP/ROCr order, which the library derives from the KFD node
+# id instead. The two disagree on real hardware (MI350X SPX/NPS1), and _gfx here becomes
+# --rocm-gfx, so an untranslated ordinal can fetch a prebuilt for another card's arch.
+# `amd-smi list -e` is the map AMD publishes for this (HIP_ID, ROCm 6.4.0+); the Python
+# side reads the same field in utils/hardware/amd.py get_hip_id_by_gpu_index.
+# Keep in sync with install.sh.
+_setup_amd_smi_hip_order() {
+    # POSIX awk forbids a newline in a -v value (fatal under gawk --posix), so records arrive
+    # on stdin before the map, sentinel-separated. Line 1 names the index space.
+    { printf '%s\n' "$1"; echo "@@hip-map@@"; cat; } | awk '
+        function value(line,   v) {
+            v = line
+            sub(/^[^:]*:[[:space:]]*/, "", v)
+            gsub(/^[[:space:]]+|[[:space:]]+$/, "", v)
+            return v
+        }
+        function keep(   i) { print "discovery"; for (i = 1; i <= r; i++) print rec[i] }
+        !split_seen && $0 == "@@hip-map@@" { split_seen = 1; next }
+        !split_seen { if ($0 != "") rec[++r] = $0; next }
+        /^[[:space:]]*GPU:[[:space:]]*[0-9]/ { n++; hip[n] = -1; next }
+        n && tolower($0) ~ /hip.?id/ {
+            if (hip[n] < 0) { v = value($0); if (v ~ /^[0-9]+$/) hip[n] = v + 0 }
+            next
+        }
+        END {
+            # All or nothing, like get_hip_id_by_gpu_index: a partial or colliding map is not 1:1.
+            if (r == 0 || n != r) { keep(); exit }
+            for (i = 1; i <= n; i++) {
+                if (hip[i] < 0 || hip[i] >= r || (hip[i] in used)) { keep(); exit }
+                used[hip[i]] = 1
+                out[hip[i]] = rec[i]
+            }
+            print "hip"
+            for (i = 0; i < r; i++) print out[i]
+        }
+    '
+}
+
+# One `gfx|marketing name` per adapter, in `GPU: N` order, so the mask picks both halves
+# of one device. Was: arch indexed, name always adapter 0's -- and on amd-smi 6.1.1, which
+# has no TARGET_GRAPHICS_VERSION, that name is what --rocm-gfx is inferred from.
+# Keep in sync with install.sh.
+_setup_amd_smi_gpu_records() {
+    awk '
+        function value(line,   v) {
+            v = line
+            sub(/^[^:]*:[[:space:]]*/, "", v)
+            gsub(/^[[:space:]]+|[[:space:]]+$/, "", v)
+            return v
+        }
+        function flush() {
+            if (started) print gfx "|" mkt
+            gfx = ""; mkt = ""
+        }
+        # amd-smi upper-cases every key (amdsmi_logger.py _capitalize_keys), so match
+        # case-folded. Two header shapes: `GPU: 0` opens a keyed block with the arch later,
+        # `GPU[0] : gfx1100` IS the record. Matching only the first answered no arch at all.
+        /^[[:space:]]*GPU[[:space:]]*[:\[][[:space:]]*[0-9]/ {
+            flush(); started = 1
+            if (match($0, /gfx[1-9][0-9a-z][0-9a-z][0-9a-z]?/)) gfx = substr($0, RSTART, RLENGTH)
+            next
+        }
+        !started { next }
+        tolower($0) ~ /market.?name/ { if (mkt == "") mkt = value($0); next }
+        tolower($0) ~ /target.?graphics.?version/ {
+            v = value($0)
+            if (gfx == "" && v ~ /^gfx[1-9][0-9a-z][0-9a-z][0-9a-z]?$/) gfx = v
+            next
+        }
+        END { flush() }
+    '
+}
+
 # Intel XPU. There is no vendor probe here like nvidia-smi / rocminfo -- Linux Intel support is
 # an explicit index pin, not autodetection -- so the installed runtime IS the signal. The local
 # label is read off disk first so a CPU-only host never pays for an `import torch`.
@@ -2072,9 +3493,9 @@ _setup_supported_gfx_from_name() {
         *"RX 7800"*|*"RX 7700"*|*"PRO W7700"*|*"PRO V710"*)                                            _sup_gfx_out="gfx1101" ;;  # RDNA 3 (Navi 32)
         *"RX 7900"*|*"PRO W7900"*|*"PRO W7800"*)                                                       _sup_gfx_out="gfx1100" ;;  # RDNA 3 desktop / workstation (Navi 31)
         *"780M"*|*"760M"*|*"740M"*|*"Phoenix"*|*"Hawk Point"*|*"Z1 Extreme"*|*"Z2 Extreme"*)            _sup_gfx_out="gfx1103" ;;  # RDNA 3 iGPU (Phoenix / Hawk Point)
-        *"RX 6900"*|*"RX 6800"*|*"RX 6750"*|*"RX 6700"*|*"PRO W6800"*|*"PRO W6900"*)                    _sup_gfx_out="gfx1030" ;;  # RDNA 2 (Navi 21)
+        *"RX 6950"*|*"RX 6900"*|*"RX 6850"*|*"RX 6800"*|*"RX 6750"*|*"RX 6700"*|*"PRO W6800"*|*"PRO W6900"*) _sup_gfx_out="gfx1030" ;;  # RDNA 2 (Navi 21)
         *"RX 6650"*|*"RX 6600"*|*"PRO W6600"*|*"PRO W6650"*)                                            _sup_gfx_out="gfx1032" ;;  # RDNA 2 (Navi 23)
-        *"RX 6500"*|*"RX 6400"*|*"RX 6300"*|*"PRO W6400"*|*"PRO W6500"*)                                _sup_gfx_out="gfx1034" ;;  # RDNA 2 (Navi 24)
+        *"RX 6550"*|*"RX 6500"*|*"RX 6450"*|*"RX 6400"*|*"RX 6300"*|*"PRO W6400"*|*"PRO W6500"*|*"PRO W6300"*)                    _sup_gfx_out="gfx1034" ;;  # RDNA 2 (Navi 24)
     esac
     [ -n "$_sup_gfx_out" ] || return 1
     printf '%s\n' "$_sup_gfx_out"
@@ -2084,24 +3505,48 @@ _setup_supported_gfx_from_name() {
 # a usable-NVIDIA host (mirrors _has_rocm_gpu in install_python_stack.py).
 # This also keeps a wedged rocminfo/amd-smi from hanging setup before the
 # host is classified; the AMD probes themselves run under _setup_run_smi.
+if _setup_has_physical_nvidia_gpu; then
+    _setup_nvidia_physical=true
+fi
 if _setup_has_usable_nvidia_gpu; then
     _setup_nvidia_usable=true
 fi
 if [ "$_setup_nvidia_usable" != true ]; then
-    if command -v rocminfo >/dev/null 2>&1 && \
-       _setup_run_smi rocminfo 2>/dev/null | awk '/Name:[[:space:]]*gfx[1-9][0-9]/{found=1} END{exit !found}'; then
+    if command -v rocminfo >/dev/null 2>&1; then
+        _setup_amd_records=$(_setup_run_smi rocminfo 2>/dev/null | _setup_rocminfo_gpu_records || true)
+        _setup_gfx_all=$(printf '%s\n' "$_setup_amd_records" | awk -F'|' '$1 != "" { print $1 }')
+    fi
+    if [ -n "$_setup_gfx_all" ]; then
         _setup_amd_detected=true
-        _setup_gfx_all=$(_setup_run_smi rocminfo 2>/dev/null | grep -oE 'gfx[1-9][0-9a-z]{2,3}' || true)
-        _setup_mkt=$(_setup_run_smi rocminfo 2>/dev/null | awk -F': ' \
-            '/Marketing Name:/{gsub(/^[[:space:]]+|[[:space:]]+$/,"", $2); if($2){print $2; exit}}' || true)
     elif command -v amd-smi >/dev/null 2>&1 && \
          _setup_run_smi amd-smi list 2>/dev/null | awk '/^GPU[[:space:]]*[:\[][[:space:]]*[0-9]/{ found=1 } END{ exit !found }'; then
         _setup_amd_detected=true
+        # amd-smi owns the device list here, so its indexed records replace rocminfo's.
+        _setup_amd_records=$(_setup_run_smi amd-smi static --asic 2>/dev/null | _setup_amd_smi_gpu_records || true)
+        if [ -n "$_setup_amd_records" ]; then
+            _setup_amd_smi_out=$(_setup_run_smi amd-smi list -e 2>/dev/null \
+                | _setup_amd_smi_hip_order "$_setup_amd_records" || true)
+            _setup_amd_space=$(printf '%s\n' "$_setup_amd_smi_out" | head -n 1)
+            _setup_amd_records=$(printf '%s\n' "$_setup_amd_smi_out" | tail -n +2)
+            # No map, and the adapters are not interchangeable: the mask indexes HIP order
+            # while these records are in discovery order, so any ordinal is a guess. Decline
+            # rather than forward a guessed --rocm-gfx to the llama.cpp and whisper
+            # prebuilts. amd-smi 6.1.1 reports no TARGET_GRAPHICS_VERSION at all and the
+            # arch is then inferred from the name, so an archless record is compared on its
+            # name instead. Interchangeable adapters are unaffected: every ordinal gives the
+            # same answer, and UNSLOTH_ROCM_GFX_ARCH still overrides below.
+            if [ "$_setup_amd_space" != hip ] && \
+               [ "$(printf '%s\n' "$_setup_amd_records" | awk -F'|' \
+                    'NF { k = ($1 != "" ? $1 : "name:" $2); if (!(k in seen)) { seen[k]; n++ } }
+                     END { print n + 0 }')" -gt 1 ]; then
+                _setup_amd_records=""
+                _setup_gfx_all=""
+                _setup_hip_map_missing=1
+            fi
+        fi
         _setup_gfx_all=$(_setup_run_smi amd-smi list 2>/dev/null | grep -oE 'gfx[1-9][0-9a-z]{2,3}' || true)
         [ -z "$_setup_gfx_all" ] && \
-            _setup_gfx_all=$(_setup_run_smi amd-smi static --asic 2>/dev/null | grep -oE 'gfx[1-9][0-9a-z]{2,3}' || true)
-        _setup_mkt=$(_setup_run_smi amd-smi static --asic 2>/dev/null | awk -F'[:|]' \
-            '/[Mm]arket.?[Nn]ame/{gsub(/^[[:space:]]+|[[:space:]]+$/,"", $2); if($2){print $2; exit}}' || true)
+            _setup_gfx_all=$(printf '%s\n' "$_setup_amd_records" | awk -F'|' '$1 != "" { print $1 }')
     elif [ -e /dev/kfd ] && \
          awk '/vendor_id/ && $2 == 4098 { found = 1 } END { exit !found }' \
              /sys/class/kfd/kfd/topology/nodes/*/properties 2>/dev/null; then
@@ -2112,11 +3557,22 @@ if [ "$_setup_nvidia_usable" != true ]; then
         # nor a marketing name is available from this path, so the report below
         # reads lspci rather than _setup_mkt when it needs to name the card.
         _setup_amd_detected=true
+        _setup_amd_records=""
     fi
 fi
 
 if [ "$_setup_nvidia_usable" = true ]; then
-    step "gpu" "NVIDIA GPU detected"
+    _setup_nv_banner_fields
+    if [ -n "$_setup_nv_name" ] && [ -n "$_setup_nv_sm" ]; then
+        step "gpu" "$_setup_nv_name ($_setup_nv_sm)"
+    elif [ -n "$_setup_nv_name" ]; then
+        step "gpu" "$_setup_nv_name"
+    else
+        step "gpu" "NVIDIA GPU detected"
+    fi
+    # An `if`, not `[ ... ] && substep ...`: the AND-list form leaves a non-zero status
+    # behind on the common path where there is no driver string to print.
+    if [ -n "$_setup_nv_driver" ]; then substep "Driver: $_setup_nv_driver"; fi
 elif [ "$_setup_amd_detected" = true ]; then
     _setup_vis="${HIP_VISIBLE_DEVICES:-${ROCR_VISIBLE_DEVICES:-}}"
     _setup_vis_idx=0
@@ -2124,8 +3580,18 @@ elif [ "$_setup_amd_detected" = true ]; then
         _setup_first="${_setup_vis%%,*}"
         case "$_setup_first" in ''|*[!0-9]*) ;; *) _setup_vis_idx=$_setup_first ;; esac
     fi
-    _setup_gfx=$(printf '%s\n' "$_setup_gfx_all" | awk -v idx="$_setup_vis_idx" \
-        'NF && !seen[$0]++ { a[n++]=$0 } END { if(idx>=n) idx=0; if(n>0) print a[idx] }')
+    if [ -n "$_setup_amd_records" ]; then
+        # Records already preserve device ordinals, including duplicate arches.
+        _setup_amd_record=$(printf '%s\n' "$_setup_amd_records" | awk -v idx="$_setup_vis_idx" \
+            'NF { a[n++]=$0 } END { if(idx>=n) idx=0; if(n>0) print a[idx+0] }')
+        _setup_gfx=${_setup_amd_record%%|*}
+        _setup_mkt=${_setup_amd_record#*|}
+    fi
+    # Only pre-TARGET_GRAPHICS_VERSION amd-smi lands here: names but no arch in the record.
+    if [ -z "$_setup_gfx" ]; then
+        _setup_gfx=$(printf '%s\n' "$_setup_gfx_all" | awk -v idx="$_setup_vis_idx" \
+            'NF && !seen[$0]++ { a[n++]=$0 } END { if(idx>=n) idx=0; if(n>0) print a[idx+0] }')
+    fi
     # UNSLOTH_ROCM_GFX_ARCH env override (mirrors setup.ps1)
     if [ -n "${UNSLOTH_ROCM_GFX_ARCH:-}" ]; then
         _setup_gfx="${UNSLOTH_ROCM_GFX_ARCH}"
@@ -2137,6 +3603,11 @@ elif [ "$_setup_amd_detected" = true ]; then
             substep "gfx arch inferred from GPU name: $_setup_gfx"
             substep "Tip: set UNSLOTH_ROCM_GFX_ARCH=$_setup_gfx to skip inference next time"
         fi
+    fi
+    # Say why the arch is missing, since the user can supply it and amd-smi cannot.
+    if [ -z "$_setup_gfx" ] && [ "$_setup_hip_map_missing" = 1 ]; then
+        substep "Unlike AMD adapters and no HIP id map (amd-smi list -e needs ROCm 6.4+):"
+        substep "cannot tell which one this session selects. Set UNSLOTH_ROCM_GFX_ARCH to pick."
     fi
     # ROCm version via hipconfig, then amd-smi
     _setup_rocm_ver=""
@@ -2207,7 +3678,11 @@ $_setup_unsup_pci
 EOF
         return 1
     }
-    if [ -n "$_setup_gfx" ]; then
+    # $_setup_mkt is the marketing name of the SAME record the arch came from, paired
+    # per GPU agent by _rocminfo_gpu_records and ordered by _amd_smi_hip_order.
+    if [ -n "$_setup_gfx" ] && [ -n "$_setup_mkt" ]; then
+        step "gpu" "$_setup_mkt ($_setup_gfx)"
+    elif [ -n "$_setup_gfx" ]; then
         step "gpu" "AMD ROCm ($_setup_gfx)"
     elif _setup_unsup_gfx=$(_setup_unsupported_gfx_any "$_setup_mkt"); then
         step "gpu" "AMD GPU detected ($_setup_unsup_gfx) -- no ROCm PyTorch wheels Unsloth installs"
@@ -2229,13 +3704,26 @@ EOF
         substep "GGUF chat can still use this GPU through Vulkan: export UNSLOTH_LLAMA_CPP_BACKEND=vulkan,"
         substep "then re-run the installer. It picks the llama.cpp bundle at install time, so setting"
         substep "it afterwards has no effect until you install or update again."
+    elif [ -n "$_setup_mkt" ]; then
+        # Name without an arch, as install.sh does. Deliberately BELOW the unsupported
+        # arm above: a card with no ROCm wheels also reaches here with a name, and
+        # naming it quietly would drop the warning that training will not run.
+        step "gpu" "$_setup_mkt"
     else
         step "gpu" "AMD ROCm"
     fi
+    # Only claim a path that is really there, matching install.sh. /opt/rocm is a
+    # FALLBACK, not a detection, so a runtime-only ROCm host reaches here with nothing at
+    # it -- and this script runs after install.sh on every install and alone on every
+    # `unsloth studio update`, so leaving it unconditional here meant the run still ended
+    # by advertising the directory install.sh had just stopped claiming.
     _setup_rocm_root="${ROCM_PATH:-${HIP_PATH:-/opt/rocm}}"
-    substep "ROCm: $_setup_rocm_root"
+    if [ -d "$_setup_rocm_root" ]; then
+        substep "ROCm: $_setup_rocm_root"
+    else
+        substep "ROCm: runtime detected (no SDK tree at $_setup_rocm_root)"
+    fi
     [ -n "$_setup_rocm_ver" ] && substep "hipconfig: $_setup_rocm_ver"
-    [ -n "$_setup_mkt" ] && [ -n "$_setup_gfx" ] && substep "GPU: $_setup_mkt"
 elif [ "$_setup_xpu_ready" = true ]; then
     # Ranks below NVIDIA and AMD, as in setup.ps1: those hosts get their own wheels.
     step "gpu" "Intel GPU detected (XPU runtime)"
@@ -2259,17 +3747,120 @@ fi
 # ── 7. Prefer prebuilt llama.cpp bundles before any source build path ──
 # Nest llama.cpp under $STUDIO_HOME only for real env-overrides; legacy
 # default keeps ~/.unsloth/llama.cpp so pre-PR builds are still discovered.
-if [ "$_STUDIO_HOME_IS_CUSTOM" = true ]; then
+if [ -n "$STAGE_ROOT" ]; then
+    UNSLOTH_HOME="$RUNTIME_ROOT"
+elif [ -n "$_MASTER_ROOT" ]; then
+    UNSLOTH_HOME="$_MASTER_ROOT"
+elif [ "$_STUDIO_HOME_IS_CUSTOM" = true ]; then
     UNSLOTH_HOME="$STUDIO_HOME"
 else
     UNSLOTH_HOME="$HOME/.unsloth"
 fi
 mkdir -p "$UNSLOTH_HOME"
+# Record the master root inside the Studio tree, for the uninstaller: UNSLOTH_HOME can be set
+# for a single command, and without the note the uninstaller removed the Studio tree and
+# stranded multi-gigabyte llama.cpp, node and whisper.cpp trees beside it.
+#
+# Only for a master root (the other branches derive UNSLOTH_HOME from paths the uninstaller
+# already knows), and only when a reader will honour it: both rejected shapes were being
+# written, so the file on disk claimed a recorded root while every reader refused it.
+_master_root_note_is_honoured() {
+    # Canonicalised here rather than trusting the value from the top of the script: that one was
+    # resolved before the mkdir above, so a root created by this run kept its uncanonical
+    # spelling, and the containment test below is textual.
+    _mrn_root=$(CDPATH= cd -P -- "$1" 2>/dev/null && pwd -P) || _mrn_root=""
+    [ -n "$_mrn_root" ] || return 1
+    # The legacy default is the one root every reader finds without help, and both uninstallers
+    # refuse it outright. Writing it turned a one-command `UNSLOTH_HOME=$HOME/.unsloth` into a
+    # permanent portable install: every later bare launch read the note back and HF_HUB_CACHE
+    # moved off ~/.cache/huggingface, the one cache this change promises not to move.
+    _mrn_legacy=$(CDPATH= cd -P -- "${HOME:-}/.unsloth" 2>/dev/null && pwd -P) || _mrn_legacy="${HOME:-}/.unsloth"
+    [ "$_mrn_root" != "$_mrn_legacy" ] || return 1
+    # Keyed on the TREE as well, because that is what the readers key on: storage_roots'
+    # _is_legacy_studio_tree and the CLI both decline ANY note found in ~/.unsloth/studio,
+    # whatever it records. Without this, UNSLOTH_HOME=$HOME passed containment (the legacy tree
+    # is inside $HOME) and the value is not the legacy root, so the note was written, warned
+    # about nothing, and then honoured by nobody.
+    _mrn_studio=$(CDPATH= cd -P -- "$STUDIO_HOME" 2>/dev/null && pwd -P) || _mrn_studio="$STUDIO_HOME"
+    _mrn_legacy_studio=$(CDPATH= cd -P -- "${HOME:-}/.unsloth/studio" 2>/dev/null && pwd -P) \
+        || _mrn_legacy_studio="${HOME:-}/.unsloth/studio"
+    if [ "$_mrn_studio" = "$_mrn_legacy_studio" ]; then
+        echo "NOTE: the managed runtimes were installed under $_mrn_root, but Studio itself is the" >&2
+        echo "      default install at $_mrn_studio, where no reader honours a recorded root. That" >&2
+        echo "      root cannot be recorded, so a later launch or uninstall will not find them." >&2
+        echo "      Set UNSLOTH_STUDIO_HOME=$_mrn_root/studio, or re-export UNSLOTH_HOME whenever" >&2
+        echo "      you run Unsloth." >&2
+        return 1
+    fi
+    # A note must describe the tree it is written into: all four readers require the Studio
+    # directory to lie INSIDE the root it names, so a tree copied between master roots cannot
+    # aim a removal at the original install. install.sh and install.ps1 do not read UNSLOTH_HOME
+    # yet, so `UNSLOTH_HOME=/mnt/portable unsloth studio update` leaves Studio at
+    # ~/.unsloth/studio with the runtimes at /mnt/portable, which is exactly that shape: warn,
+    # rather than leave a file that reads as a recorded root and behaves as none.
+    case "$STUDIO_HOME" in
+        "$_mrn_root"|"$_mrn_root"/*) return 0 ;;
+    esac
+    echo "NOTE: the managed runtimes were installed under $_mrn_root, but Studio itself lives at" >&2
+    echo "      $STUDIO_HOME, which is outside it. That root cannot be recorded, so a later launch" >&2
+    echo "      or uninstall will not find them. Set UNSLOTH_STUDIO_HOME=$_mrn_root/studio, or" >&2
+    echo "      re-export UNSLOTH_HOME whenever you run Unsloth." >&2
+    return 1
+}
+if [ -n "$_MASTER_ROOT" ] && [ -z "$STAGE_ROOT" ] && _master_root_note_is_honoured "$UNSLOTH_HOME"; then
+    if mkdir -p "$STUDIO_HOME/share" 2>/dev/null; then
+        # Staged then renamed: a reader catching a half-written note would name a truncated
+        # path, and this note licenses deletions. mktemp rather than "$$", as
+        # _uv_cache_root_is_writable states above: a redirection into a predictable name follows
+        # a symlink anyone who can write share/ could have precreated there.
+        if ! _mrn_tmp=$(mktemp "$STUDIO_HOME/share/.unsloth-master-root.XXXXXX" 2>/dev/null); then
+            _mrn_tmp=""
+        fi
+        if [ -n "$_mrn_tmp" ] && printf '%s\n' "$UNSLOTH_HOME" > "$_mrn_tmp" 2>/dev/null; then
+            mv -f "$_mrn_tmp" "$STUDIO_HOME/share/.unsloth-master-root" 2>/dev/null \
+                || rm -f "$_mrn_tmp" 2>/dev/null || true
+        elif [ -n "$_mrn_tmp" ]; then
+            rm -f "$_mrn_tmp" 2>/dev/null || true
+        fi
+        unset _mrn_tmp
+    fi
+fi
+# Clear a note an earlier run left naming the legacy default root, whatever this run was asked
+# to do. The gate above stops new ones, but an install that already has one keeps reading it
+# back on every bare launch -- portable mode on, the Hugging Face hub cache moved off
+# ~/.cache/huggingface -- and no later `unsloth studio update` would ever pass through the write
+# block to correct it, since that block only runs when UNSLOTH_HOME is set again. Narrow on
+# purpose: this is the single value both uninstallers already refuse, so removing it takes
+# nothing any reader was entitled to act on. A note naming any other root is left alone, since
+# an unreadable or unexpected one may simply describe an install this run cannot see.
+if [ -f "$STUDIO_HOME/share/.unsloth-master-root" ]; then
+    _mrn_old=$(head -n 1 "$STUDIO_HOME/share/.unsloth-master-root" 2>/dev/null \
+        | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//') || _mrn_old=""
+    if [ -n "$_mrn_old" ]; then
+        case "$_mrn_old" in
+            "~") _mrn_old="${HOME:-}" ;;
+            "~/"*) _mrn_old="${HOME:-}/${_mrn_old#'~/'}" ;;
+        esac
+        _mrn_old_canon=$(CDPATH= cd -P -- "$_mrn_old" 2>/dev/null && pwd -P) || _mrn_old_canon=""
+        [ -n "$_mrn_old_canon" ] && _mrn_old="$_mrn_old_canon"
+        _mrn_legacy=$(CDPATH= cd -P -- "${HOME:-}/.unsloth" 2>/dev/null && pwd -P) || _mrn_legacy="${HOME:-}/.unsloth"
+        if [ "$_mrn_old" = "$_mrn_legacy" ]; then
+            rm -f "$STUDIO_HOME/share/.unsloth-master-root" 2>/dev/null || true
+        fi
+    fi
+    unset _mrn_old _mrn_old_canon
+fi
 LLAMA_CPP_DIR="$UNSLOTH_HOME/llama.cpp"
 LLAMA_SERVER_BIN="$LLAMA_CPP_DIR/build/bin/llama-server"
 _NEED_LLAMA_SOURCE_BUILD=false
 _LLAMA_CPP_DEGRADED=false
 _LLAMA_CPP_NO_SPACE=false
+_LLAMA_KEEP_PREBUILT_ACTIVE=false
+# The installed GPU prebuilt was kept because the source fallback could only build CPU.
+_LLAMA_KEPT_GPU_PREBUILT=""
+_LLAMA_UPDATE_FAIL_REASON=""
+# A GPU host ended on a CPU-only llama.cpp: named in the footer, not just mid-log (#9255).
+_LLAMA_CPU_ONLY_ON_GPU_HOST=false
 _LLAMA_FORCE_COMPILE="${UNSLOTH_LLAMA_FORCE_COMPILE:-0}"
 _REQUESTED_LLAMA_TAG="${UNSLOTH_LLAMA_TAG:-${_DEFAULT_LLAMA_TAG}}"
 _HOST_SYSTEM="$(uname -s 2>/dev/null || true)"
@@ -2360,6 +3951,187 @@ _has_local_llama_server() {
     [ -x "$1/llama-server" ] || [ -x "$1/build/bin/llama-server" ]
 }
 
+# The backend the installed prebuilt's marker records (cuda/rocm/vulkan/cpu), or nothing.
+# `backend` arrived with #8520; older markers name it in llama_backend or only in the asset.
+# Whether the install marker's $2 names the pinned ref $3: exact, or ($4 = refs) the installer's
+# own alias and commit-prefix matching (a short commit pin matches the recorded full one). A
+# published release tag is a name, not a ref, so it compares exactly.
+_installed_prebuilt_ref_matches() {
+    [ -f "$1/UNSLOTH_PREBUILT_INFO.json" ] || return 1
+    python - "$SCRIPT_DIR/install_llama_prebuilt.py" "$1/UNSLOTH_PREBUILT_INFO.json" "$2" "$3" "${4:-exact}" <<'PY' 2>/dev/null
+import importlib.util
+import json
+import sys
+
+spec = importlib.util.spec_from_file_location("installer", sys.argv[1])
+installer = importlib.util.module_from_spec(spec)
+sys.modules["installer"] = installer  # the module's dataclasses resolve through sys.modules
+spec.loader.exec_module(installer)
+try:
+    marker = json.load(open(sys.argv[2], encoding="utf-8"))
+except Exception:
+    marker = {}
+values = [marker.get(f) for f in sys.argv[3].split(",")] if isinstance(marker, dict) else []
+values = [v.strip() for v in values if isinstance(v, str) and v.strip()]
+same = any(
+    v == sys.argv[4] or (sys.argv[5] == "refs" and installer.refs_match(v, sys.argv[4])) for v in values
+)
+sys.exit(0 if same else 1)
+PY
+}
+
+_installed_prebuilt_backend() {
+    [ -f "$1/UNSLOTH_PREBUILT_INFO.json" ] || return 0
+    python - "$1/UNSLOTH_PREBUILT_INFO.json" <<'PY' 2>/dev/null || true
+import json
+import sys
+
+KNOWN = ("cuda", "rocm", "vulkan", "cpu")
+try:
+    marker = json.load(open(sys.argv[1], encoding="utf-8"))
+except Exception:
+    marker = {}
+if not isinstance(marker, dict):
+    marker = {}
+def _field(key):
+    value = marker.get(key)
+    value = value.strip().lower() if isinstance(value, str) else ""
+    return "rocm" if value == "hip" else value
+
+# A recorded backend is final, known to this script or not; llama_backend was the request.
+answer = _field("backend")
+if not answer and _field("llama_backend") in KNOWN:
+    answer = _field("llama_backend")
+if not answer:
+    asset = marker.get("asset")
+    asset = asset.lower() if isinstance(asset, str) else ""
+    for value in KNOWN:
+        if f"-{value}" in asset or (value == "rocm" and "-hip" in asset):
+            answer = value
+            break
+print(answer)
+PY
+}
+
+# The updater's own completeness check, offline: a marker and an executable do not prove the
+# tree loads. Not --validate-install, which downloads a probe model the failed update cannot.
+# Why the prebuilt update failed, in a few words, from the helper's log.
+_llama_update_fail_reason() {
+    if grep -qiE "429|rate limit" "$1" 2>/dev/null; then
+        echo "GitHub rate limit"
+    elif grep -qiE "timed out|timeout|connection|resol|network|unreachable|50[234]" "$1" 2>/dev/null; then
+        echo "network error"
+    else
+        echo "download failed"
+    fi
+}
+
+_installed_prebuilt_runs() {
+    python "$SCRIPT_DIR/install_llama_prebuilt.py" --check-installed "$1" >/dev/null 2>&1
+}
+
+# An Intel GPU by DRM vendor id, the probe the prebuilt router uses for the Vulkan route.
+_setup_has_intel_gpu() {
+    grep -qs -i "^0x8086" /sys/class/drm/card*/device/vendor 2>/dev/null
+}
+
+# A CPU-only source build must not replace a working GPU prebuilt while the GPU is still
+# there (#9255). Prints the backend to keep; false when there is nothing to keep, the GPU
+# the marker names is gone, or the build was asked for by hand. Vulkan fits any vendor.
+_gpu_prebuilt_to_keep_over_cpu_build() {
+    local install_dir=$1 backend
+    [ "$_LLAMA_FORCE_COMPILE" != "1" ] || return 1
+    [ -z "$_LLAMA_PR" ] || return 1
+    # An explicit version pin asked for that version; the old install satisfies it only
+    # when its marker records the same one.
+    if [ -n "${UNSLOTH_LLAMA_RELEASE_TAG:-}" ]; then
+        _installed_prebuilt_ref_matches "$install_dir" release_tag "$UNSLOTH_LLAMA_RELEASE_TAG" || return 1
+    fi
+    case "${UNSLOTH_LLAMA_TAG:-}" in
+        ""|latest|master) ;;
+        # A commit pin is recorded beside the build tag, in the source ref fields.
+        *) _installed_prebuilt_ref_matches "$install_dir" \
+               tag,requested_source_ref,resolved_source_ref,source_commit "$UNSLOTH_LLAMA_TAG" refs || return 1 ;;
+    esac
+    _has_local_llama_server "$install_dir" || return 1
+    backend="$(_installed_prebuilt_backend "$install_dir")"
+    case "$backend" in
+        cuda) [ "$_setup_nvidia_physical" = true ] || return 1 ;;
+        rocm) [ "$_setup_amd_detected" = true ] || return 1 ;;
+        vulkan)
+            [ "$_setup_amd_detected" = true ] || [ "$_setup_nvidia_physical" = true ] \
+                || _setup_has_intel_gpu || return 1 ;;
+        *) return 1 ;;
+    esac
+    _installed_prebuilt_runs "$install_dir" || return 1
+    printf '%s' "$backend"
+}
+
+# UNSLOTH_LLAMA_KEEP_PREBUILT=1: keep an installed GPU prebuilt already matching the requested tag/fork.
+# The Docker Studio build sets it -- no GPU is visible there, so detection installs a CPU bundle over the baked CUDA one.
+_keep_installed_gpu_prebuilt() {
+    local install_dir=$1 requested_tag=$2 repo=$3 release_pin=${4:-}
+    case "$(printf '%s' "${UNSLOTH_LLAMA_KEEP_PREBUILT:-}" | awk '{$1=$1; print tolower($0)}')" in
+        1|true|yes|on) ;;
+        *) return 1 ;;
+    esac
+    # An explicitly requested backend must still be installed, or fail loudly, never kept over.
+    [ -z "${_explicit_llama_source_backend:-}" ] || return 1
+    _has_local_llama_server "$install_dir" || return 1
+    [ -f "$install_dir/UNSLOTH_PREBUILT_INFO.json" ] || return 1
+    python - "$install_dir/UNSLOTH_PREBUILT_INFO.json" "$requested_tag" "$repo" "$release_pin" <<'PY' 2>/dev/null
+import json
+import re
+import sys
+from pathlib import Path
+
+try:
+    payload = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+except Exception:
+    raise SystemExit(1)
+if not isinstance(payload, dict):
+    raise SystemExit(1)
+
+requested = sys.argv[2].strip()
+repo = sys.argv[3].strip()
+release_pin = sys.argv[4].strip() if len(sys.argv) > 4 else ""
+GPU_TOKENS = ("cuda", "rocm", "hip", "vulkan", "metal")
+# Fork bundles record only "platform"; install_llama_prebuilt.py also records "backend". Accept either.
+backend = str(payload.get("backend") or "").strip().lower()
+platform_kind = str(payload.get("platform") or payload.get("install_kind") or "").strip().lower()
+if payload.get("force_cpu") is True:
+    raise SystemExit(1)
+if backend not in GPU_TOKENS and not any(token in platform_kind for token in GPU_TOKENS):
+    raise SystemExit(1)
+if repo and str(payload.get("published_repo") or "").strip() != repo:
+    raise SystemExit(1)
+
+
+def base_build(tag: str) -> str:
+    """b10840 out of b10840-mix-d5c17a0, so the marker's normalized "tag" still matches."""
+    match = re.match(r"b(\d+)", tag.strip())
+    return f"b{match.group(1)}" if match else tag.strip()
+
+
+recorded = {str(payload.get(key) or "").strip() for key in ("release_tag", "tag", "upstream_tag")}
+recorded.discard("")
+if not recorded:
+    raise SystemExit(1)
+# UNSLOTH_LLAMA_RELEASE_TAG names one published release, so only that exact release_tag can be kept.
+if release_pin and str(payload.get("release_tag") or "").strip() != release_pin:
+    raise SystemExit(1)
+if requested and requested.lower() != "latest":
+    if re.fullmatch(r"b\d+", requested):
+        # A bare base build pin is satisfied by any mix release cut from that build.
+        if requested not in {base_build(t) for t in recorded}:
+            raise SystemExit(1)
+    elif requested not in recorded:
+        # b10840-mix-new and b10840-mix-old share a base build but are different bundles.
+        raise SystemExit(1)
+raise SystemExit(0)
+PY
+}
+
 _LOCAL_LLAMA_CPP_LINKED=false
 if [ -n "${UNSLOTH_LOCAL_LLAMA_CPP_DIR:-}" ]; then
     if [ ! -d "$UNSLOTH_LOCAL_LLAMA_CPP_DIR" ]; then
@@ -2422,8 +4194,8 @@ if [ -n "${UNSLOTH_LOCAL_LLAMA_CPP_DIR:-}" ]; then
         # for a custom UNSLOTH_STUDIO_HOME (the assert would otherwise follow the
         # link into the user's dir and reject it as unowned).
         [ -L "$LLAMA_CPP_DIR" ] && rm -f "$LLAMA_CPP_DIR"
-        if [ "$_STUDIO_HOME_IS_CUSTOM" = true ]; then
-            _assert_studio_owned_or_absent "$LLAMA_CPP_DIR" "llama.cpp install"
+        if [ "$_RUNTIME_ROOT_IS_CUSTOM" = true ]; then
+            _assert_studio_owned_or_absent "$LLAMA_CPP_DIR" "llama.cpp install" "$_RUNTIME_ROOT_IS_CUSTOM"
         fi
         rm -rf "$LLAMA_CPP_DIR" || true
         if [ -e "$LLAMA_CPP_DIR" ]; then
@@ -2448,8 +4220,8 @@ fi
 # swap only reaches its own guards after the whole build, so check here instead.
 # Local-link paths are excluded: they already replaced or reused the tree above.
 if [ "$_LOCAL_LLAMA_CPP_LINKED" != true ]; then
-    if [ "$_STUDIO_HOME_IS_CUSTOM" = true ]; then
-        _assert_studio_owned_or_absent "$LLAMA_CPP_DIR" "llama.cpp install"
+    if [ "$_RUNTIME_ROOT_IS_CUSTOM" = true ]; then
+        _assert_studio_owned_or_absent "$LLAMA_CPP_DIR" "llama.cpp install" "$_RUNTIME_ROOT_IS_CUSTOM"
     fi
     if _studio_dir_unreadable "$LLAMA_CPP_DIR"; then
         _path_access_denied "$LLAMA_CPP_DIR" "llama.cpp install"
@@ -2467,6 +4239,10 @@ elif [ "$_LLAMA_FORCE_COMPILE" = "1" ]; then
     _NEED_LLAMA_SOURCE_BUILD=true
 elif [ "${_SKIP_PREBUILT_INSTALL:-false}" = true ]; then
     substep "prebuilt install skipped -- falling back to source build"
+elif _keep_installed_gpu_prebuilt "$LLAMA_CPP_DIR" "$_REQUESTED_LLAMA_TAG" "$_HELPER_RELEASE_REPO" "${UNSLOTH_LLAMA_RELEASE_TAG:-}"; then
+    step "llama.cpp" "keeping the installed GPU prebuilt (UNSLOTH_LLAMA_KEEP_PREBUILT=1)"
+    print_installed_llama_prebuilt_release "$LLAMA_CPP_DIR"
+    _LLAMA_KEEP_PREBUILT_ACTIVE=true
 else
     substep "installing prebuilt llama.cpp..."
     if [ -d "$LLAMA_CPP_DIR" ]; then
@@ -2475,8 +4251,8 @@ else
     # why: install_llama_prebuilt.py uses os.replace(), which would displace
     # an unrelated $UNSLOTH_STUDIO_HOME/llama.cpp before the source-build
     # ownership check below ever runs.
-    if [ "$_STUDIO_HOME_IS_CUSTOM" = true ]; then
-        _assert_studio_owned_or_absent "$LLAMA_CPP_DIR" "llama.cpp install"
+    if [ "$_RUNTIME_ROOT_IS_CUSTOM" = true ]; then
+        _assert_studio_owned_or_absent "$LLAMA_CPP_DIR" "llama.cpp install" "$_RUNTIME_ROOT_IS_CUSTOM"
     fi
     # The ownership check above misses the default cache; stop before pathlib
     # turns an unreadable one into a traceback.
@@ -2541,10 +4317,15 @@ else
     if [ "$_PREBUILT_STATUS" -eq 0 ]; then
         if grep -Fq "already matches" "$_PREBUILT_LOG"; then
             step "llama.cpp" "prebuilt up to date and validated"
+        elif grep -Fq "keeping the existing complete install" "$_PREBUILT_LOG"; then
+            # Exit 0 can also mean the installer kept the tree already on disk after a
+            # transient failure. "installed and validated" would name a release nothing
+            # fetched.
+            step "llama.cpp" "update unavailable, existing prebuilt kept" "$C_WARN"
         else
             step "llama.cpp" "prebuilt installed and validated"
         fi
-        if [ "$_STUDIO_HOME_IS_CUSTOM" = true ] && [ -d "$LLAMA_CPP_DIR" ]; then
+        if [ "$_RUNTIME_ROOT_IS_CUSTOM" = true ] && [ -d "$LLAMA_CPP_DIR" ]; then
             : > "$LLAMA_CPP_DIR/$_STUDIO_OWNED_MARKER" 2>/dev/null || true
         fi
         print_installed_llama_prebuilt_release "$LLAMA_CPP_DIR"
@@ -2585,6 +4366,7 @@ else
     elif [ "$_PREBUILT_STATUS" -eq 2 ]; then
         step "llama.cpp" "prebuilt install failed" "$C_WARN"
         print_llama_error_log "$_PREBUILT_LOG"
+        _LLAMA_UPDATE_FAIL_REASON="$(_llama_update_fail_reason "$_PREBUILT_LOG")"
         rm -f "$_PREBUILT_LOG"
         if [ -d "$LLAMA_CPP_DIR" ]; then
             substep "prebuilt update failed; existing install restored"
@@ -2592,8 +4374,13 @@ else
         # Exit 2 means no concrete backend was in play: a request the installer
         # could not honour -- named here or recorded in the install marker, which
         # this script cannot see -- exits 5 above instead.
-        substep "falling back to source build"
-        _NEED_LLAMA_SOURCE_BUILD=true
+        # A working GPU prebuilt beats any source build: keep it and retry next time.
+        if _LLAMA_KEPT_GPU_PREBUILT="$(_gpu_prebuilt_to_keep_over_cpu_build "$LLAMA_CPP_DIR")"; then
+            step "llama.cpp" "update failed ($_LLAMA_UPDATE_FAIL_REASON); keeping the installed $_LLAMA_KEPT_GPU_PREBUILT prebuilt, the next update will retry" "$C_WARN"
+        else
+            substep "falling back to source build"
+            _NEED_LLAMA_SOURCE_BUILD=true
+        fi
     else
         step "llama.cpp" "prebuilt helper failed unexpectedly" "$C_ERR"
         print_llama_error_log "$_PREBUILT_LOG"
@@ -2616,10 +4403,14 @@ if [ "$_NEED_LLAMA_SOURCE_BUILD" = true ] && \
    [ -x "$LLAMA_CPP_DIR/build/bin/llama-quantize" ]; then
     step "llama.cpp" "existing source build found; skipping rebuild"
     ln -sf build/bin/llama-quantize "$LLAMA_CPP_DIR/llama-quantize"
-    if [ "$_STUDIO_HOME_IS_CUSTOM" = true ]; then
+    if [ "$_RUNTIME_ROOT_IS_CUSTOM" = true ]; then
         : > "$LLAMA_CPP_DIR/$_STUDIO_OWNED_MARKER" 2>/dev/null || true
     fi
     _NEED_LLAMA_SOURCE_BUILD=false
+fi
+
+if [ -n "$STAGE_ROOT" ] && [ "$_NEED_LLAMA_SOURCE_BUILD" = true ]; then
+    setup_fail 1 "Background staging cannot install system build tools for llama.cpp; retry with the foreground updater."
 fi
 
 # ── 8. WSL: pre-install GGUF build dependencies for fallback source builds ──
@@ -2826,13 +4617,12 @@ else
 
             GPU_BACKEND=""
             NVCC_PATH=""
-            # Gate the CUDA toolkit search on an actually-usable NVIDIA GPU
-            # (_setup_nvidia_usable, computed in the GPU summary block above;
-            # already false when hidden via CUDA_VISIBLE_DEVICES=""/-1).
-            # A CUDA toolkit alone (CPU-only build container, leftover packages)
-            # is not proof of a GPU: building with -DGGML_CUDA=ON there yields a
-            # binary that fails at runtime, so fall through to the CPU build.
-            if [ "$_setup_nvidia_usable" = true ]; then
+            # A CUDA toolkit alone (CPU-only build container, leftover packages) is not
+            # proof of a GPU: -DGGML_CUDA=ON there yields a binary that fails at runtime.
+            # So both callers gate on a real card first.
+            # One search, two callers: the usable-NVIDIA pass below and the masked-NVIDIA
+            # retry after ROCm. Sets NVCC_PATH / GPU_BACKEND, or leaves both untouched.
+            _select_nvcc() {
                 if command -v nvcc &>/dev/null; then
                     NVCC_PATH="$(command -v nvcc)"
                     GPU_BACKEND="cuda"
@@ -2846,6 +4636,10 @@ else
                     export PATH="$(dirname "$NVCC_PATH"):$PATH"
                     GPU_BACKEND="cuda"
                 fi
+            }
+
+            if [ "$_setup_nvidia_usable" = true ]; then
+                _select_nvcc
             fi
 
             # Check for ROCm (AMD) only if CUDA was not already selected, and
@@ -2867,6 +4661,16 @@ else
                     export PATH="$(dirname "$ROCM_HIPCC"):$PATH"
                     GPU_BACKEND="rocm"
                 fi
+            fi
+
+            # A card hidden by CUDA_VISIBLE_DEVICES is still a card, and the CPU-only binary
+            # built without this is activated over the tree for good. It runs after ROCm on
+            # purpose: on a mixed host the visible AMD GPU is the one the user asked for.
+            # Retrying here rather than gating the pass above on "no AMD detected" also
+            # covers AMD detected with no hipcc anywhere, which sent a GPU host to a CPU
+            # build with nvcc sitting right there.
+            if [ -z "$GPU_BACKEND" ] && [ "$_setup_nvidia_physical" = true ]; then
+                _select_nvcc
             fi
 
             _BUILD_DESC="building"
@@ -2928,6 +4732,10 @@ else
                             _raw_caps=$(_setup_run_smi "$_smi_bin" --query-gpu=compute_cap --format=csv,noheader 2>/dev/null || true)
                         fi
                         CUDA_ARCHS="$(_resolve_cuda_archs "$_raw_caps" "${UNSLOTH_LLAMA_CUDA_ARCHS:-}")"
+                        # nvidia-smi absent, stale or answering N/A: the driver library lists the capabilities.
+                        if [ -z "$CUDA_ARCHS" ] && [ "${UNSLOTH_NVIDIA_LIBRARY_PROBE:-1}" != "0" ]; then
+                            CUDA_ARCHS="$(_resolve_cuda_archs "$(_probe_compute_caps)" "")"
+                        fi
 
                         if [ -n "$CUDA_ARCHS" ]; then
                             CMAKE_ARGS="$CMAKE_ARGS -DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=${CUDA_ARCHS}"
@@ -3033,7 +4841,14 @@ else
                 _BUILD_DESC="building (CPU)"
             fi
 
-            substep "$_BUILD_DESC..."
+            # Decided before the compile: a CPU build adds nothing to a kept GPU prebuilt.
+            if [ -z "$GPU_BACKEND" ] && [ "$_IS_MACOS_ARM64" != true ] \
+                    && _LLAMA_KEPT_GPU_PREBUILT="$(_gpu_prebuilt_to_keep_over_cpu_build "$LLAMA_CPP_DIR")"; then
+                step "llama.cpp" "keeping the installed $_LLAMA_KEPT_GPU_PREBUILT prebuilt: the source fallback could only build for the CPU" "$C_WARN"
+                BUILD_OK=false
+            else
+                substep "$_BUILD_DESC..."
+            fi
 
             NCPU=$(_llama_build_jobs)
             verbose_substep "parallel jobs: $NCPU (RAM-capped; UNSLOTH_LLAMA_BUILD_JOBS overrides)"
@@ -3052,7 +4867,7 @@ else
                 fi
             }
 
-            if ! run_quiet_no_exit "cmake llama.cpp" cmake $CMAKE_GENERATOR_ARGS -S "$_BUILD_TMP" -B "$_BUILD_TMP/build" $CMAKE_ARGS; then
+            if [ "$BUILD_OK" = true ] && ! run_quiet_no_exit "cmake llama.cpp" cmake $CMAKE_GENERATOR_ARGS -S "$_BUILD_TMP" -B "$_BUILD_TMP/build" $CMAKE_ARGS; then
                 _FB_LABEL="$(_gpu_fallback_label)"
                 if [ -n "$_FB_LABEL" ]; then
                     _TRY_METAL_CPU_FALLBACK=false
@@ -3137,9 +4952,19 @@ else
             fi
         fi
 
+        # A GPU build that fell back to CPU on the way is caught here, after the fact.
+        if [ "$BUILD_OK" = true ] && [ -z "$GPU_BACKEND" ] && [ "$_TRY_METAL_CPU_FALLBACK" != true ]; then
+            if _LLAMA_KEPT_GPU_PREBUILT="$(_gpu_prebuilt_to_keep_over_cpu_build "$LLAMA_CPP_DIR")"; then
+                step "llama.cpp" "keeping the installed $_LLAMA_KEPT_GPU_PREBUILT prebuilt: the source build fell back to the CPU" "$C_WARN"
+                BUILD_OK=false
+            elif [ "$_setup_nvidia_physical" = true ] || [ "$_setup_amd_detected" = true ] \
+                    || _setup_has_intel_gpu; then
+                _LLAMA_CPU_ONLY_ON_GPU_HOST=true
+            fi
+        fi
         # Swap only after build succeeds -- preserves existing install on failure
         if [ "$BUILD_OK" = true ]; then
-            _assert_studio_owned_or_absent "$LLAMA_CPP_DIR" "llama.cpp install"
+            _assert_studio_owned_or_absent "$LLAMA_CPP_DIR" "llama.cpp install" "$_RUNTIME_ROOT_IS_CUSTOM"
             # || true: without it a raw rm error aborts under errexit to a bare exit
             # code, build stranded. Keep stderr: rm names the exact subpath, we cannot.
             rm -rf "$LLAMA_CPP_DIR" || true
@@ -3174,6 +4999,9 @@ else
         elif [ "$BUILD_OK" = true ]; then
             step "llama.cpp" "binary not found after build" "$C_WARN"
             _LLAMA_CPP_DEGRADED=true
+        elif [ -n "$_LLAMA_KEPT_GPU_PREBUILT" ]; then
+            # Not a failure: the kept prebuilt is a root-level llama-server, not $LLAMA_SERVER_BIN.
+            print_installed_llama_prebuilt_release "$LLAMA_CPP_DIR"
         else
             step "llama.cpp" "build failed" "$C_ERR"
             [ -f "$LLAMA_SERVER_BIN" ] || _LLAMA_CPP_DEGRADED=true
@@ -3190,6 +5018,7 @@ fi  # end _SKIP_GGUF_BUILD check
 # on a full disk: the retry fails the same way and buries the hint.
 if [ "$_LLAMA_CPP_DEGRADED" = true ] \
         && [ "$_LLAMA_CPP_NO_SPACE" != true ] \
+        && [ "$_LLAMA_KEEP_PREBUILT_ACTIVE" != true ] \
         && [ "$_HOST_SYSTEM" = "Linux" ] \
         && { [ "$_HOST_MACHINE" = "aarch64" ] || [ "$_HOST_MACHINE" = "arm64" ]; }; then
     substep "GPU source build unavailable; trying arm64 CPU prebuilt..."
@@ -3205,12 +5034,15 @@ if [ "$_LLAMA_CPP_DEGRADED" = true ] \
     if run_quiet_no_exit "arm64 CPU prebuilt" "${_ARM64_CPU_CMD[@]}"; then
         step "llama.cpp" "arm64 CPU prebuilt installed (GPU build unavailable)" "$C_WARN"
         _LLAMA_CPP_DEGRADED=false
+        if [ "$_setup_nvidia_physical" = true ] || [ "$_setup_amd_detected" = true ]; then
+            _LLAMA_CPU_ONLY_ON_GPU_HOST=true
+        fi
         print_installed_llama_prebuilt_release "$LLAMA_CPP_DIR"
     fi
 fi
 
 if [ ! -L "$LLAMA_CPP_DIR" ] && {
-    [ "$_STUDIO_HOME_IS_CUSTOM" != true ] ||
+    [ "$_RUNTIME_ROOT_IS_CUSTOM" != true ] ||
         [ -f "$LLAMA_CPP_DIR/$_STUDIO_OWNED_MARKER" ] ||
         _studio_owned_adoptable "$LLAMA_CPP_DIR"
 }; then
@@ -3229,8 +5061,8 @@ if [ -n "${WHISPER_SERVER_PATH:-}" ] || [ -n "${UNSLOTH_WHISPER_CPP_PATH:-}" ]; 
 elif [ "${UNSLOTH_SKIP_WHISPER_INSTALL:-0}" = "1" ]; then
     verbose_substep "whisper.cpp: install skipped (UNSLOTH_SKIP_WHISPER_INSTALL=1)"
 else
-    if [ "$_STUDIO_HOME_IS_CUSTOM" = true ]; then
-        _assert_studio_owned_or_absent "$WHISPER_CPP_DIR" "whisper.cpp install"
+    if [ "$_RUNTIME_ROOT_IS_CUSTOM" = true ]; then
+        _assert_studio_owned_or_absent "$WHISPER_CPP_DIR" "whisper.cpp install" "$_RUNTIME_ROOT_IS_CUSTOM"
     fi
     _WHISPER_CMD=(python "$SCRIPT_DIR/install_whisper_prebuilt.py" --install-dir "$WHISPER_CPP_DIR")
     if [ -n "${UNSLOTH_WHISPER_RELEASE_TAG:-}" ]; then
@@ -3254,10 +5086,15 @@ else
     if [ "$_WHISPER_STATUS" -eq 0 ]; then
         if grep -Fq "already matches" "$_WHISPER_LOG"; then
             step "whisper.cpp" "prebuilt up to date"
+        elif grep -Fq "keeping the existing complete install" "$_WHISPER_LOG"; then
+            # Exit 0 can also mean a kept tree after a lookup that could not answer; "prebuilt
+            # installed" would name a release nothing fetched. Same wording and token as llama's
+            # arm.
+            step "whisper.cpp" "update unavailable, existing prebuilt kept" "$C_WARN"
         else
             step "whisper.cpp" "prebuilt installed"
         fi
-        if [ "$_STUDIO_HOME_IS_CUSTOM" = true ] && [ -d "$WHISPER_CPP_DIR" ]; then
+        if [ "$_RUNTIME_ROOT_IS_CUSTOM" = true ] && [ -d "$WHISPER_CPP_DIR" ]; then
             : > "$WHISPER_CPP_DIR/$_STUDIO_OWNED_MARKER" 2>/dev/null || true
         fi
         rm -f "$_WHISPER_LOG"
@@ -3279,10 +5116,11 @@ else
             # a later setup run report "already matches" and skip repairing the
             # prebuilt over the source binary. Drop it before building.
             rm -f "$WHISPER_CPP_DIR/UNSLOTH_WHISPER_PREBUILT_INFO.json" 2>/dev/null || true
-            if run_quiet_no_exit "whisper.cpp source build" sh "$_WHISPER_BUILD"; then
+            if run_quiet_no_exit "whisper.cpp source build" \
+                    env UNSLOTH_HOME="$UNSLOTH_HOME" sh "$_WHISPER_BUILD"; then
                 _WHISPER_RECOVERED=true
                 step "whisper.cpp" "source build installed"
-                if [ "$_STUDIO_HOME_IS_CUSTOM" = true ] && [ -d "$WHISPER_CPP_DIR" ]; then
+                if [ "$_RUNTIME_ROOT_IS_CUSTOM" = true ] && [ -d "$WHISPER_CPP_DIR" ]; then
                     : > "$WHISPER_CPP_DIR/$_STUDIO_OWNED_MARKER" 2>/dev/null || true
                 fi
             else
@@ -3310,6 +5148,17 @@ PY
     fi
 fi
 
+# Named in the footer: every path to a lost GPU exits 0, and a mid-log line is what #9255's reporters scrolled past.
+_print_llama_gpu_notes() {
+    if [ -n "$_LLAMA_KEPT_GPU_PREBUILT" ]; then
+        printf "  ${C_WARN}%-15s%s${C_RST}\n" "llama.cpp" "update failed (${_LLAMA_UPDATE_FAIL_REASON:-the source fallback could only build for the CPU}); the installed $_LLAMA_KEPT_GPU_PREBUILT prebuilt was kept and the next update will retry"
+    fi
+    if [ "$_LLAMA_CPU_ONLY_ON_GPU_HOST" = true ]; then
+        printf "  ${C_WARN}%-15s%s${C_RST}\n" "warning" "GPU acceleration is unavailable: the prebuilt install failed and the source fallback could only build for the CPU (no GPU toolkit, or the GPU build failed above), so GGUF inference will run on the CPU"
+        printf "  ${C_WARN}%-15s%s${C_RST}\n" "" "fix the cause named above, then re-run this installer to restore the GPU"
+    fi
+}
+
 # ── Footer ──
 if [ "$_LLAMA_ONLY" = "1" ]; then
     echo ""
@@ -3320,6 +5169,7 @@ if [ "$_LLAMA_ONLY" = "1" ]; then
         printf "  ${C_TITLE}%s${C_RST}\n" "llama.cpp update finished"
     fi
     printf "  ${C_DIM}%s${C_RST}\n" "$RULE"
+    _print_llama_gpu_notes
 elif [ "$IS_COLAB" = true ]; then
     echo ""
     printf "  ${C_DIM}%s${C_RST}\n" "$RULE"
@@ -3329,6 +5179,7 @@ elif [ "$IS_COLAB" = true ]; then
         printf "  ${C_TITLE}%s${C_RST}\n" "Unsloth Studio Setup Complete"
     fi
     printf "  ${C_DIM}%s${C_RST}\n" "$RULE"
+    _print_llama_gpu_notes
     substep "from colab import start"
     substep "start()"
 else
@@ -3339,6 +5190,7 @@ else
         printf "  ${C_TITLE}%s${C_RST}\n" "Unsloth Studio Installed"
     fi
     printf "  ${C_DIM}%s${C_RST}\n" "$RULE"
+    _print_llama_gpu_notes
     if [ "$_LLAMA_CPP_DEGRADED" = true ]; then
         printf "  ${C_DIM}%-15s${C_WARN}%s${C_RST}\n" "launch" "unsloth studio -p 8888"
     else
@@ -3367,13 +5219,27 @@ if [ "$_LLAMA_CPP_DEGRADED" = true ] && [ "${SKIP_STUDIO_BASE:-0}" = "1" ]; then
     # install.sh already emits in full, so an eighth marker renders "Step 8 of 7" and
     # discards the payload. [TAURI:PROGRESS] becomes install-progress-detail, which
     # InstallingContent renders verbatim, so the user actually reads the limitation.
+    #
+    # DIAG as well: progress detail is cleared by the next install-step and is gone
+    # once the install screen closes, so it cannot answer "why is GGUF missing"
+    # afterwards. record_diag_marker keeps this in the support report.
     case "${UNSLOTH_TAURI_MODE:-0}" in
         1|true)
             printf '[TAURI:PROGRESS] %s\n' \
                 "llama.cpp unavailable; GGUF inference is disabled until 'unsloth studio update' succeeds"
+            printf '[TAURI:DIAG] %s\n' "llama_cpp=unavailable"
             ;;
         *)
             setup_fail 1 "llama.cpp setup did not produce a usable server"
             ;;
+    esac
+fi
+
+# A desktop repair runs update.rs, which sets UNSLOTH_TAURI_UPDATE alone, so the
+# block above is skipped and a degraded repair recorded nothing. update.rs parses
+# [TAURI:DIAG] the same way. Marker only: the update contract stays successful.
+if [ "$_LLAMA_CPP_DEGRADED" = true ] && [ "${SKIP_STUDIO_BASE:-0}" != "1" ]; then
+    case "${UNSLOTH_TAURI_UPDATE:-0}" in
+        1|true) printf '[TAURI:DIAG] %s\n' "llama_cpp=unavailable" ;;
     esac
 fi

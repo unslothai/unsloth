@@ -70,18 +70,52 @@ from core.inference.llama_cpp import (
     _THREAD_OVERRIDE_FLAGS,
     _backfill_usage_from_timings,
     _build_ngram_mod_flags,
+    _build_reasoning_budget_flags,
     _canonicalize_spec_mode,
     _extra_args_set_any_flag,
     _extra_args_set_spec_type,
     _is_mtp_model_name,
     _kv_unified_from_args,
+    _TARGET_KV_EXCLUDES_NEXTN_ARCHS,
+    _arch_has_fast_mla_mtp,
     _mla_mtp_auto_enabled,
     _swa_full_from_args_or_env,
 )
+from core.inference import llama_cpp as mod
+import subprocess as _subprocess
 
 
 def _matches(backend: LlamaCppBackend, **kwargs) -> bool:
     return backend.adopt_load_intent_if_matched(GgufLoadIntent(**kwargs))
+
+
+def _matches_mtp(
+    *args,
+    cache_type_kv = None,
+    chat_template_override = None,
+    extra_args = None,
+    gguf_path = None,
+    hf_variant = "Q4_K_M",
+    is_vision = False,
+    model_identifier = "unsloth/Qwen3.6-27B-MTP-GGUF",
+    n_ctx = 8192,
+    speculative_type = None,
+    **kwargs,
+):
+    """_matches against the MTP model with the request fields every caller below repeats."""
+    return _matches(
+        *args,
+        cache_type_kv = cache_type_kv,
+        chat_template_override = chat_template_override,
+        extra_args = extra_args,
+        gguf_path = gguf_path,
+        hf_variant = hf_variant,
+        is_vision = is_vision,
+        model_identifier = model_identifier,
+        n_ctx = n_ctx,
+        speculative_type = speculative_type,
+        **kwargs,
+    )
 
 
 # Synthetic GGUF helper (mirrors test_gguf_metadata.py).
@@ -110,14 +144,16 @@ def _write_minimal_gguf(
     arch: str,
     nextn: int | None,
     extra_uint32: dict[str, int] | None = None,
+    nextn_first: bool = False,
 ) -> Path:
     """Header-only GGUF with arch + optional nextn_predict_layers."""
     extra_uint32 = dict(extra_uint32 or {})
-    body = _enc_kv_string("general.architecture", arch)
-    kv_count = 1
-    if nextn is not None:
-        body += _enc_kv_uint32(f"{arch}.nextn_predict_layers", nextn)
-        kv_count += 1
+    arch_entry = _enc_kv_string("general.architecture", arch)
+    nextn_entry = (
+        _enc_kv_uint32(f"{arch}.nextn_predict_layers", nextn) if nextn is not None else b""
+    )
+    body = nextn_entry + arch_entry if nextn_first else arch_entry + nextn_entry
+    kv_count = 1 + int(nextn is not None)
     for k, v in extra_uint32.items():
         body += _enc_kv_uint32(k, v)
         kv_count += 1
@@ -260,43 +296,36 @@ def _mtp_backend(**overrides):
     return backend
 
 
+def _ngram_mod_backend(
+    *args,
+    _spec_draft_n_max = None,
+    _speculative_type = "ngram-mod",
+    **kwargs,
+):
+    """_mtp_backend already sitting on ngram-mod with no draft cap."""
+    return _mtp_backend(
+        *args, _spec_draft_n_max = _spec_draft_n_max, _speculative_type = _speculative_type, **kwargs
+    )
+
+
+def _mtp_backend_default(
+    *args,
+    _speculative_type = "default",
+    **kwargs,
+):
+    """_mtp_backend left on the default speculative type."""
+    return _mtp_backend(*args, _speculative_type = _speculative_type, **kwargs)
+
+
 def test_already_in_target_state_matches_when_request_omits_spec_for_mtp_model():
     # Duplicate /load with no spec must match a running draft-mtp backend.
     backend = _mtp_backend()
-    assert (
-        _matches(
-            backend,
-            gguf_path = None,
-            model_identifier = "unsloth/Qwen3.6-27B-MTP-GGUF",
-            hf_variant = "Q4_K_M",
-            n_ctx = 8192,
-            cache_type_kv = None,
-            speculative_type = None,
-            chat_template_override = None,
-            extra_args = None,
-            is_vision = False,
-        )
-        is True
-    )
+    assert _matches_mtp(backend) is True
 
 
 def test_already_in_target_state_matches_when_request_uses_default_for_mtp_model():
     backend = _mtp_backend()
-    assert (
-        _matches(
-            backend,
-            gguf_path = None,
-            model_identifier = "unsloth/Qwen3.6-27B-MTP-GGUF",
-            hf_variant = "Q4_K_M",
-            n_ctx = 8192,
-            cache_type_kv = None,
-            speculative_type = "default",
-            chat_template_override = None,
-            extra_args = None,
-            is_vision = False,
-        )
-        is True
-    )
+    assert _matches_mtp(backend, speculative_type = "default") is True
 
 
 def test_already_in_target_state_auto_request_matches_auto_backend_for_non_mtp_model():
@@ -304,51 +333,26 @@ def test_already_in_target_state_auto_request_matches_auto_backend_for_non_mtp_m
     # of model name. The resolved emission (--spec-default vs draft-mtp) is
     # handled by the load path and reflected in _speculative_type; the
     # short-circuit only cares whether the *intent* changed.
-    backend = _mtp_backend(
-        _model_identifier = "unsloth/Qwen3.6-27B-GGUF",
-        _speculative_type = "default",
-    )
-    assert (
-        _matches(
-            backend,
-            gguf_path = None,
-            model_identifier = "unsloth/Qwen3.6-27B-GGUF",
-            hf_variant = "Q4_K_M",
-            n_ctx = 8192,
-            cache_type_kv = None,
-            speculative_type = None,
-            chat_template_override = None,
-            extra_args = None,
-            is_vision = False,
-        )
-        is True
-    )
+    backend = _mtp_backend_default(_model_identifier = "unsloth/Qwen3.6-27B-GGUF")
+    assert _matches_mtp(backend, model_identifier = "unsloth/Qwen3.6-27B-GGUF") is True
 
 
 def test_forced_dspark_without_a_sidecar_stops_reloading():
     """drafter_not_found covers both "the fetch failed" and "this repo publishes
     none". The second is the permanent state of every repo but one, so retrying
     it relaunched an identical server on every Apply."""
-    backend = _mtp_backend(
+    backend = _mtp_backend_default(
         _model_identifier = "unsloth/Qwen3-7B-GGUF",
-        _speculative_type = "default",
         _requested_spec_mode = "dspark",
         _spec_fallback_reason = "drafter_not_found",
         _spec_drafter_kind = "dspark",
         _dspark_sidecar_absent = True,
     )
     assert (
-        _matches(
+        _matches_mtp(
             backend,
-            gguf_path = None,
             model_identifier = "unsloth/Qwen3-7B-GGUF",
-            hf_variant = "Q4_K_M",
-            n_ctx = 8192,
-            cache_type_kv = None,
             speculative_type = "dspark",
-            chat_template_override = None,
-            extra_args = None,
-            is_vision = False,
         )
         is True
     )
@@ -357,26 +361,18 @@ def test_forced_dspark_without_a_sidecar_stops_reloading():
 def test_forced_dspark_retries_when_the_fetch_failed_rather_than_the_repo():
     """The other half: the repo does publish a sidecar and the download failed, so
     the next Apply should reload and re-run _download_dspark."""
-    backend = _mtp_backend(
+    backend = _mtp_backend_default(
         _model_identifier = "unsloth/DeepSeek-V4-Flash-0731-GGUF",
-        _speculative_type = "default",
         _requested_spec_mode = "dspark",
         _spec_fallback_reason = "drafter_not_found",
         _spec_drafter_kind = "dspark",
         _dspark_sidecar_absent = False,
     )
     assert (
-        _matches(
+        _matches_mtp(
             backend,
-            gguf_path = None,
             model_identifier = "unsloth/DeepSeek-V4-Flash-0731-GGUF",
-            hf_variant = "Q4_K_M",
-            n_ctx = 8192,
-            cache_type_kv = None,
             speculative_type = "dspark",
-            chat_template_override = None,
-            extra_args = None,
-            is_vision = False,
         )
         is False
     )
@@ -384,25 +380,17 @@ def test_forced_dspark_retries_when_the_fetch_failed_rather_than_the_repo():
 
 def test_mtp_without_a_drafter_still_reloads_to_retry_the_fetch():
     """Negative control for the above: the MTP retry must survive."""
-    backend = _mtp_backend(
+    backend = _mtp_backend_default(
         _model_identifier = "unsloth/gemma-4-12b-it-GGUF",
-        _speculative_type = "default",
         _requested_spec_mode = "mtp",
         _spec_fallback_reason = "drafter_not_found",
         _spec_drafter_kind = "mtp",
     )
     assert (
-        _matches(
+        _matches_mtp(
             backend,
-            gguf_path = None,
             model_identifier = "unsloth/gemma-4-12b-it-GGUF",
-            hf_variant = "Q4_K_M",
-            n_ctx = 8192,
-            cache_type_kv = None,
             speculative_type = "mtp",
-            chat_template_override = None,
-            extra_args = None,
-            is_vision = False,
         )
         is False
     )
@@ -420,17 +408,9 @@ def test_auto_resolved_dspark_reuses_its_server_instead_of_reloading(tmp_path):
         _mtp_draft_path = str(sidecar),
     )
     assert (
-        _matches(
+        _matches_mtp(
             backend,
-            gguf_path = None,
             model_identifier = "unsloth/DeepSeek-V4-Flash-0731-GGUF",
-            hf_variant = "Q4_K_M",
-            n_ctx = 8192,
-            cache_type_kv = None,
-            speculative_type = None,
-            chat_template_override = None,
-            extra_args = None,
-            is_vision = False,
             dspark_draft_path = str(sidecar),
             compare_mtp_draft = True,
         )
@@ -440,21 +420,7 @@ def test_auto_resolved_dspark_reuses_its_server_instead_of_reloading(tmp_path):
 
 def test_already_in_target_state_explicit_off_still_mismatches_mtp_backend():
     backend = _mtp_backend()
-    assert (
-        _matches(
-            backend,
-            gguf_path = None,
-            model_identifier = "unsloth/Qwen3.6-27B-MTP-GGUF",
-            hf_variant = "Q4_K_M",
-            n_ctx = 8192,
-            cache_type_kv = None,
-            speculative_type = "off",
-            chat_template_override = None,
-            extra_args = None,
-            is_vision = False,
-        )
-        is False
-    )
+    assert _matches_mtp(backend, speculative_type = "off") is False
 
 
 # User override via extra_args (unsloth run / unsloth studio run).
@@ -590,21 +556,7 @@ def test_already_in_target_state_user_spec_type_override_matches_clean_backend()
         _requested_spec_mode = None,
         _extra_args = ["--spec-type", "none"],
     )
-    assert (
-        _matches(
-            backend,
-            gguf_path = None,
-            model_identifier = "unsloth/Qwen3.6-27B-MTP-GGUF",
-            hf_variant = "Q4_K_M",
-            n_ctx = 8192,
-            cache_type_kv = None,
-            speculative_type = None,
-            chat_template_override = None,
-            extra_args = ["--spec-type", "none"],
-            is_vision = False,
-        )
-        is True
-    )
+    assert _matches_mtp(backend, extra_args = ["--spec-type", "none"]) is True
 
 
 def test_already_in_target_state_local_file_mtp_match(tmp_path):
@@ -617,17 +569,11 @@ def test_already_in_target_state_local_file_mtp_match(tmp_path):
         _hf_variant = None,
     )
     assert (
-        _matches(
+        _matches_mtp(
             backend,
             gguf_path = str(gguf),
             model_identifier = "local-qwen-mtp",
             hf_variant = None,
-            n_ctx = 8192,
-            cache_type_kv = None,
-            speculative_type = None,
-            chat_template_override = None,
-            extra_args = None,
-            is_vision = False,
         )
         is True
     )
@@ -637,40 +583,12 @@ def test_already_in_target_state_vision_mtp_match():
     # llama.cpp #22673: MTP is compatible with mmproj. A vision MTP load
     # with auto/default spec must match a backend already running draft-mtp.
     backend = _mtp_backend(_is_vision = True)
-    assert (
-        _matches(
-            backend,
-            gguf_path = None,
-            model_identifier = "unsloth/Qwen3.6-27B-MTP-GGUF",
-            hf_variant = "Q4_K_M",
-            n_ctx = 8192,
-            cache_type_kv = None,
-            speculative_type = None,
-            chat_template_override = None,
-            extra_args = None,
-            is_vision = True,
-        )
-        is True
-    )
+    assert _matches_mtp(backend, is_vision = True) is True
 
 
 def test_already_in_target_state_vision_mtp_default_matches():
     backend = _mtp_backend(_is_vision = True)
-    assert (
-        _matches(
-            backend,
-            gguf_path = None,
-            model_identifier = "unsloth/Qwen3.6-27B-MTP-GGUF",
-            hf_variant = "Q4_K_M",
-            n_ctx = 8192,
-            cache_type_kv = None,
-            speculative_type = "default",
-            chat_template_override = None,
-            extra_args = None,
-            is_vision = True,
-        )
-        is True
-    )
+    assert _matches_mtp(backend, speculative_type = "default", is_vision = True) is True
 
 
 def test_already_in_target_state_vision_off_matches_vision_backend():
@@ -684,16 +602,10 @@ def test_already_in_target_state_vision_off_matches_vision_backend():
         _requested_spec_mode = "off",
     )
     assert (
-        _matches(
+        _matches_mtp(
             backend,
-            gguf_path = None,
             model_identifier = "unsloth/Qwen3-VL-4B-Instruct-GGUF",
-            hf_variant = "Q4_K_M",
-            n_ctx = 8192,
-            cache_type_kv = None,
             speculative_type = "off",
-            chat_template_override = None,
-            extra_args = None,
             is_vision = True,
         )
         is True
@@ -724,6 +636,19 @@ def test_read_gguf_metadata_captures_nextn_predict_layers(tmp_path, arch, nextn)
     backend = LlamaCppBackend()
     backend._read_gguf_metadata(str(gguf))
     assert backend._nextn_predict_layers == nextn
+
+
+def test_read_gguf_metadata_captures_nextn_before_architecture(tmp_path):
+    gguf = _write_minimal_gguf(
+        tmp_path / "reversed.gguf",
+        arch = "qwen35",
+        nextn = 1,
+        nextn_first = True,
+    )
+    backend = LlamaCppBackend()
+    backend._read_gguf_metadata(str(gguf))
+    assert backend._architecture == "qwen35"
+    assert backend._nextn_predict_layers == 1
 
 
 def test_read_gguf_metadata_leaves_nextn_unset_for_non_mtp_arch(tmp_path):
@@ -970,6 +895,272 @@ def test_probe_server_capabilities_reports_outdated_binary(tmp_path):
 
 
 @_NEEDS_BASH
+def test_probe_server_capabilities_detects_reasoning_budget_flags(tmp_path):
+    fake = _make_fake_llama_server(
+        tmp_path / "llama-server",
+        # Column 0, the way llama-server really prints its flags; the indented lines are
+        # descriptions. The sibling tests below use the same layout.
+        "--reasoning-budget N\n--reasoning-budget-message MESSAGE\n",
+    )
+    _clear_caps_cache()
+    caps = LlamaCppBackend.probe_server_capabilities(str(fake))
+    assert caps["supports_reasoning_budget"] is True
+    assert caps["supports_reasoning_budget_message"] is True
+    assert caps["reasoning_budget_probe_inconclusive"] is False
+
+
+@_NEEDS_BASH
+def test_probe_server_capabilities_reports_missing_reasoning_budget_flags(tmp_path):
+    fake = _make_fake_llama_server(
+        tmp_path / "llama-server",
+        "--gpu-layers N\n",
+    )
+    _clear_caps_cache()
+    caps = LlamaCppBackend.probe_server_capabilities(str(fake))
+    assert caps["supports_reasoning_budget"] is False
+    assert caps["supports_reasoning_budget_message"] is False
+    assert caps["reasoning_budget_probe_inconclusive"] is False
+
+
+@_NEEDS_BASH
+def test_probe_ignores_indented_flag_references_in_descriptions(tmp_path):
+    fake = _make_fake_llama_server(
+        tmp_path / "llama-server",
+        "--gpu-layers N\n  --reasoning-budget is unavailable on this legacy build\n",
+    )
+    _clear_caps_cache()
+    caps = LlamaCppBackend.probe_server_capabilities(str(fake))
+    assert caps["supports_reasoning_budget"] is False
+
+
+def test_reasoning_budget_capability_gate_allows_defaults_on_old_binary(monkeypatch):
+    monkeypatch.setattr(
+        LlamaCppBackend,
+        "probe_server_capabilities",
+        classmethod(
+            lambda cls, binary = None: {
+                "supports_reasoning_budget": False,
+                "supports_reasoning_budget_message": False,
+                "reasoning_budget_probe_inconclusive": False,
+            }
+        ),
+    )
+    caps = LlamaCppBackend.validate_reasoning_budget_capabilities(
+        "/old/llama-server",
+        extra_args = None,
+        reasoning_budget = -1,
+        reasoning_budget_message = "",
+    )
+    assert caps["supports_reasoning_budget"] is False
+    assert _build_reasoning_budget_flags(caps, -1, "") == []
+
+
+def test_reasoning_budget_command_flags_follow_capabilities():
+    caps = {
+        "supports_reasoning_budget": True,
+        "supports_reasoning_budget_message": True,
+    }
+    assert _build_reasoning_budget_flags(caps, -1, "") == []
+    assert _build_reasoning_budget_flags(caps, 64, "  PAD  ") == [
+        "--reasoning-budget",
+        "64",
+        "--reasoning-budget-message",
+        "  PAD  ",
+    ]
+
+
+@_NEEDS_BASH
+def test_reasoning_budget_capability_gate_rejects_legacy_positive_range(tmp_path, monkeypatch):
+    fake = tmp_path / "llama-server"
+    fake.write_text(
+        "#!/usr/bin/env bash\n"
+        'if [[ "$1" == "--reasoning-budget" && "$2" != "0" && "$2" != "-1" ]]; then\n'
+        "  exit 1\n"
+        "fi\n"
+        "printf '%s\\n' '--reasoning-budget N' '--reasoning-budget-message TEXT'\n"
+    )
+    fake.chmod(0o755)
+    _clear_caps_cache()
+
+    with pytest.raises(ValueError, match = "does not accept positive reasoning budgets"):
+        LlamaCppBackend.validate_reasoning_budget_capabilities(
+            str(fake),
+            extra_args = None,
+            reasoning_budget = 512,
+            reasoning_budget_message = "",
+        )
+    # A passthrough flag is still an explicit request, so it gates like the field.
+    with pytest.raises(ValueError, match = "does not accept positive reasoning budgets"):
+        LlamaCppBackend.validate_reasoning_budget_capabilities(
+            str(fake),
+            extra_args = ["--reasoning-budget", "512"],
+            reasoning_budget = -1,
+            reasoning_budget_message = "",
+        )
+    # The env default is not: no Studio control clears it, and llama-server
+    # validates its own env, so failing here is unrecoverable from the UI.
+    monkeypatch.setenv("LLAMA_ARG_THINK_BUDGET", "512")
+    LlamaCppBackend.validate_reasoning_budget_capabilities(
+        str(fake),
+        extra_args = None,
+        reasoning_budget = -1,
+        reasoning_budget_message = "",
+    )
+    monkeypatch.delenv("LLAMA_ARG_THINK_BUDGET")
+    LlamaCppBackend.validate_reasoning_budget_capabilities(
+        str(fake),
+        extra_args = None,
+        reasoning_budget = 0,
+        reasoning_budget_message = "",
+    )
+
+
+@pytest.mark.parametrize(
+    "kwargs,missing_flag",
+    [
+        ({"reasoning_budget": 64}, "--reasoning-budget"),
+        ({"reasoning_budget_message": "Conclude"}, "--reasoning-budget-message"),
+        (
+            {"extra_args": ["--reasoning-budget", "-1"]},
+            "--reasoning-budget",
+        ),
+    ],
+)
+def test_reasoning_budget_capability_gate_rejects_explicit_old_binary(
+    monkeypatch, kwargs, missing_flag
+):
+    monkeypatch.setattr(
+        LlamaCppBackend,
+        "probe_server_capabilities",
+        classmethod(
+            lambda cls, binary = None: {
+                "supports_reasoning_budget": False,
+                "supports_reasoning_budget_message": False,
+                "reasoning_budget_probe_inconclusive": False,
+            }
+        ),
+    )
+    request = {
+        "extra_args": None,
+        "reasoning_budget": -1,
+        "reasoning_budget_message": "",
+        **kwargs,
+    }
+    with pytest.raises(ValueError, match = missing_flag):
+        LlamaCppBackend.validate_reasoning_budget_capabilities("/old/llama-server", **request)
+
+
+def test_reasoning_budget_capability_gate_ignores_env_on_unprobeable_binary(monkeypatch):
+    """An env default must not fail closed on a binary whose --help cannot be read.
+
+    Nothing was configured, so the rejection named a setting the UI shows as default.
+    Effective state still reports the inherited value; only the gate ignores it.
+    """
+    monkeypatch.setattr(
+        LlamaCppBackend,
+        "probe_server_capabilities",
+        classmethod(
+            lambda cls, binary = None: {
+                "supports_reasoning_budget": False,
+                "supports_reasoning_budget_message": False,
+                "reasoning_budget_probe_inconclusive": True,
+            }
+        ),
+    )
+    monkeypatch.setenv("LLAMA_ARG_THINK_BUDGET", "512")
+    monkeypatch.setenv("LLAMA_ARG_THINK_BUDGET_MESSAGE", "Wrap up.")
+    LlamaCppBackend.validate_reasoning_budget_capabilities(
+        "/custom/llama-server",
+        extra_args = None,
+        reasoning_budget = -1,
+        reasoning_budget_message = "",
+    )
+
+
+def test_positive_budget_probe_drops_inherited_llama_env(monkeypatch):
+    """llama-server reads LLAMA_ARG_* before argv, so a stale inherited value fails its own
+    parse and would be recorded as the binary rejecting positive budgets."""
+    import core.inference.llama_cpp as llama_cpp_module
+
+    monkeypatch.setattr(
+        LlamaCppBackend,
+        "probe_server_capabilities",
+        classmethod(
+            lambda cls, binary = None: {
+                "supports_reasoning_budget": True,
+                "supports_reasoning_budget_message": True,
+            }
+        ),
+    )
+    monkeypatch.setattr(
+        LlamaCppBackend,
+        "_llama_server_env_for_binary",
+        staticmethod(
+            lambda binary: {
+                "PATH": "/usr/bin",
+                "LLAMA_ARG_PORT": "junk",
+                "LLAMA_ARG_THINK_BUDGET": "512",
+            }
+        ),
+    )
+    seen = {}
+
+    def _run(cmd, **kwargs):
+        seen["env"] = dict(kwargs["env"])
+        return _types.SimpleNamespace(returncode = 0, stdout = "", stderr = "")
+
+    monkeypatch.setattr(llama_cpp_module.subprocess, "run", _run)
+    caps = LlamaCppBackend.validate_reasoning_budget_capabilities(
+        "/custom/llama-server",
+        extra_args = None,
+        reasoning_budget = 512,
+        reasoning_budget_message = "",
+    )
+    assert caps["supports_reasoning_budget_value:512"] is True
+    assert not [name for name in seen["env"] if name.startswith("LLAMA_ARG_")]
+    assert seen["env"]["PATH"] == "/usr/bin"
+
+
+def test_reasoning_budget_capability_gate_rejects_inconclusive_probe(monkeypatch):
+    monkeypatch.setattr(
+        LlamaCppBackend,
+        "probe_server_capabilities",
+        classmethod(
+            lambda cls, binary = None: {
+                "supports_reasoning_budget": False,
+                "supports_reasoning_budget_message": False,
+                "reasoning_budget_probe_inconclusive": True,
+            }
+        ),
+    )
+    with pytest.raises(ValueError, match = "could not verify"):
+        LlamaCppBackend.validate_reasoning_budget_capabilities(
+            "/custom/llama-server",
+            extra_args = None,
+            reasoning_budget = 64,
+            reasoning_budget_message = "",
+        )
+
+
+def test_explicit_reasoning_budget_rejects_local_diffusion_before_kill(tmp_path, monkeypatch):
+    gguf = tmp_path / "diffusion.gguf"
+    gguf.write_bytes(b"GGUF")
+    backend = LlamaCppBackend()
+    monkeypatch.setattr(backend, "_find_llama_server_binary", lambda *args, **kwargs: "/fake")
+    monkeypatch.setattr(backend, "_gguf_path_is_diffusion", lambda *args, **kwargs: True)
+    monkeypatch.setattr(backend, "_kill_process", lambda: pytest.fail("killed before rejection"))
+
+    with pytest.raises(ValueError, match = "DiffusionGemma"):
+        backend.load_model(
+            GgufLoadIntent(
+                gguf_path = str(gguf),
+                model_identifier = "owner/DiffusionGemma-GGUF",
+                reasoning_budget = 64,
+            )
+        )
+
+
+@_NEEDS_BASH
 def test_probe_server_capabilities_reads_mtp_from_multiline_help(tmp_path):
     # Enum on the indented line: first-line-only probing falsely reported
     # "lacks MTP" (#7302).
@@ -1117,7 +1308,7 @@ def test_probe_detects_post_rename_ngram_mod_flavor(tmp_path):
     assert caps["supports_ngram_mod"] is True
     assert caps["spec_draft_n_max_flag"] == "--spec-draft-n-max"
     # The build's own depth, off the same line: a pass-through --spec-type makes
-    # the child run on this rather than on anything Studio emits, and the Hybrid
+    # the child run on this rather than on anything Unsloth emits, and the Hybrid
     # Mamba rollback reserve scales by it.
     assert caps["spec_draft_n_max_default"] == 16
 
@@ -1212,6 +1403,11 @@ def test_build_ngram_mod_flags_legacy():
     assert flags == ["--spec-ngram-size-n", "24", "--draft-min", "48", "--draft-max", "64"]
 
 
+def test_build_ngram_mod_flags_legacy_chain_omits_shared_draft_range():
+    flags = _build_ngram_mod_flags({"ngram_mod_flavor": "legacy"}, chain_with_mtp = True)
+    assert flags == ["--spec-ngram-size-n", "24"]
+
+
 def test_build_ngram_mod_flags_empty_when_unsupported():
     assert _build_ngram_mod_flags({"ngram_mod_flavor": None}) == []
     assert _build_ngram_mod_flags(None) == []
@@ -1264,24 +1460,20 @@ def _draft_n_max_matches(
     *,
     speculative_type = None,
 ):
-    return _matches(
-        backend,
-        gguf_path = None,
-        model_identifier = "unsloth/Qwen3.6-27B-MTP-GGUF",
-        hf_variant = "Q4_K_M",
-        n_ctx = 8192,
-        cache_type_kv = None,
-        speculative_type = speculative_type,
-        spec_draft_n_max = requested,
-        chat_template_override = None,
-        extra_args = None,
-        is_vision = False,
-    )
+    return _matches_mtp(backend, speculative_type = speculative_type, spec_draft_n_max = requested)
 
 
 def test_already_in_target_state_matches_when_draft_n_max_unset():
-    # None on the request means "platform default"; matches any backend.
+    # Both sides use the platform default.
     assert _draft_n_max_matches(_mtp_backend(_spec_draft_n_max = None), None)
+
+
+def test_already_in_target_state_clears_explicit_draft_n_max_to_default():
+    assert not _draft_n_max_matches(_mtp_backend(_spec_draft_n_max = 4), None)
+
+
+def test_already_in_target_state_sets_draft_n_max_from_default():
+    assert not _draft_n_max_matches(_mtp_backend(_spec_draft_n_max = None), 4)
 
 
 def test_already_in_target_state_matches_when_draft_n_max_equals_backend():
@@ -1290,6 +1482,10 @@ def test_already_in_target_state_matches_when_draft_n_max_equals_backend():
 
 def test_mtp_draft_n_max_mismatch_survives_active_runtime_state():
     assert not _draft_n_max_matches(_mtp_backend(_spec_draft_n_max = 4), 8, speculative_type = "mtp")
+
+
+def test_auto_promoted_mtp_draft_n_max_change_forces_reload():
+    assert not _draft_n_max_matches(_mtp_backend(_spec_draft_n_max = 4), 8)
 
 
 @pytest.mark.parametrize(
@@ -1311,9 +1507,8 @@ def test_mtp_draft_n_max_compares_saved_runtime_fallback_intent(saved_draft_n_ma
 
 
 def test_mtp_draft_n_max_ignored_when_binary_lacks_mtp():
-    backend = _mtp_backend(
+    backend = _mtp_backend_default(
         _requested_spec_mode = "mtp",
-        _speculative_type = "default",
         _spec_draft_n_max = None,
         _spec_fallback_reason = "binary_no_mtp",
     )
@@ -1342,11 +1537,7 @@ def test_partial_offload_stand_down_follows_the_draft_depth(decided_at, requeste
 def test_already_in_target_state_draft_n_max_ignored_when_not_mtp():
     # ngram-mod backend; spec_draft_n_max is MTP-only and must not force
     # a reload against a non-MTP active spec.
-    backend = _mtp_backend(
-        _speculative_type = "ngram-mod",
-        _requested_spec_mode = "ngram",
-        _spec_draft_n_max = None,
-    )
+    backend = _ngram_mod_backend(_requested_spec_mode = "ngram")
     assert _draft_n_max_matches(backend, 8, speculative_type = "ngram-mod")
 
 
@@ -1383,102 +1574,36 @@ def test_already_in_target_state_sub_3b_falls_back_to_ngram_mod_when_supported(m
     # 0.8B MTP request -- load_model would have promoted to ngram-mod (no MTP
     # head); reload check must match a ngram-mod backend.
     _patch_probe(monkeypatch, ngram_supported = True)
-    backend = _mtp_backend(
-        _model_identifier = "unsloth/Qwen3.5-0.8B-MTP-GGUF",
-        _speculative_type = "ngram-mod",
-        _spec_draft_n_max = None,
-    )
-    assert (
-        _matches(
-            backend,
-            gguf_path = None,
-            model_identifier = "unsloth/Qwen3.5-0.8B-MTP-GGUF",
-            hf_variant = "Q4_K_M",
-            n_ctx = 8192,
-            cache_type_kv = None,
-            speculative_type = None,
-            chat_template_override = None,
-            extra_args = None,
-            is_vision = False,
-        )
-        is True
-    )
+    backend = _ngram_mod_backend(_model_identifier = "unsloth/Qwen3.5-0.8B-MTP-GGUF")
+    assert _matches_mtp(backend, model_identifier = "unsloth/Qwen3.5-0.8B-MTP-GGUF") is True
 
 
 def test_already_in_target_state_sub_3b_falls_back_to_off_when_no_ngram(monkeypatch):
     # 0.8B + binary lacks ngram-mod -> fall back to off.
     _patch_probe(monkeypatch, ngram_supported = False)
-    backend = _mtp_backend(
+    backend = _ngram_mod_backend(
         _model_identifier = "unsloth/Qwen3.5-0.8B-MTP-GGUF",
         _speculative_type = None,
-        _spec_draft_n_max = None,
     )
-    assert (
-        _matches(
-            backend,
-            gguf_path = None,
-            model_identifier = "unsloth/Qwen3.5-0.8B-MTP-GGUF",
-            hf_variant = "Q4_K_M",
-            n_ctx = 8192,
-            cache_type_kv = None,
-            speculative_type = None,
-            chat_template_override = None,
-            extra_args = None,
-            is_vision = False,
-        )
-        is True
-    )
+    assert _matches_mtp(backend, model_identifier = "unsloth/Qwen3.5-0.8B-MTP-GGUF") is True
 
 
 def test_already_in_target_state_4b_mtp_request_promotes_as_before(monkeypatch):
     # 4B is above the 3B threshold -> auto-promote still applies.
     _patch_probe(monkeypatch, ngram_supported = True)
-    backend = _mtp_backend(
+    backend = _ngram_mod_backend(
         _model_identifier = "unsloth/Qwen3.5-4B-MTP-GGUF",
         _speculative_type = "draft-mtp",
-        _spec_draft_n_max = None,
     )
-    assert (
-        _matches(
-            backend,
-            gguf_path = None,
-            model_identifier = "unsloth/Qwen3.5-4B-MTP-GGUF",
-            hf_variant = "Q4_K_M",
-            n_ctx = 8192,
-            cache_type_kv = None,
-            speculative_type = None,
-            chat_template_override = None,
-            extra_args = None,
-            is_vision = False,
-        )
-        is True
-    )
+    assert _matches_mtp(backend, model_identifier = "unsloth/Qwen3.5-4B-MTP-GGUF") is True
 
 
 def test_already_in_target_state_2b_falls_back_to_ngram_below_threshold(monkeypatch):
     # 2.0B is below the 3B threshold -> ngram-mod fallback, not draft-mtp.
     # Clean-bench shows 2B regresses with draft-mtp.
     _patch_probe(monkeypatch, ngram_supported = True)
-    backend = _mtp_backend(
-        _model_identifier = "unsloth/Qwen3.5-2B-MTP-GGUF",
-        _speculative_type = "ngram-mod",
-        _spec_draft_n_max = None,
-    )
-    assert (
-        _matches(
-            backend,
-            gguf_path = None,
-            model_identifier = "unsloth/Qwen3.5-2B-MTP-GGUF",
-            hf_variant = "Q4_K_M",
-            n_ctx = 8192,
-            cache_type_kv = None,
-            speculative_type = None,
-            chat_template_override = None,
-            extra_args = None,
-            is_vision = False,
-        )
-        is True
-    )
+    backend = _ngram_mod_backend(_model_identifier = "unsloth/Qwen3.5-2B-MTP-GGUF")
+    assert _matches_mtp(backend, model_identifier = "unsloth/Qwen3.5-2B-MTP-GGUF") is True
 
 
 # usage backfill from timings (Unsloth UI t/s widget fix).
@@ -1540,6 +1665,9 @@ def test_backfill_usage_from_timings_passthrough_when_timings_empty():
         ("draft-mtp", "mtp"),
         ("draft-dspark", "dspark"),
         ("ngram-mod", "ngram"),
+        ("none", "off"),
+        ("disable", "off"),
+        ("disabled", "off"),
         # Comma-chained legacy values (e.g. from persisted state) collapse
         # to the right canonical mode.
         ("ngram-mod,draft-mtp", "mtp+ngram"),
@@ -1687,6 +1815,94 @@ def test_build_speculative_flags_matrix(
         assert "--spec-ngram-mod-n-max" in parsed
     else:
         assert "--spec-ngram-mod-n-match" not in parsed
+
+
+def test_build_speculative_flags_legacy_mtp_ngram_has_one_draft_max(monkeypatch):
+    caps = {
+        "found": True,
+        "mtp_token": "mtp",
+        "supports_mtp": True,
+        "supports_dspark": False,
+        "mtp_probe_inconclusive": False,
+        "ngram_mod_flavor": "legacy",
+        "supports_ngram_mod": True,
+        "spec_draft_n_max_flag": "--draft-max",
+    }
+    monkeypatch.setattr(
+        LlamaCppBackend,
+        "probe_server_capabilities",
+        classmethod(lambda cls, binary = None: caps),
+    )
+    backend = LlamaCppBackend()
+    backend._nextn_predict_layers = 1
+    flags = backend._build_speculative_flags(
+        speculative_type = "mtp+ngram",
+        spec_draft_n_max = 2,
+        extra_args = None,
+        model_identifier = _MTP_MODEL,
+        model_path = None,
+        gpus = True,
+        binary = "/fake/llama-server",
+    )
+    draft_max_positions = [i for i, flag in enumerate(flags) if flag == "--draft-max"]
+    assert len(draft_max_positions) == 1
+    assert flags[draft_max_positions[0] + 1] == "2"
+    assert "--draft-min" not in flags
+
+
+def test_forced_ngram_without_binary_support_skips_spec(monkeypatch):
+    backend = _resolver_backend(monkeypatch, ngram_supported = False)
+    flags = backend._build_speculative_flags(
+        speculative_type = "ngram",
+        spec_draft_n_max = None,
+        extra_args = None,
+        model_identifier = _NON_MTP_MODEL,
+        model_path = None,
+        gpus = True,
+        binary = "/fake/llama-server",
+    )
+    assert "--spec-type" not in flags
+    assert backend.speculative_type is None
+    assert backend.requested_spec_mode == "ngram"
+    # The warning tells the user to update llama.cpp, so the stand-down has to be
+    # recorded or the update cannot reach a resident process: the reload comparator
+    # dedupes an identical request, and the picker never even sends one.
+    assert backend._spec_fallback_reason == "binary_outdated"
+
+
+def test_forced_ngram_stand_down_reloads_once_the_binary_changes(monkeypatch):
+    backend = _resolver_backend(monkeypatch, ngram_supported = False)
+    backend._build_speculative_flags(
+        speculative_type = "ngram",
+        spec_draft_n_max = None,
+        extra_args = None,
+        model_identifier = _NON_MTP_MODEL,
+        model_path = None,
+        gpus = True,
+        binary = "/fake/llama-server",
+    )
+    backend._launch_binary_revision = "before-the-update"
+    # An untouched binary advertises nothing new, so the repair must not fire on every
+    # Apply; only a replaced one reopens the load.
+    monkeypatch.setattr(type(backend), "_binary_changed_since_launch", lambda self: False)
+    assert not backend.spec_binary_fallback_can_retry()
+    monkeypatch.setattr(type(backend), "_binary_changed_since_launch", lambda self: True)
+    assert backend.spec_binary_fallback_can_retry()
+
+
+def test_forced_ngram_with_binary_support_emits_spec(monkeypatch):
+    backend = _resolver_backend(monkeypatch, ngram_supported = True)
+    flags = backend._build_speculative_flags(
+        speculative_type = "ngram",
+        spec_draft_n_max = None,
+        extra_args = None,
+        model_identifier = _NON_MTP_MODEL,
+        model_path = None,
+        gpus = True,
+        binary = "/fake/llama-server",
+    )
+    assert _flags_dict(flags).get("--spec-type") == "ngram-mod"
+    assert backend.speculative_type == "ngram-mod"
 
 
 def test_build_speculative_flags_user_extra_args_owns_spec_type(monkeypatch):
@@ -1842,6 +2058,40 @@ def test_auto_keeps_embedded_mtp(monkeypatch):
     )
     parsed = _flags_dict(flags)
     assert parsed["--spec-type"] == "draft-mtp"
+    assert backend.spec_fallback_reason is None
+
+
+@pytest.mark.parametrize(
+    ("mode", "expected_spec_type"),
+    [
+        ("auto", "draft-mtp"),
+        ("mtp", "draft-mtp"),
+        ("mtp+ngram", "ngram-mod,draft-mtp"),
+    ],
+)
+def test_embedded_mtp_ignores_discovered_root_sidecar(
+    monkeypatch, tmp_path, mode, expected_spec_type
+):
+    backend = _resolver_backend(monkeypatch)
+    backend._nextn_predict_layers = 1
+    sidecar = tmp_path / "mtp-RVN.gguf"
+    sidecar.write_bytes(b"draft")
+
+    flags = backend._build_speculative_flags(
+        speculative_type = mode,
+        spec_draft_n_max = None,
+        extra_args = None,
+        model_identifier = "0bserverx/Qwen3.8-27B-GGUF",
+        model_path = str(tmp_path / "RVN-Q6_K-mtp.gguf"),
+        gpus = True,
+        binary = "/fake/llama-server",
+        mtp_draft_path = str(sidecar),
+        dspark_draft_path = None,
+    )
+
+    parsed = _flags_dict(flags)
+    assert parsed["--spec-type"] == expected_spec_type
+    assert "--model-draft" not in parsed
     assert backend.spec_fallback_reason is None
 
 
@@ -2090,10 +2340,8 @@ def test_auto_non_mla_embedded_mtp_keeps_draft_mtp(monkeypatch):
     assert backend.spec_fallback_reason is None
 
 
-def test_auto_mla_separate_drafter_keeps_mtp(monkeypatch):
-    # Auto + MLA + a separate drafter (mtp_draft_path) -> the drafter exemption
-    # wins over the MLA gate: still draft-mtp (Gemma-style external drafter is
-    # not the slow embedded MLA/DSA path).
+def test_auto_mla_embedded_head_ignores_separate_drafter(monkeypatch):
+    # Embedded NextN metadata wins: -md would replace the head and bypass MLA's gate.
     backend = _mla_resolver_backend(monkeypatch)
     flags = backend._build_speculative_flags(
         speculative_type = "auto",
@@ -2106,9 +2354,10 @@ def test_auto_mla_separate_drafter_keeps_mtp(monkeypatch):
         mtp_draft_path = "/fake/mtp-draft.gguf",
     )
     parsed = _flags_dict(flags)
-    assert parsed.get("--spec-type") == "draft-mtp"
-    assert backend.speculative_type == "draft-mtp"
-    assert backend.spec_fallback_reason is None
+    assert parsed.get("--spec-type") == "ngram-mod"
+    assert "--model-draft" not in parsed
+    assert backend.speculative_type == "ngram-mod"
+    assert backend.spec_fallback_reason == "mla_mtp_disabled"
 
 
 def test_auto_non_mtp_mla_model_unaffected(monkeypatch):
@@ -2236,21 +2485,7 @@ def test_reload_skip_auto_mla_ngram_is_idempotent():
         _speculative_type = "ngram-mod",
         _requested_spec_mode = "auto",
     )
-    assert (
-        _matches(
-            backend,
-            gguf_path = None,
-            model_identifier = _GLM_MLA_MODEL,
-            hf_variant = "Q4_K_M",
-            n_ctx = 8192,
-            cache_type_kv = None,
-            speculative_type = "auto",
-            chat_template_override = None,
-            extra_args = None,
-            is_vision = False,
-        )
-        is True
-    )
+    assert _matches_mtp(backend, model_identifier = _GLM_MLA_MODEL, speculative_type = "auto") is True
 
 
 def test_reload_forced_mtp_bounces_auto_mla():
@@ -2261,21 +2496,61 @@ def test_reload_forced_mtp_bounces_auto_mla():
         _speculative_type = "ngram-mod",
         _requested_spec_mode = "auto",
     )
-    assert (
-        _matches(
-            backend,
-            gguf_path = None,
-            model_identifier = _GLM_MLA_MODEL,
-            hf_variant = "Q4_K_M",
-            n_ctx = 8192,
-            cache_type_kv = None,
-            speculative_type = "mtp",
-            chat_template_override = None,
-            extra_args = None,
-            is_vision = False,
-        )
-        is False
+    assert _matches_mtp(backend, model_identifier = _GLM_MLA_MODEL, speculative_type = "mtp") is False
+
+
+# glm5next matches the MLA gate on metadata, but its MTP is 1.31x faster, not slower.
+_GLM5NEXT_MODEL = "unsloth/GLM-5.3-Flash-GGUF"
+
+
+def test_auto_glm5next_keeps_draft_mtp(monkeypatch):
+    backend = _mla_resolver_backend(monkeypatch)
+    backend._architecture = "glm5next"
+    flags = backend._build_speculative_flags(
+        speculative_type = "auto",
+        spec_draft_n_max = None,
+        extra_args = None,
+        model_identifier = _GLM5NEXT_MODEL,
+        model_path = None,
+        gpus = True,
+        binary = "/fake/llama-server",
     )
+    parsed = _flags_dict(flags)
+    assert parsed.get("--spec-type") == "draft-mtp"
+    assert backend.speculative_type == "draft-mtp"
+    assert backend.spec_fallback_reason != "mla_mtp_disabled"
+
+
+def test_auto_glm5next_hyphenated_arch_still_gated(monkeypatch):
+    # The "glm5-next" port never builds the NextN graph: no spillover.
+    backend = _mla_resolver_backend(monkeypatch)
+    backend._architecture = "glm5-next"
+    flags = backend._build_speculative_flags(
+        speculative_type = "auto",
+        spec_draft_n_max = None,
+        extra_args = None,
+        model_identifier = _GLM5NEXT_MODEL,
+        model_path = None,
+        gpus = True,
+        binary = "/fake/llama-server",
+    )
+    assert _flags_dict(flags).get("--spec-type") != "draft-mtp"
+    assert backend.spec_fallback_reason == "mla_mtp_disabled"
+
+
+def test_arch_has_fast_mla_mtp_is_case_and_space_tolerant():
+    assert _arch_has_fast_mla_mtp("glm5next")
+    assert _arch_has_fast_mla_mtp("  GLM5Next  ")
+    assert not _arch_has_fast_mla_mtp("glm5-next")
+    assert not _arch_has_fast_mla_mtp("glm-dsa")
+    assert not _arch_has_fast_mla_mtp(None)
+    assert not _arch_has_fast_mla_mtp("")
+
+
+def test_glm5next_target_kv_excludes_nextn():
+    # Both ports filter il < n_layer() && !is_recr(il), so blk.45 gets no target KV.
+    assert "glm5next" in _TARGET_KV_EXCLUDES_NEXTN_ARCHS
+    assert "glm5-next" in _TARGET_KV_EXCLUDES_NEXTN_ARCHS
 
 
 # ── Full named-repo resolver matrix (the shipping Unsloth families) ─────
@@ -2833,9 +3108,8 @@ def test_already_in_target_state_settles_a_dflash_listing_that_never_answered():
     _dflash_sidecar_absent stays False. The drafter_not_found arm read that as "worth
     another go" and relaunched a healthy drafter-free server on every Apply. DFlash
     asks through _dflash_retry_needed instead, which a permanent error never sets."""
-    backend = _mtp_backend(
+    backend = _mtp_backend_default(
         _model_identifier = "unsloth/Muse-Glimmer-30B-GGUF",
-        _speculative_type = "default",
         _gguf_path = None,
         _spec_fallback_reason = "drafter_not_found",
         _spec_drafter_kind = "dflash",
@@ -2848,9 +3122,8 @@ def test_already_in_target_state_settles_a_dflash_listing_that_never_answered():
 def test_already_in_target_state_reloads_after_a_dflash_fetch_that_dropped():
     """Under Auto a lost sidecar leaves no fallback reason at all -- the promotion
     never ran -- so the flag is the only thing that can ask for one more attempt."""
-    backend = _mtp_backend(
+    backend = _mtp_backend_default(
         _model_identifier = "unsloth/Muse-Glimmer-30B-GGUF",
-        _speculative_type = "default",
         _gguf_path = None,
     )
     assert _matches(backend, **_binary_fallback_kwargs()) is True
@@ -2899,11 +3172,51 @@ def test_probe_reports_no_draft_ngl_flag_when_the_build_has_neither(tmp_path):
 
 
 @_NEEDS_BASH
+def test_a_code_integrity_block_escalates_the_retry_window(tmp_path, monkeypatch):
+    """Only a confirmed block earns the doubling; a merely loaded machine that
+    times out a few probes and recovers must not inherit that wait. It arrives
+    the way Windows delivers it: subprocess.run returns the NTSTATUS from a
+    loader-killed process rather than raising.
+    """
+    import types as _types
+
+    fake = _make_fake_llama_server(
+        tmp_path / "llama-server",
+        "--spec-type none,draft-mtp,ngram-mod",
+    )
+    _clear_caps_cache()
+    now = [100.0]
+    calls = []
+
+    def _run(cmd, **kwargs):
+        calls.append(cmd)
+        # The Smart App Control refusal, as an exit status.
+        return _types.SimpleNamespace(stdout = "", stderr = "", returncode = 0xC0E90002)
+
+    monkeypatch.setattr("core.inference.llama_cpp.subprocess.run", _run)
+    monkeypatch.setattr("core.inference.llama_cpp.time.monotonic", lambda: now[0])
+
+    first = LlamaCppBackend.probe_server_capabilities(str(fake))
+    assert first["mtp_probe_inconclusive"] is True
+    assert len(calls) == 1
+
+    now[0] += LlamaCppBackend._CAPABILITY_PROBE_RETRY_SECONDS + 1
+    LlamaCppBackend.probe_server_capabilities(str(fake))
+    assert len(calls) == 2
+
+    now[0] += LlamaCppBackend._CAPABILITY_PROBE_RETRY_SECONDS + 1
+    LlamaCppBackend.probe_server_capabilities(str(fake))
+    assert len(calls) == 2, "a confirmed block must not be re-probed on the flat window"
+
+    now[0] += 2 * LlamaCppBackend._CAPABILITY_PROBE_RETRY_SECONDS + 1
+    LlamaCppBackend.probe_server_capabilities(str(fake))
+    assert len(calls) == 3
+
+
+@_NEEDS_BASH
 def test_inconclusive_probe_retries_after_a_bounded_cache_window(tmp_path, monkeypatch):
     """A transient timeout may not be pinned for the whole process, while a
     persistent failure may not make every capability caller wait again (#8317)."""
-    import subprocess as _subprocess
-
     fake = _make_fake_llama_server(
         tmp_path / "llama-server",
         "--spec-type none,draft-mtp,ngram-mod",
@@ -2943,8 +3256,7 @@ def test_inconclusive_probe_retries_after_a_bounded_cache_window(tmp_path, monke
     assert LlamaCppBackend.probe_server_capabilities(str(fake)) is retried
     assert len(calls) == 2
 
-    # Once a later retry succeeds, the result returns to the normal long-lived
-    # cache.
+    # A timeout is TRANSIENT: the window stays flat, only a block doubles.
     now[0] += LlamaCppBackend._CAPABILITY_PROBE_RETRY_SECONDS + 1
     recovered = LlamaCppBackend.probe_server_capabilities(str(fake))
     assert recovered["mtp_probe_inconclusive"] is False
@@ -2957,7 +3269,6 @@ def test_inconclusive_probe_retries_after_a_bounded_cache_window(tmp_path, monke
 @_NEEDS_BASH
 def test_concurrent_timeout_cannot_overwrite_a_successful_probe(tmp_path, monkeypatch):
     """A late, lower-confidence result may not replace a conclusive result."""
-    import subprocess as _subprocess
     import threading as _threading
 
     fake = _make_fake_llama_server(
@@ -3046,8 +3357,6 @@ def test_a_hanging_binary_is_probed_once_per_model_load(tmp_path, monkeypatch):
     """The cost half of #8317, stated as the caller sees it. One model load makes seven
     capability calls; a binary that hangs for a permanent reason must pay the --help
     timeout once across all of them, not once each."""
-    import subprocess as _subprocess
-
     fake = _make_fake_llama_server(tmp_path / "llama-server", "--spec-type none,draft-mtp")
     _clear_caps_cache()
     now = [100.0]
@@ -3071,7 +3380,7 @@ def test_a_hanging_binary_is_probed_once_per_model_load(tmp_path, monkeypatch):
 def test_a_missing_binary_is_not_cached_so_it_is_seen_as_soon_as_it_lands(tmp_path):
     """The found:False early return sits above the cache and costs a stat rather than a
     subprocess, so it must stay uncached: an install finishing mid-session has to be
-    picked up without a Studio restart."""
+    picked up without an Unsloth restart."""
     binary = tmp_path / "llama-server"
     _clear_caps_cache()
 
@@ -3088,8 +3397,7 @@ def test_a_missing_binary_is_not_cached_so_it_is_seen_as_soon_as_it_lands(tmp_pa
 def _inconclusive_fallback_backend():
     """A backend that asked for MTP, got an inconclusive probe, and launched without
     speculative decoding. _spec_fallback_reason stays None so the UI banner is suppressed."""
-    return _mtp_backend(
-        _speculative_type = "default",
+    return _mtp_backend_default(
         _spec_fallback_reason = None,
         _capability_probe_inconclusive = True,
         _gguf_path = None,
@@ -3121,26 +3429,29 @@ def _stub_caps(monkeypatch, **caps):
     )
 
 
+def _stub_found_caps(
+    *args,
+    found = True,
+    mtp_probe_inconclusive = False,
+    **kwargs,
+):
+    """_stub_caps for a binary whose probe found a conclusive answer."""
+    return _stub_caps(*args, found = found, mtp_probe_inconclusive = mtp_probe_inconclusive, **kwargs)
+
+
 def test_apply_reloads_once_an_inconclusive_probe_starts_answering(monkeypatch):
     # The retry window is worth nothing if Apply dedupes against the fallback: nothing
     # re-probes, so MTP stays off for the life of the process, which is the symptom the
     # window exists to end (#8317).
-    _stub_caps(
-        monkeypatch,
-        found = True,
-        mtp_token = "draft-mtp",
-        supports_mtp = True,
-        mtp_probe_inconclusive = False,
-    )
+    _stub_found_caps(monkeypatch, mtp_token = "draft-mtp", supports_mtp = True)
     assert _matches(_inconclusive_fallback_backend(), **_same_settings_apply()) is False
 
 
 def test_apply_still_dedupes_while_the_probe_keeps_hanging(monkeypatch):
     # A binary that hangs for a permanent reason must not relaunch an identical server on
     # every Apply. Only a probe that has actually turned conclusive earns the reload.
-    _stub_caps(
+    _stub_found_caps(
         monkeypatch,
-        found = True,
         mtp_token = None,
         supports_mtp = False,
         mtp_probe_inconclusive = True,
@@ -3152,13 +3463,7 @@ def test_apply_reloads_once_even_when_the_build_turns_out_to_have_no_mtp(monkeyp
     # Conclusive-and-negative still earns exactly one reload: the degradation has to be
     # re-derived from a real answer rather than from a probe that never returned. That
     # reload records the conclusive probe, clearing the flag, so it does not loop.
-    _stub_caps(
-        monkeypatch,
-        found = True,
-        mtp_token = None,
-        supports_mtp = False,
-        mtp_probe_inconclusive = False,
-    )
+    _stub_found_caps(monkeypatch, mtp_token = None, supports_mtp = False)
     assert _matches(_inconclusive_fallback_backend(), **_same_settings_apply()) is False
     # Cleared flag (what the reload leaves behind) dedupes from then on.
     settled = _mtp_backend(_speculative_type = "default", _gguf_path = None)
@@ -3171,16 +3476,13 @@ def test_a_slot_clamp_from_an_inconclusive_probe_is_also_retried(monkeypatch):
     # 1 while _requested_n_parallel keeps the ASK. The two then compare equal and Apply
     # would never restore the slots once the probe recovers. No speculative decoding is
     # involved, so the spec-only version of this guard missed it entirely.
-    _stub_caps(
+    _stub_found_caps(
         monkeypatch,
-        found = True,
         mtp_token = "draft-mtp",
         supports_mtp = True,
         supports_kv_unified = True,
-        mtp_probe_inconclusive = False,
     )
-    clamped = _mtp_backend(
-        _speculative_type = "default",
+    clamped = _mtp_backend_default(
         _capability_probe_inconclusive = True,
         _requested_n_parallel = 4,
         _gguf_path = None,
@@ -3199,11 +3501,6 @@ def test_the_probe_marker_is_committed_only_once_the_runtime_is_replaced():
     degraded, or set it on a diffusion runner that would then be torn down and reloaded
     for no reason. Checked structurally because load_model is not unit-callable.
     """
-    import ast
-    import inspect
-
-    from core.inference import llama_cpp as mod
-
     source = inspect.getsource(mod)
     tree = ast.parse(source)
     load_model = next(
@@ -3241,15 +3538,8 @@ def test_a_diffusion_runtime_is_never_reloaded_by_the_capability_recovery(monkey
     # A diffusion runner consumes no llama-server capability, so it cannot be degraded by
     # one. A marker left over from an earlier llama-server load must not make every
     # otherwise identical diffusion Apply tear it down and start it again.
-    _stub_caps(
-        monkeypatch,
-        found = True,
-        mtp_token = "draft-mtp",
-        supports_mtp = True,
-        mtp_probe_inconclusive = False,
-    )
-    diffusion = _mtp_backend(
-        _speculative_type = "default",
+    _stub_found_caps(monkeypatch, mtp_token = "draft-mtp", supports_mtp = True)
+    diffusion = _mtp_backend_default(
         _capability_probe_inconclusive = True,
         _is_diffusion = True,
         _gguf_path = None,
@@ -3271,10 +3561,6 @@ def test_a_diffusion_load_never_pays_for_the_capability_probe():
     # The probe is read at the snapshot commit, which a diffusion load returns long
     # before. Reading it beside the capability gates instead made an independent
     # diffusion launch wait out the full --help timeout this change exists to bound.
-    import ast
-    import inspect
-
-    from core.inference import llama_cpp as mod
 
     load_model = next(
         node
@@ -3345,11 +3631,6 @@ def test_the_marker_comes_from_the_launch_snapshot_not_a_probe_after_startup():
     for good -- the original bug, reintroduced. Checked structurally because load_model is
     not unit-callable.
     """
-    import ast
-    import inspect
-
-    from core.inference import llama_cpp as mod
-
     load_model = next(
         node
         for node in ast.walk(ast.parse(inspect.getsource(mod)))
@@ -3400,11 +3681,6 @@ def test_a_later_successful_probe_cannot_erase_an_earlier_degrading_one():
 
     Exercised on the accumulator itself: driving load_model would need a real download.
     """
-    import ast
-    import inspect
-
-    from core.inference import llama_cpp as mod
-
     load_model = next(
         node
         for node in ast.walk(ast.parse(inspect.getsource(mod)))
@@ -3472,11 +3748,6 @@ def test_the_dspark_pre_download_gate_latches_into_the_launch_accumulator():
     launch probe can come back conclusive and the load is remembered as a good one --
     every identical Apply after it then dedupes against a server with no drafter.
     """
-    import ast
-    import inspect
-
-    from core.inference import llama_cpp as mod
-
     tree = ast.parse(inspect.getsource(mod))
     download = next(
         node
@@ -3522,8 +3793,6 @@ def test_the_dspark_gate_uses_the_probe_it_is_given():
     drives the skip. A default is kept so the direct callers in the tests and the CLI
     keep working unchanged.
     """
-    import inspect
-
     from core.inference.llama_cpp import LlamaCppBackend
 
     signature = inspect.signature(LlamaCppBackend._download_dspark)
@@ -3548,3 +3817,129 @@ def test_the_dspark_gate_uses_the_probe_it_is_given():
     # No sidecar on disk and an incapable binary: the fetch is skipped, which is exactly
     # the degraded launch the accumulator has to remember.
     assert result is None
+
+
+def _write_head_only_drafter(path, *, with_token_embd: bool):
+    """A real GGUF the predicate will judge, so these exercise the actual verdict."""
+    import numpy as np
+    from gguf import GGUFWriter
+
+    writer = GGUFWriter(str(path), "qwen35")
+    names = ["output.weight", "blk.64.nextn.eh_proj.weight"]
+    if with_token_embd:
+        names.insert(0, "token_embd.weight")
+    for name in names:
+        writer.add_tensor(name, np.zeros((2, 2), dtype = np.float32))
+    writer.write_header_to_file()
+    writer.write_kv_data_to_file()
+    writer.write_tensors_to_file()
+    writer.close()
+    return path
+
+
+def test_repairing_an_unloadable_drafter_in_place_reloads(tmp_path):
+    """Apply after a repair must reload, or speculative decoding stays off for good.
+
+    The dedupe counts a deliberately dropped drafter as launched, comparing resolved
+    PATHS. Replace the rejected sidecar with a self-contained head at the same path and
+    a path-only comparison still says "already loaded", so the drafter-free server is
+    kept and nothing re-runs the header check.
+    """
+    sidecar = _write_head_only_drafter(tmp_path / "mtp-model.gguf", with_token_embd = False)
+    backend = _mtp_backend(
+        _speculative_type = "ngram-mod",
+        _requested_spec_mode = "auto",
+        _spec_fallback_reason = "drafter_unloadable",
+        _spec_drafter_kind = "mtp",
+        _mtp_draft_path = None,
+        _mtp_draft_suppressed_path = str(sidecar),
+        _mtp_draft_suppressed_reason = "unloadable",
+    )
+    # Still head-only: re-asking would drop it again, so a reload would buy nothing.
+    assert _matches_mtp(backend, mtp_draft_path = str(sidecar), compare_mtp_draft = True) is True
+
+    _write_head_only_drafter(tmp_path / "mtp-model.gguf", with_token_embd = True)
+    assert _matches_mtp(backend, mtp_draft_path = str(sidecar), compare_mtp_draft = True) is False
+
+
+def test_repairing_a_paravirtually_suppressed_drafter_does_not_reload(tmp_path):
+    """The negative: that drop is a property of the BUILD, not of the file's contents.
+
+    A drafter suppressed because the probe offered no draft-layer flag would be
+    suppressed again byte-for-byte, so re-asking the header question there would tear
+    down a healthy server for nothing.
+    """
+    sidecar = _write_head_only_drafter(tmp_path / "mtp-model.gguf", with_token_embd = True)
+    backend = _mtp_backend(
+        _speculative_type = "ngram-mod",
+        _requested_spec_mode = "auto",
+        _spec_fallback_reason = "drafter_not_found",
+        _spec_drafter_kind = "mtp",
+        _mtp_draft_path = None,
+        _mtp_draft_suppressed_path = str(sidecar),
+        _mtp_draft_suppressed_reason = "paravirtual",
+    )
+    assert _matches_mtp(backend, mtp_draft_path = str(sidecar), compare_mtp_draft = True) is True
+
+
+def test_a_drafter_dropped_as_unloadable_does_not_reload_to_refetch_it():
+    """Refetching returns the same file, so the retry rule must stand down."""
+    sidecar = "/cache/snapshots/abc/mtp-gemma-4-12b-it.gguf"
+    backend = _mtp_backend(
+        _model_identifier = "unsloth/gemma-4-12b-it-GGUF",
+        _speculative_type = "ngram-mod",
+        _requested_spec_mode = "auto",
+        _spec_fallback_reason = "drafter_not_found",
+        _spec_drafter_kind = "mtp",
+        _mtp_draft_path = None,
+        _mtp_draft_suppressed_path = sidecar,
+    )
+    assert (
+        _matches(
+            backend,
+            gguf_path = None,
+            model_identifier = "unsloth/gemma-4-12b-it-GGUF",
+            hf_variant = "Q4_K_M",
+            n_ctx = 8192,
+            cache_type_kv = None,
+            speculative_type = "auto",
+            chat_template_override = None,
+            extra_args = None,
+            is_vision = False,
+            mtp_draft_path = sidecar,
+            compare_mtp_draft = True,
+        )
+        is True
+    )
+
+
+def test_positive_budget_probe_uses_resolved_launch_path(monkeypatch):
+    import core.inference.llama_cpp as llama_cpp_module
+
+    monkeypatch.setattr(
+        LlamaCppBackend,
+        "probe_server_capabilities",
+        classmethod(lambda cls, binary: {"supports_reasoning_budget": True}),
+    )
+    monkeypatch.setattr(
+        LlamaCppBackend,
+        "_exec_path_for_launch",
+        staticmethod(lambda binary: "/runtime/bin/llama-server"),
+    )
+    monkeypatch.setattr(
+        LlamaCppBackend,
+        "_llama_server_env_for_binary",
+        staticmethod(lambda binary: {}),
+    )
+
+    def run(cmd, **kwargs):
+        return _types.SimpleNamespace(returncode = 0 if cmd[0] == "/runtime/bin/llama-server" else 1)
+
+    monkeypatch.setattr(llama_cpp_module.subprocess, "run", run)
+    caps = LlamaCppBackend.validate_reasoning_budget_capabilities(
+        "/runtime/llama-server",
+        extra_args = None,
+        reasoning_budget = 32,
+        reasoning_budget_message = "",
+    )
+    assert caps["supports_reasoning_budget_value:32"] is True

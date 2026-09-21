@@ -7,6 +7,7 @@ hides the failure the user opened the log to read."""
 
 from __future__ import annotations
 
+import re
 import sys
 from pathlib import Path
 
@@ -60,7 +61,7 @@ SECRETS = [
     # credential after it was never looked at.
     ("Authorization: Basic dXNlcm5hbWU6c3VwZXJzZWNyZXQ=", "dXNlcm5hbWU6c3VwZXJzZWNyZXQ="),
     ("headers={'authorization': 'Basic dXNlcjpwdw=='}", "dXNlcjpwdw=="),
-    # Studio's UI session cookie gates these very endpoints.
+    # Unsloth's UI session cookie gates these very endpoints.
     ("Cookie: unsloth_session=8f3c9d1ab77e4f0a9c2b3d4e", "8f3c9d1ab77e4f0a9c2b3d4e"),
     ("set-cookie: refresh=8f3c9d1ab77e4f0a9c2b; HttpOnly", "8f3c9d1ab77e4f0a9c2b"),
     ("CI token glpat-ABCDEFGHIJKLMNOPQRST", "glpat-ABCDEFGHIJKLMNOPQRST"),
@@ -99,7 +100,7 @@ KEEP = [
     '  File "/opt/venv/lib/python3.11/site-packages/torch/nn/modules/module.py", line 1518 in _call_impl',
     "llama-server --port 8080 --n-gpu-layers 99 --ctx-size 32768",
     '{"timestamp":"2026-08-13T09:00:00Z","level":"error","event":"llama_start_failed"}',
-    # Words a credential rule is tempted by, as Studio actually writes them.
+    # Words a credential rule is tempted by, as Unsloth actually writes them.
     # Blanking any of these hides the failure being diagnosed.
     "provider rejected the request: Bearer credentials expired",
     "Authorization header missing, expected Bearer authentication",
@@ -289,3 +290,201 @@ def test_studio_s3_secret_key_spellings_are_masked():
 def test_talking_about_the_s3_key_without_a_value_survives():
     line = "secret_access_key is required when use_iam_role is false"
     assert redact_log_text(line) == line
+
+
+# The lazy alternation this file's subject replaced. Kept verbatim as the oracle:
+# the change is a performance fix, so the contract is that _strip_ansi returns
+# exactly what this returns, on every input.
+_LAZY_ANSI_RE = re.compile(
+    r"\x1b\][\s\S]*?(?:\x07|\x1b\\|\x9c)"
+    r"|\x1b[P^_X][\s\S]*?(?:\x1b\\|\x9c)"
+    r"|\x1b\[[0-?]*[ -/]*[@-~]"
+    r"|\x1b[@-Z\\-_]"
+    r"|\x9b[0-?]*[ -/]*[@-~]"
+    r"|[\x9d\x90\x98\x9e\x9f][\s\S]*?(?:\x07|\x9c)"
+)
+
+_ANSI_SHAPES = [
+    # Well formed, every introducer and every terminator.
+    "\x1b[36m",
+    "\x1b[0m",
+    "\x1b[38;5;196m",
+    "\x1b[?25l",
+    "\x1b[2K",
+    "\x9b0m",
+    "\x1b]0;title\x07",
+    "\x1b]0;title\x1b\\",
+    "\x1b]0;title\x9c",
+    "\x9d0;title\x9c",
+    "\x1bPx\x1b\\",
+    "\x1b^x\x9c",
+    "\x1b_x\x1b\\",
+    "\x1bXx\x9c",
+    "\x90x\x07",
+    "\x98x\x9c",
+    "\x9ex\x07",
+    "\x9fx\x9c",
+    "\x1bM",
+    "\x1b7",
+    "\x1b(B",
+    # Truncated: an introducer whose sequence never terminates.
+    "\x1b]",
+    "\x1b]cut",
+    "\x1bP",
+    "\x1bPcut",
+    "\x1b^cut",
+    "\x1b_cut",
+    "\x1bXcut",
+    "\x9d",
+    "\x9dcut",
+    "\x90cut",
+    "\x98cut",
+    "\x9ecut",
+    "\x9fcut",
+    "\x1b",
+    "\x1b[",
+    "\x1b[38;5",
+    "\x9b",
+    "\x9b38;5",
+    "\x1b(",
+    # Cut, then a well formed sequence later in the same record.
+    "\x1b]cut\x1b]t\x07",
+    "\x9dcut\x9dt\x07",
+    "\x1bPcut\x1bPt\x1b\\",
+    "\x1b]cut\x1b[36m",
+    "\x1b]cut\x9b36m",
+    "\x1b\x1b[0m",
+    # Stray terminators with no introducer, and interleaved introducers.
+    "\x07",
+    "\x9c",
+    "\x1b\\",
+    "\x1b]\x9d\x07",
+    "\x9d\x1b]\x07",
+    "\x1b]\x1b]\x1b]\x07",
+]
+
+
+def test_the_strip_is_unchanged_by_the_rewrite():
+    """The contract. The lazy alternation was replaced because it backtracked,
+    not because its answers were wrong, so the walk has to agree with it
+    everywhere: same alternatives, same order, same lazy shortest match, same
+    fallthrough when a control string never terminates.
+
+    A redactor is the wrong place to smuggle a behaviour change into a
+    performance fix, and every way of "improving" the truncated cases that was
+    tried here moved a leak rather than removing one: consuming an aborted body
+    ate the separator out of "api_key<cut>=value", and dropping a lone escape
+    welded "prefix" onto "api_key".
+    """
+    from utils.log_redaction import _strip_ansi
+
+    lines = [
+        "api_key=abcdef123456",
+        "Authorization: Bearer abcdef123456",
+        "Cookie: session=abcdef123456",
+        "?token=abcdef123456&next=1",
+        "--password hunter2secret",
+        "INFO loading unsloth/Llama-3.2-1B revision 8f3a2b1c in 13ms",
+        "n_tokens = 4096, token_id=128009",
+    ]
+    checked = 0
+    for shape in _ANSI_SHAPES:
+        for line in lines:
+            middle = len(line) // 2
+            for text in (
+                shape + line,
+                line + shape,
+                shape + line + shape,
+                line[:middle] + shape + line[middle:],
+            ):
+                checked += 1
+                assert _strip_ansi(text) == _LAZY_ANSI_RE.sub("", text), text
+    assert checked > 1000
+
+
+def test_the_strip_is_unchanged_on_random_records():
+    """The shapes above are the ones someone thought of. This covers the ones
+    nobody did, which is where every finding on this change actually came
+    from."""
+    import random
+
+    from utils.log_redaction import _strip_ansi
+
+    rng = random.Random(20260913)
+    alphabet = (
+        list("\x1b\x07\x9c\x9b\x9d\x9e\x9f\x90\x98") * 4
+        + list("[]P^_X0123456789;?m\\ ") * 2
+        + list("abcdefghijklmnopqrstuvwxyzABCDEF =:\"'-_/.&?\n\r")
+    )
+    for _ in range(20000):
+        text = "".join(rng.choice(alphabet) for _ in range(rng.randint(1, 80)))
+        assert _strip_ansi(text) == _LAZY_ANSI_RE.sub("", text), repr(text)
+
+
+def test_an_unterminated_ansi_introducer_does_not_cost_quadratic_time():
+    """A lazy scan for the terminator backtracks: the introducer with no
+    terminator scans to end of string, fails, and falls through to the single
+    character Fe branch, so the cost grows with the square of the record.
+
+    Before the negated body classes, 40k of these took ~15.8s against ~0.005s
+    for the same length of ordinary text, and the log viewer hands whole lines
+    to this function once a second. An unterminated introducer is not exotic; a
+    rotated log or a writer cut mid sequence leaves one behind.
+
+    Timing is asserted loosely, as a shape rather than a number: quadratic here
+    is seconds and linear is milliseconds, so any threshold in between separates
+    them on any host.
+    """
+    import time
+
+    shapes = [
+        "\x9d",
+        "\x90",
+        "\x98",
+        "\x9e",
+        "\x9f",
+        "\x9b",
+        "\x1b",
+        "\x1b]",
+        "\x1bP",
+        "\x1b[",
+        # Interleaved: no single body class can run to the end, but each start
+        # still offers the next one a fresh full scan under a lazy body.
+        "\x1b]\x9d",
+        "\x1bP\x9e\x1b[",
+        # A terminator that belongs to nobody, and a key in front of it, which
+        # is what a colorized line cut at a page boundary actually looks like.
+        "api_key\x9d",
+        "\x1b]title\x9d",
+    ]
+    for shape in shapes:
+        text = shape * (40000 // len(shape))
+        started = time.monotonic()
+        redact_log_text(text)
+        elapsed = time.monotonic() - started
+        assert elapsed < 2.0, f"{shape!r} took {elapsed:.1f}s"
+
+
+# The seven introducers _ANSI_INTRODUCER_RE recognises, which is the set that
+# decides whether the strip runs at all.
+_INTRODUCERS = ("\x1b", "\x90", "\x98", "\x9b", "\x9d", "\x9e", "\x9f")
+
+
+def test_terminated_ansi_sequences_are_still_stripped():
+    """The walk must not cost the stripping the rules depend on: an escape
+    between a key and its value stops every anchored rule matching, and a
+    terminated sequence has to disappear whichever of the six forms it is."""
+    for text in (
+        "\x1b[36mpassword\x1b[0m=hunter2secret",
+        "\x1b]0;title\x1b\\api_key=abcdef123456",
+        "\x1b]0;title\x07api_key=abcdef123456",
+        "\x1b]0;title\x9capi_key=abcdef123456",
+        "\x1bPsome dcs\x1b\\api_key=abcdef123456",
+        "\x9dbody\x9capi_key=abcdef123456",
+        "\x9bmapi_key=abcdef123456",
+        "api\x1b[36m_key=abcdef123456",
+        "api\x1b[36mkey=abcdef123456",
+    ):
+        masked = redact_log_text(text)
+        assert "abcdef123456" not in masked and "hunter2secret" not in masked, text
+        assert REDACTED in masked, text

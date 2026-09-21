@@ -314,7 +314,7 @@ def test_save_leaves_no_orphan_mp4_when_sidecar_publish_fails(monkeypatch):
 
 def _real_mp4_bytes(
     frames: int = 8,
-    size: int = 32,
+    size: int | tuple[int, int] = 32,
     rate: int = 8,
 ) -> bytes:
     # A real tiny MP4 for the transcode tests: flat-color frames in mpeg4 (bundled in every PyAV build, unlike libx264).
@@ -325,12 +325,13 @@ def _real_mp4_bytes(
     buf = io.BytesIO()
     with av.open(buf, "w", format = "mp4") as out:
         stream = out.add_stream("mpeg4", rate = rate)
-        stream.width = size
-        stream.height = size
+        width, height = size if isinstance(size, tuple) else (size, size)
+        stream.width = width
+        stream.height = height
         stream.pix_fmt = "yuv420p"
         for i in range(frames):
             frame = av.VideoFrame.from_ndarray(
-                np.full((size, size, 3), (i * 30) % 256, dtype = np.uint8), format = "rgb24"
+                np.full((height, width, 3), (i * 30) % 256, dtype = np.uint8), format = "rgb24"
             )
             for packet in stream.encode(frame):
                 out.mux(packet)
@@ -472,6 +473,41 @@ def test_transcode_gif_and_webm_produce_real_containers():
     webm = gallery.transcode(record["id"], "webm")
     # EBML magic: WebM is a Matroska container.
     assert webm is not None and webm[:4] == b"\x1a\x45\xdf\xa3"
+
+
+def test_thumbnail_produces_a_webp_from_the_video():
+    import io
+
+    Image = pytest.importorskip("PIL.Image")
+    record = gallery.save(_real_mp4_bytes(frames = 3, size = 64), _meta())
+    thumbnail = gallery.thumbnail(record["id"])
+
+    assert thumbnail is not None
+    assert thumbnail[:4] == b"RIFF" and thumbnail[8:12] == b"WEBP"
+    with Image.open(io.BytesIO(thumbnail)) as image:
+        assert image.format == "WEBP"
+        assert image.size == (64, 64)
+
+
+def test_thumbnail_scales_large_frames_to_gallery_width():
+    import io
+
+    Image = pytest.importorskip("PIL.Image")
+    record = gallery.save(_real_mp4_bytes(frames = 1, size = (320, 180)), _meta())
+
+    with Image.open(io.BytesIO(gallery.thumbnail(record["id"]))) as image:
+        assert image.size == (192, 108)
+
+    portrait = gallery.save(_real_mp4_bytes(frames = 1, size = (320, 568)), _meta())
+    with Image.open(io.BytesIO(gallery.thumbnail(portrait["id"]))) as image:
+        assert image.size == (192, 341)
+
+
+def test_thumbnail_rejects_unowned_and_invalid_videos():
+    assert gallery.thumbnail("does-not-exist") is None
+    record = gallery.save(_mp4(), _meta())
+    with pytest.raises(RuntimeError, match = "Thumbnail generation failed"):
+        gallery.thumbnail(record["id"])
 
 
 def test_transcode_unknown_id_and_bad_format():

@@ -137,7 +137,40 @@ def _run_registry_child(body: str) -> subprocess.CompletedProcess:
     )
 
 
-def test_importing_registry_does_not_register_models():
+_REGISTRY_LIFECYCLE = (
+    "import unsloth.registry\n"
+    "from unsloth.registry import register_models\n"
+    "from unsloth.registry.registry import MODEL_REGISTRY\n"
+    "print('REGISTRY_SIZE', len(MODEL_REGISTRY))\n"
+    "register_models()\n"
+    "orgs = sorted({m.org for m in MODEL_REGISTRY.values()})\n"
+    "deepseek = [k for k in MODEL_REGISTRY if 'deepseek' in k.lower()]\n"
+    "print('ORGS', orgs)\n"
+    "print('NUM_DEEPSEEK', len(deepseek))"
+)
+
+
+@pytest.fixture(scope = "module")
+def registry_lifecycle():
+    """One child interpreter for both questions below, shared at module scope.
+
+    They ran two children with the same argv, the same inherited environment and
+    the same prelude, differing only in what they did after the import: one read
+    ``MODEL_REGISTRY`` straight away, the other called ``register_models()`` first.
+    That is one interpreter's worth of work, because the second child's own body
+    already begins from a bare import, so reading the size BEFORE it calls
+    ``register_models()`` observes exactly what the first child observed. Each was
+    ~15s, almost all of it ``import unsloth``, or three quarters of this file.
+
+    Still a fresh interpreter, which is the property both tests need: it is
+    independent of any ``register_models()`` the in-process tests above ran
+    against the shared registry. Module-scoped, not session-scoped, because
+    nothing outside this file wants it.
+    """
+    return _run_registry_child(_REGISTRY_LIFECYCLE)
+
+
+def test_importing_registry_does_not_register_models(registry_lifecycle):
     """Importing the registry must not populate MODEL_REGISTRY on its own.
 
     ``_deepseek`` used to call ``register_deepseek_models(...)`` at module
@@ -145,11 +178,7 @@ def test_importing_registry_does_not_register_models():
     import side effect, unlike every other family which only registers on
     demand.
     """
-    result = _run_registry_child(
-        "import unsloth.registry\n"
-        "from unsloth.registry.registry import MODEL_REGISTRY\n"
-        "print('REGISTRY_SIZE', len(MODEL_REGISTRY))"
-    )
+    result = registry_lifecycle
     assert result.returncode == 0, (
         f"registry import subprocess exited {result.returncode}\n"
         f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
@@ -158,7 +187,7 @@ def test_importing_registry_does_not_register_models():
     assert size_lines == ["REGISTRY_SIZE 0"], result.stdout + result.stderr
 
 
-def test_register_models_registers_no_upstream_originals():
+def test_register_models_registers_no_upstream_originals(registry_lifecycle):
     """``register_models()`` must register each family's ``unsloth``-org models
     and must NOT leak upstream vendor "original" models.
 
@@ -171,16 +200,7 @@ def test_register_models_registers_no_upstream_originals():
     registered via the normal path. Runs in a fresh interpreter so it is
     independent of other tests' registry mutations.
     """
-    result = _run_registry_child(
-        "import unsloth.registry\n"
-        "from unsloth.registry import register_models\n"
-        "from unsloth.registry.registry import MODEL_REGISTRY\n"
-        "register_models()\n"
-        "orgs = sorted({m.org for m in MODEL_REGISTRY.values()})\n"
-        "deepseek = [k for k in MODEL_REGISTRY if 'deepseek' in k.lower()]\n"
-        "print('ORGS', orgs)\n"
-        "print('NUM_DEEPSEEK', len(deepseek))"
-    )
+    result = registry_lifecycle
     assert result.returncode == 0, (
         f"register_models subprocess exited {result.returncode}\n"
         f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
