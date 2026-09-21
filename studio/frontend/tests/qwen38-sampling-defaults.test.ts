@@ -99,10 +99,8 @@ test("Qwen3.8 does not change the generic Qwen3 presence penalty", () => {
 });
 
 test("an id naming two Qwen families resolves to Qwen3.8, as the backend does", () => {
-  // The backend strips the org prefix and scans its family patterns longest-first,
-  // so "qwen3.8" wins wherever it appears in the id. String.match answers with the
-  // leftmost match instead, which for a draft pairing or a per-family directory is
-  // the other family. Both tables have to name the same row.
+  // The backend scans its family patterns longest-first, so "qwen3.8" wins wherever it
+  // appears; String.match would take the leftmost. Both tables have to name one row.
   for (const id of [
     "Qwen3.5-Draft/Qwen3.8-27B-Q4_K_M.gguf",
     "/models/qwen3.6/qwen3.8-27b.gguf",

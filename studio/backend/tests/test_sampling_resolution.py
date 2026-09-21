@@ -979,10 +979,8 @@ def test_the_status_inference_block_is_not_the_mode_aware_one():
 @pytest.mark.parametrize(
     "reasoning_style, request_kwargs, expected_kwargs",
     [
-        # An effort dial cannot be turned off, so an explicit enable_thinking=False
-        # lands on the lowest level the dial has rather than on "none". Before the
-        # controls were resolved, the client's contradictory "high" rode along and
-        # the reply reasoned at high effort while the boolean said off.
+        # An effort dial cannot be turned off, so enable_thinking=False lands on its
+        # lowest level, not "none"; the contradictory "high" used to ride along.
         (
             "reasoning_effort",
             {"enable_thinking": False, "reasoning_effort": "high"},

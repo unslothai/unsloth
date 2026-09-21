@@ -23870,16 +23870,7 @@ _CHAT_TEMPLATE_REASONING_KEYS = ("enable_thinking", "reasoning_effort", "preserv
 
 
 def _consume_chat_template_reasoning_kwargs(payload) -> None:
-    """Drop the reasoning keys a lift has just taken onto the typed fields.
-
-    Nothing downstream forwards the client's nested dict: every render rebuilds it from
-    the typed fields through ``_reasoning_template_kwargs``. Removing the keys here is
-    what makes the lift a fixed point; any other key in the dict is left alone.
-
-    Rebinds a filtered copy rather than popping in place: the dict comes from the parsed
-    request body, and mutating it would reach through to anything that still holds the
-    same object.
-    """
+    """Drop the reasoning keys a lift has just taken onto the typed fields, which is what makes the lift a fixed point; every render rebuilds the nested dict from those fields through ``_reasoning_template_kwargs``. Rebinds a filtered copy rather than popping: the dict is the parsed request body, shared with anything else holding it."""
     extra = getattr(payload, "model_extra", None)
     template_kwargs = extra.get("chat_template_kwargs") if isinstance(extra, dict) else None
     if not isinstance(template_kwargs, dict):
@@ -23908,17 +23899,7 @@ def _resolve_reasoning_controls(
 
 
 def _normalize_chat_reasoning_controls(payload) -> None:
-    """Merge typed and nested controls, then remove contradictory state.
-
-    Consumes what it lifts, so a second call on the same payload is a no-op. Without
-    that, a dropped contradictory effort came back: the first pass writes the resolved
-    values onto the typed fields, so the second pass reads a typed effort of None where
-    the first read the client's, takes the nested-effort rescue the first deliberately
-    skipped, and hands generation a level the request had already lost the right to.
-    /v1/responses normalizes the request it builds and then normalizes it again inside
-    the chat route, so the second call is not hypothetical; it is inert only because
-    _build_chat_request rebuilds the request without the nested dict.
-    """
+    """Merge typed and nested controls, then remove contradictory state. Consumes what it lifts, so the second call /v1/responses makes inside the chat route is a no-op; otherwise a dropped contradictory effort came back through the nested-effort rescue and reached generation."""
     nested = _chat_template_reasoning_kwargs(payload)
     _consume_chat_template_reasoning_kwargs(payload)
     fields_set = getattr(payload, "model_fields_set", set())
@@ -23952,11 +23933,7 @@ def _normalize_chat_reasoning_controls(payload) -> None:
 
 
 def _loaded_llama_backend_for(model_id):
-    """The live llama.cpp backend serving ``model_id``, or None.
-
-    The id has to match: a transformers/MLX request must never be answered from the
-    llama.cpp launch state.
-    """
+    """The live llama.cpp backend serving ``model_id``, or None. The id must match, or a transformers/MLX request is answered from the llama.cpp launch state."""
     if not model_id:
         return None
     backend = get_llama_cpp_backend()
@@ -23968,13 +23945,7 @@ def _loaded_llama_backend_for(model_id):
 
 
 def _normalized_sampling_thinking_mode(payload) -> Optional[bool]:
-    """Three-valued reasoning mode read from the request alone.
-
-    Precedence: ``enable_thinking``, then effort (``none`` means off), then the
-    Anthropic ``thinking`` block. The block is mapped for chat requests already;
-    the fallback also covers /v1/messages. None means the request picked nothing,
-    leaving the mode to the loaded template.
-    """
+    """Three-valued reasoning mode read from the request alone: ``enable_thinking``, then effort (``none`` means off), then the Anthropic ``thinking`` block, whose fallback also covers /v1/messages. None means the request picked nothing, leaving the mode to the loaded template."""
     enable_thinking, reasoning_effort = _resolve_reasoning_controls(
         getattr(payload, "enable_thinking", None),
         getattr(payload, "reasoning_effort", None),
@@ -23984,8 +23955,7 @@ def _normalized_sampling_thinking_mode(payload) -> Optional[bool]:
     thinking = getattr(payload, "thinking", None)
     thinking_type = getattr(thinking, "type", None)
     if thinking_type is not None:
-        # No .lower(): resolved_enable_thinking() treats only the exact "disabled"
-        # as off, and a case variant must not split sampling from generation.
+        # Not .lower(): resolved_enable_thinking() treats only the exact "disabled" as off.
         return str(thinking_type) != "disabled"
     return None
 
@@ -23993,28 +23963,19 @@ def _normalized_sampling_thinking_mode(payload) -> Optional[bool]:
 def _sampling_thinking_mode(payload, model_id) -> Optional[bool]:
     """The mode generation will actually run in, used to pick sampling recommendations.
 
-    Defers to ``_think_parsing_expected``, the same resolver the think-markup gate uses,
-    so sampling cannot disagree with generation: it honors always-on templates that
-    ignore an off control, effort-dial families that map "off" onto a low-but-thinking
-    effort, and -- when the request sends nothing -- the mode Studio launched the model
-    in. That last case is the common one: Qwen3.8 thinks by default and its card pairs
-    that with presence_penalty 0.0, so a silent request is now priced the way it is
-    actually generated. Without a live backend only the request can speak, so the
-    historical flat preset stands.
+    Defers to ``_think_parsing_expected``, the same resolver the think-markup gate uses, so
+    sampling cannot disagree with generation: always-on templates that ignore an off control,
+    effort-dial families that map "off" onto a low-but-thinking effort, and -- when the request
+    sends nothing -- the mode Studio launched the model in. Without a live backend only the
+    request can speak, so the historical flat preset stands.
 
-    The Chat UI arrives at the same row, but not through this function and not through
-    the ``.inference`` block of load/status: that block is ``load_inference_config``
-    with no mode and still answers with the flat family row. The UI matches because
-    apply-inference-status-to-store.ts layers resolveQwenThinkingParams over
-    mergeBackendRecommendedInference. Any other reader of /inference/status sees the
-    flat row, so do not treat that payload as the mode-aware one.
+    The ``.inference`` block of load/status is NOT this: it is ``load_inference_config`` with no
+    mode and still answers with the flat family row. The Chat UI matches only because
+    apply-inference-status-to-store.ts layers resolveQwenThinkingParams over it.
     """
     backend = _loaded_llama_backend_for(model_id)
-    # "Cannot answer" is not the same as "answered no": a backend reporting
-    # supports_reasoning=False has told us this template never reasons, and
-    # _think_parsing_expected turns that into False. Only a backend without the
-    # introspection at all (a test double) leaves the request as the sole source, and
-    # then the historical flat preset stands rather than a silently re-priced request.
+    # supports_reasoning=False is an answer (this template never reasons); its ABSENCE is not,
+    # and only then does the request become the sole source.
     if backend is None or getattr(backend, "supports_reasoning", None) is None:
         return _normalized_sampling_thinking_mode(payload)
     return _think_parsing_expected(backend, payload)
@@ -24061,13 +24022,10 @@ def _fill_recommended_sampling_completions(body: dict, model_id) -> None:
     this schema's value. llama-server names the repetition knob ``repeat_penalty``, so read and
     write that alias for the client-sent value and any pin.
 
-    Deliberately NOT mode-aware, unlike :func:`_fill_recommended_sampling_openai`. This endpoint
-    renders no chat template, so the launch-time ``--chat-template-kwargs`` that decide whether a
-    chat request reasons never reach it: the prompt is proxied exactly as sent. A per-mode row
-    here would price a raw continuation as a reasoning turn on the strength of how the model
-    happens to be loaded, so the flat family row stays. The consequence is that /v1/completions
-    and /v1/chat/completions can answer with different sampling for one loaded model; that is the
-    two endpoints meaning different things, not a gap. Pinned by
+    Deliberately NOT mode-aware, unlike :func:`_fill_recommended_sampling_openai`: this endpoint
+    renders no chat template, so a per-mode row would price a raw continuation as a reasoning turn
+    on the strength of how the model happens to be loaded. The two endpoints answering with
+    different sampling for one loaded model is that difference, not a gap. Pinned by
     test_raw_completions_are_never_priced_on_the_launch_mode.
     """
     from utils.inference.inference_config import resolve_effective_sampling, SAMPLING_FIELD_NAMES

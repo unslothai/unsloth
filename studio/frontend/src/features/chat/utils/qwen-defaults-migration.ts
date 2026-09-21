@@ -94,15 +94,9 @@ function matchesDefaults(
 }
 
 /**
- * Whether the prior migration would have written its Qwen3.8 thinking row for
- * this model: the family whose THINKING row carries zero presence penalty,
- * which is Qwen3.8 alone.
- *
- * Asked of the model, not of the row the session currently resolves to. The
- * snapshot was written in thinking mode, but a session can come up with Think
- * off, and then the current row is the non-thinking one with presencePenalty
- * 1.5. Keying recognition on that left the stale 0.6/0.95 in place against a
- * 0.7/0.8 default until the user happened to toggle Think.
+ * The family the prior migration wrote its thinking row for: Qwen3.8 alone. Asked of
+ * the model, not of the row the session currently resolves to, because the snapshot was
+ * written in thinking mode and a session can come up with Think off.
  */
 function wrotePriorQwen38ThinkingSnapshot(modelId: string): boolean {
   return resolveQwenThinkingParams(modelId, true)?.presencePenalty === 0;

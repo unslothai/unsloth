@@ -525,11 +525,8 @@ test("a space or bracket ends the Qwen family name", () => {
 });
 
 test("the prior Qwen3.8 thinking snapshot is recognized with Think off", () => {
-  // A session can come up with Think off, and then the row it resolves is the
-  // non-thinking one, whose presencePenalty is 1.5. Recognition of the stale
-  // snapshot cannot depend on that: the snapshot was written in the other mode,
-  // and keying on the current row left 0.6/0.95 standing against a 0.7/0.8
-  // default until the user happened to toggle Think.
+  // The snapshot was written in thinking mode, so recognizing it cannot depend on the
+  // row the session resolves now: keying on that left 0.6/0.95 standing against 0.7/0.8.
   const off = migrateLegacyQwenDefaults(
     settingsFor(QWEN38, PREVIOUS_QWEN38_THINKING_SNAPSHOT),
     QWEN38,
