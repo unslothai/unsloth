@@ -26,7 +26,9 @@ def _assume_the_restricted_load_is_available(monkeypatch):
     Without this, a machine with no (or a skewed) torchao turns every hosted-prequant decision
     below into "keep the dense weights". The capability is covered in test_diffusion_prequant.py."""
     import core.inference.diffusion_prequant as _pq
-    monkeypatch.setattr(_pq, "restricted_prequant_load_supported", lambda scheme = None, filename = None: True)
+    monkeypatch.setattr(
+        _pq, "restricted_prequant_load_supported", lambda scheme = None, filename = None: True
+    )
 
 
 from core.inference.diffusion_auto_policy import (

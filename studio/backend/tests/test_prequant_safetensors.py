@@ -171,7 +171,9 @@ def test_local_scheme_probe_rejects_a_foreign_format(monkeypatch, tmp_path):
     path = tmp_path / "other.safetensors"
     path.write_bytes(b"x")
     monkeypatch.setattr(
-        ps, "read_prequant_header", lambda p: {"format": "someone_elses_v1", "metadata": {"scheme": "int8"}}
+        ps,
+        "read_prequant_header",
+        lambda p: {"format": "someone_elses_v1", "metadata": {"scheme": "int8"}},
     )
     assert pq.local_prequant_scheme(str(path)) is None
 
@@ -202,9 +204,7 @@ def test_plain_tensor_round_trip(tmp_path):
     sd = {"enc.layer.weight": torch.ones(4, 4), "enc.layer.bias": torch.zeros(4)}
     meta = {"scheme": "fp8", "base_model_id": "org/base", "min_features": 512}
     path = str(tmp_path / "te.safetensors")
-    ps.save_prequant_safetensors(
-        path, fmt = pq.PREQUANT_FORMAT, state_dict = sd, metadata = meta
-    )
+    ps.save_prequant_safetensors(path, fmt = pq.PREQUANT_FORMAT, state_dict = sd, metadata = meta)
 
     header = ps.read_prequant_header(path)
     assert header == {"format": pq.PREQUANT_FORMAT, "metadata": meta}
@@ -288,10 +288,14 @@ def test_quantized_round_trip_is_exact(tmp_path, scheme):
     from core.inference.diffusion_transformer_quant import _make_quant_config, make_filter_fn
 
     def build():
-        module = torch.nn.Sequential(
-            torch.nn.Linear(1024, 1024, bias = False),
-            torch.nn.Linear(1024, 1024, bias = True),
-        ).cuda().bfloat16()
+        module = (
+            torch.nn.Sequential(
+                torch.nn.Linear(1024, 1024, bias = False),
+                torch.nn.Linear(1024, 1024, bias = True),
+            )
+            .cuda()
+            .bfloat16()
+        )
         quantize_(module, _make_quant_config(scheme), filter_fn = make_filter_fn(512))
         return module
 

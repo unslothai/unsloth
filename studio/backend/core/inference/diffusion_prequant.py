@@ -239,8 +239,7 @@ def _register_prequant_safe_globals() -> bool:
 
 
 def restricted_prequant_load_supported(
-    scheme: Optional[str] = None,
-    filename: Optional[str] = None,
+    scheme: Optional[str] = None, filename: Optional[str] = None
 ) -> bool:
     """Whether this install can read a pre-quant checkpoint, for ``scheme`` when one is named.
 
