@@ -15431,6 +15431,545 @@ def _web_search_images_suffix(client, query, wanted, cancel_event, website_polic
     return "\n\n---\n\n" + format_images_for_model(entries) + images_envelope(entries)
 
 
+# Node classes that _scan_bindings can do anything with. Everything else is skipped before
+# the dispatch chain. Built from the same classes that chain names, so the two cannot drift
+# without a test noticing: a binding form missing here would simply stop being recorded.
+_BINDING_NODE_TYPES = frozenset(
+    [
+        ast.Assign,
+        ast.AnnAssign,
+        ast.NamedExpr,
+        ast.AugAssign,
+        ast.For,
+        ast.AsyncFor,
+        ast.comprehension,
+        ast.withitem,
+        ast.Delete,
+        ast.ExceptHandler,
+        ast.arg,
+        ast.FunctionDef,
+        ast.AsyncFunctionDef,
+        ast.ClassDef,
+        ast.Global,
+        ast.Nonlocal,
+    ]
+    + [c for c in (getattr(ast, "MatchAs", None), getattr(ast, "MatchStar", None)) if c]
+    + [c for c in (getattr(ast, "MatchMapping", None),) if c]
+    + [c for c in (getattr(ast, "TypeAlias", None),) if c]
+)
+
+
+# Policy tables for the sandboxed-python analysis below. Module level because they are
+# constants: building them inside _check_signal_escape_patterns rebuilt every frozenset,
+# dict and compiled regex on each tool call, which was about half the cost of checking an
+# ordinary program. Read-only, and read only by that function.
+# Dangerous os/subprocess functions that can execute shell commands.
+_SHELL_EXEC_FUNCS = frozenset(
+    {
+        "os.system",
+        "os.popen",
+        "os.popen2",
+        "os.popen3",
+        "os.popen4",
+        "os.execl",
+        "os.execle",
+        "os.execlp",
+        "os.execlpe",
+        "os.execv",
+        "os.execve",
+        "os.execvp",
+        "os.execvpe",
+        "os.spawnl",
+        "os.spawnle",
+        "os.spawnlp",
+        "os.spawnlpe",
+        "os.spawnv",
+        "os.spawnve",
+        "os.spawnvp",
+        "os.spawnvpe",
+        "os.posix_spawn",
+        "os.posix_spawnp",
+        "subprocess.run",
+        "subprocess.call",
+        "subprocess.check_call",
+        "subprocess.check_output",
+        "subprocess.Popen",
+        "subprocess.getoutput",
+        "subprocess.getstatusoutput",
+    }
+)
+
+# Kwarg names that carry command content (not control flags like check=True, text=True, capture_output=True).
+_CMD_KWARGS = frozenset({"args", "command", "executable", "path", "file"})
+
+_NETWORK_FQ_PREFIXES = (
+    "socket.socket",
+    "socket.create_connection",
+    "socket.getaddrinfo",
+    "urllib.request.urlopen",
+    "urllib.request.urlretrieve",
+    "urllib3.",
+    "requests.get",
+    "requests.post",
+    "requests.put",
+    "requests.delete",
+    "requests.patch",
+    "requests.head",
+    "requests.request",
+    "requests.Session",
+    "http.client.HTTPConnection",
+    "http.client.HTTPSConnection",
+    "httpx.get",
+    "httpx.post",
+    "httpx.put",
+    "httpx.patch",
+    "httpx.delete",
+    "httpx.request",
+    "httpx.Client",
+    "httpx.AsyncClient",
+    "aiohttp.ClientSession",
+)
+
+_UPLOAD_HTTP_METHODS = (
+    "requests.post",
+    "requests.put",
+    "requests.patch",
+    "requests.delete",
+    "requests.request",
+    "httpx.post",
+    "httpx.put",
+    "httpx.patch",
+    "httpx.delete",
+    "httpx.request",
+    "urllib.request.urlopen",
+    "urllib.request.Request",
+    # Session-bound equivalents, synthesised for `s = requests.Session(); s.post(...)`.
+    "requests.Session.post",
+    "requests.Session.put",
+    "requests.Session.patch",
+    "requests.Session.delete",
+    "requests.Session.request",
+    "httpx.Client.post",
+    "httpx.Client.put",
+    "httpx.Client.patch",
+    "httpx.Client.delete",
+    "httpx.Client.request",
+    "httpx.AsyncClient.post",
+    "httpx.AsyncClient.put",
+    "httpx.AsyncClient.patch",
+    "httpx.AsyncClient.delete",
+    "httpx.AsyncClient.request",
+    "aiohttp.ClientSession.post",
+    "aiohttp.ClientSession.put",
+    "aiohttp.ClientSession.patch",
+    "aiohttp.ClientSession.delete",
+    "aiohttp.ClientSession.request",
+)
+
+_UPLOAD_HF_FQ = (
+    "huggingface_hub.upload_file",
+    "huggingface_hub.upload_folder",
+    "huggingface_hub.upload_large_folder",
+    "huggingface_hub.create_commit",
+)
+
+_UPLOAD_HF_METHODS = frozenset(
+    {
+        "upload_file",
+        "upload_folder",
+        "upload_large_folder",
+        "create_commit",
+        "preupload_lfs_files",
+    }
+)
+
+# Cloud-metadata / link-local hosts.
+_METADATA_HOST_LITERALS = {
+    "169.254.169.254",
+    "fd00:ec2::254",
+    "metadata.google.internal",
+    "metadata",
+    "metadata.tencentyun.com",
+    "100.100.100.200",
+    "100.100.100.110",
+    "169.254.170.2",
+    "169.254.170.23",
+}
+
+_METADATA_HOST_PREFIXES = (
+    "169.254.",
+    "100.64.",
+)
+
+# Allowlist kept explicit so each entry is auditable.
+_TRUSTED_PUBLIC_HOST_LITERALS = frozenset(
+    {
+        # search
+        "www.google.com",
+        "google.com",
+        "www.bing.com",
+        "bing.com",
+        "duckduckgo.com",
+        "html.duckduckgo.com",
+        # encyclopedic / reference
+        "wikipedia.org",
+        "www.wikipedia.org",
+        "wikimedia.org",
+        "www.wikimedia.org",
+        "wikidata.org",
+        "www.wikidata.org",
+        "commons.wikimedia.org",
+        "www.britannica.com",
+        "openlibrary.org",
+        "www.openstreetmap.org",
+        # ML / dev / data
+        "huggingface.co",
+        "hf.co",
+        "github.com",
+        "api.github.com",
+        "raw.githubusercontent.com",
+        "gist.github.com",
+        "docs.github.com",
+        "pypi.org",
+        "files.pythonhosted.org",
+        "www.npmjs.com",
+        "registry.npmjs.org",
+        "crates.io",
+        "static.crates.io",
+        # docs
+        "docs.python.org",
+        "python.org",
+        "www.python.org",
+        "developer.mozilla.org",
+        "developer.apple.com",
+        "learn.microsoft.com",
+        "docs.docker.com",
+        "pytorch.org",
+        "docs.pytorch.org",
+        "tensorflow.org",
+        "www.tensorflow.org",
+        "numpy.org",
+        "pandas.pydata.org",
+        "scipy.org",
+        "scikit-learn.org",
+        "matplotlib.org",
+        "fastapi.tiangolo.com",
+        "starlette.io",
+        # academic
+        "arxiv.org",
+        "export.arxiv.org",
+        "scholar.google.com",
+        "openreview.net",
+        "semanticscholar.org",
+        "www.semanticscholar.org",
+        "biorxiv.org",
+        "www.biorxiv.org",
+        "medrxiv.org",
+        "www.medrxiv.org",
+        "pubmed.ncbi.nlm.nih.gov",
+        "www.ncbi.nlm.nih.gov",
+        # Q&A / community
+        "stackoverflow.com",
+        "stackexchange.com",
+        "askubuntu.com",
+        "superuser.com",
+        "serverfault.com",
+        # standards
+        "www.w3.org",
+        "tools.ietf.org",
+        "datatracker.ietf.org",
+        "www.rfc-editor.org",
+        # reputable news
+        "www.bbc.com",
+        "www.bbc.co.uk",
+        "www.reuters.com",
+        "apnews.com",
+        "www.nature.com",
+        "www.science.org",
+        # government / open data
+        "data.gov",
+        "catalog.data.gov",
+        "www.census.gov",
+        "www.nasa.gov",
+        "data.nasa.gov",
+        "www.cdc.gov",
+        "www.nih.gov",
+        "www.who.int",
+        # weather / time
+        "api.weather.gov",
+        "worldtimeapi.org",
+    }
+)
+
+_TRUSTED_PUBLIC_HOST_SUFFIXES = (
+    ".wikipedia.org",
+    ".wikimedia.org",
+    ".wiktionary.org",
+    ".wikibooks.org",
+    ".wikiquote.org",
+    ".wikisource.org",
+    ".wikiversity.org",
+    ".wikivoyage.org",
+    ".stackexchange.com",
+    ".hf.co",
+    ".huggingface.co",
+    ".githubusercontent.com",
+    ".github.io",
+    ".arxiv.org",
+    ".readthedocs.io",
+    ".readthedocs.org",
+)
+
+_SENSITIVE_FILE_PREFIXES = (
+    "/etc/passwd",
+    "/etc/shadow",
+    "/etc/sudoers",
+    "/etc/ssh/",
+)
+
+_SENSITIVE_FILE_RE = re.compile(r"^/proc/(?:self|\d+)/(?:environ|cmdline|task/\d+/environ)$")
+
+# An aliased or session-bound call spells a name no _NETWORK_FQ_PREFIXES entry matches, so the
+# allowlist never ran on it. These tables give the policy the canonical name to check.
+_NET_MODULES = frozenset(
+    {
+        "requests",
+        "requests.sessions",
+        "httpx",
+        "urllib",
+        "urllib.request",
+        "urllib3",
+        "socket",
+        "http",
+        "http.client",
+        "aiohttp",
+        # The submodules that hold those packages' public API. Tracking their aliases is what
+        # lets a call through one of them be canonicalised back to the package.
+        "requests.api",
+        "httpx._api",
+        "httpx._client",
+        "urllib3._request_methods",
+    }
+)
+
+# Modules whose aliases are tracked. The network ones so a renamed import is still policed, and
+# the process-state ones so `import os as o` cannot hide where a target came from.
+_EXTERNAL_SOURCE_MODULES = frozenset({"os", "sys", "subprocess", "getpass"})
+
+# A `connect` that opens a local resource rather than a host. Everything else spelling
+# `connect` is treated as a network client, which is what ftplib, smtplib, imaplib, socketio
+# and friends are. Their aliases are tracked too, so `import sqlite3 as db` is the same client.
+_LOCAL_CONNECT_OWNERS = frozenset(
+    {
+        "sqlite3",
+        "apsw",
+        "duckdb",
+        "psycopg",
+        "psycopg2",
+        "pyodbc",
+        "sqlalchemy",
+        "mysql",
+    }
+)
+
+_ALIASED_MODULES = _NET_MODULES | _EXTERNAL_SOURCE_MODULES | _LOCAL_CONNECT_OWNERS
+
+# Constructor FQ -> the canonical prefix its instance methods are attributed to. The synthesised
+# name ("requests.Session.get") is already covered by the "requests.Session" entry in
+# _NETWORK_FQ_PREFIXES, since that test is a startswith.
+_SESSION_FACTORY_FQ = {
+    "requests.Session": "requests.Session",
+    "requests.session": "requests.Session",
+    "requests.sessions.Session": "requests.Session",
+    "requests.sessions.session": "requests.Session",
+    "httpx.Client": "httpx.Client",
+    "httpx.AsyncClient": "httpx.AsyncClient",
+    "aiohttp.ClientSession": "aiohttp.ClientSession",
+    "urllib3.PoolManager": "urllib3.PoolManager",
+    "urllib3.HTTPConnectionPool": "urllib3.HTTPConnectionPool",
+    "urllib3.HTTPSConnectionPool": "urllib3.HTTPSConnectionPool",
+}
+
+_URL_KWARGS = ("url", "fullurl")
+
+_HTTP_METHOD_NAMES = frozenset(
+    {"get", "post", "put", "patch", "delete", "head", "options", "request"}
+)
+
+# Client methods that send without being named after a verb, and which positional argument
+# holds the URL. A urllib3 pool's `urlopen("GET", url)` takes the verb first, which is not the
+# same method as `urllib.request.urlopen(url)`, so the owner decides.
+_SENDING_METHODS = {
+    "ws_connect": 0,
+    "stream": 1,
+    "send": 0,
+}
+
+_POOL_SENDING_METHODS = {"urlopen": 1}
+
+_SESSION_PREFIXES = (
+    "requests.Session",
+    "httpx.Client",
+    "httpx.AsyncClient",
+    "aiohttp.ClientSession",
+    "urllib3.PoolManager",
+    "urllib3.HTTPConnectionPool",
+    "urllib3.HTTPSConnectionPool",
+)
+
+_URL_OWNERS = frozenset(
+    {
+        "requests",
+        "httpx",
+        # urllib3.request("GET", url) and pool.request(...) are network calls by the prefix
+        # table already; without an owner entry the target checks would skip their URL.
+        "urllib3",
+        "urllib3.PoolManager",
+        "urllib3.HTTPConnectionPool",
+        "urllib3.HTTPSConnectionPool",
+        "requests.Session",
+        "httpx.Client",
+        "httpx.AsyncClient",
+        "aiohttp.ClientSession",
+    }
+)
+
+_URL_HOST_RE = re.compile(r"^\w+://([^/?#]+)(?:[/?#]|$)")
+
+# For a string only known up to a prefix, the authority counts as read only when the prefix
+# already passed it: "https://huggingface.co" + suffix really targets huggingface.co.evil.org,
+# so an unterminated authority must never vouch for the call.
+_URL_HOST_TERMINATED_RE = re.compile(r"^\w+://([^/?#]+)[/?#]")
+
+# Resolution follows name bindings, so a chain of them is a chain of recursive calls. Valid
+# source can be thousands deep; the budget keeps that a "cannot resolve" answer rather than a
+# RecursionError out of a tool call.
+_MAX_RESOLVE_DEPTH = 24
+
+# Depth alone does not bound the work: `s2 = s1 + s1` doubles the graph per level, so a shallow
+# file can still cost seconds. One budget per top-level resolution, spent by every step.
+_MAX_RESOLVE_STEPS = 4000
+
+# Name-to-name links are followed iteratively and cost one dictionary lookup each, so they are
+# bounded well above any plausible source file rather than by the nesting limit.
+_MAX_BINDING_LINKS = 100_000
+
+# Wrappers whose own first argument is the URL the request will use, so a Request object is
+# policed like the url string it was built from.
+_URL_WRAPPER_FQ = {
+    "urllib.request.Request": 0,
+    "httpx.Request": 1,
+    "requests.Request": 1,
+    "requests.models.Request": 1,
+}
+
+# Methods that hand back a request object built from a URL, with the argument that holds it.
+_REQUEST_BUILDER_METHODS = {"build_request": 1, "prepare_request": 0, "prepare": 0}
+
+# Submodules that hold the public API of a network package. A call resolved into one of them
+# is the same call as the one spelled on the package, which is what the prefixes know about.
+_API_SUBMODULES = {
+    "requests.api": "requests",
+    "requests.sessions": "requests",
+    "httpx._api": "httpx",
+    "httpx._client": "httpx",
+    "urllib3._request_methods": "urllib3",
+}
+
+_SOCKET_FACTORY_FQ = ("socket.socket", "socket.create_connection", "socket.socketpair")
+
+_SOCKET_TARGET_FQ = ("socket.create_connection",)
+
+# `host = ` in a libpq DSN, `SERVER = ` in an ODBC one.
+# The value runs to the next separator and may be a comma separated failover list, which the
+# caller splits: libpq tries each host in turn, so every one of them has to be screened.
+_DSN_HOST_RE = re.compile(r"(?:^|[;\s])(?:hostaddr|host|server)\s*=\s*([^;\s]+)", re.IGNORECASE)
+
+# Schemes that name a file rather than a host, so `sqlite:///state.db` opens nothing remote.
+_LOCAL_DSN_SCHEMES = ("sqlite", "duckdb", "file", "shm", "memory")
+
+# These open a file and nothing else, so their argument is a path however it is spelled:
+# `sqlite3.connect("host=cache.db")` is a file called host=cache.db.
+_FILE_ONLY_CONNECT_OWNERS = frozenset({"sqlite3", "apsw", "duckdb"})
+
+# libpq takes a literal address in hostaddr, which reaches a host without naming one in host.
+_DATABASE_HOST_KEYWORDS = frozenset({"host", "hostaddr", "server"})
+
+# A backstop against a pathological file, not the real limit. Exhausting it answers
+# "externally sourced": a guard that answers "no" when it gives up is a bypass.
+_MAX_EXTERNAL_STEPS = 200_000
+
+# Bare method-name fallback (`x.upload_file(...)`) is fuzzy, so it fires only when huggingface_hub/hf_api is
+# imported; else paramiko.upload_file, boto3.create_commit, etc. would false-positive. Pre-scan for the imports.
+_HF_IMPORT_MODULES = (
+    "huggingface_hub",
+    "hf_api",
+    "huggingface_hub.hf_api",
+)
+
+# Kwargs that ship a credential over the wire. The sandbox env strips credentials up front, so any value here is
+# hard-coded or lifted from parent.
+_HF_SENSITIVE_KWARGS = frozenset(
+    {
+        "token",
+        "hf_token",
+        "api_token",
+        "api_key",
+        "auth_token",
+        "access_token",
+        "password",
+        "secret",
+    }
+)
+
+_HF_UPLOAD_PATH_VIOLATION = (
+    "HF upload path must be a sandbox-local relative-path literal "
+    "(no absolute paths, no '..' segments, no dynamic expressions)"
+)
+
+# Upload methods that take CommitOperation* objects rather than a path, and the kwarg each one carries them in.
+# `preupload_lfs_files` sends the file bytes to the LFS store on its own, so it needs the same gate as a commit.
+_HF_OPERATIONS_KWARG = {
+    "create_commit": "operations",
+    "preupload_lfs_files": "additions",
+}
+
+# The names an aliased import can still be reading. Spelled as full names because that is what
+# the alias resolves to: `import os as o` makes `o.environ` the name `os.environ`.
+_EXTERNAL_SOURCE_FQ = frozenset(
+    {
+        "os.environ",
+        "os.environb",
+        "os.getenv",
+        "os.getenvb",
+        "sys.argv",
+        "sys.stdin",
+        "getpass.getpass",
+        "subprocess.run",
+        "subprocess.Popen",
+        "subprocess.check_output",
+        "subprocess.getoutput",
+        "subprocess.getstatusoutput",
+    }
+)
+
+# Reading a file is reading something the source does not show: a URL in a workspace file is
+# chosen wherever that file came from, which is the same hole as reading the environment.
+_FILE_READ_METHODS = frozenset({"read", "readline", "readlines", "read_text", "read_bytes"})
+
+_PATHLIB_FQ = ("pathlib.Path", "Path")
+
+# Clients handed their host at construction, after which a request needs only a path. Pools
+# take a bare host positionally; `urllib3.PoolManager(10)` takes a pool count, not a host.
+_POSITIONAL_HOST_FQ = ("urllib3.HTTPConnectionPool", "urllib3.HTTPSConnectionPool")
+
+_POOL_FACTORY_FQ = (
+    "urllib3.PoolManager",
+    "urllib3.HTTPConnectionPool",
+    "urllib3.HTTPSConnectionPool",
+)
+
+
 def _check_signal_escape_patterns(code: str):
     """Check for patterns that could escape signal-based timeouts. Returns (safe: bool, details:
     dict). Vendored from unsloth_zoo.rl_environments to avoid importing unsloth_zoo (needs GPU
@@ -15465,42 +16004,6 @@ def _check_signal_escape_patterns(code: str):
             return full_name in names
         return False
 
-    # Dangerous os/subprocess functions that can execute shell commands.
-    _SHELL_EXEC_FUNCS = frozenset(
-        {
-            "os.system",
-            "os.popen",
-            "os.popen2",
-            "os.popen3",
-            "os.popen4",
-            "os.execl",
-            "os.execle",
-            "os.execlp",
-            "os.execlpe",
-            "os.execv",
-            "os.execve",
-            "os.execvp",
-            "os.execvpe",
-            "os.spawnl",
-            "os.spawnle",
-            "os.spawnlp",
-            "os.spawnlpe",
-            "os.spawnv",
-            "os.spawnve",
-            "os.spawnvp",
-            "os.spawnvpe",
-            "os.posix_spawn",
-            "os.posix_spawnp",
-            "subprocess.run",
-            "subprocess.call",
-            "subprocess.check_call",
-            "subprocess.check_output",
-            "subprocess.Popen",
-            "subprocess.getoutput",
-            "subprocess.getstatusoutput",
-        }
-    )
-
     def _extract_string_from_node(node):
         """Extract a plain string value from an AST node, if it is a constant."""
         if isinstance(node, ast.Constant) and isinstance(node.value, str):
@@ -15517,9 +16020,6 @@ def _check_signal_escape_patterns(code: str):
                     parts.append(s)
             return parts
         return []
-
-    # Kwarg names that carry command content (not control flags like check=True, text=True, capture_output=True).
-    _CMD_KWARGS = frozenset({"args", "command", "executable", "path", "file"})
 
     def _check_args_for_blocked(args_nodes):
         """Check if any call arguments contain blocked commands."""
@@ -15785,223 +16285,6 @@ def _check_signal_escape_patterns(code: str):
     # regardless of host. Dynamic hosts are caught by the bash blocklist.
     network_calls: list[dict] = []
     sensitive_file_reads: list[dict] = []
-    _NETWORK_FQ_PREFIXES = (
-        "socket.socket",
-        "socket.create_connection",
-        "socket.getaddrinfo",
-        "urllib.request.urlopen",
-        "urllib.request.urlretrieve",
-        "urllib3.",
-        "requests.get",
-        "requests.post",
-        "requests.put",
-        "requests.delete",
-        "requests.patch",
-        "requests.head",
-        "requests.request",
-        "requests.Session",
-        "http.client.HTTPConnection",
-        "http.client.HTTPSConnection",
-        "httpx.get",
-        "httpx.post",
-        "httpx.put",
-        "httpx.patch",
-        "httpx.delete",
-        "httpx.request",
-        "httpx.Client",
-        "httpx.AsyncClient",
-        "aiohttp.ClientSession",
-    )
-    _UPLOAD_HTTP_METHODS = (
-        "requests.post",
-        "requests.put",
-        "requests.patch",
-        "requests.delete",
-        "requests.request",
-        "httpx.post",
-        "httpx.put",
-        "httpx.patch",
-        "httpx.delete",
-        "httpx.request",
-        "urllib.request.urlopen",
-        "urllib.request.Request",
-        # Session-bound equivalents, synthesised for `s = requests.Session(); s.post(...)`.
-        "requests.Session.post",
-        "requests.Session.put",
-        "requests.Session.patch",
-        "requests.Session.delete",
-        "requests.Session.request",
-        "httpx.Client.post",
-        "httpx.Client.put",
-        "httpx.Client.patch",
-        "httpx.Client.delete",
-        "httpx.Client.request",
-        "httpx.AsyncClient.post",
-        "httpx.AsyncClient.put",
-        "httpx.AsyncClient.patch",
-        "httpx.AsyncClient.delete",
-        "httpx.AsyncClient.request",
-        "aiohttp.ClientSession.post",
-        "aiohttp.ClientSession.put",
-        "aiohttp.ClientSession.patch",
-        "aiohttp.ClientSession.delete",
-        "aiohttp.ClientSession.request",
-    )
-    _UPLOAD_HF_FQ = (
-        "huggingface_hub.upload_file",
-        "huggingface_hub.upload_folder",
-        "huggingface_hub.upload_large_folder",
-        "huggingface_hub.create_commit",
-    )
-    _UPLOAD_HF_METHODS = frozenset(
-        {
-            "upload_file",
-            "upload_folder",
-            "upload_large_folder",
-            "create_commit",
-            "preupload_lfs_files",
-        }
-    )
-    # Cloud-metadata / link-local hosts.
-    _METADATA_HOST_LITERALS = {
-        "169.254.169.254",
-        "fd00:ec2::254",
-        "metadata.google.internal",
-        "metadata",
-        "metadata.tencentyun.com",
-        "100.100.100.200",
-        "100.100.100.110",
-        "169.254.170.2",
-        "169.254.170.23",
-    }
-    _METADATA_HOST_PREFIXES = (
-        "169.254.",
-        "100.64.",
-    )
-    # Allowlist kept explicit so each entry is auditable.
-    _TRUSTED_PUBLIC_HOST_LITERALS = frozenset(
-        {
-            # search
-            "www.google.com",
-            "google.com",
-            "www.bing.com",
-            "bing.com",
-            "duckduckgo.com",
-            "html.duckduckgo.com",
-            # encyclopedic / reference
-            "wikipedia.org",
-            "www.wikipedia.org",
-            "wikimedia.org",
-            "www.wikimedia.org",
-            "wikidata.org",
-            "www.wikidata.org",
-            "commons.wikimedia.org",
-            "www.britannica.com",
-            "openlibrary.org",
-            "www.openstreetmap.org",
-            # ML / dev / data
-            "huggingface.co",
-            "hf.co",
-            "github.com",
-            "api.github.com",
-            "raw.githubusercontent.com",
-            "gist.github.com",
-            "docs.github.com",
-            "pypi.org",
-            "files.pythonhosted.org",
-            "www.npmjs.com",
-            "registry.npmjs.org",
-            "crates.io",
-            "static.crates.io",
-            # docs
-            "docs.python.org",
-            "python.org",
-            "www.python.org",
-            "developer.mozilla.org",
-            "developer.apple.com",
-            "learn.microsoft.com",
-            "docs.docker.com",
-            "pytorch.org",
-            "docs.pytorch.org",
-            "tensorflow.org",
-            "www.tensorflow.org",
-            "numpy.org",
-            "pandas.pydata.org",
-            "scipy.org",
-            "scikit-learn.org",
-            "matplotlib.org",
-            "fastapi.tiangolo.com",
-            "starlette.io",
-            # academic
-            "arxiv.org",
-            "export.arxiv.org",
-            "scholar.google.com",
-            "openreview.net",
-            "semanticscholar.org",
-            "www.semanticscholar.org",
-            "biorxiv.org",
-            "www.biorxiv.org",
-            "medrxiv.org",
-            "www.medrxiv.org",
-            "pubmed.ncbi.nlm.nih.gov",
-            "www.ncbi.nlm.nih.gov",
-            # Q&A / community
-            "stackoverflow.com",
-            "stackexchange.com",
-            "askubuntu.com",
-            "superuser.com",
-            "serverfault.com",
-            # standards
-            "www.w3.org",
-            "tools.ietf.org",
-            "datatracker.ietf.org",
-            "www.rfc-editor.org",
-            # reputable news
-            "www.bbc.com",
-            "www.bbc.co.uk",
-            "www.reuters.com",
-            "apnews.com",
-            "www.nature.com",
-            "www.science.org",
-            # government / open data
-            "data.gov",
-            "catalog.data.gov",
-            "www.census.gov",
-            "www.nasa.gov",
-            "data.nasa.gov",
-            "www.cdc.gov",
-            "www.nih.gov",
-            "www.who.int",
-            # weather / time
-            "api.weather.gov",
-            "worldtimeapi.org",
-        }
-    )
-    _TRUSTED_PUBLIC_HOST_SUFFIXES = (
-        ".wikipedia.org",
-        ".wikimedia.org",
-        ".wiktionary.org",
-        ".wikibooks.org",
-        ".wikiquote.org",
-        ".wikisource.org",
-        ".wikiversity.org",
-        ".wikivoyage.org",
-        ".stackexchange.com",
-        ".hf.co",
-        ".huggingface.co",
-        ".githubusercontent.com",
-        ".github.io",
-        ".arxiv.org",
-        ".readthedocs.io",
-        ".readthedocs.org",
-    )
-    _SENSITIVE_FILE_PREFIXES = (
-        "/etc/passwd",
-        "/etc/shadow",
-        "/etc/sudoers",
-        "/etc/ssh/",
-    )
-    _SENSITIVE_FILE_RE = re.compile(r"^/proc/(?:self|\d+)/(?:environ|cmdline|task/\d+/environ)$")
 
     def _strip_userinfo_and_port(host: str) -> str:
         h = host
@@ -16057,76 +16340,6 @@ def _check_signal_escape_patterns(code: str):
             return False
         return True
 
-    # An aliased or session-bound call spells a name no _NETWORK_FQ_PREFIXES entry matches, so the
-    # allowlist never ran on it. These tables give the policy the canonical name to check.
-    _NET_MODULES = frozenset(
-        {
-            "requests",
-            "requests.sessions",
-            "httpx",
-            "urllib",
-            "urllib.request",
-            "urllib3",
-            "socket",
-            "http",
-            "http.client",
-            "aiohttp",
-            # The submodules that hold those packages' public API. Tracking their aliases is what
-            # lets a call through one of them be canonicalised back to the package.
-            "requests.api",
-            "httpx._api",
-            "httpx._client",
-            "urllib3._request_methods",
-        }
-    )
-    # Modules whose aliases are tracked. The network ones so a renamed import is still policed, and
-    # the process-state ones so `import os as o` cannot hide where a target came from.
-    _EXTERNAL_SOURCE_MODULES = frozenset({"os", "sys", "subprocess", "getpass"})
-    # A `connect` that opens a local resource rather than a host. Everything else spelling
-    # `connect` is treated as a network client, which is what ftplib, smtplib, imaplib, socketio
-    # and friends are. Their aliases are tracked too, so `import sqlite3 as db` is the same client.
-    _LOCAL_CONNECT_OWNERS = frozenset(
-        {
-            "sqlite3",
-            "apsw",
-            "duckdb",
-            "psycopg",
-            "psycopg2",
-            "pyodbc",
-            "sqlalchemy",
-            "mysql",
-        }
-    )
-    _ALIASED_MODULES = _NET_MODULES | _EXTERNAL_SOURCE_MODULES | _LOCAL_CONNECT_OWNERS
-    # Constructor FQ -> the canonical prefix its instance methods are attributed to. The synthesised
-    # name ("requests.Session.get") is already covered by the "requests.Session" entry in
-    # _NETWORK_FQ_PREFIXES, since that test is a startswith.
-    _SESSION_FACTORY_FQ = {
-        "requests.Session": "requests.Session",
-        "requests.session": "requests.Session",
-        "requests.sessions.Session": "requests.Session",
-        "requests.sessions.session": "requests.Session",
-        "httpx.Client": "httpx.Client",
-        "httpx.AsyncClient": "httpx.AsyncClient",
-        "aiohttp.ClientSession": "aiohttp.ClientSession",
-        "urllib3.PoolManager": "urllib3.PoolManager",
-        "urllib3.HTTPConnectionPool": "urllib3.HTTPConnectionPool",
-        "urllib3.HTTPSConnectionPool": "urllib3.HTTPSConnectionPool",
-    }
-    _URL_KWARGS = ("url", "fullurl")
-    _HTTP_METHOD_NAMES = frozenset(
-        {"get", "post", "put", "patch", "delete", "head", "options", "request"}
-    )
-    # Client methods that send without being named after a verb, and which positional argument
-    # holds the URL. A urllib3 pool's `urlopen("GET", url)` takes the verb first, which is not the
-    # same method as `urllib.request.urlopen(url)`, so the owner decides.
-    _SENDING_METHODS = {
-        "ws_connect": 0,
-        "stream": 1,
-        "send": 0,
-    }
-    _POOL_SENDING_METHODS = {"urlopen": 1}
-
     def _sending_url_index(fq: str) -> "int | None":
         """Which argument holds the URL for a client method that is not named after a verb, or
         None when this is not one."""
@@ -16137,46 +16350,6 @@ def _check_signal_escape_patterns(code: str):
             return _POOL_SENDING_METHODS[method]
         return None
 
-    _SESSION_PREFIXES = (
-        "requests.Session",
-        "httpx.Client",
-        "httpx.AsyncClient",
-        "aiohttp.ClientSession",
-        "urllib3.PoolManager",
-        "urllib3.HTTPConnectionPool",
-        "urllib3.HTTPSConnectionPool",
-    )
-    _URL_OWNERS = frozenset(
-        {
-            "requests",
-            "httpx",
-            # urllib3.request("GET", url) and pool.request(...) are network calls by the prefix
-            # table already; without an owner entry the target checks would skip their URL.
-            "urllib3",
-            "urllib3.PoolManager",
-            "urllib3.HTTPConnectionPool",
-            "urllib3.HTTPSConnectionPool",
-            "requests.Session",
-            "httpx.Client",
-            "httpx.AsyncClient",
-            "aiohttp.ClientSession",
-        }
-    )
-    _URL_HOST_RE = re.compile(r"^\w+://([^/?#]+)(?:[/?#]|$)")
-    # For a string only known up to a prefix, the authority counts as read only when the prefix
-    # already passed it: "https://huggingface.co" + suffix really targets huggingface.co.evil.org,
-    # so an unterminated authority must never vouch for the call.
-    _URL_HOST_TERMINATED_RE = re.compile(r"^\w+://([^/?#]+)[/?#]")
-    # Resolution follows name bindings, so a chain of them is a chain of recursive calls. Valid
-    # source can be thousands deep; the budget keeps that a "cannot resolve" answer rather than a
-    # RecursionError out of a tool call.
-    _MAX_RESOLVE_DEPTH = 24
-    # Depth alone does not bound the work: `s2 = s1 + s1` doubles the graph per level, so a shallow
-    # file can still cost seconds. One budget per top-level resolution, spent by every step.
-    _MAX_RESOLVE_STEPS = 4000
-    # Name-to-name links are followed iteratively and cost one dictionary lookup each, so they are
-    # bounded well above any plausible source file rather than by the nesting limit.
-    _MAX_BINDING_LINKS = 100_000
     # match was added in 3.10 and the project floor is 3.9, where these classes do not exist.
     # An empty tuple makes the isinstance below simply False.
     _MATCH_CAPTURES = tuple(
@@ -16228,17 +16401,6 @@ def _check_signal_escape_patterns(code: str):
         if sending is not None:
             return sending
         return 1 if fq.rpartition(".")[2] == "request" else 0
-
-    # Wrappers whose own first argument is the URL the request will use, so a Request object is
-    # policed like the url string it was built from.
-    _URL_WRAPPER_FQ = {
-        "urllib.request.Request": 0,
-        "httpx.Request": 1,
-        "requests.Request": 1,
-        "requests.models.Request": 1,
-    }
-    # Methods that hand back a request object built from a URL, with the argument that holds it.
-    _REQUEST_BUILDER_METHODS = {"build_request": 1, "prepare_request": 0, "prepare": 0}
 
     def _written_fq(func_node) -> str:
         """The dotted call name exactly as the source spells it."""
@@ -16351,16 +16513,6 @@ def _check_signal_escape_patterns(code: str):
                 variant for variant in _api_submodule_variants(name) if variant not in names
             )
         return names
-
-    # Submodules that hold the public API of a network package. A call resolved into one of them
-    # is the same call as the one spelled on the package, which is what the prefixes know about.
-    _API_SUBMODULES = {
-        "requests.api": "requests",
-        "requests.sessions": "requests",
-        "httpx._api": "httpx",
-        "httpx._client": "httpx",
-        "urllib3._request_methods": "urllib3",
-    }
 
     def _api_submodule_variants(name: str) -> "list[str]":
         """The same call spelled on the package the submodule belongs to, if it is one."""
@@ -16923,6 +17075,11 @@ def _check_signal_escape_patterns(code: str):
             """Record every binding in the tree. Run once in raw mode, to learn which
             scope binds which name, then again for real once declarations are resolved."""
             for node, scope in scoped:
+                # Most nodes in any tree are Name / Constant / operator nodes that bind nothing.
+                # One set lookup drops them before the chain below, which is otherwise walked in
+                # full, twice per call, for every one of them.
+                if node.__class__ not in _BINDING_NODE_TYPES:
+                    continue
                 if _MATCH_CAPTURES and isinstance(node, _MATCH_CAPTURES):
                     self._mark(node.name, scope, node)
                 elif _MATCH_MAPPINGS and isinstance(node, _MATCH_MAPPINGS):
@@ -17186,9 +17343,6 @@ def _check_signal_escape_patterns(code: str):
             return None, True
         return None, False
 
-    _SOCKET_FACTORY_FQ = ("socket.socket", "socket.create_connection", "socket.socketpair")
-    _SOCKET_TARGET_FQ = ("socket.create_connection",)
-
     def _is_a_socket_receiver(node) -> bool:
         """Whether *node* evaluates to a socket: `socket.socket(...)` inline, or a name bound to
         one. A tuple argument looks socket-shaped too, but the receiver is what settles it."""
@@ -17199,18 +17353,6 @@ def _check_signal_escape_patterns(code: str):
             if isinstance(bound, ast.Call):
                 return _canonical_fq(bound.func, _bindings) in _SOCKET_FACTORY_FQ
         return False
-
-    # `host = ` in a libpq DSN, `SERVER = ` in an ODBC one.
-    # The value runs to the next separator and may be a comma separated failover list, which the
-    # caller splits: libpq tries each host in turn, so every one of them has to be screened.
-    _DSN_HOST_RE = re.compile(r"(?:^|[;\s])(?:hostaddr|host|server)\s*=\s*([^;\s]+)", re.IGNORECASE)
-    # Schemes that name a file rather than a host, so `sqlite:///state.db` opens nothing remote.
-    _LOCAL_DSN_SCHEMES = ("sqlite", "duckdb", "file", "shm", "memory")
-    # These open a file and nothing else, so their argument is a path however it is spelled:
-    # `sqlite3.connect("host=cache.db")` is a file called host=cache.db.
-    _FILE_ONLY_CONNECT_OWNERS = frozenset({"sqlite3", "apsw", "duckdb"})
-    # libpq takes a literal address in hostaddr, which reaches a host without naming one in host.
-    _DATABASE_HOST_KEYWORDS = frozenset({"host", "hostaddr", "server"})
 
     def _dsn_hosts(text: str, complete: bool = True) -> "list[str]":
         """Every host a database connection string names. A libpq DSN may list failover hosts,
@@ -17464,10 +17606,6 @@ def _check_signal_escape_patterns(code: str):
 
     _external_memo: set = set()
 
-    # A backstop against a pathological file, not the real limit. Exhausting it answers
-    # "externally sourced": a guard that answers "no" when it gives up is a bypass.
-    _MAX_EXTERNAL_STEPS = 200_000
-
     def _externally_sourced(node, bindings) -> bool:
         """Whether *node* takes its value from outside the program: env, stdin, argv, a file read.
         Bindings are followed, so `u = os.environ["T"]` reads the same as the expression inline.
@@ -17544,14 +17682,6 @@ def _check_signal_escape_patterns(code: str):
                     return True
         return False
 
-    # Bare method-name fallback (`x.upload_file(...)`) is fuzzy, so it fires only when huggingface_hub/hf_api is
-    # imported; else paramiko.upload_file, boto3.create_commit, etc. would false-positive. Pre-scan for the imports.
-    _HF_IMPORT_MODULES = (
-        "huggingface_hub",
-        "hf_api",
-        "huggingface_hub.hf_api",
-    )
-
     def _module_has_hf_import(tree: ast.AST) -> bool:
         for n in _tree_nodes(tree):
             if isinstance(n, ast.Import):
@@ -17594,58 +17724,6 @@ def _check_signal_escape_patterns(code: str):
         if isinstance(f, ast.Name) and f.id in _UPLOAD_HF_METHODS:
             return f.id
         return None
-
-    # Kwargs that ship a credential over the wire. The sandbox env strips credentials up front, so any value here is
-    # hard-coded or lifted from parent.
-    _HF_SENSITIVE_KWARGS = frozenset(
-        {
-            "token",
-            "hf_token",
-            "api_token",
-            "api_key",
-            "auth_token",
-            "access_token",
-            "password",
-            "secret",
-        }
-    )
-
-    _HF_UPLOAD_PATH_VIOLATION = (
-        "HF upload path must be a sandbox-local relative-path literal "
-        "(no absolute paths, no '..' segments, no dynamic expressions)"
-    )
-
-    # Upload methods that take CommitOperation* objects rather than a path, and the kwarg each one carries them in.
-    # `preupload_lfs_files` sends the file bytes to the LFS store on its own, so it needs the same gate as a commit.
-    _HF_OPERATIONS_KWARG = {
-        "create_commit": "operations",
-        "preupload_lfs_files": "additions",
-    }
-
-    # The names an aliased import can still be reading. Spelled as full names because that is what
-    # the alias resolves to: `import os as o` makes `o.environ` the name `os.environ`.
-    _EXTERNAL_SOURCE_FQ = frozenset(
-        {
-            "os.environ",
-            "os.environb",
-            "os.getenv",
-            "os.getenvb",
-            "sys.argv",
-            "sys.stdin",
-            "getpass.getpass",
-            "subprocess.run",
-            "subprocess.Popen",
-            "subprocess.check_output",
-            "subprocess.getoutput",
-            "subprocess.getstatusoutput",
-        }
-    )
-
-    # Reading a file is reading something the source does not show: a URL in a workspace file is
-    # chosen wherever that file came from, which is the same hole as reading the environment.
-    _FILE_READ_METHODS = frozenset({"read", "readline", "readlines", "read_text", "read_bytes"})
-
-    _PATHLIB_FQ = ("pathlib.Path", "Path")
 
     def _is_a_file_receiver(node: ast.AST) -> bool:
         """Whether *node* evaluates to something backed by a file. An in-memory reader is not:
@@ -17896,15 +17974,6 @@ def _check_signal_escape_patterns(code: str):
         if not _path_arg_is_sandbox_local(path_node):
             return _HF_UPLOAD_PATH_VIOLATION
         return None
-
-    # Clients handed their host at construction, after which a request needs only a path. Pools
-    # take a bare host positionally; `urllib3.PoolManager(10)` takes a pool count, not a host.
-    _POSITIONAL_HOST_FQ = ("urllib3.HTTPConnectionPool", "urllib3.HTTPSConnectionPool")
-    _POOL_FACTORY_FQ = (
-        "urllib3.PoolManager",
-        "urllib3.HTTPConnectionPool",
-        "urllib3.HTTPSConnectionPool",
-    )
 
     def _screen_host(host: str, node) -> None:
         """Record what the policy says about a host that a call will reach."""
