@@ -105,7 +105,7 @@ Native OS protocol-launch behavior requires separate Windows, WSL2, macOS and Li
 
 ## Startup size
 
-A same-toolchain production build of `origin/main` at `606d87e76` measures 5,495.3 KiB of eager JavaScript and 1,634.5 KiB transferred. With this feature, the measurements are 5,513.0 KiB and 1,640.9 KiB, with the same 85 eager chunks. Both builds use the dependencies from that commit's lockfile. The feature fits upstream's unchanged raw and transfer budgets, with 82.7 KiB and 33.9 KiB remaining respectively.
+A same-toolchain production build of `origin/main` at `0ec1e926e` measures 5,521.2 KiB of eager JavaScript and 1,639.2 KiB transferred. With this feature, the measurements are 5,543.5 KiB and 1,646.6 KiB, with the same 79 eager chunks. Both builds use the dependencies from that commit's lockfile. The feature fits upstream's unchanged raw and transfer budgets, with 52.2 KiB and 28.2 KiB remaining respectively.
 
 Run `npm run build` and `npm run bundle:check` to remeasure with the installed toolchain.
 

@@ -18,10 +18,6 @@ import {
   usePlusMenuPrefsStore,
   useSidebarOrganizationStore,
 } from "@/features/chat";
-import {
-  compactionStyleValue,
-  parseCompactionStyle,
-} from "@/features/chat/utils/auto-compaction";
 import { PASTED_TEXT_THRESHOLD_CHOICES } from "@/features/chat/utils/pasted-text";
 import { refreshContextUsage } from "@/features/chat/utils/refresh-context-usage";
 import { formatBindingLabel, isMacPlatform } from "../lib/keyboard-shortcuts";
@@ -30,12 +26,12 @@ import { type TranslationKey, useT } from "@/i18n";
 import { toast } from "@/lib/toast";
 import {
   Bookmark02Icon,
-  BookOpen01Icon,
   Download01Icon,
   FileDatabaseIcon,
   Folder01Icon,
   McpServerIcon,
   PencilRulerIcon,
+  Scroll01Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { Columns2Icon } from "lucide-react";
@@ -86,7 +82,7 @@ const PLUS_MENU_SETTINGS: {
     labelKey: "settings.chat.menu.skills",
     icon: (
       <HugeiconsIcon
-        icon={BookOpen01Icon}
+        icon={Scroll01Icon}
         strokeWidth={2}
         className={PLUS_MENU_ICON_CLASS}
       />
@@ -166,16 +162,6 @@ export function ChatTab() {
   );
   const setAutoCompactEnabled = useChatRuntimeStore(
     (state) => state.setAutoCompactEnabled,
-  );
-  const contextPolicy = useChatRuntimeStore((state) => state.contextPolicy);
-  const compactionHeadroomRatio = useChatRuntimeStore(
-    (state) => state.compactionHeadroomRatio,
-  );
-  const setContextPolicy = useChatRuntimeStore(
-    (state) => state.setContextPolicy,
-  );
-  const setCompactionHeadroomRatio = useChatRuntimeStore(
-    (state) => state.setCompactionHeadroomRatio,
   );
   const showGreetingSloth = useUserProfileStore((s) => s.showGreetingSloth);
   const setShowGreetingSloth = useUserProfileStore(
@@ -265,6 +251,12 @@ export function ChatTab() {
   );
   const setCollapseToolActivityByDefault = useChatPreferencesStore(
     (state) => state.setCollapseToolActivityByDefault,
+  );
+  const foldToolActivityIntoThinking = useChatPreferencesStore(
+    (state) => state.foldToolActivityIntoThinking,
+  );
+  const setFoldToolActivityIntoThinking = useChatPreferencesStore(
+    (state) => state.setFoldToolActivityIntoThinking,
   );
   const pastedTextMinChars = useChatPreferencesStore(
     (state) => state.pastedTextMinChars,
@@ -383,53 +375,6 @@ export function ChatTab() {
             onCheckedChange={setAutoCompactEnabled}
           />
         </SettingsRow>
-        <SettingsRow
-          label={t("settings.chat.compactionStyle")}
-          description={t(
-            contextPolicy === "inherit"
-              ? "settings.chat.compactionDescriptionInherit"
-              : contextPolicy === "checkpoint"
-                ? "settings.chat.compactionDescriptionCheckpoint"
-                : "settings.chat.compactionDescriptionRolling",
-          )}
-        >
-          <Select
-            value={compactionStyleValue(contextPolicy, compactionHeadroomRatio)}
-            onValueChange={(value) => {
-              const next = parseCompactionStyle(value);
-              setContextPolicy(next.contextPolicy);
-              setCompactionHeadroomRatio(next.compactionHeadroomRatio);
-            }}
-            disabled={!autoCompactEnabled}
-          >
-            <SelectTrigger
-              className="w-64"
-              aria-label={t("settings.chat.compactionStyle")}
-            >
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="inherit">
-                {t("settings.chat.compactionStyleInherit")}
-              </SelectItem>
-              <SelectItem value="checkpoint">
-                {t("settings.chat.compactionStyleCheckpoint")}
-              </SelectItem>
-              <SelectItem value="rolling:0.25">
-                {t("settings.chat.compactionStyleRollingDefault")}
-              </SelectItem>
-              <SelectItem value="rolling:0.1">
-                {t("settings.chat.compactionStyleRolling10")}
-              </SelectItem>
-              <SelectItem value="rolling:0.05">
-                {t("settings.chat.compactionStyleRolling5")}
-              </SelectItem>
-              <SelectItem value="rolling:0">
-                {t("settings.chat.compactionStyleRollingNone")}
-              </SelectItem>
-            </SelectContent>
-          </Select>
-        </SettingsRow>
       </SettingsSection>
 
       <SettingsSection title={t("settings.chat.groups.conversations.title")}>
@@ -515,6 +460,16 @@ export function ChatTab() {
             aria-label={t("settings.chat.tools.collapseByDefault")}
             checked={collapseToolActivityByDefault}
             onCheckedChange={setCollapseToolActivityByDefault}
+          />
+        </SettingsRow>
+        <SettingsRow
+          label={t("settings.chat.tools.foldIntoThinking")}
+          description={t("settings.chat.tools.foldIntoThinkingDescription")}
+        >
+          <Switch
+            aria-label={t("settings.chat.tools.foldIntoThinking")}
+            checked={foldToolActivityIntoThinking}
+            onCheckedChange={setFoldToolActivityIntoThinking}
           />
         </SettingsRow>
         <SettingsRow

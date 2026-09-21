@@ -165,6 +165,8 @@ export const de = {
       export: "Exportieren",
       recents: "Zuletzt verwendet",
       noChatsYet: "Noch keine Chats",
+      // Shown under an empty project folder in the sidebar.
+      noChats: "Keine Chats",
       showMore: "Mehr anzeigen",
       showLess: "Weniger anzeigen",
       settings: "Einstellungen",
@@ -195,6 +197,7 @@ export const de = {
       unpinChats: "Chats lösen",
       archiveChats: "Chats archivieren",
       markUnread: "Als ungelesen markieren",
+      markRead: "Als gelesen markieren",
       deleteChats: "Chats löschen",
       deleteTitle: "Chats löschen",
       deleteDescription: "{count} Chats löschen? Das lässt sich nicht rückgängig machen.",
@@ -213,11 +216,22 @@ export const de = {
       priority: "Priorität",
       lastUpdated: "Zuletzt aktualisiert",
       manualOrder: "Manuelle Reihenfolge",
-      moveUp: "Nach oben",
-      moveDown: "Nach unten",
+      priorityHint: "Aktive und ungelesene zuerst",
+      lastUpdatedHint: "Neueste zuerst",
+      manualOrderHint: "Zeilen zum Umordnen ziehen",
+      switchedToManual: "Manuell sortiert: Zeilen zum Umordnen ziehen",
       organizeChats: "Chats organisieren",
       organizeProjects: "Projekte organisieren",
       sortPinnedChats: "Angeheftete Chats sortieren",
+      moveUp: "Nach oben",
+      moveDown: "Nach unten",
+    },
+    drag: {
+      reorder: "Umordnen",
+      pin: "Anheften",
+      unpin: "Lösen",
+      moveTo: "Verschieben nach {name}",
+      moveToRecents: "Zu Zuletzt verschieben",
     },
     dialog: {
       deleteChat: {
@@ -1283,7 +1297,11 @@ export const de = {
       },
       gpu: {
         title: "GPU-Geräte",
-        ggufInference: "GGUF-Inferenz",
+        memory: "GPU-Speicher",
+        sharedWithSystemRam: "Mit dem System-RAM geteilt",
+        estimatedAvailable: "Geschätzt verfügbar: {value}",
+        sharedEstimatedAvailable: "Gemeinsamer System-RAM: geschätzt {value} verfügbar",
+        ggufInference: "Speicher für GGUF-Modelle",
         unavailable: "nicht verfügbar",
         detecting: "Suche nach GPUs...",
         unreadable: "Die Hardware dieses Servers konnte nicht gelesen werden.",
@@ -1514,9 +1532,9 @@ export const de = {
           "Überspringt Bestätigungsabfragen. Nur in vertrauenswürdigen Umgebungen verwenden.",
       },
       remote: {
-        title: "Mit einem entfernten Unsloth Studio verbinden",
+        title: "Mit einem entfernten Unsloth verbinden",
         description:
-          "Richten Sie unsloth start auf ein anderswo laufendes Unsloth Studio aus, indem Sie diese Variablen vor dem Aufruf setzen (oder --api-key direkt übergeben):",
+          "Richten Sie unsloth start auf ein anderswo laufendes Unsloth aus, indem Sie diese Variablen vor dem Aufruf setzen (oder --api-key direkt übergeben):",
       },
       passthrough: {
         title: "Argumente an den Agenten übergeben",
@@ -1544,16 +1562,11 @@ export const de = {
       rememberParamsPerModelHint:
         "Wenn deaktiviert, verwenden alle Modelle dieselben Einstellungen.",
       autoCompactHint:
-        "Verwendet die eingestellte Kontextlänge, nicht den verfügbaren VRAM.",
+        "Nur lokale GGUF-Chats. Verdrängte Runden werden indexiert, sodass das Modell sie zurückholen kann, und ein Reset zitiert die dauerhaft geltenden Anweisungen, die hineinpassen, wortgetreu und mit Vorrang für die ältesten und neuesten vor allem dazwischen. Archivieren setzt einen gespeicherten Chat und den Vektorindex voraus; ohne sie werden ältere Runden verworfen. Verwendet die eingestellte Kontextlänge, nicht den verfügbaren VRAM.",
       pastedTextShortDescription:
         "Eingefügter Text ab {count} Zeichen wird als .txt-Datei angehängt. Kürzerer Text bleibt im Nachrichtenfeld.",
       pastedTextOffDescription:
         "Eingefügter Text bleibt unabhängig von seiner Länge im Nachrichtenfeld.",
-      compactionDescriptionInherit: "Folgt der Kontextrichtlinie des Servers.",
-      compactionDescriptionCheckpoint:
-        "Behält den letzten Austausch und die dauerhaft geltenden Anweisungen bei.",
-      compactionDescriptionRolling:
-        "Entfernt die ältesten Gesprächsrunden und behält neuere Inhalte mit dem gewählten zusätzlichen Freiraum.",
       projectsSection: "Projektbereich anzeigen",
       projectsSectionDescription:
         "Gruppiert Projekt-Chats unter einer Überschrift für Projekte. Deaktiviere dies, um sie stattdessen unter den zuletzt verwendeten Chats aufzulisten.",
@@ -1577,7 +1590,7 @@ export const de = {
           "Elemente im seitlichen Plus-Menü des Chats anheften. Die übrigen werden unter „Mehr“ angezeigt.",
         chatWithFiles: "Chat mit Dateien (RAG)",
         mcp: "MCP",
-        skills: "Agentenfähigkeiten",
+        skills: "Fähigkeiten",
         savedPrompts: "Gespeicherte Prompts",
         compareChat: "Chats vergleichen",
         exportChat: "Chat exportieren",
@@ -1600,22 +1613,9 @@ export const de = {
         "Stellt den zuletzt verwendeten Prompt, die Temperatur und weitere Einstellungen pro Modell wieder her.",
       autoCompact: "Lange Chats automatisch komprimieren",
       autoCompactDescription:
-        "Entfernt ältere Gesprächsrunden, wenn ein lokaler GGUF-Chat sein Kontextlimit erreicht.",
-      compactionStyle: "Wenn der Kontext voll ist",
-      compactionStyleDescription:
-        "Die Servervorgabe behält UNSLOTH_CONTEXT_POLICY bei. Gespräch zurücksetzen behält die letzte Runde und dauerhafte Anweisungen. Ein gleitendes Fenster verwirft die ältesten Runden und kann mehr aktuellen Verlauf behalten.",
-      compactionStyleInherit: "Servervorgabe verwenden",
-      compactionStyleCheckpoint: "Gespräch zurücksetzen",
-      compactionStyleRollingDefault:
-        "Älteste Runden verwerfen (~25 % zusätzlicher Platz)",
-      compactionStyleRolling10:
-        "Älteste Runden verwerfen (~10 % zusätzlicher Platz)",
-      compactionStyleRolling5:
-        "Älteste Runden verwerfen (~5 % zusätzlicher Platz)",
-      compactionStyleRollingNone:
-        "Älteste Runden verwerfen (keine zusätzliche Kürzung)",
+        "Ältere Runden wandern in ein durchsuchbares Archiv, wenn ein Chat voll läuft.",
       autoCompactKeywords:
-        "Komprimierung automatisch Kontext Fenster kürzen gleitend Prüfpunkt Reserve compaction rolling checkpoint headroom",
+        "Komprimierung automatisch Kontext Fenster kürzen gleitend Prüfpunkt Reserve Archiv Abruf Suche compaction rolling checkpoint headroom archive retrieval rag",
       thinking: {
         collapseByDefault: "Denken standardmäßig einklappen",
         collapseByDefaultDescription:
@@ -1632,6 +1632,9 @@ export const de = {
         collapseByDefault: "Tool-Aktivität standardmäßig einklappen",
         collapseByDefaultDescription:
           "Tool-Eingaben und -Ausgaben bleiben während der Ausführung eingeklappt. Zum Prüfen eine Tool-Zeile ausklappen.",
+        foldIntoThinking: "Tool-Aufrufe ins Denken einklappen",
+        foldIntoThinkingDescription:
+          "Tool-Aufrufe eines Zuges ausblenden, bis der Denken-Block geöffnet wird.",
       },
       webSearch: {
         title: "Websuche",
@@ -2769,11 +2772,11 @@ export const de = {
     tooLarge: "Größer als der VRAM, wird auf die CPU ausgelagert. Eine kleinere Quantisierung läuft schneller",
   },
   skills: {
-    title: "Agentenfähigkeiten",
+    title: "Fähigkeiten",
     description: "Fähigkeiten werden aus deinen Standard-Agentenordnern erkannt. Aktiviere sie hier und tippe dann @ im Chat, um eine zu erwähnen.",
     precedence: "~/.agents/skills hat Vorrang vor ~/.claude/skills.",
     refresh: "Aktualisieren",
-    empty: "Keine Agentenfähigkeiten gefunden. Lege einen SKILL.md-Ordner unter ~/.agents/skills oder ~/.claude/skills an und aktualisiere dann.",
+    empty: "Keine Fähigkeiten gefunden. Lege einen SKILL.md-Ordner unter ~/.agents/skills oder ~/.claude/skills an und aktualisiere dann.",
     sourceAgents: "Agents",
     sourceClaude: "Claude",
     sourceBundled: "Mitgeliefert",
@@ -2783,7 +2786,7 @@ export const de = {
     shadowedBy: "Eine andere Fähigkeit ({source}) mit diesem Namen hat Vorrang.",
     enable: "{name} aktivieren",
     disable: "{name} deaktivieren",
-    updateError: "Agentenfähigkeit konnte nicht aktualisiert werden",
-    mentions: "Agentenfähigkeiten",
+    updateError: "Fähigkeit konnte nicht aktualisiert werden",
+    mentions: "Fähigkeiten",
   },
 } satisfies DeepPartialMessageTree<typeof en>;

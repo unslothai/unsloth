@@ -162,6 +162,8 @@ export const ar = {
       export: "تصدير",
       recents: "العناصر الأخيرة",
       noChatsYet: "لا توجد محادثات بعد",
+      // Shown under an empty project folder in the sidebar.
+      noChats: "لا توجد محادثات",
       showMore: "عرض المزيد",
       showLess: "عرض أقل",
       settings: "الإعدادات",
@@ -192,6 +194,7 @@ export const ar = {
       unpinChats: "إلغاء تثبيت المحادثات",
       archiveChats: "أرشفة المحادثات",
       markUnread: "وضع علامة كغير مقروءة",
+      markRead: "وضع علامة كمقروءة",
       deleteChats: "حذف المحادثات",
       deleteTitle: "حذف المحادثات",
       deleteDescription: "هل تريد حذف {count} محادثة؟ لا يمكن التراجع عن ذلك.",
@@ -210,11 +213,22 @@ export const ar = {
       priority: "الأولوية",
       lastUpdated: "آخر تحديث",
       manualOrder: "ترتيب يدوي",
-      moveUp: "تحريك لأعلى",
-      moveDown: "تحريك لأسفل",
+      priorityHint: "النشطة وغير المقروءة أولاً",
+      lastUpdatedHint: "الأحدث أولاً",
+      manualOrderHint: "اسحب الصفوف لإعادة ترتيبها",
+      switchedToManual: "الترتيب يدوي الآن: اسحب الصفوف لإعادة ترتيبها",
       organizeChats: "تنظيم المحادثات",
       organizeProjects: "تنظيم المشاريع",
       sortPinnedChats: "ترتيب المحادثات المثبتة",
+      moveUp: "تحريك لأعلى",
+      moveDown: "تحريك لأسفل",
+    },
+    drag: {
+      reorder: "إعادة ترتيب",
+      pin: "تثبيت",
+      unpin: "إلغاء التثبيت",
+      moveTo: "نقل إلى {name}",
+      moveToRecents: "نقل إلى الأخيرة",
     },
     dialog: {
       deleteChat: {
@@ -1257,7 +1271,11 @@ export const ar = {
       },
       gpu: {
         title: "أجهزة GPU",
-        ggufInference: "استدلال GGUF",
+        memory: "ذاكرة GPU",
+        sharedWithSystemRam: "مشتركة مع ذاكرة النظام",
+        estimatedAvailable: "المتاح تقديريًا: {value}",
+        sharedEstimatedAvailable: "ذاكرة النظام المشتركة: المتاح تقديريًا {value}",
+        ggufInference: "ذاكرة نماذج GGUF",
         unavailable: "غير متاح",
         detecting: "جارٍ البحث عن وحدات GPU...",
         unreadable: "تعذّرت قراءة عتاد هذا الخادم.",
@@ -1478,9 +1496,9 @@ export const ar = {
         yolo: "يتخطى طلبات الموافقة. استخدمه في البيئات الموثوقة فقط.",
       },
       remote: {
-        title: "الاتصال بنسخة بعيدة من Unsloth Studio",
+        title: "الاتصال بنسخة بعيدة من Unsloth",
         description:
-          "وجّه unsloth start إلى نسخة من Unsloth Studio تعمل في مكان آخر بضبط ما يلي قبل التشغيل (أو مرّر ‎--api-key مباشرة):",
+          "وجّه unsloth start إلى نسخة من Unsloth تعمل في مكان آخر بضبط ما يلي قبل التشغيل (أو مرّر ‎--api-key مباشرة):",
       },
       passthrough: {
         title: "تمرير وسائط إلى الوكيل",
@@ -1508,16 +1526,11 @@ export const ar = {
       rememberParamsPerModelHint:
         "عند إيقافه، تستخدم جميع النماذج الإعدادات نفسها.",
       autoCompactHint:
-        "يعتمد على طول السياق الذي حددته، لا على ذاكرة VRAM المتاحة.",
+        "لمحادثات GGUF المحلية فقط. تُفهرس الأدوار التي تخرج من السياق ليتمكن النموذج من البحث عنها لاحقًا، ومع إعادة التعيين يُقتبس ما يتّسع من تعليماتك الدائمة بنصه الحرفي، مع تفضيل الأقدم والأحدث على ما بينهما. تتطلب الأرشفة محادثة محفوظة وفهرسًا متجهيًا؛ وبدونهما تُحذف الأدوار الأقدم. يعتمد على طول السياق الذي حددته، لا على ذاكرة VRAM المتاحة.",
       pastedTextShortDescription:
         "يصبح النص الملصق الذي يبلغ {count} حرفًا أو أكثر مرفقًا بصيغة .txt. يبقى النص الأقصر في مربع الرسالة.",
       pastedTextOffDescription:
         "يبقى كل النص الملصق في مربع الرسالة، مهما كان طوله.",
-      compactionDescriptionInherit: "يتبع سياسة السياق المحددة على الخادم.",
-      compactionDescriptionCheckpoint:
-        "يحتفظ بآخر تبادل للرسائل والتعليمات الدائمة.",
-      compactionDescriptionRolling:
-        "يحذف أقدم التبادلات للاحتفاظ بالسجل الحديث والمساحة الإضافية المحددة.",
       projectsSection: "إظهار قسم المشاريع",
       projectsSectionDescription:
         "يجمع محادثات المشروع تحت عنوان المشاريع. أوقف هذا الخيار لعرضها ضمن الأخيرة بدلاً من ذلك.",
@@ -1541,7 +1554,7 @@ export const ar = {
           "ثبّت العناصر في القائمة الجانبية لعلامة + في المحادثة. تنتقل العناصر الأخرى إلى «المزيد».",
         chatWithFiles: "المحادثة مع الملفات (RAG)",
         mcp: "MCP",
-        skills: "مهارات الوكلاء",
+        skills: "المهارات",
         savedPrompts: "الموجّهات المحفوظة",
         compareChat: "مقارنة المحادثات",
         exportChat: "تصدير المحادثة",
@@ -1564,18 +1577,9 @@ export const ar = {
         "استعد آخر موجّه ودرجة حرارة وإعدادات أخرى استُخدمت مع كل نموذج.",
       autoCompact: "ضغط المحادثات الطويلة تلقائيًا",
       autoCompactDescription:
-        "احذف الأدوار الأقدم عندما تصل محادثة GGUF محلية إلى حد السياق.",
-      compactionStyle: "عند امتلاء السياق",
-      compactionStyleDescription:
-        "يُبقي الخيار الافتراضي للخادم UNSLOTH_CONTEXT_POLICY. تحتفظ إعادة ضبط المحادثة بأحدث دور والتعليمات الدائمة. تحذف النافذة المنزلقة الأدوار الأقدم ويمكنها الاحتفاظ بمزيد من السجل الحديث.",
-      compactionStyleInherit: "استخدام إعداد الخادم الافتراضي",
-      compactionStyleCheckpoint: "إعادة ضبط المحادثة",
-      compactionStyleRollingDefault: "حذف الأدوار الأقدم (مساحة إضافية نحو 25%)",
-      compactionStyleRolling10: "حذف الأدوار الأقدم (مساحة إضافية نحو 10%)",
-      compactionStyleRolling5: "حذف الأدوار الأقدم (مساحة إضافية نحو 5%)",
-      compactionStyleRollingNone: "حذف الأدوار الأقدم (دون اقتطاع إضافي)",
+        "تنتقل الأدوار الأقدم إلى أرشيف قابل للبحث عندما تمتلئ نافذة سياق المحادثة.",
       autoCompactKeywords:
-        "ضغط تلقائي سياق نافذة اقتطاع منزلقة نقطة تحقق هامش compaction rolling checkpoint headroom",
+        "ضغط تلقائي سياق نافذة اقتطاع منزلقة نقطة تحقق هامش أرشيف استرجاع بحث compaction rolling checkpoint headroom archive retrieval rag",
       thinking: {
         collapseByDefault: "طيّ التفكير افتراضيًا",
         collapseByDefaultDescription:
@@ -1592,6 +1596,9 @@ export const ar = {
         collapseByDefault: "طيّ نشاط الأدوات افتراضيًا",
         collapseByDefaultDescription:
           "إبقاء مدخلات الأدوات ومخرجاتها مطوية أثناء التشغيل. وسّع أي صف أداة لفحصه.",
+        foldIntoThinking: "طيّ استدعاءات الأدوات داخل التفكير",
+        foldIntoThinkingDescription:
+          "إخفاء استدعاءات الأدوات في الدور حتى فتح كتلة التفكير.",
       },
       webSearch: {
         title: "البحث على الويب",
@@ -2698,7 +2705,7 @@ export const ar = {
     tooLarge: "أكبر من ذاكرة الرسوميات، وسيُفرَّغ جزء منه إلى المعالج. التكميم الأصغر أسرع",
   },
   skills: {
-    title: "مهارات الوكلاء",
+    title: "المهارات",
     description: "تُكتشف المهارات من مجلدات الوكلاء القياسية. فعّلها هنا ثم اكتب @ في الدردشة لذكر إحداها.",
     precedence: "‎~/.agents/skills له الأولوية على ‎~/.claude/skills.",
     refresh: "تحديث",
@@ -2712,7 +2719,7 @@ export const ar = {
     shadowedBy: "مهارة أخرى ({source}) بالاسم نفسه لها الأولوية.",
     enable: "تفعيل {name}",
     disable: "تعطيل {name}",
-    updateError: "تعذّر تحديث مهارة الوكيل",
-    mentions: "مهارات الوكلاء",
+    updateError: "تعذّر تحديث المهارة",
+    mentions: "المهارات",
   },
 } satisfies DeepPartialMessageTree<typeof en>;

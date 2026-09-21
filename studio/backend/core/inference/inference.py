@@ -77,6 +77,66 @@ def _hf_token_for_loader(hf_token: Optional[str] | bool) -> Optional[str] | bool
     return hf_token.strip() if isinstance(hf_token, str) and hf_token.strip() else None
 
 
+def _exact_model_name_for_load(config: ModelConfig, load_in_4bit: bool) -> Optional[str]:
+    """The repo id to hand the loader verbatim, or None to let Unsloth's mapper choose.
+
+    ``config.path`` when the mapped repo is not on disk and the user's own weights are.
+    The mapped repo's cached spelling when it IS on disk under another case: the mapper
+    emits one lowercased id and huggingface_hub keys the cache directory on the id
+    verbatim, so asking for any other spelling re-downloads it (huggingface_hub#3838).
+    """
+    if config.is_local or config.is_lora or not config.path:
+        return None
+    try:
+        from unsloth.models import loader, loader_utils
+
+        # ModelScope downloads every repo id to its own cache, so the HF cache says nothing here.
+        if loader.USE_MODELSCOPE:
+            return None
+        # Resolve the repo the loader will fetch on this host, after its bitsandbytes fallbacks.
+        if not loader.ALLOW_BITSANDBYTES:
+            load_in_4bit = False
+        name = config.path.lower()
+        if name in loader_utils.BAD_MAPPINGS:
+            return None
+        table = (
+            loader_utils.FLOAT_TO_INT_MAPPER if load_in_4bit else loader_utils.MAP_TO_UNSLOTH_16bit
+        )
+        # Avoid fetching the remote mapper for unknown names.
+        if name not in table:
+            return None
+        target = loader_utils.get_model_name(config.path, load_in_4bit = load_in_4bit)
+        if target and not loader.ALLOW_PREQUANTIZED_MODELS:
+            target = loader._strip_unsloth_bnb_4bit_suffix(target)
+    except Exception as e:
+        logger.debug(f"Could not resolve the Unsloth mapping for {config.path}: {e}")
+        return None
+    if not target or target.lower() == name:
+        return None
+    from utils.utils import (
+        active_hf_cache_loadable_snapshot,
+        active_hf_cache_repo_spelling,
+    )
+
+    cached_target = active_hf_cache_repo_spelling(target)
+    if cached_target == target:
+        return None  # on disk under the name the mapper will ask for: nothing to do
+    if cached_target is not None:
+        logger.info(f"Loading cached {cached_target} instead of downloading {target} again")
+        return cached_target
+    snapshot = active_hf_cache_loadable_snapshot(config.path)
+    if snapshot is None:
+        return None
+    try:
+        checkpoint = json.loads((snapshot / "config.json").read_text(encoding = "utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(checkpoint, dict) or checkpoint.get("quantization_config") is not None:
+        return None
+    logger.info(f"Loading cached {config.path} as named instead of downloading {target}")
+    return config.path
+
+
 class HarmonyTextStreamer:
     """Streaming text decoder for the gpt-oss harmony channel protocol.
 
@@ -809,15 +869,19 @@ class InferenceBackend:
             logger.info(f"Loading {model_type} model{adapter_info}: {model_name}")
             log_gpu_memory(f"Before loading {model_name}")
 
+            exact_model_name = _exact_model_name_for_load(config, load_in_4bit)
+            use_exact_model_name = exact_model_name is not None
+            load_path = exact_model_name or config.path
             if config.is_vision:
                 model, processor = FastVisionModel.from_pretrained(
-                    model_name = config.path,
+                    model_name = load_path,
                     max_seq_length = max_seq_length,
                     dtype = dtype,
                     load_in_4bit = load_in_4bit,
                     device_map = device_map,
                     token = _hf_token_for_loader(hf_token),
                     trust_remote_code = trust_remote_code,
+                    use_exact_model_name = use_exact_model_name,
                 )
 
                 FastVisionModel.for_inference(model)
@@ -859,13 +923,14 @@ class InferenceBackend:
 
             else:
                 model, tokenizer = FastLanguageModel.from_pretrained(
-                    model_name = config.path,
+                    model_name = load_path,
                     max_seq_length = max_seq_length,
                     dtype = dtype,
                     load_in_4bit = load_in_4bit,
                     device_map = device_map,
                     token = _hf_token_for_loader(hf_token),
                     trust_remote_code = trust_remote_code,
+                    use_exact_model_name = use_exact_model_name,
                 )
 
                 FastLanguageModel.for_inference(model)

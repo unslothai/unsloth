@@ -160,6 +160,8 @@ export const zhCN = {
       export: "导出",
       recents: "最近",
       noChatsYet: "暂无对话",
+      // Shown under an empty project folder in the sidebar.
+      noChats: "无对话",
       showMore: "显示更多",
       showLess: "显示更少",
       settings: "设置",
@@ -190,6 +192,7 @@ export const zhCN = {
       unpinChats: "取消置顶",
       archiveChats: "归档对话",
       markUnread: "标记为未读",
+      markRead: "标记为已读",
       deleteChats: "删除对话",
       deleteTitle: "删除对话",
       deleteDescription: "删除 {count} 个对话？此操作无法撤销。",
@@ -208,11 +211,22 @@ export const zhCN = {
       priority: "优先级",
       lastUpdated: "最近更新",
       manualOrder: "手动排序",
-      moveUp: "上移",
-      moveDown: "下移",
+      priorityHint: "进行中和未读优先",
+      lastUpdatedHint: "最新优先",
+      manualOrderHint: "拖动行即可重新排序",
+      switchedToManual: "已改为手动排序，拖动行即可重新排序",
       organizeChats: "整理对话",
       organizeProjects: "整理项目",
       sortPinnedChats: "对置顶对话排序",
+      moveUp: "上移",
+      moveDown: "下移",
+    },
+    drag: {
+      reorder: "重新排序",
+      pin: "固定",
+      unpin: "取消固定",
+      moveTo: "移动到 {name}",
+      moveToRecents: "移动到最近",
     },
     dialog: {
       deleteChat: {
@@ -1231,7 +1245,11 @@ export const zhCN = {
       },
       gpu: {
         title: "GPU 设备",
-        ggufInference: "GGUF 推理",
+        memory: "GPU 内存",
+        sharedWithSystemRam: "与系统 RAM 共享",
+        estimatedAvailable: "预计可用：{value}",
+        sharedEstimatedAvailable: "共享系统 RAM：预计可用 {value}",
+        ggufInference: "GGUF 模型内存",
         unavailable: "不可用",
         detecting: "正在检查 GPU...",
         unreadable: "无法读取此服务器的硬件信息。",
@@ -1447,9 +1465,9 @@ export const zhCN = {
         yolo: "跳过确认提示。请仅在可信环境中使用。",
       },
       remote: {
-        title: "连接到远程 Unsloth Studio",
+        title: "连接到远程 Unsloth",
         description:
-          "在启动前设置以下内容，即可让 unsloth start 指向运行在别处的 Unsloth Studio（也可以直接传入 --api-key）：",
+          "在启动前设置以下内容，即可让 unsloth start 指向运行在别处的 Unsloth（也可以直接传入 --api-key）：",
       },
       passthrough: {
         title: "向智能体传递参数",
@@ -1474,15 +1492,11 @@ export const zhCN = {
       },
       projectAttachmentsHint: "可在各聊天的附件菜单中单独调整此设置。",
       rememberParamsPerModelHint: "关闭后，所有模型使用同一套设置。",
-      autoCompactHint: "依据你设置的上下文长度，而不是可用显存。",
+      autoCompactHint: "仅适用于本地 GGUF 聊天。被移出的轮次会建立索引，模型可以再检索回来；重置时会原文保留放得下的长期指令，优先保留最早和最新的，而不是中间的。归档需要已保存的聊天和向量索引，两者缺一时较早的轮次会被直接丢弃。依据你设置的上下文长度，而不是可用显存。",
       pastedTextShortDescription:
         "粘贴的文本达到 {count} 个字符时会转为 .txt 附件，较短的文本则保留在消息输入框中。",
       pastedTextOffDescription:
         "无论长度如何，粘贴的文本都会保留在消息输入框中。",
-      compactionDescriptionInherit: "遵循服务器的上下文策略。",
-      compactionDescriptionCheckpoint: "保留最新一轮对话和持续生效的指令。",
-      compactionDescriptionRolling:
-        "移除最早的对话轮次，保留近期记录并预留所选的额外空间。",
       projectsSection: "显示项目分区",
       projectsSectionDescription:
         "将项目对话归到「项目」标题下。关闭后改为显示在「最近」中。",
@@ -1506,7 +1520,7 @@ export const zhCN = {
           "将条目固定到聊天中的“+”侧边菜单，其他条目会移到“更多”中。",
         chatWithFiles: "与文件聊天（RAG）",
         mcp: "MCP",
-        skills: "代理技能",
+        skills: "技能",
         savedPrompts: "已保存的提示词",
         compareChat: "对比聊天",
         exportChat: "导出聊天",
@@ -1528,18 +1542,9 @@ export const zhCN = {
         "恢复每个模型上次使用的提示词、温度等设置。",
       autoCompact: "自动压缩长聊天",
       autoCompactDescription:
-        "本地 GGUF 聊天达到上下文上限时，移除较早的轮次。",
-      compactionStyle: "上下文已满时",
-      compactionStyleDescription:
-        "使用服务器默认值会保留 UNSLOTH_CONTEXT_POLICY。重置对话会保留最新轮次和持续指令。滑动窗口会丢弃最早的轮次，并可保留更多近期历史。",
-      compactionStyleInherit: "使用服务器默认值",
-      compactionStyleCheckpoint: "重置对话",
-      compactionStyleRollingDefault: "丢弃最早的轮次（约 25% 额外空间）",
-      compactionStyleRolling10: "丢弃最早的轮次（约 10% 额外空间）",
-      compactionStyleRolling5: "丢弃最早的轮次（约 5% 额外空间）",
-      compactionStyleRollingNone: "丢弃最早的轮次（不额外裁剪）",
+        "聊天填满上下文时，较早的轮次会转入可检索的归档。",
       autoCompactKeywords:
-        "压缩 自动压缩 上下文 窗口 截断 滑动 检查点 余量 compaction rolling checkpoint headroom",
+        "压缩 自动压缩 上下文 窗口 截断 滑动 检查点 余量 归档 检索 搜索 compaction rolling checkpoint headroom archive retrieval rag",
       thinking: {
         collapseByDefault: "默认折叠思考过程",
         collapseByDefaultDescription:
@@ -1556,6 +1561,9 @@ export const zhCN = {
         collapseByDefault: "默认折叠工具活动",
         collapseByDefaultDescription:
           "工具运行时保持输入和输出折叠。需要检查时展开对应工具行。",
+        foldIntoThinking: "将工具调用折叠进思考",
+        foldIntoThinkingDescription:
+          "在展开思考块之前隐藏该轮的工具调用。",
       },
       webSearch: {
         title: "网页搜索",
@@ -2609,11 +2617,11 @@ export const zhCN = {
     tooLarge: "超出显存，将卸载到 CPU 运行。更小的量化版本速度更快",
   },
   skills: {
-    title: "代理技能",
+    title: "技能",
     description: "技能会从标准的代理文件夹中发现。在此启用后，在聊天中输入 @ 即可提及。",
     precedence: "~/.agents/skills 优先于 ~/.claude/skills。",
     refresh: "刷新",
-    empty: "未找到代理技能。请在 ~/.agents/skills 或 ~/.claude/skills 下添加包含 SKILL.md 的文件夹，然后刷新。",
+    empty: "未找到技能。请在 ~/.agents/skills 或 ~/.claude/skills 下添加包含 SKILL.md 的文件夹，然后刷新。",
     sourceAgents: "Agents",
     sourceClaude: "Claude",
     sourceBundled: "内置",
@@ -2623,7 +2631,7 @@ export const zhCN = {
     shadowedBy: "另一个同名技能（{source}）优先。",
     enable: "启用 {name}",
     disable: "禁用 {name}",
-    updateError: "无法更新代理技能",
-    mentions: "代理技能",
+    updateError: "无法更新技能",
+    mentions: "技能",
   },
 } satisfies DeepPartialMessageTree<typeof en>;
