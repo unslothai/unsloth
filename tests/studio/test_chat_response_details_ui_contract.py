@@ -458,6 +458,13 @@ def test_reasoning_keeps_streaming_height_cap_through_automatic_collapse():
     # the height cap; the same OR on a sibling reads identically here and caps nothing.
     tag = _opening_tag(src, "<ReasoningText")
     assert tag, "ReasoningText is no longer rendered, so nothing here caps the height"
+    # Same ground as the holder above, and it has to be said again here: JSX takes the last
+    # write of a prop, so a spread after `streaming=` decides the cap and the explicit text
+    # this guard reads goes on satisfying it.
+    assert not re.search(r"\{\s*\.\.\.", tag), (
+        f"ReasoningText spreads props, so whether the streaming cap it is given survives "
+        f"depends on what the spread contains, which this guard cannot resolve: {tag!r}"
+    )
     # The left operand has to be the component's own streaming input. `\w+` accepted any
     # identifier, so `streaming={somethingElse || retainStreamingHeight}` passed while an
     # actively streaming block went uncapped whenever the retained flag was false.
