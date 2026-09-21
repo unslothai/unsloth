@@ -235,9 +235,9 @@
 	--shadow-offset-x: 0px;
 	--shadow-offset-y: 0px;
 	--letter-spacing: 0em;
-	/* Tailwind's spacing step, scaled so every p-*, m-*, gap-*, size-* and
-	   w-*/h-* utility follows the UI font size. Overlays that could then
-	   outgrow a phone screen carry their own viewport cap. See
+	/* Tailwind's spacing step, scaled so every padding, margin, gap, size,
+	   width and height utility follows the UI font size. Overlays that could
+	   then outgrow a phone screen carry their own viewport cap. See
 	   --ui-space-scale below. */
 	--spacing: calc(0.25rem * var(--ui-space-scale, 1));
 	/*--shadow-2xs: 0px 0px 0px 0px hsl(0 0% 0% / 0);*/

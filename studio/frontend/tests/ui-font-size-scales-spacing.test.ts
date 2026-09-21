@@ -154,3 +154,18 @@ test("overlays that scale cannot outgrow the screen", () => {
     );
   }
 });
+
+test("the stylesheet's comments stay comments", () => {
+  // A "*/" inside the prose ends the comment early and postcss then reads the
+  // rest of the sentence as a declaration, taking the next one with it.
+  const stripped = CSS.replace(/\/\*[\s\S]*?\*\//g, "");
+  assert.doesNotMatch(
+    stripped,
+    /\butility follows\b|\bTailwind's\b/,
+    "prose leaked out of a comment",
+  );
+  assert.ok(
+    stripped.includes("--spacing: calc(0.25rem * var(--ui-space-scale, 1));"),
+    "the spacing step is no longer a declaration of its own",
+  );
+});
