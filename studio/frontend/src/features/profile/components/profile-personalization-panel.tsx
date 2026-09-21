@@ -23,6 +23,7 @@ import {
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useEffect, useRef, useState } from "react";
 import { SLOTH_AVATARS } from "../sloth-avatars";
+import { loginDisplayName } from "../hooks/use-effective-profile";
 import { decodeJwtSubject } from "../utils/jwt-subject";
 import { resizeImageFileToDataUrl } from "../utils/resize-image-file";
 import {
@@ -88,7 +89,10 @@ export function ProfilePersonalizationPanel() {
   const lastNicknameRef = useRef(nickname);
 
   const sessionSub = decodeJwtSubject(getAuthToken()) ?? "";
-  const previewName = draftName.trim() || sessionSub || "Unsloth";
+  // The draft still wins; only the login-id fallback is spelled the way the
+  // sidebar spells it, so the owner does not read two names for one account.
+  const loginName = loginDisplayName(sessionSub);
+  const previewName = draftName.trim() || loginName || "Unsloth";
 
   useEffect(() => {
     const previous = lastDisplayNameRef.current;
@@ -385,7 +389,7 @@ export function ProfilePersonalizationPanel() {
                 }
               }}
               autoComplete="off"
-              placeholder={sessionSub || "Unsloth"}
+              placeholder={loginName || "Unsloth"}
               className="h-9 w-full rounded-full text-sm"
             />
           </div>
