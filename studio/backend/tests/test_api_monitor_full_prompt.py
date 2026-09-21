@@ -129,7 +129,8 @@ def test_eviction_releases_prompt_budget_for_new_requests(monkeypatch):
     assert monitor.get(third)["prompt"] == prompt
 
 
-def test_reply_refresh_can_omit_immutable_prompt():
+def test_reply_refresh_can_omit_immutable_prompt(monkeypatch):
+    monkeypatch.setattr(monitor_module.time, "time", lambda: 1_700_000_000.0)
     monitor = ApiMonitor()
     prompt = "long prompt\n" * 2000
     entry_id = _start(monitor, prompt)

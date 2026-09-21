@@ -28,6 +28,42 @@ export type MonitorStatusFilter =
   | "error"
   | "cancelled";
 
+function retainDetail(
+  previous: Record<string, ApiMonitorEntry>,
+  id: string,
+  entry: ApiMonitorEntry,
+  cachedPrompt: string | undefined,
+): Record<string, ApiMonitorEntry> {
+  const refreshed =
+    cachedPrompt == null ? entry : { ...entry, prompt: cachedPrompt };
+  const retained: Record<string, ApiMonitorEntry> = { [id]: refreshed };
+  let promptChars = refreshed.prompt?.length ?? 0;
+  for (const [cachedId, cached] of Object.entries(previous)) {
+    if (cachedId === id) {
+      continue;
+    }
+    const cachedChars = cached.prompt?.length ?? 0;
+    if (promptChars + cachedChars > MAX_CACHED_PROMPT_CHARS) {
+      continue;
+    }
+    retained[cachedId] = cached;
+    promptChars += cachedChars;
+  }
+  return retained;
+}
+
+function dropDetail(
+  previous: Record<string, ApiMonitorEntry>,
+  id: string,
+): Record<string, ApiMonitorEntry> {
+  if (!(id in previous)) {
+    return previous;
+  }
+  const next = { ...previous };
+  delete next[id];
+  return next;
+}
+
 export function filterEntries(
   entries: ApiMonitorEntry[],
   status: MonitorStatusFilter,
@@ -96,6 +132,9 @@ export function useApiMonitor({
   // Mirrors `loadingDetails` outside React state so the guard sees same-tick writes.
   const inFlightDetails = useRef<Set<string>>(new Set());
   const retainedEntryIds = useRef<Set<string>>(new Set());
+  const listRequestGeneration = useRef(0);
+  const manualLoadGeneration = useRef(0);
+  const detailRequestGeneration = useRef(0);
 
   const updateData = useCallback((next: ApiMonitorResponse): void => {
     const ids = new Set(next.entries.map((entry) => entry.id));
@@ -111,16 +150,28 @@ export function useApiMonitor({
   }, []);
 
   const load = useCallback(async (): Promise<void> => {
+    const requestGeneration = ++listRequestGeneration.current;
+    const manualGeneration = ++manualLoadGeneration.current;
     setRefreshing(true);
     try {
       const next = await getApiMonitor();
+      if (listRequestGeneration.current !== requestGeneration) {
+        return;
+      }
       updateData(next);
       setError(null);
     } catch (err: unknown) {
+      if (listRequestGeneration.current !== requestGeneration) {
+        return;
+      }
       setError(err instanceof Error ? err.message : "Monitor unavailable");
     } finally {
-      setRefreshing(false);
-      setLoading(false);
+      if (manualLoadGeneration.current === manualGeneration) {
+        setRefreshing(false);
+      }
+      if (listRequestGeneration.current === requestGeneration) {
+        setLoading(false);
+      }
     }
   }, [updateData]);
 
@@ -132,19 +183,34 @@ export function useApiMonitor({
     let timer: number | undefined;
 
     function poll(): void {
+      const requestGeneration = ++listRequestGeneration.current;
       getApiMonitor()
         .then((next) => {
-          if (cancelled) return;
+          if (
+            cancelled ||
+            listRequestGeneration.current !== requestGeneration
+          ) {
+            return;
+          }
           updateData(next);
           setError(null);
         })
         .catch((err: unknown) => {
-          if (cancelled) return;
+          if (
+            cancelled ||
+            listRequestGeneration.current !== requestGeneration
+          ) {
+            return;
+          }
           setError(err instanceof Error ? err.message : "Monitor unavailable");
         })
         .finally(() => {
-          if (cancelled) return;
-          setLoading(false);
+          if (cancelled) {
+            return;
+          }
+          if (listRequestGeneration.current === requestGeneration) {
+            setLoading(false);
+          }
           timer = window.setTimeout(poll, intervalMs);
         });
     }
@@ -160,50 +226,47 @@ export function useApiMonitor({
 
   // Returns whether a fetch started: recording "fetched revision N" when the guard
   // refused would skip that revision once updated_at settles.
-  const requestDetail = useCallback((id: string): boolean => {
-    if (inFlightDetails.current.has(id)) {
-      return false;
-    }
-    inFlightDetails.current.add(id);
-    setLoadingDetails((prev) => new Set(prev).add(id));
-    const cachedPrompt = details[id]?.prompt;
-    getApiMonitorEntry(id, cachedPrompt == null)
-      .then((entry) => {
-        if (!retainedEntryIds.current.has(id)) return;
-        setDetails((prev) => {
-          const refreshed =
-            cachedPrompt == null ? entry : { ...entry, prompt: cachedPrompt };
-          const retained: Record<string, ApiMonitorEntry> = { [id]: refreshed };
-          let promptChars = refreshed.prompt?.length ?? 0;
-          for (const [cachedId, cached] of Object.entries(prev)) {
-            if (cachedId === id) continue;
-            const cachedChars = cached.prompt?.length ?? 0;
-            if (promptChars + cachedChars > MAX_CACHED_PROMPT_CHARS) continue;
-            retained[cachedId] = cached;
-            promptChars += cachedChars;
+  const requestDetail = useCallback(
+    (id: string): boolean => {
+      if (inFlightDetails.current.has(id)) {
+        return false;
+      }
+      inFlightDetails.current.add(id);
+      const requestGeneration = detailRequestGeneration.current;
+      setLoadingDetails((prev) => new Set(prev).add(id));
+      const cachedPrompt = details[id]?.prompt;
+      getApiMonitorEntry(id, cachedPrompt == null)
+        .then((entry) => {
+          if (
+            detailRequestGeneration.current !== requestGeneration ||
+            !retainedEntryIds.current.has(id)
+          ) {
+            return;
           }
-          return retained;
+          setDetails((prev) => retainDetail(prev, id, entry, cachedPrompt));
+        })
+        .catch(() => {
+          if (detailRequestGeneration.current !== requestGeneration) {
+            return;
+          }
+          // Aged out of the ring buffer: drop the stale copy so the row previews show.
+          setDetails((prev) => dropDetail(prev, id));
+        })
+        .finally(() => {
+          if (detailRequestGeneration.current !== requestGeneration) {
+            return;
+          }
+          inFlightDetails.current.delete(id);
+          setLoadingDetails((prev) => {
+            const next = new Set(prev);
+            next.delete(id);
+            return next;
+          });
         });
-      })
-      .catch(() => {
-        // Aged out of the ring buffer: drop the stale copy so the row previews show.
-        setDetails((prev) => {
-          if (!(id in prev)) return prev;
-          const next = { ...prev };
-          delete next[id];
-          return next;
-        });
-      })
-      .finally(() => {
-        inFlightDetails.current.delete(id);
-        setLoadingDetails((prev) => {
-          const next = new Set(prev);
-          next.delete(id);
-          return next;
-        });
-      });
-    return true;
-  }, [details]);
+      return true;
+    },
+    [details],
+  );
 
   // The Clear log button discards this promise, so a failed DELETE has to land in the
   // error banner here: rethrowing leaves an unhandled rejection and a log that silently
@@ -212,7 +275,14 @@ export function useApiMonitor({
     (): Promise<void> =>
       clearMonitor({
         clearRemote: clearApiMonitor,
-        resetDetails: () => setDetails({}),
+        resetDetails: () => {
+          listRequestGeneration.current += 1;
+          detailRequestGeneration.current += 1;
+          retainedEntryIds.current = new Set();
+          inFlightDetails.current.clear();
+          setLoadingDetails(new Set());
+          setDetails({});
+        },
         reload: load,
         onError: setError,
       }),

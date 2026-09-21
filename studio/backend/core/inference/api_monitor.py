@@ -70,6 +70,12 @@ def _finite_float_or_none(value: Any) -> Optional[float]:
     return number if math.isfinite(number) else None
 
 
+def _advance_updated_at(entry: "ApiMonitorEntry", now: Optional[float] = None) -> None:
+    """Advance the row's freshness key even on a coarse or regressing wall clock."""
+    observed = time.time() if now is None else now
+    entry.updated_at = max(observed, math.nextafter(entry.updated_at, math.inf))
+
+
 def _trim(text: Optional[str], limit: int) -> str:
     if not text:
         return ""
@@ -461,7 +467,7 @@ class ApiMonitor:
             entry = self._find_locked(entry_id)
             if entry is not None:
                 entry.model = model
-                entry.updated_at = time.time()
+                _advance_updated_at(entry)
 
     def set_progress(self, entry_id: Optional[str], progress: Optional[float]) -> None:
         """Update an open download row's percentage (clamped to 0-100)."""
@@ -471,7 +477,7 @@ class ApiMonitor:
             entry = self._find_locked(entry_id)
             if entry is not None and entry.status == "running":
                 entry.progress = min(100.0, max(0.0, float(progress)))
-                entry.updated_at = time.time()
+                _advance_updated_at(entry)
 
     def discard(self, entry_id: Optional[str]) -> None:
         """Drop a row that turned out not to be an event (an already-satisfied load)."""
@@ -513,10 +519,10 @@ class ApiMonitor:
             if len(entry.reply) >= _MAX_REPLY_CHARS:
                 if not entry.reply.endswith("..."):
                     entry.reply = _trim(entry.reply + text, _MAX_REPLY_CHARS)
-                entry.updated_at = time.time()
+                _advance_updated_at(entry)
                 return
             entry.reply = _trim(entry.reply + text, _MAX_REPLY_CHARS)
-            entry.updated_at = time.time()
+            _advance_updated_at(entry)
 
     def accumulate_openai_tool_call(
         self,
@@ -615,7 +621,7 @@ class ApiMonitor:
                 entry.first_token_monotonic = now
             if entry.first_decode_monotonic is None:
                 entry.first_decode_monotonic = now
-            entry.updated_at = time.time()
+            _advance_updated_at(entry)
 
     def take_openai_tool_calls(
         self,
@@ -656,7 +662,7 @@ class ApiMonitor:
                 entry.openai_stream_last_tool_indexes[choice_index] = remaining_indexes[
                     choice_index
                 ]
-            entry.updated_at = time.time()
+            _advance_updated_at(entry)
             return [(state.name, state.arguments) for state in selected], separate
 
     def mark_first_token(
@@ -690,7 +696,7 @@ class ApiMonitor:
             if entry is None:
                 return
             entry.reply = _trim(text, _MAX_REPLY_CHARS)
-            entry.updated_at = time.time()
+            _advance_updated_at(entry)
 
     def set_perf(
         self,
@@ -725,7 +731,7 @@ class ApiMonitor:
                 entry.decode_ms = decode_ms
             if stop_reason is not None:
                 entry.stop_reason = str(stop_reason)
-            entry.updated_at = time.time()
+            _advance_updated_at(entry)
 
     def note_stop_reason(self, entry_id: Optional[str], reason: Optional[str]) -> None:
         """Record one choice's finish reason, without publishing it yet.
@@ -742,7 +748,7 @@ class ApiMonitor:
             if entry is None:
                 return
             entry.stop_reasons_seen.add(str(reason))
-            entry.updated_at = time.time()
+            _advance_updated_at(entry)
 
     @staticmethod
     def _settle_stop_reason_locked(entry: ApiMonitorEntry, completed: bool) -> None:
@@ -795,7 +801,7 @@ class ApiMonitor:
                 entry.total_tokens = (entry.prompt_tokens or 0) + (entry.completion_tokens or 0)
             if context_length is not None:
                 entry.context_length = context_length
-            entry.updated_at = time.time()
+            _advance_updated_at(entry)
 
     def finish(
         self,
@@ -819,7 +825,7 @@ class ApiMonitor:
             self._settle_stop_reason_locked(entry, status == "completed")
             now = time.time()
             entry.status = status
-            entry.updated_at = now
+            _advance_updated_at(entry, now)
             entry.finished_at = now
             entry.finished_monotonic = time.monotonic()
             self._entries.remove(entry)
@@ -854,6 +860,7 @@ class ApiMonitor:
                 # Already terminal; refresh error text only.
                 if error:
                     entry.error = _trim(error, 1000)
+                    _advance_updated_at(entry)
                 return
             self._fail_locked(entry, error)
             notification = self._terminal_notification_locked(entry)
@@ -868,7 +875,7 @@ class ApiMonitor:
         now = time.time()
         entry.status = "error"
         entry.error = _trim(error, 1000)
-        entry.updated_at = now
+        _advance_updated_at(entry, now)
         entry.finished_at = now
         entry.finished_monotonic = time.monotonic()
         self._entries.remove(entry)
