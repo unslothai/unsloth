@@ -1535,11 +1535,6 @@ export const it = {
         "Il testo incollato di almeno {count} caratteri diventa un allegato .txt. Il testo più breve resta nel campo del messaggio.",
       pastedTextOffDescription:
         "Tutto il testo incollato resta nel campo del messaggio, indipendentemente dalla lunghezza.",
-      compactionDescriptionInherit: "Segue la politica del contesto del server.",
-      compactionDescriptionCheckpoint:
-        "Mantiene l’ultimo scambio e le istruzioni permanenti che rientrano, e archivia il resto per poterlo recuperare.",
-      compactionDescriptionRolling:
-        "Archivia i turni più vecchi per conservare la cronologia recente e lo spazio aggiuntivo selezionato.",
       projectsSection: "Mostra la sezione Progetti",
       projectsSectionDescription:
         "Raggruppa le chat di progetto sotto un titolo Progetti. Disattivalo per elencarle in Recenti.",
@@ -1588,19 +1583,6 @@ export const it = {
       autoCompact: "Compatta automaticamente le chat lunghe",
       autoCompactDescription:
         "I turni più vecchi passano in un archivio consultabile quando una chat riempie il contesto.",
-      compactionStyle: "Quando il contesto è pieno",
-      compactionStyleDescription:
-        "Il valore predefinito del server mantiene UNSLOTH_CONTEXT_POLICY. Reimpostare la conversazione conserva l'ultimo turno e le istruzioni permanenti che rientrano. Una finestra scorrevole elimina i turni più vecchi e può conservare più cronologia recente.",
-      compactionStyleInherit: "Usa il valore del server",
-      compactionStyleCheckpoint: "Reimposta la conversazione",
-      compactionStyleRollingDefault:
-        "Archivia i turni precedenti (~25% di spazio aggiuntivo)",
-      compactionStyleRolling10:
-        "Archivia i turni precedenti (~10% di spazio aggiuntivo)",
-      compactionStyleRolling5:
-        "Archivia i turni precedenti (~5% di spazio aggiuntivo)",
-      compactionStyleRollingNone:
-        "Archivia i turni precedenti (nessun taglio aggiuntivo)",
       autoCompactKeywords:
         "compattazione automatica contesto finestra troncare scorrevole checkpoint margine archivio recupero ricerca compaction rolling headroom archive retrieval rag",
       thinking: {

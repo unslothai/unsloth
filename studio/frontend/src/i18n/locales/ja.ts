@@ -1520,10 +1520,6 @@ export const ja = {
         "{count}文字以上の貼り付けテキストは .txt 添付ファイルになります。短いテキストは入力欄に残ります。",
       pastedTextOffDescription:
         "長さに関係なく、貼り付けたテキストはすべて入力欄に残ります。",
-      compactionDescriptionInherit: "サーバーのコンテキストポリシーに従います。",
-      compactionDescriptionCheckpoint: "最新のやり取りと、収まる範囲の継続的な指示を保持し、残りは検索できるようアーカイブします。",
-      compactionDescriptionRolling:
-        "古いターンをアーカイブし、最近の履歴と選択した余裕分の空きを確保します。",
       projectsSection: "プロジェクトセクションを表示",
       projectsSectionDescription:
         "プロジェクトのチャットを「プロジェクト」の見出しにまとめます。オフにすると「最近」に表示されます。",
@@ -1570,15 +1566,6 @@ export const ja = {
       autoCompact: "長いチャットを自動圧縮",
       autoCompactDescription:
         "チャットの文脈が満杯になると、古いターンは検索可能なアーカイブに移ります。",
-      compactionStyle: "コンテキストが満杯になったとき",
-      compactionStyleDescription:
-        "サーバー既定値を使うと UNSLOTH_CONTEXT_POLICY が維持されます。会話をリセットすると最新ターンと、収まる範囲の継続指示が残ります。スライディングウィンドウは古いターンを削除し、より多くの最近の履歴を残せます。",
-      compactionStyleInherit: "サーバー既定値を使用",
-      compactionStyleCheckpoint: "会話をリセット",
-      compactionStyleRollingDefault: "古いターンをアーカイブ（約 25% の追加余裕）",
-      compactionStyleRolling10: "古いターンをアーカイブ（約 10% の追加余裕）",
-      compactionStyleRolling5: "古いターンをアーカイブ（約 5% の追加余裕）",
-      compactionStyleRollingNone: "古いターンをアーカイブ（追加の切り詰めなし）",
       autoCompactKeywords:
         "圧縮 自動圧縮 コンテキスト ウィンドウ 切り詰め スライディング チェックポイント 余裕 アーカイブ 検索 取得 compaction rolling headroom archive retrieval rag",
       thinking: {
