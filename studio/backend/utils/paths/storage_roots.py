@@ -1136,7 +1136,8 @@ def _windows_temp_root_is_private(parent: Path) -> bool:
         return False
     try:
         return os.path.normcase(str(parent.resolve())) == os.path.normcase(
-            str((Path(local) / "Temp").resolve()))
+            str((Path(local) / "Temp").resolve())
+        )
     except (OSError, ValueError):
         return False
 
