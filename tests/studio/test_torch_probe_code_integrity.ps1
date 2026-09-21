@@ -120,14 +120,55 @@ foreach ($reason in @(
     Check "the backend spells it the same way: $reason" { $py.Contains($reason) }
 }
 
+# The ambiguous pair, which is the distinction the backend draws and this side has to keep:
+# Windows raises both for a damaged file too, so they must not rule out a reinstall.
+. ([scriptblock]::Create((Get-FunctionText -Path $setup -Name "Test-CodeIntegrityReasonIsAmbiguous")))
+$script:CodeIntegrityAmbiguousReasons = @(
+    "the image failed code integrity validation (invalid or missing signature)",
+    "Windows could not verify the digital signature of the image"
+)
+
+Check "0xC0000428 is ambiguous, not a settled policy verdict" {
+    Test-CodeIntegrityReasonIsAmbiguous -Reason (Get-CodeIntegrityBlockReason -Text "failed with 0xC0000428")
+}
+Check "WinError 577 is ambiguous too" {
+    Test-CodeIntegrityReasonIsAmbiguous -Reason (Get-CodeIntegrityBlockReason -Text "[WinError 577] bad signature")
+}
+Check "a Smart App Control block is not ambiguous" {
+    -not (Test-CodeIntegrityReasonIsAmbiguous -Reason (Get-CodeIntegrityBlockReason -Text "blocked by Smart App Control"))
+}
+Check "0xc0e90002 and WinError 4551 are not ambiguous" {
+    (-not (Test-CodeIntegrityReasonIsAmbiguous -Reason (Get-CodeIntegrityBlockReason -Text "Error status 0xc0e90002"))) -and
+    (-not (Test-CodeIntegrityReasonIsAmbiguous -Reason (Get-CodeIntegrityBlockReason -Text "[WinError 4551] blocked")))
+}
+Check "no reason at all is not ambiguous" {
+    -not (Test-CodeIntegrityReasonIsAmbiguous -Reason $null)
+}
+Check "the ambiguous set is the backend's _INVALID_HASH_REASONS" {
+    # Both members come from _REASON_INVALID_HASH_STATUS / _REASON_INVALID_HASH_WINERROR,
+    # and the backend keys its own "a reinstall may clear this" message on the same pair.
+    $ok = $true
+    foreach ($reason in $script:CodeIntegrityAmbiguousReasons) { if (-not $py.Contains($reason)) { $ok = $false } }
+    $ok -and $py.Contains("_INVALID_HASH_REASONS = frozenset({_REASON_INVALID_HASH_STATUS, _REASON_INVALID_HASH_WINERROR})")
+}
+
 # And the wiring: the driver advice must be behind the classifier in all three arms, or the
 # classifier is dead code.
 $setupText = Get-Content $setup -Raw
 Check "the three rescue arms consult the classifier" {
     ([regex]::Matches($setupText, "Write-CodeIntegrityTorchNotice -Reason \`$_probeBlockReason")).Count -eq 3
 }
-Check "a policy block does not force a reinstall of the same wheels" {
-    $setupText.Contains('-not $_verProbe.TimedOut -and -not $_probeBlockReason')
+Check "a settled policy block does not force a reinstall of the same wheels" {
+    $setupText.Contains('-not $_verProbe.TimedOut -and -not $_blockRulesOutDamage')
+}
+Check "an ambiguous status still reaches the force-reinstall" {
+    # The whole point of the distinction: 0xC0000428 can be a corrupt wheel, and that is
+    # repaired by reinstalling the same family in place.
+    $setupText.Contains('$_blockRulesOutDamage = $_probeBlockReason -and')
+}
+Check "the notice does not tell a user with no importable torch that the CPU is fine" {
+    (-not $setupText.Contains("Training on the CPU is unaffected")) -and
+    $setupText.Contains("it cannot run on the CPU either")
 }
 
 if ($failures.Count) {

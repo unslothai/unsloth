@@ -1617,15 +1617,38 @@ function Get-CodeIntegrityBlockReason {
     return $null
 }
 
+# The two statuses Windows also raises for a damaged or incompletely downloaded file, so
+# they do not establish a policy. Same set as _INVALID_HASH_REASONS in
+# studio/backend/utils/code_integrity.py, matched on the reason so the two cannot drift.
+$script:CodeIntegrityAmbiguousReasons = @(
+    "the image failed code integrity validation (invalid or missing signature)",
+    "Windows could not verify the digital signature of the image"
+)
+
+function Test-CodeIntegrityReasonIsAmbiguous {
+    param([string]$Reason)
+    if (-not $Reason) { return $false }
+    return ($script:CodeIntegrityAmbiguousReasons -contains $Reason)
+}
+
 function Write-CodeIntegrityTorchNotice {
     param([string]$Reason)
-    # Said once, in the three places the driver advice used to be. The wheels this refuses
-    # are AMD's and NVIDIA's own, published unsigned to PyPI, so neither a reinstall nor a
-    # driver update changes the verdict; only the policy does.
-    substep "Windows blocked part of the PyTorch GPU runtime: $Reason." "Yellow"
-    substep "This is a Windows code integrity policy refusing unsigned files, not a driver fault or a damaged install, so reinstalling will not clear it." "Yellow"
+    # Said once, in the three places the driver advice used to be.
+    substep "Windows refused part of the PyTorch GPU runtime: $Reason." "Yellow"
+    if (Test-CodeIntegrityReasonIsAmbiguous -Reason $Reason) {
+        # Microsoft raises these for a file a policy will not accept AND for one that is
+        # damaged, and the error alone does not say which, so this must not rule out the
+        # reinstall that clears the damaged case.
+        substep "Windows reports this both for a file a code integrity policy will not accept and for one that is damaged or was downloaded incompletely, so the error alone does not say which." "Yellow"
+        substep "Reinstalling the GPU wheels replaces the files and clears the damaged case. If it fails again after that, it is a policy." "Yellow"
+    } else {
+        substep "This is a Windows code integrity policy refusing unsigned files, not a driver fault or a damaged install, so reinstalling will not clear it." "Yellow"
+    }
     substep "On a device you administer, Smart App Control is under Windows Security, App and browser control; on a managed device the policy belongs to whoever administers it." "Yellow"
-    substep "Training on the CPU is unaffected. The environment is kept as it is." "DarkGray"
+    # Not "CPU training is unaffected": this venv's own `import torch` is what just failed,
+    # so nothing in it runs, on any device, until the wheels load or are replaced.
+    substep "This environment holds a GPU build whose import Windows is refusing, so it cannot run on the CPU either. A separate CPU-only install is unaffected, and UNSLOTH_TORCH_INDEX_URL moves this one onto CPU wheels on purpose." "DarkGray"
+    substep "The environment is kept as it is." "DarkGray"
 }
 
 function Invoke-BoundedPythonProbe {
@@ -6257,7 +6280,9 @@ if ((Test-Path -LiteralPath $VenvDir -PathType Container) -and -not $NoTorchMode
             }
             # A half-written torch also leaves a +cu* version.py behind, and the matched
             # install below would write a completion manifest over it. Force the reinstall.
-            if ($_verProbe -and -not $_verProbe.TimedOut -and -not $_probeBlockReason) {
+            $_blockRulesOutDamage = $_probeBlockReason -and
+                -not (Test-CodeIntegrityReasonIsAmbiguous -Reason $_probeBlockReason)
+            if ($_verProbe -and -not $_verProbe.TimedOut -and -not $_blockRulesOutDamage) {
                 $script:TorchImportDefinitivelyFailed = $true
                 substep "PyTorch failed to import rather than timing out -- reinstalling the same family in place." "Yellow"
             }
