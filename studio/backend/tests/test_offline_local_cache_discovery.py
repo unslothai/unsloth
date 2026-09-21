@@ -844,7 +844,7 @@ def test_the_ownership_check_reads_the_hosts_token_every_time(monkeypatch, on_di
 
 
 @pytest.mark.parametrize(
-    ("reader", "target", "raw", "stripped", "failure"),
+    ("reader", "target", "raw", "stripped", "failure", "answer"),
     [
         (
             "ambient",
@@ -852,19 +852,22 @@ def test_the_ownership_check_reads_the_hosts_token_every_time(monkeypatch, on_di
             "  hf_from_hub  ",
             "hf_from_hub",
             OSError("token file unreadable"),
+            lambda value: value,
         ),
         (
             "saved",
-            "storage.credential_secrets.get_hf_token",
+            # Value and presence come back together, so the stub answers as that reader does.
+            "storage.credential_secrets.get_hf_token_with_presence",
             "  hf_from_store  ",
             "hf_from_store",
             RuntimeError("credential database is locked"),
+            lambda value: (value, value is not None),
         ),
     ],
     ids = ("the-hosts-own-token", "the-studio-credential-store"),
 )
 def test_a_credential_reader_separates_an_absent_credential_from_an_unreadable_one(
-    monkeypatch, reader, target, raw, stripped, failure
+    monkeypatch, reader, target, raw, stripped, failure, answer
 ):
     read = _REAL_AMBIENT_HF_TOKEN if reader == "ambient" else _REAL_SAVED_STUDIO_HF_TOKEN
     if reader == "ambient":
@@ -872,10 +875,10 @@ def test_a_credential_reader_separates_an_absent_credential_from_an_unreadable_o
         for key in hf_tokens._HF_TOKEN_ENV_KEYS:
             monkeypatch.delenv(key, raising = False)
 
-    monkeypatch.setattr(target, lambda: raw)
+    monkeypatch.setattr(target, lambda: answer(raw))
     assert read() == (True, stripped)
 
-    monkeypatch.setattr(target, lambda: None)
+    monkeypatch.setattr(target, lambda: answer(None))
     assert read() == (True, None)
 
     # Asked and NOT answered is the third outcome; collapsing it into "no credential" fails open.
@@ -920,18 +923,17 @@ def test_an_unreadable_saved_credential_is_unknown_rather_than_absent(monkeypatc
     from storage import credential_secrets
 
     read = _REAL_SAVED_STUDIO_HF_TOKEN
-    monkeypatch.setattr(credential_secrets, "get_hf_token", lambda: None)
 
-    monkeypatch.setattr(credential_secrets, "hf_token_row_exists", lambda: True)
+    monkeypatch.setattr(credential_secrets, "get_hf_token_with_presence", lambda: (None, True))
     assert read() == (False, None), "an unreadable saved credential must not read as absent"
 
-    monkeypatch.setattr(credential_secrets, "hf_token_row_exists", lambda: False)
+    monkeypatch.setattr(credential_secrets, "get_hf_token_with_presence", lambda: (None, False))
     assert read() == (True, None), "a host with nothing saved is still a real answer"
 
     def _raises():
         raise RuntimeError("credential database is locked")
 
-    monkeypatch.setattr(credential_secrets, "hf_token_row_exists", _raises)
+    monkeypatch.setattr(credential_secrets, "get_hf_token_with_presence", _raises)
     assert read() == (False, None)
 
 
