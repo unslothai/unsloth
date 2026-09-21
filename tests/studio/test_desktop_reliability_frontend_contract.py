@@ -881,7 +881,7 @@ def _button_classes(block: str, tag: str) -> str | None:
     return " ".join(literals) if literals else None
 
 
-def _labelled_actions(block: str, variant: str) -> dict[str, bool]:
+def _labelled_actions(block: str, variant: str) -> dict[int, tuple[str, bool]]:
     """The row actions one variant renders: label -> whether it is the offset one.
 
     A row's actions are not all shared: the pin sits inside `{variant === "recent" && (` or
@@ -904,7 +904,10 @@ def _labelled_actions(block: str, variant: str) -> dict[str, bool]:
                     gates.append((match.group(1), match.start(), index))
                     break
     found = {}
+    cursor = 0
     for tag in _opening_jsx_tags(block, "<button"):
+        at = block.find(tag, cursor)
+        cursor = at + 1 if at != -1 else cursor
         classes = _button_classes(block, tag)
         assert classes is not None, (
             f"a button in renderChatSidebarItem carries classes this guard cannot read, so it "
@@ -912,12 +915,15 @@ def _labelled_actions(block: str, variant: str) -> dict[str, bool]:
         )
         if "sidebar-row-action" not in classes:
             continue
-        at = block.find(tag)
         owners = [name for name, start, stop in gates if start <= at <= stop]
         if owners and variant not in owners:
             continue
-        for label in re.findall(r"aria-label=\{?([^\n]{0,60})", tag):
-            found[label] = "is-unpin-action" in classes
+        # Keyed by where the element sits, not by its label. Keying on aria-label dropped any
+        # action that names itself another way, `aria-labelledby` being the ordinary one, and
+        # dropping the offset pin took the row's reach down to a single glyph while the pin
+        # went on rendering. The label is identity for the message only.
+        labels = re.findall(r"aria-label=\{?([^\n]{0,60})", tag)
+        found[at] = (labels[0] if labels else f"<unlabelled at {at}>", "is-unpin-action" in classes)
     return found
 
 
@@ -1311,7 +1317,11 @@ def test_chat_sidebar_row_actions_visible_on_coarse_pointers():
     # floor is what the row's actions occupy, so it has to count them rather than assume one.
     # A row carries a pin and an options button, and reserving a single glyph for the two of
     # them puts the pin back over the title, which is the regression this exists to stop.
-    glyph = re.search(r"\.sidebar-row-action-glyph\s*\{[^}]*?\bsize-(\d+(?:\.\d+)?)", css_source)
+    # Over CSS with its comments removed, for the same reason the TSX reads are: an old rule
+    # left inside `/* ... */` sits before the live one and is the one a search finds, so the
+    # floor would be measured from a glyph nothing renders.
+    live_css = re.sub(r"/\*.*?\*/", " ", css_source, flags = re.S)
+    glyph = re.search(r"\.sidebar-row-action-glyph\s*\{[^}]*?\bsize-(\d+(?:\.\d+)?)", live_css)
     assert glyph, (
         "index.css no longer sizes .sidebar-row-action-glyph with a size-N utility, so this "
         "guard cannot tell how much room one action needs"
@@ -1327,7 +1337,7 @@ def test_chat_sidebar_row_actions_visible_on_coarse_pointers():
     # reserve is how far the furthest one reaches, not how many there are: at two glyphs the
     # floor was 12 while the offset action's glyph already ends at 13.5.
     offset = re.search(
-        r"\.sidebar-row-action\.is-unpin-action\s*\{[^}]*?\bright:\s*([\d.]+)rem", css_source
+        r"\.sidebar-row-action\.is-unpin-action\s*\{[^}]*?\bright:\s*([\d.]+)rem", live_css
     )
     assert offset, (
         "index.css no longer offsets .sidebar-row-action.is-unpin-action with a rem right "
@@ -1346,7 +1356,7 @@ def test_chat_sidebar_row_actions_visible_on_coarse_pointers():
         f"{ {name: len(found) for name, found in actions.items()} }"
     )
     reach = {
-        name: max((offset_units if shifted else 0.0) + glyph_size for shifted in found.values())
+        name: max((offset_units if shifted else 0.0) + glyph_size for _, shifted in found.values())
         for name, found in actions.items()
     }
     floors = {"project-chat-item": reach["project"], "recent-item": reach["recent"]}

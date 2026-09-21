@@ -463,7 +463,10 @@ def test_response_model_badge_is_user_configurable_and_rendered_once_per_message
 
 
 def test_reasoning_keeps_streaming_height_cap_through_automatic_collapse():
-    src = REASONING_TSX.read_text(encoding = "utf-8")
+    # Stripped once, here, rather than at each lookup. Every assertion below is about what
+    # the file DOES, and commented-out code does nothing, so reading the live text is the
+    # precondition for all of them rather than a precaution for some.
+    src = _without_block_comments(REASONING_TSX.read_text(encoding = "utf-8"))
 
     assert "const [retainStreamingHeight, setRetainStreamingHeight]" in src
     assert "setRetainStreamingHeight(false)" in src
@@ -489,7 +492,7 @@ def test_reasoning_keeps_streaming_height_cap_through_automatic_collapse():
     # the retained height is bridging. Every such call has to hand the retained flag over.
     holders = [
         tag
-        for tag in _opening_tags(_without_block_comments(src), "<ReasoningBody")
+        for tag in _opening_tags(src, "<ReasoningBody")
         if "isStreaming={isReasoningStreaming}" in tag
     ]
     assert holders, (
