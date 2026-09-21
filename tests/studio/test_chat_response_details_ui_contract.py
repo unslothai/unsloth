@@ -159,7 +159,16 @@ def _assert_only_shrinks(tokens: list[str], what: str, evidence: str) -> None:
     )
 
 
+# `[min-width:max-content]` sets the same property by another spelling, and a guard that
+# only knows `min-w-*` reads a class list containing it as stating nothing. Splitting on the
+# LAST colon breaks it too, since the value contains one, so the arbitrary form is matched
+# before any variant is stripped.
+_ARBITRARY_MIN_WIDTH = re.compile(r"(?:^|:)\[min-width:[^\]]*\]!?$")
+
+
 def _is_min_width(token: str) -> bool:
+    if _ARBITRARY_MIN_WIDTH.search(token.removeprefix("!")):
+        return True
     _, _, utility = token.rpartition(":")
     return utility.removeprefix("!").removesuffix("!").startswith("min-w-")
 

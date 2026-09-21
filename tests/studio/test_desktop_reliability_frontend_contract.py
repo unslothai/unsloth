@@ -933,6 +933,15 @@ def test_chat_sidebar_row_actions_visible_on_coarse_pointers():
                 f"importance marker: {gutters} in {cls!r}. This guard compares one gutter "
                 f"against one touch padding and will not work out which of several wins"
             )
+            # `[padding-right:0]` sets the same property by another spelling, and this guard
+            # compares `pr-N` numbers. It cannot compare that, so it refuses it.
+            arbitrary = re.findall(r"\S*\[padding(?:-right)?:[^\]]*\]\S*", cls)
+            assert not arbitrary, (
+                f"the {variant} row sets its right padding through an arbitrary property: "
+                f"{arbitrary} in {cls!r}. This guard compares pr-N gutters and will not "
+                f"work out how that interacts with them: state the touch padding as a pr-N "
+                f"utility"
+            )
             assert coarse, (
                 f"a {variant} element reserves room for its action on hover but not on a "
                 f"coarse pointer, so the kebab overlaps the title on a touch device "
