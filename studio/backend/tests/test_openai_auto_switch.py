@@ -2801,6 +2801,16 @@ def test_inactive_hf_cache_entry_skips_newer_companion_only_snapshot(tmp_path):
 
 def test_hf_cache_entry_stays_within_the_scanned_case_variant(tmp_path):
     """A cache row must load from its exact repo directory, not a case-folded peer."""
+    # The case needs two repo directories that differ only in case, which a case-INSENSITIVE
+    # filesystem cannot hold: on macOS the second mkdir lands in the first directory and the
+    # "other" snapshot becomes a sibling of the scanned one, so the newest-mtime pick is
+    # right and the assertion below measures the filesystem instead of the resolver.
+    probe = tmp_path / "CaseProbe"
+    probe.mkdir()
+    if (tmp_path / "caseprobe").exists():
+        pytest.skip("case-insensitive filesystem cannot hold two case-variant repo dirs")
+    probe.rmdir()
+
     scanned_repo = tmp_path / "models--Org--Repo"
     scanned_snapshot = scanned_repo / "snapshots" / "scanned-revision"
     scanned_snapshot.mkdir(parents = True)
