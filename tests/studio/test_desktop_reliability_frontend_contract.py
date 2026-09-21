@@ -3,6 +3,7 @@
 
 """Static contracts for focused packaged-desktop reliability behavior."""
 
+import functools
 import re
 from pathlib import Path
 from tests.studio._js_source import (
@@ -1035,6 +1036,7 @@ def _modifier_rules(live_css: str) -> dict[str, str]:
 # same statement written another way.
 _SHORTHANDS = {
     "pr": (("padding",), ("p", "px", "pe")),
+    "pl": (("padding",), ("p", "px", "ps")),
     "right": (("inset",), ("inset", "inset-x")),
 }
 
@@ -1125,6 +1127,24 @@ def _row_action_offsets(live_css: str, base: float, spacing: float) -> dict[str,
     }
 
 
+def _row_action_left_paddings(
+    live_css: str, base: float, spacing: float
+) -> dict[str, float | None]:
+    """Each modifier, and the LEFT padding it renders with, in units.
+
+    The left padding is inside the button, so it is part of what a tap hits even though it
+    shows nothing, and `.sidebar-row-action.sidebar-touch-reveal` makes the button clickable
+    on a coarse pointer. The pin sets it to zero for that reason; the shared options button
+    keeps the base, which faces the pin rather than the title.
+    """
+    return {
+        name: base
+        if (measure := _sole_measure(body, "pl", "padding-left", spacing)) == ""
+        else (measure if isinstance(measure, float) else None)
+        for name, body in _modifier_rules(live_css).items()
+    }
+
+
 def _row_action_paddings(live_css: str, base: float, spacing: float) -> dict[str, float | None]:
     """Each modifier, and the right padding it renders with, in units.
 
@@ -1147,7 +1167,9 @@ def _labelled_actions(
     variant: str,
     offsets: dict[str, float | None],
     paddings: dict[str, float | None],
+    left_paddings: dict[str, float | None],
     base_padding: float,
+    base_left: float,
     base_offset: float,
     live_css: str,
 ) -> dict[int, tuple[str, float]]:
@@ -1305,10 +1327,25 @@ def _labelled_actions(
         )
         # No modifier at all means the base rule is the whole answer.
         padding = paddings[stated[0]] if stated else base_padding
+        # The left padding too, because the button's whole box is what a tap hits and
+        # `sidebar-touch-reveal` makes it clickable on a coarse pointer. Measuring only as far
+        # as the glyph left 8px of the project row's title under the pin, where a tap pinned
+        # the chat instead of opening it.
+        stated_left = [token for token in modifiers if token in left_paddings]
+        unreadable_left = [token for token in stated_left if left_paddings[token] is None]
+        assert not unreadable_left, (
+            f"the {name} action carries {unreadable_left}, whose left padding index.css states "
+            f"in a spelling this guard cannot read, so how far the button reaches is unknown"
+        )
+        assert len(stated_left) <= 1, (
+            f"the {name} action carries {stated_left}, more than one of which sets a left "
+            f"padding, and which applies is a source-order question this does not adjudicate"
+        )
+        left = left_paddings[stated_left[0]] if stated_left else base_left
         # A modifier that states no edge leaves the base rule's in force, so that is the
         # fallback, not zero.
         shift = max((offsets[token] for token in modifiers), default = base_offset)
-        found[at] = (name, shift + padding)
+        found[at] = (name, shift + padding + left)
     # Both rows carry an action that no `variant === "..."` gate guards, and every assertion
     # below is written about a row that has one. Without this the per-variant pins alone keep
     # both maps non-empty, so deleting the shared options button, or letting it lose
@@ -1475,37 +1512,46 @@ _DECLARES_RIGHT_EDGE = (
 )
 
 
-def _classes_setting(live_css: str, classes: set[str], declares: str) -> list[str]:
-    """Which of *classes* index.css gives a right padding of its own.
+@functools.lru_cache(maxsize = 4)
+def _css_rules(live_css: str) -> tuple[tuple[str, str], ...]:
+    """Every rule in the stylesheet once, as (selector list, own declarations).
 
-    The gutter comparison reads `pr-N` utilities off the row and nothing else, so an ordinary
-    project class whose rule sets `padding-right` replaces the number that renders while the
+    Cached and shared. The per-class scan below re-read the whole file for every class it was
+    asked about, five times over, which took about six seconds on its own: more than the other
+    thirty-six tests in this file put together.
+    """
+    rules = []
+    for match in re.finditer(r"([^{}]*)\{", live_css):
+        body = _declarations_at(live_css, match.end() - 1)
+        if body is not None:
+            rules.append((match.group(1), body))
+    return tuple(rules)
+
+
+def _classes_setting(live_css: str, classes: set[str], declares: str) -> list[str]:
+    """Which of *classes* index.css gives a declaration matching *declares*.
+
+    The gutter and reach comparisons read utilities off the elements, so an ordinary project
+    class whose rule sets the same property replaces the number that renders while the
     comparison carries on with the utility's. A coarse-pointer rule doing it with `!important`
     is the worst case: the row still says `pr-16` and the rendered gutter is zero.
-
-    The class's own rules are read, at any selector that mentions it, because a variant like
-    `.no-touch-gutter` inside a media query is the same claim written further away.
     """
     offenders = []
     for name in sorted(classes):
-        for match in re.finditer(r"([^{}]*)\{", live_css):
-            selectors = match.group(1)
-            if not re.search(rf"\.{re.escape(name)}(?![\w-])", selectors):
+        mentions = re.compile(rf"\.{re.escape(name)}(?![\w-])")
+        for selectors, body in _css_rules(live_css):
+            if not mentions.search(selectors):
                 continue
             # On the element that carries the class, not on a descendant of it.
             # `.sidebar-nav-btn .decorative-child { padding-right: 0 }` styles the child and
             # leaves the row's gutter alone; reading it as the row's own padding would refuse
             # harmless descendant styling. The class has to appear in the LAST compound of
             # some selector in the list, which is the element the rule targets.
-            targets = any(
-                re.search(rf"\.{re.escape(name)}(?![\w-])", re.split(r"[\s>+~]+", one.strip())[-1])
+            if not any(
+                mentions.search(re.split(r"[\s>+~]+", one.strip())[-1])
                 for one in selectors.split(",")
                 if one.strip()
-            )
-            if not targets:
-                continue
-            body = _declarations_at(live_css, match.end() - 1)
-            if body is None:
+            ):
                 continue
             if re.search(declares, body):
                 offenders.append(name)
@@ -2038,17 +2084,20 @@ def test_chat_sidebar_row_actions_visible_on_coarse_pointers():
         f"stayed put"
     )
     inner_padding = base_padding
-    # The container's `pl` is deliberately NOT added. `pr` is measured because justify-end makes
-    # it decide where the glyph sits; `pl` decides nothing about the glyph, it only extends a
-    # transparent box further left. #7276 is about the action sitting over the title, and what
-    # a reader sees over the title is the glyph.
-    #
-    # That box does extend one unit past the 15 the ink reaches, and since
-    # `.sidebar-row-action.sidebar-touch-reveal` is `pointer-events-auto`, a tap in that last
-    # 4px of a pr-16 row hits the pin rather than opening the chat. That is real, and it is a
-    # product question - widen both gutters, or shrink the pad - not one to settle by moving a
-    # contract test's floor, which would fail the shipped recents row over a defect #7276 never
-    # claimed. Raise the floor here once the rows are changed, not before.
+    # The container's `pl` IS part of the reach, and for a while this said otherwise. The
+    # argument then was that `pr` decides where the glyph sits while `pl` only extends a
+    # transparent box, so only the ink counted. That is right about what is SEEN and wrong
+    # about what is HIT: `.sidebar-row-action.sidebar-touch-reveal` is `pointer-events-auto`,
+    # so the whole button takes taps, padding included, and #7276 is about the action
+    # intercepting the title. The pin's own `padding-left: 0` is what keeps the two answers
+    # the same size now, so measuring the full box costs the rows nothing.
+    base_left_measure = _sole_measure(base_rule, "pl", "padding-left", spacing)
+    assert isinstance(base_left_measure, float), (
+        f"the base action's left padding is not one value this guard can read "
+        f"({base_left_measure!r}). It sits inside the button, so a tap lands on it, and the "
+        f"reach below cannot be computed without it"
+    )
+    base_left = base_left_measure
     base_offset = _base_row_action_offset(live_css, spacing)
     assert base_offset is not None, (
         "index.css no longer states a right edge for .sidebar-row-action in a spelling this "
@@ -2063,7 +2112,9 @@ def test_chat_sidebar_row_actions_visible_on_coarse_pointers():
             name,
             offsets,
             _row_action_paddings(live_css, inner_padding, spacing),
+            _row_action_left_paddings(live_css, base_left, spacing),
             inner_padding,
+            base_left,
             base_offset,
             live_css,
         )
