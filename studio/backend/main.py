@@ -369,7 +369,7 @@ from routes.prompts import router as prompts_router
 from routes.profile_stats import router as profile_stats_router
 from auth import policy as auth_policy, storage
 from auth.authentication import authenticated_via_api_key, get_current_subject
-from hub.utils.host_paths import redact_host_paths
+from hub.utils.host_paths import redact_inventory_host_paths
 from utils.hardware import (
     start_background_detection,
     get_device,
@@ -2508,7 +2508,11 @@ def get_disk_space(
         # path naming the service account and its home layout. The repo already draws that
         # boundary for the Hub inventory routes; a capacity reading is not a reason to cross
         # it, and the low-disk client uses only the numbers.
-        return redact_host_paths(answer, via_api_key = via_api_key)
+        #
+        # The INVENTORY redactor, not redact_host_paths: the latter runs _redact with
+        # redact_ambiguous_path=False and so leaves a field literally named "path" alone,
+        # which is the whole value here. Verified against the real helper, not assumed.
+        return redact_inventory_host_paths(answer, via_api_key = via_api_key)
     # Every probe failed. Nulls, not zeros: diskPressure() reads a zero total as psutil having
     # failed and a zero free as a full disk, and this is neither.
     return {"path": None, "total_gb": None, "free_gb": None, "percent_used": None}

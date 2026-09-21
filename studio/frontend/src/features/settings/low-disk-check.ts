@@ -69,9 +69,15 @@ function runCheck(): Promise<void> {
   inFlight = (async () => {
     const disk = await readDisk();
     if (!disk) return;
+    // Ask BEFORE observing, not after. observeDiskPressure records the level it returns, so
+    // running it with nobody listening spends the crossing: a managed account's download, or a
+    // reading that lands after logout, would mark the disk as already warned about, and the
+    // owner signing in later in the same SPA session would hear nothing until free space
+    // recovered past the re-arm margin.
+    if (!notifier) return;
     const level = observeDiskPressure(disk);
     if (level === null) return;
-    notifier?.(level, disk);
+    notifier(level, disk);
   })().finally(() => {
     inFlight = null;
   });

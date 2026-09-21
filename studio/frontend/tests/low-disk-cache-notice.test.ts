@@ -342,3 +342,26 @@ test("the notice is owner only, because its action is", () => {
     "resources stopped being owner-only, so this gate may no longer be the right one",
   );
 });
+
+test("a reading with no notifier registered does not spend the crossing", () => {
+  // The notice is owner-only, but the download path calls checkDiskSpace for everyone.
+  // observeDiskPressure RECORDS the level it returns, so running it with nobody listening
+  // marks the disk as already warned about: a managed account's download, or a reading that
+  // lands after logout, would leave an owner signing in later in the same SPA session hearing
+  // nothing until free space recovered past the re-arm margin.
+  //
+  // Asserted on the source rather than by driving the module, because low-disk-check.ts
+  // imports through the "@/" alias and cannot be loaded by the bare node test runner.
+  const check = readFileSync(
+    new URL("../src/features/settings/low-disk-check.ts", import.meta.url),
+    "utf8",
+  );
+  const guard = check.indexOf("if (!notifier) return;");
+  const observe = check.indexOf("observeDiskPressure(disk)");
+  assert.ok(guard !== -1, "runCheck does not bail out when no notifier is registered");
+  assert.ok(observe !== -1, "runCheck no longer observes disk pressure at all");
+  assert.ok(
+    guard < observe,
+    "observeDiskPressure runs before the notifier check, so a crossing is spent unheard",
+  );
+});

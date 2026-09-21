@@ -75,20 +75,17 @@ def test_the_route_walks_nothing():
     ), "the route reports the default cache, not the configured one"
 
 
-def _redact_host_paths(
-    payload,
-    *,
-    via_api_key,
-    echo = (),
-):
-    """The real redactor's contract, without importing the backend.
+def _real_redactor():
+    """The SHIPPED redactor, not a stand-in.
 
-    hub.utils.host_paths drops host paths for an API-key caller and returns the payload
-    untouched otherwise; that is the boundary this route now sits behind.
+    A stub here is what let the first version of this guard pass while the route was still
+    handing out the path: it implemented the behaviour I assumed rather than the one the repo
+    has. redact_host_paths runs _redact with redact_ambiguous_path=False and leaves a field
+    named "path" untouched; only the inventory redactor treats it as a host path. Importing
+    the real thing is what makes this test able to fail.
     """
-    if not via_api_key:
-        return payload
-    return {key: value for key, value in payload.items() if key != "path"}
+    from hub.utils.host_paths import redact_inventory_host_paths
+    return redact_inventory_host_paths
 
 
 def _load_route(
@@ -115,7 +112,7 @@ def _load_route(
         "Path": Path,
         "logger": types.SimpleNamespace(debug = lambda *_a, **_k: None),
         "authenticated_via_api_key": lambda: via_api_key,
-        "redact_host_paths": _redact_host_paths,
+        "redact_inventory_host_paths": _real_redactor(),
     }
     storage = types.ModuleType("utils.paths.storage_roots")
     storage.hf_default_cache_dir = lambda: default_cache
@@ -173,7 +170,7 @@ def test_the_route_still_answers_when_the_settings_read_fails(monkeypatch, tmp_p
         "Path": Path,
         "logger": types.SimpleNamespace(debug = lambda *_a, **_k: None),
         "authenticated_via_api_key": lambda: False,
-        "redact_host_paths": _redact_host_paths,
+        "redact_inventory_host_paths": _real_redactor(),
     }
     exec(compile(_route_source(), "<route>", "exec"), namespace)
     assert namespace["get_disk_space"](current_subject = "alice")["path"] == str(default)
@@ -313,7 +310,7 @@ def test_an_api_key_caller_is_not_told_the_host_path(monkeypatch, tmp_path):
     )
     reading = route(current_subject = "alice", via_api_key = True)
 
-    assert "path" not in reading, "the raw host path went out to an API-key caller"
+    assert not reading.get("path"), "the raw host path went out to an API-key caller"
     assert reading["free_gb"] is not None, "the capacity fields must survive redaction"
 
 
