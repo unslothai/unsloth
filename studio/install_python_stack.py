@@ -8781,17 +8781,22 @@ def _pinned_binary_policy_args(cmd: "list[str]", env: "dict[str, str] | None") -
         # Without it the opt-out withdrew the sdist exemption without putting the operator's
         # own restriction in its place, which enforced nothing and merely differed.
         if _respect_pm_policy() and cmd[:1] == ["uv"]:
-            return [arg for part in _pip_policy_only_binary() for arg in ("--only-binary", part)]
+            return _pm_build_policy_uv_args()
         return []
     if _respect_pm_policy() and cmd[:1] == ["uv"]:
         # The opt-out arm leaves pip.conf readable instead of reasserting it as variables,
         # so the scrubbed env below is not where the policy lives any more. uv reads neither
-        # the file nor PIP_ONLY_BINARY, and --only-binary has no env spelling on uv 0.10.7,
-        # so a pinned torch install would build an sdist the operator had forbidden.
-        parts = _pip_policy_only_binary()
-    else:
-        parts = [part.strip() for part in (env or {}).get("PIP_ONLY_BINARY", "").split(",")]
-        parts = [part for part in parts if part]
+        # the file nor PIP_ONLY_BINARY, and neither format control has an env spelling on uv
+        # 0.10.7, so a pinned torch install would build an sdist, or install a wheel, that
+        # the operator had forbidden.
+        #
+        # No AMD exemption is added here on purpose: _sdist_only_build_args() already
+        # declines under the opt-out, which is the whole point of it -- an operator who
+        # keeps their policy in force gets a failed install rather than four packages
+        # quietly let through it.
+        return _pm_build_policy_uv_args()
+    parts = [part.strip() for part in (env or {}).get("PIP_ONLY_BINARY", "").split(",")]
+    parts = [part for part in parts if part]
     if not parts:
         return []
     args: list[str] = []
@@ -8885,6 +8890,13 @@ def _relaxed_pip_policy_env(cmd: "list[str]") -> "dict[str, str]":
 # refuse may live in a uv.toml this module deliberately does not parse, and a translation
 # that silently covers less than it appears to is worse than none.
 _PIP_TO_UV_POLICY = (("PIP_REQUIRE_HASHES", "UV_REQUIRE_HASHES"),)
+# Source settings, carried for UNPINNED commands only. uv deprecates both spellings in
+# favour of --default-index / --index, but still reads them, and they are the ones that
+# correspond one-to-one with pip's.
+_PIP_INDEX_TO_UV = (
+    ("PIP_INDEX_URL", "UV_INDEX_URL"),
+    ("PIP_EXTRA_INDEX_URL", "UV_EXTRA_INDEX_URL"),
+)
 
 
 def _uv_only_policy_active() -> bool:
@@ -8977,22 +8989,29 @@ def _pip_policy_requires_hashes(subcommand: str = "install") -> bool:
     return value.strip().lower() not in ("", "0", "false", "no", "off", "n", "f")
 
 
-def _pip_policy_only_binary(subcommand: str = "install") -> "list[str]":
-    """The operator's only-binary targets, as uv would have to be told them.
+def _pip_policy_build_targets(
+    option: str,
+    env_name: str,
+    subcommand: str = "install",
+) -> "list[str]":
+    """An ACCUMULATING pip format-control option, resolved across every source.
 
-    NOT resolved through _effective_pip_policy: pip documents --only-binary as accumulating
-    across every source, so a `[global] only-binary = :all:` with PIP_ONLY_BINARY=numpy
-    restricts everything AND numpy, where last-wins would have restricted numpy alone and
-    quietly allowed source builds for the rest. The files are replayed in load order and the
-    environment appended, which is pip's order, and `:none:` empties the set as pip says.
+    only-binary and no-binary share this shape exactly. pip documents both as "can be
+    supplied multiple times, and each time adds to the existing value", with `:none:`
+    emptying the set, so neither may be resolved last-wins the way require-hashes is: a
+    `[global] only-binary = :all:` with PIP_ONLY_BINARY=numpy restricts everything AND
+    numpy, where last-wins would restrict numpy alone and quietly allow source builds for
+    the rest. The files are replayed in load order and the environment appended, which is
+    pip's order.
 
-    `:all:` and named packages carry verbatim: uv spells the same restriction --only-binary,
-    so the values cross unchanged and no mapping table is needed.
+    Values carry verbatim: uv spells both restrictions the same way, so no mapping is
+    needed -- only the charset filter below, which is shared with the shell twins where
+    these tokens are word-split onto a command line.
     """
     _require_readable_pip_policy()
     targets: "list[str]" = []
-    sources = list(_pip_config_values("only-binary", subcommand))
-    sources.append(os.environ.get("PIP_ONLY_BINARY", ""))
+    sources = list(_pip_config_values(option, subcommand))
+    sources.append(os.environ.get(env_name, ""))
     for source in sources:
         for part in source.split(","):
             part = part.strip()
@@ -9011,6 +9030,22 @@ def _pip_policy_only_binary(subcommand: str = "install") -> "list[str]":
             if part not in targets:
                 targets.append(part)
     return targets
+
+
+def _pip_policy_only_binary(subcommand: str = "install") -> "list[str]":
+    """The operator's only-binary targets, as uv would have to be told them."""
+    return _pip_policy_build_targets("only-binary", "PIP_ONLY_BINARY", subcommand)
+
+
+def _pip_policy_no_binary(subcommand: str = "install") -> "list[str]":
+    """The operator's no-binary targets: "install nothing prebuilt", the mirror of the above.
+
+    A policy that says build from source is as much a supply-chain control as one that says
+    never build, and uv reads neither PIP_NO_BINARY nor pip.conf. --no-binary has no
+    environment spelling on uv 0.10.7 either, so like --only-binary it can only reach uv as
+    argv, and preserving the pip variable achieved nothing on the leg that runs.
+    """
+    return _pip_policy_build_targets("no-binary", "PIP_NO_BINARY", subcommand)
 
 
 def _uv_config_file_present() -> bool:
@@ -9037,14 +9072,24 @@ def _uv_config_file_present() -> bool:
         return True
 
 
-def _pip_config_files_present() -> bool:
-    """Does this host have a pip configuration file at all?
+# The system-level roots pip searches, as a module constant so a test can point the search
+# somewhere other than the machine it runs on. `pip config debug` prints this same set.
+_PIP_SYSTEM_CONFIG_DIRS = ("/etc/xdg", "/etc")
 
-    The documented locations only, and existence only. It answers one question: if
-    `pip config list` cannot be run, is there a policy we are failing to see, or is there
-    genuinely nothing to see? Without it, an unreadable pip is indistinguishable from an
-    unconfigured host, and the opt-out would quietly install past a policy it could not read
-    -- the exact outcome it exists to prevent.
+
+def _pip_config_files_present() -> bool:
+    """Does this host have a pip configuration file anywhere pip would look?
+
+    Existence only. It answers one question: if `pip config list` cannot be run, is there a
+    policy we are failing to see, or is there genuinely nothing to see? Without it, an
+    unreadable pip is indistinguishable from an unconfigured host, and the opt-out would
+    quietly install past a policy it could not read -- the exact outcome it exists to
+    prevent. So the set has to be pip's WHOLE set: a location left out of it fails open,
+    which is the one direction this check must not fail in.
+
+    Four levels, matching `python -m pip config debug`: the global files under XDG and
+    /etc, the site file beside sys.prefix, the user file, and PIP_CONFIG_FILE. The site
+    file matters most here, because a virtual environment is where an installer runs.
 
     PIP_CONFIG_FILE pointing at os.devnull is pip's own way of saying "no files", which the
     pinned default path sets itself, so it must not read as a configured host.
@@ -9052,17 +9097,34 @@ def _pip_config_files_present() -> bool:
     explicit = os.environ.get("PIP_CONFIG_FILE", "").strip()
     if explicit:
         return Path(explicit) != Path(os.devnull) and Path(explicit).is_file()
+    name = "pip.ini" if IS_WINDOWS else "pip.conf"
     candidates: "list[Path]" = []
     if IS_WINDOWS:
         for base in (os.environ.get("PROGRAMDATA", ""), os.environ.get("APPDATA", "")):
             if base:
-                candidates.append(Path(base) / "pip" / "pip.ini")
-        candidates.append(Path.home() / "pip" / "pip.ini")
+                candidates.append(Path(base) / "pip" / name)
+        candidates.append(Path.home() / "pip" / name)
     else:
+        # XDG_CONFIG_DIRS names the global roots and defaults to /etc/xdg; /etc is pip's
+        # own addition below it.
+        roots = [
+            part for part in os.environ.get("XDG_CONFIG_DIRS", "").split(os.pathsep) if part
+        ] or list(_PIP_SYSTEM_CONFIG_DIRS)
+        for root in roots:
+            candidates.append(Path(root) / "pip" / name)
+        for root in _PIP_SYSTEM_CONFIG_DIRS:
+            candidates.append(Path(root) / "pip" / name)
         candidates.append(Path("/etc/pip.conf"))
         xdg = os.environ.get("XDG_CONFIG_HOME", "") or str(Path.home() / ".config")
-        candidates.append(Path(xdg) / "pip" / "pip.conf")
-        candidates.append(Path.home() / ".pip" / "pip.conf")
+        candidates.append(Path(xdg) / "pip" / name)
+        candidates.append(Path.home() / ".pip" / name)
+    # The site file, beside the interpreter that is doing the installing. A venv is exactly
+    # where this runs, so leaving it out would have missed the likeliest file of all.
+    candidates.append(Path(sys.prefix) / name)
+    if IS_WINDOWS:
+        venv = os.environ.get("VIRTUAL_ENV", "")
+        if venv:
+            candidates.append(Path(venv) / name)
     try:
         return any(candidate.is_file() for candidate in candidates)
     except OSError:
@@ -9133,6 +9195,16 @@ def _pip_policy_no_index() -> bool:
     return value.strip().lower() not in ("", "0", "false", "no", "off", "n", "f")
 
 
+def _pm_build_policy_uv_args() -> "list[str]":
+    """Both format controls as uv argv. Opt-out only, and only for a uv command."""
+    args: "list[str]" = []
+    for part in _pip_policy_only_binary():
+        args.extend(["--only-binary", part])
+    for part in _pip_policy_no_binary():
+        args.extend(["--no-binary", part])
+    return args
+
+
 def _pm_index_policy_uv_args(cmd: "list[str]") -> "list[str]":
     """--no-index for a uv command, when pip has been told to ignore the indexes.
 
@@ -9146,8 +9218,15 @@ def _pm_index_policy_uv_args(cmd: "list[str]") -> "list[str]":
     return ["--no-index"] if _pip_policy_no_index() else []
 
 
-def _pip_policy_as_uv_env() -> "dict[str, str]":
-    """pip-expressed policy restated for a uv command. Opt-out only."""
+def _pip_policy_as_uv_env(pinned: bool = False) -> "dict[str, str]":
+    """pip-expressed policy restated as uv's own variables. Opt-out only.
+
+    `pinned` splits the two halves that must not be treated alike. The RESTRICTIVE settings
+    apply everywhere: they can only narrow what uv will accept. The SOURCE settings are
+    carried for unpinned commands only, because on a pinned command an inherited index
+    outranking an explicit --index-url is #6898 exactly, and the pin is itself a provenance
+    control the operator did not set.
+    """
     carried: "dict[str, str]" = {}
     for pip_name, uv_name in _PIP_TO_UV_POLICY:
         if os.environ.get(uv_name, "").strip():
@@ -9161,6 +9240,18 @@ def _pip_policy_as_uv_env() -> "dict[str, str]":
         links = _effective_pip_policy("PIP_FIND_LINKS", "find-links")
         if links:
             carried["UV_FIND_LINKS"] = _uv_find_links_value(links)
+    if pinned:
+        return carried
+    # A private or required index is the commonest hardening of all, and uv reads none of
+    # pip's spellings for it (uv 0.10.7 binds these to UV_INDEX_URL and UV_EXTRA_INDEX_URL).
+    # So an unpinned dependency install under the opt-out went to PyPI while the operator's
+    # mirror sat in a variable uv never looks at.
+    for pip_name, uv_name in _PIP_INDEX_TO_UV:
+        if os.environ.get(uv_name, "").strip():
+            continue
+        value = _effective_pip_policy(pip_name, pip_name[4:].lower().replace("_", "-"))
+        if value:
+            carried[uv_name] = value
     return carried
 
 
@@ -9560,7 +9651,7 @@ def _install_env_for_cmd(cmd: "list[str]") -> "dict[str, str] | None":
         # A uv command standing in for pip still has to honour a pip-expressed hash policy,
         # or the installer's choice of manager decides whether the operator's policy applies.
         if cmd[:1] == ["uv"]:
-            env.update(_pip_policy_as_uv_env())
+            env.update(_pip_policy_as_uv_env(pinned = True))
         return env
     for name in _UV_INDEX_ENV_VARS:
         env.pop(name, None)

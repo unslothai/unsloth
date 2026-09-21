@@ -72,6 +72,18 @@ HAVE_SH = Path("/bin/sh").exists()
 requires_sh = pytest.mark.skipif(not HAVE_SH, reason = "needs a POSIX /bin/sh")
 
 
+# Stashed by the autouse fixture before it installs its stand-in. Every other test wants
+# the host's pip files answered "none"; the one test that is about the function itself
+# needs the real one back.
+_REAL_CONFIG_PRESENCE: list = []
+
+
+def _real_config_presence():
+    """The real _pip_config_files_present, past the autouse fixture's stand-in."""
+    assert _REAL_CONFIG_PRESENCE, "the autouse fixture did not run"
+    return _REAL_CONFIG_PRESENCE[0]
+
+
 def _shell_function_source(name: str) -> str:
     """The body of one POSIX shell function in install.sh, by brace depth.
 
@@ -105,13 +117,24 @@ STACK_SOURCE = (STUDIO_DIR / "install_python_stack.py").read_text(encoding = "ut
 def _hermetic_pinned_pip_config(request):
     ips._PINNED_PIP_CONFIG_LISTING = None
     ips._PINNED_PIP_CONFIG_ATTEMPTS = 2
-    if "reads_real_pip_config" in request.keywords:
-        yield
-    else:
-        with mock.patch.object(ips, "_pinned_pip_config_overrides", lambda *a, **k: {}):
+    ips._POLICY_UNREADABLE_REPORTED = False
+    if not _REAL_CONFIG_PRESENCE:
+        _REAL_CONFIG_PRESENCE.append(ips._pip_config_files_present)
+    # This fixture leaves the listing unavailable for every test, which is exactly the
+    # condition _require_readable_pip_policy() stops on. Whether it fires then depends on
+    # whether the MACHINE happens to have a pip.conf, so the opt-out tests passed on a
+    # developer box and exited 1 on a CI runner that ships /etc/pip.conf. The host's files
+    # are not part of any test here, so they are answered "none" and the tests that are
+    # about the stop say so themselves.
+    with mock.patch.object(ips, "_pip_config_files_present", lambda: False):
+        if "reads_real_pip_config" in request.keywords:
             yield
+        else:
+            with mock.patch.object(ips, "_pinned_pip_config_overrides", lambda *a, **k: {}):
+                yield
     ips._PINNED_PIP_CONFIG_LISTING = None
     ips._PINNED_PIP_CONFIG_ATTEMPTS = 2
+    ips._POLICY_UNREADABLE_REPORTED = False
 
 
 class TestUvOnlyBinaryOnPinnedCommands:
@@ -2006,6 +2029,12 @@ class TestPackageManagerPolicyOptOut:
         The pinned default path sets exactly that, so reading it as a configured host would
         stop every pinned install on a machine that has no policy at all.
         """
+        # The real function, not the fixture's stand-in, and pointed away from the host:
+        # a CI runner that ships /etc/pip.conf would otherwise decide this test's answer.
+        monkeypatch.setattr(ips, "_pip_config_files_present", _real_config_presence())
+        monkeypatch.setattr(ips, "_PIP_SYSTEM_CONFIG_DIRS", (str(tmp_path / "absent"),))
+        monkeypatch.setenv("XDG_CONFIG_DIRS", str(tmp_path / "absent"))
+        monkeypatch.setattr(ips.sys, "prefix", str(tmp_path / "absent"))
         monkeypatch.setattr(ips, "IS_WINDOWS", False)
         monkeypatch.setenv("HOME", str(tmp_path))
         monkeypatch.setattr(ips.Path, "home", staticmethod(lambda: tmp_path))
@@ -2025,6 +2054,145 @@ class TestPackageManagerPolicyOptOut:
         nested.mkdir(parents = True)
         (nested / "pip.conf").write_text("[global]\n")
         assert ips._pip_config_files_present() is True
+        (nested / "pip.conf").unlink()
+        assert ips._pip_config_files_present() is False
+
+        # The site file, beside the interpreter doing the installing. A venv is exactly
+        # where this runs, so omitting it would have missed the likeliest file of all --
+        # and every omission from this set fails OPEN, which is the direction that matters.
+        site = tmp_path / "prefix"
+        site.mkdir()
+        monkeypatch.setattr(ips.sys, "prefix", str(site))
+        assert ips._pip_config_files_present() is False
+        (site / "pip.conf").write_text("[global]\n")
+        assert ips._pip_config_files_present() is True
+        (site / "pip.conf").unlink()
+
+        # And the global XDG root, which pip reads below the user file.
+        globals_dir = tmp_path / "xdgdirs" / "pip"
+        globals_dir.mkdir(parents = True)
+        monkeypatch.setenv("XDG_CONFIG_DIRS", str(tmp_path / "xdgdirs"))
+        assert ips._pip_config_files_present() is False
+        (globals_dir / "pip.conf").write_text("[global]\n")
+        assert ips._pip_config_files_present() is True
+
+    @pytest.mark.reads_real_pip_config
+    @pytest.mark.parametrize(
+        ("environment", "listing", "expected"),
+        [
+            ({"PIP_NO_BINARY": ":all:"}, b"", ["--no-binary", ":all:"]),
+            ({}, b"global.no-binary='mypkg'\n", ["--no-binary", "mypkg"]),
+            (
+                {"PIP_NO_BINARY": "other"},
+                b"global.no-binary='mypkg'\n",
+                ["--no-binary", "mypkg", "--no-binary", "other"],
+            ),
+            (
+                {"PIP_ONLY_BINARY": ":all:", "PIP_NO_BINARY": "mypkg"},
+                b"",
+                ["--only-binary", ":all:", "--no-binary", "mypkg"],
+            ),
+            ({}, b"", []),
+        ],
+    )
+    def test_the_no_binary_policy_reaches_uv_as_arguments(
+        self, environment, listing, expected, monkeypatch
+    ):
+        """ "Build it from source" is a supply-chain control as much as "never build" is.
+
+        uv reads neither PIP_NO_BINARY nor pip.conf, and --no-binary has no environment
+        spelling on uv 0.10.7, so preserving the pip variable left the operator's rule
+        unenforced on the leg that actually runs. It accumulates exactly as only-binary
+        does, which is why both go through one resolver.
+        """
+        monkeypatch.setattr(ips, "_PINNED_PIP_CONFIG_LISTING", listing)
+        monkeypatch.setattr(ips, "_pinned_pip_config_overrides", lambda *a, **k: {})
+        with self._environment(environment, opt_out = "1"):
+            assert ips._pm_build_policy_uv_args() == expected
+            assert ips._pinned_binary_policy_args(self.PINNED, {}) == expected
+            assert ips._pinned_binary_policy_args(["uv", "pip", "install", "x"], None) == expected
+            # pip reads both settings itself, so a pip command must not be told twice.
+            assert ips._pinned_binary_policy_args(self.UNPINNED, None) == []
+        with self._environment(environment):
+            assert ips._pinned_binary_policy_args(["uv", "pip", "install", "x"], None) == []
+
+    @pytest.mark.reads_real_pip_config
+    @pytest.mark.parametrize(
+        ("environment", "listing", "expected"),
+        [
+            (
+                {"PIP_INDEX_URL": "https://mirror.internal/simple"},
+                b"",
+                {"UV_INDEX_URL": "https://mirror.internal/simple"},
+            ),
+            (
+                {},
+                b"global.index-url='https://mirror.internal/simple'\n",
+                {"UV_INDEX_URL": "https://mirror.internal/simple"},
+            ),
+            (
+                {"PIP_EXTRA_INDEX_URL": "https://extra.internal/simple"},
+                b"",
+                {"UV_EXTRA_INDEX_URL": "https://extra.internal/simple"},
+            ),
+            # an explicit uv value the operator set outranks the translation
+            (
+                {
+                    "PIP_INDEX_URL": "https://mirror.internal/simple",
+                    "UV_INDEX_URL": "https://theirs/",
+                },
+                b"",
+                {},
+            ),
+            ({}, b"", {}),
+        ],
+    )
+    def test_a_private_index_reaches_unpinned_uv_but_never_a_pinned_one(
+        self, environment, listing, expected, monkeypatch
+    ):
+        """The restrictive half of the policy applies everywhere; the SOURCE half does not.
+
+        A required or private index is the commonest hardening there is, and uv reads none
+        of pip's spellings for it, so an unpinned dependency install went to PyPI while the
+        operator's mirror sat in a variable uv never looks at. But carrying it onto a PINNED
+        command is #6898 exactly: an inherited index outranking an explicit --index-url,
+        where the pin is itself a provenance control the operator did not set. So the two
+        halves are separated rather than the whole thing being carried or withheld.
+        """
+        monkeypatch.setattr(ips, "_PINNED_PIP_CONFIG_LISTING", listing)
+        monkeypatch.setattr(ips, "_pinned_pip_config_overrides", lambda *a, **k: {})
+        with self._environment(environment, opt_out = "1"):
+            unpinned = ips._pip_policy_as_uv_env()
+            pinned = ips._pip_policy_as_uv_env(pinned = True)
+        for name, value in expected.items():
+            assert unpinned.get(name) == value
+        assert not any(
+            name.startswith("UV_INDEX") or name.startswith("UV_EXTRA") for name in pinned
+        ), "a pinned command must not inherit an index, however the operator expressed it"
+
+    @requires_sh
+    def test_the_shell_keeps_a_whole_find_links_row(self):
+        """Command substitution word-splits, and the loop then kept only the last token.
+
+        A pip.conf `find-links = /wheelhouse/a /wheelhouse/b` became `/wheelhouse/b` alone,
+        and with no-index in force everything that lived in the first wheelhouse became
+        unresolvable. Reading the row as a line rather than iterating over its words is the
+        difference, so the real function is executed rather than described.
+        """
+        library = _shell_function_source("_resolve_index_policy")
+        script = f"""
+        {library}
+        _PM_PIP_CONFIG_LISTING="global.find-links='/wheelhouse/a /wheelhouse/b'"
+        unset UV_FIND_LINKS PIP_FIND_LINKS PIP_NO_INDEX
+        _PM_INDEX_POLICY_ARGS=""
+        _resolve_index_policy
+        printf '%s' "$UV_FIND_LINKS"
+        """
+        result = subprocess.run(
+            ["/bin/sh", "-c", script], capture_output = True, text = True, timeout = 60
+        )
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == "/wheelhouse/a,/wheelhouse/b"
 
     def test_the_shell_declines_the_forced_pip_amd_wheel_too(self):
         """install.sh runs the same direct-URL install through pip, for the same reason.

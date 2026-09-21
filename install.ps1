@@ -4179,16 +4179,24 @@ exit 1
     # It separates "there is nothing to read" from "there is something we could not read", which
     # an empty listing on its own cannot do.
     function Test-PipConfigFilesPresent {
+        # pip's WHOLE discovery set. A location left out fails OPEN, which is the one direction
+        # this check must not fail in: the site file beside the interpreter is where a virtual
+        # environment keeps its policy, and an installer is exactly what runs in one.
         $explicit = "$env:PIP_CONFIG_FILE".Trim()
         if ($explicit) {
             if ($explicit -eq 'nul' -or $explicit -eq 'NUL') { return $false }
             return (Test-Path -LiteralPath $explicit -PathType Leaf)
         }
+        $candidates = @()
         foreach ($base in @("$env:PROGRAMDATA", "$env:APPDATA")) {
-            if (-not $base) { continue }
-            if (Test-Path -LiteralPath (Join-Path $base 'pip\pip.ini') -PathType Leaf) { return $true }
+            if ($base) { $candidates += (Join-Path $base 'pip\pip.ini') }
         }
-        return (Test-Path -LiteralPath (Join-Path $HOME 'pip\pip.ini') -PathType Leaf)
+        $candidates += (Join-Path $HOME 'pip\pip.ini')
+        if ($env:VIRTUAL_ENV) { $candidates += (Join-Path $env:VIRTUAL_ENV 'pip.ini') }
+        foreach ($candidate in $candidates) {
+            if (Test-Path -LiteralPath $candidate -PathType Leaf) { return $true }
+        }
+        return $false
     }
 
     # Under the opt-out, an unanswerable policy question stops the run. uv can create an
@@ -4236,27 +4244,41 @@ exit 1
     # ACCUMULATING across sources, each occurrence adding to the set and `:none:` emptying
     # it, so the file rows are replayed in load order and the environment appended, rather
     # than one of them winning as the hash policy does.
-    function Get-PipPolicyOnlyBinary {
+    function Get-PipPolicyBuildTargets {
+        param([string]$Option, [string]$EnvName)
         $sources = @()
         foreach ($line in (Get-PmPipConfigListing)) {
-            if ("$line" -match "^(global|install)\.only[-_]binary\s*=\s*'?([^']*)'?\s*$") {
+            if ("$line" -match "^(global|install)\.$Option\s*=\s*'?([^']*)'?\s*$") {
                 $sources += $Matches[2]
             }
         }
-        $sources += "$env:PIP_ONLY_BINARY"
+        $sources += [Environment]::GetEnvironmentVariable($EnvName)
         $targets = @()
         foreach ($source in $sources) {
             foreach ($part in ("$source" -split ',')) {
                 $part = $part.Trim()
                 if (-not $part) { continue }
                 if ($part -eq ':none:') { $targets = @(); continue }
-                # These go straight onto a command line, so anything outside a package name
-                # or pip's own :all:/:none: is dropped rather than passed on.
+                # These go straight onto a command line, so anything outside a package name or
+                # pip's own :all:/:none: is dropped rather than passed on.
                 if ($part -notmatch '^[A-Za-z0-9._:-]+$') { continue }
                 if ($targets -notcontains $part) { $targets += $part }
             }
         }
-        return @($targets | ForEach-Object { '--only-binary'; $_ })
+        return $targets
+    }
+
+    function Get-PipPolicyOnlyBinary {
+        return @(Get-PipPolicyBuildTargets 'only[-_]binary' 'PIP_ONLY_BINARY' |
+            ForEach-Object { '--only-binary'; $_ })
+    }
+
+    # The mirror control: "install nothing prebuilt" is as much a supply-chain rule as "never
+    # build", accumulates the same way, and uv reads neither pip spelling for it. --no-binary
+    # has no environment binding on uv 0.10.7 either, so argv is the only channel.
+    function Get-PipPolicyNoBinary {
+        return @(Get-PipPolicyBuildTargets 'no[-_]binary' 'PIP_NO_BINARY' |
+            ForEach-Object { '--no-binary'; $_ })
     }
 
     # uv spells this --no-index and gives it NO environment binding (uv 0.10.7), unlike
@@ -4278,6 +4300,26 @@ exit 1
             }
         }
         if (-not $noIndex) { $noIndex = "$fileNoIndex" }
+        # A private or required index is the commonest hardening of all, and uv reads none of
+        # pip's spellings for it (uv 0.10.7 binds these to UV_INDEX_URL and UV_EXTRA_INDEX_URL).
+        # Set once for the run: Invoke-InstallCommand and Fast-Install already scrub both for a
+        # pinned command, on the opt-out arm too, so a pin still outranks an inherited index and
+        # #6898 stays closed. Never over a uv value the operator set.
+        foreach ($pair in @(
+            @('PIP_INDEX_URL', 'UV_INDEX_URL', 'index[-_]url'),
+            @('PIP_EXTRA_INDEX_URL', 'UV_EXTRA_INDEX_URL', 'extra[-_]index[-_]url')
+        )) {
+            if ([Environment]::GetEnvironmentVariable($pair[1])) { continue }
+            $value = "$([Environment]::GetEnvironmentVariable($pair[0]))".Trim()
+            if (-not $value) {
+                foreach ($line in (Get-PmPipConfigListing)) {
+                    if ("$line" -match "^(global|install)\.$($pair[2])\s*=\s*'?([^']*)'?\s*$") {
+                        $value = $Matches[2].Trim()
+                    }
+                }
+            }
+            if ($value) { [Environment]::SetEnvironmentVariable($pair[1], $value) }
+        }
         if ($links -and -not "$env:UV_FIND_LINKS".Trim()) {
             $env:UV_FIND_LINKS = ConvertTo-UvFindLinks $links
         }
@@ -4289,7 +4331,8 @@ exit 1
     $script:PmPolicyArgs = @()
     if (Test-RespectPmPolicy) {
         Assert-ReadablePipPolicy
-        $script:PmPolicyArgs = @(Get-PipPolicyOnlyBinary) + @(Get-PipPolicyIndexArgs)
+        $script:PmPolicyArgs = @(Get-PipPolicyOnlyBinary) + @(Get-PipPolicyNoBinary) +
+            @(Get-PipPolicyIndexArgs)
     }
 
     if ((Test-RespectPmPolicy) -and -not "$env:UV_REQUIRE_HASHES".Trim() -and

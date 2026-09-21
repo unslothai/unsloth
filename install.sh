@@ -331,7 +331,48 @@ _resolve_only_binary_policy() {
         done
     done
     _PM_ONLY_BINARY_ARGS="$_pm_set"
+    _pm_set=""
+    # The mirror control: "install nothing prebuilt" is as much a supply-chain rule as
+    # "never build", accumulates the same way, and uv reads neither pip spelling for it.
+    for _pm_raw in $(printf '%s\n' "$_PM_PIP_CONFIG_LISTING" \
+        | sed -n "s/^\\(global\\|install\\)\\.no[-_]binary=//p" \
+        | tr -d "'\"" | tr ',' ' ') ${PIP_NO_BINARY:-}; do
+        _pm_raw=$(printf '%s' "$_pm_raw" | tr ',' ' ')
+        for _pm_one in $_pm_raw; do
+            if [ "$_pm_one" = ":none:" ]; then
+                _pm_set=""
+                continue
+            fi
+            case "$_pm_one" in
+                *[!A-Za-z0-9._:-]*) continue ;;
+            esac
+            _pm_set="$_pm_set --no-binary $_pm_one"
+        done
+    done
+    _PM_ONLY_BINARY_ARGS="$_PM_ONLY_BINARY_ARGS$_pm_set"
     unset _pm_set _pm_raw _pm_one
+}
+
+# A private or required index is the commonest hardening of all, and uv reads none of pip's
+# spellings for it: uv 0.10.7 binds these to UV_INDEX_URL and UV_EXTRA_INDEX_URL. Never over
+# a uv value the operator set, and never for the pinned commands run_install_cmd scrubs,
+# where an inherited index outranking an explicit --default-index is #6898 exactly.
+_carry_pip_index_into_uv() {
+    _pm_pair_env="$1"
+    _pm_pair_uv="$2"
+    _pm_pair_key="$3"
+    eval "_pm_have=\${$_pm_pair_uv:-}"
+    [ -n "$_pm_have" ] && return 0
+    eval "_pm_val=\${$_pm_pair_env:-}"
+    if [ -z "$_pm_val" ]; then
+        _pm_val=$(printf '%s\n' "$_PM_PIP_CONFIG_LISTING" \
+            | sed -n "s/^\\(global\\|install\\)\\.$_pm_pair_key=//p" \
+            | tr -d "'\"" | tail -n 1)
+    fi
+    if [ -n "$_pm_val" ]; then
+        eval "$_pm_pair_uv=\"\$_pm_val\"; export $_pm_pair_uv"
+    fi
+    unset _pm_pair_env _pm_pair_uv _pm_pair_key _pm_have _pm_val
 }
 
 # uv spells this --no-index and gives it NO environment binding (uv 0.10.7), unlike
@@ -355,11 +396,13 @@ _resolve_index_policy() {
     if [ -z "${UV_FIND_LINKS:-}" ]; then
         _pm_fl="${PIP_FIND_LINKS:-}"
         if [ -z "$_pm_fl" ]; then
-            for _pm_row in $(printf '%s\n' "$_PM_PIP_CONFIG_LISTING" \
+            # Read line by line, NOT through `for` over a command substitution: a
+            # whitespace-separated row like `/wheelhouse/a /wheelhouse/b` word-splits into
+            # two iterations, and the loop then keeps only the last one. With no-index in
+            # force, packages that live in the earlier wheelhouse become unresolvable.
+            _pm_fl=$(printf '%s\n' "$_PM_PIP_CONFIG_LISTING" \
                 | sed -n "s/^\\(global\\|install\\)\\.find[-_]links=//p" \
-                | tr -d "'\""); do
-                _pm_fl="$_pm_row"
-            done
+                | tr -d "'\"" | tail -n 1)
         fi
         if [ -n "$_pm_fl" ]; then
             # Measured on uv 0.10.7: a space-separated UV_FIND_LINKS fails with
@@ -379,6 +422,8 @@ if _respect_pm_policy; then
     _carry_pip_policy_into_uv
     _resolve_only_binary_policy
     _resolve_index_policy
+    _carry_pip_index_into_uv PIP_INDEX_URL UV_INDEX_URL "index[-_]url"
+    _carry_pip_index_into_uv PIP_EXTRA_INDEX_URL UV_EXTRA_INDEX_URL "extra[-_]index[-_]url"
 fi
 
 # Policy that binds uv and that pip cannot be told about. The Python twin is

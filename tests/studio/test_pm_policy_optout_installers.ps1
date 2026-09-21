@@ -70,7 +70,9 @@ $pipEnvFlagSrc       = Get-FunctionText $setupAst   "Test-PipEnvFlag" $setupPs1
 # and splats the only-binary policy, which uv can only be told as argv.
 $pipListingSrc       = Get-FunctionText $setupAst   "Get-PmPipConfigListing" $setupPs1
 $pipPolicySrc        = Get-FunctionText $setupAst   "Test-PipPolicyRequiresHashes" $setupPs1
+$buildTargetsSrc     = Get-FunctionText $setupAst   "Get-PipPolicyBuildTargets" $setupPs1
 $onlyBinarySrc       = Get-FunctionText $setupAst   "Get-PipPolicyOnlyBinary" $setupPs1
+$noBinarySrc         = Get-FunctionText $setupAst   "Get-PipPolicyNoBinary" $setupPs1
 $uvEnvFlagSrc        = Get-FunctionText $setupAst   "Test-UvEnvFlag" $setupPs1
 
 Write-Host "== extraction =="
@@ -378,7 +380,9 @@ Invoke-Expression $removeUvFlagsSrc
 Invoke-Expression $pipEnvFlagSrc
 Invoke-Expression $pipListingSrc
 Invoke-Expression $pipPolicySrc
+Invoke-Expression $buildTargetsSrc
 Invoke-Expression $onlyBinarySrc
+Invoke-Expression $noBinarySrc
 Invoke-Expression $uvEnvFlagSrc
 Invoke-Expression $fastInstallSrc
 
@@ -584,7 +588,9 @@ if ($failures -gt 0) {
 Write-Host ""
 Write-Host "== only-binary, which uv can only be told as argv =="
 Invoke-Expression $pipListingSrc
+Invoke-Expression $buildTargetsSrc
 Invoke-Expression $onlyBinarySrc
+Invoke-Expression $noBinarySrc
 # Stand in for the pip probe: these cases are about the fold, not about finding pip.
 function Get-PmPipConfigListing { return $script:FakeListing }
 
@@ -605,13 +611,32 @@ $obCases = @(
        expect = @();
        why    = 'an unconfigured host adds nothing' }
 )
+$nbCases = @(
+    @{ listing = @("global.no-binary='mypkg'"); env = 'other';
+       expect = @('--no-binary', 'mypkg', '--no-binary', 'other');
+       why    = 'no-binary accumulates the same way as its mirror' },
+    @{ listing = @(); env = ':all:';
+       expect = @('--no-binary', ':all:');
+       why    = 'build everything from source carries across verbatim' },
+    @{ listing = @(); env = '';
+       expect = @();
+       why    = 'no no-binary policy adds nothing' }
+)
 foreach ($case in $obCases) {
     $script:FakeListing = $case.listing
     $env:PIP_ONLY_BINARY = $case.env
     $got = @(Get-PipPolicyOnlyBinary)
     Check "$($case.why)" ((($got -join ' ')) -eq (($case.expect -join ' ')))
 }
+foreach ($case in $nbCases) {
+    $script:FakeListing = $case.listing
+    $env:PIP_NO_BINARY = $case.env
+    $env:PIP_ONLY_BINARY = $null
+    $got = @(Get-PipPolicyNoBinary)
+    Check "$($case.why)" ((($got -join ' ')) -eq (($case.expect -join ' ')))
+}
 $env:PIP_ONLY_BINARY = $null
+$env:PIP_NO_BINARY = $null
 
 Write-Host "all checks passed" -ForegroundColor Green
 exit 0
