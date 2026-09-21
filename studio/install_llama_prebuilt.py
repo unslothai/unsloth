@@ -1068,9 +1068,7 @@ def latest_upstream_release_tag() -> str:
                 f"{UPSTREAM_RELEASES_API} named {tag}, which is not a build release"
             )
         else:
-            reason = RuntimeError(
-                f"latest release tag was missing from {UPSTREAM_RELEASES_API}"
-            )
+            reason = RuntimeError(f"latest release tag was missing from {UPSTREAM_RELEASES_API}")
     except (urllib.error.URLError, RuntimeError) as exc:
         # A tokenless 403 surfaces as the RuntimeError fetch_json raises for a rate limit.
         reason = exc
