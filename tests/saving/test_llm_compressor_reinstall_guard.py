@@ -85,7 +85,23 @@ def _pip_invoked_when(
 
 
 def test_an_absent_distribution_is_still_installed(monkeypatch):
-    assert _pip_invoked_when(monkeypatch, None) is True
+    # Absent means the clean subprocess cannot import it either, which is the answer that
+    # separates a genuinely missing package from a metadata-free checkout below.
+    assert _pip_invoked_when(monkeypatch, None, subprocess_import = 1) is True
+
+
+def test_a_metadata_free_checkout_the_export_can_import_is_not_reinstalled(monkeypatch):
+    """No metadata is not the same as not installed.
+
+    A source checkout on PYTHONPATH reports no version, so the presence read raises
+    PackageNotFoundError. If the clean subprocess can still import it, the export would have
+    worked, and pip re-resolving the capped spec over it is the destructive outcome this
+    guard exists to avoid. So the probe decides here too, not the absence of metadata.
+    """
+    probes: list[list[str]] = []
+    assert _pip_invoked_when(monkeypatch, None, probes_out = probes) is False
+    assert len(probes) == 1, f"expected one clean-subprocess probe, got {probes}"
+    assert probes[0][:2] == [sys.executable, "-c"], probes[0]
 
 
 def test_a_supported_version_is_not_reinstalled(monkeypatch):

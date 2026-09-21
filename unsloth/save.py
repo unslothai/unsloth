@@ -1676,7 +1676,14 @@ def install_llm_compressor():
                 # is safe.
                 return None, None
         except _PNF:
-            pass
+            # No metadata is not the same as not installed: a source checkout on PYTHONPATH
+            # has none, _llm_compressor_version_is_supported counts unknown as supported, and
+            # if it also failed the in-process import above (Unsloth's transformers patches)
+            # pip would re-resolve destructively over a checkout the export could have used.
+            # The clean subprocess is the only thing that can tell the two apart, and it is
+            # asked only here, where the in-process import has already failed.
+            if _llm_compressor_imports_cleanly():
+                return None, None
     except Exception:
         pass
 
