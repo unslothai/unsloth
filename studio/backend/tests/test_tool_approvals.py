@@ -144,6 +144,9 @@ def test_resolve_before_wait_is_not_lost():
     assert resolve_tool_decision(aid, "allow", session_id = "sess") is True
     # wait() is only entered now, after the decision already landed.
     assert wait_tool_decision(slot, aid) == "allow"
+    # A stubbed waiter says nothing about why, and that reads as the pre-reason behaviour.
+    assert tool_approvals.decision_reason({"event": None}) is None
+    assert tool_approvals.decision_reason(None) is None
     assert not _has_pending(aid)
 
 
@@ -502,7 +505,8 @@ def test_attendance_cannot_hold_an_approval_past_the_absolute_ceiling(monkeypatc
     stamper = threading.Thread(target = _stamp, daemon = True)
     stamper.start()
     try:
-        verdict, reason = tool_approvals.wait_tool_decision_detail(slot, aid, cancel_event = cancel)
+        verdict = tool_approvals.wait_tool_decision(slot, aid, cancel_event = cancel)
+        reason = tool_approvals.decision_reason(slot)
     finally:
         stop.set()
         stamper.join(timeout = 2.0)
@@ -522,10 +526,8 @@ def test_the_reason_separates_an_expiry_from_a_deny_from_a_cancel(monkeypatch):
     cancel.durable = True
     aid = new_approval_id()
     slot = begin_tool_decision("sess", aid)
-    assert tool_approvals.wait_tool_decision_detail(slot, aid, cancel_event = cancel) == (
-        "deny",
-        tool_approvals.DECISION_EXPIRED,
-    )
+    assert tool_approvals.wait_tool_decision(slot, aid, cancel_event = cancel) == "deny"
+    assert tool_approvals.decision_reason(slot) == tool_approvals.DECISION_EXPIRED
 
     # Cancelled: an explicit Stop, or the sweeper settling a lease-expired run.
     cancel2 = threading.Event()
@@ -533,19 +535,15 @@ def test_the_reason_separates_an_expiry_from_a_deny_from_a_cancel(monkeypatch):
     aid2 = new_approval_id()
     slot2 = begin_tool_decision("sess", aid2)
     cancel2.set()
-    assert tool_approvals.wait_tool_decision_detail(slot2, aid2, cancel_event = cancel2) == (
-        "deny",
-        tool_approvals.DECISION_CANCELLED,
-    )
+    assert tool_approvals.wait_tool_decision(slot2, aid2, cancel_event = cancel2) == "deny"
+    assert tool_approvals.decision_reason(slot2) == tool_approvals.DECISION_CANCELLED
 
     # Answered: the user actually pressed Deny.
     aid3 = new_approval_id()
     slot3 = begin_tool_decision("sess", aid3)
     resolve_tool_decision(aid3, "deny", session_id = "sess")
-    assert tool_approvals.wait_tool_decision_detail(slot3, aid3) == (
-        "deny",
-        tool_approvals.DECISION_ANSWERED,
-    )
+    assert tool_approvals.wait_tool_decision(slot3, aid3) == "deny"
+    assert tool_approvals.decision_reason(slot3) == tool_approvals.DECISION_ANSWERED
 
 
 def test_the_expiry_message_does_not_claim_the_user_decided():
@@ -556,9 +554,10 @@ def test_the_expiry_message_does_not_claim_the_user_decided():
     assert "the user" not in lowered, "an expiry is not a statement about the user"
 
 
-def test_the_legacy_wrapper_still_returns_a_bare_verdict(monkeypatch):
-    """`wait_tool_decision` keeps its old signature and return, so callers that do not care about
-    the reason (request_tool_decision, and anything outside the three tool loops) are untouched."""
+def test_the_waiter_keeps_its_name_signature_and_bare_verdict(monkeypatch):
+    """The reason rides on the slot precisely so this stays true: the three tool loops are
+    monkeypatched by name (core.inference.llama_cpp.wait_tool_decision and friends), and a fake
+    that returns a bare string and never touches slot["reason"] must keep working."""
     monkeypatch.setattr(tool_approvals, "_PARK_TIMEOUT_S", 0.2)
     aid = new_approval_id()
     slot = begin_tool_decision("sess", aid)

@@ -470,7 +470,8 @@ from state.tool_approvals import (
     abort_tool_decision,
     begin_tool_decision,
     new_approval_id,
-    wait_tool_decision_detail,
+    decision_reason,
+    wait_tool_decision,
 )
 from utils.paths.path_utils import _is_wsl, is_appledouble_metadata
 from utils.code_integrity import code_integrity_block_reason, code_integrity_user_message
@@ -36406,15 +36407,18 @@ class LlamaCppBackend:
                         }
                         yield start_event
 
-                        _decision, _decision_reason = (
-                            wait_tool_decision_detail(
+                        _decision = (
+                            wait_tool_decision(
                                 decision_slot,
                                 approval_id,
                                 cancel_event = cancel_event,
                             )
                             if decision_slot is not None
-                            else (None, None)
+                            else None
                         )
+                        # The slot is where the waiter says WHY: the user's refusal, or an approval
+                        # nobody answered. Read before decision_slot is dropped in the deny branch.
+                        _decision_reason = decision_reason(decision_slot)
                         if _decision is not None and _decision != "deny":
                             # Approved: now it really is running.
                             yield {"type": "status", "text": decision.status_text}

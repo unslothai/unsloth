@@ -76,8 +76,9 @@ from state.tool_approvals import (
     TOOL_REJECTED_MESSAGE,
     abort_tool_decision,
     begin_tool_decision,
+    decision_reason,
     new_approval_id,
-    wait_tool_decision_detail,
+    wait_tool_decision,
 )
 
 
@@ -1645,11 +1646,11 @@ async def stream_with_studio_tools(
                 )
                 yield _sse(start_event)
                 verdict = None
-                decision_reason = None
+                denied_reason = None
                 if decision_slot is not None:
                     waiter = asyncio.ensure_future(
                         asyncio.to_thread(
-                            wait_tool_decision_detail, decision_slot, approval_id, cancel_event
+                            wait_tool_decision, decision_slot, approval_id, cancel_event
                         )
                     )
                     try:
@@ -1666,8 +1667,11 @@ async def stream_with_studio_tools(
                     finally:
                         if not waiter.done():
                             waiter.cancel()
-                    verdict, decision_reason = waiter.result() if waiter.done() else (None, None)
+                    verdict = waiter.result() if waiter.done() else None
                 if verdict == "deny":
+                    # Read before decision_slot is dropped below: the slot is where the waiter says
+                    # whether this was the user's refusal or an approval nobody answered.
+                    denied_reason = decision_reason(decision_slot)
                     decision_slot = None
                     denied = True
                 elif verdict is not None:
@@ -1684,7 +1688,7 @@ async def stream_with_studio_tools(
                 # by the time it lands. Saying "the user declined" there is simply false.
                 denied_text = (
                     TOOL_APPROVAL_EXPIRED_MESSAGE
-                    if decision_reason == DECISION_EXPIRED
+                    if denied_reason == DECISION_EXPIRED
                     else TOOL_REJECTED_MESSAGE
                 )
                 yield _sse(

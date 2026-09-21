@@ -68,11 +68,25 @@ TOOL_APPROVAL_EXPIRED_MESSAGE = (
     "This tool call was not run: nobody answered the approval request in time."
 )
 
-# Why wait_tool_decision returned. The verdict stays "allow"/"deny" so every existing caller is
-# unaffected; a caller that wants to report the difference asks for the reason as well.
+# Why wait_tool_decision returned, recorded on the slot rather than in the return value. The
+# verdict stays a bare "allow"/"deny" so the signature, the return and the patch target all keep
+# their shape: the three tool loops are monkeypatched by name in tests
+# (core.inference.llama_cpp.wait_tool_decision and friends), and a fake that knows nothing about
+# reasons simply leaves slot["reason"] as it found it, which reads as the old behaviour.
 DECISION_ANSWERED = "answered"
 DECISION_CANCELLED = "cancelled"
 DECISION_EXPIRED = "expired"
+
+
+def decision_reason(slot) -> Optional[str]:
+    """Why ``wait_tool_decision`` returned for ``slot``, or None if it did not say.
+
+    None on purpose for a slot a stubbed waiter never touched: the caller then falls back to
+    TOOL_REJECTED_MESSAGE, which is exactly what it did before reasons existed.
+    """
+    if not isinstance(slot, dict):
+        return None
+    return slot.get("reason")
 
 _lock = threading.Lock()
 # approval_id -> {"event": threading.Event, "decision": str|None, "session": str}
@@ -90,6 +104,8 @@ def begin_tool_decision(session_id, approval_id) -> dict:
         "event": threading.Event(),
         "decision": None,
         "session": session_id or "",
+        # Filled in by wait_tool_decision; read back with decision_reason().
+        "reason": None,
     }
     with _lock:
         _pending[approval_id] = slot
@@ -102,37 +118,18 @@ def wait_tool_decision(
     cancel_event = None,
     timeout = _DECISION_TIMEOUT,
 ):
-    """Block on a slot from ``begin_tool_decision`` until the user decides. Returns ``"allow"`` or ``"deny"``, falling back to ``"deny"`` if the wait times out or generation is cancelled first. A durable run's cancel_event is never set on a browser disconnect, so a parked gate does NOT auto-deny at the 3600s ceiling; instead it denies at the shorter park timeout (default 300s, ``UNSLOTH_STUDIO_TOOL_APPROVAL_TIMEOUT_S``) once nobody is watching the run. An explicit Stop still denies immediately. Always removes its own slot on exit."""
-    return wait_tool_decision_detail(
-        slot,
-        approval_id,
-        cancel_event = cancel_event,
-        timeout = timeout,
-    )[0]
+    """Block on a slot from ``begin_tool_decision`` until the user decides. Returns ``"allow"`` or ``"deny"``, falling back to ``"deny"`` if the wait times out or generation is cancelled first. Records WHY in ``slot["reason"]`` (see ``decision_reason``), because a bare ``"deny"`` cannot tell a user who refused from an approval nobody answered, and the loops report one of those to the user as their own decision. Always removes its own slot on exit.
 
-
-def wait_tool_decision_detail(
-    slot,
-    approval_id,
-    cancel_event = None,
-    timeout = _DECISION_TIMEOUT,
-):
-    """``wait_tool_decision`` plus WHY it returned, as ``(verdict, reason)``.
-
-    Three very different things used to come back as a bare ``"deny"``: the user pressed Deny, the
-    run was cancelled, and nobody answered before the ceiling. A caller that reports the result to
-    the user needs them apart, because "The user declined to run this tool call." is a statement
-    about the user that is only true in the first case.
-
-    The park ceiling measures time with NOBODY WATCHING, not time since the call parked. A durable
-    run outlives its tab by design, so its cancel_event says nothing about whether a human is there;
-    ``run_subscribers`` is what knows. While a follower is attached the deadline keeps re-arming and
-    the wait is bounded by ``timeout`` exactly as a browser-owned run always was, so a user who is
-    still reading what the tool wants to do does not lose the decision out from under them. Once the
-    followers go the ceiling runs, and an unattended agentic loop still refuses and carries on.
+    The park ceiling measures time with NOBODY WATCHING, not time since the call parked. A durable run outlives its tab by design, so its cancel_event says nothing about whether a human is there; ``run_subscribers`` is what knows. While a follower is attached the deadline keeps re-arming and the wait is bounded by ``_DECISION_TIMEOUT`` exactly as a browser-owned run always was, so a user still reading what the tool wants to do does not lose the decision out from under them. Once the followers go the ceiling runs (default 300s, ``UNSLOTH_STUDIO_TOOL_APPROVAL_TIMEOUT_S``) and an unattended agent adapts and continues. An explicit Stop still denies immediately.
     """
     park = bool(getattr(cancel_event, "durable", False))
     run_id = getattr(cancel_event, "durable_run_id", "") or ""
+
+    def _settle(verdict, reason):
+        if isinstance(slot, dict):
+            slot["reason"] = reason
+        return verdict
+
     try:
         # `waited` is time with nobody watching and resets when a follower is seen; `total` is the
         # whole wait and never resets. A park is bounded by both.
@@ -140,24 +137,24 @@ def wait_tool_decision_detail(
         total = 0.0
         while not slot["event"].wait(timeout = 0.5):
             if cancel_event is not None and cancel_event.is_set():
-                return "deny", DECISION_CANCELLED
+                return _settle("deny", DECISION_CANCELLED)
             waited += 0.5
             total += 0.5
             if not park:
                 # Unchanged: the caller's ceiling is the only one a browser-owned run has ever had.
                 if total >= timeout:
-                    return "deny", DECISION_EXPIRED
+                    return _settle("deny", DECISION_EXPIRED)
                 continue
             # A durable park ignores the caller's timeout by design, so the attended backstop is this
             # module's own ceiling - the same hour a browser-owned run gets - rather than `timeout`.
             if total >= _DECISION_TIMEOUT:
-                return "deny", DECISION_EXPIRED
+                return _settle("deny", DECISION_EXPIRED)
             if run_subscribers.is_attended(run_id):
                 # Someone is watching, so this is deliberation, not abandonment.
                 waited = 0.0
             elif waited >= _PARK_TIMEOUT_S:
-                return "deny", DECISION_EXPIRED
-        return slot["decision"] or "deny", DECISION_ANSWERED
+                return _settle("deny", DECISION_EXPIRED)
+        return _settle(slot["decision"] or "deny", DECISION_ANSWERED)
     finally:
         with _lock:
             if _pending.get(approval_id) is slot:

@@ -74,7 +74,8 @@ from state.tool_approvals import (
     abort_tool_decision,
     begin_tool_decision,
     new_approval_id,
-    wait_tool_decision_detail,
+    decision_reason,
+    wait_tool_decision,
 )
 
 
@@ -1426,15 +1427,18 @@ def run_safetensors_tool_loop(
                 }
                 yield start_event
 
-                _decision, _decision_reason = (
-                    wait_tool_decision_detail(
+                _decision = (
+                    wait_tool_decision(
                         decision_slot,
                         approval_id,
                         cancel_event = cancel_event,
                     )
                     if decision_slot is not None
-                    else (None, None)
+                    else None
                 )
+                # The slot is where the waiter says WHY: the user's refusal, or an approval nobody
+                # answered. Read before decision_slot is dropped in the deny branch below.
+                _decision_reason = decision_reason(decision_slot)
                 if _decision is not None and _decision != "deny":
                     yield {"type": "status", "text": decision.status_text}
                 if _decision == "deny":
