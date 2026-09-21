@@ -4180,8 +4180,23 @@ def _rocm_linux_shared_pool_host_gb_by_index(devices: list[Dict[str, Any]]) -> D
             continue
         _used, sysfs_total = entry
         torch_total = dev.get("total_gb") or 0.0
-        if sysfs_total > 0 and torch_total - sysfs_total > 0.1 * torch_total:
-            shared[index] = round(torch_total - sysfs_total, 2)
+        if sysfs_total <= 0:
+            # sysfs could not be read for this card, so the split is genuinely
+            # UNKNOWN and the index stays absent. WSL reaches here.
+            continue
+        excess = torch_total - sysfs_total
+        # A readable sysfs total that torch does not exceed means the whole torch
+        # budget IS the driver's dedicated heap, i.e. the host-backed part is a
+        # measured ZERO. Omitting the index said "unknown" instead, and the tile
+        # renders unknown as "all of it is host memory": on a gfx1151 whose
+        # mem_info_vram_total is the full 64 GiB carve-out, Settings > System read
+        # `0.00 GiB VRAM + 64.00 GiB shared`. Measured on the AMD CI Strix Halo
+        # against main; unsloth#7449 defect 1.
+        #
+        # The 0.1 band is kept as the threshold for BELIEVING an excess, not for
+        # publishing a figure at all: below it the difference is rounding between
+        # two independently reported totals, and rounding is not host memory.
+        shared[index] = round(excess, 2) if excess > 0.1 * torch_total else 0.0
     return shared
 
 
@@ -5806,8 +5821,19 @@ def get_backend_visible_gpu_info() -> Dict[str, Any]:
                 shared_host_gb = _rocm_linux_shared_pool_host_gb_by_index(torch_devices)
                 for td in torch_devices:
                     if td["index"] in shared_host_gb:
-                        td["shared_memory"] = True
-                        td["shared_memory_host_backed_gb"] = shared_host_gb[td["index"]]
+                        host_gb = shared_host_gb[td["index"]]
+                        # A measured ZERO is an answer, not a miss: it says the whole
+                        # budget is the driver's dedicated heap. Publish it either way,
+                        # because the consumer renders an ABSENT figure as "all of it is
+                        # host memory" and that is how a 64 GiB carve-out came out as
+                        # `0.00 GiB VRAM + 64.00 GiB shared` (unsloth#7449 defect 1).
+                        td["shared_memory_host_backed_gb"] = host_gb
+                        # But only call the budget shared when some of it really is.
+                        # `shared_memory` additionally means "several rows are views of
+                        # ONE pool", which collapses them; a two-socket MI300A with no
+                        # host-backed part must stay additive.
+                        if host_gb > 0:
+                            td["shared_memory"] = True
             elif IS_ROCM and platform.system() == "Windows":
                 shared_host_gb = _windows_rocm_shared_pool_host_gb_by_index(torch_devices)
                 for td in torch_devices:
