@@ -1718,12 +1718,24 @@ def studio_default(
             "(Parallel Slots) override it per load."
         ),
     ),
+    api_max_concurrency: Optional[int] = typer.Option(
+        None,
+        "--api-max-concurrency",
+        min = _PARALLEL_MIN,
+        max = _PARALLEL_MAX,
+        help = (
+            "Cap concurrent inference API requests (admission slots) "
+            "independently of --parallel. Takes the minimum of this value "
+            "and the backend's slot count. Also reads "
+            "UNSLOTH_API_MAX_CONCURRENCY."
+        ),
+    ),
     cloudflare: Optional[bool] = typer.Option(
         None,
         "--cloudflare/--no-cloudflare",
         help = "Expose Unsloth on a PUBLIC internet URL via a free Cloudflare HTTPS "
         "tunnel, for non-api-only wildcard binds (0.0.0.0 or ::). Off by default; "
-        "pass --cloudflare to enable it (--secure implies it). --no-cloudflare forces "
+        "pass --cloudflare to enable it (--secure implies it), --no-cloudflare forces "
         "it off but does not change a raw wildcard bind.",
     ),
     secure: bool = typer.Option(
@@ -1785,6 +1797,16 @@ def studio_default(
                 f"{ctx.invoked_subcommand}`, put the flag after the "
                 f"subcommand: `unsloth studio {ctx.invoked_subcommand} "
                 f"--parallel {parallel} ...`",
+                err = True,
+            )
+            raise typer.Exit(2)
+        if api_max_concurrency is not None:
+            typer.echo(
+                f"Error: --api-max-concurrency on `unsloth studio` applies to the "
+                f"plain-server path only. For `unsloth studio "
+                f"{ctx.invoked_subcommand}`, put the flag after the "
+                f"subcommand: `unsloth studio {ctx.invoked_subcommand} "
+                f"--api-max-concurrency {api_max_concurrency} ...`",
                 err = True,
             )
             raise typer.Exit(2)
@@ -1938,6 +1960,12 @@ def studio_default(
             in_studio_venv = in_studio_venv, child_run_py = run_py
         ),
     )
+
+    # Before the re-exec branches, not beside run_server: the child is launched with an
+    # explicit argv that does not carry this flag, so setting it later would drop the cap on
+    # every out-of-venv launch. The environment is inherited by both execvp and Popen.
+    if api_max_concurrency is not None:
+        os.environ["UNSLOTH_API_MAX_CONCURRENCY"] = str(api_max_concurrency)
 
     if not in_studio_venv:
         if studio_python and run_py:
@@ -2331,6 +2359,19 @@ def run(
             "run settings (Parallel Slots) can override it per load."
         ),
     ),
+    api_max_concurrency: Optional[int] = typer.Option(
+        None,
+        "--api-max-concurrency",
+        min = _PARALLEL_MIN,
+        max = _PARALLEL_MAX,
+        rich_help_panel = _RUN_PANEL_SERVER,
+        help = (
+            "Cap concurrent inference API requests (admission slots) "
+            "independently of --parallel. Takes the minimum of this value "
+            "and the backend's slot count. Also reads "
+            "UNSLOTH_API_MAX_CONCURRENCY."
+        ),
+    ),
     cloudflare: Optional[bool] = typer.Option(
         None,
         "--cloudflare/--no-cloudflare",
@@ -2560,6 +2601,12 @@ def run(
             in_studio_venv = in_studio_venv, child_run_py = None
         ),
     )
+
+    # Before the re-exec branch, not beside run_server: the child argv below does not carry
+    # this flag, so setting it later would drop the cap on every out-of-venv launch. The
+    # environment is inherited by both execvp and Popen.
+    if api_max_concurrency is not None:
+        os.environ["UNSLOTH_API_MAX_CONCURRENCY"] = str(api_max_concurrency)
 
     if not in_studio_venv:
         # Application Control blocks the generated unsloth.exe on some machines but not the signed python.exe beside it.

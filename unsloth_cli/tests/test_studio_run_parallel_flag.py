@@ -356,6 +356,16 @@ def test_in_venv_child_reports_bound_port_before_start_api_key(
     assert "UNSLOTH_START_PORT: 8889\nUNSLOTH_START_API_KEY: sk-unsloth-test\n" in result.output
 
 
+def test_run_api_max_concurrency_rides_the_env_across_the_reexec(monkeypatch):
+    """--api-max-concurrency is not in the child argv, so the cap has to be exported
+    before the re-exec; set after it, an out-of-venv `unsloth studio run` drops it."""
+    studio_mod = _load_run_command()
+    monkeypatch.delenv("UNSLOTH_API_MAX_CONCURRENCY", raising = False)
+    _result, captured = _invoke_run(monkeypatch, _BASE + ["--api-max-concurrency", "2"])
+    assert len(captured) == 1, captured
+    assert studio_mod.os.environ["UNSLOTH_API_MAX_CONCURRENCY"] == "2"
+
+
 def test_run_default_sets_tool_call_env(monkeypatch):
     """Plain `unsloth run` enables healing and nudging via the inherited env
     (written before the re-exec so the child server picks them up at import)."""
