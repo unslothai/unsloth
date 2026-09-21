@@ -900,7 +900,7 @@ test("a reply dense with `]:` and no definition does not pay per occurrence", ()
 
 test("a reference label past the old cap still resolves against its definition", () => {
   // The two probes have to agree on what a label is. The definition probe was widened to
-  // Marked's 999, the reference probe was left at 200, and a label only resolves when BOTH
+  // 999, the reference probe was left at 200, and a label only resolves when BOTH
   // ends carry it -- so every label in 201..999 kept the reply on the blocks path with the
   // reference rendered literally (unslothai/unsloth#9540).
   for (const length of [200, 201, 400, 999]) {
@@ -910,7 +910,11 @@ test("a reference label past the old cap still resolves against its definition",
       `a ${length}-character label did not reach the document path`);
     assert.equal(markdownRenderKey(reply), `document:[${label}]: https://x.test/a`);
   }
-  // 999 is Marked's cap, so a longer label is not a reference and must not widen the scope.
+  // 999 is CommonMark's cap, NOT Marked's: Marked's `def` rule is `[^\]]+` and has no cap at
+  // all, so it does register a 1000-character label and this line pins a residual rather than a
+  // correctness boundary. Both probes stop at 999 for the reason the definition one gives, that
+  // unbounded makes every `[` an O(n) start position, so the pair is split past it and the
+  // reference stays literal. Held here so that widening the cap has to move this line and say so.
   const tooLong = "L".repeat(1000);
   assert.equal(markdownRenderScope(`See [guide][${tooLong}].\n\n[${tooLong}]: /u\n`), "blocks");
 });
