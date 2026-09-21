@@ -51,11 +51,9 @@ test("the dense-quant class follows the backend's capability answer, not its nam
   for (const host of ["gguf-only", "unknown"] as const) {
     assert.equal(hostRunsDenseQuant(host), false, host);
   }
-  // A Mac stays gguf-only however its capability answers, tested through the backends a Mac
-  // can actually resolve to. DeviceType in hardware.py is {cuda, xpu, mlx, cpu} and "rocm"
-  // only when IS_ROCM, so Apple Silicon reports mlx, or cpu when its MLX stack is absent.
-  // "cuda" no longer reaches this branch: a resolved accelerated backend outranks a
-  // browser-derived deviceType, so mac + cuda is a remote CUDA host.
+  // A Mac stays gguf-only however its capability answers, tested through the only backends a
+  // Mac can report: hardware.py yields mlx, or cpu when the MLX stack is absent. "cuda" no
+  // longer reaches this branch, since mac + cuda now means a remote CUDA host.
   for (const deviceBackend of ["mlx", "cpu"]) {
     assert.equal(
       classifyHost({
