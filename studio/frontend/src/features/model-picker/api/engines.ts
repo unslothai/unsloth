@@ -12,6 +12,7 @@ export interface EngineStatus {
   installed: boolean;
   in_use: boolean;
   current: boolean;
+  restored?: boolean;
   can_rollback: boolean;
   unsupported_reason: string | null;
   job: {
@@ -21,6 +22,13 @@ export interface EngineStatus {
     activity?: string;
     log?: string[];
   };
+}
+
+export function isEngineReady(engine: EngineStatus | undefined): boolean {
+  return !!engine?.installed &&
+    (engine.current || engine.restored === true) &&
+    !engine.unsupported_reason &&
+    engine.job.state !== "running";
 }
 
 export async function listEngines(): Promise<EngineStatus[]> {

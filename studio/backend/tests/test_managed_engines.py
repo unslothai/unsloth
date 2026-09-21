@@ -92,6 +92,42 @@ def test_cancel_before_activation_keeps_previous(isolated, monkeypatch):
     assert install.status("vllm")["job"]["state"] == "cancelled"
 
 
+@pytest.mark.parametrize("engine", ["vllm", "sglang"])
+def test_explicit_rollback_allows_old_profile_until_replaced(isolated, monkeypatch, engine):
+    marker = active(isolated, engine)
+    monkeypatch.setattr(install.shutil, "which", lambda _: "/uv")
+
+    def run(engine, argv, cancel):
+        if argv[1] == "venv":
+            destination = Path(argv[-1])
+            (destination / "bin").mkdir(parents = True)
+            (destination / "bin" / "python").touch()
+
+    monkeypatch.setattr(install, "_run", run)
+    assert install.status(engine)["current"] is False
+    assert install.status(engine)["restored"] is False
+    install._install(engine, threading.Event())
+    assert install.status(engine)["current"] is True
+    install.rollback(engine)
+    # Restoration survives a new process reading the on-disk marker.
+    monkeypatch.setattr(install, "_jobs", {})
+    assert install.status(engine)["current"] is False
+    assert install.status(engine)["restored"] is True
+    before = marker.read_bytes()
+
+    def fail(*args):
+        raise RuntimeError("download failed")
+
+    monkeypatch.setattr(install, "_run", fail)
+    install._install(engine, threading.Event())
+    assert marker.read_bytes() == before
+    assert install.status(engine)["restored"] is True
+    monkeypatch.setattr(install, "_run", run)
+    install._install(engine, threading.Event())
+    assert install.status(engine)["current"] is True
+    assert install.status(engine)["restored"] is False
+
+
 def test_runtime_lease_blocks_removal(isolated):
     marker = active(isolated)
     with install.engine_lease("vllm"):

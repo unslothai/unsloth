@@ -166,6 +166,7 @@ def status(engine: str) -> dict:
         "installed": info is not None,
         "in_use": in_use,
         "current": bool(info and info.get("profile_digest") == profile_digest(engine)),
+        "restored": bool(info and info.get("restored")),
         "can_rollback": bool(info and info.get("previous")),
         "unsupported_reason": support_reason(engine),
         "download_bytes": None,
@@ -517,6 +518,7 @@ def rollback(engine: str) -> dict:
             root / "active.json",
             {
                 **previous,
+                "restored": True,
                 "previous_directory": info["directory"],
                 "previous": {
                     k: v

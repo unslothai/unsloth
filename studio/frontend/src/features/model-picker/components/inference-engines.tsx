@@ -20,6 +20,7 @@ import {
   type EngineStatus,
   type InferenceEngine,
   changeEngine,
+  isEngineReady,
 } from "../api/engines";
 import { useEngines } from "../hooks/use-engines";
 
@@ -252,12 +253,7 @@ export function InferenceEnginePicker({
   );
   const selectedGpuIds = gpuIds?.length ? gpuIds : [0];
   const selected = engines.find((engine) => engine.engine === value);
-  const ready =
-    value === "auto" ||
-    (!!selected?.installed &&
-      selected.current &&
-      !selected.unsupported_reason &&
-      selected.job.state !== "running");
+  const ready = value === "auto" || isEngineReady(selected);
   useEffect(() => {
     onReadyChange(ready);
   }, [ready, onReadyChange]);

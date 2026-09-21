@@ -118,8 +118,10 @@ An exclusive file lock protects installation and removal across Studio processes
 Running engines hold shared leases. A staged environment must pass dependency,
 CUDA import and server entry-point checks before an atomic active marker changes.
 Failed or cancelled installations preserve the prior marker. A successful repair
-keeps one previous environment for restoration. Interrupted jobs are reported
-after restarting Studio.
+keeps one previous environment for restoration. Explicitly restoring an older
+profile allows model loading while still offering the pinned update. That choice
+survives restart and failed repairs; a successful update replaces it. Interrupted
+jobs are reported after restarting Studio.
 
 Servers bind to loopback with a random port and authentication key. Studio owns
 their process trees, startup cancellation, health checks, streaming cancellation
