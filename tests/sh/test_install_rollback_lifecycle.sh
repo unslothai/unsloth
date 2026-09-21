@@ -715,6 +715,43 @@ else
     ok "a failure with room to spare does not blame the disk"
 fi
 
+echo "=== a diagnostic write that fails must not cost the rollback (#11313) ==="
+# The trap runs under set -e, so a write to a closed --tauri stdout or a redirected stderr used to
+# abort it before the restore ran, leaving the previous environment moved aside and the install
+# gone. The restore has to happen first and the writes have to be best-effort.
+TRAP_DIR="$WORK/trapsafe"
+mkdir -p "$TRAP_DIR"
+TRAP_OUT=$(
+    {
+        printf '%s\n' 'set -e'
+        printf '%s\n' 'substep() { :; }'
+        printf '%s\n' 'step() { :; }'
+        printf '%s\n' 'C_WARN=""'
+        printf '%s\n' 'TAURI_MODE=true'
+        printf "STUDIO_HOME='%s'\n" "$TRAP_DIR"
+        printf '%s\n' "$ROLLBACK_BLOCK"
+        # After the extraction, so these shadow the real ones rather than being shadowed by them.
+        printf "_restore_studio_venv_replacement() { : > '%s/restored'; }\n" "$TRAP_DIR"
+        printf "_restore_uv_cache_marker() { : > '%s/marker'; }\n" "$TRAP_DIR"
+        printf '%s\n' '_cleanup_install_temporaries() { :; }'
+        printf '%s\n' '_free_space_kb() { echo 1024; }'
+        printf '%s\n' 'tauri_log() { echo "[TAURI:$1] $2"; }'
+        # Both streams closed, so every diagnostic write below fails the way a closed Tauri pipe does.
+        printf '%s\n' 'exec 1>&- 2>&-'
+        printf '%s\n' 'exit 3'
+    } | dash 2>&1
+) || true
+if [ -f "$TRAP_DIR/restored" ]; then
+    ok "the environment is restored even when the diagnostic cannot be written"
+else
+    bad "a failed diagnostic write aborted the trap before the restore"
+fi
+if [ -f "$TRAP_DIR/marker" ]; then
+    ok "and so is the uv cache marker"
+else
+    bad "a failed diagnostic write aborted the trap before the marker restore"
+fi
+
 echo "=== the disk-full remedy describes what happened, not what was asked for (#11313) ==="
 # A discard that failed left a tree on disk, and deleting it is very likely what makes the retry
 # fit. Telling that user there is nothing left to reclaim points them away from the one thing that

@@ -1277,18 +1277,23 @@ _cleanup_install_temporaries() {
 _on_install_exit() {
     _status=$?
     if [ "$_status" -ne 0 ]; then
-        # Every earlier failure lands here, and the largest writes -- the venv and the torch install -- are all earlier, so a disk that filled during them used to surface as a bare exit code (#11313). Guarded on the helper being defined, since the argument parsing above exits before it is.
-        if [ "${_DISK_FULL_REPORTED:-false}" != true ] && command -v _set_disk_full_suffix >/dev/null 2>&1; then
-            _set_disk_full_suffix
-            if [ -n "$_DISK_FULL_SUFFIX" ]; then
-                tauri_log "ERROR_DEFAULT" "unsloth studio install failed (exit code $_status)$_DISK_FULL_SUFFIX"
-                echo "       $STUDIO_HOME has only $_DISK_FULL_MB MB free -- the disk is full, which is very likely the cause." >&2
-                echo "       $_DISK_FULL_REMEDY" >&2
-            fi
-        fi
+        # Restoring comes first, and nothing below it may be able to prevent it. Putting the
+        # diagnosis ahead of this put a pair of writes under `set -e` in front of the only code
+        # that puts the user's environment back: a closed --tauri stdout, or a redirected stderr,
+        # fails the write, and the trap then aborts with the previous environment still moved
+        # aside. A diagnostic must never be able to cost someone their install.
         _restore_studio_venv_replacement
         # Separate from the venv restore: an install can fail before one is in flight.
         _restore_uv_cache_marker
+        # Every earlier failure lands here, and the largest writes -- the venv and the torch install -- are all earlier, so a disk that filled during them used to surface as a bare exit code (#11313). Guarded on the helper being defined, since the argument parsing above exits before it is, and each write is `|| true` for the reason above.
+        if [ "${_DISK_FULL_REPORTED:-false}" != true ] && command -v _set_disk_full_suffix >/dev/null 2>&1; then
+            _set_disk_full_suffix || true
+            if [ -n "${_DISK_FULL_SUFFIX:-}" ]; then
+                tauri_log "ERROR_DEFAULT" "unsloth studio install failed (exit code $_status)$_DISK_FULL_SUFFIX" || true
+                echo "       $STUDIO_HOME has only $_DISK_FULL_MB MB free -- the disk is full, which is very likely the cause." >&2 || true
+                echo "       $_DISK_FULL_REMEDY" >&2 || true
+            fi
+        fi
     fi
     _cleanup_install_temporaries
     exit "$_status"
@@ -7437,8 +7442,9 @@ if [ "$_SETUP_EXIT" -ne 0 ]; then
         step "error" "studio setup failed (exit code $_SETUP_EXIT)" "$C_ERR"
     fi
     if [ -n "$_DISK_FULL_SUFFIX" ]; then
-        echo "       $STUDIO_HOME has only $_DISK_FULL_MB MB free -- the disk is full, which is very likely the cause." >&2
-        echo "       $_DISK_FULL_REMEDY" >&2
+        # `|| true` for the same reason the exit trap guards its copy: a closed --tauri stdout or a redirected stderr must not turn a diagnostic into the thing that decides the exit status.
+        echo "       $STUDIO_HOME has only $_DISK_FULL_MB MB free -- the disk is full, which is very likely the cause." >&2 || true
+        echo "       $_DISK_FULL_REMEDY" >&2 || true
     fi
     # Reported here, so the exit trap does not say it twice.
     _DISK_FULL_REPORTED=true

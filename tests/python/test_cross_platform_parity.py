@@ -1609,6 +1609,41 @@ class TestDiskFullDiagnosisCoversTheBiggestWrites:
         assert '"${_DISK_FULL_REPORTED:-false}" != true' in text
 
 
+class TestDiagnosticsNeverCostTheRollback:
+    """The diagnosis is the least important thing either installer does on a failure, and the
+    restore is the most important. A closed --tauri stdout or a redirected stderr fails the write,
+    and under `set -e` that used to abort the exit trap before the restore ran, leaving the
+    previous environment moved aside and the install gone (#11313)."""
+
+    def test_the_shell_restores_before_it_diagnoses(self):
+        text = INSTALL_SH.read_text(encoding = "utf-8")
+        body = text.split("_on_install_exit() {", 1)[1].split("\n}", 1)[0]
+        restore = body.index("_restore_studio_venv_replacement")
+        diagnose = body.index("_set_disk_full_suffix")
+        assert restore < diagnose, "a failed diagnostic write can abort the trap before the restore"
+
+    def test_the_shell_diagnostics_are_best_effort(self):
+        text = INSTALL_SH.read_text(encoding = "utf-8")
+        body = text.split("_on_install_exit() {", 1)[1].split("\n}", 1)[0]
+        writes = [
+            line.strip() for line in body.splitlines()
+            if ("echo " in line or "tauri_log " in line) and not line.strip().startswith("#")
+        ]
+        assert writes, "the trap no longer writes anything, so this test pins nothing"
+        for line in writes:
+            assert line.endswith("|| true"), f"under set -e this write can abort the trap: {line}"
+
+    def test_the_windows_diagnosis_cannot_escape(self):
+        """PowerShell has no `set -e`, but the installer body runs under $ErrorActionPreference
+        Stop, so a write to a closed handle throws. Containing it is the same requirement."""
+        text = INSTALL_PS1.read_text(encoding = "utf-8")
+        body = text.split("function Exit-InstallFailure", 1)[1].split("\n    }", 1)[0]
+        probe = body.index("Get-StudioFreeSpaceBytes")
+        opened = body.rindex("try {", 0, probe)
+        closed = body.index("} catch", probe)
+        assert opened < probe < closed, "the disk probe is not inside a try/catch"
+
+
 class TestDiskFullRemedyDescribesWhatHappened:
     """A run that ran out of space must be told what would actually help, and that depends on what
     became of the old environment rather than on which flag was passed. The case that matters is a
