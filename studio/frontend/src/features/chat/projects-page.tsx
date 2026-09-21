@@ -37,7 +37,6 @@ import { isDownloadCancelled, pickNativeChatImport } from "@/lib/native-files";
 import { toast } from "@/lib/toast";
 import {
   deleteChatProject,
-  renameChatProject,
   useChatProjects,
   useChatRuntimeStore,
   usePinnedProjectsStore,
@@ -45,6 +44,7 @@ import {
 } from "@/features/chat";
 import { GuidedTour, useGuidedTourController } from "@/features/tour";
 import { buildProjectsTourSteps } from "./tour";
+import { EditProjectDialog } from "./components/edit-project-dialog";
 import { NewProjectDialog } from "./components/new-project-dialog";
 import {
   Delete02Icon,
@@ -141,8 +141,7 @@ export function ProjectsPage() {
   );
 
   const [creating, setCreating] = useState(false);
-  const [renaming, setRenaming] = useState<ProjectRecord | null>(null);
-  const [renameDraft, setRenameDraft] = useState("");
+  const [editing, setEditing] = useState<ProjectRecord | null>(null);
   const [deleting, setDeleting] = useState<ProjectRecord | null>(null);
 
   const globalImportRef = useRef<HTMLInputElement>(null);
@@ -451,23 +450,6 @@ export function ProjectsPage() {
     navigate({ to: "/chat", search: { project: projectId } });
   }
 
-  async function commitRename() {
-    const target = renaming;
-    const name = renameDraft.trim();
-    if (!target || !name || name === target.name) {
-      setRenaming(null);
-      return;
-    }
-    setRenaming(null);
-    try {
-      await renameChatProject(target.id, name);
-    } catch (err) {
-      toast.error("Failed to rename project", {
-        description: err instanceof Error ? err.message : undefined,
-      });
-    }
-  }
-
   async function handleProjectExport(project: ProjectRecord, fmt: ConvExportFormat) {
     try {
       const threads = await listStoredChatThreads({ projectId: project.id, includeArchived: false });
@@ -747,31 +729,35 @@ export function ProjectsPage() {
                   className="size-5"
                 />
               </span>
-              <span className="min-w-0 flex-1 truncate text-ui-15 font-semibold text-foreground">
-                {project.name}
-              </span>
-              {/* Opens the project's chats in place, without leaving the list. */}
-              <button
-                type="button"
-                aria-label={chatsOpen ? "Hide chats" : "Show chats"}
-                aria-expanded={chatsOpen}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  toggleProjectChats(project.id);
-                }}
-                className={cn(
-                  "flex size-7 shrink-0 items-center justify-center rounded-full text-muted-foreground transition hover:bg-black/5 hover:text-foreground focus-visible:opacity-100 group-hover/project-row:opacity-100 dark:hover:bg-white/10",
-                  chatsOpen ? "opacity-100" : "opacity-0",
-                )}
-              >
-                <ChevronDownIcon
-                  strokeWidth={1.75}
+              {/* The disclosure belongs to the name, so it sits beside it rather than out by
+                  the Modified column, where it read as another row action. */}
+              <span className="flex min-w-0 flex-1 items-center gap-0.5">
+                <span className="min-w-0 truncate text-ui-15 font-semibold text-foreground">
+                  {project.name}
+                </span>
+                {/* Opens the project's chats in place, without leaving the list. */}
+                <button
+                  type="button"
+                  aria-label={chatsOpen ? "Hide chats" : "Show chats"}
+                  aria-expanded={chatsOpen}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    toggleProjectChats(project.id);
+                  }}
                   className={cn(
-                    "size-4 transition-transform",
-                    !chatsOpen && "-rotate-90",
+                    "flex size-7 shrink-0 items-center justify-center rounded-full text-muted-foreground transition hover:bg-black/5 hover:text-foreground focus-visible:opacity-100 group-hover/project-row:opacity-100 dark:hover:bg-white/10",
+                    chatsOpen ? "opacity-100" : "opacity-0",
                   )}
-                />
-              </button>
+                >
+                  <ChevronDownIcon
+                    strokeWidth={1.75}
+                    className={cn(
+                      "size-4 transition-transform",
+                      !chatsOpen && "-rotate-90",
+                    )}
+                  />
+                </button>
+              </span>
               <span className="w-40 shrink-0 text-sm text-muted-foreground">
                 {formatModified(project.updatedAt)}
               </span>
@@ -827,14 +813,10 @@ export function ProjectsPage() {
                       />
                       <span>{pinned ? "Unpin" : "Pin"}</span>
                     </DropdownMenuItem>
-                    <DropdownMenuItem
-                      onSelect={() => {
-                        setRenameDraft(project.name);
-                        setRenaming(project);
-                      }}
-                    >
+                    {/* The sidebar's dialog: name, instructions and source folders in one place. */}
+                    <DropdownMenuItem onSelect={() => setEditing(project)}>
                       <HugeiconsIcon icon={Edit03Icon} strokeWidth={1.75} className="size-icon" />
-                      <span>Rename</span>
+                      <span>Edit</span>
                     </DropdownMenuItem>
                     <DropdownMenuItem
                       onSelect={(e) => {
@@ -933,46 +915,15 @@ export function ProjectsPage() {
       {/* Create project (name + drag-and-drop sources) */}
       <NewProjectDialog open={creating} onOpenChange={setCreating} />
 
-      {/* Rename project */}
-      <Dialog
-        open={renaming !== null}
+      {/* Edit project (name + instructions + source folders), the sidebar's dialog. */}
+      <EditProjectDialog
+        project={editing}
         onOpenChange={(open) => {
-          if (!open) setRenaming(null);
+          if (!open) setEditing(null);
         }}
-      >
-        <DialogContent className="corner-squircle dialog-soft-surface sm:max-w-md">
-          <DialogHeader>
-            <DialogTitle>Rename project</DialogTitle>
-          </DialogHeader>
-          <Input
-            value={renameDraft}
-            onChange={(e) => setRenameDraft(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") {
-                e.preventDefault();
-                void commitRename();
-              }
-            }}
-            autoFocus
-            maxLength={120}
-            placeholder="Project name"
-            aria-label="Project name"
-            className="focus-visible:border-input focus-visible:ring-0"
-          />
-          <DialogFooter className="flex-wrap gap-2 sm:justify-end">
-            <Button type="button" variant="ghost" onClick={() => setRenaming(null)}>
-              Cancel
-            </Button>
-            <Button
-              type="button"
-              onClick={() => void commitRename()}
-              disabled={!renameDraft.trim() || renameDraft.trim() === renaming?.name}
-            >
-              Save
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+        // Delete keeps this page's own confirmation.
+        onDelete={(project) => setDeleting(project)}
+      />
 
       {/* Import destination picker */}
       <Dialog open={importFile !== null} onOpenChange={(open) => { if (!open) setImportFile(null); }}>

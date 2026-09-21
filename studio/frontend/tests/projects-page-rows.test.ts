@@ -48,6 +48,38 @@ test("a project row opens its chats in place", () => {
   assert.match(PAGE, /if \(e\.target !== e\.currentTarget\) return;\n\s*if \(e\.key === "Enter" \|\| e\.key === " "\)/);
 });
 
+// Out by the Modified column the arrow read as another row action, and said nothing about which
+// name it belonged to.
+test("the disclosure sits with the name it opens", () => {
+  const name = PAGE.indexOf("{project.name}");
+  const chevron = PAGE.indexOf("<ChevronDownIcon", name);
+  assert.notEqual(name, -1, "the name moved");
+  assert.notEqual(chevron, -1, "the disclosure moved");
+  // The two share a group that takes the row's free width, so the arrow follows the name's end
+  // rather than the column's.
+  assert.match(
+    PAGE,
+    /<span className="flex min-w-0 flex-1 items-center gap-0\.5">\n\s*<span className="min-w-0 truncate text-ui-15 font-semibold text-foreground">\n\s*\{project\.name\}/,
+  );
+  assert.ok(
+    PAGE.indexOf('className="w-40 shrink-0 text-sm text-muted-foreground"') > chevron,
+    "the arrow is still drawn after the Modified column",
+  );
+});
+
+// One project, two lists: the page edits it through the dialog the sidebar opens.
+test("the row menu edits a project rather than only renaming it", () => {
+  assert.match(PAGE, /import \{ EditProjectDialog \} from "\.\/components\/edit-project-dialog";/);
+  assert.match(PAGE, /onSelect=\{\(\) => setEditing\(project\)\}/);
+  assert.match(PAGE, /<span>Edit<\/span>/);
+  assert.match(PAGE, /<EditProjectDialog\n\s*project=\{editing\}/);
+  // Delete still routes to this page's own confirmation.
+  assert.match(PAGE, /onDelete=\{\(project\) => setDeleting\(project\)\}/);
+  // And the rename-only dialog it replaces is gone, with the call it wrote through.
+  assert.ok(!PAGE.includes("Rename project"));
+  assert.ok(!PAGE.includes("renameChatProject"));
+});
+
 test("pinning a project takes one click, and says which way it goes", () => {
   assert.match(PAGE, /aria-label=\{pinned \? "Unpin project" : "Pin project"\}/);
   assert.match(PAGE, /togglePinProject\(project\.id\);/);
