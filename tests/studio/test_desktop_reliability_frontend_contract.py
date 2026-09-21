@@ -1443,6 +1443,33 @@ _MOVES_HORIZONTALLY = (
 )
 
 
+def _classes_setting_the_gutter(live_css: str, classes: set[str]) -> list[str]:
+    """Which of *classes* index.css gives a right padding of its own.
+
+    The gutter comparison reads `pr-N` utilities off the row and nothing else, so an ordinary
+    project class whose rule sets `padding-right` replaces the number that renders while the
+    comparison carries on with the utility's. A coarse-pointer rule doing it with `!important`
+    is the worst case: the row still says `pr-16` and the rendered gutter is zero.
+
+    The class's own rules are read, at any selector that mentions it, because a variant like
+    `.no-touch-gutter` inside a media query is the same claim written further away.
+    """
+    offenders = []
+    for name in sorted(classes):
+        for match in re.finditer(rf"\.{re.escape(name)}(?![\w-])[^{{}}]*\{{", live_css):
+            body = _declarations_at(live_css, match.end() - 1)
+            if body is None:
+                continue
+            if re.search(
+                r"(?<![\w-])padding(?:-right|-inline-end)?:"
+                r"|@apply[^;]*(?<![\w-])!?(?:p|px|pe|pr)-",
+                body,
+            ):
+                offenders.append(name)
+                break
+    return offenders
+
+
 def _escapes_the_model(tag: str) -> str | None:
     """Why *tag*'s position cannot be read from its classes and index.css, or None.
 
@@ -1812,6 +1839,22 @@ def test_chat_sidebar_row_actions_visible_on_coarse_pointers():
     )
 
     coarse_prefix = r"\[@media\(pointer:coarse\)\]:"
+    # And no plain class on the row quietly sets the same edge. Everything below compares
+    # `pr-N` utilities; a project class whose rule states a right padding replaces what
+    # renders without appearing in that comparison at all.
+    named = {
+        token.rpartition(":")[2].strip("!")
+        for token in every_class
+        if re.fullmatch(r"(?:\S*:)?!?[a-z][\w-]*!?", token)
+    }
+    gutter_classes = _classes_setting_the_gutter(live_css, named)
+    assert not gutter_classes, (
+        f"the row carries {gutter_classes}, whose rules in index.css set a right padding of "
+        f"their own. That is the gutter that renders, and the comparison below reads the pr-N "
+        f"utilities instead, so it would credit the row with room it does not have"
+    )
+
+
     # The spinner too, on the renderings that show it. Everything above measures the row's
     # actions, and a working row also renders a spinner that the title has to clear: it sits
     # further in than the pin on touch, which is why the row reserves 78px there and not the
