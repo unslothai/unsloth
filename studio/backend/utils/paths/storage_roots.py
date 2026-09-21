@@ -1136,12 +1136,19 @@ def _holding_dir_is_safe(parent: Path) -> bool:
         info = os.stat(parent)
     except (OSError, ValueError):
         return False
-    # Deliberately NOT keyed on who owns the parent. Owning a directory does not stop anyone
-    # else writing in it; the write bits do. A world-writable parent we own ourselves is just
-    # as renameable by a third account as one we do not.
+    # A parent nobody else can write is enough on its own, whoever owns it. Ownership is NOT a
+    # substitute for that: owning a directory does not stop anyone else writing in it, the write
+    # bits do, so a world-writable parent we own is as renameable by a third account as one we
+    # do not.
     if not info.st_mode & (stat_module.S_IWGRP | stat_module.S_IWOTH):
         return True
-    return bool(info.st_mode & stat_module.S_ISVTX)
+    # Sticky narrows removal and rename of a child to the child's owner, the DIRECTORY's owner,
+    # and a privileged process. So sticky alone is not enough either: a sticky shared directory
+    # belonging to another ordinary account still lets that account swap our cache. /tmp passes
+    # because root owns it, which is the case this is actually for.
+    if not info.st_mode & stat_module.S_ISVTX:
+        return False
+    return info.st_uid in (0, os.geteuid())
 
 
 def _parseable_toolchain_fallback(key: str, intended: str) -> str | None:

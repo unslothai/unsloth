@@ -454,7 +454,7 @@ def test_the_fallback_it_creates_is_closed_to_everyone_else(monkeypatch, tmp_pat
     [
         pytest.param(0o755, True, id = "a private holding directory"),
         pytest.param(0o1777, True, id = "world-writable WITH the sticky bit, which is /tmp"),
-        pytest.param(0o1775, True, id = "group-writable WITH the sticky bit"),
+        pytest.param(0o1775, True, id = "group-writable WITH the sticky bit, owned by us"),
         pytest.param(0o777, False, id = "world-writable and NOT sticky"),
         pytest.param(0o775, False, id = "group-writable and NOT sticky"),
     ],
@@ -484,6 +484,37 @@ def test_the_holding_directory_decides_whether_the_fallback_can_be_swapped(
         shared.chmod(0o755)
 
     assert ("TORCH_EXTENSIONS_DIR" in os.environ) is published
+
+
+@pytest.mark.skipif(os.name == "nt", reason = "POSIX sticky semantics")
+def test_a_sticky_parent_owned_by_somebody_else_is_still_refused(monkeypatch, tmp_path):
+    """Sticky is not a blanket safe answer.
+
+    It narrows removal and rename of a child to the child's owner, the DIRECTORY's owner, and a
+    privileged process, so a sticky shared directory belonging to another ordinary account still
+    lets that account swap our cache after it was validated. /tmp passes because root owns it,
+    and that is the case this branch is actually for. Staged by reporting a foreign uid for the
+    parent, since a directory owned by another account cannot be created here."""
+    shared = tmp_path / "shared"
+    shared.mkdir()
+    shared.chmod(0o1777)
+    sr = _load_storage_roots()
+    real_stat = sr.os.stat
+    foreign = os.geteuid() + 4242
+
+    def lying_stat(path, *args, **kwargs):
+        info = real_stat(path, *args, **kwargs)
+        if str(path) == str(shared):
+            return os.stat_result((info.st_mode, info.st_ino, info.st_dev, info.st_nlink,
+                                   foreign, info.st_gid, info.st_size,
+                                   int(info.st_atime), int(info.st_mtime), int(info.st_ctime)))
+        return info
+
+    monkeypatch.setattr(sr.os, "stat", lying_stat)
+    assert sr._holding_dir_is_safe(shared) is False
+
+    monkeypatch.setattr(sr.os, "stat", real_stat)
+    assert sr._holding_dir_is_safe(shared) is True
 
 
 @pytest.mark.skipif(os.name == "nt", reason = "the identity is the euid on POSIX")
