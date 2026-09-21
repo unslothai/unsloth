@@ -45,17 +45,18 @@ def _mint_as(account):
         reset_account(marker)
 
 
-def _redeem(token, account_lookup = None, monkeypatch = None):
+def _redeem(
+    token,
+    account_lookup = None,
+    monkeypatch = None,
+):
     """Run the dependency and report the account in force inside the handler's scope."""
     if account_lookup is not None:
         import auth.storage
-
         monkeypatch.setattr(auth.storage, "get_account_by_id", account_lookup)
 
     async def drive():
-        generator = jobs._authorize_dataset_download(
-            request = None, token = token, **PARTS
-        )
+        generator = jobs._authorize_dataset_download(request = None, token = token, **PARTS)
         seen = None
         async for _ in generator:
             seen = current_account()
@@ -69,8 +70,9 @@ def _redeem(token, account_lookup = None, monkeypatch = None):
 def test_a_managed_account_link_is_redeemed_as_that_account(monkeypatch):
     """The regression: this used to redeem as OWNER, under the owner's recipe root."""
     token = _mint_as(ALICE)
-    seen = _redeem(token, lambda account_id: ALICE if account_id == ALICE.account_id else None,
-                   monkeypatch)
+    seen = _redeem(
+        token, lambda account_id: ALICE if account_id == ALICE.account_id else None, monkeypatch
+    )
     assert seen == ALICE, "the link was redeemed under a different account than it was minted by"
 
 
