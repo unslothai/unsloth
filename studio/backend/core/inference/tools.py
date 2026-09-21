@@ -16321,10 +16321,39 @@ def _check_signal_escape_patterns(code: str):
             n.id for t in targets if t is not None for n in ast.walk(t) if isinstance(n, ast.Name)
         ]
 
+    # Checked against `type(node)` before the chain below, since this runs twice for every node in
+    # the tree and nearly all of them bind nothing: an exact-type lookup beats a dozen isinstance
+    # calls, and ast nodes are never subclassed here.
+    _BINDING_NODE_TYPES = frozenset(
+        {
+            ast.Assign,
+            ast.Delete,
+            ast.AnnAssign,
+            ast.AugAssign,
+            ast.NamedExpr,
+            ast.For,
+            ast.AsyncFor,
+            ast.comprehension,
+            ast.withitem,
+            ast.ExceptHandler,
+            ast.MatchAs,
+            ast.MatchStar,
+            ast.MatchMapping,
+            ast.FunctionDef,
+            ast.AsyncFunctionDef,
+            ast.ClassDef,
+            ast.Lambda,
+            ast.Import,
+            ast.ImportFrom,
+        }
+    )
+
     def _binding_names(node) -> "list[str]":
         """Every name a node binds, in whatever form: assignment, unpacking, walrus, import, def,
         class, parameter, for target, `as` clause, del. One definition of "this name now means
         something else", used both to invalidate module aliases and to collect literal values."""
+        if type(node) not in _BINDING_NODE_TYPES:
+            return []
         if isinstance(node, (ast.Assign, ast.Delete)):
             return _stored_names(node.targets)
         if isinstance(node, (ast.AnnAssign, ast.AugAssign, ast.NamedExpr)):
@@ -16453,10 +16482,11 @@ def _check_signal_escape_patterns(code: str):
             # Rebinding a name drops the alias it carried. `import socket as requests; import
             # requests` runs the real `requests.get`, and a kept entry rewrote the call to
             # `socket.get`, which matches no network prefix and so went unscreened.
-            for name in _binding_names(node):
-                self.module_aliases.pop(name, None)
-                self.func_aliases.pop(name, None)
-                self.shadowed.add(name)
+            if type(node) in _BINDING_NODE_TYPES:
+                for name in _binding_names(node):
+                    self.module_aliases.pop(name, None)
+                    self.func_aliases.pop(name, None)
+                    self.shadowed.add(name)
             super().visit(node)
 
         def _star_imported_fq(self, name: str) -> "str | None":
