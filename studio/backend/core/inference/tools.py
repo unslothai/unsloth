@@ -1344,7 +1344,9 @@ def _join_escaped_newlines(text: str) -> str:
     Inside SINGLE quotes it strips nothing, and that difference is load-bearing:
     `sed -n '1e touch a\\<newline>rm -f victim' f` continues the executed payload onto the next
     line, so joining there would drop a command that really runs. An escaped backslash consumes
-    both characters, which leaves a following newline standing, as the shell does.
+    both characters, which leaves a following newline standing, as the shell does. The pair is
+    removed rather than replaced, since it can fall inside a word: checked against the same
+    bash, `to\\<newline>uch f` runs `touch`.
 
     Only a backslash-LF continues. Checked against bash 5.2.21: a backslash before CRLF escapes
     the CARRIAGE RETURN, so the newline still starts a command and `echo hi \\<CRLF>rm -rf x`
@@ -1382,7 +1384,9 @@ def _join_escaped_newlines(text: str) -> str:
         if ch == "\\" and i + 1 < n:
             nxt = text[i + 1]
             if nxt == "\n":
-                out.append(" ")
+                # Removed, NOT replaced by a space: the pair can sit inside a word, and the
+                # shell closes it up. `r\\<newline>m -rf x` runs `rm`, so a space here split
+                # the command name and both the token walk and the backstop then missed it.
                 i += 2
                 continue
             out.append(ch)
@@ -16580,13 +16584,28 @@ def _check_signal_escape_patterns(code: str):
             # off, since a bare `get(...)` matched no network prefix.
             self.star_modules: set[str] = set()
             self.shadowed: set[str] = set()
+            # How many function, lambda or class bodies deep the walk is. A binding inside one
+            # does not rebind the module-level name: `def f(get): pass` leaves the outer
+            # `from requests import get` in place, and popping the alias there let the call
+            # after it go unrecognised.
+            self.depth = 0
+
+        def _shadowing_names(self, node) -> "list[str]":
+            """The names a node binds IN THE ENCLOSING scope, which is the only scope that can
+            shadow an imported name. A def or class binds its own name there and its parameters
+            inside itself, so only the name counts."""
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                return [node.name]
+            if isinstance(node, ast.Lambda):
+                return []
+            return _binding_names(node)
 
         def _rebind(self, node) -> None:
             # Rebinding a name drops the alias it carried. `import socket as requests; import
             # requests` runs the real `requests.get`, and a kept entry rewrote the call to
             # `socket.get`, which matches no network prefix and so went unscreened.
-            if type(node) in _BINDING_NODE_TYPES:
-                for name in _binding_names(node):
+            if self.depth == 0 and type(node) in _BINDING_NODE_TYPES:
+                for name in self._shadowing_names(node):
                     # The module set is deliberately NOT dropped: see __init__. A bare function
                     # alias is, so a local `def get(...)` still shadows `from requests import get`.
                     self.func_aliases.pop(name, None)
@@ -16619,6 +16638,25 @@ def _check_signal_escape_patterns(code: str):
                 if any(fq.startswith(p) for p in _NETWORK_FQ_PREFIXES):
                     return fq
             return None
+
+        def _visit_scope(self, node):
+            self._rebind(node)
+            self.depth += 1
+            try:
+                for _field, value in ast.iter_fields(node):
+                    if isinstance(value, list):
+                        for item in value:
+                            if isinstance(item, ast.AST):
+                                self.visit(item)
+                    elif isinstance(value, ast.AST):
+                        self.visit(value)
+            finally:
+                self.depth -= 1
+
+        visit_FunctionDef = _visit_scope
+        visit_AsyncFunctionDef = _visit_scope
+        visit_ClassDef = _visit_scope
+        visit_Lambda = _visit_scope
 
         def visit_Import(self, node):
             self._rebind(node)

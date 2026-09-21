@@ -507,6 +507,35 @@ class TestStarImportedNetworkFunctions:
             expect_phrase = "Blocked: host not in sandbox allowlist",
         )
 
+    @pytest.mark.parametrize(
+        "code",
+        [
+            # A binding inside a nested scope does not rebind the module-level name, so the
+            # call after it really is `requests.get`.
+            pytest.param(
+                "from requests import get\n"
+                "def f(get):\n"
+                "    pass\n"
+                'get("https://evil.example/x")',
+                id = "parameter_of_a_nested_function",
+            ),
+            pytest.param(
+                "from requests import get\n"
+                "def f():\n"
+                "    def get(u):\n"
+                "        return u\n"
+                'get("https://evil.example/x")',
+                id = "def_inside_a_def",
+            ),
+            pytest.param(
+                'from requests import get\nh = lambda get: 1\nget("https://evil.example/x")',
+                id = "lambda_parameter",
+            ),
+        ],
+    )
+    def test_a_nested_binding_does_not_shadow_the_module_level_name(self, code):
+        _blocked(code, expect_phrase = "Blocked: host not in sandbox allowlist")
+
     def test_a_binding_after_the_star_import_still_shadows(self):
         _ok(
             "from requests import *\n"
@@ -2456,6 +2485,10 @@ class TestEscapedNewlineIsNotACommandBoundary:
             pytest.param(
                 "echo ok # comment \\\nrm -rf ./build", "rm", id = "backslash_inside_a_comment"
             ),
+            # The pair is REMOVED, not replaced by a space, so it can sit inside a word and the
+            # shell closes it up. Checked against bash 5.2.21: `to\<newline>uch f` runs `touch`.
+            pytest.param("r\\\nm -rf ./build", "rm", id = "continuation_inside_the_command_word"),
+            pytest.param("echo hi\nr\\\nm -rf x", "rm", id = "word_split_on_a_later_line"),
         ],
     )
     def test_real_command_position_still_blocked(self, command, blocked_cmd):
