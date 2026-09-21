@@ -271,7 +271,7 @@
 	--panel-surface: var(--background);
 	--panel-surface-fg: var(--foreground);
 	--panel-input-surface-base: #f5f5f5;
-	--panel-input-surface-hover: #efefef;
+	--panel-input-surface-hover-base: #efefef;
 	/* Muted gray with a one-step warmer-blue last channel (#779 vs flat #777)
 	   so the tone has a faint hue rather than pure neutral — keeps text and
 	   sliders quiet but not lifeless. */
@@ -431,7 +431,7 @@
 	/* Translucent white so the same fill reads correctly on the #181818
 	   page AND on #212121 cards/dialogs. */
 	--panel-input-surface-base: rgba(255, 255, 255, 0.07);
-	--panel-input-surface-hover: rgba(255, 255, 255, 0.11);
+	--panel-input-surface-hover-base: rgba(255, 255, 255, 0.11);
 	/* Soft neutral gray for muted text and sliders. Pure-ish #ababab
 	   reads as quiet on the dark panel without going colored. */
 	--panel-surface-fg-muted: #ababab;
@@ -512,7 +512,7 @@
 	--nav-beta-border: #e0e0e0;
 	--panel-surface-hover-base: #ececec;
 	--panel-input-surface-base: #f4f4f4;
-	--panel-input-surface-hover: #ededed;
+	--panel-input-surface-hover-base: #ededed;
 	--panel-surface-fg-muted: #7a7c7e;
 	--panel-slider-fg: #9b9d9f;
 	--chat-icon-fg: #5d5f61;
@@ -581,7 +581,7 @@
 	--nav-beta-border: #dddddd;
 	--panel-surface-hover-base: #ececec;
 	--panel-input-surface-base: #f4f4f4;
-	--panel-input-surface-hover: #ededed;
+	--panel-input-surface-hover-base: #ededed;
 	--panel-surface-fg-muted: #757575;
 	--panel-slider-fg: #9b9b9b;
 	--chat-icon-fg: #555555;
@@ -631,6 +631,7 @@
 	--nav-surface-hover: var(--nav-surface-hover-base);
 	--panel-surface-hover: var(--panel-surface-hover-base);
 	--panel-input-surface: var(--panel-input-surface-base);
+	--panel-input-surface-hover: var(--panel-input-surface-hover-base);
 	/* Lines: borders, dividers, control outlines. */
 	--border: var(--border-base);
 	--input: var(--input-base);
@@ -650,6 +651,8 @@ html[data-contrast-adjust] {
 	--nav-surface-hover: color-mix(in oklab, var(--nav-surface-hover-base), var(--contrast-target) var(--contrast-surface-mix));
 	--panel-surface-hover: color-mix(in oklab, var(--panel-surface-hover-base), var(--contrast-target) var(--contrast-surface-mix));
 	--panel-input-surface: color-mix(in oklab, var(--panel-input-surface-base), var(--contrast-target) var(--contrast-surface-mix));
+	/* Same curve as its resting twin, or the hover inverts at high contrast. */
+	--panel-input-surface-hover: color-mix(in oklab, var(--panel-input-surface-hover-base), var(--contrast-target) var(--contrast-surface-mix));
 	--border: color-mix(in oklab, var(--border-base), var(--contrast-target) var(--contrast-line-mix));
 	/* Control outlines and switch tracks stop short of the hairlines: an
 	   affordance still has to be findable at the bottom of the range. */

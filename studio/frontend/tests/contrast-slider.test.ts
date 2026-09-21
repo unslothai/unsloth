@@ -24,6 +24,7 @@ const SURFACE_TOKENS = [
   "nav-surface-hover",
   "panel-surface-hover",
   "panel-input-surface",
+  "panel-input-surface-hover",
 ];
 const LINE_TOKENS = ["border", "input", "sidebar-border"];
 
