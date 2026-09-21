@@ -12,6 +12,7 @@ own success. Keyed by attempt and bounded, since only a settling caller reads on
 
 from __future__ import annotations
 
+import threading
 from collections import OrderedDict
 from typing import Optional
 
@@ -33,29 +34,34 @@ def attempt_scope_key(attempt_id) -> Optional[str]:
     return f"{current_account_id()}\x00{attempt_id}"
 
 
-def _retain_generate_failure(engine, attempt_id, reason: str) -> None:
-    """Record *reason* against *attempt_id* on *engine*, oldest entries first out."""
+# One store for the process, not one per engine instance: a request can switch the active
+# engine between diffusers and sd.cpp, and an outcome kept on the instance that ran the
+# generation becomes unreachable the moment the other one takes over.
+_OUTCOMES: "OrderedDict[str, str]" = OrderedDict()
+_OUTCOMES_LOCK = threading.Lock()
+
+
+def _retain_generate_failure(attempt_id, reason: str) -> None:
+    """Record *reason* against *attempt_id*, oldest entries first out."""
     attempt_id = attempt_scope_key(attempt_id)
     if not attempt_id:
         return
-    outcomes = getattr(engine, "_generate_outcomes", None)
-    if outcomes is None:
-        outcomes = OrderedDict()
-        engine._generate_outcomes = outcomes
-    outcomes.pop(attempt_id, None)
-    outcomes[attempt_id] = reason
-    while len(outcomes) > _RETAINED_GENERATE_FAILURES:
-        outcomes.popitem(last = False)
+    with _OUTCOMES_LOCK:
+        _OUTCOMES.pop(attempt_id, None)
+        _OUTCOMES[attempt_id] = reason
+        while len(_OUTCOMES) > _RETAINED_GENERATE_FAILURES:
+            _OUTCOMES.popitem(last = False)
 
 
-def generate_failure_for_attempt(engine, attempt_id) -> Optional[str]:
+def generate_failure_for_attempt(attempt_id) -> Optional[str]:
     """The raw reason the generation *attempt_id* failed with, if it did and is remembered.
 
-    Per attempt, so a caller settling a lost POST is answered about ITS OWN generation
-    however many have run since. None for an attempt that succeeded, never ran, or has
-    aged out.
+    Per attempt and independent of which engine is active, so a caller settling a lost POST
+    is answered about ITS OWN generation however many have run since and whichever engine
+    took over. None for an attempt that succeeded, never ran, or has aged out.
     """
     attempt_id = attempt_scope_key(attempt_id)
     if not attempt_id:
         return None
-    return (getattr(engine, "_generate_outcomes", None) or {}).get(attempt_id)
+    with _OUTCOMES_LOCK:
+        return _OUTCOMES.get(attempt_id)

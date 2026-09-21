@@ -39562,7 +39562,7 @@ async def diffusion_generate_progress(
     # account-qualified, so this can only ever answer about the caller's own attempt.
     if attempt_id is not None:
         from core.inference.generate_outcomes import generate_failure_for_attempt
-        retained = generate_failure_for_attempt(get_active_diffusion_engine(), attempt_id)
+        retained = generate_failure_for_attempt(attempt_id)
         if retained:
             return DiffusionGenerateProgressResponse(
                 active = False,
@@ -39597,7 +39597,7 @@ async def diffusion_generate_progress(
     if attempt_id is not None:
         from core.inference.generate_outcomes import generate_failure_for_attempt
 
-        raw_error = generate_failure_for_attempt(engine, attempt_id)
+        raw_error = generate_failure_for_attempt(attempt_id)
         # Active is per attempt too, not just the reason. A generation running for someone
         # else says nothing about this one, and a settling caller that counted it as its own
         # treated that run going idle as its own success, skipping the gallery proof.

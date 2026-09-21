@@ -172,37 +172,36 @@ def test_a_failure_survives_the_runs_that_follow_it():
     newcomer going active and idle as its OWN success, and advances a batch past an output
     that never arrived. Outcomes are therefore kept per attempt.
     """
+    import core.inference.generate_outcomes as outcomes
     from core.inference.generate_outcomes import (
         _RETAINED_GENERATE_FAILURES,
         _retain_generate_failure,
         generate_failure_for_attempt,
     )
 
-    engine = types.SimpleNamespace()
-    _retain_generate_failure(engine, "attempt-a", "CUDA out of memory")
+    _retain_generate_failure("attempt-a", "CUDA out of memory")
     # B starts and fails; A has not polled yet.
-    _retain_generate_failure(engine, "attempt-b", "model was replaced")
+    _retain_generate_failure("attempt-b", "model was replaced")
     assert (
-        generate_failure_for_attempt(engine, "attempt-a") == "CUDA out of memory"
+        generate_failure_for_attempt("attempt-a") == "CUDA out of memory"
     ), "a later run discarded the reason the settling client is waiting for"
-    assert generate_failure_for_attempt(engine, "attempt-b") == "model was replaced"
+    assert generate_failure_for_attempt("attempt-b") == "model was replaced"
     # An attempt that never failed, or never ran, has nothing to report.
-    assert generate_failure_for_attempt(engine, "attempt-c") is None
-    assert generate_failure_for_attempt(engine, None) is None
-    assert generate_failure_for_attempt(engine, "") is None
+    assert generate_failure_for_attempt("attempt-c") is None
+    assert generate_failure_for_attempt(None) is None
+    assert generate_failure_for_attempt("") is None
 
     # Bounded, oldest first out: only a settling caller reads one, and it reads it within
     # seconds, so this cannot grow with uptime.
     for i in range(_RETAINED_GENERATE_FAILURES + 4):
-        _retain_generate_failure(engine, f"attempt-{i}", f"reason {i}")
-    assert len(engine._generate_outcomes) == _RETAINED_GENERATE_FAILURES
-    assert generate_failure_for_attempt(engine, "attempt-0") is None, "the bound is not enforced"
-    assert generate_failure_for_attempt(engine, f"attempt-{_RETAINED_GENERATE_FAILURES + 3}")
+        _retain_generate_failure(f"attempt-{i}", f"reason {i}")
+    assert generate_failure_for_attempt("attempt-0") is None, "the bound is not enforced"
+    assert generate_failure_for_attempt(f"attempt-{_RETAINED_GENERATE_FAILURES + 3}")
 
     # An id with no reason is not remembered at all, so a successful run leaves nothing.
-    fresh = types.SimpleNamespace()
-    _retain_generate_failure(fresh, None, "should not be kept")
-    assert getattr(fresh, "_generate_outcomes", None) is None
+    before = len(outcomes._OUTCOMES)
+    _retain_generate_failure(None, "should not be kept")
+    assert len(outcomes._OUTCOMES) == before
 
 
 @pytest.mark.parametrize("engine", ENGINES)
@@ -210,7 +209,7 @@ def test_an_engine_records_the_failure_against_its_own_attempt(engine):
     """Both engines, at the point where they already retain the reason."""
     src = _src(engine)
     assert (
-        "_retain_generate_failure(" in src
+        "_retain_generate_failure(attempt_id," in src
     ), f"{engine} does not record the failure against the attempt that ran it"
     retained = src.index("self._last_generate_error = str(exc) or type(exc).__name__")
     recorded = src.index("_retain_generate_failure(", retained)
@@ -227,7 +226,7 @@ def test_the_progress_route_answers_about_the_attempt_it_was_asked_about():
     assert (
         "attempt_id: Optional[str] = Query(" in body
     ), "the progress route cannot be asked about a particular attempt"
-    assert "generate_failure_for_attempt(engine, attempt_id)" in body
+    assert "generate_failure_for_attempt(attempt_id)" in body
     assert (
         "if attempt_id is not None:" in body
     ), "an older client with no attempt id no longer gets the retained slot"
@@ -246,7 +245,7 @@ def test_the_native_cancel_branch_records_its_attempt_too():
     at = src.index("except SdCppCancelled as exc:")
     branch = src[at : at + 700]
     assert (
-        "_retain_generate_failure(self, attempt_id, DIFFUSION_CANCELLED_MSG)" in branch
+        "_retain_generate_failure(attempt_id, DIFFUSION_CANCELLED_MSG)" in branch
     ), "a cancelled native generation records nothing against its attempt"
     # Before the re-raise, or it never runs.
     assert branch.index("_retain_generate_failure") < branch.index("raise RuntimeError(")
@@ -351,32 +350,31 @@ def test_a_retained_outcome_is_the_callers_own_account(monkeypatch):
     lookup first is only safe because the key is account-qualified, so this test pins both
     halves: the caller reads its own reason, and another account cannot read it.
     """
-    from types import SimpleNamespace
-
     from core.inference.generate_outcomes import (
         _retain_generate_failure,
         generate_failure_for_attempt,
     )
     from utils.account_context import AccountContext, run_as
 
-    engine = SimpleNamespace()
     ada = AccountContext("acct-a", "ada")
     bo = AccountContext("acct-b", "bo")
 
-    run_as(ada, _retain_generate_failure, engine, "attempt-1", "CUDA out of memory")
-    assert run_as(ada, generate_failure_for_attempt, engine, "attempt-1") == ("CUDA out of memory")
+    run_as(ada, _retain_generate_failure, "attempt-scoped", "CUDA out of memory")
+    assert run_as(ada, generate_failure_for_attempt, "attempt-scoped") == (
+        "CUDA out of memory"
+    )
     assert (
-        run_as(bo, generate_failure_for_attempt, engine, "attempt-1") is None
+        run_as(bo, generate_failure_for_attempt, "attempt-scoped") is None
     ), "another account read an attempt's retained failure"
     # And the owner is a third scope again.
-    assert generate_failure_for_attempt(engine, "attempt-1") is None
+    assert generate_failure_for_attempt("attempt-scoped") is None
 
     # The route answers that lookup ahead of the hiding guards, or the caller never reaches
     # it while someone else is generating.
     src = _src("routes/inference.py")
     at = src.index("async def diffusion_generate_progress")
     body = src[at : at + 4500]
-    lookup = body.index("generate_failure_for_attempt(get_active_diffusion_engine()")
+    lookup = body.index("generate_failure_for_attempt(attempt_id)")
     guard = body.index('account_access.generation_is_foreign("diffusion")')
     assert (
         lookup < guard
@@ -455,3 +453,34 @@ def test_a_persisting_generation_counts_as_active_only_for_its_own_attempt():
         route._diffusion_persist_active = original_count
         route._diffusion_persist_attempts.clear()
         route._diffusion_persist_attempts.update(original_attempts)
+
+
+def test_a_retained_outcome_survives_an_engine_switch():
+    """The store belongs to the process, not to the engine instance that ran the generation.
+
+    A request can switch the active engine between diffusers and sd.cpp while a client is
+    still settling a lost POST. Kept on the instance, that client's reason became
+    unreachable the moment the other engine took over, and it was told either that its
+    request never arrived or that another run going idle was its own success.
+    """
+    import core.inference.generate_outcomes as outcomes
+    from core.inference.generate_outcomes import (
+        _retain_generate_failure,
+        generate_failure_for_attempt,
+    )
+
+    _retain_generate_failure("attempt-across-engines", "CUDA out of memory")
+    # Whatever the active engine is now, the lookup takes no engine at all.
+    assert generate_failure_for_attempt("attempt-across-engines") == "CUDA out of memory"
+    assert not any(
+        hasattr(engine, "_generate_outcomes")
+        for engine in (outcomes, object())
+    ), "the outcomes are stored on an engine instance again"
+
+    src = _src("core/inference/generate_outcomes.py")
+    assert "_OUTCOMES" in src and "getattr(engine" not in src, (
+        "the store reads from an engine instance again"
+    )
+    # And the two engines record into it without passing themselves.
+    for engine_src in ENGINES:
+        assert "_retain_generate_failure(attempt_id," in _src(engine_src)

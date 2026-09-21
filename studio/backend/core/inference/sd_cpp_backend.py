@@ -3322,14 +3322,14 @@ class SdCppDiffusionBackend:
                 # must not read the transition to idle as success. The diffusers engine
                 # reaches its generic handler for this; this branch would be silent.
                 self._last_generate_error = DIFFUSION_CANCELLED_MSG
-                _retain_generate_failure(self, attempt_id, DIFFUSION_CANCELLED_MSG)
+                _retain_generate_failure(attempt_id, DIFFUSION_CANCELLED_MSG)
                 raise RuntimeError(DIFFUSION_CANCELLED_MSG) from exc
             except BaseException as exc:
                 # See the diffusers engine: idle progress is the only channel left once the
                 # POST is lost, so the reason has to outlive _gen, and the per-attempt
                 # record has to outlive the runs after it. Raw; the route classifies.
                 self._last_generate_error = str(exc) or type(exc).__name__
-                _retain_generate_failure(self, attempt_id, self._last_generate_error)
+                _retain_generate_failure(attempt_id, self._last_generate_error)
                 raise
             else:
                 self._last_generate_error = None

@@ -7278,7 +7278,7 @@ class DiffusionBackend:
                 # Both: the slot answers a client with no attempt id, and the
                 # per-attempt record survives the runs that follow this one.
                 self._last_generate_error = str(exc) or type(exc).__name__
-                _retain_generate_failure(self, attempt_id, self._last_generate_error)
+                _retain_generate_failure(attempt_id, self._last_generate_error)
                 raise
             else:
                 self._last_generate_error = None
