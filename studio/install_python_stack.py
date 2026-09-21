@@ -10506,6 +10506,23 @@ def _diffusers_main_requested() -> bool:
     return value not in ("0", "false", "no", "off")
 
 
+def _diffusers_main_resident(req: "Path | None" = None) -> bool:
+    """Whether the pinned main build is BOTH what the file names and actually on disk.
+
+    Provenance alone is not a build, the same reason ``_triton_kernels_step`` pairs its ref check
+    with this one: ``direct_url.json`` survives inside dist-info while the package tree under it is
+    deleted or truncated, and a provenance-only answer would skip the reinstall AND, since the
+    release pin reads the same predicate to decide it has been superseded, skip the repair too.
+    Diffusers is mandatory, so that combination leaves Studio broken on every later pass rather
+    than for one. Either half failing means "install it", which is the recoverable direction.
+    """
+    if req is None:
+        req = REQ_ROOT / "diffusers-main.txt"
+    return _direct_reference_is_installed(req, "diffusers") and _payload_recorded_intact(
+        "diffusers"
+    )
+
+
 def _diffusers_main_step() -> None:
     """Install the pinned Diffusers commit, or leave the release pin alone.
 
@@ -10544,7 +10561,7 @@ def _diffusers_main_step() -> None:
             "will refuse with a message naming the version they want.",
         )
         return
-    if _direct_reference_is_installed(req, "diffusers"):
+    if _diffusers_main_resident(req):
         _progress("diffusers main (satisfied, skipped)")
         _record_step("diffusers-main.txt", "skipped")
         return
@@ -11339,8 +11356,7 @@ def install_python_stack() -> int:
         REQ_ROOT / "diffusers-pin.txt",
         "diffusers pin",
         no_deps = False,
-        superseded = _diffusers_main_requested()
-        and _direct_reference_is_installed(REQ_ROOT / "diffusers-main.txt", "diffusers"),
+        superseded = _diffusers_main_requested() and _diffusers_main_resident(),
     ):
         pip_install(
             "Installing the pinned Diffusers release",

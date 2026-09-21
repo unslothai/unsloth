@@ -485,3 +485,39 @@ def test_opting_out_or_a_missing_main_build_still_reinstates_the_release(monkeyp
         module._diffusers_main_requested()
         and module._direct_reference_is_installed(main_req, "diffusers")
     ), "a first install must lay the release down before the commit goes on top of it"
+
+
+def test_a_damaged_main_build_is_repaired_rather_than_believed(monkeypatch):
+    """Provenance alone is not a build, and here that is worse than it is for triton kernels.
+
+    ``direct_url.json`` survives inside dist-info while the package tree under it is deleted or
+    truncated. The release pin reads the same predicate to decide it has been superseded, so a
+    provenance-only answer would skip the reinstall AND the repair, on a MANDATORY dependency, on
+    every later pass rather than one. Either half failing has to mean "install it".
+    """
+    module = _probe_module("install_python_stack_probe7")
+    monkeypatch.delenv("UNSLOTH_DIFFUSERS_MAIN", raising = False)
+
+    monkeypatch.setattr(module, "_direct_reference_is_installed", lambda *a, **k: True)
+    monkeypatch.setattr(module, "_payload_recorded_intact", lambda *a, **k: True)
+    assert module._diffusers_main_resident() is True
+
+    # The ref still points at the right commit, the files under it are gone.
+    monkeypatch.setattr(module, "_payload_recorded_intact", lambda *a, **k: False)
+    assert (
+        module._diffusers_main_resident() is False
+    ), "a damaged payload must not read as installed"
+    # And with it False, the release pin is no longer superseded, so the repair really can run.
+    assert not (module._diffusers_main_requested() and module._diffusers_main_resident())
+
+    # The step itself reinstalls rather than reporting satisfied.
+    attempted = []
+    monkeypatch.setattr(module, "_has_working_git", lambda: True)
+    monkeypatch.setattr(module, "_progress", lambda *a, **k: None)
+    monkeypatch.setattr(module, "_note", lambda *a, **k: None)
+    monkeypatch.setattr(module, "_record_step", lambda *a, **k: None)
+    monkeypatch.setattr(
+        module, "pip_install_try", lambda *a, req = None, **k: (attempted.append(req), True)[1]
+    )
+    module._diffusers_main_step()
+    assert attempted and attempted[0].name == "diffusers-main.txt"
