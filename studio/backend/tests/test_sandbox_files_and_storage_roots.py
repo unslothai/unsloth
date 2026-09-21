@@ -25,6 +25,8 @@ from pathlib import Path
 
 import pytest
 
+from .thread_drain import join_when_started
+
 
 def _shared_setup_1(monkeypatch, tmp_path):
     monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(tmp_path / "sb"))
@@ -346,7 +348,7 @@ def test_legacy_sandbox_is_migrated(tmp_path, monkeypatch):
     # waits on the whole tree.
     for thread in threading.enumerate():
         if thread.name == "sandbox-migrate":
-            thread.join(30)
+            join_when_started(thread, timeout = 30)
     moved = wd.parent / "__LOCALID_old1234" / "results.csv"
     print(f"\nmigrated to {moved}")
     assert moved.is_file()
@@ -1277,9 +1279,7 @@ def test_the_executor_leaves_nothing_in_the_sandbox(tmp_path, monkeypatch):
     tools = _shared_setup_1(monkeypatch, tmp_path)
     workdir = Path(tools.get_sandbox_workdir("__LOCALID_scratch"))
     tools._python_exec("print('hi')", session_id = "__LOCALID_scratch")
-    # .cache is the sandbox's own model-cache mount point: a dot directory that
-    # holds nothing, which is why the removal below still goes through.
-    assert sorted(p.name for p in workdir.iterdir() if p.name != ".cache") == [
+    assert sorted(p.name for p in workdir.iterdir()) == [
         tools._SANDBOX_MARKER,
         tools._SANDBOX_TEMP_DIRNAME,
     ]
@@ -1780,8 +1780,7 @@ def test_a_user_python_file_is_never_executor_scratch(tmp_path, monkeypatch):
     assert sorted(
         p.name
         for p in workdir.iterdir()
-        if p.name not in tools._INTERNAL_SANDBOX_FILES
-        and p.name not in (tools._SANDBOX_TEMP_DIRNAME, ".cache")
+        if p.name not in tools._INTERNAL_SANDBOX_FILES and p.name != tools._SANDBOX_TEMP_DIRNAME
     ) == ["studio_exec_results.py"]
     assert inference._sandbox_listing_names(str(workdir)) == ["studio_exec_results.py"]
     # And a delete without the opt-in will not quietly take it.
@@ -1861,8 +1860,7 @@ def test_the_scratch_script_is_never_reported_as_a_file(tmp_path, monkeypatch):
     assert sorted(
         p.name
         for p in workdir.iterdir()
-        if p.name not in tools._INTERNAL_SANDBOX_FILES
-        and p.name not in (tools._SANDBOX_TEMP_DIRNAME, ".cache")
+        if p.name not in tools._INTERNAL_SANDBOX_FILES and p.name != tools._SANDBOX_TEMP_DIRNAME
     ) == ["studio_exec_results.py"]
     assert json.loads(files) == [{"name": "studio_exec_results.py", "size": 5}]
 

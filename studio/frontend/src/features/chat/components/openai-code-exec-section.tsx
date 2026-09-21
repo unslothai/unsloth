@@ -399,7 +399,7 @@ export function OpenAICodeExecSection({
   const displayActiveId = displayedContainerId;
 
   return (
-    <div className="flex flex-col gap-3 pt-1">
+    <div className="flex flex-col gap-3">
       {/* TTL */}
       <div className="flex items-center justify-between gap-3">
         <div className="flex min-w-0 items-center gap-1.5">

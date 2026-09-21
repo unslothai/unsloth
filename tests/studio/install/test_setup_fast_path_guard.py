@@ -422,9 +422,24 @@ def test_the_windows_uv_probe_looks_where_the_pinned_installer_put_uv():
     start = text.index("$UseUv = $false")
     probe = text[start : start + 700]
     assert (
-        "Get-UvInstallDir" in probe
+        "Find-InstalledUv" in probe
     ), "the uv probe checks PATH only again; on Windows that reinstalls uv every update"
-    assert 'Join-Path (Get-UvInstallDir) "uv.exe"' in probe
+    # The finder replaced the inline `Test-Path (Join-Path (Get-UvInstallDir) "uv.exe")`, which
+    # saw one destination and never ran what it found: a uv.exe that could not run was put on
+    # PATH anyway. It must still start from the installer's destination, or the two can disagree.
+    finder = text[text.index("function Find-InstalledUv {") :]
+    finder = finder[: finder.index("\n}\n") + 3]
+    assert "Get-UvInstallDir" in finder, (
+        "the uv probe no longer starts from the installer's destination helper; the probe and "
+        "the installer can now disagree about where uv lives"
+    )
+    assert 'Combine($dir, "uv.exe")' in finder, "the probe stopped looking for uv.exe itself"
+    # Join-Path terminates on a missing drive under ErrorActionPreference Stop, and this runs
+    # outside the installation branch's try, so XDG_DATA_HOME=Z:\xdg ended setup.
+    body = finder[finder.index("$candidates") :]
+    assert (
+        "Join-Path" not in body
+    ), "the candidate paths are built with Join-Path again; one missing drive ends setup"
     # And the run that installs uv has to use it, or it records a manifest with no uv_version and
     # the next run rewrites it: a no-op update that is not one.
     install_arm = text[text.index('substep "installing uv package manager..."') :][:2000]

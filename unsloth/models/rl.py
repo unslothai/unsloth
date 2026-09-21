@@ -1529,6 +1529,17 @@ def _install_grpo_hidden_states_forward_wrapper(model):
         _note_grpo_hidden_states_success(target_model)
         return _replace_outputs_logits(outputs, hidden_states)
 
+    # generate() validates its kwargs against inspect.signature(self.forward), so a bare
+    # (*args, **kwargs) wrapper makes every forward-only vision kwarg look unused.
+    # __signature__ and NOT functools.wraps: wraps sets __wrapped__, and accelerate's
+    # extract_model_from_parallel(keep_fp32_wrapper = False) walks that chain every GRPO
+    # step and rebinds past this wrapper, losing it. inspect.unwrap() stops at __signature__.
+    wrapped_forward.__signature__ = forward_signature
+    for _attribute in ("__name__", "__qualname__", "__doc__", "__module__"):
+        try:
+            setattr(wrapped_forward, _attribute, getattr(original_forward, _attribute))
+        except Exception:
+            pass
     wrapped_forward._unsloth_grpo_hidden_states_forward_wrapped = True
     target_model.forward = wrapped_forward
     setattr(target_model, _UNSLOTH_GRPO_HIDDEN_STATES_WRAPPED_ATTR, True)

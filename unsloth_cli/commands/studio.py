@@ -40,7 +40,9 @@ def _enable_verbose_access_logs() -> None:
     os.environ["UNSLOTH_STUDIO_ACCESS_LOG_POLL_DEDUP_MS"] = "0"
 
 
-# Root order: UNSLOTH_STUDIO_HOME, STUDIO_HOME, sys.prefix, legacy ~/.unsloth/studio. Markers mirror install.ps1 / uninstall.ps1 and are matched as bytes.
+# Root order: UNSLOTH_STUDIO_HOME, STUDIO_HOME, UNSLOTH_HOME/studio, sys.prefix,
+# legacy ~/.unsloth/studio. Keep this aligned with storage_roots.studio_root().
+# Shim markers mirror install.ps1 / uninstall.ps1 and are matched as bytes.
 _CMD_SHIM_MARKERS = (b"unsloth-studio-managed-launcher", b"from unsloth_cli import app")
 _CMD_SHIM_MAX_BYTES = 8192
 
@@ -76,6 +78,25 @@ def _resolve_studio_home() -> tuple[Path, bool]:
             return Path(override).expanduser().resolve(), True
         except (OSError, ValueError):
             return Path(override).expanduser(), True
+    # Keeps the CLI on the same root as storage_roots.py; see test_unsloth_home_root_agreement.py.
+    master = (os.environ.get("UNSLOTH_HOME") or "").strip()
+    if master:
+        try:
+            candidate = Path(master).expanduser().resolve() / "studio"
+        except (OSError, ValueError):
+            candidate = Path(master).expanduser() / "studio"
+        try:
+            legacy = (Path.home() / ".unsloth" / "studio").resolve()
+        except (OSError, ValueError):
+            legacy = Path.home() / ".unsloth" / "studio"
+        # install.sh and install.ps1 do not read UNSLOTH_HOME yet, so they leave the venv and the
+        # launcher at the legacy root while setup puts the runtimes under the master root:
+        # preferring <master>/studio unconditionally reported "Unsloth Studio not set up" for an
+        # install that is right there. The master root wins only when it HAS an install.
+        if candidate != legacy and not _looks_like_installer_managed_studio_home(candidate):
+            if _looks_like_installer_managed_studio_home(legacy):
+                return legacy, False
+        return candidate, candidate != legacy
     try:
         prefix = Path(sys.prefix).resolve()
         if prefix.name == "unsloth_studio":
@@ -90,25 +111,93 @@ def _resolve_studio_home() -> tuple[Path, bool]:
 
 STUDIO_HOME, _STUDIO_HOME_IS_CUSTOM = _resolve_studio_home()
 
+MASTER_ROOT_NOTE = ".unsloth-master-root"
+
+
+def _recorded_master_root() -> Optional[Path]:
+    """The master root setup recorded in this Studio tree, or None.
+
+    Keep this aligned with storage_roots._recorded_master_root(); see
+    test_unsloth_home_root_agreement.py. `UNSLOTH_HOME=/mnt/portable unsloth studio update` puts
+    node, llama.cpp and whisper.cpp BESIDE studio/ and leaves nothing in a later environment. The
+    backend recovers that from the note, so a `unsloth studio update` that did not would hand
+    setup a plain Studio root, have it refresh the runtimes one level down at <master>/studio/,
+    and leave the backend still launching the stale trees at <master>/.
+
+    The recorded root must exist and THIS Studio directory must lie inside it, so a tree copied
+    from one master root to another does not send the update, or a removal, into the original
+    install. Containment, not an exact <root>/studio match: the flat layout names one directory
+    for both, and UNSLOTH_HOME=/root with UNSLOTH_STUDIO_HOME=/root/custom/studio is a root that
+    genuinely contains its Studio somewhere other than the default child. The backend and both
+    uninstallers apply exactly this rule, and a stricter one here would have the CLI decline a
+    note the backend accepts, which is the same split this function exists to close.
+    """
+    try:
+        recorded = (STUDIO_HOME / "share" / MASTER_ROOT_NOTE).read_text(encoding = "utf-8").strip()
+    except (OSError, ValueError, UnicodeDecodeError):
+        return None
+    if not recorded:
+        return None
+    try:
+        master = Path(recorded).expanduser().resolve()
+        here = STUDIO_HOME.resolve()
+        if not (master.is_dir() and (here == master or master in here.parents)):
+            return None
+        # A legacy-rooted install has no master root, and both uninstallers already refuse what
+        # that shape records. storage_roots._is_legacy_studio_tree declines it too, and
+        # test_unsloth_home_root_agreement.py holds the two together: without this the CLI would
+        # export UNSLOTH_HOME for a note the backend has declined. Keyed on the TREE, so a note
+        # naming $HOME or any other ancestor goes with it.
+        try:
+            if here == (Path.home() / ".unsloth" / "studio").resolve():
+                return None
+        except (OSError, RuntimeError, ValueError):
+            pass
+        return master
+    except (OSError, ValueError):
+        return None
+    return None
+
 
 def _ensure_studio_env_exported() -> None:
-    """Re-export UNSLOTH_STUDIO_HOME / UNSLOTH_LLAMA_CPP_PATH for custom roots only, per
-    subcommand rather than at import, so unrelated importers see no env changes."""
-    if not _STUDIO_HOME_IS_CUSTOM:
+    """Re-export UNSLOTH_STUDIO_HOME / UNSLOTH_LLAMA_CPP_PATH for custom roots, and for a master
+    root the resolver above declined, per subcommand rather than at import, so unrelated
+    importers see no env changes."""
+    # storage_roots.studio_root() honours UNSLOTH_HOME with no install check, so the fallback
+    # keeping this CLI on an installed legacy root must be told to the backend too: unexported,
+    # `unsloth studio` runs the legacy venv while the backend inside it writes studio.db, auth
+    # and the pid file under <master>/studio. Exporting the root does not make it custom, since
+    # the value equals the legacy path both installers compare against.
+    # The note, when this run has no UNSLOTH_HOME of its own. Exported rather than merely read,
+    # because setup runs as a subprocess and would otherwise refresh the runtimes at
+    # <master>/studio/ while the backend kept launching the ones at <master>/.
+    if not (os.environ.get("UNSLOTH_HOME") or "").strip():
+        _recorded = _recorded_master_root()
+        if _recorded is not None:
+            os.environ["UNSLOTH_HOME"] = str(_recorded)
+    if not _STUDIO_HOME_IS_CUSTOM and not (os.environ.get("UNSLOTH_HOME") or "").strip():
         return
     # Truthy-check, not setdefault: a blank UNSLOTH_STUDIO_HOME= must not win.
-    if not os.environ.get("UNSLOTH_STUDIO_HOME"):
+    if not (os.environ.get("UNSLOTH_STUDIO_HOME") or "").strip():
         os.environ["UNSLOTH_STUDIO_HOME"] = str(STUDIO_HOME)
     try:
         _legacy_studio = (Path.home() / ".unsloth" / "studio").resolve()
         _is_legacy = STUDIO_HOME.resolve() == _legacy_studio
     except (OSError, ValueError):
         _is_legacy = STUDIO_HOME == (Path.home() / ".unsloth" / "studio")
-    if _is_legacy:
+    # The runtimes are siblings of studio/, at the master root, so STUDIO_HOME/llama.cpp is one
+    # level too deep. run.py keeps a non-blank value, so a wrong export here wins everywhere.
+    _master = (os.environ.get("UNSLOTH_HOME") or "").strip()
+    if _master:
+        try:
+            _llama_dir = Path(_master).expanduser().resolve() / "llama.cpp"
+        except (OSError, ValueError):
+            _llama_dir = Path(_master).expanduser() / "llama.cpp"
+    elif _is_legacy:
         _llama_dir = Path.home() / ".unsloth" / "llama.cpp"
     else:
         _llama_dir = STUDIO_HOME / "llama.cpp"
-    if not os.environ.get("UNSLOTH_LLAMA_CPP_PATH"):
+    if not (os.environ.get("UNSLOTH_LLAMA_CPP_PATH") or "").strip():
         os.environ["UNSLOTH_LLAMA_CPP_PATH"] = str(_llama_dir)
 
 
@@ -414,6 +503,14 @@ def _torch_requires_rocm_metapackage(venv_dir: Path) -> bool:
     return False
 
 
+# The single gfx arch this install carries kernels for, published for the backend.
+# Read by studio/backend/utils/desktop_shell_env.py, which imports ROCm variables a
+# desktop launch never received out of the login shell: that profile is where the
+# #7331 override lives, so the backend needs the same arbiter this guard uses, not
+# just the outcome of running it against a GUI environment that never had the value.
+ROCM_INSTALLED_ARCH_ENV = "UNSLOTH_ROCM_INSTALLED_ARCH"
+
+
 def _installed_rocm_single_arch(venv_dir: Path) -> Optional[str]:
     """gfx arch the ROCm runtime in *venv_dir* ACTIVELY carries kernels for, or None. Read from the
     `rocm` meta-package: globbing for rocm_sdk_libraries_gfx* would read an ORPHAN. None also
@@ -472,9 +569,14 @@ def _clear_hsa_override_contradicting_install(venv_dir: Path) -> Optional[str]:
 def _clear_hsa_override_before_launch(silent: bool = False) -> Optional[str]:
     """Run the #7331 spoof clear for whichever entry point is about to launch. Idempotent."""
     _venv = STUDIO_HOME / "unsloth_studio"
-    _arch = _clear_hsa_override_contradicting_install(
-        Path(sys.prefix) if sys.prefix.startswith(str(_venv)) else _venv
-    )
+    _root = Path(sys.prefix) if sys.prefix.startswith(str(_venv)) else _venv
+    _arch = _clear_hsa_override_contradicting_install(_root)
+    # Published whether or not anything was cleared here: on a desktop launch the GUI
+    # environment never carried the override, so the clear above is a no-op and the
+    # contradicting value is still sitting in the profile the backend is about to read.
+    _installed = _installed_rocm_single_arch(_root)
+    if _installed and platform.system() != "Windows":
+        os.environ[ROCM_INSTALLED_ARCH_ENV] = _installed
     if _arch is not None and not silent:
         typer.echo(
             f"Cleared HSA_OVERRIDE_GFX_VERSION: this install carries {_arch} kernels "
@@ -530,7 +632,7 @@ def _load_run_module():
 
     spec = importlib.util.spec_from_file_location("studio.backend.run", run_py)
     if spec is None or spec.loader is None:
-        raise ImportError(f"Could not load studio backend from {run_py}")
+        raise ImportError(f"Could not load Unsloth backend from {run_py}")
     module = importlib.util.module_from_spec(spec)
     sys.modules["studio.backend.run"] = module
     try:
@@ -3548,6 +3650,11 @@ def _run_setup_script(*, verbose: bool = False, repo_root: Optional[Path] = None
     # Where setup runs uv from: setup.sh cds into its own directory, setup.ps1 keeps this cwd.
     setup_cwd = None if platform.system() == "Windows" else script.parent
     env = _with_studio_uv_cache(env, cwd = setup_cwd)
+    # Saves setup.ps1 the process walk. A HINT, not a promise: only the desktop spawn guarantees
+    # the managed venv's python, while a pip install, a checkout or a staged run puts an
+    # interpreter here that is nowhere near $VenvDir. Get-SetupHostInterpreterInVenv tests
+    # containment itself, so presence of this name is never proof setup runs from the venv.
+    env = {**(env or os.environ), "UNSLOTH_SETUP_HOST_PYTHON": sys.executable}
 
     if platform.system() == "Windows":
         # Resolved, not bare: PATH is not trusted here (#9440) and the Popen below has no OSError handler.

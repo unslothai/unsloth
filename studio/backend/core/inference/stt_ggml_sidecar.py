@@ -120,15 +120,20 @@ def resolve_ggml_model_id(model: Optional[str]) -> str:
 
 
 def _managed_whisper_cpp_dir() -> Path:
-    """`<STUDIO_HOME>/whisper.cpp` in custom mode, else `~/.unsloth/whisper.cpp`.
+    """`<UNSLOTH_HOME>/whisper.cpp` when set, else `<STUDIO_HOME>/whisper.cpp` in custom mode,
+    else `~/.unsloth/whisper.cpp`.
 
     Mirrors `managed_node_dir` / `_find_llama_server_binary` so managed runtimes
     share one parent directory.
     """
     legacy = Path.home() / ".unsloth" / "whisper.cpp"
     try:
-        from utils.paths.storage_roots import studio_root
+        from utils.paths.storage_roots import studio_root, unsloth_home
 
+        # setup.sh installs whisper.cpp at <master root>, beside studio/. No env var bridges it.
+        master = unsloth_home()
+        if master is not None:
+            return master / "whisper.cpp"
         resolved = studio_root()
         legacy_studio = Path.home() / ".unsloth" / "studio"
         try:
@@ -983,7 +988,7 @@ class GgmlSttSidecar:
                 # would otherwise start whisper-server after the sweep had run.
                 if is_process_shutting_down():
                     raise SttLoadCancelledError(
-                        "Studio is shutting down; not starting whisper-server."
+                        "Unsloth is shutting down; not starting whisper-server."
                     )
                 process = subprocess.Popen(
                     command,
@@ -1010,7 +1015,7 @@ class GgmlSttSidecar:
                         process.wait(timeout = 10)
                     forget_pid(process.pid)
                     raise SttLoadCancelledError(
-                        "Studio is shutting down; not starting whisper-server."
+                        "Unsloth is shutting down; not starting whisper-server."
                     )
                 try:
                     self._wait_for_server(process, port, cancel_event)

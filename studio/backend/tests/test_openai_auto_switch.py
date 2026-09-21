@@ -47,6 +47,68 @@ import routes.models as model_routes
 import state.tool_policy as _tp
 
 
+@pytest.fixture(autouse = True)
+def _auto_switch_waiters_are_not_carried_between_tests(request, monkeypatch):
+    """Restore ``_auto_switch_waiters`` around every test, and fail the test that dirties it.
+
+    It is a module-level dict in routes.inference, so a test that registers a waiting request
+    and does not unregister it leaves that entry behind for every later test in the same xdist
+    worker. It matters beyond tidiness because ``_switch_waiter_count()`` sums every key rather
+    than reading one, so a single stranded entry inflates the count for the whole worker and
+    ``_wait_for_model_switch_idle`` sees waiters that do not exist.
+
+    Two jobs, deliberately. Restoring keeps the next test starting from a known state. Raising
+    names the test that left the residue instead of the unrelated one that trips over it later,
+    which is the whole difficulty with this class of bug: the failure surfaces nowhere near its
+    cause.
+
+    The two halves have different proofs, and one of them has none. Removing the marker from a
+    staging test makes that test fail, so the detection half is covered. Removing the restore
+    changes nothing any test here can observe: the growth check is per-test, so a carried-over
+    entry only harms files that run LATER in the same worker, and which files share a worker is
+    decided by xdist at run time. A cleanliness assertion in a second file would pass vacuously
+    whenever the two land in different processes, which is worse than no test at all, so the
+    restore is kept as a defensive measure and is deliberately left unproven.
+
+    ``monkeypatch`` is requested, and not because this fixture patches anything. It is what
+    fixes the teardown ORDER. ``_wire()`` rebinds the registry with
+    ``monkeypatch.setattr(inference_route, "_auto_switch_waiters", {})``, so the entry a test
+    stages goes into a temporary dict, and whichever of the two fixtures tears down second sees
+    the original one restored and nothing amiss. Depending on ``monkeypatch`` here makes this
+    fixture set up after it and therefore tear down before it, so the read below lands on the
+    dict the test actually wrote to. That ordering held incidentally without the dependency,
+    which is exactly the reason to state it: a guard that works by accident stops working
+    silently.
+
+    Three tests stage a waiting request on purpose, with ``_note_switch_waiter(key, 1)`` and no
+    matching -1, because that is the honest way to set the condition up. They carry
+    ``@pytest.mark.stages_switch_waiter`` to say so, which is checked here rather than inferred
+    from a name, so a new leak cannot arrive silently by resembling them.
+    """
+    before = dict(inference_route._auto_switch_waiters)
+    try:
+        yield
+    finally:
+        after = dict(inference_route._auto_switch_waiters)
+        inference_route._auto_switch_waiters.clear()
+        inference_route._auto_switch_waiters.update(before)
+    # Only counts that GREW. A test that clears the dict, or decrements a key it did not add,
+    # is tidying up after somebody else and must not be blamed for it: several tests here reset
+    # the registry as part of their own setup, and flagging any difference at all turned every
+    # one of them into a failure the moment another file in the same worker left an entry
+    # behind. Growth is the only direction that inflates _switch_waiter_count() for the tests
+    # that follow.
+    leaked = {key: count for key, count in after.items() if count > before.get(key, 0)}
+    if leaked and request.node.get_closest_marker("stages_switch_waiter") is None:
+        raise AssertionError(
+            "this test left routes.inference._auto_switch_waiters dirty: "
+            f"{leaked!r} (registry went {before!r} -> {after!r}). _switch_waiter_count() sums "
+            "every key, so the entry inflates the waiter count for every later test in this "
+            "xdist worker. Unregister it, or mark the test @pytest.mark.stages_switch_waiter "
+            "if the residue is the point."
+        )
+
+
 async def _boom(*a, **k):
     raise _Reached()
 
@@ -2645,17 +2707,21 @@ def test_companion_root_scan_does_not_block_the_event_loop(tmp_path, monkeypatch
     )
     entered = threading.Event()
     release = threading.Event()
+    scan_thread: dict[str, int] = {}
 
     def _slow_companion_scan(_load_path, *, repo_level = False):
         assert repo_level is True
+        scan_thread["ident"] = threading.get_ident()
         entered.set()
-        release.wait(1.0)
+        release.wait(5.0)
         return ()
 
     monkeypatch.setattr(resolver, "local_gguf_companion_roots", _slow_companion_scan)
 
     async def _drive():
-        started = time.monotonic()
+        # The thread the loop runs on, captured from inside the coroutine so it is the loop's
+        # own thread and not whatever asyncio.run was called from.
+        loop_thread = threading.get_ident()
         task = asyncio.create_task(
             inference_route._maybe_auto_switch_model(
                 "org/Vision-GGUF",
@@ -2663,14 +2729,32 @@ def test_companion_root_scan_does_not_block_the_event_loop(tmp_path, monkeypatch
                 "tester",
             )
         )
-        assert await asyncio.to_thread(entered.wait, 2.0)
-        loop_was_responsive = time.monotonic() - started < 0.5
+        assert await asyncio.to_thread(entered.wait, 10.0), "the companion scan never started"
         release.set()
         await task
-        assert loop_was_responsive
+        return loop_thread
 
-    asyncio.run(_drive())
+    loop_thread = asyncio.run(_drive())
     assert len(recorder.calls) == 1
+
+    # The question is whether the scan ran OFF the event loop, and that is a fact about which
+    # thread executed it, not about how long anything took.
+    #
+    # This row used to assert `time.monotonic() - started < 0.5` as a proxy for the loop staying
+    # responsive. That is only a proxy: the elapsed time it measures includes dispatching
+    # `asyncio.to_thread(entered.wait, ...)` through the default executor, so a runner that is
+    # merely busy blows the 0.5s budget while the loop is behaving perfectly. It failed that way
+    # on main in Backend CI (Python 3.13, l-r), `assert loop_was_responsive`, on a shard that
+    # took 565s against a 371s baseline.
+    #
+    # routes.inference awaits this through `asyncio.to_thread(local_gguf_companion_roots, ...)`,
+    # so running on another thread IS the mechanism the wall clock was standing in for, and
+    # asserting it directly cannot be defeated by a slow machine.
+    assert scan_thread.get("ident") is not None, "the companion scan never ran"
+    assert scan_thread["ident"] != loop_thread, (
+        "the companion scan ran on the event loop thread, so it blocks every other request "
+        "for as long as it takes to walk the cache"
+    )
 
 
 def test_inactive_hf_cache_entry_skips_newer_companion_only_snapshot(tmp_path):
@@ -2960,6 +3044,7 @@ def test_streaming_responses_uses_advertised_id_helper():
     assert 'public_model_id(getattr(llama_backend, "model_identifier"' not in src
 
 
+@pytest.mark.stages_switch_waiter
 def test_concurrent_same_target_requests_load_once(monkeypatch):
     # Two concurrent requests for the same unloaded model must load once, not each
     # 409 the other. Simulate the second request already waiting (registered) while
@@ -2973,6 +3058,7 @@ def test_concurrent_same_target_requests_load_once(monkeypatch):
     assert len(rec.calls) == 1
 
 
+@pytest.mark.stages_switch_waiter
 def test_queued_different_target_does_not_deadlock_current_swap(monkeypatch):
     # A concurrent request already queued for another target is not generating,
     # so it must not prevent the current serialized swap from proceeding.
@@ -3110,6 +3196,7 @@ def test_pending_same_target_request_does_not_block_swap(monkeypatch):
     assert len(rec.calls) == 1
 
 
+@pytest.mark.stages_switch_waiter
 def test_swap_waits_until_concurrent_request_finishes_resolving(monkeypatch):
     # The real middleware counts a concurrent same-model request as in-flight
     # before it resolves and registers a target waiter. Treat it as active until
@@ -6053,12 +6140,27 @@ def _wire_unloaded_chat(
     *,
     enabled,
     catalog = ("org/A-GGUF", "org/B-GGUF"),
+    downloaded = (),
 ):
     # Nothing loaded, so a chat request hits "no model loaded". Pin the catalog for determinism.
     async def _catalog():
         return [{"id": mid} for mid in catalog]
 
+    # _downloaded_model_ids reads the LOCAL catalog, which _openai_catalog_objects does not
+    # cover: unpinned, these tests would answer from whatever the host has downloaded.
+    async def _local_catalog():
+        return [
+            type("_Row", (), {"model_id": mid, "id": mid, "partial": False})() for mid in downloaded
+        ]
+
+    monkeypatch.setattr(inference_route, "_cached_local_catalog", _local_catalog)
     monkeypatch.setattr(settings, "get_openai_auto_switch_enabled", lambda: enabled)
+    # Auto-download decides whether a model this server does not have is FETCHED instead of
+    # refused, so every 404 below depends on it being off. It is not off by construction:
+    # get_stored_openai_auto_download_enabled reads a process-wide cache with a 2 second TTL,
+    # so a neighbouring test that read the setting hands this one its value and the refusal
+    # becomes a download. Pin it like every other input here.
+    monkeypatch.setattr(settings, "get_openai_auto_download_enabled", lambda: False)
     monkeypatch.setattr(resolver, "resolve_local_gguf", lambda _m, **_kw: None)
     monkeypatch.setattr(
         resolver, "describe_local_miss", lambda _m: (resolver.MISS_MODEL_NOT_FOUND, ())
@@ -6133,6 +6235,58 @@ def test_chat_wrong_quant_lists_the_local_quants(monkeypatch):
     assert status == 404
     assert "'org/A-GGUF' is downloaded, but the quant 'UD-Q5_K_XL' is not" in detail
     assert "Q4_K_M, Q8_0" in detail
+
+
+def _wire_withheld_chat(monkeypatch, *, objects, downloaded):
+    async def _catalog():
+        return list(objects)
+
+    _wire_unloaded_chat(monkeypatch, enabled = True, downloaded = downloaded)
+    monkeypatch.setattr(inference_route, "_openai_catalog_objects", _catalog)
+
+
+def test_chat_withheld_model_is_not_offered_back_as_available(monkeypatch):
+    # A downloaded Whisper row is withheld from chat, so listing it as an alternative would
+    # name the model the same sentence just refused.
+    _wire_withheld_chat(
+        monkeypatch,
+        objects = [
+            {"id": "org/A-GGUF"},
+            {"id": "openai/whisper-large-v3", "task": "automatic-speech-recognition"},
+        ],
+        downloaded = ("org/A-GGUF", "openai/whisper-large-v3"),
+    )
+    status, detail = _chat_error(_chat_request(model = "openai/whisper-large-v3"))
+    assert status == 404
+    assert "cannot serve it here" in detail
+    assert "Available models: org/A-GGUF." in detail
+    assert detail.count("openai/whisper-large-v3") == 1
+
+
+def test_chat_absent_model_with_only_task_rows_says_no_chat_model_is_here(monkeypatch):
+    # Whisper is downloaded, so "no models are downloaded yet" would contradict GET /v1/models.
+    _wire_withheld_chat(
+        monkeypatch,
+        objects = [{"id": "openai/whisper-large-v3", "task": "automatic-speech-recognition"}],
+        downloaded = ("openai/whisper-large-v3",),
+    )
+    status, detail = _chat_error(_chat_request(model = "org/nope-GGUF"))
+    assert status == 404
+    assert "none of the downloaded models is a chat model" in detail
+    assert "no models are downloaded yet" not in detail
+
+
+def test_chat_withheld_model_with_no_chat_rows_offers_nothing(monkeypatch):
+    # Every row is task-specific, so there is no chat model to offer at all.
+    _wire_withheld_chat(
+        monkeypatch,
+        objects = [{"id": "openai/whisper-large-v3", "task": "automatic-speech-recognition"}],
+        downloaded = ("openai/whisper-large-v3",),
+    )
+    status, detail = _chat_error(_chat_request(model = "openai/whisper-large-v3"))
+    assert status == 404
+    assert "cannot serve it here" in detail
+    assert "Available models" not in detail
 
 
 def test_chat_error_unchanged_when_auto_switch_off(monkeypatch):
@@ -8357,6 +8511,61 @@ def test_map_entry_fill_reads_and_writes_in_one_transaction(tmp_path, monkeypatc
     assert db.get_app_setting(key) == {"a": {"v": 9}}
 
 
+def test_a_first_writer_entry_collapses_a_conflicting_claim_inside_the_write(tmp_path, monkeypatch):
+    """The credential-provenance rule, decided where the race is. A caller that reads the map,
+    sees nothing, and then writes loses to a second caller doing the same with a different
+    identity: both see "absent" and the last one stores its own claim over the first. So the
+    comparison belongs inside this transaction."""
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
+    monkeypatch.setattr(db, "_schema_ready", set())
+
+    key = "test_map_entry_first_writer"
+    first = {"at": 100.0, "by": "identity-a"}
+    assert db.upsert_app_setting_map_entry(
+        key, "repo", first, keep_first_writer = True, ambiguous_field = "by"
+    ) == {"repo": first}
+
+    # The same identity writing again changes nothing, timestamp included.
+    db.upsert_app_setting_map_entry(
+        key,
+        "repo",
+        {"at": 200.0, "by": "identity-a"},
+        keep_first_writer = True,
+        ambiguous_field = "by",
+    )
+    assert db.get_app_setting(key) == {"repo": first}
+
+    # A different one cannot take it over, and cannot be taken over in turn.
+    db.upsert_app_setting_map_entry(
+        key,
+        "repo",
+        {"at": 300.0, "by": "identity-b"},
+        keep_first_writer = True,
+        ambiguous_field = "by",
+    )
+    assert db.get_app_setting(key) == {"repo": {"at": 100.0, "by": None}}
+    db.upsert_app_setting_map_entry(
+        key,
+        "repo",
+        {"at": 400.0, "by": "identity-a"},
+        keep_first_writer = True,
+        ambiguous_field = "by",
+    )
+    assert db.get_app_setting(key) == {"repo": {"at": 100.0, "by": None}}
+
+    # An absent entry is still created, and the ordinary write still replaces.
+    db.upsert_app_setting_map_entry(
+        key,
+        "other",
+        {"at": 500.0, "by": "identity-b"},
+        keep_first_writer = True,
+        ambiguous_field = "by",
+    )
+    assert db.get_app_setting(key)["other"] == {"at": 500.0, "by": "identity-b"}
+    db.upsert_app_setting_map_entry(key, "other", {"at": 600.0, "by": "identity-c"})
+    assert db.get_app_setting(key)["other"] == {"at": 600.0, "by": "identity-c"}
+
+
 def test_a_fill_never_relabels_a_stored_gpu_pin_with_this_browser_s_index_space(
     tmp_path, monkeypatch
 ):
@@ -9913,7 +10122,8 @@ def test_a_whisper_checkpoint_is_switchable(tmp_path):
     path = _local_checkpoint(tmp_path, "whisper-large-v3")
     info = SimpleNamespace(id = str(path), path = str(path))
     (path / "config.json").write_text(
-        '{"architectures": ["WhisperForConditionalGeneration"], "model_type": "whisper"}'
+        '{"architectures": ["WhisperForConditionalGeneration"], "model_type": "whisper",'
+        ' "is_encoder_decoder": true}'
     )
     assert resolver.local_servable_model(info) == (False, ())
     assert resolver._model_type_is_audio("whisper") is True
@@ -9947,7 +10157,8 @@ def test_an_mlx_host_does_not_advertise_an_asr_checkpoint(tmp_path, monkeypatch)
     path = _local_checkpoint(tmp_path, "whisper-large-v3")
     info = SimpleNamespace(id = str(path), path = str(path))
     (path / "config.json").write_text(
-        '{"architectures": ["WhisperForConditionalGeneration"], "model_type": "whisper"}'
+        '{"architectures": ["WhisperForConditionalGeneration"], "model_type": "whisper",'
+        ' "is_encoder_decoder": true}'
     )
     monkeypatch.setattr(resolver, "_host_serves_mlx", lambda: True)
     assert resolver.local_servable_model(info) is None
@@ -9957,6 +10168,135 @@ def test_an_mlx_host_does_not_advertise_an_asr_checkpoint(tmp_path, monkeypatch)
         ' "audio_config": {}}'
     )
     assert resolver.local_servable_model(info) == (False, ())
+
+
+def test_a_conditional_checkpoint_with_no_vision_sub_config_is_switchable(tmp_path, monkeypatch):
+    """A conversion that drops the vision tower keeps the parent's multimodal architecture name
+    but loses the sub-config, so demanding one withheld a checkpoint both workers load. Shape
+    taken from ornith-ai/Ornith-1.5-35B-A3B-MLX-4bit, whose weights hold only language_model.*
+    and whose config carries image_token_id and text_config but no vision_config at all."""
+    path = _local_checkpoint(tmp_path, "Ornith-MLX-4bit")
+    info = SimpleNamespace(id = str(path), path = str(path))
+    (path / "config.json").write_text(
+        '{"architectures": ["Qwen3_5MoeForConditionalGeneration"],'
+        ' "model_type": "qwen3_5_moe", "image_token_id": 151655, "text_config": {}}'
+    )
+    for mlx_host in (True, False):
+        monkeypatch.setattr(resolver, "_host_serves_mlx", lambda mlx_host = mlx_host: mlx_host)
+        assert resolver.local_servable_model(info) == (False, ()), mlx_host
+    # The marker is matched by shape, not against a list of names, which is what the fixed list
+    # got wrong: the checkpoint spells it image_token_id and the list named image_token_index.
+    for marker in (
+        '"image_token_id": 151655',  # the spelling the reported checkpoint uses, alone
+        '"image_token_index": 1',
+        '"vision_config": {}',
+        '"video_token_id": 2',
+        '"img_processor": {}',  # matched on the word, so a shortened spelling still counts
+    ):
+        (path / "config.json").write_text(
+            '{"architectures": ["Qwen3_5MoeForConditionalGeneration"],'
+            ' "model_type": "qwen3_5_moe", %s}' % marker
+        )
+        assert resolver.local_servable_model(info) == (False, ()), marker
+    # A terse config with no modality marker at all reads exactly like a text seq2seq, so it stays
+    # refused rather than being guessed at.
+    (path / "config.json").write_text(
+        '{"architectures": ["Qwen3_5MoeForConditionalGeneration"], "model_type": "qwen3_5_moe"}'
+    )
+    assert resolver.local_servable_model(info) is None
+
+
+def test_a_multimodal_encoder_decoder_is_not_switchable(tmp_path):
+    """Declaring a modality does not make a checkpoint servable here: microsoft/udop-large is an
+    encoder-decoder carrying image_size, and the serving path has no AutoModelForSeq2SeqLM branch.
+    The flag is what refuses it, since the modality marker is satisfied."""
+    path = _local_checkpoint(tmp_path, "udop-large")
+    info = SimpleNamespace(id = str(path), path = str(path))
+    (path / "config.json").write_text(
+        '{"architectures": ["UdopForConditionalGeneration"], "model_type": "udop",'
+        ' "is_encoder_decoder": true, "image_size": 224}'
+    )
+    assert resolver.local_servable_model(info) is None
+    # The flag is what refuses it: the same shape without one is indistinguishable from a served
+    # VLM and the marker decides. Not spelled udop, so this turns on the flag rather than on the
+    # shared classifier's current view of that family.
+    (path / "config.json").write_text(
+        '{"architectures": ["SomeVlmForConditionalGeneration"], "model_type": "some_vlm",'
+        ' "image_size": 224}'
+    )
+    assert resolver.local_servable_model(info) == (False, ())
+
+
+def test_a_revision_key_does_not_pass_as_a_modality_marker(tmp_path):
+    """The marker is matched on whole words: `revision` ends in one, is common in a saved config,
+    and would otherwise admit every text seq2seq that carries it."""
+    path = _local_checkpoint(tmp_path, "t5-with-revision")
+    info = SimpleNamespace(id = str(path), path = str(path))
+    (path / "config.json").write_text(
+        '{"architectures": ["T5ForConditionalGeneration"], "model_type": "t5",'
+        ' "revision": "main"}'
+    )
+    assert resolver.local_servable_model(info) is None
+
+
+@pytest.mark.parametrize("mlx_host", [True, False])
+@pytest.mark.parametrize("architecture", ["LlamaForCausalLM", "Qwen3_5MoeForConditionalGeneration"])
+def test_a_config_declaring_model_file_is_not_switchable(
+    tmp_path, monkeypatch, architecture, mlx_host
+):
+    """model_file is the other key that runs code out of the checkpoint, and unlike auto_map it
+    does not pass through trust_remote_code at all: mlx_lm/utils.py and mlx_vlm/utils.py both
+    exec_module the named file before dispatching on model_type. An unattended switch grants no
+    approval, so it is refused on the same boundary as auto_map."""
+    monkeypatch.setattr(resolver, "_host_serves_mlx", lambda: mlx_host)
+    path = _local_checkpoint(tmp_path, "CustomModelFile")
+    info = SimpleNamespace(id = str(path), path = str(path))
+    (path / "custom.py").write_text("raise SystemExit('should never be executed')")
+    base = (
+        '{"architectures": ["%s"], "model_type": "qwen3_5_moe", "vision_config": {}%%s}'
+        % architecture
+    )
+    (path / "config.json").write_text(base % "")
+    assert resolver.local_servable_model(info) == (False, ())
+    (path / "config.json").write_text(base % ', "model_file": "custom.py"')
+    assert resolver.local_servable_model(info) is None
+    # Empty names no file, so it runs nothing, like the auto_map rule just below.
+    (path / "config.json").write_text(base % ', "model_file": ""')
+    assert resolver.local_servable_model(info) == (False, ())
+
+
+def test_a_conditional_family_the_model_picker_refuses_is_not_switchable(tmp_path):
+    """The resolver used to re-derive the category from architecture strings and drifted from the
+    classifier behind the picker's can_chat, which is how an installed checkpoint could be offered
+    in the UI and be unknown to the API. The conditional branch defers to that classifier now, so
+    the families it refuses are refused here without being restated.
+
+    Only that branch. The resolver is deliberately not a subset overall: the causal fast path does
+    not consult the classifier, and the audio branch serves whisper on a Transformers host though
+    the classifier calls it unchattable."""
+    from hub.services.models.common import _local_transformers_can_chat
+
+    path = _local_checkpoint(tmp_path, "Shared")
+    info = SimpleNamespace(id = str(path), path = str(path))
+    refused_by_picker = 0
+    for config in (
+        '{"architectures": ["Qwen3_5MoeForConditionalGeneration"], "model_type": "qwen3_5_moe",'
+        ' "vision_config": {}}',
+        '{"architectures": ["MusicgenForConditionalGeneration"], "model_type": "musicgen",'
+        ' "audio_encoder": {}}',
+        '{"architectures": ["BlipForConditionalGeneration"], "model_type": "blip",'
+        ' "vision_config": {}}',
+        '{"architectures": ["Gemma3ForConditionalGeneration"], "model_type": "gemma3",'
+        ' "vision_config": {}}',
+    ):
+        (path / "config.json").write_text(config)
+        picker_can_chat = _local_transformers_can_chat(path) is True
+        servable = resolver.local_servable_model(info) is not None
+        if not picker_can_chat:
+            refused_by_picker += 1
+            assert not servable, config
+    # musicgen and blip, so the subset assertion above is not vacuous.
+    assert refused_by_picker == 2
 
 
 def test_an_empty_auto_map_is_not_remote_code(tmp_path):
@@ -10964,6 +11304,188 @@ def test_speech_probe_refuses_remote_code(monkeypatch, audio_type, allowed):
     assert inference_route._target_speech_audio_type("/local/model", False) == (
         audio_type if allowed else None
     )
+
+
+def test_chat_withheld_model_named_by_its_advertised_alias(monkeypatch):
+    # _stt_model_objects advertises "tiny" while the catalog row is unsloth/whisper-tiny, so a
+    # request naming what GET /v1/models showed must read as downloaded, not as absent.
+    _wire_withheld_chat(
+        monkeypatch,
+        objects = [
+            {"id": "org/A-GGUF"},
+            {"id": "tiny", "task": "automatic-speech-recognition"},
+        ],
+        downloaded = ("org/A-GGUF", "unsloth/whisper-tiny"),
+    )
+    status, detail = _chat_error(_chat_request(model = "tiny"))
+    assert status == 404
+    assert "cannot serve it here" in detail
+    assert "not downloaded on this server" not in detail
+
+
+def test_chat_absent_model_with_only_resolver_withheld_checkpoints(monkeypatch):
+    # A checkpoint the resolver withholds never enters the catalog, so testing catalog_objects
+    # would claim an empty machine on a full one.
+    _wire_withheld_chat(
+        monkeypatch,
+        objects = [],
+        downloaded = ("org/has-auto-map",),
+    )
+    status, detail = _chat_error(_chat_request(model = "org/nope-GGUF"))
+    assert status == 404
+    assert "none of the downloaded models is a chat model" in detail
+    assert "no models are downloaded yet" not in detail
+
+
+def test_the_settings_memo_is_cleared_around_every_test():
+    # Drives the autouse fixture directly rather than relying on two tests running in order:
+    # under xdist --dist loadgroup a neighbouring pair can land on different workers, so an
+    # ordering-based check would pass by luck. Both ends matter: clearing only on entry leaves
+    # the last test of a worker seeding the first of the next module.
+    import time
+
+    # pytest has already imported this directory's conftest; find it by the attribute rather
+    # than by module name, which differs between rootdirs (`tests.conftest` is the repo-root one).
+    import sys
+
+    fixture = next(
+        getattr(module, "_drop_the_settings_memo_between_tests")
+        for module in list(sys.modules.values())
+        if module is not None and hasattr(module, "_drop_the_settings_memo_between_tests")
+    )
+
+    key = (settings.OWNER.account_id, settings.OPENAI_AUTO_DOWNLOAD_SETTING_KEY)
+    run = fixture.__wrapped__()
+    settings._cache[key] = (time.monotonic(), True)
+    next(run)
+    assert settings._cache == {}, "the memo was not cleared before the test body"
+
+    settings._cache[key] = (time.monotonic(), True)
+    next(run, None)
+    assert settings._cache == {}, "the memo was not cleared after the test body"
+
+
+def test_withheld_refusal_survives_a_leaked_auto_download_flag(monkeypatch):
+    # The refusals above are only refusals while auto-download is off, and it is not off by
+    # construction: get_stored_openai_auto_download_enabled reads a 2-second process-wide memo,
+    # so a neighbouring test's read decides this one. Seed that memo the way a neighbour would
+    # and the answer must not move. Unpinned this returns a download error instead of the 404
+    # (locally a 503 with the Hub blocked, on CI a 500 when the load reaches the backend double),
+    # which is exactly how #11241 showed up in the l-r shard and nowhere else.
+    import time
+
+    _wire_withheld_chat(monkeypatch, objects = [], downloaded = ("org/has-auto-map",))
+    settings._cache[(settings.OWNER.account_id, settings.OPENAI_AUTO_DOWNLOAD_SETTING_KEY)] = (
+        time.monotonic(),
+        True,
+    )
+    status, detail = _chat_error(_chat_request(model = "org/nope-GGUF"))
+    assert status == 404, f"a leaked auto-download flag turned the refusal into a {status}"
+    assert "none of the downloaded models is a chat model" in detail
+
+
+def test_a_stale_idle_reload_stash_diverts_a_refusal_into_a_reload(monkeypatch):
+    # Why the fixture beside this matters, pinned as behaviour rather than left as a story.
+    # The route reads llama_keepwarm's idle stash before it refuses anything and reloads
+    # exactly what the idle loop freed, which is deliberate: after an idle unload an alias or
+    # unknown name has to stay servable. It is only a problem when the stash belongs to a
+    # DIFFERENT TEST, because the request then loads a model this one never named -- on CI,
+    # against this file's own backend double, that surfaced as
+    # `'_B' object has no attribute 'load_model'` and `assert 500 == 404`.
+    #
+    # Asserted on which model the route went to load, not on the status: the status here is
+    # whatever the double happens to be missing, and the claim is about the diversion.
+    asked: list = []
+
+    _wire_withheld_chat(
+        monkeypatch,
+        objects = [
+            {"id": "org/A-GGUF"},
+            {"id": "tiny", "task": "automatic-speech-recognition"},
+        ],
+        downloaded = ("org/A-GGUF", "unsloth/whisper-tiny"),
+    )
+
+    def _load_model(config = None, **_kw):
+        asked.append(getattr(config, "model_name", None) or config)
+        raise _Reached()
+
+    monkeypatch.setattr(
+        inference_route,
+        "get_inference_backend",
+        lambda: type(
+            "_B",
+            (),
+            {"active_model_name": None, "models": {}, "load_model": staticmethod(_load_model)},
+        )(),
+    )
+    kw._last_unloaded_model = ("unsloth/Idle-GGUF", "Q4_K_M", "unsloth/Idle-GGUF")
+
+    with pytest.raises(Exception):
+        asyncio.run(
+            inference_route.openai_chat_completions(_chat_request(model = "tiny"), object(), "tester")
+        )
+
+    assert any("Idle-GGUF" in str(one) for one in asked), (
+        "the stale stash did not divert the request, so this test no longer covers the leak "
+        f"the fixture exists to stop (asked: {asked})"
+    )
+
+
+def test_the_idle_reload_stash_is_cleared_around_every_test(tmp_path):
+    # Driven directly, for the reason written on the settings-memo twin above: under xdist
+    # --dist loadgroup an ordering-based check passes by luck. Both ends matter, since the
+    # leak is the LAST idle test in a worker seeding the first test of the next module.
+    #
+    # With a manifest naming REAL files, not an empty one: llama_keepwarm makes whoever takes
+    # the manifest responsible for unlinking its slots, so a fixture that assigns None drops
+    # the only reference to a saved snapshot and leaves the bytes on disk. An empty manifest
+    # cannot tell that apart from a clean-up that worked.
+    import sys
+
+    fixture = next(
+        getattr(module, "_drop_the_idle_reload_stash_between_tests")
+        for module in list(sys.modules.values())
+        if module is not None and hasattr(module, "_drop_the_idle_reload_stash_between_tests")
+    )
+
+    def _saved(name):
+        slot = tmp_path / name
+        slot.write_bytes(b"kv")
+        return {"dir": str(tmp_path), "slots": [{"id": 0, "filename": name, "n_saved": 42}]}, slot
+
+    run = fixture.__wrapped__()
+    kw._last_unloaded_model = ("unsloth/Idle-GGUF", "Q4_K_M", "unsloth/Idle-GGUF")
+    kw._kv_resume, before = _saved("before.bin")
+    next(run)
+    assert kw._last_unloaded_model is None, "the stash was not cleared before the test body"
+    assert kw._kv_resume is None, "the KV manifest was not cleared before the test body"
+    assert not before.exists(), "the KV slot file outlived the manifest that named it"
+
+    kw._last_unloaded_model = ("unsloth/Idle-GGUF", "Q4_K_M", "unsloth/Idle-GGUF")
+    kw._kv_resume, after = _saved("after.bin")
+    next(run, None)
+    assert kw._last_unloaded_model is None, "the stash was not cleared after the test body"
+    assert kw._kv_resume is None, "the KV manifest was not cleared after the test body"
+    assert not after.exists(), "the KV slot file outlived the manifest that named it"
+
+
+def test_chat_withheld_model_does_not_send_the_caller_to_load_it(monkeypatch):
+    # One reason a checkpoint is withheld is a truthy model_file, which the MLX loaders
+    # exec_module and the Studio consent gate does not cover, so the refusal must not point
+    # the caller at a manual load.
+    _wire_withheld_chat(
+        monkeypatch,
+        objects = [
+            {"id": "org/A-GGUF"},
+            {"id": "org/custom-code", "task": "automatic-speech-recognition"},
+        ],
+        downloaded = ("org/A-GGUF", "org/custom-code"),
+    )
+    status, detail = _chat_error(_chat_request(model = "org/custom-code"))
+    assert status == 404
+    assert "cannot serve it here" in detail
+    assert "Unsloth Studio" not in detail
 
 
 def test_preset_reasoning_budget_rejects_booleans():

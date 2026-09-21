@@ -197,7 +197,9 @@ def test_a_non_gguf_model_takes_the_clip_through_one_gate_and_hands_it_to_genera
     assert gate < speech and gate < audio_input
     assert 'gen_kwargs["video"] = _video_clip' in source
     use_tools = source.index("_sf_use_tools = (", handler)
-    assert "and _video_clip is None" in source[use_tools : use_tools + 400]
+    tools_block = source[use_tools : source.index("\n    )", use_tools)]
+    tools_block = "\n".join(line.split("#")[0] for line in tools_block.splitlines())
+    assert "and _video_clip is None" in tools_block
     # Structural, not literal. This pinned the exact
     # "(image is not None or _video_clip is not None) and not _sf_use_tools"; #10970
     # widened the image half to `_sf_has_image`, a superset, so the clause still fires
@@ -215,10 +217,10 @@ def test_a_non_gguf_model_takes_the_clip_through_one_gate_and_hands_it_to_genera
     # is not enough: `and` for `or` stops an image-only or video-only request entering the
     # passthrough, and `image is None` / `not _sf_has_image` invert the condition. Either
     # order, since which side reads first is arbitrary.
-    image = r"(?:\bimage is not None\b|\b_sf_has_image\b)"
+    image = r"(?:\bimage is not None\b|\b_sf_has_(?:any_)?image\b)"
     clip = r"\b_video_clip is not None\b"
     assert re.search(rf"{image}\s+or\s+{clip}|{clip}\s+or\s+{image}", escape), escape
-    assert not re.search(r"\bimage is None\b|\bnot\s+_sf_has_image\b", escape), escape
+    assert not re.search(r"\bimage is None\b|\bnot\s+_sf_has_(?:any_)?image\b", escape), escape
     # Settled at the gate: a model without audio input never enters the audio-input path.
     conflict = source.index("if payload.audio_base64:", gate)
     assert conflict < speech

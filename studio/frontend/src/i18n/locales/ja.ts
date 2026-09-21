@@ -63,9 +63,9 @@ export const ja = {
     announceMoveFailed: "移動前にキューが変更されました。再試行してください。",
     announceDragReset: "キューが変更されました。残りのメッセージをもう一度ドラッグして並べ替えてください。",
     editingHint: "メッセージを編集中",
-    queueingOffHint: "新しいメッセージは現在の応答を停止して次に実行されます。",
-    queueingOnHint: "新しいメッセージは順番待ちになり、順に実行されます。",
-    queueingHintShared: "キュー内のメッセージは保持されます。",
+    queueingOffHint: "新しいメッセージが割り込んで実行されます。",
+    queueingOnHint: "新しいメッセージは順番待ちになります。",
+    queueingHintShared: "キューは保持されます。",
   },
   picker: {
     onDevice: "デバイス上",
@@ -164,6 +164,8 @@ export const ja = {
       export: "エクスポート",
       recents: "履歴",
       noChatsYet: "チャットがまだありません",
+      // Shown under an empty project folder in the sidebar.
+      noChats: "チャットなし",
       showMore: "もっと見る",
       showLess: "表示を減らす",
       settings: "設定",
@@ -194,6 +196,7 @@ export const ja = {
       unpinChats: "ピン留めを解除",
       archiveChats: "チャットをアーカイブ",
       markUnread: "未読にする",
+      markRead: "既読にする",
       deleteChats: "チャットを削除",
       deleteTitle: "チャットを削除",
       deleteDescription: "{count} 件のチャットを削除しますか。元に戻せません。",
@@ -212,11 +215,22 @@ export const ja = {
       priority: "優先度",
       lastUpdated: "最終更新",
       manualOrder: "手動で並べ替え",
-      moveUp: "上へ移動",
-      moveDown: "下へ移動",
+      priorityHint: "実行中・未読が先頭",
+      lastUpdatedHint: "新しい順",
+      manualOrderHint: "行をドラッグして並べ替えます",
+      switchedToManual: "手動の並び順に切り替えました。行をドラッグして並べ替えます",
       organizeChats: "チャットを整理",
       organizeProjects: "プロジェクトを整理",
       sortPinnedChats: "ピン留めチャットを並べ替え",
+      moveUp: "上へ移動",
+      moveDown: "下へ移動",
+    },
+    drag: {
+      reorder: "並べ替え",
+      pin: "ピン留め",
+      unpin: "ピン留めを解除",
+      moveTo: "{name} に移動",
+      moveToRecents: "最近に移動",
     },
     dialog: {
       deleteChat: {
@@ -247,9 +261,19 @@ export const ja = {
   settings: {
     accounts: {
       title: "アカウント",
-      description: "個別の Studio アカウントを作成します。新しいユーザーは一度きりのセットアップコードでサインインし、パスワードを設定します。",
+      description: "個別の Unsloth アカウントを作成します。新しいユーザーは一度きりのセットアップコードでサインインし、パスワードを設定します。",
       username: "ユーザー名",
       create: "アカウントを作成",
+      createDescription: "セットアップコードを渡すと、本人がパスワードを設定できます。",
+      actionsFor: "{username} を管理",
+      actions: "操作",
+      search: "アカウントを検索",
+      noResults: "一致するアカウントはありません",
+      created: "作成日",
+      status: "状態",
+      loginHint: "{username} としてこのコードをパスワードに使ってサインインし、新しいパスワードを設定してください。",
+      privateAccount: "個別アカウント",
+      empty: "ほかのアカウントはまだありません",
       setupCode: "セットアップコード",
       setupFor: "{username} のセットアップコード",
       shownOnce: "このコードを今すぐコピーしてアカウントの持ち主に渡してください。ここにしか表示されず、60 分以内に一度だけ使えます。",
@@ -265,7 +289,7 @@ export const ja = {
       resetTitle: "{username} のパスワードをリセットしますか?",
       resetDescription: "セットアップコードを再発行すると {username} のパスワードが置き換えられ、セッションは終了し、API キーは失効します。新しいコードを渡して、もう一度パスワードを選んでもらってください。",
       deactivate: "無効化",
-      reactivate: "再有効化",
+      reactivate: "有効化",
       delete: "アカウントを削除",
       deleteTitle: "{username} を削除しますか?",
       deleteDescription: "{username} のセッションを取り消し、実行中の作業をキャンセルします。チャット、設定、認証情報、アップロード、データセット、学習の実行、出力、エクスポート、ギャラリー、サンドボックス、プロジェクト、一時ファイルは退避されます。ディレクトリは名前を変えて脇に置かれ、削除はされません。同じユーザー名を再び作成すると、これらのデータを持たない新しいアカウントになります。",
@@ -302,9 +326,10 @@ export const ja = {
     },
     keyboardShortcuts: {
       title: "キーボードショートカット",
-      description:
-        "ショートカットを変更したり、消してブラウザや OS にそのキーを譲ったりできます。",
       searchPlaceholder: "ショートカットを検索…",
+      keystrokePlaceholder: "ショートカットを押して検索",
+      searchByKeystrokes: "キー入力で検索",
+      searchByName: "名前で検索",
       noResults: "該当するショートカットはありません。",
       unassigned: "未割り当て",
       recording: "キーを押してください…",
@@ -501,6 +526,14 @@ export const ja = {
           label: "メッセージを送信",
           description: "入力欄の内容を送信します",
         },
+        queueMessage: {
+          label: "メッセージをキューに追加",
+          description: "下書きをキューの最後に送信します",
+        },
+        steerMessage: {
+          label: "応答を修正",
+          description: "現在の応答を停止して下書きを次に送信します",
+        },
         cycleReasoningEffort: {
           label: "思考の深さを順に切り替え",
           description: "思考の深さのレベルを順に切り替えます",
@@ -567,7 +600,7 @@ export const ja = {
       openLogsFolderFailed: "ログフォルダーを開けませんでした。",
       exportFailed: "ログをダウンロードできませんでした。",
       exportTooOld: "実行中の Unsloth バックエンドが古すぎるため、ログを書き出せません。バックエンドを更新して再起動してください。",
-      exportForbidden: "すべてのログをダウンロードするには、サインイン済みの Studio セッションが必要です。API キーだけでは実行できません。",
+      exportForbidden: "すべてのログをダウンロードするには、サインイン済みの Unsloth セッションが必要です。API キーだけでは実行できません。",
       keywords: "デバッグ ログ エラー クラッシュ トレースバック スタックトレース 診断 障害 調査 debug log logs error",
     },
     voice: {
@@ -856,6 +889,8 @@ export const ja = {
         showLlamaUpdatesDescription: "新しいモデルを実行するための新しい llama.cpp ビルドが利用可能になったときに通知します。トレーニングのみを行う場合はオフにしてください。",
         showLoadedModels: "読み込み済みモデルのインジケーター",
         showLoadedModelsDescription: "現在メモリ上にあるすべてのモデル（チャット、音声、画像、動画）を一覧表示する小さなカードを右下に表示します。各モデルを解放するボタンが付いています。",
+        showWhisperUpdates: "whisper.cpp のアップデート通知",
+        showWhisperUpdatesDescription: "音声認識モデル向けの新しい whisper.cpp ビルドが利用可能になったときに通知します。音声を文字起こししない場合はオフにしてください。",
       },
       startup: {
         sectionTitle: "起動",
@@ -1216,7 +1251,11 @@ export const ja = {
       },
       gpu: {
         title: "GPU デバイス",
-        ggufInference: "GGUF 推論",
+        memory: "GPUメモリ",
+        sharedWithSystemRam: "システムRAMと共有",
+        estimatedAvailable: "推定空き容量: {value}",
+        sharedEstimatedAvailable: "共有システムRAM: 推定空き容量 {value}",
+        ggufInference: "GGUFモデル用メモリ",
         unavailable: "利用不可",
         detecting: "GPU を確認しています...",
         unreadable: "このサーバーのハードウェアを読み取れませんでした。",
@@ -1282,6 +1321,8 @@ export const ja = {
           sourceBuild: "この llama.cpp はソースからビルドされているため、ここではバックエンドを切り替えられません。",
           customPath: "カスタム llama.cpp フォルダーが選択されています。そのビルドによって計算バックエンドが決まります。",
           unresolved: "利用可能なバックエンドを確認できませんでした。接続を確認して再試行してください。",
+          updateChecksDisabled:
+            "更新チェックが無効になっているため (UNSLOTH_DISABLE_UPDATE_CHECK=1)、利用可能なバックエンドは確認されません。",
         },
         // 非表示: 設定検索用の追加キーワード。
         llamaBackendKeywords:
@@ -1442,9 +1483,9 @@ export const ja = {
           "承認の確認をスキップします。信頼できる環境でのみ使用してください。",
       },
       remote: {
-        title: "リモートの Unsloth Studio に接続する",
+        title: "リモートの Unsloth に接続する",
         description:
-          "起動前に次を設定すると、unsloth start を別の場所で動作している Unsloth Studio に向けられます (--api-key を直接渡すことも可能です):",
+          "起動前に次を設定すると、unsloth start を別の場所で動作している Unsloth に向けられます (--api-key を直接渡すことも可能です):",
       },
       passthrough: {
         title: "エージェントへの引数の受け渡し",
@@ -1470,15 +1511,11 @@ export const ja = {
       projectAttachmentsHint: "各チャットの添付メニューで個別に変更できます。",
       rememberParamsPerModelHint:
         "オフの場合、すべてのモデルで同じ設定を使います。",
-      autoCompactHint: "空きVRAMではなく、設定したコンテキスト長を基準にします。",
+      autoCompactHint: "ローカルの GGUF チャットのみ。文脈から外れたターンは索引化され、モデルが検索して取り出せます。リセットでは、収まる範囲の継続的な指示がそのままの文言で引き継がれ、途中のものより最も古いものと最も新しいものが優先されます。アーカイブには保存済みのチャットとベクトル索引が必要で、それらがない場合、古いターンは破棄されます。空きVRAMではなく、設定したコンテキスト長を基準にします。",
       pastedTextShortDescription:
         "{count}文字以上の貼り付けテキストは .txt 添付ファイルになります。短いテキストは入力欄に残ります。",
       pastedTextOffDescription:
         "長さに関係なく、貼り付けたテキストはすべて入力欄に残ります。",
-      compactionDescriptionInherit: "サーバーのコンテキストポリシーに従います。",
-      compactionDescriptionCheckpoint: "最新のやり取りと継続的な指示を保持します。",
-      compactionDescriptionRolling:
-        "古いターンを削除し、最近の履歴と選択した余裕分の空きを確保します。",
       projectsSection: "プロジェクトセクションを表示",
       projectsSectionDescription:
         "プロジェクトのチャットを「プロジェクト」の見出しにまとめます。オフにすると「最近」に表示されます。",
@@ -1502,7 +1539,7 @@ export const ja = {
           "項目をチャットの「+」サイドメニューに固定します。その他の項目は「More」に移動します。",
         chatWithFiles: "ファイルとチャット (RAG)",
         mcp: "MCP",
-        skills: "エージェントスキル",
+        skills: "スキル",
         savedPrompts: "保存済みプロンプト",
         compareChat: "チャットを比較",
         exportChat: "チャットをエクスポート",
@@ -1524,18 +1561,9 @@ export const ja = {
         "各モデルで最後に使ったプロンプト、温度、その他の設定を復元します。",
       autoCompact: "長いチャットを自動圧縮",
       autoCompactDescription:
-        "ローカル GGUF チャットがコンテキスト上限に達したら、古いターンを削除します。",
-      compactionStyle: "コンテキストが満杯になったとき",
-      compactionStyleDescription:
-        "サーバー既定値を使うと UNSLOTH_CONTEXT_POLICY が維持されます。会話をリセットすると最新ターンと継続指示が残ります。スライディングウィンドウは古いターンを削除し、より多くの最近の履歴を残せます。",
-      compactionStyleInherit: "サーバー既定値を使用",
-      compactionStyleCheckpoint: "会話をリセット",
-      compactionStyleRollingDefault: "古いターンを削除（約 25% の追加余裕）",
-      compactionStyleRolling10: "古いターンを削除（約 10% の追加余裕）",
-      compactionStyleRolling5: "古いターンを削除（約 5% の追加余裕）",
-      compactionStyleRollingNone: "古いターンを削除（追加の切り詰めなし）",
+        "チャットの文脈が満杯になると、古いターンは検索可能なアーカイブに移ります。",
       autoCompactKeywords:
-        "圧縮 自動圧縮 コンテキスト ウィンドウ 切り詰め スライディング チェックポイント 余裕 compaction rolling headroom",
+        "圧縮 自動圧縮 コンテキスト ウィンドウ 切り詰め スライディング チェックポイント 余裕 アーカイブ 検索 取得 compaction rolling headroom archive retrieval rag",
       thinking: {
         collapseByDefault: "思考をデフォルトで折りたたむ",
         collapseByDefaultDescription:
@@ -1552,6 +1580,9 @@ export const ja = {
         collapseByDefault: "ツールの動作をデフォルトで折りたたむ",
         collapseByDefaultDescription:
           "ツールの実行中は入力と出力を折りたたんだままにします。確認するにはツール行を展開してください。",
+        foldIntoThinking: "ツール呼び出しを思考に折りたたむ",
+        foldIntoThinkingDescription:
+          "思考ブロックを開くまで、そのターンのツール呼び出しを隠します。",
       },
       webSearch: {
         title: "ウェブ検索",
@@ -1911,7 +1942,7 @@ export const ja = {
         desktopAvailableDescription:
           "今すぐアップデートします。完了するとデスクトップアプリが再起動します。",
         desktopExternalServer:
-          "サーバーを起動したターミナルで `unsloth studio update` を実行してください。",
+          "アプリはすでに実行中の Studio サーバーに接続しているため、更新できません。そのサーバーを停止し、デスクトップアプリを終了してから再度開き、更新してください。",
         desktopManualInstall:
           "リリースページを開き、最新の Linux パッケージをインストールしてください。",
         desktopCheckFailed: "アップデートを確認できませんでした",
@@ -2622,11 +2653,11 @@ export const ja = {
     tooLarge: "VRAM を超えるため CPU にオフロードされます。より小さい量子化の方が高速です",
   },
   skills: {
-    title: "エージェントスキル",
+    title: "スキル",
     description: "スキルは標準のエージェントフォルダーから検出されます。ここで有効にし、チャットで @ を入力して呼び出します。",
     precedence: "~/.agents/skills は ~/.claude/skills より優先されます。",
     refresh: "更新",
-    empty: "エージェントスキルが見つかりません。~/.agents/skills または ~/.claude/skills に SKILL.md のフォルダーを追加して更新してください。",
+    empty: "スキルが見つかりません。~/.agents/skills または ~/.claude/skills に SKILL.md のフォルダーを追加して更新してください。",
     sourceAgents: "Agents",
     sourceClaude: "Claude",
     sourceBundled: "同梱",
@@ -2636,7 +2667,7 @@ export const ja = {
     shadowedBy: "同名の別のスキル ({source}) が優先されます。",
     enable: "{name} を有効化",
     disable: "{name} を無効化",
-    updateError: "エージェントスキルを更新できませんでした",
-    mentions: "エージェントスキル",
+    updateError: "スキルを更新できませんでした",
+    mentions: "スキル",
   },
 } satisfies DeepPartialMessageTree<typeof en>;

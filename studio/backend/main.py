@@ -22,6 +22,26 @@ os.environ.setdefault("CUDA_DEVICE_ORDER", "PCI_BUS_ID")
 # spawned workers inherit it. `setdefault` preserves an explicit override, including "0".
 os.environ.setdefault("TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL", "1")
 
+# The desktop app hands this process a GUI environment, and a GUI environment has
+# no ~/.bashrc in it. `fix_path_env::fix()` in src-tauri/src/main.rs spawns the
+# login shell and then takes PATH out of it and nothing else, so an AMD host's
+# HSA_OVERRIDE_GFX_VERSION / ROCM_PATH / USE_CK are dropped on the desktop path
+# and kept on the `unsloth studio` one. #9926 is that difference: identical model
+# and machine, SIGSEGV from the app and a clean run from a terminal.
+#
+# Here because HSA reads HSA_OVERRIDE_GFX_VERSION and USE_CK when torch first
+# touches the GPU, which is far below this. A no-op unless the desktop app owns
+# this process AND the host has an AMD GPU AND the variable is absent, so a
+# terminal launch and every non-AMD host are unchanged.
+_backend_dir = str(_Path(__file__).parent)
+if _backend_dir not in sys.path:
+    sys.path.insert(0, _backend_dir)
+try:
+    from utils.desktop_shell_env import import_rocm_env_from_login_shell as _import_rocm_env
+    _import_rocm_env()
+except Exception:
+    pass
+
 # Windows terminals default to the active system code page. Reconfigure stdout/stderr
 # before the startup banner so non-ASCII output cannot crash the backend process.
 if sys.platform == "win32":
@@ -210,10 +230,18 @@ try:
     _STUDIO_ROOT_RESOLVED = _studio_root().resolve()
 except (OSError, ValueError):
     _STUDIO_ROOT_RESOLVED = _studio_root()
-if _STUDIO_ROOT_RESOLVED != _LEGACY_STUDIO_ROOT:
+from utils.paths.storage_roots import unsloth_home as _unsloth_home
+
+_MASTER_ROOT = _unsloth_home()
+# A master root pointed at the legacy path still owns runtimes beside it, so the equality alone
+# would skip the export and leave unsloth_zoo on ~/.unsloth/llama.cpp.
+if _STUDIO_ROOT_RESOLVED != _LEGACY_STUDIO_ROOT or _MASTER_ROOT is not None:
     if not os.environ.get("UNSLOTH_STUDIO_HOME"):
         os.environ["UNSLOTH_STUDIO_HOME"] = str(_STUDIO_ROOT_RESOLVED)
-    _MANAGED_LLAMA_CPP_PATH = _STUDIO_ROOT_RESOLVED / "llama.cpp"
+    # Same derivation as run.py: the runtimes sit at the master root, beside studio/, and marking
+    # the wrong directory managed would make the bundled path look like an immutable override.
+    _MANAGED_ROOT = _MASTER_ROOT or _STUDIO_ROOT_RESOLVED
+    _MANAGED_LLAMA_CPP_PATH = _MANAGED_ROOT / "llama.cpp"
     if not os.environ.get("UNSLOTH_LLAMA_CPP_PATH"):
         os.environ["UNSLOTH_LLAMA_CPP_PATH"] = str(_MANAGED_LLAMA_CPP_PATH)
     # A CLI/desktop launcher may already have exported Unsloth's own install path.
@@ -609,6 +637,18 @@ def _post_warm_background_work(generation: Optional[int] = None) -> None:
         # update (new mlx_repair.py over older hardware.py) arrives here and would silently leave Train/Export
         # greyed out for the session.
         _structlog.get_logger(__name__).warning("mlx autorepair skipped: %s", _mlx_exc)
+
+    if _post_warm_retired(generation):
+        return
+    # Off the polled path on purpose: /api/system must not import torchao itself (see
+    # _dense_quant_supported). Gated on torch being up rather than assumed, since
+    # UNSLOTH_STUDIO_DISABLE_TORCH_WARM=1 exists precisely to keep the ML stack cold.
+    if "torch" in sys.modules:
+        try:
+            _refresh_dense_quant_capability()
+        except Exception as _dq_exc:  # noqa: BLE001 -- a picker label must never break the warm
+            import structlog as _structlog
+            _structlog.get_logger(__name__).debug("dense quant capability skipped: %s", _dq_exc)
 
     if _post_warm_retired(generation):
         return
@@ -1499,16 +1539,23 @@ from utils.host_policy import cors_origins_for_mode  # noqa: E402
 
 
 class RemoteAccessCORSMiddleware(CORSMiddleware):
-    """Allow remote browser origins only while a Cloudflare URL is published."""
+    """Admit the published Cloudflare origin, on top of the startup allowlist."""
 
     def __init__(self, cors_app, *, remote_access_state, **kwargs):
         self.remote_access_state = remote_access_state
         super().__init__(cors_app, **kwargs)
 
     def is_allowed_origin(self, origin: str) -> bool:
-        return bool(
-            getattr(self.remote_access_state, "cloudflare_url", None)
-        ) or super().is_allowed_origin(origin)
+        # The tunnel names ONE origin to admit, it is not a switch admitting every origin: api-only is
+        # locked to the Tauri app (run.py) and Settings > Remote access must not hand that lock to any
+        # open page. The tunnel-served UI calls relative URLs and is already same-origin; this is for a
+        # browser that does reach the API cross-origin from the tunnel's own document.
+        published = getattr(self.remote_access_state, "cloudflare_url", None)
+        if published:
+            tunnel_origin = _origin_of(published)
+            if tunnel_origin is not None and tunnel_origin == _origin_of(origin):
+                return True
+        return super().is_allowed_origin(origin)
 
 
 _cors_origins = cors_origins_for_mode(
@@ -2164,6 +2211,103 @@ def _get_cached_system_gpu_info(
         return combined_info
 
 
+def _probe_dense_quant_supported() -> bool:
+    """Whether an ``auto`` request could engage a dense quant on EVERY visible card.
+
+    The picker cannot see which card a load lands on, so a mixed host answers for the least capable.
+
+    IMPORTS the ML stack, so only ``_refresh_dense_quant_capability`` calls it, and only from the
+    post-warm worker or a request that already has both modules. Never memoised: the answer
+    sharpens, since an unprobed scheme counts as usable and a later load can record a kernel
+    failure in ``_SMOKE_CACHE``."""
+    try:
+        from core.inference.diffusion_device import (
+            diffusion_device_scope,
+            resolve_diffusion_device_target,
+        )
+        from core.inference.diffusion_transformer_quant import dense_quant_host_capable
+
+        import torch
+
+        count = torch.cuda.device_count() if torch.cuda.is_available() else 0
+        if count <= 1:
+            return bool(dense_quant_host_capable(resolve_diffusion_device_target()))
+        for ordinal in range(count):
+            with diffusion_device_scope(ordinal):
+                if not dense_quant_host_capable(resolve_diffusion_device_target(ordinal = ordinal)):
+                    return False
+        return True
+    except Exception:  # noqa: BLE001 -- a capability probe must never fail a status request
+        return False
+
+
+def _probe_dense_quant_schemes() -> list[str]:
+    """The auto ladder's schemes for this host, best first, on the same ladder and deny list the
+    loader's ``auto_scheme_candidates`` reads; a mixed host answers with the INTERSECTION. IMPORTS
+    the ML stack.
+
+    The CACHED variant, since a request holding torch reaches this from the polled ``/api/system``:
+    the load-time helper runs ``_scheme_supported``, which spawns the smoke probe or allocates in
+    this process. Like the capability bit, it sharpens as loads record verdicts in ``_SMOKE_CACHE``."""
+    try:
+        from core.inference.diffusion_device import (
+            diffusion_device_scope,
+            resolve_diffusion_device_target,
+        )
+        from core.inference.diffusion_transformer_quant import auto_scheme_candidates_cached
+
+        import torch
+
+        count = torch.cuda.device_count() if torch.cuda.is_available() else 0
+        if count <= 1:
+            return list(auto_scheme_candidates_cached(resolve_diffusion_device_target()))
+        common: Optional[list[str]] = None
+        for ordinal in range(count):
+            with diffusion_device_scope(ordinal):
+                schemes = list(
+                    auto_scheme_candidates_cached(resolve_diffusion_device_target(ordinal = ordinal))
+                )
+            common = schemes if common is None else [s for s in common if s in schemes]
+        return common or []
+    except Exception:  # noqa: BLE001 -- a capability probe must never fail a status request
+        return []
+
+
+# Resolved off the polled path: None until the post-warm worker or a request already holding the
+# ML stack has answered.
+_dense_quant_capability: Optional[bool] = None
+_dense_quant_scheme_ladder: list[str] = []
+
+
+def _refresh_dense_quant_capability() -> bool:
+    """Resolve the dense-quant bit and cache it. Imports torch and torchao; never call from a route
+    that has not already got them."""
+    global _dense_quant_capability, _dense_quant_scheme_ladder
+    _dense_quant_capability = _probe_dense_quant_supported()
+    _dense_quant_scheme_ladder = _probe_dense_quant_schemes() if _dense_quant_capability else []
+    return _dense_quant_capability
+
+
+def _dense_quant_supported() -> bool:
+    """The dense-quant bit for ``/api/system``, from already-loaded state only.
+
+    This route is polled throughout startup, and ``import torch`` and ``import torchao.quantization``
+    cost ~0.8s each and hold the GIL, the stall ``_await_hardware_detection`` already keeps off this
+    path. So never import here. The post-warm worker resolves it once the warm has the stack up, and
+    a request finding both modules loaded refreshes it, so a load's kernel verdict reaches the picker
+    on the next poll. False before that is honest: the picker renders no fast label, as it does for
+    an unknown VRAM budget."""
+    if "torch" in sys.modules and "torchao" in sys.modules:
+        return _refresh_dense_quant_capability()
+    return bool(_dense_quant_capability)
+
+
+def _dense_quant_schemes() -> list[str]:
+    """The scheme ladder for ``/api/system``, a pure read of already-resolved state: the polled route
+    must never import torch, and the entry beside it refreshed both in one pass."""
+    return list(_dense_quant_scheme_ladder)
+
+
 @app.get("/api/system")
 def get_system_info(
     current_subject: str = Depends(get_current_subject), refresh_memory: bool = False
@@ -2259,6 +2403,11 @@ def get_system_info(
         **export_capability(),
         # Video capability + reason, same shape. Additive: older clients ignore the extra keys.
         **video_capability(),
+        # One bit cannot tell an Ampere host (int8 only) from an Ada one, nor spot an unsupported
+        # CUDA card, so the picker gets the scheme list too. The bit resolves first; the list is a
+        # pure read of that same pass.
+        "dense_quant_supported": _dense_quant_supported(),
+        "dense_quant_schemes": _dense_quant_schemes(),
     }
 
 
@@ -2395,6 +2544,17 @@ def _canonical_origin(scheme: str, netloc: str) -> Optional[tuple[str, str, int]
     return (scheme, host, port)
 
 
+def _origin_of(url: Optional[str]) -> Optional[tuple[str, str, int]]:
+    """Canonical origin of a URL or of an Origin header value, or ``None`` when it is neither."""
+    if not url:
+        return None
+    try:
+        parsed = urlparse(url)
+    except ValueError:
+        return None
+    return _canonical_origin(parsed.scheme, parsed.netloc)
+
+
 def _is_loopback_ip(host: Optional[str]) -> bool:
     """Return whether ``host`` is a loopback IP, including IPv4-mapped IPv6."""
     if not host or "%" in host:  # a scope id (::1%eth0) is never a plain loopback
@@ -2476,13 +2636,44 @@ def _is_same_origin_request(request: Request) -> bool:
     return origin_canon == self_canon
 
 
+# Colab's proxy is itself a forwarded-header ingress, invisible to the loopback tests, so it is identified
+# positively by its own authority: naming one tunnel vendor instead leaves every other relay (ngrok,
+# localtunnel, bore, ssh -R) reading as the local browser.
+_COLAB_PROXY_HOST_SUFFIXES = ("colab.googleusercontent.com", ".googleusercontent.com", ".colab.dev")
+# The proxy relays the notebook owner and only the notebook owner, so it sets x-forwarded-for (which is why
+# run.py runs uvicorn with proxy_headers there). The other four mark a relay we cannot attribute to it.
+_COLAB_TOLERATED_PROXY_HEADERS = frozenset({"x-forwarded-for"})
+
+
+def _host_header_is_colab_proxy(host_header: Optional[str]) -> bool:
+    """Whether the Host authority belongs to Colab's own port proxy."""
+    if not host_header:
+        return False
+    host = host_header.strip()
+    if host.startswith("["):  # bracketed IPv6 is never a Colab proxy authority
+        return False
+    if host.count(":") == 1:  # host:port
+        host = host.split(":", 1)[0]
+    host = host.lower().rstrip(".")
+    return host.endswith(_COLAB_PROXY_HOST_SUFFIXES)
+
+
+def _is_colab_notebook_request(request: Request) -> bool:
+    """Allow bootstrap injection through Colab's single-user notebook proxy, and nothing else."""
+    for header in _PROXIED_CLIENT_HEADERS:
+        if header in _COLAB_TOLERATED_PROXY_HEADERS:
+            continue
+        if request.headers.get(header) is not None:
+            return False
+    return _host_header_is_colab_proxy(request.headers.get("host"))
+
+
 def _should_inject_bootstrap(request: Request) -> bool:
     """Whether to embed the seeded bootstrap password in index.html."""
     if not _is_same_origin_request(request):
         return False
-    if _IS_COLAB:
-        # Single-user notebook proxy: allow autofill, but never a public tunnel (sets cf-connecting-ip).
-        return request.headers.get("cf-connecting-ip") is None
+    if _IS_COLAB and _is_colab_notebook_request(request):
+        return True
     return _is_local_bootstrap_request(request)
 
 

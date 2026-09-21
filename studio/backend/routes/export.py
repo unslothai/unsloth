@@ -542,7 +542,6 @@ async def export_gguf(
             ),
             imatrix_file = imatrix_file,
             private = request.private,
-            gguf_shard_size = request.gguf_shard_size,
         )
 
         if not success:

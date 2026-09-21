@@ -73,6 +73,7 @@ from utils.third_party_source import (
 
 from utils.models import is_vision_model, detect_audio_type_checked
 from utils.models.model_identity import restore_hf_cache_repo_identity
+from utils.models.unsloth_mirror import unsloth_public_mirror
 from utils.models.model_config import _env_offline
 from utils.datasets import format_and_template_dataset
 from utils.datasets.completion_masking import apply_completion_masking
@@ -87,8 +88,10 @@ from utils.paths import (
 )
 from trl import SFTTrainer, SFTConfig
 
+from .resume import session_eta_seconds
 from .training import (
     TrainingProgress,
+    apply_save_strategy,
     create_mlx_trainer_adapter,
     should_use_mlx_training_backend,
 )
@@ -168,6 +171,45 @@ def _drop_hf_stdout_callbacks(trainer) -> None:
             trainer.remove_callback(callback_cls)
         except Exception:  # noqa: BLE001 - not attached, or an incompatible trainer
             pass
+
+
+def _bitsandbytes_allows_4bit() -> bool:
+    """``loader.ALLOW_BITSANDBYTES``: False when bitsandbytes is absent or its native kernels
+    are unusable, which is the normal state on Studio's Mac, Intel and CPU installs and on
+    some AMD stacks. from_pretrained clears load_in_4bit on that path BEFORE it calls
+    get_model_name (unsloth/models/loader.py, the `if not ALLOW_BITSANDBYTES` block), so a
+    4-bit request resolves the SIXTEEN-bit mapping there. Read it rather than assume it, or
+    the metadata read names a repo the loader never fetches."""
+    try:
+        from unsloth.device_type import ALLOW_BITSANDBYTES
+        return bool(ALLOW_BITSANDBYTES)
+    except Exception:  # noqa: BLE001 -- unreadable means "cannot narrow", so keep the request
+        return True
+
+
+def _metadata_lookup_name(
+    model_name: str,
+    lookup_name: str,
+    local_files_only: bool,
+    model_revision: Optional[str],
+    load_in_4bit: bool,
+) -> str:
+    """Return the repo whose config and tokenizer the loader will read."""
+    if local_files_only or model_revision is not None or lookup_name != model_name:
+        return lookup_name
+    # MLX loads the picked name as given: unsloth_zoo/mlx/loader.py never consults the
+    # upstream-to-Unsloth mapper, so on Apple Silicon there is no mirror to read from.
+    from core.training.training import should_use_mlx_training_backend
+
+    if should_use_mlx_training_backend():
+        return lookup_name
+    mirror = unsloth_public_mirror(model_name, load_in_4bit and _bitsandbytes_allows_4bit())
+    if mirror is None:
+        return lookup_name
+    logger.info(
+        "Reading %s config and tokenizer from %s, the repo Unsloth loads", model_name, mirror
+    )
+    return mirror
 
 
 def _spark_tts_tokenizer_kwargs(audio_type: Optional[str], lookup_name: str) -> dict:
@@ -317,6 +359,7 @@ class UnslothTrainer:
         self.dataset_snapshot_path = None
 
         self.training_start_time: Optional[float] = None
+        self.session_start_step: int = 0
         self.batch_size: Optional[int] = None
         self.max_seq_length: Optional[int] = None
         self.gradient_accumulation_steps: Optional[int] = None
@@ -334,6 +377,7 @@ class UnslothTrainer:
         model_load_name: Optional[str] = None,
         local_files_only: bool = False,
         model_revision: Optional[str] = None,
+        load_in_4bit: bool = True,
     ) -> None:
         """Lightweight detection and tokenizer load: no model weights, no VRAM. Sets is_vlm,
         _audio_type, is_audio_vlm, model_name and loads a lightweight tokenizer for dataset
@@ -343,7 +387,13 @@ class UnslothTrainer:
         self.model_name = model_name
         self.max_seq_length = max_seq_length
         self.trust_remote_code = trust_remote_code
-        lookup_name = model_load_name or model_name
+        lookup_name = _metadata_lookup_name(
+            model_name,
+            model_load_name or model_name,
+            local_files_only,
+            model_revision,
+            load_in_4bit,
+        )
 
         if hf_token:
             os.environ["HF_TOKEN"] = hf_token
@@ -515,6 +565,9 @@ class UnslothTrainer:
             _eval_last_report = 0.0
 
             def on_train_begin(self, args, state, control, **kwargs):
+                trainer_ref.session_start_step = state.global_step
+                if state.global_step > 0:
+                    trainer_ref.training_start_time = time.time()
                 # on_log reports an empty status, else the UI stays on "Starting training...".
                 if trainer_ref.should_stop:
                     return
@@ -594,13 +647,12 @@ class UnslothTrainer:
                 if trainer_ref.training_start_time is not None:
                     elapsed_seconds = time.time() - trainer_ref.training_start_time
 
-                eta_seconds = None
-                if elapsed_seconds is not None and current_step > 0:
-                    total_steps = trainer_ref.training_progress.total_steps
-                    if total_steps > 0:
-                        steps_remaining = total_steps - current_step
-                        if steps_remaining > 0:
-                            eta_seconds = (elapsed_seconds / current_step) * steps_remaining
+                eta_seconds = session_eta_seconds(
+                    elapsed_seconds,
+                    current_step,
+                    trainer_ref.session_start_step,
+                    trainer_ref.training_progress.total_steps,
+                )
 
                 num_tokens = getattr(state, "num_input_tokens_seen", None)
 
@@ -611,6 +663,7 @@ class UnslothTrainer:
                     learning_rate = logs.get("learning_rate", None),
                     elapsed_seconds = elapsed_seconds,
                     eta_seconds = eta_seconds,
+                    session_start_step = trainer_ref.session_start_step,
                     grad_norm = grad_norm,
                     num_tokens = num_tokens,
                     eval_loss = logs.get("eval_loss", None),
@@ -686,10 +739,7 @@ class UnslothTrainer:
         else:
             config["num_train_epochs"] = training_args.get("num_epochs", 3)
 
-        save_steps_val = training_args.get("save_steps", 0)
-        if save_steps_val and save_steps_val > 0:
-            config["save_steps"] = save_steps_val
-            config["save_strategy"] = "steps"
+        apply_save_strategy(config, training_args.get("save_steps", 0))
 
         if extra_args:
             config.update(extra_args)
@@ -828,6 +878,9 @@ class UnslothTrainer:
         use_gradient_checkpointing = normalize_gradient_checkpointing(use_gradient_checkpointing)
         self._use_gradient_checkpointing = use_gradient_checkpointing
         lookup_name = model_load_name or model_name
+        metadata_name = _metadata_lookup_name(
+            model_name, lookup_name, local_files_only, model_revision, load_in_4bit
+        )
         self.model_load_error = None
         try:
             if self.model is not None:
@@ -863,7 +916,7 @@ class UnslothTrainer:
             # Checked: this reassigns _audio_type, so an unchecked answer would leave the flag describing the previous
             # probe.
             self._audio_type, self._audio_type_known = detect_audio_type_checked(
-                lookup_name,
+                metadata_name,
                 hf_token,
                 local_files_only = local_files_only,
                 revision = model_revision,
@@ -882,7 +935,7 @@ class UnslothTrainer:
 
             vision = (
                 is_vision_model(
-                    lookup_name,
+                    metadata_name,
                     hf_token = hf_token,
                     local_files_only = local_files_only,
                     revision = model_revision,
@@ -920,7 +973,7 @@ class UnslothTrainer:
             if hf_token:
                 os.environ["HF_TOKEN"] = hf_token
 
-            # Proactive gated/private check before from_pretrained; skipped offline (uses cache).
+            # Gate-check the repo Unsloth will fetch, which may be a public mirror of it.
             if "/" in model_name and not local_files_only and not _env_offline():
                 try:
                     from huggingface_hub import model_info as hf_model_info
@@ -928,7 +981,7 @@ class UnslothTrainer:
                     model_info_kwargs = {"token": hf_token or None}
                     if model_revision:
                         model_info_kwargs["revision"] = model_revision
-                    info = hf_model_info(model_name, **model_info_kwargs)
+                    info = hf_model_info(metadata_name, **model_info_kwargs)
                     # model_info works on gated repos (metadata is public); info.gated flags acceptance.
                     if info.gated and not hf_token:
                         friendly = (
@@ -3226,6 +3279,9 @@ class UnslothTrainer:
                 self._update_progress(error = error_msg)
                 return None
 
+            if dataset_info.get("dropped_rows_warning"):
+                self._record_warning(dataset_info["dropped_rows_warning"])
+
             detected = dataset_info.get("detected_format", "unknown")
             final_ds = dataset_info.get("dataset")
             final_n = len(final_ds) if hasattr(final_ds, "__len__") else "?"
@@ -3248,6 +3304,14 @@ class UnslothTrainer:
                     dataset_name = dataset_source,
                     custom_format_mapping = custom_format_mapping,
                 )
+                if not eval_info.get("success", True):
+                    eval_errors = eval_info.get("errors", [])
+                    error_msg = "; ".join(eval_errors) or "Eval dataset formatting failed"
+                    logger.error(f"Eval dataset conversion failed: {error_msg}")
+                    self._update_progress(error = error_msg)
+                    return None
+                if eval_info.get("dropped_rows_warning"):
+                    self._record_warning(f"Eval dataset: {eval_info['dropped_rows_warning']}")
                 eval_dataset = eval_info["dataset"]
                 logger.info("Eval dataset formatted successfully\n")
             elif eval_enabled and not has_separate_eval_source and not dataset_streaming:
@@ -4081,10 +4145,7 @@ class UnslothTrainer:
                 config_args["warmup_steps"] = 5
                 logger.info("Using default warmup_steps: 5\n")
 
-            save_steps_val = training_args.get("save_steps", 0)
-            if save_steps_val and save_steps_val > 0:
-                config_args["save_steps"] = save_steps_val
-                config_args["save_strategy"] = "steps"
+            apply_save_strategy(config_args, training_args.get("save_steps", 0))
 
             max_steps_val = training_args.get("max_steps", 0)
             if max_steps_val and max_steps_val > 0:

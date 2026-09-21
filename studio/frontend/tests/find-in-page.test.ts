@@ -1488,7 +1488,9 @@ test("the bar stays out of a backgrounded scope, and off the document origin", a
   // 22.25/28.25rem is exactly the previous short-counter width: fixed input + 12rem chrome.
   assert.match(surface[1], /(?:^|\s)w-\[22\.25rem\](?:\s|$)/);
   assert.match(surface[1], /(?:^|\s)sm:w-\[28\.25rem\](?:\s|$)/);
-  const input = /<input[\s\S]*?className=\{cn\([\s\S]*?"([^"]*)"/.exec(
+  // Either form: the field's classes are the point, not whether they go
+  // through cn().
+  const input = /<input[\s\S]*?className=\{?(?:cn\()?\s*"([^"]*)"/.exec(
     FIND_BAR,
   );
   assert.ok(input);

@@ -1098,5 +1098,6 @@ def format_and_template_dataset(
             "requires_manual_mapping": requires_manual,
             "warnings": all_warnings,
             "errors": all_errors,
+            "dropped_rows_warning": template_result.get("dropped_rows_warning"),
             "summary": summary,
         }
