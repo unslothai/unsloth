@@ -2493,9 +2493,16 @@ def get_disk_space(
     # costs most on exactly the network mounts this is careful about.
     located = []
     seen = set()
+    unreadable = False
     for root in roots:
         found = _locate(root)
         if found is None:
+            # An ACTIVE destination that cannot be read makes the whole answer unknown, rather
+            # than quietly leaving the other one to speak for it. Hub and Xet can sit on
+            # different volumes, so reporting the readable one's free space would be a
+            # confident number about a disk the download is not filling: the same mistake as
+            # climbing past an unreadable root, one level up.
+            unreadable = True
             continue
         candidate, device = found
         if device in seen:
@@ -2503,7 +2510,16 @@ def get_disk_space(
         seen.add(device)
         located.append(candidate)
 
-    readings = [reading for reading in map(_read, located) if reading is not None]
+    readings = [] if unreadable else [r for r in map(_read, located) if r is not None]
+    if not unreadable and len(readings) != len(located):
+        # A root that located but would not report is the same situation.
+        unreadable = True
+        readings = []
+
+    if unreadable:
+        # Nulls, not zeros, and not a fallback volume either: the caller reads this as
+        # "could not tell", which neither warns nor blocks a download.
+        return {"path": None, "total_gb": None, "free_gb": None, "percent_used": None}
 
     if not readings:
         # Nothing resolved: fall back to the same places the old reading used.

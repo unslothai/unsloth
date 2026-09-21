@@ -381,3 +381,47 @@ def test_an_unreadable_cache_volume_is_not_reported_as_its_parent(monkeypatch, t
     assert reading["path"] != str(
         roomy
     ), "an unreadable cache reported its parent volume's free space"
+
+
+def test_one_unreadable_root_does_not_let_the_other_answer_for_it(monkeypatch, tmp_path):
+    """Hub and Xet can be on different volumes, so the readable one is not a stand-in.
+
+    An unavailable network-mounted hub cache beside a local Xet cache would otherwise return
+    the Xet volume's free space: a confident number about a disk the download is not filling,
+    which is the same mistake as climbing past an unreadable root, one level up. Unknown is
+    the honest answer, and the client treats it as neither a warning nor a block.
+    """
+    hub = tmp_path / "mounted" / "hub"
+    hub.mkdir(parents = True)
+    xet = tmp_path / "local" / "xet"
+    xet.mkdir(parents = True)
+
+    real_stat = os.stat
+    real_usage = shutil.disk_usage
+
+    def deny_stat(path, *args, **kwargs):
+        if str(path) == str(hub):
+            raise OSError(5, "Input/output error")
+        return real_stat(path, *args, **kwargs)
+
+    def deny_usage(path, *args, **kwargs):
+        if str(path) == str(hub):
+            raise OSError(5, "Input/output error")
+        return real_usage(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "stat", deny_stat)
+    monkeypatch.setattr(shutil, "disk_usage", deny_usage)
+
+    route = _load_route(
+        monkeypatch,
+        hub_cache = hub,
+        xet_cache = xet,
+        default_cache = tmp_path / "d",
+        studio = tmp_path / "s",
+    )
+    reading = route(current_subject = "alice", via_api_key = False)
+
+    assert (
+        reading["free_gb"] is None
+    ), "the readable Xet volume answered for an unreadable hub cache"
+    assert reading["path"] is None
