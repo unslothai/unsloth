@@ -16396,9 +16396,25 @@ def _check_signal_escape_patterns(code: str):
     _LITERAL_CANDIDATE_CAP = 8
 
     def _stored_names(targets) -> "list[str]":
-        return [
-            n.id for t in targets if t is not None for n in ast.walk(t) if isinstance(n, ast.Name)
-        ]
+        """Only the names a target actually binds.
+
+        Walking every `ast.Name` under the target also returns the BASE of an attribute or
+        subscript, which is read, not rebound: `r.debug = True` left `r` looking rebound and
+        dropped the `r -> requests` alias that the runtime still has, so the call after it went
+        unrecognised.
+        """
+        names: list[str] = []
+        stack = [t for t in targets if t is not None]
+        while stack:
+            node = stack.pop()
+            if isinstance(node, ast.Name):
+                names.append(node.id)
+            elif isinstance(node, (ast.Tuple, ast.List)):
+                stack.extend(node.elts)
+            elif isinstance(node, ast.Starred):
+                stack.append(node.value)
+            # ast.Attribute / ast.Subscript bind nothing: their base is loaded.
+        return names
 
     # Checked against `type(node)` before the chain below, since this runs twice for every node in
     # the tree and nearly all of them bind nothing: an exact-type lookup beats a dozen isinstance
@@ -16548,7 +16564,12 @@ def _check_signal_escape_patterns(code: str):
             # Alias -> the module it binds, and bare name -> the network function it binds. The shell-exec half of
             # this analyzer already resolves both; without them `import urllib.request as u; u.urlopen(...)` matched
             # no prefix and a hardcoded attacker host passed the screen untouched.
-            self.module_aliases: dict[str, str] = {}
+            # Name -> every network module ever bound to it, because this map is not scope
+            # aware: a nested `def f(): import socket as r` would otherwise overwrite an outer
+            # `import requests as r`, and the module-level `r.get(...)` after it would carry
+            # only unrecognised candidates. Accumulating keeps resolution monotone, so a binding
+            # anywhere can add a way to recognise a call and never take one away.
+            self.module_aliases: dict[str, set[str]] = {}
             self.func_aliases: dict[str, str] = {}
             # Name -> every string literal it can hold, None when unreadable. `url =
             # "https://huggingface.co/x"; requests.get(url)` is still a host this screen can read.
@@ -16566,7 +16587,8 @@ def _check_signal_escape_patterns(code: str):
             # `socket.get`, which matches no network prefix and so went unscreened.
             if type(node) in _BINDING_NODE_TYPES:
                 for name in _binding_names(node):
-                    self.module_aliases.pop(name, None)
+                    # The module set is deliberately NOT dropped: see __init__. A bare function
+                    # alias is, so a local `def get(...)` still shadows `from requests import get`.
                     self.func_aliases.pop(name, None)
                     self.shadowed.add(name)
 
@@ -16602,7 +16624,7 @@ def _check_signal_escape_patterns(code: str):
             self._rebind(node)
             for alias in node.names:
                 if alias.asname and alias.name in _NETWORK_MODULES:
-                    self.module_aliases[alias.asname] = alias.name
+                    self.module_aliases.setdefault(alias.asname, set()).add(alias.name)
             self.generic_visit(node)
 
         def visit_ImportFrom(self, node):
@@ -16623,7 +16645,8 @@ def _check_signal_escape_patterns(code: str):
                 bound = alias.asname or alias.name
                 fq = f"{module}.{alias.name}"
                 if fq in _NETWORK_MODULES:
-                    self.module_aliases[bound] = fq  # from urllib import request
+                    # from urllib import request
+                    self.module_aliases.setdefault(bound, set()).add(fq)
                 elif module in _NETWORK_MODULES:
                     self.func_aliases[bound] = fq  # from urllib.request import urlopen
             self.generic_visit(node)
@@ -16640,7 +16663,8 @@ def _check_signal_escape_patterns(code: str):
                 return None
             parts.insert(0, cur.id)
             if parts[0] in self.module_aliases:
-                parts = self.module_aliases[parts[0]].split(".") + parts[1:]
+                # Any one of them naming a network module is enough for the caller's question.
+                parts = sorted(self.module_aliases[parts[0]])[0].split(".") + parts[1:]
             fq = ".".join(parts)
             return fq if fq in _NETWORK_MODULES else None
 
@@ -16650,7 +16674,7 @@ def _check_signal_escape_patterns(code: str):
             if carried:
                 for target in node.targets:
                     if isinstance(target, ast.Name):
-                        self.module_aliases[target.id] = carried
+                        self.module_aliases.setdefault(target.id, set()).add(carried)
             self.generic_visit(node)
 
         def visit_Call(self, node):
@@ -16671,7 +16695,8 @@ def _check_signal_escape_patterns(code: str):
             written = ".".join(parts) if parts else ""
             fq_candidates = [written] if written else []
             if len(parts) > 1 and parts[0] in self.module_aliases:
-                fq_candidates.append(".".join([self.module_aliases[parts[0]]] + parts[1:]))
+                for module in sorted(self.module_aliases[parts[0]]):
+                    fq_candidates.append(".".join(module.split(".") + parts[1:]))
             elif len(parts) == 1 and parts[0] in self.func_aliases:
                 fq_candidates.append(self.func_aliases[parts[0]])
             elif len(parts) == 1 and self.star_modules:

@@ -340,6 +340,39 @@ class TestRebindingDropsStaleAliases:
     def test_alias_from_another_scope_cannot_hide_the_call(self, code):
         _blocked(code, expect_phrase = "Blocked: host not in sandbox allowlist")
 
+    @pytest.mark.parametrize(
+        "code",
+        [
+            # A CUSTOM alias is not recognisable by its written spelling, so a nested binding
+            # overwriting it used to leave only unrecognised candidates.
+            pytest.param(
+                "import requests as r\n"
+                "def f():\n"
+                "    import socket as r\n"
+                'r.get("https://evil.example/x")',
+                id = "nested_import_of_a_custom_alias",
+            ),
+            pytest.param(
+                "import requests as r\n"
+                "if False:\n"
+                "    import socket as r\n"
+                'r.get("https://evil.example/x")',
+                id = "untaken_branch_rebinds_a_custom_alias",
+            ),
+            # Storing THROUGH the alias does not rebind it: the runtime module is still there.
+            pytest.param(
+                'import requests as r\nr.debug = True\nr.get("https://evil.example/x")',
+                id = "attribute_store_does_not_rebind",
+            ),
+            pytest.param(
+                'import requests as r\nr.cache["k"] = 1\nr.get("https://evil.example/x")',
+                id = "subscript_store_does_not_rebind",
+            ),
+        ],
+    )
+    def test_a_custom_alias_survives_what_does_not_really_rebind_it(self, code):
+        _blocked(code, expect_phrase = "Blocked: host not in sandbox allowlist")
+
     def test_shadowed_alias_still_fails_closed_on_a_dynamic_host(self):
         _blocked(
             "import socket as requests\nimport requests\nrequests.get('https://' + h)",
