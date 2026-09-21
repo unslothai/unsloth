@@ -39716,7 +39716,14 @@ async def diffusion_generate_progress(
         # client-input one it answered without logging, and both end up behind the same
         # prefix. Said explicitly, so the page does not have to infer it from the text.
         from core.inference.generate_outcomes import generate_failure_was_logged
-        was_logged = generate_failure_was_logged(attempt_id) if attempt_id else None
+
+        # The attributed attempt when this poll named none: a reloaded page polls unscoped,
+        # and looking up None answered "logged" for a client-input failure the route
+        # deliberately never logged, so the page offered a log that cannot hold it. Only
+        # reachable for the caller's own attempt, since an unattributable error is already
+        # cleared above on an install with accounts.
+        attributed = attempt_id or progress.get("generation_attempt")
+        was_logged = generate_failure_was_logged(attributed) if attributed else None
         progress = {**progress, "error_logged": True if was_logged is None else was_logged}
     # Only meaningful beside the reason it dates, and only its own sender can match it:
     # without a reason there is nothing to attribute, and a concurrent client has no

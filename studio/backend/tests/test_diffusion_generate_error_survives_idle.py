@@ -146,8 +146,10 @@ def test_the_route_forwards_the_attempt_id_and_sends_it_only_beside_a_reason():
     assert (
         "attempt_id = request.attempt_id," in src[at : at + 4000]
     ), "the generate route no longer forwards the attempt id to the engine"
+    # Widened as the route grows: the window has to reach the end of this handler, or the
+    # assertions below silently stop measuring anything.
     at = src.index("async def diffusion_generate_progress")
-    body = src[at : at + 6000]
+    body = src[at : at + 9000]
     assert 'if not progress.get("error"):' in body
     assert 'progress.pop("generation_attempt", None)' in body
 
@@ -766,3 +768,38 @@ def test_a_reloaded_page_hears_about_a_persist_failure():
     at = src.index('logger.error("diffusion.persist_failed')
     window = src[at : at + 900]
     assert "_note_unscoped_generate_failure(backend, request.attempt_id" in window
+
+
+def test_an_unscoped_poll_reads_the_log_flag_of_the_attempt_it_is_told_about():
+    """A reloaded page polls without an attempt id, and the record still knows.
+
+    A client-input failure is answered with its own reason and never logged, and the route
+    marks the record so. Looking the flag up under None answered "logged" anyway, so the
+    reloaded page offered a log that cannot hold that failure.
+    """
+    from core.inference.generate_outcomes import (
+        _retain_generate_failure,
+        mark_generate_failure_unlogged,
+    )
+
+    _retain_generate_failure("attempt-unlogged", "Image generation failed. Bad size.")
+    mark_generate_failure_unlogged("attempt-unlogged")
+    idle = {
+        "active": False,
+        "step": 0,
+        "total_steps": 0,
+        "fraction": 0.0,
+        "eta_seconds": None,
+        "error": "Image generation failed. Bad size.",
+        "generation_attempt": "attempt-unlogged",
+    }
+    resumed = _answer_progress(idle, None)
+    assert resumed.error, "the reason itself was dropped"
+    assert (
+        resumed.error_logged is False
+    ), "an unscoped poll was offered the log of a failure that was never logged"
+
+    # A failure that WAS logged still gets its log through the same channel.
+    _retain_generate_failure("attempt-logged", "boom")
+    logged = _answer_progress({**idle, "generation_attempt": "attempt-logged"}, None)
+    assert logged.error_logged is True
