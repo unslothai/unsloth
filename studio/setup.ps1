@@ -1653,16 +1653,30 @@ function Test-CodeIntegrityReasonIsAmbiguous {
     return ($script:CodeIntegrityAmbiguousReasons -contains $Reason)
 }
 
+# Same split as _ADMIN_POLICY_REASONS / _SMART_APP_CONTROL_REASONS in
+# studio/backend/utils/code_integrity.py: 0xC0E90002 is SAC or WDAC and proves neither,
+# so only these two reasons name which one to send the user to.
+$script:CodeIntegrityAdminPolicyReasons = @("an Application Control policy blocked this program")
+$script:CodeIntegritySmartAppControlReasons = @("Smart App Control blocked this program")
+
 function Write-CodeIntegrityTorchNotice {
     param(
         [string]$Reason,
         # What setup does next, since this notice is emitted from paths that keep the
         # environment, reinstall the wheels into it, and rebuild it outright.
         [ValidateSet("kept", "reinstall", "rebuild")]
-        [string]$Action = "kept"
+        [string]$Action = "kept",
+        # False where no family answered: the rebuild path reaches this with a CPU wheel
+        # or no torch at all, and calling that a GPU build tells the user the wrong thing
+        # about a file that is already CPU-only.
+        [bool]$GpuBuild = $true
     )
     # Said once, in the three places the driver advice used to be.
-    substep "Windows refused part of the PyTorch GPU runtime: $Reason." "Yellow"
+    if ($GpuBuild) {
+        substep "Windows refused part of the PyTorch GPU runtime: $Reason." "Yellow"
+    } else {
+        substep "Windows refused part of this environment's PyTorch runtime: $Reason." "Yellow"
+    }
     if (Test-CodeIntegrityReasonIsAmbiguous -Reason $Reason) {
         # Microsoft raises these for a file a policy will not accept AND for one that is
         # damaged, and the error alone does not say which, so this must not rule out the
@@ -1672,10 +1686,23 @@ function Write-CodeIntegrityTorchNotice {
     } else {
         substep "This is a Windows code integrity policy refusing unsigned files, not a driver fault or a damaged install, so reinstalling will not clear it." "Yellow"
     }
-    substep "On a device you administer, Smart App Control is under Windows Security, App and browser control; on a managed device the policy belongs to whoever administers it." "Yellow"
+    # Which policy to go to, told apart the way the backend tells them apart: sending an
+    # AppLocker or WDAC case to Smart App Control is advice that cannot work, since turning
+    # SAC off does not touch an administrator policy.
+    if ($script:CodeIntegrityAdminPolicyReasons -contains $Reason) {
+        substep "This policy is set by whoever administers this device (AppLocker, WDAC or Group Policy) and can only be changed there, so ask them to allow the files. Turning off Smart App Control does not affect an administrator policy." "Yellow"
+    } elseif ($script:CodeIntegritySmartAppControlReasons -contains $Reason) {
+        substep "Smart App Control has no per-application exception; turning it off in Windows Security, under App and browser control, is the only local workaround." "Yellow"
+    } else {
+        substep "On a device you administer, Smart App Control is under Windows Security, App and browser control; on a managed device the policy belongs to whoever administers it." "Yellow"
+    }
     # Not "CPU training is unaffected": this venv's own `import torch` is what just failed,
     # so nothing in it runs, on any device, until the wheels load or are replaced.
-    substep "This environment holds a GPU build whose import Windows is refusing, so it cannot run on the CPU either. A separate CPU-only install is unaffected, and UNSLOTH_TORCH_INDEX_URL moves this one onto CPU wheels on purpose." "DarkGray"
+    if ($GpuBuild) {
+        substep "This environment holds a GPU build whose import Windows is refusing, so it cannot run on the CPU either. A separate CPU-only install is unaffected, and UNSLOTH_TORCH_INDEX_URL moves this one onto CPU wheels on purpose." "DarkGray"
+    } else {
+        substep "This environment's own import of PyTorch is what Windows refused, so nothing in it runs until those files load or are replaced. A separate install elsewhere is unaffected." "DarkGray"
+    }
     switch ($Action) {
         "reinstall" {
             substep "Setup will reinstall the same wheels in place, which clears the damaged case; a policy will refuse them again the same way." "DarkGray"
@@ -6599,7 +6626,9 @@ if ((Test-Path -LiteralPath $VenvDir -PathType Container) -and -not $NoTorchMode
     if ($_rebuildBlockReason) {
         $_rebuildAction = "reinstall"
         if ($shouldRebuild) { $_rebuildAction = "rebuild" }
-        Write-CodeIntegrityTorchNotice -Reason $_rebuildBlockReason -Action $_rebuildAction
+        # No family answered on this path (the three disk predicates all declined), so the
+        # wheel here may well be CPU-only.
+        Write-CodeIntegrityTorchNotice -Reason $_rebuildBlockReason -Action $_rebuildAction -GpuBuild $false
     }
 
     # Outside the rebuild branch: an install that moved a venv aside, failed to delete the copy and

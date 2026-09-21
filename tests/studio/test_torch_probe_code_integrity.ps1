@@ -170,6 +170,9 @@ Check "an ambiguous status still reaches the force-reinstall" {
 # from a kept environment, from one whose wheels are about to be force-reinstalled, and
 # from the rebuild path.
 . ([scriptblock]::Create((Get-FunctionText -Path $setup -Name "Write-CodeIntegrityTorchNotice")))
+# Script-scope data the notice reads, restated here and drift-checked against the file below.
+$script:CodeIntegrityAdminPolicyReasons = @("an Application Control policy blocked this program")
+$script:CodeIntegritySmartAppControlReasons = @("Smart App Control blocked this program")
 function substep { param([string]$Text, [string]$Colour) $script:said += $Text }
 
 Check "a kept environment is the only one told it is kept" {
@@ -264,6 +267,52 @@ Check "a driver fault with no block reason still keeps those venvs as they are" 
 Check "no PowerShell 7 only if-expression reached the argument" {
     # 5.1 cannot parse `-Action (if ...)`, and this file runs on both engines.
     -not ($setupText -match 'Action \(\s*if ')
+}
+
+Check "the rebuild path does not call an unknown wheel a GPU build" {
+    # Reached with a CPU-only wheel or none at all, since all three family predicates
+    # declined, so the GPU sentences would be describing something else.
+    $script:said = @()
+    Write-CodeIntegrityTorchNotice -Reason "code integrity blocked the image" -Action "rebuild" -GpuBuild $false
+    $joined = $script:said -join " "
+    (-not $joined.Contains("GPU build")) -and (-not $joined.Contains("PyTorch GPU runtime")) -and
+    $joined.Contains("nothing in it runs")
+}
+Check "a known GPU family still gets the GPU wording" {
+    $script:said = @()
+    Write-CodeIntegrityTorchNotice -Reason "code integrity blocked the image" -Action "kept"
+    ($script:said -join " ").Contains("holds a GPU build")
+}
+Check "the rebuild call site says the family is unknown" {
+    $setupText.Contains('-Action $_rebuildAction -GpuBuild $false')
+}
+
+# Which policy to send the user to, told apart the way the backend tells them apart.
+Check "an administrator policy is not answered with Smart App Control advice" {
+    $script:said = @()
+    Write-CodeIntegrityTorchNotice -Reason "an Application Control policy blocked this program" -Action "kept"
+    $joined = $script:said -join " "
+    $joined.Contains("AppLocker, WDAC or Group Policy") -and
+    $joined.Contains("does not affect an administrator policy") -and
+    (-not $joined.Contains("On a device you administer"))
+}
+Check "a Smart App Control block says how to turn it off" {
+    $script:said = @()
+    Write-CodeIntegrityTorchNotice -Reason "Smart App Control blocked this program" -Action "kept"
+    $joined = $script:said -join " "
+    $joined.Contains("no per-application exception") -and (-not $joined.Contains("AppLocker"))
+}
+Check "a reason that proves neither still offers both" {
+    # 0xc0e90002 is SAC or WDAC and does not say which, so neither branch may claim it.
+    $script:said = @()
+    Write-CodeIntegrityTorchNotice -Reason "Smart App Control or an Application Control policy blocked the image" -Action "kept"
+    ($script:said -join " ").Contains("On a device you administer")
+}
+Check "the two policy sets are the backend's" {
+    $py.Contains("_ADMIN_POLICY_REASONS = frozenset({_REASON_ADMIN_POLICY})") -and
+    $py.Contains("_SMART_APP_CONTROL_REASONS = frozenset({_REASON_SMART_APP_CONTROL})") -and
+    $setupText.Contains('$script:CodeIntegrityAdminPolicyReasons = @("an Application Control policy blocked this program")') -and
+    $setupText.Contains('$script:CodeIntegritySmartAppControlReasons = @("Smart App Control blocked this program")')
 }
 
 Check "the notice does not tell a user with no importable torch that the CPU is fine" {
