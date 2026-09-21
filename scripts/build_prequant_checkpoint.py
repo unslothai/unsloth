@@ -109,12 +109,22 @@ def upload_destination(
             f"{scheme!r}, so {why} has no name the loader would ask for. Add the "
             "entry to the family table, or pass --upload-filename."
         )
-    if safetensors and not preferred.lower().endswith(".safetensors"):
+    # Both directions, not just one. The declared name and the container have to agree, and a
+    # family that has moved its entry to a .safetensors artifact makes the REVERSE mismatch the
+    # reachable one: a rotated pickle build then publishes torch.save bytes under a safetensors
+    # name, every loader dispatches on the extension and hands them to safe_open, and the artifact
+    # is unopenable after the hours the quantization took. Same failure as the guarded direction,
+    # so it gets the same refusal.
+    wanted = ".safetensors" if safetensors else ".pt"
+    if not preferred.lower().endswith(wanted):
+        reads_as = "a pickle" if safetensors else "safetensors"
+        writes = "safetensors" if safetensors else "torch.save"
         raise ValueError(
-            f"family {getattr(fam, 'name', fam)!r} declares {preferred!r} for {scheme!r}, which is "
-            "not a safetensors name, so this build would be published under a name the loader "
-            "reads as a pickle. Point the prequant_filenames entry at the .safetensors artifact, "
-            "or pass --upload-filename."
+            f"family {getattr(fam, 'name', fam)!r} declares {preferred!r} for {scheme!r}, which "
+            f"does not end in {wanted!r}, but --out writes the {writes} container. The loader "
+            f"dispatches on the extension alone, so this would be published under a name it reads "
+            f"as {reads_as}. Point the prequant_filenames entry at the matching artifact, or pass "
+            "--upload-filename."
         )
     return preferred
 

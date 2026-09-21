@@ -12,6 +12,8 @@ import importlib.util
 import sys
 from pathlib import Path
 
+import types
+
 import pytest
 
 from core.inference.diffusion_convrot import rotation_metadata, rotation_metadata_error
@@ -100,8 +102,26 @@ def test_a_safetensors_build_refuses_a_declared_name_that_reads_as_a_pickle():
     # H3 declares a .pt name for int8. Uploading a safetensors artifact there gives every loader a
     # file whose extension says pickle and whose bytes are not one, so the load fails for a reason
     # that has nothing to do with the real mistake. Refuse at build time and say which name to fix.
-    with pytest.raises(ValueError, match = "not a safetensors name"):
+    with pytest.raises(ValueError, match = r"does not end in '\.safetensors'"):
         build.upload_destination(h3, "int8", rotated = False, safetensors = True)
+
+
+def test_a_rotated_pickle_build_refuses_a_declared_name_that_reads_as_safetensors():
+    """The mirror image, and the one a family reaches by MOVING to safetensors.
+
+    Once a family points prequant_filenames at a .safetensors artifact, a rotated pickle build for
+    that same family would publish torch.save bytes under a safetensors name. Every loader
+    dispatches on the extension, hands the file to safe_open and rejects it, so the artifact is
+    unopenable for a reason that says nothing about the real mistake. Guarding only the
+    safetensors-build direction left this one live.
+    """
+    build = _script()
+    fam = types.SimpleNamespace(
+        name = "qwen-image-2.1",
+        prequant_filenames = (("fp8", "Qwen-Image-2.1-FP8.safetensors"),),
+    )
+    with pytest.raises(ValueError, match = r"does not end in '\.pt'"):
+        build.upload_destination(fam, "fp8", rotated = True, safetensors = False)
 
 
 def test_an_override_still_has_to_match_the_container_it_is_naming():
