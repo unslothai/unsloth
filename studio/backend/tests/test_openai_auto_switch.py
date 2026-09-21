@@ -13355,3 +13355,37 @@ def test_the_lmstudio_and_models_dir_weight_checks_also_raise():
         with _enumeration_denied(checkpoint):
             with pytest.raises(OSError):
                 models_route._scan_models_dir(checkpoint)
+
+
+def test_a_manifest_that_went_unreadable_between_two_reads_is_reported(monkeypatch):
+    """The scan reads a manifest, then the servable check reads it again.
+
+    The second read is wrapped as a ValueError, so an unreadable manifest was dropped by the
+    same branch that drops an unsupported one, and the pass published as complete over a row
+    it had already built. Unsupported layers stay silent: the next pass answers the same way.
+    """
+    from core.inference import local_model_resolver as resolver
+    from core.inference.scan_incidents import collecting_scan_incidents
+    from hub.services.models import ollama as ollama_service
+
+    ref = "ollama:library/llama3:latest"
+    info = types.SimpleNamespace(id = ref, source = "ollama", path = "/store/blobs/sha256-abc")
+    monkeypatch.setattr(ollama_service, "is_ollama_manifest_ref", lambda value: value == ref)
+
+    def unreadable(_ref):
+        raise ValueError("Could not read Ollama manifest: boom") from OSError(5, "I/O error")
+
+    monkeypatch.setattr(ollama_service, "ollama_model_ref_files", unreadable)
+    with collecting_scan_incidents() as incidents:
+        assert resolver._local_servable_entry(ref, info) is None
+    assert any(
+        "ollama manifest unreadable on recheck" in note for note in incidents
+    ), f"a manifest that went unreadable between two reads was dropped silently: {incidents}"
+
+    def unsupported(_ref):
+        raise ValueError("Could not resolve Ollama model from manifest")
+
+    monkeypatch.setattr(ollama_service, "ollama_model_ref_files", unsupported)
+    with collecting_scan_incidents() as incidents:
+        assert resolver._local_servable_entry(ref, info) is None
+    assert incidents == [], f"an unsupported Ollama tag was reported as a gap: {incidents}"

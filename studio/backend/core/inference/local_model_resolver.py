@@ -674,7 +674,14 @@ def _local_servable_entry(loader_id: str, info) -> Optional[_LocalGgufEntry]:
         # Raises when the tag's layers are gone or unsupported, withholding rather than advertising.
         try:
             ollama_model_ref_files(raw_id)
-        except (OSError, ValueError):
+        except (OSError, ValueError) as exc:
+            # A row the scan already built, dropped on a SECOND read of the same manifest.
+            # Unreadable is a gap, and the read failure arrives wrapped as a ValueError with
+            # the OSError as its cause. Unsupported layers or malformed JSON is an answer:
+            # the next pass gives the same one.
+            cause = exc if isinstance(exc, OSError) else exc.__cause__
+            if isinstance(cause, OSError):
+                note_scan_incident(f"ollama manifest unreadable on recheck: {raw_id}")
             return None
         # No quants: an Ollama tag names one file, so there is no ":<quant>" to pin.
         return _LocalGgufEntry(loader_id, raw_id, ())
