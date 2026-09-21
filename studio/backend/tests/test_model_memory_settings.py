@@ -1286,9 +1286,7 @@ class TestTheIgpuSnapshotCannotWithdrawThePageLock:
             if any(
                 isinstance(t, ast.Name) and t.id == "_mem_igpu_snapshot" for t in node.targets
             ) and isinstance(node.value, ast.IfExp):
-                return compile(
-                    ast.Expression(body = node.value), "<snapshot>", "eval"
-                )
+                return compile(ast.Expression(body = node.value), "<snapshot>", "eval")
         raise AssertionError("the lossless-snapshot binding is gone from load_model")
 
     def _snapshot(self, known, detected):
@@ -1359,9 +1357,7 @@ class TestTheIgpuSnapshotCannotWithdrawThePageLock:
         )
         assert LlamaCppBackend._weights_in_host_memory(backend, **common) is True
         assert (
-            LlamaCppBackend._weights_in_host_memory(
-                backend, known_vulkan_igpus = set(), **common
-            )
+            LlamaCppBackend._weights_in_host_memory(backend, known_vulkan_igpus = set(), **common)
             is False
         )
 
