@@ -1083,7 +1083,9 @@ def test_the_refused_windows_cache_path_is_taken_away_on_upgrade():
     state. The clear needs nothing that block computes, so it is hoisted out of it.
     """
     ps = SETUP_PS1.read_text(encoding = "utf-8")
-    body = _slice(ps, "function Clear-UnparseableTorchCacheEnv {", "\nClear-UnparseableTorchCacheEnv")
+    body = _slice(
+        ps, "function Clear-UnparseableTorchCacheEnv {", "\nClear-UnparseableTorchCacheEnv"
+    )
     code = "\n".join(line for line in body.splitlines() if not line.lstrip().startswith("#"))
     assert "GetEnvironmentVariable('TORCHINDUCTOR_CACHE_DIR', 'User')" in code, code
     assert "[NullString]::Value, 'User'" in code, code
@@ -1104,9 +1106,9 @@ def test_the_refused_windows_cache_path_is_taken_away_on_upgrade():
             break
     calls = [i for i, line in enumerate(lines) if line.strip() == "Clear-UnparseableTorchCacheEnv"]
     assert calls, "nothing calls the cleanup"
-    assert any(i < gate for i in calls), (
-        "the cleanup only runs on a dependency pass, which the fast paths skip"
-    )
+    assert any(
+        i < gate for i in calls
+    ), "the cleanup only runs on a dependency pass, which the fast paths skip"
 
 
 def test_the_windows_uninstaller_clears_the_inductor_path_it_persisted():
