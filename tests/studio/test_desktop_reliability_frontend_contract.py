@@ -926,12 +926,28 @@ def test_chat_sidebar_row_actions_visible_on_coarse_pointers():
             f"this guard can no longer tell whether the touch case is covered"
         )
         for cls in hovered:
-            gutters = re.findall(rf"group-hover/{variant}:(!?pr-\d+!?)", cls)
-            coarse = re.findall(r"\[@media\(pointer:coarse\)\]:(!?pr-\d+!?)", cls)
+            gutters = re.findall(rf"group-hover/{variant}:(!?pr-\d+(?:\.\d+)?!?)(?![\w.-])", cls)
+            coarse = re.findall(
+                r"\[@media\(pointer:coarse\)\]:(!?pr-\d+(?:\.\d+)?!?)(?![\w.-])", cls
+            )
             assert len(set(gutters)) == 1 and not gutters[0].strip("!") != gutters[0], (
                 f"the {variant} row states more than one hover gutter, or states it with an "
                 f"importance marker: {gutters} in {cls!r}. This guard compares one gutter "
                 f"against one touch padding and will not work out which of several wins"
+            )
+            # A shorthand sets the right edge too. `px-0` and `p-0` both override `pr-16`
+            # through tailwind-merge, and `pe-0` is the logical-property spelling of the
+            # same edge, so a row carrying one is a row whose touch gutter this guard
+            # cannot read off its pr-N utilities.
+            shorthand = [
+                token
+                for token in cls.strip('"').split()
+                if re.fullmatch(r"(?:\S*:)?!?(?:p|px|pe)-\S+", token)
+            ]
+            assert not shorthand, (
+                f"the {variant} row sets padding with a shorthand that also moves the right "
+                f"edge: {shorthand} in {cls!r}. It overrides the pr-N gutters this guard "
+                f"compares, so state the row's padding with pr-N alone"
             )
             # `[padding-right:0]` sets the same property by another spelling, and this guard
             # compares `pr-N` numbers. It cannot compare that, so it refuses it.
@@ -953,8 +969,8 @@ def test_chat_sidebar_row_actions_visible_on_coarse_pointers():
                 f"tailwind-merge's answer and then the cascade's, and this guard refuses "
                 f"rather than guess: reduce it to one plain utility"
             )
-            gutter = int(gutters[0].removeprefix("pr-"))
-            touch = int(coarse[0].removeprefix("pr-"))
+            gutter = float(gutters[0].removeprefix("pr-"))
+            touch = float(coarse[0].removeprefix("pr-"))
             assert touch >= gutter, (
                 f"the {variant} row reserves less room on a coarse pointer than it does on "
                 f"hover: {(gutter, touch)} as (hover, coarse). The action is always visible "
