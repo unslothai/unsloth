@@ -361,3 +361,57 @@ def test_prepared_message_parsing_runs_off_the_event_loop(monkeypatch):
 
     asyncio.run(scenario())
     assert seen and all(thread != loop_thread for thread in seen)
+
+
+@pytest.mark.parametrize("continue_request", [False, True])
+def test_tool_recost_rechecks_continuation_after_tool_result(monkeypatch, continue_request):
+    async def scenario():
+        queue = LlamaAdmissionQueue("continuation-recost")
+        monkeypatch.setattr(inference, "get_llama_admission_queue", lambda _: queue)
+        backend = _backend(12000)
+        payload = _payload()
+        payload.continue_final_message = continue_request
+        payload.messages = [
+            {"role": "user", "content": "Look up the result"},
+            {"role": "assistant", "content": "Let me check."},
+        ]
+        reservation, _ = await inference._reserve_counted_gguf_chat(
+            request = None,
+            llama_backend = backend,
+            payload = payload,
+            messages = payload.messages,
+            tool_loop = True,
+        )
+        lease = reservation.lease_nowait()
+        assert lease is not None
+        try:
+            assert (
+                backend.count_chat_tokens.call_args.kwargs["continue_final_message"]
+                is continue_request
+            )
+            call = {
+                "id": "call_1",
+                "type": "function",
+                "function": {"name": "lookup", "arguments": "{}"},
+            }
+            conversation = [
+                payload.messages[0],
+                {**payload.messages[1], "tool_calls": [call]},
+                {"role": "tool", "tool_call_id": "call_1", "content": "Found it"},
+            ]
+            inference._openai_llama_admission_recost(
+                reservation,
+                conversation,
+                request = None,
+                llama_backend = backend,
+                payload = payload,
+                output_tokens = 1024,
+                count_prepared_prompt = True,
+            )
+            assert backend.count_chat_tokens.call_count == 2
+            assert backend.count_chat_tokens.call_args.kwargs["continue_final_message"] is False
+            assert queue.snapshot().committed == 13024
+        finally:
+            lease.release()
+
+    asyncio.run(scenario())

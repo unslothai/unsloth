@@ -2408,6 +2408,8 @@ def _count_gguf_admission_prompt(
     If no exact count succeeds, reserve the pool instead of overlapping requests
     on the character estimate that undercounts numeric and other dense ASCII text.
     """
+    from core.inference.chat_template_helpers import trailing_assistant_text
+
     budget = _openai_llama_admission_budget(llama_backend) or 0
     try:
         text_messages, images = _openai_llama_admission_messages_for_estimate(
@@ -2421,7 +2423,8 @@ def _count_gguf_admission_prompt(
             chat_template_kwargs = llama_backend._request_reasoning_kwargs(
                 payload.enable_thinking, payload.reasoning_effort, payload.preserve_thinking
             ),
-            continue_final_message = _continue_final_message(payload),
+            continue_final_message = _continue_final_message(payload)
+            and bool(trailing_assistant_text(messages)),
         )
         if type(count) is not int or count <= 0:
             raise ValueError("Invalid prompt token count")
