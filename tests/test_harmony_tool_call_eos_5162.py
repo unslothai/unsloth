@@ -81,7 +81,11 @@ def _namespace():
 class _Tokenizer:
     """Only the surface `_harmony_tool_call_token_id` is allowed to touch."""
 
-    def __init__(self, ids, unk_token_id = None):
+    def __init__(
+        self,
+        ids,
+        unk_token_id = None,
+    ):
         self._ids = dict(ids)
         self.unk_token_id = unk_token_id
 
