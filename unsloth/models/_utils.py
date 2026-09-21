@@ -3219,6 +3219,24 @@ def _unsloth_train_if_needed(model):
     return model
 
 
+def _unsloth_cache_reuses_one_config(cache):
+    """Whether this autotuner cache answers every key with its one stored config.
+
+    That is what unsloth_zoo's `compile_fla_no_autotune` installs, but its `_ReuseBestCache` is
+    defined inside that function, so there is no symbol to import and no class to isinstance
+    against. Probe the behaviour instead of the class name: `dict.keys()` membership always uses
+    dict's own lookup, so a key absent from the raw mapping yet reported present by `in` is
+    exactly the reuse behaviour, under any name a future rewrite gives it.
+    """
+    try:
+        if len(cache) == 0:
+            return False
+        probe = ("__unsloth_probe__",) * 2
+        return probe not in cache.keys() and probe in cache
+    except Exception:
+        return False
+
+
 def patch_fla_autotuner_fast_path():
     """unsloth_zoo's `compile_fla_no_autotune` makes every fla Triton autotuner reuse its first
     tuned config for every key (`_ReuseBestCache`). After that, fla's `CachedAutotuner.run` still
@@ -3248,7 +3266,7 @@ def patch_fla_autotuner_fast_path():
             cache = self.cache
             if len(self.configs) == 1:
                 cfg = self.configs[0]
-            elif type(cache).__name__ == "_ReuseBestCache" and len(cache) > 0:
+            elif _unsloth_cache_reuses_one_config(cache):
                 cfg = next(iter(cache.values()))
             else:
                 return original_run(self, *args, **kwargs)

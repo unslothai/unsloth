@@ -213,3 +213,47 @@ def test_patch_is_a_no_op_when_fla_is_missing(monkeypatch):
 
     monkeypatch.setattr(builtins, "__import__", _blocked)
     PATCHER()  # must not raise
+
+
+# --------------------------------------------------------------------------- cache probe
+CACHE_PROBE = getattr(U, "_unsloth_cache_reuses_one_config", None)
+needs_probe = pytest.mark.skipif(CACHE_PROBE is None, reason = "tree without the behaviour probe")
+
+
+@needs_probe
+def test_cache_probe_detects_the_reuse_cache_under_any_name():
+    """unsloth_zoo defines _ReuseBestCache inside a function, so there is no symbol to import.
+    The probe must key off behaviour, not the class name, or a rename silently turns the fast
+    path off."""
+
+    class RenamedTomorrow(_ReuseBestCache):
+        pass
+
+    for cls in (_ReuseBestCache, RenamedTomorrow):
+        c = cls()
+        assert CACHE_PROBE(c) is False, "an empty reuse cache reuses nothing yet"
+        c["k"] = object()
+        assert CACHE_PROBE(c) is True
+
+
+@needs_probe
+def test_cache_probe_rejects_a_plain_dict_and_anything_that_raises():
+    assert CACHE_PROBE({}) is False
+    assert CACHE_PROBE({"k": object()}) is False
+
+    class Hostile(dict):
+        def __contains__(self, key):
+            raise RuntimeError("no")
+
+    h = Hostile()
+    h["k"] = object()
+    assert CACHE_PROBE(h) is False, "a cache that raises must fall back, not propagate"
+
+
+@needs_probe
+def test_cache_probe_does_not_mutate_the_cache():
+    c = _ReuseBestCache()
+    c["k"] = object()
+    before = dict(c)
+    CACHE_PROBE(c)
+    assert dict(c) == before and len(c) == 1
