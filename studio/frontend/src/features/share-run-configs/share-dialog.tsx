@@ -23,10 +23,12 @@ import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { toast } from "@/lib/toast";
 import { useId, useState } from "react";
 import type { ModelPickTarget } from "../model-picker/components/model-selector/types";
+import { formatExtraArgs } from "../model-picker/model-config/llama-extra-args";
 import {
   DEFAULT_PER_MODEL_CONFIG,
   type PerModelConfig,
 } from "../model-picker/model-config/per-model-config";
+import { sharedExtraArgsError } from "./extra-args";
 import {
   SHARED_CONFIG_FIELDS,
   SHARED_CONFIG_KEYS,
@@ -54,6 +56,22 @@ function linkPreview(value: SharedRunConfig, destination: string) {
         cause instanceof Error ? cause.message : "Could not create this link.",
     };
   }
+}
+
+function configDetail(key: SharedConfigKey, config: PerModelConfig) {
+  const value = config[key];
+  if (!SHARED_CONFIG_FIELDS[key].valid(value)) {
+    return key === "llamaExtraArgs"
+      ? `Excluded: ${sharedExtraArgsError(value)} Edit Extra Arguments in Run settings to share them.`
+      : (SHARED_CONFIG_FIELDS[key].error ?? "This value cannot be shared.");
+  }
+  if (key === "llamaExtraArgs") {
+    return formatExtraArgs(config.llamaExtraArgs) || "No extra arguments";
+  }
+  if (value === null) {
+    return "Default";
+  }
+  return typeof value === "string" ? value : JSON.stringify(value);
 }
 
 export function ShareRunConfigDialog({
@@ -111,27 +129,36 @@ export function ShareRunConfigDialog({
     detail?: string,
     disabled = false,
   ) => (
-    <div key={key} className="flex items-start gap-2 py-1.5">
+    <div
+      key={key}
+      className={`flex min-w-0 items-start gap-2 py-1.5 ${disabled ? "sm:col-span-2" : ""}`}
+    >
       <Checkbox
         id={`${id}-${key}`}
+        aria-describedby={
+          detail !== undefined ? `${id}-${key}-detail` : undefined
+        }
         checked={checked}
         disabled={disabled}
         onCheckedChange={(value) => change(value === true)}
       />
-      <label
-        htmlFor={`${id}-${key}`}
-        className="min-w-0 cursor-pointer text-sm"
-      >
-        {label}
+      <div className="min-w-0">
+        <label
+          htmlFor={`${id}-${key}`}
+          className={`text-sm ${disabled ? "cursor-not-allowed text-muted-foreground" : "cursor-pointer"}`}
+        >
+          {label}
+        </label>
         {detail !== undefined && (
-          <span
-            className="block truncate text-xs text-muted-foreground"
-            title={detail}
+          <p
+            id={`${id}-${key}-detail`}
+            className={`text-xs text-muted-foreground ${disabled ? "whitespace-normal break-words" : "truncate"}`}
+            title={disabled ? undefined : detail}
           >
             {detail}
-          </span>
+          </p>
         )}
-      </label>
+      </div>
     </div>
   );
   return (
@@ -191,14 +218,7 @@ export function ShareRunConfigDialog({
                     }
                     return next;
                   }),
-                SHARED_CONFIG_FIELDS[key].valid(config[key])
-                  ? config[key] === null
-                    ? "Default"
-                    : typeof config[key] === "string"
-                      ? (config[key] as string)
-                      : JSON.stringify(config[key])
-                  : (SHARED_CONFIG_FIELDS[key].error ??
-                      "This value cannot be shared."),
+                configDetail(key, config),
                 !SHARED_CONFIG_FIELDS[key].valid(config[key]),
               ),
           )}

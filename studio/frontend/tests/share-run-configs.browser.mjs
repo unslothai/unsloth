@@ -628,12 +628,18 @@ try {
   {
     const { context, page, writes, errors } = await fixture({ delay: 400 });
     const args = [
-      "--rope-scaling",
+      "--rope_scaling",
       "yarn",
       "--yarn-orig-ctx",
       "32768",
       "--flash-attn",
       "on",
+      "-ts",
+      "1,1",
+      "-s",
+      "42",
+      "--temperature",
+      "0.7",
     ];
     await page.goto(
       `${base}/chat#run?${params({ nParallel: "3", llamaExtraArgs: JSON.stringify(args) })}`,
@@ -665,6 +671,7 @@ try {
       )?.config;
     });
     assert.deepEqual(draft.llamaExtraArgs, args);
+    await context.setOffline(true);
     await page.getByRole("button", { name: "Share", exact: true }).click();
     const dialog = page.getByRole("dialog", { name: "Share run settings" });
     await dialog.waitFor();
@@ -699,7 +706,9 @@ try {
       "3",
     );
     await dialog.getByRole("checkbox", { name: /^Parallel slots/ }).uncheck();
-    await dialog.getByRole("checkbox", { name: /^Model unsloth/ }).uncheck();
+    await dialog
+      .getByRole("checkbox", { name: "Model", exact: true })
+      .uncheck();
     const partial = new URLSearchParams(
       new URL(
         await dialog.getByLabel("Shareable link").inputValue(),
@@ -708,6 +717,25 @@ try {
     assert.equal(partial.has("nParallel"), false);
     assert.equal(partial.has("model"), false);
     assert.deepEqual(JSON.parse(partial.get("llamaExtraArgs")), args);
+    const extraArgs = dialog.getByRole("checkbox", {
+      name: "Extra arguments",
+      exact: true,
+    });
+    assert.equal(await extraArgs.isEnabled(), true);
+    assert.equal(await extraArgs.isChecked(), true);
+    await extraArgs.focus();
+    await page.keyboard.press("Space");
+    assert.equal(await extraArgs.isChecked(), false);
+    assert.equal(
+      new URLSearchParams(
+        new URL(
+          await dialog.getByLabel("Shareable link").inputValue(),
+        ).hash.slice(5),
+      ).has("llamaExtraArgs"),
+      false,
+    );
+    await page.keyboard.press("Space");
+    assert.equal(await extraArgs.isChecked(), true);
     await dialog
       .getByRole("combobox", { name: "Open in", exact: true })
       .click();
@@ -719,9 +747,18 @@ try {
         "unsloth://run?",
       ),
     );
+    assert.deepEqual(
+      JSON.parse(
+        new URL(
+          await dialog.getByLabel("Shareable link").inputValue(),
+        ).searchParams.get("llamaExtraArgs"),
+      ),
+      args,
+    );
     if (process.env.SHARE_RUN_SCREENSHOT)
       await page.screenshot({ path: process.env.SHARE_RUN_SCREENSHOT });
     await page.keyboard.press("Escape");
+    await context.setOffline(false);
     await nativeLink(page, params({ nParallel: "5", llamaExtraArgs: "[]" }));
     await value(page, "Parallel decode slots", "5");
     await value(page, "Extra llama-server arguments", "");
@@ -738,7 +775,7 @@ try {
     assert.deepEqual(errors, []);
     await context.close();
     console.log(
-      "PASS: editor, delayed defaults, exact argv, sharing, omitted fields, native intents and deduplication",
+      "PASS: editor, delayed defaults, exact argv, offline sharing, omitted fields, native intents and deduplication",
     );
   }
   {
@@ -795,6 +832,15 @@ try {
     await page.keyboard.press("Escape");
     for (const hostile of [
       'llamaExtraArgs=["--agent"]',
+      new URLSearchParams({
+        llamaExtraArgs: JSON.stringify(["--no-warmup", " --no-context-shift"]),
+      }).toString(),
+      new URLSearchParams({
+        llamaExtraArgs: JSON.stringify(["--no_warmup", "\t--no_context_shift"]),
+      }).toString(),
+      new URLSearchParams({
+        llamaExtraArgs: JSON.stringify(["--batch_size", "1"]),
+      }).toString(),
       `llamaExtraArgs=${encodeURIComponent('["\\u002d\\u002dmcp-servers-json","{}"]')}`,
       `llamaExtraArgs=${encodeURIComponent(encodeURIComponent('["--rpc","evil:5000"]'))}`,
       new URLSearchParams({ ggufVariant: "C:/model.gguf" }).toString(),
@@ -830,10 +876,36 @@ try {
     });
     await page.getByRole("button", { name: "Share", exact: true }).click();
     await dialog.waitFor();
+    const extraArgs = dialog.getByRole("checkbox", {
+      name: "Extra arguments",
+      exact: true,
+    });
+    assert.equal(await extraArgs.isDisabled(), true);
+    assert.equal(await extraArgs.isChecked(), false);
+    const detail = await extraArgs.evaluate((element) => {
+      const description = document.getElementById(
+        element.getAttribute("aria-describedby"),
+      );
+      return {
+        text: description?.textContent,
+        title: description?.getAttribute("title"),
+        whiteSpace: description && getComputedStyle(description).whiteSpace,
+      };
+    });
+    assert.match(detail.text, /--lora is not supported in shared links/);
+    assert.match(detail.text, /Edit Extra Arguments in Run settings/);
+    assert.equal(detail.text.includes("private"), false);
+    assert.equal(detail.title, null);
+    assert.equal(detail.whiteSpace, "normal");
+    await page.setViewportSize({ width: 390, height: 844 });
+    await extraArgs.scrollIntoViewIfNeeded();
     assert.equal(
-      await dialog
-        .getByRole("checkbox", { name: /^Extra arguments/ })
-        .isDisabled(),
+      await extraArgs.evaluate((element) => {
+        const description = document.getElementById(
+          element.getAttribute("aria-describedby"),
+        );
+        return description.scrollWidth <= description.clientWidth;
+      }),
       true,
     );
     assert.equal(

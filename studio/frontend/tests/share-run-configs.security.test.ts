@@ -14,9 +14,11 @@ installLocalStorageFake();
 const { createRunConfigLink, parseRunConfigLink } = await import(
   "../src/features/share-run-configs/links.ts"
 );
-const { validSharedExtraArgs } = await import(
+const { sharedExtraArgsError, validSharedExtraArgs } = await import(
   "../src/features/share-run-configs/extra-args.ts"
 );
+const { diagnoseExtraArgs, extraArgsAreLoadable, formatExtraArgs } =
+  await import("../src/features/model-picker/model-config/llama-extra-args.ts");
 const { mergeSharedRunConfig } = await import(
   "../src/features/share-run-configs/inbox.ts"
 );
@@ -177,6 +179,9 @@ test("only exact argument boundaries and bounded inference values are accepted",
     [" --threads", "4"],
     ["--threads ", "4"],
     ["--threads\n", "4"],
+    ["--no-warmup", " --no-context-shift"],
+    ["--no-context-shift", "--no-warmup\n"],
+    ["--no_warmup", "\t--no_context_shift"],
     ["--threads", "4\n"],
     ["--threads", " 4"],
     ["--threads", "4\t"],
@@ -214,7 +219,6 @@ test("only exact argument boundaries and bounded inference values are accepted",
     ["--"],
     ["@arguments.txt"],
     ["-t4"],
-    ["--threads_batch", "4"],
     ["--flash-attn", "on --agent"],
     ["--cache-type-k", "q8_0;whoami"],
     ["--tensor-split", "0,0"],
@@ -222,6 +226,15 @@ test("only exact argument boundaries and bounded inference values are accepted",
     ["--tensor-split", "1,2\n"],
     ["--tensor-split", "1,RPC:evil:5000"],
     ["--tensor-split", Array(257).fill("1").join(",")],
+    ["-ts", "0,0"],
+    ["-ts", "1,RPC:evil:5000"],
+    ["-ts", "1,1", "--tensor-split", "3,1"],
+    ["-s", "-2"],
+    ["-s", "4294967296"],
+    ["-s", "1", "--seed", "2"],
+    ["--temperature", "0.7;whoami"],
+    ["--temperature", "101"],
+    ["--temperature", "0.7", "--temp", "0.8"],
   ];
   for (const args of invalid) rejects(query("llamaExtraArgs", args));
   const valid = [
@@ -240,6 +253,13 @@ test("only exact argument boundaries and bounded inference values are accepted",
     ["--flash-attn", "auto"],
     ["--rope-scaling", "yarn", "--yarn-orig-ctx", "32768"],
     ["--tensor-split", "3,1.5,0"],
+    ["-ts", "3,1.5,0"],
+    ["-s", "-1"],
+    ["-s", "4294967295"],
+    ["--temperature", "0.7"],
+    ["-ts", "1,1", "-s", "42", "--temperature", "0.7"],
+    ["--threads_batch", "4"],
+    ["--tensor_split", "1,1", "--cache_type_k", "q8_0"],
   ];
   for (const args of valid) {
     const value = { config: { llamaExtraArgs: args } };
@@ -247,6 +267,116 @@ test("only exact argument boundaries and bounded inference values are accepted",
       kind: "valid",
       value,
     });
+  }
+});
+
+test("sharing diagnostics identify the offending option without exposing its value", () => {
+  assert.equal(sharedExtraArgsError(["-ts", "1,1"]), null);
+  assert.match(
+    sharedExtraArgsError(["--threads"]) ?? "",
+    /--threads requires a value/,
+  );
+  assert.match(
+    sharedExtraArgsError(["--threads", "1025"]) ?? "",
+    /--threads has an invalid or unsupported value/,
+  );
+  assert.match(
+    sharedExtraArgsError(["-ts", "1,1", "--tensor-split", "2,1"]) ?? "",
+    /--tensor-split is specified more than once/,
+  );
+  assert.match(
+    sharedExtraArgsError(["--threads=4"]) ?? "",
+    /Write --threads and its value as two arguments/,
+  );
+  assert.match(
+    sharedExtraArgsError(["--no-warmup=true"]) ?? "",
+    /--no-warmup does not take a value/,
+  );
+  for (const flag of sensitiveFlags) {
+    for (const payload of [
+      "private-api-key",
+      "C:\\private\\adapter.gguf",
+      "/home/user/private.gguf",
+      '<img src="/attack" onerror="alert(1)">',
+      "\u202e--threads\n4",
+    ]) {
+      for (const tokens of [[flag, payload], [`${flag}=${payload}`]]) {
+        assert.equal(
+          sharedExtraArgsError(["--threads", "4", ...tokens]),
+          `${flag} is not supported in shared links.`,
+        );
+      }
+      assert.equal(
+        sharedExtraArgsError(["--threads", payload]),
+        "--threads has an invalid or unsupported value.",
+      );
+    }
+  }
+  for (const token of [
+    "--metrics\u202e",
+    '<img src="/attack">',
+    "--" + "x".repeat(1000),
+    "C:\\private\\adapter.gguf",
+  ]) {
+    assert.equal(
+      sharedExtraArgsError([token]),
+      "Extra arguments contain an unexpected token.",
+    );
+  }
+});
+
+test("shared arguments use upstream syntax and integer diagnostics offline", () => {
+  for (const args of [
+    ["--threads=4"],
+    [" --threads", "4"],
+    ["--threads\n", "4"],
+    ["--batch-size", "1"],
+    ["-b", "1"],
+    ["--batch_size", "1"],
+    ["--ctx-size", "128.5"],
+    ["-c", "128.0"],
+    ["--gpu-layers", "4.5"],
+    ["--n_gpu_layers", "4.0"],
+    ["-ngl", "4.5"],
+    ["-ncmoe", "1.5"],
+    ["--ubatch_size", "2.5"],
+  ]) {
+    const diagnostics = diagnoseExtraArgs(formatExtraArgs(args), null);
+    assert.equal(extraArgsAreLoadable(diagnostics), false);
+    const upstreamError = diagnostics.find((item) => item.level === "error");
+    assert.equal(sharedExtraArgsError(args), upstreamError?.message);
+    rejects(query("llamaExtraArgs", args));
+  }
+});
+
+test("upstream normalization preserves argv without bypassing sharing restrictions", () => {
+  for (const args of [
+    ["--threads_batch", "4", "-tb", "8"],
+    ["--tensor_split", "1,1", "-ts", "2,1"],
+    ["--n_gpu_layers", "4", "--gpu-layers", "8"],
+    ["--no_warmup", "--no-warmup"],
+    ["--cache_type_k", "q8_0", "-ctk", "f16"],
+  ]) {
+    rejects(query("llamaExtraArgs", args));
+  }
+  for (const args of [
+    ["--new-unknown-option", "x"],
+    ["--lora", "/private/adapter.gguf"],
+    ["--grammar_file", "C:\\private\\grammar.txt"],
+    ["--chat_template", "{{ messages }}"],
+  ]) {
+    assert.equal(
+      extraArgsAreLoadable(diagnoseExtraArgs(formatExtraArgs(args), null)),
+      true,
+    );
+    assert.equal(validSharedExtraArgs(args), false);
+    rejects(query("llamaExtraArgs", args));
+  }
+  const sparse = new Array<string>(3);
+  sparse[0] = "--threads";
+  sparse[2] = "4";
+  for (const args of [Array(1), sparse, [undefined], [1]]) {
+    assert.equal(validSharedExtraArgs(args), false);
   }
 });
 
