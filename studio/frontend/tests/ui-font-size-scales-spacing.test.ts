@@ -138,3 +138,19 @@ test("the composer's one-row clamp is one row at any size", () => {
   assert.match(thread, /const oneRowHeight = Math\.round\(40 \* uiSpaceScale\);/);
   assert.doesNotMatch(thread, /Math\.max\(40, editorHeight\)/);
 });
+
+test("overlays that scale cannot outgrow the screen", () => {
+  // w-* follows --spacing too, so a w-72 popover is 384px at the 20px
+  // setting, past a 375px phone. Each floating surface caps itself.
+  for (const file of [
+    "components/ui/popover.tsx",
+    "components/ui/dropdown-menu.tsx",
+    "components/ui/select.tsx",
+  ]) {
+    assert.match(
+      readSrc(file),
+      /max-w-\[calc\(100vw-32px\)\]/,
+      `${file} can overflow a narrow viewport`,
+    );
+  }
+});
