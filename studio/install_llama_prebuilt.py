@@ -3784,7 +3784,31 @@ def published_rocm_choice_for_host(
     build."""
     if not host.rocm_gfx_target:
         return None
-    gfx = host.rocm_gfx_target.lower().strip()
+    # The active arch first, then the host's remaining physical arches. One arch picks the
+    # bundle for the whole host, and _pick_rocm_gfx_target now prefers a discrete card over a
+    # leading integrated one (#7776, #11143) -- so on a host whose discrete arch this release
+    # does not build (a gfx1103 APU beside an RDNA1 gfx1010, say) the preferred arch has no
+    # bundle while the iGPU's does. Trying only the active arch there would turn an install
+    # that used to get a working prebuilt into a source build, which is slower and can fail;
+    # a source build still happens when NO physical arch is served, which is the case the
+    # "falls back to a HIP source build" contract below is really about.
+    _candidates = [host.rocm_gfx_target] + [
+        target for target in (host.rocm_gfx_targets or []) if target != host.rocm_gfx_target
+    ]
+    for _candidate in _candidates:
+        _choice = _published_rocm_choice_for_gfx(release, host, install_kind, _candidate)
+        if _choice is not None:
+            return _choice
+    return None
+
+
+def _published_rocm_choice_for_gfx(
+    release: PublishedReleaseBundle, host: HostInfo, install_kind: str, gfx_target: str
+) -> AssetChoice | None:
+    """published_rocm_choice_for_host for ONE arch, so the caller can try several."""
+    if not gfx_target:
+        return None
+    gfx = gfx_target.lower().strip()
     for artifact in release.artifacts:
         if artifact.install_kind != install_kind:
             continue
@@ -3811,8 +3835,13 @@ def published_rocm_choice_for_host(
             mapped_targets = list(artifact.mapped_targets),
             selection_log = list(release.selection_log)
             + [
-                f"rocm_selection: gpu={host.rocm_gfx_target} "
-                f"selected published {artifact.asset_name}"
+                f"rocm_selection: gpu={gfx_target}"
+                + (
+                    f" (preferred {host.rocm_gfx_target} has no published bundle)"
+                    if gfx_target != host.rocm_gfx_target
+                    else ""
+                )
+                + f" selected published {artifact.asset_name}"
             ],
         )
     return None
