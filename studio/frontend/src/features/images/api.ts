@@ -75,13 +75,14 @@ export interface DiffusionGenerateProgress {
    * from a finished one. Already classified by the backend, so it is safe to show.
    * Optional: an older backend omits it. */
   error?: string | null;
-  /** Which run the `error` belongs to, sent only alongside one.
+  /** Which ATTEMPT the `error` belongs to: the id that request carried. Sent only
+   * alongside a reason.
    *
    * A caller settling a generation whose POST was lost cannot assume the reason is its
-   * own: if that POST never reached the backend, no run started, and this has not moved
-   * since before it was sent. Comparing against a value read BEFORE the POST is what tells
-   * this attempt's failure from a previous one's. */
-  generation_seq?: number | null;
+   * own. If that POST never reached the backend no run started, so nothing carries its id;
+   * and a run that started after it may belong to another client entirely. Only an exact
+   * match makes the failure this attempt's. */
+  generation_attempt?: string | null;
 }
 
 export interface DiffusionLoadProgress {
@@ -132,6 +133,8 @@ export interface DiffusionLoadRequest {
 
 export interface DiffusionGenerateRequest {
   prompt: string;
+  /** This attempt's own id, echoed back beside a retained failure. */
+  attempt_id?: string;
   negative_prompt?: string;
   width?: number;
   height?: number;

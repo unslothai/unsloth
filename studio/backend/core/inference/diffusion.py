@@ -6766,6 +6766,9 @@ class DiffusionBackend:
         controlnet: Optional[tuple[str, str, str, float, float, float]] = None,
         # load_identity() of the caller's status() read; refuse rather than run a different load (#9448)
         expected_load: Optional[LoadIdentity] = None,
+        # Client-generated id for THIS request, echoed back beside a retained failure.
+        # Absent from an older client, which simply gets the pre-existing gallery probe.
+        attempt_id: Optional[str] = None,
     ) -> dict[str, Any]:
         import torch
         from PIL import Image
@@ -6789,10 +6792,11 @@ class DiffusionBackend:
                 # Cleared at the START, not only on success, so the retained reason can
                 # never be read as belonging to the run that is now in flight.
                 self._last_generate_error = None
-                # Bumped per run so a caller can tell WHICH generation a retained reason
-                # belongs to. A lost POST that never reached the backend leaves this
-                # unchanged, which is how a stale reason is told from this attempt's.
-                self._generate_seq = getattr(self, "_generate_seq", 0) + 1
+                # The id THIS request carried, kept with the reason so a caller settling a
+                # lost POST can tell a failure that is its own from one that is not. A post
+                # that never reached the backend started no run, so no retained reason
+                # carries its id, and a concurrent client's run carries its own.
+                self._last_generate_attempt = attempt_id
             try:
                 self._state_device_target(state)
                 # The local `state` ref keeps the pipe alive even if unload() nulls _state. Resolve the per-image
@@ -7299,10 +7303,10 @@ class DiffusionBackend:
                 # Idle is not the same as fine. Carried only while it is the LAST thing that
                 # happened: the next generation clears it on success.
                 "error": getattr(self, "_last_generate_error", None),
-                # Which run that reason belongs to, so a caller settling a LOST post can
-                # reject one from a previous generation: its own attempt never started, so
-                # this never moved.
-                "generation_seq": getattr(self, "_generate_seq", 0),
+                # WHICH attempt that reason belongs to, so a caller settling a LOST post
+                # can reject a failure that is not its own -- a previous run's, or a
+                # concurrent client's. None when the request carried no id.
+                "generation_attempt": getattr(self, "_last_generate_attempt", None),
             }
         return {
             "active": True,
@@ -7310,9 +7314,6 @@ class DiffusionBackend:
             "total_steps": gen.total_steps,
             "fraction": gen.step / gen.total_steps,  # step is 1..total, never over 1.0
             "eta_seconds": gen.eta_seconds,
-            # On this branch too: it is the BASELINE a caller freezes before its own
-            # post, and a run that succeeds retains no reason to carry it alongside.
-            "generation_seq": getattr(self, "_generate_seq", 0),
         }
 
     def cancel_generate(self, expected_account: Optional[str] = None) -> bool:

@@ -108,53 +108,59 @@ def test_the_progress_route_puts_the_classified_reason_on_the_response():
 
 
 @pytest.mark.parametrize("engine", ENGINES)
-def test_an_engine_dates_the_reason_with_a_run_counter(engine):
-    """A retained reason is only useful if a caller can tell WHICH run it belongs to.
+def test_an_engine_identifies_the_reason_with_the_attempt_that_caused_it(engine):
+    """A retained reason is only useful if a caller can tell WHOSE run it came from.
 
-    A generation whose POST never reached the backend started no run, so the counter has not
-    moved since before that POST; without it the client attributes the previous run's failure
-    to its own lost request and skips the gallery probe that would have said the request
-    never arrived.
+    A counter only answers "later", and later includes a concurrent client's run as well as
+    this attempt's, while a generation whose POST never reached the backend started no run at
+    all. So the engine keeps the id the request carried, and a caller matches it exactly.
     """
     src = _src(engine)
-    assert 'self._generate_seq = getattr(self, "_generate_seq", 0) + 1' in src, (
-        f"{engine} does not advance a run counter, so a reason cannot be dated"
+    assert "self._last_generate_attempt = attempt_id" in src, (
+        f"{engine} does not keep the attempt id, so a reason cannot be identified"
     )
-    assert '"generation_seq": getattr(self, "_generate_seq", 0),' in src, (
-        f"{engine} does not publish the run counter beside the reason"
+    assert '"generation_attempt": getattr(self, "_last_generate_attempt", None),' in src, (
+        f"{engine} does not publish the attempt id beside the reason"
     )
-    # Bumped where the run STARTS, beside the clear, or the counter and the reason would
+    assert "attempt_id: Optional[str] = None," in src, (
+        f"{engine} does not accept an attempt id from the route"
+    )
+    # Recorded where the run STARTS, beside the clear, or the id and the reason would
     # describe different moments.
-    bump = src.index('self._generate_seq = getattr(self, "_generate_seq", 0) + 1')
+    recorded = src.index("self._last_generate_attempt = attempt_id")
     clear = src.index("self._last_generate_error = None")
-    assert 0 < bump - clear < 400, (
-        f"{engine} bumps the counter away from where the reason is cleared"
+    assert 0 < recorded - clear < 600, (
+        f"{engine} records the attempt id away from where the reason is cleared"
     )
+    # And no counter left behind: a monotonic lower bound is what this replaced, and leaving
+    # it published invites the comparison it cannot support.
+    assert "generation_seq" not in src, f"{engine} still publishes the superseded counter"
 
 
-def test_the_route_sends_the_counter_whether_or_not_there_is_a_reason():
-    """The counter is half of a comparison, and the other half is read when nothing is wrong.
+def test_the_route_forwards_the_attempt_id_and_sends_it_only_beside_a_reason():
+    """Forwarded from the request, returned only with the failure it dates.
 
-    A caller freezes the baseline before its own post. A run that SUCCEEDED retains no
-    reason, so withholding the counter unless there is one leaves that baseline unobservable:
-    the caller falls back to whatever an earlier poll left behind, and a reason retained from
-    a run before that reads as newer than a post which never arrived.
+    Without a reason there is nothing to attribute, and only the client that sent the id can
+    match it -- so a concurrent client has no business reading which attempt last failed.
     """
     src = _src("routes/inference.py")
+    at = src.index("async def generate_diffusion_image")
+    assert "attempt_id = request.attempt_id," in src[at : at + 4000], (
+        "the generate route no longer forwards the attempt id to the engine"
+    )
     at = src.index("async def diffusion_generate_progress")
     body = src[at : at + 2500]
-    assert 'progress.pop("generation_seq", None)' not in body, (
-        "the route withholds the counter again, so a caller cannot freeze a baseline"
-    )
+    assert 'if not progress.get("error"):' in body
+    assert 'progress.pop("generation_attempt", None)' in body
 
 
-@pytest.mark.parametrize("engine", ENGINES)
-def test_an_engine_publishes_the_counter_on_both_branches(engine):
-    """Active as well as idle: the baseline is read while a previous run is still going, and
-    between the runs of a batch, not only once everything has stopped."""
-    src = _src(engine)
-    at = src.index("def generate_progress")
-    body = src[at : at + 2000]
-    assert body.count('"generation_seq": getattr(self, "_generate_seq", 0),') == 2, (
-        f"{engine} does not publish the run counter on both progress branches"
-    )
+def test_the_attempt_id_is_bounded_and_patterned_on_the_way_in():
+    """It comes off a request and goes back out on a response, so it is validated there."""
+    from models.inference import DiffusionGenerateRequest
+
+    ok = DiffusionGenerateRequest(prompt = "p", attempt_id = "a-Z_09")
+    assert ok.attempt_id == "a-Z_09"
+    assert DiffusionGenerateRequest(prompt = "p").attempt_id is None
+    for bad in ("has space", "semi;colon", "<script>", "x" * 65, "sl/ash"):
+        with pytest.raises(Exception):
+            DiffusionGenerateRequest(prompt = "p", attempt_id = bad)

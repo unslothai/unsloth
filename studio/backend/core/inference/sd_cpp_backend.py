@@ -3143,6 +3143,9 @@ class SdCppDiffusionBackend:
         controlnet: Optional[tuple[str, str, str, float, float, float]] = None,
         # load_identity() of the caller's status() read; refuse rather than run a different load (#9448)
         expected_load: Optional[LoadIdentity] = None,
+        # Client-generated id for THIS request, echoed back beside a retained failure.
+        # Absent from an older client, which simply gets the pre-existing gallery probe.
+        attempt_id: Optional[str] = None,
     ) -> dict[str, Any]:
         import tempfile
 
@@ -3203,10 +3206,11 @@ class SdCppDiffusionBackend:
                 self._gen = _SdGen(total_steps = int(steps))
                 # Cleared at the START, so the retained reason is never read as this run's.
                 self._last_generate_error = None
-                # Bumped per run so a caller can tell WHICH generation a retained reason
-                # belongs to. A lost POST that never reached the backend leaves this
-                # unchanged, which is how a stale reason is told from this attempt's.
-                self._generate_seq = getattr(self, "_generate_seq", 0) + 1
+                # The id THIS request carried, kept with the reason so a caller settling a
+                # lost POST can tell a failure that is its own from one that is not. A post
+                # that never reached the backend started no run, so no retained reason
+                # carries its id, and a concurrent client's run carries its own.
+                self._last_generate_attempt = attempt_id
             try:
                 if seed is None:
                     seed = int.from_bytes(os.urandom(6), "big") & ((1 << 53) - 1)
@@ -3639,10 +3643,10 @@ class SdCppDiffusionBackend:
                 # Idle is not the same as fine. Only while it is the LAST thing that
                 # happened: the next generation clears it on success.
                 "error": getattr(self, "_last_generate_error", None),
-                # Which run that reason belongs to, so a caller settling a LOST post can
-                # reject one from a previous generation: its own attempt never started, so
-                # this never moved.
-                "generation_seq": getattr(self, "_generate_seq", 0),
+                # WHICH attempt that reason belongs to, so a caller settling a LOST post
+                # can reject a failure that is not its own -- a previous run's, or a
+                # concurrent client's. None when the request carried no id.
+                "generation_attempt": getattr(self, "_last_generate_attempt", None),
             }
         return {
             "active": True,
@@ -3650,9 +3654,6 @@ class SdCppDiffusionBackend:
             "total_steps": gen.total_steps,
             "fraction": min(gen.step / gen.total_steps, 1.0),
             "eta_seconds": gen.eta_seconds,
-            # On this branch too: it is the BASELINE a caller freezes before its own
-            # post, and a run that succeeds retains no reason to carry it alongside.
-            "generation_seq": getattr(self, "_generate_seq", 0),
         }
 
     def cancel_generate(self, expected_account: Optional[str] = None) -> bool:

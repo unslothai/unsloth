@@ -3944,6 +3944,15 @@ class DiffusionGenerateRequest(BaseModel):
     """Request to generate one image from the loaded diffusion model."""
 
     prompt: str = Field(..., min_length = 1, description = "Text prompt")
+    # The client's own id for this attempt. Echoed back beside a retained failure so a
+    # caller whose POST response was lost can tell whether the failure is its own. Pattern
+    # and length bounded because it comes from a request and goes back out on a response.
+    attempt_id: Optional[str] = Field(
+        None,
+        max_length = 64,
+        pattern = r"^[A-Za-z0-9_-]+$",
+        description = "Client-generated id for this generation attempt",
+    )
     negative_prompt: Optional[str] = Field(
         None, description = "What to avoid (if the model supports it)"
     )
@@ -4217,14 +4226,13 @@ class DiffusionGenerateProgressResponse(BaseModel):
     # whose POST is lost past the proxy's ~100s window (GenerateResponseLostError) leaves the
     # client polling a response that can report "not running" but never why.
     error: Optional[str] = Field(None, description = "Why the last generation failed, if it did")
-    # The engine's run counter, bumped where a generation STARTS. A caller settling a
-    # generation whose POST was lost needs both ends of a comparison: this value read before
-    # its own post, and the one carried beside a retained reason. Always sent, because the
-    # baseline is read when there is nothing wrong -- a run that succeeded retains no reason
-    # to carry it alongside, and a baseline that is merely stale attributes a previous
-    # failure to a request that never arrived.
-    generation_seq: Optional[int] = Field(
-        None, description = "The engine's generation counter; compare against a baseline"
+    # Which ATTEMPT that reason belongs to: the id the failing request carried. A caller
+    # settling a generation whose POST was lost compares it with its own. Identity rather
+    # than a counter, because a counter only says "later", and later includes a concurrent
+    # client's run as well as this attempt's -- while a post that never reached the backend
+    # started no run at all, so nothing carries its id. Sent only beside a reason.
+    generation_attempt: Optional[str] = Field(
+        None, description = "The attempt id the retained failure belongs to"
     )
 
 

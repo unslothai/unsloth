@@ -5,59 +5,83 @@
  *
  * The reason has to outlive the run it came from, because a caller whose POST was lost past
  * the proxy window has nothing else to read. That is exactly why it cannot be taken at face
- * value: if the POST never reached the backend no run started, so the reason is a previous
- * one's, and attributing it here also skips the gallery probe that would report the truth,
- * which is that the request never arrived.
+ * value. Two different things can be true and both look like "a failure is available": the
+ * POST never reached the backend, so nothing ran for it, or something ran and failed that
+ * was not this attempt -- an earlier run, or a concurrent client on the same account.
+ * Reporting either one is a failure that did not happen here, and it skips the gallery probe
+ * that would have said what did.
  */
 
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 
-import { generationFailureForAttempt } from "../src/features/images/lib/generation-failure.ts";
+import {
+  generationFailureForAttempt,
+  newGenerationAttemptId,
+} from "../src/features/images/lib/generation-failure.ts";
 
 const REASON = "Image generation failed. The GPU ran out of memory.";
+const MINE = "attempt-mine";
 
-test("a failure from a run that started after this POST is this attempt's", () => {
+test("a failure carrying this attempt's own id is this attempt's", () => {
   assert.equal(
-    generationFailureForAttempt({ error: REASON, generation_seq: 8 }, 7),
+    generationFailureForAttempt(
+      { error: REASON, generation_attempt: MINE },
+      MINE,
+    ),
     REASON,
   );
 });
 
-test("a failure from a run that started before this POST is not", () => {
-  // The reported case: a previous generation failed, then this POST was lost before the
-  // backend ever saw it, so no run started and the counter never moved.
-  for (const seq of [7, 6, 0]) {
-    assert.equal(
-      generationFailureForAttempt({ error: REASON, generation_seq: seq }, 7),
-      null,
-      `seq=${seq}`,
-    );
-  }
-});
-
-test("a reason that cannot be dated is not used", () => {
-  // A backend older than generation_seq. The gallery probe still settles those, as it did
-  // before this field existed, rather than a guess being made here.
-  for (const seq of [undefined, null]) {
+test("a failure from any other run is not, however recent", () => {
+  // The two cases a monotonic counter cannot separate: a previous run of this client, and a
+  // run a concurrent client started AFTER this post and failed before this waiter polled.
+  // Both are "later than my baseline"; neither is this attempt.
+  for (const other of ["attempt-earlier", "attempt-other-tab"]) {
     assert.equal(
       generationFailureForAttempt(
-        { error: REASON, generation_seq: seq as number | null | undefined },
-        0,
+        { error: REASON, generation_attempt: other },
+        MINE,
       ),
       null,
-      String(seq),
+      other,
     );
   }
 });
 
-test("no failure is no failure, however the counter reads", () => {
+test("a reason that cannot be identified is not used", () => {
+  // An older backend, or a run started by a request that carried no id. The gallery probe
+  // still settles those, as it did before this field existed, rather than a guess here.
+  for (const carried of [undefined, null, ""]) {
+    assert.equal(
+      generationFailureForAttempt(
+        {
+          error: REASON,
+          generation_attempt: carried as string | null | undefined,
+        },
+        MINE,
+      ),
+      null,
+      String(carried),
+    );
+  }
+  // And an attempt with no id of its own cannot claim a reason either.
+  assert.equal(
+    generationFailureForAttempt(
+      { error: REASON, generation_attempt: MINE },
+      null,
+    ),
+    null,
+  );
+});
+
+test("no failure is no failure, whatever the id says", () => {
   for (const error of [undefined, null, ""]) {
     assert.equal(
       generationFailureForAttempt(
-        { error: error as string | null | undefined, generation_seq: 99 },
-        0,
+        { error: error as string | null | undefined, generation_attempt: MINE },
+        MINE,
       ),
       null,
       String(error),
@@ -65,44 +89,51 @@ test("no failure is no failure, however the counter reads", () => {
   }
 });
 
-test("an attempt with no baseline of its own declines to attribute", () => {
-  // The client never got a progress read in before its post: on the first attempt after a
-  // page load, or because that read failed. A guessed baseline is the whole defect -- the
-  // route only ships the counter beside a reason if it is withheld otherwise, so a run that
-  // succeeded leaves the caller at 0 and ANY retained reason reads as newer than a post that
-  // never arrived.
+test("a minted id is unique, and something the backend will accept", () => {
+  // Bounded and patterned on the backend, because it comes off a request and goes back out
+  // on a response: attempt_id is max_length 64 with ^[A-Za-z0-9_-]+$.
+  const ids = new Set<string>();
+  for (let i = 0; i < 64; i++) {
+    const id = newGenerationAttemptId();
+    assert.match(id, /^[A-Za-z0-9_-]+$/, id);
+    assert.ok(id.length > 0 && id.length <= 64, `length ${id.length}`);
+    ids.add(id);
+  }
   assert.equal(
-    generationFailureForAttempt({ error: REASON, generation_seq: 12 }, null),
-    null,
-  );
-  // And a real baseline of 0 is still a baseline: nothing had run yet, so a first run's
-  // failure is this attempt's.
-  assert.equal(
-    generationFailureForAttempt({ error: REASON, generation_seq: 1 }, 0),
-    REASON,
+    ids.size,
+    64,
+    "minted ids collided, so two attempts could share a failure",
   );
 });
 
-test("the page reads its baseline before it posts, not from whatever a poll left behind", () => {
-  // Source-shape, because images-page.tsx cannot be loaded on its own: the ordering IS the
-  // contract. Asserted as: the ref is cleared and a progress read awaited, both before the
-  // generate loop that freezes seqBeforePost.
+test("an id is minted per post and sent with it", () => {
+  // Source-shape, because images-page.tsx cannot be loaded on its own, and scoped to the
+  // generate loop's body: an id minted anywhere else would not describe one post. Asserted
+  // as: the mint, the payload field and the settle call all sit inside handleGenerate,
+  // between its start and the next top-level callback.
   const src = readFileSync(
     new URL("../src/features/images/images-page.tsx", import.meta.url),
     "utf8",
   );
-  const cleared = src.indexOf("lastGenerationSeq.current = null;");
-  const awaited = src.indexOf("await pollGenerateOnce();");
-  const frozen = src.indexOf(
-    "const seqBeforePost = lastGenerationSeq.current;",
-  );
-  assert.ok(cleared > 0, "the page keeps a baseline across generate clicks");
+  const start = src.indexOf("const handleGenerate = useCallback(async () => {");
+  assert.ok(start > 0, "handleGenerate was renamed");
+  const end = src.indexOf("const handleGenerateWithRecall", start);
+  assert.ok(end > start, "handleGenerateWithRecall was renamed");
+  const body = src.slice(start, end);
   assert.ok(
-    awaited > cleared,
-    "no progress read is awaited before the first post",
+    body.includes("const attemptId = newGenerationAttemptId();"),
+    "the attempt id is not minted in the submit path",
   );
   assert.ok(
-    frozen > awaited,
-    "the baseline is frozen before the read that would have observed it",
+    body.includes("attempt_id: attemptId,"),
+    "the minted id is not sent with the generate request",
+  );
+  assert.ok(
+    body.indexOf("const attemptId") < body.indexOf("attempt_id: attemptId,"),
+    "the id is sent before it is minted",
+  );
+  assert.ok(
+    body.includes("attemptId,"),
+    "the settling waiter is not given this attempt's id",
   );
 });

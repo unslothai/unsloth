@@ -38987,6 +38987,7 @@ async def generate_diffusion_image(
                     backend.generate,
                     expected_load = expected_load,
                     prompt = request.prompt,
+                    attempt_id = request.attempt_id,
                     negative_prompt = request.negative_prompt,
                     width = request.width,
                     height = request.height,
@@ -39550,11 +39551,12 @@ async def diffusion_generate_progress(current_subject: str = Depends(get_current
         **progress,
         "error": _generate_failure_detail(raw_error) if raw_error else None,
     }
-    # Sent whether or not there is a reason. A caller settling a lost POST compares the
-    # reason's run against the counter as it stood BEFORE that post, and a successful run
-    # retains no reason to carry the counter alongside -- so withholding it left the
-    # baseline unobservable and a stale one attributes a previous failure to a request that
-    # never arrived. Alone it is an internal counter and says nothing about the outcome.
+    # The attempt id is only meaningful beside the reason it dates, and only the client that
+    # sent it can match it, so it goes no further than that: without a reason there is
+    # nothing to attribute, and a concurrent client has no business reading which attempt
+    # last failed.
+    if not progress.get("error"):
+        progress.pop("generation_attempt", None)
     log_media_generation_progress("image", progress)
     # A finished generation still persisting its gallery record counts as active, so a reload probe keeps polling.
     if _diffusion_persist_active > 0 and not progress["active"]:
