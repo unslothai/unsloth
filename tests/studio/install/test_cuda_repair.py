@@ -2316,16 +2316,40 @@ class TestADefinitiveImportFailureIsNotADriverHang:
         assert "TimedOut = $false" in self._SOURCE
         assert "$result.TimedOut = $true" in self._SOURCE
 
+    def _cuda_arm(self):
+        """The CUDA rescue arm alone.
+
+        Bounded on the family chain's own trailing else, which is at the elseif's
+        indentation; the arm holds nested if/else of its own, and stopping at the first
+        one cut the arm off before the flag it sets.
+        """
+        start = self._SOURCE.index("Test-VenvTorchIsCuda -VenvPath $VenvDir")
+        return self._SOURCE[start : self._SOURCE.index("\n        } else {", start)]
+
     def test_the_cuda_rescue_forces_a_reinstall_on_a_definitive_failure(self):
-        block = self._SOURCE[self._SOURCE.index("Test-VenvTorchIsCuda -VenvPath $VenvDir") :][:2000]
-        assert "$_verProbe -and -not $_verProbe.TimedOut" in block
-        assert "$script:TorchImportDefinitivelyFailed = $true" in block
+        # The timeout distinction is decided once, above the family chain, because all
+        # three arms need it; the arm is what acts on it.
+        assert (
+            "$_willForceReinstall = $_verProbe -and -not $_verProbe.TimedOut" in self._SOURCE
+        )
+        arm = self._cuda_arm()
+        assert "if ($_willForceReinstall) {" in arm
+        assert "$script:TorchImportDefinitivelyFailed = $true" in arm
+
+    def test_a_settled_policy_block_is_the_one_exception(self):
+        # Reinstalling the same wheels cannot clear a code integrity policy refusing
+        # unsigned files, so that case does not force one; an ambiguous status, which
+        # Windows also raises for a damaged file, still does.
+        assert (
+            "-and -not $_blockRulesOutDamage" in self._SOURCE
+        ), "the force-reinstall must exempt a settled policy verdict"
+        assert (
+            "$_blockRulesOutDamage = $_probeBlockReason -and" in self._SOURCE
+        ), "and the exemption is keyed on the classified reason"
 
     def test_the_venv_is_still_kept_either_way(self):
         # A faulted driver raises at DLL load rather than timing out.
-        start = self._SOURCE.index("Test-VenvTorchIsCuda -VenvPath $VenvDir")
-        # The CUDA arm only: the trailing "no family matched" else SHOULD rebuild.
-        arm = self._SOURCE[start : self._SOURCE.index("} else {", start)]
+        arm = self._cuda_arm()
         code = "\n".join(line for line in arm.splitlines() if not line.strip().startswith("#"))
         assert "$shouldRebuild" not in code
         assert "$script:TorchImportDefinitivelyFailed = $true" in arm
