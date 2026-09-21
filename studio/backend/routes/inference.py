@@ -9053,7 +9053,6 @@ def _alias_probe_key(identifier: str) -> str:
     lives in.
     """
     from utils.account_context import current_account_id
-
     return f"{current_account_id()}\x00{identifier}"
 
 
@@ -9069,7 +9068,6 @@ def _alias_probe_index_state() -> tuple[int, float]:
     one per message, which is the cost it exists to remove.
     """
     from core.inference.local_model_resolver import index_generation, index_scan_stamp
-
     return (index_generation(), index_scan_stamp())
 
 

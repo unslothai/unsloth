@@ -32,7 +32,9 @@ def no_switch(monkeypatch):
 def _run(requested, *, managed, hidden, satisfies, monkeypatch):
     monkeypatch.setattr(account_access, "managed_account", lambda: managed)
     monkeypatch.setattr(account_access, "resident_hidden", lambda modality, reference = None: hidden)
-    monkeypatch.setattr(inference, "_loaded_identity_satisfies", lambda requested, claimed = None: satisfies)
+    monkeypatch.setattr(
+        inference, "_loaded_identity_satisfies", lambda requested, claimed = None: satisfies
+    )
     return asyncio.run(inference._maybe_auto_switch_model(requested, _Request(), "bob"))
 
 

@@ -504,7 +504,9 @@ def chat_switch(route, monkeypatch):
     monkeypatch.setattr(route, "get_llama_cpp_backend", lambda: backend)
     monkeypatch.setattr(route, "_auto_switch_waiters", {})
     monkeypatch.setattr(
-        route, "_loaded_identity_satisfies", lambda name, claimed = None: backend.model_identifier == name
+        route,
+        "_loaded_identity_satisfies",
+        lambda name, claimed = None: backend.model_identifier == name,
     )
     monkeypatch.setattr(route, "_claim_slot_for_non_preview", lambda *_args: None)
     monkeypatch.setattr(

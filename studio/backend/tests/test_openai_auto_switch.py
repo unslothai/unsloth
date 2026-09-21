@@ -11726,9 +11726,9 @@ def test_an_unrelated_request_cannot_settle_someone_elses_claim(monkeypatch):
 
     # A request for a different model runs its own full pass, start to finish.
     _run_hook("unsloth/something-else-GGUF")
-    assert inference_route._alias_probed_load_paths == set(), (
-        "an unrelated request settled a claim it never took"
-    )
+    assert (
+        inference_route._alias_probed_load_paths == set()
+    ), "an unrelated request settled a claim it never took"
     assert inference_route._alias_probe_inflight == {KEY(path): 1}, "still in flight"
     # So the owner's path still reaches the resolver rather than answering from the shortcut.
     assert inference_route._loaded_identity_satisfies(path) is False
@@ -11766,17 +11766,17 @@ def test_a_failed_index_scan_does_not_count_as_a_confirmed_absence(monkeypatch):
     monkeypatch.setattr(resolver, "_build_index", failing_build)
     _run_hook(path)
     assert attempts, "the scan must have been attempted at all"
-    assert inference_route._alias_probed_load_paths == set(), (
-        "a scan that failed was recorded as a confirmed absence"
-    )
+    assert (
+        inference_route._alias_probed_load_paths == set()
+    ), "a scan that failed was recorded as a confirmed absence"
     assert inference_route._alias_probe_inflight == {}, "and the claim was not given back"
 
     # Once the scanner recovers, the next request probes again and THAT settles.
     monkeypatch.setattr(resolver, "_build_index", lambda: {})
     _run_hook(path)
-    assert inference_route._alias_probed_load_paths == {KEY(path)}, (
-        "a recovered scan must settle the probe, or the index rebuilds forever"
-    )
+    assert inference_route._alias_probed_load_paths == {
+        KEY(path)
+    }, "a recovered scan must settle the probe, or the index rebuilds forever"
 
 
 def test_a_positive_resolution_that_aborts_does_not_settle_the_probe(monkeypatch):
@@ -11814,12 +11814,12 @@ def test_a_positive_resolution_that_aborts_does_not_settle_the_probe(monkeypatch
     except Exception:
         pass
     assert rec.calls, "the switch must have been attempted for this case to mean anything"
-    assert backend._openai_advertised_id is None, (
-        "the alias was never recorded, which is the premise of this case"
-    )
-    assert inference_route._alias_probed_load_paths == set(), (
-        "a resolution that aborted before recording its alias settled the probe"
-    )
+    assert (
+        backend._openai_advertised_id is None
+    ), "the alias was never recorded, which is the premise of this case"
+    assert (
+        inference_route._alias_probed_load_paths == set()
+    ), "a resolution that aborted before recording its alias settled the probe"
     assert inference_route._alias_probe_inflight == {}, "and the claim was not given back"
     # So the next request reaches the resolver again and the alias can still be recorded.
     monkeypatch.setattr(inference_route, "_load_model_impl", _LoadRecorder(backend))
@@ -11852,9 +11852,9 @@ def test_one_accounts_negative_probe_does_not_answer_for_another(monkeypatch):
     assert run_as(tenant, inference_route._loaded_identity_satisfies, path) is True
 
     # Tenant B has never probed, so it must still reach the resolver.
-    assert run_as(other, inference_route._loaded_identity_satisfies, path) is False, (
-        "a second account inherited the first account's negative probe"
-    )
+    assert (
+        run_as(other, inference_route._loaded_identity_satisfies, path) is False
+    ), "a second account inherited the first account's negative probe"
     # And the owner too, whose snapshot is a third one again.
     assert inference_route._loaded_identity_satisfies(path) is False
 
@@ -11881,9 +11881,9 @@ def test_a_released_claim_does_not_take_a_concurrent_one_with_it(monkeypatch):
 
     # The first is cancelled.
     inference_route._alias_probe_release(path)
-    assert inference_route._alias_probe_inflight == {KEY(path): 1}, (
-        "a cancelled request took a concurrent request's claim with it"
-    )
+    assert inference_route._alias_probe_inflight == {
+        KEY(path): 1
+    }, "a cancelled request took a concurrent request's claim with it"
     # The second's pass completes, and THAT is what memoizes the answer.
     inference_route._alias_probe_settle(path)
     assert inference_route._alias_probed_load_paths == {KEY(path)}
@@ -11927,21 +11927,21 @@ def test_a_miss_from_a_partial_scan_is_not_a_confirmed_absence(monkeypatch):
 
     monkeypatch.setattr(resolver, "_build_index", partial_build)
     _run_hook(path)
-    assert resolver.index_last_scan_was_complete() is False, (
-        "the harness did not actually produce a partial scan"
-    )
-    assert inference_route._alias_probed_load_paths == set(), (
-        "a miss from a partial scan was memoized as a confirmed absence"
-    )
+    assert (
+        resolver.index_last_scan_was_complete() is False
+    ), "the harness did not actually produce a partial scan"
+    assert (
+        inference_route._alias_probed_load_paths == set()
+    ), "a miss from a partial scan was memoized as a confirmed absence"
     assert inference_route._alias_probe_inflight == {}, "and the claim was not given back"
 
     # The source recovers, and THAT pass is what settles the probe.
     monkeypatch.setattr(resolver, "_build_index", lambda: {})
     _run_hook(path)
     assert resolver.index_last_scan_was_complete() is True
-    assert inference_route._alias_probed_load_paths == {KEY(path)}, (
-        "a complete scan must still settle, or the index rebuilds for every message"
-    )
+    assert inference_route._alias_probed_load_paths == {
+        KEY(path)
+    }, "a complete scan must still settle, or the index rebuilds for every message"
 
 
 def test_the_completeness_verdict_belongs_to_the_scan_that_published(monkeypatch):
@@ -11968,7 +11968,9 @@ def test_the_completeness_verdict_belongs_to_the_scan_that_published(monkeypatch
     # And back again: the count does not accumulate across passes.
     monkeypatch.setattr(resolver, "_build_index", lambda: {})
     resolver._index()
-    assert resolver.index_last_scan_was_complete() is True, "the skip count leaked into the next pass"
+    assert (
+        resolver.index_last_scan_was_complete() is True
+    ), "the skip count leaked into the next pass"
 
     # A build that raises leaves no verdict claiming otherwise.
     def boom():
@@ -11978,9 +11980,9 @@ def test_the_completeness_verdict_belongs_to_the_scan_that_published(monkeypatch
     monkeypatch.setattr(resolver, "_build_index", boom)
     with pytest.raises(OSError):
         resolver._index()
-    assert resolver.index_last_scan_was_complete() is True, (
-        "a raising build must not rewrite the verdict of the snapshot still published"
-    )
+    assert (
+        resolver.index_last_scan_was_complete() is True
+    ), "a raising build must not rewrite the verdict of the snapshot still published"
 
 
 def test_one_tenants_complete_scan_does_not_bless_anothers_partial_one(monkeypatch):
@@ -12007,22 +12009,22 @@ def test_one_tenants_complete_scan_does_not_bless_anothers_partial_one(monkeypat
 
     monkeypatch.setattr(resolver, "_build_index", partial)
     run_as(tenant_a, resolver._index)
-    assert run_as(tenant_a, resolver.index_last_scan_was_complete) is False, (
-        "the harness did not produce a partial scan for tenant A"
-    )
+    assert (
+        run_as(tenant_a, resolver.index_last_scan_was_complete) is False
+    ), "the harness did not produce a partial scan for tenant A"
 
     monkeypatch.setattr(resolver, "_build_index", lambda: {})
     run_as(tenant_b, resolver._index)
     assert run_as(tenant_b, resolver.index_last_scan_was_complete) is True
 
-    assert run_as(tenant_a, resolver.index_last_scan_was_complete) is False, (
-        "another tenant's complete scan blessed this tenant's partial snapshot"
-    )
+    assert (
+        run_as(tenant_a, resolver.index_last_scan_was_complete) is False
+    ), "another tenant's complete scan blessed this tenant's partial snapshot"
     # The owner's snapshot is a third one again, and it has not scanned at all. Unknown
     # reads as incomplete, which only ever admits fewer memoized answers.
-    assert resolver.index_last_scan_was_complete() is False, (
-        "the owner inherited a managed account's verdict"
-    )
+    assert (
+        resolver.index_last_scan_was_complete() is False
+    ), "the owner inherited a managed account's verdict"
 
 
 def test_an_unreadable_registered_scan_folder_is_a_skipped_source(monkeypatch):
@@ -12044,27 +12046,23 @@ def test_an_unreadable_registered_scan_folder_is_a_skipped_source(monkeypatch):
 
     missing = "/nonexistent-mount/uidiff-registered-folder"
     assert not os.path.isdir(missing), "the premise of this case is that it is absent"
-    monkeypatch.setattr(
-        studio_db, "list_scan_folders", lambda *a, **k: [{"path": missing}]
-    )
+    monkeypatch.setattr(studio_db, "list_scan_folders", lambda *a, **k: [{"path": missing}])
 
     monkeypatch.setattr(resolver, "_scan_sources_skipped", 0)
     resolver._build_index()
-    assert resolver._scan_sources_skipped >= 1, (
-        "an absent registered scan folder was counted as a source this pass could read"
-    )
+    assert (
+        resolver._scan_sources_skipped >= 1
+    ), "an absent registered scan folder was counted as a source this pass could read"
 
     # A readable one is not penalized, or every pass would read as incomplete forever and
     # the probe would never settle.
     with tempfile.TemporaryDirectory() as readable:
-        monkeypatch.setattr(
-            studio_db, "list_scan_folders", lambda *a, **k: [{"path": readable}]
-        )
+        monkeypatch.setattr(studio_db, "list_scan_folders", lambda *a, **k: [{"path": readable}])
         monkeypatch.setattr(resolver, "_scan_sources_skipped", 0)
         resolver._build_index()
-        assert resolver._scan_sources_skipped == 0, (
-            f"a readable registered folder {readable} was reported as skipped"
-        )
+        assert (
+            resolver._scan_sources_skipped == 0
+        ), f"a readable registered folder {readable} was reported as skipped"
 
 
 def test_an_additions_only_invalidation_cannot_confirm_an_absence(monkeypatch):
@@ -12098,9 +12096,9 @@ def test_an_additions_only_invalidation_cannot_confirm_an_absence(monkeypatch):
     # A download adds a model: entries stay trusted, stamp goes negative.
     resolver.invalidate_index(additions_only = True)
     assert resolver.index_scan_stamp() < 0.0, "the harness did not produce an additions-only stamp"
-    assert resolver.index_answer_is_trustworthy() is False, (
-        "an additions-only snapshot was read as able to confirm an absence"
-    )
+    assert (
+        resolver.index_answer_is_trustworthy() is False
+    ), "an additions-only snapshot was read as able to confirm an absence"
 
     # The rebuild keeps failing, so no scan lands during the request's own pass either.
     def boom():
@@ -12111,9 +12109,9 @@ def test_an_additions_only_invalidation_cannot_confirm_an_absence(monkeypatch):
         _run_hook(path)
     except Exception:
         pass
-    assert inference_route._alias_probed_load_paths == set(), (
-        "a miss read from an additions-only snapshot was memoized as a confirmed absence"
-    )
+    assert (
+        inference_route._alias_probed_load_paths == set()
+    ), "a miss read from an additions-only snapshot was memoized as a confirmed absence"
     assert inference_route._alias_probe_inflight == {}, "and the claim was not given back"
 
 
@@ -12140,14 +12138,12 @@ def test_a_registered_scan_folder_that_cannot_be_searched_is_a_skipped_source(mo
         if os.access(folder, os.X_OK):
             pytest.skip("running as a user that bypasses directory permissions")
         try:
-            monkeypatch.setattr(
-                studio_db, "list_scan_folders", lambda *a, **k: [{"path": folder}]
-            )
+            monkeypatch.setattr(studio_db, "list_scan_folders", lambda *a, **k: [{"path": folder}])
             monkeypatch.setattr(resolver, "_scan_sources_skipped", 0)
             resolver._build_index()
-            assert resolver._scan_sources_skipped >= 1, (
-                "a registered folder that cannot be searched was counted as readable"
-            )
+            assert (
+                resolver._scan_sources_skipped >= 1
+            ), "a registered folder that cannot be searched was counted as readable"
         finally:
             os.chmod(folder, 0o700)
 
@@ -12167,6 +12163,7 @@ def test_a_suppressed_child_failure_makes_the_scan_incomplete(monkeypatch):
     with tempfile.TemporaryDirectory() as root:
         child = os.path.join(root, "Qwen3-4B-Instruct-GGUF")
         os.mkdir(child)
+
         # The real suppression path: make the child's own inspection raise, which is what a
         # revoked permission or a dropped mount does to one entry.
         def boom_is_dir(self):
@@ -12185,15 +12182,14 @@ def test_a_suppressed_child_failure_makes_the_scan_incomplete(monkeypatch):
 
     def build_with_child_failure():
         from core.inference.scan_incidents import note_scan_incident
-
         note_scan_incident("child unreadable: /root/model-a")
         return {}
 
     monkeypatch.setattr(resolver, "_build_index", build_with_child_failure)
     resolver._index()
-    assert resolver.index_last_scan_was_complete() is False, (
-        "a scan that could not read a child was published as complete"
-    )
+    assert (
+        resolver.index_last_scan_was_complete() is False
+    ), "a scan that could not read a child was published as complete"
 
     # A clean pass is still complete, or nothing would ever be memoized.
     monkeypatch.setattr(resolver, "_build_index", lambda: {})
@@ -12255,16 +12251,16 @@ def test_a_non_gguf_resident_path_is_probed_once_too(monkeypatch):
     monkeypatch.setattr(inference_route, "_alias_probe_generation", -1)
 
     claimed: list[str] = []
-    assert inference_route._loaded_identity_satisfies(path, claimed) is False, (
-        "the first request naming the path must reach the resolver so the alias is recorded"
-    )
+    assert (
+        inference_route._loaded_identity_satisfies(path, claimed) is False
+    ), "the first request naming the path must reach the resolver so the alias is recorded"
     assert claimed == [path], "the probe was not claimed, so it can never be settled"
 
     # The pass completes and finds no alias to record; the next request stops paying for it.
     inference_route._alias_probe_settle(path)
-    assert inference_route._loaded_identity_satisfies(path) is True, (
-        "a settled path still reaches the resolver, so the index rebuilds per message"
-    )
+    assert (
+        inference_route._loaded_identity_satisfies(path) is True
+    ), "a settled path still reaches the resolver, so the index rebuilds per message"
 
     # A reload of the same path advertises nothing again, so the probe must not outlive it.
     inference_route._clear_advertised_alias(_Orchestrator())
@@ -12275,12 +12271,12 @@ def test_a_non_gguf_resident_path_is_probed_once_too(monkeypatch):
 def test_the_transformers_load_clears_the_probe_with_the_alias():
     """Source-shape: the clear sits on the load path, through the helper that drops both."""
     src = inspect.getsource(inference_route._load_model_impl)
-    assert "_clear_advertised_alias(backend)" in src, (
-        "the transformers load no longer drops the probe taken under the previous alias"
-    )
-    assert "\n        backend._openai_advertised_id = None" not in src, (
-        "the alias is cleared without the probe, so a reload keeps a settled negative"
-    )
+    assert (
+        "_clear_advertised_alias(backend)" in src
+    ), "the transformers load no longer drops the probe taken under the previous alias"
+    assert (
+        "\n        backend._openai_advertised_id = None" not in src
+    ), "the alias is cleared without the probe, so a reload keeps a settled negative"
 
 
 def test_the_hermes_and_ollama_scanners_report_a_directory_they_could_not_walk(monkeypatch):
@@ -12305,9 +12301,9 @@ def test_the_hermes_and_ollama_scanners_report_a_directory_they_could_not_walk(m
         monkeypatch.setattr(pathlib.Path, "glob", boom)
         with collecting_scan_incidents() as incidents:
             assert hermes.staged_gguf_files(hermes_dir) == []
-        assert any("hermes" in note for note in incidents), (
-            f"the Hermes scanner reported an unreadable directory as empty: {incidents}"
-        )
+        assert any(
+            "hermes" in note for note in incidents
+        ), f"the Hermes scanner reported an unreadable directory as empty: {incidents}"
         monkeypatch.undo()
 
         ollama_dir = pathlib.Path(root) / "ollama"
@@ -12315,9 +12311,9 @@ def test_the_hermes_and_ollama_scanners_report_a_directory_they_could_not_walk(m
         monkeypatch.setattr(pathlib.Path, "rglob", boom)
         with collecting_scan_incidents() as incidents:
             assert ollama.scan_ollama_dir(ollama_dir) == []
-        assert any("ollama" in note for note in incidents), (
-            f"the Ollama scanner reported an unreadable directory as empty: {incidents}"
-        )
+        assert any(
+            "ollama" in note for note in incidents
+        ), f"the Ollama scanner reported an unreadable directory as empty: {incidents}"
 
 
 def test_a_newly_published_scan_reopens_a_settled_probe(monkeypatch):
@@ -12343,19 +12339,19 @@ def test_a_newly_published_scan_reopens_a_settled_probe(monkeypatch):
     assert inference_route._loaded_identity_satisfies(path) is False
     inference_route._alias_probe_settle(path)
     generation_at_settle = resolver.index_generation()
-    assert inference_route._loaded_identity_satisfies(path) is True, (
-        "a settled probe must answer for the snapshot it was taken against"
-    )
+    assert (
+        inference_route._loaded_identity_satisfies(path) is True
+    ), "a settled probe must answer for the snapshot it was taken against"
 
     # A later scan publishes a new stamp WITHOUT touching the generation: exactly what a
     # TTL expiry or a warm does after something appeared under an existing root.
     resolver._index()
-    assert resolver.index_generation() == generation_at_settle, (
-        "the harness invalidated the index, which is not the case under test"
-    )
-    assert inference_route._loaded_identity_satisfies(path) is False, (
-        "a probe settled against an older snapshot answered for a newer one"
-    )
+    assert (
+        resolver.index_generation() == generation_at_settle
+    ), "the harness invalidated the index, which is not the case under test"
+    assert (
+        inference_route._loaded_identity_satisfies(path) is False
+    ), "a probe settled against an older snapshot answered for a newer one"
     # And it is reopened, not merely refused: the pass it sends to the resolver can record
     # the alias the new scan indexed.
     assert inference_route._alias_probe_inflight == {KEY(path): 1}
@@ -12385,9 +12381,9 @@ def test_a_suppressed_sibling_revision_walk_is_not_a_complete_scan(monkeypatch):
         # inactive-cache repo.
         list(resolver._sibling_revision_entries(str(resident), "loader"))
 
-    assert resolver._scan_sources_skipped >= 1, (
-        "a sibling revision walk that failed was counted as a complete look"
-    )
+    assert (
+        resolver._scan_sources_skipped >= 1
+    ), "a sibling revision walk that failed was counted as a complete look"
 
 
 def test_an_entry_dropped_by_a_read_failure_is_not_a_complete_scan(monkeypatch):
@@ -12416,12 +12412,13 @@ def test_an_entry_dropped_by_a_read_failure_is_not_a_complete_scan(monkeypatch):
         monkeypatch.setattr(resolver, "_resolve_load_dir", boom)
         monkeypatch.setattr(resolver, "_host_has_a_non_gguf_backend", lambda: True)
         with collecting_scan_incidents() as incidents:
-            assert resolver._local_weights_entry(
-                "loader", SimpleNamespace(path = str(model_dir))
-            ) is None
-        assert any("unreadable" in note for note in incidents), (
-            f"a dropped entry left no trace for the caller: {incidents}"
-        )
+            assert (
+                resolver._local_weights_entry("loader", SimpleNamespace(path = str(model_dir)))
+                is None
+            )
+        assert any(
+            "unreadable" in note for note in incidents
+        ), f"a dropped entry left no trace for the caller: {incidents}"
 
         # And a model this host simply cannot serve is NOT an incident, or every scan on
         # every host would read as incomplete and nothing would ever be memoized.
@@ -12430,9 +12427,10 @@ def test_an_entry_dropped_by_a_read_failure_is_not_a_complete_scan(monkeypatch):
 
         monkeypatch.setattr(resolver, "_resolve_load_dir", refuse)
         with collecting_scan_incidents() as incidents:
-            assert resolver._local_weights_entry(
-                "loader", SimpleNamespace(path = str(model_dir))
-            ) is None
+            assert (
+                resolver._local_weights_entry("loader", SimpleNamespace(path = str(model_dir)))
+                is None
+            )
         assert incidents == [], f"a classification refusal was reported as a gap: {incidents}"
 
 
@@ -12464,9 +12462,9 @@ def test_a_helper_that_swallowed_a_read_failure_reports_it(monkeypatch):
         monkeypatch.setattr(pathlib.Path, "open", boom_open)
         with collecting_scan_incidents() as incidents:
             assert resolver._read_json(config) is None
-        assert any("json unreadable" in note for note in incidents), (
-            f"an unreadable config was indistinguishable from an absent one: {incidents}"
-        )
+        assert any(
+            "json unreadable" in note for note in incidents
+        ), f"an unreadable config was indistinguishable from an absent one: {incidents}"
         monkeypatch.undo()
 
         # Absent is not a gap: most of these files simply do not exist.
@@ -12486,9 +12484,9 @@ def test_a_helper_that_swallowed_a_read_failure_reports_it(monkeypatch):
         monkeypatch.setattr(pathlib.Path, "iterdir", boom_iterdir)
         with collecting_scan_incidents() as incidents:
             assert resolver._has_safetensors_weights(load_dir) is False
-        assert any("weights listing unreadable" in note for note in incidents), (
-            f"a directory that could not be listed read as having no weights: {incidents}"
-        )
+        assert any(
+            "weights listing unreadable" in note for note in incidents
+        ), f"a directory that could not be listed read as having no weights: {incidents}"
 
 
 def test_snapshot_selection_read_failures_are_reported(monkeypatch):
@@ -12515,9 +12513,9 @@ def test_snapshot_selection_read_failures_are_reported(monkeypatch):
         monkeypatch.setattr(pathlib.Path, "iterdir", boom)
         with collecting_scan_incidents() as incidents:
             select_gguf_cache_snapshot_for_repo_dir(repo_dir)
-        assert any("snapshots dir unreadable" in note for note in incidents), (
-            f"an unlistable snapshots dir read as a repo with no snapshots: {incidents}"
-        )
+        assert any(
+            "snapshots dir unreadable" in note for note in incidents
+        ), f"an unlistable snapshots dir read as a repo with no snapshots: {incidents}"
         monkeypatch.undo()
 
         def boom_resolve(self, *a, **k):
@@ -12526,9 +12524,9 @@ def test_snapshot_selection_read_failures_are_reported(monkeypatch):
         monkeypatch.setattr(pathlib.Path, "resolve", boom_resolve)
         with collecting_scan_incidents() as incidents:
             assert resolve_hf_cache_realpath(repo_dir) is None
-        assert any("realpath unreadable" in note for note in incidents), (
-            f"a path that could not be resolved dropped its row silently: {incidents}"
-        )
+        assert any(
+            "realpath unreadable" in note for note in incidents
+        ), f"a path that could not be resolved dropped its row silently: {incidents}"
 
 
 def test_an_unreadable_ollama_manifest_is_reported_but_a_malformed_one_is_not(monkeypatch):
@@ -12564,9 +12562,9 @@ def test_an_unreadable_ollama_manifest_is_reported_but_a_malformed_one_is_not(mo
         monkeypatch.setattr(pathlib.Path, "read_text", boom)
         with collecting_scan_incidents() as incidents:
             assert ollama._ollama_model_info_from_manifest(ollama_dir, tag_file) is None
-        assert any("manifest unreadable" in note for note in incidents), (
-            f"an unreadable manifest was indistinguishable from a malformed one: {incidents}"
-        )
+        assert any(
+            "manifest unreadable" in note for note in incidents
+        ), f"an unreadable manifest was indistinguishable from a malformed one: {incidents}"
 
 
 def test_a_miss_is_settled_against_the_snapshot_it_was_read_from(monkeypatch):
@@ -12593,14 +12591,14 @@ def test_a_miss_is_settled_against_the_snapshot_it_was_read_from(monkeypatch):
 
     # A warmer publishes another snapshot before this request reaches its finally.
     resolver._index()
-    assert inference_route._alias_probe_index_state() != answered_state, (
-        "the harness did not publish a second snapshot"
-    )
+    assert (
+        inference_route._alias_probe_index_state() != answered_state
+    ), "the harness did not publish a second snapshot"
 
     inference_route._alias_probe_settle(path, answered_state)
-    assert inference_route._alias_probed_load_paths == set(), (
-        "a miss read from an older snapshot was settled against the newer one"
-    )
+    assert (
+        inference_route._alias_probed_load_paths == set()
+    ), "a miss read from an older snapshot was settled against the newer one"
     assert inference_route._alias_probe_inflight == {}, "and the claim was not given back"
     assert inference_route._loaded_identity_satisfies(path) is False
 
@@ -12619,9 +12617,9 @@ def test_a_miss_is_settled_against_the_snapshot_it_was_read_from(monkeypatch):
     assert inference_route._loaded_identity_satisfies(path) is False
     assert inference_route._loaded_identity_satisfies(path) is False
     inference_route._alias_probe_settle(path, answered_state)
-    assert inference_route._alias_probe_inflight == {KEY(path): 1}, (
-        "a stale settle took a concurrent request's claim with it"
-    )
+    assert inference_route._alias_probe_inflight == {
+        KEY(path): 1
+    }, "a stale settle took a concurrent request's claim with it"
 
 
 def test_a_truncated_gguf_walk_is_reported(monkeypatch):
@@ -12656,9 +12654,9 @@ def test_a_truncated_gguf_walk_is_reported(monkeypatch):
             os.chmod(subtree, 0o700)
         # The readable part is still returned: this is a report, not a refusal.
         assert found
-        assert any("walk truncated" in note for note in incidents), (
-            f"an unreadable subtree left the walk looking complete: {incidents}"
-        )
+        assert any(
+            "walk truncated" in note for note in incidents
+        ), f"an unreadable subtree left the walk looking complete: {incidents}"
 
         # And the flat walk, which gives up on a directory it cannot list.
         def boom(self):
@@ -12667,9 +12665,9 @@ def test_a_truncated_gguf_walk_is_reported(monkeypatch):
         monkeypatch.setattr(pathlib.Path, "iterdir", boom)
         with collecting_scan_incidents() as incidents:
             assert list(iter_gguf_files(directory, recursive = False)) == []
-        assert any("dir unreadable" in note for note in incidents), (
-            f"an unlistable directory read as holding no GGUFs: {incidents}"
-        )
+        assert any(
+            "dir unreadable" in note for note in incidents
+        ), f"an unlistable directory read as holding no GGUFs: {incidents}"
 
 
 def test_a_gguf_walk_that_hit_the_entry_cap_is_reported(monkeypatch):
@@ -12691,9 +12689,9 @@ def test_a_gguf_walk_that_hit_the_entry_cap_is_reported(monkeypatch):
         monkeypatch.setattr(gguf_utils, "_MAX_LOCAL_SCAN_ENTRIES", 2)
         with collecting_scan_incidents() as incidents:
             list(gguf_utils.iter_gguf_files(directory, recursive = True))
-        assert any("entry cap" in note for note in incidents), (
-            f"a walk cut short by the cap read as a complete look: {incidents}"
-        )
+        assert any(
+            "entry cap" in note for note in incidents
+        ), f"a walk cut short by the cap read as a complete look: {incidents}"
 
         # Under the cap, nothing is reported.
         monkeypatch.setattr(gguf_utils, "_MAX_LOCAL_SCAN_ENTRIES", 1000)
