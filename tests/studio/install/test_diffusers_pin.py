@@ -27,6 +27,9 @@ import pytest
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[3]
 REQ_ROOT = REPO_ROOT / "studio" / "backend" / "requirements"
 PIN_FILE = REQ_ROOT / "diffusers-pin.txt"
+# The opt-in commit pin. Exempt from the one-source-of-truth scan below because it is never
+# installed without UNSLOTH_DIFFUSERS_MAIN, which the tests here pin down rather than assume.
+MAIN_FILE = REQ_ROOT / "diffusers-main.txt"
 
 # The shape install_python_stack._filter_requirements writes: a dot, the source stem,
 # "-filtered-", then tempfile's random suffix. NamedTemporaryFile's suffixes are
@@ -87,7 +90,7 @@ def test_only_the_pin_file_names_diffusers():
     whichever step runs last wins, and the step order is not obvious from any one file."""
     offenders = {}
     for path in sorted(REQ_ROOT.rglob("*.txt")):
-        if path == PIN_FILE:
+        if path in (PIN_FILE, MAIN_FILE):
             continue
         # install_python_stack._filter_requirements writes `.{stem}-filtered-XXXX.txt` BESIDE the source on purpose, so
         # relative -r/-c includes still resolve, and it does not delete it.
@@ -103,6 +106,88 @@ def test_only_the_pin_file_names_diffusers():
         f"diffusers is requirement-listed outside diffusers-pin.txt: {offenders}. "
         f"Move it into the pin file so the dedicated late step remains authoritative."
     )
+
+
+def test_the_main_build_is_opt_in_and_pins_a_commit():
+    """The opt-in file exists, names a COMMIT, and cannot reach a default install.
+
+    Every guarantee here is one the release pin gives up, so each is asserted rather than trusted:
+    a branch ref would leave nothing pinning behaviour (any main build reports 0.41.0.dev0 and
+    ``_version_tuple`` truncates it to (0, 41, 0), so no version check can tell two apart), and a
+    step that ran without the flag would put a source build in front of every user, including the
+    ones behind a PyPI mirror with no route to github.com.
+    """
+    assert MAIN_FILE.is_file(), f"{MAIN_FILE} is missing"
+    lines = _requirements(MAIN_FILE)
+    assert len(lines) == 1, lines
+    spec = lines[0]
+    assert spec.startswith("diffusers @ git+"), spec
+    revision = spec.rpartition("@")[2].strip()
+    assert re.fullmatch(r"[0-9a-f]{40}", revision), (
+        f"{MAIN_FILE.name} must pin a full 40-character commit, not {revision!r}: a branch ref "
+        "moves under an unchanged requirements file and nothing in Unsloth can tell two builds of "
+        "main apart"
+    )
+
+    source = _code_only(STACK.read_text(encoding = "utf-8"))
+    # Installed only through the opt-in step, and that step is gated on the flag.
+    assert "diffusers-main.txt" in source
+    assert "_diffusers_main_requested" in source
+    assert 'UNSLOTH_DIFFUSERS_MAIN' in source
+    # And the CALL runs after the release pin install, or the release would overwrite it. Compared
+    # on the call site, not on the filename: the helper is DEFINED earlier in the file than either
+    # install, so a filename compare answers a different question and passes by accident.
+    call = "\n    _diffusers_main_step()\n"
+    assert call in source, "the opt-in step is never called"
+    assert source.index(call) > source.index('req = REQ_ROOT / "diffusers-pin.txt"')
+
+
+def test_the_main_build_step_does_nothing_without_the_flag(monkeypatch):
+    """The default install must not touch diffusers twice. A failure here is not a slow install,
+    it is a source build shipped to everyone."""
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("install_python_stack_probe", STACK)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    monkeypatch.delenv("UNSLOTH_DIFFUSERS_MAIN", raising = False)
+    assert module._diffusers_main_requested() is False
+    monkeypatch.setattr(
+        module, "pip_install", lambda *a, **k: pytest.fail("the opt-in step ran without the flag")
+    )
+    # _progress divides by a total the standalone module never set.
+    monkeypatch.setattr(module, "_progress", lambda *a, **k: None)
+    monkeypatch.setattr(module, "_note", lambda *a, **k: None)
+    module._diffusers_main_step()
+
+    for value in ("1", "true", "YES", "on"):
+        monkeypatch.setenv("UNSLOTH_DIFFUSERS_MAIN", value)
+        assert module._diffusers_main_requested() is True, value
+    monkeypatch.setenv("UNSLOTH_DIFFUSERS_MAIN", "0")
+    assert module._diffusers_main_requested() is False
+
+
+def test_the_main_build_keeps_the_release_when_there_is_no_git(monkeypatch):
+    """Diffusers is mandatory, unlike triton_kernels, so a host with no working git must be left
+    with the release the previous step installed rather than nothing at all."""
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("install_python_stack_probe2", STACK)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    monkeypatch.setenv("UNSLOTH_DIFFUSERS_MAIN", "1")
+    monkeypatch.setattr(module, "_has_working_git", lambda: False)
+    monkeypatch.setattr(
+        module, "pip_install", lambda *a, **k: pytest.fail("a git requirement without git")
+    )
+    monkeypatch.setattr(module, "_progress", lambda *a, **k: None)
+    notes = []
+    monkeypatch.setattr(module, "_note", lambda msg, *a, **k: notes.append(msg))
+    module._diffusers_main_step()
+    # And it SAYS so, rather than leaving the flag looking honoured.
+    assert notes and "no working git" in notes[0]
 
 
 def test_the_pin_step_is_not_gated_by_skip_base_or_no_torch():

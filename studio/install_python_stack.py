@@ -10196,6 +10196,58 @@ def _triton_kernels_step() -> None:
     )
 
 
+DIFFUSERS_MAIN_ENV = "UNSLOTH_DIFFUSERS_MAIN"
+
+
+def _diffusers_main_requested() -> bool:
+    """Whether this install asked for the pinned Diffusers main build."""
+    return (os.environ.get(DIFFUSERS_MAIN_ENV) or "").strip().lower() in ("1", "true", "yes", "on")
+
+
+def _diffusers_main_step() -> None:
+    """Install the pinned Diffusers commit, or leave the release pin alone.
+
+    Three things this has to get right, none of which the ordinary ``_skip_step`` path covers:
+
+    * A VERSION says nothing here. Every build of main reports 0.41.0.dev0, so the usual "is the
+      requirement satisfied" check passes against a build from any other commit, or against the
+      release the previous step just installed. ``_direct_reference_is_installed`` reads the ref out
+      of direct_url.json, which is the only place it survives, so bumping the commit in the file
+      actually reinstalls instead of silently keeping the old tree.
+    * Diffusers is MANDATORY, unlike triton_kernels, so a host with no working git must not be left
+      with a broken install. It is not: the release pin ran first and is already in place, so
+      skipping here leaves a working Studio that simply cannot load the newest model.
+    * The flag going away must put the release back. Opting out and re-running reinstalls the pin
+      on the next pass, because the pin step's own inputs are unchanged but the resident diffusers
+      is no longer what the release pin names.
+    """
+    if not _diffusers_main_requested():
+        return
+    req = REQ_ROOT / "diffusers-main.txt"
+    if not req.is_file():
+        return
+    if not _has_working_git():
+        _progress("diffusers main (skipped, no git)")
+        _note(
+            f"{DIFFUSERS_MAIN_ENV} is set but there is no working git -- keeping the pinned "
+            "Diffusers release. Models that need an unreleased Diffusers will refuse with a "
+            "message naming the version they want.",
+        )
+        return
+    if _direct_reference_is_installed(req, "diffusers"):
+        _progress("diffusers main (satisfied, skipped)")
+        _record_step("diffusers-main.txt", "skipped")
+        return
+    _progress("diffusers main")
+    _record_step("diffusers-main.txt", "ran")
+    pip_install(
+        "Installing the pinned Diffusers main build",
+        "--no-cache-dir",
+        req = req,
+        constrain = False,
+    )
+
+
 def _recorded_direct_url(dist_name: str) -> "dict | None":
     """The direct_url.json pip and uv wrote for *dist_name*, or None when there is none
     that parses. This is the only place a git install's ref and commit survive."""
@@ -10958,6 +11010,12 @@ def install_python_stack() -> int:
             "--no-cache-dir",
             req = REQ_ROOT / "diffusers-pin.txt",
         )
+
+    # 11c. OPT-IN only: a pinned commit of Diffusers main, for a model whose support has merged
+    #      upstream but has not reached a release. Runs immediately after the release pin so it
+    #      overwrites it, and never at all without the flag, so the default install keeps the exact
+    #      release everything is built against and keeps working with no route to github.com.
+    _diffusers_main_step()
 
     # 12. Patch metadata for single-env compatibility
     _finalize_ran = _dd_deps_ran or _dd_ran or _patch_metadata_is_pending()
