@@ -11,6 +11,7 @@ import {
 import type { IconSvgElement } from "@hugeicons/react";
 import { HugeiconsIcon } from "@hugeicons/react";
 import type { ReactNode } from "react";
+import { useUiSpaceScale } from "@/hooks/use-ui-space-scale";
 import { useLayoutEffect, useRef, useState } from "react";
 import type { HubFailure } from "@/features/hub/lib/network";
 
@@ -307,11 +308,14 @@ const MIN_SKELETON_ROWS = 4;
 const MAX_SKELETON_ROWS = 24;
 const DEFAULT_SKELETON_ROWS = 6;
 
-function clampSkeletonCount(height: number): number {
+// The row's padding, avatar and bars follow the UI font size, so the estimate
+// does too, or the list under-fills at small sizes and overflows at large.
+function clampSkeletonCount(height: number, scale: number): number {
   if (!Number.isFinite(height) || height <= 0) return DEFAULT_SKELETON_ROWS;
+  const rowHeight = SKELETON_ROW_ESTIMATE_PX * scale;
   return Math.max(
     MIN_SKELETON_ROWS,
-    Math.min(MAX_SKELETON_ROWS, Math.ceil(height / SKELETON_ROW_ESTIMATE_PX)),
+    Math.min(MAX_SKELETON_ROWS, Math.ceil(height / rowHeight)),
   );
 }
 
@@ -319,6 +323,7 @@ export function SkeletonList({ count }: { count?: number }) {
   const ref = useRef<HTMLUListElement>(null);
   const [autoCount, setAutoCount] = useState(count ?? DEFAULT_SKELETON_ROWS);
   const rowCount = count ?? autoCount;
+  const scale = useUiSpaceScale();
 
   useLayoutEffect(() => {
     if (count != null) return;
@@ -328,7 +333,7 @@ export function SkeletonList({ count }: { count?: number }) {
     let frame: number | null = null;
     const update = () => {
       frame = null;
-      setAutoCount(clampSkeletonCount(container.clientHeight));
+      setAutoCount(clampSkeletonCount(container.clientHeight, scale));
     };
     const schedule = () => {
       if (frame !== null) return;
@@ -350,7 +355,7 @@ export function SkeletonList({ count }: { count?: number }) {
       if (frame !== null) window.cancelAnimationFrame(frame);
       observer.disconnect();
     };
-  }, [count]);
+  }, [count, scale]);
 
   return (
     <ul ref={ref} className="divide-y divide-border" aria-hidden="true">

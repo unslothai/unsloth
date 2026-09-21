@@ -59,6 +59,26 @@ function Slider({
   );
   const isSingleThumbHorizontal =
     values.length === 1 && orientation === "horizontal";
+  // The thumb follows the UI font size, and .panel-slider resizes it outright,
+  // so the fill measures it rather than assuming 16px. offsetWidth ignores the
+  // hover/press transforms.
+  const thumbRef = React.useRef<HTMLSpanElement | null>(null);
+  const [thumbWidth, setThumbWidth] = React.useState(THUMB_SIZE_PX);
+  React.useLayoutEffect(() => {
+    const thumb = thumbRef.current;
+    if (!thumb) return;
+    const measure = () => {
+      const width = thumb.offsetWidth;
+      if (width > 0) {
+        setThumbWidth((current) => (current === width ? current : width));
+      }
+    };
+    measure();
+    if (typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(measure);
+    observer.observe(thumb);
+    return () => observer.disconnect();
+  }, []);
   const fillPercent = isSingleThumbHorizontal
     ? Math.min(
         100,
@@ -73,7 +93,7 @@ function Slider({
       ? undefined
       : fillPercent <= 0
         ? "0%"
-        : `calc(${fillPercent}% + ${getThumbInBoundsOffset(THUMB_SIZE_PX, fillPercent)}px)`;
+        : `calc(${fillPercent}% + ${getThumbInBoundsOffset(thumbWidth, fillPercent)}px)`;
 
   return (
     <SliderPrimitive.Root
@@ -116,6 +136,7 @@ function Slider({
         <SliderPrimitive.Thumb
           data-slot="slider-thumb"
           key={index}
+          ref={index === 0 ? thumbRef : undefined}
           // The thumb is the element carrying role="slider", so the name and the spoken value
           // belong here. Everything else spreads onto Root, which is a plain div: an aria-label
           // passed to this component reached that div and left the actual control unnamed, and
