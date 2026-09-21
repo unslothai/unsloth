@@ -334,7 +334,11 @@ Check "a taken stale name takes a suffix"        ($_repair -match '\$_staleTry -
 Check "the sweep recognises that suffix"         ($_repair -match '\(\?:-\[0-9\]\+\)\?\$')
 # Why it failed, not just that it failed: this line separates a faulted GPU driver from a missing
 # wheel, and the user is about to be told what happened to their environment.
-Check "the swallowed probe error is surfaced" ($_repair -match '\$_verProbe\.Error')
+# Surfaced through Get-ProbeFailureText now, which is the probe's stderr plus the exit
+# code Windows terminated it with: a code integrity fail-fast writes no stderr at all,
+# and the number is then the only thing there is to print.
+Check "the swallowed probe error is surfaced" (
+    $_repair -match 'Get-ProbeFailureText -Probe \$_verProbe')
 Check "the probe handle is declared up front" ($setupText -match '(?m)^\s*\$_verProbe = \$null')
 # Read by four install arms and raised by the repair above, but assigned only inside the
 # venv-exists block, so on a fresh install every one of those reads is of a variable that was never

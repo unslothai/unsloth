@@ -353,6 +353,39 @@ Check "the notice does not tell a user with no importable torch that the CPU is 
     $setupText.Contains("it cannot run on the CPU either")
 }
 
+# 0xC0000602 alone is the generic fail-fast, not a policy: any native component raises it.
+Check "a bare fail-fast exit code is not turned into a policy verdict" {
+    $setupText.Contains('$_probeBlockReason -eq "the image was refused by a code integrity fail-fast" -and') -and
+    $setupText.Contains('-not (Get-CodeIntegrityBlockReason -Text $_verProbe.Error)')
+}
+Check "text that names the fail-fast is still classified" {
+    # The suppression is keyed on stderr having said nothing, so the backend's own
+    # mapping of this status is untouched.
+    (Get-CodeIntegrityBlockReason -Text "OSError: exited 0xc0000602") -eq
+        "the image was refused by a code integrity fail-fast"
+}
+Check "the exit code still reaches the diagnostic line" {
+    # Suppressing the verdict must not hide the number: with no stderr, the status is
+    # what the PyTorch reported line has to print.
+    $setupText.Contains('$_probeErrLine = (Get-ProbeFailureText -Probe $_verProbe) -split')
+}
+
+# The AMD fast-path escape probes import torch again, long after the verdict was reached.
+Check "a refused torch is not announced as a CPU-only wheel" {
+    $setupText.Contains('$script:TorchProbeBlockReason = $_probeBlockReason') -and
+    $setupText.Contains('if ($_torchIsCpu -and $script:TorchProbeBlockReason -and') -and
+    $setupText.Contains('-not (Test-CodeIntegrityReasonIsAmbiguous -Reason $script:TorchProbeBlockReason))')
+}
+Check "an ambiguous refusal there still gets the dependency pass" {
+    # A reinstall clears the damaged case, so only a settled verdict stops it.
+    $setupText.Contains('} elseif ($_torchIsCpu) {') -and
+    $setupText.Contains('reinstalling ROCm PyTorch')
+}
+Check "the carried verdict is declared before the block that assigns it" {
+    $setupText.IndexOf('$script:TorchProbeBlockReason = $null') -lt
+    $setupText.IndexOf('$script:TorchProbeBlockReason = $_probeBlockReason')
+}
+
 if ($failures.Count) {
     Write-Host ""
     Write-Host "$($failures.Count) check(s) failed:" -ForegroundColor Red

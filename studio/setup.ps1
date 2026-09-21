@@ -6277,6 +6277,9 @@ $installedTorchTag = $null
 # assigns it.
 $script:PinChangedForceReinstall = $false
 $script:TorchImportDefinitivelyFailed = $false
+# The classified refusal for THIS venv's torch, or $null. Read by the fast-path escapes,
+# which run long after the block that assigns it and never enter it on a fresh install.
+$script:TorchProbeBlockReason = $null
 if ((Test-Path -LiteralPath $VenvDir -PathType Container) -and -not $NoTorchMode) {
     $VenvPyExe = Join-Path $VenvDir "Scripts\python.exe"
     $installedTorchTag = $null
@@ -6306,6 +6309,19 @@ if ((Test-Path -LiteralPath $VenvDir -PathType Container) -and -not $NoTorchMode
         $_probeBlockReason = if ($_verProbe -and -not $_verProbe.Ok) {
             Get-CodeIntegrityBlockReason -Text (Get-ProbeFailureText -Probe $_verProbe)
         } else { $null }
+        # 0xC0000602 is the generic STATUS_FAIL_FAST_EXCEPTION: any native component can
+        # raise it, a corrupt DLL included, so an exit code carrying it and nothing else
+        # does not establish a policy. Suppressed rather than reclassified, which leaves
+        # the ordinary damaged-wheel repair in place instead of telling the user to go
+        # and change a Windows security setting. Text that says so on its own still
+        # counts, which keeps this in step with the backend classifier.
+        if ($_probeBlockReason -eq "the image was refused by a code integrity fail-fast" -and
+            -not (Get-CodeIntegrityBlockReason -Text $_verProbe.Error)) {
+            $_probeBlockReason = $null
+        }
+        # Carried for the fast-path escapes far below, which probe `import torch` again and
+        # would otherwise read a refusal as a CPU-only wheel.
+        $script:TorchProbeBlockReason = $_probeBlockReason
         # The distinction all three arms need: Windows raises these two for a damaged file as
         # well, so they do not settle the question and a reinstall may still clear it.
         $_blockRulesOutDamage = $_probeBlockReason -and
@@ -6565,7 +6581,7 @@ if ((Test-Path -LiteralPath $VenvDir -PathType Container) -and -not $NoTorchMode
             # No @(...)[0] around this: the guard above passes on a whitespace-only stderr,
             # Where-Object then drops every line, and [0] into the empty array that leaves is fatal
             # under a caller's Set-StrictMode. -Last 1 already yields one string or nothing.
-            $_probeErrLine = $_verProbe.Error -split "`r?`n" |
+            $_probeErrLine = (Get-ProbeFailureText -Probe $_verProbe) -split "`r?`n" |
                 Where-Object { $_.Trim() } | Select-Object -Last 1
             if ($_probeErrLine) { substep "PyTorch reported: $($_probeErrLine.Trim())" "DarkGray" }
             # Not reclassified: it is the same probe the rescue arms read, and two
@@ -7567,7 +7583,14 @@ sys.exit(2 if conflict else (0 if version else 1))
             $_rocmTorchProbe = Invoke-BoundedPythonProbe -PythonExe "python" `
                 -Code "import torch, sys; sys.exit(0 if torch.cuda.is_available() else 1)"
             $_torchIsCpu = -not $_rocmTorchProbe.Ok
-            if ($_torchIsCpu) {
+            # A torch Windows is refusing cannot answer this question at all, and reading
+            # the refusal as "CPU-only" announced a ROCm reinstall of the very wheels the
+            # policy just blocked. A settled verdict is left alone; an ambiguous one is
+            # still repaired, which is the case a reinstall can clear.
+            if ($_torchIsCpu -and $script:TorchProbeBlockReason -and
+                -not (Test-CodeIntegrityReasonIsAmbiguous -Reason $script:TorchProbeBlockReason)) {
+                substep "Windows is refusing this environment's PyTorch ($script:TorchProbeBlockReason), so whether it is a ROCm build cannot be read from it -- leaving the wheels as they are." "Yellow"
+            } elseif ($_torchIsCpu) {
                 substep "AMD GPU ($script:ROCmGfxArch) detected but installed PyTorch is CPU-only -- reinstalling ROCm PyTorch" "Cyan"
                 $SkipPythonDeps = $false
             }
