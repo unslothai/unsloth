@@ -37,6 +37,7 @@ import { loadVramBudgetSettings } from "@/features/settings/api/vram-budget";
 import { loadOpenAIAutoSwitchSettings } from "@/features/settings";
 import {
   failureLogPath,
+  loadFailureLogFamily,
   viewLogsAction,
 } from "@/features/settings/lib/view-logs-action";
 import {
@@ -2668,12 +2669,13 @@ export function useChatModelRuntime() {
             // action that opens the runner's own log.
             const [summary, ...rest] = message.split("\n");
             const detail = rest.join("\n").trim();
-            // This hook loads GGUF diffusion models too, and their runner writes under
-            // diffusion-server rather than llama-server, so a fixed family would open an
-            // unrelated LLM log. The path, when the diagnostic carries one, pins the exact
-            // attempt regardless of a rollback load landing after it.
+            // Which file holds the reason depends on who was loading: only a GGUF load
+            // goes through a runner that writes its own file per attempt, and a
+            // Transformers or MLX load reaches this same catch with its reason in the
+            // backend's current server log instead. The path, when the diagnostic carries
+            // one, pins the exact attempt regardless of a rollback load landing after it.
             const logsAction = viewLogsAction(
-              isDiffusion === true ? "diffusion-server" : "llama-server",
+              loadFailureLogFamily(isGguf, isDiffusion),
               failureLogPath(message),
             );
             if (loadToastDismissedRef.current) {

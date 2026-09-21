@@ -105,8 +105,12 @@ export function DebuggingTab() {
       try {
         // Bounded like the tail read: the poll loop and its failure recovery
         // both await this, so an unanswered /sources would freeze both.
+        // Sent with the listing so the backend can canonicalise it against the same
+        // realpaths it is about to report; the spellings do not match as strings.
+        const pendingPath =
+          useSettingsDialogStore.getState().logSourcePathRequested;
         const result = await withRequestTimeout(
-          (signal) => loadDebugLogSources(signal),
+          (signal) => loadDebugLogSources(signal, pendingPath),
           REQUEST_TIMEOUT_MS,
           options.signal,
         );
@@ -117,19 +121,21 @@ export function DebuggingTab() {
         // that fails after evicting the previous model is rolled back by performLoad,
         // and that rollback writes a NEWER log in the same family, so recency alone
         // opens the attempt that succeeded. Family recency stays the fallback for a
-        // diagnostic with no path in it.
+        // diagnostic with no path in it, or one naming a file no longer listed.
         const dialog = useSettingsDialogStore.getState();
         const requested = dialog.logFamilyRequested;
-        const requestedPath = dialog.logSourcePathRequested;
-        const byPath = requestedPath
-          ? result.sources.find((source) => source.realpath === requestedPath)
+        const byPath = result.matchedSourceId
+          ? result.sources.find(
+              (source) => source.id === result.matchedSourceId,
+            )
           : undefined;
         const fromFailure =
           byPath ??
           (requested
             ? result.sources.find((source) => source.family === requested)
             : undefined);
-        if (fromFailure) useSettingsDialogStore.getState().consumeLogFamilyRequest();
+        if (fromFailure)
+          useSettingsDialogStore.getState().consumeLogFamilyRequest();
         setSourceId((current) =>
           fromFailure
             ? fromFailure.id

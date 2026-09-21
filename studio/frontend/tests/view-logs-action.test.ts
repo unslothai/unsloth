@@ -67,7 +67,11 @@ test("the action opens Logs on the family that failed", () => {
       (node, part) => (node as Record<string, unknown> | undefined)?.[part],
       en as unknown,
     );
-  assert.equal(typeof shipped, "string", "no English message for the View logs label");
+  assert.equal(
+    typeof shipped,
+    "string",
+    "no English message for the View logs label",
+  );
 
   assert.equal(store.getState().logFamilyRequested, null);
   action.onClick();
@@ -109,6 +113,31 @@ test("a GGUF diffusion load asks for the diffusion runner's log, not the LLM one
   assert.equal(store.getState().logFamilyRequested, "diffusion-server");
 });
 
+test("only a GGUF load is explained by a runner log; everything else is in the server log", () => {
+  const { loadFailureLogFamily } = loadWithStubs<
+    typeof import("../src/features/settings/lib/view-logs-action.ts")
+  >(ACTION_URL, {
+    "@/i18n": { translate: (k: string) => k },
+    "../stores/settings-dialog-store": { useSettingsDialogStore: store },
+  });
+
+  // The runners write a file per attempt, so a GGUF failure's reason is in there.
+  assert.equal(loadFailureLogFamily(true, false), "llama-server");
+  assert.equal(loadFailureLogFamily(true, true), "diffusion-server");
+  // A Transformers or MLX load has no runner at all. Answering llama-server for those
+  // opens whatever older GGUF attempt happens to be on the host -- an unrelated log,
+  // which reads as the reason and is not. performLoad's catch is shared by all of them.
+  for (const notGguf of [false, undefined] as const) {
+    for (const diffusion of [true, false, undefined] as const) {
+      assert.equal(
+        loadFailureLogFamily(notGguf, diffusion),
+        "server",
+        `isGguf=${notGguf} isDiffusion=${diffusion}`,
+      );
+    }
+  }
+});
+
 test("the exact log the diagnostic named is carried, and wins over family recency", () => {
   reset();
   const { viewLogsAction, failureLogPath } = loadWithStubs<
@@ -138,7 +167,6 @@ test("the exact log the diagnostic named is carried, and wins over family recenc
   store.getState().consumeLogFamilyRequest();
   assert.equal(store.getState().logSourcePathRequested, null);
 });
-
 
 test("the Logs panel clears the request once it has consumed it", () => {
   reset();

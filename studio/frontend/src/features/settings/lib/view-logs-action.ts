@@ -24,6 +24,21 @@ import { useSettingsDialogStore } from "../stores/settings-dialog-store";
  */
 export type FailureLogFamily = "llama-server" | "diffusion-server" | "server";
 
+/** The family a model-load failure is explained by, from what was being loaded.
+ *
+ * Only a GGUF load goes through a runner that writes its own file. A Transformers or MLX
+ * load has none, and its failure is recorded by the backend logger in the CURRENT server
+ * log, so answering `llama-server` there opens whatever older runner attempt happens to be
+ * on the host -- an unrelated log, which is worse than none.
+ */
+export function loadFailureLogFamily(
+  isGguf: boolean | undefined,
+  isDiffusion: boolean | undefined,
+): FailureLogFamily {
+  if (!isGguf) return "server";
+  return isDiffusion === true ? "diffusion-server" : "llama-server";
+}
+
 /** Pull the log path the backend already names out of a load diagnostic.
  *
  * llama_cpp.py appends `Full log: <path>` to the message it raises. Selecting by family
@@ -34,7 +49,10 @@ export type FailureLogFamily = "llama-server" | "diffusion-server" | "server";
 export function failureLogPath(message: string): string | null {
   const at = message.lastIndexOf("Full log: ");
   if (at === -1) return null;
-  const path = message.slice(at + "Full log: ".length).split("\n")[0].trim();
+  const path = message
+    .slice(at + "Full log: ".length)
+    .split("\n")[0]
+    .trim();
   return path || null;
 }
 
