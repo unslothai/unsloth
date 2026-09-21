@@ -5,7 +5,13 @@
 
 from __future__ import annotations
 
-from utils.account_context import current_account
+from utils.account_context import (
+    OWNER,
+    AccountContext,
+    bind_account,
+    current_account,
+    reset_account,
+)
 from core.training.account_jobs import account_event_stream
 import copy
 import hashlib
@@ -69,30 +75,57 @@ _DOWNLOAD_LINK_SECRET = secrets.token_bytes(32)
 
 
 def _download_link_payload(
-    *, job_id: str, export_format: str, artifact_path: str | None, filename: str | None
+    *,
+    job_id: str,
+    export_format: str,
+    artifact_path: str | None,
+    filename: str | None,
+    account_id: str,
 ) -> str:
-    # Every parameter the export reads, or the holder could swap artifact_path for another run's.
-    parts = [job_id, export_format, artifact_path or "", filename or ""]
+    # Every parameter the export reads, or the holder could swap artifact_path for another run's,
+    # plus the account whose roots it will be read from: recipe roots are derived from the account
+    # ContextVar, so the tenant is part of the object this capability names.
+    parts = [account_id, job_id, export_format, artifact_path or "", filename or ""]
     return "\x1f".join(parts)
 
 
 def _sign_download_link(**parts: Any) -> str:
+    account = current_account()
+    account_id = "" if account.is_owner else account.account_id
     expires_at = int(time.time()) + _DOWNLOAD_LINK_TTL
-    payload = f"{_download_link_payload(**parts)}\x1f{expires_at}"
+    payload = f"{_download_link_payload(account_id = account_id, **parts)}\x1f{expires_at}"
     signature = hmac.new(_DOWNLOAD_LINK_SECRET, payload.encode(), hashlib.sha256).hexdigest()
-    return f"{expires_at}.{signature}"
+    return f"{expires_at}.{account_id}.{signature}"
 
 
-def _download_link_authorizes(token: str, **parts: Any) -> bool:
+def _download_link_account(token: str, **parts: Any) -> AccountContext | None:
+    """The account this link was minted for, or None once it is invalid or deactivated.
+
+    Same shape as the signed RAG document link: expiry, account id, signature, with an empty
+    account id meaning the owner.
+    """
     try:
-        expires_at, signature = token.rsplit(".", 1)
-        if int(expires_at) < int(time.time()):
-            return False
+        expires_at, account_id, signature = token.split(".", 2)
     except ValueError:
-        return False
-    payload = f"{_download_link_payload(**parts)}\x1f{expires_at}"
+        return None
+    if "." in signature:
+        return None
+    payload = f"{_download_link_payload(account_id = account_id, **parts)}\x1f{expires_at}"
     expected = hmac.new(_DOWNLOAD_LINK_SECRET, payload.encode(), hashlib.sha256).hexdigest()
-    return hmac.compare_digest(signature, expected)
+    if not hmac.compare_digest(signature, expected):
+        return None
+    try:
+        if int(expires_at) < int(time.time()):
+            return None
+    except ValueError:
+        return None
+    if not account_id:
+        return OWNER
+    from auth.storage import get_account_by_id
+
+    # None once the account is deactivated or deleted: the link dies with it.
+    account = get_account_by_id(account_id)
+    return None if account is None or account.is_owner else account
 
 
 async def _authorize_dataset_download(
@@ -102,18 +135,31 @@ async def _authorize_dataset_download(
     artifact_path: str | None = Query(default = None),
     filename: str | None = Query(default = None),
     token: str | None = Query(default = None),
-) -> None:
+):
     """A signed link for exactly this export, or the ordinary Authorization header for an API
     client. The session bearer is deliberately not read from the query."""
-    if token and _download_link_authorizes(
-        token,
-        job_id = job_id,
-        export_format = export_format,
-        artifact_path = artifact_path,
-        filename = filename,
-    ):
+    account = (
+        _download_link_account(
+            token,
+            job_id = job_id,
+            export_format = export_format,
+            artifact_path = artifact_path,
+            filename = filename,
+        )
+        if token
+        else None
+    )
+    if account is not None:
+        # This route has no auth dependency behind the link, so without this bind every read
+        # resolves under the owner's recipe root rather than the minter's.
+        marker = bind_account(account)
+        try:
+            yield
+        finally:
+            reset_account(marker)
         return
     await subject_for_header_or_query_token(request, None)
+    yield
 
 
 download_router = APIRouter(dependencies = [Depends(_authorize_dataset_download)])
