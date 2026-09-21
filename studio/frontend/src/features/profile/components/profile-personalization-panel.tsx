@@ -89,8 +89,7 @@ export function ProfilePersonalizationPanel() {
   const lastNicknameRef = useRef(nickname);
 
   const sessionSub = decodeJwtSubject(getAuthToken()) ?? "";
-  // The draft still wins; only the login-id fallback is spelled the way the
-  // sidebar spells it, so the owner does not read two names for one account.
+  // Fallback only: the draft being typed still wins over this.
   const loginName = loginDisplayName(sessionSub);
   const previewName = draftName.trim() || loginName || "Unsloth";
 

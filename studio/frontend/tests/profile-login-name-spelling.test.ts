@@ -39,11 +39,6 @@ const { loginDisplayName } = loadWithStubs<{
   "../stores/user-profile-store": { useUserProfileStore: () => "" },
 });
 
-// The owner's login id is reserved rather than chosen, and it is the product name
-// in lower case. Every surface that falls back to that id owes the user the same
-// spelling: a sidebar reading "Unsloth" over a settings panel reading "unsloth"
-// describes one account with two names.
-
 test("the reserved owner id is the only subject whose spelling is mapped", () => {
   // Read from the shipped export, not a copy: a test pinned to its own literal
   // cannot notice the constant it is about drifting.

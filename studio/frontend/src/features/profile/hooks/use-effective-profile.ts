@@ -7,8 +7,7 @@ import { useUserProfileStore } from "../stores/user-profile-store";
 
 // The owner's id is the reserved literal "unsloth", so a verbatim subject spells
 // the brand lower case. Only that id maps; a chosen username stays as chosen.
-// Exported because every surface falling back to the login id owes the user the
-// same spelling: the sidebar and the personalization preview and placeholder.
+// Shared, not copied: every surface falling back to the login id must agree.
 export function loginDisplayName(sessionSub: string | null): string {
   return sessionSub === OWNER_USERNAME ? "Unsloth" : (sessionSub ?? "");
 }
