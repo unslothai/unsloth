@@ -678,6 +678,13 @@ const PY_FLOAT =
 /** Largest per-GPU share llama.cpp's float array holds; std::stof throws out_of_range above it. */
 const FLOAT32_MAX = 3.4028234663852886e38;
 
+/** FLT_MIN. libstdc++ reports every SUBNORMAL result as ERANGE too, so std::stof refuses a share
+ *  below this just as it refuses one above FLOAT32_MAX; exactly 0 is fine. */
+const FLOAT32_MIN_NORMAL = 1.1754943508222875e-38;
+
+/** `value` rounded to float32, so the check follows the rounding std::stof does, not the literal. */
+const toFloat32 = (value: number): number => Math.fround(value);
+
 /** The three ways parse_tensor_split_override refuses a ratio, or null when it would take it. */
 function ratioValueProblem(flag: string, value: string): string | null {
   const parts = value
@@ -699,6 +706,13 @@ function ratioValueProblem(flag: string, value: string): string | null {
   }
   if (numbers.some((entry) => entry > FLOAT32_MAX)) {
     return `${flag} entries must fit in a 32-bit float (at most ${FLOAT32_MAX.toExponential(4)}).`;
+  }
+  if (
+    numbers.some(
+      (entry) => entry !== 0 && toFloat32(entry) < FLOAT32_MIN_NORMAL,
+    )
+  ) {
+    return `${flag} entries must be 0 or at least ${FLOAT32_MIN_NORMAL.toExponential(4)}.`;
   }
   if (numbers.reduce((total, entry) => total + entry, 0) <= 0) {
     return `${flag} must have a positive total.`;

@@ -935,6 +935,12 @@ def _as_float32(value: float) -> float:
 # Largest share llama.cpp's float array can hold; anything above is out_of_range to std::stof.
 _FLOAT32_MAX = struct.unpack("=f", struct.pack("=f", 3.4028234663852886e38))[0]
 
+# FLT_MIN, the smallest NORMAL float. libstdc++'s std::stof reports every subnormal result as
+# ERANGE and throws out_of_range, so the usable range has a floor as well as a ceiling: measured
+# here, stof("1e-38") and stof("1e-45") both throw while stof("0") is fine. Rounding decides, not
+# the literal -- 1.1754943508222874e-38 rounds UP to FLT_MIN and is accepted.
+_FLOAT32_MIN_NORMAL = struct.unpack("=f", struct.pack("=f", 1.1754943508222875e-38))[0]
+
 
 def parse_tensor_split_override(args: Optional[Iterable[str]]) -> Optional[list[float]]:
     """Return the last user-supplied ``-ts`` / ``--tensor-split`` ratios from extras.
@@ -977,6 +983,12 @@ def parse_tensor_split_override(args: Optional[Iterable[str]]) -> Optional[list[
             raise ValueError(
                 "llama-server --tensor-split entries must fit in a 32-bit float "
                 f"(at most {_FLOAT32_MAX:g})"
+            )
+        if part != 0 and _as_float32(part) < _FLOAT32_MIN_NORMAL:
+            raise ValueError(
+                "llama-server --tensor-split entries must be 0 or at least "
+                f"{_FLOAT32_MIN_NORMAL:g}: a smaller share is a subnormal float and "
+                "std::stof refuses it"
             )
         running = _as_float32(running + part)
         if not math.isfinite(running):

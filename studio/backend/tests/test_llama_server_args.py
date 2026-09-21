@@ -664,6 +664,22 @@ def test_parse_tensor_split_override_rejects_a_share_float32_cannot_hold():
     assert parse_tensor_split_override(["-ts", "3.4e38,1"]) == [3.4e38, 1.0]
 
 
+@pytest.mark.parametrize("value", ["1e-50,1", "1e-45,1", "1e-40,1", "1e-38,1"])
+def test_parse_tensor_split_override_rejects_a_share_that_underflows_stof(value):
+    # libstdc++ reports every subnormal result as ERANGE, so std::stof throws out_of_range on the
+    # way DOWN as well: measured here, stof("1e-38") and stof("1e-45") both raise, stof("0") does
+    # not. Rejecting only what rounds to zero would still have let 1e-40 kill the server.
+    with pytest.raises(ValueError, match = "at least"):
+        parse_tensor_split_override(["-ts", value])
+
+
+@pytest.mark.parametrize("value", ["0,1", "1.1754943508222874e-38,1", "1.2e-38,1", "1e-30,1"])
+def test_parse_tensor_split_override_keeps_what_stof_accepts(value):
+    # Rounding decides, not the literal: 1.1754943508222874e-38 rounds UP to FLT_MIN and stof
+    # takes it. An exact zero share is a device the user is deliberately emptying.
+    assert parse_tensor_split_override(["-ts", value]) is not None
+
+
 def test_parse_tensor_split_override_rejects_a_total_float32_cannot_hold():
     # llama.cpp prefix-sums the shares into the same float array (llama-model.cpp).
     with pytest.raises(ValueError, match = "adds up past"):

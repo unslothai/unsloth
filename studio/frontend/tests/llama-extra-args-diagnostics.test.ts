@@ -1469,3 +1469,14 @@ test("a share llama.cpp's float array cannot hold is refused", () => {
   // The shares are prefix-summed into that same float array.
   assert.match(_tsError("-ts 3e38,3e38") ?? "", /adds up past/);
 });
+
+test("a share that underflows std::stof is refused too", () => {
+  // libstdc++ throws out_of_range on any subnormal result, not only on a value that rounds to
+  // zero, so the floor is FLT_MIN and not the smallest denormal.
+  for (const bad of ["1e-50,1", "1e-45,1", "1e-40,1", "1e-38,1"]) {
+    assert.match(_tsError(`-ts ${bad}`) ?? "", /0 or at least/, bad);
+  }
+  for (const good of ["0,1", "1.1754943508222874e-38,1", "1.2e-38,1", "1e-30,1"]) {
+    assert.equal(_tsError(`-ts ${good}`), null, good);
+  }
+});
