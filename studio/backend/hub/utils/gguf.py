@@ -230,8 +230,14 @@ def iter_gguf_files(directory: Path, recursive: bool = False):
         return
     if recursive:
         seen = 0
-        # os.walk skips unreadable subdirs instead of raising (e.g. /proc).
-        for dirpath, dirnames, filenames in os.walk(directory, onerror = lambda _e: None):
+
+        def _walk_error(exc) -> None:
+            # os.walk skips an unreadable subdir instead of raising (e.g. /proc), which is
+            # what keeps this usable, but a truncated walk yields fewer variants and looks
+            # exactly like a directory holding fewer: a caller memoizing a miss has to know.
+            note_scan_incident(f"gguf walk truncated: {getattr(exc, 'filename', directory)}")
+
+        for dirpath, dirnames, filenames in os.walk(directory, onerror = _walk_error):
             for name in filenames:
                 if is_gguf_filename(name):
                     path = Path(dirpath) / name
@@ -245,6 +251,7 @@ def iter_gguf_files(directory: Path, recursive: bool = False):
     try:
         entries = list(directory.iterdir())
     except OSError:
+        note_scan_incident(f"gguf dir unreadable: {directory}")
         return
     for file in entries:
         try:
@@ -253,6 +260,7 @@ def iter_gguf_files(directory: Path, recursive: bool = False):
                     continue
                 yield file
         except OSError:
+            note_scan_incident(f"gguf file unreadable: {file}")
             continue
 
 

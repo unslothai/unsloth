@@ -12622,3 +12622,51 @@ def test_a_miss_is_settled_against_the_snapshot_it_was_read_from(monkeypatch):
     assert inference_route._alias_probe_inflight == {KEY(path): 1}, (
         "a stale settle took a concurrent request's claim with it"
     )
+
+
+def test_a_truncated_gguf_walk_is_reported(monkeypatch):
+    """os.walk hands an unreadable subtree to onerror and carries on.
+
+    Skipping it is what keeps the walk usable on a host with a /proc under a scan root, but
+    a truncated walk yields fewer variants and reads exactly like a directory holding fewer,
+    so a resident model's row could lose its quants while the pass published as complete.
+    """
+    import pathlib
+
+    from core.inference.scan_incidents import collecting_scan_incidents
+    from hub.utils.gguf import iter_gguf_files
+
+    with tempfile.TemporaryDirectory() as root:
+        directory = pathlib.Path(root)
+        (directory / "model-Q4_K_M.gguf").write_bytes(b"GGUF")
+        subtree = directory / "locked"
+        subtree.mkdir()
+
+        with collecting_scan_incidents() as incidents:
+            assert list(iter_gguf_files(directory, recursive = True))
+        assert incidents == [], f"a clean walk reported a gap: {incidents}"
+
+        os.chmod(subtree, 0o000)
+        try:
+            if os.access(subtree, os.R_OK):
+                pytest.skip("running as a user that bypasses directory permissions")
+            with collecting_scan_incidents() as incidents:
+                found = list(iter_gguf_files(directory, recursive = True))
+        finally:
+            os.chmod(subtree, 0o700)
+        # The readable part is still returned: this is a report, not a refusal.
+        assert found
+        assert any("walk truncated" in note for note in incidents), (
+            f"an unreadable subtree left the walk looking complete: {incidents}"
+        )
+
+        # And the flat walk, which gives up on a directory it cannot list.
+        def boom(self):
+            raise PermissionError("cannot list")
+
+        monkeypatch.setattr(pathlib.Path, "iterdir", boom)
+        with collecting_scan_incidents() as incidents:
+            assert list(iter_gguf_files(directory, recursive = False)) == []
+        assert any("dir unreadable" in note for note in incidents), (
+            f"an unlistable directory read as holding no GGUFs: {incidents}"
+        )
