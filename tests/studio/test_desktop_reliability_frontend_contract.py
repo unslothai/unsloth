@@ -899,8 +899,8 @@ def _resolve_classes(source: str, expression: str, variant: str) -> str | None:
     return None
 
 
-def _className_from_spread(tag: str) -> bool:
-    """True when a top-level JSX spread could be supplying or replacing `className`.
+def _spread_may_supply(tag: str, attribute: str = "className") -> bool:
+    """True when a top-level JSX spread could be supplying or replacing *attribute*.
 
     A spread's contents are not resolvable here, and both ways it can matter are silent. With
     no explicit `className`, a spread may be the only thing supplying one, and this reader
@@ -920,13 +920,13 @@ def _className_from_spread(tag: str) -> bool:
             depth -= 1
     if not spreads:
         return False
-    explicit = re.search(r"(?:^|[\s{])className=", tag)
+    explicit = re.search(rf"(?:^|[\s{{]){re.escape(attribute)}=", tag)
     return explicit is None or max(spreads) > explicit.start()
 
 
 def _button_classes(source: str, tag: str, variant: str) -> str | None:
     """The classes a `<button>` tag ends up with for `variant`, or None if unreadable."""
-    if _className_from_spread(tag):
+    if _spread_may_supply(tag):
         return None
     # A suffixed lookalike is refused, not read as absent. `data-className={cn(...)}` is not a
     # className, so the boundary above correctly declines to read it, but returning "" then
@@ -1435,7 +1435,7 @@ _MOVES_HORIZONTALLY = (
 )
 
 
-def _touch_spinner_reach(block: str, spacing: float) -> float | None:
+def _touch_spinner_reach(block: str, spacing: float) -> tuple[str, float] | None:
     """How far the working-row spinner reaches into the row on a coarse pointer, in units.
 
     The row actions are not the only thing the title has to clear. A working row also renders
@@ -1446,7 +1446,16 @@ def _touch_spinner_reach(block: str, spacing: float) -> float | None:
     Read the way everything else here is: the offset off the element that carries it, the
     width off the glyph inside it, and None for anything this cannot resolve.
     """
-    gate = re.search(r"\{\s*showWorkSpinner\s*\?\s*\(", block)
+    # The ternary that mounts a <span>, whatever its condition is called. Matching the name
+    # here and correlating on the same literal elsewhere would let the two drift apart.
+    gate = next(
+        (
+            found
+            for found in re.finditer(r"\{\s*([A-Za-z_$][\w$]*)\s*\?\s*\(", block)
+            if re.match(r"\s*<span", block[found.end() :])
+        ),
+        None,
+    )
     if not gate:
         return None
     depth, end = 0, None
@@ -1468,7 +1477,9 @@ def _touch_spinner_reach(block: str, spacing: float) -> float | None:
     for tag in _opening_jsx_tags(rendered, "<span"):
         if "sidebar-row-action" in tag.split() or "absolute" not in tag:
             continue
-        if re.search(r"(?:^|[\s{])style=", tag) or _className_from_spread(tag):
+        if re.search(r"(?:^|[\s{])style=", tag) or any(
+            _spread_may_supply(tag, attribute) for attribute in ("className", "style")
+        ):
             return None
         if re.search(_MOVES_HORIZONTALLY, tag):
             return None
@@ -1484,7 +1495,11 @@ def _touch_spinner_reach(block: str, spacing: float) -> float | None:
     ]
     if len(offsets) != 1 or len(widths) != 1:
         return None
-    return offsets[0] + widths[0]
+    # The gate's own condition is returned with the measurement, because the caller has to
+    # correlate it with the builder's branches. Naming `showWorkSpinner` there and reading it
+    # here would let the two drift: spell the gate `Boolean(showWorkSpinner)` in both places
+    # and a caller keyed on the literal name finds no spinner rendering and skips them all.
+    return gate.group(1), offsets[0] + widths[0]
 
 
 def _rendered_class_lists(arguments: list[str]) -> list[list[str]]:
@@ -1620,7 +1635,15 @@ def test_chat_sidebar_row_actions_visible_on_coarse_pointers():
     # `style={{ paddingRight: 0 }}` on the carrier puts the always-visible touch actions
     # straight back over the title while every gutter assertion below stays green, because
     # only buttonClass is analysed.
-    styled = [tag for tag in carriers if re.search(r"(?:^|[\s{])style=", tag)]
+    # A spread counts wherever it sits. Ordering only settles `className`, where the explicit
+    # attribute beats a spread written before it; it settles nothing about `style`, which no
+    # attribute here declares, so `{...rowProps}` with a `style.paddingRight` of 0 overrides
+    # every pr-N gutter below from either side of the className.
+    styled = [
+        tag
+        for tag in carriers
+        if re.search(r"(?:^|[\s{])style=", tag) or _spread_may_supply(tag, "style")
+    ]
     assert not styled, (
         f"a row carrier sets an inline style, which outranks the pr-N gutters this guard "
         f"compares, so the room it computes is not the room that renders: {styled!r}"
@@ -1761,15 +1784,27 @@ def test_chat_sidebar_row_actions_visible_on_coarse_pointers():
     # further in than the pin on touch, which is why the row reserves 78px there and not the
     # 64 the actions alone would need. Without this the touch gutter could drop to the
     # actions' floor with the spinner left over the title, and every check above would pass.
-    spinner_reach = _touch_spinner_reach(applied, spacing)
-    assert spinner_reach is not None, (
+    spinner = _touch_spinner_reach(applied, spacing)
+    assert spinner is not None, (
         "renderChatSidebarItem no longer states the working-row spinner's coarse offset and "
         "size in a form this guard can read, so it cannot tell how much room a working row "
         "has to reserve beyond its actions"
     )
-    for constraints, rendering in rendered:
-        if not constraints.get("showWorkSpinner"):
-            continue
+    spinner_gate, spinner_reach = spinner
+    # Correlated, or refused. Skipping renderings whose constraints do not mention the gate
+    # treats "this is not a working row" and "this guard could not tell" as the same answer,
+    # and the second one is how the whole check quietly stops running.
+    showing = [
+        (constraints, rendering)
+        for constraints, rendering in rendered
+        if constraints.get(spinner_gate)
+    ]
+    assert showing, (
+        f"no rendering of the row's classes is conditioned on {spinner_gate!r}, the same "
+        f"condition that gates the spinner, so this guard cannot tell which rows show one "
+        f"and would check the spinner's gutter on none of them"
+    )
+    for constraints, rendering in showing:
         touch = [
             float(match.group(1))
             for match in (
