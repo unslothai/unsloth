@@ -15,7 +15,7 @@ if str(_BACKEND) not in sys.path:
 
 import core.inference.defaults as defaults_mod  # noqa: E402
 import utils.hardware.hardware as hw  # noqa: E402
-from core.inference.mlx_bnb import mlx_bnb_base_repo, mlx_bnb_substitutions  # noqa: E402
+from core.inference.model_ids import mlx_bnb_base_repo, mlx_bnb_substitutions  # noqa: E402
 
 
 def test_unsloth_bnb_repos_resolve_to_their_base():
@@ -146,7 +146,7 @@ def test_worker_only_watches_the_repositories_mlx_downloads(
 
 
 def test_the_host_rule_only_fires_on_mlx(monkeypatch):
-    from core.inference.mlx_bnb import mlx_host_bnb_base_repo
+    from core.inference.model_ids import mlx_host_bnb_base_repo
 
     monkeypatch.setattr(hw, "get_device", lambda: hw.DeviceType.CUDA)
     assert mlx_host_bnb_base_repo("unsloth/Qwen2-VL-2B-Instruct-bnb-4bit") is None
@@ -159,7 +159,7 @@ def test_the_host_rule_only_fires_on_mlx(monkeypatch):
 
 
 def test_diffusion_bnb_repos_are_loaded_as_named(monkeypatch):
-    from core.inference.mlx_bnb import mlx_host_bnb_base_repo
+    from core.inference.model_ids import mlx_host_bnb_base_repo
 
     monkeypatch.setattr(hw, "get_device", lambda: hw.DeviceType.MLX)
     assert mlx_host_bnb_base_repo("unsloth/Qwen-Image-2512-unsloth-bnb-4bit") is None

@@ -451,7 +451,7 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
         # loads; a no-progress Xet download is reported as a stall so the parent
         # can respawn over HTTP. Watch model + base repos (base is the LoRA
         # download bottleneck).
-        from core.inference.mlx_bnb import mlx_bnb_substitutions
+        from core.inference.model_ids import mlx_bnb_substitutions
         from utils.hf_xet_fallback import start_watchdog
 
         watch_repos = [mc.identifier]

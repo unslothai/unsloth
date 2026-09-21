@@ -16989,7 +16989,7 @@ def _requires_security_review_for_model(
 
 
 def _mlx_base_for_config(config) -> Optional[str]:
-    from core.inference.mlx_bnb import mlx_host_bnb_base_repo
+    from core.inference.model_ids import mlx_host_bnb_base_repo
     for candidate in (getattr(config, "identifier", None), getattr(config, "base_model", None)):
         base = mlx_host_bnb_base_repo(candidate)
         if base:

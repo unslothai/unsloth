@@ -6,7 +6,7 @@
 from typing import Iterable
 
 import utils.hardware.hardware as hw
-from core.inference.mlx_bnb import mlx_bnb_base_repo
+from core.inference.model_ids import mlx_bnb_base_repo
 
 DEFAULT_MODELS_GGUF = [
     "unsloth/Qwen3.6-27B-MTP-GGUF",

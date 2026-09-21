@@ -158,8 +158,7 @@ def _cached_mlx_siblings(repo_id):
 
 
 def get_mlx_load_plan_cached(repo_id: str, hf_token: Optional[str] = None):
-    from core.inference.mlx_bnb import mlx_load_siblings
-    from hub.utils.snapshot_filters import blob_hashes_for_siblings
+    from hub.utils.snapshot_filters import blob_hashes_for_siblings, mlx_load_siblings
     from huggingface_hub import HfApi
 
     key = (repo_id, hf_cache_scan.token_fingerprint(hf_token))
