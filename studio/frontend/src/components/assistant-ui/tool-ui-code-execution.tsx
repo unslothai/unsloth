@@ -10,8 +10,9 @@ import {
   type ToolCallMessagePartComponent,
   useAuiState,
 } from "@assistant-ui/react";
-import { CopyIcon, FileTextIcon, TerminalIcon } from "lucide-react";
+import { FileTextIcon, TerminalIcon } from "lucide-react";
 import { Tick02Icon } from "@/lib/tick-icon";
+import { Copy01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { Spinner } from "@/components/ui/spinner";
 import { isToolCallRunning, toolArgText } from "./tool-arg-text";
@@ -98,7 +99,7 @@ function CopyBtn({ text }: { text: string }) {
       {copied ? (
         <HugeiconsIcon icon={Tick02Icon} strokeWidth={2} className="size-3" />
       ) : (
-        <CopyIcon className="size-3" />
+        <HugeiconsIcon icon={Copy01Icon} className="size-3" />
       )}
       {copied ? "Copied" : "Copy"}
     </button>

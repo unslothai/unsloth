@@ -196,6 +196,7 @@ export const es = {
       unpinChats: "Dejar de fijar chats",
       archiveChats: "Archivar chats",
       markUnread: "Marcar como no leído",
+      markRead: "Marcar como leído",
       deleteChats: "Eliminar chats",
       deleteTitle: "Eliminar chats",
       deleteDescription: "¿Eliminar {count} chats? Esta acción no se puede deshacer.",
@@ -214,11 +215,26 @@ export const es = {
       priority: "Prioridad",
       lastUpdated: "Última actualización",
       manualOrder: "Orden manual",
-      moveUp: "Subir",
-      moveDown: "Bajar",
+      priorityHint: "Activos y no leídos primero",
+      lastUpdatedHint: "Más recientes primero",
+      manualOrderHint: "Arrastra las filas para reordenarlas",
+      switchedToManual: "Orden manual: arrastra las filas para reordenarlas",
       organizeChats: "Organizar chats",
       organizeProjects: "Organizar proyectos",
       sortPinnedChats: "Ordenar chats fijados",
+      dragDrop: "Arrastrar y soltar",
+      dragHints: "Mostrar una pista al arrastrar",
+      reorderSwitchesSort: "Reordenar cambia a orden manual",
+      dragOpensFolders: "Abrir carpetas bajo el puntero",
+      moveUp: "Subir",
+      moveDown: "Bajar",
+    },
+    drag: {
+      reorder: "Reordenar",
+      pin: "Fijar",
+      unpin: "Desfijar",
+      moveTo: "Mover a {name}",
+      moveToRecents: "Mover a Recientes",
     },
     dialog: {
       deleteChat: {
@@ -1629,6 +1645,9 @@ export const es = {
         collapseByDefault: "Contraer la actividad de herramientas por defecto",
         collapseByDefaultDescription:
           "Mantén contraídas las entradas y salidas de las herramientas mientras se ejecutan. Expande cualquier fila para inspeccionarla.",
+        foldIntoThinking: "Plegar las llamadas de herramientas en Pensamiento",
+        foldIntoThinkingDescription:
+          "Oculta las llamadas de herramientas de un turno hasta abrir su bloque de Pensamiento.",
       },
       webSearch: {
         title: "Búsqueda web",
