@@ -46,9 +46,8 @@ store.set(
 const { useChatPreferencesStore } = await import(
   "../src/features/chat/stores/chat-preferences-store.ts"
 );
-const { resolveToolActivityOpen, syncToolActivityPreference } = await import(
-  "../src/components/assistant-ui/tool-activity-open-state.ts"
-);
+const { resolveToolActivityOpen, syncToolActivityPreference, toolActivityOpen } =
+  await import("../src/components/assistant-ui/tool-activity-open-state.ts");
 const { foldIsActive } = await import(
   "../src/features/chat/utils/display-visibility.ts"
 );
@@ -317,45 +316,87 @@ test("changing the setting hands the card back to the automatic rules", () => {
 });
 
 test("fallback cards react to live preference changes", () => {
-  const manuallyOpen = { visibility: "auto" as const, open: true };
+  const manuallyOpen = {
+    visibility: "auto" as const,
+    active: true,
+    override: true,
+  };
   const collapsed = syncToolActivityPreference(manuallyOpen, "collapsed", true);
-  assert.deepEqual(collapsed, { visibility: "collapsed", open: false });
-  assert.deepEqual(syncToolActivityPreference(collapsed, "auto", true), {
-    visibility: "auto",
-    open: true,
-  });
-  // Always expanded ignores the card's own default and opens it regardless.
-  assert.deepEqual(syncToolActivityPreference(collapsed, "expanded", false), {
-    visibility: "expanded",
-    open: true,
-  });
+  // The setting change drops the manual open, so the card follows the new setting.
+  assert.equal(collapsed.override, null);
+  assert.equal(toolActivityOpen(collapsed), false);
+  assert.equal(toolActivityOpen(syncToolActivityPreference(collapsed, "auto", true)), true);
+  // Always expanded ignores the card's own activity and opens it regardless.
+  assert.equal(
+    toolActivityOpen(syncToolActivityPreference(collapsed, "expanded", false)),
+    true,
+  );
 });
 
 test("fallback cards preserve manual state until the preference changes", () => {
-  const manuallyOpen = { visibility: "collapsed" as const, open: true };
+  const manuallyOpen = {
+    visibility: "collapsed" as const,
+    active: true,
+    override: true,
+  };
   // Reference identity, not deep equality: the render-phase `if (synced !==
   // state) setState(...)` in ToolFallbackRoot and ToolGroupRoot terminates only
-  // because an unchanged preference returns the very same object.
+  // because an unchanged preference and activity return the very same object.
   assert.equal(
     syncToolActivityPreference(manuallyOpen, "collapsed", true),
     manuallyOpen,
   );
-  const manuallyClosed = { visibility: "expanded" as const, open: false };
+  const manuallyClosed = {
+    visibility: "expanded" as const,
+    active: true,
+    override: false,
+  };
   assert.equal(
     syncToolActivityPreference(manuallyClosed, "expanded", true),
     manuallyClosed,
   );
 });
 
-test("switching to auto respects a closed fallback default", () => {
-  assert.deepEqual(
-    syncToolActivityPreference(
-      { visibility: "collapsed", open: false },
-      "auto",
-      false,
+test("switching to auto respects a card whose call has finished", () => {
+  assert.equal(
+    toolActivityOpen(
+      syncToolActivityPreference(
+        { visibility: "collapsed", active: false, override: null },
+        "auto",
+        false,
+      ),
     ),
-    { visibility: "auto", open: false },
+    false,
   );
+});
+
+test("an auto card closes itself when its call stops running", () => {
+  // The gap this covers: an uncontrolled card mounted with defaultOpen={isRunning} used to open
+  // and never close again, because an unchanged setting returned the state untouched.
+  const running = { visibility: "auto" as const, active: true, override: null };
+  assert.equal(toolActivityOpen(running), true);
+  const finished = syncToolActivityPreference(running, "auto", false);
+  assert.equal(toolActivityOpen(finished), false);
+});
+
+test("a hand-opened auto card survives its call finishing", () => {
+  // Activity moving on its own must not discard a manual open, only the setting may.
+  const opened = { visibility: "auto" as const, active: true, override: true };
+  const finished = syncToolActivityPreference(opened, "auto", false);
+  assert.equal(finished.override, true);
+  assert.equal(toolActivityOpen(finished), true);
+});
+
+test("a hand-closed running card stays closed while it runs", () => {
+  const closed = { visibility: "auto" as const, active: true, override: false };
+  assert.equal(toolActivityOpen(closed), false);
+  assert.equal(toolActivityOpen(syncToolActivityPreference(closed, "auto", true)), false);
+});
+
+test("always expanded opens a card that mounted with nothing running", () => {
+  // Generic and MCP cards render with whatever their status says; expanded ignores it.
+  const idle = { visibility: "expanded" as const, active: false, override: null };
+  assert.equal(toolActivityOpen(idle), true);
 });
 
 // ---------------------------------------------------------------------------
@@ -709,6 +750,52 @@ test("a mounted group follows the preference like a mounted card", async () => {
       synced.parent.name.getText(),
     ),
     "the group computes a synced state and then ignores it",
+  );
+});
+
+test("the generic fallback card tells its root whether the call is running", async () => {
+  // Without this the root's defaultOpen stays false, so "Expand while running" could never
+  // reach an unknown or MCP tool call.
+  const source = await sourceOf(
+    "../src/components/assistant-ui/tool-fallback.tsx",
+  );
+  const impl = initializerOf(source, "ToolFallbackImpl");
+  const root = jsxElement(impl, "ToolFallbackRoot");
+  const attribute = jsxAttribute(root, "defaultOpen");
+  assert.ok(attribute, "the generic card mounts collapsed even while it runs");
+  assert.ok(
+    attribute.initializer &&
+      ts.isJsxExpression(attribute.initializer) &&
+      attribute.initializer.expression &&
+      identifiersIn(attribute.initializer.expression).has("isToolCallRunning"),
+    "the generic card pins defaultOpen instead of reading its live status",
+  );
+});
+
+test("a tool group tells its root whether its own calls are running", async () => {
+  const source = await sourceOf(
+    "../src/components/assistant-ui/tool-group.tsx",
+  );
+  const impl = initializerOf(source, "ToolGroupImpl");
+  const attribute = jsxAttribute(jsxElement(impl, "ToolGroupRoot"), "defaultOpen");
+  assert.ok(attribute, "a running group mounts collapsed under auto");
+  assert.ok(
+    attribute.initializer &&
+      ts.isJsxExpression(attribute.initializer) &&
+      attribute.initializer.expression &&
+      identifiersIn(attribute.initializer.expression).has("groupRunning"),
+    "the group pins defaultOpen instead of reading its live activity",
+  );
+  // Scoped to the group's own calls, not the whole message, so it goes quiet once they finish.
+  const running = initializerOf(source, "groupRunning");
+  const names = identifiersIn(running);
+  assert.ok(
+    names.has("startIndex") && names.has("endIndex"),
+    "the group's activity signal ignores which calls belong to it",
+  );
+  assert.ok(
+    names.has("result"),
+    "the group stays open for the whole turn instead of until its calls have results",
   );
 });
 

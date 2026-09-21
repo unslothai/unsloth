@@ -37,12 +37,12 @@ import { useCollapseScrollLock } from "@/hooks/use-collapse-scroll-lock";
 import { cn } from "@/lib/utils";
 import { Spinner } from "@/components/ui/spinner";
 import { awaitsConfirmation, holdsOwnOutput } from "./tool-fold-exemptions";
-import { syncToolActivityPreference } from "./tool-activity-open-state";
-// eslint-disable-next-line no-restricted-imports -- this file is in the startup cycle; the chat barrel closes it.
 import {
-  defaultOpenFor,
-  foldIsActive,
-} from "@/features/chat/utils/display-visibility";
+  syncToolActivityPreference,
+  toolActivityOpen,
+} from "./tool-activity-open-state";
+// eslint-disable-next-line no-restricted-imports -- this file is in the startup cycle; the chat barrel closes it.
+import { foldIsActive } from "@/features/chat/utils/display-visibility";
 
 const ANIMATION_DURATION = 200;
 
@@ -84,7 +84,8 @@ function ToolGroupRoot({
   const visibility = useChatPreferencesStore((state) => state.toolVisibility);
   const [uncontrolledState, setUncontrolledState] = useState(() => ({
     visibility,
-    open: defaultOpenFor(visibility, defaultOpen),
+    active: defaultOpen,
+    override: null as boolean | null,
   }));
   const syncedUncontrolledState = syncToolActivityPreference(
     uncontrolledState,
@@ -97,7 +98,9 @@ function ToolGroupRoot({
   const lockScroll = useCollapseScrollLock(collapsibleRef, ANIMATION_DURATION);
 
   const isControlled = controlledOpen !== undefined;
-  const isOpen = isControlled ? controlledOpen : syncedUncontrolledState.open;
+  const isOpen = isControlled
+    ? controlledOpen
+    : toolActivityOpen(syncedUncontrolledState);
 
   // Opening by hand grows the group downward; see the same note in reasoning.tsx.
   const detachFromBottom = useDetachThreadFromBottom();
@@ -112,12 +115,12 @@ function ToolGroupRoot({
         detachFromBottom();
       }
       if (!isControlled) {
-        setUncontrolledState({ visibility, open });
+        setUncontrolledState({ ...syncedUncontrolledState, override: open });
       }
       controlledOnOpenChange?.(open);
     },
     [
-      visibility,
+      syncedUncontrolledState,
       lockScroll,
       isControlled,
       controlledOnOpenChange,
@@ -276,6 +279,19 @@ const ToolGroupImpl: FC<
   const messageRunning = useAuiState(
     ({ message }) => message.status?.type === "running",
   );
+  // Still working: a part inherits the message status until it has a result, so the group goes
+  // quiet once every call in it has one, without waiting for the rest of the turn.
+  const groupRunning = useAuiState(
+    ({ message }) =>
+      message.status?.type === "running" &&
+      message.parts
+        .slice(startIndex, endIndex + 1)
+        .some(
+          (part) =>
+            part.type === "tool-call" &&
+            (part as { result?: unknown }).result === undefined,
+        ),
+  );
   // Only collapsed suppresses the forced opens below. Auto and expanded want it open anyway.
   const collapseByDefault = useChatPreferencesStore(
     (state) => state.toolVisibility === "collapsed",
@@ -344,7 +360,7 @@ const ToolGroupImpl: FC<
     toolCount <= 1 || containsUngroupedTool ? (
       <>{children}</>
     ) : (
-      <ToolGroupRoot open={forceOpen ? true : undefined}>
+      <ToolGroupRoot open={forceOpen ? true : undefined} defaultOpen={groupRunning}>
         <ToolGroupTrigger count={toolCount} />
         <ToolGroupContent>{children}</ToolGroupContent>
       </ToolGroupRoot>

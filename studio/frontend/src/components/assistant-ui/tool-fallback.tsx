@@ -48,9 +48,10 @@ import {
   toolArgText,
   toolFallbackLabel,
 } from "./tool-arg-text";
-import { syncToolActivityPreference } from "./tool-activity-open-state";
-// eslint-disable-next-line no-restricted-imports -- this file is in the startup cycle; the chat barrel closes it.
-import { defaultOpenFor } from "@/features/chat/utils/display-visibility";
+import {
+  syncToolActivityPreference,
+  toolActivityOpen,
+} from "./tool-activity-open-state";
 
 const ANIMATION_DURATION = 200;
 
@@ -82,7 +83,8 @@ function ToolFallbackRoot({
   const visibility = useChatPreferencesStore((state) => state.toolVisibility);
   const [uncontrolledState, setUncontrolledState] = useState(() => ({
     visibility,
-    open: defaultOpenFor(visibility, defaultOpen),
+    active: defaultOpen,
+    override: null as boolean | null,
   }));
   const syncedUncontrolledState = syncToolActivityPreference(
     uncontrolledState,
@@ -97,7 +99,7 @@ function ToolFallbackRoot({
   const isControlled = controlledOpen !== undefined;
   const isOpen =
     awaitingApproval ||
-    (isControlled ? controlledOpen : syncedUncontrolledState.open);
+    (isControlled ? controlledOpen : toolActivityOpen(syncedUncontrolledState));
 
   // Opening by hand grows the card downward; see the same note in reasoning.tsx.
   const detachFromBottom = useDetachThreadFromBottom();
@@ -112,15 +114,12 @@ function ToolFallbackRoot({
         detachFromBottom();
       }
       if (!isControlled) {
-        setUncontrolledState({
-          visibility,
-          open,
-        });
+        setUncontrolledState({ ...syncedUncontrolledState, override: open });
       }
       controlledOnOpenChange?.(open);
     },
     [
-      visibility,
+      syncedUncontrolledState,
       lockScroll,
       isControlled,
       controlledOnOpenChange,
@@ -449,7 +448,10 @@ const ToolFallbackImpl: ToolCallMessagePartComponent = ({
   const isCancelled = isToolCallCancelled(status);
 
   return (
-    <ToolFallbackRoot className={cn(isCancelled && "bg-muted/30")}>
+    <ToolFallbackRoot
+      className={cn(isCancelled && "bg-muted/30")}
+      defaultOpen={isToolCallRunning(status)}
+    >
       <ToolFallbackTrigger
         toolName={toolName}
         mcpServer={mcpServerFromProvenance(provenance)}

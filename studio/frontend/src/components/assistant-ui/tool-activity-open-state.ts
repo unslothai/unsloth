@@ -44,20 +44,31 @@ export function resolveToolActivityOpen({
 
 export interface ToolActivityPreferenceState {
   visibility: DisplayVisibility;
-  open: boolean;
+  /** Still running. A live prop, so it falls to false when the call finishes. */
+  active: boolean;
+  /** null until the user clicks the trigger. */
+  override: boolean | null;
 }
 
-/** Same rule for uncontrolled cards and groups: leave them alone until the setting moves. */
+/** The state uncontrolled cards and groups keep. A setting change hands the card back to the
+ *  setting; activity changing on its own only moves cards the user has not touched, so auto can
+ *  close a card when its call ends without discarding a manual open. */
 export function syncToolActivityPreference(
   current: ToolActivityPreferenceState,
   visibility: DisplayVisibility,
   active: boolean,
-) {
-  if (current.visibility === visibility) {
+): ToolActivityPreferenceState {
+  if (current.visibility === visibility && current.active === active) {
     return current;
   }
   return {
     visibility,
-    open: defaultOpenFor(visibility, active),
+    active,
+    override: current.visibility === visibility ? current.override : null,
   };
+}
+
+/** Whether such a card is open right now. */
+export function toolActivityOpen(state: ToolActivityPreferenceState): boolean {
+  return state.override ?? defaultOpenFor(state.visibility, state.active);
 }
