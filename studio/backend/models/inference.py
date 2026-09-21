@@ -4217,12 +4217,14 @@ class DiffusionGenerateProgressResponse(BaseModel):
     # whose POST is lost past the proxy's ~100s window (GenerateResponseLostError) leaves the
     # client polling a response that can report "not running" but never why.
     error: Optional[str] = Field(None, description = "Why the last generation failed, if it did")
-    # Which run that reason belongs to. A caller settling a generation whose POST was lost
-    # needs it: its own attempt may never have reached the backend, in which case this has
-    # not moved since before that POST and the reason is a previous run's. Sent only
-    # alongside a reason, so it is never an unexplained internal counter.
+    # The engine's run counter, bumped where a generation STARTS. A caller settling a
+    # generation whose POST was lost needs both ends of a comparison: this value read before
+    # its own post, and the one carried beside a retained reason. Always sent, because the
+    # baseline is read when there is nothing wrong -- a run that succeeded retains no reason
+    # to carry it alongside, and a baseline that is merely stale attributes a previous
+    # failure to a request that never arrived.
     generation_seq: Optional[int] = Field(
-        None, description = "Sequence of the generation the error belongs to"
+        None, description = "The engine's generation counter; compare against a baseline"
     )
 
 

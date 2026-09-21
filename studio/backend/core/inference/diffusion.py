@@ -7310,6 +7310,9 @@ class DiffusionBackend:
             "total_steps": gen.total_steps,
             "fraction": gen.step / gen.total_steps,  # step is 1..total, never over 1.0
             "eta_seconds": gen.eta_seconds,
+            # On this branch too: it is the BASELINE a caller freezes before its own
+            # post, and a run that succeeds retains no reason to carry it alongside.
+            "generation_seq": getattr(self, "_generate_seq", 0),
         }
 
     def cancel_generate(self, expected_account: Optional[str] = None) -> bool:

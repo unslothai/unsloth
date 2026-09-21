@@ -132,12 +132,29 @@ def test_an_engine_dates_the_reason_with_a_run_counter(engine):
     )
 
 
-def test_the_route_sends_the_counter_only_beside_a_reason():
-    """On its own it is an internal counter with no meaning to a client, and shipping it
-    unconditionally invites exactly the correlation this is meant to make possible to be
-    done against a number that was never qualified."""
+def test_the_route_sends_the_counter_whether_or_not_there_is_a_reason():
+    """The counter is half of a comparison, and the other half is read when nothing is wrong.
+
+    A caller freezes the baseline before its own post. A run that SUCCEEDED retains no
+    reason, so withholding the counter unless there is one leaves that baseline unobservable:
+    the caller falls back to whatever an earlier poll left behind, and a reason retained from
+    a run before that reads as newer than a post which never arrived.
+    """
     src = _src("routes/inference.py")
     at = src.index("async def diffusion_generate_progress")
     body = src[at : at + 2500]
-    assert 'if not progress.get("error"):' in body
-    assert 'progress.pop("generation_seq", None)' in body
+    assert 'progress.pop("generation_seq", None)' not in body, (
+        "the route withholds the counter again, so a caller cannot freeze a baseline"
+    )
+
+
+@pytest.mark.parametrize("engine", ENGINES)
+def test_an_engine_publishes_the_counter_on_both_branches(engine):
+    """Active as well as idle: the baseline is read while a previous run is still going, and
+    between the runs of a batch, not only once everything has stopped."""
+    src = _src(engine)
+    at = src.index("def generate_progress")
+    body = src[at : at + 2000]
+    assert body.count('"generation_seq": getattr(self, "_generate_seq", 0),') == 2, (
+        f"{engine} does not publish the run counter on both progress branches"
+    )

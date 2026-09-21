@@ -21,14 +21,19 @@ export interface RetainedGenerationFailure {
  * previous run's. Attributing it would also skip the gallery probe that reports the request
  * never arrived, which is the more accurate answer.
  *
- * A backend older than `generation_seq` sends a reason that cannot be dated, so it is not
- * used: the pre-existing probe still settles those, as it did before this field existed.
+ * Both ends have to be real. A backend older than `generation_seq` sends a reason that
+ * cannot be dated, and a caller that never managed to read the counter before its post has
+ * no baseline to date it against -- a guessed one (0, or whatever an earlier poll left
+ * behind) makes every retained reason look newer than the post. Either way the reason is not
+ * used and the pre-existing gallery probe settles the attempt, as it did before this field
+ * existed.
  */
 export function generationFailureForAttempt(
   progress: RetainedGenerationFailure,
-  seqBeforePost: number,
+  seqBeforePost: number | null,
 ): string | null {
   if (!progress.error) return null;
   if (typeof progress.generation_seq !== "number") return null;
+  if (typeof seqBeforePost !== "number") return null;
   return progress.generation_seq > seqBeforePost ? progress.error : null;
 }

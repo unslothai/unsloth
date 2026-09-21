@@ -483,11 +483,11 @@ const SETTLE_MAX_FAILS = 5; // consecutive progress failures before calling the 
 async function settleLostGeneration(
   isCurrent: () => boolean,
   baseline: NewRecordProbeBaseline,
-  // The engine's run counter as it stood BEFORE this POST. A retained reason is only this
-  // attempt's if a run started after that; without the comparison a previous failure is
-  // attributed to a request that never reached the backend, and the gallery probe that
-  // would have said so is skipped.
-  seqBeforePost: number,
+  // The engine's run counter as it stood BEFORE this POST, or null when the client never
+  // managed to read it. A retained reason is only this attempt's if a run started after
+  // that; without the comparison a previous failure is attributed to a request that never
+  // reached the backend, and the gallery probe that would have said so is skipped.
+  seqBeforePost: number | null,
 ): Promise<void> {
   const start = Date.now();
   let fails = 0;
@@ -1385,7 +1385,9 @@ export function ImagesPage({
   // The engine's run counter as last seen by the progress poll. Only used to date a
   // retained failure reason against the moment before a POST; an unanswered poll leaves
   // it 0, which admits fewer reasons rather than more.
-  const lastGenerationSeq = useRef(0);
+  // Null until a progress read answers: an assumed baseline makes every retained reason
+  // look newer than the post being settled.
+  const lastGenerationSeq = useRef<number | null>(null);
   // The run token owning the Stop on the wire, or null: without it each extra click posts again
   // and a late duplicate stops whichever generation is running by then. A token, not a flag,
   // because the clear is asynchronous.
@@ -2308,6 +2310,13 @@ export function ImagesPage({
     };
     document.addEventListener("visibilitychange", genVisibilityListener.current);
     genPollTimer.current = setInterval(() => void pollGenerateOnce(), 300);
+    // Awaited, once, before anything is posted. The interval keeps the counter fresh for
+    // the runs after the first, but the first has nothing to read yet, and the value a
+    // previous page-session poll left behind is exactly the stale baseline that
+    // misattributes a reason retained from before this page loaded. A read that fails
+    // leaves it null, which declines to attribute rather than guessing.
+    lastGenerationSeq.current = null;
+    await pollGenerateOnce();
   }, [loadGallery, refreshStatus]);
 
   useEffect(() => {
@@ -3458,8 +3467,13 @@ export function ImagesPage({
       pollInFlight = true;
       try {
         const p = await getGenerateProgress();
+        // Monotonic: two polls can answer out of order, and a baseline that went backwards
+        // would let the run it belongs to look like a later one.
         if (typeof p.generation_seq === "number")
-          lastGenerationSeq.current = p.generation_seq;
+          lastGenerationSeq.current = Math.max(
+            lastGenerationSeq.current ?? p.generation_seq,
+            p.generation_seq,
+          );
         // Skip the state update (and re-render) when nothing the bar shows moved.
         setGenStep((prev) => {
           if (!p.active) return null;
@@ -3504,8 +3518,9 @@ export function ImagesPage({
         // Frozen with the baseline, and for the same reason: both halves have to describe
         // the moment before THIS post. A reason retained from an earlier failed run
         // carries a sequence at or below this, so it cannot be mistaken for this
-        // attempt's. Read through the poll already running, so the happy path pays
-        // nothing; 0 when it has not answered yet, which only ever admits fewer reasons.
+        // attempt's. Read through the poll, which was awaited once before this loop and
+        // runs every 300ms after, so the happy path pays one local request per click; null
+        // if it never answered, which declines to attribute rather than guessing.
         const seqBeforePost = lastGenerationSeq.current;
         let res: DiffusionGenerateResponse;
         try {

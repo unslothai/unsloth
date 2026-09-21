@@ -11,6 +11,7 @@
  */
 
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import { generationFailureForAttempt } from "../src/features/images/lib/generation-failure.ts";
@@ -62,4 +63,46 @@ test("no failure is no failure, however the counter reads", () => {
       String(error),
     );
   }
+});
+
+test("an attempt with no baseline of its own declines to attribute", () => {
+  // The client never got a progress read in before its post: on the first attempt after a
+  // page load, or because that read failed. A guessed baseline is the whole defect -- the
+  // route only ships the counter beside a reason if it is withheld otherwise, so a run that
+  // succeeded leaves the caller at 0 and ANY retained reason reads as newer than a post that
+  // never arrived.
+  assert.equal(
+    generationFailureForAttempt({ error: REASON, generation_seq: 12 }, null),
+    null,
+  );
+  // And a real baseline of 0 is still a baseline: nothing had run yet, so a first run's
+  // failure is this attempt's.
+  assert.equal(
+    generationFailureForAttempt({ error: REASON, generation_seq: 1 }, 0),
+    REASON,
+  );
+});
+
+test("the page reads its baseline before it posts, not from whatever a poll left behind", () => {
+  // Source-shape, because images-page.tsx cannot be loaded on its own: the ordering IS the
+  // contract. Asserted as: the ref is cleared and a progress read awaited, both before the
+  // generate loop that freezes seqBeforePost.
+  const src = readFileSync(
+    new URL("../src/features/images/images-page.tsx", import.meta.url),
+    "utf8",
+  );
+  const cleared = src.indexOf("lastGenerationSeq.current = null;");
+  const awaited = src.indexOf("await pollGenerateOnce();");
+  const frozen = src.indexOf(
+    "const seqBeforePost = lastGenerationSeq.current;",
+  );
+  assert.ok(cleared > 0, "the page keeps a baseline across generate clicks");
+  assert.ok(
+    awaited > cleared,
+    "no progress read is awaited before the first post",
+  );
+  assert.ok(
+    frozen > awaited,
+    "the baseline is frozen before the read that would have observed it",
+  );
 });

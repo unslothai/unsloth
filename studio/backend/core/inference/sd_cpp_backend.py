@@ -3650,6 +3650,9 @@ class SdCppDiffusionBackend:
             "total_steps": gen.total_steps,
             "fraction": min(gen.step / gen.total_steps, 1.0),
             "eta_seconds": gen.eta_seconds,
+            # On this branch too: it is the BASELINE a caller freezes before its own
+            # post, and a run that succeeds retains no reason to carry it alongside.
+            "generation_seq": getattr(self, "_generate_seq", 0),
         }
 
     def cancel_generate(self, expected_account: Optional[str] = None) -> bool:
