@@ -1309,6 +1309,55 @@ def test_a_minute_of_watchdog_ticks_does_not_lock_the_shell_out():
     assert admitted.json()["access_token"]
 
 
+def test_a_desktop_exchange_does_not_reset_the_shared_password_throttle():
+    """The desktop secret proves the shell owns the backend, not that anyone signed in.
+
+    /login's per-IP aggregate is what stops password spraying across many usernames, none of which
+    reaches its own per-account limit. Letting /desktop-login clear it hands one holder of the local
+    secret a fresh aggregate budget for every account behind the same NAT, and in multi-user mode it
+    does so while returning no session at all.
+    """
+    seed_user(must_change_password = False)
+    raw = storage.create_desktop_secret()
+    auth_route = auth_route_module()
+    client = auth_client(auth_route)
+
+    sprayed = auth_route._LOGIN_IP_MAX_FAILS - 1
+    for i in range(sprayed):
+        client.post("/api/auth/login", json = {"username": f"sprayed{i}", "password": "wrong"})
+    ip = next(iter(auth_route._LOGIN_IP_BUCKETS))
+    assert len(auth_route._LOGIN_IP_BUCKETS[ip]) == sprayed
+
+    assert client.post("/api/auth/desktop-login", json = {"secret": raw}).status_code == 200
+
+    assert len(auth_route._LOGIN_IP_BUCKETS.get(ip, [])) == sprayed, (
+        "a desktop exchange cleared /login's per-IP aggregate"
+    )
+    # Its own bucket is still cleared: the shell must not be locked out by its own earlier miss.
+    assert auth_route._unknown_user_key(None)[1] not in {k[1] for k in auth_route._LOGIN_BUCKETS}
+
+
+def test_multi_user_desktop_exchange_grants_no_session_and_clears_no_aggregate(monkeypatch):
+    """The sharpest case: multi-user returns login_required, so nothing was authenticated at all."""
+    seed_user(must_change_password = False)
+    raw = storage.create_desktop_secret()
+    auth_route = auth_route_module()
+    monkeypatch.setattr(auth_route.policy, "installation_is_multi_user", lambda: True)
+    import auth.policy as auth_policy
+
+    monkeypatch.setattr(auth_policy, "installation_is_multi_user", lambda: True)
+    client = auth_client(auth_route)
+
+    sprayed = auth_route._LOGIN_IP_MAX_FAILS - 1
+    for i in range(sprayed):
+        client.post("/api/auth/login", json = {"username": f"sprayed{i}", "password": "wrong"})
+    ip = next(iter(auth_route._LOGIN_IP_BUCKETS))
+
+    response = client.post("/api/auth/desktop-login", json = {"secret": raw})
+    assert response.json() == {"login_required": True, "login_mode": "multi"}
+    assert len(auth_route._LOGIN_IP_BUCKETS.get(ip, [])) == sprayed
+
+
 def test_storage_rejects_a_malformed_desktop_secret_before_the_kdf(monkeypatch):
     """The shape gate lives in storage, so every caller of the validator gets it.
 
