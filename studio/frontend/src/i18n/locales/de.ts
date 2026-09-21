@@ -1566,14 +1566,14 @@ export const de = {
       rememberParamsPerModelHint:
         "Wenn deaktiviert, verwenden alle Modelle dieselben Einstellungen.",
       autoCompactHint:
-        "Nur lokale GGUF-Chats. Verdrängte Runden werden indexiert, sodass das Modell sie zurückholen kann, und ein Reset übernimmt Ihre dauerhaft geltenden Anweisungen wortgetreu. Archivieren setzt einen gespeicherten Chat und den Vektorindex voraus; ohne sie werden ältere Runden verworfen. Verwendet die eingestellte Kontextlänge, nicht den verfügbaren VRAM.",
+        "Nur lokale GGUF-Chats. Verdrängte Runden werden indexiert, sodass das Modell sie zurückholen kann, und ein Reset zitiert die dauerhaft geltenden Anweisungen, die hineinpassen, wortgetreu und mit den neuesten zuerst. Archivieren setzt einen gespeicherten Chat und den Vektorindex voraus; ohne sie werden ältere Runden verworfen. Verwendet die eingestellte Kontextlänge, nicht den verfügbaren VRAM.",
       pastedTextShortDescription:
         "Eingefügter Text ab {count} Zeichen wird als .txt-Datei angehängt. Kürzerer Text bleibt im Nachrichtenfeld.",
       pastedTextOffDescription:
         "Eingefügter Text bleibt unabhängig von seiner Länge im Nachrichtenfeld.",
       compactionDescriptionInherit: "Folgt der Kontextrichtlinie des Servers.",
       compactionDescriptionCheckpoint:
-        "Behält den letzten Austausch und die dauerhaft geltenden Anweisungen bei und archiviert den Rest zum Nachschlagen.",
+        "Behält den letzten Austausch und so viele der dauerhaft geltenden Anweisungen bei, wie hineinpassen, und archiviert den Rest zum Nachschlagen.",
       compactionDescriptionRolling:
         "Archiviert die ältesten Gesprächsrunden und behält neuere Inhalte mit dem gewählten zusätzlichen Freiraum.",
       projectsSection: "Projektbereich anzeigen",
@@ -1625,7 +1625,7 @@ export const de = {
         "Ältere Runden wandern in ein durchsuchbares Archiv, wenn ein Chat voll läuft.",
       compactionStyle: "Wenn der Kontext voll ist",
       compactionStyleDescription:
-        "Die Servervorgabe behält UNSLOTH_CONTEXT_POLICY bei. Gespräch zurücksetzen behält die letzte Runde und dauerhafte Anweisungen. Ein gleitendes Fenster verwirft die ältesten Runden und kann mehr aktuellen Verlauf behalten.",
+        "Die Servervorgabe behält UNSLOTH_CONTEXT_POLICY bei. Gespräch zurücksetzen behält die letzte Runde und so viele dauerhafte Anweisungen, wie hineinpassen. Ein gleitendes Fenster verwirft die ältesten Runden und kann mehr aktuellen Verlauf behalten.",
       compactionStyleInherit: "Servervorgabe verwenden",
       compactionStyleCheckpoint: "Gespräch zurücksetzen",
       compactionStyleRollingDefault:

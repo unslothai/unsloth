@@ -1527,13 +1527,13 @@ export const en = {
         "Override this setting from each chat's attachment menu.",
       rememberParamsPerModelHint:
         "When off, use the same settings for every model.",
-      autoCompactHint: "Local GGUF chats only. Evicted turns are indexed so the model can search them back in, and a reset carries your standing instructions forward word for word. Archiving needs a saved chat and the vector index; without them older turns are dropped. Uses the context length you set, not available VRAM.",
+      autoCompactHint: "Local GGUF chats only. Evicted turns are indexed so the model can search them back in, and a reset quotes back the standing instructions that fit, newest first and word for word. Archiving needs a saved chat and the vector index; without them older turns are dropped. Uses the context length you set, not available VRAM.",
       pastedTextShortDescription:
         "Pastes of {count} characters or more become .txt attachments.",
       pastedTextOffDescription: "Pasted text always stays in the message box.",
       compactionDescriptionInherit: "Follow the server's context policy.",
       compactionDescriptionCheckpoint:
-        "Keep the latest turn and your standing instructions, and archive the rest for retrieval.",
+        "Keep the latest turn and the standing instructions that fit, and archive the rest for retrieval.",
       compactionDescriptionRolling:
         "Archive the oldest turns to keep recent history and the selected amount of extra room.",
       projectsSection: "Show projects section",
@@ -1584,7 +1584,7 @@ export const en = {
         "Older turns move to a searchable archive when a chat fills its context.",
       compactionStyle: "When context fills",
       compactionStyleDescription:
-        "Use server default keeps UNSLOTH_CONTEXT_POLICY. Reset conversation keeps the latest turn and standing instructions. A sliding window drops oldest turns and can keep more recent history.",
+        "Use server default keeps UNSLOTH_CONTEXT_POLICY. Reset conversation keeps the latest turn and the standing instructions that fit. A sliding window drops oldest turns and can keep more recent history.",
       compactionStyleInherit: "Use server default",
       compactionStyleCheckpoint: "Reset conversation",
       compactionStyleRollingDefault: "Archive oldest turns (~25% extra room)",

@@ -1496,13 +1496,13 @@ export const zhCN = {
       },
       projectAttachmentsHint: "可在各聊天的附件菜单中单独调整此设置。",
       rememberParamsPerModelHint: "关闭后，所有模型使用同一套设置。",
-      autoCompactHint: "仅适用于本地 GGUF 聊天。被移出的轮次会建立索引，模型可以再检索回来；重置时你的长期指令会原文保留。归档需要已保存的聊天和向量索引，两者缺一时较早的轮次会被直接丢弃。依据你设置的上下文长度，而不是可用显存。",
+      autoCompactHint: "仅适用于本地 GGUF 聊天。被移出的轮次会建立索引，模型可以再检索回来；重置时会按从新到旧原文保留放得下的长期指令。归档需要已保存的聊天和向量索引，两者缺一时较早的轮次会被直接丢弃。依据你设置的上下文长度，而不是可用显存。",
       pastedTextShortDescription:
         "粘贴的文本达到 {count} 个字符时会转为 .txt 附件，较短的文本则保留在消息输入框中。",
       pastedTextOffDescription:
         "无论长度如何，粘贴的文本都会保留在消息输入框中。",
       compactionDescriptionInherit: "遵循服务器的上下文策略。",
-      compactionDescriptionCheckpoint: "保留最新一轮对话和持续生效的指令，其余内容归档以便检索。",
+      compactionDescriptionCheckpoint: "保留最新一轮对话和放得下的持续生效指令，其余内容归档以便检索。",
       compactionDescriptionRolling:
         "归档最早的对话轮次，保留近期记录并预留所选的额外空间。",
       projectsSection: "显示项目分区",
@@ -1553,7 +1553,7 @@ export const zhCN = {
         "聊天填满上下文时，较早的轮次会转入可检索的归档。",
       compactionStyle: "上下文已满时",
       compactionStyleDescription:
-        "使用服务器默认值会保留 UNSLOTH_CONTEXT_POLICY。重置对话会保留最新轮次和持续指令。滑动窗口会丢弃最早的轮次，并可保留更多近期历史。",
+        "使用服务器默认值会保留 UNSLOTH_CONTEXT_POLICY。重置对话会保留最新轮次和放得下的持续指令。滑动窗口会丢弃最早的轮次，并可保留更多近期历史。",
       compactionStyleInherit: "使用服务器默认值",
       compactionStyleCheckpoint: "重置对话",
       compactionStyleRollingDefault: "归档最早的轮次（约 25% 额外空间）",

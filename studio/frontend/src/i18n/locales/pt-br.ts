@@ -1544,14 +1544,14 @@ export const ptBR = {
         "Altere esta configuração para cada chat pelo menu de anexos.",
       rememberParamsPerModelHint:
         "Quando desativado, todos os modelos usam as mesmas configurações.",
-      autoCompactHint: "Apenas chats GGUF locais. Os turnos removidos são indexados para que o modelo possa buscá-los de volta, e uma reinicialização mantém suas instruções permanentes palavra por palavra. Arquivar exige um chat salvo e o índice vetorial; sem eles, os turnos antigos são descartados. Usa o tamanho de contexto definido, não a VRAM disponível.",
+      autoCompactHint: "Apenas chats GGUF locais. Os turnos removidos são indexados para que o modelo possa buscá-los de volta, e uma reinicialização cita palavra por palavra as instruções permanentes que couberem, começando pelas mais recentes. Arquivar exige um chat salvo e o índice vetorial; sem eles, os turnos antigos são descartados. Usa o tamanho de contexto definido, não a VRAM disponível.",
       pastedTextShortDescription:
         "Texto colado com {count} caracteres ou mais vira um anexo .txt. Textos menores ficam na caixa de mensagem.",
       pastedTextOffDescription:
         "Todo o texto colado fica na caixa de mensagem, independentemente do tamanho.",
       compactionDescriptionInherit: "Segue a política de contexto do servidor.",
       compactionDescriptionCheckpoint:
-        "Mantém a última troca de mensagens e as instruções permanentes, e arquiva o restante para consulta.",
+        "Mantém a última troca de mensagens e as instruções permanentes que couberem, e arquiva o restante para consulta.",
       compactionDescriptionRolling:
         "Arquiva os turnos mais antigos para manter o histórico recente e o espaço extra selecionado.",
       projectsSection: "Mostrar a seção Projetos",
@@ -1603,7 +1603,7 @@ export const ptBR = {
         "Os turnos antigos vão para um arquivo pesquisável quando um chat enche o contexto.",
       compactionStyle: "Quando o contexto estiver cheio",
       compactionStyleDescription:
-        "Usar o padrão do servidor preserva UNSLOTH_CONTEXT_POLICY. Redefinir a conversa mantém o turno mais recente e as instruções permanentes. Uma janela deslizante descarta os turnos mais antigos e pode manter mais histórico recente.",
+        "Usar o padrão do servidor preserva UNSLOTH_CONTEXT_POLICY. Redefinir a conversa mantém o turno mais recente e as instruções permanentes que couberem. Uma janela deslizante descarta os turnos mais antigos e pode manter mais histórico recente.",
       compactionStyleInherit: "Usar padrão do servidor",
       compactionStyleCheckpoint: "Redefinir conversa",
       compactionStyleRollingDefault:

@@ -1557,14 +1557,14 @@ export const es = {
       rememberParamsPerModelHint:
         "Al desactivarlo, todos los modelos usan los mismos ajustes.",
       autoCompactHint:
-        "Solo chats GGUF locales. Los turnos expulsados se indexan para que el modelo pueda recuperarlos, y un reinicio conserva tus instrucciones permanentes palabra por palabra. Archivar requiere un chat guardado y el índice vectorial; sin ellos, los turnos antiguos se descartan. Usa la longitud de contexto configurada, no la VRAM disponible.",
+        "Solo chats GGUF locales. Los turnos expulsados se indexan para que el modelo pueda recuperarlos, y un reinicio cita palabra por palabra las instrucciones permanentes que quepan, empezando por las más recientes. Archivar requiere un chat guardado y el índice vectorial; sin ellos, los turnos antiguos se descartan. Usa la longitud de contexto configurada, no la VRAM disponible.",
       pastedTextShortDescription:
         "El texto pegado de {count} caracteres o más se convierte en un adjunto .txt. El texto más corto queda en el cuadro de mensaje.",
       pastedTextOffDescription:
         "Todo el texto pegado queda en el cuadro de mensaje, sin importar su longitud.",
       compactionDescriptionInherit: "Sigue la política de contexto del servidor.",
       compactionDescriptionCheckpoint:
-        "Conserva el último intercambio y las instrucciones permanentes, y archiva el resto para poder consultarlo.",
+        "Conserva el último intercambio y las instrucciones permanentes que quepan, y archiva el resto para poder consultarlo.",
       compactionDescriptionRolling:
         "Archiva los turnos más antiguos para conservar el historial reciente y el espacio adicional seleccionado.",
       projectsSection: "Mostrar la sección Proyectos",
@@ -1616,7 +1616,7 @@ export const es = {
         "Los turnos antiguos pasan a un archivo consultable al llenarse el contexto de un chat.",
       compactionStyle: "Cuando se llena el contexto",
       compactionStyleDescription:
-        "Usar el valor del servidor conserva UNSLOTH_CONTEXT_POLICY. Restablecer la conversación mantiene el último turno y las instrucciones permanentes. Una ventana deslizante descarta los turnos más antiguos y puede conservar más historial reciente.",
+        "Usar el valor del servidor conserva UNSLOTH_CONTEXT_POLICY. Restablecer la conversación mantiene el último turno y las instrucciones permanentes que quepan. Una ventana deslizante descarta los turnos más antiguos y puede conservar más historial reciente.",
       compactionStyleInherit: "Usar valor del servidor",
       compactionStyleCheckpoint: "Restablecer conversación",
       compactionStyleRollingDefault:

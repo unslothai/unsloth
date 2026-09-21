@@ -1515,13 +1515,13 @@ export const ja = {
       projectAttachmentsHint: "各チャットの添付メニューで個別に変更できます。",
       rememberParamsPerModelHint:
         "オフの場合、すべてのモデルで同じ設定を使います。",
-      autoCompactHint: "ローカルの GGUF チャットのみ。文脈から外れたターンは索引化され、モデルが検索して取り出せます。リセットでは継続的な指示がそのままの文言で引き継がれます。アーカイブには保存済みのチャットとベクトル索引が必要で、それらがない場合、古いターンは破棄されます。空きVRAMではなく、設定したコンテキスト長を基準にします。",
+      autoCompactHint: "ローカルの GGUF チャットのみ。文脈から外れたターンは索引化され、モデルが検索して取り出せます。リセットでは、収まる範囲の継続的な指示が新しいものから順にそのままの文言で引き継がれます。アーカイブには保存済みのチャットとベクトル索引が必要で、それらがない場合、古いターンは破棄されます。空きVRAMではなく、設定したコンテキスト長を基準にします。",
       pastedTextShortDescription:
         "{count}文字以上の貼り付けテキストは .txt 添付ファイルになります。短いテキストは入力欄に残ります。",
       pastedTextOffDescription:
         "長さに関係なく、貼り付けたテキストはすべて入力欄に残ります。",
       compactionDescriptionInherit: "サーバーのコンテキストポリシーに従います。",
-      compactionDescriptionCheckpoint: "最新のやり取りと継続的な指示を保持し、残りは検索できるようアーカイブします。",
+      compactionDescriptionCheckpoint: "最新のやり取りと、収まる範囲の継続的な指示を保持し、残りは検索できるようアーカイブします。",
       compactionDescriptionRolling:
         "古いターンをアーカイブし、最近の履歴と選択した余裕分の空きを確保します。",
       projectsSection: "プロジェクトセクションを表示",
@@ -1572,7 +1572,7 @@ export const ja = {
         "チャットの文脈が満杯になると、古いターンは検索可能なアーカイブに移ります。",
       compactionStyle: "コンテキストが満杯になったとき",
       compactionStyleDescription:
-        "サーバー既定値を使うと UNSLOTH_CONTEXT_POLICY が維持されます。会話をリセットすると最新ターンと継続指示が残ります。スライディングウィンドウは古いターンを削除し、より多くの最近の履歴を残せます。",
+        "サーバー既定値を使うと UNSLOTH_CONTEXT_POLICY が維持されます。会話をリセットすると最新ターンと、収まる範囲の継続指示が残ります。スライディングウィンドウは古いターンを削除し、より多くの最近の履歴を残せます。",
       compactionStyleInherit: "サーバー既定値を使用",
       compactionStyleCheckpoint: "会話をリセット",
       compactionStyleRollingDefault: "古いターンをアーカイブ（約 25% の追加余裕）",

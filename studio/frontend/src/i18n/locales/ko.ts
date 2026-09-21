@@ -1525,14 +1525,14 @@ export const ko = {
       projectAttachmentsHint:
         "각 채팅의 첨부 메뉴에서 이 설정을 개별적으로 변경할 수 있습니다.",
       rememberParamsPerModelHint: "끄면 모든 모델에 같은 설정을 사용합니다.",
-      autoCompactHint: "로컬 GGUF 채팅에만 적용됩니다. 밀려난 턴은 색인되어 모델이 다시 검색할 수 있고, 초기화 시에는 계속 적용되는 지침이 원문 그대로 이어집니다. 보관하려면 저장된 채팅과 벡터 색인이 필요하며, 없으면 오래된 턴은 그냥 삭제됩니다. 남은 VRAM이 아닌 설정한 컨텍스트 길이를 기준으로 합니다.",
+      autoCompactHint: "로컬 GGUF 채팅에만 적용됩니다. 밀려난 턴은 색인되어 모델이 다시 검색할 수 있고, 초기화 시에는 들어갈 수 있는 만큼의 계속 적용되는 지침이 최신 것부터 원문 그대로 이어집니다. 보관하려면 저장된 채팅과 벡터 색인이 필요하며, 없으면 오래된 턴은 그냥 삭제됩니다. 남은 VRAM이 아닌 설정한 컨텍스트 길이를 기준으로 합니다.",
       pastedTextShortDescription:
         "붙여넣은 텍스트가 {count}자 이상이면 .txt 첨부 파일이 됩니다. 더 짧은 텍스트는 입력창에 남습니다.",
       pastedTextOffDescription:
         "길이와 관계없이 붙여넣은 모든 텍스트가 입력창에 남습니다.",
       compactionDescriptionInherit: "서버의 컨텍스트 정책을 따릅니다.",
       compactionDescriptionCheckpoint:
-        "최신 대화 턴과 계속 적용되는 지침을 유지하고, 나머지는 검색할 수 있도록 보관합니다.",
+        "최신 대화 턴과 들어갈 수 있는 만큼의 계속 적용되는 지침을 유지하고, 나머지는 검색할 수 있도록 보관합니다.",
       compactionDescriptionRolling:
         "가장 오래된 턴을 보관소로 옮겨 최근 기록을 유지하고 선택한 만큼의 여유 공간을 확보합니다.",
       projectsSection: "프로젝트 섹션 표시",
@@ -1584,7 +1584,7 @@ export const ko = {
         "채팅이 컨텍스트를 모두 채우면 오래된 턴은 검색 가능한 보관소로 옮겨집니다.",
       compactionStyle: "컨텍스트가 가득 찼을 때",
       compactionStyleDescription:
-        "서버 기본값을 사용하면 UNSLOTH_CONTEXT_POLICY가 유지됩니다. 대화 재설정은 최신 턴과 지속 지침을 남깁니다. 슬라이딩 윈도우는 가장 오래된 턴을 삭제하고 최근 기록을 더 많이 유지할 수 있습니다.",
+        "서버 기본값을 사용하면 UNSLOTH_CONTEXT_POLICY가 유지됩니다. 대화 재설정은 최신 턴과 들어갈 수 있는 만큼의 지속 지침을 남깁니다. 슬라이딩 윈도우는 가장 오래된 턴을 삭제하고 최근 기록을 더 많이 유지할 수 있습니다.",
       compactionStyleInherit: "서버 기본값 사용",
       compactionStyleCheckpoint: "대화 재설정",
       compactionStyleRollingDefault: "오래된 턴 보관(약 25% 추가 여유)",

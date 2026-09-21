@@ -1563,14 +1563,14 @@ export const fr = {
       rememberParamsPerModelHint:
         "Lorsque cette option est désactivée, tous les modèles utilisent les mêmes réglages.",
       autoCompactHint:
-        "Uniquement les chats GGUF locaux. Les échanges évincés sont indexés pour que le modèle puisse les retrouver, et une réinitialisation conserve vos instructions permanentes mot pour mot. L’archivage nécessite un chat enregistré et l’index vectoriel ; sans eux, les anciens échanges sont supprimés. Utilise la longueur de contexte définie, pas la VRAM disponible.",
+        "Uniquement les chats GGUF locaux. Les échanges évincés sont indexés pour que le modèle puisse les retrouver, et une réinitialisation cite mot pour mot les instructions permanentes qui tiennent, les plus récentes d’abord. L’archivage nécessite un chat enregistré et l’index vectoriel ; sans eux, les anciens échanges sont supprimés. Utilise la longueur de contexte définie, pas la VRAM disponible.",
       pastedTextShortDescription:
         "Le texte collé de {count} caractères ou plus devient une pièce jointe .txt. Le texte plus court reste dans le champ de message.",
       pastedTextOffDescription:
         "Tout le texte collé reste dans le champ de message, quelle que soit sa longueur.",
       compactionDescriptionInherit: "Suit la politique de contexte du serveur.",
       compactionDescriptionCheckpoint:
-        "Conserve le dernier échange et les instructions permanentes, et archive le reste pour pouvoir le retrouver.",
+        "Conserve le dernier échange et les instructions permanentes qui tiennent, et archive le reste pour pouvoir le retrouver.",
       compactionDescriptionRolling:
         "Archive les échanges les plus anciens pour conserver les plus récents et la marge choisie.",
       projectsSection: "Afficher la section Projets",
@@ -1622,7 +1622,7 @@ export const fr = {
         "Les anciens échanges vont dans une archive consultable quand un chat sature son contexte.",
       compactionStyle: "Lorsque le contexte est plein",
       compactionStyleDescription:
-        "La valeur par défaut du serveur conserve UNSLOTH_CONTEXT_POLICY. Réinitialiser la discussion garde le dernier tour et les instructions permanentes. Une fenêtre glissante supprime les tours les plus anciens et peut conserver davantage d’historique récent.",
+        "La valeur par défaut du serveur conserve UNSLOTH_CONTEXT_POLICY. Réinitialiser la discussion garde le dernier tour et les instructions permanentes qui tiennent. Une fenêtre glissante supprime les tours les plus anciens et peut conserver davantage d’historique récent.",
       compactionStyleInherit: "Utiliser la valeur du serveur",
       compactionStyleCheckpoint: "Réinitialiser la discussion",
       compactionStyleRollingDefault:
