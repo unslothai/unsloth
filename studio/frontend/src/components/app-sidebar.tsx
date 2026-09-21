@@ -368,29 +368,14 @@ const REVEAL_WITH_OPEN_MENU_PROJECT_CHAT =
 const REVEAL_WITH_OPEN_MENU_RECENT =
   "group-has-[.sidebar-row-action[data-state=open]]/recent-item:opacity-100 group-has-[.sidebar-row-action[data-state=open]]/recent-item:pointer-events-auto";
 
-// Every list offers the same three orders. Each says what it actually does under its name: the
-// three read as synonyms otherwise, and Manual order in particular is a rule the user writes by
-// dragging rather than one the list applies.
+// Every list offers the same three orders.
 const CHAT_SORT_OPTIONS: Array<{
   value: SidebarChatSort;
   key: TranslationKey;
-  hint: TranslationKey;
 }> = [
-  {
-    value: "priority",
-    key: "shell.organize.priority",
-    hint: "shell.organize.priorityHint",
-  },
-  {
-    value: "updated",
-    key: "shell.organize.lastUpdated",
-    hint: "shell.organize.lastUpdatedHint",
-  },
-  {
-    value: "manual",
-    key: "shell.organize.manualOrder",
-    hint: "shell.organize.manualOrderHint",
-  },
+  { value: "priority", key: "shell.organize.priority" },
+  { value: "updated", key: "shell.organize.lastUpdated" },
+  { value: "manual", key: "shell.organize.manualOrder" },
 ];
 const ORGANIZE_OPTIONS: Array<{
   value: SidebarOrganizeBy;
@@ -1307,12 +1292,12 @@ export function AppSidebar() {
   );
   // Pinned is one list of folders and chats, in the order they were dropped into. Folders lead
   // until a drop says otherwise; a chat sort other than Manual keeps the chats after them.
+  // Pinning is its own grouping: a pinned folder stays here whichever way the sidebar organizes,
+  // and "In one list" only takes the Projects section away.
   const pinnedRows = useMemo(() => {
     const rows: PinnedRow[] = [];
-    if (organizeBy === "project") {
-      for (const project of pinnedProjectBase) {
-        rows.push({ kind: "project", id: project.id, project });
-      }
+    for (const project of pinnedProjectBase) {
+      rows.push({ kind: "project", id: project.id, project });
     }
     for (const item of sortedPinnedChatItems) {
       rows.push({ kind: "chat", id: item.id, item });
@@ -1320,7 +1305,7 @@ export function AppSidebar() {
     return pinnedSort === "manual"
       ? applyManualOrder(rows, manualOrder[PINNED_ORDER_SCOPE], (row) => row.id)
       : rows;
-  }, [organizeBy, pinnedProjectBase, sortedPinnedChatItems, pinnedSort, manualOrder]);
+  }, [pinnedProjectBase, sortedPinnedChatItems, pinnedSort, manualOrder]);
   const pinnedRowIds = useMemo(() => pinnedRows.map((row) => row.id), [pinnedRows]);
   const pinnedProjectRecords = useMemo(
     () => pinnedRows.flatMap((row) => (row.kind === "project" ? [row.project] : [])),
@@ -1345,7 +1330,7 @@ export function AppSidebar() {
   // disclosure, not the Projects one, so each section collects its own.
   const folderChatItems = useCallback(
     (open: boolean, records: ProjectRecord[]) => {
-      if (!chatListsOnScreen || organizeBy !== "project" || !open) return [];
+      if (!chatListsOnScreen || !open) return [];
       const out: SidebarItem[] = [];
       for (const project of records) {
         if (collapsedProjectIds.has(project.id)) continue;
@@ -1360,15 +1345,24 @@ export function AppSidebar() {
     },
     [
       chatListsOnScreen,
-      organizeBy,
       collapsedProjectIds,
       expandedChatProjectIds,
       sortedChatsByProjectId,
     ],
   );
+  // Only the Projects section answers to how the sidebar organizes; Pinned draws its folders either way.
   const sectionProjectChatItems = useMemo(
-    () => folderChatItems(projectsOpen, visibleProjectRecords),
-    [folderChatItems, projectsOpen, visibleProjectRecords],
+    () =>
+      folderChatItems(
+        projectsOpen && projectsSectionConfigured,
+        visibleProjectRecords,
+      ),
+    [
+      folderChatItems,
+      projectsOpen,
+      projectsSectionConfigured,
+      visibleProjectRecords,
+    ],
   );
   // A collapsed section is not on screen either, so its rows are not walked or
   // selected any more than a collapsed folder's are.
@@ -1408,24 +1402,22 @@ export function AppSidebar() {
   // section closes, the sidebar organizes by date, or a "show less" takes back the overflow. The chat
   // sets above say nothing about that, since a folder with no chats in view is still a row.
   const renderedProjectIds = useMemo(() => {
-    if (!chatListsOnScreen || organizeBy !== "project") {
-      return new Set<string>();
-    }
+    if (!chatListsOnScreen) return new Set<string>();
     const ids = new Set<string>();
-    // Each folder leaves with its own section.
+    // Each folder leaves with its own section, and Pinned keeps its folders in either organization.
     if (pinnedOpen) {
       for (const project of pinnedProjectRecords) ids.add(project.id);
     }
-    if (projectsOpen) {
+    if (projectsOpen && projectsSectionConfigured) {
       for (const project of visibleProjectRecords) ids.add(project.id);
     }
     return ids;
   }, [
     chatListsOnScreen,
-    organizeBy,
     pinnedOpen,
     pinnedProjectRecords,
     projectsOpen,
+    projectsSectionConfigured,
     visibleProjectRecords,
   ]);
   // Rows wanting attention, most urgent first. Same rule the Priority sort uses.
@@ -1481,9 +1473,12 @@ export function AppSidebar() {
   }, [sortedChatsByProjectId]);
   // Nested rows across both sections, so the bottom fade re-measures when the list height changes.
   const projectChatRowCount = useMemo(() => {
-    if (organizeBy !== "project") return 0;
     let rows = 0;
-    for (const project of [...pinnedProjectRecords, ...visibleProjectRecords]) {
+    // Pinned keeps its folders in either organization; the Projects section only has them in one.
+    const folders = projectsSectionConfigured
+      ? [...pinnedProjectRecords, ...visibleProjectRecords]
+      : pinnedProjectRecords;
+    for (const project of folders) {
       if (collapsedProjectIds.has(project.id)) continue;
       const chats = sortedChatsByProjectId.get(project.id) ?? [];
       rows += expandedChatProjectIds.has(project.id)
@@ -1495,7 +1490,7 @@ export function AppSidebar() {
     }
     return rows;
   }, [
-    organizeBy,
+    projectsSectionConfigured,
     pinnedProjectRecords,
     visibleProjectRecords,
     collapsedProjectIds,
@@ -3128,14 +3123,9 @@ export function AppSidebar() {
             <DropdownMenuRadioItem
               key={option.value}
               value={option.value}
-              className={cn(menuRadioItemClass, "items-start py-1.5")}
+              className={menuRadioItemClass}
             >
-              <span className="flex flex-col gap-0.5">
-                <span>{t(option.key)}</span>
-                <span className="text-ui-12 leading-ui-16 text-muted-foreground">
-                  {t(option.hint)}
-                </span>
-              </span>
+              {t(option.key)}
             </DropdownMenuRadioItem>
           ))}
         </DropdownMenuRadioGroup>

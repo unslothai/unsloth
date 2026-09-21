@@ -260,3 +260,79 @@ test("the walk reads the rows in the order Pinned draws them", () => {
     /pinnedItems: pinnedSectionChatItems,\n\s*projectItems: sectionProjectChatItems,/,
   );
 });
+
+// Pinning is its own grouping. Organizing in one list used to empty Pinned of its folders, so a
+// project pinned to the top vanished along with the section the setting was actually about.
+test("a pinned folder stays in Pinned when the sidebar is one list", () => {
+  const rows = APP_SIDEBAR.slice(
+    APP_SIDEBAR.indexOf("const pinnedRows = useMemo("),
+    APP_SIDEBAR.indexOf("const pinnedRowIds = useMemo("),
+  );
+  assert.ok(rows.length > 0, "pinnedRows moved");
+  assert.ok(
+    !rows.includes("organizeBy"),
+    "Pinned still drops its folders when the sidebar organizes in one list",
+  );
+  assert.match(
+    rows,
+    /for \(const project of pinnedProjectBase\) \{\n\s*rows\.push\(\{ kind: "project", id: project\.id, project \}\);/,
+  );
+  // Only the Projects section answers to the setting, and its rows leave the published lists,
+  // the folder ids and the row count with it.
+  assert.match(
+    APP_SIDEBAR,
+    /folderChatItems\(\n\s*projectsOpen && projectsSectionConfigured,\n\s*visibleProjectRecords,\n\s*\)/,
+  );
+  assert.match(
+    APP_SIDEBAR,
+    /if \(projectsOpen && projectsSectionConfigured\) \{\n\s*for \(const project of visibleProjectRecords\) ids\.add\(project\.id\);/,
+  );
+  assert.match(
+    APP_SIDEBAR,
+    /const folders = projectsSectionConfigured\n\s*\? \[\.\.\.pinnedProjectRecords, \.\.\.visibleProjectRecords\]\n\s*: pinnedProjectRecords;/,
+  );
+});
+
+// The three orders were each captioned with what they do. The names say it, and the captions
+// made a four-item radio group twice as tall as every other menu in the sidebar.
+test("the sort options are names, with nothing written under them", () => {
+  const options = APP_SIDEBAR.slice(
+    APP_SIDEBAR.indexOf("const CHAT_SORT_OPTIONS"),
+    APP_SIDEBAR.indexOf("const ORGANIZE_OPTIONS"),
+  );
+  assert.ok(!options.includes("hint"), "the sort options still carry captions");
+  assert.match(APP_SIDEBAR, /\{CHAT_SORT_OPTIONS\.map\(\(option\) => \(/);
+  const menu = APP_SIDEBAR.slice(APP_SIDEBAR.indexOf("{CHAT_SORT_OPTIONS.map("));
+  assert.match(
+    menu.slice(0, menu.indexOf("</DropdownMenuRadioGroup>")),
+    /className=\{menuRadioItemClass\}\n\s*>\n\s*\{t\(option\.key\)\}/,
+  );
+  // And the strings go with them, in every language.
+  for (const key of ["priorityHint", "lastUpdatedHint", "manualOrderHint"]) {
+    assert.ok(!APP_SIDEBAR.includes(key), `${key} is still read`);
+  }
+});
+
+// The project page's own header kebab still opened a name-only dialog, so the same project
+// offered two different "edit" depending on which list it was reached from.
+test("the project page edits through the same dialog the sidebar opens", async () => {
+  const page = await readSrcAsync("features/chat/chat-page.tsx");
+  assert.ok(!page.includes("Rename project"), "the rename-only dialog is still there");
+  assert.ok(!page.includes("commitProjectRename"), "the rename call is still there");
+  assert.match(page, /onSelect=\{\(\) => setEditingProject\(true\)\}/);
+  assert.match(page, /<span>Edit project<\/span>/);
+  // The record behind the header, and the dialog it feeds.
+  assert.match(
+    page,
+    /projects\.find\(\(project\) => project\.id === projectId\)/,
+  );
+  assert.match(
+    page,
+    /project=\{active && editingProject \? \(currentProject \?\? null\) : null\}/,
+  );
+  // Delete hands back to the page's own confirmation, as it does in the sidebar.
+  assert.match(
+    page,
+    /onDelete=\{\(\) => \{\n\s*setEditingProject\(false\);\n\s*setDeletingProject\(true\);/,
+  );
+});

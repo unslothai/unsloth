@@ -1275,11 +1275,13 @@ test("a collapsed sidebar section is not published for the chords", async () => 
     APP_SIDEBAR,
     /folderChatItems\(true, \[row\.project\]\)/,
   );
+  // Only the Projects section answers to the organization: its folders are gone in one-list
+  // mode, while Pinned keeps drawing the folders pinned to it.
   assert.match(
     APP_SIDEBAR,
-    /folderChatItems\(projectsOpen, visibleProjectRecords\)/,
+    /folderChatItems\(\n\s*projectsOpen && projectsSectionConfigured,\n\s*visibleProjectRecords,\n\s*\)/,
   );
-  assert.match(APP_SIDEBAR, /if \(!chatListsOnScreen \|\| organizeBy !== "project" \|\| !open\)/);
+  assert.match(APP_SIDEBAR, /if \(!chatListsOnScreen \|\| !open\) return \[\];/);
   // And the published lists are the filtered ones.
   assert.match(APP_SIDEBAR, /pinnedItems: pinnedSectionChatItems,/);
   assert.match(APP_SIDEBAR, /recentItems: visibleRecentItems,/);
@@ -1598,7 +1600,7 @@ test("the published chat lists stop where the sidebar stops", async () => {
     /const chatListsOnScreen =\n\s*!isStudioRoute &&\n\s*!showTrainingRecents &&\n\s*\(isMobile \|\| sidebarState !== "collapsed"\);/,
   );
   for (const group of [
-    /if \(!chatListsOnScreen \|\| organizeBy !== "project" \|\| !open\) return \[\];/,
+    /if \(!chatListsOnScreen \|\| !open\) return \[\];/,
     /chatListsOnScreen && pinnedOpen\n\s*\? pinnedRows\.flatMap\([\s\S]*?: \[\],/,
     /\(chatListsOnScreen && chatOpen \? sortedRecentChatItems : \[\]\)/,
   ]) {
@@ -1682,7 +1684,7 @@ test("a selection does not outlive the rows it was made on", async () => {
   // closing, which for a pinned folder is Pinned, not Projects.
   assert.match(
     APP_SIDEBAR,
-    /const renderedProjectIds = useMemo\(\(\) => \{\n\s*if \(!chatListsOnScreen \|\| organizeBy !== "project"\) \{\n\s*return new Set<string>\(\);\n\s*\}/,
+    /const renderedProjectIds = useMemo\(\(\) => \{\n\s*if \(!chatListsOnScreen\) return new Set<string>\(\);/,
   );
   assert.match(
     APP_SIDEBAR,
@@ -1690,7 +1692,7 @@ test("a selection does not outlive the rows it was made on", async () => {
   );
   assert.match(
     APP_SIDEBAR,
-    /if \(projectsOpen\) \{\n\s*for \(const project of visibleProjectRecords\) ids\.add\(project\.id\);/,
+    /if \(projectsOpen && projectsSectionConfigured\) \{\n\s*for \(const project of visibleProjectRecords\) ids\.add\(project\.id\);/,
   );
   // Both counts feed the flag, which is why both have to be pruned.
   assert.match(
