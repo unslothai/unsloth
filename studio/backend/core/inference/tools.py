@@ -100,6 +100,13 @@ EMPTY_SEARCH_RESULTS = (
 # ddgs signals an empty sweep by raising rather than returning [].
 _DDGS_EMPTY_SWEEP = "No results found"
 
+# Tier 2 is only asked when tier 1 found nothing. Naming is the only way ddgs reaches an engine, so
+# an engine in neither tier (yandex, bing, the mullvad_* mirrors) is never contacted.
+_SEARCH_ENGINE_TIERS = (
+    ("wikipedia", "brave", "duckduckgo", "mojeek", "startpage"),
+    ("grokipedia", "google", "yahoo"),
+)
+
 # Import at module level so the preexec_fn closure triggers no imports in the forked child (which can deadlock
 # multi-threaded servers).
 _libc = None
@@ -198,8 +205,36 @@ _BLOCKED_COMMANDS = (
 
 _SHELL_SEPARATORS = frozenset({";", "&&", "||", "|", "&", "\n", "(", ")", "`", "{", "}"})
 # Bash keywords starting a new command position. `if`/`while`/`until` are followed by a CONDITION the shell executes,
-# so a command right after them is at command position.
-_SHELL_KEYWORDS_AS_SEP = frozenset({"then", "do", "else", "elif", "if", "while", "until", "!"})
+# so a command right after them is at command position. `coproc` too: read as the command word it left `coproc rm
+# -rf x` scanning as arguments, and that really deletes.
+_SHELL_KEYWORDS_AS_SEP = frozenset(
+    {"then", "do", "else", "elif", "if", "while", "until", "!", "coproc"}
+)
+# Bash takes `coproc NAME ...` only before a COMPOUND command, which is what tells a name from a command: the same
+# position holds the command itself in `coproc rm -f x`. Only the WORD starters are listed: `{` and `(` are already
+# separators, so `coproc JOB { rm ...; }` resolves without reading JOB as a name, and listing them would only mean
+# trusting a lookahead that a quoted `'{'` can forge.
+_COPROC_COMPOUND_STARTERS = frozenset({"if", "while", "until", "for", "case", "select"})
+_COPROC_NAME_RE = re.compile(r"^[A-Za-z_]\w*$")
+
+
+def _is_coproc_name(tokens: "list[str]", index: int) -> bool:
+    """Whether `tokens[index]` is the NAME of a `coproc NAME compound-command`, not a command word.
+
+    Callers gate this on having just consumed the `coproc` KEYWORD, which the neighbouring tokens cannot decide:
+    `echo coproc JOB if rm -f x` prints three words while `time coproc JOB if rm -f x` really deletes. They then
+    READ the name like any other command word rather than skipping it, since shlex has already dropped the quotes
+    and a forged `'{'` would otherwise hide whatever stands there; only command position carries past it.
+    """
+    return (
+        index > 0
+        and tokens[index - 1] == "coproc"
+        and index + 1 < len(tokens)
+        and tokens[index + 1] in _COPROC_COMPOUND_STARTERS
+        and _COPROC_NAME_RE.match(tokens[index]) is not None
+    )
+
+
 # Wrappers whose next non-flag argument is the command Bash will exec.
 _COMMAND_PREFIXES = frozenset(
     {
@@ -1196,6 +1231,7 @@ def _exec_scan_layout(
     at_command = True  # the next ordinary word is one the shell RUNS
     wrapper = ""  # a command prefix (env/timeout/sudo) awaiting that word
     skip_operand = False  # ...and its option's value stands in between
+    coproc_kw = False  # the word just consumed was the `coproc` KEYWORD, so a name may follow
     index = 0
     while index < len(tokens):
         token = tokens[index]
@@ -1206,6 +1242,8 @@ def _exec_scan_layout(
             continue
         here = index
         index += 1
+        after_coproc = coproc_kw
+        coproc_kw = False
         if _looks_like_separator(token) and here not in quoted:
             stops.add(here)
             forwarding = in_action = False
@@ -1241,6 +1279,7 @@ def _exec_scan_layout(
             in_action = True
             continue
         if at_command and token in _SHELL_KEYWORDS_AS_SEP:
+            coproc_kw = token == "coproc"
             continue  # `then find ...` / `do find ...`: still a command position
         if skip_operand:
             skip_operand = False  # a wrapper option's value (env -u NAME)
@@ -1253,14 +1292,15 @@ def _exec_scan_layout(
         if wrapper and token.lstrip("-").isdigit():
             continue  # `timeout 5 find ...`: the wrapper's own operand
         base = os.path.basename(token.strip(";&|()`{}")).lower()
-        if at_command and base in _COMMAND_PREFIXES:
+        coproc_name_here = after_coproc and _is_coproc_name(tokens, here)
+        if at_command and base in _COMMAND_PREFIXES and not coproc_name_here:
             wrapper = base
             continue
         if at_command and _forwards_exec_flags(base):
             # Only a find/fd the shell really RUNS forwards its exec flags. Any token spelled `fd`/`find` used to turn
             # one on, so `echo fd -x rm` came back with rm and was refused.
             forwarding = True
-        at_command = False
+        at_command = coproc_name_here
         wrapper = ""
     return frozenset(exec_flags), frozenset(stops), frozenset(redirects)
 
@@ -1332,6 +1372,8 @@ def _blocked_word_re(assignment_prefixes: bool):
     if not _BLOCKED_COMMANDS:
         return None
     return re.compile(
+        # No `coproc` alternative here, deliberately: with no quoting or command-position context this pass refused
+        # `grep coproc rm file`. The token scan above knows where a command starts and handles the keyword.
         r"(?:^|[;&|`\n(]\s*|[$]\(\s*|<\(\s*)"
         + (r"(?:[A-Za-z_]\w*=[^\s'\"]*\s+)*" if assignment_prefixes else r"")
         + r"(?:[\w./\\-]*/|[a-zA-Z]:[/\\][\w./\\-]*)?"
@@ -1583,7 +1625,10 @@ def _find_blocked_commands(command: str) -> set[str]:
     sed_indexes: "list[int]" = []  # command-position sed words, for the `e` scan below
     sed_xargs: "dict[int, int]" = {}  # sed word -> the xargs that builds its argv
     xargs_index = -1  # an xargs awaiting the command it wraps
+    coproc_kw = False  # the word just consumed was the `coproc` KEYWORD, so a name may follow
     for token_index, token in enumerate(tokens):
+        after_coproc = coproc_kw
+        coproc_kw = False
         if skip_operand:
             # `exec -a NAME cmd` and `if exist FILE cmd` both put an operand where the command word would otherwise
             # be.
@@ -1605,6 +1650,7 @@ def _find_blocked_commands(command: str) -> set[str]:
         if (_looks_like_separator(token) and token_index not in quoted_separators) or (
             token in _SHELL_KEYWORDS_AS_SEP and expect_command
         ):
+            coproc_kw = expect_command and token == "coproc"
             expect_command = True
             prefix_pending = False
             prefix_command = ""
@@ -1635,6 +1681,7 @@ def _find_blocked_commands(command: str) -> set[str]:
         # Numeric wrapper arg: `timeout 1 cmd` / `nice -n 5 cmd`.
         if prefix_pending and token.lstrip("-").isdigit():
             continue
+        coproc_name_here = after_coproc and _is_coproc_name(tokens, token_index)
         base = _token_basename(token)
         if _is_sed_command(base):
             sed_indexes.append(token_index)
@@ -1646,13 +1693,13 @@ def _find_blocked_commands(command: str) -> set[str]:
             blocked |= _blocked_matching_glob(base)
         # Wrappers (env/time/xargs/sudo) consume one command; the next non-flag, non-numeric token is the real
         # command. sudo is also in _BLOCKED_COMMANDS.
-        if base in _COMMAND_PREFIXES:
+        if base in _COMMAND_PREFIXES and not coproc_name_here:
             if base == "xargs" and xargs_index < 0:
                 xargs_index = token_index
             prefix_pending = True
             prefix_command = base
             continue
-        expect_command = False
+        expect_command = coproc_name_here
         prefix_pending = False
         prefix_command = ""
         xargs_index = -1
@@ -5648,7 +5695,7 @@ def _terminal_is_potentially_unsafe(command: str) -> bool:
     current_command = ""
     positional_args = 0
     pending_flag_value = False
-    for token in tokens:
+    for _tok_idx, token in enumerate(tokens):
         # Runs of punctuation (";;", ";&") lex as one token; any token made purely of separator characters still
         # separates commands.
         if (
@@ -8015,12 +8062,19 @@ def _terminal_is_high_risk(command: str, _depth: int = 0) -> bool:
         git_glob_pending = False  # a git global option (-C repo) precedes its value
         chdir_pending = False  # a cd/pushd precedes its target directory
         xargs_index = -1  # an xargs awaiting the command whose argv it builds
+        coproc_kw = False  # the word just consumed was the `coproc` KEYWORD, so a name may follow
         for _tok_idx, token in enumerate(tokens):
+            after_coproc = coproc_kw
+            coproc_kw = False
             if (
                 token in _SHELL_SEPARATORS
                 or (token in _SHELL_KEYWORDS_AS_SEP and expect_command)
+                # This walker carries a wrapper's command position in `prefix_pending`, not `expect_command`, so the
+                # clause above misses `time coproc rm -f x`, which bash runs and which really deletes.
+                or (token == "coproc" and prefix_pending)
                 or not set(token) - set(";&|()")
             ):
+                coproc_kw = (expect_command or prefix_pending) and token == "coproc"
                 expect_command = True
                 prefix_pending = False
                 xargs_index = -1
@@ -8303,10 +8357,17 @@ def _terminal_is_high_risk(command: str, _depth: int = 0) -> bool:
             stem, ext = os.path.splitext(base)
             if ext in {".exe", ".com", ".bat", ".cmd"}:
                 base = stem
-            if (expect_command or prefix_pending) and (
-                base in _AUTO_SAFE_WRAPPERS
-                or base in _MULTICALL_BINARIES
-                or base in _PRIVILEGE_EXEC_WRAPPERS
+            coproc_name_here = after_coproc and _is_coproc_name(tokens, _tok_idx)
+            if (
+                (expect_command or prefix_pending)
+                # A coprocess NAME is not a wrapper, and spending the wrapper on the compound behind it demoted
+                # the real command: `coproc env if git clean -fd; then :; fi` deletes untracked files.
+                and not coproc_name_here
+                and (
+                    base in _AUTO_SAFE_WRAPPERS
+                    or base in _MULTICALL_BINARIES
+                    or base in _PRIVILEGE_EXEC_WRAPPERS
+                )
             ):
                 # A wrapper (env/timeout) or a multicall binary (busybox rm) precedes the real command; keep seeking
                 # it, but track it so its own flags (env -S / -C) are judged in the meantime.
@@ -8515,7 +8576,7 @@ def _terminal_is_high_risk(command: str, _depth: int = 0) -> bool:
                     for cand in (raw, _expand_param_defaults(raw), _expand_shell_assignments(raw))
                 ):
                     return True
-            expect_command = False
+            expect_command = coproc_name_here
             prefix_pending = False
     return False
 
@@ -15296,6 +15357,27 @@ def _search_failure_message(exc: BaseException, timeout: int) -> str:
     return f"Search failed: {exc}"
 
 
+def _resolve_engine_tiers(text_engines) -> list:
+    """``_SEARCH_ENGINE_TIERS`` reduced to the engines this ddgs actually has, in tier order.
+
+    Naming an engine the registry lacks is not an error: ddgs 9.8.0 raises ``KeyError`` on the first
+    unknown name and silently re-runs the request as ``auto``, the Yandex fan-out this exists to
+    prevent, and tier 1 trips it there because 9.8.0 ships no ``startpage``. An empty tier is dropped
+    for the same reason.
+    """
+    engines = text_engines or {}
+    resolved = []
+    for tier in _SEARCH_ENGINE_TIERS:
+        live = [
+            name
+            for name in tier
+            if engines.get(name) is not None and not getattr(engines.get(name), "disabled", False)
+        ]
+        if live:
+            resolved.append(",".join(live))
+    return resolved
+
+
 def _image_search_or_none(subjects: list, timeout, cancel_event, website_policy) -> "str | None":
     """``_image_search`` that reports a failure as None instead of raising. Every caller sits inside
     ``_web_search``'s own ``except``, which would turn a raise into Search failed: ... and throw
@@ -15344,9 +15426,8 @@ def _web_search(
     include_images: bool = False,
     image_queries = None,
 ) -> str:
-    """Search the web and return formatted results. ddgs fans the query out across its search
-    engines, so a single engine refusing is already covered. If ``url`` is provided, fetches that
-    page directly instead of searching. ``include_images`` adds image results registered
+    """Search the web through the approved engine tiers and return formatted results. If ``url`` is provided,
+    fetches that page directly instead of searching. ``include_images`` adds image results registered
     server-side and offered to the model as ``[[img:<id>]]`` tokens, with a frontend-only
     envelope appended: one picture per ``image_queries`` subject when the model named them, else
     a handful for the query. ``image_queries`` alone (no query) is a pure image lookup."""
@@ -15379,8 +15460,13 @@ def _web_search(
         return "Search cancelled."
     try:
         from ddgs import DDGS
+        from ddgs.engines import ENGINES
 
         from .web_access_policy import check_url_access, scope_search_query
+
+        engine_tiers = _resolve_engine_tiers(ENGINES.get("text", {}))
+        if not engine_tiers:
+            return "Search failed: no approved search engine is available."
 
         effective_query = scope_search_query(query, website_policy)
         # The policy filters below, so ask for a deeper pool when one actually restricts: a page whose top hits are
@@ -15390,8 +15476,30 @@ def _web_search(
             (website_policy or {}).get(key) for key in ("allowedDomains", "blockedDomains")
         )
         wanted = max_results * _POLICY_OVERFETCH if restricted else max_results
+        # ddgs applies `timeout` per client, as both the engine HTTP timeout and its fan-out wait, so
+        # a client per tier would restart the budget and a 7s web_search could block ~14s.
+        deadline = time.monotonic() + timeout if timeout else None
         client = DDGS(timeout = timeout)
-        results = client.text(effective_query, max_results = wanted)
+        # ddgs signals an empty sweep by RAISING, so a tier's exception means try the next tier; the
+        # last is re-raised for _search_failure_message to classify as a single-tier failure would be.
+        results, last_error = [], None
+        for backend in engine_tiers:
+            if cancel_event is not None and cancel_event.is_set():
+                return "Search cancelled."
+            if deadline is not None:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                client = DDGS(timeout = remaining)
+            try:
+                results = client.text(effective_query, max_results = wanted, backend = backend)
+            except Exception as exc:  # noqa: BLE001 - re-raised below when no tier produced anything
+                last_error = exc
+                continue
+            if results:
+                break
+        if not results and last_error is not None:
+            raise last_error
         if cancel_event is not None and cancel_event.is_set():
             return "Search cancelled."
         if not results:
@@ -16735,8 +16843,8 @@ def _check_signal_escape_patterns(code: str):
             # was star-imported. A shadow only takes effect for calls that CANNOT run before it:
             # dropping the alias for the whole tree let `fetch(url)` written ABOVE `fetch = print`
             # go unrecognised, when that call really is `requests.get`.
-            self.shadow_lines: "dict[str, list[int]]" = {}
-            self.star_lines: list[int] = []
+            self.shadow_lines: "dict[str, list[tuple[int, int]]]" = {}
+            self.star_lines: "list[tuple[int, int]]" = []
             # How many function, lambda or class bodies deep the walk is. A body can be invoked at
             # any point, including before a later shadow, so a call inside one is never treated as
             # shadowed.
@@ -16760,17 +16868,30 @@ def _check_signal_escape_patterns(code: str):
                 return []
             return _binding_names(node)
 
-        def _rebind(self, node) -> None:
+        def _rebind(
+            self,
+            node,
+            exempt = (),
+        ) -> None:
             # Rebinding a name drops the alias it carried. `import socket as requests; import
             # requests` runs the real `requests.get`, and a kept entry rewrote the call to
             # `socket.get`, which matches no network prefix and so went unscreened.
             if self.collecting and id(node) in self.unconditional_shadows:
-                line = getattr(node, "lineno", 0)
+                # Position, not just the line: `from requests import get as fetch; fetch = print;
+                # fetch(url)` puts all three on line 1, and comparing lines alone made the
+                # rebinding invisible, so a harmless local call was refused as `requests.get`.
+                where = (getattr(node, "lineno", 0), getattr(node, "col_offset", 0))
                 for name in self._shadowing_names(node):
+                    if name in exempt:
+                        # A statement that REGISTERS an alias must not also shadow the name it just
+                        # bound: `s = r` after `import requests as r` carries the module to `s`,
+                        # and recording it as a shadow of `s` dropped that very candidate for
+                        # every later line.
+                        continue
                     # The module set is deliberately NOT dropped: see __init__. A bare function
                     # alias is shadowed, so a local `def get(...)` still shadows
                     # `from requests import get` for the calls that follow it.
-                    self.shadow_lines.setdefault(name, []).append(line)
+                    self.shadow_lines.setdefault(name, []).append(where)
 
         def generic_visit(self, node):
             """`ast.NodeVisitor.generic_visit`, inlined, plus the rebinding hook.
@@ -16794,23 +16915,27 @@ def _check_signal_escape_patterns(code: str):
         def _is_shadowed(
             self,
             name: str,
-            line: int,
+            at,
             after_star: bool = False,
         ) -> bool:
-            """Whether a module-level rebinding of `name` has certainly happened by `line`.
+            """Whether a module-level rebinding of `name` has certainly happened by `at`.
+
+            Positions are `(lineno, col_offset)`, so a semicolon-separated
+            `from requests import get as fetch; fetch = print; fetch(url)` orders correctly where
+            comparing lines alone made the rebinding invisible.
 
             A call inside a function, lambda or class body is never shadowed: the body can be
             invoked at any point, including before the rebinding. At module level the rebinding
-            counts only for the lines AFTER it. For a star-imported name the import rebinds every
+            counts only for what comes AFTER it. For a star-imported name the import rebinds every
             exported name, so only a shadow later than the import counts.
             """
             if self.depth:
                 return False
-            floor = max(self.star_lines) if (after_star and self.star_lines) else 0
-            return any(floor < shadow < line for shadow in self.shadow_lines.get(name, ()))
+            floor = max(self.star_lines) if (after_star and self.star_lines) else (0, -1)
+            return any(floor < shadow < at for shadow in self.shadow_lines.get(name, ()))
 
-        def _star_imported_fq(self, name: str, line: int) -> "str | None":
-            if self._is_shadowed(name, line, after_star = True):
+        def _star_imported_fq(self, name: str, at) -> "str | None":
+            if self._is_shadowed(name, at, after_star = True):
                 return None  # a local def or assignment of that name is not the module's function
             for module in sorted(self.star_modules):
                 fq = f"{module}.{name}"
@@ -16857,7 +16982,9 @@ def _check_signal_escape_patterns(code: str):
                 if alias.name == "*":
                     if module in _NETWORK_MODULES:
                         self.star_modules.add(module)
-                        self.star_lines.append(getattr(node, "lineno", 0))
+                        self.star_lines.append(
+                            (getattr(node, "lineno", 0), getattr(node, "col_offset", 0))
+                        )
                         # The import rebinds every name the module exports, so a binding that came
                         # BEFORE it no longer shadows: `def get(url): ...` then
                         # `from requests import *` really calls `requests.get`. Which names are
@@ -16900,18 +17027,20 @@ def _check_signal_escape_patterns(code: str):
             if not self.collecting:
                 self.generic_visit(node)
                 return
-            self._rebind(node)
             carried = self._modules_named_by(node.value)
+            registered: set[str] = set()
             if carried:
                 for target in node.targets:
                     if isinstance(target, ast.Name):
                         self.module_aliases.setdefault(target.id, set()).update(carried)
+                        registered.add(target.id)
+            self._rebind(node, exempt = registered)
             self.generic_visit(node)
 
         def _fq_candidates(
             self,
             func,
-            line: int = 0,
+            at = (0, 0),
         ) -> "list[str]":
             """Every fully qualified name a callee could be, written spelling first."""
             parts: list[str] = []
@@ -16924,13 +17053,17 @@ def _check_signal_escape_patterns(code: str):
             written = ".".join(parts) if parts else ""
             candidates = [written] if written else []
             if len(parts) > 1 and parts[0] in self.module_aliases:
-                for module in sorted(self.module_aliases[parts[0]]):
-                    candidates.append(".".join(module.split(".") + parts[1:]))
+                # A module alias is filtered the same way a function alias is: after
+                # `import requests as client; client = LocalClient()`, `client.get(target)` is a
+                # local API, and offering `requests.get` as a candidate refused it as egress.
+                if not self._is_shadowed(parts[0], at):
+                    for module in sorted(self.module_aliases[parts[0]]):
+                        candidates.append(".".join(module.split(".") + parts[1:]))
             elif len(parts) == 1 and parts[0] in self.func_aliases:
-                if not self._is_shadowed(parts[0], line):
+                if not self._is_shadowed(parts[0], at):
                     candidates.extend(sorted(self.func_aliases[parts[0]]))
             elif len(parts) == 1 and self.star_modules:
-                starred = self._star_imported_fq(parts[0], line)
+                starred = self._star_imported_fq(parts[0], at)
                 if starred:
                     candidates.append(starred)
             return candidates
@@ -16968,7 +17101,9 @@ def _check_signal_escape_patterns(code: str):
             # hardcoded host past a screen that refuses it on `main`. Both spellings are checked and
             # the recognised one decides; the cost of checking a name the code does not really call
             # is a refusal of a call that would not have run anyway.
-            fq_candidates = self._fq_candidates(node.func, getattr(node, "lineno", 0))
+            fq_candidates = self._fq_candidates(
+                node.func, (getattr(node, "lineno", 0), getattr(node, "col_offset", 0))
+            )
             recognised = [
                 c for c in fq_candidates if any(c.startswith(p) for p in _NETWORK_FQ_PREFIXES)
             ]

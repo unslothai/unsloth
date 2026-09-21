@@ -25,6 +25,8 @@ from pathlib import Path
 
 import pytest
 
+from .thread_drain import join_when_started
+
 
 def _shared_setup_1(monkeypatch, tmp_path):
     monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(tmp_path / "sb"))
@@ -346,7 +348,7 @@ def test_legacy_sandbox_is_migrated(tmp_path, monkeypatch):
     # waits on the whole tree.
     for thread in threading.enumerate():
         if thread.name == "sandbox-migrate":
-            thread.join(30)
+            join_when_started(thread, timeout = 30)
     moved = wd.parent / "__LOCALID_old1234" / "results.csv"
     print(f"\nmigrated to {moved}")
     assert moved.is_file()

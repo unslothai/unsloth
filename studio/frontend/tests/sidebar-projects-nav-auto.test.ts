@@ -111,7 +111,7 @@ test("the rail keeps the Projects row, since the section is hidden there", async
   const sidebar = await readSrcAsync("components/app-sidebar.tsx");
   assert.match(
     sidebar,
-    /const projectsSectionShowing =\n\s*projectsSectionRendered && \(isMobile \|\| sidebarState !== "collapsed"\);/,
+    /const projectsSectionShowing =\n\s*projectsSectionConfigured && \(isMobile \|\| sidebarState !== "collapsed"\);/,
   );
   // The section itself still mounts on the rail, as it did before, and CSS hides it.
   assert.match(sidebar, /\{projectsSectionRendered && \(/);
@@ -136,7 +136,7 @@ test("folders range-select within the list the row is in", async () => {
   assert.match(sidebar, /rangeBetween\(orderedIds, anchorId, projectId\)/);
   assert.match(
     sidebar,
-    /handleProjectSelectionClick\(event, project\.id, order\.orderedIds\)/,
+    /handleProjectSelectionClick\(\n\s*event,\n\s*project\.id,\n\s*order\.selectionIds \?\? order\.orderedIds,\n\s*\)/,
   );
   // Nothing reaches for the Projects list from inside the handler any more.
   const handler = sidebar.slice(
@@ -163,5 +163,43 @@ test("the sidebar and the customizer resolve the row the same way", async () => 
   assert.match(
     customizer,
     /sidebarNavAuto: sidebarNavAutoAfterChoice\(sidebarNavAuto, item\.id\)/,
+  );
+});
+
+// Train and Recipes list their runs where the folders go. The row read that as the section being
+// gone and pinned itself back to the top, so walking to Train turned a row the user had put away
+// back on, and walking back turned it off again.
+test("a route that borrows the section does not bring the row back", async () => {
+  const sidebar = await readSrcAsync("components/app-sidebar.tsx");
+  assert.match(
+    sidebar,
+    /const projectsSectionConfigured =\n\s*organizeBy === "project" && projects\.length > 0;/,
+  );
+  // The section itself still stands down on those routes; only the row stopped following it.
+  assert.match(
+    sidebar,
+    /const projectsSectionRendered =\n\s*!isStudioRoute && !showTrainingRecents && projectsSectionConfigured;/,
+  );
+  const showing = sidebar.slice(
+    sidebar.indexOf("const projectsSectionShowing ="),
+    sidebar.indexOf("const chatSort ="),
+  );
+  for (const route of ["isStudioRoute", "showTrainingRecents"]) {
+    assert.ok(
+      !showing.includes(route),
+      `the row still reads ${route}`,
+    );
+  }
+});
+
+// Both the sidebar and Customize sidebar decide the row's place, and a switch that disagrees with
+// the sidebar beside it is the bug in another form.
+test("the customizer reads the setting the same way", async () => {
+  const customizer = await readSrcAsync(
+    "features/settings/components/sidebar-nav-customizer.tsx",
+  );
+  assert.match(
+    customizer,
+    /const projectsSectionShowing =\n\s*organizeBy === "project" && projects\.length > 0;/,
   );
 });
