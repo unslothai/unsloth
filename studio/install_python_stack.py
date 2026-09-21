@@ -10324,6 +10324,7 @@ def _skip_step(
     no_deps: bool,
     constrain: bool = True,
     extra_check = None,
+    superseded: bool = False,
 ) -> bool:
     """Announce one requirements step and say whether it is already satisfied.
 
@@ -10332,12 +10333,22 @@ def _skip_step(
 
     *extra_check* is an on-disk predicate for a file importlib.metadata cannot fully answer:
     today only triton-kernels.txt, whose git ref no version reflects.
+
+    *superseded* says a LATER step has already put a different build of this distribution in
+    place, one this file's version pin cannot describe. The requirement really is unsatisfied and
+    must still not run: running it would undo the step that supersedes it, which would then redo
+    itself, so every pass reinstalls twice and no update is ever a no-op. Deliberately separate
+    from *extra_check*, which can only make an answer stricter.
     """
     key = _pass_input_key(req) or str(req)
     if not no_deps and _pass_input_key(req) is not None:
         # Registered whether or not skipped, so the first pass records what its closure cannot
         # satisfy.
         _AUDITED_STEPS[key] = req
+    if superseded:
+        _progress(f"{progress_label} (superseded, skipped)")
+        _record_step(key, "skipped")
+        return True
     satisfied = _requirements_satisfied(req, no_deps = no_deps, constrain = constrain)
     if satisfied and extra_check is not None:
         satisfied = bool(extra_check())
@@ -11317,7 +11328,20 @@ def install_python_stack() -> int:
     #      release, and outside every skip_base / NO_TORCH branch so it reaches every path.
     #      constrain stays on: constraints.txt says nothing about diffusers today, and a
     #      future entry there should win rather than be silently bypassed here.
-    if not _skip_step(REQ_ROOT / "diffusers-pin.txt", "diffusers pin", no_deps = False):
+    #      And it stands down once 11c's build is resident. Nothing here can see that on its own: a
+    #      main build reports 0.41.0.dev0, which does not satisfy `diffusers==0.40.0`, so this step
+    #      would reinstall the release on every later pass and 11c would put the same commit back on
+    #      top of it. Two Diffusers installs per update, no update that is a no-op, and offline the
+    #      downgrade lands while the restore cannot. Only a build that is BOTH wanted and already
+    #      resident supersedes it, so opting out still reinstates the release, and a first install
+    #      still lays it down first, which is what a failed source build degrades to.
+    if not _skip_step(
+        REQ_ROOT / "diffusers-pin.txt",
+        "diffusers pin",
+        no_deps = False,
+        superseded = _diffusers_main_requested()
+        and _direct_reference_is_installed(REQ_ROOT / "diffusers-main.txt", "diffusers"),
+    ):
         pip_install(
             "Installing the pinned Diffusers release",
             "--no-cache-dir",

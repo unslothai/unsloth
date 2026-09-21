@@ -418,3 +418,70 @@ def test_the_win_arm64_floor_is_the_first_release_that_has_a_wheel(relpath, dist
         ):
             continue
         assert line in wanted, f"{relpath}: a second ARM64 floor for {dist}: {line}"
+
+
+def test_the_release_pin_stands_down_once_the_main_build_is_resident(monkeypatch):
+    """The one that makes a second update a no-op.
+
+    The release pin is a version pin and the main build reports ``0.41.0.dev0``, so the pin never
+    reads as satisfied once the commit is in place. Left alone it reinstalls the release on every
+    pass and the step after it reinstalls the same commit on top, which is two Diffusers installs
+    per update and an offline update that downgrades a working build and then cannot restore it.
+    """
+    module = _probe_module("install_python_stack_probe5")
+
+    calls = []
+    monkeypatch.setattr(module, "_progress", lambda label, *a, **k: calls.append(label))
+    monkeypatch.setattr(module, "_record_step", lambda *a, **k: None)
+    monkeypatch.setattr(module, "_requirements_satisfied", lambda *a, **k: False)
+
+    # Resident and wanted: the step must not run, and must still spend its slot.
+    assert (
+        module._skip_step(
+            module.REQ_ROOT / "diffusers-pin.txt",
+            "diffusers pin",
+            no_deps = False,
+            superseded = True,
+        )
+        is True
+    )
+    assert len(calls) == 1 and "skipped" in calls[0], calls
+
+    # Not superseded: unchanged, so a first install and an opt-out both still get the release.
+    calls.clear()
+    assert (
+        module._skip_step(
+            module.REQ_ROOT / "diffusers-pin.txt",
+            "diffusers pin",
+            no_deps = False,
+            superseded = False,
+        )
+        is False
+    )
+    assert calls == ["diffusers pin"], calls
+
+
+def test_opting_out_or_a_missing_main_build_still_reinstates_the_release(monkeypatch):
+    """The supersession is narrow on purpose: it is the ONLY thing standing between an opt-out and
+    a Studio left on a main build it asked not to have."""
+    module = _probe_module("install_python_stack_probe6")
+    main_req = module.REQ_ROOT / "diffusers-main.txt"
+
+    monkeypatch.setattr(module, "_direct_reference_is_installed", lambda *a, **k: True)
+    monkeypatch.delenv("UNSLOTH_DIFFUSERS_MAIN", raising = False)
+    assert module._diffusers_main_requested() and module._direct_reference_is_installed(
+        main_req, "diffusers"
+    )
+
+    monkeypatch.setenv("UNSLOTH_DIFFUSERS_MAIN", "0")
+    assert not (
+        module._diffusers_main_requested()
+        and module._direct_reference_is_installed(main_req, "diffusers")
+    ), "opting out must let the release pin run again"
+
+    monkeypatch.delenv("UNSLOTH_DIFFUSERS_MAIN", raising = False)
+    monkeypatch.setattr(module, "_direct_reference_is_installed", lambda *a, **k: False)
+    assert not (
+        module._diffusers_main_requested()
+        and module._direct_reference_is_installed(main_req, "diffusers")
+    ), "a first install must lay the release down before the commit goes on top of it"
