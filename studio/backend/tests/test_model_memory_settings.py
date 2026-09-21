@@ -1302,7 +1302,7 @@ class TestVulkanIgpuDetection:
         assert self._probe(monkeypatch, rows)("bin", None) is False
 
     def test_an_unreadable_probe_folds_into_not_integrated(self, monkeypatch):
-        """"No answer" reads as "not an iGPU" HERE and only here. This predicate
+        """ "No answer" reads as "not an iGPU" HERE and only here. This predicate
         gates a page-lock, so the cost of being wrong is a lock not taken; the
         loader choice asks _vulkan_offload_is_discrete instead, which declines an
         unread type rather than buffering host-backed weights."""
