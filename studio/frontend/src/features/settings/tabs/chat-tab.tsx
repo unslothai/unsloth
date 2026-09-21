@@ -30,13 +30,12 @@ import { type TranslationKey, useT } from "@/i18n";
 import { toast } from "@/lib/toast";
 import {
   Bookmark02Icon,
-  BookOpen01Icon,
   Download01Icon,
   FileDatabaseIcon,
   Folder01Icon,
   McpServerIcon,
   PencilRulerIcon,
-  ShieldBanIcon,
+  Scroll01Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { Columns2Icon } from "lucide-react";
@@ -87,7 +86,7 @@ const PLUS_MENU_SETTINGS: {
     labelKey: "settings.chat.menu.skills",
     icon: (
       <HugeiconsIcon
-        icon={BookOpen01Icon}
+        icon={Scroll01Icon}
         strokeWidth={2}
         className={PLUS_MENU_ICON_CLASS}
       />
@@ -137,17 +136,6 @@ const PLUS_MENU_SETTINGS: {
     icon: (
       <HugeiconsIcon
         icon={Folder01Icon}
-        strokeWidth={2}
-        className={PLUS_MENU_ICON_CLASS}
-      />
-    ),
-  },
-  {
-    id: "bypassPermissions",
-    labelKey: "settings.general.permissions.bypassLabel",
-    icon: (
-      <HugeiconsIcon
-        icon={ShieldBanIcon}
         strokeWidth={2}
         className={PLUS_MENU_ICON_CLASS}
       />
@@ -277,6 +265,12 @@ export function ChatTab() {
   );
   const setCollapseToolActivityByDefault = useChatPreferencesStore(
     (state) => state.setCollapseToolActivityByDefault,
+  );
+  const foldToolActivityIntoThinking = useChatPreferencesStore(
+    (state) => state.foldToolActivityIntoThinking,
+  );
+  const setFoldToolActivityIntoThinking = useChatPreferencesStore(
+    (state) => state.setFoldToolActivityIntoThinking,
   );
   const pastedTextMinChars = useChatPreferencesStore(
     (state) => state.pastedTextMinChars,
@@ -527,6 +521,16 @@ export function ChatTab() {
             aria-label={t("settings.chat.tools.collapseByDefault")}
             checked={collapseToolActivityByDefault}
             onCheckedChange={setCollapseToolActivityByDefault}
+          />
+        </SettingsRow>
+        <SettingsRow
+          label={t("settings.chat.tools.foldIntoThinking")}
+          description={t("settings.chat.tools.foldIntoThinkingDescription")}
+        >
+          <Switch
+            aria-label={t("settings.chat.tools.foldIntoThinking")}
+            checked={foldToolActivityIntoThinking}
+            onCheckedChange={setFoldToolActivityIntoThinking}
           />
         </SettingsRow>
         <SettingsRow

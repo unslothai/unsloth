@@ -14,6 +14,28 @@
 #
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+# Remove-Item's -ErrorAction does not cover every failure. For a path the FileSystem provider
+# cannot resolve it raises a terminating PSArgumentException ("An object at the specified path
+# ... does not exist"), which -ErrorAction SilentlyContinue cannot suppress, so an unguarded
+# removal during a rollback aborts the rest of the cleanup it belongs to (#11290). Guard on
+# existence and catch everything, so a missing or unresolvable temp path is never fatal. Used
+# for the temp files whose names can come from an 8.3 alias.
+#
+# Top level, NOT inside Install-UnslothStudio: a nested function lives in its parent's local
+# scope and is gone once the parent returns, and the outer finally below runs after exactly
+# that. Defined there, the finally's two calls raise CommandNotFoundException and leave the
+# overrides file -- which carries the caller's UV_OVERRIDE lines -- on disk.
+# tests/studio/test_unsloth_torch_override.ps1 pins the placement.
+function Remove-UnslothTempFileQuietly {
+    param([string]$Path)
+    if (-not $Path) { return }
+    try {
+        if (-not (Test-Path -LiteralPath $Path -ErrorAction SilentlyContinue)) { return }
+        Remove-Item -LiteralPath $Path -Force -ErrorAction Stop
+    } catch { }
+}
+
 function Install-UnslothStudio {
     $ErrorActionPreference = "Stop"
 
@@ -395,7 +417,9 @@ function Install-UnslothStudio {
             } else {
                 $fso.GetFile($Path).ShortPath
             }
-            if ($short -and -not $short.Contains(" ")) { return $short }
+            # A space-free alias is not necessarily a name that resolves (#11290). This value
+            # reaches UV_OVERRIDE and --find-links, so a bogus one breaks every later uv call.
+            if ($short -and -not $short.Contains(" ") -and (Test-Path -LiteralPath $short -ErrorAction SilentlyContinue)) { return $short }
         } catch {}
         return $Path
     }
@@ -3211,7 +3235,7 @@ exit 1
             if (-not (Test-StudioUvNoCache)) {
                 Write-StudioUvCacheMarker -StudioRoot $StudioRoot -Cache $studioCache
             }
-            step "uv cache" "forced Studio cache isolation ($studioCache); already-cached packages may download again" "Yellow"
+            step "uv cache" "forced Unsloth Studio cache isolation ($studioCache); already-cached packages may download again" "Yellow"
             return
         }
 
@@ -3338,19 +3362,19 @@ exit 1
             }
             "studio" {
                 if ($chosenCache) {
-                    step "uv cache" "reusing this install's Studio cache ($selectedCache)"
+                    step "uv cache" "reusing this install's Unsloth Studio cache ($selectedCache)"
                 # Never about the directory we are falling back TO: the Studio cache is itself
                 # a candidate now, so it can be the one refused, and naming it claims a fallback
                 # that did not happen.
                 } elseif ($scanBlocked -and -not [string]::IsNullOrWhiteSpace([string]$blockedCache) -and $blockedCache -ne $selectedCache) {
-                    step "uv cache" "using new Studio-owned cache ($selectedCache); part of $blockedCache could not be read, so cached packages may download again" "Yellow"
+                    step "uv cache" "using new Unsloth Studio-owned cache ($selectedCache); part of $blockedCache could not be read, so cached packages may download again" "Yellow"
                 } elseif ($scanBlocked -and [string]::IsNullOrWhiteSpace([string]$blockedCache)) {
-                    step "uv cache" "using new Studio-owned cache ($selectedCache); the existing uv cache could not be inspected, so cached packages may download again" "Yellow"
+                    step "uv cache" "using new Unsloth Studio-owned cache ($selectedCache); the existing uv cache could not be inspected, so cached packages may download again" "Yellow"
                 # Warm and still here means the write probe refused it.
                 } elseif ($warnCache -and $warnCache -ne $selectedCache) {
-                    step "uv cache" "using new Studio-owned cache ($selectedCache); $warnCache is populated but not writable, so cached packages may download again" "Yellow"
+                    step "uv cache" "using new Unsloth Studio-owned cache ($selectedCache); $warnCache is populated but not writable, so cached packages may download again" "Yellow"
                 } else {
-                    step "uv cache" "using new Studio-owned cache ($selectedCache)"
+                    step "uv cache" "using new Unsloth Studio-owned cache ($selectedCache)"
                 }
             }
         }
@@ -3851,9 +3875,13 @@ exit 1
     # files, so neither explains a denied folder.
     #
     # When Defender is not it, name whichever antivirus is registered and running
-    # instead: third-party suites ship the same feature under their own names
-    # (Bitdefender Safe Files and Ransomware Remediation, for instance), and the
-    # user cannot act on advice that does not say which product to open.
+    # instead: third-party suites ship the same protected-folders feature under
+    # their own product names, and the user cannot act on advice that does not say
+    # which product to open. Which suite ships what is recorded in
+    # tests/studio/test_installer_av_shapes.py and deliberately not repeated here,
+    # because this file is scanned in full before a line of it runs and a comment
+    # listing security products raises the score of the very file explaining it.
+    # Nothing below hard-codes a product: it reads what SecurityCenter2 registered.
     #
     # Answers "" whenever it cannot tell, so a machine with no Defender module
     # and no SecurityCenter registration reads the same as one that says no.
@@ -3962,12 +3990,31 @@ exit 1
             (Get-CanonicalDir -Path (Join-Path $env:USERPROFILE ".unsloth\studio")))
     }
 
-    # Explicit staging root, shared default cache, or the custom Unsloth home's tree.
+    # The master root storage_roots.unsloth_home() reads. llama.cpp, node and whisper.cpp sit
+    # BESIDE studio\ under it, so deriving them from $StudioHome would put them one level below
+    # where every runtime resolver looks.
+    function Get-MasterRootOverride {
+        if ([string]::IsNullOrWhiteSpace($env:UNSLOTH_HOME)) { return $null }
+        $value = $env:UNSLOTH_HOME.Trim()
+        if ($value -eq "~") {
+            $value = $env:USERPROFILE
+        } elseif ($value -like "~/*" -or $value -like "~\*") {
+            $value = (Join-Path $env:USERPROFILE $value.Substring(1).TrimStart('/', '\'))
+        }
+        return (Get-CanonicalDir -Path $value)
+    }
+
+    # Explicit staging root, the master root, the shared default cache, or the custom Unsloth
+    # home's tree.
     function Get-ManagedLlamaCppDir {
         param([AllowNull()][string]$StagingRoot = $null)
 
         if ($StagingRoot) {
             return (Join-Path $StagingRoot "llama.cpp")
+        }
+        $masterRoot = Get-MasterRootOverride
+        if ($masterRoot) {
+            return (Join-Path $masterRoot "llama.cpp")
         }
         if (-not (Test-StudioHomeIsCustom)) {
             return (Join-Path $env:USERPROFILE ".unsloth\llama.cpp")
@@ -3984,8 +4031,9 @@ exit 1
         $dir = Get-ManagedLlamaCppDir -StagingRoot $StagingRoot
         if ((Get-LlamaCppInstallReadState -Path $dir) -ne "Denied") { return $null }
         Write-StudioLine ""
-        # A denied custom home cannot be claimed as an Unsloth-managed cache.
-        $homeIsCustom = Test-StudioHomeIsCustom
+        # A denied custom home cannot be claimed as an Unsloth-managed cache. Computed rather
+        # than read off $RuntimeRootIsCustom: this runs beside the line that defines it.
+        $homeIsCustom = (Test-StudioHomeIsCustom) -or [bool](Get-MasterRootOverride)
         # Preserve user-supplied wording when either override names this tree, or
         # names a build inside it: moving or deleting this folder takes that build
         # with it, and the later --with-llama-cpp-dir check then aborts on a path
@@ -4033,10 +4081,26 @@ exit 1
             $asideDir = "$dir.denied-$(Get-Date -Format 'yyyyMMddHHmmss')"
             $moved = $false
             try {
-                Move-Item -LiteralPath $dir -Destination $asideDir -ErrorAction Stop
+                # [System.IO.Directory]::Move, not Move-Item. Move-Item falls back to
+                # copy-then-delete when the rename fails, which creates $asideDir and then
+                # dies on the unreadable contents, leaving a stray llama.cpp.denied-* folder
+                # beside the original on every run. Directory.Move is a bare rename: it
+                # either moves the tree or throws having created nothing.
+                # Measured on windows-latest, denying each shape on the folder itself:
+                #   (OI)(CI)(RX)  rename refused, Move-Item left a stray folder
+                #   (OI)(CI)(R)   rename refused, Move-Item left a stray folder
+                #   (RX)          rename refused, Move-Item left a stray folder
+                #   (DE)          rename SUCCEEDED, both ways
+                # So on Windows a read denial always refuses the rename (the open asks for
+                # SYNCHRONIZE, which every read deny removes) and this recovery cannot fire;
+                # denying DELETE, which sounds like the blocker, does not stop it. On POSIX
+                # the rename needs only write+execute on the parent, so the recovery is real
+                # there and is why this stays rather than being deleted.
+                [System.IO.Directory]::Move($dir, $asideDir)
                 $moved = $true
             } catch {
-                # Expected when the denial also covers rename; fall through to guidance.
+                # Expected when the denial covers the rename; fall through to guidance.
+                # Nothing to clean up: Directory.Move creates nothing when it throws.
             }
             if ($moved) {
                 step "permissions" "llama.cpp install at $dir could not be read, so it was moved aside" "Yellow"
@@ -9391,7 +9455,11 @@ exit 0
         if (-not $Path.Contains(" ")) { return @{ Path = $Path; Temporary = $false } }
         $short = $null
         try { $short = (New-Object -ComObject Scripting.FileSystemObject).GetFile($Path).ShortPath } catch { }
-        if ($short -and -not $short.Contains(" ")) { return @{ Path = $short; Temporary = $false } }
+        # Space-free is not sufficient: a volume can hand back an 8.3 name that does not resolve,
+        # and uv then fails to open the file it was pointed at (#11290).
+        if ($short -and -not $short.Contains(" ") -and (Test-Path -LiteralPath $short -PathType Leaf -ErrorAction SilentlyContinue)) {
+            return @{ Path = $short; Temporary = $false }
+        }
 
         # No 8.3 name: copy to a space-free directory instead. Several candidates, because %TEMP%
         # can carry the space itself (the #11012 case) and 8.3 creation is commonly disabled on
@@ -9417,7 +9485,9 @@ exit 0
             if ($dir.Contains(" ")) {
                 $dirShort = $null
                 try { $dirShort = (New-Object -ComObject Scripting.FileSystemObject).GetFolder($dir).ShortPath } catch { }
-                if (-not $dirShort -or $dirShort.Contains(" ")) { continue }
+                # Space-free is not sufficient: an 8.3 name that does not resolve would be copied
+                # into and then handed to uv, which cannot open it (#11290).
+                if (-not $dirShort -or $dirShort.Contains(" ") -or -not (Test-Path -LiteralPath $dirShort -PathType Container -ErrorAction SilentlyContinue)) { continue }
                 $dir = $dirShort
             }
             # Declared before the try so the catch can clean up a Copy-Item that failed partway
@@ -9495,7 +9565,7 @@ exit 0
         try {
             [System.IO.File]::WriteAllText($f, (($lines -join "`n") + "`n"), (New-Object System.Text.UTF8Encoding($false)))
         } catch {
-            Remove-Item -LiteralPath $f -Force -ErrorAction SilentlyContinue
+            Remove-UnslothTempFileQuietly -Path $f
             $script:TorchOverridesFile = $null
             throw
         }
@@ -9503,11 +9573,23 @@ exit 0
         if ($f.Contains(" ")) {
             $short = $null
             try { $short = (New-Object -ComObject Scripting.FileSystemObject).GetFile($f).ShortPath } catch { }
-            if (-not $short -or $short.Contains(" ")) {
-                # No short name: skip the freeze rather than fail.
-                substep "[WARN] the torch overrides path has a space and no 8.3 short name;" "Yellow"
+            # Space-free is not sufficient. A volume can hand back an 8.3 name that does not resolve,
+            # and this path is then both uv's --overrides argument and the file the caller deletes:
+            # uv fails to open it, and Remove-Item raises a terminating PSArgumentException that
+        # -ErrorAction SilentlyContinue on every one of these probes is the idiom at line 3277
+        # and is load-bearing: under this script's "Stop", Test-Path inside an ACL-denied
+        # directory THROWS UnauthorizedAccessException instead of returning false, and none of
+        # these guards sits inside a try. Bare, the check aborts the install on a path whose
+        # only crime is being unreadable, in functions whose contract is to fall through.
+            # -ErrorAction SilentlyContinue cannot suppress (#11290). Require a real file.
+            if (-not $short -or $short.Contains(" ") -or -not (Test-Path -LiteralPath $short -PathType Leaf -ErrorAction SilentlyContinue)) {
+                # No usable short name: skip the freeze rather than fail.
+                substep "[WARN] the torch overrides path has a space and no usable 8.3 short name;" "Yellow"
                 substep "installing unsloth without freezing the installed PyTorch." "Yellow"
-                Remove-Item -LiteralPath $f -Force -ErrorAction SilentlyContinue
+                Remove-UnslothTempFileQuietly -Path $f
+                # Tracked above: clear it so the outer sweep is not handed a path this branch
+                # has already deleted.
+                $script:TorchOverridesFile = $null
                 return $null
             }
             $f = $short
@@ -9517,7 +9599,7 @@ exit 0
 
     $_desktopMinVer = if ($env:UNSLOTH_DESKTOP_BACKEND_VERSION) { $env:UNSLOTH_DESKTOP_BACKEND_VERSION.Trim() } else { "" }
     $_unslothDesktopInstallSpec = if ($_desktopMinVer) { "unsloth>=$_desktopMinVer" } else { $null }
-    $_unslothReleaseInstallSpec = if ($_unslothDesktopInstallSpec) { $_unslothDesktopInstallSpec } else { "unsloth>=2026.9.6" }
+    $_unslothReleaseInstallSpec = if ($_unslothDesktopInstallSpec) { $_unslothDesktopInstallSpec } else { "unsloth>=2026.9.7" }
 
     if ($_Migrated) {
         Write-TauriLog "STEP" "Installing unsloth"
@@ -9528,7 +9610,7 @@ exit 0
             # --no-deps means unsloth's own metadata is never read, so this spec IS the zoo
             # floor for this path. Keep it equal to the unsloth_zoo floor in pyproject.toml
             # (tests/test_installer_zoo_floor_parity.py enforces that).
-            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (migrated no-torch)" { & $script:UvExe pip install --python $VenvPython --no-deps --reinstall-package unsloth --reinstall-package unsloth-zoo "$_unslothReleaseInstallSpec" "unsloth-zoo>=2026.9.5" }
+            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (migrated no-torch)" { & $script:UvExe pip install --python $VenvPython --no-deps --reinstall-package unsloth --reinstall-package unsloth-zoo "$_unslothReleaseInstallSpec" "unsloth-zoo>=2026.9.6" }
             if ($baseInstallExit -eq 0) {
                 # Resolve pydantic WITH deps so pip pins pydantic-core
                 # to the matching version (no-torch-runtime.txt below
@@ -9547,7 +9629,7 @@ exit 0
                 }
             }
         } else {
-            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (migrated)" { & $script:UvExe pip install --python $VenvPython --reinstall-package unsloth --reinstall-package unsloth-zoo "$_unslothReleaseInstallSpec" "unsloth-zoo>=2026.9.5" }
+            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (migrated)" { & $script:UvExe pip install --python $VenvPython --reinstall-package unsloth --reinstall-package unsloth-zoo "$_unslothReleaseInstallSpec" "unsloth-zoo>=2026.9.6" }
         }
         if ($baseInstallExit -ne 0) {
             Write-StudioLine "[ERROR] Failed to install unsloth (exit code $baseInstallExit)" -ForegroundColor Red
@@ -9799,7 +9881,7 @@ exit 0
             # No-torch: install unsloth + unsloth-zoo with --no-deps, then
             # runtime deps (typer, safetensors, transformers, etc.) with --no-deps.
             # --no-deps: this spec IS the zoo floor here. Kept equal to pyproject.toml's.
-            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (no-torch)" { & $script:UvExe pip install --python $VenvPython --no-deps --upgrade-package unsloth --upgrade-package unsloth-zoo "$_unslothReleaseInstallSpec" "unsloth-zoo>=2026.9.5" }
+            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (no-torch)" { & $script:UvExe pip install --python $VenvPython --no-deps --upgrade-package unsloth --upgrade-package unsloth-zoo "$_unslothReleaseInstallSpec" "unsloth-zoo>=2026.9.6" }
             if ($baseInstallExit -eq 0) {
                 # Same pydantic-with-deps trick as the migrated branch.
                 $baseInstallExit = Invoke-InstallCommandRetry -Label "install pydantic" { & $script:UvExe pip install --python $VenvPython pydantic }
@@ -9819,18 +9901,18 @@ exit 0
             # Freeze the trio so this with-deps resolve cannot downgrade the pinned build.
             $script:TorchOverridesFile = New-UnslothTorchOverridesFile -PythonExe $VenvPython
             if ($script:TorchOverridesFile) {
-                $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (local)" { & $script:UvExe pip install --python $VenvPython --upgrade-package unsloth --overrides $script:TorchOverridesFile "$_unslothReleaseInstallSpec" "unsloth-zoo>=2026.9.5" }
-                Remove-Item -LiteralPath $script:TorchOverridesFile -Force -ErrorAction SilentlyContinue
+                $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (local)" { & $script:UvExe pip install --python $VenvPython --upgrade-package unsloth --overrides $script:TorchOverridesFile "$_unslothReleaseInstallSpec" "unsloth-zoo>=2026.9.6" }
+                Remove-UnslothTempFileQuietly -Path $script:TorchOverridesFile
                 $script:TorchOverridesFile = $null
             } else {
-                $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (local)" { & $script:UvExe pip install --python $VenvPython --upgrade-package unsloth "$_unslothReleaseInstallSpec" "unsloth-zoo>=2026.9.5" }
+                $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (local)" { & $script:UvExe pip install --python $VenvPython --upgrade-package unsloth "$_unslothReleaseInstallSpec" "unsloth-zoo>=2026.9.6" }
             }
         } else {
             $_unslothPkg = if ($PackageName -eq "unsloth" -and $_unslothDesktopInstallSpec) { $_unslothDesktopInstallSpec } else { $PackageName }
             $script:TorchOverridesFile = New-UnslothTorchOverridesFile -PythonExe $VenvPython
             if ($script:TorchOverridesFile) {
                 $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth" { & $script:UvExe pip install --python $VenvPython --upgrade-package unsloth --overrides $script:TorchOverridesFile -- "$_unslothPkg" }
-                Remove-Item -LiteralPath $script:TorchOverridesFile -Force -ErrorAction SilentlyContinue
+                Remove-UnslothTempFileQuietly -Path $script:TorchOverridesFile
                 $script:TorchOverridesFile = $null
             } else {
                 $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth" { & $script:UvExe pip install --python $VenvPython --upgrade-package unsloth -- "$_unslothPkg" }
@@ -9860,7 +9942,7 @@ exit 0
         Write-TauriLog "STEP" "Installing unsloth"
         substep "installing unsloth (this may take a few minutes)..."
         if ($StudioLocalInstall) {
-            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (auto torch backend)" { & $script:UvExe pip install --python $VenvPython "unsloth-zoo>=2026.9.5" "$_unslothReleaseInstallSpec" --torch-backend=auto }
+            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (auto torch backend)" { & $script:UvExe pip install --python $VenvPython "unsloth-zoo>=2026.9.6" "$_unslothReleaseInstallSpec" --torch-backend=auto }
             if ($baseInstallExit -ne 0) {
                 Write-StudioLine "[ERROR] Failed to install unsloth (exit code $baseInstallExit)" -ForegroundColor Red
                 return (Exit-InstallFailure "Failed to install unsloth (exit code $baseInstallExit)" $baseInstallExit)
@@ -10729,11 +10811,11 @@ try {
     Remove-Item Env:UNSLOTH_KEPT_TORCH -ErrorAction SilentlyContinue
     # The generated overrides file copies the caller's UV_OVERRIDE contents; never leave it.
     if ($script:TorchOverridesFile) {
-        Remove-Item -LiteralPath $script:TorchOverridesFile -Force -ErrorAction SilentlyContinue
+        Remove-UnslothTempFileQuietly -Path $script:TorchOverridesFile
         $script:TorchOverridesFile = $null
     }
     if ($script:WoaSessionOverrides) {
-        Remove-Item -LiteralPath $script:WoaSessionOverrides -Force -ErrorAction SilentlyContinue
+        Remove-UnslothTempFileQuietly -Path $script:WoaSessionOverrides
         $script:WoaSessionOverrides = $null
     }
 }

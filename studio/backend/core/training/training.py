@@ -157,6 +157,16 @@ def _coerce_optional_bool(value, default: bool) -> bool:
     return bool(value)
 
 
+def apply_save_strategy(config, save_steps_val):
+    # Save Steps 0 means "no checkpoints"; without an explicit strategy HF defaults to every 500 steps.
+    if save_steps_val and save_steps_val > 0:
+        config["save_steps"] = save_steps_val
+        config["save_strategy"] = "steps"
+    else:
+        config["save_strategy"] = "no"
+    return config
+
+
 def _coerce_optional_nonneg_float(name: str, value):
     """Reject negatives and non-finite; `ge=0` misses raw callers, and inf never binds."""
     if value is None:
@@ -643,6 +653,7 @@ class TrainingProgress:
     status_message: str = "Ready to train"
     elapsed_seconds: Optional[float] = None
     eta_seconds: Optional[float] = None
+    session_start_step: int = 0
     grad_norm: Optional[float] = None
     num_tokens: Optional[int] = None
     eval_loss: Optional[float] = None
@@ -1041,6 +1052,10 @@ class _MLXTrainerAdapter:
                     self.training_progress.elapsed_seconds,
                 ),
                 eta_seconds = event.get("eta_seconds", self.training_progress.eta_seconds),
+                session_start_step = event.get(
+                    "session_start_step",
+                    self.training_progress.session_start_step,
+                ),
                 grad_norm = event.get("grad_norm", self.training_progress.grad_norm),
                 num_tokens = event.get("num_tokens", self.training_progress.num_tokens),
                 eval_loss = event.get("eval_loss", self.training_progress.eval_loss),
@@ -1824,7 +1839,7 @@ class TrainingBackend:
                         # the worker would then train on past it holding the GPU.
                         if is_process_shutting_down():
                             logger.info(
-                                "Studio is shutting down; not starting training worker for %s",
+                                "Unsloth is shutting down; not starting training worker for %s",
                                 start_request_id,
                             )
                             return False
@@ -1841,7 +1856,7 @@ class TrainingBackend:
                         # adoption ran first, so the worker is in the sweep record for as
                         # long as it exists.
                         if is_process_shutting_down():
-                            raise RuntimeError("Studio is shutting down")
+                            raise RuntimeError("Unsloth is shutting down")
                     except Exception:
                         logger.error(
                             "Could not keep the training subprocess; terminating it",
@@ -2579,7 +2594,7 @@ class TrainingBackend:
                         # this respawn after the shutdown sweep has taken its snapshot.
                         if is_process_shutting_down():
                             raise RuntimeError(
-                                "Studio is shutting down; not respawning the training worker"
+                                "Unsloth is shutting down; not respawning the training worker"
                             )
                         new_proc.start()
                         adopt_pid(new_proc.pid)
@@ -2602,7 +2617,7 @@ class TrainingBackend:
                                     "could not reap the new training worker", exc_info = True
                                 )
                             raise RuntimeError(
-                                "Studio is shutting down; not respawning the training worker"
+                                "Unsloth is shutting down; not respawning the training worker"
                             )
                 except Exception:
                     logger.error("Failed to respawn training subprocess", exc_info = True)
@@ -3054,6 +3069,9 @@ class TrainingBackend:
                 self._progress.total_steps = event.get("total_steps", self._progress.total_steps)
                 self._progress.elapsed_seconds = event.get("elapsed_seconds")
                 self._progress.eta_seconds = event.get("eta_seconds")
+                self._progress.session_start_step = event.get(
+                    "session_start_step", self._progress.session_start_step
+                )
                 self._progress.grad_norm = event.get("grad_norm")
                 self._progress.num_tokens = event.get("num_tokens")
                 self._progress.eval_loss = event.get("eval_loss")

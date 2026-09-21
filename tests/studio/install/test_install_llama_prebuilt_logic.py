@@ -4408,6 +4408,7 @@ _LLAMA_CPP_NO_SPACE=false
 _LLAMA_CPP_DEGRADED=false
 _explicit_llama_backend=""
 _STUDIO_HOME_IS_CUSTOM=false
+_RUNTIME_ROOT_IS_CUSTOM=false
 _STUDIO_OWNED_MARKER=".unsloth-owned"
 step() { echo "step: $2"; }
 substep() { echo "substep: $1"; }
@@ -7008,6 +7009,23 @@ def test_the_planner_records_the_newest_release_a_mac_walked_past(monkeypatch):
     _, plans = module._fork_manifest_release_plans("latest", host, "unslothai/llama.cpp", "")
     assert plans[0].release_tag == "r2"
     assert plans[0].walk_back is None
+
+
+def test_a_late_rocm_listing_failure_keeps_the_vulkan_plan(monkeypatch):
+    module = INSTALL_LLAMA_PREBUILT
+    vulkan = release_plan([asset_choice(install_kind = "linux-vulkan")], release_checksums())
+
+    def rocm_plans():
+        yield vulkan
+        raise urllib.error.URLError("CDN down, API timed out")
+
+    monkeypatch.setattr(
+        module,
+        "resolve_simple_install_release_plans",
+        lambda *args: ("latest", module.LazyReleasePlans(rocm_plans())),
+    )
+    kept = module._with_rocm_behind_vulkan([vulkan], "latest", linux_host(), "", "")
+    assert [plan.release_tag for plan in kept] == [vulkan.release_tag]
 
 
 def test_a_reused_marker_takes_the_walk_back_this_run_made():

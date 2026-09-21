@@ -165,6 +165,8 @@ export const fr = {
       export: "Exporter",
       recents: "Discussions récentes",
       noChatsYet: "Aucune discussion pour le moment",
+      // Shown under an empty project folder in the sidebar.
+      noChats: "Aucune discussion",
       showMore: "Afficher plus",
       showLess: "Afficher moins",
       settings: "Paramètres",
@@ -195,6 +197,7 @@ export const fr = {
       unpinChats: "Détacher les discussions",
       archiveChats: "Archiver les discussions",
       markUnread: "Marquer comme non lu",
+      markRead: "Marquer comme lu",
       deleteChats: "Supprimer les discussions",
       deleteTitle: "Supprimer les discussions",
       deleteDescription: "Supprimer {count} discussions ? Cette action est irréversible.",
@@ -213,11 +216,26 @@ export const fr = {
       priority: "Priorité",
       lastUpdated: "Dernière mise à jour",
       manualOrder: "Ordre manuel",
-      moveUp: "Monter",
-      moveDown: "Descendre",
+      priorityHint: "Actifs et non lus en premier",
+      lastUpdatedHint: "Les plus récents en premier",
+      manualOrderHint: "Faites glisser les lignes pour les réorganiser",
+      switchedToManual: "Tri manuel : faites glisser les lignes pour les réorganiser",
       organizeChats: "Organiser les discussions",
       organizeProjects: "Organiser les projets",
       sortPinnedChats: "Trier les discussions épinglées",
+      dragDrop: "Glisser-déposer",
+      dragHints: "Afficher une indication pendant le glissement",
+      reorderSwitchesSort: "Réordonner passe en ordre manuel",
+      dragOpensFolders: "Ouvrir les dossiers sous le pointeur",
+      moveUp: "Monter",
+      moveDown: "Descendre",
+    },
+    drag: {
+      reorder: "Réordonner",
+      pin: "Épingler",
+      unpin: "Désépingler",
+      moveTo: "Déplacer vers {name}",
+      moveToRecents: "Déplacer vers Récents",
     },
     dialog: {
       deleteChat: {
@@ -249,9 +267,19 @@ export const fr = {
   settings: {
     accounts: {
       title: "Comptes",
-      description: "Créez des comptes Studio privés. Les nouveaux utilisateurs se connectent avec un code de configuration à usage unique et choisissent un mot de passe.",
+      description: "Créez des comptes Unsloth privés. Les nouveaux utilisateurs se connectent avec un code de configuration à usage unique et choisissent un mot de passe.",
       username: "Nom d'utilisateur",
       create: "Créer un compte",
+      createDescription: "Partagez un code de configuration pour que la personne choisisse son propre mot de passe.",
+      actionsFor: "Gérer {username}",
+      actions: "Actions",
+      search: "Rechercher des comptes",
+      noResults: "Aucun compte correspondant",
+      created: "Créé le",
+      status: "Statut",
+      loginHint: "Connectez-vous en tant que {username} avec ce code comme mot de passe, puis choisissez un nouveau mot de passe.",
+      privateAccount: "Compte privé",
+      empty: "Aucun autre compte pour l'instant",
       setupCode: "Code de configuration",
       setupFor: "Code de configuration pour {username}",
       shownOnce: "Copiez ce code maintenant et transmettez-le au titulaire du compte. Il n'est affiché qu'ici et ne peut être utilisé qu'une seule fois dans les 60 minutes.",
@@ -261,13 +289,13 @@ export const fr = {
       copyFailed: "Impossible de copier. Sélectionnez et copiez le code de configuration ci-dessus.",
       dismiss: "Terminé",
       owner: "Propriétaire de l'installation",
-      active: "Actif",
-      inactive: "Inactif",
+      active: "Activé",
+      inactive: "Désactivé",
       regenerate: "Régénérer le code de configuration",
       resetTitle: "Réinitialiser le mot de passe de {username} ?",
       resetDescription: "Régénérer le code de configuration remplace le mot de passe de {username}, ferme ses sessions et révoque ses clés API. Donnez-lui le nouveau code pour qu'il choisisse à nouveau un mot de passe.",
       deactivate: "Désactiver",
-      reactivate: "Réactiver",
+      reactivate: "Activer",
       delete: "Supprimer le compte",
       deleteTitle: "Supprimer {username} ?",
       deleteDescription: "Cette action révoque les sessions de {username} et annule ses travaux en cours. Ses conversations, réglages, identifiants, envois, jeux de données, entraînements, sorties, exports, galeries, bacs à sable, projets et fichiers temporaires sont retirés. Les répertoires sont renommés à part, jamais supprimés. Recréer ce nom d'utilisateur démarre un nouveau compte sans aucune de ces données.",
@@ -304,9 +332,10 @@ export const fr = {
     },
     keyboardShortcuts: {
       title: "Raccourcis clavier",
-      description:
-        "Modifiez un raccourci, ou effacez-le pour libérer la combinaison pour le navigateur ou le système.",
       searchPlaceholder: "Rechercher des raccourcis…",
+      keystrokePlaceholder: "Appuyez sur un raccourci pour rechercher",
+      searchByKeystrokes: "Rechercher par frappe",
+      searchByName: "Rechercher par nom",
       noResults: "Aucun raccourci ne correspond à cette recherche.",
       unassigned: "Non attribué",
       recording: "Appuyez sur les touches…",
@@ -503,6 +532,14 @@ export const fr = {
           label: "Envoyer le message",
           description: "Envoyer le contenu de la zone de saisie",
         },
+        queueMessage: {
+          label: "Mettre le message en file",
+          description: "Envoyer le brouillon à la fin de la file",
+        },
+        steerMessage: {
+          label: "Réorienter la réponse",
+          description: "Arrêter la réponse en cours et envoyer le brouillon ensuite",
+        },
         cycleReasoningEffort: {
           label: "Faire défiler l’effort de raisonnement",
           description: "Parcourir les niveaux d’effort de raisonnement",
@@ -569,7 +606,7 @@ export const fr = {
       openLogsFolderFailed: "Le dossier des journaux n'a pas pu être ouvert.",
       exportFailed: "Les journaux n'ont pas pu être téléchargés.",
       exportTooOld: "Le backend Unsloth en cours d'exécution est trop ancien pour exporter les journaux. Mettez-le à jour et redémarrez-le.",
-      exportForbidden: "Le téléchargement de tous les journaux nécessite une session Studio connectée. Une clé d'API ne suffit pas.",
+      exportForbidden: "Le téléchargement de tous les journaux nécessite une session Unsloth connectée. Une clé d'API ne suffit pas.",
       keywords: "debogage deboguer journal journaux log logs erreur erreurs plantage trace diagnostic depannage debug",
     },
     voice: {
@@ -883,6 +920,9 @@ export const fr = {
         showLoadedModels: "Indicateur des modèles chargés",
         showLoadedModelsDescription:
           "Affiche une petite carte en bas à droite listant tous les modèles actuellement en mémoire (chat, voix, image, vidéo), avec un bouton pour éjecter chacun d'eux.",
+        showWhisperUpdates: "Notifications de mise à jour de whisper.cpp",
+        showWhisperUpdatesDescription:
+          "Notifier lorsqu'une nouvelle version de whisper.cpp est disponible pour les modèles de transcription vocale. Désactivez si vous ne transcrivez jamais d'audio.",
       },
       startup: {
         sectionTitle: "Démarrage",
@@ -1260,7 +1300,11 @@ export const fr = {
       },
       gpu: {
         title: "Périphériques GPU",
-        ggufInference: "Inférence GGUF",
+        memory: "Mémoire GPU",
+        sharedWithSystemRam: "Partagée avec la RAM système",
+        estimatedAvailable: "Disponibilité estimée : {value}",
+        sharedEstimatedAvailable: "RAM système partagée : disponibilité estimée de {value}",
+        ggufInference: "Mémoire pour les modèles GGUF",
         unavailable: "indisponible",
         detecting: "Recherche de GPU...",
         unreadable: "Impossible de lire le matériel de ce serveur.",
@@ -1489,9 +1533,9 @@ export const fr = {
           "Ignore les demandes d'autorisation. À n'utiliser que dans des environnements de confiance.",
       },
       remote: {
-        title: "Se connecter à un Unsloth Studio distant",
+        title: "Se connecter à un Unsloth distant",
         description:
-          "Faites pointer unsloth start vers un Unsloth Studio exécuté ailleurs en définissant ces variables avant le lancement (ou passez --api-key directement) :",
+          "Faites pointer unsloth start vers un Unsloth exécuté ailleurs en définissant ces variables avant le lancement (ou passez --api-key directement) :",
       },
       passthrough: {
         title: "Transmettre des arguments à l'agent",
@@ -1519,16 +1563,16 @@ export const fr = {
       rememberParamsPerModelHint:
         "Lorsque cette option est désactivée, tous les modèles utilisent les mêmes réglages.",
       autoCompactHint:
-        "Utilise la longueur de contexte définie, pas la VRAM disponible.",
+        "Uniquement les chats GGUF locaux. Les échanges évincés sont indexés pour que le modèle puisse les retrouver, et une réinitialisation cite mot pour mot les instructions permanentes qui tiennent, en gardant les plus anciennes et les plus récentes plutôt que celles du milieu. L’archivage nécessite un chat enregistré et l’index vectoriel ; sans eux, les anciens échanges sont supprimés. Utilise la longueur de contexte définie, pas la VRAM disponible.",
       pastedTextShortDescription:
         "Le texte collé de {count} caractères ou plus devient une pièce jointe .txt. Le texte plus court reste dans le champ de message.",
       pastedTextOffDescription:
         "Tout le texte collé reste dans le champ de message, quelle que soit sa longueur.",
       compactionDescriptionInherit: "Suit la politique de contexte du serveur.",
       compactionDescriptionCheckpoint:
-        "Conserve le dernier échange et les instructions permanentes.",
+        "Conserve le dernier échange et les instructions permanentes qui tiennent, et archive le reste pour pouvoir le retrouver.",
       compactionDescriptionRolling:
-        "Supprime les échanges les plus anciens pour conserver les plus récents et la marge choisie.",
+        "Archive les échanges les plus anciens pour conserver les plus récents et la marge choisie.",
       projectsSection: "Afficher la section Projets",
       projectsSectionDescription:
         "Regroupe les discussions de projet sous un titre Projets. Désactivez cette option pour les lister dans Récents.",
@@ -1575,22 +1619,22 @@ export const fr = {
         "Restaure le dernier prompt, la température et les autres réglages utilisés pour chaque modèle.",
       autoCompact: "Compacter automatiquement les longues discussions",
       autoCompactDescription:
-        "Supprime les anciens échanges lorsqu’une discussion GGUF locale atteint sa limite de contexte.",
+        "Les anciens échanges vont dans une archive consultable quand un chat sature son contexte.",
       compactionStyle: "Lorsque le contexte est plein",
       compactionStyleDescription:
-        "La valeur par défaut du serveur conserve UNSLOTH_CONTEXT_POLICY. Réinitialiser la discussion garde le dernier tour et les instructions permanentes. Une fenêtre glissante supprime les tours les plus anciens et peut conserver davantage d’historique récent.",
+        "La valeur par défaut du serveur conserve UNSLOTH_CONTEXT_POLICY. Réinitialiser la discussion garde le dernier tour et les instructions permanentes qui tiennent. Une fenêtre glissante supprime les tours les plus anciens et peut conserver davantage d’historique récent.",
       compactionStyleInherit: "Utiliser la valeur du serveur",
       compactionStyleCheckpoint: "Réinitialiser la discussion",
       compactionStyleRollingDefault:
-        "Supprimer les anciens tours (~25 % d’espace supplémentaire)",
+        "Archiver les anciens tours (~25 % d’espace supplémentaire)",
       compactionStyleRolling10:
-        "Supprimer les anciens tours (~10 % d’espace supplémentaire)",
+        "Archiver les anciens tours (~10 % d’espace supplémentaire)",
       compactionStyleRolling5:
-        "Supprimer les anciens tours (~5 % d’espace supplémentaire)",
+        "Archiver les anciens tours (~5 % d’espace supplémentaire)",
       compactionStyleRollingNone:
-        "Supprimer les anciens tours (sans réduction supplémentaire)",
+        "Archiver les anciens tours (sans réduction supplémentaire)",
       autoCompactKeywords:
-        "compaction automatique contexte fenêtre tronquer glissante point de contrôle marge compaction rolling checkpoint headroom",
+        "compaction automatique contexte fenêtre tronquer glissante point de contrôle marge archive récupération recherche rolling checkpoint headroom retrieval rag",
       thinking: {
         collapseByDefault: "Replier la réflexion par défaut",
         collapseByDefaultDescription:
@@ -1607,6 +1651,9 @@ export const fr = {
         collapseByDefault: "Replier l’activité des outils par défaut",
         collapseByDefaultDescription:
           "Garde les entrées et sorties des outils repliées pendant leur exécution. Dépliez une ligne d’outil pour l’examiner.",
+        foldIntoThinking: "Replier les appels d'outils dans la Réflexion",
+        foldIntoThinkingDescription:
+          "Masque les appels d'outils d'un tour jusqu'à l'ouverture de son bloc de Réflexion.",
       },
       webSearch: {
         title: "Recherche web",
@@ -1997,7 +2044,7 @@ export const fr = {
         desktopAvailableDescription:
           "Effectuez la mise à jour maintenant. L’application de bureau redémarrera une fois l’opération terminée.",
         desktopExternalServer:
-          "Exécutez `unsloth studio update` dans le terminal depuis lequel vous avez lancé le serveur.",
+          "L’application est connectée à un serveur Studio déjà en cours d’exécution et ne peut pas le mettre à jour. Arrêtez ce serveur, puis quittez et rouvrez l’application de bureau pour effectuer la mise à jour.",
         desktopManualInstall:
           "Ouvrez la page des versions pour installer le dernier paquet Linux.",
         desktopCheckFailed: "Impossible de rechercher les mises à jour",

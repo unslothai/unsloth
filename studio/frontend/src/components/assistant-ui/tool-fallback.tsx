@@ -11,6 +11,7 @@ import {
 import { Spinner } from "@/components/ui/spinner";
 // eslint-disable-next-line no-restricted-imports -- the feature barrel imports this component
 import { useChatPreferencesStore } from "@/features/chat/stores/chat-preferences-store";
+import { useDetachThreadFromBottom } from "@/components/assistant-ui/use-intent-aware-autoscroll";
 import { useCollapseScrollLock } from "@/hooks/use-collapse-scroll-lock";
 import {
   formatMcpToolName,
@@ -22,6 +23,7 @@ import { cn } from "@/lib/utils";
 import {
   type ToolCallMessagePartComponent,
   type ToolCallMessagePartStatus,
+  useAuiState,
 } from "@assistant-ui/react";
 import {
   AlertCircleIcon,
@@ -99,10 +101,17 @@ function ToolFallbackRoot({
     awaitingApproval ||
     (isControlled ? controlledOpen : syncedUncontrolledState.open);
 
+  // Opening by hand grows the card downward; see the same note in reasoning.tsx.
+  const detachFromBottom = useDetachThreadFromBottom();
+  const messageRunning = useAuiState(
+    ({ message }) => message.status?.type === "running",
+  );
   const handleOpenChange = useCallback(
     (open: boolean) => {
       if (!open) {
         lockScroll();
+      } else if (!messageRunning) {
+        detachFromBottom();
       }
       if (!isControlled) {
         setUncontrolledState({
@@ -112,7 +121,14 @@ function ToolFallbackRoot({
       }
       controlledOnOpenChange?.(open);
     },
-    [collapseByDefault, lockScroll, isControlled, controlledOnOpenChange],
+    [
+      collapseByDefault,
+      lockScroll,
+      isControlled,
+      controlledOnOpenChange,
+      detachFromBottom,
+      messageRunning,
+    ],
   );
 
   return (
@@ -122,7 +138,7 @@ function ToolFallbackRoot({
       open={isOpen}
       onOpenChange={handleOpenChange}
       className={cn(
-        "aui-tool-fallback-root group/tool-fallback-root w-full py-1",
+        "aui-tool-fallback-root group/tool-fallback-root w-full",
         className,
       )}
       style={
@@ -183,7 +199,9 @@ function ToolFallbackTrigger({
     <CollapsibleTrigger
       data-slot="tool-fallback-trigger"
       className={cn(
-        "aui-tool-fallback-trigger group/trigger flex w-full cursor-pointer items-center gap-2 py-1.5 text-sm transition-colors",
+        // Brightens on hover like the Thinking trigger. The icon inherits this; the label
+        // sets its own colour and picks it up through the group below.
+        "aui-tool-fallback-trigger group/trigger flex w-full cursor-pointer items-center gap-2 text-sm transition-colors hover:text-foreground",
         className,
       )}
       {...props}
@@ -210,8 +228,11 @@ function ToolFallbackTrigger({
       <span
         data-slot="tool-fallback-trigger-label"
         className={cn(
-          "aui-tool-fallback-trigger-label-wrapper relative min-w-0 text-left leading-none text-muted-foreground",
-          isCancelled && "text-muted-foreground line-through",
+          "aui-tool-fallback-trigger-label-wrapper relative min-w-0 text-left leading-none text-muted-foreground transition-colors",
+          // A cancelled row stays muted: the strikethrough is the point, not the name.
+          isCancelled
+            ? "text-muted-foreground line-through"
+            : "group-hover/trigger:text-foreground",
         )}
       >
         <span
@@ -221,7 +242,7 @@ function ToolFallbackTrigger({
           )}
         >
           {label}:{" "}
-          <span className="font-medium text-foreground/85">{displayName}</span>
+          <span className="font-medium">{displayName}</span>
         </span>
         {isRunning && (
           <span
@@ -233,7 +254,7 @@ function ToolFallbackTrigger({
             )}
           >
             {label}:{" "}
-            <span className="font-medium text-foreground/85">{displayName}</span>
+            <span className="font-medium">{displayName}</span>
           </span>
         )}
       </span>
@@ -271,7 +292,7 @@ function ToolFallbackContent({
       )}
       {...props}
     >
-      <div className="mt-1 flex flex-col gap-2 pl-5">{children}</div>
+      <div className="mt-2 flex flex-col gap-2 pl-5">{children}</div>
     </CollapsibleContent>
   );
 }

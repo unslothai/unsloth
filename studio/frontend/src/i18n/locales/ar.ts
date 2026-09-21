@@ -162,6 +162,8 @@ export const ar = {
       export: "تصدير",
       recents: "العناصر الأخيرة",
       noChatsYet: "لا توجد محادثات بعد",
+      // Shown under an empty project folder in the sidebar.
+      noChats: "لا توجد محادثات",
       showMore: "عرض المزيد",
       showLess: "عرض أقل",
       settings: "الإعدادات",
@@ -192,6 +194,7 @@ export const ar = {
       unpinChats: "إلغاء تثبيت المحادثات",
       archiveChats: "أرشفة المحادثات",
       markUnread: "وضع علامة كغير مقروءة",
+      markRead: "وضع علامة كمقروءة",
       deleteChats: "حذف المحادثات",
       deleteTitle: "حذف المحادثات",
       deleteDescription: "هل تريد حذف {count} محادثة؟ لا يمكن التراجع عن ذلك.",
@@ -210,11 +213,26 @@ export const ar = {
       priority: "الأولوية",
       lastUpdated: "آخر تحديث",
       manualOrder: "ترتيب يدوي",
-      moveUp: "تحريك لأعلى",
-      moveDown: "تحريك لأسفل",
+      priorityHint: "النشطة وغير المقروءة أولاً",
+      lastUpdatedHint: "الأحدث أولاً",
+      manualOrderHint: "اسحب الصفوف لإعادة ترتيبها",
+      switchedToManual: "الترتيب يدوي الآن: اسحب الصفوف لإعادة ترتيبها",
       organizeChats: "تنظيم المحادثات",
       organizeProjects: "تنظيم المشاريع",
       sortPinnedChats: "ترتيب المحادثات المثبتة",
+      dragDrop: "السحب والإفلات",
+      dragHints: "إظهار تلميح أثناء السحب",
+      reorderSwitchesSort: "إعادة الترتيب تبدّل إلى الترتيب اليدوي",
+      dragOpensFolders: "فتح المجلدات أسفل المؤشر",
+      moveUp: "تحريك لأعلى",
+      moveDown: "تحريك لأسفل",
+    },
+    drag: {
+      reorder: "إعادة ترتيب",
+      pin: "تثبيت",
+      unpin: "إلغاء التثبيت",
+      moveTo: "نقل إلى {name}",
+      moveToRecents: "نقل إلى الأخيرة",
     },
     dialog: {
       deleteChat: {
@@ -245,9 +263,19 @@ export const ar = {
   settings: {
     accounts: {
       title: "الحسابات",
-      description: "أنشئ حسابات Studio خاصة. يسجّل المستخدمون الجدد الدخول برمز إعداد يُستخدم مرة واحدة ثم يختارون كلمة مرور.",
+      description: "أنشئ حسابات Unsloth خاصة. يسجّل المستخدمون الجدد الدخول برمز إعداد يُستخدم مرة واحدة ثم يختارون كلمة مرور.",
       username: "اسم المستخدم",
       create: "إنشاء حساب",
+      createDescription: "شارك رمز إعداد ليختار صاحب الحساب كلمة مروره بنفسه.",
+      actionsFor: "إدارة {username}",
+      actions: "الإجراءات",
+      search: "البحث في الحسابات",
+      noResults: "لا توجد حسابات مطابقة",
+      created: "تاريخ الإنشاء",
+      status: "الحالة",
+      loginHint: "سجّل الدخول باسم {username} مستخدمًا هذا الرمز ككلمة مرور، ثم اختر كلمة مرور جديدة.",
+      privateAccount: "حساب خاص",
+      empty: "لا توجد حسابات أخرى بعد",
       setupCode: "رمز الإعداد",
       setupFor: "رمز الإعداد لـ {username}",
       shownOnce: "انسخ هذا الرمز الآن وشاركه مع صاحب الحساب. يظهر هنا فقط ويمكن استخدامه مرة واحدة خلال 60 دقيقة.",
@@ -257,13 +285,13 @@ export const ar = {
       copyFailed: "تعذّر النسخ. حدّد رمز الإعداد أعلاه وانسخه.",
       dismiss: "تم",
       owner: "مالك التثبيت",
-      active: "نشط",
-      inactive: "غير نشط",
+      active: "مُفعّل",
+      inactive: "مُعطّل",
       regenerate: "إعادة إنشاء رمز الإعداد",
       resetTitle: "إعادة تعيين كلمة مرور {username}؟",
       resetDescription: "إعادة إنشاء رمز الإعداد تستبدل كلمة مرور {username} وتُنهي جلساته وتُلغي مفاتيح API الخاصة به. أعطه الرمز الجديد ليختار كلمة مرور من جديد.",
       deactivate: "تعطيل",
-      reactivate: "إعادة التفعيل",
+      reactivate: "تفعيل",
       delete: "حذف الحساب",
       deleteTitle: "حذف {username}؟",
       deleteDescription: "سيؤدي هذا إلى إلغاء جلسات {username} وإيقاف أعماله الجارية. تُسحب محادثاته وإعداداته وبيانات اعتماده وملفاته المرفوعة ومجموعات بياناته وعمليات التدريب والمخرجات والتصديرات والمعارض وبيئات العزل والمشاريع والملفات المؤقتة. يُعاد تسمية المجلدات وتُنحّى جانبًا ولا تُحذف أبدًا. إنشاء اسم المستخدم هذا مرة أخرى يبدأ حسابًا جديدًا دون أيٍّ من هذه البيانات.",
@@ -300,9 +328,10 @@ export const ar = {
     },
     keyboardShortcuts: {
       title: "اختصارات لوحة المفاتيح",
-      description:
-        "غيّر أي اختصار، أو امسحه لتحرير التركيبة لمتصفحك أو نظام التشغيل.",
       searchPlaceholder: "بحث في الاختصارات…",
+      keystrokePlaceholder: "اضغط اختصارًا للبحث",
+      searchByKeystrokes: "البحث بضغط المفاتيح",
+      searchByName: "البحث بالاسم",
       noResults: "لا توجد اختصارات مطابقة لهذا البحث.",
       unassigned: "غير معيّن",
       recording: "اضغط المفاتيح…",
@@ -499,6 +528,14 @@ export const ar = {
           label: "إرسال الرسالة",
           description: "إرسال ما في مربع الكتابة",
         },
+        queueMessage: {
+          label: "إضافة الرسالة إلى الطابور",
+          description: "إرسال المسودة إلى نهاية الطابور",
+        },
+        steerMessage: {
+          label: "توجيه الرد",
+          description: "إيقاف الرد الحالي وإرسال المسودة بعده",
+        },
         cycleReasoningEffort: {
           label: "تدوير مستوى التفكير",
           description: "التنقل بين مستويات جهد التفكير",
@@ -565,7 +602,7 @@ export const ar = {
       openLogsFolderFailed: "تعذّر فتح مجلد السجلات.",
       exportFailed: "تعذّر تنزيل السجلات.",
       exportTooOld: "خادم Unsloth العامل أقدم من أن يدعم تصدير السجلات. حدِّثه وأعد تشغيله.",
-      exportForbidden: "يتطلب تنزيل كل السجلات جلسة Studio مسجّل الدخول إليها. لا يكفي مفتاح API.",
+      exportForbidden: "يتطلب تنزيل كل السجلات جلسة Unsloth مسجّل الدخول إليها. لا يكفي مفتاح API.",
       keywords: "تصحيح الأخطاء سجل السجلات خطأ أخطاء تعطل تتبع تشخيص استكشاف الأخطاء debug log logs error",
     },
     voice: {
@@ -866,6 +903,9 @@ export const ar = {
         showLoadedModels: "مؤشر النماذج المحمّلة",
         showLoadedModelsDescription:
           "إظهار بطاقة صغيرة في الزاوية السفلية اليمنى تعرض كل نموذج موجود حاليًا في الذاكرة (الدردشة، الكلام، الصور، الفيديو)، مع زر لإخراج كل منها.",
+        showWhisperUpdates: "إشعارات تحديث whisper.cpp",
+        showWhisperUpdatesDescription:
+          "التنبيه عند توفر إصدار أحدث من whisper.cpp لنماذج تحويل الكلام إلى نص. أوقف التشغيل إذا كنت لا تفرّغ الصوت.",
       },
       startup: {
         sectionTitle: "بدء التشغيل",
@@ -1235,7 +1275,11 @@ export const ar = {
       },
       gpu: {
         title: "أجهزة GPU",
-        ggufInference: "استدلال GGUF",
+        memory: "ذاكرة GPU",
+        sharedWithSystemRam: "مشتركة مع ذاكرة النظام",
+        estimatedAvailable: "المتاح تقديريًا: {value}",
+        sharedEstimatedAvailable: "ذاكرة النظام المشتركة: المتاح تقديريًا {value}",
+        ggufInference: "ذاكرة نماذج GGUF",
         unavailable: "غير متاح",
         detecting: "جارٍ البحث عن وحدات GPU...",
         unreadable: "تعذّرت قراءة عتاد هذا الخادم.",
@@ -1456,9 +1500,9 @@ export const ar = {
         yolo: "يتخطى طلبات الموافقة. استخدمه في البيئات الموثوقة فقط.",
       },
       remote: {
-        title: "الاتصال بنسخة بعيدة من Unsloth Studio",
+        title: "الاتصال بنسخة بعيدة من Unsloth",
         description:
-          "وجّه unsloth start إلى نسخة من Unsloth Studio تعمل في مكان آخر بضبط ما يلي قبل التشغيل (أو مرّر ‎--api-key مباشرة):",
+          "وجّه unsloth start إلى نسخة من Unsloth تعمل في مكان آخر بضبط ما يلي قبل التشغيل (أو مرّر ‎--api-key مباشرة):",
       },
       passthrough: {
         title: "تمرير وسائط إلى الوكيل",
@@ -1486,16 +1530,16 @@ export const ar = {
       rememberParamsPerModelHint:
         "عند إيقافه، تستخدم جميع النماذج الإعدادات نفسها.",
       autoCompactHint:
-        "يعتمد على طول السياق الذي حددته، لا على ذاكرة VRAM المتاحة.",
+        "لمحادثات GGUF المحلية فقط. تُفهرس الأدوار التي تخرج من السياق ليتمكن النموذج من البحث عنها لاحقًا، ومع إعادة التعيين يُقتبس ما يتّسع من تعليماتك الدائمة بنصه الحرفي، مع تفضيل الأقدم والأحدث على ما بينهما. تتطلب الأرشفة محادثة محفوظة وفهرسًا متجهيًا؛ وبدونهما تُحذف الأدوار الأقدم. يعتمد على طول السياق الذي حددته، لا على ذاكرة VRAM المتاحة.",
       pastedTextShortDescription:
         "يصبح النص الملصق الذي يبلغ {count} حرفًا أو أكثر مرفقًا بصيغة .txt. يبقى النص الأقصر في مربع الرسالة.",
       pastedTextOffDescription:
         "يبقى كل النص الملصق في مربع الرسالة، مهما كان طوله.",
       compactionDescriptionInherit: "يتبع سياسة السياق المحددة على الخادم.",
       compactionDescriptionCheckpoint:
-        "يحتفظ بآخر تبادل للرسائل والتعليمات الدائمة.",
+        "يحتفظ بآخر تبادل للرسائل وبما يتّسع من التعليمات الدائمة، ويؤرشف البقية ليتسنى استرجاعها.",
       compactionDescriptionRolling:
-        "يحذف أقدم التبادلات للاحتفاظ بالسجل الحديث والمساحة الإضافية المحددة.",
+        "يؤرشف أقدم التبادلات للاحتفاظ بالسجل الحديث والمساحة الإضافية المحددة.",
       projectsSection: "إظهار قسم المشاريع",
       projectsSectionDescription:
         "يجمع محادثات المشروع تحت عنوان المشاريع. أوقف هذا الخيار لعرضها ضمن الأخيرة بدلاً من ذلك.",
@@ -1542,18 +1586,18 @@ export const ar = {
         "استعد آخر موجّه ودرجة حرارة وإعدادات أخرى استُخدمت مع كل نموذج.",
       autoCompact: "ضغط المحادثات الطويلة تلقائيًا",
       autoCompactDescription:
-        "احذف الأدوار الأقدم عندما تصل محادثة GGUF محلية إلى حد السياق.",
+        "تنتقل الأدوار الأقدم إلى أرشيف قابل للبحث عندما تمتلئ نافذة سياق المحادثة.",
       compactionStyle: "عند امتلاء السياق",
       compactionStyleDescription:
-        "يُبقي الخيار الافتراضي للخادم UNSLOTH_CONTEXT_POLICY. تحتفظ إعادة ضبط المحادثة بأحدث دور والتعليمات الدائمة. تحذف النافذة المنزلقة الأدوار الأقدم ويمكنها الاحتفاظ بمزيد من السجل الحديث.",
+        "يُبقي الخيار الافتراضي للخادم UNSLOTH_CONTEXT_POLICY. تحتفظ إعادة ضبط المحادثة بأحدث دور وبما يتّسع من التعليمات الدائمة. تحذف النافذة المنزلقة الأدوار الأقدم ويمكنها الاحتفاظ بمزيد من السجل الحديث.",
       compactionStyleInherit: "استخدام إعداد الخادم الافتراضي",
       compactionStyleCheckpoint: "إعادة ضبط المحادثة",
-      compactionStyleRollingDefault: "حذف الأدوار الأقدم (مساحة إضافية نحو 25%)",
-      compactionStyleRolling10: "حذف الأدوار الأقدم (مساحة إضافية نحو 10%)",
-      compactionStyleRolling5: "حذف الأدوار الأقدم (مساحة إضافية نحو 5%)",
-      compactionStyleRollingNone: "حذف الأدوار الأقدم (دون اقتطاع إضافي)",
+      compactionStyleRollingDefault: "أرشفة الأدوار الأقدم (مساحة إضافية نحو 25%)",
+      compactionStyleRolling10: "أرشفة الأدوار الأقدم (مساحة إضافية نحو 10%)",
+      compactionStyleRolling5: "أرشفة الأدوار الأقدم (مساحة إضافية نحو 5%)",
+      compactionStyleRollingNone: "أرشفة الأدوار الأقدم (دون اقتطاع إضافي)",
       autoCompactKeywords:
-        "ضغط تلقائي سياق نافذة اقتطاع منزلقة نقطة تحقق هامش compaction rolling checkpoint headroom",
+        "ضغط تلقائي سياق نافذة اقتطاع منزلقة نقطة تحقق هامش أرشيف استرجاع بحث compaction rolling checkpoint headroom archive retrieval rag",
       thinking: {
         collapseByDefault: "طيّ التفكير افتراضيًا",
         collapseByDefaultDescription:
@@ -1570,6 +1614,9 @@ export const ar = {
         collapseByDefault: "طيّ نشاط الأدوات افتراضيًا",
         collapseByDefaultDescription:
           "إبقاء مدخلات الأدوات ومخرجاتها مطوية أثناء التشغيل. وسّع أي صف أداة لفحصه.",
+        foldIntoThinking: "طيّ استدعاءات الأدوات داخل التفكير",
+        foldIntoThinkingDescription:
+          "إخفاء استدعاءات الأدوات في الدور حتى فتح كتلة التفكير.",
       },
       webSearch: {
         title: "البحث على الويب",
@@ -1947,7 +1994,7 @@ export const ar = {
         desktopAvailableDescription:
           "حدّث الآن، وسيُعاد تشغيل تطبيق سطح المكتب عند اكتمال التحديث.",
         desktopExternalServer:
-          "شغّل الأمر `unsloth studio update` في الطرفية التي شغّلت الخادم.",
+          "اتصل التطبيق بخادم Studio يعمل مسبقًا ولا يمكنه تحديثه. أوقف ذلك الخادم، ثم أغلق تطبيق سطح المكتب وأعد فتحه للتحديث.",
         desktopManualInstall:
           "افتح صفحة الإصدار لتثبيت أحدث حزمة لنظام Linux.",
         desktopCheckFailed: "تعذّر التحقق من وجود تحديثات",

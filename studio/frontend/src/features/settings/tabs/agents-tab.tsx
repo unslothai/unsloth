@@ -1270,7 +1270,7 @@ export function AgentsTab() {
         </h1>
         <p
           data-settings-label={t("settings.agents.description")}
-          className="text-xs text-muted-foreground leading-relaxed"
+          className="text-xs text-muted-foreground"
         >
           {t("settings.agents.description")}
         </p>
@@ -1295,44 +1295,48 @@ export function AgentsTab() {
         {t("settings.agents.intro")}
       </p>
 
-      <fieldset className="flex min-w-0 items-center gap-0.5">
-        <legend className="mb-2 text-xs font-medium text-foreground">
+      {/* Shared track + pill selector. The legend is sr-only: the two shell
+          names already say what the control picks. */}
+      <fieldset className="flex min-w-0">
+        <legend className="sr-only">
           {t("settings.agents.commandShell")}
         </legend>
-        <button
-          type="button"
-          onClick={() => {
-            setCommandOsOverride("unix");
-            setStoredOs("unix");
-            resetCopied();
-          }}
-          aria-pressed={commandOs === "unix"}
-          className={cn(
-            "rounded-full px-2.5 py-1 text-ui-11 font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
-            commandOs === "unix"
-              ? "hub-tab-toggle-pill text-foreground"
-              : "text-muted-foreground hover:text-foreground",
-          )}
-        >
-          {t("settings.apiKeys.osUnix")}
-        </button>
-        <button
-          type="button"
-          onClick={() => {
-            setCommandOsOverride("windows");
-            setStoredOs("windows");
-            resetCopied();
-          }}
-          aria-pressed={commandOs === "windows"}
-          className={cn(
-            "rounded-full px-2.5 py-1 text-ui-11 font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
-            commandOs === "windows"
-              ? "hub-tab-toggle-pill text-foreground"
-              : "text-muted-foreground hover:text-foreground",
-          )}
-        >
-          {t("settings.apiKeys.osWindows")}
-        </button>
+        <div className="hub-tab-toggle inline-flex h-8 items-center rounded-full">
+          <button
+            type="button"
+            onClick={() => {
+              setCommandOsOverride("unix");
+              setStoredOs("unix");
+              resetCopied();
+            }}
+            aria-pressed={commandOs === "unix"}
+            className={cn(
+              "inline-flex h-8 items-center rounded-full px-3.5 text-ui-12 font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
+              commandOs === "unix"
+                ? "hub-tab-toggle-pill text-foreground"
+                : "text-muted-foreground hover:text-foreground",
+            )}
+          >
+            {t("settings.apiKeys.osUnix")}
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              setCommandOsOverride("windows");
+              setStoredOs("windows");
+              resetCopied();
+            }}
+            aria-pressed={commandOs === "windows"}
+            className={cn(
+              "inline-flex h-8 items-center rounded-full px-3.5 text-ui-12 font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
+              commandOs === "windows"
+                ? "hub-tab-toggle-pill text-foreground"
+                : "text-muted-foreground hover:text-foreground",
+            )}
+          >
+            {t("settings.apiKeys.osWindows")}
+          </button>
+        </div>
       </fieldset>
 
       <section

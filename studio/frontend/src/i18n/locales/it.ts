@@ -129,6 +129,8 @@ export const it = {
       export: "Esporta",
       recents: "Recenti",
       noChatsYet: "Ancora nessuna chat",
+      // Shown under an empty project folder in the sidebar.
+      noChats: "Nessuna chat",
       showMore: "Mostra altro",
       showLess: "Mostra meno",
       settings: "Impostazioni",
@@ -159,6 +161,7 @@ export const it = {
       unpinChats: "Rimuovi le chat fissate",
       archiveChats: "Archivia le chat",
       markUnread: "Segna come non letta",
+      markRead: "Segna come letta",
       deleteChats: "Elimina le chat",
       deleteTitle: "Elimina le chat",
       deleteDescription: "Eliminare {count} chat? L'operazione non è reversibile.",
@@ -177,11 +180,26 @@ export const it = {
       priority: "Priorità",
       lastUpdated: "Ultimo aggiornamento",
       manualOrder: "Ordine manuale",
-      moveUp: "Sposta su",
-      moveDown: "Sposta giù",
+      priorityHint: "Prima attive e non lette",
+      lastUpdatedHint: "Prima le più recenti",
+      manualOrderHint: "Trascina le righe per riordinarle",
+      switchedToManual: "Ordinamento manuale: trascina le righe per riordinarle",
       organizeChats: "Organizza le chat",
       organizeProjects: "Organizza i progetti",
       sortPinnedChats: "Ordina le chat fissate",
+      dragDrop: "Trascina e rilascia",
+      dragHints: "Mostra un suggerimento durante il trascinamento",
+      reorderSwitchesSort: "Riordinare passa all'ordine manuale",
+      dragOpensFolders: "Apri le cartelle sotto il puntatore",
+      moveUp: "Sposta su",
+      moveDown: "Sposta giù",
+    },
+    drag: {
+      reorder: "Riordina",
+      pin: "Fissa",
+      unpin: "Sblocca",
+      moveTo: "Sposta in {name}",
+      moveToRecents: "Sposta in Recenti",
     },
     dialog: {
       deleteChat: {
@@ -213,9 +231,19 @@ export const it = {
   settings: {
     accounts: {
       title: "Account",
-      description: "Crea account Studio privati. I nuovi utenti accedono con un codice di configurazione monouso e scelgono una password.",
+      description: "Crea account Unsloth privati. I nuovi utenti accedono con un codice di configurazione monouso e scelgono una password.",
       username: "Nome utente",
       create: "Crea account",
+      createDescription: "Condividi un codice di configurazione perché possa scegliere la propria password.",
+      actionsFor: "Gestisci {username}",
+      actions: "Azioni",
+      search: "Cerca account",
+      noResults: "Nessun account corrispondente",
+      created: "Creato",
+      status: "Stato",
+      loginHint: "Accedi come {username} usando questo codice come password, poi scegli una nuova password.",
+      privateAccount: "Account privato",
+      empty: "Nessun altro account",
       setupCode: "Codice di configurazione",
       setupFor: "Codice di configurazione per {username}",
       shownOnce: "Copia subito questo codice e condividilo con il titolare dell'account. Viene mostrato solo qui e può essere usato una sola volta entro 60 minuti.",
@@ -225,13 +253,13 @@ export const it = {
       copyFailed: "Impossibile copiare. Seleziona e copia il codice di configurazione qui sopra.",
       dismiss: "Fatto",
       owner: "Proprietario dell'installazione",
-      active: "Attivo",
-      inactive: "Inattivo",
+      active: "Attivato",
+      inactive: "Disattivato",
       regenerate: "Rigenera codice di configurazione",
       resetTitle: "Reimpostare la password di {username}?",
       resetDescription: "Rigenerare il codice di configurazione sostituisce la password di {username}, chiude le sue sessioni e revoca le sue chiavi API. Consegnagli il nuovo codice per scegliere di nuovo una password.",
       deactivate: "Disattiva",
-      reactivate: "Riattiva",
+      reactivate: "Attiva",
       delete: "Elimina account",
       deleteTitle: "Eliminare {username}?",
       deleteDescription: "Questa operazione revoca le sessioni di {username} e annulla il suo lavoro. Chat, impostazioni, credenziali, caricamenti, dataset, addestramenti, output, esportazioni, gallerie, sandbox, progetti e file temporanei vengono ritirati. Le directory vengono rinominate e messe da parte, mai eliminate. Creare di nuovo questo nome utente avvia un account nuovo senza questi dati.",
@@ -268,9 +296,10 @@ export const it = {
     },
     keyboardShortcuts: {
       title: "Scorciatoie da tastiera",
-      description:
-        "Modifica una scorciatoia, oppure cancellala per liberare la combinazione per il browser o il sistema.",
       searchPlaceholder: "Cerca scorciatoie…",
+      keystrokePlaceholder: "Premi una scorciatoia per cercare",
+      searchByKeystrokes: "Cerca per combinazione",
+      searchByName: "Cerca per nome",
       noResults: "Nessuna scorciatoia corrisponde alla ricerca.",
       unassigned: "Non assegnata",
       recording: "Premi i tasti…",
@@ -467,6 +496,14 @@ export const it = {
           label: "Invia messaggio",
           description: "Invia il contenuto dell’editor",
         },
+        queueMessage: {
+          label: "Accoda messaggio",
+          description: "Invia la bozza in fondo alla coda",
+        },
+        steerMessage: {
+          label: "Reindirizza la risposta",
+          description: "Interrompi la risposta in corso e invia subito la bozza",
+        },
         cycleReasoningEffort: {
           label: "Scorri lo sforzo di ragionamento",
           description: "Passa in rassegna i livelli di sforzo di ragionamento",
@@ -533,7 +570,7 @@ export const it = {
       openLogsFolderFailed: "Non è stato possibile aprire la cartella dei log.",
       exportFailed: "Non è stato possibile scaricare i log.",
       exportTooOld: "Il backend Unsloth in esecuzione è troppo vecchio per esportare i log. Aggiornalo e riavvialo.",
-      exportForbidden: "Per scaricare tutti i log serve una sessione di Studio con accesso eseguito. Una chiave API non basta.",
+      exportForbidden: "Per scaricare tutti i log serve una sessione di Unsloth con accesso eseguito. Una chiave API non basta.",
       keywords: "debug log logs registro registri errore errori crash traccia diagnostica risoluzione dei problemi",
     },
     voice: {
@@ -856,6 +893,9 @@ export const it = {
         showLoadedModels: "Indicatore dei modelli caricati",
         showLoadedModelsDescription:
           "Mostra una piccola scheda in basso a destra con tutti i modelli attualmente in memoria (chat, voce, immagini, video), con un pulsante per rimuovere ciascuno.",
+        showWhisperUpdates: "Notifiche di aggiornamento di whisper.cpp",
+        showWhisperUpdatesDescription:
+          "Avvisa quando è disponibile una build più recente di whisper.cpp per i modelli di trascrizione vocale. Disattiva le notifiche se non trascrivi mai l'audio.",
       },
       startup: {
         sectionTitle: "Avvio",
@@ -1227,7 +1267,11 @@ export const it = {
       },
       gpu: {
         title: "Dispositivi GPU",
-        ggufInference: "Inferenza GGUF",
+        memory: "Memoria GPU",
+        sharedWithSystemRam: "Condivisa con la RAM di sistema",
+        estimatedAvailable: "Disponibilità stimata: {value}",
+        sharedEstimatedAvailable: "RAM di sistema condivisa: disponibilità stimata di {value}",
+        ggufInference: "Memoria per i modelli GGUF",
         unavailable: "non disponibile",
         detecting: "Ricerca di GPU...",
         unreadable: "Impossibile leggere l'hardware di questo server.",
@@ -1456,9 +1500,9 @@ export const it = {
         yolo: "Salta le richieste di approvazione. Usa solo in ambienti fidati.",
       },
       remote: {
-        title: "Connettersi a un Unsloth Studio remoto",
+        title: "Connettersi a un Unsloth remoto",
         description:
-          "Punta unsloth start a un Unsloth Studio in esecuzione altrove impostando queste variabili prima dell'avvio (oppure passa direttamente --api-key):",
+          "Punta unsloth start a un Unsloth in esecuzione altrove impostando queste variabili prima dell'avvio (oppure passa direttamente --api-key):",
       },
       passthrough: {
         title: "Passare argomenti all'agente",
@@ -1486,16 +1530,16 @@ export const it = {
       rememberParamsPerModelHint:
         "Quando è disattivata, tutti i modelli usano le stesse impostazioni.",
       autoCompactHint:
-        "Usa la lunghezza del contesto impostata, non la VRAM disponibile.",
+        "Solo chat GGUF locali. I turni rimossi vengono indicizzati perché il modello possa recuperarli, e un ripristino cita parola per parola le istruzioni permanenti che rientrano, privilegiando le più vecchie e le più recenti rispetto a quelle intermedie. L’archiviazione richiede una chat salvata e l’indice vettoriale; senza di essi i turni più vecchi vengono eliminati. Usa la lunghezza del contesto impostata, non la VRAM disponibile.",
       pastedTextShortDescription:
         "Il testo incollato di almeno {count} caratteri diventa un allegato .txt. Il testo più breve resta nel campo del messaggio.",
       pastedTextOffDescription:
         "Tutto il testo incollato resta nel campo del messaggio, indipendentemente dalla lunghezza.",
       compactionDescriptionInherit: "Segue la politica del contesto del server.",
       compactionDescriptionCheckpoint:
-        "Mantiene l’ultimo scambio e le istruzioni permanenti.",
+        "Mantiene l’ultimo scambio e le istruzioni permanenti che rientrano, e archivia il resto per poterlo recuperare.",
       compactionDescriptionRolling:
-        "Rimuove i turni più vecchi per conservare la cronologia recente e lo spazio aggiuntivo selezionato.",
+        "Archivia i turni più vecchi per conservare la cronologia recente e lo spazio aggiuntivo selezionato.",
       projectsSection: "Mostra la sezione Progetti",
       projectsSectionDescription:
         "Raggruppa le chat di progetto sotto un titolo Progetti. Disattivalo per elencarle in Recenti.",
@@ -1543,22 +1587,22 @@ export const it = {
         "Ripristina l’ultimo prompt, la temperatura e le altre impostazioni usate con ogni modello.",
       autoCompact: "Compatta automaticamente le chat lunghe",
       autoCompactDescription:
-        "Rimuove i turni più vecchi quando una chat GGUF locale raggiunge il limite del contesto.",
+        "I turni più vecchi passano in un archivio consultabile quando una chat riempie il contesto.",
       compactionStyle: "Quando il contesto è pieno",
       compactionStyleDescription:
-        "Il valore predefinito del server mantiene UNSLOTH_CONTEXT_POLICY. Reimpostare la conversazione conserva l'ultimo turno e le istruzioni permanenti. Una finestra scorrevole elimina i turni più vecchi e può conservare più cronologia recente.",
+        "Il valore predefinito del server mantiene UNSLOTH_CONTEXT_POLICY. Reimpostare la conversazione conserva l'ultimo turno e le istruzioni permanenti che rientrano. Una finestra scorrevole elimina i turni più vecchi e può conservare più cronologia recente.",
       compactionStyleInherit: "Usa il valore del server",
       compactionStyleCheckpoint: "Reimposta la conversazione",
       compactionStyleRollingDefault:
-        "Elimina i turni precedenti (~25% di spazio aggiuntivo)",
+        "Archivia i turni precedenti (~25% di spazio aggiuntivo)",
       compactionStyleRolling10:
-        "Elimina i turni precedenti (~10% di spazio aggiuntivo)",
+        "Archivia i turni precedenti (~10% di spazio aggiuntivo)",
       compactionStyleRolling5:
-        "Elimina i turni precedenti (~5% di spazio aggiuntivo)",
+        "Archivia i turni precedenti (~5% di spazio aggiuntivo)",
       compactionStyleRollingNone:
-        "Elimina i turni precedenti (nessun taglio aggiuntivo)",
+        "Archivia i turni precedenti (nessun taglio aggiuntivo)",
       autoCompactKeywords:
-        "compattazione automatica contesto finestra troncare scorrevole checkpoint margine compaction rolling headroom",
+        "compattazione automatica contesto finestra troncare scorrevole checkpoint margine archivio recupero ricerca compaction rolling headroom archive retrieval rag",
       thinking: {
         collapseByDefault: "Comprimi il ragionamento per impostazione predefinita",
         collapseByDefaultDescription:
@@ -1575,6 +1619,9 @@ export const it = {
         collapseByDefault: "Comprimi l’attività degli strumenti per impostazione predefinita",
         collapseByDefaultDescription:
           "Mantieni compressi input e output degli strumenti durante l’esecuzione. Espandi una riga per esaminarla.",
+        foldIntoThinking: "Comprimi le chiamate agli strumenti nel Ragionamento",
+        foldIntoThinkingDescription:
+          "Nasconde le chiamate agli strumenti di un turno finché non si apre il blocco Ragionamento.",
       },
       webSearch: {
         title: "Ricerca web",
@@ -1961,7 +2008,7 @@ export const it = {
         desktopAvailableDescription:
           "Aggiorna ora: al termine, l'app desktop verrà riavviata.",
         desktopExternalServer:
-          "Esegui `unsloth studio update` nel terminale da cui hai avviato il server.",
+          "L’app si è connessa a un server Studio già in esecuzione e non può aggiornarlo. Arresta quel server, poi chiudi e riapri l’app desktop per aggiornare.",
         desktopManualInstall:
           "Apri la pagina della release per installare il pacchetto Linux più recente.",
         desktopCheckFailed:

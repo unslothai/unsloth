@@ -165,6 +165,8 @@ export const hi = {
       export: "एक्सपोर्ट",
       recents: "हाल के",
       noChatsYet: "अभी तक कोई चैट नहीं",
+      // Shown under an empty project folder in the sidebar.
+      noChats: "कोई चैट नहीं",
       showMore: "और दिखाएं",
       showLess: "कम दिखाएं",
       settings: "सेटिंग्स",
@@ -195,6 +197,7 @@ export const hi = {
       unpinChats: "चैट अनपिन करें",
       archiveChats: "चैट संग्रहित करें",
       markUnread: "अपठित के रूप में चिह्नित करें",
+      markRead: "पढ़ा हुआ चिह्नित करें",
       deleteChats: "चैट हटाएँ",
       deleteTitle: "चैट हटाएँ",
       deleteDescription: "{count} चैट हटाएँ? इसे पूर्ववत नहीं किया जा सकता।",
@@ -213,11 +216,26 @@ export const hi = {
       priority: "प्राथमिकता",
       lastUpdated: "अंतिम अपडेट",
       manualOrder: "मैन्युअल क्रम",
-      moveUp: "ऊपर ले जाएँ",
-      moveDown: "नीचे ले जाएँ",
+      priorityHint: "सक्रिय और अपठित पहले",
+      lastUpdatedHint: "सबसे नए पहले",
+      manualOrderHint: "पंक्तियाँ खींचकर क्रम बदलें",
+      switchedToManual: "अब मैन्युअल क्रम: पंक्तियाँ खींचकर क्रम बदलें",
       organizeChats: "चैट व्यवस्थित करें",
       organizeProjects: "प्रोजेक्ट व्यवस्थित करें",
       sortPinnedChats: "पिन की गई चैट क्रमबद्ध करें",
+      dragDrop: "खींचें और छोड़ें",
+      dragHints: "खींचते समय संकेत दिखाएँ",
+      reorderSwitchesSort: "क्रम बदलने पर मैन्युअल क्रम पर स्विच करें",
+      dragOpensFolders: "पॉइंटर के नीचे फ़ोल्डर खोलें",
+      moveUp: "ऊपर ले जाएँ",
+      moveDown: "नीचे ले जाएँ",
+    },
+    drag: {
+      reorder: "क्रम बदलें",
+      pin: "पिन करें",
+      unpin: "अनपिन करें",
+      moveTo: "{name} में ले जाएँ",
+      moveToRecents: "हाल के में ले जाएँ",
     },
     dialog: {
       deleteChat: {
@@ -248,9 +266,19 @@ export const hi = {
   settings: {
     accounts: {
       title: "खाते",
-      description: "निजी Studio खाते बनाएँ। नए उपयोगकर्ता एक बार इस्तेमाल होने वाले सेटअप कोड से साइन इन करते हैं और पासवर्ड चुनते हैं।",
+      description: "निजी Unsloth खाते बनाएँ। नए उपयोगकर्ता एक बार इस्तेमाल होने वाले सेटअप कोड से साइन इन करते हैं और पासवर्ड चुनते हैं।",
       username: "उपयोगकर्ता नाम",
       create: "खाता बनाएँ",
+      createDescription: "सेटअप कोड साझा करें ताकि वे अपना पासवर्ड खुद चुन सकें।",
+      actionsFor: "{username} प्रबंधित करें",
+      actions: "कार्रवाइयाँ",
+      search: "खाते खोजें",
+      noResults: "कोई मेल खाता खाता नहीं",
+      created: "बनाया गया",
+      status: "स्थिति",
+      loginHint: "इस कोड को पासवर्ड के रूप में इस्तेमाल करके {username} के रूप में साइन इन करें, फिर नया पासवर्ड चुनें।",
+      privateAccount: "निजी खाता",
+      empty: "अभी कोई अन्य खाता नहीं",
       setupCode: "सेटअप कोड",
       setupFor: "{username} के लिए सेटअप कोड",
       shownOnce: "यह कोड अभी कॉपी करें और खाता धारक को दें। यह केवल यहीं दिखता है और 60 मिनट के भीतर एक बार इस्तेमाल किया जा सकता है।",
@@ -260,13 +288,13 @@ export const hi = {
       copyFailed: "कॉपी नहीं हो सका। ऊपर दिए सेटअप कोड को चुनकर कॉपी करें।",
       dismiss: "हो गया",
       owner: "इंस्टॉलेशन स्वामी",
-      active: "सक्रिय",
-      inactive: "निष्क्रिय",
+      active: "सक्षम",
+      inactive: "अक्षम",
       regenerate: "सेटअप कोड फिर से बनाएँ",
       resetTitle: "{username} का पासवर्ड रीसेट करें?",
       resetDescription: "सेटअप कोड फिर से बनाने पर {username} का पासवर्ड बदल जाता है, उनके सत्र समाप्त हो जाते हैं और उनकी API कुंजियाँ रद्द हो जाती हैं। उन्हें नया कोड दें ताकि वे फिर से पासवर्ड चुन सकें।",
-      deactivate: "निष्क्रिय करें",
-      reactivate: "फिर से सक्रिय करें",
+      deactivate: "अक्षम करें",
+      reactivate: "सक्षम करें",
       delete: "खाता हटाएँ",
       deleteTitle: "{username} को हटाएँ?",
       deleteDescription: "इससे {username} के सत्र रद्द हो जाएँगे और उनका चल रहा काम बंद हो जाएगा। उनकी चैट, सेटिंग्स, क्रेडेंशियल, अपलोड, डेटासेट, ट्रेनिंग रन, आउटपुट, एक्सपोर्ट, गैलरी, सैंडबॉक्स, प्रोजेक्ट और अस्थायी फ़ाइलें अलग रख दी जाती हैं। डायरेक्टरी का नाम बदलकर उन्हें किनारे कर दिया जाता है, हटाया कभी नहीं जाता। यही उपयोगकर्ता नाम फिर से बनाने पर इस डेटा के बिना एक नया खाता शुरू होता है।",
@@ -303,9 +331,10 @@ export const hi = {
     },
     keyboardShortcuts: {
       title: "कीबोर्ड शॉर्टकट",
-      description:
-        "कोई भी शॉर्टकट बदलें, या उसे हटाकर वह कुंजी-संयोजन अपने ब्राउज़र या OS के लिए खाली करें।",
       searchPlaceholder: "शॉर्टकट खोजें…",
+      keystrokePlaceholder: "खोजने के लिए शॉर्टकट दबाएँ",
+      searchByKeystrokes: "कीस्ट्रोक से खोजें",
+      searchByName: "नाम से खोजें",
       noResults: "इस खोज से कोई शॉर्टकट मेल नहीं खाता।",
       unassigned: "असाइन नहीं",
       recording: "कुंजियाँ दबाएँ…",
@@ -502,6 +531,14 @@ export const hi = {
           label: "संदेश भेजें",
           description: "लिखने के बॉक्स की सामग्री भेजें",
         },
+        queueMessage: {
+          label: "संदेश कतार में डालें",
+          description: "ड्राफ़्ट को कतार के अंत में भेजें",
+        },
+        steerMessage: {
+          label: "उत्तर बदलें",
+          description: "मौजूदा उत्तर रोककर ड्राफ़्ट अगला भेजें",
+        },
         cycleReasoningEffort: {
           label: "तर्क प्रयास बदलें",
           description: "तर्क प्रयास के स्तरों में क्रमशः बदलें",
@@ -568,7 +605,7 @@ export const hi = {
       openLogsFolderFailed: "लॉग फ़ोल्डर नहीं खोला जा सका।",
       exportFailed: "लॉग डाउनलोड नहीं किए जा सके।",
       exportTooOld: "चल रहा Unsloth बैकएंड लॉग निर्यात करने के लिए बहुत पुराना है। उस बैकएंड को अपडेट करें और पुनः आरंभ करें।",
-      exportForbidden: "सभी लॉग डाउनलोड करने के लिए साइन-इन किया हुआ Studio सत्र चाहिए। केवल API कुंजी पर्याप्त नहीं है।",
+      exportForbidden: "सभी लॉग डाउनलोड करने के लिए साइन-इन किया हुआ Unsloth सत्र चाहिए। केवल API कुंजी पर्याप्त नहीं है।",
       keywords: "डिबग डिबगिंग लॉग त्रुटि गड़बड़ी क्रैश ट्रेसबैक निदान समस्या निवारण debug log logs error",
     },
     voice: {
@@ -869,6 +906,9 @@ export const hi = {
         showLoadedModels: "लोड किए गए मॉडल का संकेतक",
         showLoadedModelsDescription:
           "नीचे दाएं कोने में एक छोटा कार्ड दिखाएं जिसमें वर्तमान में मेमोरी में मौजूद हर मॉडल (चैट, स्पीच, इमेज, वीडियो) सूचीबद्ध हो, और हर एक को हटाने के लिए एक बटन हो।",
+        showWhisperUpdates: "whisper.cpp अपडेट सूचनाएं",
+        showWhisperUpdatesDescription:
+          "स्पीच-टू-टेक्स्ट मॉडल के लिए जब कोई नया whisper.cpp बिल्ड उपलब्ध हो तो सूचित करें। यदि आप ऑडियो ट्रांसक्राइब नहीं करते हैं तो बंद कर दें।",
       },
       startup: {
         sectionTitle: "स्टार्टअप",
@@ -1238,7 +1278,11 @@ export const hi = {
       },
       gpu: {
         title: "GPU डिवाइस",
-        ggufInference: "GGUF इन्फ़रेंस",
+        memory: "GPU मेमोरी",
+        sharedWithSystemRam: "सिस्टम RAM के साथ साझा",
+        estimatedAvailable: "अनुमानित उपलब्ध: {value}",
+        sharedEstimatedAvailable: "साझा सिस्टम RAM: अनुमानित उपलब्ध {value}",
+        ggufInference: "GGUF मॉडल मेमोरी",
         unavailable: "उपलब्ध नहीं",
         detecting: "GPU खोजे जा रहे हैं...",
         unreadable: "इस सर्वर का हार्डवेयर नहीं पढ़ा जा सका।",
@@ -1462,9 +1506,9 @@ export const hi = {
           "मंज़ूरी के प्रॉम्प्ट छोड़ देता है। केवल भरोसेमंद वातावरण में उपयोग करें।",
       },
       remote: {
-        title: "रिमोट Unsloth Studio से जुड़ें",
+        title: "रिमोट Unsloth से जुड़ें",
         description:
-          "चलाने से पहले ये सेट करके unsloth start को कहीं और चल रहे Unsloth Studio की ओर भेजें (या --api-key सीधे दें):",
+          "चलाने से पहले ये सेट करके unsloth start को कहीं और चल रहे Unsloth की ओर भेजें (या --api-key सीधे दें):",
       },
       passthrough: {
         title: "एजेंट को आर्ग्युमेंट भेजना",
@@ -1492,7 +1536,7 @@ export const hi = {
       rememberParamsPerModelHint:
         "बंद होने पर सभी मॉडल एक ही सेटिंग इस्तेमाल करते हैं।",
       autoCompactHint:
-        "उपलब्ध VRAM के बजाय आपके तय किए गए संदर्भ की लंबाई का उपयोग करता है।",
+        "केवल लोकल GGUF चैट पर लागू। हटाए गए टर्न इंडेक्स किए जाते हैं ताकि मॉडल उन्हें दोबारा खोज सके, और रीसेट पर जितने स्थायी निर्देश समा सकें, वे हूबहू दोहरा दिए जाते हैं, जिनमें बीच वाले के बजाय सबसे पुराने और सबसे नए को प्राथमिकता मिलती है। आर्काइव के लिए सहेजी गई चैट और वेक्टर इंडेक्स ज़रूरी हैं; इनके बिना पुराने टर्न हटा दिए जाते हैं। उपलब्ध VRAM के बजाय आपके तय किए गए संदर्भ की लंबाई का उपयोग करता है।",
       pastedTextShortDescription:
         "{count} या अधिक अक्षरों वाला पेस्ट किया गया टेक्स्ट .txt अटैचमेंट बन जाता है। छोटा टेक्स्ट संदेश बॉक्स में रहता है।",
       pastedTextOffDescription:
@@ -1500,9 +1544,9 @@ export const hi = {
       compactionDescriptionInherit:
         "सर्वर की संदर्भ नीति का पालन करें।",
       compactionDescriptionCheckpoint:
-        "सबसे हाल का संवाद और स्थायी निर्देश बनाए रखें।",
+        "सबसे हाल का संवाद और जितने स्थायी निर्देश समा सकें, उन्हें बनाए रखें, और बाकी को खोज के लिए आर्काइव करें।",
       compactionDescriptionRolling:
-        "पुराने संवाद हटाकर हाल का इतिहास और चुनी गई अतिरिक्त खाली जगह बनाए रखें।",
+        "पुराने संवाद आर्काइव करके हाल का इतिहास और चुनी गई अतिरिक्त खाली जगह बनाए रखें।",
       projectsSection: "प्रोजेक्ट अनुभाग दिखाएँ",
       projectsSectionDescription:
         "प्रोजेक्ट चैट को प्रोजेक्ट शीर्षक के नीचे समूहित करता है। बंद करने पर वे हाल ही के अंतर्गत दिखती हैं।",
@@ -1549,18 +1593,18 @@ export const hi = {
         "हर मॉडल के साथ आखिरी बार इस्तेमाल किए गए प्रॉम्प्ट, तापमान और अन्य सेटिंग्स वापस लाएँ।",
       autoCompact: "लंबी चैट को अपने आप कॉम्पैक्ट करें",
       autoCompactDescription:
-        "लोकल GGUF चैट की कॉन्टेक्स्ट सीमा भरने पर पुराने टर्न हटाएँ।",
+        "चैट का कॉन्टेक्स्ट भरने पर पुराने टर्न खोजे जा सकने वाले आर्काइव में चले जाते हैं।",
       compactionStyle: "कॉन्टेक्स्ट भरने पर",
       compactionStyleDescription:
-        "सर्वर डिफ़ॉल्ट से UNSLOTH_CONTEXT_POLICY बना रहता है। बातचीत रीसेट करने पर नवीनतम टर्न और स्थायी निर्देश रहते हैं। स्लाइडिंग विंडो सबसे पुराने टर्न हटाती है और हाल का अधिक इतिहास रख सकती है।",
+        "सर्वर डिफ़ॉल्ट से UNSLOTH_CONTEXT_POLICY बना रहता है। बातचीत रीसेट करने पर नवीनतम टर्न और जितने स्थायी निर्देश समा सकें, वे रहते हैं। स्लाइडिंग विंडो सबसे पुराने टर्न हटाती है और हाल का अधिक इतिहास रख सकती है।",
       compactionStyleInherit: "सर्वर डिफ़ॉल्ट उपयोग करें",
       compactionStyleCheckpoint: "बातचीत रीसेट करें",
-      compactionStyleRollingDefault: "पुराने टर्न हटाएँ (~25% अतिरिक्त जगह)",
-      compactionStyleRolling10: "पुराने टर्न हटाएँ (~10% अतिरिक्त जगह)",
-      compactionStyleRolling5: "पुराने टर्न हटाएँ (~5% अतिरिक्त जगह)",
-      compactionStyleRollingNone: "पुराने टर्न हटाएँ (कोई अतिरिक्त कटौती नहीं)",
+      compactionStyleRollingDefault: "पुराने टर्न आर्काइव करें (~25% अतिरिक्त जगह)",
+      compactionStyleRolling10: "पुराने टर्न आर्काइव करें (~10% अतिरिक्त जगह)",
+      compactionStyleRolling5: "पुराने टर्न आर्काइव करें (~5% अतिरिक्त जगह)",
+      compactionStyleRollingNone: "पुराने टर्न आर्काइव करें (कोई अतिरिक्त कटौती नहीं)",
       autoCompactKeywords:
-        "कॉम्पैक्शन कॉम्पैक्ट कॉन्टेक्स्ट विंडो ट्रंकेट स्लाइडिंग चेकपॉइंट हेडरूम compaction rolling checkpoint headroom",
+        "कॉम्पैक्शन कॉम्पैक्ट कॉन्टेक्स्ट विंडो ट्रंकेट स्लाइडिंग चेकपॉइंट हेडरूम आर्काइव पुनर्प्राप्ति खोज compaction rolling checkpoint headroom archive retrieval rag",
       thinking: {
         collapseByDefault: "थिंकिंग को डिफ़ॉल्ट रूप से संक्षिप्त रखें",
         collapseByDefaultDescription:
@@ -1577,6 +1621,9 @@ export const hi = {
         collapseByDefault: "टूल गतिविधि को डिफ़ॉल्ट रूप से संक्षिप्त रखें",
         collapseByDefaultDescription:
           "टूल चलते समय उनके इनपुट और आउटपुट संक्षिप्त रखें। जाँचने के लिए किसी भी टूल पंक्ति को विस्तृत करें।",
+        foldIntoThinking: "टूल कॉल को थिंकिंग में समेटें",
+        foldIntoThinkingDescription:
+          "किसी टर्न के टूल कॉल तब तक छिपाएँ जब तक उसका थिंकिंग ब्लॉक न खोला जाए।",
       },
       webSearch: {
         title: "वेब खोज",
@@ -1955,7 +2002,7 @@ export const hi = {
         desktopAvailableDescription:
           "अभी अपडेट करें। अपडेट पूरा होने पर डेस्कटॉप ऐप फिर से शुरू होगा।",
         desktopExternalServer:
-          "जिस टर्मिनल से सर्वर शुरू किया गया था, उसमें `unsloth studio update` चलाएँ।",
+          "ऐप पहले से चल रहे Studio सर्वर से जुड़ा है और उसे अपडेट नहीं कर सकता। उस सर्वर को रोकें, फिर अपडेट करने के लिए डेस्कटॉप ऐप बंद करके दोबारा खोलें।",
         desktopManualInstall:
           "नवीनतम Linux पैकेज इंस्टॉल करने के लिए रिलीज़ पेज खोलें।",
         desktopCheckFailed: "अपडेट की जाँच नहीं हो सकी",
