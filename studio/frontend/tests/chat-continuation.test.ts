@@ -1913,16 +1913,19 @@ test("the run that ends is the one the hold was taken for, not the round before 
 });
 
 test("a settled hold is read before the thread is, not after it", async () => {
-  // The settled check sits AHEAD of the arming check, and this is the window where that
-  // position is the whole answer. The hold was taken on an idle key, so it owns it, and its
-  // own run ended without ever streaming: Stop during preflight. By the time the keeper looks,
-  // the key already reads busy -- the store's notification for the run that replaced this one
-  // has not been delivered yet, and the settle callback observes on its own -- so a single
-  // pass sees `settled`, `!armed` and `isRunning` all true at once.
+  // The settled check sits AHEAD of the arming check, and this is the only pass in which that
+  // position is the whole answer: the hold owns an idle key, its own run ended without ever
+  // streaming, and the key reads busy by the time the keeper looks. Below the arming check,
+  // that pass arms the hold on somebody else's run and the end of THAT run releases it,
+  // writing a `done` marker for a message that produced not one token. Ahead of it, the hold
+  // is discarded and the lease lapses on its own TTL.
   //
-  // Below the arming check, that pass arms the hold on somebody else's run and the end of THAT
-  // run releases it, writing a `done` marker for a message that produced not one token. Ahead
-  // of it, the hold is discarded and the lease lapses on its own TTL.
+  // An invariant of the keeper, not a user-reachable sequence: the signal it is wired to
+  // notifies synchronously on every store write, so in the app the key turning busy is always
+  // observed -- and observed while the hold is still unsettled, which arms it, which is the
+  // superseded-run case this deliberately does not close. The keeper takes the signal as a
+  // parameter and promises nothing about its delivery, so the ordering is pinned here rather
+  // than left to rest on one caller's store.
   const { storage } = storageFake();
   const tab = createAutoContinueTab({ storage, locks: null });
   const start = 1_000;
