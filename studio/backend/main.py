@@ -2629,13 +2629,44 @@ def _is_same_origin_request(request: Request) -> bool:
     return origin_canon == self_canon
 
 
+# Colab's notebook proxy is itself a forwarded-header ingress, so the loopback tests cannot see it and it
+# has to be identified positively, by its own authority. Naming one tunnel vendor instead would leave every
+# other relay (ngrok, localtunnel, bore, localhost.run, ssh -R) reading as the local browser.
+_COLAB_PROXY_HOST_SUFFIXES = ("colab.googleusercontent.com", ".googleusercontent.com", ".colab.dev")
+# The proxy relays the notebook owner and only the notebook owner, so it sets x-forwarded-for (which is why
+# run.py runs uvicorn with proxy_headers there). The other four mark a relay we cannot attribute to it.
+_COLAB_TOLERATED_PROXY_HEADERS = frozenset({"x-forwarded-for"})
+
+
+def _host_header_is_colab_proxy(host_header: Optional[str]) -> bool:
+    """Whether the Host authority belongs to Colab's own port proxy."""
+    if not host_header:
+        return False
+    host = host_header.strip()
+    if host.startswith("["):  # bracketed IPv6 is never a Colab proxy authority
+        return False
+    if host.count(":") == 1:  # host:port
+        host = host.split(":", 1)[0]
+    host = host.lower().rstrip(".")
+    return host.endswith(_COLAB_PROXY_HOST_SUFFIXES)
+
+
+def _is_colab_notebook_request(request: Request) -> bool:
+    """Allow bootstrap injection through Colab's single-user notebook proxy, and nothing else."""
+    for header in _PROXIED_CLIENT_HEADERS:
+        if header in _COLAB_TOLERATED_PROXY_HEADERS:
+            continue
+        if request.headers.get(header) is not None:
+            return False
+    return _host_header_is_colab_proxy(request.headers.get("host"))
+
+
 def _should_inject_bootstrap(request: Request) -> bool:
     """Whether to embed the seeded bootstrap password in index.html."""
     if not _is_same_origin_request(request):
         return False
-    if _IS_COLAB:
-        # Single-user notebook proxy: allow autofill, but never a public tunnel (sets cf-connecting-ip).
-        return request.headers.get("cf-connecting-ip") is None
+    if _IS_COLAB and _is_colab_notebook_request(request):
+        return True
     return _is_local_bootstrap_request(request)
 
 
