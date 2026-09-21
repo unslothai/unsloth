@@ -1333,9 +1333,9 @@ def test_desktop_login_failures_do_not_lock_everyone_out_of_login():
     for _ in range(auth_route._LOGIN_MAX_FAILS + 1):
         client.post("/api/auth/desktop-login", json = {"secret": guess})
 
-    assert client.post("/api/auth/login", json = good).status_code == 200, (
-        "unauthenticated desktop-login attempts rejected a correct password"
-    )
+    assert (
+        client.post("/api/auth/login", json = good).status_code == 200
+    ), "unauthenticated desktop-login attempts rejected a correct password"
     # Its own throttle still works, on its own slot.
     assert client.post("/api/auth/desktop-login", json = {"secret": guess}).status_code == 429
     assert auth_route._desktop_login_key(None)[1] != auth_route._unknown_user_key(None)[1]
