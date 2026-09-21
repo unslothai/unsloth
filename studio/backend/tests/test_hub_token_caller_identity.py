@@ -834,7 +834,7 @@ def test_seed_inspection_derives_its_policy_from_the_caller(monkeypatch):
         seen["token"] = token
         return []
 
-    monkeypatch.setattr(seed_routes, "_list_hf_data_files", _fake_list)
+    monkeypatch.setattr(seed_routes, "_list_hf_repo_files", _fake_list)
 
     for via_api_key in (True, False):
         _router_client(seed_routes.router, "/api/data-recipe", via_api_key = via_api_key).post(
@@ -852,7 +852,7 @@ def test_an_explicit_seed_token_wins_for_either_caller(monkeypatch):
     _counting_probe(monkeypatch, True)
     monkeypatch.setattr(
         seed_routes,
-        "_list_hf_data_files",
+        "_list_hf_repo_files",
         lambda *, dataset_name, token: seen.update(token = token) or [],
     )
     monkeypatch.setattr(seed_routes, "load_dataset", lambda **_k: iter([]), raising = False)
@@ -1362,7 +1362,7 @@ def test_a_seed_preview_off_the_cache_is_refused(monkeypatch, reason, hf_token, 
     def _never(*_a, **_k):
         raise AssertionError(f"{reason} reached the dataset load")
 
-    monkeypatch.setattr(seed_routes, "_list_hf_data_files", _never)
+    monkeypatch.setattr(seed_routes, "_list_hf_repo_files", _never)
 
     payload = SimpleNamespace(
         dataset_name = "org/private",
