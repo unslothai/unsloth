@@ -910,11 +910,13 @@ test("a reference label past the old cap still resolves against its definition",
       `a ${length}-character label did not reach the document path`);
     assert.equal(markdownRenderKey(reply), `document:[${label}]: https://x.test/a`);
   }
-  // 999 is CommonMark's cap, NOT Marked's: Marked's `def` rule is `[^\]]+` and has no cap at
-  // all, so it does register a 1000-character label and this line pins a residual rather than a
-  // correctness boundary. Both probes stop at 999 for the reason the definition one gives, that
-  // unbounded makes every `[` an O(n) start position, so the pair is split past it and the
-  // reference stays literal. Held here so that widening the cap has to move this line and say so.
+  // 999 is CommonMark's cap, and it is a real boundary rather than a bound we chose. Not Marked's:
+  // Marked's `def` label is `[^\]]+` with no cap, and it does register a 1000-character label.
+  // Marked only SPLITS here though, through streamdown's `parseMarkdownIntoBlocks`; the render is
+  // streamdown's remark pipeline, which is CommonMark-strict. Counting anchors through that
+  // pipeline, a 1000-character label resolves to 0 links even when the whole reply is lexed as one
+  // document, so there is no link past 999 for the blocks path to lose and nothing for a wider
+  // probe to buy. See tests/link-definition-oracle.test.ts, which guards that direction.
   const tooLong = "L".repeat(1000);
   assert.equal(markdownRenderScope(`See [guide][${tooLong}].\n\n[${tooLong}]: /u\n`), "blocks");
 });
