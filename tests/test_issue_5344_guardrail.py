@@ -405,6 +405,65 @@ def test_fires_when_the_bulk_weight_shares_the_quantized_device():
     assert not any("sits off those devices" in m for m in msgs), msgs
 
 
+class _Params4bitBf16Storage(nn.Parameter):
+    """A packed 4-bit payload whose storage dtype is bfloat16.
+
+    `bnb_4bit_quant_storage=torch.bfloat16` is what FSDP QLoRA requires, and it
+    gives the packed Params4bit a FLOATING dtype. Keying "is this quantized" on
+    uint8 both counted this as suspect bulk weight and left quantized_bytes at
+    zero, which then suppressed the partial-bypass warning through the
+    `quantized_bytes > 0` gate.
+    """
+
+
+_Params4bitBf16Storage.__name__ = "Params4bit"
+
+
+class _Linear4bitFloatStorage(nn.Module):
+    def __init__(self, numel = 8 * 1024 * 1024 + 16):
+        super().__init__()
+        self.weight = _Params4bitBf16Storage(
+            torch.zeros(numel, dtype = torch.bfloat16), requires_grad = False
+        )
+
+
+_Linear4bitFloatStorage.__name__ = "Linear4bit"
+
+
+def test_float_storage_payload_counts_as_quantized_not_as_a_suspect():
+    # The packed payload is larger than the fused experts here, so if it were
+    # miscounted as a suspect the ratio would fire; and if it counted as nothing
+    # at all, the quantized_bytes > 0 gate would silence a real partial bypass.
+    model = nn.Sequential(_Linear4bitFloatStorage(), _MoEFusedExpertWrapper())
+    with warnings.catch_warnings(record = True) as caught:
+        warnings.simplefilter("always")
+        _warn_if_quantization_silently_dropped(
+            model,
+            load_in_4bit = True,
+            load_in_8bit = False,
+            full_finetuning = False,
+        )
+    msgs = [str(w.message) for w in caught]
+    assert not any("partially applied" in m for m in msgs), msgs
+
+
+def test_float_storage_still_reports_a_real_partial_bypass():
+    # Negative control: shrink the packed payload so the fused experts really do
+    # dominate. The warning must survive the type-based accounting.
+    model = nn.Sequential(_Linear4bitFloatStorage(numel = 1024), _MoEFusedExpertWrapper())
+    with warnings.catch_warnings(record = True) as caught:
+        warnings.simplefilter("always")
+        _warn_if_quantization_silently_dropped(
+            model,
+            load_in_4bit = True,
+            load_in_8bit = False,
+            full_finetuning = False,
+        )
+    msgs = [str(w.message) for w in caught]
+    assert any("partially applied" in m for m in msgs), msgs
+    assert any("gate_up_proj" in m for m in msgs), msgs
+
+
 if __name__ == "__main__":
     test_fires_when_4bit_requested_but_no_bnb_modules()
     test_silent_when_4bit_succeeded()
@@ -421,4 +480,6 @@ if __name__ == "__main__":
     test_fires_when_the_checkpoint_declares_the_width_it_did_not_produce()
     test_silent_when_the_bulk_weight_is_offloaded_off_the_quantized_device()
     test_fires_when_the_bulk_weight_shares_the_quantized_device()
-    print("All 15 guardrail tests passed.")
+    test_float_storage_payload_counts_as_quantized_not_as_a_suspect()
+    test_float_storage_still_reports_a_real_partial_bypass()
+    print("All 17 guardrail tests passed.")

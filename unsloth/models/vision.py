@@ -148,6 +148,21 @@ __all__ = [
 _BNB_4BIT_CLASS_NAMES = ("Linear4bit", "LinearNF4", "LinearFP4")
 _BNB_8BIT_CLASS_NAMES = ("Linear8bitLt",)
 
+# bnb's own Parameter subclasses. Checked BEFORE dtype because dtype does not
+# identify a packed payload: `bnb_4bit_quant_storage` (float16 / bfloat16, which
+# FSDP QLoRA requires) gives the packed Params4bit a floating dtype, and an
+# unquantized Params4bit reads float32 until it reaches the device. Keying on
+# uint8 alone left quantized_bytes at 0 on those loads, which both counted the
+# payload as suspect bulk weight and then suppressed the warning entirely via
+# the `quantized_bytes > 0` gate.
+_BNB_PARAM_CLASS_NAMES = ("Params4bit", "Int8Params")
+
+
+def _is_quantized_param(p):
+    """True for a bnb-packed payload, whatever storage dtype it was given."""
+    return type(p).__name__ in _BNB_PARAM_CLASS_NAMES or p.dtype in (torch.uint8, torch.int8)
+
+
 # Substrings the guardrail treats as intentionally-not-quantized: embeddings,
 # norms, biases, routers/gates that need fp16/fp32 precision, vision/audio
 # towers, classification heads, rotary tables.
@@ -313,9 +328,7 @@ def _warn_if_quantization_silently_dropped(
     # weights are meta tensors occupying nothing anywhere. Counting either as
     # bulk weight warns that a correctly quantized model is near full precision.
     quantized_devices = {
-        p.device
-        for p in model.parameters()
-        if p is not None and p.dtype in (torch.uint8, torch.int8)
+        p.device for p in model.parameters() if p is not None and _is_quantized_param(p)
     }
 
     quantized_bytes = 0
@@ -326,8 +339,7 @@ def _warn_if_quantization_silently_dropped(
         if p is None:
             continue
         nbytes = p.numel() * p.element_size()
-        if p.dtype in (torch.uint8, torch.int8):
-            # bnb stores 4-bit payloads as uint8 and 8-bit payloads (Int8Params) as int8.
+        if _is_quantized_param(p):
             quantized_bytes += nbytes
             continue
         if p.dtype not in (torch.bfloat16, torch.float16, torch.float32):
