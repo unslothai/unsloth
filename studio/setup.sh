@@ -3501,13 +3501,8 @@ _setup_supported_gfx_from_name() {
     printf '%s\n' "$_sup_gfx_out"
 }
 
-# The AMD integrated GPUs that shadow a discrete card by enumerating ahead of it. Mirror of
-# install.sh's _amd_gfx_is_shadowing_integrated / _SHADOWING_INTEGRATED_GFX, held to them by
-# tests/studio/install/test_rocm_arch_table_parity.py: one installer having this table and not
-# the other is the shape of #7264 / #7277 / #7293 -- and this file having no copy AT ALL was
-# the #11143 follow-up, since `unsloth studio update` runs setup.sh alone.
-# Named _amd_* rather than this file's usual _setup_* prefix on purpose: the parity test looks
-# these two helpers up by install.sh's names, so renaming them here hides the copy again.
+# Mirror of install.sh's table, held to it by tests/studio/install/test_rocm_arch_table_parity.py,
+# which looks both helpers up by install.sh's names: keep the _amd_* prefix, not this file's _setup_*.
 _amd_gfx_is_shadowing_integrated() {
     case "$1" in
         gfx90c|gfx1013|gfx1033|gfx1035|gfx1036|gfx1103|gfx1153) return 0 ;;
@@ -3515,33 +3510,24 @@ _amd_gfx_is_shadowing_integrated() {
     return 1
 }
 
-# The card to install for when enumeration put an integrated GPU first (#7776): one arch is
-# forwarded as --rocm-gfx, and install_llama_prebuilt.py reads that as "this host has ROCm,
-# serve this arch's bundle", so letting the APU decide hands the ROCm bundle to the iGPU while
-# torch targets the discrete card. gfx906 is never a candidate, since naming it on a mixed host
-# strands BOTH cards.
-# Unlike install.sh, NO wheel-route predicate is consulted, and that is deliberate: there the
-# arch selects a torch WHEEL family off repo.amd.com, which only some arches have an index for.
-# Here the consumer is the llama.cpp prebuilt bundle, resolved per gfx on the installer side,
-# so the candidate bar is just "not a shadowing integrated arch and not gfx906", first in
-# enumeration order. Do not "restore" the wheel-route filter.
+# Pick the card to install for when enumeration put an integrated GPU first (#7776). gfx906 is
+# never a candidate: naming it on a mixed host strands BOTH cards. install.sh also requires a
+# torch wheel route; deliberately omitted, since this arch selects a llama.cpp bundle resolved
+# per gfx installer-side, not a repo.amd.com wheel family. Do not "restore" that filter.
 _amd_prefer_discrete_gfx() {
     _apdg_devs="$1"
     _apdg_sel="$2"
-    # Nothing to prefer away from: no pick at all, or a pick that is not a shadowing iGPU.
     if [ -z "$_apdg_sel" ] || ! _amd_gfx_is_shadowing_integrated "$_apdg_sel"; then
         printf '%s' "$_apdg_sel"
         return 0
     fi
-    # A mask the user SET is their own device choice and is never second-guessed, even when it
-    # is empty -- same `+x` test as install.sh, so "set to nothing" still counts as deliberate.
+    # A mask the user SET is their own device choice: `+x`, not `-n`, so empty still counts.
     if [ -n "${HIP_VISIBLE_DEVICES+x}" ] || [ -n "${ROCR_VISIBLE_DEVICES+x}" ] || \
        [ -n "${CUDA_VISIBLE_DEVICES+x}" ]; then
         printf '%s' "$_apdg_sel"
         return 0
     fi
-    # Here-doc rather than a pipe so the pick lands in THIS shell (a `while` on the right of a
-    # pipe is a subshell), and so `set -o pipefail` cannot see a SIGPIPE from an early break.
+    # Here-doc, not a pipe: a piped `while` is a subshell, and an early break SIGPIPEs under pipefail.
     _apdg_pick=""
     while IFS= read -r _apdg_g; do
         if [ -n "$_apdg_g" ] && [ "$_apdg_g" != gfx906 ] && \
@@ -3552,8 +3538,7 @@ _amd_prefer_discrete_gfx() {
     done <<EOF
 $_apdg_devs
 EOF
-    # Every enumerated arch a shadowing iGPU, or no list to read: keep the original pick. This
-    # function never returns empty for a nonempty selection.
+    # All-integrated host, or no list: keep the pick. Never returns empty for a nonempty selection.
     [ -n "$_apdg_pick" ] || _apdg_pick="$_apdg_sel"
     printf '%s' "$_apdg_pick"
 }
@@ -3649,19 +3634,11 @@ elif [ "$_setup_amd_detected" = true ]; then
         _setup_gfx=$(printf '%s\n' "$_setup_gfx_all" | awk -v idx="$_setup_vis_idx" \
             'NF && !seen[$0]++ { a[n++]=$0 } END { if(idx>=n) idx=0; if(n>0) print a[idx+0] }')
     fi
-    # Enumeration can put an integrated GPU ahead of a discrete card on a mixed host, and the
-    # arch resolved above is what --rocm-gfx forwards below, so the iGPU would take the ROCm
-    # llama.cpp bundle while torch targets the dGPU (#7776; the #11143 follow-up saw a gfx1036
-    # Raphael ahead of a gfx1200 RX 9060 XT on Fedora). install.sh, setup.ps1 and
-    # install_python_stack.py all apply this skip; setup.sh did not, so `unsloth studio update`
-    # -- which runs this file alone -- put the iGPU back. Placed BEFORE the override below so a
-    # declared UNSLOTH_ROCM_GFX_ARCH still wins, and install_llama_prebuilt.py's
-    # _apply_host_overrides already honours a repick of exactly this shape.
-    # Candidates come from the records when there are any (device order, duplicate arches
-    # kept) and from $_setup_gfx_all otherwise: the amd-smi path re-derives that list after
-    # clearing the records, so it can be the only inventory available.
-    # Skipped outright under the override, so a host that declares an arch keeps the exact
-    # report it had before, with no repick line printed above a line that overrules it.
+    # The arch resolved above is what --rocm-gfx forwards below, so an iGPU enumerated first
+    # takes the ROCm bundle while torch targets the dGPU (#7776; #11143 saw gfx1036 ahead of a
+    # gfx1200). Runs before, and is skipped under, the UNSLOTH_ROCM_GFX_ARCH override, so a
+    # declared arch wins with no repick line printed above the line that overrules it.
+    # Candidates: the records, else $_setup_gfx_all, the only inventory left on the amd-smi path.
     _setup_gfx_pref=""
     if [ -z "${UNSLOTH_ROCM_GFX_ARCH:-}" ]; then
         _setup_gfx_cands="$_setup_gfx_all"
@@ -3674,9 +3651,7 @@ elif [ "$_setup_amd_detected" = true ]; then
         substep "Integrated $_setup_gfx enumerated first; installing for discrete $_setup_gfx_pref"
         substep "Set UNSLOTH_ROCM_GFX_ARCH=$_setup_gfx to target the integrated GPU instead."
         _setup_gfx="$_setup_gfx_pref"
-        # Re-pair the banner name with the card the arch now belongs to. Empty when no record
-        # carries the new arch, so the banner prints the arch alone rather than pairing it with
-        # the APU's name; nothing outside this block's report reads $_setup_mkt.
+        # Re-pair the banner name; empty beats pairing the new arch with the APU's name.
         _setup_mkt=$(printf '%s\n' "$_setup_amd_records" | awk -F'|' -v gfx="$_setup_gfx" \
             '$1 == gfx { print $2; exit }')
     fi

@@ -767,22 +767,14 @@ class TestShadowingIntegratedGfxParity:
         assert not (self._STRIX & self._install_sh_list())
 
 
-# ── The other half of #7776: APPLYING the preference, not just holding the table ──
-
-
 def _sh_call_site_offsets(source: str, helper: str) -> list[int]:
-    """Offsets where `helper` is invoked, excluding its definition and comments.
-
-    A table can be in parity while nothing calls the helper that reads it, which is
-    exactly the shape of #11143 (see TestShadowingPreferenceIsApplied).
-    """
+    """Offsets where `helper` is invoked, excluding its definition and comments."""
     offsets = []
     for match in re.finditer(re.escape(helper), source):
         line_start = source.rfind("\n", 0, match.start()) + 1
         line_end = source.find("\n", match.start())
         line = source[line_start : line_end if line_end != -1 else len(source)]
         before = line[: match.start() - line_start]
-        # The definition itself, and a mention inside a comment, are not call sites.
         if "#" in before:
             continue
         if re.match(rf"\s*{re.escape(helper)}\s*\(\)", line):
@@ -792,26 +784,14 @@ def _sh_call_site_offsets(source: str, helper: str) -> list[int]:
 
 
 class TestShadowingPreferenceIsApplied:
-    """Holding the table is half the guard; the other half is calling something
-    that reads it.
-
-    #11143 (Fedora, AMD iGPU driving the desktop + a discrete RX 9060 XT gfx1200)
-    is what that gap costs. TestShadowingIntegratedGfxParity above lists the copies
-    as "studio/setup.ps1, install_llama_prebuilt.py, install.sh" and describes
-    install_llama_prebuilt.py as honouring "setup's repick" -- but studio/setup.sh,
-    the script `unsloth studio update` runs in full, carried neither the table nor
-    the preference, so on Linux there was no repick to honour. It resolved the AMD
-    arch at visible-index 0 and forwarded the iGPU's arch as --rocm-gfx, which
-    _apply_host_overrides then reads as implying has_rocm.
-
-    So these tests assert the preference is REACHED on each entry point's
-    resolution path, not merely defined somewhere in the file.
+    """A table can be in parity while nothing calls the helper that reads it: that was
+    #11143, where studio/setup.sh (all `unsloth studio update` runs) had neither, so
+    install_llama_prebuilt.py had no repick to honour on Linux. These assert the
+    preference is REACHED on each entry point's path, not merely defined in the file.
     """
 
     _VISIBILITY_ENV = ("HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES")
 
-    # Shell entry points that resolve an AMD gfx arch and then act on it. Both must
-    # define the preference helper AND call it.
     _SHELL_RESOLVERS = ("install.sh", "studio/setup.sh")
 
     def _shadowing_arm(self, path: Path) -> set[str]:
@@ -838,14 +818,12 @@ class TestShadowingPreferenceIsApplied:
             "forwards is still whatever enumerated first"
         )
 
-    # The argv-append sites, not a bare "--rocm-gfx": the flag is named in eight
-    # comments before the first real one, so a substring search anchors on prose and
-    # no correct placement can satisfy it.
+    # The argv-append sites, not a bare "--rocm-gfx", which matches an earlier comment
+    # and so cannot be satisfied by any correct placement.
     _ROCM_GFX_FORWARDS = ("_PREBUILT_CMD+=(--rocm-gfx", "_WHISPER_CMD+=(--rocm-gfx")
 
     def test_setup_sh_applies_the_preference_before_forwarding_rocm_gfx(self):
-        """Order matters: a repick after the forward changes nothing. Both consumers
-        are fed from $_setup_gfx, so the repick has to precede both."""
+        """Both consumers read $_setup_gfx, so the repick must precede both."""
         source = _SETUP_SH.read_text(encoding = "utf-8")
         calls = _sh_call_site_offsets(source, "_amd_prefer_discrete_gfx")
         assert calls, "studio/setup.sh never calls _amd_prefer_discrete_gfx"
@@ -862,9 +840,8 @@ class TestShadowingPreferenceIsApplied:
 
     @pytest.mark.parametrize("rel", _SHELL_RESOLVERS)
     def test_an_explicit_visibility_mask_is_honoured_by_each_shell_copy(self, rel):
-        """A user who masked a device chose it. The preference must not second-guess
-        that, or `HIP_VISIBLE_DEVICES=1` stops being the documented workaround for
-        #7624 / #7669."""
+        """`HIP_VISIBLE_DEVICES=1` is the documented #7624 / #7669 workaround; a repick
+        that second-guesses a mask would break it."""
         body = _sh_function_body(
             (PACKAGE_ROOT / rel).read_text(encoding = "utf-8"), "_amd_prefer_discrete_gfx"
         )
@@ -883,8 +860,7 @@ class TestShadowingPreferenceIsApplied:
         raise AssertionError("_pick_rocm_gfx_target not found in install_llama_prebuilt.py")
 
     def test_gfx906_is_never_a_repick_candidate(self):
-        """Naming gfx906 on a mixed host strands BOTH cards, so install.sh excludes
-        it. Any copy that repicks has to exclude it too."""
+        """Naming gfx906 on a mixed host strands BOTH cards."""
         for rel in self._SHELL_RESOLVERS:
             body = _sh_function_body(
                 (PACKAGE_ROOT / rel).read_text(encoding = "utf-8"), "_amd_prefer_discrete_gfx"
