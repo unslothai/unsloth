@@ -155,6 +155,8 @@ export interface ValidateModelResponse {
   /** Architecture only shipped by a newer transformers; UI pauses on the upgrade dialog. */
   requires_transformers_upgrade?: boolean;
   transformers_upgrade?: TransformersUpgradeInfo | null;
+  /** Replacement repository for an MLX BNB model or adapter base. */
+  mlx_loads_base_model?: string | null;
 }
 
 export interface GgufVariantDetail {

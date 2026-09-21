@@ -872,6 +872,18 @@ export const it = {
         revoked: "Tutti i link di anteprima sono stati revocati",
         revokeError: "Impossibile revocare i link di anteprima",
       },
+      managedProviderUrls: {
+        sectionTitle: "Account gestiti",
+        enableLabel: "Connessioni locali e di rete",
+        enableDescription:
+          "Consente agli account gestiti di puntare le proprie connessioni a indirizzi locali o di rete, come un server Ollama o llama.cpp su questo computer o sulla tua rete locale. Disattivato per impostazione predefinita, perché consente a quegli account di raggiungere i servizi in esecuzione sul tuo computer e sulla tua rete.",
+        lockedByEnvironment:
+          "Impostato da UNSLOTH_STUDIO_BLOCK_PRIVATE_PROVIDER_URLS=1 in questo server, che rifiuta gli indirizzi privati per tutti gli account.",
+        loadError:
+          "Impossibile caricare le impostazioni di connessione degli account gestiti.",
+        saveError:
+          "Impossibile salvare le impostazioni di connessione degli account gestiti.",
+      },
       permissions: {
         sectionTitle: "Autorizzazioni",
         bypassLabel: "Autorizzazioni degli strumenti",

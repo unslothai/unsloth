@@ -880,6 +880,16 @@ export const ja = {
         revoked: "すべてのプレビューリンクを失効させました",
         revokeError: "プレビューリンクを失効させることができませんでした",
       },
+      managedProviderUrls: {
+        sectionTitle: "管理対象アカウント",
+        enableLabel: "ローカルおよびネットワーク接続",
+        enableDescription:
+          "管理対象アカウントが、このコンピューターや LAN 上の Ollama や llama.cpp サーバーなど、ローカルまたはネットワークのアドレスに接続を向けられるようにします。既定ではオフです。オンにすると、これらのアカウントがお使いのコンピューターやネットワークで動作しているサービスに到達できるようになるためです。",
+        lockedByEnvironment:
+          "このサーバーの UNSLOTH_STUDIO_BLOCK_PRIVATE_PROVIDER_URLS=1 によって決まります。すべてのアカウントでプライベートアドレスが拒否されます。",
+        loadError: "管理対象アカウントの接続設定を読み込めませんでした。",
+        saveError: "管理対象アカウントの接続設定を保存できませんでした。",
+      },
       notifications: {
         sectionTitle: "通知",
         showLlamaUpdates: "llama.cpp のアップデート通知",

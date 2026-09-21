@@ -464,7 +464,10 @@ def test_a_restore_copy_that_fails_leaves_the_link_and_no_half_tree(tmp_path):
     assert not (home / "src.restore-tmp").exists()
 
 
-@pytest.mark.skipif(os.geteuid() == 0, reason = "root ignores directory modes")
+@pytest.mark.skipif(
+    os.name != "posix" or os.geteuid() == 0,
+    reason = "needs POSIX directory modes, and root ignores them",
+)
 def test_a_read_only_home_fails_loudly_and_touches_nothing(tmp_path):
     app = _app(tmp_path)
     home = _legacy_home(tmp_path)

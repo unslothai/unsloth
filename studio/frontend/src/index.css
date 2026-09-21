@@ -1240,6 +1240,13 @@ html[data-chat-font] .aui-root {
 	.sidebar-row-action.is-unpin-action {
 		right: 1.875rem;
 		padding-right: 0.125rem;
+		/* The base pl-2 faces the options button, which is what opens the gap between the two
+		   icons. On the pin there is nothing to its left but the title, so that padding is
+		   dead space: invisible, but inside the button, and sidebar-touch-reveal makes the
+		   button clickable on a coarse pointer. It put 8px of the title under the pin on
+		   project rows, where a tap pinned the chat instead of opening it. Nothing moves
+		   visually; the glyph is positioned from the right. */
+		padding-left: 0;
 	}
 	.sidebar-row-action.is-unpin-action + .sidebar-row-action {
 		padding-left: 0;

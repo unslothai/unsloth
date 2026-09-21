@@ -894,6 +894,18 @@ export const ptBR = {
         revoked: "Todos os links de pré-visualização foram revogados",
         revokeError: "Não foi possível revogar os links de pré-visualização",
       },
+      managedProviderUrls: {
+        sectionTitle: "Contas gerenciadas",
+        enableLabel: "Conexões locais e de rede",
+        enableDescription:
+          "Permite que contas gerenciadas apontem suas conexões para endereços locais ou de rede, como um servidor Ollama ou llama.cpp neste computador ou na sua rede local. Desativado por padrão, porque permite que essas contas alcancem serviços em execução no seu computador e na sua rede.",
+        lockedByEnvironment:
+          "Definido por UNSLOTH_STUDIO_BLOCK_PRIVATE_PROVIDER_URLS=1 neste servidor, que recusa endereços privados para todas as contas.",
+        loadError:
+          "Não foi possível carregar as configurações de conexão das contas gerenciadas.",
+        saveError:
+          "Não foi possível salvar as configurações de conexão das contas gerenciadas.",
+      },
       notifications: {
         sectionTitle: "Notificações",
         showLlamaUpdates: "Notificações de atualização do llama.cpp",

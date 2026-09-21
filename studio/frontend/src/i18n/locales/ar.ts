@@ -888,6 +888,16 @@ export const ar = {
         revoked: "تم إلغاء جميع روابط المعاينة",
         revokeError: "تعذّر إلغاء روابط المعاينة",
       },
+      managedProviderUrls: {
+        sectionTitle: "الحسابات المُدارة",
+        enableLabel: "الاتصالات المحلية والشبكية",
+        enableDescription:
+          "اسمح للحسابات المُدارة بتوجيه اتصالاتها إلى عناوين محلية أو عناوين على الشبكة، مثل خادم Ollama أو llama.cpp على هذا الجهاز أو على شبكتك المحلية. معطّل افتراضيًا، لأنه يتيح لتلك الحسابات الوصول إلى الخدمات التي تعمل على جهازك وعلى شبكتك.",
+        lockedByEnvironment:
+          "محدَّد عبر UNSLOTH_STUDIO_BLOCK_PRIVATE_PROVIDER_URLS=1 على هذا الخادم، وهو يرفض العناوين الخاصة لكل الحسابات.",
+        loadError: "تعذّر تحميل إعدادات اتصال الحسابات المُدارة.",
+        saveError: "تعذّر حفظ إعدادات اتصال الحسابات المُدارة.",
+      },
       notifications: {
         sectionTitle: "الإشعارات",
         showLlamaUpdates: "إشعارات تحديث llama.cpp",
