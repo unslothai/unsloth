@@ -36,10 +36,9 @@ import time
 def join_when_started(thread: threading.Thread, timeout: float = 5.0) -> bool:
     """Join ``thread``, waiting out the not-started-yet window. True if it finished.
 
-    Never raises for an unstarted thread: that is the condition this exists to absorb. The
-    return value is what callers should assert on if they need the thread to be done, since a
-    thread that is still running at the deadline and a thread that never started are different
-    failures and only the caller knows which one matters.
+    Never raises for an unstarted thread: that is the condition this exists to absorb. It does
+    not report one as drained either. A thread still in `_limbo` at the deadline has not run
+    yet and still will, so True is reserved for a thread that actually finished.
     """
     # join() raises RuntimeError for two unrelated reasons, and only one of them is a window
     # that closes. Joining yourself never becomes possible, so retrying it would burn the whole
@@ -53,7 +52,13 @@ def join_when_started(thread: threading.Thread, timeout: float = 5.0) -> bool:
             thread.join(timeout = max(remaining, 0.0))
         except RuntimeError:
             if remaining <= 0:
-                return not thread.is_alive()
+                # Still not started at the deadline, so it is UNDRAINED, and is_alive() must
+                # not be consulted here: it is False before a thread starts exactly as it is
+                # after one finishes, so asking it would report a worker that is still
+                # scheduled and will run later as one that is already done. Callers restore
+                # their monkeypatches on the strength of this answer, which is how that
+                # worker would end up running against the next test.
+                return False
             time.sleep(0.005)
             continue
         return not thread.is_alive()

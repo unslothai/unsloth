@@ -31,10 +31,17 @@ def test_join_raises_on_its_own_for_a_thread_that_never_started():
         never.join(timeout = 0.01)
 
 
-def test_an_unstarted_thread_does_not_raise_and_reports_not_running():
+def test_an_unstarted_thread_does_not_raise_and_is_not_called_drained():
+    """Absorbing the exception must not turn into claiming the thread is done.
+
+    A thread that `join()` still refuses at the deadline has not run yet and, if it came out
+    of `threading.enumerate()`, still will. `is_alive()` cannot tell that apart from finished,
+    since it is False on both sides, so the answer here is taken from `join()` rather than
+    from `is_alive()`. Callers restore their monkeypatches on the strength of this answer.
+    """
     never = threading.Thread(target = lambda: None)
     started = time.monotonic()
-    assert join_when_started(never, timeout = 0.05) is True
+    assert join_when_started(never, timeout = 0.05) is False
     # It gives up at the deadline rather than waiting for a thread that will never run.
     assert time.monotonic() - started < 5
 
