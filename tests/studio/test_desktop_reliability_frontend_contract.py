@@ -1032,11 +1032,19 @@ def _declarations_at(live_css: str, brace: str | int) -> str | None:
 
 def _modifier_rules(live_css: str) -> dict[str, str]:
     """Every `.sidebar-row-action.is-*` rule the stylesheet defines, as its own declarations."""
-    rules = {}
+    rules: dict[str, str] = {}
     for match in re.finditer(r"\.sidebar-row-action\.(is-[\w-]+)\s*\{", live_css):
         body = _declarations_at(live_css, match.end() - 1)
-        if body is not None:
-            rules[match.group(1)] = body
+        if body is None:
+            continue
+        # Joined in source order, not replaced. A selector may appear more than once, and CSS
+        # keeps an earlier declaration for any property the later rule does not restate: one
+        # rule setting `right: 5rem` followed by another setting only `color` still renders at
+        # 5rem. Overwriting recorded the second rule alone, so the offset fell back to the
+        # base and the action overlapped the title with this green. Joining also means a
+        # property genuinely restated appears twice, which `_sole_measure` then refuses rather
+        # than resolving, as it does within a single rule.
+        rules[match.group(1)] = f"{rules.get(match.group(1), '')}\n{body}"
     return rules
 
 

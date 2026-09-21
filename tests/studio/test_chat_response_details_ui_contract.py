@@ -688,7 +688,11 @@ def test_reasoning_clears_manual_open_on_a_new_stream():
                 closed = index
                 break
     assert closed is not None, "the new-round branch in reasoning.tsx is unterminated"
-    assert f"{writes}(null)" in src[opened:closed], (
+    # As a statement of the branch itself, not merely somewhere inside it. `if (false)
+    # setOverride(null)` and a nested block both satisfy a substring search while a
+    # hand-opened block stays pinned across a regenerate, which is the whole contract.
+    statements = [piece.strip() for piece in src[opened + 1 : closed].split(";")]
+    assert f"{writes}(null)" in statements, (
         f"a new reasoning round does not clear {held!r}. A block the reader opened by hand "
         f"during the previous round keeps its override, so it stays pinned open over the "
         f"next answer whatever the Thinking setting says"
