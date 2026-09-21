@@ -127,6 +127,21 @@ def test_unsafe_archive_shapes_are_rejected(tmp_path, monkeypatch, official_rele
         installer.install_mxc_release(tmp_path / "installed" / "windows-x86_64")
 
 
+def test_windows_setup_always_checks_mxc_without_optional_os_environment_variable():
+    setup = (_STUDIO / "setup.ps1").read_text(encoding="utf-8")
+    start = setup.index("# Windows MXC Preview is an optional, pinned prebuilt")
+    end = setup.index("# ── Pre-install transformers", start)
+    mxc_setup = setup[start:end]
+
+    assert "$env:OS" not in mxc_setup
+    assert (
+        "[System.Environment]::OSVersion.Platform -eq [System.PlatformID]::Win32NT"
+    ) in mxc_setup
+    assert setup.index("# Windows MXC Preview is an optional, pinned prebuilt") > setup.index(
+        'step "python" "dependencies up to date"'
+    )
+
+
 def test_non_windows_host_never_downloads(tmp_path, monkeypatch):
     monkeypatch.setattr(installer.sys, "platform", "linux")
     monkeypatch.setattr(

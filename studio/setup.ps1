@@ -8068,34 +8068,6 @@ substep "running ordered dependency installation..."
 python "$PSScriptRoot\install_python_stack.py"
 $stackExit = $LASTEXITCODE
 
-# Windows MXC Preview is an optional, pinned prebuilt like the other native
-# runtimes. The installer owns the immutable Microsoft release URL and verifies
-# the archive and wxc-exec.exe sizes and SHA-256 digests before safely
-# activating it. Failure leaves Auto mode on software safeguards.
-if ($stackExit -eq 0 -and $env:OS -eq "Windows_NT") {
-    $_mxcInstaller = Join-Path $PSScriptRoot "install_mxc_prebuilt.py"
-    $_mxcInstallDir = Join-Path $StudioHome "mxc-runtime\windows-x86_64"
-    if (Test-Path -LiteralPath $_mxcInstaller -PathType Leaf) {
-        substep "installing Windows MXC Preview runtime..."
-        $_mxcOutput = & python $_mxcInstaller --install-dir $_mxcInstallDir 2>&1 | Out-String
-        $_mxcExit = $LASTEXITCODE
-        if ($_mxcExit -eq 0) {
-            if ($_mxcOutput -match "already matches") {
-                step "MXC Preview" "prebuilt up to date and validated"
-            } else {
-                step "MXC Preview" "prebuilt installed and validated"
-            }
-        } elseif ($_mxcExit -eq 3) {
-            step "MXC Preview" "install blocked by an active MXC process; existing runtime kept" "Yellow"
-        } else {
-            step "MXC Preview" "prebuilt unavailable; Studio will use software safeguards" "Yellow"
-        }
-        if ($script:UnslothVerbose -and $_mxcOutput) {
-            Write-StudioLine $_mxcOutput.Trim() -ForegroundColor $(if ($_mxcExit -eq 0) { "DarkGray" } else { "Yellow" })
-        }
-    }
-}
-
 # ── Intel XPU: bitsandbytes must carry XPU kernels ──
 # unsloth/bnb_availability.py binds cgemv_4bit_inference_fp16/bf16 for device_type "xpu" and only
 # bitsandbytes' XPU library exports those, so a wheel without it turns 4-bit QLoRA off. 0.48.2 is
@@ -8281,6 +8253,33 @@ if ($stackExit -ne 0) {
     step "python" "dependencies up to date"
     # Restore ErrorActionPreference (was lowered for pip/python section)
     $ErrorActionPreference = $prevEAP
+}
+
+# Windows MXC Preview is an optional, pinned prebuilt like the other native
+# runtimes. Keep this outside the Python dependency fast path: a missing or
+# corrupt runtime must be installed or repaired even when the venv is current.
+if ([System.Environment]::OSVersion.Platform -eq [System.PlatformID]::Win32NT) {
+    $_mxcInstaller = Join-Path $PSScriptRoot "install_mxc_prebuilt.py"
+    $_mxcInstallDir = Join-Path $StudioHome "mxc-runtime\windows-x86_64"
+    if (Test-Path -LiteralPath $_mxcInstaller -PathType Leaf) {
+        substep "installing Windows MXC Preview runtime..."
+        $_mxcOutput = & python $_mxcInstaller --install-dir $_mxcInstallDir 2>&1 | Out-String
+        $_mxcExit = $LASTEXITCODE
+        if ($_mxcExit -eq 0) {
+            if ($_mxcOutput -match "already matches") {
+                step "MXC Preview" "prebuilt up to date and validated"
+            } else {
+                step "MXC Preview" "prebuilt installed and validated"
+            }
+        } elseif ($_mxcExit -eq 3) {
+            step "MXC Preview" "install blocked by an active MXC process; existing runtime kept" "Yellow"
+        } else {
+            step "MXC Preview" "prebuilt unavailable; Studio will use software safeguards" "Yellow"
+        }
+        if ($script:UnslothVerbose -and $_mxcOutput) {
+            Write-StudioLine $_mxcOutput.Trim() -ForegroundColor $(if ($_mxcExit -eq 0) { "DarkGray" } else { "Yellow" })
+        }
+    }
 }
 
 # ── Pre-install transformers 5.x into .venv_t5_530/, .venv_t5_550/, and .venv_t5_510/ ──
