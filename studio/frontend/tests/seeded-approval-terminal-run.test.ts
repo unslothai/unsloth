@@ -99,3 +99,66 @@ test("the terminal check is imported, not invented locally", () => {
       "stays defined in exactly one place",
   );
 });
+
+// ── Arming must not hold the event stream closed ────────────────────────────
+// followChatGenerationRun yields its snapshot BEFORE it opens /events
+// (chat-generation-api.ts: `yield { run, source: "snapshot" }` precedes the
+// streamChatGenerationEvents loop), so the consumer is what decides when that stream opens.
+// /events is also the only thing that marks the run attended server-side
+// (state/run_subscribers.py), and attendance is what stops the park ceiling denying an
+// approval. Awaiting the seeded-approval check at the call site therefore serialises the
+// "is it still pending?" request AHEAD of the stream that says someone is watching, so a tab
+// returning near the ceiling can have its approval expire during that very request and be
+// handed buttons that can only 404.
+//
+// Pinned on the call site for the same reason as the guard above: the follow loop needs a live
+// EventSource, so no behavioural test in this suite reaches it.
+
+/** Walk up from a node looking for an `await` that directly wraps it. */
+const isDirectlyAwaited = (node: ts.Node): boolean => {
+  let current: ts.Node | undefined = node.parent;
+  while (current) {
+    if (ts.isAwaitExpression(current)) return true;
+    // Stop at the first construct that is not a transparent wrapper: anything further up
+    // awaits a different expression, not this call.
+    if (
+      ts.isExpressionStatement(current) ||
+      ts.isVariableDeclaration(current) ||
+      ts.isBinaryExpression(current) ||
+      ts.isBlock(current)
+    ) {
+      return false;
+    }
+    current = current.parent;
+  }
+  return false;
+};
+
+test("the seeded-approval check does not block the event stream from opening", () => {
+  for (const call of seededApprovalCalls()) {
+    assert.ok(
+      !isDirectlyAwaited(call),
+      "armSeededApprovals must NOT be awaited at its call site. The follower is suspended " +
+        "at followChatGenerationRun's snapshot yield, so awaiting here delays " +
+        "streamChatGenerationEvents, which is the only thing that marks the run attended " +
+        "(state/run_subscribers.py). A tab returning near UNSLOTH_STUDIO_TOOL_APPROVAL_TIMEOUT_S " +
+        "would then lose the approval during the request that checks whether it is still pending. " +
+        "Assign the promise and join it before disarmAll instead.",
+    );
+  }
+});
+
+test("the seeded-approval promise is joined before the run is disarmed", () => {
+  const text = readFileSync(SOURCE, "utf8");
+  // Not awaiting at the call site is only safe if something still orders the arm against the
+  // disarm; without this a late arm lands after the run ended and leaves the buttons up.
+  const disarmIndex = text.indexOf("toolRecovery.disarmAll()");
+  assert.ok(disarmIndex > 0, "disarmAll call site not found");
+  const before = text.slice(0, disarmIndex);
+  assert.match(
+    before,
+    /await seededApprovals/,
+    "the seeded-approval promise must be joined before disarmAll, or an arm that resolves " +
+      "late re-raises buttons on a run that is already over",
+  );
+});

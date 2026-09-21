@@ -886,6 +886,8 @@ function scheduleGenerationRecovery(
       resolve: (partId) =>
         useChatRuntimeStore.getState().clearToolConfirmation(partId),
     });
+    // Settled before disarmAll so an arm cannot land after the run is over.
+    let seededApprovals: Promise<void> | null = null;
     let { raw, reasoningOpen } = stored;
     let completionTokens: number | undefined;
     let recoveryUsage:
@@ -1069,16 +1071,27 @@ function scheduleGenerationRecovery(
             // coming to disarm the card, so arming from the seed would leave permanent Approve/Deny
             // buttons whose confirm can only 404.
             if (!isTerminalChatGenerationRun(update.run)) {
-              await toolRecovery.armSeededApprovals(
-              update.run.requestPayload?.session_id,
-              (approvalId) =>
-                toolApprovalIsPending(
-                  approvalId,
-                  typeof update.run.requestPayload?.session_id === "string"
-                    ? update.run.requestPayload.session_id
-                    : "",
-                ),
-            );
+              // Deliberately NOT awaited here. followChatGenerationRun yields its snapshot before
+              // opening /events, so this generator is suspended at that yield: awaiting holds the
+              // event stream closed, and /events is the only thing that marks the run attended
+              // server-side (state/run_subscribers.py). A tab returning near the park ceiling would
+              // then have its approval expire during the very request that asks whether it is still
+              // pending, and the restored buttons could only 404. Kicked off here and settled at the
+              // end of the loop instead, so the card gains its buttons a moment later and the stream
+              // opens immediately.
+              seededApprovals = toolRecovery.armSeededApprovals(
+                update.run.requestPayload?.session_id,
+                (approvalId) =>
+                  toolApprovalIsPending(
+                    approvalId,
+                    typeof update.run.requestPayload?.session_id === "string"
+                      ? update.run.requestPayload.session_id
+                      : "",
+                  ),
+              );
+              // armSeededApprovals already treats an unanswerable check as "still parked", so this
+              // only stops a rejection from surfacing unhandled before the join below reaches it.
+              seededApprovals.catch(() => {});
             }
             identityValidated = true;
           }
@@ -1172,6 +1185,9 @@ function scheduleGenerationRecovery(
             await publish(update.run);
           }
           if (isTerminalChatGenerationRun(update.run)) {
+            // Join the seeding first: it is no longer awaited at the call site, so without this a
+            // late arm could land after the disarm and leave the buttons up on a finished run.
+            if (seededApprovals) await seededApprovals.catch(() => {});
             // The run is over, so any approval card recovery raised is over with it. A run that
             // terminates without a tool_end (backend failed or restarted while the call was parked)
             // leaves the card armed otherwise: the initial guard above only covers a run that was
