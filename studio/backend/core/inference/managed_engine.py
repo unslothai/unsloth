@@ -21,7 +21,12 @@ import httpx
 from .engine_install import engine_lease, installed, profile, support_reason
 
 
-from .engine_adapters import ADAPTERS, gpu_memory_fraction, launch_arguments
+from .engine_adapters import (
+    ADAPTERS,
+    gpu_memory_fraction,
+    launch_arguments,
+    tool_parser_for_template,
+)
 
 
 def validate_load(engine: str, request) -> None:
@@ -41,6 +46,35 @@ def validate_load(engine: str, request) -> None:
         )
     if request.chat_template_override:
         raise ValueError("Optional engines do not yet support template overrides.")
+
+
+def _model_chat_template(config, hf_token = None):
+    """Read the same template files native tokenizers use, without loading weights."""
+
+    def read(name):
+        if config.is_local:
+            path = Path(config.path) / name
+            return path.read_text(encoding = "utf-8") if path.is_file() else None
+        from huggingface_hub import hf_hub_download
+        from huggingface_hub.errors import EntryNotFoundError
+
+        try:
+            return Path(hf_hub_download(config.identifier, name, token = hf_token)).read_text(
+                encoding = "utf-8"
+            )
+        except EntryNotFoundError:
+            return None
+
+    template = read("chat_template.jinja")
+    if template is not None:
+        return template
+    metadata = json.loads(read("tokenizer_config.json") or "{}")
+    template = metadata.get("chat_template")
+    if isinstance(template, list):
+        template = {entry["name"]: entry["template"] for entry in template}
+    if isinstance(template, dict):
+        template = template.get("tool_use") or template.get("default")
+    return template
 
 
 def validate_model(
@@ -67,7 +101,11 @@ def validate_model(
         raise ValueError(
             "This checkpoint is already quantized. Choose Model default to use its stored precision."
         )
-    if quant.get("quant_method") == "bitsandbytes" and len(gpu_ids or [0]) > 1 and parallelism == "tensor":
+    if (
+        quant.get("quant_method") == "bitsandbytes"
+        and len(gpu_ids or [0]) > 1
+        and parallelism == "tensor"
+    ):
         raise ValueError(
             "Prequantized BitsAndBytes checkpoints do not support tensor parallelism with this engine. Select one GPU, another multi-GPU mode, or a tensor-parallel compatible checkpoint such as AWQ or GPTQ."
         )
@@ -82,6 +120,7 @@ def validate_model(
             "Select one GPU, use Replicas, or load an unquantized checkpoint with 4-bit precision."
         )
     options = {
+        "tool_parser": tool_parser_for_template(_model_chat_template(config, hf_token), engine),
         "precision": precision,
         "parallelism": parallelism,
         "is_vision": bool(metadata.get("vision_config") or getattr(config, "is_vision", False)),
@@ -91,7 +130,8 @@ def validate_model(
         and quant.get("quant_method") == "bitsandbytes"
         and quant.get("load_in_8bit", False),
         "load_format": "bitsandbytes"
-        if quant.get("quant_method") == "bitsandbytes" or (engine == "vllm" and precision == "int4" and parallelism != "pipeline")
+        if quant.get("quant_method") == "bitsandbytes"
+        or (engine == "vllm" and precision == "int4" and parallelism != "pipeline")
         else "auto",
     }
     if precision == "fp8":

@@ -2146,7 +2146,7 @@ class InferenceOrchestrator:
                     "gpu_ids": list(gpu_ids or [0]),
                     "tensor_parallel": len(gpu_ids or [0]) > 1
                     and (options or {}).get("parallelism", "tensor") == "tensor",
-                    "supports_tools": False,
+                    "supports_tools": bool((options or {}).get("tool_parser")),
                 }
                 self.active_model_name = model
                 self.load_generation += 1
@@ -2704,11 +2704,15 @@ class InferenceOrchestrator:
             kwargs = dict(locals())
             for key in ("self", "managed", "kwargs"):
                 kwargs.pop(key, None)
+            from .engine_transport import EngineHTTPError
+
             try:
                 cumulative = ""
                 for delta in managed.generate(**kwargs):
                     cumulative += delta
                     yield cumulative
+            except EngineHTTPError:
+                raise
             except Exception as exc:
                 yield GenStreamError(str(exc), public = True)
             return

@@ -11,6 +11,28 @@ import json
 from pathlib import Path
 
 
+def tool_parser_for_template(template, engine):
+    """Select a native output parser from the model's own tool syntax."""
+    if not isinstance(template, str) or "tools" not in template:
+        return None
+    # Specific nested formats precede the generic JSON tool-call envelope.
+    formats = (
+        (("<tool_call>", "<function="), "qwen3_coder", "qwen3_coder"),
+        (("<tool_call>", "<arg_key>"), "glm45", "glm"),
+        (("<tool_call>", "arguments"), "hermes", "qwen"),
+        (("[TOOL_CALLS]",), "mistral", "mistral"),
+        (("<|python_tag|>",), "llama3_json", "llama3"),
+        (("<|channel|>", "<|message|>"), "openai", "gpt-oss"),
+        (("<|tool_calls_section_begin|>",), "kimi_k2", "kimi_k2"),
+        (("<minimax:tool_call>",), "minimax_m2", "minimax-m2"),
+        (("<｜tool▁calls▁begin｜>",), "deepseek_v3", "deepseekv3"),
+    )
+    for markers, vllm, sglang in formats:
+        if all(marker in template for marker in markers):
+            return vllm if engine == "vllm" else sglang
+    return None
+
+
 @dataclass(frozen = True)
 class EngineAdapter:
     name: str
@@ -50,18 +72,26 @@ class EngineAdapter:
         trust_remote_code = False,
     ):
         options = options or {}
+        tool_args = []
+        if options.get("tool_parser"):
+            tool_args = ["--tool-call-parser", options["tool_parser"]]
+            if self.name == "vllm":
+                tool_args.append("--enable-auto-tool-choice")
         mode = options.get("parallelism", "tensor")
         # Exactly one parallel dimension spans the selected devices;
         # the others stay at one.
-        parallel_args = [
-            "--tensor-parallel-size", str(gpu_count if mode == "tensor" else 1)
-        ]
+        parallel_args = ["--tensor-parallel-size", str(gpu_count if mode == "tensor" else 1)]
         if mode != "tensor":
             flag = "--pipeline-parallel-size" if mode == "pipeline" else "--data-parallel-size"
             parallel_args += [flag, str(gpu_count)]
         if gpu_count > 1:
             parallel_args += (
-                ["--data-parallel-backend" if mode == "data" else "--distributed-executor-backend", "mp"]
+                [
+                    "--data-parallel-backend"
+                    if mode == "data"
+                    else "--distributed-executor-backend",
+                    "mp",
+                ]
                 if self.name == "vllm"
                 else ["--enable-p2p-check"]
             )
@@ -89,10 +119,12 @@ class EngineAdapter:
                     {
                         "group_size": 32,
                         "int4_packing_format": {
-                            "_type": "Int4PackingFormat", "_data": "TILE_PACKED_TO_4D"
+                            "_type": "Int4PackingFormat",
+                            "_data": "TILE_PACKED_TO_4D",
                         },
                         "int4_choose_qparams_algorithm": {
-                            "_type": "Int4ChooseQParamsAlgorithm", "_data": "HQQ"
+                            "_type": "Int4ChooseQParamsAlgorithm",
+                            "_data": "HQQ",
                         },
                     }
                 )
@@ -123,7 +155,11 @@ class EngineAdapter:
                 else ["--disable-cuda-graph", "--disable-piecewise-cuda-graph"]
             )
         if self.name == "sglang":
-            entrypoint = [str(Path(__file__).with_name("sglang_server.py")), self.model_option, model]
+            entrypoint = [
+                str(Path(__file__).with_name("sglang_server.py")),
+                self.model_option,
+                model,
+            ]
         elif mode == "data":
             # The native serve CLI owns data-parallel worker/API orchestration.
             entrypoint = ["-m", "vllm.entrypoints.cli.main", "serve", model]
@@ -139,6 +175,7 @@ class EngineAdapter:
             str(memory_fraction),
             *parallel_args,
             *precision_args,
+            *tool_args,
             *(["--trust-remote-code"] if trust_remote_code else []),
             *self.extra_args,
             "--host",

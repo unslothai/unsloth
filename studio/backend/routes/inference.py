@@ -802,6 +802,15 @@ def _openai_stream_error_chunk(exc) -> dict:
     ride in the SSE body. An upstream context-window overflow is mapped to
     code=context_length_exceeded so client compaction/trim loops can detect it
     (a code-less error hides it)."""
+    from core.inference.engine_transport import EngineHTTPError
+
+    if isinstance(exc, EngineHTTPError):
+        error = _openai_passthrough_error(exc.status_code, exc.body)
+        return (
+            error.detail
+            if isinstance(error.detail, dict)
+            else openai_error_body(str(error.detail), status = error.status_code)
+        )
     _cls = _classify_llama_generation_error(exc)
     if _cls:
         return openai_error_body(
@@ -3660,7 +3669,7 @@ def _detect_safetensors_features(
     model_id = getattr(backend, "active_model_name", None)
     if (getattr(backend, "models", {}).get(model_id) or {}).get("engine") in ("vllm", "sglang"):
         return {
-            "supports_tools": False,
+            "supports_tools": bool(backend.models[model_id].get("supports_tools")),
             "supports_reasoning": False,
             # Response schemas require a style even when reasoning is disabled.
             "reasoning_style": "enable_thinking",
@@ -26402,21 +26411,24 @@ async def produce_openai_chat_completions(
     _sf_model_info = backend.models.get(backend.active_model_name, {})
     if _sf_model_info.get("engine") in ("vllm", "sglang"):
         if (
-            payload.tools
-            or payload.use_adapter is not None
-            or payload.enable_tools
-            or payload.mcp_enabled
+            payload.use_adapter is not None
             or payload.response_format
             or payload.continue_final_message
             or payload.enable_thinking
             or payload.preserve_thinking
             or payload.reasoning_effort not in (None, "none")
-            or any(m.role == "tool" or m.tool_calls for m in payload.messages)
         ):
             raise _reject(
                 400,
-                "This engine integration supports text and image chat without tools, adapters, structured output, continuation or reasoning controls.",
+                "This engine integration does not support adapters, structured output, continuation or reasoning controls.",
             )
+        from routes.managed_engine_chat import managed_tool_chat
+
+        response = await managed_tool_chat(
+            payload, request, backend, chat_messages, system_prompt, monitor_id
+        )
+        if response is not None:
+            return response
     _sf_tpl = (_sf_model_info.get("chat_template_info") or {}).get("template")
     # Resolve the tool policy BEFORE the protocol is classified: the template
     # branch chosen here must be the one generation renders. Reading the raw
@@ -27512,12 +27524,13 @@ async def produce_openai_chat_completions(
                 logger.error(f"Error during OpenAI streaming: {e}", exc_info = True)
                 _msg = _friendly_error(e)
                 api_monitor.fail(monitor_id, _msg)
-                error_chunk = {
-                    "error": {
-                        "message": _msg,
-                        "type": "server_error",
-                    },
-                }
+                from core.inference.engine_transport import EngineHTTPError
+
+                error_chunk = (
+                    _openai_stream_error_chunk(e)
+                    if isinstance(e, EngineHTTPError)
+                    else {"error": {"message": _msg, "type": "server_error"}}
+                )
                 yield _openai_stream_error_sse(error_chunk)
             finally:
                 await _stop_local_disconnect_cancel_watcher(disconnect_watcher)
@@ -27800,6 +27813,10 @@ async def produce_openai_chat_completions(
             backend.reset_generation_state(cancel_event)
             logger.error(f"Error during OpenAI completion: {e}", exc_info = True)
             api_monitor.fail(monitor_id, _friendly_error(e))
+            from core.inference.engine_transport import EngineHTTPError
+
+            if isinstance(e, EngineHTTPError):
+                raise _openai_passthrough_error(e.status_code, e.body)
             raise HTTPException(status_code = 500, detail = safe_error_detail(e))
         finally:
             # Nested under the except arms too: reset_generation_state() can throw, and a leaked entry 409s swaps.
@@ -32448,7 +32465,7 @@ async def _mlx_count_chat_tokens(payload, request = None) -> Optional[JSONRespon
     ):
         raise HTTPException(
             status_code = 503,
-            detail = "Tools and reasoning controls are unavailable for this engine profile.",
+            detail = "Exact token counting with tools or reasoning controls is unavailable for this engine profile.",
         )
 
     # The completion's own helper: rebuilding it here is how a count prices a prompt

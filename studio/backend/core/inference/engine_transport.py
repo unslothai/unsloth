@@ -13,6 +13,15 @@ import httpx
 from .http_stream import closing_response_lines
 
 
+class EngineHTTPError(RuntimeError):
+    """Keep a native rejection distinct from a transport or worker failure."""
+
+    def __init__(self, status_code, body):
+        self.status_code = status_code
+        self.body = body[:500]
+        super().__init__(f"Engine rejected generation (HTTP {status_code}): {self.body}")
+
+
 def stream_chat_events(base_url, headers, payload, cancelled):
     items = queue.Queue(maxsize = 64)
     done = threading.Event()
@@ -32,9 +41,8 @@ def stream_chat_events(base_url, headers, payload, cancelled):
                 "POST", base_url + "/v1/chat/completions", headers = headers, json = payload
             ) as response:
                 if response.status_code != 200:
-                    raise RuntimeError(
-                        f"Engine rejected generation (HTTP {response.status_code}). Try a smaller context or token limit."
-                    )
+                    await response.aread()
+                    raise EngineHTTPError(response.status_code, response.text)
                 lines = closing_response_lines(response)
                 try:
                     async for line in lines:

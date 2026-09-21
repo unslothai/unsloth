@@ -42,7 +42,16 @@ combined tensor/pipeline/data configurations are not exposed.
 Text and vision architectures are validated by the selected engine. Individual
 models can still exceed available memory or require unsupported kernels.
 
-LoRA adapters, audio/video input, tool calling, structured output, reasoning
+OpenAI chat requests support client-owned tool calls, streamed arguments and tool-result
+history. Studio can also execute its existing built-in and MCP tools through the
+shared approval and execution flow. Native output parsers are selected from the
+model's Jinja template syntax; Studio does not replace the template. Models with
+unrecognized tool syntax remain available for ordinary chat. The pinned SGLang
+version can return multiple calls even with `parallel_tool_calls: false`.
+Legacy completions and Anthropic endpoints retain their existing GGUF requirement;
+exact token counting for tool-enabled prompts is not available.
+
+LoRA adapters, audio/video input, structured output, reasoning
 controls and continuation are outside this profile. Custom model code uses the
 existing trust-remote-code consent setting. Multi-node serving is not configured by Studio.
 Engine servers honor Studio's VRAM budget, capped by the most constrained
