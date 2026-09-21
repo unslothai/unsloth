@@ -246,6 +246,12 @@ def iter_gguf_files(directory: Path, recursive: bool = False):
                     yield path
             seen += len(dirnames) + len(filenames)
             if seen > _MAX_LOCAL_SCAN_ENTRIES:
+                # The cap keeps a pathological root from stalling the request path, and it
+                # truncates the walk exactly like an unreadable subtree does: whatever is
+                # past it was not looked at, so a miss from this pass is not an absence.
+                note_scan_incident(
+                    f"gguf walk hit the entry cap: {directory} ({seen} entries)"
+                )
                 return
         return
     try:

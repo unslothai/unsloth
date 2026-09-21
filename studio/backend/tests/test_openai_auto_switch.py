@@ -12670,3 +12670,33 @@ def test_a_truncated_gguf_walk_is_reported(monkeypatch):
         assert any("dir unreadable" in note for note in incidents), (
             f"an unlistable directory read as holding no GGUFs: {incidents}"
         )
+
+
+def test_a_gguf_walk_that_hit_the_entry_cap_is_reported(monkeypatch):
+    """The entry cap truncates the walk just as an unreadable subtree does.
+
+    It exists so a pathological root cannot stall the request path, and whatever sits past
+    it was not looked at: the resident model's GGUF can be in the part that was skipped, and
+    every later scan hits the same cap, so memoizing that miss leaves the filename advertised
+    for good.
+    """
+    from core.inference.scan_incidents import collecting_scan_incidents
+    from hub.utils import gguf as gguf_utils
+
+    with tempfile.TemporaryDirectory() as root:
+        directory = pathlib.Path(root)
+        for i in range(4):
+            (directory / f"model-{i}-Q4_K_M.gguf").write_bytes(b"GGUF")
+
+        monkeypatch.setattr(gguf_utils, "_MAX_LOCAL_SCAN_ENTRIES", 2)
+        with collecting_scan_incidents() as incidents:
+            list(gguf_utils.iter_gguf_files(directory, recursive = True))
+        assert any("entry cap" in note for note in incidents), (
+            f"a walk cut short by the cap read as a complete look: {incidents}"
+        )
+
+        # Under the cap, nothing is reported.
+        monkeypatch.setattr(gguf_utils, "_MAX_LOCAL_SCAN_ENTRIES", 1000)
+        with collecting_scan_incidents() as incidents:
+            assert len(list(gguf_utils.iter_gguf_files(directory, recursive = True))) == 4
+        assert incidents == [], f"a walk within the cap reported a gap: {incidents}"
