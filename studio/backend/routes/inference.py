@@ -9029,13 +9029,30 @@ def _loaded_satisfies(requested: str) -> bool:
 # again would rebuild the index for an answer we already have. Scoped to the current
 # load: a fresh one clears the advertised id, so the recording has to happen again.
 _alias_probed_load_paths: set[str] = set()
-# Paths handed to the resolver whose pass has not finished yet. Held apart from the set
-# above because a concurrent request must still reach the resolver rather than take the
-# shortcut and report the filename while the first pass is mid-scan.
-_alias_probe_inflight: set[str] = set()
-# The resolver index generation the two sets describe.
+# Paths handed to the resolver whose pass has not finished yet, and HOW MANY requests hold
+# each. Held apart from the set above because a concurrent request must still reach the
+# resolver rather than take the shortcut and report the filename while the first pass is
+# mid-scan. Counted rather than a set because two requests can name the same path, and one
+# releasing would otherwise take the other's claim away with it.
+_alias_probe_inflight: dict[str, int] = {}
+# The resolver index generation the two collections describe.
 _alias_probe_generation = -1
 _alias_probe_lock = threading.Lock()
+
+
+def _alias_probe_key(identifier: str) -> str:
+    """The probe key for *identifier* under the ACTING account.
+
+    The resolver keeps a snapshot per managed account because their scan roots are private
+    (``local_model_resolver._managed_scans``), so a negative answer is only negative for the
+    account that took it: another account whose roots DO index that path has an alias to
+    record, and letting it inherit the marker would report the filename for the rest of the
+    load. The account id travels here because ``asyncio.to_thread`` copies the context this
+    lives in.
+    """
+    from utils.account_context import current_account_id
+
+    return f"{current_account_id()}\x00{identifier}"
 
 
 def _alias_probe_forget_stale_locked() -> None:
@@ -9057,19 +9074,30 @@ def _alias_probe_forget_stale_locked() -> None:
 
 def _alias_probe_taken(identifier: str) -> bool:
     """Whether *identifier* still needs a resolver pass, claiming it if so."""
+    key = _alias_probe_key(identifier)
     with _alias_probe_lock:
         _alias_probe_forget_stale_locked()
-        if identifier in _alias_probed_load_paths:
+        if key in _alias_probed_load_paths:
             return False
-        _alias_probe_inflight.add(identifier)
+        _alias_probe_inflight[key] = _alias_probe_inflight.get(key, 0) + 1
         return True
 
 
 def _alias_probe_release(identifier: str) -> None:
-    """Give back the claim on *identifier*, so the next request probes rather than shortcut."""
+    """Give back ONE claim on *identifier*, so the next request probes rather than shortcut.
+
+    One claim, not the entry: a concurrent request naming the same path holds its own, and
+    dropping the entry would leave that one unable to record its completed pass, so the next
+    request would pay for the multi-root scan again.
+    """
+    key = _alias_probe_key(identifier)
     with _alias_probe_lock:
         _alias_probe_forget_stale_locked()
-        _alias_probe_inflight.discard(identifier)
+        held = _alias_probe_inflight.get(key, 0) - 1
+        if held > 0:
+            _alias_probe_inflight[key] = held
+        else:
+            _alias_probe_inflight.pop(key, None)
 
 
 def _alias_probe_settle(identifier: str) -> None:
@@ -9081,11 +9109,14 @@ def _alias_probe_settle(identifier: str) -> None:
     would then take the shortcut with ``_openai_advertised_id`` still None and report the
     filename for the rest of the load.
     """
+    key = _alias_probe_key(identifier)
     with _alias_probe_lock:
         _alias_probe_forget_stale_locked()
-        if identifier in _alias_probe_inflight:
-            _alias_probe_inflight.discard(identifier)
-            _alias_probed_load_paths.add(identifier)
+        if key in _alias_probe_inflight:
+            # The whole entry: the answer is established now, so a request still mid-pass on
+            # the same path has nothing left to contribute.
+            _alias_probe_inflight.pop(key, None)
+            _alias_probed_load_paths.add(key)
 
 
 def _clear_advertised_alias(llama_backend) -> None:
