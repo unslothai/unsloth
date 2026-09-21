@@ -208,11 +208,14 @@ def test_an_unknown_environment_value_falls_through_to_the_install(monkeypatch, 
         ("cpu", "linux-cpu", "cpu"),
         ("auto", "linux-cuda", "auto"),
         (None, "linux-cuda", "auto"),
-        # A request the install could not honour is KEPT, not erased to "auto" (#11143):
-        # macOS resolves every request to its universal Metal build, and a Vulkan request
-        # can end on the CPU bundle. The miss is recorded separately, see below.
-        ("cpu", "macos-arm64", "cpu"),
+        # A request the install could not honour is KEPT, not erased to "auto" (#11143), so a
+        # later update can retry it. The miss is recorded separately, see below.
         ("vulkan", "linux-cpu", "vulkan"),
+        # Except where no later release could ever honour it: macOS ships one universal Metal
+        # bundle and the picker offers only "auto" there, so a preserved "cpu" would be a
+        # selection Settings can never apply. Detection, as before.
+        ("cpu", "macos-arm64", "auto"),
+        ("vulkan", "macos-x64", "auto"),
     ],
 )
 def test_the_request_is_recorded_verbatim(request_backend, kind, expected):
@@ -226,8 +229,9 @@ def test_the_request_is_recorded_verbatim(request_backend, kind, expected):
         ("cpu", "linux-cpu", True),
         ("auto", "linux-cuda", True),
         (None, "linux-cuda", True),
+        # A single-build platform cannot owe a request: nothing could ever serve it.
+        ("cpu", "macos-arm64", True),
         # Concrete requests the bundle that landed contradicts.
-        ("cpu", "macos-arm64", False),
         ("vulkan", "linux-cpu", False),
     ],
 )

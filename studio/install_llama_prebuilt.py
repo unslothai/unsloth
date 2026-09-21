@@ -7159,6 +7159,12 @@ def persisted_marker_backend_request(backend_request: str | None, choice: AssetC
     """
     if backend_request in (None, "auto"):
         return "auto"
+    # Same single-build platforms as marker_backend_request_was_satisfied: on macOS the
+    # universal Metal bundle is the only one, so a recorded "cpu" or "vulkan" is a selection
+    # the picker can never offer and never apply. Record detection instead, as before.
+    effective = backend_for_install_kind(choice.install_kind)
+    if effective is not None and not is_requestable_backend(effective):
+        return "auto"
     return backend_request
 
 
@@ -7173,7 +7179,17 @@ def marker_backend_request_was_satisfied(backend_request: str | None, choice: As
     if backend_request in (None, "auto"):
         return True
     effective = backend_for_install_kind(choice.install_kind)
-    return effective is None or effective == backend_request
+    if effective is None:
+        return True
+    # A platform that publishes exactly ONE build cannot ever honour a named backend, and
+    # "metal" is kept out of REQUESTABLE_BACKENDS for precisely that reason. Counting macOS
+    # as unsatisfied left a request no later release could serve: resolve_backends_payload
+    # offers only "auto" there, so Settings rendered a stored selection with no matching
+    # option and an Apply that always answers backend_unavailable. Satisfied, as the erasing
+    # rule had it, because there is nothing to owe.
+    if not is_requestable_backend(effective):
+        return True
+    return effective == backend_request
 
 
 # Marker field: the recorded backend_request is NOT the backend that landed, so the request

@@ -280,3 +280,23 @@ def test_a_satisfied_marker_without_the_flag_is_left_alone():
         rocm_gfx = None,
     )
     assert ILP.MARKER_BACKEND_REQUEST_UNSATISFIED not in patch
+
+
+def test_a_single_build_platform_never_records_an_unfulfillable_request():
+    """macOS ships one universal Metal bundle, and `metal` is kept out of
+    REQUESTABLE_BACKENDS for that reason, so `cpu` or `vulkan` there can never become the
+    installed backend. Preserving the request left Settings with a stored selection the
+    picker has no option for -- resolve_backends_payload offers only "auto" on macOS -- and
+    an Apply that always answered backend_unavailable. Record detection instead, and keep
+    preservation for the multi-build platforms it exists for.
+    """
+    mac = _choice("macos-arm64")
+    for request in ("cpu", "vulkan", "rocm", "cuda"):
+        assert ILP.persisted_marker_backend_request(request, mac) == "auto"
+        assert ILP.marker_backend_request_was_satisfied(request, mac) is True
+    # The reason it is safe: the landed backend is not one a user can ask for.
+    assert ILP.backend_for_install_kind("macos-arm64") == "metal"
+    assert "metal" not in ILP.REQUESTABLE_BACKENDS
+    # Unchanged where a later release COULD serve the request.
+    assert ILP.persisted_marker_backend_request("vulkan", _choice("linux-rocm")) == "vulkan"
+    assert ILP.marker_backend_request_was_satisfied("vulkan", _choice("linux-rocm")) is False
