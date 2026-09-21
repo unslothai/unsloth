@@ -1563,7 +1563,7 @@ export const fr = {
       rememberParamsPerModelHint:
         "Lorsque cette option est désactivée, tous les modèles utilisent les mêmes réglages.",
       autoCompactHint:
-        "Uniquement les chats GGUF locaux. Les échanges évincés sont indexés pour que le modèle puisse les retrouver, et une réinitialisation cite mot pour mot les instructions permanentes qui tiennent, les plus récentes d’abord. L’archivage nécessite un chat enregistré et l’index vectoriel ; sans eux, les anciens échanges sont supprimés. Utilise la longueur de contexte définie, pas la VRAM disponible.",
+        "Uniquement les chats GGUF locaux. Les échanges évincés sont indexés pour que le modèle puisse les retrouver, et une réinitialisation cite mot pour mot les instructions permanentes qui tiennent, en gardant les plus anciennes et les plus récentes plutôt que celles du milieu. L’archivage nécessite un chat enregistré et l’index vectoriel ; sans eux, les anciens échanges sont supprimés. Utilise la longueur de contexte définie, pas la VRAM disponible.",
       pastedTextShortDescription:
         "Le texte collé de {count} caractères ou plus devient une pièce jointe .txt. Le texte plus court reste dans le champ de message.",
       pastedTextOffDescription:

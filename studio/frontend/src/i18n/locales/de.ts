@@ -1566,7 +1566,7 @@ export const de = {
       rememberParamsPerModelHint:
         "Wenn deaktiviert, verwenden alle Modelle dieselben Einstellungen.",
       autoCompactHint:
-        "Nur lokale GGUF-Chats. Verdrängte Runden werden indexiert, sodass das Modell sie zurückholen kann, und ein Reset zitiert die dauerhaft geltenden Anweisungen, die hineinpassen, wortgetreu und mit den neuesten zuerst. Archivieren setzt einen gespeicherten Chat und den Vektorindex voraus; ohne sie werden ältere Runden verworfen. Verwendet die eingestellte Kontextlänge, nicht den verfügbaren VRAM.",
+        "Nur lokale GGUF-Chats. Verdrängte Runden werden indexiert, sodass das Modell sie zurückholen kann, und ein Reset zitiert die dauerhaft geltenden Anweisungen, die hineinpassen, wortgetreu und mit Vorrang für die ältesten und neuesten vor allem dazwischen. Archivieren setzt einen gespeicherten Chat und den Vektorindex voraus; ohne sie werden ältere Runden verworfen. Verwendet die eingestellte Kontextlänge, nicht den verfügbaren VRAM.",
       pastedTextShortDescription:
         "Eingefügter Text ab {count} Zeichen wird als .txt-Datei angehängt. Kürzerer Text bleibt im Nachrichtenfeld.",
       pastedTextOffDescription:

@@ -1530,7 +1530,7 @@ export const it = {
       rememberParamsPerModelHint:
         "Quando è disattivata, tutti i modelli usano le stesse impostazioni.",
       autoCompactHint:
-        "Solo chat GGUF locali. I turni rimossi vengono indicizzati perché il modello possa recuperarli, e un ripristino cita parola per parola le istruzioni permanenti che rientrano, partendo dalle più recenti. L’archiviazione richiede una chat salvata e l’indice vettoriale; senza di essi i turni più vecchi vengono eliminati. Usa la lunghezza del contesto impostata, non la VRAM disponibile.",
+        "Solo chat GGUF locali. I turni rimossi vengono indicizzati perché il modello possa recuperarli, e un ripristino cita parola per parola le istruzioni permanenti che rientrano, privilegiando le più vecchie e le più recenti rispetto a quelle intermedie. L’archiviazione richiede una chat salvata e l’indice vettoriale; senza di essi i turni più vecchi vengono eliminati. Usa la lunghezza del contesto impostata, non la VRAM disponibile.",
       pastedTextShortDescription:
         "Il testo incollato di almeno {count} caratteri diventa un allegato .txt. Il testo più breve resta nel campo del messaggio.",
       pastedTextOffDescription:

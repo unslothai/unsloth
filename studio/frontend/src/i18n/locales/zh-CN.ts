@@ -1496,7 +1496,7 @@ export const zhCN = {
       },
       projectAttachmentsHint: "可在各聊天的附件菜单中单独调整此设置。",
       rememberParamsPerModelHint: "关闭后，所有模型使用同一套设置。",
-      autoCompactHint: "仅适用于本地 GGUF 聊天。被移出的轮次会建立索引，模型可以再检索回来；重置时会按从新到旧原文保留放得下的长期指令。归档需要已保存的聊天和向量索引，两者缺一时较早的轮次会被直接丢弃。依据你设置的上下文长度，而不是可用显存。",
+      autoCompactHint: "仅适用于本地 GGUF 聊天。被移出的轮次会建立索引，模型可以再检索回来；重置时会原文保留放得下的长期指令，优先保留最早和最新的，而不是中间的。归档需要已保存的聊天和向量索引，两者缺一时较早的轮次会被直接丢弃。依据你设置的上下文长度，而不是可用显存。",
       pastedTextShortDescription:
         "粘贴的文本达到 {count} 个字符时会转为 .txt 附件，较短的文本则保留在消息输入框中。",
       pastedTextOffDescription:
