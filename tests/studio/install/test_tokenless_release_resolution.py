@@ -123,7 +123,12 @@ def _tag_page(prerelease: bool = True) -> str:
     return f"<html><h1>release</h1>{label}</html>"
 
 
-def _install_web(monkeypatch, pages: dict[str, str], *, prerelease: bool = True) -> _Web:
+def _install_web(
+    monkeypatch,
+    pages: dict[str, str],
+    *,
+    prerelease: bool = True,
+) -> _Web:
     # Every release whose assets are served needs its release page served too, since
     # that is where the prerelease status is read from.
     pages = dict(pages)
@@ -166,7 +171,8 @@ class TestWebReleaseTags:
 
     def test_honours_the_limit(self, monkeypatch):
         _install_web(
-            monkeypatch, {"releases.atom": _atom(UPSTREAM, [f"b{n}" for n in range(11070, 11060, -1)])}
+            monkeypatch,
+            {"releases.atom": _atom(UPSTREAM, [f"b{n}" for n in range(11070, 11060, -1)])},
         )
         assert MOD.web_release_tags(UPSTREAM, limit = 3) == ["b11070", "b11069", "b11068"]
 
@@ -259,9 +265,7 @@ class TestWebReleasePayload:
             MOD.web_release_payload(UPSTREAM, "b11070")
 
     def test_refuses_an_implausibly_large_page(self, monkeypatch):
-        monkeypatch.setattr(
-            CORE, "download_bytes", lambda ops, url, **kw: b"x" * (8 * 1024 * 1024)
-        )
+        monkeypatch.setattr(CORE, "download_bytes", lambda ops, url, **kw: b"x" * (8 * 1024 * 1024))
         with pytest.raises(RuntimeError, match = "implausibly large"):
             MOD.web_release_payload(UPSTREAM, "b11070")
 
@@ -414,9 +418,7 @@ def _plans(host, requested = "latest"):
 
 
 class TestEndToEnd:
-    def test_macos_installs_a_digest_verified_prebuilt_when_rest_is_rate_limited(
-        self, monkeypatch
-    ):
+    def test_macos_installs_a_digest_verified_prebuilt_when_rest_is_rate_limited(self, monkeypatch):
         monkeypatch.setattr(MOD, "github_releases", _rest_403)
         _install_web(
             monkeypatch,
@@ -469,9 +471,7 @@ class TestEndToEnd:
         with pytest.raises(MOD.PrebuiltFallback):
             _plans(_host())
 
-    def test_a_release_without_this_hosts_archive_falls_back_to_an_older_one(
-        self, monkeypatch
-    ):
+    def test_a_release_without_this_hosts_archive_falls_back_to_an_older_one(self, monkeypatch):
         monkeypatch.setattr(MOD, "github_releases", _rest_403)
         _install_web(
             monkeypatch,
@@ -521,9 +521,7 @@ class TestPrereleaseStatus:
     def test_an_upstream_build_release_stays_selectable_when_marked_prerelease(self):
         # ggml-org marks every bNNNN build prerelease; excluding them strands the
         # upstream path on the newest release that is not one, which ships no prebuilt.
-        assert MOD.release_is_selectable(
-            UPSTREAM, {"tag_name": "b11070", "prerelease": True}
-        )
+        assert MOD.release_is_selectable(UPSTREAM, {"tag_name": "b11070", "prerelease": True})
 
     def test_a_non_build_prerelease_is_still_refused(self):
         assert not MOD.release_is_selectable(
@@ -598,11 +596,7 @@ class TestPinnedPublishedRelease:
         monkeypatch.setattr(MOD, "github_release", _rest_403)
         monkeypatch.setattr(MOD, "web_release_payload", _boom)
         with pytest.raises(RuntimeError, match = "403"):
-            list(
-                MOD.iter_release_payloads_by_time(
-                    MOD.DEFAULT_PUBLISHED_REPO, "b9415", "latest"
-                )
-            )
+            list(MOD.iter_release_payloads_by_time(MOD.DEFAULT_PUBLISHED_REPO, "b9415", "latest"))
 
     def test_rest_still_wins_for_a_pinned_published_release(self, monkeypatch):
         rest = {"tag_name": "b9415", "assets": []}
@@ -616,9 +610,7 @@ class TestPinnedTagHttpFailures:
 
     def _http(self, code):
         def call(*args, **kwargs):
-            raise urllib.error.HTTPError(
-                "https://api.github.com/x", code, "boom", None, None
-            )
+            raise urllib.error.HTTPError("https://api.github.com/x", code, "boom", None, None)
 
         return call
 
@@ -648,11 +640,7 @@ class TestPinnedTagHttpFailures:
         monkeypatch.setattr(MOD, "github_release", self._http(503))
         monkeypatch.setattr(MOD, "web_release_payload", _boom)
         with pytest.raises(urllib.error.HTTPError):
-            list(
-                MOD.iter_release_payloads_by_time(
-                    MOD.DEFAULT_PUBLISHED_REPO, "", "b9415"
-                )
-            )
+            list(MOD.iter_release_payloads_by_time(MOD.DEFAULT_PUBLISHED_REPO, "", "b9415"))
 
 
 class TestFreshnessAgreesWithSelection:
@@ -663,9 +651,24 @@ class TestFreshnessAgreesWithSelection:
     """
 
     RELEASES = [
-        {"tag_name": "v0.4.1", "prerelease": False, "draft": False, "published_at": "2026-09-14T00:00:00Z"},
-        {"tag_name": "b11071", "prerelease": True, "draft": False, "published_at": "2026-09-21T00:00:00Z"},
-        {"tag_name": "b11070", "prerelease": True, "draft": False, "published_at": "2026-09-20T00:00:00Z"},
+        {
+            "tag_name": "v0.4.1",
+            "prerelease": False,
+            "draft": False,
+            "published_at": "2026-09-14T00:00:00Z",
+        },
+        {
+            "tag_name": "b11071",
+            "prerelease": True,
+            "draft": False,
+            "published_at": "2026-09-21T00:00:00Z",
+        },
+        {
+            "tag_name": "b11070",
+            "prerelease": True,
+            "draft": False,
+            "published_at": "2026-09-20T00:00:00Z",
+        },
     ]
 
     def test_upstream_freshness_names_the_build_the_planner_installs(self, monkeypatch):
@@ -683,8 +686,12 @@ class TestFreshnessAgreesWithSelection:
 
     def test_a_draft_is_never_newest(self, monkeypatch):
         releases = self.RELEASES + [
-            {"tag_name": "b11072", "prerelease": True, "draft": True,
-             "published_at": "2026-09-22T00:00:00Z"}
+            {
+                "tag_name": "b11072",
+                "prerelease": True,
+                "draft": True,
+                "published_at": "2026-09-22T00:00:00Z",
+            }
         ]
         monkeypatch.setattr(MOD, "github_releases", lambda repo, **kw: releases)
         assert MOD._api_newest_release_tag(UPSTREAM) == "b11071"

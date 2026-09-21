@@ -1057,7 +1057,12 @@ def _fetch_web_metadata(ops: ModuleOps, url: str) -> str:
     return data.decode("utf-8", "replace")
 
 
-def web_release_tags(ops: ModuleOps, repo: str, *, limit: int = 30) -> list[str]:
+def web_release_tags(
+    ops: ModuleOps,
+    repo: str,
+    *,
+    limit: int = 30,
+) -> list[str]:
     """Recent release tags, newest first, from github.com/<repo>/releases.atom.
 
     The atom feed is the only tokenless surface that ORDERS releases, so it is what
@@ -1078,9 +1083,7 @@ def web_release_tags(ops: ModuleOps, repo: str, *, limit: int = 30) -> list[str]
     return tags
 
 
-_PRERELEASE_LABEL_RE = re.compile(
-    r"Label--warning[^>]*>\s*Pre-release\s*<", re.IGNORECASE
-)
+_PRERELEASE_LABEL_RE = re.compile(r"Label--warning[^>]*>\s*Pre-release\s*<", re.IGNORECASE)
 
 
 def web_release_prerelease(ops: ModuleOps, repo: str, tag: str) -> bool:

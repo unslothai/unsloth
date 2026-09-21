@@ -1143,7 +1143,9 @@ def _web_release_payloads(repo: str, reason: Exception) -> Iterable[dict[str, An
     except Exception as exc:  # noqa: BLE001 - report both causes
         raise RuntimeError(f"{reason}; release feed fallback also failed: {exc}") from reason
     if not tags:
-        raise RuntimeError(f"{reason}; the release feed for {repo} listed no build tags") from reason
+        raise RuntimeError(
+            f"{reason}; the release feed for {repo} listed no build tags"
+        ) from reason
     log(
         f"GitHub REST release listing failed ({reason}); resolved {len(tags)} recent "
         f"{repo} releases from the release feed instead"
