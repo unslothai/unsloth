@@ -10,6 +10,7 @@ tests/test_gguf_completion_usage.py.
 import asyncio
 import json
 import os
+import pathlib
 import tempfile
 import threading
 import time
@@ -10588,7 +10589,8 @@ def test_the_advertised_alias_is_cleared_before_a_replacement_load(tmp_path):
     src = inspect.getsource(inference_route._load_model_impl)
     # Anchored on the line start: llama_backend.load_model appears earlier and would
     # otherwise match as a substring of the orchestrator call this guards.
-    clear = src.index("\n        backend._openai_advertised_id = None")
+    # Through the helper now, which clears the alias AND the probe taken under it.
+    clear = src.index("\n        _clear_advertised_alias(backend)")
     load = src.index("\n                backend.load_model,")
     assert clear < load, "the alias must be cleared before load_model publishes the new model"
 
@@ -10636,7 +10638,7 @@ def test_both_failed_load_exits_restore_the_alias():
 
     src = inspect.getsource(inference_route._load_model_impl)
     assert src.count("_restore_alias_if_failed_load_left_the_prior_model(") == 2
-    clear = src.index("\n        backend._openai_advertised_id = None")
+    clear = src.index("\n        _clear_advertised_alias(backend)")
     assert src.index("_restore_alias_if_failed_load_left_the_prior_model(") > clear
     # the second call sits on the falsy-success exit, past the raise the first one guards.
     assert (
@@ -12148,3 +12150,134 @@ def test_a_registered_scan_folder_that_cannot_be_searched_is_a_skipped_source(mo
             )
         finally:
             os.chmod(folder, 0o700)
+
+
+def test_a_suppressed_child_failure_makes_the_scan_incomplete(monkeypatch):
+    """Coming back short is not the same as there being less.
+
+    _scan_models_dir catches an OSError from ONE child and carries on, so the pass returns a
+    shorter list and raises nothing: from outside it is indistinguishable from a root that
+    genuinely holds fewer models. Publishing that as complete lets a resident model's miss be
+    memoized for the rest of the load, and exact-path requests keep reporting the filename
+    after the child recovers.
+    """
+    import routes.models as routes_models
+    from core.inference.scan_incidents import collecting_scan_incidents
+
+    with tempfile.TemporaryDirectory() as root:
+        child = os.path.join(root, "Qwen3-4B-Instruct-GGUF")
+        os.mkdir(child)
+        # The real suppression path: make the child's own inspection raise, which is what a
+        # revoked permission or a dropped mount does to one entry.
+        def boom_is_dir(self):
+            if str(self) == child:
+                raise OSError("child vanished mid-scan")
+            return os.path.isdir(self)
+
+        monkeypatch.setattr(pathlib.Path, "is_dir", boom_is_dir)
+        with collecting_scan_incidents() as incidents:
+            routes_models._scan_models_dir(pathlib.Path(root))
+        assert incidents, "a suppressed per-child failure left no trace for the caller"
+
+    # And the resolver's verdict is the one that has to reflect it.
+    monkeypatch.undo()
+    monkeypatch.setattr(resolver, "_CACHE_TTL_S", 0)
+
+    def build_with_child_failure():
+        from core.inference.scan_incidents import note_scan_incident
+
+        note_scan_incident("child unreadable: /root/model-a")
+        return {}
+
+    monkeypatch.setattr(resolver, "_build_index", build_with_child_failure)
+    resolver._index()
+    assert resolver.index_last_scan_was_complete() is False, (
+        "a scan that could not read a child was published as complete"
+    )
+
+    # A clean pass is still complete, or nothing would ever be memoized.
+    monkeypatch.setattr(resolver, "_build_index", lambda: {})
+    resolver._index()
+    assert resolver.index_last_scan_was_complete() is True
+
+
+def test_a_concurrent_scans_incidents_are_not_charged_to_this_pass(monkeypatch):
+    """The scanners also serve /api/models, whose passes are none of this one's business.
+
+    A module global would let any listing running alongside condemn this snapshot, so the
+    probe would never settle on a busy server and the multi-root scan would run per message,
+    which is the cost this PR exists to remove.
+    """
+    import threading as _threading
+
+    from core.inference.scan_incidents import (
+        collecting_scan_incidents,
+        note_scan_incident,
+    )
+
+    done = _threading.Event()
+
+    def other_caller():
+        # No collector of its own: a note outside one is a no-op, and must not reach the
+        # collector another thread opened.
+        note_scan_incident("someone else's unreadable child")
+        with collecting_scan_incidents() as mine:
+            note_scan_incident("and their own collected one")
+            assert mine == ["and their own collected one"]
+        done.set()
+
+    with collecting_scan_incidents() as incidents:
+        thread = _threading.Thread(target = other_caller)
+        thread.start()
+        thread.join()
+        assert done.is_set()
+        assert incidents == [], f"another caller's incidents were charged to this pass: {incidents}"
+
+
+def test_a_non_gguf_resident_path_is_probed_once_too(monkeypatch):
+    """The bound belongs to the path, not to the engine that loaded it.
+
+    A transformers/orchestrator resident loaded from a local path advertises nothing either,
+    so the same rule sends the first request naming it to the resolver. Unbounded, a path no
+    scan root indexes rebuilt the multi-root index on every message -- the exact latency this
+    change removes for the llama.cpp resident.
+    """
+    path = "/srv/models/Qwen3-8B-MLX"
+
+    class _Orchestrator:
+        active_model_name = path
+        _openai_advertised_id = None
+
+    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: _FakeBackend(None))
+    monkeypatch.setattr(inference_route, "get_inference_backend", lambda: _Orchestrator())
+    monkeypatch.setattr(inference_route, "_alias_probed_load_paths", set())
+    monkeypatch.setattr(inference_route, "_alias_probe_inflight", {})
+    monkeypatch.setattr(inference_route, "_alias_probe_generation", -1)
+
+    claimed: list[str] = []
+    assert inference_route._loaded_identity_satisfies(path, claimed) is False, (
+        "the first request naming the path must reach the resolver so the alias is recorded"
+    )
+    assert claimed == [path], "the probe was not claimed, so it can never be settled"
+
+    # The pass completes and finds no alias to record; the next request stops paying for it.
+    inference_route._alias_probe_settle(path)
+    assert inference_route._loaded_identity_satisfies(path) is True, (
+        "a settled path still reaches the resolver, so the index rebuilds per message"
+    )
+
+    # A reload of the same path advertises nothing again, so the probe must not outlive it.
+    inference_route._clear_advertised_alias(_Orchestrator())
+    assert inference_route._alias_probed_load_paths == set()
+    assert inference_route._loaded_identity_satisfies(path) is False
+
+
+def test_the_transformers_load_clears_the_probe_with_the_alias():
+    """Source-shape: the clear sits on the load path, through the helper that drops both."""
+    src = inspect.getsource(inference_route._load_model_impl)
+    assert "_clear_advertised_alias(backend)" in src, (
+        "the transformers load no longer drops the probe taken under the previous alias"
+    )
+    assert "\n        backend._openai_advertised_id = None" not in src, (
+        "the alias is cleared without the probe, so a reload keeps a settled negative"
+    )

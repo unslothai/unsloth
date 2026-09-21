@@ -1033,14 +1033,22 @@ def _index() -> dict[str, _LocalGgufEntry]:
         if ts > 0.0 and now - ts < _CACHE_TTL_S:
             return cached
         global _scan_sources_skipped
+        from core.inference.scan_incidents import collecting_scan_incidents
+
         # Around the call, not inside it, so the verdict belongs to whatever actually built
         # this snapshot. Reset first: the count is per pass.
         _scan_sources_skipped = 0
-        fresh = _build_index()
+        # A whole source dropping is not the only way to come back short: the scanners
+        # suppress a per-child OSError and hand back a shorter list, which from out here
+        # looks exactly like a root that genuinely holds less. Collected rather than
+        # counted globally, so a concurrent models-route scan's incidents are not charged
+        # to this pass.
+        with collecting_scan_incidents() as incidents:
+            fresh = _build_index()
         # Only after it returned, and published beside the snapshot it describes. A build
         # that raised publishes nothing and must not leave a verdict standing over the
         # snapshot that is still there.
-        _publish_scan_completeness(_scan_sources_skipped == 0)
+        _publish_scan_completeness(_scan_sources_skipped == 0 and not incidents)
         # Stamp AFTER the scan, not with the pre-scan ``now``: a multi-root scan on an install with many local models
         # can itself exceed the TTL, which would store the cache already expired and make every request rebuild the
         # index.

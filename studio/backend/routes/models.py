@@ -15,6 +15,7 @@ from typing import List, NamedTuple, Optional
 from loggers import get_logger
 
 # Dependency-light leaf (PEP 562 package init): no llama.cpp / torch import chain.
+from core.inference.scan_incidents import note_scan_incident
 from core.inference.memory_contract import (
     EMPTY_BREAKDOWN,
     build_memory_estimate,
@@ -410,6 +411,7 @@ def _has_non_gguf_weights(path: Path) -> bool:
             return True
         return any(_is_weight_bin(f.name) for f in path.glob("*.bin"))
     except OSError:
+        note_scan_incident(f"weights unreadable: {path}")
         return False
 
 
@@ -487,6 +489,7 @@ def _scan_models_dir(models_dir: Path, *, limit: int | None = None) -> List[Loca
             has_pipeline_index = _local_pipeline_index(child)
             has_model_files = has_gguf or has_non_gguf_weights or has_config or has_pipeline_index
         except OSError:
+            note_scan_incident(f"models_dir child unreadable: {child}")
             continue
         if not has_model_files:
             continue
@@ -639,6 +642,7 @@ def _dir_model_format(path: Path, recursive: bool = False) -> Optional[str]:
                 return None
         return None if _has_non_gguf_weights(path) else "gguf"
     except OSError:
+        note_scan_incident(f"format unreadable: {path}")
         return None
 
 
@@ -758,8 +762,10 @@ def _scan_lmstudio_dir(lm_dir: Path) -> List[LocalModelInfo]:
                             ),
                         )
                 except OSError:
+                    note_scan_incident(f"lmstudio child unreadable: {child}")
                     continue
         except OSError:
+            note_scan_incident(f"lmstudio subtree unreadable: {child}")
             continue
     return found
 

@@ -9119,15 +9119,18 @@ def _alias_probe_settle(identifier: str) -> None:
             _alias_probed_load_paths.add(key)
 
 
-def _clear_advertised_alias(llama_backend) -> None:
+def _clear_advertised_alias(backend) -> None:
     """Drop the advertised id, and with it the probe that recorded it.
 
     A load advertises its own identifier until auto-switch overwrites it with the
     repo id. Keeping the marker across that reset would let the resident shortcut
     answer the first request after a reload, so the alias would never be recorded
     again and the model would be reported by its filename.
+
+    Takes whichever backend is being loaded: the transformers path resets the same field
+    for the same reason, and the probe set is keyed by path, not by engine.
     """
-    llama_backend._openai_advertised_id = None
+    backend._openai_advertised_id = None
     with _alias_probe_lock:
         _alias_probed_load_paths.clear()
         _alias_probe_inflight.clear()
@@ -9194,8 +9197,19 @@ def _loaded_identity_satisfies(requested: str, claimed: Optional[list] = None) -
     if not active:
         return False
     advertised = getattr(backend, "_openai_advertised_id", None)
-    # Same rule as the llama branch: answering from the path alone skips the recording.
-    if advertised is None and _looks_like_local_path(active):
+    # Same rule as the llama branch, and the same bound on it: answering from the path alone
+    # skips the recording, so the first request naming it goes to the resolver, and a path no
+    # scan root indexes has no alias to record and must not pay for the multi-root scan
+    # again. A request naming anything else falls through to the final match, which is False
+    # here anyway with nothing advertised. _alias_probe_taken CLAIMS, so it stays last.
+    if (
+        advertised is None
+        and _looks_like_local_path(active)
+        and _matches_any(base, (active,))
+        and _alias_probe_taken(active)
+    ):
+        if claimed is not None:
+            claimed.append(active)
         return False
     return _matches_any(base, (active, advertised)) and _loaded_satisfies(requested)
 
@@ -16777,7 +16791,10 @@ async def _load_model_impl(
         # would be answered by them. Auto-switch sets the repo id once this returns.
         _prior_alias = getattr(backend, "_openai_advertised_id", None)
         _prior_active = getattr(backend, "active_model_name", None)
-        backend._openai_advertised_id = None
+        # Through the helper, so the alias probe is dropped with the alias: a reload of the
+        # same local path advertises nothing again, and a probe settled under the previous
+        # load would let the resident shortcut answer with the filename for good.
+        _clear_advertised_alias(backend)
         # Not after the load (held across a long download, the chat evictor cancels
         # this very load) and not before it (until the previous worker exits, this
         # claim is all that stops a second pipeline allocating over a resident model).
