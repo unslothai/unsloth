@@ -1664,7 +1664,7 @@ function Write-CodeIntegrityTorchNotice {
         [string]$Reason,
         # What setup does next, since this notice is emitted from paths that keep the
         # environment, reinstall the wheels into it, and rebuild it outright.
-        [ValidateSet("kept", "reinstall", "rebuild")]
+        [ValidateSet("kept", "reinstall", "replace", "rebuild")]
         [string]$Action = "kept",
         # False where no family answered: the rebuild path reaches this with a CPU wheel
         # or no torch at all, and calling that a GPU build tells the user the wrong thing
@@ -1682,7 +1682,11 @@ function Write-CodeIntegrityTorchNotice {
         # damaged, and the error alone does not say which, so this must not rule out the
         # reinstall that clears the damaged case.
         substep "Windows reports this both for a file a code integrity policy will not accept and for one that is damaged or was downloaded incompletely, so the error alone does not say which." "Yellow"
-        substep "Reinstalling the GPU wheels replaces the files and clears the damaged case. If it fails again after that, it is a policy." "Yellow"
+        if ($GpuBuild) {
+            substep "Reinstalling the GPU wheels replaces the files and clears the damaged case. If it fails again after that, it is a policy." "Yellow"
+        } else {
+            substep "Reinstalling the PyTorch wheels replaces the files and clears the damaged case. If it fails again after that, it is a policy." "Yellow"
+        }
     } else {
         substep "This is a Windows code integrity policy refusing unsigned files, not a driver fault or a damaged install, so reinstalling will not clear it." "Yellow"
     }
@@ -1706,6 +1710,9 @@ function Write-CodeIntegrityTorchNotice {
     switch ($Action) {
         "reinstall" {
             substep "Setup will reinstall the same wheels in place, which clears the damaged case; a policy will refuse them again the same way." "DarkGray"
+        }
+        "replace" {
+            substep "Setup will install the PyTorch build this host resolves to over this environment, so these files are replaced rather than reused." "DarkGray"
         }
         "rebuild" { substep "Setup will rebuild this environment." "DarkGray" }
         default   { substep "The environment is kept as it is." "DarkGray" }
@@ -6276,6 +6283,11 @@ if ((Test-Path -LiteralPath $VenvDir -PathType Container) -and -not $NoTorchMode
     # Declared before the branch that assigns it: the failure message below reads its .Error, and
     # a venv with no python.exe never runs the probe at all.
     $_verProbe = $null
+    # Whether a rescue arm has something to say. Said after the pin and family comparison
+    # below, never inside the arm: that comparison can set PinChangedForceReinstall and
+    # replace the wheels, so a notice printed in the arm told the user the environment was
+    # kept immediately before setup changed it.
+    $_rescueNoticePending = $false
     $shouldRebuild = $false
     # Set when a stale venv under a pin is repaired in place (force-reinstall) not wiped.
     $script:PinChangedForceReinstall = $false
@@ -6299,17 +6311,11 @@ if ((Test-Path -LiteralPath $VenvDir -PathType Container) -and -not $NoTorchMode
         # whose version.py still names a good wheel, and the matched install below would write
         # a completion manifest over a half-written torch. Repair it in place instead.
         $_willForceReinstall = $_verProbe -and -not $_verProbe.TimedOut -and -not $_blockRulesOutDamage
-        # Assigned, not an inline if-expression: Windows PowerShell 5.1 cannot parse one as an
-        # argument, and this file has to run on both engines.
-        $_blockAction = "kept"
-        if ($_willForceReinstall) { $_blockAction = "reinstall" }
         # The XPU and ROCm arms exist to STOP a driver fault being treated as a broken
         # install (#8335, #7275), so they repair only the case the notice itself says a
         # reinstall clears: an ambiguous code integrity status, which Windows also raises for
         # a damaged download. No block reason there still means "keep it and blame the driver".
         $_ambiguousBlockRepair = [bool]($_probeBlockReason -and $_willForceReinstall)
-        $_ambiguousBlockAction = "kept"
-        if ($_ambiguousBlockRepair) { $_ambiguousBlockAction = "reinstall" }
         if ($_verProbe.Ok -and $torchVer) {
             if ($torchVer -match '\+(cu\d+)') {
                 $installedTorchTag = $Matches[1]
@@ -6335,7 +6341,7 @@ if ((Test-Path -LiteralPath $VenvDir -PathType Container) -and -not $NoTorchMode
             $installedTorchTag = "xpu"
             substep "PyTorch did not respond in time but this venv holds an XPU build -- keeping it." "Yellow"
             if ($_probeBlockReason) {
-                Write-CodeIntegrityTorchNotice -Reason $_probeBlockReason -Action $_ambiguousBlockAction
+                $_rescueNoticePending = $true
             } else {
                 substep "If training fails, update the Intel GPU compute driver." "Yellow"
             }
@@ -6352,7 +6358,7 @@ if ((Test-Path -LiteralPath $VenvDir -PathType Container) -and -not $NoTorchMode
             $installedTorchTag = "rocm"
             substep "PyTorch did not respond but this venv holds a ROCm build -- keeping it." "Yellow"
             if ($_probeBlockReason) {
-                Write-CodeIntegrityTorchNotice -Reason $_probeBlockReason -Action $_ambiguousBlockAction
+                $_rescueNoticePending = $true
             } else {
                 substep "If training fails, reboot and update the AMD Adrenalin / HIP SDK driver." "Yellow"
             }
@@ -6369,7 +6375,7 @@ if ((Test-Path -LiteralPath $VenvDir -PathType Container) -and -not $NoTorchMode
             # install below would write a completion manifest over it. Force the reinstall
             # ($_willForceReinstall, decided with the classification above).
             if ($_probeBlockReason) {
-                Write-CodeIntegrityTorchNotice -Reason $_probeBlockReason -Action $_blockAction
+                $_rescueNoticePending = $true
             } else {
                 substep "If training fails, reboot and update the NVIDIA driver." "Yellow"
             }
@@ -6623,6 +6629,16 @@ if ((Test-Path -LiteralPath $VenvDir -PathType Container) -and -not $NoTorchMode
     # clear $shouldRebuild here both set $PinChangedForceReinstall, so "reinstall" is the only
     # other outcome (the nvidia-smi keep needs an $installedTorchTag, which a torch that did not
     # import never produced).
+    # Both notices are chosen here, where the repair path is finally known.
+    if ($_rescueNoticePending) {
+        # A pin or family change replaces the wheels with whatever this host resolves to,
+        # which is not "the same wheels in place", so it gets its own wording.
+        $_rescueAction = "kept"
+        if ($script:TorchImportDefinitivelyFailed) { $_rescueAction = "reinstall" }
+        if ($script:PinChangedForceReinstall) { $_rescueAction = "replace" }
+        Write-CodeIntegrityTorchNotice -Reason $_probeBlockReason -Action $_rescueAction
+    }
+
     if ($_rebuildBlockReason) {
         $_rebuildAction = "reinstall"
         if ($shouldRebuild) { $_rebuildAction = "rebuild" }

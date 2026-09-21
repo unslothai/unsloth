@@ -156,7 +156,9 @@ Check "the ambiguous set is the backend's _INVALID_HASH_REASONS" {
 # classifier is dead code.
 $setupText = Get-Content $setup -Raw
 Check "the three rescue arms consult the classifier" {
-    ([regex]::Matches($setupText, "Write-CodeIntegrityTorchNotice -Reason \`$_probeBlockReason")).Count -eq 3
+    # One deferred notice for all three now, so what has to be true is that each arm
+    # raises the flag it is emitted from rather than printing driver advice.
+    ([regex]::Matches($setupText, [regex]::Escape('$_rescueNoticePending = $true'))).Count -eq 3
 }
 Check "a settled policy block does not force a reinstall of the same wheels" {
     $setupText.Contains('-not $_verProbe.TimedOut -and -not $_blockRulesOutDamage')
@@ -198,8 +200,23 @@ Check "an unknown action is refused rather than guessed" {
     try { Write-CodeIntegrityTorchNotice -Reason "x" -Action "wipe" } catch { $refused = $true }
     $refused
 }
-Check "the CUDA arm decides before it speaks" {
-    $setupText.Contains('Write-CodeIntegrityTorchNotice -Reason $_probeBlockReason -Action $_blockAction')
+Check "the rescue notice is chosen after the pin and family comparison" {
+    # That comparison can set PinChangedForceReinstall and replace the wheels, so an
+    # action decided in the arm said "kept" immediately before setup changed them.
+    $notice = $setupText.IndexOf('Write-CodeIntegrityTorchNotice -Reason $_probeBlockReason -Action $_rescueAction')
+    $lastPinSet = $setupText.LastIndexOf('$script:PinChangedForceReinstall = $true')
+    ($notice -gt 0) -and ($lastPinSet -gt 0) -and ($notice -gt $lastPinSet)
+}
+Check "a replaced environment is not described as kept or as the same wheels" {
+    $script:said = @()
+    Write-CodeIntegrityTorchNotice -Reason "code integrity blocked the image" -Action "replace"
+    $joined = $script:said -join " "
+    $joined.Contains("replaced rather than reused") -and
+    (-not $joined.Contains("kept as it is")) -and (-not $joined.Contains("the same wheels in place"))
+}
+Check "the pin change outranks the import repair when both fired" {
+    $setupText.Contains('if ($script:TorchImportDefinitivelyFailed) { $_rescueAction = "reinstall" }') -and
+    $setupText.Contains('if ($script:PinChangedForceReinstall) { $_rescueAction = "replace" }')
 }
 Check "the rebuild notice is chosen after the guards that cancel the rebuild" {
     # Those guards turn the rebuild into an in-place reinstall on every installer-managed run
@@ -254,21 +271,33 @@ Check "both probe call sites classify the exit code, not stderr alone" {
 # they have to actually do it rather than print the promise and keep a damaged venv.
 Check "an ambiguous block repairs the XPU and ROCm venvs too" {
     $setupText.Contains('$_ambiguousBlockRepair = [bool]($_probeBlockReason -and $_willForceReinstall)') -and
-    ([regex]::Matches($setupText, [regex]::Escape('Write-CodeIntegrityTorchNotice -Reason $_probeBlockReason -Action $_ambiguousBlockAction'))).Count -eq 2 -and
     # Three arms set the flag now: CUDA on any non-timeout failure, XPU and ROCm on an
     # ambiguous block. The flag is what makes the install pass use --force-reinstall.
     ([regex]::Matches($setupText, [regex]::Escape('$script:TorchImportDefinitivelyFailed = $true'))).Count -eq 3
 }
 Check "a driver fault with no block reason still keeps those venvs as they are" {
     # #8335 / #7275: these arms exist to stop a faulted driver costing a whole install, so the
-    # repair is gated on a block reason, not on any failed import.
-    $setupText.Contains('$_ambiguousBlockAction = "kept"')
+    # repair is gated on a block reason, not on any failed import, and with no reason the arm
+    # prints driver advice and raises nothing.
+    $setupText.Contains('$_ambiguousBlockRepair = [bool]($_probeBlockReason -and $_willForceReinstall)') -and
+    $setupText.Contains('substep "If training fails, reboot and update the AMD Adrenalin / HIP SDK driver." "Yellow"')
 }
 Check "no PowerShell 7 only if-expression reached the argument" {
     # 5.1 cannot parse `-Action (if ...)`, and this file runs on both engines.
     -not ($setupText -match 'Action \(\s*if ')
 }
 
+Check "an ambiguous reason on the rebuild path does not promise GPU wheels" {
+    $script:said = @()
+    Write-CodeIntegrityTorchNotice -Reason "the image failed code integrity validation (invalid or missing signature)" -Action "rebuild" -GpuBuild $false
+    $joined = $script:said -join " "
+    $joined.Contains("Reinstalling the PyTorch wheels") -and (-not $joined.Contains("GPU wheels"))
+}
+Check "a GPU family still hears about GPU wheels" {
+    $script:said = @()
+    Write-CodeIntegrityTorchNotice -Reason "the image failed code integrity validation (invalid or missing signature)" -Action "reinstall"
+    ($script:said -join " ").Contains("Reinstalling the GPU wheels")
+}
 Check "the rebuild path does not call an unknown wheel a GPU build" {
     # Reached with a CPU-only wheel or none at all, since all three family predicates
     # declined, so the GPU sentences would be describing something else.
