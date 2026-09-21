@@ -82,6 +82,7 @@ import {
   useState,
 } from "react";
 import { useShallow } from "zustand/react/shallow";
+import { ScrollPane } from "./scroll-pane";
 const ANIMATION_DURATION = 200;
 const AUTO_SCROLL_THRESHOLD_PX = 24;
 
@@ -483,9 +484,12 @@ function OversizedReasoningCode({ source }: { source: string }) {
         Showing part of an oversized code block. Copy reasoning preserves the
         full source.
       </p>
-      <pre className="max-w-full overflow-x-auto whitespace-pre-wrap break-words rounded-md bg-muted/40 p-3 font-mono text-xs">
+      <ScrollPane
+        className="max-w-full rounded-md bg-muted/40 p-3"
+        scrollerClassName="overflow-x-auto whitespace-pre-wrap break-words font-mono text-xs"
+      >
         {source}
-      </pre>
+      </ScrollPane>
     </div>
   );
 }

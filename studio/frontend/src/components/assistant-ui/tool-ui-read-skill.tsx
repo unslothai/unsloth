@@ -17,6 +17,7 @@ import {
   ToolFallbackTrigger,
 } from "./tool-fallback";
 import { useToolActivityOpen } from "./use-tool-activity-open";
+import { ScrollPane } from "./scroll-pane";
 
 const ReadSkillToolUIImpl: ToolCallMessagePartComponent = ({
   args,
@@ -58,9 +59,12 @@ const ReadSkillToolUIImpl: ToolCallMessagePartComponent = ({
             <span>Reading {name}&hellip;</span>
           </div>
         ) : resultText ? (
-          <pre className="max-h-64 overflow-auto whitespace-pre-wrap break-words rounded bg-muted/50 p-2 text-xs">
+          <ScrollPane
+            className="rounded bg-muted/50 p-2"
+            scrollerClassName="max-h-64 overflow-auto whitespace-pre-wrap break-words text-xs"
+          >
             {resultText}
-          </pre>
+          </ScrollPane>
         ) : (
           <div className="text-sm text-muted-foreground">
             Loaded {resource}.
