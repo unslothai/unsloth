@@ -537,7 +537,10 @@ def _scan_models_dir(models_dir: Path, *, limit: int | None = None) -> List[Loca
             ),
         )
     if limit is None or len(found) < limit:
-        for gguf_file in models_dir.glob("*.gguf"):
+        # Raising, like the iterdir above: a root that went unreadable after the children
+        # loop answered glob with nothing, so the loose GGUFs were dropped while the caller
+        # was told the source had been read.
+        for gguf_file in _suffixed(models_dir, ".gguf"):
             if limit is not None and len(found) >= limit:
                 break
             # A standalone mmproj is a vision adapter, not servable weights.
@@ -670,10 +673,19 @@ def _dir_model_format(path: Path, recursive: bool = False) -> Optional[str]:
         def _servable(p: Path) -> bool:
             return _is_main_gguf_filename(p.name) and not is_appledouble_metadata(p)
 
-        if not any(_servable(p) for p in path.glob("*.gguf")):
+        # Raising helpers, so the handler below is reachable for an enumeration failure and
+        # not only for a stat: glob answers an unreadable directory with no matches, and the
+        # classification then said "not GGUF" about a directory it never read.
+        if not any(_servable(p) for p in _suffixed(path, ".gguf")):
             if not recursive:
                 return None
-            if not any(_servable(p) for p in path.glob("*/*.gguf")):
+            nested = [
+                p
+                for child in _dir_entries(path)
+                if child.is_dir()
+                for p in _suffixed(child, ".gguf")
+            ]
+            if not any(_servable(p) for p in nested):
                 return None
         return None if _has_non_gguf_weights(path) else "gguf"
     except OSError:
@@ -753,9 +765,13 @@ def _scan_lmstudio_dir(lm_dir: Path) -> List[LocalModelInfo]:
                         has_model = (
                             bool(_servable_gguf_names(model_dir))
                             or (model_dir / "config.json").exists()
+                            # Through the raising helper, like every other weight check in
+                            # this pass: glob answers a directory that went unreadable
+                            # between the two calls with no matches, so the handler below
+                            # never fired and the row was dropped as if it held nothing.
                             or any(
                                 not is_appledouble_metadata(p)
-                                for p in model_dir.glob("*.safetensors")
+                                for p in _suffixed(model_dir, ".safetensors")
                             )
                         )
                         if not has_model:

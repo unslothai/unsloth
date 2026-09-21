@@ -13306,3 +13306,52 @@ def test_two_scans_inside_one_clock_tick_are_still_two_snapshots(monkeypatch):
         assert abs(second - 1234.5) < 1e-3
     finally:
         resolver._scan = saved
+
+
+def test_the_lmstudio_and_models_dir_weight_checks_also_raise():
+    """The glob sites left on the scan path after the predicates were converted.
+
+    An LM Studio publisher/model directory that goes unreadable between the GGUF check and
+    the safetensors one, a ./models root that goes unreadable after its children loop, and
+    the format classifier's own listing: all three answered glob with no matches, so their
+    handlers never fired and rows were dropped while the pass published as complete.
+    """
+    import pathlib
+
+    from core.inference.scan_incidents import collecting_scan_incidents
+    from routes import models as models_route
+
+    with tempfile.TemporaryDirectory() as root:
+        lm_dir = pathlib.Path(root) / "lmstudio"
+        model_dir = lm_dir / "publisher" / "model"
+        model_dir.mkdir(parents = True)
+        (model_dir / "model.safetensors").write_bytes(b"x")
+        with _enumeration_denied(model_dir):
+            with collecting_scan_incidents() as incidents:
+                assert models_route._scan_lmstudio_dir(lm_dir) == []
+            assert any(
+                "lmstudio" in note for note in incidents
+            ), f"an unreadable LM Studio model folder was dropped silently: {incidents}"
+
+        # Readable, and the same checkpoint is a row again.
+        with collecting_scan_incidents() as incidents:
+            assert [m.model_id for m in models_route._scan_lmstudio_dir(lm_dir)] == [
+                "publisher/model"
+            ]
+        assert incidents == [], f"a readable LM Studio folder was reported as a gap: {incidents}"
+
+        # The classifier's own listing, which decides GGUF vs not.
+        checkpoint = pathlib.Path(root) / "checkpoint"
+        checkpoint.mkdir()
+        (checkpoint / "model-Q4_K_M.gguf").write_bytes(b"GGUF")
+        with _enumeration_denied(checkpoint):
+            with collecting_scan_incidents() as incidents:
+                assert models_route._dir_model_format(checkpoint) is None
+            assert any(
+                "format unreadable" in note for note in incidents
+            ), f"a directory the classifier could not list was answered for: {incidents}"
+
+        # A ./models root that cannot be listed at all is a skipped source, and says so.
+        with _enumeration_denied(checkpoint):
+            with pytest.raises(OSError):
+                models_route._scan_models_dir(checkpoint)
