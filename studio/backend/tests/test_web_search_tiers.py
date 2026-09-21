@@ -140,7 +140,9 @@ def test_an_engine_absent_from_the_registry_does_not_reopen_auto(
     assert "yandex" not in contacted
     # Equality, not a subset: as a subset this passed intermittently on the pre-allowlist code, whose
     # shuffle sometimes kept the dispatched engines inside the tiers anyway.
-    assert contacted == expected, f"expected exactly the resolved tier 1 {expected}, got {contacted}"
+    assert (
+        contacted == expected
+    ), f"expected exactly the resolved tier 1 {expected}, got {contacted}"
     assert "URL: https://" in result
 
 
@@ -181,11 +183,13 @@ def test_the_caller_timeout_is_one_budget_for_both_tiers(monkeypatch, engine_cal
         return real_init(self, *args, **kwargs)
 
     monkeypatch.setattr(DDGS, "__init__", recording_init)
+
     # Tier 1 burns most of the budget before coming back empty, so tier 2 runs with what is left.
     def slow_tier_one(name):
         if name in TIER1:
             return "empty"
         return "results"
+
     engine_calls.install(slow_tier_one)
     for name in TIER1:
         cls = ENGINES["text"].get(name)
@@ -201,10 +205,12 @@ def test_the_caller_timeout_is_one_budget_for_both_tiers(monkeypatch, engine_cal
     assert len(tier_budgets) >= 3, f"expected a client per tier, saw {budgets}"
     # Each value is the budget REMAINING when that tier starts, so the invariant is that it shrinks
     # and never exceeds what the caller asked for. Summing them would be summing overlapping windows.
-    assert tier_budgets == sorted(tier_budgets, reverse = True), f"budget did not shrink: {tier_budgets}"
-    assert tier_budgets[-1] < tier_budgets[0], (
-        f"tier 2 was handed {tier_budgets[-1]}, not the remainder of {tier_budgets[0]}"
-    )
+    assert tier_budgets == sorted(
+        tier_budgets, reverse = True
+    ), f"budget did not shrink: {tier_budgets}"
+    assert (
+        tier_budgets[-1] < tier_budgets[0]
+    ), f"tier 2 was handed {tier_budgets[-1]}, not the remainder of {tier_budgets[0]}"
     assert max(tier_budgets) <= tier_budgets[0], "a tier was handed more than the original budget"
 
 
