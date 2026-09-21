@@ -470,15 +470,28 @@ def test_response_model_badge_is_user_configurable_and_rendered_once_per_message
     # The header is a plain div carrying data-slot, not a <ReasoningHeader> component. Naming
     # the component matched nothing at all, so half of this check was vacuous and an inline
     # width on the real header went straight through.
+    # The <Trigger> that ReasoningTrigger renders is where the base min-w-0 actually lives, so
+    # it belongs in this loop as much as the call site does: a style there overrides the very
+    # class this test reads, and checking only the call site and the header left it out.
+    base_tags = [
+        tag
+        for tag in _opening_tags(live, "<Trigger")
+        if 'data-slot="reasoning-trigger"' in tag
+    ]
+    assert base_tags, (
+        'reasoning.tsx no longer renders a Trigger with data-slot="reasoning-trigger", so the '
+        "base min-w-0 this guard reads belongs to no element on the page"
+    )
+    # Spreads are refused on the call site and the header, not on the base Trigger: that one
+    # forwards `{...props}` by design, which is how a caller reaches it at all, and the values
+    # arriving through it are exactly what the call-site check above adjudicates. Refusing it
+    # here would fail the shipped component for doing the right thing.
     for tag in [*_opening_tags(live, "<ReasoningTrigger"), *header_tags]:
-        # A spread can carry `style` as easily as an attribute can, and its contents are not
-        # resolvable here: `{...{ style: { minWidth: "max-content" } }}` applies the same
-        # override, and writing it before `className` keeps the class list readable so every
-        # width check below stays green.
         assert not _spread_overrides(tag, "style"), (
             f"an element the min-w-0 chain depends on takes a spread that may carry a style, "
             f"which would outrank the utilities this guard compares: {tag!r}"
         )
+    for tag in [*_opening_tags(live, "<ReasoningTrigger"), *header_tags, *base_tags]:
         assert not re.search(r"(?:^|[\s{])style=", tag), (
             f"an element the min-w-0 chain depends on carries an inline style, which outranks "
             f"the utilities this guard compares, so the width it computes is not the width "

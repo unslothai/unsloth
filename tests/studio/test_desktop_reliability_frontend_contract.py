@@ -1426,11 +1426,62 @@ def _tokens(value: str) -> list[str]:
     return value.strip('"').split() if re.fullmatch(r'"[^"]*"', value) else []
 
 
+def _touch_spinner_reach(block: str, spacing: float) -> float | None:
+    """How far the working-row spinner reaches into the row on a coarse pointer, in units.
+
+    The row actions are not the only thing the title has to clear. A working row also renders
+    a spinner, anchored right and pushed clear of the actions on touch, and the gutter has to
+    hold both. Measuring only the actions let the touch gutter drop from the 78px the spinner
+    needs to the 64px the pin needs, with the spinner then over the title.
+
+    Read the way everything else here is: the offset off the element that carries it, the
+    width off the glyph inside it, and None for anything this cannot resolve.
+    """
+    gate = re.search(r"\{\s*showWorkSpinner\s*\?\s*\(", block)
+    if not gate:
+        return None
+    depth, end = 0, None
+    for index in range(gate.end() - 1, len(block)):
+        if block[index] == "(":
+            depth += 1
+        elif block[index] == ")":
+            depth -= 1
+            if depth == 0:
+                end = index
+                break
+    if end is None:
+        return None
+    rendered = block[gate.end() : end]
+    offsets = [
+        float(match.group(1))
+        for match in re.finditer(
+            r"\[@media\(pointer:coarse\)\]:right-(\d+(?:\.\d+)?)(?![\w.-])", rendered
+        )
+    ]
+    widths = [
+        float(match.group(1))
+        for match in re.finditer(r"<Spinner[^>]*?(?<![\w-])size-(\d+(?:\.\d+)?)(?![\w.-])", rendered, re.S)
+    ]
+    if len(offsets) != 1 or len(widths) != 1:
+        return None
+    return offsets[0] + widths[0]
+
+
 def _rendered_class_lists(arguments: list[str]) -> list[list[str]]:
     """Every class list the builder can produce, in builder order, one per live branch.
 
     Combinations that would need one condition to hold two truths at once are dropped, not
     checked: they are not rows anyone can render.
+    """
+    return [classes for _, classes in _rendered_with_conditions(arguments)]
+
+
+def _rendered_with_conditions(arguments: list[str]) -> list[tuple[dict[str, bool], list[str]]]:
+    """As above, but keeping which conditions each rendering needed.
+
+    The conditions are what tie a rendering to the rest of the row. The spinner is gated on
+    the same flag as the row's widest gutter, and without them a check can only ask what SOME
+    rendering reserves, not what the rendering that shows the spinner reserves.
     """
     lists: list[tuple[dict[str, bool], list[str]]] = [({}, [])]
     for argument in arguments:
@@ -1442,7 +1493,7 @@ def _rendered_class_lists(arguments: list[str]) -> list[list[str]]:
                     continue
                 grown.append((merged, classes + _tokens(value)))
         lists = grown
-    return [classes for _, classes in lists]
+    return lists
 
 
 def _cn_arguments(body: str) -> list[str]:
@@ -1607,10 +1658,11 @@ def test_chat_sidebar_row_actions_visible_on_coarse_pointers():
         "pin's fixed rem offset and padding into the pr-N units the row's gutters are in, and "
         "the two sides of every comparison below would be in different scales"
     )
-    renderings = [
-        [_as_spacing_units(cls, spacing) for cls in rendering]
-        for rendering in _rendered_class_lists(_cn_arguments(row_classes))
+    rendered = [
+        (constraints, [_as_spacing_units(cls, spacing) for cls in rendering])
+        for constraints, rendering in _rendered_with_conditions(_cn_arguments(row_classes))
     ]
+    renderings = [classes for _, classes in rendered]
     every_class = [cls for rendering in renderings for cls in rendering]
     # Refused across the WHOLE builder, not just the row's own literal. What follows compares
     # pr-N numbers and takes the last one to win, which is tailwind-merge's answer only while
@@ -1684,6 +1736,39 @@ def test_chat_sidebar_row_actions_visible_on_coarse_pointers():
     )
 
     coarse_prefix = r"\[@media\(pointer:coarse\)\]:"
+    # The spinner too, on the renderings that show it. Everything above measures the row's
+    # actions, and a working row also renders a spinner that the title has to clear: it sits
+    # further in than the pin on touch, which is why the row reserves 78px there and not the
+    # 64 the actions alone would need. Without this the touch gutter could drop to the
+    # actions' floor with the spinner left over the title, and every check above would pass.
+    spinner_reach = _touch_spinner_reach(applied, spacing)
+    assert spinner_reach is not None, (
+        "renderChatSidebarItem no longer states the working-row spinner's coarse offset and "
+        "size in a form this guard can read, so it cannot tell how much room a working row "
+        "has to reserve beyond its actions"
+    )
+    for constraints, rendering in rendered:
+        if not constraints.get("showWorkSpinner"):
+            continue
+        touch = [
+            float(match.group(1))
+            for match in (
+                re.fullmatch(coarse_prefix + r"pr-(\d+(?:\.\d+)?)", cls) for cls in rendering
+            )
+            if match
+        ]
+        plain = [
+            float(match.group(1))
+            for match in (re.fullmatch(r"pr-(\d+(?:\.\d+)?)", cls) for cls in rendering)
+            if match
+        ]
+        reserved = touch[-1] if touch else (plain[-1] if plain else None)
+        assert reserved is not None and reserved >= spinner_reach, (
+            f"a working row reserves {reserved} on a coarse pointer, under the "
+            f"{spinner_reach} its spinner reaches. The spinner is always visible there, so "
+            f"it would sit over the title (#7276)"
+        )
+
     variants = ("project-chat-item", "recent-item")
     # Every rendering is some row, and a rendering that claims no gutter at all was being
     # skipped as "not this variant" by each variant's loop in turn, so wrapping both variants'
