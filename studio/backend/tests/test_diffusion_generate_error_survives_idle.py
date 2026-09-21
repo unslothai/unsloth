@@ -645,8 +645,7 @@ def test_a_persist_failure_is_retained_for_the_client_that_cannot_read_the_respo
     at = src.index('logger.error("diffusion.persist_failed')
     window = src[at : at + 900]
     assert (
-        '_retain_generate_failure(request.attempt_id, "Failed to save the generated image.")'
-        in window
+        "_retain_generate_failure(request.attempt_id, _PERSIST_FAILURE_MSG)" in window
     ), "a persist failure leaves the settling client reading its lost run as a success"
     # Before the finally, which drops the marker this attempt was active under.
     retained = src.index("_retain_generate_failure(request.attempt_id", at)
@@ -654,3 +653,116 @@ def test_a_persist_failure_is_retained_for_the_client_that_cannot_read_the_respo
     assert retained < released, "the failure is recorded after the attempt stops being active"
     # Retained as LOGGED, since the line above is the log and the disk error is only there.
     assert "logged = False" not in window
+
+
+def _answer_progress(payload, attempt_id):
+    """Drive diffusion_generate_progress against *payload* on a single-identity install."""
+    import asyncio
+
+    import routes.inference as route
+
+    class _Engine:
+        def generate_progress(self):
+            return dict(payload)
+
+        def status(self):
+            return {"loaded": True, "repo_id": "someone/model"}
+
+    original = route.account_access
+    try:
+        route.account_access = types.SimpleNamespace(
+            managed_account = lambda: False,
+            account_scope = lambda: None,
+            generation_is_foreign = lambda *_a, **_k: False,
+            generation_is_mine = lambda *_a, **_k: True,
+            resident_hidden = lambda *_a, **_k: False,
+            hidden_generate_progress_response = lambda cls: cls(),
+        )
+        import core.inference.diffusion_engine_router as router
+
+        original_get = router.get_active_diffusion_engine
+        router.get_active_diffusion_engine = lambda: _Engine()
+        try:
+            return asyncio.run(
+                route.diffusion_generate_progress(attempt_id = attempt_id, current_subject = "owner")
+            )
+        finally:
+            router.get_active_diffusion_engine = original_get
+    finally:
+        route.account_access = original
+
+
+def test_a_queued_attempt_is_pending_not_absent():
+    """The engine cannot name an attempt until it holds the generation slot.
+
+    A second run queued behind an active one therefore answered a named poll with active
+    False, and a settling client whose POST was lost read that as "the request never
+    arrived", or took the running run's newly saved record for proof that its own finished.
+    Driven, not read: the failure mode is a field carrying the global answer.
+    """
+    import routes.inference as route
+    from core.inference.generate_outcomes import attempt_scope_key
+
+    running_for_someone_else = {
+        "active": True,
+        "step": 7,
+        "total_steps": 30,
+        "fraction": 7 / 30,
+        "eta_seconds": 12.0,
+        "generation_attempt": "attempt-theirs",
+    }
+
+    key = attempt_scope_key("attempt-queued")
+    route._note_queued_attempt(key, 1)
+    try:
+        queued = _answer_progress(running_for_someone_else, "attempt-queued")
+    finally:
+        route._note_queued_attempt(key, -1)
+    assert queued.active is True, "a queued attempt was reported as one that never arrived"
+    # Pending, not progressing: the running run's step counter is still not this caller's.
+    assert (queued.step, queued.total_steps, queued.eta_seconds) == (0, 0, None)
+
+    # Once the request is gone the attempt really is absent, and the answer goes back.
+    absent = _answer_progress(running_for_someone_else, "attempt-queued")
+    assert absent.active is False, "the marker outlived the request that held it"
+
+
+def test_a_reloaded_page_hears_about_a_persist_failure():
+    """A mount probe after a reload has lost its attempt id.
+
+    The keyed store is reachable only by id, so a persist failure recorded there alone was
+    invisible to the resumed poll: it saw an error-free idle state and refreshed a gallery
+    that had not changed, and the user was never told saving had failed.
+    """
+    import routes.inference as route
+
+    class _Backend:
+        pass
+
+    backend = _Backend()
+    route._note_unscoped_generate_failure(
+        backend, "attempt-reloaded", "Failed to save the generated image."
+    )
+    assert backend._last_generate_error == "Failed to save the generated image."
+    assert backend._last_generate_attempt == "attempt-reloaded"
+
+    idle_after_the_failure = {
+        "active": False,
+        "step": 0,
+        "total_steps": 0,
+        "fraction": 0.0,
+        "eta_seconds": None,
+        "error": backend._last_generate_error,
+        "generation_attempt": backend._last_generate_attempt,
+    }
+    resumed = _answer_progress(idle_after_the_failure, None)
+    assert (
+        resumed.error == "Failed to save the generated image."
+    ), "a reloaded page read a failed save as a finished generation"
+    assert resumed.error_logged is True, "the log that holds the disk error is not offered"
+
+    # Wired at the persist failure, and before the marker that made the attempt active drops.
+    src = _src("routes/inference.py")
+    at = src.index('logger.error("diffusion.persist_failed')
+    window = src[at : at + 900]
+    assert "_note_unscoped_generate_failure(backend, request.attempt_id" in window

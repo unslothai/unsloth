@@ -38913,6 +38913,36 @@ _diffusion_persist_active = 0
 _diffusion_persist_attempts: dict[str, int] = {}
 
 
+# Which attempts a generate request is holding BEFORE the engine names them: the engine only
+# publishes generation_attempt once it has the generation slot, so a run queued behind another
+# answered a named poll with active False and a settling client read that as "never arrived",
+# or took the running run's new gallery record for its own proof.
+_diffusion_queued_attempts: dict[str, int] = {}
+
+
+def _note_queued_attempt(attempt_id, delta: int) -> None:
+    if not attempt_id:
+        return
+    held = _diffusion_queued_attempts.get(attempt_id, 0) + delta
+    if held > 0:
+        _diffusion_queued_attempts[attempt_id] = held
+    else:
+        _diffusion_queued_attempts.pop(attempt_id, None)
+
+
+def _note_unscoped_generate_failure(backend, attempt_id, reason: str) -> None:
+    """Park *reason* in the engine's unscoped slot, the only channel a reload has left.
+
+    A poll after a reload has lost its attempt id, and the keyed store is reachable only by
+    id, so a failure recorded there alone was invisible to the mount probe: it saw an
+    error-free idle state and refreshed an unchanged gallery. Both engines publish these two
+    attributes from generate_progress and clear them at the START of the next run, so a
+    reason parked here cannot outlive the run that follows it.
+    """
+    backend._last_generate_error = reason
+    backend._last_generate_attempt = attempt_id
+
+
 def _note_persisting_attempt(attempt_id, delta: int) -> None:
     key = attempt_id if delta < 0 else attempt_id
     if not key:
@@ -38950,6 +38980,12 @@ _GENERATE_FAILURE_CLASSES: tuple[tuple[tuple[str, ...], str], ...] = (
 )
 
 
+# The one reason built here that is not a classification: saving failed after the images
+# were generated, so the disk error is in the log and the text is the same on the response
+# and on the poll. The frontend recognises it by value to offer that log.
+_PERSIST_FAILURE_MSG = "Failed to save the generated image."
+
+
 def _generate_failure_detail(message: str) -> str:
     """A user-facing reason for a failed generation, built only from fixed text.
 
@@ -38965,6 +39001,11 @@ def _generate_failure_detail(message: str) -> str:
     # fallback, so a caller settling a LOST post toasted a failure for its own Stop.
     if str(message or "") == DIFFUSION_CANCELLED_MSG:
         return DIFFUSION_CANCELLED_MSG
+    # The persist failure is fixed text too, and it is the reason the POST itself answers
+    # with: classified, the same failure read one way on the response and another on the
+    # poll, and "Image generation failed" is wrong about a generation that succeeded.
+    if str(message or "") == _PERSIST_FAILURE_MSG:
+        return _PERSIST_FAILURE_MSG
     text = str(message or "").lower()
     for needles, detail in _GENERATE_FAILURE_CLASSES:
         if any(n in text for n in needles):
@@ -39003,6 +39044,13 @@ async def generate_diffusion_image(
                 )
         # Ahead of the run: milestones key off the previous poll, so a resumed range logs nothing.
         reset_media_generation_progress("image")
+        # From here the request owns this attempt, including the wait for the generation
+        # slot, which the engine cannot name. Released in the finally below; the persist
+        # marker takes over with no await in between, so no poll is served in the gap.
+        from core.inference.generate_outcomes import attempt_scope_key as _attempt_key
+
+        queued_attempt = _attempt_key(request.attempt_id)
+        _note_queued_attempt(queued_attempt, 1)
         try:
             with account_access.media_generation("diffusion"):
                 result = await asyncio.to_thread(
@@ -39063,6 +39111,10 @@ async def generate_diffusion_image(
             # Exception and answered with the fallback, so the same failure named its cause or
             # not depending on which class torch happened to raise.
             raise HTTPException(status_code = 500, detail = _generate_failure_detail(str(exc)))
+        finally:
+            # Whatever happened: a failure has its reason retained above, so it does not need
+            # the marker, and a DiffusionModelReplacedError retry re-takes it on the next lap.
+            _note_queued_attempt(queued_attempt, -1)
 
     # Persist each image with its full recipe. BOTH engines batch with a distinct seed per image, returned in ``seeds``, so each is individually reproducible.
     created_at = time.time()
@@ -39157,8 +39209,12 @@ async def generate_diffusion_image(
         # images it never saved are not in the gallery either. Retained before the finally
         # drops the marker, so the progress poll can answer with the reason instead. Logged
         # just above, and the disk error is only there.
-        _retain_generate_failure(request.attempt_id, "Failed to save the generated image.")
-        raise HTTPException(status_code = 500, detail = "Failed to save the generated image.")
+        _retain_generate_failure(request.attempt_id, _PERSIST_FAILURE_MSG)
+        # And on the channel a RELOADED page has left: its mount probe polls without an
+        # attempt id, so the keyed record alone was invisible to it and the resumed poll saw
+        # an error-free idle state and refreshed an unchanged gallery.
+        _note_unscoped_generate_failure(backend, request.attempt_id, _PERSIST_FAILURE_MSG)
+        raise HTTPException(status_code = 500, detail = _PERSIST_FAILURE_MSG)
     finally:
         _diffusion_persist_active -= 1
         _note_persisting_attempt(persisting_attempt, -1)
@@ -39679,6 +39735,13 @@ async def diffusion_generate_progress(
             from core.inference.generate_outcomes import attempt_scope_key
             if _diffusion_persist_attempts.get(attempt_scope_key(attempt_id) or ""):
                 progress = {**progress, "active": True}
+    # A named attempt whose request is QUEUED behind another run is pending, not absent: the
+    # engine cannot name it until it holds the slot, and False there told a settling client
+    # its post never arrived, or let the running run's new record pass as its proof.
+    if attempt_id is not None and not progress["active"] and not progress.get("error"):
+        from core.inference.generate_outcomes import attempt_scope_key
+        if _diffusion_queued_attempts.get(attempt_scope_key(attempt_id) or ""):
+            progress = {**progress, "active": True}
     return DiffusionGenerateProgressResponse(**progress)
 
 
@@ -40037,7 +40100,10 @@ async def _generate_openai_images(
             data = await asyncio.to_thread(_persist)
     except Exception as exc:  # noqa: BLE001
         logger.error("openai_images.persist_failed: %s", exc)
-        raise HTTPException(status_code = 500, detail = "Failed to save the generated image.")
+        # Same text, and on the engine's unscoped slot too: this route carries no attempt id,
+        # so that slot is the only place a Studio page watching the same engine can read it.
+        _note_unscoped_generate_failure(get_active_diffusion_engine(), None, _PERSIST_FAILURE_MSG)
+        raise HTTPException(status_code = 500, detail = _PERSIST_FAILURE_MSG)
     finally:
         _diffusion_persist_active -= 1
 
