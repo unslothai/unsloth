@@ -20,17 +20,19 @@ rather than their presence:
 `os.name == "posix" or os.geteuid() == 0` mentions the same attribute and spares nothing,
 so it is flagged.
 
-A third form in the tree, `getattr(os, "geteuid", lambda: 1)()`, needs no case: it names
-the function with a string, so it never reaches this scan at all. And nothing else counts
-as a guard merely for sitting to the left of the call, since `is_ci() or os.geteuid() == 0`
-still raises on Windows every time is_ci() is false.
+A third form in the tree, `getattr(os, "geteuid", lambda: 1)()`, is a guard in itself: the
+fallback is what makes it safe, so the two-argument `getattr(os, "geteuid")()` is treated
+as the plain lookup it is. And nothing else counts as a guard merely for sitting to the
+left of the call, since `is_ci() or os.geteuid() == 0` still raises on Windows every time
+is_ci() is false.
 
 Runtime uses inside a function body are not covered here: they only run on a platform
 the test already reached, and a POSIX-only test that gets that far has a skip of its own.
 A default argument is not a runtime use, because it is evaluated where the `def` is, and
 neither is an annotation in a module without `from __future__ import annotations`. A `def`
 nested inside another function is the other way round: nothing of it is evaluated until
-the outer one runs, so none of it can break collection.
+the outer one runs, so none of it can break collection. Nor is a lambda's body, though
+its defaults are.
 """
 
 from __future__ import annotations
@@ -43,12 +45,42 @@ TESTS = REPO_ROOT / "tests"
 
 
 def _is_os_geteuid(node: ast.AST) -> bool:
-    return (
+    """A lookup of os.geteuid that raises on Windows. Both spellings: the attribute, and
+    the two-argument getattr, which has no fallback and so raises exactly the same way.
+    Three-argument getattr does not, and is the form already used in the tree."""
+    if (
         isinstance(node, ast.Attribute)
         and node.attr == "geteuid"
         and isinstance(node.value, ast.Name)
         and node.value.id == "os"
+    ):
+        return True
+    return (
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "getattr"
+        and len(node.args) == 2
+        and not node.keywords
+        and isinstance(node.args[0], ast.Name)
+        and node.args[0].id == "os"
+        and isinstance(node.args[1], ast.Constant)
+        and node.args[1].value == "geteuid"
     )
+
+
+def _geteuid_sites(expr: ast.AST):
+    """Every os.geteuid lookup performed when THIS expression is evaluated. A lambda's
+    body is not: it runs when the lambda is called, so `helper = lambda: os.geteuid()`
+    is as safe as the same line inside a def. Its defaults are evaluated here and stay."""
+    stack = [expr]
+    while stack:
+        node = stack.pop()
+        if _is_os_geteuid(node):
+            yield node
+        for child in ast.iter_child_nodes(node):
+            if isinstance(node, ast.Lambda) and child is node.body:
+                continue
+            stack.append(child)
 
 
 def _is_os_name(node: ast.AST) -> bool:
@@ -137,8 +169,8 @@ def _is_guarded(expr: ast.AST) -> bool:
     else counts for merely sitting to the left of the call: `is_ci() or os.geteuid() == 0`
     still raises every time is_ci() is false.
 
-    `getattr(os, "geteuid", lambda: 1)()` needs no case: it names the function with a
-    string, so it has no `os.geteuid` attribute node and never reaches the scan at all."""
+    The three-argument `getattr(os, "geteuid", lambda: 1)()` needs no case here: the
+    fallback means no lookup can fail, so it is not a site at all."""
     parents: dict[ast.AST, ast.AST] = {}
     for node in ast.walk(expr):
         for child in ast.iter_child_nodes(node):
@@ -209,8 +241,8 @@ def test_no_test_module_calls_os_geteuid_unguarded_at_import():
             continue  # not ours to parse; the lint job owns syntax
         checked += 1
         for expr in _import_time_expressions(tree):
-            for node in ast.walk(expr):
-                if _is_os_geteuid(node) and not _is_guarded(expr):
+            for node in _geteuid_sites(expr):
+                if not _is_guarded(expr):
                     offenders.append(f"{path.relative_to(REPO_ROOT)}:{node.lineno}")
                     break
     assert checked > 100, f"only {checked} test modules parsed; the scan lost its tree"
@@ -239,7 +271,7 @@ def test_the_scan_still_recognises_an_unguarded_call():
         found = [
             expr
             for expr in _import_time_expressions(tree)
-            if any(_is_os_geteuid(n) for n in ast.walk(expr)) and not _is_guarded(expr)
+            if any(True for _ in _geteuid_sites(expr)) and not _is_guarded(expr)
         ]
         assert found, "an unguarded os.geteuid decorator no longer trips the scan"
 
@@ -254,7 +286,7 @@ def test_the_scan_still_recognises_an_unguarded_call():
         '_ROOT = getattr(os, "geteuid", lambda: 1)() == 0\n'
     )
     for expr in _import_time_expressions(good):
-        if any(_is_os_geteuid(n) for n in ast.walk(expr)):
+        if any(True for _ in _geteuid_sites(expr)):
             assert _is_guarded(expr), ast.dump(expr)
 
 
@@ -270,7 +302,7 @@ def test_an_unrelated_call_to_the_left_is_not_a_guard():
     flagged = [
         expr
         for expr in _import_time_expressions(tree)
-        if any(_is_os_geteuid(n) for n in ast.walk(expr)) and not _is_guarded(expr)
+        if any(True for _ in _geteuid_sites(expr)) and not _is_guarded(expr)
     ]
     assert flagged, "an unrelated call is being accepted as a Windows guard"
 
@@ -282,7 +314,7 @@ def test_a_default_argument_is_import_time():
     flagged = [
         expr
         for expr in _import_time_expressions(tree)
-        if any(_is_os_geteuid(n) for n in ast.walk(expr)) and not _is_guarded(expr)
+        if any(True for _ in _geteuid_sites(expr)) and not _is_guarded(expr)
     ]
     assert flagged, "a default argument is evaluated at import and must be scanned"
 
@@ -303,8 +335,8 @@ def _flagged(source: str) -> list[int]:
     return [
         node.lineno
         for expr in _import_time_expressions(tree)
-        for node in ast.walk(expr)
-        if _is_os_geteuid(node) and not _is_guarded(expr)
+        for node in _geteuid_sites(expr)
+        if not _is_guarded(expr)
     ]
 
 
@@ -361,3 +393,22 @@ def test_a_nested_definition_is_not_import_time():
         '    @pytest.mark.skipif(os.geteuid() == 0, reason = "x")\n'
         "    def test_b(self): pass\n"
     )
+
+
+def test_a_two_argument_getattr_is_the_same_lookup():
+    """`getattr(os, "geteuid")()` raises exactly as `os.geteuid()` does; only the
+    three-argument form has a fallback, and that is the one already in the tree."""
+    assert _flagged(
+        "import os, pytest\n"
+        '@pytest.mark.skipif(getattr(os, "geteuid")() == 0, reason = "x")\n'
+        "def test_a(): pass\n"
+    )
+    assert not _flagged('import os\n_ROOT = getattr(os, "geteuid", lambda: 1)() == 0\n')
+
+
+def test_a_lambda_body_is_not_import_time():
+    """`helper = lambda: os.geteuid()` does not look anything up until it is called, so
+    it is as safe as the same line inside a def. A lambda's defaults are evaluated at the
+    lambda, so those still count."""
+    assert not _flagged("import os\nhelper = lambda: os.geteuid()\n")
+    assert _flagged("import os\nhelper = lambda uid = os.geteuid(): uid\n")
