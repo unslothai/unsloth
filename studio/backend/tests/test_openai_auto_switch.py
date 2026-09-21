@@ -12719,16 +12719,14 @@ def test_the_answer_and_the_index_that_gave_it_describe_one_snapshot(monkeypatch
     """
     monkeypatch.setattr(resolver, "_CACHE_TTL_S", 0)
 
-    entry = resolver._LocalGgufEntry(
-        "unsloth/B-GGUF", "/models/unsloth/B-GGUF", ("Q4_K_M",)
-    )
+    entry = resolver._LocalGgufEntry("unsloth/B-GGUF", "/models/unsloth/B-GGUF", ("Q4_K_M",))
     monkeypatch.setattr(resolver, "_build_index", lambda: {"unsloth/b-gguf": entry})
 
     state: list = []
     assert resolver.resolve_local_gguf("unsloth/B-GGUF", index_state = state) is not None
-    assert state == [(resolver.index_generation(), resolver.index_scan_stamp())], (
-        "the identity reported is not the one the answer came from"
-    )
+    assert state == [
+        (resolver.index_generation(), resolver.index_scan_stamp())
+    ], "the identity reported is not the one the answer came from"
 
     # A rebuild that REPLACES the index between two resolutions is reported as a different
     # identity, which is what retires a marker taken against the older one.
@@ -12753,9 +12751,10 @@ def test_the_answer_and_the_index_that_gave_it_describe_one_snapshot(monkeypatch
 
     monkeypatch.setattr(resolver, "_resolve_from_index", _publish_midway)
     state = []
-    assert resolver.resolve_local_gguf(
-        "unsloth/B-GGUF", allow_scan = False, index_state = state
-    ) is not None
+    assert (
+        resolver.resolve_local_gguf("unsloth/B-GGUF", allow_scan = False, index_state = state)
+        is not None
+    )
     now = (resolver.index_generation(), resolver.index_scan_stamp())
     assert now != answered_by, "the harness did not change the index during the resolution"
     assert state == [answered_by], (
@@ -12770,13 +12769,13 @@ def test_the_answer_and_the_index_that_gave_it_describe_one_snapshot(monkeypatch
 
     # And the route hands its own sink in rather than reading the state separately.
     src = inspect.getsource(inference_route._maybe_auto_switch_model)
-    assert "index_state = resolved_from," in src, (
-        "the route no longer asks the resolver which index answered"
-    )
+    assert (
+        "index_state = resolved_from," in src
+    ), "the route no longer asks the resolver which index answered"
     assert "alias_probe_state = resolved_from[0] if resolved_from else None" in src
-    assert "alias_probe_state = _alias_probe_index_state()" not in src, (
-        "the route reads the index state separately again"
-    )
+    assert (
+        "alias_probe_state = _alias_probe_index_state()" not in src
+    ), "the route reads the index state separately again"
 
 
 def test_a_cache_only_resolution_does_not_wait_for_a_scan(monkeypatch):
@@ -12786,9 +12785,7 @@ def test_a_cache_only_resolution_does_not_wait_for_a_scan(monkeypatch):
     warm, so putting it behind the mutex a multi-root scan holds would stall every request
     on that loop until a slow HF or network-folder scan finished.
     """
-    entry = resolver._LocalGgufEntry(
-        "unsloth/B-GGUF", "/models/unsloth/B-GGUF", ("Q4_K_M",)
-    )
+    entry = resolver._LocalGgufEntry("unsloth/B-GGUF", "/models/unsloth/B-GGUF", ("Q4_K_M",))
     monkeypatch.setattr(resolver, "_scan", (time.monotonic(), {"unsloth/b-gguf": entry}))
 
     holding = threading.Event()
@@ -12850,6 +12847,6 @@ def test_a_scanning_resolution_answers_from_the_index_it_built(monkeypatch):
     monkeypatch.setattr(resolver, "_snapshot", snapshot)
 
     state: list = []
-    assert resolver.resolve_local_gguf("unsloth/B-GGUF", index_state = state) is None, (
-        "resolved a model from a snapshot the build did not produce"
-    )
+    assert (
+        resolver.resolve_local_gguf("unsloth/B-GGUF", index_state = state) is None
+    ), "resolved a model from a snapshot the build did not produce"
