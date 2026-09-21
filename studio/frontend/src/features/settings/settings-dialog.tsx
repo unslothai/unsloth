@@ -27,12 +27,12 @@ import {
   Globe02Icon,
   HelpCircleIcon,
   HomeWifiIcon,
-  Message01Icon,
   PaintBrush02Icon,
   Search01Icon,
   Settings02Icon,
   UserCircleIcon,
 } from "@hugeicons/core-free-icons";
+import { MessageCircleIcon } from "@/lib/hugeicons-derived";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { motion, useReducedMotion } from "motion/react";
 import {
@@ -201,7 +201,7 @@ const TABS: TabDef[] = [
   {
     id: "chat",
     labelKey: "settings.tabs.chat",
-    icon: Message01Icon,
+    icon: MessageCircleIcon,
   },
   {
     id: "api-keys",

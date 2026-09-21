@@ -194,6 +194,7 @@ export const ko = {
       unpinChats: "채팅 고정 해제",
       archiveChats: "채팅 보관",
       markUnread: "읽지 않음으로 표시",
+      markRead: "읽음으로 표시",
       deleteChats: "채팅 삭제",
       deleteTitle: "채팅 삭제",
       deleteDescription: "채팅 {count}개를 삭제할까요? 되돌릴 수 없습니다.",
@@ -212,11 +213,19 @@ export const ko = {
       priority: "우선순위",
       lastUpdated: "최근 업데이트",
       manualOrder: "수동 정렬",
-      moveUp: "위로 이동",
-      moveDown: "아래로 이동",
+      switchedToManual: "수동 정렬로 전환됨: 행을 끌어 순서를 바꾸세요",
       organizeChats: "채팅 정리",
       organizeProjects: "프로젝트 정리",
       sortPinnedChats: "고정된 채팅 정렬",
+      moveUp: "위로 이동",
+      moveDown: "아래로 이동",
+    },
+    drag: {
+      reorder: "순서 변경",
+      pin: "고정",
+      unpin: "고정 해제",
+      moveTo: "{name}(으)로 이동",
+      moveToRecents: "최근으로 이동",
     },
     dialog: {
       deleteChat: {
@@ -876,6 +885,16 @@ export const ko = {
         revoked: "모든 미리보기 링크가 취소되었습니다",
         revokeError: "미리보기 링크를 취소하지 못했습니다",
       },
+      managedProviderUrls: {
+        sectionTitle: "관리 계정",
+        enableLabel: "로컬 및 네트워크 연결",
+        enableDescription:
+          "관리 계정이 이 컴퓨터나 LAN의 Ollama 또는 llama.cpp 서버처럼 로컬 또는 네트워크 주소로 연결을 지정할 수 있도록 합니다. 기본적으로 꺼져 있으며, 켜면 해당 계정이 사용자의 컴퓨터와 네트워크에서 실행 중인 서비스에 접근할 수 있기 때문입니다.",
+        lockedByEnvironment:
+          "이 서버의 UNSLOTH_STUDIO_BLOCK_PRIVATE_PROVIDER_URLS=1 설정에 따릅니다. 모든 계정에서 사설 주소가 거부됩니다.",
+        loadError: "관리 계정 연결 설정을 불러오지 못했습니다.",
+        saveError: "관리 계정 연결 설정을 저장하지 못했습니다.",
+      },
       notifications: {
         sectionTitle: "알림",
         showLlamaUpdates: "llama.cpp 업데이트 알림",
@@ -1255,7 +1274,11 @@ export const ko = {
       },
       gpu: {
         title: "GPU 장치",
-        ggufInference: "GGUF 추론",
+        memory: "GPU 메모리",
+        sharedWithSystemRam: "시스템 RAM과 공유",
+        estimatedAvailable: "예상 사용 가능: {value}",
+        sharedEstimatedAvailable: "공유 시스템 RAM: 예상 사용 가능 {value}",
+        ggufInference: "GGUF 모델 메모리",
         unavailable: "사용할 수 없음",
         detecting: "GPU를 확인하는 중...",
         unreadable: "이 서버의 하드웨어를 읽을 수 없습니다.",
@@ -1477,9 +1500,9 @@ export const ko = {
         yolo: "승인 확인을 건너뜁니다. 신뢰할 수 있는 환경에서만 사용하세요.",
       },
       remote: {
-        title: "원격 Unsloth Studio에 연결",
+        title: "원격 Unsloth에 연결",
         description:
-          "실행 전에 다음을 설정하면 unsloth start를 다른 곳에서 실행 중인 Unsloth Studio로 연결할 수 있습니다(또는 --api-key를 직접 전달):",
+          "실행 전에 다음을 설정하면 unsloth start를 다른 곳에서 실행 중인 Unsloth로 연결할 수 있습니다(또는 --api-key를 직접 전달):",
       },
       passthrough: {
         title: "에이전트에 인자 전달",
@@ -1505,16 +1528,11 @@ export const ko = {
       projectAttachmentsHint:
         "각 채팅의 첨부 메뉴에서 이 설정을 개별적으로 변경할 수 있습니다.",
       rememberParamsPerModelHint: "끄면 모든 모델에 같은 설정을 사용합니다.",
-      autoCompactHint: "남은 VRAM이 아닌 설정한 컨텍스트 길이를 기준으로 합니다.",
+      autoCompactHint: "로컬 GGUF 채팅에만 적용됩니다. 밀려난 턴은 색인되어 모델이 다시 검색할 수 있고, 초기화 시에는 들어갈 수 있는 만큼의 계속 적용되는 지침이 원문 그대로 이어지며, 중간 것보다 가장 오래된 것과 가장 최근 것이 우선됩니다. 보관하려면 저장된 채팅과 벡터 색인이 필요하며, 없으면 오래된 턴은 그냥 삭제됩니다. 남은 VRAM이 아닌 설정한 컨텍스트 길이를 기준으로 합니다.",
       pastedTextShortDescription:
         "붙여넣은 텍스트가 {count}자 이상이면 .txt 첨부 파일이 됩니다. 더 짧은 텍스트는 입력창에 남습니다.",
       pastedTextOffDescription:
         "길이와 관계없이 붙여넣은 모든 텍스트가 입력창에 남습니다.",
-      compactionDescriptionInherit: "서버의 컨텍스트 정책을 따릅니다.",
-      compactionDescriptionCheckpoint:
-        "최신 대화 턴과 계속 적용되는 지침을 유지합니다.",
-      compactionDescriptionRolling:
-        "가장 오래된 턴을 삭제해 최근 기록을 유지하고 선택한 만큼의 여유 공간을 확보합니다.",
       projectsSection: "프로젝트 섹션 표시",
       projectsSectionDescription:
         "프로젝트 채팅을 프로젝트 제목 아래에 모읍니다. 끄면 최근 항목에 표시됩니다.",
@@ -1538,7 +1556,7 @@ export const ko = {
           "채팅의 + 사이드 메뉴에 항목을 고정합니다. 나머지 항목은 ‘더 보기’로 이동합니다.",
         chatWithFiles: "파일과 채팅(RAG)",
         mcp: "MCP",
-        skills: "에이전트 스킬",
+        skills: "스킬",
         savedPrompts: "저장된 프롬프트",
         compareChat: "채팅 비교",
         exportChat: "채팅 내보내기",
@@ -1561,22 +1579,20 @@ export const ko = {
         "각 모델에서 마지막으로 사용한 프롬프트, 온도 등의 설정을 복원합니다.",
       autoCompact: "긴 채팅 자동 압축",
       autoCompactDescription:
-        "로컬 GGUF 채팅이 컨텍스트 한도에 도달하면 오래된 턴을 삭제합니다.",
-      compactionStyle: "컨텍스트가 가득 찼을 때",
-      compactionStyleDescription:
-        "서버 기본값을 사용하면 UNSLOTH_CONTEXT_POLICY가 유지됩니다. 대화 재설정은 최신 턴과 지속 지침을 남깁니다. 슬라이딩 윈도우는 가장 오래된 턴을 삭제하고 최근 기록을 더 많이 유지할 수 있습니다.",
-      compactionStyleInherit: "서버 기본값 사용",
-      compactionStyleCheckpoint: "대화 재설정",
-      compactionStyleRollingDefault: "오래된 턴 삭제(약 25% 추가 여유)",
-      compactionStyleRolling10: "오래된 턴 삭제(약 10% 추가 여유)",
-      compactionStyleRolling5: "오래된 턴 삭제(약 5% 추가 여유)",
-      compactionStyleRollingNone: "오래된 턴 삭제(추가 잘라내기 없음)",
+        "채팅이 컨텍스트를 모두 채우면 오래된 턴은 검색 가능한 보관소로 옮겨집니다.",
       autoCompactKeywords:
-        "압축 자동 컨텍스트 윈도우 자르기 슬라이딩 체크포인트 여유 compaction rolling checkpoint headroom",
+        "압축 자동 컨텍스트 윈도우 자르기 슬라이딩 체크포인트 여유 보관 검색 회수 compaction rolling checkpoint headroom archive retrieval rag",
+      visibility: {
+        collapsed: "접힘",
+        auto: "실행 중 펼치기",
+        expanded: "항상 펼침",
+      },
+      visibilityKeywords:
+        "접기 접힘 펼치기 펼침 열기 닫기 사고 과정 추론 도구 호출 도구 활동 그룹 스트리밍",
       thinking: {
-        collapseByDefault: "기본적으로 사고 과정 접기",
-        collapseByDefaultDescription:
-          "모델이 생각하는 동안 사고 과정을 자동으로 펼치지 않고 접어 둡니다. 읽으려면 블록을 펼치세요.",
+        visibility: "사고 과정",
+        visibilityDescription:
+          "사고 과정이 열리는 방식. 각 블록은 직접 펼치거나 접을 수 있습니다.",
       },
       currentDate: {
         label: "모델에 오늘 날짜 알려주기",
@@ -1586,9 +1602,14 @@ export const ko = {
         saveError: "현재 날짜 설정을 업데이트하지 못했습니다",
       },
       tools: {
-        collapseByDefault: "기본적으로 도구 활동 접기",
-        collapseByDefaultDescription:
-          "도구가 실행되는 동안 입력과 출력을 접어 둡니다. 확인하려면 도구 행을 펼치세요.",
+        visibility: "도구 호출",
+        visibilityDescription:
+          "도구 활동이 열리는 방식. 각 호출은 직접 펼치거나 접을 수 있습니다.",
+        foldIntoThinking: "도구 호출을 사고 과정으로 묶기",
+        foldIntoThinkingDescription:
+          "해당 턴의 도구 호출을 별도 행 대신 사고 과정 블록 안에 표시합니다.",
+        foldIntoThinkingBlocked:
+          "도구 호출이 ‘항상 펼침’으로 설정된 동안에는 사용할 수 없습니다. 그 설정은 호출을 별도 행에 유지합니다.",
       },
       webSearch: {
         title: "웹 검색",
@@ -2694,11 +2715,11 @@ export const ko = {
     tooLarge: "VRAM보다 커서 CPU로 오프로드됩니다. 더 작은 양자화가 더 빠릅니다",
   },
   skills: {
-    title: "에이전트 스킬",
+    title: "스킬",
     description: "스킬은 표준 에이전트 폴더에서 찾습니다. 여기서 활성화한 뒤 채팅에서 @를 입력해 언급하세요.",
     precedence: "~/.agents/skills가 ~/.claude/skills보다 우선합니다.",
     refresh: "새로 고침",
-    empty: "에이전트 스킬이 없습니다. ~/.agents/skills 또는 ~/.claude/skills에 SKILL.md 폴더를 추가한 뒤 새로 고침하세요.",
+    empty: "스킬이 없습니다. ~/.agents/skills 또는 ~/.claude/skills에 SKILL.md 폴더를 추가한 뒤 새로 고침하세요.",
     sourceAgents: "Agents",
     sourceClaude: "Claude",
     sourceBundled: "기본 제공",
@@ -2708,7 +2729,7 @@ export const ko = {
     shadowedBy: "같은 이름의 다른 스킬({source})이 우선합니다.",
     enable: "{name} 활성화",
     disable: "{name} 비활성화",
-    updateError: "에이전트 스킬을 업데이트할 수 없습니다",
-    mentions: "에이전트 스킬",
+    updateError: "스킬을 업데이트할 수 없습니다",
+    mentions: "스킬",
   },
 } satisfies DeepPartialMessageTree<typeof en>;

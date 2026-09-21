@@ -482,11 +482,19 @@ class InferenceOrchestrator:
         self._start_top_models_fetch()
         top_gguf = self._top_gguf_cache or []
         top_hub = self._top_hub_cache or []
-        # Never wait for the remote Hugging Face ranking during startup. Chat's first /api/models/list needs curated
-        # defaults immediately; the background fetch backfills extra choices on later calls.
+        # Use detected hardware here: discovery runs on the event loop.
+        from core.inference.defaults import suggestions_for_host
+        import utils.hardware.hardware as _hw_mod
+
+        # A chat-only Mac never reaches the MLX loader, so its ranking is left as fetched.
+        device = None if _hw_mod.CHAT_ONLY else _hw_mod.DEVICE
+        fetched = suggestions_for_host(top_gguf + top_hub, device)
+        # Never wait for the remote Hugging Face ranking during startup. Chat's
+        # first /api/models/list needs curated defaults immediately; the
+        # background fetch backfills extra choices on later calls.
         result: list[str] = []
         seen: set[str] = set()
-        for m in self._static_models + top_gguf + top_hub:
+        for m in self._static_models + fetched:
             if m not in seen:
                 result.append(m)
                 seen.add(m)
