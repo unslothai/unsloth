@@ -220,14 +220,22 @@ def _cn_literals(source: str, anchor: str) -> str | None:
                 break
     if closes is None:
         return _UNREADABLE
-    pieces = []
+    pieces, forwards = [], False
     for argument in _split_arguments(source[opens + len("cn(") : closes]):
         argument = argument.strip()
         literal = re.fullmatch(r'"([^"]*)"', argument)
         if literal:
             pieces.append(literal.group(1))
-        elif argument != "className":
+        elif argument == "className":
+            forwards = True
+        else:
             return _UNREADABLE
+    # The caller's classes have to actually arrive. Without `className` among the arguments
+    # the component composes from its base alone, and the caller's contribution, which the
+    # test adds to the order afterwards, reaches nothing. Reading the base and crediting the
+    # call site anyway is how a trigger that stopped forwarding would keep passing.
+    if not forwards:
+        return _UNREADABLE
     return " ".join(pieces)
 
 

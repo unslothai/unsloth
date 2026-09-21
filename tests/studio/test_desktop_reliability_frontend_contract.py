@@ -896,7 +896,24 @@ def _button_classes(block: str, tag: str, variant: str) -> str | None:
     return " ".join(literals) if literals else None
 
 
-def _labelled_actions(block: str, variant: str) -> dict[int, tuple[str, bool]]:
+def _row_action_offsets(live_css: str) -> dict[str, float]:
+    """Each `.sidebar-row-action.is-*` modifier the stylesheet defines, and the right edge it
+    sets, in Tailwind spacing units.
+
+    Read from CSS rather than named here, so an action positioned by a modifier this file has
+    never heard of is refused instead of being recorded as flush right. A modifier that the
+    stylesheet defines without moving `right` contributes 0, which is what it does.
+    """
+    offsets = {}
+    for match in re.finditer(r"\.sidebar-row-action\.(is-[\w-]+)\s*\{([^}]*)\}", live_css):
+        edge = re.search(r"\bright:\s*([\d.]+)rem", match.group(2))
+        offsets[match.group(1)] = float(edge.group(1)) / 0.25 if edge else 0.0
+    return offsets
+
+
+def _labelled_actions(
+    block: str, variant: str, offsets: dict[str, float]
+) -> dict[int, tuple[str, float]]:
     """The row actions one variant renders: label -> whether it is the offset one.
 
     A row's actions are not all shared: the pin sits inside `{variant === "recent" && (` or
@@ -938,7 +955,30 @@ def _labelled_actions(block: str, variant: str) -> dict[int, tuple[str, bool]]:
         # dropping the offset pin took the row's reach down to a single glyph while the pin
         # went on rendering. The label is identity for the message only.
         labels = re.findall(r"aria-label=\{?([^\n]{0,60})", tag)
-        found[at] = (labels[0] if labels else f"<unlabelled at {at}>", "is-unpin-action" in classes)
+        name = labels[0] if labels else f"<unlabelled at {at}>"
+        # Visible on touch, which is the whole affordance. An action that keeps its row-action
+        # class but loses `sidebar-touch-reveal` stays counted, so the gutter still looks
+        # right while the button is transparent and inert on a coarse pointer.
+        assert "sidebar-touch-reveal" in classes, (
+            f"the {name} action on the {variant} row no longer carries sidebar-touch-reveal, "
+            f"so it is invisible and inert on a coarse pointer however much room the row "
+            f"reserves for it (#7276)"
+        )
+        # Where it sits, read from the stylesheet. A `right-*` utility or a modifier the CSS
+        # does not define is positioning this guard has not modelled, and recording it as
+        # flush right would understate the reach of an action that renders further in.
+        utility = [token for token in classes.split() if re.fullmatch(r"right-\S+", token)]
+        assert not utility, (
+            f"the {name} action is positioned with {utility}, which this guard does not model: "
+            f"it reads the row's action offsets from index.css, so state the offset there"
+        )
+        modifiers = [token for token in classes.split() if token.startswith("is-")]
+        unknown = [token for token in modifiers if token not in offsets]
+        assert not unknown, (
+            f"the {name} action carries {unknown}, which index.css does not define for "
+            f".sidebar-row-action, so this guard cannot tell how far that action reaches"
+        )
+        found[at] = (name, max((offsets[token] for token in modifiers), default = 0.0))
     return found
 
 
@@ -1349,17 +1389,8 @@ def test_chat_sidebar_row_actions_visible_on_coarse_pointers():
     glyph_size = float(glyph.group(1))
     # The actions do not sit side by side and counting them assumed they did. They are
     # absolutely positioned and one is pushed clear of the other, so what the row has to
-    # reserve is how far the furthest one reaches, not how many there are: at two glyphs the
-    # floor was 12 while the offset action's glyph already ends at 13.5.
-    offset = re.search(
-        r"\.sidebar-row-action\.is-unpin-action\s*\{[^}]*?\bright:\s*([\d.]+)rem", live_css
-    )
-    assert offset, (
-        "index.css no longer offsets .sidebar-row-action.is-unpin-action with a rem right "
-        "edge, so this guard cannot tell how far the row's actions reach"
-    )
-    # Tailwind's spacing unit is 0.25rem, which is what every pr-N here is counted in.
-    offset_units = float(offset.group(1)) / 0.25
+    # reserve is how far the furthest one reaches, not how many there are. Each action's
+    # offset comes from `_row_action_offsets`, read out of the stylesheet.
     # To the far edge of the GLYPH, which is where the ink stops, but through the padding
     # that positions it. The container is justify-end with its own pr, so the glyph's right
     # edge sits that far inside the container's, and its left edge is offset + pr + size.
@@ -1373,17 +1404,15 @@ def test_chat_sidebar_row_actions_visible_on_coarse_pointers():
         "where inside its container the glyph sits"
     )
     inner_padding = float(inner.group(1))
-    actions = {name: _labelled_actions(applied, name) for name in ("project", "recent")}
+    offsets = _row_action_offsets(live_css)
+    actions = {name: _labelled_actions(applied, name, offsets) for name in ("project", "recent")}
     assert all(actions.values()), (
         f"no labelled row action left for one of the variants, so this guard cannot tell how "
         f"much room that row has to reserve: "
         f"{ {name: len(found) for name, found in actions.items()} }"
     )
     reach = {
-        name: max(
-            (offset_units if shifted else 0.0) + inner_padding + glyph_size
-            for _, shifted in found.values()
-        )
+        name: max(shift + inner_padding + glyph_size for _, shift in found.values())
         for name, found in actions.items()
     }
     floors = {"project-chat-item": reach["project"], "recent-item": reach["recent"]}
