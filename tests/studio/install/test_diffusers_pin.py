@@ -27,8 +27,10 @@ import pytest
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[3]
 REQ_ROOT = REPO_ROOT / "studio" / "backend" / "requirements"
 PIN_FILE = REQ_ROOT / "diffusers-pin.txt"
-# The opt-in commit pin. Exempt from the one-source-of-truth scan below because it is never
-# installed without UNSLOTH_DIFFUSERS_MAIN, which the tests here pin down rather than assume.
+# The commit pin, installed by default ON TOP of the release pin. Exempt from the
+# one-source-of-truth scan below because it is the one deliberate second namer of diffusers: it is
+# installed by the step immediately after the release pin and by nothing else, which the tests here
+# pin down rather than assume.
 MAIN_FILE = REQ_ROOT / "diffusers-main.txt"
 
 # The shape install_python_stack._filter_requirements writes: a dot, the source stem,
@@ -103,19 +105,20 @@ def test_only_the_pin_file_names_diffusers():
         if named:
             offenders[str(path.relative_to(REPO_ROOT))] = named
     assert not offenders, (
-        f"diffusers is requirement-listed outside diffusers-pin.txt: {offenders}. "
+        f"diffusers is requirement-listed outside diffusers-pin.txt and diffusers-main.txt: "
+        f"{offenders}. "
         f"Move it into the pin file so the dedicated late step remains authoritative."
     )
 
 
-def test_the_main_build_is_opt_in_and_pins_a_commit():
-    """The opt-in file exists, names a COMMIT, and cannot reach a default install.
+def test_the_main_build_pins_a_commit_and_runs_after_the_release():
+    """The main-build file exists, names a COMMIT, and runs after the release pin.
 
-    Every guarantee here is one the release pin gives up, so each is asserted rather than trusted:
-    a branch ref would leave nothing pinning behaviour (any main build reports 0.41.0.dev0 and
-    ``_version_tuple`` truncates it to (0, 41, 0), so no version check can tell two apart), and a
-    step that ran without the flag would put a source build in front of every user, including the
-    ones behind a PyPI mirror with no route to github.com.
+    The commit is the load-bearing part and is asserted rather than trusted: a branch ref would
+    leave nothing pinning behaviour, because any main build reports 0.41.0.dev0 and
+    ``_version_tuple`` truncates it to (0, 41, 0), so no version check can tell two apart. Now that
+    this installs by default that is a stronger requirement, not a weaker one, since the whole user
+    base would otherwise be on whatever main happened to be that morning.
     """
     assert MAIN_FILE.is_file(), f"{MAIN_FILE} is missing"
     lines = _requirements(MAIN_FILE)
@@ -130,7 +133,7 @@ def test_the_main_build_is_opt_in_and_pins_a_commit():
     )
 
     source = _code_only(STACK.read_text(encoding = "utf-8"))
-    # Installed only through the opt-in step, and that step is gated on the flag.
+    # Installed only through its own step, which reads the opt-out.
     assert "diffusers-main.txt" in source
     assert "_diffusers_main_requested" in source
     assert 'UNSLOTH_DIFFUSERS_MAIN' in source
@@ -138,56 +141,120 @@ def test_the_main_build_is_opt_in_and_pins_a_commit():
     # on the call site, not on the filename: the helper is DEFINED earlier in the file than either
     # install, so a filename compare answers a different question and passes by accident.
     call = "\n    _diffusers_main_step()\n"
-    assert call in source, "the opt-in step is never called"
+    assert call in source, "the main-build step is never called"
     assert source.index(call) > source.index('req = REQ_ROOT / "diffusers-pin.txt"')
 
 
-def test_the_main_build_step_does_nothing_without_the_flag(monkeypatch):
-    """The default install must not touch diffusers twice. A failure here is not a slow install,
-    it is a source build shipped to everyone."""
+def _probe_module(name: str):
     import importlib.util
 
-    spec = importlib.util.spec_from_file_location("install_python_stack_probe", STACK)
+    spec = importlib.util.spec_from_file_location(name, STACK)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
+    return module
+
+
+def test_the_main_build_is_on_by_default_and_opts_out_on_zero(monkeypatch):
+    """Default ON is the whole point, so the unset case is asserted, not assumed.
+
+    The opt-out is deliberately narrow: only an explicit falsy value turns it off, because a typo
+    in the variable name silently disabling a model is the worse failure of the two.
+    """
+    module = _probe_module("install_python_stack_probe")
 
     monkeypatch.delenv("UNSLOTH_DIFFUSERS_MAIN", raising = False)
-    assert module._diffusers_main_requested() is False
-    monkeypatch.setattr(
-        module, "pip_install", lambda *a, **k: pytest.fail("the opt-in step ran without the flag")
-    )
-    # _progress divides by a total the standalone module never set.
-    monkeypatch.setattr(module, "_progress", lambda *a, **k: None)
-    monkeypatch.setattr(module, "_note", lambda *a, **k: None)
-    module._diffusers_main_step()
-
-    for value in ("1", "true", "YES", "on"):
+    assert module._diffusers_main_requested() is True
+    for value in ("", "1", "true", "YES", "on", "anything"):
         monkeypatch.setenv("UNSLOTH_DIFFUSERS_MAIN", value)
         assert module._diffusers_main_requested() is True, value
+    for value in ("0", "false", "NO", "off", " off "):
+        monkeypatch.setenv("UNSLOTH_DIFFUSERS_MAIN", value)
+        assert module._diffusers_main_requested() is False, value
+
+    # And opting out really stops the step, rather than only stopping the message.
     monkeypatch.setenv("UNSLOTH_DIFFUSERS_MAIN", "0")
-    assert module._diffusers_main_requested() is False
+    monkeypatch.setattr(
+        module, "pip_install_try", lambda *a, **k: pytest.fail("the step ran after opting out")
+    )
+    # _progress divides by a total the standalone module never set.
+    progressed = []
+    monkeypatch.setattr(module, "_progress", lambda label, *a, **k: progressed.append(label))
+    monkeypatch.setattr(module, "_note", lambda *a, **k: None)
+    module._diffusers_main_step()
+    # It still spends its slot. The total is fixed before the opt-out is known, so returning early
+    # without a _progress leaves the bar stuck short of its own total for exactly these users.
+    assert len(progressed) == 1, progressed
 
 
 def test_the_main_build_keeps_the_release_when_there_is_no_git(monkeypatch):
     """Diffusers is mandatory, unlike triton_kernels, so a host with no working git must be left
     with the release the previous step installed rather than nothing at all."""
-    import importlib.util
+    module = _probe_module("install_python_stack_probe2")
 
-    spec = importlib.util.spec_from_file_location("install_python_stack_probe2", STACK)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-
-    monkeypatch.setenv("UNSLOTH_DIFFUSERS_MAIN", "1")
+    monkeypatch.delenv("UNSLOTH_DIFFUSERS_MAIN", raising = False)
     monkeypatch.setattr(module, "_has_working_git", lambda: False)
     monkeypatch.setattr(
-        module, "pip_install", lambda *a, **k: pytest.fail("a git requirement without git")
+        module, "pip_install_try", lambda *a, **k: pytest.fail("a git requirement without git")
     )
     monkeypatch.setattr(module, "_progress", lambda *a, **k: None)
     notes = []
     monkeypatch.setattr(module, "_note", lambda msg, *a, **k: notes.append(msg))
     module._diffusers_main_step()
-    # And it SAYS so, rather than leaving the flag looking honoured.
-    assert notes and "no working git" in notes[0]
+    # And it SAYS so, rather than leaving the install looking like it got the main build.
+    assert notes and "no working git" in notes[0].lower()
+
+
+def test_a_failed_main_build_degrades_instead_of_failing_the_install(monkeypatch):
+    """The one that makes default-on safe.
+
+    ``pip_install`` exits the installer. Using it here would make a reachable github.com a hard
+    requirement of installing Unsloth: a blocked proxy, an offline mirror or an upstream outage
+    would turn a working install into no install. The release pin is already resident, so the
+    failure is survivable and must be survived.
+    """
+    module = _probe_module("install_python_stack_probe3")
+
+    monkeypatch.delenv("UNSLOTH_DIFFUSERS_MAIN", raising = False)
+    monkeypatch.setattr(module, "_has_working_git", lambda: True)
+    monkeypatch.setattr(module, "_direct_reference_is_installed", lambda *a, **k: False)
+    monkeypatch.setattr(module, "_progress", lambda *a, **k: None)
+    monkeypatch.setattr(
+        module, "pip_install", lambda *a, **k: pytest.fail("pip_install exits the installer")
+    )
+    attempted = []
+    monkeypatch.setattr(
+        module, "pip_install_try", lambda *a, **k: (attempted.append(k.get("req")), False)[1]
+    )
+    notes = []
+    monkeypatch.setattr(module, "_note", lambda msg, *a, **k: notes.append(msg))
+    steps = {}
+    monkeypatch.setattr(module, "_record_step", lambda name, state: steps.__setitem__(name, state))
+
+    module._diffusers_main_step()
+
+    assert attempted and attempted[0].name == "diffusers-main.txt"
+    assert steps["diffusers-main.txt"] == "skipped", (
+        "a failed build recorded as 'ran' would report an install that never happened"
+    )
+    assert notes and "keeps the pinned" in notes[0]
+
+
+def test_the_main_build_is_satisfied_without_touching_the_network(monkeypatch):
+    """A full SHA is answerable from direct_url.json, and on by default this runs on every pass."""
+    module = _probe_module("install_python_stack_probe4")
+
+    monkeypatch.delenv("UNSLOTH_DIFFUSERS_MAIN", raising = False)
+    monkeypatch.setattr(module, "_has_working_git", lambda: True)
+    monkeypatch.setattr(module, "_direct_reference_is_installed", lambda *a, **k: True)
+    monkeypatch.setattr(module, "_progress", lambda *a, **k: None)
+    monkeypatch.setattr(module, "_note", lambda *a, **k: None)
+    monkeypatch.setattr(
+        module, "pip_install_try", lambda *a, **k: pytest.fail("reinstalled an installed pin")
+    )
+    steps = {}
+    monkeypatch.setattr(module, "_record_step", lambda name, state: steps.__setitem__(name, state))
+    module._diffusers_main_step()
+    assert steps["diffusers-main.txt"] == "skipped"
 
 
 def test_the_pin_step_is_not_gated_by_skip_base_or_no_torch():

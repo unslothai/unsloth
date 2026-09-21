@@ -1,25 +1,28 @@
-# OPT-IN ONLY. Never installed unless UNSLOTH_DIFFUSERS_MAIN=1 is set.
+# INSTALLED BY DEFAULT, on top of diffusers-pin.txt. Set UNSLOTH_DIFFUSERS_MAIN=0 to opt out.
 #
 # A pinned commit of Diffusers main, for models whose support has merged upstream but has not
 # reached a release yet. Today that is Qwen-Image-2.1: it merged on 2026-09-18, four weeks after
 # 0.40.0 was cut, so 0.41.0 is the first release that can carry it and there is nothing on PyPI
-# that works. Without this file the only way to try it is to break the release pin by hand.
+# that works. Without this file the only way to run it is to break the release pin by hand.
 #
-# Why this is a SEPARATE file rather than an edit to diffusers-pin.txt. That file is the single
-# source of truth for the release everything is built against, and it deliberately refuses a source
-# build so installs stay reproducible and keep working behind a PyPI mirror with no route to
-# github.com. Both properties are worth more than shipping one model early, so the default is
-# untouched and this is something you ask for.
+# Why this is a SEPARATE file rather than an edit to diffusers-pin.txt, even though both now run on
+# every install. That file is the single source of truth for the release everything is built
+# against, and it deliberately refuses a source build. Keeping them apart is what makes this one
+# survivable: the release lands first and stays resident, so a host with no git, no route to
+# github.com, or an upstream that is down for the afternoon keeps a working Studio and loses one
+# model, instead of failing the install outright. Folding the commit into the pin would make a
+# reachable github.com a hard requirement of installing Unsloth at all.
 #
 # Why a COMMIT and not a branch. Nothing in Unsloth can tell two builds of main apart: a git
 # checkout reports 0.41.0.dev0 whatever it was built from, and ``_version_tuple`` truncates that to
 # (0, 41, 0), so the family version gate reads any main build as satisfying 0.41.0. The commit is
-# therefore the only thing actually pinning behaviour. It is also cheaper to check: for a full SHA
+# therefore the only thing actually pinning behaviour, and with this on by default that matters
+# more, not less: everyone gets the same tree. It is also cheaper to check: for a full SHA
 # ``_direct_reference_is_installed`` compares what is recorded in direct_url.json and needs no
 # network, while a branch ref costs a git ls-remote on every pass.
 #
 # This exact commit is the tree the Qwen-Image-2.1 FP8 and INT8 artifacts were built and measured
-# against, so what a user opting in gets is what was tested, not "whatever main was that day".
+# against, so what a user gets is what was tested, not "whatever main was that day".
 #
 # Retiring this file: once 0.41.0 ships, bump diffusers-pin.txt to it and delete this. The family
 # entry already records 0.41.0 as QwenImage21Pipeline's minimum, so nothing else has to move.
