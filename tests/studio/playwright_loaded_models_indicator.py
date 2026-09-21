@@ -245,6 +245,7 @@ def why_no_card(
     page,
     state: Runtime,
     waited: str = "",
+    reads_before: int | None = None,
 ) -> str:
     """What the page actually looked like when a presence check went the wrong way.
 
@@ -252,7 +253,12 @@ def why_no_card(
     are the states that separate the causes, and each one names a different bug: a redirect or a route that never
     resolved (pathname), an SPA that never mounted (root_children 0), an auth slip that the /login guard in `boot`
     cannot catch on a mid-suite navigation (auth_token), a preference that was not seeded (show_pref), a poll that
-    never fired (status_reads flat against the previous line), and a bundle that threw (console).
+    never fired (status_reads), and a bundle that threw (console).
+
+    `Runtime.status_reads` counts every read since boot, so the raw total says nothing about the page that just
+    failed: a route whose poll never fired still reports whatever boot and the earlier routes accumulated. Callers
+    that navigate pass the count they took before the navigation and the report names the reads THIS page issued,
+    scoped the same way `console_errors` already is.
     """
 
     def probe(expression: str):
@@ -273,10 +279,15 @@ def why_no_card(
     mounted = probe("document.getElementById('root')?.childElementCount ?? -1")
     token = probe("Boolean(localStorage.getItem('unsloth_auth_token'))")
     shown = probe(f"localStorage.getItem({json.dumps(SHOW_KEY)})")
+    reads = (
+        f"{state.status_reads}"
+        if reads_before is None
+        else f"{state.status_reads - reads_before} (of {state.status_reads} since boot)"
+    )
     return (
         f"wait={waited or 'returned'} pathname={pathname!r} card_nodes={nodes(CARD)} "
         f"collapsed_pill={nodes(PILL)} root_children={mounted} auth_token={token} "
-        f"show_pref={shown!r} status_reads={state.status_reads} console={console_errors[-4:]}"
+        f"show_pref={shown!r} status_reads={reads} console={console_errors[-4:]}"
     )
 
 
@@ -439,6 +450,7 @@ def run(page, state: Runtime) -> None:
     for route in ("/hub", "/train", "/images"):
         # Scoped to this navigation, so a failure names what THIS route logged rather than everything since boot.
         console_errors.clear()
+        reads_before = state.status_reads
         page.goto(BASE + route, wait_until = "domcontentloaded")
         # Wait for the card, not for the clock. This is a hard navigation: a
         # full SPA reload plus a loaded-models poll, and 3000ms was the only
@@ -458,7 +470,9 @@ def run(page, state: Runtime) -> None:
                 f"NOTE card survives {route}: attached but not visible in {SETTLE_MS}ms ({waited})"
             )
         check(
-            f"card survives {route}", present, "" if present else why_no_card(page, state, waited)
+            f"card survives {route}",
+            present,
+            "" if present else why_no_card(page, state, waited, reads_before),
         )
 
     # ── Hardware shapes a CUDA runner never produces ────────────────────
@@ -650,6 +664,7 @@ def run(page, state: Runtime) -> None:
     page.wait_for_timeout(1500)
     check("collapses to a pill", page.locator(PILL).count() > 0)
     console_errors.clear()
+    reads_before = state.status_reads
     page.reload(wait_until = "domcontentloaded")
     # The last hard-navigation-plus-fixed-budget left in this file, and the same shape the /hub loop above was fixed
     # for: a reload has to re-parse the bundle and re-read the stored preference before the pill can exist, so wait
@@ -659,7 +674,7 @@ def run(page, state: Runtime) -> None:
     check(
         "the collapsed state survives a reload",
         restored,
-        "" if restored else why_no_card(page, state, waited),
+        "" if restored else why_no_card(page, state, waited, reads_before),
     )
 
     # ── Closed, then a load nobody announced ────────────────────────────
