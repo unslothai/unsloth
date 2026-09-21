@@ -3330,9 +3330,7 @@ class SdCppDiffusionBackend:
                 # POST is lost, so the reason has to outlive _gen, and the per-attempt
                 # record has to outlive the runs after it. Raw; the route classifies.
                 self._last_generate_error = str(exc) or type(exc).__name__
-                _retain_generate_failure(
-                    self, attempt_id, self._last_generate_error
-                )
+                _retain_generate_failure(self, attempt_id, self._last_generate_error)
                 raise
             else:
                 self._last_generate_error = None

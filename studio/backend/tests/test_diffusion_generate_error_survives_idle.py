@@ -31,7 +31,7 @@ ENGINES = ("core/inference/diffusion.py", "core/inference/sd_cpp_backend.py")
 
 
 def _src(rel: str) -> str:
-    return (Path(_BACKEND_DIR) / rel).read_text(encoding="utf-8")
+    return (Path(_BACKEND_DIR) / rel).read_text(encoding = "utf-8")
 
 
 @pytest.mark.parametrize("engine", ENGINES)
@@ -86,9 +86,9 @@ def test_the_route_classifies_it_and_never_relays_engine_text(monkeypatch):
     assert classified != raw and classified, "the raw text was relayed unchanged"
     # And it still says something specific rather than collapsing to the bare fallback,
     # which is the whole reason this PR touched these messages.
-    assert classified != route._GENERATE_FAILURE_FALLBACK, (
-        "an out-of-memory failure classified to the bare fallback"
-    )
+    assert (
+        classified != route._GENERATE_FAILURE_FALLBACK
+    ), "an out-of-memory failure classified to the bare fallback"
 
     # Nothing to say when nothing failed.
     assert route._generate_failure_detail("") == route._GENERATE_FAILURE_FALLBACK
@@ -100,9 +100,9 @@ def test_the_progress_route_puts_the_classified_reason_on_the_response():
     src = _src("routes/inference.py")
     at = src.index("async def diffusion_generate_progress")
     body = src[at : at + 4500]
-    assert '"error": _generate_failure_detail(raw_error) if raw_error else None' in body, (
-        "the progress route no longer classifies the retained reason"
-    )
+    assert (
+        '"error": _generate_failure_detail(raw_error) if raw_error else None' in body
+    ), "the progress route no longer classifies the retained reason"
 
 
 @pytest.mark.parametrize("engine", ENGINES)
@@ -114,22 +114,22 @@ def test_an_engine_identifies_the_reason_with_the_attempt_that_caused_it(engine)
     all. So the engine keeps the id the request carried, and a caller matches it exactly.
     """
     src = _src(engine)
-    assert "self._last_generate_attempt = attempt_id" in src, (
-        f"{engine} does not keep the attempt id, so a reason cannot be identified"
-    )
-    assert '"generation_attempt": getattr(self, "_last_generate_attempt", None),' in src, (
-        f"{engine} does not publish the attempt id beside the reason"
-    )
-    assert "attempt_id: Optional[str] = None," in src, (
-        f"{engine} does not accept an attempt id from the route"
-    )
+    assert (
+        "self._last_generate_attempt = attempt_id" in src
+    ), f"{engine} does not keep the attempt id, so a reason cannot be identified"
+    assert (
+        '"generation_attempt": getattr(self, "_last_generate_attempt", None),' in src
+    ), f"{engine} does not publish the attempt id beside the reason"
+    assert (
+        "attempt_id: Optional[str] = None," in src
+    ), f"{engine} does not accept an attempt id from the route"
     # Recorded where the run STARTS, beside the clear, or the id and the reason would
     # describe different moments.
     recorded = src.index("self._last_generate_attempt = attempt_id")
     clear = src.index("self._last_generate_error = None")
-    assert 0 < recorded - clear < 600, (
-        f"{engine} records the attempt id away from where the reason is cleared"
-    )
+    assert (
+        0 < recorded - clear < 600
+    ), f"{engine} records the attempt id away from where the reason is cleared"
     # And no counter left behind: a monotonic lower bound is what this replaced, and leaving
     # it published invites the comparison it cannot support.
     assert "generation_seq" not in src, f"{engine} still publishes the superseded counter"
@@ -143,9 +143,9 @@ def test_the_route_forwards_the_attempt_id_and_sends_it_only_beside_a_reason():
     """
     src = _src("routes/inference.py")
     at = src.index("async def generate_diffusion_image")
-    assert "attempt_id = request.attempt_id," in src[at : at + 4000], (
-        "the generate route no longer forwards the attempt id to the engine"
-    )
+    assert (
+        "attempt_id = request.attempt_id," in src[at : at + 4000]
+    ), "the generate route no longer forwards the attempt id to the engine"
     at = src.index("async def diffusion_generate_progress")
     body = src[at : at + 4500]
     assert 'if not progress.get("error"):' in body
@@ -182,9 +182,9 @@ def test_a_failure_survives_the_runs_that_follow_it():
     _retain_generate_failure(engine, "attempt-a", "CUDA out of memory")
     # B starts and fails; A has not polled yet.
     _retain_generate_failure(engine, "attempt-b", "model was replaced")
-    assert generate_failure_for_attempt(engine, "attempt-a") == "CUDA out of memory", (
-        "a later run discarded the reason the settling client is waiting for"
-    )
+    assert (
+        generate_failure_for_attempt(engine, "attempt-a") == "CUDA out of memory"
+    ), "a later run discarded the reason the settling client is waiting for"
     assert generate_failure_for_attempt(engine, "attempt-b") == "model was replaced"
     # An attempt that never failed, or never ran, has nothing to report.
     assert generate_failure_for_attempt(engine, "attempt-c") is None
@@ -209,14 +209,14 @@ def test_a_failure_survives_the_runs_that_follow_it():
 def test_an_engine_records_the_failure_against_its_own_attempt(engine):
     """Both engines, at the point where they already retain the reason."""
     src = _src(engine)
-    assert "_retain_generate_failure(" in src, (
-        f"{engine} does not record the failure against the attempt that ran it"
-    )
+    assert (
+        "_retain_generate_failure(" in src
+    ), f"{engine} does not record the failure against the attempt that ran it"
     retained = src.index("self._last_generate_error = str(exc) or type(exc).__name__")
     recorded = src.index("_retain_generate_failure(", retained)
-    assert recorded - retained < 300, (
-        f"{engine} records the per-attempt outcome away from where it retains the reason"
-    )
+    assert (
+        recorded - retained < 300
+    ), f"{engine} records the per-attempt outcome away from where it retains the reason"
 
 
 def test_the_progress_route_answers_about_the_attempt_it_was_asked_about():
@@ -224,13 +224,13 @@ def test_the_progress_route_answers_about_the_attempt_it_was_asked_about():
     src = _src("routes/inference.py")
     at = src.index("async def diffusion_generate_progress")
     body = src[at : at + 4500]
-    assert "attempt_id: Optional[str] = Query(" in body, (
-        "the progress route cannot be asked about a particular attempt"
-    )
+    assert (
+        "attempt_id: Optional[str] = Query(" in body
+    ), "the progress route cannot be asked about a particular attempt"
     assert "generate_failure_for_attempt(engine, attempt_id)" in body
-    assert "if attempt_id is not None:" in body, (
-        "an older client with no attempt id no longer gets the retained slot"
-    )
+    assert (
+        "if attempt_id is not None:" in body
+    ), "an older client with no attempt id no longer gets the retained slot"
 
 
 def test_the_native_cancel_branch_records_its_attempt_too():
@@ -245,9 +245,9 @@ def test_the_native_cancel_branch_records_its_attempt_too():
     src = _src("core/inference/sd_cpp_backend.py")
     at = src.index("except SdCppCancelled as exc:")
     branch = src[at : at + 700]
-    assert "_retain_generate_failure(self, attempt_id, DIFFUSION_CANCELLED_MSG)" in branch, (
-        "a cancelled native generation records nothing against its attempt"
-    )
+    assert (
+        "_retain_generate_failure(self, attempt_id, DIFFUSION_CANCELLED_MSG)" in branch
+    ), "a cancelled native generation records nothing against its attempt"
     # Before the re-raise, or it never runs.
     assert branch.index("_retain_generate_failure") < branch.index("raise RuntimeError(")
 
@@ -263,9 +263,9 @@ def test_an_engine_says_whose_run_is_active(engine):
     src = _src(engine)
     at = src.index("def generate_progress")
     body = src[at : at + 2200]
-    assert body.count('"generation_attempt": getattr(self, "_last_generate_attempt", None),') == 2, (
-        f"{engine} does not publish the running attempt on both progress branches"
-    )
+    assert (
+        body.count('"generation_attempt": getattr(self, "_last_generate_attempt", None),') == 2
+    ), f"{engine} does not publish the running attempt on both progress branches"
 
 
 def test_an_attempt_specific_progress_answer_is_only_about_that_attempt():
@@ -324,12 +324,12 @@ def test_an_attempt_specific_progress_answer_is_only_about_that_attempt():
             route.account_access = original
 
     mine = answer(running_for_someone_else, "attempt-mine")
-    assert mine.active is False, (
-        "a run belonging to another attempt was reported as this caller's"
-    )
-    assert (mine.step, mine.total_steps, mine.eta_seconds) == (0, 0, None), (
-        "another attempt's step counter was reported as this caller's progress"
-    )
+    assert mine.active is False, "a run belonging to another attempt was reported as this caller's"
+    assert (mine.step, mine.total_steps, mine.eta_seconds) == (
+        0,
+        0,
+        None,
+    ), "another attempt's step counter was reported as this caller's progress"
 
     theirs = answer(running_for_someone_else, "attempt-theirs")
     assert theirs.active is True, "the attempt that IS running must be told so"
@@ -364,12 +364,10 @@ def test_a_retained_outcome_is_the_callers_own_account(monkeypatch):
     bo = AccountContext("acct-b", "bo")
 
     run_as(ada, _retain_generate_failure, engine, "attempt-1", "CUDA out of memory")
-    assert run_as(ada, generate_failure_for_attempt, engine, "attempt-1") == (
-        "CUDA out of memory"
-    )
-    assert run_as(bo, generate_failure_for_attempt, engine, "attempt-1") is None, (
-        "another account read an attempt's retained failure"
-    )
+    assert run_as(ada, generate_failure_for_attempt, engine, "attempt-1") == ("CUDA out of memory")
+    assert (
+        run_as(bo, generate_failure_for_attempt, engine, "attempt-1") is None
+    ), "another account read an attempt's retained failure"
     # And the owner is a third scope again.
     assert generate_failure_for_attempt(engine, "attempt-1") is None
 
@@ -380,9 +378,9 @@ def test_a_retained_outcome_is_the_callers_own_account(monkeypatch):
     body = src[at : at + 4500]
     lookup = body.index("generate_failure_for_attempt(get_active_diffusion_engine()")
     guard = body.index('account_access.generation_is_foreign("diffusion")')
-    assert lookup < guard, (
-        "the named lookup runs after the guard that hides another account's generation"
-    )
+    assert (
+        lookup < guard
+    ), "the named lookup runs after the guard that hides another account's generation"
 
 
 def test_a_persisting_generation_counts_as_active_only_for_its_own_attempt():
@@ -445,12 +443,12 @@ def test_a_persisting_generation_counts_as_active_only_for_its_own_attempt():
         route._diffusion_persist_attempts.clear()
         route._note_persisting_attempt(attempt_scope_key("attempt-theirs"), 1)
 
-        assert answer("attempt-mine").active is False, (
-            "another attempt's persist window was reported as this caller's activity"
-        )
-        assert answer("attempt-theirs").active is True, (
-            "the attempt whose records ARE being written must still be told so"
-        )
+        assert (
+            answer("attempt-mine").active is False
+        ), "another attempt's persist window was reported as this caller's activity"
+        assert (
+            answer("attempt-theirs").active is True
+        ), "the attempt whose records ARE being written must still be told so"
         # An unnamed poll keeps the global answer: that is what the reload mount probe reads.
         assert answer(None).active is True
     finally:

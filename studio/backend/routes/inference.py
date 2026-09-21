@@ -39562,7 +39562,6 @@ async def diffusion_generate_progress(
     # account-qualified, so this can only ever answer about the caller's own attempt.
     if attempt_id is not None:
         from core.inference.generate_outcomes import generate_failure_for_attempt
-
         retained = generate_failure_for_attempt(get_active_diffusion_engine(), attempt_id)
         if retained:
             return DiffusionGenerateProgressResponse(
@@ -39637,7 +39636,6 @@ async def diffusion_generate_progress(
             progress = {**progress, "active": True}
         else:
             from core.inference.generate_outcomes import attempt_scope_key
-
             if _diffusion_persist_attempts.get(attempt_scope_key(attempt_id) or ""):
                 progress = {**progress, "active": True}
     return DiffusionGenerateProgressResponse(**progress)
