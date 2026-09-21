@@ -339,6 +339,9 @@ const DROP_CUE_BOTTOM = `${DROP_CUE_BASE} before:bottom-0`;
 // Kept inside the box for the same clipping reason.
 const DROP_INTO_CUE =
   "before:pointer-events-none before:absolute before:inset-x-1 before:inset-y-0 before:rounded-2xl before:bg-primary/8 before:ring-1 before:ring-inset before:ring-primary/70 before:content-['']";
+// The menu keeps a 1px gap between rows. A pointer resting on that gap would hit the section
+// instead, which answers with its last slot, so each row's box reaches over the gap below it.
+const DROP_ROW_HIT = "pb-px -mb-px";
 // A closed section has no body to light, so its header takes the tint.
 const DROP_INTO_HEADER_CUE =
   "rounded-full bg-primary/8 ring-1 ring-inset ring-primary/70";
@@ -3372,10 +3375,12 @@ export function AppSidebar() {
     );
     const hasUnreadActivity =
       !isGenerating && !hasQueuedActivity && alreadyUnread;
-    const itemClass =
+    const itemClass = cn(
       variant === "project"
         ? "group/project-chat-item relative"
-        : "group/recent-item relative";
+        : "group/recent-item relative",
+      DROP_ROW_HIT,
+    );
     const actionClass =
       variant === "project"
         ? "sidebar-row-action sidebar-touch-reveal group-hover/project-chat-item:opacity-100 group-hover/project-chat-item:pointer-events-auto focus-visible:opacity-100 focus-visible:pointer-events-auto"
@@ -3824,6 +3829,7 @@ export function AppSidebar() {
         <SidebarMenuItem
           className={cn(
             "group/recent-item relative",
+            DROP_ROW_HIT,
             draggingRow?.id === project.id && "opacity-50",
             dropCueClass(order.scope, project.id),
             // Lit while a chat is over the folder row or any of the chats inside it.

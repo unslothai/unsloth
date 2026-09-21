@@ -188,6 +188,9 @@ function planPinnedDrop(
     } else {
       target = { id: zone.row.id, edge };
     }
+  } else if (zone.folderId) {
+    // A folder block's own rows (Show more, or an empty folder) are its tail: below it.
+    target = { id: zone.folderId, edge: "bottom" };
   } else if (ids.length > 0) {
     // The section's own space: last.
     target = { id: ids[ids.length - 1], edge: "bottom" };

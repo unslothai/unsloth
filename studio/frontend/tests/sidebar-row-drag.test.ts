@@ -423,6 +423,23 @@ test("a folder reorders among its own list, and the block under it aims at it", 
   assert.deepEqual(lower?.effects.orders, [
     { scope: PINNED_ORDER_SCOPE, ids: ["work", "play", "p1"] },
   ]);
+  // Over a block's own rows, Show more or an empty folder, it lands below that folder.
+  const tail = planSidebarDrop(
+    folder("play", "pinned", PINNED_ORDER_SCOPE),
+    {
+      section: "pinned",
+      folderId: "work",
+      blockEnd: { scope: projectOrderScope("work"), id: "c2" },
+    },
+    "top",
+    ctx,
+  );
+  assert.deepEqual(tail?.cue, {
+    line: { rowKey: rowKey(projectOrderScope("work"), "c2"), edge: "bottom" },
+  });
+  assert.deepEqual(tail?.effects.orders, [
+    { scope: PINNED_ORDER_SCOPE, ids: ["work", "play", "p1"] },
+  ]);
   // A folder lands between pinned chats too: Pinned is one list.
   const belowChat = planSidebarDrop(
     folder("work", "pinned", PINNED_ORDER_SCOPE),
@@ -645,6 +662,20 @@ test("a row over itself claims the drag and paints nothing", () => {
     /if \(next === STAY\) \{\n\s*\/\/[^\n]*\n\s*cancelSpring\(\);\n\s*showPlan\(null\);\n\s*return;\n\s*\}/,
   );
   assert.match(HOOK, /if \(next !== STAY\) optionsRef\.current\.onDrop\(next, dragged\);/);
+});
+
+// The menu keeps a 1px gap between rows. A pointer on it would hit the section, whose answer
+// is its last slot, so every draggable row's box reaches over the gap below it.
+test("rows cover the gap between them, so the section never answers for it", () => {
+  assert.match(APP_SIDEBAR, /const DROP_ROW_HIT = "pb-px -mb-px";/);
+  assert.match(
+    APP_SIDEBAR,
+    /: "group\/recent-item relative",\n\s*DROP_ROW_HIT,\n\s*\);/,
+  );
+  assert.match(
+    APP_SIDEBAR,
+    /"group\/recent-item relative",\n\s*DROP_ROW_HIT,\n\s*draggingRow\?\.id === project\.id/,
+  );
 });
 
 // A section's collapsible clips its overflow, so cues stay inside the row.
