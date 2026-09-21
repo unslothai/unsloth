@@ -637,3 +637,52 @@ def test_a_checkout_the_child_reaches_first_is_not_answered_for_by_the_cached_wh
     empty.mkdir()
     monkeypatch.setenv("PYTHONPATH", str(empty))
     assert _llm_compressor_module_is_usable(_module_at(str(wheel), "0.12.0")) is True
+
+
+def test_an_empty_pythonpath_component_is_the_current_directory(tmp_path, monkeypatch):
+    """`PYTHONPATH=/opt/lib:` puts the CWD on the child's path, at that position.
+
+    Verified on 3.13: the empty component is absolutized into the child's sys.path where it
+    sits in PYTHONPATH, so dropping it mismodelled the child and a cwd checkout it would
+    import ahead of the cached wheel went unnoticed. A trailing separator is the ordinary
+    way a PYTHONPATH ends up with one.
+    """
+    import subprocess as sp
+    import sysconfig
+
+    from unsloth.save import _llm_compressor_module_is_usable
+
+    def _provide(root: str):
+        package = tmp_path / root / "llmcompressor"
+        package.mkdir(parents = True)
+        (package / "__init__.py").write_text("")
+        return package / "__init__.py"
+
+    # The premise, measured rather than assumed, with a FILE-based run like the export's.
+    probe = tmp_path / "probe.py"
+    probe.write_text("import os, sys\nprint(os.getcwd() in sys.path[1:])\n")
+    seen = sp.run(
+        [sys.executable, str(probe)],
+        cwd = str(tmp_path),
+        env = {**os.environ, "PYTHONPATH": str(tmp_path / "other") + os.pathsep},
+        stdout = sp.PIPE,
+        text = True,
+    )
+    assert (
+        seen.stdout.strip() == "True"
+    ), "an empty PYTHONPATH component no longer names the cwd, so this case is stale"
+
+    wheel = _provide("site-packages")
+    _provide("cwd-checkout")
+    monkeypatch.setattr(
+        sysconfig, "get_paths", lambda: {"purelib": str(tmp_path / "site-packages")}
+    )
+    monkeypatch.chdir(tmp_path / "cwd-checkout")
+    monkeypatch.setenv("PYTHONPATH", str(tmp_path / "unrelated") + os.pathsep)
+    assert (
+        _llm_compressor_module_is_usable(_module_at(str(wheel), "0.12.0")) is False
+    ), "a cwd checkout the child reaches through an empty PYTHONPATH component was ignored"
+
+    # Without that component the cwd is on no path the child has, so the wheel answers.
+    monkeypatch.setenv("PYTHONPATH", str(tmp_path / "unrelated"))
+    assert _llm_compressor_module_is_usable(_module_at(str(wheel), "0.12.0")) is True

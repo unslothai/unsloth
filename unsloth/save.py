@@ -1767,9 +1767,15 @@ def _llm_compressor_module_is_usable(module):
             # cannot import and the failure landed after the whole merge.
             runner_dir = os.path.dirname(os.path.abspath(__file__))
             roots = [runner_dir]
-            roots += [
-                entry for entry in os.environ.get("PYTHONPATH", "").split(os.pathsep) if entry
-            ]
+            # An EMPTY component is the current directory, which the child absolutizes into
+            # its sys.path at the PYTHONPATH position (verified on 3.13: `PYTHONPATH=/opt/lib:`
+            # puts the cwd there). Dropping it mismodelled the child, so a cwd checkout it
+            # would import ahead of the cached wheel went unnoticed. A trailing separator is
+            # the ordinary way this happens.
+            # An empty PYTHONPATH adds nothing at all, which is not the same thing.
+            pythonpath = os.environ.get("PYTHONPATH", "")
+            if pythonpath:
+                roots += [entry or os.getcwd() for entry in pythonpath.split(os.pathsep)]
             import sysconfig
 
             for key in ("purelib", "platlib", "stdlib", "platstdlib"):
