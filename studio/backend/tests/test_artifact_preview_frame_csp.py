@@ -145,3 +145,46 @@ def test_the_shell_generator_matches_the_app_one():
     ):
         assert expression in boot
         assert expression in shell
+
+
+def test_the_shell_reports_runtime_errors_and_console_output():
+    # A JS error in the canvas used to come up blank with nothing to hand to the
+    # model. Both report types cross as plain fields the parent clips and escapes.
+    shell = inf_mod._ARTIFACT_PREVIEW_FRAME_HTML
+    assert '"unsloth:artifact-error"' in shell
+    assert '"unsloth:artifact-console"' in shell
+    assert 'window.addEventListener("error", reportError)' in shell
+    assert 'window.addEventListener("unhandledrejection", reportRejection)' in shell
+    assert "captureConsole();" in shell
+
+
+def test_error_listeners_bind_between_open_and_write():
+    # document.open() clears the window's listeners, and an inline script's error
+    # fires during document.write(), so binding before open() or after close()
+    # misses the most common error a model writes: a synchronous top-level throw.
+    shell = inf_mod._ARTIFACT_PREVIEW_FRAME_HTML
+    opened = shell.index("document.open();")
+    wrote = shell.index("document.write(html);")
+    for listener in (
+        'window.addEventListener("error", reportError)',
+        'window.addEventListener("unhandledrejection", reportRejection)',
+        "captureConsole();",
+    ):
+        assert opened < shell.index(listener) < wrote
+
+
+def test_error_and_console_reports_carry_the_load_stamp():
+    # Same reason as the blocked reports: a report in flight when the canvas is
+    # swapped must not pin its error on the new code.
+    shell = inf_mod._ARTIFACT_PREVIEW_FRAME_HTML
+    assert shell.index("const loadVersion") < shell.index("const report = (fields) =>")
+    assert "{ ...fields, v: loadVersion }" in shell
+
+
+def test_the_shell_caps_and_clips_what_it_reports():
+    # The parent bounds what it keeps, but every postMessage still lands on the
+    # parent's thread, so the shell stops after a fixed number and clips each string.
+    shell = inf_mod._ARTIFACT_PREVIEW_FRAME_HTML
+    assert "const REPORTS_MAX = 1000;" in shell
+    assert "if (reportsLeft <= 0) return;" in shell
+    assert "const REPORT_MAX_CHARS = 2048;" in shell

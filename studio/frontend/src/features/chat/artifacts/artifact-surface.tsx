@@ -11,11 +11,12 @@ import {
 } from "@/components/assistant-ui/code-themes";
 import { MascotImg } from "@/components/mascot-img";
 import { Button } from "@/components/ui/button";
+import { useT } from "@/i18n";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { downloadFile, isDownloadCancelled } from "@/lib/native-files";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
-import { EyeIcon, XIcon } from "lucide-react";
+import { EyeIcon, TerminalIcon, XIcon } from "lucide-react";
 import {
   Copy01Icon,
   Download01Icon,
@@ -112,6 +113,10 @@ export function ArtifactSurface({
   // Follow the view the opener asked for (Preview vs Code button), per artifact.
   const requestedView = useChatArtifactsStore((state) => state.requestedView);
   const [copied, setCopied] = useState(false);
+  const t = useT();
+  const [consoleOpen, setConsoleOpen] = useState(false);
+  const [outputCounts, setOutputCounts] = useState({ errors: 0, total: 0 });
+  const consoleLabel = t("settings.chat.artifacts.consoleTitle");
   const copyResetRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const surfaceRef = useRef<HTMLElement>(null);
   const closeButtonRef = useRef<HTMLButtonElement>(null);
@@ -222,47 +227,79 @@ export function ArtifactSurface({
           variant === "panel" && "rounded-t-[28px]",
         )}
       >
-        <div
-          className="flex items-center gap-1 rounded-full bg-muted/40 p-0.5"
-          role="tablist"
-          aria-label="Canvas view"
-        >
-          {(["preview", "source"] as const).map((mode) => {
-            const isPreview = mode === "preview";
-            const Icon = isPreview ? EyeIcon : CodeToggleIcon;
-            return (
-              <button
-                key={mode}
-                type="button"
-                role="tab"
-                disabled={isLoadingArtifact && !isPreview}
-                onClick={() => setViewMode(mode)}
-                className={cn(
-                  "flex size-8 items-center justify-center rounded-full text-muted-foreground transition-colors",
-                  effectiveViewMode === mode
-                    ? "bg-background text-foreground shadow-sm"
-                    : "hover:bg-background/70 hover:text-foreground",
-                  isLoadingArtifact &&
-                    !isPreview &&
-                    "cursor-not-allowed opacity-50",
-                )}
-                aria-label={
-                  isPreview ? "Preview canvas" : "View canvas source"
-                }
-                aria-selected={effectiveViewMode === mode}
-                aria-pressed={effectiveViewMode === mode}
-                title={
-                  isPreview
-                    ? "Preview"
-                    : isLoadingArtifact
-                      ? "Source available when generation finishes"
-                      : "Source"
-                }
-              >
-                <Icon className="size-4" />
-              </button>
-            );
-          })}
+        <div className="flex items-center gap-2">
+          <div
+            className="flex items-center gap-1 rounded-full bg-muted/40 p-0.5"
+            role="tablist"
+            aria-label="Canvas view"
+          >
+            {(["preview", "source"] as const).map((mode) => {
+              const isPreview = mode === "preview";
+              const Icon = isPreview ? EyeIcon : CodeToggleIcon;
+              return (
+                <button
+                  key={mode}
+                  type="button"
+                  role="tab"
+                  disabled={isLoadingArtifact && !isPreview}
+                  onClick={() => setViewMode(mode)}
+                  className={cn(
+                    "flex size-8 items-center justify-center rounded-full text-muted-foreground transition-colors",
+                    effectiveViewMode === mode
+                      ? "bg-background text-foreground shadow-sm"
+                      : "hover:bg-background/70 hover:text-foreground",
+                    isLoadingArtifact &&
+                      !isPreview &&
+                      "cursor-not-allowed opacity-50",
+                  )}
+                  aria-label={
+                    isPreview ? "Preview canvas" : "View canvas source"
+                  }
+                  aria-selected={effectiveViewMode === mode}
+                  aria-pressed={effectiveViewMode === mode}
+                  title={
+                    isPreview
+                      ? "Preview"
+                      : isLoadingArtifact
+                        ? "Source available when generation finishes"
+                        : "Source"
+                  }
+                >
+                  <Icon className="size-4" />
+                </button>
+              );
+            })}
+          </div>
+          <button
+            type="button"
+            disabled={isLoadingArtifact}
+            aria-pressed={consoleOpen && effectiveViewMode === "preview"}
+            aria-label={consoleLabel}
+            title={consoleLabel}
+            onClick={() => {
+              // The console sits under the preview, so from the source view it switches back.
+              if (effectiveViewMode !== "preview") {
+                setViewMode("preview");
+                setConsoleOpen(true);
+                return;
+              }
+              setConsoleOpen((open) => !open);
+            }}
+            className={cn(
+              "flex h-8 items-center gap-1.5 rounded-full px-2.5 text-muted-foreground transition-colors",
+              consoleOpen && effectiveViewMode === "preview"
+                ? "bg-muted/60 text-foreground"
+                : "hover:bg-muted/40 hover:text-foreground",
+              isLoadingArtifact && "cursor-not-allowed opacity-50",
+            )}
+          >
+            <TerminalIcon className="size-4" />
+            {outputCounts.errors > 0 ? (
+              <span className="rounded-full bg-destructive px-1.5 text-[10px] font-medium leading-4 text-destructive-foreground">
+                {outputCounts.errors}
+              </span>
+            ) : null}
+          </button>
         </div>
         <div className="flex shrink-0 items-center gap-1">
           <Button
@@ -352,6 +389,10 @@ export function ArtifactSurface({
             actionFocusTargetRef={
               variant === "overlay" ? closeButtonRef : undefined
             }
+            consoleOpen={consoleOpen}
+            onConsoleOpenChange={setConsoleOpen}
+            onOutputCountChange={setOutputCounts}
+            onFixWithModel={variant === "overlay" ? onClose : undefined}
           />
         ) : (
           <div className="h-full overflow-auto text-xs leading-relaxed [&_[data-streamdown=code-block]]:!my-0 [&_[data-streamdown=code-block]]:!gap-0 [&_[data-streamdown=code-block]]:!rounded-none [&_[data-streamdown=code-block]]:!border-0 [&_[data-streamdown=code-block]]:!bg-transparent [&_[data-streamdown=code-block]]:!p-0 [&_[data-streamdown=code-block-body]]:!border-0 [&_[data-streamdown=code-block-body]]:!bg-transparent [&_[data-streamdown=code-block-body]]:!p-0 [&_pre]:!m-0 [&_pre]:!bg-transparent [&_pre]:!p-0 [&_pre]:text-xs [&_pre]:leading-relaxed [&_code]:text-xs">
