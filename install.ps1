@@ -4136,11 +4136,9 @@ exit 1
         return $Text -replace '(https?://[^\s`#]+)#[^\s`]+', '$1#<redacted>'
     }
 
-    # True when the operator asked for their pip/uv policy to be left in force. Mirrors
-    # _respect_pm_policy() in studio/install_python_stack.py and install.sh, including its
-    # set, so the same variable means the same thing at every entry point. A hand-maintained
-    # duplicate of studio/setup.ps1's copy, like the UNSLOTH_ENABLE_AMD_SMI pair: this sits
-    # OUTSIDE the shared block above, so it is not under the sync script's contract.
+    # Must answer as _respect_pm_policy() does in install.sh and install_python_stack.py.
+    # A hand-maintained duplicate of setup.ps1's copy, like the UNSLOTH_ENABLE_AMD_SMI pair;
+    # sits OUTSIDE the shared block above, so the sync script's contract does not cover it.
     function Test-RespectPmPolicy {
         $value = [string][Environment]::GetEnvironmentVariable('UNSLOTH_RESPECT_PM_POLICY')
         return (@('1', 'true', 'yes', 'on') -contains $value.Trim().ToLowerInvariant())
@@ -4152,9 +4150,8 @@ exit 1
             [string]$Label = "install command"
         )
         # A pinned index must beat an inherited uv mirror (#6898); UV_NO_CONFIG=1 blocks uv.toml.
-        # This runs before install_python_stack.py, so the Python side's opt-out cannot cover
-        # it: under the opt-out keep UV_CONFIG_FILE, UV_NO_CONFIG and UV_FIND_LINKS so the
-        # operator's uv.toml binds the pinned install too. The ADDITIVE ones still go.
+        # Runs before install_python_stack.py, so the Python opt-out cannot cover it: under the
+        # opt-out the uv.toml binds this install too, and only the ADDITIVE vars go.
         $respectPolicy = Test-RespectPmPolicy
         $savedUvIndex = $null
         if ($Command.ToString() -match '--default-index') {
@@ -4212,8 +4209,7 @@ exit 1
             $ErrorActionPreference = $prevEap
             if ($savedUvIndex) {
                 # Only clear what this function SET: under the opt-out UV_NO_CONFIG was
-                # neither saved nor overwritten, so removing it would destroy the
-                # operator's own value for the rest of the run.
+                # neither saved nor overwritten, so removing it destroys the operator's own.
                 if (-not $respectPolicy) { Remove-Item "Env:UV_NO_CONFIG" -ErrorAction SilentlyContinue }
                 foreach ($n in $savedUvIndex.Keys) { if ($null -ne $savedUvIndex[$n]) { Set-Item "Env:$n" $savedUvIndex[$n] } }
             }
