@@ -40,7 +40,6 @@ import {
   supportsProviderPromptCacheTtl,
   supportsProviderReasoningToggle,
 } from "./external-providers";
-import { withProviderModelUpdate } from "./stores/external-providers-store";
 
 const OPENAI_DEPRECATED_MODELS = new Set(["gpt-5.3"]);
 // Rejected for every ChatGPT account, so drop it from selections saved earlier.
@@ -191,7 +190,7 @@ export function mergeLocalProviderOptions(
 
 
 
-export function preserveConcurrentLlamaCppModelUpdates(
+export function preserveConcurrentLlamaCppUpdates(
   syncedProviders: ExternalProviderConfig[],
   previousProviders: ExternalProviderConfig[],
   currentProviders: ExternalProviderConfig[],
@@ -206,17 +205,29 @@ export function preserveConcurrentLlamaCppModelUpdates(
     if (synced.providerType !== "llama_cpp") return synced;
     const previous = previousById.get(synced.id);
     const current = currentById.get(synced.id);
-    const merged = mergeLocalProviderOptions(current, synced);
+    let merged = mergeLocalProviderOptions(current, synced);
+    if (!previous || !current) return merged;
     if (
-      !previous || !current ||
-      (previous.models === current.models &&
-        previous.availableModels === current.availableModels)
-    ) return merged;
-    return {
-      ...merged,
-      models: current.models,
-      availableModels: current.availableModels,
-    };
+      previous.baseUrl !== current.baseUrl ||
+      previous.hasApiKey !== current.hasApiKey
+    ) {
+      merged = {
+        ...merged,
+        baseUrl: current.baseUrl,
+        hasApiKey: current.hasApiKey,
+      };
+    }
+    if (
+      previous.models !== current.models ||
+      previous.availableModels !== current.availableModels
+    ) {
+      merged = {
+        ...merged,
+        models: current.models,
+        availableModels: current.availableModels,
+      };
+    }
+    return merged;
   });
 }
 
@@ -312,39 +323,15 @@ export async function syncExternalProvidersFromBackend(
         serverModels.length === 0 && savedModels.length > 0;
       const needsAvailableBackfill =
         serverAvailableModels.length === 0 && savedAvailableModels.length > 0;
-      if (needsModelBackfill || needsAvailableBackfill) {
-        const backfill = () =>
+      // A llama.cpp settings snapshot cannot safely compare then backfill across tabs without
+      // backend CAS support. Leave its catalog writes to queued manual and live-refresh paths.
+      const settingsMayBackfill = uiProviderType !== "llama_cpp";
+      if ((needsModelBackfill || needsAvailableBackfill) && settingsMayBackfill) {
+        backfillTasks.push(() =>
           updateProviderConfig(config.id, {
             models: resolvedModels,
             availableModels: resolvedAvailableModels,
-          });
-        backfillTasks.push(
-          uiProviderType === "llama_cpp"
-            ? () => withProviderModelUpdate(config.id, async () => {
-                const current = (await listProviderConfigs()).find(
-                  (provider) => provider.id === config.id,
-                );
-                if (!current) return;
-                const currentModels = pruneProviderModelIds(
-                  uiProviderType,
-                  current.models ?? [],
-                );
-                const currentAvailableModels = pruneProviderModelIds(
-                  uiProviderType,
-                  current.available_models ?? [],
-                );
-                const models =
-                  needsModelBackfill && currentModels.length === 0
-                    ? resolvedModels
-                    : undefined;
-                const availableModels =
-                  needsAvailableBackfill && currentAvailableModels.length === 0
-                    ? resolvedAvailableModels
-                    : undefined;
-                if (!models && !availableModels) return;
-                await updateProviderConfig(config.id, { models, availableModels });
-              })
-            : backfill,
+          }),
         );
       }
       const synced: ExternalProviderConfig = {

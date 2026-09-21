@@ -87,9 +87,17 @@ export function startLlamaCppAutoReload(intervalMs = 10_000): () => void {
         ];
         // an empty catalog during server startup must not erase the last working selection.
         if (availableModels.length === 0) return;
-        const savedModels = saved.models ?? latest.models;
-        const savedCatalog =
-          saved.available_models ?? latest.availableModels ?? savedModels;
+        const hasSavedCatalog =
+          (saved.models?.length ?? 0) > 0 ||
+          (saved.available_models?.length ?? 0) > 0;
+        // Older configs can have no durable catalog yet. In that case the recovered local
+        // selection remains authoritative until this first queued live refresh persists it.
+        const savedModels = hasSavedCatalog
+          ? (saved.models ?? latest.models)
+          : latest.models;
+        const savedCatalog = hasSavedCatalog
+          ? (saved.available_models ?? latest.availableModels ?? savedModels)
+          : (latest.availableModels ?? savedModels);
         const previousCatalog = new Set(savedCatalog);
         const selected = new Set(savedModels);
         const manualModels = savedModels.filter(

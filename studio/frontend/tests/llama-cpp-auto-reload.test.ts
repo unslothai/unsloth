@@ -142,6 +142,7 @@ test("monitor refreshes once per connection, retains selections, retries failure
       })),
     );
   store.getState().setProviders([provider]);
+  savedConfigs.set(provider.id, { models: [], available_models: [] });
   store.getState().setConnectionsEnabled(true);
   const stop = startLlamaCppAutoReload(10);
   try {
@@ -474,7 +475,7 @@ test("credential-state replacement retires an in-flight llama.cpp poll", async (
   }
 });
 
-test("delayed llama.cpp backfill does not overwrite a newer catalog", async () => {
+test("llama.cpp catalogs are never overwritten by settings backfill", async () => {
   const storage = new Map<string, string>([["unsloth_auth_token", "test-token"]]);
   const originalWindow = globalThis.window;
   const originalStorage = globalThis.localStorage;
@@ -506,7 +507,6 @@ test("delayed llama.cpp backfill does not overwrite a newer catalog", async () =
     created_at: "2026-01-01T00:00:00Z",
     updated_at: "2026-01-01T00:00:00Z",
   };
-  const fresh = { models: ["fresh"], available_models: ["fresh"] };
   let releaseSnapshot!: () => void;
   const snapshotGate = new Promise<void>((resolve) => {
     releaseSnapshot = resolve;
@@ -535,11 +535,11 @@ test("delayed llama.cpp backfill does not overwrite a newer catalog", async () =
         await snapshotGate;
         return Response.json([baseConfig]);
       }
-      return Response.json([{ ...baseConfig, ...fresh }]);
+      return Response.json([baseConfig]);
     }
     if (init?.method === "PUT") {
       writes.push(JSON.parse(String(init.body)));
-      return Response.json({ ...baseConfig, ...fresh });
+      return Response.json(baseConfig);
     }
     if (url.endsWith("/api/models/catalog")) {
       return Response.json({ detail: "offline" }, { status: 503 });
@@ -554,7 +554,7 @@ test("delayed llama.cpp backfill does not overwrite a newer catalog", async () =
     models: ["stale"],
     availableModels: ["stale"],
     hasApiKey: false,
-    autoReloadModels: true,
+    autoReloadModels: false,
     createdAt: 1,
     updatedAt: 1,
   };
@@ -565,8 +565,8 @@ test("delayed llama.cpp backfill does not overwrite a newer catalog", async () =
     assert.equal(listCalls, 1);
     releaseSnapshot();
     await sync;
-    assert.equal(listCalls, 2, "backfill must re-read the durable provider");
-    assert.deepEqual(writes, [], "the newer catalog must win over the stale snapshot");
+    assert.equal(listCalls, 1, "settings sync must not start a compare-then-write race");
+    assert.deepEqual(writes, [], "settings sync must not write the live catalog");
   } finally {
     globalThis.fetch = originalFetch;
     Object.defineProperty(globalThis, "window", {
@@ -614,13 +614,15 @@ test("manual saves follow delayed automatic saves, and a failed save does not bl
   assert.equal(writes.at(-1), "retry");
 });
 
-test("late settings sync preserves refreshed llama.cpp models without changing other providers", async () => {
-  const { preserveConcurrentLlamaCppModelUpdates } = await vite.ssrLoadModule(
+test("late settings sync preserves concurrent llama.cpp state without changing other providers", async () => {
+  const { preserveConcurrentLlamaCppUpdates } = await vite.ssrLoadModule(
     "/src/features/chat/sync-external-providers.ts",
   );
   const previous = {
     id: "llama",
     providerType: "llama_cpp",
+    baseUrl: "http://old.example/v1",
+    hasApiKey: false,
     models: ["old"],
     availableModels: ["old"],
     autoReloadModels: true,
@@ -631,14 +633,22 @@ test("late settings sync preserves refreshed llama.cpp models without changing o
     models: ["old"],
     availableModels: ["old"],
   };
-  const current = { ...previous, models: ["new"], availableModels: ["new"] };
-  const merged = preserveConcurrentLlamaCppModelUpdates(
+  const current = {
+    ...previous,
+    baseUrl: "http://new.example/v1",
+    hasApiKey: true,
+    models: ["new"],
+    availableModels: ["new"],
+  };
+  const merged = preserveConcurrentLlamaCppUpdates(
     [synced],
     [previous],
     [current],
   )[0];
   assert.deepEqual(merged.models, ["new"]);
   assert.deepEqual(merged.availableModels, ["new"]);
+  assert.equal(merged.baseUrl, "http://new.example/v1");
+  assert.equal(merged.hasApiKey, true);
   assert.equal(merged.name, "Renamed on server");
   assert.equal(merged.autoReloadModels, true);
   const external = {
@@ -647,17 +657,17 @@ test("late settings sync preserves refreshed llama.cpp models without changing o
     availableModels: ["external"],
   };
   assert.deepEqual(
-    preserveConcurrentLlamaCppModelUpdates([external], [previous], [previous])[0]
+    preserveConcurrentLlamaCppUpdates([external], [previous], [previous])[0]
       .models,
     ["external"],
   );
   assert.deepEqual(
-    preserveConcurrentLlamaCppModelUpdates([], [previous], [current]),
+    preserveConcurrentLlamaCppUpdates([], [previous], [current]),
     [],
   );
   const other = { ...synced, providerType: "ollama" };
   assert.equal(
-    preserveConcurrentLlamaCppModelUpdates([other], [previous], [current])[0],
+    preserveConcurrentLlamaCppUpdates([other], [previous], [current])[0],
     other,
     "non-llama providers keep the existing sync behavior",
   );

@@ -203,7 +203,7 @@ test("the deep link waits for the provider and fires once", () => {
   assert.match(providersDialog, /\[providersReady, setProvidersReady\] = useState\(false\)/);
   assert.match(
     providersDialog,
-    /onProvidersChange\(preserveConcurrentLlamaCppModelUpdates\([\s\S]*?useExternalProvidersStore\.getState\(\)\.providers,[\s\S]*?\)\);\s*setProvidersReady\(true\);/,
+    /onProvidersChange\(preserveConcurrentLlamaCppUpdates\([\s\S]*?useExternalProvidersStore\.getState\(\)\.providers,[\s\S]*?\)\);\s*setProvidersReady\(true\);/,
   );
   assert.match(providersDialog, /if \(!providersReady\) return;/);
   // Ready either way: a failed sync leaves the hydrated list as all there is, and waiting on a

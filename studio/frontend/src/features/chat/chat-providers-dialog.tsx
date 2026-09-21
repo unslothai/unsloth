@@ -87,7 +87,7 @@ import {
 import {
   mergeLearnedModelCapabilities,
   pruneProviderModelIds,
-  preserveConcurrentLlamaCppModelUpdates,
+  preserveConcurrentLlamaCppUpdates,
   refreshProviderModelCatalogs,
   syncExternalProvidersFromBackend,
 } from "./sync-external-providers";
@@ -460,7 +460,7 @@ export function ChatProvidersSettings({
         });
         // Trust the backend response. An empty array means every connection was removed, often from
         // another tab; mirror that locally, else stale entries are un-removable here.
-        onProvidersChange(preserveConcurrentLlamaCppModelUpdates(
+        onProvidersChange(preserveConcurrentLlamaCppUpdates(
           syncedProviders, previousProviders, useExternalProvidersStore.getState().providers,
         ));
         setProvidersReady(true);
@@ -1144,7 +1144,7 @@ export function ChatProvidersSettings({
       const previousProviders = useExternalProvidersStore.getState().providers;
       void syncExternalProvidersFromBackend(previousProviders)
         .then((synced) => {
-          const merged = preserveConcurrentLlamaCppModelUpdates(
+          const merged = preserveConcurrentLlamaCppUpdates(
             synced, previousProviders, useExternalProvidersStore.getState().providers,
           );
           providersRef.current = merged;
@@ -1756,7 +1756,7 @@ export function ChatProvidersSettings({
                 try {
                   const previousProviders = useExternalProvidersStore.getState().providers;
                   const response = await syncExternalProvidersFromBackend(previousProviders);
-                  const synced = preserveConcurrentLlamaCppModelUpdates(
+                  const synced = preserveConcurrentLlamaCppUpdates(
                     response, previousProviders, useExternalProvidersStore.getState().providers,
                   );
                   providersRef.current = synced;
