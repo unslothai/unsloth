@@ -34,9 +34,8 @@ def attempt_scope_key(attempt_id) -> Optional[str]:
     return f"{current_account_id()}\x00{attempt_id}"
 
 
-# One store for the process, not one per engine instance: a request can switch the active
-# engine between diffusers and sd.cpp, and an outcome kept on the instance that ran the
-# generation becomes unreachable the moment the other one takes over.
+# One store per process, not per engine instance: a request can switch the active engine,
+# and an outcome kept on the instance that ran the generation goes with it.
 _OUTCOMES: "OrderedDict[str, str]" = OrderedDict()
 _OUTCOMES_LOCK = threading.Lock()
 
@@ -56,9 +55,9 @@ def _retain_generate_failure(attempt_id, reason: str) -> None:
 def generate_failure_for_attempt(attempt_id) -> Optional[str]:
     """The raw reason the generation *attempt_id* failed with, if it did and is remembered.
 
-    Per attempt and independent of which engine is active, so a caller settling a lost POST
-    is answered about ITS OWN generation however many have run since and whichever engine
-    took over. None for an attempt that succeeded, never ran, or has aged out.
+    Per attempt and independent of the active engine, so a caller settling a lost POST is
+    answered about ITS OWN generation however many have run since. None for an attempt that
+    succeeded, never ran, or has aged out.
     """
     attempt_id = attempt_scope_key(attempt_id)
     if not attempt_id:
