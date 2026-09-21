@@ -591,38 +591,23 @@ export function useFenceReached(
 
 export const DeferredFenceShell = memo(FenceShell);
 
-/* ------------------------------------------------------------------------------------------- *
- * THE HIGHLIGHTED BODY, RENDERED HERE RATHER THAN BY STREAMDOWN.
+/*
+ * The highlighted body, rendered here rather than by streamdown.
  *
- * Streamdown's `CodeBlockBody` maps the WHOLE token array to elements on every render and is
- * memoized on `prev.result === next.result`, reference equality. `code-plugin.ts` hands back a
- * fresh result object on every call -- including `approximateResult`, which runs on every streamed
- * frame between the 250 ms refreshes -- so that memo never hits and React rebuilds every line and
- * every token in the fence about sixty times a second. At the 140K characters of #10769 that is
- * some fifty to seventy thousand elements per frame, and it is what made the UI unusable.
+ * Streamdown's `CodeBlockBody` maps the whole token array every render and memoizes on
+ * `prev.result === next.result`, reference equality, while `code-plugin.ts` returns a fresh object
+ * every call, so the memo never hits and every line and token rebuilds each frame. The spans are
+ * the cost, not the tokenizer: #10779 kept calling the highlighter, stopped rendering the tokens
+ * and still doubled the frame rate, and `scripts/coal-span-census.mjs` shows Shiki's tokens are
+ * already maximally coalesced, so merging cannot help.
  *
- * It is also, separately, what PR #10779 measured. That change kept calling the highlighter and
- * only stopped RENDERING the tokens, and still took a 140K stream from 29 fps to 59 fps. The
- * tokenizer was never the problem; the spans were. `scripts/coal-span-census.mjs` had already
- * closed the other door: Shiki emits maximally coalesced tokens (537013 -> 537013 over the whole
- * corpus), so the span count cannot be reduced by merging. It can only be reduced by not mounting
- * spans for code nobody is looking at.
+ * So: one memoized component per line (a committed line's identity is stable, so `memo` bails),
+ * plus a line window past `WINDOW_CAP_LINES` (see `code-fence-window.ts`).
  *
- * So this body does two things Streamdown's cannot:
- *   1. ONE MEMOIZED COMPONENT PER LINE. `code-plugin.ts` pushes each completed line into
- *      `fence.lines` exactly once and never rebuilds it, so a committed line's array identity is
- *      already stable across refreshes and `memo` bails out on it. A growing fence then reconciles
- *      the live tail line and whatever was just committed, instead of all of it.
- *   2. A LINE WINDOW. Past `WINDOW_CAP_LINES` a line outside the window renders its text as one
- *      node instead of its token spans. See `code-fence-window.ts` for why that is safe and for
- *      why it is not virtualization: the characters never leave the document, so selection, copy,
- *      find-in-page and print are untouched and only off-screen COLOUR is given up.
- *
- * The DOM is Streamdown's, element for element and class for class, including the line-number
- * pseudo-element `index.css` then nulls out. That is not tidiness: `playwright_code_block_flicker.py`
- * reads computed styles off this subtree, and a performance change that also moves the rendering
- * is a change no A/B can attribute.
- * ------------------------------------------------------------------------------------------- */
+ * The DOM is streamdown's element for element and class for class, because
+ * `playwright_code_block_flicker.py` reads computed styles off this subtree and a perf change that
+ * also moved the rendering could not be attributed.
+ */
 
 export type FenceTokens = HighlightResult;
 type TokenLine = HighlightResult["tokens"][number];
@@ -632,17 +617,10 @@ type FenceToken = TokenLine[number];
  * unbalanced in streamdown 2.5's build and therefore generate no rule at all; they are reproduced
  * as they are because the goal is the same DOM, not a tidier one. */
 /*
- * ONE DELIBERATE DIFFERENCE FROM STREAMDOWN'S OWN LINE CLASS, and it is the only one.
- * Streamdown writes a raw 13 pixel text utility here.
- * `tests/studio/test_ui_font_scale_contract.py` forbids that spelling anywhere in frontend source,
- * comments included, because a fixed pixel size ignores the UI font size preference, and copying
- * streamdown's version into the tree is what put this file on that test's offender list (base 12
- * passed, head 1 failed, which is how it was found). `text-ui-13`
- * is `calc(0.8125rem * var(--ui-font-scale, 1))`, so it renders at 13px at the default scale and
- * follows the preference above and below it.
- * It changes nothing in the thread either way: `index.css` gives
- * `.aui-thread-root [data-streamdown="code-block"] code > span::before` `content: none` and
- * `display: none`, so no pseudo-element box is generated there at all and its font size is dead.
+ * The one deliberate difference from streamdown's line class: it writes a raw pixel text utility,
+ * which `tests/studio/test_ui_font_scale_contract.py` forbids anywhere in frontend source, comments
+ * included, because a fixed size ignores the UI font preference. `text-ui-13` scales with it.
+ * Moot in the thread either way: `index.css` gives that pseudo-element `display: none`.
  */
 const LINE_CLASS =
   "block before:content-[counter(line)] before:inline-block before:[counter-increment:line] before:w-6 before:mr-4 before:text-ui-13 before:text-right before:text-muted-foreground/50 before:font-mono before:select-none";
@@ -744,34 +722,21 @@ const FenceLine = memo(function FenceLine({
   );
 });
 
-/*
- * ONE SCROLL LISTENER AND ONE FRAME FOR EVERY WINDOWED FENCE ON THE PAGE.
- * A listener per fence would be a listener per fence, and the measurement each one performs reads
- * layout; doing that inside the scroll handler for every fence separately is how a scroll gets
- * slower than the rendering the window exists to avoid. Registered on the first windowed fence and
- * removed with the last, exactly as `watchScrolling` does for the reach latch.
- * Coalesced into an animation frame: scroll fires faster than the screen updates, and the window
- * only has to be right for the frame that is about to be painted.
- */
+// One scroll listener and one frame for every windowed fence: each measurement reads layout, so a
+// listener per fence makes scrolling cost more than the rendering the window avoids. Same shape
+// `watchScrolling` uses for the reach latch, coalesced into a frame.
 const windowedFences = new Set<() => void>();
 let windowFrame = 0;
 let windowWatched = false;
 
 /*
- * A PRINT PUTS THE WHOLE DOCUMENT ON THE PAGE, SO THE WHOLE FENCE HAS TO BE COLOURED.
- * `upgradeEverythingForPrint` above makes exactly this argument for a DEFERRED fence, and the line
- * window reintroduces the same defect one level down: measured, a 3,000 line fence printed with
- * 342 spans against the 23,139 the merge base printed, so all but a screenful of a printed listing
- * came out uncoloured. Colour is the only thing a window costs, and a printed page is the one
- * place the reader keeps it.
- * WHY THIS ONE REVERTS AND THE LATCH DOES NOT. The latch refuses `afterprint` because giving a
- * fence back its plain shell is the bidirectional edge that design exists to remove, and because
- * re-latching would mean re-tokenizing. Neither applies here: the tokens are already in
- * `fence.lines`, so re-windowing after the print costs element creation and nothing else, and NOT
- * reverting would mean one Ctrl+P un-windows every huge fence for the life of the tab, which is
- * precisely the cost the window exists to avoid.
- * BOTH DOORS, as above: `beforeprint` covers Ctrl+P and the print menu; headless `page.pdf()` and
- * devtools print emulation change the media query without firing it.
+ * A print puts the whole document on the page, so the whole fence is coloured;
+ * `upgradeEverythingForPrint` makes the same argument for a deferred fence.
+ *
+ * This one REVERTS where the latch does not: the tokens are already in `fence.lines`, so
+ * re-windowing costs element creation only, and not reverting would let one Ctrl+P un-window every
+ * huge fence for the life of the tab. Both doors, as above: `beforeprint` for Ctrl+P, the media
+ * query for `page.pdf()` and devtools emulation, which do not fire it.
  */
 let printing = false;
 

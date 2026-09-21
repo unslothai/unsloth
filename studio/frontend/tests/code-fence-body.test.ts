@@ -12,20 +12,15 @@ import {
 import { readSrc } from "./helpers/kit.ts";
 
 /**
- * The fence body that replaced streamdown's `Block`.
- *
- * What is RUN here is the part that decides what characters a line shows, because that is the one
- * thing the window may never change. The React side is a `.tsx` and the runner cannot load JSX, so
- * it is pinned by regexes over source in the style `code-fence-defer.test.ts` already uses -- not
- * because that is good evidence, but because the alternative is no evidence at all.
+ * The fence body that replaced streamdown's `Block`. What is RUN is the part deciding what
+ * characters a line shows; the `.tsx` side is pinned by regex over source, since the runner cannot
+ * load JSX.
  */
 
 const DEFER = readSrc("components/assistant-ui/code-fence-defer.tsx");
 const MARKDOWN_TEXT = readSrc("components/assistant-ui/markdown-text.tsx");
 
 test("a line shows the same characters inside the window and outside it", () => {
-  // The invariant the whole mechanism rests on. Read back out of the tokens, so it holds by
-  // construction rather than by two code paths agreeing.
   const line = [
     { content: "const " },
     { content: "x" },
@@ -36,9 +31,8 @@ test("a line shows the same characters inside the window and outside it", () => 
 });
 
 test("the plain form is the tokens, never a slice of the source", () => {
-  // Shiki drops the CR of a CRLF pair from token content. A source slice would put it back, so a
-  // line leaving the window would gain a character the highlighted form never showed, and a fence
-  // would change its text as the reader scrolled past it.
+  // Shiki drops the CR of a CRLF pair, so a source slice would make a line gain a character on
+  // leaving the window.
   assert.equal(plainLineText([{ content: "x = 1" }]), "x = 1");
   assert.ok(
     !/source\.slice|split\(["'`]\\n["'`]\)/.test(
@@ -49,8 +43,7 @@ test("the plain form is the tokens, never a slice of the source", () => {
 });
 
 test("a blank line is one line tall, not nothing", () => {
-  // A <span> holding an empty text node has no line box at all, so a blank line in the middle of a
-  // fence would close up and everything below it would move by one line.
+  // An empty text node has no line box, so the fence would close up and everything below it moves.
   assert.equal(isBlankLine([]), true);
   assert.equal(isBlankLine([{ content: "" }]), true);
   assert.equal(isBlankLine([{ content: " " }]), false);
@@ -63,9 +56,8 @@ test("a blank line is one line tall, not nothing", () => {
 });
 
 test("the line component is memoized, which is the whole point of it", () => {
-  // `code-plugin.ts` commits a line once and never rebuilds it, so the array identity is already
-  // stable. Without `memo` on top of that, a fence growing by one character still reconciles every
-  // line it has, which is the cost this change exists to remove.
+  // A committed line's identity is already stable, so without `memo` a one-character growth still
+  // reconciles every line: the cost this change removes.
   assert.ok(
     /const FenceLine = memo\(function FenceLine\(/.test(DEFER),
     "FenceLine must be memoized",
@@ -78,8 +70,6 @@ test("the line component is memoized, which is the whole point of it", () => {
 });
 
 test("the fence branch no longer renders streamdown's Block", () => {
-  // `Block` maps the whole token array on every render and memoizes on `prev.result ===
-  // next.result`, and the plugin returns a fresh object every frame, so the memo never hit.
   const from = MARKDOWN_TEXT.indexOf("function FenceBlock(");
   const to = MARKDOWN_TEXT.indexOf("const StreamdownBlock = memo(", from);
   assert.ok(from > 0 && to > from, "FenceBlock still bounds a branch of its own");
@@ -97,8 +87,6 @@ test("the fence branch no longer renders streamdown's Block", () => {
 });
 
 test("a streaming open fence is highlighted rather than shown plain", () => {
-  // This is the route #10769 measured and #10779 fixed by giving up the colours. `getCodeFence`
-  // needs the closing delimiter, so an open fence had no `codeFence` and fell to the bare `Block`.
   assert.ok(
     /if \(props\.isIncomplete\) \{\s*const openFence = markdownBlockFallback\(props\.content\);\s*if \(openFence\.fenced\) \{\s*return \(\s*<StreamingFenceBlock/m
       .test(MARKDOWN_TEXT),
@@ -115,9 +103,8 @@ test("a streaming open fence is highlighted rather than shown plain", () => {
 });
 
 test("a completed fence on a non-``` form keeps the bounded renderer", () => {
-  // `getCodeFence` does not match tilde / four-backtick / indented fences, so a completed one used
-  // to fall to streamdown's whole-token `Block` and remount every span. A stopped reply never
-  // settles, which is the same route.
+  // A completed tilde / four-backtick / indented fence used to fall to `Block` and remount every
+  // span; a stopped reply takes the same route.
   assert.ok(
     /const settledFence = props\.isIncomplete \? null : markdownBlockFallback\(props\.content\);\s*if \(settledFence\?\.fenced/.test(
       MARKDOWN_TEXT,
@@ -140,9 +127,8 @@ test("a completed fence on a non-``` form keeps the bounded renderer", () => {
 });
 
 test("markdownBlockFallback is what recognises the open fence, not getCodeFence", () => {
-  // `CODE_FENCE_RE` behind `getCodeFence` accepts exactly three unindented backticks. CommonMark
-  // also allows tildes, four or more backticks, and up to three spaces of indent, and a fence this
-  // route fails to recognise goes back to the renderer that cannot afford it.
+  // `getCodeFence` claims only unindented triple backticks; a fence this route misses goes back to
+  // the renderer that cannot afford it.
   assert.ok(
     MARKDOWN_TEXT.includes(
       'import { markdownBlockFallback } from "./markdown-block-fallback";',
@@ -152,8 +138,6 @@ test("markdownBlockFallback is what recognises the open fence, not getCodeFence"
 });
 
 test("the window decision is not reimplemented in the component", () => {
-  // Same rule `code-fence-defer.test.ts` holds for the mode table: one place decides, and it is
-  // the one a test can execute.
   assert.ok(
     /import \{[\s\S]*?selectLineWindow,[\s\S]*?\} from "\.\/code-fence-window";/.test(DEFER),
     "the component must consume the decision",
@@ -165,10 +149,8 @@ test("the window decision is not reimplemented in the component", () => {
 });
 
 test("the text is never removed from the document, only its colour", () => {
-  // The difference between this and virtualization, and the reason find-in-page, select-all, copy
-  // and print are untouched. `progressive-mount-controller.ts` rejects unmounting on exactly these
-  // grounds, and `index.css` forces `content-visibility: visible` back on for code blocks because
-  // WebKit before Safari 26 cannot find-in-page skipped content.
+  // Why this is not virtualization: the text never leaves the document, so find-in-page, copy and
+  // print are untouched (`progressive-mount-controller.ts`, and the `content-visibility` ban).
   const body = DEFER.slice(DEFER.indexOf("export const FenceBody = memo("));
   assert.ok(
     /tokens\.map\(\(line, index\) => \(/.test(body),
@@ -181,8 +163,7 @@ test("the text is never removed from the document, only its colour", () => {
 });
 
 test("one scroll listener serves every windowed fence on the page", () => {
-  // A listener per fence forces layout per fence per scroll, which is how the measurement costs
-  // more than the rendering it saves. Same shape `watchScrolling` uses for the reach latch.
+  // A listener per fence reads layout per fence per scroll, costing more than it saves.
   assert.ok(
     /const windowedFences = new Set<\(\) => void>\(\);/.test(DEFER),
     "the registry must be shared",

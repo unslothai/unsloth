@@ -8,24 +8,15 @@ import { getCodeFence } from "../src/features/chat/artifacts/html-fences.ts";
 import { markdownBlockFallback } from "../src/components/assistant-ui/markdown-block-fallback.ts";
 
 /**
- * THE TWO CLASSIFIERS HAVE TO AGREE ABOUT THE SAME REPLY.
+ * The two classifiers have to agree about the same reply.
  *
- * One block is owned by `markdownBlockFallback` while it is still arriving and by `getCodeFence`
- * the instant its closing delimiter lands, because only the second can see a close. Since
- * `FenceBody` renders the body TEXT each one reports, rather than re-parsing the block the way
- * streamdown's `Block` did, a disagreement between them is not academic: it is a block whose
- * contents change under a reader at the moment the model finishes writing it.
+ * A block is owned by `markdownBlockFallback` while it arrives and by `getCodeFence` the instant it
+ * closes. Since `FenceBody` renders the body text each reports, rather than re-parsing the block as
+ * streamdown's `Block` did, a disagreement is a block whose contents change under the reader at
+ * that moment. `code-fence-close-run.test.ts` pins each against CommonMark; this pins them against
+ * EACH OTHER, which neither file catches alone.
  *
- * That is not hypothetical. `CODE_FENCE_RE` used to require exactly three closing backticks and
- * matched a longer run by its LAST three, so a fence closed with four handed the surplus backtick
- * to `source` while the streaming scanner, which already implemented CommonMark's "at least as
- * many" rule, did not. `code-fence-close-run.test.ts` pins each classifier against CommonMark
- * separately. This file pins them against EACH OTHER, which is the invariant the rendering
- * actually depends on and the one neither file would catch alone.
- *
- * Fences that `getCodeFence` declines by design are skipped rather than asserted: it claims only
- * unindented three-backtick fences, and where it declines, the settled block falls to streamdown's
- * own parser and there is no second opinion to compare.
+ * Fences `getCodeFence` declines by design are skipped: there is no second opinion to compare.
  */
 
 const BODIES = [
@@ -111,18 +102,10 @@ test("a closing run longer than the opener agrees across the handover", () => {
 
 test("a block holding more than one fence is claimed by neither classifier", () => {
   /*
-   * CommonMark closes a fence at the FIRST bare run on its own line. A match that runs past one has
-   * swallowed the real close, the prose after it, and the next fence's opener, and because
-   * `FenceBody` renders `source` the reader sees all of that as their own code.
-   *
-   * Each expectation below is `micromark`'s, read off its HTML rather than asserted from this
-   * file's reading of the spec:
-   *   "```md\nA:\n```\nB\n```"          -> <pre><code class="language-md">A:</code></pre>
-   *                                        <p>B</p><pre><code></code></pre>
-   *   "```js\ncode\n```\n```"           -> <pre><code class="language-js">code</code></pre>
-   *                                        <pre><code></code></pre>
-   * Neither is ONE fence, so `getCodeFence` must decline and hand the block to the renderer that
-   * parses it properly, which is exactly what `markdownBlockFallback` already reports.
+   * CommonMark closes a fence at the FIRST bare run on its own line; a match running past one has
+   * swallowed the close, the prose after it and the next opener, and `FenceBody` renders all of
+   * that as the reader's code. Expectations read off `micromark`'s HTML, not off this file: it
+   * makes "```md\nA:\n```\nB\n```" a fence holding `A:`, a paragraph `B`, and an empty fence.
    */
   for (const block of [
     "```md\nA:\n```\nB\n```",
@@ -144,8 +127,7 @@ test("a block holding more than one fence is claimed by neither classifier", () 
 });
 
 test("a delimiter line that carries an info string is still code", () => {
-  // The other side of the rule, so the fix above cannot be "reject anything with backticks in it".
-  // An indented or info-carrying run is not a close, so these remain single fences.
+  // The other side of the rule: an info-carrying run is not a close, so these stay single fences.
   assert.equal(
     getCodeFence("```js\nconst s = `x`;\n```")?.source,
     "const s = `x`;",
@@ -157,8 +139,7 @@ test("a delimiter line that carries an info string is still code", () => {
 });
 
 test("a run too short to close leaves the block streaming on both routes", () => {
-  // The other direction: a stream that has written only its first delimiter backtick must not be
-  // read as a completed fence by either classifier, or the block settles early and then re-opens.
+  // A stream that has written only its first delimiter backtick must not read as closed.
   for (const short of ["`", "``"]) {
     const text = `\`\`\`python\nx = 1\n${short}`;
     assert.equal(

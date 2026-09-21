@@ -703,17 +703,12 @@ function StreamdownBlockContent(props: BlockProps) {
      * boundary, so the completed block mounts `FenceBlock` normally and keeps its controls.
      */
   /*
-     * THE STREAMING FENCE, which used to fall through to the bare `Block` below.
-     * `getCodeFence` needs the CLOSING fence, so a fence that is still arriving has no `codeFence`
-     * and never reached `FenceBlock`. That route is what #10769 measured as unusable, and PR #10779
-     * fixed it by rendering the plain shell, which cost the colours a reader watches a model write.
-     * `FenceBody` keeps them: it is the same per-line rendering the completed fence gets, so the
-     * block does not change shape when its closing delimiter lands, and the line window bounds what
-     * a 140K-character fence can cost while it grows.
-     * `markdownBlockFallback` rather than `getCodeFence` because it recognises every CommonMark
-     * fence -- tildes, four or more backticks, up to three spaces of indent -- and this route must
-     * not hand a fence it failed to recognise back to the renderer that cannot afford it.
-     */
+   * The streaming fence, which used to fall through to the bare `Block`: `getCodeFence` needs a
+   * close, so an arriving fence never reached `FenceBlock`. That is the route #10769 measured as
+   * unusable and #10779 fixed by giving up the colours. `FenceBody` is the same per-line rendering
+   * the completed fence gets, so the block does not change shape when its delimiter lands.
+   * `markdownBlockFallback`, not `getCodeFence`, because it recognises every CommonMark fence.
+   */
   /*
    * RECOGNISED FORMS STAY ON THE BOUNDED RENDERER AT COMPLETION TOO. `getCodeFence` does not match
    * tildes, four or more backticks or up to three spaces of indent, so a completed fence on those
@@ -867,18 +862,11 @@ function FenceBlock({
   const mode = fenceMode();
 
   /*
-     * WHICH FENCES THIS COVERS, and which it does not. `CODE_FENCE_RE` accepts exactly three backticks, unindented.
-     * CommonMark also allows tildes, four or more backticks (which is how a model writes a fence whose body contains
-     * one), and up to three spaces of indent. Those forms never reach here, so they render exactly as they do today
-     * and get no deferral: unrealised benefit, not a wrong result.
-     * Left alone deliberately rather than overlooked. `getCodeFence` is also what decides whether a block is an SVG
-     * or a full HTML document to be shown as an artifact, and a fence that does not match it renders a bare
-     * `<Block>` with no `relative isolate` wrapper and no copy button. Widening the regex would therefore add an
-     * artifact path and a copy overlay to blocks that do not have them today, which is a rendering change, and a
-     * performance PR is the wrong place to smuggle one in. It also does not move any number here: over the frozen
-     * corpus, 2,467,069 characters, all 1,456 fence delimiters are unindented triple backticks. Not one tilde, not
-     * one four-backtick fence, not one indented one.
-     */
+   * `CODE_FENCE_RE` claims only unindented triple-backtick fences. Tildes, four or more backticks
+   * and indented fences do not reach THIS branch; they are picked up by the settled-fence rung
+   * below. The regex is deliberately not widened: it also decides the SVG and HTML-artifact paths,
+   * so widening it would add an artifact path and a copy overlay to blocks that lack them today.
+   */
   // `getCodeFence` hands back the WHOLE info string, so a fence opened with metadata such as ```python startLine=10
   // arrives here as "python startLine=10". Markdown treats everything after the first word as metadata and
   // Streamdown highlights it as `python`, so passing the raw string on would label the shell with the metadata

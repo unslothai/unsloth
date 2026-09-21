@@ -2,88 +2,52 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 /*
- * WHICH LINES OF A FENCE CARRY TOKEN SPANS, decided in one pure function.
+ * Which lines of a fence carry token spans. JSX-free so the tests can RUN it.
  *
- * Kept out of `code-fence-defer.tsx` for the same reason `code-fence-mode.ts` is: that is a
- * `.tsx`, the frontend's tests run under `node --experimental-strip-types`, and that runner cannot
- * load JSX. Every rule below is RUN by `tests/code-fence-window.test.ts` rather than checked by a
- * regex over a file nothing can import.
+ * A line outside the window loses its COLOUR and nothing else: every character stays in the
+ * document, which is what separates this from virtualization (rejected in
+ * `progressive-mount-controller.ts`) and from `content-visibility: auto` (banned on code blocks in
+ * `index.css`; WebKit before Safari 26 cannot find-in-page skipped content).
  *
- * WHAT IS BEING WINDOWED, and what is NOT. A fence's text is always in the document, every
- * character of it, whatever this function returns. The window decides only whether a line renders
- * as Shiki's token spans or as one plain text node holding the same characters. So a windowed
- * fence is still selectable, still copyable, still reachable by find-in-page and still printable,
- * and the only thing a line outside the window loses is its COLOUR -- off screen, by construction.
- * That is what separates this from virtualization, which `progressive-mount-controller.ts` rejects
- * on exactly those grounds, and from `content-visibility: auto`, which `index.css` bans on code
- * blocks because WebKit before Safari 26 cannot find-in-page skipped content.
- *
- * WHY IT IS SAFE TO SWAP. The swap replaces the CHILDREN of a line element, never the element. A
- * line is a block box whose height comes from the code block's `line-height`, and `<pre>` does not
- * wrap, so a line is exactly one line tall whether it holds forty spans or one text node. Nothing
- * above or below it moves. This matters more than it sounds: `use-intent-aware-autoscroll.tsx`
- * absorbs only 64px of sub-frame shrink and `progressive-messages.tsx` has already turned native
- * scroll anchoring off, so a windowing scheme that changed heights would be visible immediately.
+ * The swap replaces a line's CHILDREN, never the element, so heights cannot move. That matters:
+ * `use-intent-aware-autoscroll.tsx` absorbs only 64px of sub-frame shrink and
+ * `progressive-messages.tsx` has scroll anchoring off.
  */
 
 /** An inclusive line range. `null` means "no window": every line renders its token spans. */
 export type LineWindow = { first: number; last: number };
 
-/*
- * BELOW THE CAP, NOTHING HAPPENS AT ALL. A fence with fewer rendered lines than this is
- * highlighted end to end and is never downgraded, so it produces the DOM main produces, byte for
- * byte. The benchmark corpus averages 1,800 characters per fence and the field capture that
- * corpus was calibrated against carried 5.6 characters per span; neither comes anywhere near this,
- * which is deliberate. The mechanism exists for the 140K-character single fence in #10769, and a
- * cap is how it stays off everywhere else.
- * Counted in LINES rather than characters because the cost this bounds is the mounted element
- * count, and that tracks tokens, which track lines far better than they track characters.
- */
+// Below the cap a fence is highlighted end to end and produces main's DOM byte for byte; the
+// mechanism exists for the 140K-character fence in #10769. Lines, not characters: the bounded cost
+// is mounted elements, which track lines.
 export const WINDOW_CAP_LINES = 2_000;
 
-/*
- * How far past the viewport the window reaches, in viewports, each way. The same one-viewport
- * lookahead `REACH_MARGIN` gives whole-fence deferral, for the same reason: the reader should
- * cross into already-coloured code rather than watch it arrive.
- */
+// Viewports of lookahead each way, matching `REACH_MARGIN`: the reader crosses into already
+// coloured code rather than watching it arrive.
 export const OVERSCAN_VIEWPORTS = 1;
 
-/*
- * HOW FAR THE READER MUST GET TOWARDS AN EDGE BEFORE THE WINDOW MOVES, in viewports.
- * Without this, one line of scroll re-selects the range and re-renders both boundaries, which is
- * the thrash the earlier whole-fence bidirectional gate was killed for. With a full viewport of
- * slack inside the overscan, ordinary reading scrolls do not move the window at all, and when it
- * does move the old and new ranges overlap heavily, so most lines keep their identity and their
- * elements.
- */
+// Slack before the window moves, in viewports. Without it one line of scroll re-renders both
+// boundaries, the thrash that killed the earlier bidirectional gate.
 export const HYSTERESIS_VIEWPORTS = 0.5;
 
 export type WindowGeometry = {
-  /** Total lines in the fence body. */
   lineCount: number;
-  /** One line's height in px, MEASURED from the rendered block, never assumed. */
+  /** MEASURED from the rendered block, never assumed. */
   lineHeight: number;
-  /** Top of the code content box, in the same coordinate space as `viewportTop`. */
   contentTop: number;
-  /** Top of the clipping viewport (the fence's nearest scrolling ancestor, or the window). */
+  /** The fence's nearest scrolling ancestor, or the window. */
   viewportTop: number;
-  /** Height of that viewport. */
   viewportHeight: number;
-  /** The window currently rendered, so an ordinary scroll can decide to keep it. */
+  /** The window currently rendered, so an ordinary scroll can keep it. */
   previous: LineWindow | null;
-  /** Overridable for tests; defaults to `WINDOW_CAP_LINES`. */
   cap?: number;
 };
 
 const clamp = (value: number, low: number, high: number): number =>
   value < low ? low : value > high ? high : value;
 
-/*
- * The lines the viewport actually covers, inclusive, clamped to the fence.
- * Line `i` occupies `[contentTop + i*lineHeight, contentTop + (i+1)*lineHeight)`, so this is
- * arithmetic rather than a measurement per line: reading 20,000 line boxes to find out which two
- * are on screen would cost more than the rendering this exists to avoid.
- */
+// Arithmetic, not a measurement per line: reading 20,000 line boxes would cost more than the
+// rendering this avoids.
 const visibleRange = (geometry: WindowGeometry): LineWindow => {
   const { lineCount, lineHeight, contentTop, viewportTop, viewportHeight } = geometry;
   const top = (viewportTop - contentTop) / lineHeight;
@@ -95,12 +59,9 @@ const visibleRange = (geometry: WindowGeometry): LineWindow => {
 };
 
 /**
- * Which lines should carry token spans.
- *
- * `null` means every line does, which is both the small-fence answer and the answer whenever the
- * geometry cannot be trusted: a zero or negative line height (fonts still loading, a detached
- * node, a display:none ancestor) must degrade to today's rendering rather than to an arbitrary
- * range. Nothing here can lose text, so the worst a wrong answer costs is colour.
+ * Which lines carry token spans. `null` (every line) is both the small-fence answer and the answer
+ * for untrustworthy geometry, so a zero line height degrades to today's rendering, never to an
+ * arbitrary range. A wrong answer costs colour, never text.
  */
 export const selectLineWindow = (geometry: WindowGeometry): LineWindow | null => {
   const cap = geometry.cap ?? WINDOW_CAP_LINES;
@@ -114,11 +75,8 @@ export const selectLineWindow = (geometry: WindowGeometry): LineWindow | null =>
   const visible = visibleRange(geometry);
   const linesPerViewport = Math.ceil(viewportHeight / lineHeight);
 
-  /*
-     * KEEP THE CURRENT WINDOW IF THE READER IS STILL WELL INSIDE IT. Checked against the VISIBLE
-     * range rather than the overscanned one: overscan is a rendering margin, and asking whether it
-     * still fits would move the window on every scroll, which is the whole failure this avoids.
-     */
+  // Checked against the VISIBLE range, not the overscanned one: overscan is a rendering margin,
+  // and testing it would move the window on every scroll.
   const slack = Math.ceil(linesPerViewport * HYSTERESIS_VIEWPORTS);
   const previous = geometry.previous;
   if (
@@ -133,13 +91,8 @@ export const selectLineWindow = (geometry: WindowGeometry): LineWindow | null =>
   let first = clamp(visible.first - overscan, 0, lineCount - 1);
   let last = clamp(visible.last + overscan, 0, lineCount - 1);
 
-  /*
-     * THE CAP BINDS THE WINDOW TOO, not just the decision to have one. A viewport tall enough to
-     * hold more than `cap` lines is not a thing a reader has, but a zoomed-out print layout or a
-     * 4K window with a tiny font can approach it, and a window wider than the cap would quietly
-     * restore the cost this bounds. Shrink from the END first so the lines the reader is heading
-     * towards outlive the ones they have passed.
-     */
+  // The cap binds the window itself, or a zoomed-out print layout restores the cost it bounds.
+  // Shrink from the END so lines the reader is heading towards outlive ones they passed.
   if (last - first + 1 > cap) {
     last = first + cap - 1;
     if (last < visible.last) {
@@ -155,33 +108,24 @@ export const selectLineWindow = (geometry: WindowGeometry): LineWindow | null =>
 export const lineIsWindowed = (window: LineWindow | null, index: number): boolean =>
   window === null || (index >= window.first && index <= window.last);
 
-/*
- * WHAT A LINE RENDERS AS, on either side of the window. Structurally typed rather than importing
- * Shiki's `ThemedToken`, so this module stays loadable by a test runner that has no bundler: the
- * two functions below read `content` and nothing else.
- */
+// Structurally typed rather than importing Shiki's `ThemedToken`, so a bundler-less test runner
+// can load this module.
 type LineToken = { content: string };
 
 /**
- * A LINE WITH NO CONTENT IS ONE LINE TALL, not nothing.
- *
- * Same rule as `shellBody` in `code-fence-defer.tsx`, and the same reason: a `<span>` holding an
- * empty text node has no line box at all, so a blank line in the middle of a fence would close up
- * and everything below it would move. Streamdown special-cases the same two shapes -- an empty
- * token array, and a single token whose content is empty -- to a bare newline.
+ * A blank line is one line tall, not nothing: a `<span>` holding an empty text node has no line box,
+ * so the fence would close up and everything below it would move. Streamdown special-cases the same
+ * two shapes to a bare newline.
  */
 export const isBlankLine = (line: readonly LineToken[]): boolean =>
   line.length === 0 || (line.length === 1 && line[0].content === "");
 
 /**
- * A line's text, taken from its TOKENS rather than from a slice of the source.
- *
- * This is the invariant the whole window rests on: a line must render the same characters whether
- * it is inside the window or outside it, or the fence's text would change as the reader scrolled.
- * Reading it back out of the tokens makes that true by construction. A source slice would not:
- * Shiki drops the CR of a CRLF pair from token content, so a line that left the window would
- * silently gain a character, and `code-plugin.ts` goes to some trouble over exactly that boundary
- * (`completedEnd`, and the CRLF cases in `code-plugin-incremental.test.ts`).
+ * A line's text from its TOKENS, never a source slice. The invariant the window rests on is that a
+ * line shows the same characters on both sides of it; reading it back out of the tokens makes that
+ * true by construction. A slice would not: Shiki drops the CR of a CRLF pair, so a line leaving the
+ * window would gain a character (`code-plugin.ts` `completedEnd`, and the CRLF cases in
+ * `code-plugin-incremental.test.ts`).
  */
 export const plainLineText = (line: readonly LineToken[]): string => {
   let text = "";
