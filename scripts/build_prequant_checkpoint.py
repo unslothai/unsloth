@@ -68,8 +68,23 @@ def upload_destination(
     ``.pt``, so no build ever asks the Hub for a safetensors artifact unless the family names it.
     Uploading one under a derived name produces a file that is reachable by nothing and a repo that
     looks like it has a checkpoint when it does not, so it is refused here rather than discovered
-    as a silent dense fallback later."""
+    as a silent dense fallback later.
+
+    An ``override`` skips the family table, because naming the artifact by hand is the escape hatch
+    for a repo the table does not describe yet. It does NOT skip the container check: every loader
+    dispatches on the extension alone, so a safetensors build published as ``.pt`` is read as a
+    pickle and a pickle published as ``.safetensors`` is read from a header it does not have. Either
+    way the upload succeeds and the artifact is unopenable, after the hours the quantization took.
+    """
     if override:
+        wanted = ".safetensors" if safetensors else ".pt"
+        if not override.lower().endswith(wanted):
+            container = "safetensors" if safetensors else "torch.save"
+            raise ValueError(
+                f"--upload-filename {override!r} does not end in {wanted!r}, but --out writes the "
+                f"{container} container. The loader dispatches on the extension alone, so this "
+                "would publish an artifact nothing can open. Rename the upload, or change --out."
+            )
         return override
     from core.inference.diffusion_prequant import prequant_filename
 
@@ -112,7 +127,7 @@ def main(argv = None) -> int:
         "--out",
         required = True,
         help = "output path; a .safetensors extension writes the safetensors container, anything "
-               "else writes the torch.save one",
+        "else writes the torch.save one",
     )
     p.add_argument("--min-features", type = int, default = 512)
     p.add_argument("--dtype", default = "bfloat16", choices = ["bfloat16"])
@@ -191,7 +206,6 @@ def main(argv = None) -> int:
     is_safetensors_out = str(args.out).lower().endswith(".safetensors")
     if is_safetensors_out:
         from core.inference.prequant_safetensors import safetensors_prequant_supported
-
         if not safetensors_prequant_supported():
             print(
                 "error: --out names a .safetensors checkpoint but this install cannot write one "
@@ -299,7 +313,6 @@ def main(argv = None) -> int:
     out.parent.mkdir(parents = True, exist_ok = True)
     if is_safetensors_out:
         from core.inference.prequant_safetensors import save_prequant_safetensors
-
         save_prequant_safetensors(
             str(out),
             fmt = ckpt["format"],

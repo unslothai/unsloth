@@ -333,7 +333,11 @@ def check_reasoning_page_navigation(page, token):
         body = {"messages": messages},
     )
     open_thread(page, thread_id)
-    page.get_by_role("button", name = "Thought for 0 seconds", exact = True).click()
+    # By slot, not by label. This clicked `name = "Thought for 0 seconds"` until #11373
+    # reworded the trigger to "Worked for ...", and a driver that names the copy fails the
+    # whole leg on a wording change while the button it wants is right there. The slot is
+    # what the component guarantees; the wording is product copy and moves.
+    page.locator('[data-slot="reasoning-trigger"]').first.click()
     navigation = page.get_by_role("navigation", name = "Reasoning pages")
     body = page.locator('[data-slot="reasoning-text"]')
 

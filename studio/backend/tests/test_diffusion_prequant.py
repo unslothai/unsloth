@@ -35,7 +35,7 @@ def _prequant_source(**overrides):
             "kind": "repo",
             "location": "unsloth/Z-Image-Turbo-FP8",
             "filename": "Z-Image-Turbo-FP8.pt",
-            "fallback_filename": "transformer_fp8.pt",
+            "fallback_filenames": ("transformer_fp8.pt",),
             **overrides,
         }
     )
@@ -69,9 +69,13 @@ def test_resolve_family_repo_by_scheme():
     fam = _fam(prequant_repos = (("fp8", "org/hosted-fp8"), ("int8", "org/hosted-int8")))
     src = resolve_prequant_source(fam, "int8")
     assert src.kind == "repo" and src.location == "org/hosted-int8"
-    # Model-name convention first (repo scheme suffix stripped), legacy name as fallback.
-    assert src.filename == "hosted-INT8.pt"
-    assert src.fallback_filename == "transformer_int8.pt"
+    # Model-name convention first (repo scheme suffix stripped), safetensors ahead of the pickle,
+    # legacy name last.
+    assert src.candidate_filenames == (
+        "hosted-INT8.safetensors",
+        "hosted-INT8.pt",
+        "transformer_int8.pt",
+    )
 
 
 def test_prequant_repo_filename_convention():
@@ -94,7 +98,7 @@ def test_resolve_variant_base_picks_variant_repo():
     )
     src = resolve_prequant_source(fam, "int8", base_repo = "Org/Model-DEV")
     assert src.kind == "repo" and src.location == "org/dev-fp8"
-    assert src.filename == "dev-INT8.pt"
+    assert src.filename == "dev-INT8.safetensors"
 
 
 def test_resolve_variant_base_falls_back_to_default():
@@ -136,13 +140,20 @@ def test_resolve_prefers_a_family_declared_filename():
     fam = dataclasses.replace(fam, prequant_filenames = (("int8", "Model-INT8-ConvRot.pt"),))
     src = resolve_prequant_source(fam, "int8")
     assert src.filename == "Model-INT8-ConvRot.pt"
-    assert src.fallback_filename == "Model-INT8.pt"
-    # Only for the scheme that declares one; everything else keeps today's derived/legacy pair.
+    assert src.fallback_filenames == (
+        "Model-INT8.safetensors",
+        "Model-INT8.pt",
+        "transformer_int8.pt",
+    )
+    # Only for the scheme that declares one; everything else keeps the plain derived chain.
     other = resolve_prequant_source(
         dataclasses.replace(fam, prequant_repos = (("fp8", "unsloth/Model-FP8"),)), "fp8"
     )
-    assert other.filename == "Model-FP8.pt"
-    assert other.fallback_filename == "transformer_fp8.pt"
+    assert other.candidate_filenames == (
+        "Model-FP8.safetensors",
+        "Model-FP8.pt",
+        "transformer_fp8.pt",
+    )
 
 
 def test_resolve_wrong_scheme_is_none():
@@ -175,7 +186,9 @@ def test_local_prequant_path_ready(tmp_path, monkeypatch):
 def restricted_load_available(monkeypatch):
     """Whether this install could open a checkpoint depends on the host's torchao. The resolution
     tests below are not about that, so pin it on."""
-    monkeypatch.setattr(pq, "restricted_prequant_load_supported", lambda scheme = None, filename = None: True)
+    monkeypatch.setattr(
+        pq, "restricted_prequant_load_supported", lambda scheme = None, filename = None: True
+    )
 
 
 def test_usable_source_missing_path_is_none(tmp_path, monkeypatch, restricted_load_available):
@@ -926,9 +939,13 @@ def test_an_install_that_cannot_restrict_the_load_offers_no_prequant_source(monk
     import os
 
     fam = _fam(prequant_repos = (("int8", "org/hosted-int8"),))
-    monkeypatch.setattr(pq, "restricted_prequant_load_supported", lambda scheme = None, filename = None: True)
+    monkeypatch.setattr(
+        pq, "restricted_prequant_load_supported", lambda scheme = None, filename = None: True
+    )
     assert pq.usable_prequant_source(fam, "int8") is not None
-    monkeypatch.setattr(pq, "restricted_prequant_load_supported", lambda scheme = None, filename = None: False)
+    monkeypatch.setattr(
+        pq, "restricted_prequant_load_supported", lambda scheme = None, filename = None: False
+    )
     # Hosted and local alike: the loader refuses both, so neither is usable.
     assert pq.usable_prequant_source(fam, "int8") is None
     ckpt = tmp_path / "model.pt"
@@ -1270,10 +1287,13 @@ def test_prequant_checkpoint_cached_reads_only_the_cache(monkeypatch, tmp_path):
     # The live root is asked first, and the model-name file resolves, so no legacy lookup.
     assert asked == [("unsloth/Z-Image-Turbo-FP8", "Z-Image-Turbo-FP8.pt", "/models/hub")]
 
-    # Only the legacy name on disk does NOT count: whether the repo publishes the canonical one
-    # needs a network call, so this reads as "would download" and the GGUF runs.
+    # A cached name FURTHER DOWN the chain now counts. Primary-only was right while the primary
+    # was the only name a repo realistically hosted; with the chain leading on a safetensors name
+    # most repos do not have yet, primary-only would report every existing .pt repo as "would
+    # download several GB" and hand the pick to GGUF while its checkpoint sat in the cache. The
+    # preference is unaffected: the downloader still asks for the better name first.
     ckpt.unlink()
-    assert prequant_checkpoint_cached(source) is False
+    assert prequant_checkpoint_cached(source) is True
     # Neither name cached -> same answer, for the ordinary reason.
     legacy.unlink()
     assert prequant_checkpoint_cached(source) is False
@@ -1865,3 +1885,56 @@ def test_the_floor_check_ignores_dense_and_unreadable_state_dicts():
     assert pq._fp8_activation_floor_present({"w": object()}, None) is True
     assert pq._fp8_activation_floor_present(None, None) is True
     assert pq._fp8_activation_floor_present({}, None) is True
+
+
+def test_the_plan_only_commits_to_a_hosted_name_this_install_can_open(monkeypatch):
+    """The call that drops the released dense shards must ask both questions, not one.
+
+    The candidate chain now spans two containers, so "the repo has this name" and "this install can
+    open that name" have come apart. A repo still serving only the legacy pickle, met by an install
+    whose torch or torchao cannot restrict that load, would otherwise have the plan spend the
+    download and then refuse it with no dense weights left to fall back to.
+    """
+    from core.inference.diffusion import DiffusionBackend
+
+    class _Sibling:
+        def __init__(self, name, size):
+            self.rfilename, self.size = name, size
+
+    class _Info:
+        siblings = [_Sibling("Model-FP8.pt", 4096)]
+
+    class _Api:
+        def __init__(self, *a, **k):
+            pass
+
+        def model_info(self, *a, **k):
+            return _Info()
+
+    import huggingface_hub
+
+    monkeypatch.setattr(huggingface_hub, "HfApi", _Api)
+    source = pq.PrequantSource(
+        kind = "repo",
+        location = "unsloth/Model-FP8",
+        filename = "Model-FP8.safetensors",
+        fallback_filenames = ("Model-FP8.pt",),
+    )
+
+    # An install that CAN open the pickle commits to it: the name exists and is readable.
+    monkeypatch.setattr(pq, "restricted_prequant_load_supported", lambda *a, **k: True)
+    assert DiffusionBackend._prequant_source_hub_entry(source, None, scheme = "fp8") == (
+        "unsloth/Model-FP8",
+        "Model-FP8.pt",
+        4096,
+    )
+
+    # One that cannot reports the miss instead, which is what keeps the dense shards in the pull.
+    monkeypatch.setattr(
+        pq,
+        "restricted_prequant_load_supported",
+        lambda scheme = None, filename = None: bool(filename) and filename.endswith(".safetensors"),
+    )
+    failures: list = []
+    assert DiffusionBackend._prequant_source_hub_entry(source, None, failures, scheme = "fp8") is None
+    assert failures, "an unopenable artifact has to leave the plan marked partial"

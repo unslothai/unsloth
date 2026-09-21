@@ -14,7 +14,7 @@ import {
 } from "@/lib/floating-panel-order";
 import { cn } from "@/lib/utils";
 import {
-  ArrowExpand01Icon,
+  ExpandIcon,
   DragDropVerticalIcon,
   Globe02Icon,
 } from "@hugeicons/core-free-icons";
@@ -459,7 +459,7 @@ export function ApiMonitorOverlay(): ReactElement | null {
               className="mt-1 flex h-[33px] w-full items-center justify-center gap-[8.5px] rounded-full bg-muted/60 text-ui-13p5 font-medium tracking-nav text-nav-fg transition-colors hover:bg-nav-surface-hover focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring dark:bg-background/50"
             >
               <HugeiconsIcon
-                icon={ArrowExpand01Icon}
+                icon={ExpandIcon}
                 strokeWidth={1.75}
                 className="size-icon shrink-0"
               />

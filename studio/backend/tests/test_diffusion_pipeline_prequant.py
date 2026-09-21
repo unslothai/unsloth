@@ -27,7 +27,7 @@ MIB = 1024 * 1024
 
 Z_IMAGE_REPO = "Tongyi-MAI/Z-Image-Turbo"
 PREQUANT_REPO = "unsloth/Z-Image-Turbo-FP8"
-PREQUANT_FILE = "Z-Image-Turbo-FP8.pt"
+PREQUANT_FILE = "Z-Image-Turbo-FP8.safetensors"
 PREQUANT_BYTES = 6000 * MIB
 
 Z_IMAGE_INDEX = {
@@ -253,7 +253,9 @@ def test_a_gguf_pick_still_never_downloads_a_second_denoiser(monkeypatch):
 def test_a_planned_pipeline_pick_is_sized_from_the_hub(monkeypatch, hub):
     backend = DiffusionBackend()
     monkeypatch.setattr(backend, "_target_for_ordinal", lambda *_a, **_k: _target())
-    monkeypatch.setattr(pqmod, "restricted_prequant_load_supported", lambda _scheme, filename = None: True)
+    monkeypatch.setattr(
+        pqmod, "restricted_prequant_load_supported", lambda _scheme, filename = None: True
+    )
     assert backend._dit_prequant_plan_source(
         _family(),
         "pipeline",
@@ -290,7 +292,9 @@ def _settle_backend(
     monkeypatch.setattr(
         dmod, "select_transformer_quant_scheme", lambda target, mode, family = None: scheme
     )
-    monkeypatch.setattr(pqmod, "restricted_prequant_load_supported", lambda _scheme, filename = None: True)
+    monkeypatch.setattr(
+        pqmod, "restricted_prequant_load_supported", lambda _scheme, filename = None: True
+    )
     monkeypatch.setattr(
         dmod,
         "resolve_dense_quant_candidate",
@@ -691,7 +695,9 @@ def _load_backend(
     monkeypatch.setattr(dmod, "_pipeline_quant_uncompilable_reason", lambda *_a, **_k: None)
     monkeypatch.setattr(dmod, "stored_denoiser_precision", lambda *_a, **_k: None)
     monkeypatch.setattr(dmod, "denoiser_modules", lambda pipe: [("transformer", object())])
-    monkeypatch.setattr(pqmod, "restricted_prequant_load_supported", lambda _scheme, filename = None: True)
+    monkeypatch.setattr(
+        pqmod, "restricted_prequant_load_supported", lambda _scheme, filename = None: True
+    )
 
     plans: list = []
 

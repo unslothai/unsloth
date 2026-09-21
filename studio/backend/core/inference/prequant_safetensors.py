@@ -74,7 +74,20 @@ def _torchao_helpers() -> Optional[tuple]:
     ``prototype`` is a rename we should follow silently, and a version parse is not evidence the
     symbols exist. Never raises -- an install without them has no safetensors support, which is a
     fallback, not an error.
+
+    The stub comes FIRST because importing by feature is not enough against it. On Windows ROCm
+    ``install_torchao_windows_rocm_stub`` installs a meta-path finder that answers every
+    ``torchao.*`` import with fabricated callables, so the import below succeeds and hands back two
+    names that return None. Planning would then read safetensors as supported, drop the dense
+    shards, and the load would unflatten nothing. The pickle probe already asks ``is_stubbed`` for
+    the same reason (``diffusion_prequant._register_prequant_safe_globals``).
     """
+    try:
+        from core._torchao_stub import is_stubbed
+        if is_stubbed("torchao"):
+            return None
+    except Exception:  # noqa: BLE001 - no stub module to ask means nothing is stubbed
+        pass
     try:
         from torchao.prototype.safetensors.safetensors_support import (
             flatten_tensor_state_dict,
@@ -88,7 +101,6 @@ def _torchao_helpers() -> Optional[tuple]:
 def _torchao_version() -> Optional[str]:
     try:
         import torchao
-
         return getattr(torchao, "__version__", None)
     except Exception:  # noqa: BLE001
         return None
@@ -133,13 +145,7 @@ def unsupported_state_dict_keys(state_dict: Any) -> list:
     return [k for k in keys if "." not in str(k)]
 
 
-def save_prequant_safetensors(
-    path: str,
-    *,
-    fmt: str,
-    state_dict: Any,
-    metadata: Any,
-) -> None:
+def save_prequant_safetensors(path: str, *, fmt: str, state_dict: Any, metadata: Any) -> None:
     """Write ``state_dict`` (quantized, tensor subclasses and plain tensors alike) to ``path``.
 
     ``fmt`` and ``metadata`` land in the header beside torchao's own description of every tensor.
@@ -204,7 +210,6 @@ def read_prequant_header(path: str) -> Optional[dict]:
     """
     try:
         from safetensors import safe_open
-
         with safe_open(path, framework = "pt") as handle:
             raw = handle.metadata() or {}
     except Exception:  # noqa: BLE001 - unreadable or not safetensors at all

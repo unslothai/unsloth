@@ -32,6 +32,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { isTauri } from "@/lib/api-base";
+import { cn } from "@/lib/utils";
 import { isDownloadCancelled, pickNativeChatImport } from "@/lib/native-files";
 import { toast } from "@/lib/toast";
 import {
@@ -57,9 +58,10 @@ import {
   Upload01Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { MoreHorizontalIcon } from "lucide-react";
+import { ChevronDownIcon, MoreHorizontalIcon } from "lucide-react";
+import { MessageCircleIcon } from "@/lib/hugeicons-derived";
 import { useNavigate } from "@tanstack/react-router";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   COMBINED_EXPORT_FORMATS_LIST,
   exportProjectConversations,
@@ -77,11 +79,15 @@ import {
 import {
   listStoredChatThreads,
 } from "./utils/chat-history-storage";
+import { CHAT_HISTORY_UPDATED_EVENT } from "./api/chat-api";
+import { groupThreads, type SidebarItem } from "./hooks/use-chat-sidebar-items";
 
 type SortMode = "activity" | "name";
 
 // Reveal this many more projects each time the user scrolls near the bottom.
 const PROJECTS_PAGE_STEP = 12;
+// A streaming chat fires the history event per chunk; one reload per quiet window is enough.
+const PROJECT_CHATS_REFRESH_DEBOUNCE_MS = 300;
 // Visible count before the fit-to-height measurement runs.
 const PROJECTS_INITIAL_FALLBACK = 8;
 // Approx list row height in px, used to estimate how many rows fit the page.
@@ -146,6 +152,100 @@ export function ProjectsPage() {
   const [importing, setImporting] = useState(false);
   // null = Recents
   const [importTargetId, setImportTargetId] = useState<string | null>(null);
+  // Rows open their own chats in place, loaded the first time they are opened.
+  const [openProjectIds, setOpenProjectIds] = useState<ReadonlySet<string>>(
+    () => new Set(),
+  );
+  // Grouped as the sidebar groups them, so a comparison is one row that opens as one.
+  // "error" is a failed first load: the row says so and offers a retry, and reopening it loads
+  // again rather than trusting the entry.
+  const [projectChats, setProjectChats] = useState<
+    Record<string, SidebarItem[] | "loading" | "error">
+  >({});
+  // Rows kept on screen after a reload failed: they may miss a chat or show one that is gone,
+  // so the row says so, and its next open asks again.
+  const [staleProjectIds, setStaleProjectIds] = useState<ReadonlySet<string>>(
+    () => new Set(),
+  );
+  const setStale = useCallback((projectId: string, stale: boolean) => {
+    setStaleProjectIds((prev) => {
+      if (prev.has(projectId) === stale) return prev;
+      const next = new Set(prev);
+      if (stale) next.add(projectId);
+      else next.delete(projectId);
+      return next;
+    });
+  }, []);
+
+  // One sequence per project: a response that a newer request overtook is dropped, so a chat
+  // moved or deleted mid-flight cannot come back.
+  const loadSeqRef = useRef(new Map<string, number>());
+  const loadProjectChats = useCallback((projectId: string, silent = false) => {
+    const seq = (loadSeqRef.current.get(projectId) ?? 0) + 1;
+    loadSeqRef.current.set(projectId, seq);
+    // A reload keeps the rows on screen; only a first load shows the skeleton.
+    if (!silent) {
+      setProjectChats((prev) => ({ ...prev, [projectId]: "loading" }));
+    }
+    void listStoredChatThreads({ projectId, includeArchived: false })
+      .then((threads) => {
+        if (loadSeqRef.current.get(projectId) !== seq) return;
+        setStale(projectId, false);
+        setProjectChats((prev) => ({
+          ...prev,
+          [projectId]: groupThreads(threads).sort(
+            (a, b) => b.updatedAt - a.updatedAt,
+          ),
+        }));
+      })
+      .catch(() => {
+        if (loadSeqRef.current.get(projectId) !== seq) return;
+        // A failed reload keeps rows already showing, marked stale; anything else becomes a
+        // retryable error, including a first load this reload overtook while it was still
+        // pending, and a folder loaded as empty, which the reload may have been about to fill.
+        setProjectChats((prev) => {
+          const rows = prev[projectId];
+          if (silent && Array.isArray(rows) && rows.length > 0) {
+            setStale(projectId, true);
+            return prev;
+          }
+          return { ...prev, [projectId]: "error" };
+        });
+      });
+  }, [setStale]);
+
+  // A loaded list goes stale when chats are imported, moved or deleted. Streaming fires the
+  // event per chunk, so the reload is debounced: open rows reload in place, the rest load
+  // again on their next open.
+  const openProjectIdsRef = useRef(openProjectIds);
+  useEffect(() => {
+    openProjectIdsRef.current = openProjectIds;
+  }, [openProjectIds]);
+  useEffect(() => {
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const refresh = () => {
+      if (timer !== null) clearTimeout(timer);
+      timer = setTimeout(() => {
+        timer = null;
+        const open = openProjectIdsRef.current;
+        // A closed project's load may still be in flight; its answer must not refill the cache.
+        for (const [id, seq] of loadSeqRef.current) {
+          if (!open.has(id)) loadSeqRef.current.set(id, seq + 1);
+        }
+        setProjectChats((prev) => {
+          const kept: typeof prev = {};
+          for (const id of open) if (prev[id] !== undefined) kept[id] = prev[id];
+          return kept;
+        });
+        for (const id of open) loadProjectChats(id, true);
+      }, PROJECT_CHATS_REFRESH_DEBOUNCE_MS);
+    };
+    window.addEventListener(CHAT_HISTORY_UPDATED_EVENT, refresh);
+    return () => {
+      if (timer !== null) clearTimeout(timer);
+      window.removeEventListener(CHAT_HISTORY_UPDATED_EVENT, refresh);
+    };
+  }, [loadProjectChats]);
 
   async function handleImport(source: ImportSource, projectId: string | null) {
     // Counts up while it runs: a large export takes minutes of writes.
@@ -312,6 +412,37 @@ export function ProjectsPage() {
     // Re-observe after each load so it keeps filling while the sentinel stays in view
     // (IntersectionObserver does not re-fire on a steady intersection).
   }, [hasMore, visibleCount]);
+
+  function toggleProjectChats(projectId: string) {
+    const opening = !openProjectIds.has(projectId);
+    setOpenProjectIds((prev) => {
+      const next = new Set(prev);
+      if (opening) next.add(projectId);
+      else next.delete(projectId);
+      return next;
+    });
+    // Only an open asks: a close after a failed load must not start a request the reopen
+    // then waits on.
+    if (!opening) return;
+    const cached = projectChats[projectId];
+    const loaded = cached !== undefined && cached !== "error";
+    if (loaded && !staleProjectIds.has(projectId)) return;
+    // Stale rows stay on screen while the retry runs.
+    loadProjectChats(projectId, loaded);
+  }
+
+  function openChat(item: SidebarItem, projectId: string) {
+    const runtime = useChatRuntimeStore.getState();
+    runtime.setActiveProjectId(projectId);
+    // A comparison restores from its pair id; a pane opened as a thread is half of it.
+    if (item.type === "compare") {
+      runtime.setActiveThreadId(null);
+      navigate({ to: "/chat", search: { compare: item.id, project: projectId } });
+      return;
+    }
+    runtime.setActiveThreadId(item.id);
+    navigate({ to: "/chat", search: { thread: item.id, project: projectId } });
+  }
 
   function openProject(projectId: string) {
     const runtime = useChatRuntimeStore.getState();
@@ -575,6 +706,8 @@ export function ProjectsPage() {
           <div ref={listRef} data-tour="projects-list">
           {visibleProjects.map((project) => {
             const pinned = pinnedProjectIdSet.has(project.id);
+            const chatsOpen = openProjectIds.has(project.id);
+            const chats = projectChats[project.id];
             return (
             <div key={`wrap-${project.id}`}>
             <input
@@ -598,6 +731,8 @@ export function ProjectsPage() {
               tabIndex={0}
               onClick={() => openProject(project.id)}
               onKeyDown={(e) => {
+                // A key pressed on a control inside the row is that control's.
+                if (e.target !== e.currentTarget) return;
                 if (e.key === "Enter" || e.key === " ") {
                   e.preventDefault();
                   openProject(project.id);
@@ -615,18 +750,54 @@ export function ProjectsPage() {
               <span className="min-w-0 flex-1 truncate text-ui-15 font-semibold text-foreground">
                 {project.name}
               </span>
+              {/* Opens the project's chats in place, without leaving the list. */}
+              <button
+                type="button"
+                aria-label={chatsOpen ? "Hide chats" : "Show chats"}
+                aria-expanded={chatsOpen}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  toggleProjectChats(project.id);
+                }}
+                className={cn(
+                  "flex size-7 shrink-0 items-center justify-center rounded-full text-muted-foreground transition hover:bg-black/5 hover:text-foreground focus-visible:opacity-100 group-hover/project-row:opacity-100 dark:hover:bg-white/10",
+                  chatsOpen ? "opacity-100" : "opacity-0",
+                )}
+              >
+                <ChevronDownIcon
+                  strokeWidth={1.75}
+                  className={cn(
+                    "size-4 transition-transform",
+                    !chatsOpen && "-rotate-90",
+                  )}
+                />
+              </button>
               <span className="w-40 shrink-0 text-sm text-muted-foreground">
                 {formatModified(project.updatedAt)}
               </span>
+              {/* Pinning is one click here, as it is on a sidebar row. */}
+              <button
+                type="button"
+                aria-label={pinned ? "Unpin project" : "Pin project"}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  togglePinProject(project.id);
+                }}
+                className={cn(
+                  "flex size-7 shrink-0 items-center justify-center rounded-full text-muted-foreground transition hover:bg-black/5 hover:text-foreground focus-visible:opacity-100 group-hover/project-row:opacity-100 dark:hover:bg-white/10",
+                  pinned ? "opacity-100" : "opacity-0",
+                )}
+              >
+                <HugeiconsIcon
+                  icon={pinned ? PinOffIcon : PinIcon}
+                  strokeWidth={1.75}
+                  className="size-4"
+                />
+              </button>
               <div className="relative flex w-8 shrink-0 items-center justify-end">
                 {/* Pin fades out and the kebab fades in on hover, focus, or
                     menu open. Absolute + opacity gating keeps them from
                     overlapping while leaving the button keyboard-focusable. */}
-                {pinned && (
-                  <span className="text-muted-foreground transition-opacity group-hover/project-row:opacity-0 group-focus-within/project-row:opacity-0 group-has-[[data-state=open]]/project-row:opacity-0">
-                    <HugeiconsIcon icon={PinIcon} strokeWidth={1.75} className="size-4" />
-                  </span>
-                )}
                 <DropdownMenu>
                   <DropdownMenuTrigger asChild>
                     <button
@@ -654,7 +825,7 @@ export function ProjectsPage() {
                         strokeWidth={1.75}
                         className="size-icon"
                       />
-                      <span>{pinned ? "Unpin project" : "Pin project"}</span>
+                      <span>{pinned ? "Unpin" : "Pin"}</span>
                     </DropdownMenuItem>
                     <DropdownMenuItem
                       onSelect={() => {
@@ -705,6 +876,50 @@ export function ProjectsPage() {
                 </DropdownMenu>
               </div>
             </div>
+            {chatsOpen && (
+              <div className="mb-2 flex flex-col gap-0.5 pl-[76px] pr-5">
+                {chats === undefined || chats === "loading" ? (
+                  <Skeleton className="h-6 w-48 rounded-[8px]" />
+                ) : chats === "error" ? (
+                  <button
+                    type="button"
+                    onClick={() => loadProjectChats(project.id)}
+                    className="cursor-pointer self-start py-1 text-left text-sm text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
+                  >
+                    Could not load chats. Retry
+                  </button>
+                ) : chats.length === 0 ? (
+                  <p className="py-1 text-sm text-muted-foreground">No chats</p>
+                ) : (
+                  <>
+                    {chats.map((chat) => (
+                      <button
+                        key={chat.id}
+                        type="button"
+                        onClick={() => openChat(chat, project.id)}
+                        className="flex cursor-pointer items-center gap-2 truncate rounded-lg px-2 py-1.5 text-left text-sm text-muted-foreground transition-colors hover:bg-muted/70 hover:text-foreground dark:hover:bg-white/[0.055]"
+                      >
+                        <HugeiconsIcon
+                          icon={MessageCircleIcon}
+                          strokeWidth={1.75}
+                          className="size-4 shrink-0"
+                        />
+                        <span className="truncate">{chat.title}</span>
+                      </button>
+                    ))}
+                    {staleProjectIds.has(project.id) && (
+                      <button
+                        type="button"
+                        onClick={() => loadProjectChats(project.id, true)}
+                        className="cursor-pointer self-start py-1 text-left text-sm text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
+                      >
+                        Could not refresh chats. Retry
+                      </button>
+                    )}
+                  </>
+                )}
+              </div>
+            )}
             </div>
             );
           })}

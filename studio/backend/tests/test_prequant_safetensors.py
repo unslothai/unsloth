@@ -13,6 +13,7 @@ entire risk is in the metadata contract.
 from __future__ import annotations
 
 import json
+import sys
 
 import pytest
 
@@ -112,11 +113,45 @@ def test_usable_source_survives_a_pickle_only_refusal(monkeypatch):
 
 
 def test_usable_source_still_refused_when_nothing_is_readable(monkeypatch):
-    """A .pt-only family on a pickle-less install keeps answering None, as it always has."""
+    """A family with no DECLARED safetensors name, on a pickle-less install, keeps answering None.
+
+    Regression for a hazard the safetensors-first chain introduced. Every family now derives a
+    ``<Model>-<SCHEME>.safetensors`` candidate, so a naive "is any candidate readable" gate answers
+    yes on a pickle-less install even for a repo that hosts only ``.pt``. Planning would then budget
+    a 6 GB artifact, the download would 404 to the pickle, the pickle would be refused, and the
+    load would fall back to dense under a plan that never budgeted it: the evict-then-OOM this
+    function exists to prevent. A derived name is a guess and does not count as evidence.
+    """
     fam = _family(prequant_repos = (("fp8", "org/model-fp8"),))
     monkeypatch.setattr(pq, "_register_prequant_safe_globals", lambda: False)
     monkeypatch.setattr(ps, "safetensors_prequant_supported", lambda: True)
+    monkeypatch.setattr(pq, "cached_checkpoint_path", lambda source, **kw: None)
     assert pq.usable_prequant_source(fam, "fp8") is None
+
+
+def test_a_cached_safetensors_artifact_is_evidence_enough(monkeypatch):
+    """The other side of that guard: once the file is actually THERE, the pickle-less install may
+    plan for it. A cached candidate is evidence, exactly as a family-declared name is."""
+    fam = _family(prequant_repos = (("fp8", "org/model-fp8"),))
+    monkeypatch.setattr(pq, "_register_prequant_safe_globals", lambda: False)
+    monkeypatch.setattr(ps, "safetensors_prequant_supported", lambda: True)
+    monkeypatch.setattr(
+        pq, "cached_checkpoint_path", lambda source, **kw: "/cache/model-FP8.safetensors"
+    )
+    src = pq.usable_prequant_source(fam, "fp8")
+    assert src is not None and src.filename == "model-FP8.safetensors"
+
+
+def test_the_derived_chain_puts_safetensors_first_and_keeps_the_pickles(monkeypatch):
+    """The preference itself, and the promise that nothing is dropped behind it: an existing
+    .pt-only repo still resolves both of the names it resolves today."""
+    fam = _family(prequant_repos = (("fp8", "unsloth/Model-FP8"),))
+    src = pq.resolve_prequant_source(fam, "fp8")
+    assert src.candidate_filenames == (
+        "Model-FP8.safetensors",
+        "Model-FP8.pt",
+        "transformer_fp8.pt",
+    )
 
 
 def test_local_scheme_probe_reads_the_header_only(monkeypatch, tmp_path):
@@ -141,7 +176,9 @@ def test_local_scheme_probe_rejects_a_foreign_format(monkeypatch, tmp_path):
     path = tmp_path / "other.safetensors"
     path.write_bytes(b"x")
     monkeypatch.setattr(
-        ps, "read_prequant_header", lambda p: {"format": "someone_elses_v1", "metadata": {"scheme": "int8"}}
+        ps,
+        "read_prequant_header",
+        lambda p: {"format": "someone_elses_v1", "metadata": {"scheme": "int8"}},
     )
     assert pq.local_prequant_scheme(str(path)) is None
 
@@ -172,9 +209,7 @@ def test_plain_tensor_round_trip(tmp_path):
     sd = {"enc.layer.weight": torch.ones(4, 4), "enc.layer.bias": torch.zeros(4)}
     meta = {"scheme": "fp8", "base_model_id": "org/base", "min_features": 512}
     path = str(tmp_path / "te.safetensors")
-    ps.save_prequant_safetensors(
-        path, fmt = pq.PREQUANT_FORMAT, state_dict = sd, metadata = meta
-    )
+    ps.save_prequant_safetensors(path, fmt = pq.PREQUANT_FORMAT, state_dict = sd, metadata = meta)
 
     header = ps.read_prequant_header(path)
     assert header == {"format": pq.PREQUANT_FORMAT, "metadata": meta}
@@ -258,10 +293,14 @@ def test_quantized_round_trip_is_exact(tmp_path, scheme):
     from core.inference.diffusion_transformer_quant import _make_quant_config, make_filter_fn
 
     def build():
-        module = torch.nn.Sequential(
-            torch.nn.Linear(1024, 1024, bias = False),
-            torch.nn.Linear(1024, 1024, bias = True),
-        ).cuda().bfloat16()
+        module = (
+            torch.nn.Sequential(
+                torch.nn.Linear(1024, 1024, bias = False),
+                torch.nn.Linear(1024, 1024, bias = True),
+            )
+            .cuda()
+            .bfloat16()
+        )
         quantize_(module, _make_quant_config(scheme), filter_fn = make_filter_fn(512))
         return module
 
@@ -292,3 +331,29 @@ def test_quantized_round_trip_is_exact(tmp_path, scheme):
         assert torch.equal(got, want)
 
     build().load_state_dict(loaded, strict = True, assign = True)
+
+
+def test_the_windows_rocm_torchao_stub_is_not_safetensors_support(monkeypatch):
+    """The stub answers every ``torchao.*`` import with a fabricated callable, so importing the
+    flatten/unflatten pair proves nothing on Windows ROCm: both names bind, both return None, and
+    an install that reported support here would have planning drop the dense shards for a
+    checkpoint the loader can never rebuild. The pickle probe already asks the same question."""
+    import core._torchao_stub as stub
+    from core.inference import prequant_safetensors as ps
+    from core.inference.diffusion_prequant import restricted_prequant_load_supported
+
+    for name in [k for k in list(sys.modules) if k == "torchao" or k.startswith("torchao.")]:
+        monkeypatch.delitem(sys.modules, name, raising = False)
+    monkeypatch.setattr(stub, "_is_windows_rocm", lambda: True)
+    stub.install_torchao_windows_rocm_stub()
+    assert stub.is_stubbed("torchao"), "the stub did not install, so this proves nothing"
+    # The negative control: the import really does succeed against the stub.
+    from torchao.prototype.safetensors.safetensors_support import (  # noqa: F401
+        unflatten_tensor_state_dict,
+    )
+
+    assert ps._torchao_helpers() is None
+    assert ps.safetensors_prequant_supported() is False
+    # And the capability the planners ask is False for a safetensors name too, not only the pickle.
+    assert restricted_prequant_load_supported("fp8", "Model-FP8.safetensors") is False
+    assert restricted_prequant_load_supported("fp8", "Model-FP8.pt") is False
