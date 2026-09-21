@@ -1,18 +1,14 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""What the installer modules are allowed to import just to be imported.
+"""What the installer modules may import just to be imported.
 
-Every `unsloth studio` command loads `install_llama_prebuilt`, and through it
-`prebuilt_core`, before it knows whether this run will download anything. The
-desktop's launch preflight loads it to stat a directory. So the module-scope
-import list is on the launch path, and filelock alone costs about 25 ms because
-it pulls in asyncio.
+Every `unsloth studio` command loads `install_llama_prebuilt`, and the desktop
+preflight loads it to stat a directory, so the module-scope import list is on the
+launch path; filelock alone costs ~25 ms because it pulls in asyncio.
 
-These tests pin the deferral rather than the timing: a wall-clock budget on a
-shared runner is a flake, while "filelock is not in sys.modules after the import"
-is the same answer on every machine. Each runs in a fresh interpreter, since
-anything already imported by the test session would hide a regression.
+Pinned as "not in sys.modules" rather than as a wall-clock budget, which would flake
+on a shared runner. Fresh interpreter each time: the test session has its own imports.
 """
 
 import subprocess
@@ -24,13 +20,11 @@ import pytest
 PACKAGE_ROOT = Path(__file__).resolve().parents[3]
 STUDIO_DIR = PACKAGE_ROOT / "studio"
 
-# Imported by the archive and locking paths, which an import must not reach.
-# asyncio is here because it is filelock's cost rather than its own.
+# asyncio is here because it is filelock's cost, not its own.
 DEFERRED = ("filelock", "asyncio", "zipfile", "tarfile")
 
 
 def _modules_after_importing(statement: str) -> set[str]:
-    """The interesting part of sys.modules in a fresh interpreter."""
     probe = (
         f"{statement}\n"
         "import json, sys\n"
@@ -73,11 +67,7 @@ def test_the_lock_still_uses_filelock_when_it_is_installed():
 
 
 def test_a_missing_filelock_still_answers_with_the_pid_fallback(tmp_path, monkeypatch):
-    """The ImportError arm, which is what a stripped environment hits.
-
-    Exercised through install_lock rather than by asserting on the tuple, since
-    the point of the fallback is that the lock still works.
-    """
+    """The ImportError arm, through install_lock: the point is that it still locks."""
     sys.path.insert(0, str(STUDIO_DIR))
     import prebuilt_core
 

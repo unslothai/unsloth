@@ -65,11 +65,8 @@ _FILELOCK_CLASSES: tuple[Any, Any] | None = None
 def filelock_classes() -> tuple[Any, Any]:
     """``(FileLock, Timeout)``, or ``(None, None)`` when filelock is not installed.
 
-    Imported on first use rather than at module scope. filelock pulls in asyncio and
-    costs about 25 ms of a cold start, and the only caller is ``install_lock`` below,
-    so every CLI invocation that merely reads a marker or grades an install tree was
-    paying for a lock it never takes. The result is cached because the miss is an
-    ImportError, which is not cheap to repeat.
+    First use, not import: filelock pulls in asyncio and costs ~25 ms, and only
+    ``install_lock`` needs it. Cached because repeating an ImportError is not cheap.
     """
     global _FILELOCK_CLASSES
     if _FILELOCK_CLASSES is None:
@@ -1116,8 +1113,8 @@ def extract_archive(archive_path: Path, destination: Path) -> None:
         return normalized, resolved
 
     def extract_zip_safely(source: Path, base: Path) -> None:
-        # Local, like tarfile below: only an install that actually unpacks an archive
-        # needs these, and the module is imported by every CLI command.
+        # Local: only an install that unpacks an archive needs these, and every CLI
+        # command imports this module.
         import zipfile
         with zipfile.ZipFile(source) as archive:
             for member in archive.infolist():
