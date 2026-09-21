@@ -1620,25 +1620,11 @@ export function useChatModelRuntime() {
               ]
                 .filter(Boolean)
                 .join(" ");
-              activeLoadingDescription = loadingDescription;
               setLoadProgress({
                 percent: 0,
                 label: "Preparing download",
                 phase: "downloading",
               });
-              if (!loadToastDismissedRef.current) {
-                toast(null, {
-                  id: toastId,
-                  ...modelLoadToastOptions(
-                    renderLoadDescription(
-                      "Downloading model…",
-                      loadingDescription,
-                      0,
-                      "Preparing download",
-                    ),
-                  ),
-                });
-              }
               toast.info("MLX cannot use 4-bit bitsandbytes weights", {
                 description: mlxBaseDescription,
               });
@@ -2359,7 +2345,7 @@ export function useChatModelRuntime() {
           }
         }
 
-        const isCachedLoad = isDownloaded || isCachedLora;
+        const isCachedLoad = downloadComplete;
         const toastTitle = isCachedLoad ? "Starting model…" : "Downloading model…";
         const modelLoadToastOptions = (description: ReturnType<typeof renderLoadDescription>) => ({
           description,
