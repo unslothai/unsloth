@@ -12529,3 +12529,41 @@ def test_snapshot_selection_read_failures_are_reported(monkeypatch):
         assert any("realpath unreadable" in note for note in incidents), (
             f"a path that could not be resolved dropped its row silently: {incidents}"
         )
+
+
+def test_an_unreadable_ollama_manifest_is_reported_but_a_malformed_one_is_not(monkeypatch):
+    """_ollama_model_info_from_manifest caught read and parse failures together.
+
+    A manifest or config blob that could not be READ dropped the row from a scan still
+    published as complete, so a resident model loaded from that path kept being reported by
+    its filename rather than its Ollama alias. A manifest that does not PARSE is a different
+    thing: it will not parse on the next pass either.
+    """
+    import pathlib
+
+    from core.inference.scan_incidents import collecting_scan_incidents
+    from hub.services.models import ollama
+
+    with tempfile.TemporaryDirectory() as root:
+        ollama_dir = pathlib.Path(root)
+        tag_file = ollama_dir / "manifests" / "registry" / "library" / "qwen3" / "4b"
+        tag_file.parent.mkdir(parents = True)
+        tag_file.write_text("{not json")
+
+        with collecting_scan_incidents() as incidents:
+            assert ollama._ollama_model_info_from_manifest(ollama_dir, tag_file) is None
+        assert incidents == [], f"a malformed manifest was reported as a gap: {incidents}"
+
+        real_read_text = pathlib.Path.read_text
+
+        def boom(self, *a, **k):
+            if self == tag_file:
+                raise PermissionError("manifest unreadable")
+            return real_read_text(self, *a, **k)
+
+        monkeypatch.setattr(pathlib.Path, "read_text", boom)
+        with collecting_scan_incidents() as incidents:
+            assert ollama._ollama_model_info_from_manifest(ollama_dir, tag_file) is None
+        assert any("manifest unreadable" in note for note in incidents), (
+            f"an unreadable manifest was indistinguishable from a malformed one: {incidents}"
+        )
