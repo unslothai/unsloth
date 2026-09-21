@@ -970,15 +970,20 @@ def test_chat_sidebar_row_actions_visible_on_coarse_pointers():
                     closes = index
                     break
         assert closes is not None, f"unbalanced cn() around the {variant} row classes"
-        # The other variant's own string is the opposite branch of the same ternary and
-        # carries its own pair; it is checked on its own pass, not borrowed into this one.
-        variants = ("project-chat-item", "recent-item")
+        # Exempt the OTHER variant's own row strings, identified the same way this variant's
+        # were, and nothing else. Exempting any literal that merely contains a variant name
+        # let `"group/recent-item [@media(pointer:coarse)]:pr-0"` through, and that zero is
+        # what would render.
+        siblings = {
+            match
+            for other in ("project-chat-item", "recent-item")
+            if other != variant
+            for match in re.findall(rf'"[^"]*group-hover/{other}:pr-\d+[^"]*"', block)
+        }
         elsewhere = [
             cls
             for cls in re.findall(r'"[^"]*"', block[opens:closes])
-            if "[@media(pointer:coarse)]:" in cls
-            and cls not in hovered
-            and not any(name in cls for name in variants)
+            if "[@media(pointer:coarse)]:" in cls and cls not in hovered and cls not in siblings
         ]
         assert not elsewhere, (
             f"the cn() that builds the {variant} row carries coarse-pointer padding outside "

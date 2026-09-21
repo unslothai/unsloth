@@ -164,6 +164,41 @@ def _is_min_width(token: str) -> bool:
     return utility.removeprefix("!").removesuffix("!").startswith("min-w-")
 
 
+def _cn_literals(source: str, anchor: str) -> str | None:
+    """The string literals of the `cn(...)` call containing `anchor`, joined in order.
+
+    `className` itself is expected among the arguments: that is the caller's contribution,
+    read separately. Any OTHER unresolved argument means this cannot say what the element
+    composes to, which is _UNREADABLE rather than silence.
+    """
+    at = source.find(anchor)
+    if at == -1:
+        return None
+    opens = source.rfind("cn(", 0, at)
+    if opens == -1:
+        return None
+    depth, closes = 0, None
+    for index in range(opens + 2, len(source)):
+        if source[index] == "(":
+            depth += 1
+        elif source[index] == ")":
+            depth -= 1
+            if depth == 0:
+                closes = index
+                break
+    if closes is None:
+        return _UNREADABLE
+    pieces = []
+    for argument in _split_arguments(source[opens + len("cn(") : closes]):
+        argument = argument.strip()
+        literal = re.fullmatch(r'"([^"]*)"', argument)
+        if literal:
+            pieces.append(literal.group(1))
+        elif argument != "className":
+            return _UNREADABLE
+    return " ".join(pieces)
+
+
 def test_assistant_more_menu_exposes_response_details_action():
     src = THREAD_TSX.read_text(encoding = "utf-8")
     assert "MessageResponseDetailsSheet" in src
@@ -270,7 +305,14 @@ def test_response_model_badge_is_user_configurable_and_rendered_once_per_message
     # Whole class tokens, not a substring: `\b` treats the colon in `md:min-w-0` as a
     # boundary, so a variant-qualified utility would satisfy a loose match while leaving the
     # trigger unable to shrink at every width it was not qualified for.
-    base = re.search(r'"(aui-reasoning-trigger[^"]*)"', reasoning_src)
+    # The WHOLE composition inside the component, not its first quoted literal. A second
+    # literal appended after `className` would be effective and invisible to a first-match
+    # read, and an argument this cannot resolve means the composition is unknown.
+    base = _cn_literals(reasoning_src, '"aui-reasoning-trigger')
+    assert base != _UNREADABLE, (
+        "ReasoningTrigger composes its className from something this guard cannot resolve, "
+        "so it cannot tell what the trigger ends up with. Widen the reader before trusting it"
+    )
     call_site = _class_list(reasoning_src, "<ReasoningTrigger")
     assert call_site != _UNREADABLE, (
         "the ReasoningTrigger call site passes a className this guard cannot resolve, so it "
@@ -280,7 +322,7 @@ def test_response_model_badge_is_user_configurable_and_rendered_once_per_message
     # In `cn(base, className)` order, and the LAST min-w-* wins: cn runs tailwind-merge, so a
     # call site passing min-w-full or min-w-max drops the base min-w-0 and the trigger stops
     # shrinking. A union of the two would still hold the base token and call that fine.
-    ordered = (base.group(1).split() if base else []) + (call_site.split() if call_site else [])
+    ordered = (base.split() if base else []) + (call_site.split() if call_site else [])
     assert ordered, (
         "neither ReasoningTrigger's base classes nor its call site carries a class list this "
         "can read, so this guard cannot see the trigger's layout at all"
@@ -288,7 +330,7 @@ def test_response_model_badge_is_user_configurable_and_rendered_once_per_message
     _assert_only_shrinks(
         ordered,
         "the reasoning trigger",
-        f"Base classes: {base.group(1) if base else None!r}. Call site: {call_site!r}",
+        f"Base classes: {base!r}. Call site: {call_site!r}",
     )
     header = _class_list(reasoning_src, 'data-slot="reasoning-header"')
     assert header is not None, "the reasoning header row no longer carries a className"
