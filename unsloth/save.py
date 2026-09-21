@@ -1369,6 +1369,33 @@ def install_python_non_blocking(packages = []):
 _LLM_COMPRESSOR_SPEC = "llmcompressor>=0.6.0,<=0.12.0"
 
 
+def _llm_compressor_version_is_supported():
+    """Whether the INSTALLED llmcompressor is one _LLM_COMPRESSOR_SPEC would have installed.
+
+    A version outside the pinned range is exactly what the spec exists to correct, so it must
+    not be accepted from either direction: not from the metadata short-circuit below, and not
+    from a successful in-process import either, which would quantize against a release this
+    package explicitly does not support.
+
+    Unknown counts as supported, which keeps two working setups working. No metadata at all
+    but importable is a source checkout on sys.path, and a missing `packaging` or an
+    unparseable spec says nothing about the install; in both cases the alternative is forcing
+    the destructive pip re-resolve this guard exists to avoid.
+    """
+    try:
+        from importlib.metadata import version as _iv
+        installed = _iv("llmcompressor")
+    except Exception:
+        return True
+    try:
+        from packaging.requirements import Requirement
+        return Requirement(_LLM_COMPRESSOR_SPEC).specifier.contains(
+            installed, prereleases = True
+        )
+    except Exception:
+        return True
+
+
 def _llm_compressor_imports_cleanly():
     """Does llm-compressor import in the conditions the compressed export actually runs in?
 
@@ -1411,12 +1438,16 @@ def install_llm_compressor():
     not upgrade them. Set UNSLOTH_DISABLE_LLM_COMPRESSOR_AUTOINSTALL=1 to forbid the auto-install.
     Returns (oneshot, QuantizationModifier).
     """
-    try:
-        from llmcompressor import oneshot
-        from llmcompressor.modifiers.quantization import QuantizationModifier
-        return oneshot, QuantizationModifier
-    except Exception:
-        pass
+    # Gated on the version, not just on importability: an out-of-range release that happens
+    # to import would otherwise be accepted here and never reach the check below, leaving the
+    # pin decorative for exactly the installs it was written for.
+    if _llm_compressor_version_is_supported():
+        try:
+            from llmcompressor import oneshot
+            from llmcompressor.modifiers.quantization import QuantizationModifier
+            return oneshot, QuantizationModifier
+        except Exception:
+            pass
 
     # Already installed but not importable in THIS process? Do not reinstall. The in-process import
     # can fail under Unsloth's transformers patches (the compressed export quantizes in an isolated
@@ -1426,22 +1457,11 @@ def install_llm_compressor():
     try:
         from importlib.metadata import version as _iv, PackageNotFoundError as _PNF
         try:
-            _installed = _iv("llmcompressor")
-            # Presence alone is not enough: a version outside the pinned range is exactly what
-            # the spec exists to correct, and short-circuiting on it would leave the export
-            # quantizing against an unsupported release. Only skip the install when what is
-            # installed is what we would have installed anyway.
-            _supported = True
-            try:
-                from packaging.requirements import Requirement
-                _supported = Requirement(_LLM_COMPRESSOR_SPEC).specifier.contains(
-                    _installed, prereleases = True
-                )
-            except Exception:
-                # No packaging, or a spec this cannot parse: treat presence as good enough
-                # rather than forcing the destructive re-resolve this guard exists to avoid.
-                _supported = True
-            if _supported and _llm_compressor_imports_cleanly():
+            _iv("llmcompressor")
+            if (
+                _llm_compressor_version_is_supported()
+                and _llm_compressor_imports_cleanly()
+            ):
                 # Present, supported, and importable in the same conditions the export runs
                 # under. The compressed-export subprocess performs the real import; the caller
                 # only uses this to trigger the install and fail fast, so returning None here

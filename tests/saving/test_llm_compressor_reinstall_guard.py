@@ -214,3 +214,74 @@ def test_an_install_that_fixed_nothing_still_fails_loudly(monkeypatch):
     outcome = _install_outcome(monkeypatch, subprocess_import = 1)
     assert isinstance(outcome, RuntimeError), outcome
     assert "could not be imported" in str(outcome)
+
+
+def _with_importable_llmcompressor(monkeypatch, reported: str):
+    """Present an llmcompressor that IMPORTS, at version *reported*.
+
+    The other cases here rely on the interpreter not having it, which is what made them
+    blind to this branch: an out-of-range release that imports fine returns from the very
+    first try block, before any version check. Substituting the module is the only way to
+    reach that path without installing an unsupported release.
+    """
+    import types
+
+    real_version = md.version
+
+    def fake_version(dist: str) -> str:
+        if dist == "llmcompressor":
+            return reported
+        return real_version(dist)
+
+    monkeypatch.setattr(md, "version", fake_version)
+
+    pkg = types.ModuleType("llmcompressor")
+    pkg.oneshot = lambda *a, **k: None
+    quant = types.ModuleType("llmcompressor.modifiers.quantization")
+    quant.QuantizationModifier = type("QuantizationModifier", (), {})
+    mods = types.ModuleType("llmcompressor.modifiers")
+    mods.quantization = quant
+    pkg.modifiers = mods
+    for name, module in (
+        ("llmcompressor", pkg),
+        ("llmcompressor.modifiers", mods),
+        ("llmcompressor.modifiers.quantization", quant),
+    ):
+        monkeypatch.setitem(sys.modules, name, module)
+
+    calls: list[list[str]] = []
+    monkeypatch.setattr(subprocess, "check_call", lambda cmd, *a, **k: calls.append(list(cmd)))
+    monkeypatch.setattr(
+        subprocess, "run", lambda cmd, *a, **k: subprocess.CompletedProcess(cmd, 0)
+    )
+    return calls
+
+
+def test_a_supported_version_that_imports_is_used_directly(monkeypatch):
+    """The ordinary fast path: in range and importable, so the real symbols come back and
+    nothing is installed."""
+    calls = _with_importable_llmcompressor(monkeypatch, "0.12.0")
+    oneshot, modifier = install_llm_compressor()
+    assert oneshot is not None and modifier is not None
+    assert calls == [], "a supported install must not be touched"
+
+
+@pytest.mark.parametrize("version", ["0.5.0", "1.0.0", "0.13.0"])
+def test_an_out_of_range_version_is_not_accepted_just_because_it_imports(
+    monkeypatch, version
+):
+    """The gap: importability is not support. Returning the symbols here would quantize
+    against a release _LLM_COMPRESSOR_SPEC explicitly excludes, and the pin would be
+    decorative for exactly the installs it was written for."""
+    from packaging.requirements import Requirement
+
+    assert not Requirement(_LLM_COMPRESSOR_SPEC).specifier.contains(
+        version, prereleases = True
+    ), f"{version} must be outside {_LLM_COMPRESSOR_SPEC} for this case to mean anything"
+    calls = _with_importable_llmcompressor(monkeypatch, version)
+    try:
+        install_llm_compressor()
+    except Exception:
+        pass
+    assert calls, f"{version} imported and was accepted without being corrected"
+    assert any(_LLM_COMPRESSOR_SPEC in " ".join(cmd) for cmd in calls), calls
