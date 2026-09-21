@@ -729,6 +729,7 @@ function StreamingFenceBlock({
       fallback={<DeferredFenceShell language={languageToken} source={source} />}
     >
       <FenceBody
+        isIncomplete
         language={languageToken}
         result={tokens}
         source={source}
@@ -848,6 +849,7 @@ function FenceBlock({
       >
         {reached ? (
           <FenceBody
+            isIncomplete={isIncomplete}
             language={languageToken}
             result={tokens}
             source={source}

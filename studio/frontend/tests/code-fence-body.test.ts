@@ -91,7 +91,7 @@ test("the fence branch no longer renders streamdown's Block", () => {
     "the reached fence must render FenceBody, not Block",
   );
   assert.ok(
-    /<FenceBody\s+language=\{languageToken\}/.test(code),
+    /<FenceBody[\s\S]{0,80}language=\{languageToken\}/.test(code),
     "and it must be handed the parsed language token, not the raw info string",
   );
 });
@@ -180,5 +180,29 @@ test("the scrolling ancestor is resolved from outside the code block", () => {
   assert.ok(
     /const scroller = scrollerOf\(outer\);/.test(DEFER),
     "resolve from the fence's outermost element, not from the code element",
+  );
+});
+
+test("the body reproduces streamdown's language class and incomplete flag", () => {
+  // Both were MEASURED missing against the merge base, on the same scene, and neither has a
+  // reader in the tree today. That is what makes them worth pinning rather than shrugging at: a
+  // published rendering contract with no current consumer is exactly the kind of thing that goes
+  // quietly and is found by a user stylesheet months later.
+  const body = DEFER.slice(DEFER.indexOf("export const FenceBody = memo("));
+  assert.ok(
+    /const languageClass = language === null \? null : `language-\$\{language\}`;/.test(DEFER),
+    "the first word of the info string, which is what remark-rehype emits",
+  );
+  assert.ok(
+    /className=\{joinClasses\(\s*languageClass,/.test(body),
+    "the body div carries it, as streamdown's does",
+  );
+  assert.ok(
+    /<pre className=\{joinClasses\(languageClass, PRE_CLASS\)\}/.test(body),
+    "and so does the pre",
+  );
+  assert.ok(
+    /data-incomplete=\{isIncomplete \|\| undefined\}/.test(body),
+    "an open fence carries data-incomplete, and a settled one carries no attribute at all",
   );
 });

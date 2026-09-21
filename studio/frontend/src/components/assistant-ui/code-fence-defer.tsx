@@ -631,6 +631,19 @@ const TOKEN_CLASS =
 const TOKEN_BG_CLASS =
   "bg-[var(--sdm-tbg)] dark:bg-[var(--shiki-dark-bg,var(--sdm-tbg))]";
 
+/*
+ * THE `language-x` CLASS, WHICH IS NOT DECORATION. `remark-rehype` puts `language-<info>` on the
+ * `<code>` of a fenced block, streamdown passes that `className` straight through to BOTH the body
+ * div and the `<pre>`, and dropping it was measured as the only DOM difference between this body
+ * and the one it replaces. Nothing in the tree selects on it today, which is exactly why it would
+ * have gone unnoticed: it is a published rendering contract, user stylesheets and future probes
+ * reach for it, and `math-block-marker.ts` already relies on the same `language-` convention one
+ * layer up. The token is the FIRST word of the info string, so ```python startLine=10 is
+ * `language-python`, which is what `languageToken` already holds.
+ */
+const joinClasses = (...parts: (string | null)[]): string =>
+  parts.filter((part): part is string => Boolean(part)).join(" ");
+
 /* `rootStyle` arrives as a CSS declaration string. Parsed the way streamdown parses it, splitting
  * on the FIRST colon only, so a `url(data:...)` value survives. */
 const parseDeclarations = (text: string): Record<string, string> => {
@@ -877,11 +890,14 @@ function useLineWindow(
  * not change shape when the colours land.
  */
 export const FenceBody = memo(function FenceBody({
+  isIncomplete,
   language,
   result,
   source,
   windowing,
 }: {
+  /** Streamdown's unclosed-fence flag, reproduced as `data-incomplete` on the wrapper. */
+  isIncomplete: boolean | undefined;
   language: string | null;
   result: FenceTokens | null;
   source: string;
@@ -892,6 +908,7 @@ export const FenceBody = memo(function FenceBody({
   const frame = useRef<HTMLDivElement | null>(null);
   const tokens = result?.tokens ?? null;
   const lineWindow = useLineWindow(code, frame, tokens?.length ?? 0, windowing);
+  const languageClass = language === null ? null : `language-${language}`;
 
   const rootStyle = useMemo(() => {
     const style: Record<string, string> = {};
@@ -911,6 +928,7 @@ export const FenceBody = memo(function FenceBody({
   return (
     <div
       className="my-4 flex w-full flex-col gap-2 rounded-xl border border-border bg-sidebar p-2"
+      data-incomplete={isIncomplete || undefined}
       data-language={language ?? undefined}
       data-streamdown="code-block"
       ref={frame}
@@ -928,12 +946,15 @@ export const FenceBody = memo(function FenceBody({
         <span className="ml-1 font-mono lowercase">{language}</span>
       </div>
       <div
-        className="overflow-x-auto rounded-md border border-border bg-background p-4 text-sm"
+        className={joinClasses(
+          languageClass,
+          "overflow-x-auto rounded-md border border-border bg-background p-4 text-sm",
+        )}
         data-language={language ?? undefined}
         data-streamdown="code-block-body"
         data-unsloth-fence-windowed={lineWindow === null ? undefined : "true"}
       >
-        <pre className={PRE_CLASS} style={rootStyle}>
+        <pre className={joinClasses(languageClass, PRE_CLASS)} style={rootStyle}>
           <code className={CODE_CLASS} ref={code}>
             {tokens.map((line, index) => (
               <FenceLine
