@@ -852,6 +852,28 @@ def test_chat_sidebar_rows_are_compact_without_vertical_padding():
     assert 'variant === "project" ? "pl-[39px]" : "pl-3"' in block
 
 
+def _opening_jsx_tags(source: str, marker: str) -> list[str]:
+    """Every `marker ... >` opening tag in `source`, braces balanced.
+
+    A `>` inside an attribute expression does not end the tag, so depth is tracked rather
+    than scanning to the first one.
+    """
+    tags, start = [], source.find(marker)
+    while start != -1:
+        depth = 0
+        for index in range(start, len(source)):
+            char = source[index]
+            if char == "{":
+                depth += 1
+            elif char == "}":
+                depth -= 1
+            elif char == ">" and depth == 0:
+                tags.append(source[start : index + 1])
+                break
+        start = source.find(marker, start + 1)
+    return tags
+
+
 def _operators(text: str) -> list[tuple[int, str]]:
     """Positions of `?`, `:`, `&&` and `||` that are not inside a string or brackets.
 
@@ -1061,9 +1083,25 @@ def test_chat_sidebar_row_actions_visible_on_coarse_pointers():
     # in the same text, and an assignment that survives only as a comment reads the same to a
     # substring search while the button that renders receives none of these classes.
     applied = "\n".join(re.sub(r"(?<!:)//.*$", "", line) for line in block.splitlines())
-    assert re.search(r"(?:^|[\s{])className=\{buttonClass\}", applied), (
-        "buttonClass is no longer applied to anything in renderChatSidebarItem, so checking "
-        "it says nothing about the row that renders"
+    # On the row button itself, not merely somewhere in the function. The row also renders an
+    # inline rename input and a pin, and handing buttonClass to one of those while the button
+    # went without would leave every padding check below describing classes that reach nothing
+    # the gutters are measured against.
+    carriers = [
+        tag
+        for tag in _opening_jsx_tags(applied, "<SidebarMenuButton")
+        if re.search(r"(?:^|[\s{])className=\{buttonClass\}", tag)
+    ]
+    assert carriers, (
+        "no <SidebarMenuButton> in renderChatSidebarItem receives className={buttonClass}, so "
+        "the classes checked below do not reach the row button and say nothing about the row "
+        "that renders"
+    )
+    spreading = [tag for tag in carriers if re.search(r"\{\s*\.\.\.", tag)]
+    assert not spreading, (
+        f"the row button spreads props alongside className={{buttonClass}}, so whether those "
+        f"classes survive depends on what the spread holds, which this guard cannot resolve: "
+        f"{spreading!r}"
     )
     # Comments first: they hold commas and prose, and splitting arguments around them turns
     # a sentence into an unreadable "value".
@@ -1137,7 +1175,39 @@ def test_chat_sidebar_row_actions_visible_on_coarse_pointers():
     )
 
     coarse_prefix = r"\[@media\(pointer:coarse\)\]:"
-    for variant in ("project-chat-item", "recent-item"):
+    variants = ("project-chat-item", "recent-item")
+    # Every rendering is some row, and a rendering that claims no gutter at all was being
+    # skipped as "not this variant" by each variant's loop in turn, so wrapping both variants'
+    # gutters in the same condition left ordinary rows with no touch padding and nothing
+    # checking them. A row is identified by the gutter it claims, so a row that claims none
+    # cannot be identified, and that is the thing to refuse rather than to skip.
+    for rendering in renderings:
+        if not any(
+            re.fullmatch(rf"\S*/{re.escape(name)}:pr-\d+(?:\.\d+)?", cls)
+            for name in variants
+            for cls in rendering
+        ):
+            raise AssertionError(
+                f"buttonClass can render a row that states no action gutter for either "
+                f"variant: {rendering}. The row's actions are always visible on touch, so a "
+                f"row that reserves nothing puts them over the title (#7276). If this branch "
+                f"really renders no action, give it a gutter of its own rather than leaving "
+                f"it unidentifiable"
+            )
+
+    # A floor under both sides, because the comparison below is relative and reducing the two
+    # together satisfies it while reserving nothing usable: pr-0.5 against pr-0.5 passes. An
+    # action is one `.sidebar-row-action-glyph`, sized in index.css, and the gutter has to
+    # hold at least one of them. This is a floor and not the whole requirement; the row's own
+    # stated gutter is still what the coarse padding is measured against.
+    glyph = re.search(r"\.sidebar-row-action-glyph\s*\{[^}]*?\bsize-(\d+(?:\.\d+)?)", css_source)
+    assert glyph, (
+        "index.css no longer sizes .sidebar-row-action-glyph with a size-N utility, so this "
+        "guard cannot tell how much room one action needs"
+    )
+    floor = float(glyph.group(1))
+
+    for variant in variants:
         # Any qualified gutter for this variant, not the hover one alone: hover, an open menu
         # and keyboard focus each state how much room the row's action needs, and each is a
         # state a coarse pointer is permanently in, because there the action is always shown.
@@ -1172,15 +1242,17 @@ def test_chat_sidebar_row_actions_visible_on_coarse_pointers():
             # Tailwind emits variants after base and a media query adds no specificity.
             reserved = touch[-1] if touch else (plain[-1] if plain else None)
             needed = max(claimed)
-            # Zero on both sides satisfies the comparison and reserves nothing, which is the
-            # state this test was written against: the action has a width whatever the row
-            # says, so a row that claims no room for it has not passed, it has stopped
-            # claiming. The gutter's size is still not pinned here, only that there is one.
-            assert needed > 0, (
-                f"a {variant} row states its action gutter as {claimed}, so nothing reserves "
-                f"room for an action that still has a width. The comparison below is "
-                f"satisfied by zero against zero, which is the overlap this test exists to "
-                f"catch rather than a row that has been fixed (#7276)"
+            # Both sides reduced together satisfies the comparison below and reserves nothing
+            # usable, which is the state this test was written against: the action keeps its
+            # width whatever the row says, so a row that claims less than one action's worth
+            # has not been fixed, it has stopped claiming. The gutter's exact size is still
+            # not pinned here, only that it holds at least one action.
+            assert needed >= floor, (
+                f"a {variant} row states its action gutter as {claimed}, under the "
+                f"{floor} that one .sidebar-row-action-glyph occupies. Nothing then reserves "
+                f"room for an action that still has its width, and the comparison below is "
+                f"satisfied by two equally small numbers, which is the overlap this test "
+                f"exists to catch rather than a row that has been fixed (#7276)"
             )
             assert reserved is not None and reserved >= needed, (
                 f"a {variant} row reserves less room on a coarse pointer than it says its "
