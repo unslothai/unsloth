@@ -1172,9 +1172,17 @@ def _reserve_downloads(key: str) -> tuple[list, Optional[str]]:
     if not kinds:
         return [], None
     try:
-        from hub.utils.download_registry import get_datasets_registry, get_models_registry
+        from hub.services.datasets import downloads as dataset_downloads
+        from hub.utils.download_registry import get_models_registry
+
+        # The dataset SERVICE, not get_datasets_registry(). A managed-account install has one
+        # dataset registry per account, and the singleton is only the owner's: reserving it
+        # alone left every other account's download invisible to the purge. The service holds
+        # all of them, and keeps a new one from being born free while this purge runs. Both
+        # objects answer begin_cache_purge/end_cache_purge, which is all _release_downloads
+        # below asks of them.
         registries = [
-            get_models_registry() if kind == "models" else get_datasets_registry() for kind in kinds
+            get_models_registry() if kind == "models" else dataset_downloads for kind in kinds
         ]
     except Exception as exc:  # noqa: BLE001 - a broken registry must not block a purge
         logger.debug(f"Could not reach the download registries for {key}: {exc}")
