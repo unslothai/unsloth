@@ -1538,11 +1538,10 @@ class RemoteAccessCORSMiddleware(CORSMiddleware):
         super().__init__(cors_app, **kwargs)
 
     def is_allowed_origin(self, origin: str) -> bool:
-        # The tunnel is the source of the ONE origin that needs admitting, not a switch that admits
-        # every origin: plain api-only is locked to the Tauri app (run.py), and turning on Settings >
-        # Remote access must not hand that lock to any page the user has open. The UI served over the
-        # tunnel calls the API on relative URLs, so it is same-origin and needs no widening at all;
-        # this covers a browser that does reach it cross-origin from the tunnel's own document.
+        # The tunnel names ONE origin to admit, it is not a switch admitting every origin: api-only is
+        # locked to the Tauri app (run.py) and Settings > Remote access must not hand that lock to any
+        # open page. The tunnel-served UI calls relative URLs and is already same-origin; this is for a
+        # browser that does reach the API cross-origin from the tunnel's own document.
         published = getattr(self.remote_access_state, "cloudflare_url", None)
         if published:
             tunnel_origin = _origin_of(published)
@@ -2629,9 +2628,9 @@ def _is_same_origin_request(request: Request) -> bool:
     return origin_canon == self_canon
 
 
-# Colab's notebook proxy is itself a forwarded-header ingress, so the loopback tests cannot see it and it
-# has to be identified positively, by its own authority. Naming one tunnel vendor instead would leave every
-# other relay (ngrok, localtunnel, bore, localhost.run, ssh -R) reading as the local browser.
+# Colab's proxy is itself a forwarded-header ingress, invisible to the loopback tests, so it is identified
+# positively by its own authority: naming one tunnel vendor instead leaves every other relay (ngrok,
+# localtunnel, bore, ssh -R) reading as the local browser.
 _COLAB_PROXY_HOST_SUFFIXES = ("colab.googleusercontent.com", ".googleusercontent.com", ".colab.dev")
 # The proxy relays the notebook owner and only the notebook owner, so it sets x-forwarded-for (which is why
 # run.py runs uvicorn with proxy_headers there). The other four mark a relay we cannot attribute to it.

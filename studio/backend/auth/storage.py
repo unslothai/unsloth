@@ -1029,9 +1029,8 @@ _API_KEY_PBKDF2_ITERATIONS = 100_000
 DESKTOP_SECRET_PREFIX = "desktop-"
 _DESKTOP_SECRET_HASH_KEY = "desktop_secret_hash"
 _DESKTOP_SECRET_CREATED_AT_KEY = "desktop_secret_created_at"
-# The body `create_desktop_secret` mints, and the only one a stored hash can have come from:
-# `secrets.token_urlsafe(48)` is exactly 64 unpadded URL-safe base64 characters. Byte for byte the
-# same shape the CLI mints in unsloth_cli/commands/studio.py, and the exact form of the `desktop-`
+# `token_urlsafe(48)` is exactly 64 unpadded URL-safe characters, and no other shape can be behind a
+# stored hash. Keep in sync with the CLI minter (unsloth_cli/commands/studio.py) and the `desktop-`
 # alternation in core/inference/tool_loop_controller.py.
 _DESKTOP_SECRET_BODY = re.compile(r"\A[A-Za-z0-9_-]{64}\Z")
 

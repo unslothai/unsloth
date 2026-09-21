@@ -218,9 +218,9 @@ def _overflow_take(ip: str, now: float) -> tuple[int, float]:
 # Unrepresentable as a real username (leading NUL); folds unknown-user attempts
 # into one slot so attacker cardinality can't blow the bucket dict.
 _UNKNOWN_LOGIN_USER = "\x00unknown-user"
-# /desktop-login's own slot. NOT _UNKNOWN_LOGIN_USER: /login reads that bucket and 429s on it, so
-# sharing it lets an unauthenticated caller lock every account out of /login with five desktop
-# attempts a minute, and behind a tunnel every visitor arrives as the same cloudflared peer.
+# /desktop-login's own slot, NOT _UNKNOWN_LOGIN_USER: /login 429s on that bucket, so sharing it lets an
+# unauthenticated caller lock out every account with five attempts a minute, and behind a tunnel every
+# visitor is the same cloudflared peer.
 _DESKTOP_LOGIN_USER = "\x00desktop-login"
 
 
@@ -391,9 +391,9 @@ def _clear_login_bucket(key: tuple[str, str], *, ip_aggregate: bool = True) -> N
     with _LOGIN_BUCKETS_LOCK:
         _LOGIN_BUCKETS.pop(key, None)
         if not ip_aggregate:
-            # /desktop-login proves the shell owns the backend, not that anyone signed in: in multi-user mode it
-            # returns login_required and no session at all. Letting it reset the aggregate would let one holder of
-            # the local secret hand every account behind the same NAT a fresh password-guessing budget.
+            # /desktop-login proves the shell owns the backend, not that anyone signed in (multi-user returns
+            # login_required and no session), so resetting the aggregate would hand every account behind the
+            # same NAT a fresh password-guessing budget.
             return
         _LOGIN_IP_BUCKETS.pop(ip, None)
         # A successful login resets the IP's throttle, including any overflow it accumulated during saturation (drop
@@ -557,12 +557,10 @@ def desktop_login(payload: DesktopLoginRequest, request: Request) -> Token | Res
     secret can be rejected, so without it one unauthenticated request buys unbounded work. On its
     own account bucket, contributing to the shared per-IP aggregate exactly as /login does.
     """
-    # Before the bucket is read, not just before it is written. The shipped desktop shell posts a
-    # deliberately invalid secret here on every preflight, every 15s watchdog tick and once per live
-    # candidate port, and reads anything but a 401 as a backend it cannot manage
-    # (src-tauri/src/preflight/backend.rs, src-tauri/src/desktop_backend_owner.rs). A candidate that
-    # cannot be the stored secret spends no KDF, so it neither fills the bucket nor is withheld by
-    # one, and the valid exchange that follows it still goes through.
+    # Before the bucket is READ, not just before it is written: the shipped shell probes this route with a
+    # deliberately invalid secret on every preflight, every 15s watchdog tick and once per live candidate
+    # port, and reads anything but 401 as a backend it cannot manage (src-tauri/src/preflight/backend.rs,
+    # src-tauri/src/desktop_backend_owner.rs).
     if not storage.desktop_secret_is_well_formed(payload.secret):
         raise HTTPException(
             status_code = status.HTTP_401_UNAUTHORIZED,
