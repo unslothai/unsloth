@@ -110,7 +110,26 @@ class _Web:
         raise urllib.error.HTTPError(url, 404, "Not Found", None, None)
 
 
-def _install_web(monkeypatch, pages: dict[str, str]) -> _Web:
+def _tag_page(prerelease: bool = True) -> str:
+    """A release page, labelled the way github.com labels one.
+
+    Prerelease by default because ggml-org marks every bNNNN build release that way.
+    """
+    label = (
+        '<span class="Label Label--warning Label--large">Pre-release</span>'
+        if prerelease
+        else '<span class="Label Label--success Label--large">Latest</span>'
+    )
+    return f"<html><h1>release</h1>{label}</html>"
+
+
+def _install_web(monkeypatch, pages: dict[str, str], *, prerelease: bool = True) -> _Web:
+    # Every release whose assets are served needs its release page served too, since
+    # that is where the prerelease status is read from.
+    pages = dict(pages)
+    for suffix in [key for key in pages if "expanded_assets/" in key]:
+        tag = suffix.rsplit("/", 1)[-1]
+        pages.setdefault(f"releases/tag/{tag}", _tag_page(prerelease))
     web = _Web(pages)
     monkeypatch.setattr(CORE, "download_bytes", lambda ops, url, **kw: web(url, **kw))
     return web
@@ -469,3 +488,124 @@ class TestEndToEnd:
         )
         _requested, plans = _plans(_host())
         assert plans[0].attempts[0].name == "llama-b11069-bin-macos-arm64.tar.gz"
+
+
+# ── prerelease parity between the two paths ──
+
+
+class TestPrereleaseStatus:
+    def test_the_payload_states_the_status_it_read(self, monkeypatch):
+        _install_web(
+            monkeypatch,
+            {
+                "expanded_assets/b11070": _expanded_assets(
+                    UPSTREAM, "b11070", {"llama-b11070-bin-macos-arm64.tar.gz": DIGEST_A}
+                )
+            },
+            prerelease = True,
+        )
+        assert MOD.web_release_payload(UPSTREAM, "b11070")["prerelease"] is True
+
+    def test_a_release_without_the_label_is_not_reported_as_prerelease(self, monkeypatch):
+        _install_web(
+            monkeypatch,
+            {
+                "expanded_assets/b11070": _expanded_assets(
+                    UPSTREAM, "b11070", {"llama-b11070-bin-macos-arm64.tar.gz": DIGEST_A}
+                )
+            },
+            prerelease = False,
+        )
+        assert MOD.web_release_payload(UPSTREAM, "b11070")["prerelease"] is False
+
+    def test_an_upstream_build_release_stays_selectable_when_marked_prerelease(self):
+        # ggml-org marks every bNNNN build prerelease; excluding them strands the
+        # upstream path on the newest release that is not one, which ships no prebuilt.
+        assert MOD.release_is_selectable(
+            UPSTREAM, {"tag_name": "b11070", "prerelease": True}
+        )
+
+    def test_a_non_build_prerelease_is_still_refused(self):
+        assert not MOD.release_is_selectable(
+            UPSTREAM, {"tag_name": "v0.5.0-rc1", "prerelease": True}
+        )
+
+    def test_the_fork_keeps_the_plain_rule(self):
+        assert not MOD.release_is_selectable(
+            MOD.DEFAULT_PUBLISHED_REPO, {"tag_name": "b11070", "prerelease": True}
+        )
+
+    def test_a_draft_is_never_selectable(self):
+        assert not MOD.release_is_selectable(UPSTREAM, {"tag_name": "b11070", "draft": True})
+
+    def test_the_rest_path_keeps_a_prerelease_build(self, monkeypatch):
+        rest = {"tag_name": "b11070", "prerelease": True, "draft": False, "assets": []}
+        monkeypatch.setattr(MOD, "github_releases", lambda repo, **kw: [rest])
+        monkeypatch.setattr(MOD, "web_release_payload", _boom)
+        monkeypatch.setattr(MOD, "web_release_tags", _boom)
+        got = list(MOD.iter_release_payloads_by_time(UPSTREAM, "", "latest"))
+        assert [release["tag_name"] for release in got] == ["b11070"]
+
+    def test_the_web_path_keeps_the_same_prerelease_build(self, monkeypatch):
+        monkeypatch.setattr(MOD, "github_releases", _rest_403)
+        _install_web(
+            monkeypatch,
+            {
+                "releases.atom": _atom(UPSTREAM, ["b11070"]),
+                "expanded_assets/b11070": _expanded_assets(
+                    UPSTREAM, "b11070", {"llama-b11070-bin-macos-arm64.tar.gz": DIGEST_A}
+                ),
+            },
+            prerelease = True,
+        )
+        got = list(MOD.iter_release_payloads_by_time(UPSTREAM, "", "latest"))
+        assert [release["tag_name"] for release in got] == ["b11070"]
+        assert got[0]["prerelease"] is True
+
+    def test_the_web_walk_skips_a_release_the_rest_path_would_filter(self, monkeypatch):
+        monkeypatch.setattr(MOD, "github_releases", _rest_403)
+        _install_web(
+            monkeypatch,
+            {
+                "releases.atom": _atom(UPSTREAM, ["b11070"]),
+                "expanded_assets/b11070": _expanded_assets(
+                    UPSTREAM, "b11070", {"llama-b11070-bin-macos-arm64.tar.gz": DIGEST_A}
+                ),
+            },
+        )
+        monkeypatch.setattr(MOD, "release_is_selectable", lambda repo, release: False)
+        assert list(MOD.iter_release_payloads_by_time(UPSTREAM, "", "latest")) == []
+
+
+# ── a pinned published release ──
+
+
+class TestPinnedPublishedRelease:
+    def test_a_pinned_published_release_resolves_through_its_release_page(self, monkeypatch):
+        monkeypatch.setattr(MOD, "github_release", _rest_403)
+        _install_web(
+            monkeypatch,
+            {
+                "expanded_assets/b9415": _expanded_assets(
+                    UPSTREAM, "b9415", {"llama-b9415-bin-macos-arm64.tar.gz": DIGEST_A}
+                )
+            },
+        )
+        got = list(MOD.iter_release_payloads_by_time(UPSTREAM, "b9415", "latest"))
+        assert [release["tag_name"] for release in got] == ["b9415"]
+
+    def test_a_pinned_published_release_on_the_fork_still_re_raises(self, monkeypatch):
+        monkeypatch.setattr(MOD, "github_release", _rest_403)
+        monkeypatch.setattr(MOD, "web_release_payload", _boom)
+        with pytest.raises(RuntimeError, match = "403"):
+            list(
+                MOD.iter_release_payloads_by_time(
+                    MOD.DEFAULT_PUBLISHED_REPO, "b9415", "latest"
+                )
+            )
+
+    def test_rest_still_wins_for_a_pinned_published_release(self, monkeypatch):
+        rest = {"tag_name": "b9415", "assets": []}
+        monkeypatch.setattr(MOD, "github_release", lambda repo, tag: rest)
+        monkeypatch.setattr(MOD, "web_release_payload", _boom)
+        assert list(MOD.iter_release_payloads_by_time(UPSTREAM, "b9415", "latest")) == [rest]

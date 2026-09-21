@@ -1078,6 +1078,26 @@ def web_release_tags(ops: ModuleOps, repo: str, *, limit: int = 30) -> list[str]
     return tags
 
 
+_PRERELEASE_LABEL_RE = re.compile(
+    r"Label--warning[^>]*>\s*Pre-release\s*<", re.IGNORECASE
+)
+
+
+def web_release_prerelease(ops: ModuleOps, repo: str, tag: str) -> bool:
+    """Whether <repo>@<tag> is marked pre-release, read from its release page.
+
+    The atom feed and the asset fragment both omit it, and asserting a value we did
+    not read would let the web path select a release the REST path filters out.
+    Draft is not asked: a draft release is not served to an anonymous caller at all,
+    so reaching this page already proves the release is published.
+    """
+    url = (
+        f"https://github.com/{urllib.parse.quote(repo, safe = '/')}/releases/tag/"
+        f"{urllib.parse.quote(tag, safe = '')}"
+    )
+    return _PRERELEASE_LABEL_RE.search(_fetch_web_metadata(ops, url)) is not None
+
+
 def web_release_payload(ops: ModuleOps, repo: str, tag: str) -> dict[str, Any]:
     """An ordinary release payload for <repo>@<tag>, built without api.github.com.
 
@@ -1131,7 +1151,7 @@ def web_release_payload(ops: ModuleOps, repo: str, tag: str) -> dict[str, Any]:
     return {
         "tag_name": tag,
         "draft": False,
-        "prerelease": False,
+        "prerelease": web_release_prerelease(ops, repo, tag),
         "assets": assets,
     }
 

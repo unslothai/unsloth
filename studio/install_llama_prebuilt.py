@@ -1091,6 +1091,23 @@ def release_time_sort_key(release: dict[str, Any]) -> tuple[str, int]:
     return (timestamp, normalized_id)
 
 
+def release_is_selectable(repo: str, release: dict[str, Any]) -> bool:
+    """Whether a listed release may be planned against. Draft is never selectable.
+
+    A prerelease is not, with one exception that is not a relaxation but a correction:
+    ggml-org marks EVERY bNNNN build release prerelease, so excluding them leaves the
+    upstream path selecting the newest release that is not one. Measured against the
+    live API on 2026-09-21, that was b10549 while the newest build was b11071, an
+    install 522 builds behind, and the versioned releases above it (v0.4.1 and older)
+    publish no prebuilt at all. The fork and any other repo keep the plain rule.
+    """
+    if release.get("draft"):
+        return False
+    if not release.get("prerelease"):
+        return True
+    return repo == UPSTREAM_REPO and is_release_tag_like(release.get("tag_name"))
+
+
 def _web_fallback_eligible(repo: str) -> bool:
     """Whether <repo> may be resolved through github.com when the REST API is down.
 
@@ -1133,9 +1150,16 @@ def _web_release_payloads(repo: str, reason: Exception) -> Iterable[dict[str, An
     )
     for tag in tags:
         try:
-            yield web_release_payload(repo, tag)
+            release = web_release_payload(repo, tag)
         except Exception as exc:  # noqa: BLE001 - one unreadable release is not the end of the walk
             log(f"skipping {repo}@{tag}: {exc}")
+            continue
+        # The same rule the REST listing applies, against a status read from the
+        # release page rather than assumed, so the two paths cannot select differently.
+        if not release_is_selectable(repo, release):
+            log(f"skipping {repo}@{tag}: not selectable (prerelease or draft)")
+            continue
+        yield release
 
 
 def iter_release_payloads_by_time(
@@ -1144,7 +1168,12 @@ def iter_release_payloads_by_time(
     requested_tag: str = "",
 ) -> Iterable[dict[str, Any]]:
     if published_release_tag:
-        yield github_release(repo, published_release_tag)
+        try:
+            yield github_release(repo, published_release_tag)
+        except (urllib.error.URLError, RuntimeError) as exc:
+            if not _web_fallback_eligible(repo):
+                raise
+            yield _web_release_or_raise(repo, published_release_tag, exc)
         return
 
     if requested_tag and requested_tag != "latest" and is_release_tag_like(requested_tag):
@@ -1177,7 +1206,7 @@ def iter_release_payloads_by_time(
     releases = [
         release
         for release in listing
-        if isinstance(release, dict) and not release.get("draft") and not release.get("prerelease")
+        if isinstance(release, dict) and release_is_selectable(repo, release)
     ]
     releases.sort(key = release_time_sort_key, reverse = True)
     for release in releases:
