@@ -12714,20 +12714,21 @@ def test_the_index_identity_comes_back_with_the_resolution(monkeypatch):
 
     resolved, state = resolver.resolve_local_gguf_with_index_state("nope/not-a-model")
     assert resolved is None
-    assert state == (resolver.index_generation(), resolver.index_scan_stamp()), (
-        "the identity returned is not the one the resolution came from"
-    )
+    assert state == (
+        resolver.index_generation(),
+        resolver.index_scan_stamp(),
+    ), "the identity returned is not the one the resolution came from"
 
     # The route uses that pair rather than re-reading, for both questions it asks.
     src = inspect.getsource(inference_route._maybe_auto_switch_model)
-    assert "resolved, alias_probe_state = await asyncio.to_thread(" in src, (
-        "the route no longer takes the index identity with its resolution"
-    )
-    assert "scan_stamp_after = alias_probe_state[1]" in src, (
-        "the route reads the post-resolution stamp separately again"
-    )
-    assert "alias_probe_state = _alias_probe_index_state()" not in src, (
-        "the route still re-reads the index state after resolving"
-    )
+    assert (
+        "resolved, alias_probe_state = await asyncio.to_thread(" in src
+    ), "the route no longer takes the index identity with its resolution"
+    assert (
+        "scan_stamp_after = alias_probe_state[1]" in src
+    ), "the route reads the post-resolution stamp separately again"
+    assert (
+        "alias_probe_state = _alias_probe_index_state()" not in src
+    ), "the route still re-reads the index state after resolving"
     # And a positive hit from the trusted cache leaves no state, so nothing is settled off it.
     assert "alias_probe_state[1] if alias_probe_state else 0.0" in src

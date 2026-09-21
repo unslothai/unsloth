@@ -1242,9 +1242,7 @@ def resolve_local_gguf(
 
 
 def resolve_local_gguf_with_index_state(
-    requested: str,
-    *,
-    include_companion_scope: bool = False,
+    requested: str, *, include_companion_scope: bool = False
 ) -> tuple:
     """``(resolved, (generation, stamp))``: the answer and the index that gave it.
 
@@ -1254,9 +1252,7 @@ def resolve_local_gguf_with_index_state(
     read under ``_lock`` here, which the scan holds for its whole pass, so nothing can
     publish in between.
     """
-    resolved = resolve_local_gguf(
-        requested, include_companion_scope = include_companion_scope
-    )
+    resolved = resolve_local_gguf(requested, include_companion_scope = include_companion_scope)
     with _lock:
         return resolved, (_generation, _snapshot()[0])
 
