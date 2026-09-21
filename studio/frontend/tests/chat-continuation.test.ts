@@ -1708,10 +1708,8 @@ test("the keeper is wired to the failure the adapter already reports", () => {
 
 /**
  * The run a hold was taken for, as the keeper sees it: something that settles, once.
- *
- * `runSignalFake` above is the STREAM, which turns true only when tokens are on their way.
- * This is the RUN, pending for the whole preflight however long that is, and settling when
- * that one run ends however it ends -- finished, failed, or cancelled mid-model-load.
+ * `runSignalFake` above is the STREAM, true only once tokens are on their way; this is the RUN,
+ * pending for the whole preflight and settling however that one run ends.
  */
 function issuedRunFake() {
   const settlers = new Set<() => void>();
@@ -1731,12 +1729,10 @@ function issuedRunFake() {
 }
 
 test("a preflight the user stopped gives up its hold instead of keeping it for the tab", async () => {
-  // Stop during preflight. The run is aborted, so the adapter wrapper skips its per-thread
-  // failure notice ON PURPOSE -- the abort is what was asked for, not a fault to report -- and
-  // `runningByThreadId` never moved in either direction, because no token was ever on its way.
-  // The hold therefore had nothing to arm on and nothing to settle on, and renewed its lease
-  // for the life of the tab while every other tab read that lease as live and refused the
-  // message. The run's own promise is the one thing that knows it is over.
+  // Stop during preflight. The adapter wrapper skips its per-thread failure notice ON PURPOSE
+  // (the abort was asked for, not a fault) and `runningByThreadId` never moved, since no token
+  // was ever on its way, so the hold had nothing to arm on and nothing to settle on and renewed
+  // its lease for the life of the tab. The run's own promise is the one thing that knows.
   const { storage } = storageFake();
   const tab = createAutoContinueTab({ storage, locks: null });
   const otherTab = createAutoContinueTab({ storage, locks: null });
@@ -1760,18 +1756,15 @@ test("a preflight the user stopped gives up its hold instead of keeping it for t
   });
 
   await tab.claim("m1", { now: start, holder: "thread-A" });
-  // Taken on the line BEFORE the run is started, which is why the two are separate calls.
   keeper.hold("m1", "thread-A");
   keeper.settleOn("m1", "thread-A", issued.issued);
 
-  // An ordinary preflight: the promise is pending, so nothing here ends anything.
   for (let tick = 1; tick <= 4; tick += 1) {
     clock = start + tick * AUTO_CONTINUE_LEASE_RENEW_MS;
     keeper.tick();
   }
   assert.equal(keeper.held(), 1, "a preflight in progress keeps its hold");
 
-  // The user hits Stop.
   issued.settle();
   assert.equal(
     keeper.held(),
@@ -1792,9 +1785,8 @@ test("a preflight the user stopped gives up its hold instead of keeping it for t
 });
 
 test("a hold whose run is merely slow is never settled by the clock", async () => {
-  // The preflight has no upper bound: this chat's settings pairing waits up to 30 seconds by
-  // itself, and `waitForModelReady` then polls for as long as a large local GGUF takes. The
-  // promise stays pending throughout, and a pending promise settles nothing.
+  // The preflight has no upper bound (settings pairing, then `waitForModelReady` polling while
+  // a large local GGUF loads) and a pending promise settles nothing.
   const { storage } = storageFake();
   const tab = createAutoContinueTab({ storage, locks: null });
   const otherTab = createAutoContinueTab({ storage, locks: null });
@@ -1819,7 +1811,6 @@ test("a hold whose run is merely slow is never settled by the clock", async () =
   keeper.hold("m1", "thread-A");
   keeper.settleOn("m1", "thread-A", issued.issued);
 
-  // Ten minutes of preflight, renewed at the keeper's own interval throughout.
   for (let tick = 1; tick <= 20; tick += 1) {
     clock = start + tick * AUTO_CONTINUE_LEASE_RENEW_MS;
     keeper.tick();
@@ -1832,7 +1823,6 @@ test("a hold whose run is merely slow is never settled by the clock", async () =
     "nobody else may take a message this tab is still about to continue",
   );
 
-  // It finally streams, and the ordinary path gives the lease back with its done marker.
   running.add("thread-A");
   runs.change();
   running.delete("thread-A");
@@ -1842,11 +1832,9 @@ test("a hold whose run is merely slow is never settled by the clock", async () =
 });
 
 test("the run that ends is the one the hold was taken for, not the round before it", async () => {
-  // The next round is claimed while the previous one is still winding down: the adapter clears
-  // `runningByThreadId` from its own `finally`, strictly before the runtime announces that run
-  // ending. Anything per-thread would read the predecessor's ending as the successor's and
-  // settle a hold whose preflight has only just begun -- lapsing the lease under a live
-  // continuation, which is the failure the missing arming deadline exists to avoid.
+  // The adapter clears `runningByThreadId` from its own `finally`, strictly before the runtime
+  // announces that run ending, so anything per-thread would read the predecessor's ending as
+  // the successor's and lapse the lease under a live continuation.
   const { storage } = storageFake();
   const tab = createAutoContinueTab({ storage, locks: null });
   const otherTab = createAutoContinueTab({ storage, locks: null });
@@ -1868,13 +1856,11 @@ test("the run that ends is the one the hold was taken for, not the round before 
     now: () => clock,
   });
 
-  // Round one runs and streams on this thread.
   await tab.claim("round-1", { now: start, holder: "thread-A" });
   keeper.hold("round-1", "thread-A");
   keeper.settleOn("round-1", "thread-A", predecessor.issued);
   running.add("thread-A");
   runs.change();
-  // Its stream ends, which is what the adapter clears first.
   running.delete("thread-A");
   runs.change();
   await Promise.all(pending);
@@ -1907,25 +1893,18 @@ test("the run that ends is the one the hold was taken for, not the round before 
     "and its lease is still renewed while its own run is on its way",
   );
 
-  // Only its own run ending ends it.
   round2.settle();
   assert.equal(keeper.held(), 0);
 });
 
 test("a settled hold is read before the thread is, not after it", async () => {
-  // The settled check sits AHEAD of the arming check, and this is the only pass in which that
-  // position is the whole answer: the hold owns an idle key, its own run ended without ever
-  // streaming, and the key reads busy by the time the keeper looks. Below the arming check,
-  // that pass arms the hold on somebody else's run and the end of THAT run releases it,
-  // writing a `done` marker for a message that produced not one token. Ahead of it, the hold
-  // is discarded and the lease lapses on its own TTL.
-  //
-  // An invariant of the keeper, not a user-reachable sequence: the signal it is wired to
-  // notifies synchronously on every store write, so in the app the key turning busy is always
-  // observed -- and observed while the hold is still unsettled, which arms it, which is the
-  // superseded-run case this deliberately does not close. The keeper takes the signal as a
-  // parameter and promises nothing about its delivery, so the ordering is pinned here rather
-  // than left to rest on one caller's store.
+  // The only pass where the settled check being ahead of the arming check is the whole answer:
+  // the hold owns an idle key, its own run ended without streaming, and the key reads busy by
+  // the time the keeper looks. Below the arming check that pass arms the hold on somebody
+  // else's run, whose end then writes a `done` marker for a message that produced not one
+  // token. An invariant of the keeper rather than a user-reachable sequence -- the signal it is
+  // wired to notifies on every store write -- but the keeper takes that signal as a parameter
+  // and promises nothing about delivery.
   const { storage } = storageFake();
   const tab = createAutoContinueTab({ storage, locks: null });
   const start = 1_000;
@@ -1959,7 +1938,6 @@ test("a settled hold is read before the thread is, not after it", async () => {
     "a stopped preflight armed on whatever was on the thread when it was read",
   );
 
-  // Whatever that other run was, its ending records nothing against this message.
   running.delete("thread-A");
   runs.change();
   await Promise.all(pending);
@@ -1971,20 +1949,12 @@ test("a settled hold is read before the thread is, not after it", async () => {
 });
 
 test("a hold on a key that was already busy is left alone, not guessed at", async () => {
-  // The keeper watches the whole store, so a hold taken while the thread already reads busy
-  // -- `scheduleGenerationRecovery` follows a durable run from outside the adapter and holds
-  // its own owner on the same key -- has not seen the thread idle, so nothing it reads there
-  // can be its own run: the flag was somebody else's before the hold existed. Unarmed
-  // therefore stops meaning "streamed nothing" here, and the two outcomes are
-  // indistinguishable from the flag alone.
-  //
-  // The bar reaches this on its own. Its `!isRunning` gate reads the SELECTED BRANCH, not
-  // `runningByThreadId`, so switching to a truncated sibling while a durable run is followed
-  // on the same thread fires the continuation with the key already true, and a continuation
-  // keeps the legacy stream instead of joining that run.
-  //
-  // So the hold is kept and renewed, exactly as it was before this signal existed. Discarding
-  // it would hand a continuation that may well have streamed to the next tab to pay for again.
+  // A hold taken while the key already reads busy -- `scheduleGenerationRecovery` follows a
+  // durable run on it -- has not seen the thread idle, so nothing it reads there is its own
+  // run and unarmed stops meaning "streamed nothing". The bar reaches this on its own: its
+  // `!isRunning` gate reads the SELECTED BRANCH, not `runningByThreadId`. Undecidable, so the
+  // hold is renewed; discarding it would hand a continuation that may well have streamed to
+  // the next tab to pay for again.
   const { storage } = storageFake();
   const tab = createAutoContinueTab({ storage, locks: null });
   const otherTab = createAutoContinueTab({ storage, locks: null });
@@ -2009,8 +1979,7 @@ test("a hold on a key that was already busy is left alone, not guessed at", asyn
   keeper.hold("m1", "thread-A");
   keeper.settleOn("m1", "thread-A", issued.issued);
 
-  // Its own run ends while the other owner is still going. Which of the two ways it ended is
-  // not knowable from the flag, so nothing is concluded.
+  // Its own run ends while the other owner is still going: which of the two ways is unknowable.
   issued.settle();
   assert.equal(keeper.held(), 1, "an undecidable hold was dropped anyway");
 
@@ -2027,11 +1996,9 @@ test("a hold on a key that was already busy is left alone, not guessed at", asyn
 });
 
 test("a continuation that streamed under a second owner keeps its marker", async () => {
-  // The regression the guard above exists for. The key is busy when the hold is taken, so the
-  // hold never arms; its own run then streams the whole way through and settles while the
-  // second owner still holds the key. Dropped there, the message reads as never continued:
-  // the lease lapses on its TTL and another tab pays for the same continuation again, with
-  // this tab still open and perfectly healthy.
+  // The regression the guard above exists for: the key is busy when the hold is taken so it
+  // never arms, yet its own run streams the whole way through. Dropped there, the message
+  // reads as never continued and another tab pays for the same continuation again.
   const { storage } = storageFake();
   const tab = createAutoContinueTab({ storage, locks: null });
   const otherTab = createAutoContinueTab({ storage, locks: null });
@@ -2057,8 +2024,7 @@ test("a continuation that streamed under a second owner keeps its marker", async
   keeper.hold("m1", "thread-A");
   keeper.settleOn("m1", "thread-A", issued.issued);
 
-  // The continuation streams to the end. The key never reads false, because the other owner
-  // is still on it, so nothing about this run ever reaches the flag.
+  // It streams to the end, but the other owner keeps the key true so the flag never moves.
   runs.change();
   for (let tick = 1; tick <= 3; tick += 1) {
     clock = start + tick * AUTO_CONTINUE_LEASE_RENEW_MS;
@@ -2067,7 +2033,6 @@ test("a continuation that streamed under a second owner keeps its marker", async
   issued.settle();
   await Promise.all(pending);
 
-  // The tab stays open and keeps renewing, so the message it just continued is still its own.
   for (let tick = 4; tick <= 16; tick += 1) {
     clock = start + tick * AUTO_CONTINUE_LEASE_RENEW_MS;
     keeper.tick();
@@ -2081,12 +2046,10 @@ test("a continuation that streamed under a second owner keeps its marker", async
 });
 
 test("a second owner on the key does not cost an armed hold its marker", async () => {
-  // `runningByThreadId` is a flag per thread with a LIST of owners behind it, and the adapter
-  // clears only its own. A durable run being followed by `scheduleGenerationRecovery` keeps
-  // the key busy after the continuation's own stream is over, so this hold's run settles with
-  // the thread still reading busy. It streamed, so it is owed its `done` marker: discarding it
-  // there would hand the message back and another tab would pay for the same continuation
-  // again once the lease lapsed.
+  // `runningByThreadId` has a LIST of owners behind it and the adapter clears only its own, so
+  // a durable run being followed keeps the key busy after this hold's stream is over and its
+  // run settles with the thread still reading busy. It streamed, so it is owed its `done`
+  // marker; discarding it there hands the message back for another tab to pay for again.
   const { storage } = storageFake();
   const tab = createAutoContinueTab({ storage, locks: null });
   const otherTab = createAutoContinueTab({ storage, locks: null });
@@ -2116,12 +2079,10 @@ test("a second owner on the key does not cost an armed hold its marker", async (
   running.add("thread-A");
   runs.change();
 
-  // The continuation's own stream ends, and its promise settles, but the follower still
-  // holds the key so the flag has not moved.
+  // Its stream ends and its promise settles, but the follower still holds the key.
   issued.settle();
   assert.equal(keeper.held(), 1, "the hold was dropped on somebody else's run");
 
-  // The follower finishes and the message is recorded as continued, once.
   running.delete("thread-A");
   runs.change();
   await Promise.all(pending);
@@ -2134,9 +2095,8 @@ test("a second owner on the key does not cost an armed hold its marker", async (
 });
 
 test("a run that ends after its hold is gone reaches nothing", async () => {
-  // A promise settles whenever it settles, and by then the hold it was taken for may have been
-  // given back by its own stream or claimed again for the next round under the same key. The
-  // callback is scoped to one hold, not to the message or the thread.
+  // By the time a promise settles its hold may have been given back or the key claimed again:
+  // the callback is scoped to one hold, not to the message or the thread.
   const { storage } = storageFake();
   const tab = createAutoContinueTab({ storage, locks: null });
   const start = 1_000;
@@ -2160,7 +2120,6 @@ test("a run that ends after its hold is gone reaches nothing", async () => {
   await tab.claim("m1", { now: start, holder: "thread-A" });
   keeper.hold("m1", "thread-A");
   keeper.settleOn("m1", "thread-A", first.issued);
-  // It streams and is released the ordinary way, with the marker that says it was continued.
   running.add("thread-A");
   runs.change();
   running.delete("thread-A");
@@ -2201,7 +2160,6 @@ test("settling a hold that was never taken does nothing", () => {
   assert.equal(attached, 0, "no hold, so the run is not watched at all");
   assert.equal(keeper.held(), 0);
 
-  // And a run handed over as nothing leaves an existing hold exactly as it was.
   keeper.hold("m1", "thread-A");
   keeper.settleOn("m1", "thread-A", undefined);
   issued.settle();
@@ -2209,11 +2167,8 @@ test("settling a hold that was never taken does nothing", () => {
 });
 
 test("only what the runtime actually hands back is treated as the run", () => {
-  // `startRun` is DECLARED to return `void` and in fact returns the roundtrip's promise, so
-  // the value is passed through untyped and checked here. A value that is not thenable is
-  // assistant-ui no longer handing the run back, and the honest answer is no signal at all --
-  // the hold is then kept and renewed, which is the behaviour this fix replaced, never an
-  // early release.
+  // Not thenable is assistant-ui no longer handing the run back, and the honest answer is no
+  // signal: the hold is kept and renewed as before this fix, never released early.
   for (const notARun of [undefined, null, 0, "", "pending", true, {}, []]) {
     assert.equal(
       issuedRunFrom(notARun),
@@ -2228,8 +2183,8 @@ test("only what the runtime actually hands back is treated as the run", () => {
     "a promise is a run",
   );
 
-  // A thenable rather than a native promise, which is all the contract asks for. The handler
-  // is parked on an object rather than in a local so it survives narrowing to `never`.
+  // A thenable, which is all the contract asks for. The handler is parked on an object rather
+  // than a local so it survives narrowing to `never`.
   const parked: { settle?: (ok: boolean) => void } = {};
   const thenable = {
     then: (onOk: () => void, onErr: () => void) => {
@@ -2252,8 +2207,7 @@ test("only what the runtime actually hands back is treated as the run", () => {
 });
 
 test("a rejected run settles its hold rather than escaping", async () => {
-  // The promise rejects when the roundtrip throws and resolves when it is cancelled, and
-  // neither says whether the lease may be given back -- only whether the run is still coming.
+  // Neither arm says whether the lease may be given back, only that the run is not coming.
   // An unobserved rejection here would also be an unhandled one.
   const settled: string[] = [];
   const rejected = issuedRunFrom(Promise.reject(new Error("model refused")));

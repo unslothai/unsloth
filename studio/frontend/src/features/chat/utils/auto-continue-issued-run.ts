@@ -6,20 +6,11 @@
 
 import type { AutoContinueIssuedRun } from "./continuation";
 
-/**
- * The run just issued, watched through its own promise.
- *
- * `ThreadRuntime.startRun` is DECLARED `void` and returns the roundtrip's promise: every hop
- * down to `LocalThreadRuntimeCore.startRun` delegates with `return` and that core is `async`.
- * The declaration is narrow, not the value, so the caller passes it untyped and the shape is
- * checked here. Not thenable means assistant-ui no longer hands the run back, and the answer
- * is `undefined`: no signal, so the hold is renewed as any unarmed hold is. Never an early
- * release.
- *
- * Rejection and cancellation both settle it: they say the run is no longer coming, not whether
- * the lease may be given back. Observing the rejection also stops the unhandled one this call
- * site produced; the failure is still reported per thread by the adapter wrapper.
- */
+/** The run just issued, watched through its own promise. `startRun` is DECLARED `void` but
+ *  returns the roundtrip's promise, so it arrives untyped and the shape is checked rather than
+ *  assumed; not thenable means no signal at all, and the hold is renewed as any unarmed hold
+ *  is, never released early. Both arms settle it: a rejection says the run is not coming, not
+ *  whether the lease may be given back. */
 export function issuedRunFrom(
   started: unknown,
 ): AutoContinueIssuedRun | undefined {

@@ -803,18 +803,11 @@ export type AutoContinueRunSignal = {
   subscribe(onChange: () => void): () => void;
 };
 
-/**
- * The run a hold was taken for, and the one thing that knows when it is over: its own promise.
- *
- * `AutoContinueRunSignal` answers off the STREAM, so it is silent for a preflight the user
- * STOPPED: the abort raises no failure, on purpose, and the flag never moved in either
- * direction. `startRun` hands back a promise that settles when THAT run ends however it ends,
- * and is pending for the whole preflight, so a run that is merely slow settles nothing.
- *
- * It must be the run's OWN promise. The next round is claimed while the previous one is still
- * winding down, and a thread-wide notice cannot say which of the two ended: the predecessor's
- * would settle the successor's hold mid-preflight and lapse the lease under a live run.
- */
+/** The run a hold was taken for. `AutoContinueRunSignal` answers off the STREAM, so it is silent
+ *  for a preflight the user STOPPED; this settles when THAT run ends however it ends, and is
+ *  pending for the whole preflight, so a merely slow run settles nothing. It must be the run's
+ *  OWN promise: the next round is claimed while the previous is still winding down, so a
+ *  thread-wide notice would lapse the successor's lease mid-preflight. */
 export type AutoContinueIssuedRun = {
   whenSettled(onSettled: () => void): void;
 };
@@ -873,28 +866,15 @@ export function createAutoContinueLeaseKeeper({
     const at = now();
     for (const [id, hold] of [...holds]) {
       if (hold.settled && !hold.armed && hold.ownsTheKey) {
-        // Its own run is over and the stream never began: Stop during preflight. Discarded as
-        // a failed preflight is, so the lease lapses on its own TTL and no `done` marker
-        // claims a message that produced not one token.
+        // Its own run is over and the stream never began: Stop during preflight. Discarded as a
+        // failed preflight is, so the lease lapses on its own TTL and no `done` marker claims a
+        // message that produced not one token.
         //
         // Ahead of the running check so nothing on the thread now can arm it, and only for an
-        // UNARMED hold: the key can carry a second owner, which says nothing about whether
-        // this hold's own run streamed. Dropping an armed hold there costs a continuation
-        // that did stream its marker, and the next tab pays for it again.
-        //
-        // `ownsTheKey` is the other half of that. Unarmed means "never streamed" only if a
-        // true reading of the key would have belonged to this hold; when the key was ALREADY
-        // busy as the hold was taken, arming cannot happen off this hold's own run, so a
-        // continuation that streamed the whole way through looks identical to one that was
-        // stopped. (It can still arm LATER, off a run that starts after the key has been seen
-        // idle -- the thread-wide mis-arm #9425 declined to close, which this does not move.)
-        // The bar
-        // reaches that state on its own: its `!isRunning` gate reads the selected branch,
-        // not `runningByThreadId`, so it fires while `scheduleGenerationRecovery` follows a
-        // durable run on the same key, and a continuation keeps the legacy stream rather than
-        // joining that run. Undecidable, so it is left alone and renewed, exactly as before
-        // this signal existed. Never guessed: a wrong `done` here is a continuation charged
-        // for twice.
+        // UNARMED hold, since the key carries a LIST of owners and dropping an armed hold costs
+        // a continuation that did stream its marker. `ownsTheKey` is the other half: a hold
+        // taken while the key was already busy cannot arm off its own run, so one that streamed
+        // throughout is indistinguishable from one that was stopped. Undecidable, so renewed.
         holds.delete(id);
         continue;
       }
@@ -939,13 +919,8 @@ export function createAutoContinueLeaseKeeper({
       });
       unsubscribe ??= signal.subscribe(observe);
     },
-    /**
-     * Tie an existing hold to the run that was just issued for it.
-     *
-     * Separate from `hold` because the hold is taken on the line BEFORE the run starts: the
-     * bar unmounts as soon as the continuation's sibling becomes the selected branch, so the
-     * promise does not exist yet when the hold does.
-     */
+    /** Tie an existing hold to the run just issued for it. Separate from `hold` because the hold
+     *  is taken on the line BEFORE the run starts, so the promise does not exist yet. */
     settleOn(messageId, threadId, issued) {
       if (!issued || !messageId || !threadId) {
         return;
