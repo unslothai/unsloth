@@ -4,13 +4,12 @@
 """Who paints over whom in the bottom-right corner.
 
 The Live resource monitor, the API monitor panel and the notification stack all
-live there. The first two keep out of each other's way geometrically and the
-stack steps over both (stackGeometry, panel-placement, monitor-stack-inset.test.ts
-and panel-placement.test.ts), but the dodge has a floor: a monitor dragged to the
-corner and resized to fill the viewport leaves nowhere to dodge to, and the stack
-is parked at the top of the screen, on top of the monitor's own title bar. At that
-point z-order is the only thing deciding whether the monitor's Close button can be
-clicked.
+live there. The first two keep out of each other's way geometrically
+(panel-placement and panel-placement.test.ts); the stack does not move for
+anyone -- it is anchored to the corner in CSS, because placing it from the
+boxes the others publish is what moved it to the middle and the top of the
+window. So the corner is shared, and z-order is the only thing deciding whether
+a monitor sitting under the stack still has a clickable Close button.
 
 The Windows UI smoke does exactly that drag-and-resize and then clicks Close, so
 it catches a regression here for real. It takes about twenty minutes and needs a
@@ -28,6 +27,9 @@ import re
 from pathlib import Path
 
 import pytest
+
+# tests/conftest.py puts tests/_shared on sys.path for everything under tests/.
+from jsx_tags import opening_tag, without_comments  # noqa: E402
 
 REPO = Path(__file__).resolve().parents[2]
 FRONTEND = REPO / "studio/frontend/src"
@@ -63,8 +65,8 @@ def _container(path: Path, ref: str) -> str:
 
 
 def test_the_floating_panels_paint_over_the_notification_stack():
-    """A full-viewport monitor parks the stack over its own title bar. The stack is
-    passive status; the panels are windows being dragged, resized and closed."""
+    """The stack holds its corner, so a monitor parked there is under it. The stack
+    is passive status; the panels are windows being dragged, resized and closed."""
     layers = _layers()
     assert layers["FLOATING_PANEL"] > layers["OVERLAY_STACK"], (
         "the notification stack paints over the floating panels, so their Close "
@@ -100,12 +102,29 @@ def test_both_floating_panels_stack_on_the_shared_layer(path: Path):
     ), f"{path.name}: the panel no longer reads the shared floating panel layer"
 
 
+_RAIL_TESTID = 'data-testid="overlay-rail"'
+
+
 def test_the_notification_stack_uses_the_named_layer():
-    """Both copies, browser and desktop. They drifted apart once already."""
-    src = PROVIDER.read_text(encoding = "utf-8")
-    # The click-through class is applied conditionally now, so it is not part
-    # of the literal the rail's own classes are authored in.
-    stacks = re.findall(r'"fixed right-4 ([^"]*)"', src)
+    """Both copies, browser and desktop. They drifted apart once already.
+
+    Found by `data-testid`, not by a run of the rail's classes. The class-anchored version
+    spelled the corner into the pattern, so #11260 moving the rail flush to the edge made it
+    match nothing and report the stacks as missing rather than as moved. Where the rail sits
+    is asserted in tests/studio/test_update_release_notes.py, which is the file about its
+    layout; this one is only about the layer it draws on.
+    """
+    src = without_comments(PROVIDER.read_text(encoding = "utf-8"))
+    stacks = []
+    at = src.find(_RAIL_TESTID)
+    while at != -1:
+        # opening_tag, not rfind("<")/find(">"): an attribute before the test id can hold a
+        # comparison (`disabled={count < limit}`) and one after it an arrow function, either
+        # of which truncates a hand-rolled scan. A truncated tag drops the classes this test
+        # reads, so it would pass over the very z-index regression it exists to catch.
+        start, end = opening_tag(src, at)
+        stacks.append(src[start:end])
+        at = src.find(_RAIL_TESTID, end)
     assert len(stacks) == 2, f"expected the two bottom-right stacks, found {len(stacks)}"
     for stack in stacks:
         assert not _Z.search(stack), f"the stack still carries a hard-coded z-index: {stack!r}"

@@ -1,11 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Encrypted installation-wide credential persistence in ``studio.db``.
-
-Studio is a single-user local application. Credentials belong to the installation,
-not to an authenticated subject. The AES key lives separately in auth.db and the
-credential kind/scope are authenticated so ciphertext rows cannot be swapped.
+"""Encrypted installation-wide credential persistence in ``studio.db``. Unsloth is a single-user local
+application, so credentials belong to the installation, not to an authenticated subject. The AES key lives
+separately in auth.db and the credential kind/scope are authenticated so ciphertext rows cannot be swapped.
 """
 
 from __future__ import annotations
@@ -14,6 +12,7 @@ import logging
 import os
 import sqlite3
 import threading
+from pathlib import Path
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -35,7 +34,7 @@ _FORMAT_VERSION = 1
 _NONCE_BYTES = 12
 
 _schema_lock = threading.Lock()
-_schema_ready = False
+_schema_ready: set[Path] = set()
 
 
 def _associated_data(credential_kind: str, scope_id: str) -> bytes:
@@ -62,8 +61,12 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
     conn.commit()
 
 
+def reset_schema_state_for_tests() -> None:
+    with _schema_lock:
+        _schema_ready.clear()
+
+
 def get_connection() -> sqlite3.Connection:
-    global _schema_ready
     db_path = studio_db_path()
     ensure_dir(db_path.parent)
     conn = sqlite3.connect(str(db_path), timeout = 5.0)
@@ -73,16 +76,23 @@ def get_connection() -> sqlite3.Connection:
         os.chmod(db_path, 0o600)
     except OSError:
         pass
-    if not _schema_ready:
+    if db_path not in _schema_ready:
         with _schema_lock:
-            if not _schema_ready:
+            schema_path = db_path.resolve()
+            if schema_path not in _schema_ready:
                 try:
                     _ensure_schema(conn)
-                    _schema_ready = True
+                    _schema_ready.add(schema_path)
                 except Exception:
                     conn.close()
                     raise
     return conn
+
+
+def ensure_schema() -> None:
+    """Ensure the credential table exists before a shared transaction starts."""
+    conn = get_connection()
+    conn.close()
 
 
 def _encrypted_secret(
@@ -102,10 +112,17 @@ def _encrypted_secret(
     return nonce, ciphertext, datetime.now(timezone.utc).isoformat()
 
 
-def upsert_secret(credential_kind: str, scope_id: str, plaintext: str) -> None:
+def upsert_secret(
+    credential_kind: str,
+    scope_id: str,
+    plaintext: str,
+    *,
+    connection: sqlite3.Connection | None = None,
+) -> None:
     """Encrypt and atomically insert or replace one installation credential."""
     nonce, ciphertext, now = _encrypted_secret(credential_kind, scope_id, plaintext)
-    conn = get_connection()
+    owns_connection = connection is None
+    conn = connection or get_connection()
     try:
         conn.execute(
             """
@@ -121,9 +138,11 @@ def upsert_secret(credential_kind: str, scope_id: str, plaintext: str) -> None:
             """,
             (credential_kind, scope_id, _FORMAT_VERSION, nonce, ciphertext, now, now),
         )
-        conn.commit()
+        if owns_connection:
+            conn.commit()
     finally:
-        conn.close()
+        if owns_connection:
+            conn.close()
 
 
 def insert_secret_if_absent(credential_kind: str, scope_id: str, plaintext: str) -> bool:
@@ -146,8 +165,13 @@ def insert_secret_if_absent(credential_kind: str, scope_id: str, plaintext: str)
         conn.close()
 
 
-def get_secret(credential_kind: str, scope_id: str) -> Optional[str]:
-    """Return a decrypted credential, or ``None`` if absent or unreadable."""
+def get_secret_with_presence(credential_kind: str, scope_id: str) -> "tuple[Optional[str], bool]":
+    """The decrypted credential, and whether a row is STORED at all, from ONE read.
+
+    Asking `get_secret` and then `secret_row_exists` is two connections for one question, and
+    the cache-read gate in hub/utils/hf_tokens.py asks it on every read of a cached repo. The
+    two answers must still be told apart: absent authorizes, unreadable must not.
+    """
     conn = get_connection()
     try:
         row = conn.execute(
@@ -160,54 +184,119 @@ def get_secret(credential_kind: str, scope_id: str) -> Optional[str]:
         ).fetchone()
     finally:
         conn.close()
-    if row is None or row["format_version"] != _FORMAT_VERSION:
-        return None
+    if row is None:
+        return (None, False)
+    if row["format_version"] != _FORMAT_VERSION:
+        return (None, True)
     try:
         plaintext = AESGCM(get_or_create_credential_encryption_key()).decrypt(
             bytes(row["nonce"]),
             bytes(row["ciphertext"]),
             _associated_data(credential_kind, scope_id),
         )
-        return plaintext.decode("utf-8")
+        return (plaintext.decode("utf-8"), True)
     except Exception:
         logger.warning(
             "Saved credential is unreadable; re-entry is required (kind=%s)",
             credential_kind,
         )
-        return None
+        return (None, True)
+
+
+def get_secret(credential_kind: str, scope_id: str) -> Optional[str]:
+    """Return a decrypted credential, or ``None`` if absent or unreadable."""
+    return get_secret_with_presence(credential_kind, scope_id)[0]
 
 
 def has_secret(credential_kind: str, scope_id: str) -> bool:
     return get_secret(credential_kind, scope_id) is not None
 
 
-def delete_secret(credential_kind: str, scope_id: str) -> bool:
-    """Idempotently delete one credential; return whether a row existed."""
+def secret_row_exists(credential_kind: str, scope_id: str) -> bool:
+    """Whether a credential is STORED, readable or not. `get_secret` and `has_secret` answer
+    None for an absent row AND an undecryptable one, which callers that AUTHORIZE on the absence
+    of a credential must tell apart."""
     conn = get_connection()
+    try:
+        row = conn.execute(
+            """
+            SELECT 1
+            FROM credential_secrets
+            WHERE credential_kind = ? AND scope_id = ?
+            """,
+            (credential_kind, scope_id),
+        ).fetchone()
+    finally:
+        conn.close()
+    return row is not None
+
+
+def delete_secret(
+    credential_kind: str,
+    scope_id: str,
+    *,
+    connection: sqlite3.Connection | None = None,
+) -> bool:
+    """Idempotently delete one credential; return whether a row existed."""
+    owns_connection = connection is None
+    conn = connection or get_connection()
     try:
         cursor = conn.execute(
             "DELETE FROM credential_secrets WHERE credential_kind = ? AND scope_id = ?",
             (credential_kind, scope_id),
         )
-        conn.commit()
+        if owns_connection:
+            conn.commit()
         return cursor.rowcount > 0
     finally:
-        conn.close()
+        if owns_connection:
+            conn.close()
 
 
 def get_hf_token() -> Optional[str]:
     return get_secret(HF_TOKEN_KIND, HF_TOKEN_SCOPE)
 
 
+def get_hf_token_with_presence() -> "tuple[Optional[str], bool]":
+    """The saved HF token and whether one is stored at all. See `get_secret_with_presence`."""
+    return get_secret_with_presence(HF_TOKEN_KIND, HF_TOKEN_SCOPE)
+
+
+def hf_token_row_exists() -> bool:
+    """Whether an HF token is saved, readable or not. See `secret_row_exists`."""
+    return secret_row_exists(HF_TOKEN_KIND, HF_TOKEN_SCOPE)
+
+
+def _note_a_credential_this_host_held() -> None:
+    """Record the identity of the token being replaced or removed, while it is still here.
+
+    The ledger of credentials this host has EVER held is what stops a tokenless caller
+    inheriting the downloads of one that has since been removed, and it used to be written only
+    where an authorization probe happened to read it. An operator who cleared the token first
+    left nothing behind. A row that exists but cannot be decrypted records the sentinel, since
+    an unreadable credential is still a credential this host held.
+    """
+    try:
+        from hub.utils.hf_tokens import note_host_credential_identity
+        note_host_credential_identity(get_hf_token(), a_credential_was_held = hf_token_row_exists())
+    except Exception:  # noqa: BLE001 -- bookkeeping must never fail a settings write
+        pass
+
+
 def save_hf_token(token: str) -> None:
+    _note_a_credential_this_host_held()
     upsert_secret(HF_TOKEN_KIND, HF_TOKEN_SCOPE, token)
+    _note_a_credential_this_host_held()
 
 
 def save_hf_token_if_absent(token: str) -> bool:
-    return insert_secret_if_absent(HF_TOKEN_KIND, HF_TOKEN_SCOPE, token)
+    inserted = insert_secret_if_absent(HF_TOKEN_KIND, HF_TOKEN_SCOPE, token)
+    _note_a_credential_this_host_held()
+    return inserted
 
 
 def delete_hf_token() -> bool:
+    _note_a_credential_this_host_held()
     return delete_secret(HF_TOKEN_KIND, HF_TOKEN_SCOPE)
 
 
@@ -215,16 +304,23 @@ def get_provider_api_key(provider_id: str) -> Optional[str]:
     return get_secret(PROVIDER_API_KEY_KIND, provider_id)
 
 
-def save_provider_api_key(provider_id: str, api_key: str) -> None:
-    upsert_secret(PROVIDER_API_KEY_KIND, provider_id, api_key)
+def save_provider_api_key(
+    provider_id: str,
+    api_key: str,
+    *,
+    connection: sqlite3.Connection | None = None,
+) -> None:
+    upsert_secret(PROVIDER_API_KEY_KIND, provider_id, api_key, connection = connection)
 
 
 def save_provider_api_key_if_absent(provider_id: str, api_key: str) -> bool:
     return insert_secret_if_absent(PROVIDER_API_KEY_KIND, provider_id, api_key)
 
 
-def delete_provider_api_key(provider_id: str) -> bool:
-    return delete_secret(PROVIDER_API_KEY_KIND, provider_id)
+def delete_provider_api_key(
+    provider_id: str, *, connection: sqlite3.Connection | None = None
+) -> bool:
+    return delete_secret(PROVIDER_API_KEY_KIND, provider_id, connection = connection)
 
 
 def resolve_provider_api_key(provider_id: Optional[str], encrypted_api_key: Optional[str]) -> str:

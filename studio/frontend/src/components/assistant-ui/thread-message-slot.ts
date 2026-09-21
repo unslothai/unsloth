@@ -48,6 +48,22 @@ export function threadMessageKind(
 }
 
 /**
+ * Whether a message in this state paints anything.
+ *
+ * Derived from `threadMessageKind` rather than from its own list of roles: a second list would
+ * drift from the renderer the first time a role is added, and the drift is silent in both
+ * directions. Anything sizing itself on what the reader can SEE, rather than on how many messages
+ * there are, has to ask this -- a "none" message occupies no height, so counting it as a row makes
+ * a thread open on blanks. See progressive-mount-controller.ts.
+ */
+export function rendersAsRow(
+  role: ThreadMessageRole,
+  isEditing: boolean,
+): boolean {
+  return threadMessageKind(role, isEditing) !== "none";
+}
+
+/**
  * A render prop that always returns the SAME propless element for `Component`.
  *
  * Propless is what assistant-ui's bail-out requires; one shared instance also makes the bail-out

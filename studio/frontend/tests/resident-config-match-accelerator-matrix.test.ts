@@ -2,7 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 /**
- * `residentRuntimeMatchesConfig` across the accelerators Studio runs on, crossed with every
+ * `residentRuntimeMatchesConfig` across the accelerators Unsloth runs on, crossed with every
  * setting a remembered config can pin.
  *
  * The two failures are not symmetric. A wrong FALSE costs one reload, which is what
@@ -20,12 +20,10 @@
  */
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
-import { fileURLToPath } from "node:url";
 
 import type { PerModelConfig } from "../src/features/model-picker/model-config/per-model-config.ts";
-import { registerBundlerResolver } from "./helpers/kit.ts";
+import { readSrc, registerBundlerResolver } from "./helpers/kit.ts";
 
 registerBundlerResolver();
 const { residentRuntimeMatchesConfig: matchesWithStanding } = await import(
@@ -71,11 +69,14 @@ const BLANK = {
   nParallel: null,
   nBatch: null,
   nUbatch: null,
+  reasoningBudget: -1,
+  reasoningBudgetMessage: "",
   tensorParallel: false,
+  disableVision: false,
   chatTemplateOverride: null,
 };
 
-/** What `/api/inference/status` reports per host, measured against a running Studio rather
+/** What `/api/inference/status` reports per host, measured against a running Unsloth rather
  * than copied from the type: a default CUDA load answers auto / -1 / 0 / null / false. */
 const ACCELERATORS: Record<string, Record<string, unknown>> = {
   "nvidia-cuda": {
@@ -185,6 +186,42 @@ const FIELDS: FieldCase[] = [
     different: 256,
   },
   {
+    key: "loadMode",
+    statusKey: "requested_load_mode",
+    same: "mmap+mlock",
+    different: "mmap",
+  },
+  {
+    key: "specDraftCacheDtype",
+    statusKey: "requested_spec_draft_cache_type",
+    same: "q8_0",
+    different: "f16",
+  },
+  {
+    key: "ctxCheckpoints",
+    statusKey: "requested_ctx_checkpoints",
+    same: 8,
+    different: 32,
+  },
+  {
+    key: "cacheRam",
+    statusKey: "requested_cache_ram",
+    same: 4096,
+    different: 8192,
+  },
+  {
+    key: "reasoningBudget",
+    statusKey: "reasoning_budget",
+    same: 1024,
+    different: 512,
+  },
+  {
+    key: "reasoningBudgetMessage",
+    statusKey: "reasoning_budget_message",
+    same: "Wrap up.",
+    different: "Stop here.",
+  },
+  {
     key: "chatTemplateOverride",
     statusKey: "chat_template_override",
     same: "{{ bos }}",
@@ -228,6 +265,12 @@ const FIELDS: FieldCase[] = [
   {
     key: "tensorParallel",
     statusKey: "tensor_parallel",
+    same: true,
+    different: false,
+  },
+  {
+    key: "disableVision",
+    statusKey: "disable_vision",
     same: true,
     different: false,
   },
@@ -281,12 +324,20 @@ for (const [accelerator, base] of Object.entries(ACCELERATORS)) {
   }
 }
 
-test("placement compares as a set on a multi-GPU host, not as an order", () => {
-  // The backend narrows and reorders the pool at fit time, so only membership counts.
+test("placement compares as an order on a multi-GPU host, not as a set", () => {
+  // The picker's order is the order the backend pins, so the same cards in a
+  // different order are a different placement and the runner has to restart.
   assert.equal(
     residentRuntimeMatchesConfig(
       { ...ACCELERATORS["amd-rocm"], requested_gpu_ids: [0, 1] },
       { ...BLANK, selectedGpuIds: [1, 0] },
+    ),
+    false,
+  );
+  assert.equal(
+    residentRuntimeMatchesConfig(
+      { ...ACCELERATORS["amd-rocm"], requested_gpu_ids: [0, 1] },
+      { ...BLANK, selectedGpuIds: [0, 1] },
     ),
     true,
   );
@@ -349,7 +400,7 @@ test("a CPU-only host distinguishes zero offloaded layers from automatic", () =>
   );
 });
 
-test("a config stored by an older Studio does not throw and does not over-adopt", () => {
+test("a config stored by an older Unsloth does not throw and does not over-adopt", () => {
   // Blobs written before a field existed lack the key. Optional ones express no opinion
   // and adopt; a missing tensorParallel cannot be confirmed and reloads. Neither throws.
   // Cast at the boundary on purpose: these come off localStorage, so the point is the
@@ -405,15 +456,7 @@ test("an empty pinned pool is Automatic, not a demand for no GPUs", () => {
 
 test("every PerModelConfig field is either compared or deliberately excluded", () => {
   // A new setting not classified here is one an adopted pick would drop silently.
-  const source = readFileSync(
-    fileURLToPath(
-      new URL(
-        "../src/features/model-picker/model-config/per-model-config.ts",
-        import.meta.url,
-      ),
-    ),
-    "utf8",
-  );
+  const source = readSrc("features/model-picker/model-config/per-model-config.ts");
   const body = source.slice(
     source.indexOf("export interface PerModelConfig {"),
     source.indexOf("export const DEFAULT_PER_MODEL_CONFIG"),

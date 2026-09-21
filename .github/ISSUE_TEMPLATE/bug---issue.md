@@ -10,7 +10,7 @@ assignees: ''
 ---
 name: Unsloth Studio Bug
 about: Report a problem with the Unsloth Studio desktop app or web UI
-title: "[Studio Bug] "
+title: "[Unsloth Bug] "
 labels: bug
 assignees: ""
 ---
@@ -25,8 +25,8 @@ datasets, or other sensitive information.
 
 **Where are you using Unsloth?**
 
-- [ ] Studio desktop application
-- [ ] Studio web UI (`unsloth studio`)
+- [ ] Unsloth desktop application
+- [ ] Unsloth web UI (`unsloth studio`)
 - [ ] Unsloth CLI
 - [ ] Python package or notebook
 - [ ] Colab or Kaggle
@@ -38,7 +38,7 @@ datasets, or other sensitive information.
 
 **Versions:**
 <!--
-For Studio, copy the Unsloth, package, desktop, and llama.cpp versions from
+For Unsloth, copy the Unsloth, package, desktop, and llama.cpp versions from
 Settings → About when available.
 -->
 
@@ -89,14 +89,14 @@ Useful files include:
 - `logs/install-*.log`, `logs/update-*.log`, `logs/repair-*.log`, or `logs/backend-*.log`
 - The newest `logs/server/server-*.log`
 
-### Studio web UI
+### Unsloth web UI
 
 Attach the newest relevant items:
 
 - Linux/macOS/Windows: `~/.unsloth/studio/logs/server/server-*.log`
   (use `%USERPROFILE%\.unsloth\studio\logs\server\` on Windows)
 - Linux/macOS shortcut launches only: `~/.local/share/unsloth/studio.log`
-- Terminal output if Studio was launched from a terminal
+- Terminal output if Unsloth was launched from a terminal
 - Browser Console errors for browser-only problems
 
 If you configured `UNSLOTH_STUDIO_HOME` or `STUDIO_HOME`, look under

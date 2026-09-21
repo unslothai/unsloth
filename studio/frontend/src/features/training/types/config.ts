@@ -49,6 +49,10 @@ export interface TrainingMethodProvenance {
   learningRateManuallySet: boolean;
   modelAdapterLearningRate: number | null;
   datasetFormatBeforeCpt: DatasetFormat | null;
+  targetModulesBeforeCpt: string[] | null;
+  loraRankBeforeCpt: number | null;
+  loraAlphaBeforeCpt: number | null;
+  loraVariantBeforeCpt: LoraVariant | null;
 }
 
 /** Column-to-role mapping, e.g. { "problem": "user", "solution": "assistant", "context": "system" } */

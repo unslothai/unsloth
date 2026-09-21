@@ -27,7 +27,7 @@ sys.path.insert(0, _backend)
 import routes.inference as inf_mod
 from routes.inference import (
     _anthropic_passthrough_non_streaming,
-    _anthropic_passthrough_retry_url,
+    _passthrough_retry_url,
     _anthropic_passthrough_stream,
 )
 
@@ -156,7 +156,7 @@ async def _run_non_streaming(backend):
 def test_retry_url_rebuilds_from_the_respawned_base_url():
     backend = _Backend()
 
-    url = asyncio.run(_anthropic_passthrough_retry_url(backend, httpx.ConnectError("x")))
+    url = asyncio.run(_passthrough_retry_url(backend, httpx.ConnectError("x")))
 
     assert url == f"{_FRESH}/v1/chat/completions"
     assert backend.respawn_calls == 1
@@ -165,7 +165,7 @@ def test_retry_url_rebuilds_from_the_respawned_base_url():
 def test_retry_url_is_none_when_nothing_respawned():
     backend = _Backend(respawn_ok = False)
 
-    url = asyncio.run(_anthropic_passthrough_retry_url(backend, httpx.ConnectError("x")))
+    url = asyncio.run(_passthrough_retry_url(backend, httpx.ConnectError("x")))
 
     assert url is None
 
@@ -174,7 +174,7 @@ def test_retry_url_defers_to_the_mtp_crash_recovery():
     # An MTP+tensor crash schedules its own reload; retrying would race it.
     backend = _Backend(mtp_handled = True)
 
-    url = asyncio.run(_anthropic_passthrough_retry_url(backend, httpx.ConnectError("x")))
+    url = asyncio.run(_passthrough_retry_url(backend, httpx.ConnectError("x")))
 
     assert url is None
     assert backend.respawn_calls == 0
@@ -183,7 +183,7 @@ def test_retry_url_defers_to_the_mtp_crash_recovery():
 def test_retry_url_tolerates_a_backend_without_respawn_hooks():
     backend = SimpleNamespace(base_url = _DEAD)
 
-    url = asyncio.run(_anthropic_passthrough_retry_url(backend, httpx.ConnectError("x")))
+    url = asyncio.run(_passthrough_retry_url(backend, httpx.ConnectError("x")))
 
     assert url is None
 

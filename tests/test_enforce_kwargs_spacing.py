@@ -186,10 +186,10 @@ def test_enforce_spacing_noop_when_already_spaced():
     assert out == src
 
 
+# Rule D:
+
 # ── Rule D: def one-per-line iff >= 3 params AND a default ──────────────────
 # add comma -> force one-per-line; strip comma -> stay collapsible.
-
-# Comma must be ADDED: >= 3 params, has a default, no trailing comma yet.
 _DEF_ADD = {
     "three_with_default": "def f(a, b, c=1):\n    return a\n",
     "four_with_default": "def f(a, b, c, d=1):\n    return a\n",
@@ -257,9 +257,6 @@ def test_def_comma_exact_output_strip_and_add():
         normalize_def_trailing_comma("def f(\n    a,\n    b,\n    c,\n):\n    return a\n")[0]
         == "def f(\n    a,\n    b,\n    c\n):\n    return a\n"
     )
-
-
-# ── Rule C: merge adjacent same-line string literals ───────────────────────
 
 
 @pytest.mark.parametrize(
@@ -349,8 +346,6 @@ def test_fstring_fold_applied_inside_large_multiline_call():
 
 # ── collapse_short_asserts: strip the magic comma holding a short assert open ──
 # Strips the trailing comma so ruff joins the assert onto one line; AST unchanged.
-
-
 @pytest.mark.parametrize(
     "name,src",
     [
@@ -403,7 +398,6 @@ def test_collapse_short_assert_strips_trailing_comma(name, src):
             '        "alpha": 11111111,\n        "beta": 22222222,\n'
             '        "gamma": 33333333,\n        "delta": 44444444,\n    }\n',
         ),
-        # already one line: nothing to do.
         ("one_line", 'def t():\n    assert got == {"a": 1, "b": 2}\n'),
     ],
 )
@@ -411,3 +405,39 @@ def test_collapse_short_assert_left_alone(name, src):
     out, changed = collapse_short_asserts(src)
     assert changed is False
     assert out == src
+
+
+class TestTheRewriteKeepsThePermissions:
+    """The rewrite is a temp file moved over the target, so the mode travels with it.
+
+    tempfile.mkstemp creates 0600 and os.replace carries that onto the target, so
+    every file this hook touched came back 0600: an executable script lost the bit,
+    git recorded 100755 -> 100644, and pre-commit.ci committed that mode change on
+    a branch whose diff showed nothing. scripts/run_ruff_format.py is one of the
+    files this hook formats, so it did it to itself.
+    """
+
+    @staticmethod
+    def _rewrite(path: Path) -> None:
+        import subprocess
+        script = Path(__file__).resolve().parent.parent / "scripts" / "enforce_kwargs_spacing.py"
+        subprocess.run([sys.executable, str(script), str(path)], check = True, capture_output = True)
+
+    @pytest.mark.skipif(sys.platform.startswith("win"), reason = "no POSIX mode bits")
+    @pytest.mark.parametrize("mode", [0o755, 0o644, 0o600])
+    def test_a_rewritten_file_keeps_the_mode_it_had(self, tmp_path, mode):
+        target = tmp_path / "sample.py"
+        target.write_text("x = f(a=1)\n", encoding = "utf-8")
+        target.chmod(mode)
+        self._rewrite(target)
+        # It really did rewrite: otherwise this asserts nothing about the writer.
+        assert target.read_text(encoding = "utf-8") == "x = f(a = 1)\n"
+        assert target.stat().st_mode & 0o777 == mode
+
+    @pytest.mark.skipif(sys.platform.startswith("win"), reason = "no POSIX mode bits")
+    def test_a_file_it_leaves_alone_is_not_touched_either(self, tmp_path):
+        target = tmp_path / "already.py"
+        target.write_text("x = f(a = 1)\n", encoding = "utf-8")
+        target.chmod(0o755)
+        self._rewrite(target)
+        assert target.stat().st_mode & 0o777 == 0o755

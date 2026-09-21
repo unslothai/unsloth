@@ -106,9 +106,8 @@ def test_plugin_still_writes_the_mcp_server_and_skill(tmp_path):
 
 
 def test_wsl_run_clears_a_gate_left_by_an_earlier_windows_run(tmp_path, monkeypatch):
-    # The plugin dir survives across runs when persisted, so a gate written by a
-    # Windows run would otherwise be shipped into the distro with an interpreter
-    # path it cannot execute.
+    # The plugin dir survives across runs when persisted, so a gate written by a Windows run would
+    # otherwise be shipped into the distro with an interpreter path it cannot execute.
     plugin = _plugin(tmp_path)
     gate = plugin / "hooks" / "plan_gate.py"
     hooks = plugin / "hooks" / "hooks.json"
@@ -123,9 +122,9 @@ def test_wsl_run_clears_a_gate_left_by_an_earlier_windows_run(tmp_path, monkeypa
 
 
 def test_hook_command_survives_a_missing_gate_and_a_path_with_spaces(tmp_path):
-    # Handing the path straight to the interpreter makes a missing gate exit 2,
-    # which Claude treats as a blocking error: the editing tool would then be
-    # denied in every mode, not just plan. Going through runpy makes it exit 1.
+    # Handing the path straight to the interpreter makes a missing gate exit 2, which Claude treats as
+    # a blocking error: the editing tool would then be denied in every mode, not just plan. Going
+    # through runpy makes it exit 1.
     plugin = _plugin(tmp_path / "dir with space")
     hook = json.loads((plugin / "hooks" / "hooks.json").read_text())
     command = hook["hooks"]["PreToolUse"][0]["hooks"][0]["command"]
@@ -157,9 +156,9 @@ def test_hook_command_survives_a_missing_gate_and_a_path_with_spaces(tmp_path):
 
 @pytest.mark.parametrize("hostile", ["sub$(echo X)", "tick`echo X`", "var$HOME", "pct%TEMP%pct"])
 def test_gate_survives_shell_metacharacters_in_its_path(tmp_path, hostile):
-    # The hook command is run by a shell. A temp root holding these expands under
-    # sh (or cmd, for %VAR%) before Python sees the path, so the gate is not found
-    # and exits 1, which fails open and silently drops the routing message.
+    # The hook command is run by a shell. A temp root holding these expands under sh (or cmd, for
+    # %VAR%) before Python sees the path, so the gate is not found and exits 1, which fails open and
+    # silently drops the routing message.
     plugin = _plugin(tmp_path / hostile)
     command = json.loads((plugin / "hooks" / "hooks.json").read_text())["hooks"]["PreToolUse"][0][
         "hooks"

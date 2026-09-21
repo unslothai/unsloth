@@ -101,8 +101,6 @@ def test_detect_none_when_bnb_absent(import_fixes, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# maybe_set_windows_rocm_bnb_version
-# ---------------------------------------------------------------------------
 
 
 def test_sets_bnb_version_on_windows_rocm(import_fixes, clean_env):

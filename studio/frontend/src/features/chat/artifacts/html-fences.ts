@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Shared fenced-code helpers for the HTML-artifact render paths, hoisted from
-// markdown-text.tsx so the in-place collapse and the post-message auto-render
-// agree on what counts as a renderable HTML fence.
+// Shared fenced-code helpers for the HTML-artifact render paths, hoisted from markdown-text.tsx
+// so the in-place collapse and the post-message auto-render agree on what counts as a renderable
+// HTML fence.
 
 export type CodeFence = {
   language: string | null;
@@ -79,8 +79,8 @@ export function isFullHtmlDocument(source: string): boolean {
 export interface HtmlFence {
   source: string;
   isFullDocument: boolean;
-  // Plain 3-backtick unindented fence: the only form the in-place collapser
-  // (CODE_FENCE_RE) recognizes, so only these may be skipped as already shown.
+  // Plain 3-backtick unindented fence: the only form the in-place collapser (CODE_FENCE_RE)
+  // recognizes, so only these may be skipped as already shown.
   isPlainFence: boolean;
   index: number;
 }
@@ -88,9 +88,9 @@ export interface HtmlFence {
 // Opening fence: up to 3 leading spaces, >=3 backticks, then a backtick-free info string.
 const FENCE_OPEN_RE = /^( {0,3})(`{3,})([^`\r\n]*)$/;
 
-// Scan a full message for every closed ```html fence. Line-based so multiple
-// fences are found and backticks inside a <script> string never split a block
-// (a close must be its own fence line). Drops unterminated/SVG fences.
+// Scan a full message for every closed ```html fence. Line-based so multiple fences are found and
+// backticks inside a <script> string never split a block (a close must be its own fence line).
+// Drops unterminated and SVG fences.
 export function extractHtmlFences(text: string): HtmlFence[] {
   const lines = text.split(/\r?\n/);
   const fences: HtmlFence[] = [];
