@@ -306,6 +306,34 @@ VALIDATION_MODEL_CACHE_FILENAME = "stories260K.gguf"
 _RUN_STAGED_PREBUILT_VALIDATION = False
 
 
+def prebuilt_needs_functional_validation(choice: "AssetChoice") -> bool:
+    """True when a staged prebuilt must run the functional smoke test before activation.
+
+    Three cases, and only the third is allowed to skip it:
+
+    * No digest at all. Nothing else gates the archive, so the smoke test is its only
+      integrity gate and always runs.
+    * A digest GitHub published on the release (``unmanifested_digest``). It proves the
+      bytes are the ones upstream uploaded, and nothing about whether they RUN here --
+      right bytes, wrong glibc, absent CUDA runtime, an arch this host cannot load. The
+      upstream path is exactly where that mismatch lands, because it is what hosts the
+      fork does not cover fall to: Linux ARM64 Vulkan, Intel, the pinned macOS tag, any
+      ``--published-repo``. These archives ran the smoke test while they were hashless
+      and keep running it, so requiring a digest does not quietly buy a weaker check.
+    * An approved-manifest bundle. Unsloth's own release process built and exercised it,
+      so the manifest speaks for integrity and runnability both, and its smoke test -- a
+      cold CUDA-JIT pass costing minutes on Blackwell sm_100 -- stays gated behind
+      staged_validation_enabled() (constant or UNSLOTH_LLAMA_STAGED_VALIDATION),
+      disabled for now. That check and the source-build fallback it triggers are kept
+      intact; flip the flag / env to restore it (#5854).
+    """
+    if choice.expected_sha256 is None:
+        return True
+    if choice.unmanifested_digest:
+        return True
+    return staged_validation_enabled()
+
+
 def staged_validation_enabled() -> bool:
     """True when the expensive llama-server GPU smoke test should run.
 
@@ -439,6 +467,11 @@ class AssetChoice:
     max_sm: int | None = None
     selection_log: list[str] | None = None
     expected_sha256: str | None = None
+    # True when expected_sha256 came from GitHub's per-asset release digest rather than
+    # the approved checksum manifest. Both prove the bytes; only the manifest also means
+    # Unsloth built and exercised that bundle, so see
+    # prebuilt_needs_functional_validation.
+    unmanifested_digest: bool = False
     # ROCm bundles only (mirrors PublishedLlamaArtifact): umbrella gfx family
     # and the concrete archs the binaries were built for.
     gfx_target: str | None = None
@@ -1345,6 +1378,11 @@ def direct_upstream_release_plan(
             f"{repo}@{release_tag} publishes no asset digest for any compatible prebuilt; "
             "refusing to install one unverified"
         )
+    # A release digest is not a manifest entry, so keep the functional smoke test these
+    # attempts already ran while they were hashless. See
+    # prebuilt_needs_functional_validation.
+    for attempt in verified:
+        attempt.unmanifested_digest = True
     return InstallReleasePlan(
         requested_tag = requested_tag,
         llama_tag = release_tag,
@@ -9031,15 +9069,7 @@ def validate_prebuilt_choice(
         walk_back = walk_back,
         macos_load_probe_passed = macos_load_probe_passed,
     )
-    # Hashless external prebuilts are not in the approved-sha256
-    # manifest and rely on the functional smoke test as their only integrity gate,
-    # so they are always validated. For an approved bundle the sha256 manifest
-    # already proves integrity, so its runtime smoke test -- a cold CUDA-JIT pass
-    # costing minutes on Blackwell sm_100 -- is gated behind
-    # staged_validation_enabled() (constant or UNSLOTH_LLAMA_STAGED_VALIDATION),
-    # disabled for now. The check and the source-build fallback it triggers are
-    # kept intact; flip the flag / env to restore it (#5854).
-    if choice.expected_sha256 is None or staged_validation_enabled():
+    if prebuilt_needs_functional_validation(choice):
         # Only branch that reads the probe, so this is where a lazy one is fetched.
         probe_path = resolve_validation_model(probe)
         validate_quantize(
@@ -9133,7 +9163,7 @@ def validate_prebuilt_attempts(
     # read as a bad bundle and demote a healthy GPU pick to CPU -- and, since the
     # thunk memoises success but not failure, re-download once per attempt. Plans
     # that skip validation never call the thunk, so they stay lazy.
-    if staged_validation_enabled() or any(a.expected_sha256 is None for a in attempt_list):
+    if any(prebuilt_needs_functional_validation(a) for a in attempt_list):
         probe = resolve_validation_model(probe)
 
     tried_fallback = initial_fallback_used
@@ -10575,9 +10605,9 @@ def install_prebuilt(
                         f"{plan.release_tag} for {host.system} {host.machine}"
                     )
                     # Outside the handler, so a transient failure cannot demote to an older release.
-                    if not probe_resolved and (
-                        staged_validation_enabled()
-                        or any(attempt.expected_sha256 is None for attempt in plan.attempts)
+                    if not probe_resolved and any(
+                        prebuilt_needs_functional_validation(attempt)
+                        for attempt in plan.attempts
                     ):
                         probe = resolve_validation_model(probe)
                         probe_resolved = True

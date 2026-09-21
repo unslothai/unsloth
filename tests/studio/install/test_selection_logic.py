@@ -5,6 +5,7 @@ import importlib.util
 import inspect
 import json
 import os
+import pathlib
 import socket
 import subprocess
 import sys
@@ -4934,3 +4935,122 @@ class TestDirectUpstreamRequiresAssetDigests:
         release["assets"][0]["digest"] = "md5:" + "0" * 32
         with pytest.raises(PrebuiltFallback):
             direct_upstream_release_plan(release, self._host(), UPSTREAM_REPO, "latest")
+
+
+# ===========================================================================
+class TestUpstreamDigestKeepsTheFunctionalSmokeTest:
+    """Requiring a digest must not quietly disable the smoke test it replaces.
+
+    validate_prebuilt_choice skips the staged smoke test for any attempt carrying a
+    sha256, because an approved-manifest bundle is one Unsloth built and exercised.
+    Upstream attempts used to reach it with expected_sha256 None, so they always ran it.
+    Binding them to the release digest would have flipped that off for every upstream
+    install -- Linux ARM64 Vulkan, Intel, the pinned macOS tag, any --published-repo --
+    and a release digest proves the bytes, not that they run on this host.
+    """
+
+    TAG = "b9365"
+
+    def _host(self, **overrides):
+        defaults = dict(
+            system = "Windows",
+            machine = "AMD64",
+            has_physical_nvidia = False,
+            has_usable_nvidia = False,
+            nvidia_smi = None,
+            driver_cuda_version = None,
+            compute_caps = [],
+        )
+        defaults.update(overrides)
+        return make_host(**defaults)
+
+    def _release(self):
+        name = f"llama-{self.TAG}-bin-win-cpu-x64.zip"
+        return {
+            "tag_name": self.TAG,
+            "assets": [
+                {
+                    "name": name,
+                    "browser_download_url": f"https://example.com/{name}",
+                    "digest": f"sha256:{_fixture_digest(name)}",
+                }
+            ],
+        }
+
+    def test_upstream_attempts_are_marked_as_carrying_an_unmanifested_digest(self):
+        plan = direct_upstream_release_plan(
+            self._release(), self._host(), UPSTREAM_REPO, "latest"
+        )
+        assert plan.attempts
+        for attempt in plan.attempts:
+            assert attempt.expected_sha256, attempt.name
+            assert attempt.unmanifested_digest, (
+                f"{attempt.name} would skip the smoke test on the strength of a release digest"
+            )
+
+    def test_the_smoke_test_still_runs_for_every_upstream_attempt(self, monkeypatch):
+        monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "_RUN_STAGED_PREBUILT_VALIDATION", False)
+        monkeypatch.delenv("UNSLOTH_LLAMA_STAGED_VALIDATION", raising = False)
+        assert not INSTALL_LLAMA_PREBUILT.staged_validation_enabled()
+        plan = direct_upstream_release_plan(
+            self._release(), self._host(), UPSTREAM_REPO, "latest"
+        )
+        for attempt in plan.attempts:
+            assert INSTALL_LLAMA_PREBUILT.prebuilt_needs_functional_validation(attempt), (
+                f"{attempt.name} lost the functional smoke test it ran while hashless"
+            )
+
+    def test_a_manifest_approved_bundle_still_skips_it(self, monkeypatch):
+        """The negative control: the expensive-path gate must still be reachable."""
+        monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "_RUN_STAGED_PREBUILT_VALIDATION", False)
+        monkeypatch.delenv("UNSLOTH_LLAMA_STAGED_VALIDATION", raising = False)
+        approved = AssetChoice(
+            repo = "unslothai/llama.cpp",
+            tag = self.TAG,
+            name = "llama-app-bin-win-cuda-x64.zip",
+            url = "https://example.com/a.zip",
+            source_label = "published",
+            expected_sha256 = "a" * 64,
+        )
+        assert not INSTALL_LLAMA_PREBUILT.prebuilt_needs_functional_validation(approved)
+        monkeypatch.setenv("UNSLOTH_LLAMA_STAGED_VALIDATION", "1")
+        assert INSTALL_LLAMA_PREBUILT.prebuilt_needs_functional_validation(approved)
+
+    def test_a_hashless_bundle_is_still_always_validated(self):
+        hashless = AssetChoice(
+            repo = "somebody/llama.cpp",
+            tag = self.TAG,
+            name = "llama-whatever.zip",
+            url = "https://example.com/w.zip",
+            source_label = "upstream",
+        )
+        assert INSTALL_LLAMA_PREBUILT.prebuilt_needs_functional_validation(hashless)
+
+    def test_probe_preresolution_agrees_with_the_validation_decision(self):
+        """All three gates must read the same predicate.
+
+        The two probe gates decide whether to resolve the validation model UP FRONT.
+        Their comments say why it matters: the per-candidate handler catches Exception,
+        so a probe download failing lazily inside it reads as a bad bundle and demotes a
+        healthy GPU pick to CPU, re-downloading once per attempt. If a gate still tested
+        `expected_sha256 is None` while validation tested something wider, upstream
+        attempts would validate with an unresolved probe and hit exactly that.
+        """
+        source = pathlib.Path(INSTALL_LLAMA_PREBUILT.__file__).read_text()
+        stale = [
+            line.strip()
+            for line in source.splitlines()
+            if "expected_sha256 is None" in line
+            and "prebuilt_needs_functional_validation" not in line
+        ]
+        # The predicate's own first clause is the single legitimate reader.
+        assert stale == ["if choice.expected_sha256 is None:"], stale
+
+    def test_every_upstream_attempt_resolves_the_probe_up_front(self):
+        plan = direct_upstream_release_plan(
+            self._release(), self._host(), UPSTREAM_REPO, "latest"
+        )
+        assert any(
+            INSTALL_LLAMA_PREBUILT.prebuilt_needs_functional_validation(a)
+            for a in plan.attempts
+        ), "the probe would be resolved lazily inside the per-candidate handler"
