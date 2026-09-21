@@ -9,17 +9,20 @@ import {
   unslothDarkTheme,
   unslothLightTheme,
 } from "@/components/assistant-ui/code-themes";
+import { MascotImg } from "@/components/mascot-img";
 import { Button } from "@/components/ui/button";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
+import { downloadFile, isDownloadCancelled } from "@/lib/native-files";
+import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
+import { EyeIcon, XIcon } from "lucide-react";
 import {
-  CheckIcon,
-  CopyIcon,
-  DownloadIcon,
-  EyeIcon,
-  Maximize2Icon,
-  XIcon,
-} from "lucide-react";
+  Copy01Icon,
+  Download01Icon,
+  ExpandIcon,
+} from "@hugeicons/core-free-icons";
+import { Tick02Icon } from "@/lib/tick-icon";
+import { HugeiconsIcon } from "@hugeicons/react";
 import {
   type KeyboardEvent,
   useEffect,
@@ -29,8 +32,9 @@ import {
 } from "react";
 import { Streamdown } from "streamdown";
 import { ArtifactHtmlFrame, type ArtifactViewMode } from "./html-frame";
+import { useChatArtifactsStore } from "./store";
 import type { ChatArtifact } from "./types";
-import { getArtifactFilename } from "./types";
+import { buildArtifactSourceKey, getArtifactFilename } from "./types";
 
 const COPY_RESET_MS = 2000;
 const artifactSourceCodePlugin = createCodePlugin({
@@ -45,10 +49,9 @@ function buildHtmlFence(source: string): string {
   const fence = "`".repeat(longestBacktickRun + 1);
   return `${fence}html\n${source}\n${fence}`;
 }
-// Sandboxed artifact iframes are intentionally excluded from the overlay focus
-// trap. Granting same-origin sandbox privileges would weaken isolation, so
-// keyboard users can reach Studio controls here while fully interactive artifact
-// content remains a known sandbox limitation.
+// Sandboxed canvas iframes are deliberately outside the overlay focus trap: granting same-origin
+// sandbox privileges would weaken isolation, so reaching interactive canvas content via keyboard
+// is a known sandbox limitation.
 const FOCUSABLE_SELECTOR =
   'a[href], button:not([disabled]), textarea:not([disabled]), input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])';
 
@@ -78,14 +81,13 @@ function ArtifactGeneratingPanel() {
   return (
     <div className="flex h-full min-h-0 flex-col items-center justify-center bg-muted/10 px-6 text-center">
       <div className="max-w-[30ch] space-y-1.5">
-        <img
-          src="/Sloth%20emojis/sloth%20w%20pc%20transparent.png"
-          alt=""
+        <MascotImg
+          src="Sloth emojis/sloth w pc transparent.png"
           aria-hidden={true}
           className="mx-auto mb-3 size-20 object-contain"
         />
         <p className="text-sm font-medium text-foreground">
-          Building artifact preview…
+          Building canvas preview…
         </p>
         <p className="text-xs leading-relaxed text-muted-foreground">
           The preview will appear here when the HTML is ready.
@@ -93,18 +95,6 @@ function ArtifactGeneratingPanel() {
       </div>
     </div>
   );
-}
-
-function downloadTextFile(filename: string, text: string): void {
-  const blob = new Blob([text], { type: "text/html;charset=utf-8" });
-  const url = URL.createObjectURL(blob);
-  const anchor = document.createElement("a");
-  anchor.href = url;
-  anchor.download = filename;
-  document.body.appendChild(anchor);
-  anchor.click();
-  document.body.removeChild(anchor);
-  window.setTimeout(() => URL.revokeObjectURL(url), 0);
 }
 
 export function ArtifactSurface({
@@ -119,9 +109,12 @@ export function ArtifactSurface({
   onOpenFullscreen?: () => void;
 }) {
   const [viewMode, setViewMode] = useState<ArtifactViewMode>("preview");
+  // Follow the view the opener asked for (Preview vs Code button), per artifact.
+  const requestedView = useChatArtifactsStore((state) => state.requestedView);
   const [copied, setCopied] = useState(false);
   const copyResetRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const surfaceRef = useRef<HTMLElement>(null);
+  const closeButtonRef = useRef<HTMLButtonElement>(null);
   const previousFocusRef = useRef<Element | null>(null);
   const filename = getArtifactFilename(artifact);
   const sourceMarkdown = useMemo(
@@ -137,6 +130,10 @@ export function ArtifactSurface({
       if (copyResetRef.current) clearTimeout(copyResetRef.current);
     };
   }, []);
+
+  useEffect(() => {
+    setViewMode(requestedView);
+  }, [artifact.id, requestedView]);
 
   useEffect(() => {
     if (variant !== "overlay") return;
@@ -201,12 +198,23 @@ export function ArtifactSurface({
       tabIndex={variant === "overlay" ? -1 : undefined}
       onKeyDown={handleDialogKeyDown}
       className={cn(
-        "relative flex min-h-0 flex-col border border-border bg-background",
+        "relative flex min-h-0 flex-col bg-background",
         variant === "panel"
-          ? "artifact-panel-shell mx-2 mt-[72px] mb-8 h-[calc(100%_-_104px)] overflow-visible rounded-[28px] border-border/70 bg-card/95 [box-shadow:rgba(0,0,0,0.16)_0px_2px_8px_-2px]"
-          : "h-[min(92vh,900px)] w-[min(96vw,1200px)] overflow-hidden rounded-2xl shadow-xl",
+          ? "artifact-panel-shell mx-2 mb-8 overflow-visible rounded-[28px] border-t border-border/70 bg-card/95"
+          : "h-[min(92dvh,900px)] w-[min(96vw,1200px)] overflow-hidden rounded-2xl border border-border shadow-xl",
       )}
-      aria-label={`${artifact.title} artifact`}
+      // The chat-model notice is an absolute child of the chat content container, so it spans this
+      // column too, not just the thread pane. Its height is 0 whenever it is off screen, which leaves
+      // the geometry this panel has always had. Both edges move, or the panel overflows the bottom.
+      style={
+        variant === "panel"
+          ? {
+              marginTop: "calc(90px + var(--studio-chat-notice-height, 0px))",
+              height: "calc(100% - 122px - var(--studio-chat-notice-height, 0px))",
+            }
+          : undefined
+      }
+      aria-label={`${artifact.title} canvas`}
     >
       <header
         className={cn(
@@ -217,7 +225,7 @@ export function ArtifactSurface({
         <div
           className="flex items-center gap-1 rounded-full bg-muted/40 p-0.5"
           role="tablist"
-          aria-label="Artifact view"
+          aria-label="Canvas view"
         >
           {(["preview", "source"] as const).map((mode) => {
             const isPreview = mode === "preview";
@@ -239,7 +247,7 @@ export function ArtifactSurface({
                     "cursor-not-allowed opacity-50",
                 )}
                 aria-label={
-                  isPreview ? "Preview artifact" : "View artifact source"
+                  isPreview ? "Preview canvas" : "View canvas source"
                 }
                 aria-selected={effectiveViewMode === mode}
                 aria-pressed={effectiveViewMode === mode}
@@ -263,10 +271,22 @@ export function ArtifactSurface({
             size="icon"
             className="size-8"
             disabled={isLoadingArtifact || !hasArtifactCode}
-            onClick={() => downloadTextFile(filename, artifact.code)}
-            aria-label="Download artifact HTML"
+            onClick={() => {
+              // Route through the native save dialog on desktop; the plain blob-anchor download is silently
+              // dropped by the Tauri WebView2.
+              void downloadFile(
+                artifact.code,
+                filename,
+                "text/html;charset=utf-8",
+              ).catch((err) => {
+                if (!isDownloadCancelled(err)) {
+                  toast.error("Failed to save canvas HTML");
+                }
+              });
+            }}
+            aria-label="Download canvas HTML"
           >
-            <DownloadIcon className="size-4" />
+            <HugeiconsIcon icon={Download01Icon} className="size-4" />
           </Button>
           <Button
             type="button"
@@ -275,12 +295,12 @@ export function ArtifactSurface({
             className="size-8"
             disabled={isLoadingArtifact || !hasArtifactCode}
             onClick={handleCopy}
-            aria-label="Copy artifact HTML"
+            aria-label="Copy canvas HTML"
           >
             {copied ? (
-              <CheckIcon className="size-4" />
+              <HugeiconsIcon icon={Tick02Icon} strokeWidth={2} className="size-4" />
             ) : (
-              <CopyIcon className="size-4" />
+              <HugeiconsIcon icon={Copy01Icon} className="size-4" />
             )}
           </Button>
           {variant === "panel" && onOpenFullscreen ? (
@@ -290,18 +310,19 @@ export function ArtifactSurface({
               size="icon"
               className="size-8"
               onClick={onOpenFullscreen}
-              aria-label="Open artifact fullscreen"
+              aria-label="Open canvas fullscreen"
             >
-              <Maximize2Icon className="size-4" />
+              <HugeiconsIcon icon={ExpandIcon} className="size-4" />
             </Button>
           ) : null}
           <Button
+            ref={closeButtonRef}
             type="button"
             variant="ghost"
             size="icon"
             className="size-8"
             onClick={onClose}
-            aria-label="Close artifact"
+            aria-label="Close canvas"
           >
             <XIcon className="size-4" />
           </Button>
@@ -328,10 +349,15 @@ export function ArtifactSurface({
             title={artifact.title}
             fill={true}
             className="h-full"
+            actionFocusTargetRef={
+              variant === "overlay" ? closeButtonRef : undefined
+            }
           />
         ) : (
-          <div className="h-full overflow-auto text-xs leading-relaxed [&_[data-streamdown=code-block]]:!rounded-none [&_pre]:!m-0 [&_pre]:!bg-transparent [&_pre]:!p-0 [&_pre]:text-xs [&_pre]:leading-relaxed [&_code]:text-xs">
+          <div className="h-full overflow-auto text-xs leading-relaxed [&_[data-streamdown=code-block]]:!my-0 [&_[data-streamdown=code-block]]:!gap-0 [&_[data-streamdown=code-block]]:!rounded-none [&_[data-streamdown=code-block]]:!border-0 [&_[data-streamdown=code-block]]:!bg-transparent [&_[data-streamdown=code-block]]:!p-0 [&_[data-streamdown=code-block-body]]:!border-0 [&_[data-streamdown=code-block-body]]:!bg-transparent [&_[data-streamdown=code-block-body]]:!p-0 [&_pre]:!m-0 [&_pre]:!bg-transparent [&_pre]:!p-0 [&_pre]:text-xs [&_pre]:leading-relaxed [&_code]:text-xs">
             <Streamdown
+              // Only computed when the source view is actually on screen.
+              key={buildArtifactSourceKey(artifact)}
               mode="streaming"
               plugins={{ code: artifactSourceCodePlugin }}
               controls={{ code: false }}

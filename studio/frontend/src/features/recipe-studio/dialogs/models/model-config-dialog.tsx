@@ -49,10 +49,8 @@ export function ModelConfigDialog({
   const skipHealthCheckId = `${config.id}-skip-health-check`;
   const providerAnchorRef = useRef<HTMLDivElement>(null);
   const providerInputRef = useRef(config.provider);
-  // Sync providerInputRef with the current provider value. Updating a ref in
-  // an effect (vs reading/writing it during render) satisfies the
-  // react-hooks/refs rule and keeps the combobox blur path stable across
-  // re-renders.
+  // Sync providerInputRef in an effect (not during render) to satisfy the
+  // react-hooks/refs rule and keep the combobox blur path stable.
   useEffect(() => {
     providerInputRef.current = config.provider;
   }, [config.provider]);

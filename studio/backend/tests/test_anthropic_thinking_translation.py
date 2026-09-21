@@ -1,30 +1,23 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""
-Unit tests for the Anthropic extended-thinking translation in
-external_provider.
+"""Unit tests for Anthropic extended-thinking translation in external_provider.
 
 Covers:
-- Adaptive-mode request body nests effort under
-  ``output_config: {effort: "<level>"}`` per the Messages API
-  reference (a top-level ``effort`` field 400s with
-  "effort: Extra inputs are not permitted").
-- Streaming SSE: ``content_block_delta`` with
-  ``delta.type == "thinking_delta"`` is translated into inline
-  ``<think>...</think>`` chat-completion chunks so the frontend's
-  reasoning-panel pipeline lifts it correctly.
-- The ``<think>`` tag closes when the first ``text_delta`` arrives,
-  on ``content_block_stop``, on ``message_delta``, or on
-  ``message_stop``.
-- Thinking is paired with ``temperature=1`` and no ``top_p`` /
-  ``top_k`` on the wire (Anthropic extended-thinking contract).
+- Adaptive-mode body nests effort under ``output_config: {effort}`` (a
+  top-level ``effort`` field 400s).
+- Streaming ``thinking_delta`` is translated into inline ``<think>...</think>``
+  chunks for the frontend reasoning panel.
+- The ``<think>`` tag closes on the first ``text_delta``, ``content_block_stop``,
+  ``message_delta``, or ``message_stop``.
+- Thinking forces ``temperature=1`` with no ``top_p`` / ``top_k`` (contract).
 """
 
 import asyncio
 import json
 
 import httpx
+import pytest
 
 from core.inference import external_provider as ep_mod
 from core.inference.external_provider import ExternalProviderClient
@@ -113,14 +106,66 @@ def test_adaptive_thinking_body_uses_output_config_effort_shape(monkeypatch):
     # display=summarized is set explicitly so Opus 4.7 (which defaults to
     # "omitted") still emits thinking_delta events for the reasoning panel.
     assert body["thinking"] == {"type": "adaptive", "display": "summarized"}
-    # Documented shape: effort is nested under output_config.
-    # A top-level `effort` field produces a 400:
-    #   "effort: Extra inputs are not permitted".
+    # Documented shape: effort is nested under output_config. A top-level
+    # `effort` field produces a 400: "effort: Extra inputs are not permitted".
     assert body["output_config"] == {"effort": "medium"}
     assert "effort" not in body
     # Extended-thinking contract: temperature=1, no top_p / top_k.
     assert body["temperature"] == 1
     assert "top_p" not in body
+    assert "top_k" not in body
+
+
+@pytest.mark.parametrize(
+    ("model", "sampling_removed"),
+    (
+        ("claude-opus-4-7", True),
+        ("claude-opus-4-8", True),
+        ("claude-opus-5", True),
+        ("claude-sonnet-5", True),
+        ("claude-fable-5", True),
+        ("claude-mythos-5", True),
+        ("claude-mythos-preview", True),
+        ("claude-opus-4-6", False),
+        ("claude-sonnet-4-6", False),
+        ("claude-haiku-4-5-20251001", False),
+    ),
+)
+def test_sampling_parameter_capability_detection(model, sampling_removed):
+    assert ep_mod._anthropic_sampling_params_removed(model) is sampling_removed
+
+
+def test_claude_opus_5_request_omits_removed_sampling_parameters(monkeypatch):
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content.decode("utf-8"))
+        return httpx.Response(
+            200,
+            content = _anthropic_sse([{"type": "message_stop"}]),
+            headers = {"content-type": "text/event-stream"},
+        )
+
+    _mock_http_client(monkeypatch, handler)
+
+    async def run():
+        client = _make_client()
+        async for _ in client._stream_anthropic(
+            messages = [{"role": "user", "content": "hi"}],
+            model = "claude-opus-5",
+            temperature = 0.7,
+            top_p = 0.95,
+            max_tokens = 1024,
+            top_k = 40,
+            enable_thinking = False,
+        ):
+            pass
+        await client.close()
+
+    _drive(run())
+
+    body = captured["body"]
+    assert "temperature" not in body
     assert "top_k" not in body
 
 
@@ -258,10 +303,10 @@ def test_manual_thinking_body_uses_budget_tokens_on_4_5(monkeypatch):
     body = captured["body"]
     assert body["thinking"] == {"type": "enabled", "budget_tokens": 4096}
     # max_tokens must be strictly greater than budget_tokens; we shipped 1024
-    # and budget is 4096, so the wrapper should bump max_tokens.
+    # and budget is 4096, so the wrapper must bump max_tokens.
     assert body["max_tokens"] > body["thinking"]["budget_tokens"]
-    # Manual-thinking path does not use output_config / effort — those are
-    # the adaptive-mode controls (Claude 4.6 / 4.7).
+    # Manual-thinking path does not use output_config / effort — those are the
+    # adaptive-mode controls (Claude 4.6 / 4.7).
     assert "effort" not in body
     assert "output_config" not in body
 
@@ -338,8 +383,8 @@ def test_thinking_delta_wrapped_in_think_tags(monkeypatch):
         if isinstance(p, dict) and p["choices"][0]["delta"]
     )
 
-    # Reasoning text should be wrapped in <think>...</think>, followed by the
-    # answer text, and the stream should terminate with [DONE].
+    # Reasoning text is wrapped in <think>...</think>, then the answer text, and
+    # the stream terminates with [DONE].
     assert "<think>First I plan.</think>" in combined
     assert combined.endswith("Answer.")
     # signature_delta is intentionally dropped — no leaked signature text.
@@ -350,9 +395,9 @@ def test_thinking_delta_wrapped_in_think_tags(monkeypatch):
 def test_thinking_only_turn_closes_tag_without_text_delta(monkeypatch):
     """display=omitted on Claude 4.7 emits a signature_delta and no text.
 
-    The <think> open is still triggered by the (synthetic) thinking_delta;
-    we want content_block_stop to close it cleanly so the tag never leaks
-    into the next chunk."""
+    The <think> open is still triggered by the (synthetic) thinking_delta; we
+    want content_block_stop to close it cleanly so the tag never leaks into the
+    next chunk."""
 
     def handler(request: httpx.Request) -> httpx.Response:
         events = [
@@ -402,3 +447,106 @@ def test_thinking_only_turn_closes_tag_without_text_delta(monkeypatch):
         if isinstance(p, dict) and p["choices"][0]["delta"]
     )
     assert combined == "<think>internal</think>"
+
+
+def _capture_body(monkeypatch, **kwargs) -> dict:
+    """Drive one streamed call and return the outbound Anthropic body."""
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content.decode("utf-8"))
+        return httpx.Response(
+            200,
+            content = _anthropic_sse([{"type": "message_stop"}]),
+            headers = {"content-type": "text/event-stream"},
+        )
+
+    _mock_http_client(monkeypatch, handler)
+
+    async def run():
+        client = _make_client()
+        async for _ in client.stream_chat_completion(
+            messages = [{"role": "user", "content": "hi"}],
+            temperature = 0.7,
+            top_p = 0.95,
+            max_tokens = 64,
+            **kwargs,
+        ):
+            pass
+        await client.close()
+
+    _drive(run())
+    return captured["body"]
+
+
+@pytest.mark.parametrize(
+    "model",
+    ("claude-opus-5", "claude-sonnet-5", "claude-fable-5", "claude-opus-4-8"),
+)
+def test_claude_5_uses_adaptive_thinking_and_effort(monkeypatch, model):
+    """Claude 5 / Opus 4.8 must get adaptive thinking, not a bare request."""
+    body = _capture_body(
+        monkeypatch,
+        model = model,
+        enable_thinking = True,
+        reasoning_effort = "xhigh",
+    )
+    assert body["thinking"] == {"type": "adaptive", "display": "summarized"}
+    assert body["output_config"] == {"effort": "xhigh"}
+
+
+def test_thinking_off_disables_explicitly_on_opus_5(monkeypatch):
+    """Opus 5 thinks by default, so "off" must send an explicit disable."""
+    body = _capture_body(monkeypatch, model = "claude-opus-5", enable_thinking = False)
+    assert body["thinking"] == {"type": "disabled"}
+    assert "output_config" not in body
+
+
+def test_thinking_off_omits_disable_on_fable_5(monkeypatch):
+    """Fable 5 thinking is always on and 400s on an explicit disable."""
+    body = _capture_body(monkeypatch, model = "claude-fable-5", enable_thinking = False)
+    assert "thinking" not in body
+
+
+@pytest.mark.parametrize(
+    ("model", "web", "code", "compaction", "fast"),
+    (
+        ("claude-opus-5", "web_search_20260209", "code_execution_20260120", True, True),
+        ("claude-sonnet-5", "web_search_20260209", "code_execution_20260120", True, False),
+        ("claude-opus-4-8", "web_search_20260209", "code_execution_20260120", True, True),
+        # 4.7 keeps the new tool versions but dropped fast mode upstream.
+        ("claude-opus-4-7", "web_search_20260209", "code_execution_20260120", True, False),
+        ("claude-opus-4-5", "web_search_20250305", "code_execution_20260120", False, False),
+    ),
+)
+def test_model_capability_tables_cover_claude_5(model, web, code, compaction, fast):
+    assert ep_mod._anthropic_web_search_version(model) == web
+    assert ep_mod._anthropic_code_execution_version(model) == code
+    assert ep_mod._anthropic_supports_compaction(model) is compaction
+    assert ep_mod._anthropic_supports_fast_mode(model) is fast
+
+
+@pytest.mark.parametrize(
+    ("model", "sampling_removed"),
+    (
+        # Dotted minor versions and legacy version-first ids.
+        ("claude-opus-4.8", True),
+        ("claude-opus-4.7", True),
+        ("claude-sonnet-4.6", False),
+        ("claude-3-5-sonnet-20241022", False),
+        ("claude-3-7-sonnet-20250219", False),
+        # A snapshot date is not a minor version: claude-opus-4-20250514 is
+        # Opus 4.0, three generations before sampling params were removed, and
+        # reading 20250514 as the minor sorted it above 4.7 and silently
+        # dropped the caller's temperature / top_k.
+        ("claude-opus-4-20250514", False),
+        ("claude-opus-4", False),
+        ("claude-opus-4-1-20250805", False),
+        ("claude-opus-5-20260724", True),
+        ("claude-opus-4-7-20260414", True),
+        # Two-digit minors still parse.
+        ("claude-opus-4-10", True),
+    ),
+)
+def test_sampling_capability_handles_alternate_id_spellings(model, sampling_removed):
+    assert ep_mod._anthropic_sampling_params_removed(model) is sampling_removed

@@ -3,6 +3,18 @@
 
 from __future__ import annotations
 
+from core.training.account_jobs import (
+    account_process_spec,
+    init_job_owner,
+    job_busy,
+    job_control,
+    job_pump,
+    job_read,
+    owned_job,
+    validate_recipe_access,
+    worker_alive,
+)
+from utils.account_context import account_thread
 import asyncio
 import json
 import queue
@@ -16,7 +28,7 @@ from typing import Any
 
 import multiprocessing as mp
 
-from ..jsonable import to_preview_jsonable
+from ..jsonable import to_preview_jsonable_row
 from .constants import (
     EVENT_JOB_CANCELLING,
     EVENT_JOB_CANCELLED,
@@ -27,7 +39,9 @@ from .constants import (
 )
 from .parse import apply_update, coerce_event, parse_log_message
 from .types import Job
-from .worker import run_job_process
+from loggers import get_logger
+
+logger = get_logger(__name__)
 
 
 _CTX = mp.get_context("spawn")
@@ -108,14 +122,18 @@ class Subscription:
             event_id = self._next_id
         body = json.dumps(event, separators = (",", ":"), ensure_ascii = False)
         event_type = event.get("type") or "message"
-        return (
-            f"id: {event_id}\n" f"event: {event_type}\n" f"data: {body}\n\n"
-        ).encode("utf-8")
+        return (f"id: {event_id}\n" f"event: {event_type}\n" f"data: {body}\n\n").encode("utf-8")
 
 
 class JobManager:
     def __init__(self) -> None:
         """Single-job runner (in-mem). Simple on purpose, not a whole platform."""
+        init_job_owner(
+            self,
+            lambda: worker_alive(self),
+            lambda: self.cancel(self._job.job_id) if self._job else None,
+            self._clear_account_result,
+        )
         self._lock = threading.Lock()
         self._job: Job | None = None
         self._proc: mp.Process | None = None
@@ -125,6 +143,13 @@ class JobManager:
         self._pump_thread: threading.Thread | None = None
         self._seq: int = 0
 
+    def _clear_account_result(self):
+        self._job = None
+        self._events.clear()
+        # Old subscribers retain their private queues but never receive a successor's events.
+        self._subs.clear()
+
+    @owned_job()
     def start(
         self,
         *,
@@ -134,11 +159,11 @@ class JobManager:
     ) -> str:
         """Spawn the job subprocess (one at a time, no cap).
 
-        ``internal_api_key_id`` is the row id of a workflow-scoped
-        sk-unsloth-* key minted by the route layer for local providers.
-        JobManager revokes it when the job reaches a terminal state so the
-        key's live window is no longer than the run.
+        ``internal_api_key_id`` is a workflow-scoped sk-unsloth-* key row id
+        minted by the route layer; revoked on terminal state so the key's
+        live window is no longer than the run.
         """
+        validate_recipe_access(recipe)
         llm_columns = recipe.get("columns") or []
         llm_column_count = 0
         if isinstance(llm_columns, list):
@@ -158,9 +183,7 @@ class JobManager:
             job_id = uuid.uuid4().hex
             self._job = Job(job_id = job_id, status = "pending", started_at = time.time())
             self._job.progress_columns_total = llm_column_count
-            self._job.source_progress_estimated_total = _github_source_estimated_total(
-                recipe
-            )
+            self._job.source_progress_estimated_total = _github_source_estimated_total(recipe)
             self._job.internal_api_key_id = internal_api_key_id
             self._events.clear()
             self._seq = 0
@@ -171,27 +194,44 @@ class JobManager:
                 native_path_secret_removed_for_child_start,
                 run_without_native_path_secret,
             )
+            from utils.hf_cache_settings import child_environment_for_spawn, get_hf_cache_paths
 
-            with native_path_secret_removed_for_child_start():
+            cache_env = get_hf_cache_paths().child_env({})
+
+            with (
+                child_environment_for_spawn(cache_env),
+                native_path_secret_removed_for_child_start(),
+            ):
                 mp_q = _CTX.Queue()
+                process_args, process_kwargs = account_process_spec(
+                    "core.data_recipe.jobs.worker",
+                    "run_job_process",
+                    cache_env,
+                    {"event_queue": mp_q, "recipe": recipe, "run": run_payload},
+                )
                 proc = _CTX.Process(
                     target = run_without_native_path_secret,
-                    args = (run_job_process,),
-                    kwargs = {"event_queue": mp_q, "recipe": recipe, "run": run_payload},
+                    args = process_args,
+                    kwargs = process_kwargs,
                     daemon = True,
                 )
-                proc.start()
+                from utils.process_lifetime import adopt_pid, spawn_on_lifetime_thread
+
+                # Linux PDEATHSIG follows the spawning thread. A sync request's pool
+                # thread can retire while this recipe is still generating (#11002).
+                spawn_on_lifetime_thread(proc.start)
+
+                adopt_pid(proc.pid)
 
             self._mp_q = mp_q
             self._proc = proc
-            self._pump_thread = threading.Thread(target = self._pump_loop, daemon = True)
+            self._pump_thread = account_thread(target = self._pump_loop, daemon = True)
             self._pump_thread.start()
 
-            self._emit(
-                {"type": EVENT_JOB_ENQUEUED, "ts": time.time(), "job_id": job_id}
-            )
+            self._emit({"type": EVENT_JOB_ENQUEUED, "ts": time.time(), "job_id": job_id})
             return job_id
 
+    @job_control
     def cancel(self, job_id: str) -> bool:
         """Hard stop. We terminate the subprocess. Quick + reliable."""
         with self._lock:
@@ -200,17 +240,16 @@ class JobManager:
             if self._proc is None or not self._proc.is_alive():
                 return True
             self._job.status = "cancelling"
-            self._emit(
-                {"type": EVENT_JOB_CANCELLING, "ts": time.time(), "job_id": job_id}
-            )
+            self._emit({"type": EVENT_JOB_CANCELLING, "ts": time.time(), "job_id": job_id})
             try:
                 self._proc.terminate()
             except (AttributeError, OSError):
                 pass
             return True
 
+    @job_read(lambda self, *args, **kwargs: None)
     def get_status(self, job_id: str) -> dict | None:
-        """UI friendly snapshot that we need. Alternative to sse kinda of and structured"""
+        """UI-friendly structured snapshot; an alternative to SSE."""
         with self._lock:
             if self._job is None or self._job.job_id != job_id:
                 return None
@@ -270,6 +309,7 @@ class JobManager:
                 "finished_at": job.finished_at,
             }
 
+    @job_read(lambda self: {"status": "busy" if job_busy(self) else "idle"})
     def get_current_status(self) -> dict | None:
         """Single-job convenience (last/current)."""
         job_id = self.get_current_job_id()
@@ -277,11 +317,12 @@ class JobManager:
             return None
         return self.get_status(job_id)
 
+    @job_read(lambda self, *args, **kwargs: None)
     def get_current_job_id(self) -> str | None:
-        """Return current job_id (or None)."""
         with self._lock:
             return None if self._job is None else self._job.job_id
 
+    @job_read(lambda self, *args, **kwargs: None)
     def get_analysis(self, job_id: str) -> dict | None:
         """Final profiling output (only after job completes)."""
         with self._lock:
@@ -289,6 +330,7 @@ class JobManager:
                 return None
             return self._job.analysis
 
+    @job_read(lambda self, *args, **kwargs: None)
     def get_dataset(
         self,
         job_id: str,
@@ -319,19 +361,12 @@ class JobManager:
             if not parquet_dir.exists():
                 return {"error": f"dataset path missing: {parquet_dir}"}
 
-            return self._load_dataset_page(
-                parquet_dir = parquet_dir, limit = limit, offset = offset
-            )
+            return self._load_dataset_page(parquet_dir = parquet_dir, limit = limit, offset = offset)
         except Exception as exc:
             return {"error": f"dataset load failed: {exc}"}
 
     @staticmethod
-    def _load_dataset_page(
-        *,
-        parquet_dir: Path,
-        limit: int,
-        offset: int,
-    ) -> dict[str, Any]:
+    def _load_dataset_page(*, parquet_dir: Path, limit: int, offset: int) -> dict[str, Any]:
         dataset_page = JobManager._load_dataset_page_with_duckdb(
             parquet_dir = parquet_dir,
             limit = limit,
@@ -347,10 +382,7 @@ class JobManager:
 
     @staticmethod
     def _load_dataset_page_with_duckdb(
-        *,
-        parquet_dir: Path,
-        limit: int,
-        offset: int,
+        *, parquet_dir: Path, limit: int, offset: int
     ) -> dict[str, Any] | None:
         parquet_glob = str((parquet_dir / "*.parquet").resolve())
         try:
@@ -385,24 +417,25 @@ class JobManager:
                 dataframe = dataframe.drop(columns = [helper_col])
 
         rows = dataframe.to_dict(orient = "records")
-        return {"dataset": to_preview_jsonable(rows), "total": total}
+        return {"dataset": to_preview_jsonable_row(rows), "total": total}
 
     @staticmethod
     def _load_dataset_page_with_data_designer(
-        *,
-        parquet_dir: Path,
-        limit: int,
-        offset: int,
+        *, parquet_dir: Path, limit: int, offset: int
     ) -> dict[str, Any]:
         from data_designer.config.utils.io_helpers import read_parquet_dataset
 
         dataframe = read_parquet_dataset(parquet_dir)
         total = int(len(dataframe.index))
         rows = dataframe.iloc[offset : offset + limit].to_dict(orient = "records")
-        return {"dataset": to_preview_jsonable(rows), "total": total}
+        return {"dataset": to_preview_jsonable_row(rows), "total": total}
 
+    @job_read(lambda self, *args, **kwargs: None)
     def subscribe(
-        self, job_id: str, *, after_seq: int | None = None
+        self,
+        job_id: str,
+        *,
+        after_seq: int | None = None,
     ) -> Subscription | None:
         """SSE subscribe: get replay buffer + live events stream."""
         with self._lock:
@@ -461,56 +494,86 @@ class JobManager:
                 events.append(coerce_event(q.get_nowait()))
             except queue.Empty:
                 return events
-            except (EOFError, OSError, ValueError):
+            except Exception:
+                # Return what we have so the run still finalizes rather than wedging "active".
+                logger.exception(
+                    "Data-recipe job pump: queue drain failed; finalizing with drained events"
+                )
                 return events
 
+    def _safe_handle_event(self, job: Job, event: dict) -> None:
+        """Apply one event, swallowing any handler error so the pump can't die."""
+        # Worker exited: drain + finalize, guarded so an error can't strand the run "active".
+        try:
+            self._handle_event(job, event)
+        except Exception:
+            etype = event.get("type") if isinstance(event, dict) else type(event).__name__
+            logger.exception("Data-recipe job pump: failed to handle %s event; skipping", etype)
+
+    @job_pump
     def _pump_loop(self) -> None:
-        """Background thread: consumes worker events + updates job snapshot."""
+        """Background thread: consume worker events and update the job snapshot.
+
+        Guarded so no single event can end the loop; it is the sole writer of the
+        snapshot the UI polls, so its death would freeze status/SSE.
+        """
         while True:
             snap = self._snapshot()
             if snap is None:
                 return
             job, proc, mp_q = snap
 
-            event = self._read_queue_with_timeout(mp_q, timeout_sec = 0.25)
+            try:
+                event = self._read_queue_with_timeout(mp_q, timeout_sec = 0.25)
+            except Exception:
+                # Only retry while the worker is alive; otherwise finalize instead of spinning forever.
+                logger.exception("Data-recipe job pump: queue read failed; continuing")
+                if proc.is_alive():
+                    time.sleep(0.1)
+                    continue
+                event = None
+
             if event is not None:
-                self._handle_event(job, event)
+                self._safe_handle_event(job, event)
                 continue
 
             if proc.is_alive():
                 continue
 
-            for e in self._drain_queue(mp_q):
-                self._handle_event(job, e)
+            try:
+                for e in self._drain_queue(mp_q):
+                    self._safe_handle_event(job, e)
 
-            retired_job: Job | None = None
-            with self._lock:
-                if self._job and self._job.status in {
-                    "pending",
-                    "active",
-                    "cancelling",
-                }:
-                    if self._job.status == "cancelling":
-                        self._job.status = "cancelled"
-                    else:
-                        self._job.status = "error"
-                        self._job.error = self._job.error or "process exited"
-                    self._job.finished_at = time.time()
-                    event_type = (
-                        EVENT_JOB_CANCELLED
-                        if self._job.status == "cancelled"
-                        else EVENT_JOB_ERROR
-                    )
-                    self._emit(
-                        {
-                            "type": event_type,
-                            "ts": time.time(),
-                            "job_id": self._job.job_id,
-                        }
-                    )
-                    retired_job = self._job
-            if retired_job is not None:
-                self._retire_workflow_key(retired_job)
+                retired_job: Job | None = None
+                with self._lock:
+                    if self._job and self._job.status in {
+                        "pending",
+                        "active",
+                        "cancelling",
+                    }:
+                        if self._job.status == "cancelling":
+                            self._job.status = "cancelled"
+                        else:
+                            self._job.status = "error"
+                            self._job.error = self._job.error or "process exited"
+                        self._job.finished_at = time.time()
+                        event_type = (
+                            EVENT_JOB_CANCELLED
+                            if self._job.status == "cancelled"
+                            else EVENT_JOB_ERROR
+                        )
+                        self._emit(
+                            {
+                                "type": event_type,
+                                "ts": time.time(),
+                                "job_id": self._job.job_id,
+                            }
+                        )
+                        retired_job = self._job
+                if retired_job is not None:
+                    self._retire_workflow_key(retired_job)
+            except Exception:
+                logger.exception("Data-recipe job pump: finalization after worker exit failed")
             return
 
     def _handle_event(self, job: Job, event: dict) -> None:
@@ -557,16 +620,14 @@ class JobManager:
     def _retire_workflow_key(self, job: Job) -> None:
         """Revoke the workflow-scoped sk-unsloth-* key, if one was minted.
 
-        Best-effort: revocation failures are swallowed. The key would
-        expire on its own after 24h, so a missed revoke is a latency
-        concern, not a correctness one.
+        Best-effort: failures are swallowed. The key expires after 24h, so a
+        missed revoke is a latency, not correctness, concern.
         """
         key_id = getattr(job, "internal_api_key_id", None)
         if not key_id:
             return
         try:
-            from auth import storage  # deferred: avoids circular import
-
+            from auth import storage  # deferred: avoid circular import
             storage.revoke_internal_api_key(int(key_id))
         except Exception:
             pass

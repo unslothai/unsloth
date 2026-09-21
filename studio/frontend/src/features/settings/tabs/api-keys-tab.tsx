@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { useIsAccountOwner } from "@/features/auth";
+import { Button } from "@/components/ui/button";
 import {
   Dialog,
   DialogContent,
@@ -9,32 +11,45 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { Button } from "@/components/ui/button";
 import { translate, useT } from "@/i18n";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import { useCallback, useEffect, useState } from "react";
-import { fetchApiKeys, revokeApiKey, type ApiKey } from "../api/api-keys";
+import { type ApiKey, fetchApiKeys, revokeApiKey } from "../api/api-keys";
+import type {
+  KeylessApiAccessExposure,
+  KeylessApiAccessScope,
+} from "../api/keyless-api-access";
 import { ApiKeyRow } from "../components/api-key-row";
 import { CreateKeyForm } from "../components/create-key-form";
 import { KeyRevealCard } from "../components/key-reveal-card";
+import { KeylessApiAccessSection } from "../components/keyless-api-access-section";
+import { LanAccessSection } from "../components/lan-access-section";
+import { ModelAutoSwitchSection } from "../components/model-auto-switch-section";
+import { MonitorLink } from "../components/monitor-link";
+import { RemoteAccessSection } from "../components/remote-access-section";
 import { UsageExamples } from "../components/usage-examples";
 
 export function ApiKeysTab() {
   const t = useT();
+  const isOwner = useIsAccountOwner();
   const [keys, setKeys] = useState<ApiKey[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [revokeTarget, setRevokeTarget] = useState<ApiKey | null>(null);
   const [revoking, setRevoking] = useState(false);
   const [revealed, setRevealed] = useState<string | null>(null);
+  const [keyless, setKeyless] = useState<{
+    scope: KeylessApiAccessScope;
+    tools: boolean;
+    exposure: KeylessApiAccessExposure | null;
+  }>({ scope: "off", tools: false, exposure: null });
   const reduced = useReducedMotion();
   const transition = reduced
     ? { duration: 0 }
     : { duration: 0.18, ease: [0.165, 0.84, 0.44, 1] as const };
 
-  // API helpers in ../api/api-keys.ts throw generic English Error messages
-  // ("Failed to load API access", etc.). Always use the translated message
-  // so zh-CN users do not see those English strings bleed through.
+  // ../api/api-keys.ts throws generic English errors; use the translated
+  // message so zh-CN users don't see English strings bleed through.
   const load = useCallback(async () => {
     setLoading(true);
     setError(null);
@@ -87,7 +102,7 @@ export function ApiKeysTab() {
   return (
     <div className="flex min-w-0 max-w-full flex-col gap-6">
       <header className="flex min-w-0 flex-col gap-1">
-        <h1 className="text-lg font-semibold font-heading">
+        <h1 className="text-xl font-semibold font-heading">
           {t("settings.apiKeys.title")}
         </h1>
         <p className="text-xs text-muted-foreground">
@@ -113,10 +128,7 @@ export function ApiKeysTab() {
             exit={{ opacity: 0, y: -4 }}
             transition={transition}
           >
-            <KeyRevealCard
-              rawKey={revealed}
-              onDone={() => setRevealed(null)}
-            />
+            <KeyRevealCard rawKey={revealed} onDone={() => setRevealed(null)} />
           </motion.div>
         ) : (
           <motion.div
@@ -159,17 +171,43 @@ export function ApiKeysTab() {
             {t("settings.apiKeys.noAccess")}
           </p>
         ) : (
-          <div className="flex min-w-0 flex-col">
-            {keys.map((k) => (
-              <ApiKeyRow key={k.id} apiKey={k} onRevoke={setRevokeTarget} />
-            ))}
+          <div className="hover-scrollbar flex max-h-72 min-w-0 flex-col overflow-y-auto pr-1 [scrollbar-gutter:stable]">
+            <div className="overlay-scrollbar-gutter">
+              {keys.map((k) => (
+                <ApiKeyRow key={k.id} apiKey={k} onRevoke={setRevokeTarget} />
+              ))}
+            </div>
           </div>
         )}
       </section>
 
-      <UsageExamples />
+      <MonitorLink />
 
-      <Dialog open={revokeTarget !== null} onOpenChange={(o) => !o && setRevokeTarget(null)}>
+      {/* Installation-wide controls: owner-only routes. */}
+      {isOwner ? (
+        <>
+          <KeylessApiAccessSection onSettingsChange={setKeyless} />
+
+          {/* Also on the Remote & LAN tab. One panel mounts at a time, so only one polls. */}
+          <RemoteAccessSection />
+
+          <LanAccessSection />
+
+          <ModelAutoSwitchSection />
+        </>
+      ) : null}
+
+      <UsageExamples
+        apiKey={revealed}
+        keylessScope={keyless.scope}
+        keylessTools={keyless.tools}
+        keylessExposure={keyless.exposure}
+      />
+
+      <Dialog
+        open={revokeTarget !== null}
+        onOpenChange={(o) => !o && setRevokeTarget(null)}
+      >
         <DialogContent className="max-w-md">
           <DialogHeader>
             <DialogTitle>

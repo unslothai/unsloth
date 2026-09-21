@@ -1,29 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""
-Unit tests for Anthropic's server-side `code_execution_20250825` tool
-translation in `_stream_anthropic`.
-
-Covers:
-- Request body: when ``enabled_tools=["code_execution"]``, the outbound
-  ``tools`` array carries ``{"type": "code_execution_20250825", "name":
-  "code_execution"}`` and the ``anthropic-beta`` header includes
-  ``code-execution-2025-08-25``.
-- Combined request: ``enabled_tools=["web_search", "code_execution"]``
-  sends both tool entries; the beta header still merges the code-exec
-  flag onto whatever the registry contributed.
-- SSE translation: a `bash_code_execution` server_tool_use +
-  `bash_code_execution_tool_result` pair emits one tool_start and one
-  tool_end ``_toolEvent`` chunk with the expected arguments and result.
-- SSE translation: a `text_editor_code_execution` create + result emits
-  a tool_start with ``kind="text_editor"`` + parsed args, and tool_end
-  with ``"Created"`` (or ``"Updated"``) based on the ``is_file_update``
-  flag.
-- Error path: a ``bash_code_execution_tool_result_error`` with
-  ``error_code="container_expired"`` renders as ``"Error:
-  container_expired"`` in the tool_end ``result``.
-"""
+"""Tests for Anthropic server-side `code_execution` tool translation in
+`_stream_anthropic`: request body/beta header, combined web_search,
+bash/text_editor SSE tool events, and the container_expired error path."""
 
 import asyncio
 import json
@@ -116,16 +96,11 @@ def test_code_execution_tool_appended_to_request_body(monkeypatch):
 
     body = captured["body"]
     tools = body.get("tools") or []
-    # Opus 4.7 gets the newer date-pinned variant (`_20260120`) that
-    # supports REPL state persistence + programmatic tool calling.
-    assert {
-        "type": "code_execution_20260120",
-        "name": "code_execution",
-    } in tools
+    # Opus 4.7 gets the newer date-pinned variant with REPL persistence.
+    assert {"type": "code_execution_20260120", "name": "code_execution"} in tools
     # No web_search entry when only code_execution is enabled.
     assert all("web_search" not in (t.get("type") or "") for t in tools)
-    # Beta header still carries the documented flag; both `_20250825`
-    # and `_20260120` are unlocked by the same header per upstream docs.
+    # Same beta header unlocks both _20250825 and _20260120.
     beta_header = captured["headers"].get("anthropic-beta", "")
     assert "code-execution-2025-08-25" in beta_header
 
@@ -196,14 +171,10 @@ def test_no_code_execution_tool_when_pill_off(monkeypatch):
     _drive(run())
 
     tools = captured["body"].get("tools") or []
-    # Pill off -- neither the legacy nor the new code_execution variant
-    # may appear on the wire.
+    # Pill off: no code_execution variant on the wire.
     assert all("code_execution" not in (t.get("type") or "") for t in tools)
-    # Beta header must NOT mention code-execution when the tool isn't on
-    # -- that flag is opt-in only.
-    assert "code-execution-2025-08-25" not in captured["headers"].get(
-        "anthropic-beta", ""
-    )
+    # Beta header must omit code-execution when the tool is off (opt-in only).
+    assert "code-execution-2025-08-25" not in captured["headers"].get("anthropic-beta", "")
 
 
 def test_bash_code_execution_emits_tool_start_and_end(monkeypatch):
@@ -275,13 +246,8 @@ def test_bash_code_execution_emits_tool_start_and_end(monkeypatch):
     assert start["type"] == "tool_start"
     assert start["tool_name"] == "code_execution"
     assert start["tool_call_id"] == "srvtoolu_1"
-    # `_server_tool: True` marks this as a provider-side synthetic
-    # tool card for the frontend's history serializer.
-    assert start["arguments"] == {
-        "kind": "bash",
-        "command": "ls -la",
-        "_server_tool": True,
-    }
+    # `_server_tool: True` marks a provider-side synthetic tool card.
+    assert start["arguments"] == {"kind": "bash", "command": "ls -la", "_server_tool": True}
 
     assert end["type"] == "tool_end"
     assert end["tool_call_id"] == "srvtoolu_1"
@@ -308,8 +274,7 @@ def test_text_editor_create_emits_kind_and_status(monkeypatch):
             "delta": {
                 "type": "input_json_delta",
                 "partial_json": (
-                    '{"command": "create", "path": "new_file.txt", '
-                    '"file_text": "hi"}'
+                    '{"command": "create", "path": "new_file.txt", "file_text": "hi"}'
                 ),
             },
         },

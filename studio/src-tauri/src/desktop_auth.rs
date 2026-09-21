@@ -8,21 +8,51 @@ use std::path::{Path, PathBuf};
 
 static DESKTOP_AUTH_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
-#[derive(Debug, Serialize)]
-pub struct DesktopAuthResponse {
-    pub access_token: String,
-    pub refresh_token: String,
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum DesktopAuthResponse {
+    LoginRequired {
+        login_required: LoginRequired,
+        login_mode: MultiLoginMode,
+    },
+    Tokens {
+        access_token: String,
+        refresh_token: String,
+    },
+}
+
+// Literal values keep malformed successful responses from becoming a session.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(try_from = "bool", into = "bool")]
+pub struct LoginRequired;
+
+impl TryFrom<bool> for LoginRequired {
+    type Error = &'static str;
+
+    fn try_from(value: bool) -> Result<Self, Self::Error> {
+        if value {
+            Ok(Self)
+        } else {
+            Err("login_required must be true")
+        }
+    }
+}
+
+impl From<LoginRequired> for bool {
+    fn from(_: LoginRequired) -> Self {
+        true
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub enum MultiLoginMode {
+    #[serde(rename = "multi")]
+    Multi,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 struct DesktopAuthRequest {
     secret: String,
-}
-
-#[derive(Debug, Deserialize)]
-struct TokenResponse {
-    access_token: String,
-    refresh_token: String,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -201,7 +231,7 @@ async fn exchange_desktop_secret(
 
     if response.status() == reqwest::StatusCode::NOT_FOUND {
         return Err(AuthError::StaleResponder(
-            "Running Studio backend is too old for this desktop app. Update that backend and restart."
+            "Running Unsloth backend is too old for this desktop app. Update that backend and restart."
                 .to_string(),
         ));
     }
@@ -213,29 +243,25 @@ async fn exchange_desktop_secret(
     }
 
     response
-        .json::<TokenResponse>()
+        .json::<DesktopAuthResponse>()
         .await
-        .map(|tokens| {
-            Some(DesktopAuthResponse {
-                access_token: tokens.access_token,
-                refresh_token: tokens.refresh_token,
-            })
-        })
+        .map(Some)
         .map_err(|e| AuthError::Failed(format!("Desktop auth failed: {}", e)))
 }
 
 async fn provision_desktop_auth() -> Result<(), String> {
     let bin = crate::process::resolve_backend_binary()?;
-    let mut cmd = tokio::process::Command::new(&bin);
-    cmd.args(["studio", "provision-desktop-auth"])
-        .stdout(std::process::Stdio::null())
+    let mut cmd = crate::process::build_managed_cli_command_tokio(
+        &bin,
+        &["studio", "provision-desktop-auth"],
+    )
+    .map_err(|e| format!("Desktop auth provisioning failed: {}", e))?;
+    cmd.stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::piped());
+    crate::process::apply_managed_cli_context_tokio(&mut cmd)
+        .map_err(|error| format!("Desktop auth provisioning failed: {}", error))?;
     #[cfg(target_os = "linux")]
-    if std::env::var_os("APPIMAGE").is_some() {
-        cmd.env_remove("LD_LIBRARY_PATH");
-        cmd.env_remove("PYTHONHOME");
-        cmd.env_remove("PYTHONPATH");
-    }
+    crate::process::scrub_appimage_python_env_tokio(&mut cmd);
 
     // Tauri uses the legacy root regardless of UNSLOTH_STUDIO_HOME / STUDIO_HOME.
     // Scrub so provisioning writes match what the Rust auth code reads.
@@ -247,7 +273,11 @@ async fn provision_desktop_auth() -> Result<(), String> {
         cmd.creation_flags(crate::process::CREATE_NO_WINDOW);
     }
 
-    let output = tokio::time::timeout(std::time::Duration::from_secs(30), cmd.output())
+    let child = crate::process::with_studio_runtime_launch_guard(|| {
+        cmd.spawn().map_err(|error| error.to_string())
+    })
+    .map_err(|e| format!("Desktop auth provisioning failed: {}", e))?;
+    let output = tokio::time::timeout(std::time::Duration::from_secs(30), child.wait_with_output())
         .await
         .map_err(|_| "Desktop auth provisioning timed out after 30s".to_string())?
         .map_err(|e| format!("Desktop auth provisioning failed: {}", e))?;
@@ -335,9 +365,7 @@ async fn desktop_auth_inner(
     if backend.source == PortSource::Discovered {
         diagnostics::record_attached_external_backend(diagnostics, backend.port);
     }
-    let client = Client::builder()
-        .timeout(std::time::Duration::from_secs(5))
-        .build()
+    let client = crate::loopback_http::client(std::time::Duration::from_secs(5))
         .map_err(|e| format!("Desktop auth failed: {}", e))?;
 
     for attempt in 0..2 {
@@ -364,7 +392,7 @@ async fn desktop_auth_inner(
     }
 
     Err(
-        "Desktop auth failed. Update or repair the managed Studio install, then restart Studio."
+        "Desktop auth failed. Update or repair the managed Unsloth install, then restart Unsloth."
             .to_string(),
     )
 }
@@ -376,20 +404,67 @@ mod tests {
     use tokio::net::TcpListener;
 
     async fn login_server(status: &str) -> u16 {
+        login_server_with_body(status, "").await
+    }
+
+    async fn login_server_with_body(status: &str, body: &str) -> u16 {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();
         let status = status.to_string();
+        let body = body.to_string();
 
         tokio::spawn(async move {
             let (mut stream, _) = listener.accept().await.unwrap();
             let mut buffer = [0; 1024];
             let _ = stream.read(&mut buffer).await.unwrap();
-            let response =
-                format!("HTTP/1.1 {status}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+            let response = format!(
+                "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
             stream.write_all(response.as_bytes()).await.unwrap();
         });
 
         port
+    }
+
+    #[tokio::test]
+    async fn desktop_login_required_is_a_success_without_tokens() {
+        let body = r#"{"login_required":true,"login_mode":"multi"}"#;
+        let port = login_server_with_body("200 OK", body).await;
+        let response = exchange_desktop_secret(&Client::new(), port, "desktop-secret")
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(matches!(response, DesktopAuthResponse::LoginRequired { .. }));
+        assert_eq!(serde_json::to_string(&response).unwrap(), body);
+    }
+
+    #[tokio::test]
+    async fn desktop_single_account_keeps_the_token_response_bytes() {
+        let body = r#"{"access_token":"access","refresh_token":"refresh","token_type":"bearer","must_change_password":false}"#;
+        let port = login_server_with_body("200 OK", body).await;
+        let response = exchange_desktop_secret(&Client::new(), port, "desktop-secret")
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(matches!(response, DesktopAuthResponse::Tokens { .. }));
+        assert_eq!(
+            serde_json::to_string(&response).unwrap(),
+            r#"{"access_token":"access","refresh_token":"refresh"}"#
+        );
+    }
+
+    #[test]
+    fn malformed_desktop_success_never_becomes_login_required() {
+        for body in [
+            r#"{}"#,
+            r#"{"login_required":false,"login_mode":"multi"}"#,
+            r#"{"login_required":true,"login_mode":"single"}"#,
+            r#"{"login_required":true}"#,
+            r#"{"access_token":"access"}"#,
+        ] {
+            assert!(serde_json::from_str::<DesktopAuthResponse>(body).is_err());
+        }
     }
 
     #[test]
@@ -465,7 +540,7 @@ mod tests {
             .message();
         assert_eq!(
             error,
-            "Running Studio backend is too old for this desktop app. Update that backend and restart."
+            "Running Unsloth backend is too old for this desktop app. Update that backend and restart."
         );
     }
 }

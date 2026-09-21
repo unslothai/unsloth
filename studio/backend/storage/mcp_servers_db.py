@@ -3,13 +3,14 @@
 
 import sqlite3
 import threading
+from pathlib import Path
 from datetime import datetime, timezone
 from typing import Optional
 
 from utils.paths import studio_db_path, ensure_dir
 
 _schema_lock = threading.Lock()
-_schema_ready = False
+_schema_ready: set[Path] = set()
 
 
 def _ensure_schema(conn: sqlite3.Connection) -> None:
@@ -28,28 +29,35 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         )
         """
     )
-    # use_oauth was added after the first release; backfill for pre-existing DBs.
-    cols = {
-        r["name"] for r in conn.execute("PRAGMA table_info(mcp_servers)").fetchall()
-    }
+    # Backfill use_oauth for pre-existing DBs.
+    cols = {r["name"] for r in conn.execute("PRAGMA table_info(mcp_servers)").fetchall()}
     if "use_oauth" not in cols:
-        conn.execute(
-            "ALTER TABLE mcp_servers ADD COLUMN use_oauth INTEGER NOT NULL DEFAULT 0"
-        )
+        conn.execute("ALTER TABLE mcp_servers ADD COLUMN use_oauth INTEGER NOT NULL DEFAULT 0")
+    for column in ("builtin_id", "builtin_config_json"):
+        if column not in cols:
+            conn.execute(f"ALTER TABLE mcp_servers ADD COLUMN {column} TEXT")
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS mcp_servers_builtin_id ON mcp_servers(builtin_id)"
+    )
+
+
+def reset_schema_state_for_tests() -> None:
+    with _schema_lock:
+        _schema_ready.clear()
 
 
 def get_connection() -> sqlite3.Connection:
-    global _schema_ready
     db_path = studio_db_path()
     ensure_dir(db_path.parent)
     conn = sqlite3.connect(str(db_path))
     conn.row_factory = sqlite3.Row
-    if not _schema_ready:
+    if db_path not in _schema_ready:
         with _schema_lock:
-            if not _schema_ready:
+            schema_path = db_path.resolve()
+            if schema_path not in _schema_ready:
                 try:
                     _ensure_schema(conn)
-                    _schema_ready = True
+                    _schema_ready.add(schema_path)
                 except Exception:
                     conn.close()
                     raise
@@ -63,7 +71,12 @@ def create_server(
     headers_json: Optional[str] = None,
     is_enabled: bool = True,
     use_oauth: bool = False,
+    builtin_id: Optional[str] = None,
+    builtin_config_json: Optional[str] = None,
 ) -> None:
+    from core.inference.mcp_client import validate_mcp_address
+
+    validate_mcp_address(url)
     now = datetime.now(timezone.utc).isoformat()
     conn = get_connection()
     try:
@@ -71,8 +84,8 @@ def create_server(
             """
             INSERT INTO mcp_servers
                 (id, display_name, url, headers_json,
-                 is_enabled, use_oauth, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                 is_enabled, use_oauth, created_at, updated_at, builtin_id, builtin_config_json)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 id,
@@ -83,6 +96,8 @@ def create_server(
                 int(use_oauth),
                 now,
                 now,
+                builtin_id,
+                builtin_config_json,
             ),
         )
         conn.commit()
@@ -94,6 +109,9 @@ def update_server(id: str, changes: dict) -> bool:
     """Apply column updates and bump ``updated_at``. Returns True on a hit."""
     if not changes:
         return False
+    if "url" in changes:
+        from core.inference.mcp_client import validate_mcp_address
+        validate_mcp_address(changes["url"])
     bool_cols = {"is_enabled", "use_oauth"}
     sets, params = [], []
     for col, value in changes.items():
@@ -128,7 +146,7 @@ def get_server(id: str) -> Optional[dict]:
     conn = get_connection()
     try:
         row = conn.execute("SELECT * FROM mcp_servers WHERE id = ?", (id,)).fetchone()
-        return dict(row) if row else None
+        return _effective_row(dict(row)) if row else None
     finally:
         conn.close()
 
@@ -137,6 +155,19 @@ def list_servers() -> list[dict]:
     conn = get_connection()
     try:
         rows = conn.execute("SELECT * FROM mcp_servers ORDER BY created_at").fetchall()
-        return [dict(row) for row in rows]
+        return [_effective_row(dict(row)) for row in rows]
     finally:
         conn.close()
+
+
+def get_server_for_tool(key: str) -> Optional[dict]:
+    if key == "blender":
+        return next((row for row in list_servers() if row.get("builtin_id") == key), None)
+    return get_server(key)
+
+
+def _effective_row(row: dict) -> dict:
+    if row.get("builtin_id"):
+        from integrations.blender.service import resolve_server
+        return resolve_server(row)
+    return row

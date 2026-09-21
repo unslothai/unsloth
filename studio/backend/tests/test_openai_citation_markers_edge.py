@@ -13,8 +13,8 @@ Reference: https://developers.openai.com/api/docs/guides/citation-formatting
 import importlib
 
 
-# Streaming integration is exercised by ``_simulate_delta_stream`` further
-# down, mirroring the head/buffer/flush dance from ``_stream_openai_responses``.
+# Streaming is exercised by ``_simulate_delta_stream`` below, mirroring the
+# head/buffer/flush dance from ``_stream_openai_responses``.
 _module = importlib.import_module("core.inference.external_provider")
 _replace_openai_citation_markers = _module._replace_openai_citation_markers
 _split_pending_citation_tail = _module._split_pending_citation_tail
@@ -27,7 +27,7 @@ CITE_DELIM = ""
 
 def _marker(*source_ids: str, locator: str | None = None) -> str:
     """Build a ``\\ue200cite\\ue202<sid>[\\ue202<sid>...][\\ue202<loc>]\\ue201``
-    marker. Accepts one or many ``source_ids`` plus an optional ``locator``."""
+    marker from one or more ``source_ids`` plus an optional ``locator``."""
     payload = f"{CITE_START}cite{CITE_DELIM}" + CITE_DELIM.join(source_ids)
     if locator:
         payload = f"{payload}{CITE_DELIM}{locator}"
@@ -39,7 +39,7 @@ def _no_private_use(text: str) -> bool:
 
 
 # Harness mirroring the head/pending-tail/flush dance in
-# `_stream_openai_responses`, so streaming tests skip the httpx mock.
+# `_stream_openai_responses` so streaming tests skip the httpx mock.
 def _simulate_delta_stream(
     deltas: list[str],
     citations: list[dict],
@@ -56,8 +56,8 @@ def _simulate_delta_stream(
             if head:
                 emitted.append(head)
     if flush and pending:
-        # Mirror `_flush_pending_marker_tail`: drop the tail entirely if no
-        # closing stop byte arrived; the literal ``cite<sid>`` would leak otherwise.
+        # Mirror `_flush_pending_marker_tail`: drop the tail if no closing stop
+        # byte arrived; the literal ``cite<sid>`` would leak otherwise.
         if CITE_STOP not in pending:
             rendered = ""
         else:
@@ -79,7 +79,7 @@ def _simulate_delta_stream(
 
 def test_multi_source_marker_all_resolve():
     """\\ue200cite\\ue202id1\\ue202id2\\ue202id3\\ue201 expands to three links
-    when every id is known. Earlier regex captured only id1 and dropped id2/id3."""
+    when every id is known. Earlier regex captured only id1."""
     text = f"All three: {_marker('id1', 'id2', 'id3')}"
     citations = [
         {"source_id": "id1", "url": "https://example.com/1"},
@@ -136,14 +136,14 @@ def test_marker_with_range_locator():
 
 
 def test_marker_split_in_source_id():
-    """Delta-1 ends mid-source-id (``\\ue200cite\\ue202tu``), delta-2 starts
-    with the rest (``rn0view0\\ue201``). The buffer stitches the halves
-    back together so they resolve to one link instead of leaking."""
+    """Delta-1 ends mid-source-id (``\\ue200cite\\ue202tu``), delta-2 has the
+    rest (``rn0view0\\ue201``). The buffer stitches the halves so they resolve
+    to one link instead of leaking."""
     full = f"See {_marker('turn0view0')} now."
     # Cut right after the second delim + "tu" inside the source id.
     cut = full.index("tu", full.index(CITE_START)) + len("tu")
     d1, d2 = full[:cut], full[cut:]
-    # Sanity check: delta-1 actually contains a partial marker.
+    # Sanity: delta-1 contains a partial marker.
     assert CITE_START in d1 and CITE_STOP not in d1
     assert CITE_STOP in d2
     citations = [{"source_id": "turn0view0", "url": "https://x"}]
@@ -153,8 +153,8 @@ def test_marker_split_in_source_id():
 
 
 def test_marker_split_at_start_byte():
-    """Split exactly after the opening ``\\ue200`` byte; the buffer must
-    hold the lone open byte until the rest arrives."""
+    """Split right after the opening ``\\ue200`` byte; the buffer must hold the
+    lone open byte until the rest arrives."""
     full = f"Text {_marker('sid')} done"
     cut = full.index(CITE_START) + 1  # right AFTER the open byte
     d1, d2 = full[:cut], full[cut:]
@@ -167,7 +167,7 @@ def test_marker_split_at_start_byte():
 def test_marker_split_across_three_deltas():
     """Worst case: marker chopped into three pieces across three deltas."""
     full = f"A {_marker('threesplit')} B"
-    # cut at two points inside the marker
+    # Cut at two points inside the marker.
     open_pos = full.index(CITE_START)
     stop_pos = full.index(CITE_STOP)
     cut1 = open_pos + 4
@@ -206,21 +206,20 @@ def test_split_marker_unknown_source_is_dropped_cleanly():
 
 
 def test_unterminated_marker_at_stream_end_dropped_on_flush():
-    """Stream ends mid-marker (e.g. response.incomplete); the tail is
-    flushed with private-use bytes stripped, no `E202` text leaks."""
+    """Stream ends mid-marker (e.g. response.incomplete); the flushed tail
+    strips private-use bytes, no `E202` text leaks."""
     deltas = ["Some text ", f"{CITE_START}citetu", "rn0view0"]  # no STOP ever
     out = _simulate_delta_stream(deltas, [], flush = True)
     assert _no_private_use(out)
     assert "E200" not in out and "E202" not in out
-    # Surrounding prose stays; we don't assert exact marker remainder.
+    # Surrounding prose stays; don't assert exact marker remainder.
     assert "Some text " in out
 
 
 def test_flush_resolves_marker_when_late_annotation_arrives():
-    """Marker in a delta, matching annotation arrives later (on
-    response.output_text.annotation.added after the final delta). The
-    rewriter reads ``all_url_citations`` LIVE at flush, so the buffered
-    marker still resolves."""
+    """Marker in a delta; the matching annotation arrives later (on
+    response.output_text.annotation.added after the final delta). The rewriter
+    reads ``all_url_citations`` LIVE at flush, so the buffered marker resolves."""
     deltas = ["Look ", f"{CITE_START}cite{CITE_DELIM}late_sid"]
     pending = ""
     citations: list[dict] = []
@@ -291,8 +290,8 @@ def test_rewriter_idempotent_on_marker_free_text():
 
 
 def test_only_marker_no_surrounding_text():
-    """A delta that is JUST a marker (no prose) still renders correctly;
-    used to leak without the empty-string short-circuit in the split helper."""
+    """A delta that is JUST a marker (no prose) renders correctly; it leaked
+    before the empty-string short-circuit in the split helper."""
     text = _marker("solo")
     citations = [{"source_id": "solo", "url": "https://solo.example"}]
     out = _replace_openai_citation_markers(text, citations)
@@ -311,18 +310,16 @@ def test_back_to_back_markers_with_no_separator():
 
 
 def test_split_helper_buffers_only_after_last_open_byte():
-    """A complete marker followed by an unterminated one: head includes
-    the complete marker, buffer holds only the trailing partial."""
+    """Complete marker followed by an unterminated one: head includes the
+    complete marker, buffer holds only the trailing partial."""
     complete = _marker("done")
     partial = f"{CITE_START}cite{CITE_DELIM}half"  # no STOP
     text = f"pre {complete} mid {partial}"
     head, tail = _split_pending_citation_tail(text)
     assert head == f"pre {complete} mid "
     assert tail == partial
-    # And the head, once rewritten, drops every private-use byte.
-    rewritten = _replace_openai_citation_markers(
-        head, [{"source_id": "done", "url": "https://d"}]
-    )
+    # Head, once rewritten, drops every private-use byte.
+    rewritten = _replace_openai_citation_markers(head, [{"source_id": "done", "url": "https://d"}])
     assert rewritten == "pre [[1]](https://d) mid "
 
 
@@ -357,7 +354,7 @@ def test_unknown_marker_does_not_perturb_citation_indexing():
         {"source_id": "real_b", "url": "https://example.com/b"},
     ]
     out = _replace_openai_citation_markers(text, citations)
-    # real_a is index 1; unknown does not take a slot.
+    # real_a is index 1; unknown takes no slot.
     assert "[[1]](https://example.com/a)" in out
     assert "[[2]](https://example.com/b)" in out
     assert _no_private_use(out)
@@ -370,8 +367,8 @@ def test_unknown_marker_does_not_perturb_citation_indexing():
 
 
 def test_unterminated_marker_does_not_leak_cite_residue():
-    """Stream ends mid-marker: drop the whole tail rather than strip
-    codepoints and leave ``cite<sid>`` behind."""
+    """Stream ends mid-marker: drop the whole tail rather than strip codepoints
+    and leave ``cite<sid>`` behind."""
     half = f"Hi there {CITE_START}cite{CITE_DELIM}turn0view0"
     out = _simulate_delta_stream([half], [], flush = True)
     # Prose before the marker stays; no private-use bytes or cite residue.

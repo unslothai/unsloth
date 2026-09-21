@@ -1,18 +1,12 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Unit tests for the prompt_cache_ttl threading on the Anthropic path.
+"""Unit tests for prompt_cache_ttl threading on the Anthropic path.
 
-Anthropic accepts an optional ``ttl`` on each ``cache_control`` marker:
-the default is the 5-minute ephemeral pool; ``ttl:"1h"`` writes into
-the 1-hour pool instead. The 1h pool is the right pick when
-conversations span multiple short bursts more than 5 minutes apart --
-1h writes are billed at 2x base input vs 1.25x for 5m, but reads stay
-at 0.1x for both, so one extra read pays off the premium.
-
-These tests pin the outbound body shape: when prompt_cache_ttl="1h"
-both cache_control markers carry ``ttl:"1h"``; default omits the field
-entirely so the 5m pool is used; garbage values are silently dropped.
+Anthropic's ``cache_control`` marker takes an optional ``ttl``: default 5m
+pool, ``ttl:"1h"`` the 1h pool. These tests pin the outbound body shape:
+"1h" puts ``ttl:"1h"`` on both markers; default omits the field; garbage
+values are silently dropped.
 """
 
 import asyncio
@@ -128,13 +122,9 @@ def test_1h_ttl_writes_into_1h_pool(monkeypatch):
 
 
 def test_1h_ttl_does_not_send_extended_cache_ttl_beta_header(monkeypatch):
-    # The `extended-cache-ttl-2025-04-11` beta header that originally
-    # gated 1h cache TTL has been promoted to GA: verified live against
-    # api.anthropic.com on 2026-05-22 -- a request with
-    # `cache_control:{type:"ephemeral", ttl:"1h"}` and NO beta header
-    # returns 200 and populates `ephemeral_1h_input_tokens`. Pin the
-    # contract so we don't reintroduce the gate by accident; a future
-    # regression that re-adds the header would surface here.
+    # The extended-cache-ttl-2025-04-11 beta header is now GA (verified live
+    # 2026-05-22); 1h TTL works with no beta header. Pin so a regression that
+    # re-adds the header surfaces here.
     captured = _capture(monkeypatch, ttl = "1h")
     beta = captured["headers"].get("anthropic-beta", "")
     assert "extended-cache-ttl-2025-04-11" not in beta, beta
@@ -155,8 +145,7 @@ def test_unknown_ttl_silently_dropped(monkeypatch, bogus):
     ccs = _cache_controls(captured["body"])
     assert len(ccs) == 2, ccs
     for cc in ccs:
-        # Bogus TTLs must NOT round-trip; marker stays at the default
-        # (no `ttl` key, which means the 5m pool upstream).
+        # Bogus TTLs must not round-trip; marker stays at default (no ttl = 5m).
         assert cc == {"type": "ephemeral"}, cc
 
 

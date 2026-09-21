@@ -4,10 +4,14 @@
 import {
   getChatSettings,
   saveChatSettingsPatch,
+  saveChatSettingsPatchIfCurrent,
+  type ChatSettingsPath,
   type PersistedChatPreset,
   type PersistedChatSettings,
   type PersistedInferenceParams,
 } from "../api/chat-settings-api";
+import { isMinPMode, normalizeSavedMinP } from "../lib/min-p-policy";
+import { normalizePresetLoadConfig } from "../presets/preset-load-config";
 import {
   BUILTIN_PRESETS,
   defaultInferenceParams,
@@ -18,9 +22,15 @@ import {
   type Preset,
 } from "../presets/preset-policy";
 import type { ReasoningEffort } from "../stores/chat-runtime-store";
+import { MAX_SAMPLING_SEED } from "../types/runtime";
+import {
+  assignSanitizedMirroredSettings,
+  hasNoMirroredSettings,
+} from "./mirrored-chat-settings";
 
 const AUTO_TITLE_KEY = "unsloth_chat_auto_title";
 const AUTO_HEAL_TOOL_CALLS_KEY = "unsloth_auto_heal_tool_calls";
+const NUDGE_TOOL_CALLS_KEY = "unsloth_nudge_tool_calls";
 const MAX_TOOL_CALLS_KEY = "unsloth_max_tool_calls_per_message";
 const TOOL_CALL_TIMEOUT_KEY = "unsloth_tool_call_timeout";
 const INFERENCE_PARAMS_KEY = "unsloth_chat_inference_params";
@@ -131,6 +141,7 @@ function sanitizeInferenceParams(
   if (!isRecord(value)) return undefined;
 
   const params: PersistedInferenceParams = {};
+  if (isMinPMode(value.minPMode)) params.minPMode = value.minPMode;
   for (const field of NUMERIC_INFERENCE_FIELDS) {
     const fieldValue = value[field];
     if (typeof fieldValue === "number" && Number.isFinite(fieldValue)) {
@@ -140,25 +151,54 @@ function sanitizeInferenceParams(
   if (typeof value.systemPrompt === "string") {
     params.systemPrompt = value.systemPrompt;
   }
-  if (typeof value.trustRemoteCode === "boolean") {
-    params.trustRemoteCode = value.trustRemoteCode;
+  if (typeof value.systemVariables === "string") {
+    params.systemVariables = value.systemVariables;
   }
-  // Mirror trustRemoteCode handling so the toggle survives reload
-  // and the /api/chat/settings round-trip.
+  // trustRemoteCode is no longer persisted: custom code is consented per model via the dialog.
   if (typeof value.fastMode === "boolean") {
     params.fastMode = value.fastMode;
+  }
+  // Bounded here as well as in the panel: this gates the hydration read and the outgoing PUT alike.
+  if (value.seed === null) {
+    // Kept, not dropped: the server merge overwrites the keys it receives and removes none.
+    params.seed = null;
+  } else if (
+    typeof value.seed === "number" &&
+    Number.isInteger(value.seed) &&
+    value.seed >= 0 &&
+    value.seed <= MAX_SAMPLING_SEED
+  ) {
+    params.seed = value.seed;
   }
   return hasKeys(params) ? params : undefined;
 }
 
+// Not capped. The server merge never removes keys and keeps an existing key in its original
+// position, so a load-time trim would permanently hide the oldest entries: editing one of those
+// models would write an update the next reload silently drops. Entries are a dozen numbers each.
+function sanitizeInferenceParamsByModel(
+  value: unknown,
+): Record<string, PersistedInferenceParams> | undefined {
+  if (!isRecord(value)) return undefined;
+  const byModel: Record<string, PersistedInferenceParams> = {};
+  for (const [modelId, params] of Object.entries(value)) {
+    if (!modelId) continue;
+    const sanitized = sanitizeInferenceParams(params);
+    if (sanitized) byModel[modelId] = sanitized;
+  }
+  return hasKeys(byModel) ? byModel : undefined;
+}
+
 function toFullPreset(preset: PersistedChatPreset): Preset {
+  const loadConfig = normalizePresetLoadConfig(preset.loadConfig);
   return {
     name: preset.name,
     params: {
       ...defaultInferenceParams,
-      ...preset.params,
+      ...normalizeSavedMinP(preset.params),
       checkpoint: defaultInferenceParams.checkpoint,
     },
+    ...(loadConfig ? { loadConfig } : {}),
   };
 }
 
@@ -174,7 +214,12 @@ function sanitizeCustomPresets(
       const name = item.name.trim();
       if (!name) return null;
       const params = sanitizeInferenceParams(item.params);
-      return { name, params: params ?? {} };
+      const loadConfig = normalizePresetLoadConfig(item.loadConfig);
+      return {
+        name,
+        params: params ?? {},
+        ...(loadConfig ? { loadConfig } : {}),
+      };
     })
     .filter((preset): preset is PersistedChatPreset => preset !== null);
 
@@ -183,6 +228,7 @@ function sanitizeCustomPresets(
     (preset, index) => ({
       name: preset.name,
       params: presets[index]?.params ?? {},
+      ...(preset.loadConfig ? { loadConfig: preset.loadConfig } : {}),
     }),
   );
 }
@@ -209,11 +255,38 @@ function sanitizeInt(value: unknown, min: number): number | undefined {
     : undefined;
 }
 
-function sanitizeChatSettings(value: unknown): PersistedChatSettings {
+/** Read-only migration; outgoing numeric patches do not imply user intent. */
+export function normalizeSavedChatSettings(value: unknown): PersistedChatSettings {
+  const settings = sanitizeChatSettings(value);
+  if (settings.inferenceParams) {
+    settings.inferenceParams = normalizeSavedMinP(settings.inferenceParams);
+  }
+  if (settings.inferenceParamsByModel) {
+    settings.inferenceParamsByModel = Object.fromEntries(
+      Object.entries(settings.inferenceParamsByModel).map(([id, params]) => [
+        id,
+        normalizeSavedMinP(params),
+      ]),
+    );
+  }
+  if (settings.customPresets) {
+    settings.customPresets = settings.customPresets.map((preset) => ({
+      ...preset,
+      params: normalizeSavedMinP(preset.params),
+    }));
+  }
+  return settings;
+}
+
+export function sanitizeChatSettings(value: unknown): PersistedChatSettings {
   if (!isRecord(value)) return {};
 
   const settings: PersistedChatSettings = {};
   const inferenceParams = sanitizeInferenceParams(value.inferenceParams);
+  const inferenceParamsByModel = sanitizeInferenceParamsByModel(
+    value.inferenceParamsByModel,
+  );
+  const rememberParamsPerModel = sanitizeBool(value.rememberParamsPerModel);
   const customPresets = sanitizeCustomPresets(value.customPresets);
   const activePresetSource = sanitizePresetSource(value.activePresetSource);
   const reasoningEffort = sanitizeReasoningEffort(value.reasoningEffort);
@@ -224,10 +297,18 @@ function sanitizeChatSettings(value: unknown): PersistedChatSettings {
     value.allowArtifactNetworkAccess,
   );
   const autoHealToolCalls = sanitizeBool(value.autoHealToolCalls);
-  const maxToolCallsPerMessage = sanitizeInt(value.maxToolCallsPerMessage, 1);
+  const nudgeToolCalls = sanitizeBool(value.nudgeToolCalls);
+  const autoCompactEnabled = sanitizeBool(value.autoCompactEnabled);
+  const maxToolCallsPerMessage = sanitizeInt(value.maxToolCallsPerMessage, 0);
   const toolCallTimeout = sanitizeInt(value.toolCallTimeout, 1);
 
   if (inferenceParams) settings.inferenceParams = inferenceParams;
+  if (inferenceParamsByModel) {
+    settings.inferenceParamsByModel = inferenceParamsByModel;
+  }
+  if (rememberParamsPerModel !== undefined) {
+    settings.rememberParamsPerModel = rememberParamsPerModel;
+  }
   if (customPresets !== undefined) settings.customPresets = customPresets;
   if (typeof value.activePreset === "string" && value.activePreset.trim()) {
     settings.activePreset = value.activePreset.trim();
@@ -246,10 +327,17 @@ function sanitizeChatSettings(value: unknown): PersistedChatSettings {
   if (autoHealToolCalls !== undefined) {
     settings.autoHealToolCalls = autoHealToolCalls;
   }
+  if (nudgeToolCalls !== undefined) {
+    settings.nudgeToolCalls = nudgeToolCalls;
+  }
+  if (autoCompactEnabled !== undefined) {
+    settings.autoCompactEnabled = autoCompactEnabled;
+  }
   if (maxToolCallsPerMessage !== undefined) {
     settings.maxToolCallsPerMessage = maxToolCallsPerMessage;
   }
   if (toolCallTimeout !== undefined) settings.toolCallTimeout = toolCallTimeout;
+  assignSanitizedMirroredSettings(value, settings);
 
   return settings;
 }
@@ -297,6 +385,8 @@ function loadLegacySystemPromptPresets(
 export function isEmptyChatSettings(settings: PersistedChatSettings): boolean {
   return (
     (!settings.inferenceParams || !hasKeys(settings.inferenceParams)) &&
+    settings.inferenceParamsByModel === undefined &&
+    settings.rememberParamsPerModel === undefined &&
     settings.customPresets === undefined &&
     settings.activePreset === undefined &&
     settings.activePresetSource === undefined &&
@@ -306,8 +396,11 @@ export function isEmptyChatSettings(settings: PersistedChatSettings): boolean {
     settings.collapseHtmlArtifacts === undefined &&
     settings.allowArtifactNetworkAccess === undefined &&
     settings.autoHealToolCalls === undefined &&
+    settings.nudgeToolCalls === undefined &&
+    settings.autoCompactEnabled === undefined &&
     settings.maxToolCallsPerMessage === undefined &&
-    settings.toolCallTimeout === undefined
+    settings.toolCallTimeout === undefined &&
+    hasNoMirroredSettings(settings)
   );
 }
 
@@ -336,7 +429,8 @@ export function loadLegacyChatSettings(): PersistedChatSettings {
   const collapseHtmlArtifacts = loadBool(COLLAPSE_HTML_ARTIFACTS_KEY);
   const allowArtifactNetworkAccess = loadBool(ALLOW_ARTIFACT_NETWORK_ACCESS_KEY);
   const autoHealToolCalls = loadBool(AUTO_HEAL_TOOL_CALLS_KEY);
-  const maxToolCallsPerMessage = loadInt(MAX_TOOL_CALLS_KEY, 1);
+  const nudgeToolCalls = loadBool(NUDGE_TOOL_CALLS_KEY);
+  const maxToolCallsPerMessage = loadInt(MAX_TOOL_CALLS_KEY, 0);
   const toolCallTimeout = loadInt(TOOL_CALL_TIMEOUT_KEY, 1);
   const allCustomPresets = sanitizeCustomPresets([
     ...(customPresets ?? []),
@@ -362,24 +456,42 @@ export function loadLegacyChatSettings(): PersistedChatSettings {
   if (autoHealToolCalls !== undefined) {
     settings.autoHealToolCalls = autoHealToolCalls;
   }
+  if (nudgeToolCalls !== undefined) {
+    settings.nudgeToolCalls = nudgeToolCalls;
+  }
   if (maxToolCallsPerMessage !== undefined) {
     settings.maxToolCallsPerMessage = maxToolCallsPerMessage;
   }
   if (toolCallTimeout !== undefined) settings.toolCallTimeout = toolCallTimeout;
 
-  return settings;
+  return normalizeSavedChatSettings(settings);
 }
 
-export async function loadChatSettingsWithLegacyImport(): Promise<PersistedChatSettings> {
+export interface LoadedChatSettings {
+  settings: PersistedChatSettings;
+  /** The GET answered, so a mirrored field missing from `settings` is missing on the server too.
+   *  False when the read fell back to this browser's legacy storage: nothing is then known about the
+   *  server, and treating every field as absent would back this browser's stale values over another's. */
+  fromServer: boolean;
+  /**
+   * Whether these values are what the server holds. False when a legacy import
+   * merged local values but failed to save them: the server answered, so
+   * absence is still authoritative, but the merge exists only in this session
+   * and a later re-read would silently drop it.
+   */
+  persisted: boolean;
+}
+
+export async function loadChatSettingsWithLegacyImport(): Promise<LoadedChatSettings> {
   let dbSettings: PersistedChatSettings;
   try {
-    dbSettings = sanitizeChatSettings(await getChatSettings());
+    dbSettings = normalizeSavedChatSettings(await getChatSettings());
   } catch (error) {
     const legacySettings = loadLegacyChatSettings();
     if (isEmptyChatSettings(legacySettings)) {
       throw error;
     }
-    return legacySettings;
+    return { settings: legacySettings, fromServer: false, persisted: false };
   }
 
   const legacySettings = loadLegacyChatSettings();
@@ -388,18 +500,25 @@ export async function loadChatSettingsWithLegacyImport(): Promise<PersistedChatS
       !isEmptyChatSettings(dbSettings) ||
       isEmptyChatSettings(legacySettings)
     ) {
-      return dbSettings;
+      return { settings: dbSettings, fromServer: true, persisted: true };
     }
     try {
-      return sanitizeChatSettings(await saveChatSettingsPatch(legacySettings));
+      return {
+        settings: normalizeSavedChatSettings(
+          await saveChatSettingsPatch(legacySettings),
+        ),
+        fromServer: true,
+        persisted: true,
+      };
     } catch {
-      return legacySettings;
+      // The GET still answered (empty), so absence remains authoritative.
+      return { settings: legacySettings, fromServer: true, persisted: false };
     }
   }
 
   if (isEmptyChatSettings(legacySettings)) {
     markLegacySettingsImportDone();
-    return dbSettings;
+    return { settings: dbSettings, fromServer: true, persisted: true };
   }
 
   const mergedSettings = {
@@ -411,13 +530,13 @@ export async function loadChatSettingsWithLegacyImport(): Promise<PersistedChatS
     },
   };
   try {
-    const savedSettings = sanitizeChatSettings(
+    const savedSettings = normalizeSavedChatSettings(
       await saveChatSettingsPatch(mergedSettings),
     );
     markLegacySettingsImportDone();
-    return savedSettings;
+    return { settings: savedSettings, fromServer: true, persisted: true };
   } catch {
-    return mergedSettings;
+    return { settings: mergedSettings, fromServer: true, persisted: false };
   }
 }
 
@@ -425,7 +544,25 @@ export async function savePersistedChatSettingsPatch(
   patch: PersistedChatSettings,
   options: { keepalive?: boolean } = {},
 ): Promise<PersistedChatSettings> {
-  return sanitizeChatSettings(
+  return normalizeSavedChatSettings(
     await saveChatSettingsPatch(sanitizeChatSettings(patch), options),
   );
+}
+
+export async function savePersistedChatSettingsPatchIfCurrent(
+  expected: PersistedChatSettings,
+  patch: PersistedChatSettings,
+  expectedAbsent: Array<keyof PersistedChatSettings> = [],
+  expectedAbsentPaths: ChatSettingsPath[] = [],
+): Promise<{ settings: PersistedChatSettings; applied: boolean }> {
+  const result = await saveChatSettingsPatchIfCurrent(
+    sanitizeChatSettings(expected),
+    sanitizeChatSettings(patch),
+    expectedAbsent,
+    expectedAbsentPaths,
+  );
+  return {
+    settings: normalizeSavedChatSettings(result.settings),
+    applied: result.applied,
+  };
 }

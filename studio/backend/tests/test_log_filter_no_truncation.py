@@ -4,9 +4,9 @@
 """
 Regression tests for loggers.handlers.filter_sensitive_data.
 
-Pins two properties: (1) long strings with commas/slashes pass through
-unchanged (the base64-truncation heuristic from PR #5246 was too aggressive),
-and (2) native-path lease redaction still fires for both inline and dict-key forms.
+Pins two properties: (1) long strings with commas/slashes pass through unchanged
+(the base64-truncation heuristic from PR #5246 was too aggressive), and
+(2) native-path lease redaction still fires for inline and dict-key forms.
 """
 
 from loggers.handlers import filter_sensitive_data
@@ -21,7 +21,7 @@ class TestNoTruncation:
         # Mirrors the f-string at studio/backend/core/inference/llama_cpp.py:2117
         event = (
             "GGUF size: 232.9 GB, est. KV cache: 87.0 GB, context: 259072, "
-            "GPUs free: [(0, 80000), (1, 80000)], selected: [0, 1], fit: False"
+            "GPUs free: [(0, 80000), (1, 80000)], selected: [0, 1], --fit: off"
         )
         out = _run({"event": event})
         assert out["event"] == event

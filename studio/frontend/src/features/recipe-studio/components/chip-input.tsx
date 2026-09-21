@@ -84,7 +84,7 @@ export function ChipInput({
   return (
     <div
       ref={containerRef}
-      className={`bg-input/30 border-input focus-within:border-ring focus-within:ring-ring/50 flex min-h-9 flex-wrap items-center gap-1.5 border bg-clip-padding px-1.5 py-1.5 text-sm transition-colors focus-within:ring-[3px] ${isWrapped ? "corner-squircle rounded-xl" : "rounded-4xl"}`}
+      className={`bg-input/30 border-input dark:border-transparent focus-within:border-ring dark:focus-within:border-transparent dark:focus-within:bg-white/[0.09] flex min-h-9 flex-wrap items-center gap-1.5 border bg-clip-padding px-1.5 py-1.5 text-sm transition-colors ${isWrapped ? "corner-squircle rounded-xl" : "rounded-4xl"}`}
     >
       {values.map((value, index) => (
         <span

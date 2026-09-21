@@ -46,6 +46,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+from pathlib import PurePosixPath
 import builtins
 import re as _re_mod
 import subprocess
@@ -83,9 +84,6 @@ _BUILTINS = set(dir(builtins)) | {
 }
 
 
-# ---------------------------------------------------------------- scope model
-
-
 @dataclass
 class Binding:
     kind: str  # 'import' | 'importfrom' | 'def' | 'class' | 'other'
@@ -111,10 +109,16 @@ def _import_target(node: ast.AST, alias: ast.alias) -> tuple[str, str]:
     if isinstance(node, ast.Import):
         bound = alias.asname or alias.name.split(".")[0]
         return bound, f"import:{alias.name}"
-    # ImportFrom
     bound = alias.asname or alias.name
     mod = ("." * (node.level or 0)) + (node.module or "")
     return bound, f"from:{mod}:{alias.name}"
+
+
+def _is_literal_ref(node: ast.AST) -> bool:
+    """Whether `node` names `Literal`, however it was imported (`Literal`, `t.Literal`)."""
+    if isinstance(node, ast.Name):
+        return node.id == "Literal"
+    return isinstance(node, ast.Attribute) and node.attr == "Literal"
 
 
 class _Builder(ast.NodeVisitor):
@@ -122,25 +126,48 @@ class _Builder(ast.NodeVisitor):
 
     def __init__(self):
         self.module = Scope("module", "<module>", None)
-        self.uses: list[tuple[Scope, str, int]] = []  # (scope, name, lineno) hard loads
-        self.soft_uses: list[
-            tuple[Scope, str, int]
-        ] = []  # annotations: count as "used"
-        #                                                     but never as "unresolved"
-        #                                                     (forward refs / string annos)
+        self.uses: list[tuple[Scope, str, int]] = []  # hard loads
+        # annotations: count as "used" but never as "unresolved" (forward refs)
+        self.soft_uses: list[tuple[Scope, str, int]] = []
 
-    def _visit_annotation(self, node, scope: Scope) -> None:
-        """Annotation context: with `from __future__ import annotations` these are
-        never evaluated (strings), and even otherwise they routinely contain forward
-        references. Record contained names as SOFT uses so an import used only in an
-        annotation still counts as used, but a forward-ref name is never 'unresolved'."""
+    # `Optional["Dict[str, 'T']"]` is two deep; nothing real goes further.
+    _FORWARD_REF_DEPTH = 3
+
+    def _visit_annotation(
+        self,
+        node,
+        scope: Scope,
+        _depth: int = 0,
+        _lineno: int = 0,
+    ) -> None:
+        """Record annotation names as SOFT uses: an import used only in an annotation
+        counts as used, but a forward-ref name is never 'unresolved'.
+
+        A QUOTED annotation is one too: `Optional["T"]` keeps the name in an ast.Constant,
+        invisible to a Name walk, so a TYPE_CHECKING import reached only that way read as
+        unused and blocked correct code. Parse the string and walk what it denotes.
+        """
         if node is None:
             return
-        for n in ast.walk(node):
-            if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Load):
-                self.soft_uses.append((scope, n.id, n.lineno))
+        # Literal[...] holds values, not type names. Skipping its args is what keeps this from crediting an
+        # unrelated import, the one direction that loses a real finding.
+        if isinstance(node, ast.Subscript) and _is_literal_ref(node.value):
+            self._visit_annotation(node.value, scope, _depth, _lineno)
+            return
+        if isinstance(node, ast.Constant):
+            if not isinstance(node.value, str) or _depth >= self._FORWARD_REF_DEPTH:
+                return
+            try:
+                inner = ast.parse(node.value.strip(), mode = "eval").body
+            except (SyntaxError, ValueError):
+                return  # Prose, as in Annotated[int, "docs"]. Nothing to credit.
+            self._visit_annotation(inner, scope, _depth + 1, _lineno or node.lineno)
+            return
+        if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load):
+            self.soft_uses.append((scope, node.id, _lineno or node.lineno))
+        for child in ast.iter_child_nodes(node):
+            self._visit_annotation(child, scope, _depth, _lineno)
 
-    # -- binding helpers --
     def _bind_targets(self, scope: Scope, target: ast.AST) -> None:
         for n in ast.walk(target):
             if isinstance(n, ast.Name) and isinstance(n.ctx, (ast.Store, ast.Del)):
@@ -159,16 +186,13 @@ class _Builder(ast.NodeVisitor):
         else:
             scope.add(name, b)
 
-    # -- generic dispatch within a scope --
     def _visit_body(self, stmts, scope: Scope) -> None:
         for s in stmts:
             self._visit_stmt(s, scope)
 
     def _visit_stmt(self, node: ast.AST, scope: Scope) -> None:
         if isinstance(node, (ast.Import, ast.ImportFrom)):
-            star = isinstance(node, ast.ImportFrom) and any(
-                a.name == "*" for a in node.names
-            )
+            star = isinstance(node, ast.ImportFrom) and any(a.name == "*" for a in node.names)
             if star:
                 scope.star_import = True
             for alias in node.names:
@@ -193,7 +217,7 @@ class _Builder(ast.NodeVisitor):
             child = Scope("function", f"{scope.qualname}.{node.name}", scope)
             self._bind_type_params(node, child)
             self._bind_args(node.args, child)
-            # arg + return annotations: soft uses (may be strings / forward refs)
+            # arg + return annotations: soft uses
             for a in self._all_args(node.args):
                 self._visit_annotation(a.annotation, child)
             self._visit_annotation(getattr(node, "returns", None), child)
@@ -247,6 +271,11 @@ class _Builder(ast.NodeVisitor):
                 # AugAssign target is also a load
                 if isinstance(node, ast.AugAssign):
                     self._record_loads(t, scope)
+                else:
+                    # A subscript or attribute target LOADS everything but the outermost
+                    # binding: `overrides[dependency] = fn` reads both names.
+                    if not isinstance(t, ast.Name):
+                        self._record_loads(t, scope)
             return
         if isinstance(node, (ast.For, ast.AsyncFor)):
             self._visit_expr(node.iter, scope)
@@ -272,14 +301,12 @@ class _Builder(ast.NodeVisitor):
             self._visit_body(node.orelse, scope)
             self._visit_body(node.finalbody, scope)
             return
-        # generic statement: visit all child expressions/stmts in same scope
         for child in ast.iter_child_nodes(node):
             if isinstance(child, ast.stmt):
                 self._visit_stmt(child, scope)
             else:
                 self._visit_expr(child, scope)
 
-    # -- expressions --
     def _visit_arg_defaults(self, args: ast.arguments, scope: Scope) -> None:
         for d in list(args.defaults) + [d for d in args.kw_defaults if d is not None]:
             self._visit_expr(d, scope)
@@ -356,12 +383,10 @@ class _Builder(ast.NodeVisitor):
             self._bind_args(node.args, child)
             self._visit_expr(node.body, child)
             return
-        if isinstance(
-            node, (ast.ListComp, ast.SetComp, ast.GeneratorExp, ast.DictComp)
-        ):
+        if isinstance(node, (ast.ListComp, ast.SetComp, ast.GeneratorExp, ast.DictComp)):
             child = Scope("comp", f"{scope.qualname}.<comp>", scope)
             for i, gen in enumerate(node.generators):
-                # first iterable is evaluated in the enclosing scope
+                # first iterable evaluates in the enclosing scope
                 self._visit_expr(gen.iter, scope if i == 0 else child)
                 self._bind_targets(child, gen.target)
                 for cond in gen.ifs:
@@ -400,9 +425,8 @@ def _any_star(scope: Scope) -> bool:
 
 
 def _resolve(scope: Scope, name: str):
-    """LEGB resolution. Returns (status, bindings) where status in
+    """LEGB resolution. Returns (status, bindings); status in
     {'local','import','other','builtin','star','unresolved'}."""
-    # global / nonlocal redirection
     start = scope
     if name in scope.globals:
         chain = [_module_of(scope)]
@@ -447,9 +471,7 @@ def _legb_chain(scope: Scope) -> list[Scope]:
     chain = [scope]
     p = scope.parent
     while p is not None:
-        if (
-            p.kind != "class" or p.parent is None
-        ):  # module-level class never happens; keep module
+        if p.kind != "class" or p.parent is None:  # skip class scopes, keep module
             if p.kind != "class":
                 chain.append(p)
         p = p.parent
@@ -463,7 +485,6 @@ def _analyze(src: str):
     tree = ast.parse(src)
     b = _Builder()
     b.run(tree)
-    # Per-scope: unresolved load names, and import targets it resolves to.
     unresolved: dict[str, set[str]] = {}
     targets_by_scope: dict[str, set[str]] = {}
     target_by_use: dict[tuple[str, str], set[str]] = {}
@@ -475,13 +496,12 @@ def _analyze(src: str):
             tids = {bd.target for bd in binds if bd.target}
             targets_by_scope.setdefault(scope.qualname, set()).update(tids)
             target_by_use.setdefault((scope.qualname, name), set()).update(tids)
-    # soft uses (annotations): only contribute to "used", never to "unresolved"
+    # soft uses (annotations): contribute to "used" only, never "unresolved"
     for scope, name, _ln in b.soft_uses:
         status, binds = _resolve(scope, name)
         if status == "import":
             tids = {bd.target for bd in binds if bd.target}
             targets_by_scope.setdefault(scope.qualname, set()).update(tids)
-    # module-level binding info for clash checks
     module = b.module
     module_imports = {
         n: bs
@@ -494,7 +514,6 @@ def _analyze(src: str):
         if any(x.kind in ("import", "importfrom") for x in bs)
         and any(x.kind not in ("import", "importfrom") for x in bs)
     }
-    # ambiguous: any scope where a name is bound by import AND non-import
     ambiguous: dict[str, set[str]] = {}
 
     def walk_scopes(scope: Scope):
@@ -503,8 +522,8 @@ def _analyze(src: str):
                 x.kind not in ("import", "importfrom") for x in bs
             ):
                 ambiguous.setdefault(scope.qualname, set()).add(n)
-        # scope tree isn't stored; rebuild via uses is hard. We approximate with module only.
 
+    # scope tree isn't stored; approximate with module only.
     walk_scopes(module)
     return {
         "unresolved": unresolved,
@@ -527,24 +546,25 @@ def _git_show(ref: str, path: str) -> str | None:
         return None
 
 
+def _is_package_init(path: str) -> bool:
+    """True for a package __init__.py, where __all__ means "public re-export"."""
+    return PurePosixPath(str(path).replace("\\", "/")).name == "__init__.py"
+
+
 def compare(before_src: str, after_src: str, path: str) -> list[tuple[str, str]]:
     """Return list of (severity, message). severity in BLOCKER/WARN/INFO.
 
     Blocker signals (precise, no relocation false-positives):
       UNRESOLVED-NEW    - a load became undefined (dangling alias / removed import).
-      NEW-UNUSED-HOIST  - a module-level import added by THIS change is resolved by
-                          NO load. A correct hoist always wires its new import to a
-                          reference; if the alias was left un-normalized OR renamed
-                          to the wrong name, the hoisted import ends up unused. This
-                          single signal catches BOTH user-described failure modes and
-                          does NOT fire for code merely relocated to another file
-                          (that removes the import, it doesn't add an unused one).
-      TARGET-CHANGED    - the same (scope, name) load resolves to a different import
+      NEW-UNUSED-HOIST  - a module-level import added by this change is resolved by
+                          NO load (un-normalized alias or wrong rename target).
+      TARGET-CHANGED    - same (scope, name) load resolves to a different import
                           target before vs after (a same-name re-point).
     """
     a = _analyze(before_src)
     b = _analyze(after_src)
     findings: list[tuple[str, str]] = []
+    after_exported = _dunder_all_names(after_src)
 
     def used_targets(analysis) -> set[str]:
         out: set[str] = set()
@@ -574,14 +594,24 @@ def compare(before_src: str, after_src: str, path: str) -> list[tuple[str, str]]
                 )
             )
 
-    # 2. HOISTED-IMPORT-UNUSED  (the core botched-hoist / wrong-rename signal)
-    #    A module-level import in AFTER that NO load resolves to, and which was
-    #    either newly added by this change OR was actually used before. Excludes:
-    #      - relocation (the import is REMOVED, so it's not in after at all)
-    #      - stable pre-existing re-exports (unused before AND after, not newly added)
+    # 2. HOISTED-IMPORT-UNUSED (core botched-hoist / wrong-rename signal)
+    #    A module-level import in AFTER that NO load resolves to, that was either newly added by this change OR
+    #    actually used before. Excludes relocation and stable re-exports.
     for n, tids in b["module_import_targets"].items():
         if tids & after_used:
-            continue  # resolved by something -> fine
+            continue  # resolved -> fine
+        # `from __future__ import ...` is a compiler directive, not a runtime binding: the name is
+        # never loaded, so it can never "resolve" to a use. Skip it so a legitimately-added future
+        # import (e.g. `annotations` for lazy PEP 604 on py3.9) is not flagged.
+        if all(t.startswith("from:__future__:") for t in tids):
+            continue
+        # A name listed in __all__ in a package __init__ is an intentional public re-export: it is loaded by importers,
+        # not by this module, so "no load resolves to it here" is expected.
+        # Scoped to __init__.py deliberately: applied to every module defining __all__ it exempts 224 names across 27
+        # non-package modules and disables rename-clash detection for them, one of the two bugs this tool exists to
+        # catch.
+        if n in after_exported and _is_package_init(path):
+            continue
         newly_added = bool(tids - before_module_targets)
         was_used_before = bool(tids & before_used)
         if newly_added or was_used_before:
@@ -599,9 +629,21 @@ def compare(before_src: str, after_src: str, path: str) -> list[tuple[str, str]]
             )
 
     # 3. TARGET-CHANGED (same scope+name resolves to a different import target)
+    #    Only a *swap* is dangerous: a BEFORE target no longer reachable in AFTER means a reference was silently
+    #    re-pointed. A pure superset growth (tbefore <= tafter) is the benign `import pkg.subA` + `import pkg.subB`
+    #    case: both bind the same top-level name and only add submodule attributes, so nothing is lost, skip it.
+    #    A deliberate *relocation* is also benign: when a name keeps its spelling but its import source moves A -> B in
+    #    THIS diff, the swap is intentional, not a silent re-point. The dangerous case, resolving to a target that
+    #    already existed before (shadow/clash), is NOT exempted.
+    removed_module_targets = before_module_targets - after_module_targets
     for key, tafter in b["target_by_use"].items():
         tbefore = a["target_by_use"].get(key)
-        if tbefore and tbefore != tafter:
+        if tbefore and tbefore != tafter and (tbefore - tafter):
+            lost = tbefore - tafter
+            gained = tafter - tbefore
+            relocated = lost <= removed_module_targets and gained <= added_module_targets
+            if relocated:
+                continue
             findings.append(
                 (
                     "BLOCKER",
@@ -624,13 +666,10 @@ def compare(before_src: str, after_src: str, path: str) -> list[tuple[str, str]]
     for scope, names in b["ambiguous"].items():
         new = names - a["ambiguous"].get(scope, set())
         for n in sorted(new):
-            findings.append(
-                ("WARN", f"{path}: AMBIGUOUS-BIND '{n}' import+non-import in {scope}")
-            )
+            findings.append(("WARN", f"{path}: AMBIGUOUS-BIND '{n}' import+non-import in {scope}"))
 
-    # 6. TARGET-MISSING (informational): a scope stopped resolving to an import
-    #    target. Real bugs are already covered above; remaining cases are code
-    #    relocated to another file (e.g. a moved helper). Shown for transparency.
+    # 6. TARGET-MISSING (informational): a scope stopped resolving to an import target. Real bugs are covered above;
+    #    remaining cases are relocated code.
     for scope, tbefore in a["targets_by_scope"].items():
         tafter = b["targets_by_scope"].get(scope, set())
         for t in sorted(tbefore - tafter):
@@ -639,9 +678,7 @@ def compare(before_src: str, after_src: str, path: str) -> list[tuple[str, str]]
                 if t in added_module_targets
                 else "  [target not re-added here -> likely relocated/deleted]"
             )
-            findings.append(
-                ("INFO", f"{path}: TARGET-MISSING {t} in scope {scope}{relocated}")
-            )
+            findings.append(("INFO", f"{path}: TARGET-MISSING {t} in scope {scope}{relocated}"))
     return findings
 
 
@@ -650,49 +687,41 @@ def compare(before_src: str, after_src: str, path: str) -> list[tuple[str, str]]
 _SELF_TESTS = {
     "dangling_alias": (
         # before: inline aliased import, used as _b
-        "import os\n"
-        "def f():\n"
-        "    import glob as _b\n"
-        "    return _b.glob('*')\n",
+        "import os\ndef f():\n    import glob as _b\n    return _b.glob('*')\n",
         # after: hoisted to canonical, but reference NOT normalized -> _b dangles
-        "import os\n" "import glob\n" "def f():\n" "    return _b.glob('*')\n",
+        "import os\nimport glob\ndef f():\n    return _b.glob('*')\n",
         "BLOCKER",
     ),
     "rename_clash": (
         # before: _b is a deliberate alias; `b` already means something else
-        "import re as _b\n" "b = 123\n" "def f():\n" "    return _b.compile('x'), b\n",
+        "import re as _b\nb = 123\ndef f():\n    return _b.compile('x'), b\n",
         # after: someone normalized _b -> b ; now f().b is the int, re is lost
-        "import re\n" "b = 123\n" "def f():\n" "    return b.compile('x'), b\n",
+        "import re\nb = 123\ndef f():\n    return b.compile('x'), b\n",
         "BLOCKER",  # TARGET-MISSING from:.. or import:re in f
     ),
     "clean_rename": (
-        "def f():\n" "    import glob as _g\n" "    return _g.glob('*')\n",
-        "import glob\n" "def f():\n" "    return glob.glob('*')\n",
-        None,  # expect NO blocker
+        "def f():\n    import glob as _g\n    return _g.glob('*')\n",
+        "import glob\ndef f():\n    return glob.glob('*')\n",
+        None,
     ),
     "clean_dedup_redundant": (
-        "import sys\n" "def f():\n" "    import sys\n" "    return sys.argv\n",
-        "import sys\n" "def f():\n" "    return sys.argv\n",
+        "import sys\ndef f():\n    import sys\n    return sys.argv\n",
+        "import sys\ndef f():\n    return sys.argv\n",
         None,
     ),
     "from_import_dangling": (
-        # from-import alias left un-normalized
-        "def f():\n"
-        "    from importlib.metadata import version as _v\n"
-        "    return _v('x')\n",
-        "from importlib.metadata import version\n" "def f():\n" "    return _v('x')\n",
+        "def f():\n    from importlib.metadata import version as _v\n    return _v('x')\n",
+        "from importlib.metadata import version\ndef f():\n    return _v('x')\n",
         "BLOCKER",
     ),
     "local_var_clash": (
-        # _b renamed to b, but b is a LOCAL variable in f -> import silently unused
-        "def f(b):\n" "    import re as _b\n" "    return _b.compile(b)\n",
-        "import re\n"
-        "def f(b):\n"
-        "    return b.compile(b)\n",  # 'b' is the param, not the module
+        # _b renamed to b, but b is a LOCAL var in f -> import silently unused
+        "def f(b):\n    import re as _b\n    return _b.compile(b)\n",
+        "import re\ndef f(b):\n    return b.compile(b)\n",  # 'b' is the param, not the module
         "BLOCKER",
     ),
     "substring_safe": (
-        # correct _copy->copy rename while a config_copy var exists: NO false positive
+        # correct _copy->copy rename while config_copy var exists: NO false positive
         "def f(config):\n"
         "    import copy as _copy\n"
         "    config_copy = _copy.deepcopy(config)\n"
@@ -705,11 +734,80 @@ _SELF_TESTS = {
     ),
     "attr_access_not_a_use": (
         # x._b is attribute access, not a use of name _b; removing import _b is fine
-        "import os\n"
-        "def f(x):\n"
-        "    import sys as _b\n"
-        "    return x._b + _b.argv[0]\n",
-        "import os\n" "import sys\n" "def f(x):\n" "    return x._b + sys.argv[0]\n",
+        "import os\ndef f(x):\n    import sys as _b\n    return x._b + _b.argv[0]\n",
+        "import os\nimport sys\ndef f(x):\n    return x._b + sys.argv[0]\n",
+        None,
+    ),
+    "reexport_in_package_init_is_allowed": (
+        'from .a import A\n__all__ = ["A"]\n',
+        'from .a import A\nfrom .b import B\n__all__ = ["A", "B"]\n',
+        None,
+        "pkg/__init__.py",
+    ),
+    "reexport_in_ordinary_module_is_still_blocked": (
+        'from .a import A\n__all__ = ["A"]\n',
+        'from .a import A\nfrom .b import B\n__all__ = ["A", "B"]\n',
+        "BLOCKER",
+        "pkg/helpers.py",
+    ),
+    "unexported_new_import_in_init_is_still_blocked": (
+        'from .a import A\n__all__ = ["A"]\n',
+        'from .a import A\nfrom .b import B\n__all__ = ["A"]\n',
+        "BLOCKER",
+        "pkg/__init__.py",
+    ),
+    # A TYPE_CHECKING import reached only through a forward reference IS used.
+    "forward_ref_string_annotation_counts_as_a_use": (
+        "from typing import TYPE_CHECKING, Optional\ndef f(x) -> Optional[int]:\n    return x\n",
+        "from typing import TYPE_CHECKING, Optional\n"
+        "if TYPE_CHECKING:\n"
+        "    from .m import T\n"
+        'def f(x) -> Optional["T"]:\n'
+        "    return x\n",
+        None,
+    ),
+    # Two strings deep; each layer is parsed.
+    "nested_forward_ref_counts_as_a_use": (
+        "from typing import TYPE_CHECKING, Optional\ndef f(x) -> Optional[int]:\n    return x\n",
+        "from typing import TYPE_CHECKING, Optional\n"
+        "if TYPE_CHECKING:\n"
+        "    from .m import T\n"
+        "def f(x) -> Optional[\"Optional['T']\"]:\n"
+        "    return x\n",
+        None,
+    ),
+    # `app.dependency_overrides[dep] = lambda: ...` is how FastAPI route tests are written.
+    "a_subscript_key_on_the_left_hand_side_is_a_use": (
+        "app = {}\n",
+        "from .deps import dependency\napp = {}\napp[dependency] = 1\n",
+        None,
+    ),
+    "a_subscripted_object_on_the_left_hand_side_is_a_use": (
+        "def f(k, v):\n    return k, v\n",
+        "from .deps import registry\ndef f(k, v):\n    registry[k] = v\n",
+        None,
+    ),
+    "an_attribute_target_loads_the_object": (
+        "def f(v):\n    return v\n",
+        "from .deps import settings\ndef f(v):\n    settings.value = v\n",
+        None,
+    ),
+    # The other direction: Literal['T'] is a VALUE, so it must NOT credit an import T.
+    "a_literal_value_is_not_a_use_of_that_name": (
+        "from typing import TYPE_CHECKING, Literal\ndef f(x) -> Literal['a']:\n    return x\n",
+        "from typing import TYPE_CHECKING, Literal\n"
+        "if TYPE_CHECKING:\n"
+        "    from .m import T\n"
+        "def f(x) -> Literal['T']:\n"
+        "    return x\n",
+        "BLOCKER",
+    ),
+    # Prose is not a type, and a parse error there is not a finding.
+    "unparseable_annotation_string_is_ignored": (
+        "from typing import Annotated\ndef f(x: Annotated[int, 'ok']) -> int:\n    return x\n",
+        "from typing import Annotated\n"
+        "def f(x: Annotated[int, 'not a type at all']) -> int:\n"
+        "    return x\n",
         None,
     ),
 }
@@ -717,8 +815,11 @@ _SELF_TESTS = {
 
 def _self_test() -> int:
     ok = True
-    for name, (before, after, expect) in _SELF_TESTS.items():
-        findings = compare(before, after, f"<{name}>")
+    for name, case in _SELF_TESTS.items():
+        # A case may supply its own path; the __all__ skip is scoped to package __init__.py.
+        before, after, expect = case[0], case[1], case[2]
+        path = case[3] if len(case) > 3 else f"<{name}>"
+        findings = compare(before, after, path)
         blockers = [m for sev, m in findings if sev == "BLOCKER"]
         got = "BLOCKER" if blockers else None
         passed = got == expect
@@ -750,10 +851,9 @@ def _pyflakes_undefined(path: str) -> set[str] | None:
 
 
 def audit_files(paths: list[str]) -> int:
-    """Single-version robustness audit. For every file: confirm the analyzer does
-    not crash, then cross-check its 'unresolved' names against pyflakes. Any name
-    the resolver flags that pyflakes does NOT call undefined is a tool FALSE
-    POSITIVE (a resolver gap to fix)."""
+    """Single-version robustness audit: confirm the analyzer doesn't crash, then
+    cross-check its 'unresolved' names against pyflakes. A name the resolver flags
+    that pyflakes accepts is a tool false positive."""
     n_files = n_err = n_fp = n_syntax = 0
     fp_detail: dict[str, set[str]] = {}
     err_detail: dict[str, str] = {}
@@ -761,7 +861,7 @@ def audit_files(paths: list[str]) -> int:
         n_files += 1
         try:
             src = open(path, encoding = "utf-8").read()
-        except Exception as e:  # unreadable
+        except Exception as e:
             n_err += 1
             err_detail[path] = f"read: {e}"
             continue
@@ -770,7 +870,7 @@ def audit_files(paths: list[str]) -> int:
         except SyntaxError:
             n_syntax += 1
             continue
-        except Exception as e:  # analyzer crash -> robustness bug
+        except Exception as e:
             n_err += 1
             err_detail[path] = f"{type(e).__name__}: {e}"
             continue
@@ -781,7 +881,7 @@ def audit_files(paths: list[str]) -> int:
             continue
         pf = _pyflakes_undefined(path)
         if pf is None:
-            continue  # pyflakes couldn't adjudicate; skip cross-check
+            continue
         false_pos = tool_unresolved - pf
         if false_pos:
             n_fp += 1
@@ -797,11 +897,34 @@ def audit_files(paths: list[str]) -> int:
     ok = n_err == 0 and n_fp == 0
     print(
         "\nAUDIT:",
-        "ROBUST (no crashes, no false positives vs pyflakes)"
-        if ok
-        else "NEEDS WORK (see above)",
+        "ROBUST (no crashes, no false positives vs pyflakes)" if ok else "NEEDS WORK (see above)",
     )
     return 0 if ok else 1
+
+
+def _dunder_all_names(src: str) -> set[str]:
+    """Names a module publishes via __all__, i.e. deliberate re-exports."""
+    out: set[str] = set()
+    try:
+        tree = ast.parse(src)
+    except SyntaxError:
+        return out
+    for node in tree.body:
+        targets = []
+        if isinstance(node, ast.Assign):
+            targets = node.targets
+        elif isinstance(node, ast.AnnAssign):
+            targets = [node.target]
+        elif isinstance(node, ast.AugAssign):
+            targets = [node.target]
+        if not any(isinstance(t, ast.Name) and t.id == "__all__" for t in targets):
+            continue
+        value = getattr(node, "value", None)
+        if isinstance(value, (ast.List, ast.Tuple, ast.Set)):
+            for elt in value.elts:
+                if isinstance(elt, ast.Constant) and isinstance(elt.value, str):
+                    out.add(elt.value)
+    return out
 
 
 def main() -> int:
@@ -835,18 +958,12 @@ def main() -> int:
         blockers = [f for f in findings if f[0] == "BLOCKER"]
         warns = [f for f in findings if f[0] == "WARN"]
         infos = [f for f in findings if f[0] == "INFO"]
-        status = (
-            "CLEAN"
-            if not blockers and not warns
-            else ("BLOCKERS" if blockers else "WARNINGS")
-        )
+        status = "CLEAN" if not blockers and not warns else ("BLOCKERS" if blockers else "WARNINGS")
         print(f"\n=== {path}: {status} ===")
         for sev, m in blockers + warns + infos:
             print(f"  [{sev}] {m}")
         any_blocker = any_blocker or bool(blockers)
-    print(
-        "\nOVERALL:", "FAIL (blockers found)" if any_blocker else "PASS (no blockers)"
-    )
+    print("\nOVERALL:", "FAIL (blockers found)" if any_blocker else "PASS (no blockers)")
     return 1 if any_blocker else 0
 
 

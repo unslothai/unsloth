@@ -29,9 +29,7 @@ _MISSING = object()
 def _load_import_fixes_module():
     repo_root = Path(__file__).resolve().parents[2]
     import_fixes_path = repo_root / "unsloth" / "import_fixes.py"
-    spec = importlib.util.spec_from_file_location(
-        "unsloth_import_fixes_local", import_fixes_path
-    )
+    spec = importlib.util.spec_from_file_location("unsloth_import_fixes_local", import_fixes_path)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -59,7 +57,7 @@ def test_trunc_normal_patch_accepts_positional_generator():
     old_patched = _getattr_or_missing(init_mod, "_unsloth_trunc_normal_patched")
     old_original = _getattr_or_missing(init_mod, "_unsloth_trunc_normal_original")
     try:
-        # Normalize to an unpatched baseline before applying the patch.
+        # Reset to an unpatched baseline before applying the patch.
         if old_original is not _MISSING:
             init_mod.trunc_normal_ = old_original
         if hasattr(init_mod, "_unsloth_trunc_normal_patched"):

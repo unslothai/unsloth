@@ -3,11 +3,10 @@
 
 """Tests for Anthropic ``citations_delta`` handling in the streaming proxy.
 
-Verifies the proxy injects inline ``[N]`` markers after cited text,
-dedupes by type-specific anchor (char_location, page_location,
-content_block_location, search_result_location), forwards a synthetic
-``document_citations`` tool_event at message_stop, and stays inert when
-no citations_delta events fire. See
+Verifies the proxy injects inline ``[N]`` markers after cited text, dedupes by
+type-specific anchor (char_location, page_location, content_block_location,
+search_result_location), forwards a synthetic ``document_citations`` tool_event
+at message_stop, and stays inert when no citations_delta events fire. See
 https://platform.claude.com/docs/en/build-with-claude/citations
 """
 
@@ -127,8 +126,7 @@ def _joined(lines: list[str]) -> str:
 
 
 def test_no_citations_stream_unchanged(monkeypatch):
-    """Plain text streams pass through with no inline markers and no
-    document_citations tool_event."""
+    """Plain text passes through with no inline markers or document_citations."""
     lines = _capture(
         monkeypatch,
         [

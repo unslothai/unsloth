@@ -1,8 +1,8 @@
 """Tests for the proposed PR #5863 improvements.
 
 Covers: _client() self-gating + keep_alive, OAuth normalised off for stdio
-(create + update), env/header dropped on a transport-type switch, and the
-backend rejecting a command whose first token is a URL scheme.
+(create + update), env/header dropped on a transport-type switch, and rejecting
+a command whose first token is a URL scheme.
 
 Run from studio/backend:  python -m pytest tests/test_mcp_stdio_improvements.py -q
 """
@@ -18,7 +18,7 @@ from storage import mcp_servers_db
 
 def _reset_db(tmp_path, monkeypatch):
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
-    monkeypatch.setattr(mcp_servers_db, "_schema_ready", False)
+    monkeypatch.setattr(mcp_servers_db, "_schema_ready", set())
 
 
 def _enable(monkeypatch):
@@ -41,9 +41,43 @@ def test_client_refuses_stdio_when_disabled(monkeypatch):
 def test_client_builds_stdio_when_enabled_without_spawning(monkeypatch):
     _enable(monkeypatch)
     # Constructing the Client must not spawn the subprocess (spawn happens on
-    # __aenter__); we only assert it builds.
+    # __aenter__); only assert it builds.
     client = mcp_client._client("npx -y server /tmp", {"K": "v"})
     assert client is not None
+
+
+def test_client_builds_stdio_with_encoded_arguments_without_shell(monkeypatch):
+    import routes.mcp_servers as routes_mcp
+
+    import fastmcp
+    from fastmcp.client import transports
+    from models.mcp_servers import McpStdioCommand
+
+    _enable(monkeypatch)
+    captured = {}
+
+    class CapturingStdioTransport:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+    monkeypatch.setattr(fastmcp, "Client", lambda transport: transport)
+    monkeypatch.setattr(transports, "StdioTransport", CapturingStdioTransport)
+    monkeypatch.setattr(mcp_client, "_stdio_argv", lambda parts, env: parts)
+
+    encoded = routes_mcp.encode_stdio_command(
+        McpStdioCommand(
+            command = "  python  ",
+            arguments = ["-m", "mod", "--name", "a b", "", "  keep padding  "],
+        ),
+        current_subject = "u",
+    )
+    mcp_client._client(encoded.url, {"API_KEY": "secret"})
+
+    assert captured["command"] == "python"
+    assert captured["args"] == ["-m", "mod", "--name", "a b", "", "  keep padding  "]
+    assert captured["env"]["API_KEY"] == "secret"
+    assert captured["keep_alive"] is False
+    assert set(captured) == {"command", "args", "env", "keep_alive"}
 
 
 def test_client_http_unaffected_by_gate(monkeypatch):
@@ -56,15 +90,14 @@ def test_client_http_unaffected_by_gate(monkeypatch):
 
 def test_create_forces_oauth_off_for_stdio(tmp_path, monkeypatch):
     import routes.mcp_servers as routes_mcp
+
     from models.mcp_servers import McpServerCreate
 
     _reset_db(tmp_path, monkeypatch)
     _enable(monkeypatch)
     resp = asyncio.run(
         routes_mcp.create_mcp_server(
-            McpServerCreate(
-                display_name = "FS", url = "npx -y server /tmp", use_oauth = True
-            ),
+            McpServerCreate(display_name = "FS", url = "npx -y server /tmp", use_oauth = True),
             current_subject = "u",
         )
     )
@@ -74,6 +107,7 @@ def test_create_forces_oauth_off_for_stdio(tmp_path, monkeypatch):
 
 def test_create_keeps_oauth_for_http(tmp_path, monkeypatch):
     import routes.mcp_servers as routes_mcp
+
     from models.mcp_servers import McpServerCreate
 
     _reset_db(tmp_path, monkeypatch)
@@ -87,19 +121,40 @@ def test_create_keeps_oauth_for_http(tmp_path, monkeypatch):
     assert resp.use_oauth is True
 
 
-def test_update_url_to_stdio_clears_oauth(tmp_path, monkeypatch):
+def test_connection_test_forces_oauth_off_for_stdio(monkeypatch):
     import routes.mcp_servers as routes_mcp
+
+    from models.mcp_servers import McpServerTestRequest
+
+    _enable(monkeypatch)
+    captured = {}
+
+    async def capture_probe(**kwargs):
+        captured.update(kwargs)
+        return []
+
+    monkeypatch.setattr(routes_mcp, "list_tools_async", capture_probe)
+    result = asyncio.run(
+        routes_mcp.test_mcp_server(
+            McpServerTestRequest(url = "python server.py", use_oauth = True),
+            current_subject = "u",
+        )
+    )
+
+    assert result.ok is True
+    assert captured["use_oauth"] is False
+    assert captured["timeout"] == mcp_client.probe_timeout("python server.py", False)
+
+
+def test_update_url_to_stdio_clears_oauth(tmp_path, monkeypatch):
     from models.mcp_servers import McpServerUpdate
+    import routes.mcp_servers as routes_mcp
 
     _reset_db(tmp_path, monkeypatch)
     _enable(monkeypatch)
     monkeypatch.setattr(mcp_client, "_oauth_token_store", None)
-    monkeypatch.setattr(
-        routes_mcp, "clear_oauth_tokens_async", lambda *a, **k: asyncio.sleep(0)
-    )
-    mcp_servers_db.create_server(
-        id = "s1", display_name = "A", url = "https://a/mcp", use_oauth = True
-    )
+    monkeypatch.setattr(routes_mcp, "clear_oauth_tokens_async", lambda *a, **k: asyncio.sleep(0))
+    mcp_servers_db.create_server(id = "s1", display_name = "A", url = "https://a/mcp", use_oauth = True)
     resp = asyncio.run(
         routes_mcp.update_mcp_server(
             "s1", McpServerUpdate(url = "npx -y server /tmp"), current_subject = "u"
@@ -112,8 +167,8 @@ def test_update_url_to_stdio_clears_oauth(tmp_path, monkeypatch):
 
 
 def test_switch_stdio_to_http_drops_env(tmp_path, monkeypatch):
-    import routes.mcp_servers as routes_mcp
     from models.mcp_servers import McpServerUpdate
+    import routes.mcp_servers as routes_mcp
 
     _reset_db(tmp_path, monkeypatch)
     _enable(monkeypatch)
@@ -128,14 +183,14 @@ def test_switch_stdio_to_http_drops_env(tmp_path, monkeypatch):
             "s1", McpServerUpdate(url = "https://remote/mcp"), current_subject = "u"
         )
     )
-    # the stdio env must NOT survive as HTTP headers on the remote endpoint
+    # stdio env must NOT survive as HTTP headers on the remote endpoint
     assert resp.headers == {}
     assert mcp_servers_db.get_server("s1")["headers_json"] is None
 
 
 def test_switch_keeps_explicitly_supplied_headers(tmp_path, monkeypatch):
-    import routes.mcp_servers as routes_mcp
     from models.mcp_servers import McpServerUpdate
+    import routes.mcp_servers as routes_mcp
 
     _reset_db(tmp_path, monkeypatch)
     _enable(monkeypatch)
@@ -148,9 +203,7 @@ def test_switch_keeps_explicitly_supplied_headers(tmp_path, monkeypatch):
     resp = asyncio.run(
         routes_mcp.update_mcp_server(
             "s1",
-            McpServerUpdate(
-                url = "https://remote/mcp", headers = {"Authorization": "Bearer new"}
-            ),
+            McpServerUpdate(url = "https://remote/mcp", headers = {"Authorization": "Bearer new"}),
             current_subject = "u",
         )
     )
@@ -158,8 +211,8 @@ def test_switch_keeps_explicitly_supplied_headers(tmp_path, monkeypatch):
 
 
 def test_same_transport_edit_keeps_headers(tmp_path, monkeypatch):
-    import routes.mcp_servers as routes_mcp
     from models.mcp_servers import McpServerUpdate
+    import routes.mcp_servers as routes_mcp
 
     _reset_db(tmp_path, monkeypatch)
     _enable(monkeypatch)
@@ -169,11 +222,9 @@ def test_same_transport_edit_keeps_headers(tmp_path, monkeypatch):
         url = "npx server",
         headers_json = '{"API_KEY": "secret"}',
     )
-    # editing only the display name (still stdio) must not wipe env vars
+    # editing only the display name (still stdio) must keep env vars
     resp = asyncio.run(
-        routes_mcp.update_mcp_server(
-            "s1", McpServerUpdate(display_name = "B"), current_subject = "u"
-        )
+        routes_mcp.update_mcp_server("s1", McpServerUpdate(display_name = "B"), current_subject = "u")
     )
     assert resp.headers == {"API_KEY": "secret"}
 
@@ -183,7 +234,6 @@ def test_same_transport_edit_keeps_headers(tmp_path, monkeypatch):
 
 def test_validate_url_rejects_url_scheme_command_when_enabled(monkeypatch):
     from routes.mcp_servers import _validate_url
-
     _enable(monkeypatch)
     for bad in ["ftp://host/x", "file:///etc/passwd", "ws://h/y"]:
         with pytest.raises(HTTPException) as exc:
@@ -193,17 +243,13 @@ def test_validate_url_rejects_url_scheme_command_when_enabled(monkeypatch):
 
 def test_validate_url_allows_url_in_argument(monkeypatch):
     from routes.mcp_servers import _validate_url
-
     _enable(monkeypatch)
-    # :// inside an ARGUMENT (not the first token) is still a valid command
-    assert _validate_url("npx server --url https://x/mcp") == (
-        "npx server --url https://x/mcp"
-    )
+    # :// inside an ARGUMENT (not the first token) is a valid command
+    assert _validate_url("npx server --url https://x/mcp") == ("npx server --url https://x/mcp")
 
 
 # ── P6: Data Recipe stdio path obeys the same host gate ─────────────
-# build_mcp_providers needs the data_designer plugin, which is only installed in
-# the Studio test job; skip there rather than fail the core matrix.
+# build_mcp_providers needs the Unsloth-only data_designer plugin; skip if absent.
 
 _STDIO_RECIPE = {
     "mcp_providers": [
@@ -223,7 +269,7 @@ def test_data_recipe_skips_stdio_when_disabled(monkeypatch):
     _disable(monkeypatch)
     from core.data_recipe.service import build_mcp_providers
 
-    # gate off -> the stdio provider is dropped (no subprocess can be spawned)
+    # gate off -> the stdio provider is dropped (no subprocess spawned)
     assert build_mcp_providers(_STDIO_RECIPE) == []
 
 

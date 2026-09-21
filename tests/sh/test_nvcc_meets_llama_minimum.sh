@@ -1,29 +1,18 @@
 #!/bin/bash
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 # Unit tests for _nvcc_meets_llama_minimum() from studio/setup.sh.
 # llama.cpp needs CUDA toolkit >= 12.4 (#4437); setup.ps1 aborts via #4517,
 # the Linux side was silent until this fix.
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+. "$SCRIPT_DIR/_harness.sh"
 SETUP_SH="$SCRIPT_DIR/../../studio/setup.sh"
-PASS=0
-FAIL=0
-
 # Extract just the helper function. The sed range is the same pattern the
 # install.sh tests use.
 _FUNC_FILE=$(mktemp)
 sed -n '/^_nvcc_meets_llama_minimum()/,/^}/p' "$SETUP_SH" > "$_FUNC_FILE"
-
-assert_eq() {
-    _label="$1"; _expected="$2"; _actual="$3"
-    if [ "$_actual" = "$_expected" ]; then
-        echo "  PASS: $_label"
-        PASS=$((PASS + 1))
-    else
-        echo "  FAIL: $_label (expected '$_expected', got '$_actual')"
-        FAIL=$((FAIL + 1))
-    fi
-}
 
 # Fake nvcc printing "release X.Y" in the canonical nvcc -V layout (the helper
 # greps for "release X.Y", stable across CUDA 9.x-13.x).
@@ -116,6 +105,4 @@ rm -rf "$_dir"
 
 rm -f "$_FUNC_FILE"
 
-echo ""
-echo "Results: $PASS passed, $FAIL failed"
-[ "$FAIL" -eq 0 ] || exit 1
+summary

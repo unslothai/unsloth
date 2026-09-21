@@ -34,7 +34,6 @@ if str(_REPO_ROOT) not in sys.path:
 
 def _studio_mod():
     from unsloth_cli.commands import studio as _s
-
     return _s
 
 
@@ -87,9 +86,7 @@ def _install_capture(monkeypatch):
     captured = []
     monkeypatch.setattr(sys, "prefix", "/nonexistent/outer/venv")
     fake_bin = Path("/fake/studio/venv/unsloth_studio/bin/unsloth")
-    monkeypatch.setattr(
-        studio_mod, "_studio_venv_python", lambda: fake_bin.parent / "python"
-    )
+    monkeypatch.setattr(studio_mod, "_studio_venv_python", lambda: fake_bin.parent / "python")
     real_is_file = Path.is_file
     monkeypatch.setattr(
         Path,
@@ -129,8 +126,7 @@ def _invoke(monkeypatch, args):
     return captured
 
 
-# (short_flag, value, llama-server long name). All were silently
-# mis-parsed pre-cleanup.
+# (short_flag, value, llama-server long name). All were silently mis-parsed pre-cleanup.
 _PREVIOUSLY_BROKEN = [
     ("-fa", None, "--flash-attn"),
     ("-fit", None, "--fit"),
@@ -147,12 +143,7 @@ _PREVIOUSLY_BROKEN = [
 
 
 @pytest.mark.parametrize("flag,value,llama_long_name", _PREVIOUSLY_BROKEN)
-def test_previously_broken_short_flag_now_passes_through(
-    monkeypatch,
-    flag,
-    value,
-    llama_long_name,
-):
+def test_previously_broken_short_flag_now_passes_through(monkeypatch, flag, value, llama_long_name):
     """Each of these was eaten by typer pre-cleanup; must pass through verbatim now."""
     extras = [flag] if value is None else [flag, value]
     captured = _invoke(monkeypatch, ["--model", "X"] + extras)
@@ -170,8 +161,7 @@ def test_previously_broken_short_flag_now_passes_through(
 
 
 def test_dash_hf_documented_alias_still_works(monkeypatch):
-    """`-hf` is documented and must keep working (multi-char shorts
-    don't cluster in Click)."""
+    """`-hf` must keep working: multi-char shorts don't cluster in Click."""
     captured = _invoke(
         monkeypatch,
         ["-hf", "unsloth/gemma-4-26B-A4B-it-GGUF:UD-Q4_K_XL"],
@@ -183,9 +173,9 @@ def test_dash_hf_documented_alias_still_works(monkeypatch):
     assert argv[argv.index("--gguf-variant") + 1] == "UD-Q4_K_XL", argv
 
 
-# Legacy `-m` / `-hfr` / `-f` were typer aliases pre-PR. The
-# preprocessor promotes EXACT matches back to their typer params and
-# leaves clustered tokens (`-mg`, `-fa`, ...) in the pass-through tail.
+# Legacy `-m` / `-hfr` / `-f` were typer aliases pre-PR. The preprocessor promotes EXACT matches
+# back to their typer params and leaves clustered tokens (`-mg`, `-fa`, ...) in the pass-through
+# tail.
 
 
 @pytest.mark.parametrize(
@@ -197,11 +187,7 @@ def test_dash_hf_documented_alias_still_works(monkeypatch):
         (["-hfr=unsloth/Qwen3-1.7B-GGUF"], "unsloth/Qwen3-1.7B-GGUF"),
     ],
 )
-def test_legacy_model_aliases_still_promote_to_model(
-    monkeypatch,
-    legacy_args,
-    expected_model,
-):
+def test_legacy_model_aliases_still_promote_to_model(monkeypatch, legacy_args, expected_model):
     """Pre-PR `-m X` / `-hfr X` set --model X; preprocessor preserves that."""
     captured = _invoke(monkeypatch, legacy_args)
     assert len(captured) == 1, f"parent did not re-exec for {legacy_args}"
@@ -218,8 +204,7 @@ def test_legacy_frontend_alias_still_promotes_to_frontend(monkeypatch):
     captured = _invoke(monkeypatch, ["--model", "X", "-f", "/tmp/dist"])
     assert len(captured) == 1
     argv = captured[0]
-    # Compare via Path so Windows's str(Path("/tmp/dist")) = "\tmp\dist"
-    # doesn't trip the assertion on the same logical path.
+    # Compare via Path: on Windows str(Path("/tmp/dist")) = "\tmp\dist".
     assert Path(argv[argv.index("--frontend") + 1]) == Path("/tmp/dist"), argv
     assert "-f" not in argv, f"-f leaked into child argv: {argv}"
 
@@ -227,9 +212,7 @@ def test_legacy_frontend_alias_still_promotes_to_frontend(monkeypatch):
 def test_legacy_model_alias_conflicts_with_long_form(monkeypatch):
     """`--model X` plus `-m Y` is ambiguous; must error pre-re-exec."""
     captured = _invoke(monkeypatch, ["--model", "X", "-m", "Y"])
-    assert (
-        len(captured) == 0
-    ), f"expected error before re-exec, got launch with argv = {captured}"
+    assert len(captured) == 0, f"expected error before re-exec, got launch with argv = {captured}"
 
 
 def test_clustered_tokens_are_not_promoted(monkeypatch):
@@ -262,9 +245,7 @@ def test_legacy_m_with_repo_variant_syntax(monkeypatch):
 def test_missing_model_after_preprocessor_errors(monkeypatch):
     """Neither --model nor a legacy alias → clean exit(2) before re-exec."""
     captured = _invoke(monkeypatch, ["--parallel", "8"])
-    assert (
-        len(captured) == 0
-    ), f"expected exit before re-exec, got launch with argv = {captured}"
+    assert len(captured) == 0, f"expected exit before re-exec, got launch with argv = {captured}"
 
 
 def test_legacy_m_inline_value_form(monkeypatch):
@@ -317,7 +298,6 @@ def test_consume_helper_leaves_clusters_alone():
 def test_consume_helper_value_already_set_raises():
     helper = _studio_mod()._consume_legacy_short_aliases
     import typer as _typer
-
     with pytest.raises(_typer.BadParameter):
         helper(["-m", "Y"], ("-m",), "X", "--model")
 
@@ -325,7 +305,6 @@ def test_consume_helper_value_already_set_raises():
 def test_consume_helper_missing_value_raises():
     helper = _studio_mod()._consume_legacy_short_aliases
     import typer as _typer
-
     with pytest.raises(_typer.BadParameter):
         helper(["-m"], ("-m",), None, "--model")
 
@@ -354,8 +333,8 @@ def test_consume_helper_preserves_value_when_no_match():
     assert remaining == ["--top-k", "20"]
 
 
-# `-p` is typer short for --port, so Click clusters `-np8` as `-n -p 8`
-# (port=8, parallel dropped). The rewrite splits to `-np 8` pre-parse.
+# `-p` is typer short for --port, so Click clusters `-np8` as `-n -p 8` (port=8, parallel dropped).
+# The rewrite splits to `-np 8` pre-parse.
 
 
 def test_expand_np_rewrites_attached_form(monkeypatch):
@@ -365,15 +344,7 @@ def test_expand_np_rewrites_attached_form(monkeypatch):
         ["unsloth", "studio", "run", "--model", "X", "-np8"],
     )
     _studio_mod()._expand_attached_np_short()
-    assert sys.argv == [
-        "unsloth",
-        "studio",
-        "run",
-        "--model",
-        "X",
-        "-np",
-        "8",
-    ]
+    assert sys.argv == ["unsloth", "studio", "run", "--model", "X", "-np", "8"]
 
 
 @pytest.mark.parametrize("value", ["1", "8", "64", "999"])
@@ -430,9 +401,7 @@ def test_expand_np_handles_signed_attached_forms(monkeypatch, attached, expected
     "attached,expected_suffix",
     [("-np8x", "8x"), ("-np-1foo", "-1foo"), ("-np9bar", "9bar")],
 )
-def test_expand_np_rewrites_numeric_prefix_even_with_junk(
-    monkeypatch, attached, expected_suffix
-):
+def test_expand_np_rewrites_numeric_prefix_even_with_junk(monkeypatch, attached, expected_suffix):
     """`-np8x` would surface as a baffling --port error; rewriting to
     `-np 8x` makes typer report against `-np` where it was typed."""
     monkeypatch.setattr(sys, "argv", ["unsloth", "run", attached])
@@ -449,8 +418,8 @@ def test_consume_helper_rejects_empty_inline_value():
         helper(["-m="], ("-m",), None, "--model")
 
 
-# Gate isolation: importing unsloth_cli from a third-party script must
-# leave its sys.argv intact. Pins the narrow basename set.
+# Gate isolation: importing unsloth_cli from a third-party script must leave its sys.argv intact.
+# Pins the narrow basename set.
 
 
 @pytest.mark.parametrize(
@@ -465,9 +434,7 @@ def test_consume_helper_rejects_empty_inline_value():
         "unsloth-cli.py",
     ],
 )
-def test_third_party_importers_do_not_trigger_np_rewrite(
-    monkeypatch, third_party_argv0
-):
+def test_third_party_importers_do_not_trigger_np_rewrite(monkeypatch, third_party_argv0):
     """Only the `unsloth` / `unsloth.exe` console-script may run the
     canonicaliser; third-party scripts must keep their argv intact."""
     import os as _os
