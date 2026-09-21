@@ -3201,6 +3201,8 @@ class SdCppDiffusionBackend:
                 # Publish an active (step 0) state before the slow pre-generate setup so a reload probe does not read
                 # idle while this holds _generate_lock.
                 self._gen = _SdGen(total_steps = int(steps))
+                # Cleared at the START, so the retained reason is never read as this run's.
+                self._last_generate_error = None
             try:
                 if seed is None:
                     seed = int.from_bytes(os.urandom(6), "big") & ((1 << 53) - 1)
@@ -3307,7 +3309,15 @@ class SdCppDiffusionBackend:
                     ),
                 }
             except SdCppCancelled as exc:
+                self._last_generate_error = DIFFUSION_CANCELLED_MSG
                 raise RuntimeError(DIFFUSION_CANCELLED_MSG) from exc
+            except BaseException as exc:
+                # See the diffusers engine: idle progress is the only channel left once the
+                # POST is lost, so the reason has to outlive _gen. Raw; the route classifies.
+                self._last_generate_error = str(exc) or type(exc).__name__
+                raise
+            else:
+                self._last_generate_error = None
             finally:
                 self._gen = None
                 with self._lock:
@@ -3622,6 +3632,9 @@ class SdCppDiffusionBackend:
                 "total_steps": 0,
                 "fraction": 0.0,
                 "eta_seconds": None,
+                # Idle is not the same as fine. Only while it is the LAST thing that
+                # happened: the next generation clears it on success.
+                "error": getattr(self, "_last_generate_error", None),
             }
         return {
             "active": True,

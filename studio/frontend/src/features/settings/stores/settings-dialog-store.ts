@@ -154,6 +154,26 @@ function requestsFor(state: SettingsDialogState, tab: SettingsTab) {
   };
 }
 
+/** One value identifying the log request currently pending, for a subscriber.
+ *
+ * The Logs panel reads the request imperatively when it refreshes its source list, so it
+ * needs a reason to refresh when one ARRIVES while it is already mounted: reopening the tab
+ * it is on does not remount it, and in manual refresh mode nothing else rescans. Subscribing
+ * to a derived string rather than the two fields keeps that one subscription, and returning
+ * the same value for "nothing pending" keeps the effect from firing on unrelated changes.
+ *
+ * Both fields, because a second failure in the same family with a different log must look
+ * different here or the panel would not go and fetch it.
+ */
+export function pendingLogRequestKey(state: {
+  logFamilyRequested: string | null;
+  logSourcePathRequested: string | null;
+}): string {
+  return `${state.logFamilyRequested ?? ""}|${state.logSourcePathRequested ?? ""}`;
+}
+
+export const NO_PENDING_LOG_REQUEST = "|";
+
 export const useSettingsDialogStore = create<SettingsDialogState>((set) => ({
   open: false,
   activeTab: loadInitialTab(),

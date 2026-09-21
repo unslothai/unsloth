@@ -304,3 +304,39 @@ test("the owner-only tab list is what the gate is gating on", () => {
   assert.equal(resolveSettingsTab("debugging", false), "general");
   assert.equal(resolveSettingsTab("debugging", true), "debugging");
 });
+
+test("a request arriving while Logs is already open is visible to a subscriber", async () => {
+  // openLogs only writes the store, and reopening the tab it is already on does not
+  // remount the panel, so nothing re-read the request: in manual refresh mode the panel
+  // sat on its previous selection indefinitely. The panel subscribes to this key, so the
+  // properties that matter are that it MOVES on arrival and settles back on consumption.
+  const { pendingLogRequestKey, NO_PENDING_LOG_REQUEST } = await import(
+    "../src/features/settings/stores/settings-dialog-store.ts"
+  );
+  reset();
+  assert.equal(
+    pendingLogRequestKey(store.getState()),
+    NO_PENDING_LOG_REQUEST,
+    "an idle store must read as nothing pending, or the panel refreshes on every change",
+  );
+
+  store.getState().openLogs("llama-server", "/logs/llama-a.log");
+  const first = pendingLogRequestKey(store.getState());
+  assert.notEqual(first, NO_PENDING_LOG_REQUEST);
+
+  // A second failure in the SAME family naming a DIFFERENT log has to look different, or
+  // the panel would not go and fetch the new one.
+  store.getState().openLogs("llama-server", "/logs/llama-b.log");
+  assert.notEqual(pendingLogRequestKey(store.getState()), first);
+
+  // And consuming it settles, so the arrival fires the panel once rather than looping.
+  store.getState().consumeLogFamilyRequest();
+  assert.equal(pendingLogRequestKey(store.getState()), NO_PENDING_LOG_REQUEST);
+
+  // A family-only request still registers: not every diagnostic carries a path.
+  store.getState().openLogs("server");
+  assert.notEqual(
+    pendingLogRequestKey(store.getState()),
+    NO_PENDING_LOG_REQUEST,
+  );
+});

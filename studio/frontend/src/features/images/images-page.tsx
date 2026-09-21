@@ -490,15 +490,23 @@ async function settleLostGeneration(
     await new Promise((r) => setTimeout(r, SETTLE_POLL_MS));
     if (!isCurrent()) return;
     let idle = false;
+    let reported: string | null = null;
     try {
       const p = await getGenerateProgress();
       fails = 0;
+      reported = p.error ?? null;
       if (p.active) sawActive = true;
       else idle = true;
     } catch {
       fails += 1;
       if (fails >= SETTLE_MAX_FAILS) throw new Error("Lost connection to the image server.");
     }
+    // Outside the catch, so a reason the backend reported is not counted as a transport
+    // failure. Idle is not the same as finished: a generation that failed after its POST
+    // was lost ends active-to-idle exactly like a successful one, so returning here
+    // reported success and could advance a multi-run batch past an output that never
+    // arrived. The string is already classified by the backend.
+    if (reported) throw new Error(reported);
     if (!idle) continue;
     if (sawActive) return;
     // Idle on the very first look: the run may have finished or never started, so a gallery

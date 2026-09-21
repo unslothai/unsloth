@@ -26,6 +26,18 @@ import { en } from "../src/i18n/locales/en.ts";
 import * as formatFastApiError from "../src/lib/format-fastapi-error.ts";
 import { loadWithStubs } from "./helpers/module-stubs.ts";
 
+type DialogState = {
+  logFamilyRequested: string | null;
+  logSourcePathRequested: string | null;
+  consumeLogFamilyRequest: () => void;
+};
+
+const IDLE_DIALOG_STATE: DialogState = {
+  logFamilyRequested: null,
+  logSourcePathRequested: null,
+  consumeLogFamilyRequest: () => {},
+};
+
 const API_URL = new URL(
   "../src/features/settings/api/debug-logs.ts",
   import.meta.url,
@@ -182,14 +194,17 @@ function makeWorld(options: {
     "../lib/debug-log-buffer": debugLogBuffer,
     "../lib/debug-log-error": debugLogError,
     // No "View logs" request pending: these cases are the tab opened directly, so
-    // the picker keeps its own default source rather than a failure's family.
+    // the picker keeps its own default source rather than a failure's family. Callable
+    // AND carrying getState, like the real zustand store: the tab subscribes to the
+    // pending request as a hook and reads the rest imperatively.
     "../stores/settings-dialog-store": {
-      useSettingsDialogStore: {
-        getState: () => ({
-          logFamilyRequested: null,
-          consumeLogFamilyRequest: () => {},
-        }),
-      },
+      useSettingsDialogStore: Object.assign(
+        (selector?: (state: DialogState) => unknown) =>
+          selector ? selector(IDLE_DIALOG_STATE) : IDLE_DIALOG_STATE,
+        { getState: () => IDLE_DIALOG_STATE },
+      ),
+      pendingLogRequestKey: () => "|",
+      NO_PENDING_LOG_REQUEST: "|",
     },
   });
 
@@ -335,7 +350,11 @@ test("a failure that is not a 401 never reaches for the refresh token", async ()
   });
 
   await assert.rejects(() => world.api.exportAllLogs());
-  assert.equal(world.refreshes.length, 0, "a 500 is not an authentication problem");
+  assert.equal(
+    world.refreshes.length,
+    0,
+    "a 500 is not an authentication problem",
+  );
   assert.equal(world.invokes.length, 1);
 });
 
@@ -353,7 +372,10 @@ test("openLogsFolder uses the reported root when no source is selected", async (
 test("a selected log still beats the reported root", async () => {
   const world = makeWorld({ isTauri: true });
 
-  await world.api.openLogsFolder("/srv/other/logs/server/s.log", "/srv/studio-home");
+  await world.api.openLogsFolder(
+    "/srv/other/logs/server/s.log",
+    "/srv/studio-home",
+  );
   assert.deepEqual(world.invokes, [
     { command: "open_models_dir", args: { path: "/srv/other/logs/server" } },
   ]);
@@ -368,7 +390,10 @@ test("openLogsFolder opens the CONFIGURED home, not the hard-coded one", async (
 
   await world.api.openLogsFolder("/srv/studio-home/logs/server/server-1.log");
   assert.deepEqual(world.invokes, [
-    { command: "open_models_dir", args: { path: "/srv/studio-home/logs/server" } },
+    {
+      command: "open_models_dir",
+      args: { path: "/srv/studio-home/logs/server" },
+    },
   ]);
 });
 

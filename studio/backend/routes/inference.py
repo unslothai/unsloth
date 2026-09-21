@@ -39542,6 +39542,14 @@ async def diffusion_generate_progress(current_subject: str = Depends(get_current
         return account_access.hidden_generate_progress_response(DiffusionGenerateProgressResponse)
 
     progress = get_active_diffusion_engine().generate_progress()
+    # Classified HERE, where every other client-visible generation message is built: the
+    # engine retains its own raw text so this stays the only place that decides what a
+    # caller may see, and engine text with its local paths and argv never escapes.
+    raw_error = progress.get("error")
+    progress = {
+        **progress,
+        "error": _generate_failure_detail(raw_error) if raw_error else None,
+    }
     log_media_generation_progress("image", progress)
     # A finished generation still persisting its gallery record counts as active, so a reload probe keeps polling.
     if _diffusion_persist_active > 0 and not progress["active"]:

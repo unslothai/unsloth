@@ -68,6 +68,13 @@ export interface DiffusionGenerateProgress {
   total_steps: number;
   fraction: number;
   eta_seconds: number | null;
+  /** Why the LAST generation failed, when one did and is no longer running.
+   *
+   * The only channel left when a generation's POST is lost past the proxy window: the
+   * settling path polls this, and without it an idle read of a failed run cannot be told
+   * from a finished one. Already classified by the backend, so it is safe to show.
+   * Optional: an older backend omits it. */
+  error?: string | null;
 }
 
 export interface DiffusionLoadProgress {

@@ -6786,6 +6786,9 @@ class DiffusionBackend:
                 # Publish an active (step 0) state before the slow pre-denoise setup so a reload mount probe does not
                 # read idle.
                 self._gen = _GenState(total_steps = steps)
+                # Cleared at the START, not only on success, so the retained reason can
+                # never be read as belonging to the run that is now in flight.
+                self._last_generate_error = None
             try:
                 self._state_device_target(state)
                 # The local `state` ref keeps the pipe alive even if unload() nulls _state. Resolve the per-image
@@ -7258,6 +7261,17 @@ class DiffusionBackend:
                     # Create recipe.
                     "workflow": workflow,
                 }
+            except BaseException as exc:
+                # Kept so the idle progress below can still say WHY. A generation whose POST
+                # was lost past the proxy window leaves the client polling progress as its
+                # only channel, and clearing _gen without this reported "not running" for a
+                # failure, which the settling path then read as success. RAW: the route
+                # classifies it through _generate_failure_detail, so engine text and the
+                # paths and argv in it never reach a client from here.
+                self._last_generate_error = str(exc) or type(exc).__name__
+                raise
+            else:
+                self._last_generate_error = None
             finally:
                 with self._generation_cancel_lock:
                     if self._active_generate_cancel is cancel:
@@ -7278,6 +7292,9 @@ class DiffusionBackend:
                 "total_steps": 0,
                 "fraction": 0.0,
                 "eta_seconds": None,
+                # Idle is not the same as fine. Carried only while it is the LAST thing that
+                # happened: the next generation clears it on success.
+                "error": getattr(self, "_last_generate_error", None),
             }
         return {
             "active": True,
