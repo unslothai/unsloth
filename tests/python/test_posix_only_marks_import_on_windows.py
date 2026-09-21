@@ -109,7 +109,21 @@ def _fallback_takes(fallback: ast.AST, call: ast.Call) -> bool:
     its word, since whether a name is callable is not decidable from this file."""
     if isinstance(fallback, ast.Lambda):
         return _lambda_accepts(fallback, call)
-    return not isinstance(fallback, ast.Constant)
+    # a literal of any shape: a number, a string, None, a list, a dict, an f-string
+    return not isinstance(
+        fallback,
+        (
+            ast.Constant,
+            ast.List,
+            ast.Dict,
+            ast.Set,
+            ast.Tuple,
+            ast.JoinedStr,
+            ast.ListComp,
+            ast.DictComp,
+            ast.SetComp,
+        ),
+    )
 
 
 def _geteuid_sites(expr: ast.AST):
@@ -118,11 +132,18 @@ def _geteuid_sites(expr: ast.AST):
     is as safe as the same line inside a def. Its defaults are evaluated here and stay."""
     # `(lambda: os.geteuid())()` runs its body right there, so only a lambda that is not
     # the callee of a call in this expression gets the deferral
-    invoked = {
-        node.func
-        for node in ast.walk(expr)
-        if isinstance(node, ast.Call) and isinstance(node.func, ast.Lambda)
-    }
+    invoked = set()
+    for node in ast.walk(expr):
+        if not isinstance(node, ast.Call):
+            continue
+        if isinstance(node.func, ast.Lambda):
+            invoked.add(node.func)
+            continue
+        # `getattr(os, "geteuid", lambda: os.geteuid())()` picks the fallback on Windows
+        # and runs its body there, which is the only platform that ever sees it
+        inner = _getattr_geteuid(node.func)
+        if inner is not None and len(inner.args) == 3 and isinstance(inner.args[2], ast.Lambda):
+            invoked.add(inner.args[2])
     stack = [expr]
     while stack:
         node = stack.pop()
@@ -272,6 +293,26 @@ def _definition_expressions(node: ast.AST, eager_annotations: bool):
         yield from (arg.annotation for arg in every if arg is not None and arg.annotation)
 
 
+TRY_STATEMENTS = (ast.Try, ast.TryStar) if hasattr(ast, "TryStar") else (ast.Try,)
+
+# A handler for any of these turns a missing os.geteuid from a collection failure into a
+# branch the module handles itself. Listed generously on purpose: a scan everybody has to
+# keep green should err towards silence, not towards rejecting portable code.
+CAUGHT = frozenset(
+    {"ImportError", "AttributeError", "TypeError", "OSError", "Exception", "BaseException"}
+)
+
+
+def _catches_a_missing_geteuid(statement) -> bool:
+    for handler in statement.handlers:
+        if handler.type is None:  # bare except
+            return True
+        named = handler.type.elts if isinstance(handler.type, ast.Tuple) else [handler.type]
+        if any(isinstance(node, ast.Name) and node.id in CAUGHT for node in named):
+            return True
+    return False
+
+
 def _normalise_os_aliases(tree: ast.Module) -> ast.Module:
     """Rewrite `import os as _os` so every later `_os.geteuid()` reads as `os.geteuid()`.
     Cheaper and less error-prone than threading an alias set through every predicate, and
@@ -329,6 +370,17 @@ def _import_time_expressions(tree: ast.Module):
                 yield from block(statement.body)
             if reached is not True:
                 yield from block(statement.orelse)
+            return
+        if isinstance(statement, TRY_STATEMENTS):
+            # `try: from os import geteuid / except ImportError: geteuid = None` is the
+            # portable spelling, and Windows lands in the handler. The handler, the else
+            # and the finally all still run, so they are walked.
+            if not _catches_a_missing_geteuid(statement):
+                yield from block(statement.body)
+            yield from block(statement.orelse)
+            for handler in statement.handlers:
+                yield from walk(handler)
+            yield from block(statement.finalbody)
             return
         if isinstance(statement, ast.ExceptHandler):
             if statement.type is not None:
@@ -554,25 +606,42 @@ def test_a_statement_level_platform_guard_is_honoured():
 
 
 def test_a_function_body_under_a_compound_statement_is_still_runtime():
-    """A def nested in a `try` or a `for` is reached at import, but its BODY is not, so a
+    """A def nested in a `for` or a `with` is reached at import, but its BODY is not, so a
     lookup there cannot break collection however deep the statement nesting goes."""
     assert not _flagged(
         "import os\n"
-        "try:\n"
+        "with open('x') as fh:\n"
         "    for _ in range(1):\n"
         "        def helper():\n"
         "            return os.geteuid()\n"
-        "except Exception:\n"
-        "    pass\n"
     )
     # the def's own decorator under the same nesting IS reached
     assert _flagged(
         "import os, pytest\n"
-        "try:\n"
-        '    @pytest.mark.skipif(os.geteuid() == 0, reason = "x")\n'
-        "    def test_a(): pass\n"
-        "except Exception:\n"
-        "    pass\n"
+        "with open('x') as fh:\n"
+        "    for _ in range(1):\n"
+        '        @pytest.mark.skipif(os.geteuid() == 0, reason = "x")\n'
+        "        def test_a(): pass\n"
+    )
+
+
+def test_a_try_that_catches_the_failure_is_the_portable_spelling():
+    """`try: from os import geteuid / except ImportError: geteuid = None` is how portable
+    code is written, and Windows lands in the handler. Rejecting it would be the scan
+    telling people to stop doing the right thing."""
+    assert not _flagged(
+        "try:\n    from os import geteuid\nexcept ImportError:\n    geteuid = None\n"
+    )
+    assert not _flagged(
+        "import os\ntry:\n    ROOT = os.geteuid() == 0\nexcept AttributeError:\n    ROOT = False\n"
+    )
+    # a handler that cannot catch it leaves the body reported
+    assert _flagged(
+        "import os\ntry:\n    ROOT = os.geteuid() == 0\nexcept KeyError:\n    ROOT = False\n"
+    )
+    # and the handler's own body is still walked, since that is what Windows runs
+    assert _flagged(
+        "import os\ntry:\n    pass\nexcept ImportError:\n    ROOT = os.geteuid() == 0\n"
     )
 
 
@@ -635,3 +704,16 @@ def test_an_uninvoked_lookup_with_a_literal_fallback_is_fine():
     succeeds; it is only calling the result that fails. Feature detection is not a bug."""
     assert not _flagged('import os\nGETEUID = getattr(os, "geteuid", None)\n')
     assert _flagged('import os\nROOT = getattr(os, "geteuid", None)() == 0\n')
+
+
+def test_a_non_callable_container_fallback_is_no_fallback():
+    """`getattr(os, "geteuid", [])()` picks the list on Windows and raises TypeError."""
+    for fallback in ("[]", "{}", "()", "{1}", '"text"', "0"):
+        assert _flagged(f'import os\nROOT = getattr(os, "geteuid", {fallback})() == 0\n'), fallback
+
+
+def test_an_invoked_fallback_lambda_runs_its_body_on_windows():
+    """`getattr(os, "geteuid", lambda: os.geteuid())()` picks the fallback there and runs
+    it, so its body is the one place Windows definitely reaches."""
+    assert _flagged('import os\nROOT = getattr(os, "geteuid", lambda: os.geteuid())() == 0\n')
+    assert not _flagged('import os\nROOT = getattr(os, "geteuid", lambda: 1)() == 0\n')
