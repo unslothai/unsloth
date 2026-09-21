@@ -54,9 +54,7 @@ def client_as(account):
 
 
 def is_pinned(client) -> bool:
-    return isinstance(
-        getattr(client, "_transport", None), external_provider._PinnedPublicTransport
-    )
+    return isinstance(getattr(client, "_transport", None), external_provider._PinnedPublicTransport)
 
 
 def test_owner_always_gets_the_shared_client(switch):

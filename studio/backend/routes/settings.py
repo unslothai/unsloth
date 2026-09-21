@@ -3304,9 +3304,7 @@ def _managed_provider_urls_response() -> ManagedProviderUrlsResponse:
     )
 
 
-@_shared_settings_router.get(
-    "/managed-provider-urls", response_model = ManagedProviderUrlsResponse
-)
+@_shared_settings_router.get("/managed-provider-urls", response_model = ManagedProviderUrlsResponse)
 def get_managed_provider_urls(
     current_subject: str = Depends(get_current_subject),
 ) -> ManagedProviderUrlsResponse:

@@ -50,7 +50,6 @@ def get_managed_private_provider_urls_allowed() -> bool:
     try:
         from storage.studio_db import get_app_setting
         from utils.account_context import OWNER, run_as
-
         stored = run_as(OWNER, get_app_setting, MANAGED_PRIVATE_PROVIDER_URLS_SETTING_KEY, None)
     except Exception:  # noqa: BLE001 - an unreadable settings DB keeps the stricter answer
         return False

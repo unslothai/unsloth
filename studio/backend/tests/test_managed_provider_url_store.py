@@ -103,7 +103,6 @@ def test_read_failure_fails_closed(monkeypatch):
 
     def sqlite_error():
         import sqlite3
-
         return sqlite3.OperationalError("unable to open database file")
 
     monkeypatch.setattr(studio_db, "get_app_setting", boom)
