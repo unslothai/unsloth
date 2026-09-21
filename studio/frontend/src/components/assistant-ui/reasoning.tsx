@@ -68,6 +68,7 @@ import { ChevronDownIcon } from "lucide-react";
 import { Tick02Icon } from "@/lib/tick-icon";
 import { Copy01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
+import { IconActionButton } from "./icon-action-button";
 import {
   type CSSProperties,
   type ComponentProps,
@@ -82,6 +83,7 @@ import {
   useState,
 } from "react";
 import { useShallow } from "zustand/react/shallow";
+import { ScrollPane } from "./scroll-pane";
 const ANIMATION_DURATION = 200;
 const AUTO_SCROLL_THRESHOLD_PX = 24;
 
@@ -483,9 +485,12 @@ function OversizedReasoningCode({ source }: { source: string }) {
         Showing part of an oversized code block. Copy reasoning preserves the
         full source.
       </p>
-      <pre className="max-w-full overflow-x-auto whitespace-pre-wrap break-words rounded-md bg-muted/40 p-3 font-mono text-xs">
+      <ScrollPane
+        className="max-w-full rounded-md bg-muted/40 p-3"
+        scrollerClassName="overflow-x-auto whitespace-pre-wrap break-words font-mono text-xs"
+      >
         {source}
-      </pre>
+      </ScrollPane>
     </div>
   );
 }
@@ -513,19 +518,16 @@ function ReasoningCopyButton({
   }, [reasoningText]);
 
   return (
-    <button
-      type="button"
+    <IconActionButton
+      label={copied ? "Copied" : "Copy reasoning"}
       onClick={handleCopy}
-      className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-xs text-muted-foreground transition-colors hover:text-foreground hover:bg-muted"
-      aria-label="Copy reasoning"
     >
       {copied ? (
         <HugeiconsIcon icon={Tick02Icon} strokeWidth={2} className="size-3" />
       ) : (
         <HugeiconsIcon icon={Copy01Icon} className="size-3" />
       )}
-      {copied ? "Copied" : "Copy"}
-    </button>
+    </IconActionButton>
   );
 }
 
@@ -761,12 +763,14 @@ const ReasoningGroupImpl: ReasoningGroupComponent = (props) => {
 
 // A thin line closing the trace when the answer comes right after it, so the two do not read
 // as one text. Rendered inside whatever is last under the header, so it hides with it.
+// Full --border, not 60% of it: at 60% the line was 14/255 off the dark background and
+// 19/255 off the light one, which is under the rule rather than a quiet version of it.
 function ReasoningEndRule() {
   return (
     <div
       data-slot="reasoning-end-rule"
       aria-hidden={true}
-      className="mt-4 border-border/60 border-t"
+      className="mt-4 border-border border-t"
     />
   );
 }

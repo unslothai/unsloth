@@ -8511,6 +8511,61 @@ def test_map_entry_fill_reads_and_writes_in_one_transaction(tmp_path, monkeypatc
     assert db.get_app_setting(key) == {"a": {"v": 9}}
 
 
+def test_a_first_writer_entry_collapses_a_conflicting_claim_inside_the_write(tmp_path, monkeypatch):
+    """The credential-provenance rule, decided where the race is. A caller that reads the map,
+    sees nothing, and then writes loses to a second caller doing the same with a different
+    identity: both see "absent" and the last one stores its own claim over the first. So the
+    comparison belongs inside this transaction."""
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
+    monkeypatch.setattr(db, "_schema_ready", set())
+
+    key = "test_map_entry_first_writer"
+    first = {"at": 100.0, "by": "identity-a"}
+    assert db.upsert_app_setting_map_entry(
+        key, "repo", first, keep_first_writer = True, ambiguous_field = "by"
+    ) == {"repo": first}
+
+    # The same identity writing again changes nothing, timestamp included.
+    db.upsert_app_setting_map_entry(
+        key,
+        "repo",
+        {"at": 200.0, "by": "identity-a"},
+        keep_first_writer = True,
+        ambiguous_field = "by",
+    )
+    assert db.get_app_setting(key) == {"repo": first}
+
+    # A different one cannot take it over, and cannot be taken over in turn.
+    db.upsert_app_setting_map_entry(
+        key,
+        "repo",
+        {"at": 300.0, "by": "identity-b"},
+        keep_first_writer = True,
+        ambiguous_field = "by",
+    )
+    assert db.get_app_setting(key) == {"repo": {"at": 100.0, "by": None}}
+    db.upsert_app_setting_map_entry(
+        key,
+        "repo",
+        {"at": 400.0, "by": "identity-a"},
+        keep_first_writer = True,
+        ambiguous_field = "by",
+    )
+    assert db.get_app_setting(key) == {"repo": {"at": 100.0, "by": None}}
+
+    # An absent entry is still created, and the ordinary write still replaces.
+    db.upsert_app_setting_map_entry(
+        key,
+        "other",
+        {"at": 500.0, "by": "identity-b"},
+        keep_first_writer = True,
+        ambiguous_field = "by",
+    )
+    assert db.get_app_setting(key)["other"] == {"at": 500.0, "by": "identity-b"}
+    db.upsert_app_setting_map_entry(key, "other", {"at": 600.0, "by": "identity-c"})
+    assert db.get_app_setting(key)["other"] == {"at": 600.0, "by": "identity-c"}
+
+
 def test_a_fill_never_relabels_a_stored_gpu_pin_with_this_browser_s_index_space(
     tmp_path, monkeypatch
 ):

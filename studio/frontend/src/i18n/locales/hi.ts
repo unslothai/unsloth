@@ -1506,9 +1506,9 @@ export const hi = {
           "मंज़ूरी के प्रॉम्प्ट छोड़ देता है। केवल भरोसेमंद वातावरण में उपयोग करें।",
       },
       remote: {
-        title: "रिमोट Unsloth Studio से जुड़ें",
+        title: "रिमोट Unsloth से जुड़ें",
         description:
-          "चलाने से पहले ये सेट करके unsloth start को कहीं और चल रहे Unsloth Studio की ओर भेजें (या --api-key सीधे दें):",
+          "चलाने से पहले ये सेट करके unsloth start को कहीं और चल रहे Unsloth की ओर भेजें (या --api-key सीधे दें):",
       },
       passthrough: {
         title: "एजेंट को आर्ग्युमेंट भेजना",
@@ -1536,7 +1536,7 @@ export const hi = {
       rememberParamsPerModelHint:
         "बंद होने पर सभी मॉडल एक ही सेटिंग इस्तेमाल करते हैं।",
       autoCompactHint:
-        "उपलब्ध VRAM के बजाय आपके तय किए गए संदर्भ की लंबाई का उपयोग करता है।",
+        "केवल लोकल GGUF चैट पर लागू। हटाए गए टर्न इंडेक्स किए जाते हैं ताकि मॉडल उन्हें दोबारा खोज सके, और रीसेट पर जितने स्थायी निर्देश समा सकें, वे हूबहू दोहरा दिए जाते हैं, जिनमें बीच वाले के बजाय सबसे पुराने और सबसे नए को प्राथमिकता मिलती है। आर्काइव के लिए सहेजी गई चैट और वेक्टर इंडेक्स ज़रूरी हैं; इनके बिना पुराने टर्न हटा दिए जाते हैं। उपलब्ध VRAM के बजाय आपके तय किए गए संदर्भ की लंबाई का उपयोग करता है।",
       pastedTextShortDescription:
         "{count} या अधिक अक्षरों वाला पेस्ट किया गया टेक्स्ट .txt अटैचमेंट बन जाता है। छोटा टेक्स्ट संदेश बॉक्स में रहता है।",
       pastedTextOffDescription:
@@ -1544,9 +1544,9 @@ export const hi = {
       compactionDescriptionInherit:
         "सर्वर की संदर्भ नीति का पालन करें।",
       compactionDescriptionCheckpoint:
-        "सबसे हाल का संवाद और स्थायी निर्देश बनाए रखें।",
+        "सबसे हाल का संवाद और जितने स्थायी निर्देश समा सकें, उन्हें बनाए रखें, और बाकी को खोज के लिए आर्काइव करें।",
       compactionDescriptionRolling:
-        "पुराने संवाद हटाकर हाल का इतिहास और चुनी गई अतिरिक्त खाली जगह बनाए रखें।",
+        "पुराने संवाद आर्काइव करके हाल का इतिहास और चुनी गई अतिरिक्त खाली जगह बनाए रखें।",
       projectsSection: "प्रोजेक्ट अनुभाग दिखाएँ",
       projectsSectionDescription:
         "प्रोजेक्ट चैट को प्रोजेक्ट शीर्षक के नीचे समूहित करता है। बंद करने पर वे हाल ही के अंतर्गत दिखती हैं।",
@@ -1570,7 +1570,7 @@ export const hi = {
           "आइटम को चैट के + साइड मेन्यू में पिन करें। बाकी आइटम “More” में चले जाएँगे।",
         chatWithFiles: "फ़ाइलों के साथ चैट (RAG)",
         mcp: "MCP",
-        skills: "एजेंट कौशल",
+        skills: "कौशल",
         savedPrompts: "सहेजे गए प्रॉम्प्ट",
         compareChat: "चैट की तुलना करें",
         exportChat: "चैट एक्सपोर्ट करें",
@@ -1593,18 +1593,18 @@ export const hi = {
         "हर मॉडल के साथ आखिरी बार इस्तेमाल किए गए प्रॉम्प्ट, तापमान और अन्य सेटिंग्स वापस लाएँ।",
       autoCompact: "लंबी चैट को अपने आप कॉम्पैक्ट करें",
       autoCompactDescription:
-        "लोकल GGUF चैट की कॉन्टेक्स्ट सीमा भरने पर पुराने टर्न हटाएँ।",
+        "चैट का कॉन्टेक्स्ट भरने पर पुराने टर्न खोजे जा सकने वाले आर्काइव में चले जाते हैं।",
       compactionStyle: "कॉन्टेक्स्ट भरने पर",
       compactionStyleDescription:
-        "सर्वर डिफ़ॉल्ट से UNSLOTH_CONTEXT_POLICY बना रहता है। बातचीत रीसेट करने पर नवीनतम टर्न और स्थायी निर्देश रहते हैं। स्लाइडिंग विंडो सबसे पुराने टर्न हटाती है और हाल का अधिक इतिहास रख सकती है।",
+        "सर्वर डिफ़ॉल्ट से UNSLOTH_CONTEXT_POLICY बना रहता है। बातचीत रीसेट करने पर नवीनतम टर्न और जितने स्थायी निर्देश समा सकें, वे रहते हैं। स्लाइडिंग विंडो सबसे पुराने टर्न हटाती है और हाल का अधिक इतिहास रख सकती है।",
       compactionStyleInherit: "सर्वर डिफ़ॉल्ट उपयोग करें",
       compactionStyleCheckpoint: "बातचीत रीसेट करें",
-      compactionStyleRollingDefault: "पुराने टर्न हटाएँ (~25% अतिरिक्त जगह)",
-      compactionStyleRolling10: "पुराने टर्न हटाएँ (~10% अतिरिक्त जगह)",
-      compactionStyleRolling5: "पुराने टर्न हटाएँ (~5% अतिरिक्त जगह)",
-      compactionStyleRollingNone: "पुराने टर्न हटाएँ (कोई अतिरिक्त कटौती नहीं)",
+      compactionStyleRollingDefault: "पुराने टर्न आर्काइव करें (~25% अतिरिक्त जगह)",
+      compactionStyleRolling10: "पुराने टर्न आर्काइव करें (~10% अतिरिक्त जगह)",
+      compactionStyleRolling5: "पुराने टर्न आर्काइव करें (~5% अतिरिक्त जगह)",
+      compactionStyleRollingNone: "पुराने टर्न आर्काइव करें (कोई अतिरिक्त कटौती नहीं)",
       autoCompactKeywords:
-        "कॉम्पैक्शन कॉम्पैक्ट कॉन्टेक्स्ट विंडो ट्रंकेट स्लाइडिंग चेकपॉइंट हेडरूम compaction rolling checkpoint headroom",
+        "कॉम्पैक्शन कॉम्पैक्ट कॉन्टेक्स्ट विंडो ट्रंकेट स्लाइडिंग चेकपॉइंट हेडरूम आर्काइव पुनर्प्राप्ति खोज compaction rolling checkpoint headroom archive retrieval rag",
       thinking: {
         collapseByDefault: "थिंकिंग को डिफ़ॉल्ट रूप से संक्षिप्त रखें",
         collapseByDefaultDescription:
@@ -2731,11 +2731,11 @@ export const hi = {
     tooLarge: "VRAM से बड़ा है, CPU पर ऑफ़लोड होगा। छोटा क्वांटाइज़ेशन तेज़ चलता है",
   },
   skills: {
-    title: "एजेंट कौशल",
+    title: "कौशल",
     description: "कौशल आपके मानक एजेंट फ़ोल्डरों से खोजे जाते हैं। उन्हें यहाँ सक्षम करें, फिर चैट में @ टाइप करके किसी का उल्लेख करें।",
     precedence: "~/.agents/skills को ~/.claude/skills पर प्राथमिकता मिलती है।",
     refresh: "रीफ़्रेश",
-    empty: "कोई एजेंट कौशल नहीं मिला। ~/.agents/skills या ~/.claude/skills में SKILL.md फ़ोल्डर जोड़ें, फिर रीफ़्रेश करें।",
+    empty: "कोई कौशल नहीं मिला। ~/.agents/skills या ~/.claude/skills में SKILL.md फ़ोल्डर जोड़ें, फिर रीफ़्रेश करें।",
     sourceAgents: "Agents",
     sourceClaude: "Claude",
     sourceBundled: "बंडल्ड",
@@ -2745,7 +2745,7 @@ export const hi = {
     shadowedBy: "इसी नाम का एक और कौशल ({source}) प्राथमिकता लेता है।",
     enable: "{name} सक्षम करें",
     disable: "{name} अक्षम करें",
-    updateError: "एजेंट कौशल अपडेट नहीं हो सका",
-    mentions: "एजेंट कौशल",
+    updateError: "कौशल अपडेट नहीं हो सका",
+    mentions: "कौशल",
   },
 } satisfies DeepPartialMessageTree<typeof en>;

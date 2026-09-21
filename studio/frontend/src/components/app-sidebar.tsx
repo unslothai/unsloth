@@ -86,7 +86,6 @@ import {
   Delete02Icon,
   Download01Icon,
   DragDropVerticalIcon,
-  DownloadSquare01Icon,
   Edit03Icon,
   FolderAddIcon,
   FolderAttachmentIcon,
@@ -99,7 +98,6 @@ import {
   HelpCircleIcon,
   Image03Icon,
   Logout05Icon,
-  Message01Icon,
   MoreHorizontalIcon,
   MoreVerticalIcon,
   PaintBrush02Icon,
@@ -281,7 +279,7 @@ const SETTINGS_TAB_MENU_ITEMS: Record<
   profile: { icon: UserCircleIcon, labelKey: "settings.tabs.profile" },
   appearance: { icon: PaintBrush02Icon, labelKey: "settings.tabs.appearance" },
   resources: { icon: CpuIcon, labelKey: "settings.tabs.resources" },
-  chat: { icon: Message01Icon, labelKey: "settings.tabs.chat" },
+  chat: { icon: MessageCircleIcon, labelKey: "settings.tabs.chat" },
   connections: { icon: CloudIcon, labelKey: "settings.tabs.connections" },
 };
 
@@ -2115,7 +2113,7 @@ export function AppSidebar() {
       case "move": {
         const projectId = plan.action.projectId;
         if (projectId === null) {
-          return { icon: Message01Icon, text: t("shell.drag.moveToRecents") };
+          return { icon: MessageCircleIcon, text: t("shell.drag.moveToRecents") };
         }
         const name = projects.find((project) => project.id === projectId)?.name ?? "";
         return { icon: Folder01Icon, text: t("shell.drag.moveTo", { name }) };
@@ -2398,7 +2396,7 @@ export function AppSidebar() {
       },
     },
     export: {
-      icon: DownloadSquare01Icon,
+      icon: Download01Icon,
       label: t("shell.navigation.export"),
       active: pathname === "/export" || pathname.startsWith("/export/"),
       spinner: exportInProgress,
@@ -3437,6 +3435,9 @@ export function AppSidebar() {
       // A spinner glyph cannot truncate, and the pin and the kebab overlay that same edge, so a
       // working row holds their room open whether or not it is hovered.
       showWorkSpinner ? "pr-16" : hasUnreadActivity ? "pr-7" : undefined,
+      // Coarse pointers reveal the actions permanently, so the spinner drops back beside
+      // them (right-16, ending 78px in) and the title has to clear that, not just pr-16.
+      showWorkSpinner && "[@media(pointer:coarse)]:pr-[78px]",
       variant === "project"
         ? showWorkSpinner
           ? undefined
@@ -3543,7 +3544,23 @@ export function AppSidebar() {
               <span className="truncate">
                 {pendingRename?.id === item.id ? pendingRename.title : item.title}
               </span>
-              {showWorkSpinner && (
+            </SidebarMenuButton>
+            {showWorkSpinner ? (
+              // Anchored to the row, not laid out in it. As ml-auto the spinner rested on
+              // the button's padding-right, and a working row swaps pr-4 for pr-16 to hold
+              // room for the pin and kebab, pushing it 64px in. right-4 is the 16px trailing
+              // column the nav spinner keeps. Fades on hover like the unread dot below.
+              <span
+                className={cn(
+                  "pointer-events-none absolute right-4 top-1/2 z-10 -translate-y-1/2 transition-opacity",
+                  // Touch reveals the pin and kebab for good, so there is nothing to fade
+                  // behind: sit left of them instead, where this used to be.
+                  "[@media(pointer:coarse)]:right-16",
+                  variant === "project"
+                    ? "group-hover/project-chat-item:opacity-0 group-has-[.sidebar-row-action[data-state=open]]/project-chat-item:opacity-0 group-has-[.sidebar-row-action:focus-visible]/project-chat-item:opacity-0"
+                    : "group-hover/recent-item:opacity-0 group-has-[.sidebar-row-action[data-state=open]]/recent-item:opacity-0 group-has-[.sidebar-row-action:focus-visible]/recent-item:opacity-0",
+                )}
+              >
                 <Spinner
                   data-testid="chat-row-spinner"
                   // role="status" + label: announced, not motion-only.
@@ -3552,10 +3569,10 @@ export function AppSidebar() {
                       ? translate("shell.navigation.chatGenerating")
                       : "Queued"
                   }
-                  className="ml-auto size-3.5 shrink-0 text-muted-foreground"
+                  className="size-3.5 shrink-0 text-muted-foreground"
                 />
-              )}
-            </SidebarMenuButton>
+              </span>
+            ) : null}
             {hasUnreadActivity ? (
               <span
                 className={cn(
