@@ -16966,13 +16966,10 @@ _TOOL_TEXT_TRUNCATION_NOTICE = (
 
 
 def cap_tool_text(text: str) -> str:
-    """Cap tool-result text for the model at ``MAX_TOOL_TEXT_CHARS`` characters, unconditionally.
+    """Cap model-bound tool text at ``MAX_TOOL_TEXT_CHARS``, appending the truncation notice.
 
-    Truncates at a nearby line break when there is one inside the room, then appends
-    ``_TOOL_TEXT_TRUNCATION_NOTICE``. Idempotent: a result that already carries the notice is
-    left alone, so capping once in the live loop and again on a later replay is a no-op. The
-    suffix-only envelope reload (`_split_frontend_suffix`) and the card-facing result are never
-    run through here; the frontend mirrors this exact limit with its own ``capToolText``.
+    Idempotent, and mirrored by ``capToolText`` in the frontend. The card result and the
+    frontend-only envelopes are never passed through here.
     """
     if len(text) <= MAX_TOOL_TEXT_CHARS:
         return text

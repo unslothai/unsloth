@@ -328,9 +328,9 @@ class ToolCallCompletion:
         content = strip_result_for_model(self.result, self.decision.tool_name)
         from core.inference.tools import cap_tool_text  # noqa: PLC0415 -- cycle at import time
 
-        content = cap_tool_text(content)
         if self.is_error:
             content = content + TOOL_ERROR_NUDGE
+        content = cap_tool_text(content)
         message: dict[str, Any] = {
             "role": "tool",
             "name": self.decision.tool_name,
