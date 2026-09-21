@@ -1563,7 +1563,7 @@ export const ar = {
           "ثبّت العناصر في القائمة الجانبية لعلامة + في المحادثة. تنتقل العناصر الأخرى إلى «المزيد».",
         chatWithFiles: "المحادثة مع الملفات (RAG)",
         mcp: "MCP",
-        skills: "مهارات الوكلاء",
+        skills: "المهارات",
         savedPrompts: "الموجّهات المحفوظة",
         compareChat: "مقارنة المحادثات",
         exportChat: "تصدير المحادثة",
@@ -2723,7 +2723,7 @@ export const ar = {
     tooLarge: "أكبر من ذاكرة الرسوميات، وسيُفرَّغ جزء منه إلى المعالج. التكميم الأصغر أسرع",
   },
   skills: {
-    title: "مهارات الوكلاء",
+    title: "المهارات",
     description: "تُكتشف المهارات من مجلدات الوكلاء القياسية. فعّلها هنا ثم اكتب @ في الدردشة لذكر إحداها.",
     precedence: "‎~/.agents/skills له الأولوية على ‎~/.claude/skills.",
     refresh: "تحديث",
@@ -2737,7 +2737,7 @@ export const ar = {
     shadowedBy: "مهارة أخرى ({source}) بالاسم نفسه لها الأولوية.",
     enable: "تفعيل {name}",
     disable: "تعطيل {name}",
-    updateError: "تعذّر تحديث مهارة الوكيل",
-    mentions: "مهارات الوكلاء",
+    updateError: "تعذّر تحديث المهارة",
+    mentions: "المهارات",
   },
 } satisfies DeepPartialMessageTree<typeof en>;
