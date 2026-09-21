@@ -363,7 +363,7 @@ const ToolGroupImpl: FC<
         <div
           data-slot="reasoning-end-rule"
           aria-hidden={true}
-          className={cn("mt-4 border-border/60 border-t", !roundOpen && "hidden")}
+          className={cn("mt-4 border-border border-t", !roundOpen && "hidden")}
         />
       )}
     </div>
