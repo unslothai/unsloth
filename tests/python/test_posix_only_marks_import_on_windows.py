@@ -406,11 +406,23 @@ def _assigns_os_geteuid(expr: ast.AST) -> bool:
 def _offending_sites(tree: ast.Module):
     """Every unguarded import-time lookup, in source order, stopping at the point the
     module gives os.geteuid a definition of its own."""
+    # Only a definition in the module body counts. One inside an `if` the scan cannot
+    # decide is not guaranteed on Windows, and treating it as one would silence every
+    # lookup after it.
+    defined_at = next(
+        (
+            statement.lineno
+            for statement in tree.body
+            if isinstance(statement, (ast.Assign, ast.AnnAssign)) and _assigns_os_geteuid(statement)
+        ),
+        None,
+    )
     for expr in _import_time_expressions(tree):
-        if not _is_guarded(expr):
-            yield from _geteuid_sites(expr)
-        if _assigns_os_geteuid(expr):
-            return  # from here on the attribute exists, even on Windows
+        if _is_guarded(expr):
+            continue
+        for node in _geteuid_sites(expr):
+            if defined_at is None or node.lineno < defined_at:
+                yield node
 
 
 def _import_time_expressions(tree: ast.Module):
@@ -877,3 +889,12 @@ def test_literal_arithmetic_is_still_a_literal():
     """`1 + 2` is a BinOp and still a number nobody can call; `a + b` could be anything."""
     assert _flagged('import os\nROOT = getattr(os, "geteuid", 1 + 2)() == 0\n')
     assert not _flagged('import os\nROOT = getattr(os, "geteuid", a + b)() == 0\n')
+
+
+def test_a_conditional_definition_does_not_count():
+    """`if is_ci(): os.geteuid = lambda: 0` is not guaranteed on Windows, so a later read
+    can still fail. Only a definition in the module body settles it."""
+    assert _flagged(
+        "import os\nif is_ci():\n    os.geteuid = lambda: 0\nROOT = os.geteuid() == 0\n"
+    )
+    assert not _flagged("import os\nos.geteuid = lambda: 0\nROOT = os.geteuid() == 0\n")
