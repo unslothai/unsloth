@@ -1105,21 +1105,52 @@ def test_a_held_back_keyless_caller_is_told_it_cannot_switch(monkeypatch, loaded
 
 
 def test_the_keyless_load_probe_runs_off_the_event_loop(monkeypatch):
-    """The probe refreshes the scope from SQLite and may resolve the bind host, so it must
-    not run on the loop: a slow resolver would stall every in-flight generation, not just
-    this request. Same invariant as test_auth_lookup_off_event_loop.py."""
+    """The probe reads settings and resolves the bind host, so it must not run on the loop:
+    a slow resolver would stall every in-flight generation, not just this request. Same
+    invariant as test_auth_lookup_off_event_loop.py."""
     from routes import inference
     from utils import keyless_api_access as keyless
     seed_user(); set_keyless_api_access("full")
     request = request_for(headers = {"Host": "localhost:8888"})
     assert admitted_without_session(request)
+    # As the middleware leaves it, so the admission fallback does not run the predicate too.
+    keyless.mark_keyless_admission(request, True)
     threads: list[int] = []
-    def _probe(_request):
-        threads.append(threading.get_ident()); return True
-    monkeypatch.setattr(keyless, "keyless_request_may_load_models", _probe)
+    real = keyless._keyless_request_allowed_for_scope
+    def _spy(*args, **kwargs):
+        threads.append(threading.get_ident()); return real(*args, **kwargs)
+    monkeypatch.setattr(keyless, "_keyless_request_allowed_for_scope", _spy)
     async def _drive():
         return await inference._keyless_caller_held_back(request), threading.get_ident()
     held_back, loop_thread = asyncio.run(_drive())
     assert held_back is False
     assert threads and all(thread != loop_thread for thread in threads)
+
+
+def test_the_keyless_load_probe_waits_out_a_settings_refresh(monkeypatch):
+    """The sync settings read fails a follower closed to "off" for the length of one SQLite
+    read while another caller refreshes the 1s cache. Answering from it told a full-scope
+    caller admission had already admitted that it may not load, which silently dropped the
+    auto-switch this PR exists to deliver. The probe must read the way admission reads."""
+    from routes import inference
+    from utils import keyless_api_access as keyless
+    seed_user(); set_keyless_api_access("full")
+    request = request_for(headers = {"Host": "localhost:8888"})
+    assert admitted_without_session(request)
+    keyless.mark_keyless_admission(request, True)
+    real = keyless._read_settings_from_db
+    started = threading.Event()
+    def _slow():
+        started.set(); time.sleep(0.05); return real()
+    monkeypatch.setattr(keyless, "_read_settings_from_db", _slow)
+    with keyless._cache_lock:
+        keyless._cached_settings = None
+    # A second caller holds the refresh while this one asks.
+    refresher = threading.Thread(target = keyless.get_keyless_api_access_scope)
+    refresher.start(); assert started.wait(2)
+    try:
+        held_back = asyncio.run(inference._keyless_caller_held_back(request))
+    finally:
+        refresher.join()
+    assert held_back is False
 # fmt: on

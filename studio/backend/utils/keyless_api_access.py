@@ -504,10 +504,23 @@ def keyless_request_allowed(request: Any) -> bool:
     return _keyless_request_allowed_for_scope(request, get_keyless_api_access_scope())
 
 
-def keyless_request_may_load_models(request: Any) -> bool:
-    """Whether keyless access would admit this request's transport on ``POST /api/inference/load`` too, so loading a model on its behalf grants nothing it lacks."""
-    return _keyless_request_allowed_for_scope(
-        request, get_keyless_api_access_scope(), route = ("POST", "/api/inference/load")
+async def keyless_request_may_load_models(request: Any) -> bool:
+    """Whether keyless access would admit this request's transport on ``POST /api/inference/load`` too, so loading a model on its behalf grants nothing it lacks.
+
+    Async because it must answer for a caller admission already admitted, and the sync
+    settings read cannot: ``_settings_once`` fails a *follower* closed to ``off`` for the
+    length of one SQLite read whenever another caller is refreshing the 1s cache, so a
+    concurrent full-scope caller would be told it may not load and silently lose the
+    switch. Admission itself reads through ``_settings_async``, which retries instead;
+    reading the same way is what keeps the two answers from disagreeing. The transport
+    leg then runs in a worker thread, as the middleware runs it, because it resolves the
+    bind host.
+    """
+    from starlette.concurrency import run_in_threadpool
+
+    scope, _tools, _generation = await _settings_async()
+    return await run_in_threadpool(
+        _keyless_request_allowed_for_scope, request, scope, ("POST", "/api/inference/load")
     )
 
 

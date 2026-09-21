@@ -8642,17 +8642,15 @@ def disable_openai_auto_switch_for_request(scope) -> None:
 async def _keyless_caller_held_back(fastapi_request) -> bool:
     """A keyless caller that may not POST /api/inference/load itself, so it gets only the serving model or the idle-unloaded one it names.
 
-    The load-route probe re-enters the whole admission predicate, which refreshes the
-    scope from SQLite on a cache miss and resolves a hostname ``bind_host`` through
-    ``socket.getaddrinfo``; both block, which is why the middleware runs the same
-    predicate in a worker thread. Only a keyless caller pays the hop.
+    The load-route probe reads the scope and the transport the way admission does, off
+    the loop and through the retrying settings accessor. Only a keyless caller pays it.
     """
     from auth.authentication import request_admitted_without_credential
     from utils.keyless_api_access import keyless_request_may_load_models
 
     if not request_admitted_without_credential(fastapi_request):
         return False
-    return not await asyncio.to_thread(keyless_request_may_load_models, fastapi_request)
+    return not await keyless_request_may_load_models(fastapi_request)
 
 
 def _automatic_model_load_may_run() -> bool:
