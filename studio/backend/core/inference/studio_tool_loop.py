@@ -1083,6 +1083,17 @@ def _unrun_call_card(
     ]
 
 
+def _is_strict_prefix_of_declared(name: str, declared_names: set[str]) -> bool:
+    """Could this complete-looking name still be the start of a longer declared one?
+
+    Only a prefix of ANOTHER declared name counts, so the ordinary case -- a name no other
+    tool extends -- is unaffected and still stamped on the chunk that completes it.
+    """
+    return any(
+        other != name and other.startswith(name) for other in declared_names
+    )
+
+
 def _mcp_provenance_by_id(
     turn: "_Turn", declared_names: set[str], stamped: set[str]
 ) -> dict[str, Any]:
@@ -1094,6 +1105,13 @@ def _mcp_provenance_by_id(
 
     The declared catalog is what says a streamed name is complete: ``mcp__srv__cre`` is well
     formed too, and would name the wrong server. Once per id.
+
+    A declared name that is a strict PREFIX of another declared one is not evidence of
+    completeness, though: a server exposing both ``foo`` and ``foo_bar`` makes the fragment
+    ending at ``foo`` look finished, and a stamp there would name the wrong tool for the rest
+    of the turn, since the id is marked and ``_bar`` can no longer correct it. Those wait for
+    the authoritative provenance on ``tool_start``, which is what every call relied on before
+    this, rather than being relabelled early and wrongly.
     """
     stamps: dict[str, Any] = {}
     for call in turn.by_index.values():
@@ -1103,6 +1121,8 @@ def _mcp_provenance_by_id(
         function = call.get("function")
         name = function.get("name") if isinstance(function, dict) else None
         if not isinstance(name, str) or name not in declared_names:
+            continue
+        if _is_strict_prefix_of_declared(name, declared_names):
             continue
         # Declared means the name is whole, so the call is judged either way. Mark it BEFORE
         # asking whether it resolves: mcp_display_parts is a SQLite lookup that answers falsy

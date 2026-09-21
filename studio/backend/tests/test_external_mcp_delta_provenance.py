@@ -305,3 +305,79 @@ def test_a_provider_cannot_forge_the_stamp(named):
     )
     lines = _run(FakeTransport([[forged, _finish("stop")], [_DONE]]), [_tool(MCP_NAME)])
     assert all("Totally Legit" not in line for line in lines)
+
+
+def test_a_declared_name_that_another_tool_extends_is_not_stamped_early(monkeypatch):
+    """One server exposing both ``foo`` and ``foo_bar`` makes the fragment ending at ``foo``
+    look complete. Stamping there names the WRONG tool and marks the id, so the ``_bar``
+    fragment can no longer correct it, and the card carries the wrong name for the rest of
+    the turn. Both wait for tool_start instead, which is what every call relied on before.
+    """
+    short = "mcp__a3f9c1d2e4b6f807__foo"
+    long = "mcp__a3f9c1d2e4b6f807__foo_bar"
+
+    def _parts(tool_name: str):
+        return (DISPLAY, tool_name.rsplit("__", 1)[-1]) if tool_name in (short, long) else None
+
+    monkeypatch.setattr(loop_mod, "mcp_display_parts", _parts)
+    monkeypatch.setattr(controller_mod, "mcp_display_parts", _parts)
+    monkeypatch.setattr(loop_mod, "execute_tool", lambda name, arguments, **kw: "ok")
+    monkeypatch.setattr(loop_mod, "build_rag_autoinject", lambda *a, **k: None)
+    monkeypatch.setattr(loop_mod, "is_high_risk_tool_call", lambda name, args: False)
+
+    # The call is to the LONGER tool, streamed so a fragment boundary falls exactly on the
+    # shorter declared name.
+    lines = _run(
+        FakeTransport(
+            [
+                [
+                    _delta(short),
+                    _delta("_bar"),
+                    _delta(arguments = "{}"),
+                    _finish(),
+                ],
+                [_DONE],
+            ]
+        ),
+        [_tool(short), _tool(long)],
+    )
+    stamps = _stamps(lines)
+    # Deferring the ambiguous moment does not lose the stamp: the very next fragment makes
+    # the name unambiguous, and THAT is what stamps. So the card is relabelled during the
+    # turn as the PR intends, and with the right tool.
+    assert len(stamps) == 1, f"expected exactly one stamp, got {stamps}"
+    assert stamps[0]["c1"]["mcp_tool"] == "foo_bar"
+    assert not any('"mcp_tool": "foo"' in line for line in lines), (
+        "stamped the shorter declared name, so the card read as the wrong tool"
+    )
+
+    # A call that really IS the shorter tool has no unambiguous moment while streaming, so
+    # it waits for tool_start rather than being relabelled on a guess. The cost of the fix,
+    # and only for a name another tool extends.
+    lines = _run(
+        FakeTransport(
+            [[_delta(short), _delta(arguments = "{}"), _finish()], [_DONE]]
+        ),
+        [_tool(short), _tool(long)],
+    )
+    assert _stamps(lines) == []
+
+    # And the ordinary case is untouched: a declared name no other tool extends still
+    # stamps on the chunk that completes it, or this fix would have disabled the feature.
+    lines = _run(
+        FakeTransport(
+            [[_delta(long), _delta(arguments = "{}"), _finish()], [_DONE]]
+        ),
+        [_tool(long)],
+    )
+    assert _stamps(lines)[0]["c1"]["mcp_server"] == DISPLAY
+
+
+def test_the_prefix_test_only_looks_at_other_declared_names():
+    """A name is not its own prefix, or nothing would ever stamp."""
+    from core.inference.studio_tool_loop import _is_strict_prefix_of_declared
+
+    assert _is_strict_prefix_of_declared("a", {"a", "ab"}) is True
+    assert _is_strict_prefix_of_declared("ab", {"a", "ab"}) is False
+    assert _is_strict_prefix_of_declared("a", {"a"}) is False
+    assert _is_strict_prefix_of_declared("a", set()) is False
