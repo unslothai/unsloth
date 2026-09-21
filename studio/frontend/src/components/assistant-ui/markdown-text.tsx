@@ -321,8 +321,23 @@ const ACTION_BUTTON_CLASS =
   "flex size-8 cursor-pointer items-center justify-center rounded-[10px] text-chat-icon-fg transition-all hover:bg-chat-icon-bg-hover hover:text-chat-icon-fg-hover disabled:cursor-not-allowed disabled:opacity-50";
 
 function getMermaidSource(blockContent: string): string | null {
+  // A block that continues past the fence (a reply containing a footnote is one block) is not
+  // `fenced` as a whole, so the fence is re-read on its own slice.
   const fence = markdownBlockFallback(blockContent);
-  const source = fence.fenced && fence.language === "mermaid" ? fence.text.trim() : "";
+  if (fence.fenced && fence.language === "mermaid") {
+    const source = fence.text.trim();
+    return source.length > 0 ? source : null;
+  }
+  const open = MERMAID_INFO_RE.exec(blockContent);
+  if (!open) return null;
+  const marker = blockContent.slice(open.index).match(/^ {0,3}(`{3,}|~{3,})/)?.[1];
+  if (!marker) return null;
+  const closeRe = new RegExp(`^ {0,3}${marker[0].repeat(marker.length)}[\\t ]*\\r?$`, "m");
+  const bodyStart = blockContent.indexOf("\n", open.index) + 1;
+  if (bodyStart === 0) return null;
+  const rest = blockContent.slice(bodyStart);
+  const close = closeRe.exec(rest);
+  const source = (close ? rest.slice(0, close.index) : rest).trim();
   return source.length > 0 ? source : null;
 }
 
@@ -667,7 +682,11 @@ function StreamdownBlockContent(props: BlockProps) {
   const settledFence = props.isIncomplete ? null : markdownBlockFallback(props.content);
   if (settledFence?.fenced && !(settledFence.language === "mermaid" && mermaidSource)) {
     return (
-      <StreamingFenceBlock language={settledFence.language} source={settledFence.text} />
+      <StreamingFenceBlock
+        isIncomplete={false}
+        language={settledFence.language}
+        source={settledFence.text}
+      />
     );
   }
 
@@ -744,9 +763,11 @@ function useFenceTokens(
 function StreamingFenceBlock({
   language,
   source,
+  isIncomplete = true,
 }: {
   language: string | null;
   source: string;
+  isIncomplete?: boolean;
 }) {
   const languageToken = language?.trim().split(/\s+/)[0] || null;
   const tokens = useFenceTokens(source, languageToken, true);
@@ -755,7 +776,7 @@ function StreamingFenceBlock({
       fallback={<DeferredFenceShell language={languageToken} source={source} />}
     >
       <FenceBody
-        isIncomplete
+        isIncomplete={isIncomplete}
         language={languageToken}
         result={tokens}
         source={source}

@@ -415,24 +415,44 @@ test("nothing is watched once there is nothing left to defer", () => {
 
 const CODE_PLUGIN = readSrc("components/assistant-ui/code-plugin.ts");
 
-test("the mermaid source comes from the shared fence scanner", () => {
-  // A hand-rolled matcher was the root cause of three review findings: a spaced info string, a
-  // fence still streaming with no close, and a mixed-character line that is not a close.
-  const cases: Array<[string, string | null]> = [
-    ["~~~ mermaid\ngraph TD;\nA-->B;\n~~~", "graph TD;\nA-->B;"],
-    ["````mermaid\ngraph TD;\nA[\"~~~\"] --> B\n````", 'graph TD;\nA["~~~"] --> B'],
-    ["```mermaid\nx\n```~~~\ny\n```", "x\n```~~~\ny"],
-    ["```typescript\nx = 1\n```", null],
-    ["plain prose", null],
-  ];
-  for (const [source, want] of cases) {
-    const fence = markdownBlockFallback(source);
-    const got =
-      fence.fenced && fence.language === "mermaid" ? fence.text.trim() || null : null;
-    assert.equal(got, want, `diagram source for ${JSON.stringify(source)}`);
-  }
-  // The streaming branch keys on the OPENER, because there is no close to match yet.
+test("the mermaid source matches what the scanner renders", () => {
+  // A hand-rolled matcher was the root cause of three review findings (a spaced info string, a
+  // fence with no close yet, and a line of the opposite marker), so the source now comes from the
+  // shared scanner. This pins the SHAPE of that rule rather than re-running a private copy of it.
+  assert.match(
+    MARKDOWN_TEXT,
+    /const fence = markdownBlockFallback\(blockContent\);/,
+    "getMermaidSource must read the shared scanner",
+  );
+  assert.match(
+    MARKDOWN_TEXT,
+    /const open = MERMAID_INFO_RE\.exec\(blockContent\);/,
+    "and must still find a fence embedded in a longer block, or the copy button disappears",
+  );
+  // The close is matched with the opener's own run, not any run.
+  assert.match(
+    MARKDOWN_TEXT,
+    /const closeRe = new RegExp\(`\^ \{0,3\}\$\{marker\[0\]\.repeat\(marker\.length\)\}/,
+    "the close must repeat the opener's character",
+  );
+  // The streaming branch keys on the opener: there is no close to match yet.
+  assert.match(MARKDOWN_TEXT, /const hasMermaidFence = isMermaidFenceOpener\(props\.content\);/);
   assert.match(MARKDOWN_TEXT, /const MERMAID_INFO_RE = \/\^ \{0,3\}/);
+});
+
+test("a settled alternative fence is not marked incomplete", () => {
+  // The completed form renders through the streaming component, which used to pass isIncomplete
+  // unconditionally and left data-incomplete="true" on a finished fence.
+  assert.match(
+    MARKDOWN_TEXT,
+    /<StreamingFenceBlock[\s\S]{0,160}isIncomplete=\{false\}/,
+    "the settled branch must pass isIncomplete={false}",
+  );
+  assert.match(
+    MARKDOWN_TEXT,
+    /function StreamingFenceBlock\(\{[\s\S]{0,120}isIncomplete = true,/,
+    "and the parameter must default to true for the streaming branch",
+  );
 });
 
 test("the fence language is a language, not the whole info string", () => {

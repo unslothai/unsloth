@@ -127,7 +127,7 @@ test("a completed fence on a non-``` form keeps the bounded renderer", () => {
   const settled = MARKDOWN_TEXT.slice(MARKDOWN_TEXT.indexOf("const settledFence ="));
   const branch = settled.slice(0, settled.indexOf("if (props.isIncomplete)"));
   assert.ok(
-    /<StreamingFenceBlock language=\{settledFence\.language\} source=\{settledFence\.text\} \/>/.test(
+    /<StreamingFenceBlock[\s\S]{0,120}isIncomplete=\{false\}[\s\S]{0,120}settledFence\.language/.test(
       branch,
     ),
     "and it must render the per-line body rather than Block, or the spans remount",
