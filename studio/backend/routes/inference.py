@@ -3446,6 +3446,7 @@ from models.inference import (
     OpenAIContainerSummary,
 )
 from core.inference.anthropic_compat import (
+    TOOL_RESULT_IMAGE_OMITTED,
     anthropic_messages_to_openai,
     anthropic_reference_block_text,
     fold_tool_results_into_user,
@@ -8440,6 +8441,17 @@ def _messages_have_image(messages) -> bool:
         isinstance(m.content, list) and any(isinstance(p, ImageContentPart) for p in m.content)
         for m in messages
     )
+
+
+def _omit_tool_images(messages) -> None:
+    for message in messages:
+        if message.role == "tool" and isinstance(message.content, list):
+            message.content = [
+                TextContentPart(type = "text", text = TOOL_RESULT_IMAGE_OMITTED)
+                if isinstance(part, ImageContentPart)
+                else part
+                for part in message.content
+            ]
 
 
 def _messages_have_remote_image(messages) -> bool:
@@ -24925,6 +24937,8 @@ async def produce_openai_chat_completions(
         # text-only tool-capable GGUFs should return a clear 400 here rather
         # than forwarding the image to llama-server and surfacing an opaque
         # upstream error.
+        if not llama_backend.is_vision:
+            _omit_tool_images(payload.messages)
         if not llama_backend.is_vision and (
             payload.image_base64
             or any(
@@ -31518,6 +31532,8 @@ async def _responses_stream(
         raise HTTPException(status_code = _status, detail = _detail)
 
     # Direct pass-through bypasses the openai_chat_completions image gate.
+    if not llama_backend.is_vision:
+        _omit_tool_images(messages)
     if not llama_backend.is_vision and any(
         isinstance(m.content, list) and any(isinstance(p, ImageContentPart) for p in m.content)
         for m in messages
@@ -32690,7 +32706,7 @@ async def openai_responses(
             )
     if payload.stream:
         # streaming preflights here; non-streaming delegates its complete preflight to chat.
-        _responses_has_image = _messages_have_image(messages)
+        _responses_has_image = _messages_have_image(m for m in messages if m.role != "tool")
         _responses_image_b64s = _local_image_payloads_from_messages(messages)
         await _maybe_auto_switch_model(
             _switch_model_for_payload(payload),
