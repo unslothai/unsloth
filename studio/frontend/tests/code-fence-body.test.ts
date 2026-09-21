@@ -206,3 +206,31 @@ test("the body reproduces streamdown's language class and incomplete flag", () =
     "an open fence carries data-incomplete, and a settled one carries no attribute at all",
   );
 });
+
+test("a print colours the whole fence, and the window comes back afterwards", () => {
+  // MEASURED: a 3,000 line fence printed with 342 spans against the 23,139 the merge base
+  // printed. `upgradeEverythingForPrint` makes this argument for a deferred fence already; the
+  // line window reintroduced the same defect one level down.
+  assert.ok(
+    /let printing = false;/.test(DEFER),
+    "the print state has to be module-global: a print is a document-wide event",
+  );
+  assert.ok(
+    /window\.addEventListener\("afterprint", \(\) => setPrinting\(false\)\);/.test(DEFER),
+    "and it must revert, or one Ctrl+P un-windows every huge fence for the life of the tab. " +
+      "Unlike the reach latch this costs nothing to undo, because the tokens are already cached",
+  );
+  assert.ok(
+    /if \(event\.matches\) \{\s*upgradeEverythingForPrint\(\);\s*setPrinting\(true\);\s*\} else \{\s*setPrinting\(false\);\s*\}/
+      .test(DEFER),
+    "both doors: beforeprint for Ctrl+P, the media query for page.pdf() and devtools emulation",
+  );
+  assert.ok(
+    /flushSync\(remeasureWindows\);/.test(DEFER),
+    "synchronously, because there is no next paint before the print snapshot",
+  );
+  assert.ok(
+    /if \(printing\) \{\s*if \(current\.current === null\) return;/.test(DEFER),
+    "and the measurement has to honour it",
+  );
+});

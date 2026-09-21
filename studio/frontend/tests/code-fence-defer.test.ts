@@ -324,9 +324,27 @@ test("a print upgrades the whole document, and never puts it back", () => {
       `${door} is one of the two ways a document reaches a printer, and both must be covered`,
     );
   }
+  /*
+   * THE LATCH NEVER REVERTS. This used to ban the string `afterprint` outright, which said the
+   * right thing about the only mechanism that existed when it was written. The line window is a
+   * second one and it MUST revert: not reverting would mean one Ctrl+P un-windows every huge fence
+   * for the life of the tab, which is the cost the window exists to avoid, and unlike a latch it
+   * costs nothing to undo because the tokens are already in `fence.lines`.
+   * So the ban is narrowed to what it protects rather than dropped: an `afterprint` handler may
+   * clear the PRINT flag and nothing else, and no route may clear a latch.
+   */
+  const afterPrint = SOURCE.match(/addEventListener\("afterprint", (.*?)\);/);
+  if (afterPrint) {
+    assert.equal(
+      afterPrint[1],
+      "() => setPrinting(false)",
+      "an afterprint handler may do one thing: end the print. Anything else here is the " +
+        "bidirectional edge this design removes",
+    );
+  }
   assert.ok(
-    !/addEventListener\(\s*"afterprint"/.test(SOURCE),
-    "reverting on afterprint would be exactly the bidirectional edge this design removes",
+    !/setLatched\(false\)|latched = false/.test(SOURCE),
+    "nothing anywhere may hand a reached fence back its plain shell",
   );
   // A PRINT IS NOT A SESSION-WIDE SWITCH. As a module-global `printed` folded into every future
   // fence's `reached` it measured, at the 100K rung: print once, navigate away in-app and back,

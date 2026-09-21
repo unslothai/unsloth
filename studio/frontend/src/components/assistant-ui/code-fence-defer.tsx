@@ -357,9 +357,18 @@ const scheduleGrammarWarm = (): void => {
 };
 
 if (typeof window !== "undefined" && typeof window.addEventListener === "function") {
-  window.addEventListener("beforeprint", upgradeEverythingForPrint);
+  window.addEventListener("beforeprint", () => {
+    upgradeEverythingForPrint();
+    setPrinting(true);
+  });
+  window.addEventListener("afterprint", () => setPrinting(false));
   window.matchMedia?.("print")?.addEventListener?.("change", (event) => {
-    if (event.matches) upgradeEverythingForPrint();
+    if (event.matches) {
+      upgradeEverythingForPrint();
+      setPrinting(true);
+    } else {
+      setPrinting(false);
+    }
   });
 }
 
@@ -734,9 +743,44 @@ const windowedFences = new Set<() => void>();
 let windowFrame = 0;
 let windowWatched = false;
 
+/*
+ * A PRINT PUTS THE WHOLE DOCUMENT ON THE PAGE, SO THE WHOLE FENCE HAS TO BE COLOURED.
+ * `upgradeEverythingForPrint` above makes exactly this argument for a DEFERRED fence, and the line
+ * window reintroduces the same defect one level down: measured, a 3,000 line fence printed with
+ * 342 spans against the 23,139 the merge base printed, so all but a screenful of a printed listing
+ * came out uncoloured. Colour is the only thing a window costs, and a printed page is the one
+ * place the reader keeps it.
+ * WHY THIS ONE REVERTS AND THE LATCH DOES NOT. The latch refuses `afterprint` because giving a
+ * fence back its plain shell is the bidirectional edge that design exists to remove, and because
+ * re-latching would mean re-tokenizing. Neither applies here: the tokens are already in
+ * `fence.lines`, so re-windowing after the print costs element creation and nothing else, and NOT
+ * reverting would mean one Ctrl+P un-windows every huge fence for the life of the tab, which is
+ * precisely the cost the window exists to avoid.
+ * BOTH DOORS, as above: `beforeprint` covers Ctrl+P and the print menu; headless `page.pdf()` and
+ * devtools print emulation change the media query without firing it.
+ */
+let printing = false;
+
 const remeasureWindows = (): void => {
   windowFrame = 0;
   for (const measure of windowedFences) measure();
+};
+
+/** Is a print in progress? While it is, every fence renders every line highlighted. */
+export const fencePrinting = (): boolean => printing;
+
+/*
+ * Synchronous, and inside `flushSync`, for the same reason `latchNow` is: a normally scheduled
+ * update lands after the next paint, and there is no next paint before the print snapshot.
+ */
+const setPrinting = (value: boolean): void => {
+  if (printing === value || windowedFences.size === 0) return;
+  printing = value;
+  if (windowFrame !== 0) {
+    cancelAnimationFrame(windowFrame);
+    windowFrame = 0;
+  }
+  flushSync(remeasureWindows);
 };
 
 const scheduleRemeasure = (): void => {
@@ -803,6 +847,13 @@ function useLineWindow(
     const node = code.current;
     const outer = frame.current;
     if (!node || !outer) return;
+    // See `setPrinting`: the whole document is on the page, so the whole fence is coloured.
+    if (printing) {
+      if (current.current === null) return;
+      current.current = null;
+      setLineWindow(null);
+      return;
+    }
     const scroller = scrollerOf(outer);
     const bounds = scroller?.getBoundingClientRect();
     const rect = node.getBoundingClientRect();
