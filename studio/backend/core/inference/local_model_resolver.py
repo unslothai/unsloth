@@ -60,6 +60,13 @@ def _snapshot() -> tuple[float, dict[str, _LocalGgufEntry]]:
 
 def _publish(snapshot: tuple[float, dict[str, _LocalGgufEntry]]) -> None:
     global _scan
+    # The stamp is this snapshot's IDENTITY as well as its age, and time.monotonic() steps in
+    # ~16ms on Windows: two scans inside one tick published the SAME stamp, so a settled
+    # negative was never reopened by the pass that would have contradicted it. Nudged past
+    # the previous stamp, which moves the TTL arithmetic by a microsecond.
+    previous = _snapshot()[0]
+    if snapshot[0] <= previous:
+        snapshot = (previous + 1e-6, snapshot[1])
     if is_owner_context():
         _scan = snapshot
     else:

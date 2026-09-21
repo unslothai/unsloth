@@ -8,6 +8,7 @@ tests/test_gguf_completion_usage.py.
 """
 
 import asyncio
+import contextlib
 import json
 import os
 import pathlib
@@ -12323,6 +12324,9 @@ def test_the_hermes_and_ollama_scanners_report_a_directory_they_could_not_walk(m
         monkeypatch.setattr(os, "walk", walk_fails)
         with collecting_scan_incidents() as incidents:
             assert ollama.scan_ollama_dir(ollama_dir) == []
+        # Before the temp dir is removed: shutil.rmtree walks on Windows, and would be
+        # handed this failure.
+        monkeypatch.undo()
         assert any(
             "ollama" in note for note in incidents
         ), f"the Ollama scanner reported an unreadable directory as empty: {incidents}"
@@ -13050,6 +13054,62 @@ def test_a_root_the_classifier_could_not_read_is_not_a_complete_scan(monkeypatch
         assert incidents == [], f"a config-only directory was reported as a gap: {incidents}"
 
 
+def _directory_permissions_deny_listing():
+    """Whether chmod on a directory can actually stop it being listed here.
+
+    Its own function so the patched branch below can be exercised on any host: the Windows
+    arm is the one that cannot be reached by pretending, because pathlib refuses to build a
+    WindowsPath off Windows.
+    """
+    return os.name != "nt"
+
+
+@contextlib.contextmanager
+def _enumeration_denied(directory):
+    """Make *directory* refuse enumeration, however this platform can.
+
+    chmod 000 is the real trigger, and on POSIX it is also the proof that glob suppresses the
+    failure. Windows does not deny a listing that way, so there the enumeration itself is
+    patched to raise the same OSError: the handler under test is reached either way, and only
+    the trigger differs. Yields whether the trigger was real, so the glob premise is asserted
+    only where it can be.
+    """
+    import os
+    import pathlib
+    from unittest import mock
+
+    if _directory_permissions_deny_listing():
+        os.chmod(directory, 0o000)
+        try:
+            yield True
+        finally:
+            os.chmod(directory, 0o755)
+        return
+
+    target = os.path.normcase(str(directory))
+    real_iterdir = pathlib.Path.iterdir
+    real_walk = os.walk
+
+    def denied_iterdir(self):
+        if os.path.normcase(str(self)) == target:
+            raise PermissionError(13, "Permission denied", str(self))
+        return real_iterdir(self)
+
+    def denied_walk(
+        top,
+        onerror = None,
+        **kwargs,
+    ):
+        if onerror is not None and os.path.normcase(str(top)) == target:
+            onerror(PermissionError(13, "Permission denied", str(top)))
+            return iter(())
+        return real_walk(top, onerror = onerror, **kwargs)
+
+    with mock.patch.object(pathlib.Path, "iterdir", denied_iterdir):
+        with mock.patch.object(os, "walk", denied_walk):
+            yield False
+
+
 def test_a_scan_directory_that_cannot_be_enumerated_is_reported():
     """``glob`` and ``rglob`` SWALLOW the OSError from reading a directory.
 
@@ -13070,32 +13130,28 @@ def test_a_scan_directory_that_cannot_be_enumerated_is_reported():
         unreadable = pathlib.Path(root) / "hermes"
         unreadable.mkdir()
         (unreadable / "model-Q4_K_M.gguf").write_bytes(b"GGUF")
-        # The premise of the whole case, asserted rather than assumed.
-        os.chmod(unreadable, 0o000)
-        try:
-            assert (
-                list(unreadable.glob("*.gguf")) == []
-            ), "glob no longer suppresses the enumeration failure, so this case is stale"
+        manifests = pathlib.Path(root) / "ollama" / "manifests"
+        manifests.mkdir(parents = True)
+        (manifests / "library").mkdir()
+        with _enumeration_denied(unreadable) as real_permissions:
+            # The premise of the whole case, asserted rather than assumed, where the
+            # platform can arm it for real.
+            if real_permissions:
+                assert (
+                    list(unreadable.glob("*.gguf")) == []
+                ), "glob no longer suppresses the enumeration failure, so this case is stale"
             with collecting_scan_incidents() as incidents:
                 assert hermes_service.staged_gguf_files(unreadable) == []
             assert any(
                 "hermes" in note for note in incidents
             ), f"an unreadable Hermes folder read as an empty one: {incidents}"
 
-            manifests = pathlib.Path(root) / "ollama" / "manifests"
-            manifests.mkdir(parents = True)
-            (manifests / "library").mkdir()
-            os.chmod(manifests / "library", 0o000)
+        with _enumeration_denied(manifests / "library"):
             with collecting_scan_incidents() as incidents:
                 list(ollama_service._walk_manifest_files(manifests))
             assert any(
                 "ollama manifests" in note for note in incidents
             ), f"an unreadable Ollama manifests tree read as an empty one: {incidents}"
-        finally:
-            os.chmod(unreadable, 0o755)
-            library = pathlib.Path(root) / "ollama" / "manifests" / "library"
-            if library.exists():
-                os.chmod(library, 0o755)
 
     # A readable folder with nothing in it is an ANSWER, and stays silent.
     with tempfile.TemporaryDirectory() as root:
@@ -13124,18 +13180,16 @@ def test_a_checkpoint_directory_that_cannot_be_enumerated_is_reported():
         child = pathlib.Path(root) / "checkpoint"
         child.mkdir()
         (child / "model.safetensors").write_bytes(b"x")
-        os.chmod(child, 0o000)
-        try:
-            assert (
-                list(child.glob("*.safetensors")) == []
-            ), "glob no longer suppresses the enumeration failure, so this case is stale"
+        with _enumeration_denied(child) as real_permissions:
+            if real_permissions:
+                assert (
+                    list(child.glob("*.safetensors")) == []
+                ), "glob no longer suppresses the enumeration failure, so this case is stale"
             with collecting_scan_incidents() as incidents:
                 assert models_route._has_non_gguf_weights(child) is False
             assert any(
                 "unreadable" in note for note in incidents
             ), f"a checkpoint the scan could not read was dropped silently: {incidents}"
-        finally:
-            os.chmod(child, 0o755)
 
         # Readable and holding no weights is an ANSWER.
         empty = pathlib.Path(root) / "empty"
@@ -13164,18 +13218,16 @@ def test_an_hf_cache_root_that_cannot_be_enumerated_is_reported():
         cache = pathlib.Path(root) / "hub"
         repo = cache / "models--unsloth--gemma-3-4b-it-GGUF"
         repo.mkdir(parents = True)
-        os.chmod(cache, 0o000)
-        try:
-            assert (
-                list(cache.glob("models--*")) == []
-            ), "glob no longer suppresses the enumeration failure, so this case is stale"
+        with _enumeration_denied(cache) as real_permissions:
+            if real_permissions:
+                assert (
+                    list(cache.glob("models--*")) == []
+                ), "glob no longer suppresses the enumeration failure, so this case is stale"
             with collecting_scan_incidents() as incidents:
                 assert models_route._scan_hf_cache(cache) == []
             assert any(
                 "hf cache root unreadable" in note for note in incidents
             ), f"an unreadable HF cache root read as an empty one: {incidents}"
-        finally:
-            os.chmod(cache, 0o755)
 
         # A readable cache holding no repos is an ANSWER, and stays silent.
         empty = pathlib.Path(root) / "empty-hub"
@@ -13203,3 +13255,54 @@ def test_the_scanners_match_a_gguf_suffix_the_way_windows_does():
             "MODEL.GGUF"
         ], "an upper-case GGUF is no longer staged, which Windows used to discover"
         assert models_route._servable_gguf_names(directory) == ["MODEL.GGUF"]
+
+
+def test_the_patched_arm_of_the_unreadable_directory_helper_also_arms_it(monkeypatch):
+    """The Windows arm of _enumeration_denied, exercised where Windows is not.
+
+    The three cases above fall back to patching the enumeration on a host whose directory
+    permissions cannot stop a listing, and an arm that quietly armed nothing would make all
+    three pass while testing the opposite. pathlib refuses to build a WindowsPath off
+    Windows, so the decision is a function rather than an os.name read.
+    """
+    from core.inference.scan_incidents import collecting_scan_incidents
+    from hub.services.models import hermes as hermes_service
+
+    monkeypatch.setitem(globals(), "_directory_permissions_deny_listing", lambda: False)
+    with tempfile.TemporaryDirectory() as root:
+        staged = pathlib.Path(root) / "hermes"
+        staged.mkdir()
+        (staged / "model-Q4_K_M.gguf").write_bytes(b"GGUF")
+        with _enumeration_denied(staged) as real_permissions:
+            assert real_permissions is False, "the helper claimed a real trigger it did not use"
+            with collecting_scan_incidents() as incidents:
+                assert hermes_service.staged_gguf_files(staged) == []
+            assert any(
+                "hermes" in note for note in incidents
+            ), f"the patched arm armed nothing, so the cases above prove nothing: {incidents}"
+        # Restored on exit: the staged GGUF is listable again.
+        assert [p.name for p in hermes_service.staged_gguf_files(staged)] == ["model-Q4_K_M.gguf"]
+
+
+def test_two_scans_inside_one_clock_tick_are_still_two_snapshots(monkeypatch):
+    """time.monotonic steps in about 16ms on Windows, so a stamp is not unique by itself.
+
+    The stamp is a snapshot's IDENTITY here as well as its age, so two scans inside one tick
+    published the same one and a settled negative was never reopened by the pass that would
+    have contradicted it. Caught on windows-latest, where three of the probe cases failed
+    comparing a state to an identical one.
+    """
+    from core.inference import local_model_resolver as resolver
+
+    saved = resolver._scan
+    try:
+        monkeypatch.setattr(resolver.time, "monotonic", lambda: 1234.5)
+        resolver._publish((resolver.time.monotonic(), {}))
+        first = resolver.index_scan_stamp()
+        resolver._publish((resolver.time.monotonic(), {}))
+        second = resolver.index_scan_stamp()
+        assert second > first, "two scans inside one clock tick published one identity"
+        # Still the clock's value, to the microsecond, so the TTL arithmetic is unchanged.
+        assert abs(second - 1234.5) < 1e-3
+    finally:
+        resolver._scan = saved
