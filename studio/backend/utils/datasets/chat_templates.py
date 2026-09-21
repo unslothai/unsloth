@@ -32,6 +32,12 @@ _TEMPLATE_ERROR_COLUMN = "__chat_template_error"
 # materialises the whole column in Python.
 _ERROR_SCAN_BATCH = 10_000
 
+# Maximum conversations used to compare templates.
+_TEMPLATE_PROBE_ROWS = 8
+
+# Reuse the chosen template across splits.
+_CHOSEN_TEMPLATE_ATTR = "_unsloth_studio_chat_template_choice"
+
 _CUSTOM_PROMPT_TEMPLATE_ERROR = (
     "custom_prompt_template is deprecated and unsupported because Unsloth Studio cannot persist a "
     "matching template for inference. Pass None to continue without a custom prompt template."
@@ -106,6 +112,104 @@ def get_tokenizer_chat_template(tokenizer, model_name):
                 logger.info(f"   Falling back to tokenizer as-is")
 
     return tokenizer
+
+
+def _set_chat_template(tokenizer, chat_template):
+    """Set the template on both the processor and its tokenizer.
+
+    Does not undo EOS remapping by ``get_chat_template`` (Gemma 1/2).
+    """
+    tokenizer.chat_template = chat_template
+    inner = getattr(tokenizer, "tokenizer", None)
+    if inner is not None and inner is not tokenizer and hasattr(inner, "chat_template"):
+        inner.chat_template = chat_template
+
+
+def _count_renderable(tokenizer, conversations):
+    rendered = 0
+    for conversation in conversations:
+        try:
+            tokenizer.apply_chat_template(
+                conversation,
+                tokenize = False,
+                add_generation_prompt = False,
+            )
+            rendered += 1
+        except Exception:
+            pass
+    return rendered
+
+
+def _sample_conversations(dataset, chat_column, limit = _TEMPLATE_PROBE_ROWS):
+    """Sample across the dataset, or from the start for streaming datasets."""
+    n_rows = len(dataset) if hasattr(dataset, "__len__") else 0
+    conversations = []
+    try:
+        if n_rows > limit:
+            rows = (dataset[index] for index in range(0, n_rows, max(1, n_rows // limit)))
+        else:
+            rows = dataset
+        for row in rows:
+            conversation = row.get(chat_column)
+            if conversation:
+                conversations.append(conversation)
+            if len(conversations) >= limit:
+                break
+    except Exception:
+        return []
+    return conversations
+
+
+def keep_renderable_chat_template(tokenizer, dataset, chat_column, own_template):
+    """Restore the checkpoint template if it renders more sampled rows; return a log note.
+
+    Sampling can miss incompatible rows, which the caller drops and reports.
+    """
+    override = getattr(tokenizer, "chat_template", None)
+    if not own_template or override == own_template:
+        return None
+
+    conversations = _sample_conversations(dataset, chat_column)
+    if not conversations:
+        return None
+
+    rendered_by_override = _count_renderable(tokenizer, conversations)
+    if rendered_by_override == len(conversations):
+        return None
+
+    _set_chat_template(tokenizer, own_template)
+    if _count_renderable(tokenizer, conversations) <= rendered_by_override:
+        # Keep the override unless the checkpoint template renders more rows.
+        _set_chat_template(tokenizer, override)
+        return None
+
+    return (
+        "📝 The Unsloth chat template cannot render this dataset's conversations "
+        "(tool calls or consecutive same-role turns); using the model's own chat "
+        "template instead"
+    )
+
+
+def resolve_dataset_chat_template(tokenizer, model_name, dataset, chat_column):
+    """Choose on the first split and reuse for evaluation and saving.
+
+    Return ``(tokenizer, note_to_log)``. Incompatible eval rows are dropped and reported.
+    """
+    remembered = getattr(tokenizer, _CHOSEN_TEMPLATE_ATTR, None)
+    if remembered is not None and remembered[0] == model_name:
+        _set_chat_template(tokenizer, remembered[1])
+        return tokenizer, None
+
+    own_template = getattr(tokenizer, "chat_template", None)
+    tokenizer = get_tokenizer_chat_template(tokenizer, model_name)
+    note = keep_renderable_chat_template(tokenizer, dataset, chat_column, own_template)
+    try:
+        chosen = (model_name, getattr(tokenizer, "chat_template", None))
+        setattr(tokenizer, _CHOSEN_TEMPLATE_ATTR, chosen)
+    except Exception:
+        # Wrappers that reject new attributes cannot retain the choice across splits.
+        pass
+    return tokenizer, note
 
 
 def get_dataset_info_summary(dataset_info):
@@ -337,7 +441,11 @@ def apply_chat_template_to_dataset(
             warnings.append("Dataset may not be fully standardized")
 
         if model_name:
-            tokenizer = get_tokenizer_chat_template(tokenizer, model_name)
+            tokenizer, kept_own_template = resolve_dataset_chat_template(
+                tokenizer, model_name, dataset, chat_column
+            )
+            if kept_own_template:
+                logger.info(kept_own_template)
 
         streamed_failures = []
 
