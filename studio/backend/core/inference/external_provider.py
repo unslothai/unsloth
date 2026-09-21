@@ -884,34 +884,33 @@ class _PinnedNonMetadataTransport(_PinnedPublicTransport):
         return await self._pool(origin).handle_async_request(pinned)
 
 
-_managed_http_client: Optional[httpx.AsyncClient] = None
-_managed_private_http_client: Optional[httpx.AsyncClient] = None
+# (account_id, private allowed) -> that account's client. An httpx.AsyncClient persists cookies
+# across requests (python-httpx.org/advanced/clients), so one client shared by two managed accounts
+# sends whatever Set-Cookie the first collected on the second's requests to the same host, which is
+# a gateway session crossing accounts. Keyed by account, and bounded by the accounts that exist.
+_managed_clients: dict[tuple[str, bool], httpx.AsyncClient] = {}
+_managed_clients_lock = threading.Lock()
 
 
 def _client() -> httpx.AsyncClient:
-    """The shared client for the owner; for a managed account one of two screening clients.
-
-    Never the owner's object: an ``httpx.AsyncClient`` keeps a cookie jar, which would carry a
-    Set-Cookie between accounts on the same host.
-    """
-    from utils.account_context import is_owner_context
+    """The shared client for the owner; a screening client of its own for each managed account."""
+    from utils.account_context import current_account_id, is_owner_context
     from utils.managed_provider_url_settings import get_managed_private_provider_urls_allowed
 
     if is_owner_context():
         return _http_client
-    global _managed_http_client, _managed_private_http_client
-    if get_managed_private_provider_urls_allowed():
-        # Read per call, so a flip takes effect without a restart.
-        if _managed_private_http_client is None:
-            _managed_private_http_client = httpx.AsyncClient(
-                transport = _PinnedNonMetadataTransport(), trust_env = False
+    # Read per call, so a flip takes effect without a restart.
+    allowed = get_managed_private_provider_urls_allowed()
+    key = (current_account_id(), allowed)
+    with _managed_clients_lock:
+        client = _managed_clients.get(key)
+        if client is None:
+            transport = (
+                _PinnedNonMetadataTransport() if allowed else _PinnedPublicTransport()
             )
-        return _managed_private_http_client
-    if _managed_http_client is None:
-        _managed_http_client = httpx.AsyncClient(
-            transport = _PinnedPublicTransport(), trust_env = False
-        )
-    return _managed_http_client
+            client = httpx.AsyncClient(transport = transport, trust_env = False)
+            _managed_clients[key] = client
+        return client
 
 
 # Cap per-image fetch well below Gemini's ~20 MB total request budget.

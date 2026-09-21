@@ -121,7 +121,7 @@ def owner_allows_private_urls(monkeypatch):
         managed_provider_url_settings, "get_managed_private_provider_urls_allowed", lambda: True
     )
     # The pinning client is a module-level singleton; drop it so the choice is made fresh.
-    monkeypatch.setattr(external_provider, "_managed_http_client", None, raising = False)
+    monkeypatch.setattr(external_provider, "_managed_clients", {}, raising = False)
 
 
 def test_managed_account_may_save_a_private_base_url_once_the_owner_allows_it(

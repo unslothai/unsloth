@@ -21,15 +21,14 @@ from core.inference import external_provider
 from utils.account_context import OWNER, AccountContext, bind_account, reset_account
 
 ALICE = AccountContext("a" * 32, "alice")
+BOB = AccountContext("b" * 32, "bob")
 
 
 @pytest.fixture(autouse = True)
 def fresh_singleton(monkeypatch):
-    monkeypatch.setattr(external_provider, "_managed_http_client", None, raising = False)
-    monkeypatch.setattr(external_provider, "_managed_private_http_client", None, raising = False)
+    monkeypatch.setattr(external_provider, "_managed_clients", {}, raising = False)
     yield
-    external_provider._managed_http_client = None
-    external_provider._managed_private_http_client = None
+    external_provider._managed_clients = {}
 
 
 @pytest.fixture
@@ -92,6 +91,21 @@ def test_the_choice_follows_a_live_flip(switch):
 def test_the_pinning_client_is_reused_not_rebuilt(switch):
     """Rebuilding per call would drop every pooled connection."""
     assert client_as(ALICE) is client_as(ALICE)
+
+
+def test_two_managed_accounts_never_share_a_client(switch):
+    """httpx persists cookies per client, so one shared by two accounts carries a gateway
+    session from one to the other. https://www.python-httpx.org/advanced/clients/"""
+    for allowed in (False, True):
+        switch["allowed"] = allowed
+        alice, bob = client_as(ALICE), client_as(BOB)
+        assert alice is not bob
+
+        alice.cookies.set("gateway_session", "ALICE", domain = "gw.example")
+        try:
+            assert bob.cookies.get("gateway_session", domain = "gw.example") is None
+        finally:
+            alice.cookies.clear()
 
 
 def test_an_unbound_thread_defaults_to_owner(switch):
