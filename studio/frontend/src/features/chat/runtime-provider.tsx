@@ -1185,14 +1185,8 @@ function scheduleGenerationRecovery(
             await publish(update.run);
           }
           if (isTerminalChatGenerationRun(update.run)) {
-            // Join the seeding first: it is no longer awaited at the call site, so without this a
-            // late arm could land after the disarm and leave the buttons up on a finished run.
-            if (seededApprovals) await seededApprovals.catch(() => {});
-            // The run is over, so any approval card recovery raised is over with it. A run that
-            // terminates without a tool_end (backend failed or restarted while the call was parked)
-            // leaves the card armed otherwise: the initial guard above only covers a run that was
-            // ALREADY terminal when this attached, not one that gets there later.
-            toolRecovery.disarmAll();
+            // The disarm itself now lives in the finally, so it also covers the exits this branch
+            // never sees (a permanent follower error, a thread deleted in another tab).
             // Only another successful active-list sync would otherwise drop it, so the thread would keep
             // reading as durable and a later subscriber-owned stream would be capped, losing the
             // checkpoints that are its only persistence.
@@ -1225,6 +1219,17 @@ function scheduleGenerationRecovery(
         );
       }
     } finally {
+      // EVERY exit, not just the terminal one. A permanent follower error (another tab deletes the
+      // thread, the run row cascades, the next request 404s) throws straight past the terminal
+      // branch and is swallowed by the outer catch, so a card armed from the seed would stay in the
+      // global toolConfirmations store for the rest of the session. Nothing renders buttons over a
+      // finished part, but `soleRequest` counts entries, so a later real approval reads as non-sole
+      // and silently loses its Enter and Escape chords.
+      //
+      // The seeding is joined first because it is no longer awaited at its call site: without this
+      // a late arm lands after the disarm and leaves the card up on a run that is already over.
+      if (seededApprovals) await seededApprovals.catch(() => {});
+      toolRecovery.disarmAll();
       const store = useChatRuntimeStore.getState();
       store.setThreadRunning(threadId, false, { owner: serverCancel });
       store.clearThreadServerCancel(threadId, serverCancel);

@@ -17,7 +17,14 @@ count would have to be decremented by a ``finally`` that a wedged or abandoned g
 reach, and a leaked increment fails the dangerous way round: it would park an abandoned approval
 forever.
 
-Keyed by run id AND by follower, because one run can have several: two tabs, or a reconnect whose
+Keyed by ACCOUNT and run id, and within that by follower. The account half matters because
+`studio.db` is per-account (`utils.paths.storage_roots.studio_db_path` -> `account_path`) and the
+run id is chosen by the client (`CreateChatGenerationRun.runId`), so two accounts on one managed
+install can hold the same id. A process-global map keyed on the bare id let one account's follower
+report the other's run as attended, which would hold a stranger's approval open and keep renewing
+its lease.
+
+Keyed by follower too, because one run can have several: two tabs, or a reconnect whose
 replacement stream attaches before the old one finishes unwinding. A single stamp per run made
 either follower's cleanup delete a heartbeat the OTHER had just written, and the survivor does not
 stamp again until its event wait turns over (up to 15s), so a short
@@ -43,8 +50,15 @@ import uuid
 _ATTENDED_FOR_S = 45.0
 
 _LOCK = threading.Lock()
-# run_id -> {follower token: monotonic seconds at that follower's last heartbeat}
-_SEEN: dict[str, dict[str, float]] = {}
+# (account_id, run_id) -> {follower token: monotonic seconds at that follower's last heartbeat}
+_SEEN: dict[tuple[str, str], dict[str, float]] = {}
+
+
+def _key(account_id: str, run_id: str) -> tuple[str, str]:
+    # A missing account is its own scope rather than a wildcard: on a single-user install every
+    # caller passes the same empty value, and on a managed one a caller that cannot name its
+    # account must not match one that can.
+    return (account_id or "", run_id)
 
 
 def new_follower_token() -> str:
@@ -52,8 +66,12 @@ def new_follower_token() -> str:
     return uuid.uuid4().hex
 
 
-def mark_subscriber_seen(run_id: str, follower: str) -> None:
-    """Record that ``follower`` is attached to ``run_id`` right now.
+def mark_subscriber_seen(
+    run_id: str,
+    follower: str,
+    account_id: str = "",
+) -> None:
+    """Record that ``follower`` is attached to ``account_id``'s ``run_id`` right now.
 
     Called once per iteration of the run's SSE loop, which turns over at least every keep-alive
     period. Cheap enough to call unconditionally: one dict write under a lock.
@@ -61,10 +79,14 @@ def mark_subscriber_seen(run_id: str, follower: str) -> None:
     if not run_id or not follower:
         return
     with _LOCK:
-        _SEEN.setdefault(run_id, {})[follower] = time.monotonic()
+        _SEEN.setdefault(_key(account_id, run_id), {})[follower] = time.monotonic()
 
 
-def subscriber_departed(run_id: str, follower: str) -> None:
+def subscriber_departed(
+    run_id: str,
+    follower: str,
+    account_id: str = "",
+) -> None:
     """Drop only ``follower``'s stamp when its loop exits, leaving any other follower's alone.
 
     Best effort, and deliberately not the only way an entry goes away: a generator that is closed
@@ -74,22 +96,24 @@ def subscriber_departed(run_id: str, follower: str) -> None:
     """
     if not run_id or not follower:
         return
+    key = _key(account_id, run_id)
     with _LOCK:
-        followers = _SEEN.get(run_id)
+        followers = _SEEN.get(key)
         if followers is None:
             return
         followers.pop(follower, None)
         if not followers:
-            _SEEN.pop(run_id, None)
+            _SEEN.pop(key, None)
 
 
-def is_attended(run_id: str) -> bool:
-    """Whether ANY follower of ``run_id`` has been heard from within the freshness window."""
+def is_attended(run_id: str, account_id: str = "") -> bool:
+    """Whether ANY follower of ``account_id``'s ``run_id`` has been heard from recently."""
     if not run_id:
         return False
+    key = _key(account_id, run_id)
     cutoff = time.monotonic() - _ATTENDED_FOR_S
     with _LOCK:
-        followers = _SEEN.get(run_id)
+        followers = _SEEN.get(key)
         if not followers:
             return False
         # Expire lazily. A reaper would need a thread to do the same job this loop does, and the
@@ -98,15 +122,15 @@ def is_attended(run_id: str) -> bool:
             if seen <= cutoff:
                 del followers[token]
         if not followers:
-            _SEEN.pop(run_id, None)
+            _SEEN.pop(key, None)
             return False
         return True
 
 
-def attendance_for_tests(run_id: str) -> int:
-    """How many followers are currently stamped for ``run_id``."""
+def attendance_for_tests(run_id: str, account_id: str = "") -> int:
+    """How many followers are currently stamped for ``account_id``'s ``run_id``."""
     with _LOCK:
-        return len(_SEEN.get(run_id) or {})
+        return len(_SEEN.get(_key(account_id, run_id)) or {})
 
 
 def reset_for_tests() -> None:

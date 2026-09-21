@@ -148,15 +148,40 @@ test("the seeded-approval check does not block the event stream from opening", (
   }
 });
 
-test("the seeded-approval promise is joined before the run is disarmed", () => {
+
+// ── The disarm has to cover every exit, not just the terminal one ───────────
+// A permanent follower error -- another tab deletes the thread, the run row cascades, the next
+// request 404s -- throws straight past the terminal branch and is swallowed by the outer catch. A
+// card armed from the seed would then sit in the global toolConfirmations store for the rest of the
+// session. Nothing renders buttons over a finished part, but `soleRequest` counts entries, so a
+// later real approval reads as non-sole and silently loses its Enter and Escape chords.
+
+test("disarmAll runs in the recovery's finally, not only on the terminal path", () => {
   const text = readFileSync(SOURCE, "utf8");
-  // Not awaiting at the call site is only safe if something still orders the arm against the
-  // disarm; without this a late arm lands after the run ended and leaves the buttons up.
+  const disarms = [...text.matchAll(/toolRecovery\.disarmAll\(\)/g)];
+  assert.equal(
+    disarms.length,
+    1,
+    "expected exactly one disarmAll call site; more than one means the terminal-path copy came " +
+      "back and the two can disagree about ordering against the seed join",
+  );
+  // The call must sit inside a `finally {`, which is the only block every exit reaches.
+  const before = text.slice(0, disarms[0]!.index!);
+  const lastFinally = before.lastIndexOf("} finally {");
+  const lastTerminalIf = before.lastIndexOf("isTerminalChatGenerationRun(update.run)");
+  assert.ok(
+    lastFinally > lastTerminalIf,
+    "disarmAll must sit in the recovery's finally block. Under the terminal `if` it is skipped " +
+      "whenever the follower throws, which leaks the armed card into the global store.",
+  );
+});
+
+test("the seed is joined before the disarm, wherever the disarm lives", () => {
+  const text = readFileSync(SOURCE, "utf8");
   const disarmIndex = text.indexOf("toolRecovery.disarmAll()");
   assert.ok(disarmIndex > 0, "disarmAll call site not found");
-  const before = text.slice(0, disarmIndex);
   assert.match(
-    before,
+    text.slice(0, disarmIndex),
     /await seededApprovals/,
     "the seeded-approval promise must be joined before disarmAll, or an arm that resolves " +
       "late re-raises buttons on a run that is already over",

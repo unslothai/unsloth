@@ -731,3 +731,50 @@ def test_a_waiter_with_no_renew_hook_still_works(monkeypatch):
     assert _has_pending(aid), "attendance must still hold the park open without a renew hook"
     assert resolve_tool_decision(aid, "allow", session_id = "sess") is True
     assert w.join(timeout = 3.0) == "allow"
+
+
+# ── Attendance is per ACCOUNT as well as per run ──
+# studio.db is per-account (utils.paths.storage_roots.studio_db_path -> account_path) and the run id
+# comes from the client (CreateChatGenerationRun.runId), so two accounts on one managed install can
+# hold the same id. Keyed on the bare id, one tenant's follower answered for another's run: it would
+# hold a stranger's approval open past its ceiling and keep renewing that run's lease.
+
+
+def test_attendance_does_not_cross_accounts():
+    run_subscribers.mark_subscriber_seen("shared-id", "tab-a", "account-a")
+    assert run_subscribers.is_attended("shared-id", "account-a") is True
+    assert (
+        run_subscribers.is_attended("shared-id", "account-b") is False
+    ), "another account's follower must not report this run as attended"
+    # And the no-account scope is its own, not a wildcard that matches everyone.
+    assert run_subscribers.is_attended("shared-id") is False
+
+
+def test_a_departure_only_clears_its_own_accounts_stamp():
+    run_subscribers.mark_subscriber_seen("shared-id", "tab-a", "account-a")
+    run_subscribers.mark_subscriber_seen("shared-id", "tab-b", "account-b")
+    run_subscribers.subscriber_departed("shared-id", "tab-a", "account-a")
+    assert run_subscribers.is_attended("shared-id", "account-a") is False
+    assert run_subscribers.is_attended("shared-id", "account-b") is True
+
+
+def test_another_accounts_follower_cannot_hold_this_park_open(monkeypatch):
+    """The reachable consequence: account B watching its own run must not keep account A's
+    approval alive, nor keep renewing A's lease."""
+    monkeypatch.setattr(tool_approvals, "_PARK_TIMEOUT_S", 0.2)
+    monkeypatch.setattr(tool_approvals, "_LEASE_RENEW_EVERY_S", 0.0)
+    renewals = []
+    cancel = threading.Event()
+    cancel.durable = True
+    cancel.durable_run_id = "shared-id"
+    cancel.durable_account_id = "account-a"
+    cancel.renew_lease = lambda: renewals.append(1)
+    aid = new_approval_id()
+
+    # Only account B is watching, on ITS run that happens to share the id.
+    run_subscribers.mark_subscriber_seen("shared-id", "tab-b", "account-b")
+    w = _Waiter("sess", aid, cancel_event = cancel).start()
+    assert (
+        w.join(timeout = 3.0) == "deny"
+    ), "account A's approval was held open by account B's follower"
+    assert renewals == [], "account A's lease was renewed on the strength of account B's follower"

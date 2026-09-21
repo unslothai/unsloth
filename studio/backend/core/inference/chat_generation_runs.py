@@ -18,7 +18,7 @@ from starlette.requests import Request
 
 from core.inference.llama_keepwarm import InferenceActivityReservation
 from core.training.account_jobs import sweepable_job_accounts
-from utils.account_context import run_as
+from utils.account_context import current_account_id, run_as
 from loggers import get_logger
 from models.inference import ChatCompletionRequest
 from state import active_generations
@@ -516,6 +516,9 @@ class ChatGenerationSupervisor:
         # sweeper is the only bound on a producer that stops making progress at all.
         cancel_event.durable = True
         cancel_event.durable_run_id = run_id
+        # Same scope active_generations.ActiveGeneration captures just below, and for the same
+        # reason: the id alone is not unique across accounts.
+        cancel_event.durable_account_id = current_account_id() or ""
         # Re-arming the approval's own counter is not enough on its own: parking makes no progress,
         # so without this the sweeper settles the run at the lease timeout (default 1200s) and
         # cancels the wait, capping an ATTENDED deliberation at ~20 minutes. A user who is sitting

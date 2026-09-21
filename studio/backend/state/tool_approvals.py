@@ -129,6 +129,9 @@ def wait_tool_decision(
     """
     park = bool(getattr(cancel_event, "durable", False))
     run_id = getattr(cancel_event, "durable_run_id", "") or ""
+    # Run ids are account-local (per-account studio.db, client-chosen id), so attendance has to be
+    # asked for under the same account or one tenant's follower answers for another's run.
+    account_id = getattr(cancel_event, "durable_account_id", "") or ""
     renew_lease = getattr(cancel_event, "renew_lease", None)
 
     def _settle(verdict, reason):
@@ -156,7 +159,7 @@ def wait_tool_decision(
             # module's own ceiling - the same hour a browser-owned run gets - rather than `timeout`.
             if total >= _DECISION_TIMEOUT:
                 return _settle("deny", DECISION_EXPIRED)
-            if run_subscribers.is_attended(run_id):
+            if run_subscribers.is_attended(run_id, account_id):
                 # Someone is watching, so this is deliberation, not abandonment.
                 waited = 0.0
                 # The RUN's lease has to be renewed too, not just this counter. Parking makes no

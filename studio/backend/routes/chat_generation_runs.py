@@ -380,6 +380,7 @@ async def chat_generation_events(
     # same run, or a reconnect overlapping the stream it replaces, otherwise had either one's
     # cleanup delete the other's heartbeat.
     follower = run_subscribers.new_follower_token()
+    follower_account = current_account_id() or ""
 
     async def stream():
         nonlocal cursor
@@ -397,7 +398,7 @@ async def chat_generation_events(
             # who is still reading what the tool wants to do. Stamped before the wait, so a follower
             # that attaches while a call is already parked counts immediately rather than only after
             # its first keep-alive. See state/run_subscribers.py.
-            run_subscribers.mark_subscriber_seen(run_id, follower)
+            run_subscribers.mark_subscriber_seen(run_id, follower, follower_account)
             events = await loop.run_in_executor(
                 _EVENT_WAIT_EXECUTOR,
                 wait_for_events,
@@ -445,7 +446,7 @@ async def chat_generation_events(
             async for frame in stream():
                 yield frame
         finally:
-            run_subscribers.subscriber_departed(run_id, follower)
+            run_subscribers.subscriber_departed(run_id, follower, follower_account)
 
     return StreamingResponse(
         stream_while_attended(),
