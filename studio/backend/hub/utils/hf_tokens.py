@@ -367,17 +367,15 @@ def _saved_studio_hf_token() -> "tuple[bool, Optional[str]]":
         from storage import credential_secrets
     except Exception:
         return (False, None)
+    # Value and presence from ONE read: `get_secret` answers None for an absent row AND for an
+    # undecryptable one, and conflating them is fail-open, but asking the store twice was two
+    # sqlite connections on a path every read of a cached repo goes through.
     try:
-        token = credential_secrets.get_hf_token()
+        token, stored = credential_secrets.get_hf_token_with_presence()
     except Exception:
         return (False, None)
     if isinstance(token, str) and token.strip():
         return (True, token.strip())
-    # `get_secret` returns None for an absent row AND an undecryptable one; conflating is fail-open.
-    try:
-        stored = credential_secrets.hf_token_row_exists()
-    except Exception:
-        return (False, None)
     if stored:
         return (False, None)
     return (True, None)

@@ -165,8 +165,13 @@ def insert_secret_if_absent(credential_kind: str, scope_id: str, plaintext: str)
         conn.close()
 
 
-def get_secret(credential_kind: str, scope_id: str) -> Optional[str]:
-    """Return a decrypted credential, or ``None`` if absent or unreadable."""
+def get_secret_with_presence(credential_kind: str, scope_id: str) -> "tuple[Optional[str], bool]":
+    """The decrypted credential, and whether a row is STORED at all, from ONE read.
+
+    Asking `get_secret` and then `secret_row_exists` is two connections for one question, and
+    the cache-read gate in hub/utils/hf_tokens.py asks it on every read of a cached repo. The
+    two answers must still be told apart: absent authorizes, unreadable must not.
+    """
     conn = get_connection()
     try:
         row = conn.execute(
@@ -179,21 +184,28 @@ def get_secret(credential_kind: str, scope_id: str) -> Optional[str]:
         ).fetchone()
     finally:
         conn.close()
-    if row is None or row["format_version"] != _FORMAT_VERSION:
-        return None
+    if row is None:
+        return (None, False)
+    if row["format_version"] != _FORMAT_VERSION:
+        return (None, True)
     try:
         plaintext = AESGCM(get_or_create_credential_encryption_key()).decrypt(
             bytes(row["nonce"]),
             bytes(row["ciphertext"]),
             _associated_data(credential_kind, scope_id),
         )
-        return plaintext.decode("utf-8")
+        return (plaintext.decode("utf-8"), True)
     except Exception:
         logger.warning(
             "Saved credential is unreadable; re-entry is required (kind=%s)",
             credential_kind,
         )
-        return None
+        return (None, True)
+
+
+def get_secret(credential_kind: str, scope_id: str) -> Optional[str]:
+    """Return a decrypted credential, or ``None`` if absent or unreadable."""
+    return get_secret_with_presence(credential_kind, scope_id)[0]
 
 
 def has_secret(credential_kind: str, scope_id: str) -> bool:
@@ -243,6 +255,11 @@ def delete_secret(
 
 def get_hf_token() -> Optional[str]:
     return get_secret(HF_TOKEN_KIND, HF_TOKEN_SCOPE)
+
+
+def get_hf_token_with_presence() -> "tuple[Optional[str], bool]":
+    """The saved HF token and whether one is stored at all. See `get_secret_with_presence`."""
+    return get_secret_with_presence(HF_TOKEN_KIND, HF_TOKEN_SCOPE)
 
 
 def hf_token_row_exists() -> bool:
