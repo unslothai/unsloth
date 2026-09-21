@@ -15,6 +15,8 @@ from pathlib import Path
 
 import pytest
 
+from .thread_drain import join_when_started
+
 _BACKEND = Path(__file__).resolve().parent.parent
 if str(_BACKEND) not in sys.path:
     sys.path.insert(0, str(_BACKEND))
@@ -45,8 +47,7 @@ def _reset_attempt_guard(monkeypatch):
     # against the next test's globals.
     for thread in threading.enumerate():
         if thread.name == "mlx-autorepair":
-            thread.join(timeout = 5)
-            assert not thread.is_alive(), (
+            assert join_when_started(thread, timeout = 5), (
                 "an mlx-autorepair worker outlived its test; once these stubs are "
                 "restored it runs the real repair and detection against another test"
             )
@@ -402,7 +403,7 @@ def test_apple_silicon_missing_mlx_starts_repair_and_redetects(monkeypatch):
     # Join the daemon thread deterministically.
     for thread in threading.enumerate():
         if thread.name == "mlx-autorepair":
-            thread.join(timeout = 5)
+            join_when_started(thread, timeout = 5)
 
     assert repaired["called"] is True
     assert redetected["called"] is True
@@ -596,8 +597,7 @@ def _recorded_announcements(monkeypatch):
 def _join_the_repair_worker():
     for thread in threading.enumerate():
         if thread.name == "mlx-autorepair":
-            thread.join(timeout = 5)
-            assert not thread.is_alive()
+            assert join_when_started(thread, timeout = 5)
 
 
 def test_a_stack_that_measures_usable_overturns_the_verdict(monkeypatch):
