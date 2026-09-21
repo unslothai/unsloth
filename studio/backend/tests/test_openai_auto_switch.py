@@ -10,6 +10,7 @@ tests/test_gguf_completion_usage.py.
 import asyncio
 import json
 import os
+import tempfile
 import threading
 import time
 import types
@@ -11978,3 +11979,87 @@ def test_the_completeness_verdict_belongs_to_the_scan_that_published(monkeypatch
     assert resolver.index_last_scan_was_complete() is True, (
         "a raising build must not rewrite the verdict of the snapshot still published"
     )
+
+
+def test_one_tenants_complete_scan_does_not_bless_anothers_partial_one(monkeypatch):
+    """The completeness verdict is per account, like the snapshot it describes.
+
+    Scan roots are account private: _snapshot selects from _managed_scans per tenant, so a
+    verdict kept in one process-global reads back whichever account scanned LAST. Tenant A
+    publishing a partial scan and tenant B then completing one would leave A's next cache
+    miss looking like a confirmed absence and permanently settle its alias probe, with
+    nothing to reopen it short of an invalidation or a reload.
+    """
+    from utils.account_context import AccountContext, run_as
+
+    monkeypatch.setattr(resolver, "_CACHE_TTL_S", 0)
+    monkeypatch.setattr(resolver, "_scan_complete", False)
+    monkeypatch.setattr(resolver, "_managed_scans_complete", {})
+
+    tenant_a = AccountContext("acct-a", "ada")
+    tenant_b = AccountContext("acct-b", "bo")
+
+    def partial():
+        resolver._note_scan_source_skipped()
+        return {}
+
+    monkeypatch.setattr(resolver, "_build_index", partial)
+    run_as(tenant_a, resolver._index)
+    assert run_as(tenant_a, resolver.index_last_scan_was_complete) is False, (
+        "the harness did not produce a partial scan for tenant A"
+    )
+
+    monkeypatch.setattr(resolver, "_build_index", lambda: {})
+    run_as(tenant_b, resolver._index)
+    assert run_as(tenant_b, resolver.index_last_scan_was_complete) is True
+
+    assert run_as(tenant_a, resolver.index_last_scan_was_complete) is False, (
+        "another tenant's complete scan blessed this tenant's partial snapshot"
+    )
+    # The owner's snapshot is a third one again, and it has not scanned at all. Unknown
+    # reads as incomplete, which only ever admits fewer memoized answers.
+    assert resolver.index_last_scan_was_complete() is False, (
+        "the owner inherited a managed account's verdict"
+    )
+
+
+def test_an_unreadable_registered_scan_folder_is_a_skipped_source(monkeypatch):
+    """A registered folder that is not there right now was not SEEN, not found empty.
+
+    Every scan under a scan folder answers an unreachable path with an empty list and no
+    exception -- a disconnected network mount, an unplugged drive, a revoked permission --
+    so only the exception handler noticing would publish that pass as complete and let a
+    miss be memoized as a confirmed absence while the mount is down.
+    """
+    import routes.models as routes_models
+    import storage.studio_db as studio_db
+
+    for name in ("_scan_models_dir", "_scan_lmstudio_dir", "_scan_ollama_dir"):
+        monkeypatch.setattr(routes_models, name, lambda *a, **k: [])
+    monkeypatch.setattr(routes_models, "_scan_hf_cache", lambda *a, **k: [])
+    monkeypatch.setattr(routes_models, "_resolve_hf_cache_dir", lambda: "/nonexistent-hf")
+    monkeypatch.setattr(routes_models, "_is_hidden_model", lambda *a, **k: False)
+
+    missing = "/nonexistent-mount/uidiff-registered-folder"
+    assert not os.path.isdir(missing), "the premise of this case is that it is absent"
+    monkeypatch.setattr(
+        studio_db, "list_scan_folders", lambda *a, **k: [{"path": missing}]
+    )
+
+    monkeypatch.setattr(resolver, "_scan_sources_skipped", 0)
+    resolver._build_index()
+    assert resolver._scan_sources_skipped >= 1, (
+        "an absent registered scan folder was counted as a source this pass could read"
+    )
+
+    # A readable one is not penalized, or every pass would read as incomplete forever and
+    # the probe would never settle.
+    with tempfile.TemporaryDirectory() as readable:
+        monkeypatch.setattr(
+            studio_db, "list_scan_folders", lambda *a, **k: [{"path": readable}]
+        )
+        monkeypatch.setattr(resolver, "_scan_sources_skipped", 0)
+        resolver._build_index()
+        assert resolver._scan_sources_skipped == 0, (
+            f"a readable registered folder {readable} was reported as skipped"
+        )

@@ -15,6 +15,7 @@ seconds since auto-switch consults it per request.
 
 from __future__ import annotations
 
+import os
 import threading
 import time
 from dataclasses import dataclass
@@ -701,10 +702,14 @@ def local_load_dir(path: Optional[str]) -> Optional[str]:
 # How many sources the scan in progress had to skip. Each source is guarded on its own so one
 # bad root does not crash the index, which means a published snapshot can be fresh and
 # incomplete at the same time: a caller reading a miss from it as a confirmed ABSENCE would
-# memoize an answer the recovered scan contradicts. Both are written only in ``_index``,
-# which holds ``_lock`` for the whole pass.
+# memoize an answer the recovered scan contradicts. Written only in ``_index``, which holds
+# ``_lock`` for the whole pass.
 _scan_sources_skipped = 0
-_last_scan_was_complete = False
+# The verdict for the OWNER's snapshot, and one per managed account, selected exactly like
+# ``_snapshot``: scan roots are account private, so one tenant's partial scan says nothing
+# about another's, and a single global would let the last account to scan answer for all.
+_scan_complete = False
+_managed_scans_complete: dict[str, bool] = {}
 
 
 def _note_scan_source_skipped() -> None:
@@ -712,14 +717,26 @@ def _note_scan_source_skipped() -> None:
     _scan_sources_skipped += 1
 
 
-def index_last_scan_was_complete() -> bool:
-    """Whether the most recent completed scan reached every source it tried.
+def _publish_scan_completeness(complete: bool) -> None:
+    global _scan_complete
+    if is_owner_context():
+        _scan_complete = complete
+    else:
+        _managed_scans_complete[current_account_id()] = complete
 
-    A miss from an INCOMPLETE scan is not evidence of absence, only of what this pass could
+
+def index_last_scan_was_complete() -> bool:
+    """Whether the acting account's published snapshot came from a scan that reached
+    every source it tried.
+
+    A miss from an INCOMPLETE scan is not evidence of absence, only of what that pass could
     see. Callers memoizing a negative answer must check this; ones simply resolving a name do
-    not, since a partial index is still better than none.
+    not, since a partial index is still better than none. An account that has never scanned
+    reads False, which only ever admits fewer memoized answers.
     """
-    return _last_scan_was_complete
+    if is_owner_context():
+        return _scan_complete
+    return _managed_scans_complete.get(current_account_id(), False)
 
 
 def _build_index() -> dict[str, _LocalGgufEntry]:
@@ -823,6 +840,17 @@ def _build_index() -> dict[str, _LocalGgufEntry]:
         for folder in list_scan_folders():
             try:
                 fp = Path(folder["path"])
+                # A REGISTERED folder was configured explicitly, so its absence is a source
+                # this pass could not read, not a source that has nothing in it. Every scan
+                # below answers an unreachable path with an empty list and no exception -- a
+                # disconnected network mount, an unplugged drive, a revoked permission -- so
+                # without this the pass publishes as complete and a miss is memoized as a
+                # confirmed absence. Unlike the discovered roots above, which are absent on
+                # most hosts by nature and would make every scan incomplete forever.
+                if not (fp.is_dir() and os.access(fp, os.R_OK)):
+                    _note_scan_source_skipped()
+                    logger.debug("auto-switch: scan folder %r not readable", folder)
+                    continue
                 custom_found += dedupe_custom_gguf_rows(
                     _scan_models_dir(fp, limit = 200)
                     + _scan_hf_once(fp)
@@ -1000,14 +1028,15 @@ def _index() -> dict[str, _LocalGgufEntry]:
         # would serve what was just revoked
         if ts > 0.0 and now - ts < _CACHE_TTL_S:
             return cached
-        global _scan_sources_skipped, _last_scan_was_complete
+        global _scan_sources_skipped
         # Around the call, not inside it, so the verdict belongs to whatever actually built
         # this snapshot. Reset first: the count is per pass.
         _scan_sources_skipped = 0
         fresh = _build_index()
-        # Only after it returned. A build that raised publishes nothing, and must not leave
-        # the previous pass's verdict standing over an unchanged snapshot.
-        _last_scan_was_complete = _scan_sources_skipped == 0
+        # Only after it returned, and published beside the snapshot it describes. A build
+        # that raised publishes nothing and must not leave a verdict standing over the
+        # snapshot that is still there.
+        _publish_scan_completeness(_scan_sources_skipped == 0)
         # Stamp AFTER the scan, not with the pre-scan ``now``: a multi-root scan on an install with many local models
         # can itself exceed the TTL, which would store the cache already expired and make every request rebuild the
         # index.
