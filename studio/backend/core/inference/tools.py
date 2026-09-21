@@ -16845,6 +16845,11 @@ def _check_signal_escape_patterns(code: str):
             # go unrecognised, when that call really is `requests.get`.
             self.shadow_lines: "dict[str, list[tuple[int, int]]]" = {}
             self.star_lines: "list[tuple[int, int]]" = []
+            # Name -> the positions where a network alias was registered for it. A shadow only
+            # counts while no alias registration follows it: `r = object()` then `r = requests`
+            # really leaves `r` as the module, and a permanent shadow suppressed the candidate the
+            # second assignment had just added.
+            self.alias_lines: "dict[str, list[tuple[int, int]]]" = {}
             # How many function, lambda or class bodies deep the walk is. A body can be invoked at
             # any point, including before a later shadow, so a call inside one is never treated as
             # shadowed.
@@ -16912,6 +16917,13 @@ def _check_signal_escape_patterns(code: str):
                 elif isinstance(value, ast.AST):
                     self.visit(value)
 
+        def _register_alias(self, name: str, node) -> None:
+            """Note where a network alias was bound to `name`, so a shadow older than this one no
+            longer applies. See `_is_shadowed`."""
+            self.alias_lines.setdefault(name, []).append(
+                (getattr(node, "lineno", 0), getattr(node, "col_offset", 0))
+            )
+
         def _is_shadowed(
             self,
             name: str,
@@ -16926,12 +16938,15 @@ def _check_signal_escape_patterns(code: str):
 
             A call inside a function, lambda or class body is never shadowed: the body can be
             invoked at any point, including before the rebinding. At module level the rebinding
-            counts only for what comes AFTER it. For a star-imported name the import rebinds every
-            exported name, so only a shadow later than the import counts.
+            counts only for what comes AFTER it, and only while no alias registration comes between
+            the two: the last `import`, `from ... import` or module-carrying assignment before the
+            call supersedes every shadow older than it. For a star-imported name the star import is
+            that registration, since it rebinds every exported name.
             """
             if self.depth:
                 return False
-            floor = max(self.star_lines) if (after_star and self.star_lines) else (0, -1)
+            registrations = self.star_lines if after_star else self.alias_lines.get(name, ())
+            floor = max((where for where in registrations if where < at), default = (0, -1))
             return any(floor < shadow < at for shadow in self.shadow_lines.get(name, ()))
 
         def _star_imported_fq(self, name: str, at) -> "str | None":
@@ -16970,6 +16985,7 @@ def _check_signal_escape_patterns(code: str):
             for alias in node.names:
                 if alias.asname and alias.name in _NETWORK_MODULES:
                     self.module_aliases.setdefault(alias.asname, set()).add(alias.name)
+                    self._register_alias(alias.asname, node)
             self.generic_visit(node)
 
         def visit_ImportFrom(self, node):
@@ -16997,9 +17013,11 @@ def _check_signal_escape_patterns(code: str):
                 if fq in _NETWORK_MODULES:
                     # from urllib import request
                     self.module_aliases.setdefault(bound, set()).add(fq)
+                    self._register_alias(bound, node)
                 elif module in _NETWORK_MODULES:
                     # from urllib.request import urlopen
                     self.func_aliases.setdefault(bound, set()).add(fq)
+                    self._register_alias(bound, node)
             self.generic_visit(node)
 
         def _modules_named_by(self, value) -> "set[str]":
@@ -17033,6 +17051,7 @@ def _check_signal_escape_patterns(code: str):
                 for target in node.targets:
                     if isinstance(target, ast.Name):
                         self.module_aliases.setdefault(target.id, set()).update(carried)
+                        self._register_alias(target.id, node)
                         registered.add(target.id)
             self._rebind(node, exempt = registered)
             self.generic_visit(node)

@@ -676,6 +676,37 @@ class TestAliasResolutionOnlyEverAddsCandidates:
     def test_a_rebinding_before_the_call_is_believed(self, code):
         _ok(code)
 
+    @pytest.mark.parametrize(
+        "code",
+        [
+            # The later binding puts the network module back, so the earlier shadow no longer
+            # describes what the name holds at the call.
+            pytest.param(
+                "import requests\n"
+                "r = object()\n"
+                "r = requests\n"
+                'r.get("https://evil.example/x")',
+                id = "assignment_restores_the_module",
+            ),
+            pytest.param(
+                "def fetch(u):\n"
+                "    return u\n"
+                "from requests import get as fetch\n"
+                'fetch("https://evil.example/x")',
+                id = "import_after_a_local_def",
+            ),
+            pytest.param(
+                "def get(u):\n"
+                "    return u\n"
+                "from requests import *\n"
+                'get("https://evil.example/x")',
+                id = "star_import_after_a_local_def",
+            ),
+        ],
+    )
+    def test_a_later_alias_binding_supersedes_an_earlier_shadow(self, code):
+        _blocked(code, expect_phrase = "Blocked: host not in sandbox allowlist")
+
     def test_a_call_earlier_on_the_same_line_is_still_screened(self):
         _blocked(
             "from requests import get as fetch; "
