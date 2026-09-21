@@ -441,7 +441,9 @@ test("the mermaid source matches what the scanner renders", () => {
   );
   // The streaming branch keys on the opener: there is no close to match yet.
   assert.match(MARKDOWN_TEXT, /const hasMermaidFence = isMermaidFenceOpener\(props\.content\);/);
-  assert.match(MARKDOWN_TEXT, /const MERMAID_INFO_RE = \/\^ \{0,3\}/);
+  // Searching a LINE, so a fence preceded by prose (a footnote coalesces the reply into one
+  // block) is still found.
+  assert.match(MARKDOWN_TEXT, /const MERMAID_INFO_RE = \/\^ \{0,3\}[^;]*\/im;/);
 });
 
 test("a settled alternative fence is not marked incomplete", () => {

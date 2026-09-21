@@ -314,7 +314,7 @@ const STREAMDOWN_ALLOWED_TAGS = {
 const COPY_RESET_MS = 2000;
 // A second parser was the root cause of three review findings, so the diagram source comes from
 // `markdownBlockFallback`, which already handles every fence form CommonMark allows.
-const MERMAID_INFO_RE = /^ {0,3}(?:`{3,}|~{3,})[ \t]*mermaid\b/i;
+const MERMAID_INFO_RE = /^ {0,3}(?:`{3,}|~{3,})[ \t]*mermaid\b/im;
 const ACTION_PANEL_CLASS =
   "pointer-events-auto flex shrink-0 items-center gap-1";
 const ACTION_BUTTON_CLASS =
