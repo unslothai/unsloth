@@ -2692,14 +2692,13 @@ def test_two_accounts_with_the_same_project_id_do_not_fence_each_other(
         held = tools._project_update_key(project["id"])
     finally:
         reset_account(token)
-    assert held != tools._project_update_key(project["id"]), (
-        "the workspace update fence does not distinguish accounts"
-    )
+    assert held != tools._project_update_key(
+        project["id"]
+    ), "the workspace update fence does not distinguish accounts"
     with tools._sessions_free:
         tools._removing_sessions.add(held)
     try:
-        changed, _ = tools.update_project_workspace_when_idle(
-            project["id"], lambda: "ours")
+        changed, _ = tools.update_project_workspace_when_idle(project["id"], lambda: "ours")
         assert changed, "another account's update fenced this account's project"
     finally:
         with tools._sessions_free:
