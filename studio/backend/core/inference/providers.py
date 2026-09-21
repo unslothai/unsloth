@@ -609,9 +609,7 @@ _METADATA_NETWORK = ipaddress.ip_network("169.254.0.0/16")
 # LAN endpoints are the normal case (Ollama, llama.cpp, vLLM, custom gateways).
 _BLOCK_PRIVATE_ENV = "UNSLOTH_STUDIO_BLOCK_PRIVATE_PROVIDER_URLS"
 
-# Said in one place because a managed account meets it from three: saving the connection, sending
-# through it, and running a data recipe on it. Names the setting that lifts it, since the person
-# reading it cannot lift it themselves and would otherwise have nothing to go on.
+# Named in one place: a managed account meets this refusal from save, send and recipe alike.
 MANAGED_PRIVATE_URL_HINT = (
     " The installation owner can allow private and LAN addresses in Settings > General."
 )
@@ -619,11 +617,7 @@ MANAGED_PUBLIC_ONLY_TEXT = "Managed accounts may only use public-network provide
 
 
 def managed_private_url_hint() -> str:
-    """The hint, unless this server's environment means the owner cannot act on it either.
-
-    Sending someone to a switch that is held off by ``UNSLOTH_STUDIO_BLOCK_PRIVATE_PROVIDER_URLS``
-    costs them a conversation with an owner who then finds the control disabled.
-    """
+    """The hint, omitted when the environment lock means the owner cannot act on it either."""
     return "" if os.environ.get(_BLOCK_PRIVATE_ENV) == "1" else MANAGED_PRIVATE_URL_HINT
 
 
@@ -882,9 +876,8 @@ def _managed_account_caller() -> bool:
 def _managed_private_urls_allowed() -> bool:
     """True when the owner has opened private provider addresses to managed accounts.
 
-    Imported here rather than at module scope because this module is loaded standalone by
-    ``tests/test_provider_base_url_validation.py``, and because a settings read is worth nothing on
-    the owner path that never asks.
+    Imported here, not at module scope: tests/test_provider_base_url_validation.py loads this
+    module standalone.
     """
     from utils.managed_provider_url_settings import get_managed_private_provider_urls_allowed
     return get_managed_private_provider_urls_allowed()
@@ -957,10 +950,8 @@ METADATA_REFUSED_REASON = "Cloud metadata endpoints cannot be used as a provider
 def provider_address_excluding_metadata(url: str) -> str:
     """Resolve ``url``'s host now and return one address to dial, refusing only metadata services.
 
-    The address half of ``public_provider_address`` for a caller the owner has allowed private
-    addresses: private and LAN answers are fine, the host's credentials endpoint never is. Resolving
-    here rather than trusting the check made at save time is the point, since a name is free to
-    answer 169.254.169.254 afterwards.
+    For a caller the owner has allowed private addresses. Re-resolving rather than trusting the
+    save-time check is the point: a name is free to answer 169.254.169.254 afterwards.
     """
     import socket
 
@@ -1044,8 +1035,7 @@ def validate_provider_base_url(base_url: str) -> str:
         and not _public_registry_hostname(hostname)
         and not _managed_private_urls_allowed()
     ):
-        # Caller-controlled egress must not reach the owner's loopback models or LAN, unless the
-        # owner has said the accounts on this installation share one local model on purpose.
+        # Caller-controlled egress: the owner's loopback and LAN, unless the owner opened them.
         _reject_non_public(hostname, port, scheme, managed_public_only_reason())
 
     return raw.rstrip("/")

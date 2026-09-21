@@ -11,26 +11,17 @@ import time
 from typing import Any
 
 MANAGED_PRIVATE_PROVIDER_URLS_SETTING_KEY = "managed_private_provider_urls_allowed"
-# Default off, which is what every installation does today: a managed account's provider base URL is
-# caller-controlled server-side egress, so it reaches public addresses only until the owner says the
-# people on this installation are trusted with the loopback and LAN services the host can see.
 DEFAULT_MANAGED_PRIVATE_PROVIDER_URLS_ALLOWED = False
 
-# The shared-host opt-in refuses private addresses for EVERY account, the owner included, so it is
-# the stricter of the two statements and wins: an operator who set it in the environment does not
-# get it undone from a settings page.
+# Refuses private addresses for EVERY account, the owner included, so it outranks the stored
+# preference: an operator who set it in the environment does not get it undone from a settings page.
 BLOCK_PRIVATE_ENV = "UNSLOTH_STUDIO_BLOCK_PRIVATE_PROVIDER_URLS"
 
-# Every outbound provider request from a managed account asks this question, and the answer costs a
-# fresh SQLite connection (measured at ~600us, essentially all of it connection setup) on the event
-# loop shared by every concurrent request. Held briefly instead. The window is short and one-sided in
-# practice: a write through this module drops the entry immediately, so the flip an owner just made
-# is live in this process at once, and the TTL only bounds how long another process may still be
-# answering from its own copy.
+# Every outbound provider request from a managed account asks this, and an uncached answer costs a
+# fresh SQLite connection (~600us, nearly all of it connection setup) on the shared event loop. A
+# write drops the entry, so the TTL only bounds how long ANOTHER process may still answer stale.
 _CACHE_TTL_SECONDS = 1.0
 _cache_lock = threading.Lock()
-# (expiry, value); None means nothing remembered. A failed read is never remembered, so an
-# unreadable settings DB keeps failing closed per call rather than pinning that answer for a second.
 _cached: tuple[float, bool] | None = None
 
 
@@ -74,13 +65,12 @@ def private_urls_locked_by_environment() -> bool:
 def get_managed_private_provider_urls_allowed() -> bool:
     """Whether a managed account may use a provider base URL that resolves to a private address.
 
-    The setting is installation-wide, so it is read from the owner's store whoever is asking. A
-    *missing* setting keeps the refusal that shipped, and a *read failure* (a transient SQLite or
-    permission error) fails closed for the same reason the preview kill switch does: an unreadable
-    settings DB must not quietly widen what a managed account can dial.
+    Installation-wide, so it is read from the owner's store whoever is asking. A missing setting
+    keeps the refusal that shipped, and a read failure fails closed: an unreadable settings DB must
+    not quietly widen what a managed account can dial.
     """
-    # Read before the cache, so setting the variable takes hold at once rather than after the TTL,
-    # and so the strict answer is never the one being held.
+    # Both before the cache: the strict answer is never the one being held, and a failed read is
+    # never remembered.
     if private_urls_locked_by_environment():
         return False
     held = _remembered()
@@ -107,10 +97,8 @@ def set_managed_private_provider_urls_allowed(value: Any) -> bool:
     from storage.studio_db import upsert_app_settings
     from utils.account_context import OWNER, run_as
 
-    # Bound to the owner like the read is. The route that calls this is owner-only, but the two
-    # halves have to name one store, or a write from anywhere else lands where the reader never looks.
+    # Owner-bound like the read: the two halves have to name one store.
     run_as(OWNER, upsert_app_settings, {MANAGED_PRIVATE_PROVIDER_URLS_SETTING_KEY: parsed})
-    # Dropped rather than replaced with `parsed`: the next reader then answers from the store, which
-    # is the thing that decides, so a write that did not land cannot be believed for a second after.
+    # Dropped, not replaced with `parsed`: a write that did not land must not be believed.
     forget_cached_setting()
     return parsed

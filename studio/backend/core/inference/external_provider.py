@@ -855,11 +855,9 @@ class _PinnedPublicTransport(httpx.AsyncBaseTransport):
 class _PinnedNonMetadataTransport(_PinnedPublicTransport):
     """Managed-account egress once the owner has allowed private addresses.
 
-    Same machinery as the public pin, one rule looser: the address dialled may be private, so the
-    LAN model server the owner allowed is reachable, and may never be the host's cloud metadata
-    service. Keeping the re-resolve is the point. Handing these callers an ordinary transport would
-    let a name that passed validation answer 169.254.169.254 by the time the socket opens, which is
-    the one destination this switch is not allowed to open.
+    The public pin, one rule looser: the dialled address may be private, never metadata. The
+    re-resolve stays, or a name that validated as public could answer 169.254.169.254 by connect
+    time, which is the one destination this switch may not open.
     """
 
     async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
@@ -893,9 +891,8 @@ _managed_private_http_client: Optional[httpx.AsyncClient] = None
 def _client() -> httpx.AsyncClient:
     """The shared client for the owner; for a managed account one of two screening clients.
 
-    Never the owner's client: an ``httpx.AsyncClient`` keeps a cookie jar, so handing a managed
-    account the owner's object would let a Set-Cookie from one reach the other's requests to the
-    same host.
+    Never the owner's object: an ``httpx.AsyncClient`` keeps a cookie jar, which would carry a
+    Set-Cookie between accounts on the same host.
     """
     from utils.account_context import is_owner_context
     from utils.managed_provider_url_settings import get_managed_private_provider_urls_allowed
@@ -904,7 +901,7 @@ def _client() -> httpx.AsyncClient:
         return _http_client
     global _managed_http_client, _managed_private_http_client
     if get_managed_private_provider_urls_allowed():
-        # Read per call, so flipping the switch takes effect without a restart.
+        # Read per call, so a flip takes effect without a restart.
         if _managed_private_http_client is None:
             _managed_private_http_client = httpx.AsyncClient(
                 transport = _PinnedNonMetadataTransport(), trust_env = False

@@ -32,8 +32,7 @@ BOB = AccountContext("b" * 32, "bob")
 def isolated_home(monkeypatch, tmp_path):
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
     monkeypatch.setattr(studio_db, "_schema_ready", set())
-    # The helper holds its answer briefly; a value read from the previous test's home would
-    # otherwise be handed to this one, whose store is a different file entirely.
+    # The helper holds its answer briefly, and each test has its own home.
     mpu.forget_cached_setting()
     yield
     mpu.forget_cached_setting()
@@ -188,8 +187,7 @@ def test_a_read_failure_is_never_remembered(monkeypatch, as_account):
         assert mpu.get_managed_private_provider_urls_allowed() is False
         assert mpu._remembered() is None
     finally:
-        # Restored by hand rather than with monkeypatch.undo(), which would also undo the
-        # isolated-home fixture and send the read that follows at a different store.
+        # By hand: monkeypatch.undo() would also undo the isolated-home fixture.
         studio_db_module.get_app_setting = real
     assert mpu.get_managed_private_provider_urls_allowed() is True
 
@@ -211,8 +209,7 @@ def test_the_held_answer_expires(monkeypatch, as_account):
     )
     assert mpu.get_managed_private_provider_urls_allowed() is False  # still held
 
-    # Age the held entry rather than the clock: patching time.monotonic patches the module the
-    # cache itself calls, which recurses.
+    # Age the entry, not the clock: patching time.monotonic recurses through the cache's own call.
     with mpu._cache_lock:
         expiry, value = mpu._cached
         mpu._cached = (expiry - mpu._CACHE_TTL_SECONDS - 1.0, value)

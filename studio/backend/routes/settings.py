@@ -3055,8 +3055,8 @@ class ManagedProviderUrlsPayload(BaseModel):
 class ManagedProviderUrlsResponse(BaseModel):
     allowed: bool
     default_allowed: bool = DEFAULT_MANAGED_PRIVATE_PROVIDER_URLS_ALLOWED
-    # True when UNSLOTH_STUDIO_BLOCK_PRIVATE_PROVIDER_URLS=1 holds the answer, so the UI can say why
-    # the switch does nothing rather than showing one that silently reverts.
+    # UNSLOTH_STUDIO_BLOCK_PRIVATE_PROVIDER_URLS=1 holds the answer: the UI says why rather than
+    # showing a switch that silently reverts.
     locked_by_environment: bool = False
 
 
@@ -3295,9 +3295,8 @@ def update_preview_sharing(
 
 
 def _managed_provider_urls_response() -> ManagedProviderUrlsResponse:
-    # `allowed` is the EFFECTIVE answer, not the stored preference: with the environment opt-in set
-    # the backend refuses private addresses whatever is stored, and a switch reading back on while
-    # every save is refused would be the worst of the three things this could say.
+    # The EFFECTIVE answer, not the stored preference: a switch reading back on while every save
+    # is refused would be the worst of the three things this could say.
     return ManagedProviderUrlsResponse(
         allowed = get_managed_private_provider_urls_allowed(),
         locked_by_environment = private_urls_locked_by_environment(),
@@ -3317,8 +3316,7 @@ def get_managed_provider_urls(
 def update_managed_provider_urls(
     payload: ManagedProviderUrlsPayload,
     current_subject: str = Depends(get_current_subject),
-    # What a managed account may dial is installation policy, so it is set from an interactive
-    # session at the console, not from a remote key that happens to be the owner's.
+    # Installation policy: set at the console, not from a remote key that happens to be owned.
     _ui_session: None = Depends(_require_ui_session),
 ) -> ManagedProviderUrlsResponse:
     """Allow or refuse private and LAN provider base URLs for the installation's managed accounts.

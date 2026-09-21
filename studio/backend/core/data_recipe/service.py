@@ -141,10 +141,8 @@ def _require_public_provider_endpoint(endpoint: str) -> None:
     transport: require HTTPS, which binds the peer to its certificate rather than to a DNS answer that
     may rebind to loopback or the LAN after this public-address check.
 
-    Once the owner has opened private addresses to managed accounts the HTTPS and public-address
-    rules stand down, so a connection that saves in Settings > Connections is one a recipe can
-    actually run on. The metadata rule does not: it is not part of what that switch offers, and this
-    path has no validator behind it to catch what is waved through here."""
+    With the switch on, the HTTPS and public-address rules stand down so a saved connection is one
+    a recipe can run on. The metadata rule does not: this path has no validator behind it."""
     if not managed_account():
         return
     from urllib.parse import urlsplit
@@ -184,10 +182,8 @@ def install_public_egress_guard() -> None:
     guard and a host that rebinds to loopback or the LAN after the endpoint check is refused at connect
     time rather than dialled. Process-wide, so it is installed only in the job subprocess.
 
-    When the owner has opened private addresses to managed accounts the guard narrows to the cloud
-    metadata services rather than standing down: the private half of the rule is what the switch
-    lifts, the metadata half is not, and a worker whose engine dials for itself has nothing else
-    between it and that address."""
+    With the switch on the guard narrows to the metadata services rather than standing down: a
+    worker whose engine dials for itself has nothing else between it and that address."""
     if not managed_account():
         return
     from utils.managed_provider_url_settings import get_managed_private_provider_urls_allowed
@@ -200,10 +196,7 @@ def install_public_egress_guard() -> None:
     resolve = socket.getaddrinfo
 
     def guarded_getaddrinfo(host, port, *args, **kwargs):
-        # Asked per lookup rather than captured at install: a worker can outlive the switch that
-        # was set when it started, and the owner turning it off means this job too, not the next
-        # one. The helper holds its answer briefly, so this costs a dictionary read in the common
-        # case. Read before resolving, so a refusal needs no name.
+        # Per lookup, not captured at install: a worker outlives the switch it started under.
         private_allowed = get_managed_private_provider_urls_allowed()
         infos = resolve(host, port, *args, **kwargs)
         for info in infos:

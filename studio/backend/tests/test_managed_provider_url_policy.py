@@ -34,8 +34,7 @@ METADATA_URLS = [
 
 @pytest.fixture(autouse = True)
 def _clean_resolver_state(monkeypatch, tmp_path):
-    # An isolated store per test. Without it the tests here that exercise the real setter write
-    # into whatever installation happens to be on the machine running them.
+    # Isolated per test: the real setter would otherwise write to the machine's own installation.
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
     monkeypatch.setattr(studio_db, "_schema_ready", set())
     monkeypatch.delenv(setting.BLOCK_PRIVATE_ENV, raising = False)
@@ -220,8 +219,8 @@ def test_the_recipe_guard_follows_a_later_flip(monkeypatch, as_alice):
 
     original = socket.getaddrinfo
     monkeypatch.setattr(socket, "getaddrinfo", original)
-    # The real store, not a stubbed helper: the guard closes over the function it imported at
-    # install time, so a test that rebinds that name proves nothing about a running worker.
+    # The real store: the guard closed over the function it imported, so rebinding that name
+    # proves nothing about a running worker.
     setting.set_managed_private_provider_urls_allowed(True)
     try:
         service.install_public_egress_guard()

@@ -37,8 +37,8 @@ def switch(monkeypatch):
     state = {"allowed": False}
     from utils import managed_provider_url_settings
 
-    # Patched on the settings module rather than on a caller: `_client` imports the helper per call,
-    # which is what makes a flip take effect without a restart, so a caller-side patch would miss.
+    # Patched on the settings module: `_client` imports the helper per call, so a caller-side
+    # patch would miss.
     monkeypatch.setattr(
         managed_provider_url_settings,
         "get_managed_private_provider_urls_allowed",
@@ -56,8 +56,8 @@ def client_as(account):
 
 
 def is_pinned(client) -> bool:
-    """Held to public addresses only. Exact type: the allowed-private screen subclasses this one,
-    so isinstance would call that pinned too and every assertion below would stop meaning anything."""
+    """Public-only. Exact type: the allowed-private screen subclasses this, so isinstance would
+    call that pinned too and every assertion below would stop meaning anything."""
     return type(getattr(client, "_transport", None)) is external_provider._PinnedPublicTransport
 
 
@@ -95,9 +95,8 @@ def test_the_pinning_client_is_reused_not_rebuilt(switch):
 
 
 def test_an_unbound_thread_defaults_to_owner(switch):
-    """Documents the fail-open default of the account ContextVar: a worker thread that
-    forgot run_as is treated as the owner, which the switch does not change but which
-    any caller of _client() off the request path must keep in mind."""
+    """The account ContextVar fails open: a worker thread that forgot run_as reads as the owner.
+    Unchanged by the switch, and load-bearing for any _client() caller off the request path."""
     import threading
 
     seen = []
