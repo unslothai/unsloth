@@ -1044,8 +1044,8 @@ _ATTR_DIGEST_RE = re.compile(r"value=\"sha256:(?P<hex>[0-9a-f]{64})\"", re.IGNOR
 def _fetch_web_metadata(ops: ModuleOps, url: str) -> str:
     """GET a github.com (not api.github.com) metadata page, unauthenticated.
 
-    The web host is outside the 60-request-per-hour anonymous API budget, which is
-    the whole point of the callers below. No token is ever attached.
+    The web host is outside the anonymous API's hourly budget, which is the whole point
+    of the callers below. No token is ever attached.
     """
     data = ops.download_bytes(
         url,
@@ -1065,11 +1065,8 @@ def web_release_tags(
 ) -> list[str]:
     """Recent release tags, newest first, from github.com/<repo>/releases.atom.
 
-    The atom feed is the only tokenless surface that ORDERS releases, so it is what
-    restores the older-release walk-back when the API listing is unavailable. It is
-    also the only one that answers "newest nightly": /releases/latest resolves by
-    make_latest, which upstream points at a versioned pointer release (v0.4.1) that
-    publishes no prebuilt at all.
+    The only tokenless surface that ORDERS releases, so it is what restores the
+    older-release walk-back, and the only one that can name the newest nightly.
     """
     url = f"https://github.com/{urllib.parse.quote(repo, safe = '/')}/releases.atom"
     body = _fetch_web_metadata(ops, url)
@@ -1089,10 +1086,9 @@ _PRERELEASE_LABEL_RE = re.compile(r"Label--warning[^>]*>\s*Pre-release\s*<", re.
 def web_release_prerelease(ops: ModuleOps, repo: str, tag: str) -> bool:
     """Whether <repo>@<tag> is marked pre-release, read from its release page.
 
-    The atom feed and the asset fragment both omit it, and asserting a value we did
-    not read would let the web path select a release the REST path filters out.
-    Draft is not asked: a draft release is not served to an anonymous caller at all,
-    so reaching this page already proves the release is published.
+    The feed and the asset fragment both omit it, and asserting a value we did not read
+    would let the web path select a release the REST path filters out. Draft is not
+    asked: a draft is not served anonymously, so reaching this page proves publication.
     """
     url = (
         f"https://github.com/{urllib.parse.quote(repo, safe = '/')}/releases/tag/"
@@ -1104,16 +1100,11 @@ def web_release_prerelease(ops: ModuleOps, repo: str, tag: str) -> bool:
 def web_release_payload(ops: ModuleOps, repo: str, tag: str) -> dict[str, Any]:
     """An ordinary release payload for <repo>@<tag>, built without api.github.com.
 
-    github.com/<repo>/releases/expanded_assets/<tag> is the fragment the release page
-    lazy-loads; it carries one row per asset with the download link and the sha256
-    GitHub itself computed. Shaping it like the REST payload is deliberate: every
-    caller downstream, release_asset_map and release_asset_digests included, keeps
-    reading the same fields, so digest enforcement stays authoritative rather than
-    being bypassed by a second code path.
-
-    An asset whose link does not match the deterministic URL for this exact repo and
-    tag, or whose digest is missing or not a sha256, is dropped rather than guessed
-    at: the archives these URLs name are extracted, chmod 0o755'd and executed.
+    Shaped like the REST payload on purpose: release_asset_map and release_asset_digests
+    keep reading the same fields, so digest enforcement stays authoritative instead of
+    being bypassed by a second code path. An asset whose link is not for this exact repo
+    and tag, or whose digest is absent or not a sha256, is dropped rather than guessed
+    at, since these archives are extracted, chmod 0o755'd and executed.
     """
     quoted_repo = urllib.parse.quote(repo, safe = "/")
     url = (
@@ -1126,9 +1117,8 @@ def web_release_payload(ops: ModuleOps, repo: str, tag: str) -> dict[str, Any]:
         for row in _DOWNLOAD_HREF_RE.finditer(body)
         if urllib.parse.unquote(row.group("tag")).strip() == tag
     }
-    # Read the digest off the copy-to-clipboard control, which names its asset in the
-    # same element. Two independent lists paired by position would hand one asset
-    # another asset's hash the first time GitHub reorders or omits a row.
+    # The copy-to-clipboard control names its asset in the same element; pairing two
+    # lists by position would misassign a hash the first time a row moves or is omitted.
     digests: dict[str, str] = {}
     conflicting: set[str] = set()
     for control in _CLIPBOARD_TAG_RE.finditer(body):

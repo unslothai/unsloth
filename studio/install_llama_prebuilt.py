@@ -1039,10 +1039,8 @@ def web_release_payload(repo: str, tag: str) -> dict[str, Any]:
 def upstream_web_release_tags(repo: str, *, limit: int = 30) -> list[str]:
     """Recent upstream build tags, newest first, resolved without api.github.com.
 
-    Filtered to bNNNN because upstream also publishes a versioned pointer release
-    (currently v0.4.1, whose single asset is nightly-tag.txt) that GitHub designates
-    "latest" and which packages no prebuilt: /releases/latest resolves to it, so the
-    redirect alone cannot answer "the newest release carrying binaries".
+    Filtered to bNNNN: upstream's designated latest is a versioned pointer release
+    whose only asset is nightly-tag.txt, so it never names a release carrying binaries.
     """
     return [tag for tag in web_release_tags(repo, limit = limit) if is_release_tag_like(tag)]
 
@@ -1050,11 +1048,9 @@ def upstream_web_release_tags(repo: str, *, limit: int = 30) -> list[str]:
 def latest_upstream_release_tag() -> str:
     """The newest upstream build tag, which the source-build fallback compiles.
 
-    The REST answer is taken only when it names a build. /releases/latest resolves by
-    make_latest, and upstream currently points it at v0.4.1, a pointer release that
-    packages no prebuilt, so returning it would have the source build compile a
-    different version from the one the prebuilt path installs, which is the whole
-    point of resolving it here.
+    Only a bNNNN REST answer is taken: /releases/latest resolves by make_latest, which
+    upstream points at a pointer release packaging no prebuilt, and the source build
+    must compile the version the prebuilt path would have installed.
     """
     rest_tag = ""
     try:
@@ -1111,14 +1107,11 @@ def release_time_sort_key(release: dict[str, Any]) -> tuple[str, int]:
 
 
 def release_is_selectable(repo: str, release: dict[str, Any]) -> bool:
-    """Whether a listed release may be planned against. Draft is never selectable.
+    """Whether a listed release may be planned against. A draft never is.
 
-    A prerelease is not, with one exception that is not a relaxation but a correction:
-    ggml-org marks EVERY bNNNN build release prerelease, so excluding them leaves the
-    upstream path selecting the newest release that is not one. Measured against the
-    live API on 2026-09-21, that was b10549 while the newest build was b11071, an
-    install 522 builds behind, and the versioned releases above it (v0.4.1 and older)
-    publish no prebuilt at all. The fork and any other repo keep the plain rule.
+    Nor is a prerelease, except an upstream bNNNN build: ggml-org marks every one of
+    them prerelease, so the plain rule strands the upstream path hundreds of builds
+    back on the newest release that is not one, and those publish no prebuilt at all.
     """
     if release.get("draft"):
         return False
@@ -1152,10 +1145,8 @@ def _web_release_or_raise(repo: str, tag: str, reason: Exception) -> dict[str, A
 def _web_release_payloads(repo: str, reason: Exception) -> Iterable[dict[str, Any]]:
     """Recent upstream releases, newest first, with no api.github.com call.
 
-    Yields lazily and one page at a time so the caller's older-release walk-back still
-    works: a newest release missing this host's archive is skipped for the next one,
-    exactly as it would be off the REST listing, and only the releases actually looked
-    at cost a request.
+    Lazy, one page at a time, so the caller's older-release walk-back still works and
+    only the releases actually looked at cost a request.
     """
     try:
         tags = upstream_web_release_tags(repo, limit = DEFAULT_GITHUB_RELEASE_SCAN_MAX_PAGES * 4)
@@ -1175,8 +1166,8 @@ def _web_release_payloads(repo: str, reason: Exception) -> Iterable[dict[str, An
         except Exception as exc:  # noqa: BLE001 - one unreadable release is not the end of the walk
             log(f"skipping {repo}@{tag}: {exc}")
             continue
-        # The same rule the REST listing applies, against a status read from the
-        # release page rather than assumed, so the two paths cannot select differently.
+        # The REST listing's rule, on a status read rather than assumed, so the two
+        # paths cannot select differently.
         if not release_is_selectable(repo, release):
             log(f"skipping {repo}@{tag}: not selectable (prerelease or draft)")
             continue
@@ -1203,8 +1194,7 @@ def iter_release_payloads_by_time(
             return
         except urllib.error.HTTPError as exc:
             # HTTPError subclasses URLError, so this clause shadows the one below and
-            # has to route the fallback itself; a 404 means the tag does not exist,
-            # which is a reason to scan rather than to read its page.
+            # must route the fallback itself; a 404 tag has no page to read either.
             if exc.code == 404:
                 log(f"release tag {requested_tag} not found in {repo}; scanning recent releases")
             elif _web_fallback_eligible(repo):
@@ -1213,8 +1203,8 @@ def iter_release_payloads_by_time(
             else:
                 raise
         except (urllib.error.URLError, RuntimeError) as exc:
-            # A pinned tag is exactly the case the web path serves best: the release is
-            # named, so one page answers it. The macOS-floor pin (b9415) reaches here.
+            # A named release is one page, so a pin is what this path serves best; the
+            # macOS-floor pin (b9415) reaches here.
             if not _web_fallback_eligible(repo):
                 raise
             yield _web_release_or_raise(repo, requested_tag, exc)
@@ -8296,11 +8286,9 @@ def prebuilt_full_check_requested() -> bool:
 def _newest_release_tag_from_releases(repo: str, releases: "Iterable[Any]") -> "str | None":
     """The newest published release tag by published_at, the ordering _select uses.
 
-    Mirrors iter_release_payloads_by_time's sort (release_time_sort_key) and its
-    selectability rule so the two cannot answer differently from the same payload.
-    The rule is repository-aware, so this takes the repo: filtering every prerelease
-    here while the planner installs an upstream bNNNN build would report the freshly
-    installed build as stale and reinstall it on every update run.
+    Mirrors iter_release_payloads_by_time's sort and its repo-aware selectability rule,
+    hence the repo: answering differently here reports the freshly installed build as
+    stale and reinstalls it on every update run.
     """
     published = [
         release
