@@ -96,6 +96,48 @@ test("a working Recents row clears the kebab on hover", async () => {
   }
 });
 
+// The pin and the options button both float over that same right edge, so the padding around
+// one glyph can reach across the other. The options button is later in the DOM and would win
+// those clicks, taking the pin's own glyph with them.
+test("the pin and options buttons do not overlap", () => {
+  const css = readSrc("index.css");
+
+  const px = (value: string) =>
+    value.trim().endsWith("rem")
+      ? Number.parseFloat(value) * 16
+      : Number.parseFloat(value);
+  const decl = (selector: string, prop: string) => {
+    const block = new RegExp(
+      `${selector.replace(/[.+]/g, "\\$&")} \\{([^}]*)\\}`,
+    ).exec(css);
+    assert.ok(block, `could not find ${selector} in index.css`);
+    const m = new RegExp(`(?:^|;|\\n)\\s*${prop}:\\s*([^;]+)`).exec(block[1]);
+    assert.ok(m, `${selector} does not set ${prop}`);
+    return px(m[1]);
+  };
+
+  const base = grab(css, /\.sidebar-row-action \{\s*@apply ([^;]*);/, "row action");
+  const glyph = inset(
+    grab(css, /\.sidebar-row-action-glyph \{\s*@apply ([^;]*);/, "action glyph"),
+    "size",
+  );
+
+  // The options button is one glyph plus the padding either side of it, and a row with a pin
+  // zeroes the left one, so the button ends where its glyph does.
+  const optionsWidth =
+    decl(".sidebar-row-action.is-unpin-action + .sidebar-row-action", "padding-left") +
+    glyph +
+    inset(base, "pr");
+  const pinRight = decl(".sidebar-row-action.is-unpin-action", "right");
+
+  assert.ok(
+    pinRight >= optionsWidth,
+    `the pin starts ${pinRight}px in, ${optionsWidth - pinRight}px under the options button`,
+  );
+  // And it stays snug against it rather than reopening the trough.
+  assert.ok(pinRight - optionsWidth <= 4, `${pinRight - optionsWidth}px of dead space between them`);
+});
+
 // That same column now carries a second meaning: a row whose capability has not been measured
 // yet. On a Mac the platform store seeds chatOnly from the user agent, so Train and Video used
 // to paint disabled (opacity-50, inert) from first load and only recover once /api/health

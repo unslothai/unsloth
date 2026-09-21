@@ -1181,11 +1181,19 @@ html[data-chat-font] .aui-root {
 	.sidebar-row-action.is-disclosure-open {
 		@apply opacity-100 pointer-events-auto;
 	}
-	/* Secondary row action (the pinned-chat unpin button) sits just left of
-	   the primary "…" options button. 26px, not 30px: both glyphs are size-6
-	   boxes around a ~16px icon, so 30px left a 14px trough between them. */
+	/* The pin sits just left of the "…" options button, and the 14px trough
+	   between their ~16px icons is the two paddings that face each other: the
+	   pin's pr-1.5 and the options button's pl-2. Drop those, and the pin's
+	   right edge lands exactly on the options button's left edge (30px = its
+	   pr-1.5 plus a size-6 glyph). Closing the gap by moving the pin instead
+	   would slide it under that pl-2, and the options button, later in the DOM,
+	   would take the clicks over the pin's own glyph. */
 	.sidebar-row-action.is-unpin-action {
-		right: 1.625rem;
+		right: 1.875rem;
+		padding-right: 0;
+	}
+	.sidebar-row-action.is-unpin-action + .sidebar-row-action {
+		padding-left: 0;
 	}
 
 	/* Branch picker chevron buttons sit beside action bar icon buttons
