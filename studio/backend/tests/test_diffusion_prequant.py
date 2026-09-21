@@ -35,7 +35,7 @@ def _prequant_source(**overrides):
             "kind": "repo",
             "location": "unsloth/Z-Image-Turbo-FP8",
             "filename": "Z-Image-Turbo-FP8.pt",
-            "fallback_filename": "transformer_fp8.pt",
+            "fallback_filenames": ("transformer_fp8.pt",),
             **overrides,
         }
     )
@@ -69,9 +69,11 @@ def test_resolve_family_repo_by_scheme():
     fam = _fam(prequant_repos = (("fp8", "org/hosted-fp8"), ("int8", "org/hosted-int8")))
     src = resolve_prequant_source(fam, "int8")
     assert src.kind == "repo" and src.location == "org/hosted-int8"
-    # Model-name convention first (repo scheme suffix stripped), legacy name as fallback.
-    assert src.filename == "hosted-INT8.pt"
-    assert src.fallback_filename == "transformer_int8.pt"
+    # Model-name convention first (repo scheme suffix stripped), safetensors ahead of the pickle,
+    # legacy name last.
+    assert src.candidate_filenames == (
+        "hosted-INT8.safetensors", "hosted-INT8.pt", "transformer_int8.pt",
+    )
 
 
 def test_prequant_repo_filename_convention():
@@ -94,7 +96,7 @@ def test_resolve_variant_base_picks_variant_repo():
     )
     src = resolve_prequant_source(fam, "int8", base_repo = "Org/Model-DEV")
     assert src.kind == "repo" and src.location == "org/dev-fp8"
-    assert src.filename == "dev-INT8.pt"
+    assert src.filename == "dev-INT8.safetensors"
 
 
 def test_resolve_variant_base_falls_back_to_default():
@@ -136,13 +138,16 @@ def test_resolve_prefers_a_family_declared_filename():
     fam = dataclasses.replace(fam, prequant_filenames = (("int8", "Model-INT8-ConvRot.pt"),))
     src = resolve_prequant_source(fam, "int8")
     assert src.filename == "Model-INT8-ConvRot.pt"
-    assert src.fallback_filename == "Model-INT8.pt"
-    # Only for the scheme that declares one; everything else keeps today's derived/legacy pair.
+    assert src.fallback_filenames == (
+        "Model-INT8.safetensors", "Model-INT8.pt", "transformer_int8.pt",
+    )
+    # Only for the scheme that declares one; everything else keeps the plain derived chain.
     other = resolve_prequant_source(
         dataclasses.replace(fam, prequant_repos = (("fp8", "unsloth/Model-FP8"),)), "fp8"
     )
-    assert other.filename == "Model-FP8.pt"
-    assert other.fallback_filename == "transformer_fp8.pt"
+    assert other.candidate_filenames == (
+        "Model-FP8.safetensors", "Model-FP8.pt", "transformer_fp8.pt",
+    )
 
 
 def test_resolve_wrong_scheme_is_none():
@@ -1270,10 +1275,13 @@ def test_prequant_checkpoint_cached_reads_only_the_cache(monkeypatch, tmp_path):
     # The live root is asked first, and the model-name file resolves, so no legacy lookup.
     assert asked == [("unsloth/Z-Image-Turbo-FP8", "Z-Image-Turbo-FP8.pt", "/models/hub")]
 
-    # Only the legacy name on disk does NOT count: whether the repo publishes the canonical one
-    # needs a network call, so this reads as "would download" and the GGUF runs.
+    # A cached name FURTHER DOWN the chain now counts. Primary-only was right while the primary
+    # was the only name a repo realistically hosted; with the chain leading on a safetensors name
+    # most repos do not have yet, primary-only would report every existing .pt repo as "would
+    # download several GB" and hand the pick to GGUF while its checkpoint sat in the cache. The
+    # preference is unaffected: the downloader still asks for the better name first.
     ckpt.unlink()
-    assert prequant_checkpoint_cached(source) is False
+    assert prequant_checkpoint_cached(source) is True
     # Neither name cached -> same answer, for the ordinary reason.
     legacy.unlink()
     assert prequant_checkpoint_cached(source) is False

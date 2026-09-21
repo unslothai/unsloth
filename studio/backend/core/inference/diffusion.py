@@ -3014,8 +3014,11 @@ class DiffusionBackend:
 
         info = HfApi(token = hf_token or None).model_info(source.location, files_metadata = True)
         sizes = {s.rfilename: int(getattr(s, "size", 0) or 0) for s in (info.siblings or [])}
-        # Primary name first, then the legacy one, in the order the loader tries them.
-        for name in (source.filename, source.fallback_filename):
+        # Every candidate, in the order the loader tries them: safetensors first, then the pickle
+        # spellings. Reading only two of them would miss the artifact on a repo that hosts the third.
+        from .diffusion_prequant import candidate_filenames_of
+
+        for name in candidate_filenames_of(source):
             if name and name in sizes:
                 return (source.location, name, int(sizes[name]))
         # The repo answered and holds NEITHER name. Not "no prequant is used": this pick is configured to
@@ -3024,7 +3027,7 @@ class DiffusionBackend:
             failures_out.append(
                 RuntimeError(
                     f"prequant artifact missing from {source.location}: "
-                    f"{source.filename!r} / {source.fallback_filename!r}"
+                    f"tried {list(candidate_filenames_of(source))}"
                 )
             )
         return None

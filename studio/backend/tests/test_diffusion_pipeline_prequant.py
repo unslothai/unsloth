@@ -27,7 +27,7 @@ MIB = 1024 * 1024
 
 Z_IMAGE_REPO = "Tongyi-MAI/Z-Image-Turbo"
 PREQUANT_REPO = "unsloth/Z-Image-Turbo-FP8"
-PREQUANT_FILE = "Z-Image-Turbo-FP8.pt"
+PREQUANT_FILE = "Z-Image-Turbo-FP8.safetensors"
 PREQUANT_BYTES = 6000 * MIB
 
 Z_IMAGE_INDEX = {

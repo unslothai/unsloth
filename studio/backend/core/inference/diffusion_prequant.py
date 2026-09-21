@@ -361,13 +361,46 @@ def local_prequant_path_ready(path: str) -> bool:
 @dataclass(frozen = True)
 class PrequantSource:
     """Where a pre-quantized checkpoint lives. ``kind`` is "path" (a local file) or "repo" (Hub repo
-    id in ``location`` + ``filename``; ``fallback_filename`` is tried when the primary name is
-    absent, covering repos still on the legacy transformer_<scheme>.pt)."""
+    id in ``location`` + ``filename``; ``fallback_filenames`` are tried IN ORDER when the primary
+    name is absent, covering the ``.pt`` container and repos still on the legacy
+    transformer_<scheme>.pt)."""
 
     kind: str
     location: str
     filename: Optional[str] = None
-    fallback_filename: Optional[str] = None
+    fallback_filenames: tuple[str, ...] = ()
+    # Names the FAMILY declared, as opposed to ones derived from the repo id. A declared name is
+    # evidence the repo really hosts that file; a derived one is a guess that costs a 404. Planning
+    # needs to tell them apart, see ``usable_prequant_source``.
+    declared_filenames: tuple[str, ...] = ()
+
+    @property
+    def fallback_filename(self) -> Optional[str]:
+        """The first fallback. Kept because callers outside this module read it by name, and
+        because it is what "the one other name to try" meant before the chain existed."""
+        return self.fallback_filenames[0] if self.fallback_filenames else None
+
+    @property
+    def candidate_filenames(self) -> tuple[str, ...]:
+        """Every name this source may resolve, best first. The single place that ordering lives, so
+        the downloader, the cache probe and the planner cannot disagree about which file wins."""
+        return tuple(n for n in (self.filename, *self.fallback_filenames) if n)
+
+
+def candidate_filenames_of(source: Any) -> tuple[str, ...]:
+    """``source``'s names, best first, for anything SHAPED like a source.
+
+    Planning passes lightweight stand-ins that carry ``filename`` / ``fallback_filename`` and
+    nothing else, so reading the property directly turns one of those into an AttributeError that
+    is swallowed into "no prequant plan" and a silent dense fallback. Falling back to the two older
+    attributes keeps every such caller working while the real dataclass answers the full chain."""
+    names = getattr(source, "candidate_filenames", None)
+    if names is None:
+        names = (
+            getattr(source, "filename", None),
+            getattr(source, "fallback_filename", None),
+        )
+    return tuple(n for n in names if n)
 
 
 def prequant_filename(scheme: str) -> str:
@@ -375,16 +408,37 @@ def prequant_filename(scheme: str) -> str:
     return f"transformer_{scheme}.pt"
 
 
-def prequant_repo_filename(repo_id: str, scheme: str) -> str:
+def prequant_repo_filename(repo_id: str, scheme: str, suffix: str = ".pt") -> str:
     """The model-name checkpoint filename for ``scheme`` in ``repo_id``: the hosted repos are named
     <Model>-FP8 (or -INT8 / -quantized) and carry <Model>-<SCHEME>.pt files, e.g.
-    unsloth/Z-Image-Turbo-FP8 -> Z-Image-Turbo-INT8.pt / Z-Image-Turbo-FP8.pt."""
+    unsloth/Z-Image-Turbo-FP8 -> Z-Image-Turbo-INT8.pt / Z-Image-Turbo-FP8.pt.
+
+    ``suffix`` picks the container. It defaults to ``.pt`` so every existing caller keeps naming the
+    artifact it already names; ``derived_prequant_filenames`` is what puts the safetensors spelling
+    of the same name ahead of it."""
     model = repo_id.rsplit("/", 1)[-1]
-    for suffix in ("-fp8", "-int8", "-quantized"):
-        if model.lower().endswith(suffix):
-            model = model[: -len(suffix)]
+    for drop in ("-fp8", "-int8", "-quantized"):
+        if model.lower().endswith(drop):
+            model = model[: -len(drop)]
             break
-    return f"{model}-{scheme.upper()}.pt"
+    return f"{model}-{scheme.upper()}{suffix}"
+
+
+def derived_prequant_filenames(repo_id: str, scheme: str) -> tuple[str, ...]:
+    """The names to try for ``(repo_id, scheme)``, best first, safetensors AHEAD of the pickle.
+
+    Preferring safetensors is a policy decision rather than a detail: it needs no constructor
+    allowlist (so it loads on installs where the pickle is refused outright), it validates from its
+    header before a weight is read, and it cannot carry pickle opcodes at all. Deriving the
+    preference here rather than per family means a repo that gains a ``.safetensors`` sibling is
+    picked up with no code change, and a repo that never does keeps resolving exactly what it
+    resolves today, because the ``.pt`` names stay in the chain behind it.
+    """
+    return (
+        prequant_repo_filename(repo_id, scheme, ".safetensors"),
+        prequant_repo_filename(repo_id, scheme, ".pt"),
+        prequant_filename(scheme),
+    )
 
 
 def resolve_prequant_source(
@@ -426,7 +480,7 @@ def resolve_prequant_source(
     except Exception:  # noqa: BLE001 - a bad family object must not break the load
         repo_id = None
     if repo_id:
-        derived = prequant_repo_filename(repo_id, scheme)
+        derived = derived_prequant_filenames(repo_id, scheme)
         # A family may name a SECOND artifact for the same repo and scheme (today: MiniMax-H3's rotated INT8
         # denoiser). It becomes the primary and the derived name becomes the fallback, so a build that knows the new
         # name gets it and every older build keeps resolving the artifact it already understands. Without an override
@@ -437,13 +491,26 @@ def resolve_prequant_source(
         # artifact per task prevents. Absent is better than wrong here: no artifact means the released bfloat16
         # denoiser.
         task_specific = preferred is not None and preferred != agnostic
+        if task_specific:
+            return PrequantSource(
+                kind = "repo",
+                location = repo_id,
+                filename = preferred,
+                declared_filenames = (preferred,),
+            )
+        # Family-declared name first when there is one, then the derived chain, which puts the
+        # safetensors spelling ahead of the pickle. Order-preserving dedup so a family that declares
+        # exactly what the chain would derive does not make the downloader ask twice for it.
+        names: list[str] = []
+        for name in ((preferred,) if preferred else ()) + derived:
+            if name and name not in names:
+                names.append(name)
         return PrequantSource(
             kind = "repo",
             location = repo_id,
-            filename = preferred or derived,
-            fallback_filename = (
-                None if task_specific else (derived if preferred else prequant_filename(scheme))
-            ),
+            filename = names[0],
+            fallback_filenames = tuple(names[1:]),
+            declared_filenames = (preferred,) if preferred else (),
         )
     return None
 
@@ -535,10 +602,23 @@ def usable_prequant_source(
     candidates = (
         [src.location]
         if getattr(src, "kind", None) == "path"
-        else [n for n in (getattr(src, "filename", None), getattr(src, "fallback_filename", None)) if n]
+        else list(candidate_filenames_of(src))
     ) or [None]
-    if not any(restricted_prequant_load_supported(scheme, name) for name in candidates):
+    readable = [n for n in candidates if restricted_prequant_load_supported(scheme, n)]
+    if not readable:
         return None
+    # A DERIVED safetensors name is a guess: most repos do not host one yet, and a guess must not be
+    # what planning bets the dense shards on. So when the only readable candidates are safetensors
+    # names, require evidence that one is really there -- the family declared it, or it is already
+    # in the cache. Without that, an install that cannot open a pickle would plan a 6 GB artifact
+    # for a .pt-only repo, get a 404 then a refusal, and fall back to dense under a plan that never
+    # budgeted for it, which is the evict-then-OOM this function exists to prevent.
+    from .prequant_safetensors import is_safetensors_checkpoint
+
+    if src.kind == "repo" and all(is_safetensors_checkpoint(n) for n in readable):
+        declared = set(getattr(src, "declared_filenames", ()) or ())
+        if not any(n in declared for n in readable) and cached_checkpoint_path(src) is None:
+            return None
     if src.kind == "path":
         if not local_prequant_path_ready(src.location):
             return None
@@ -549,16 +629,23 @@ def usable_prequant_source(
 
 def cached_checkpoint_path(source: Any, *, cache_dir: Optional[str] = None) -> Optional[str]:
     """The path of a hosted (``kind == "repo"``) checkpoint ALREADY in the local Hub cache. A pure
-    lookup (a refs read plus a stat, no network), so memory planning can ask on every pick. Only
-    the PRIMARY ``filename`` counts: a cached ``fallback_filename`` (the legacy artifact) must
-    not short-circuit it, or a stale name stays pinned once the repo ships the real one, so a
-    fallback-only cache reads as "this would have to download" and the GGUF simply runs. Both
-    cache roots are searched: Unsloth pins the LIVE cache setting while an unpinned
+    lookup (a refs read plus a stat, no network), so memory planning can ask on every pick.
+
+    Every candidate name counts, IN PREFERENCE ORDER, not just the primary. Primary-only was right
+    while the primary was the only name a repo could realistically host; it is wrong the moment the
+    chain leads with a safetensors name that most repos do not have yet, because then every existing
+    ``.pt`` repo reads as "this would have to download several GB" and loses to the GGUF even though
+    its checkpoint is sitting in the cache. Walking the chain in order keeps the anti-staleness
+    property that motivated primary-only: the better name still wins whenever it is present.
+
+    Both cache roots are searched: Unsloth pins the LIVE cache setting while an unpinned
     ``hf_hub_download`` falls back to huggingface_hub's import-time constant. Never raises."""
-    for root in (cache_dir, None) if cache_dir else (None,):
-        hit = _cached_in_root(source, root)
-        if hit is not None:
-            return hit
+    roots = (cache_dir, None) if cache_dir else (None,)
+    for name in candidate_filenames_of(source):
+        for root in roots:
+            hit = _cached_in_root(source, root, name)
+            if hit is not None:
+                return hit
     return None
 
 
@@ -877,29 +964,26 @@ def _resolve_checkpoint_path(
         return expanded if os.path.isfile(expanded) else None
     if source.kind == "repo":
         EntryNotFoundError, _ = _entry_not_found_errors()
-        has_fallback = (
-            bool(source.fallback_filename) and source.fallback_filename != source.filename
-        )
-        try:
-            return _download_checkpoint_name(
-                source,
-                source.filename,
-                hf_token,
-                cache_dir,
-                propagate_missing = has_fallback,
-                local_files_only = local_files_only,
-            )
-        except EntryNotFoundError:
-            if not has_fallback:
-                raise
-            return _download_checkpoint_name(
-                source,
-                source.fallback_filename,
-                hf_token,
-                cache_dir,
-                propagate_missing = False,
-                local_files_only = local_files_only,
-            )
+        names = list(candidate_filenames_of(source))
+        if not names:
+            return None
+        for index, name in enumerate(names):
+            last = index == len(names) - 1
+            try:
+                return _download_checkpoint_name(
+                    source,
+                    name,
+                    hf_token,
+                    cache_dir,
+                    # Only the LAST name may swallow its own 404. Any earlier one has to let the
+                    # error reach here so the next candidate is tried, which is what makes the
+                    # safetensors-then-pickle preference work on a repo hosting only one of them.
+                    propagate_missing = not last,
+                    local_files_only = local_files_only,
+                )
+            except EntryNotFoundError:
+                if last:
+                    raise
     return None
 
 

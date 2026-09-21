@@ -5656,7 +5656,7 @@ _HOSTED_PREQUANT = types.SimpleNamespace(
     kind = "repo",
     location = "unsloth/Z-Image-Turbo-FP8",
     filename = "Z-Image-Turbo-FP8.pt",
-    fallback_filename = "transformer_fp8.pt",
+    fallback_filenames = ("transformer_fp8.pt",),
 )
 
 
@@ -8141,7 +8141,7 @@ def test_download_plan_counts_a_cached_lower_auto_prequant(monkeypatch):
         kind = "repo",
         location = "unsloth/Qwen-Image-FP8",
         filename = "Qwen-Image-INT8.pt",
-        fallback_filename = "transformer_int8.pt",
+        fallback_filenames = ("transformer_int8.pt",),
     )
     _fake_hf_api(
         monkeypatch,
@@ -11592,7 +11592,7 @@ def test_a_prequant_repo_missing_its_artifact_marks_the_plan_incomplete(monkeypa
         kind = "repo",
         location = "unsloth/some-prequant",
         filename = "transformer_fp8.safetensors",
-        fallback_filename = "transformer.fp8.safetensors",
+        fallback_filenames = ("transformer.fp8.safetensors",),
     )
     monkeypatch.setattr(diffusion_mod, "usable_prequant_source", lambda *a, **k: source)
     monkeypatch.setattr(diffusion_mod, "select_transformer_quant_scheme", lambda *a, **k: "fp8")

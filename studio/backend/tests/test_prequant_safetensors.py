@@ -112,11 +112,41 @@ def test_usable_source_survives_a_pickle_only_refusal(monkeypatch):
 
 
 def test_usable_source_still_refused_when_nothing_is_readable(monkeypatch):
-    """A .pt-only family on a pickle-less install keeps answering None, as it always has."""
+    """A family with no DECLARED safetensors name, on a pickle-less install, keeps answering None.
+
+    Regression for a hazard the safetensors-first chain introduced. Every family now derives a
+    ``<Model>-<SCHEME>.safetensors`` candidate, so a naive "is any candidate readable" gate answers
+    yes on a pickle-less install even for a repo that hosts only ``.pt``. Planning would then budget
+    a 6 GB artifact, the download would 404 to the pickle, the pickle would be refused, and the
+    load would fall back to dense under a plan that never budgeted it: the evict-then-OOM this
+    function exists to prevent. A derived name is a guess and does not count as evidence.
+    """
     fam = _family(prequant_repos = (("fp8", "org/model-fp8"),))
     monkeypatch.setattr(pq, "_register_prequant_safe_globals", lambda: False)
     monkeypatch.setattr(ps, "safetensors_prequant_supported", lambda: True)
+    monkeypatch.setattr(pq, "cached_checkpoint_path", lambda source, **kw: None)
     assert pq.usable_prequant_source(fam, "fp8") is None
+
+
+def test_a_cached_safetensors_artifact_is_evidence_enough(monkeypatch):
+    """The other side of that guard: once the file is actually THERE, the pickle-less install may
+    plan for it. A cached candidate is evidence, exactly as a family-declared name is."""
+    fam = _family(prequant_repos = (("fp8", "org/model-fp8"),))
+    monkeypatch.setattr(pq, "_register_prequant_safe_globals", lambda: False)
+    monkeypatch.setattr(ps, "safetensors_prequant_supported", lambda: True)
+    monkeypatch.setattr(pq, "cached_checkpoint_path", lambda source, **kw: "/cache/model-FP8.safetensors")
+    src = pq.usable_prequant_source(fam, "fp8")
+    assert src is not None and src.filename == "model-FP8.safetensors"
+
+
+def test_the_derived_chain_puts_safetensors_first_and_keeps_the_pickles(monkeypatch):
+    """The preference itself, and the promise that nothing is dropped behind it: an existing
+    .pt-only repo still resolves both of the names it resolves today."""
+    fam = _family(prequant_repos = (("fp8", "unsloth/Model-FP8"),))
+    src = pq.resolve_prequant_source(fam, "fp8")
+    assert src.candidate_filenames == (
+        "Model-FP8.safetensors", "Model-FP8.pt", "transformer_fp8.pt",
+    )
 
 
 def test_local_scheme_probe_reads_the_header_only(monkeypatch, tmp_path):
