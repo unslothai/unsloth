@@ -56,6 +56,27 @@ _IMPORT = re.compile(
 # such specifiers read as a duplicate and fail CI on a file tsc accepts.
 _TYPE_MODIFIER = re.compile(r"^type\s+")
 
+# Words that end in identifier characters but are not values, so a `/` after one of them
+# opens a regex rather than dividing.
+_OPERATOR_KEYWORDS = frozenset(
+    {
+        "await",
+        "case",
+        "delete",
+        "do",
+        "else",
+        "in",
+        "instanceof",
+        "new",
+        "of",
+        "return",
+        "throw",
+        "typeof",
+        "void",
+        "yield",
+    }
+)
+
 
 def _bindings(clause: str) -> list[str]:
     """Local names a single import clause introduces, in source order."""
@@ -117,9 +138,16 @@ def _without_embedded_source(source: str) -> str:
     specifiers survive as whitespace inside their quotes, which the pattern still matches, so
     masking cannot hide a genuine import.
 
-    A regex literal holding an unpaired quote or backtick can desync this scanner. That fails
-    OPEN, missing a duplicate rather than inventing one, which is the right way round for a
-    gate that runs on every push.
+    Regex literals are recognised, because leaving them out did NOT fail open as an earlier
+    version of this comment claimed. `const BACKTICK = /`/g;` is real code in
+    studio/frontend/src/lib/release-notes-preview.ts, and an unrecognised backtick inside it
+    pairs with the opener of the next real template, so the masking lands on the gap between
+    them and leaves the fixture exposed. That invents a duplicate rather than missing one.
+
+    Telling a regex from a division needs the previous token, since `/` is both. The test is
+    the usual one: after a value, so an identifier, a literal, or a closing bracket, `/`
+    divides; anywhere else it opens a regex. `return`, `typeof` and the other operator
+    keywords end in identifier characters but are not values, so they are listed.
     """
     out = list(source)
     length = len(source)
@@ -129,11 +157,52 @@ def _without_embedded_source(source: str) -> str:
             if out[index] != "\n":
                 out[index] = " "
 
+    def opens_a_regex(before: int) -> bool:
+        """True when a `/` at `before` starts a regex rather than dividing."""
+        cursor = before - 1
+        while cursor >= 0 and source[cursor] in " \t\r\n":
+            cursor -= 1
+        if cursor < 0:
+            return True
+        previous = source[cursor]
+        if previous in ")]":
+            # `(a + b) / 2` divides. `if (x) /re/.test(s)` does not, and is not written here.
+            return False
+        if previous.isalnum() or previous in "_$":
+            word = re.search(r"[A-Za-z_$][\w$]*$", source[: cursor + 1])
+            return bool(word) and word.group(0) in _OPERATOR_KEYWORDS
+        return True
+
     index = 0
     while index < length:
         char = source[index]
         pair = source[index : index + 2]
-        if pair == "//":
+        if char == "/" and pair not in ("//", "/*") and opens_a_regex(index):
+            cursor = index + 1
+            in_class = False
+            while cursor < length:
+                here = source[cursor]
+                if here == "\\":
+                    cursor += 2
+                    continue
+                if here == "\n":
+                    # Unterminated: a regex cannot span a line, so this was a division after
+                    # all. Leave the slash alone rather than masking to the end of the file.
+                    cursor = index
+                    break
+                if here == "[":
+                    in_class = True
+                elif here == "]":
+                    in_class = False
+                elif here == "/" and not in_class:
+                    break
+                cursor += 1
+            if cursor > index:
+                blank(index + 1, min(cursor, length))
+                index = min(cursor, length) + 1
+                continue
+            index += 1
+        elif pair == "//":
             stop = source.find("\n", index)
             stop = length if stop == -1 else stop
             blank(index, stop)
@@ -205,6 +274,47 @@ def _self_test() -> int:
             'import {\n  type ExternalConnectionRef,\n} from "./model-selector/missing";\n'
             'import { HubModelPicker, hasDownloadedModels } from "./model-selector/pickers";\n',
             ["HubModelPicker", "hasDownloadedModels"],
+        ),
+        (
+            "a backtick inside a regex does not open a template",
+            # `const BACKTICK = /`/g;` is real code in release-notes-preview.ts. Unrecognised,
+            # its backtick pairs with the opener of the next real template and exposes the
+            # fixture between them.
+            "const BACKTICK = /`/g;\n"
+            "const FIXTURE = `\n"
+            'import { A } from "m";\n'
+            'import { A } from "n";\n'
+            "`;\n",
+            [],
+        ),
+        (
+            "a quote inside a regex does not open a string",
+            "const QUOTE = /'/g;\n"
+            "const FIXTURE = `\n"
+            'import { A } from "m";\n'
+            'import { A } from "n";\n'
+            "`;\n",
+            [],
+        ),
+        (
+            "a division is not a regex",
+            'const half = total / 2;\nimport { A } from "m";\nimport { A } from "n";\n',
+            ["A"],
+        ),
+        (
+            "a division after a closing paren is not a regex",
+            'const x = (a + b) / 2;\nimport { A } from "m";\nimport { A } from "n";\n',
+            ["A"],
+        ),
+        (
+            "a regex after an operator keyword is still a regex",
+            'function f() { return /`/.test(s); }\nimport { A } from "m";\nimport { A } from "n";\n',
+            ["A"],
+        ),
+        (
+            "a slash inside a character class does not end the regex",
+            'const re = /[/`]/g;\nimport { A } from "m";\nimport { A } from "n";\n',
+            ["A"],
         ),
         (
             "TypeScript quoted as a fixture in a template literal is data, not imports",
