@@ -299,8 +299,18 @@ def test_the_fallback_never_loses_a_bundle_the_leading_arch_would_have_had():
     pre-repick arch would have, over the real published coverage."""
     bundle = _rocm_bundle()
     candidates = [
-        "gfx1200", "gfx1201", "gfx1100", "gfx1030", "gfx1150",
-        "gfx1151", "gfx1152", "gfx1010", "gfx1011", "gfx1012", "gfx90a", "gfx908",
+        "gfx1200",
+        "gfx1201",
+        "gfx1100",
+        "gfx1030",
+        "gfx1150",
+        "gfx1151",
+        "gfx1152",
+        "gfx1010",
+        "gfx1011",
+        "gfx1012",
+        "gfx90a",
+        "gfx908",
     ]
     lost = []
     for igpu in sorted(ILP.SHADOWING_INTEGRATED_GFX):
