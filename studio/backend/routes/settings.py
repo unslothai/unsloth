@@ -78,6 +78,7 @@ from utils.download_transport_settings import (
     set_download_transport_mode,
 )
 from picker.schemas import MAX_CHAT_TEMPLATE_BYTES, chat_template_byte_length
+from utils.reasoning_budget import validate_reasoning_budget_message
 from utils.coding_agents import CODING_AGENTS, detect_installed_coding_agents
 from utils.model_memory_settings import (
     DEFAULT_KEEP_RESIDENT,
@@ -136,6 +137,12 @@ from utils.preview_sharing_settings import (
     DEFAULT_PREVIEW_SHARING_ENABLED,
     get_preview_sharing_enabled,
     set_preview_sharing_enabled,
+)
+from utils.managed_provider_url_settings import (
+    DEFAULT_MANAGED_PRIVATE_PROVIDER_URLS_ALLOWED,
+    get_managed_private_provider_urls_allowed,
+    private_urls_locked_by_environment,
+    set_managed_private_provider_urls_allowed,
 )
 from utils.current_date_prompt_settings import (
     DEFAULT_CURRENT_DATE_PROMPT_ENABLED,
@@ -810,6 +817,8 @@ class ModelOverridePayload(BaseModel):
     spec_draft_n_max: Optional[int] = Field(default = None, ge = 1, le = 16)
     # Parallel decode slots (llama-server --parallel), GGUF-only; None follows the server default.
     n_parallel: Optional[int] = Field(default = None, ge = PARALLEL_SLOTS_MIN, le = PARALLEL_SLOTS_MAX)
+    reasoning_budget: Optional[int] = Field(default = None, ge = -1, le = 2_147_483_647)
+    reasoning_budget_message: Optional[str] = None
     # prompt batch sizes (--batch-size / --ubatch-size), gguf-only; none = llama.cpp defaults
     n_batch: Optional[int] = Field(default = None, ge = BATCH_SIZE_MIN, le = BATCH_SIZE_MAX)
     n_ubatch: Optional[int] = Field(default = None, ge = BATCH_SIZE_MIN, le = BATCH_SIZE_MAX)
@@ -825,6 +834,9 @@ class ModelOverridePayload(BaseModel):
     # predates them is indistinguishable from a user clearing them. Only a client that sets this may clear by
     # omission; default False, so an old payload is the safe case.
     mirrors_server_tuning: bool = False
+    # The reasoning pair came later than the four, so a build that mirrors them can still
+    # predate it: its own flag, same contract.
+    mirrors_reasoning_budget: bool = False
     tensor_parallel: bool = False
     disable_vision: bool = False
     # Validated in bytes below: pydantic counts characters, so a multi-byte template would pass.
@@ -854,11 +866,17 @@ class ModelOverridePayload(BaseModel):
             raise ValueError(f"Chat template exceeds the {MAX_CHAT_TEMPLATE_BYTES}-byte limit.")
         return value
 
+    @field_validator("reasoning_budget_message")
+    @classmethod
+    def _validate_reasoning_budget_message(cls, value: Optional[str]) -> Optional[str]:
+        return None if value is None else validate_reasoning_budget_message(value)
+
     @field_validator(
         "max_seq_length",
         "custom_context_length",
         "spec_draft_n_max",
         "n_parallel",
+        "reasoning_budget",
         "n_batch",
         "n_ubatch",
         "ctx_checkpoints",
@@ -1429,6 +1447,60 @@ def update_last_local_model(
     )
 
 
+class DiffusionAcceleratorFallbackRecord(BaseModel):
+    accelerator: str
+    fallback: Optional[str] = None
+    # Qualifying failures under the current fingerprint; `proven` means one named the BUILD.
+    strikes: int = 0
+    proven: bool = False
+    diverting: bool = False
+    # Taken under a different driver, bundle or set of cards, so it is already inert.
+    stale: bool = False
+
+
+class DiffusionAcceleratorFallbackResponse(BaseModel):
+    records: list[DiffusionAcceleratorFallbackRecord] = []
+    # False when UNSLOTH_DIFFUSION_SD_CPP_VULKAN_FALLBACK is off, where no record can divert.
+    enabled: bool = True
+    diverting: bool = False
+
+
+def _diffusion_accelerator_fallback_response() -> DiffusionAcceleratorFallbackResponse:
+    from core.inference.sd_cpp_backend import accelerator_runtime_failure_state
+    return DiffusionAcceleratorFallbackResponse(**accelerator_runtime_failure_state())
+
+
+@_owner_settings_router.get(
+    "/diffusion-accelerator-fallback", response_model = DiffusionAcceleratorFallbackResponse
+)
+def get_diffusion_accelerator_fallback(
+    current_subject: str = Depends(get_current_subject),
+) -> DiffusionAcceleratorFallbackResponse:
+    """Which native diffusion accelerators this host has been recorded as unable to run.
+
+    Upstream publishes one generic ROCm stable-diffusion.cpp build, not one per gfx arch, so a card
+    it carries no kernels for cannot start it and the host moves to Vulkan (#9278, #8814).
+    """
+    return _diffusion_accelerator_fallback_response()
+
+
+@_owner_settings_router.delete(
+    "/diffusion-accelerator-fallback", response_model = DiffusionAcceleratorFallbackResponse
+)
+def clear_diffusion_accelerator_fallback(
+    current_subject: str = Depends(get_current_subject),
+) -> DiffusionAcceleratorFallbackResponse:
+    """Forget the records, so the next load tries this host's own accelerator again.
+
+    A driver upgrade or a new card retires them through the fingerprint; this is the way back for a
+    fix it cannot see. Reinstalling does not clear them: the record lives in settings, not the tree.
+    """
+    from core.inference.sd_cpp_backend import clear_accelerator_runtime_failures
+
+    clear_accelerator_runtime_failures()
+    return _diffusion_accelerator_fallback_response()
+
+
 @_owner_settings_router.get("/vram-budget", response_model = VramBudgetResponse)
 def get_vram_budget(current_subject: str = Depends(get_current_subject)) -> VramBudgetResponse:
     return _vram_budget_response()
@@ -1583,6 +1655,43 @@ def _fallback_supplies_extra_args(model_id: str, target_id: str) -> bool:
     return False
 
 
+def _fallback_supplies_reasoning_flag(model_id: str, target_id: str) -> bool:
+    """Whether a load for this model would still pick a reasoning flag off another entry.
+
+    The -1/"" pair is stored rather than dropped so a qualified row survives as a tombstone that
+    shadows such a flag. A later save leaving the controls at their defaults omits the pair, and
+    without this the row can empty out, be deleted, and hand the reset value straight back.
+    """
+    from core.inference.llama_server_args import (
+        parse_reasoning_budget_message_override,
+        parse_reasoning_budget_override,
+    )
+    from utils.openai_auto_switch_settings import get_model_override
+
+    for candidate in (
+        _bare_model_id(model_id),
+        _legacy_standalone_gguf_key(model_id),
+    ):
+        if not candidate or candidate == target_id:
+            continue
+        stored = get_model_override(candidate)
+        if stored.get("reasoning_budget", -1) != -1 or stored.get("reasoning_budget_message"):
+            return True
+        stored_args = stored.get("llama_extra_args")
+        if not stored_args:
+            continue
+        try:
+            if (
+                parse_reasoning_budget_override(stored_args) is not None
+                or parse_reasoning_budget_message_override(stored_args) is not None
+            ):
+                return True
+        except ValueError:
+            # A malformed stored flag is the loader's problem, not this save's.
+            continue
+    return False
+
+
 def _other_quants_remain(bare_id: str, removed_ids: list[str]) -> bool:
     """Whether a quant of ``bare_id`` other than the ones being removed still has an entry. Such a quant has its
     own settings and never reads the bare fallback, so this is not "is anyone inheriting" but "is this
@@ -1670,7 +1779,11 @@ def _serialized_override_write(func):
 def update_openai_auto_switch_override(
     payload: ModelOverridePayload, current_subject: str = Depends(get_current_subject)
 ) -> ModelOverridesResponse:
-    from core.inference.llama_server_args import drop_managed_flags, validate_extra_args
+    from core.inference.llama_server_args import (
+        drop_managed_flags,
+        strip_shadowing_flags,
+        validate_extra_args,
+    )
     from utils.openai_auto_switch_settings import get_model_override
 
     try:
@@ -1689,6 +1802,7 @@ def update_openai_auto_switch_override(
                 "remove",
                 "fill_absent_fields",
                 "mirrors_server_tuning",
+                "mirrors_reasoning_budget",
             },
             exclude_none = True,
         )
@@ -1727,6 +1841,22 @@ def update_openai_auto_switch_override(
                         requested_extra_args = get_model_override(alias_id).get("llama_extra_args")
                         if requested_extra_args is not None:
                             break
+        fields_set = payload.model_fields_set
+        reset_reasoning_budget = "reasoning_budget" in fields_set and payload.reasoning_budget == -1
+        reset_reasoning_budget_message = (
+            "reasoning_budget_message" in fields_set and payload.reasoning_budget_message == ""
+        )
+        if not payload.fill_absent_fields and requested_extra_args:
+            requested_extra_args = strip_shadowing_flags(
+                requested_extra_args,
+                strip_context = False,
+                strip_cache = False,
+                strip_spec = False,
+                strip_template = False,
+                strip_split_mode = False,
+                strip_reasoning_budget = reset_reasoning_budget,
+                strip_reasoning_budget_message = reset_reasoning_budget_message,
+            )
         # Not validated on an explicit remove: a 400 would only leave the override in place.
         if payload.remove is True:
             extra_args = []
@@ -1746,8 +1876,13 @@ def update_openai_auto_switch_override(
         # the caller never knew about must survive it. Gated on is_removal, not on payload.remove: the documented
         # legacy contract is a payload carrying only model_id, which leaves remove None.
         _tuning_fields = ("load_mode", "spec_draft_cache_type", "ctx_checkpoints", "cache_ram")
-        _kept_tuning = {name: getattr(payload, name) for name in _tuning_fields}
-        if not payload.mirrors_server_tuning and not is_removal:
+        _reasoning_fields = ("reasoning_budget", "reasoning_budget_message")
+        _kept_tuning = {name: getattr(payload, name) for name in _tuning_fields + _reasoning_fields}
+        # Each group is carried only for a client that does not mirror it.
+        _carried_fields = (() if payload.mirrors_server_tuning else _tuning_fields) + (
+            () if payload.mirrors_reasoning_budget else _reasoning_fields
+        )
+        if _carried_fields and not is_removal:
             # The same spellings the extra-args carry-over walks: a cached repo is not an ordinary folded match,
             # so a save under the repo id would find nothing and retire the alias with its tuning.
             _alias_ids = [payload.model_id]
@@ -1768,7 +1903,7 @@ def update_openai_auto_switch_override(
                 _stored_tuning = get_model_override(_alias_id)
                 if not _stored_tuning:
                     continue
-                for name in _tuning_fields:
+                for name in _carried_fields:
                     if _kept_tuning[name] is None:
                         _kept_tuning[name] = _stored_tuning.get(name)
                 break
@@ -1823,6 +1958,18 @@ def update_openai_auto_switch_override(
                 and not payload.fill_absent_fields
                 and _fallback_supplies_extra_args(payload.model_id, target_id)
             )
+            # A default the caller did not send still has to be written while a broader entry
+            # would otherwise answer with the flag this row exists to shadow.
+            _kept_reasoning_budget = _kept_tuning["reasoning_budget"]
+            _kept_reasoning_budget_message = _kept_tuning["reasoning_budget_message"]
+            if (
+                not payload.fill_absent_fields
+                and _kept_reasoning_budget is None
+                and _kept_reasoning_budget_message is None
+                and _fallback_supplies_reasoning_flag(payload.model_id, target_id)
+            ):
+                _kept_reasoning_budget = -1
+                _kept_reasoning_budget_message = ""
             set_model_override(
                 target_id,
                 llama_extra_args = extra_args,
@@ -1834,6 +1981,16 @@ def update_openai_auto_switch_override(
                 speculative_type = payload.speculative_type,
                 spec_draft_n_max = payload.spec_draft_n_max,
                 n_parallel = payload.n_parallel,
+                reasoning_budget = (
+                    None
+                    if payload.fill_absent_fields and reset_reasoning_budget
+                    else _kept_reasoning_budget
+                ),
+                reasoning_budget_message = (
+                    None
+                    if payload.fill_absent_fields and reset_reasoning_budget_message
+                    else _kept_reasoning_budget_message
+                ),
                 n_batch = payload.n_batch,
                 n_ubatch = payload.n_ubatch,
                 load_mode = _kept_tuning["load_mode"],
@@ -2891,6 +3048,18 @@ class PreviewSharingResponse(BaseModel):
     default_enabled: bool = DEFAULT_PREVIEW_SHARING_ENABLED
 
 
+class ManagedProviderUrlsPayload(BaseModel):
+    allowed: StrictBool
+
+
+class ManagedProviderUrlsResponse(BaseModel):
+    allowed: bool
+    default_allowed: bool = DEFAULT_MANAGED_PRIVATE_PROVIDER_URLS_ALLOWED
+    # UNSLOTH_STUDIO_BLOCK_PRIVATE_PROVIDER_URLS=1 holds the answer: the UI says why rather than
+    # showing a switch that silently reverts.
+    locked_by_environment: bool = False
+
+
 class CurrentDatePromptPayload(BaseModel):
     enabled: StrictBool
 
@@ -3125,6 +3294,53 @@ def update_preview_sharing(
     return PreviewSharingResponse(enabled = enabled)
 
 
+def _managed_provider_urls_response() -> ManagedProviderUrlsResponse:
+    # The EFFECTIVE answer, not the stored preference: a switch reading back on while every save
+    # is refused would be the worst of the three things this could say.
+    return ManagedProviderUrlsResponse(
+        allowed = get_managed_private_provider_urls_allowed(),
+        locked_by_environment = private_urls_locked_by_environment(),
+    )
+
+
+@_shared_settings_router.get("/managed-provider-urls", response_model = ManagedProviderUrlsResponse)
+def get_managed_provider_urls(
+    current_subject: str = Depends(get_current_subject),
+) -> ManagedProviderUrlsResponse:
+    """Readable by any account: a managed one has to be able to tell a refusal the owner can lift
+    from one nobody on this installation can, and it learns the same bit by trying to save a URL."""
+    return _managed_provider_urls_response()
+
+
+@_owner_settings_router.put("/managed-provider-urls", response_model = ManagedProviderUrlsResponse)
+def update_managed_provider_urls(
+    payload: ManagedProviderUrlsPayload,
+    current_subject: str = Depends(get_current_subject),
+    # Installation policy: set at the console, not from a remote key that happens to be owned.
+    _ui_session: None = Depends(_require_ui_session),
+) -> ManagedProviderUrlsResponse:
+    """Allow or refuse private and LAN provider base URLs for the installation's managed accounts.
+
+    Off by default. The preference is stored either way, so removing
+    ``UNSLOTH_STUDIO_BLOCK_PRIVATE_PROVIDER_URLS`` later restores what the owner chose here rather
+    than a default.
+    """
+    try:
+        allowed = set_managed_private_provider_urls_allowed(payload.allowed)
+    except ValueError as exc:
+        raise log_and_http_error(
+            exc,
+            400,
+            safe_error_detail(exc, fallback = "Invalid managed provider URL setting."),
+            event = "settings.update_managed_provider_urls_failed",
+            log = logger,
+        ) from exc
+    logger.info(
+        "settings.managed_provider_urls_updated subject=%s allowed=%s", current_subject, allowed
+    )
+    return _managed_provider_urls_response()
+
+
 @_account_settings_router.get("/current-date-prompt", response_model = CurrentDatePromptResponse)
 def get_current_date_prompt(
     current_subject: str = Depends(get_current_subject),
@@ -3353,20 +3569,23 @@ def _default_sidebar_menu() -> "list[PersonalizationSidebarMenuItem]":
     ]
 
 
+SidebarNavItemId = Literal[
+    "hub",
+    "projects",
+    "images",
+    "video",
+    "audio",
+    "train",
+    "recipes",
+    "export",
+    "api",
+]
+
+
 class PersonalizationSidebarNavItem(BaseModel):
     model_config = ConfigDict(extra = "ignore")
 
-    id: Literal[
-        "hub",
-        "projects",
-        "images",
-        "video",
-        "audio",
-        "train",
-        "recipes",
-        "export",
-        "api",
-    ]
+    id: SidebarNavItemId
     pinned: bool = True
 
 
@@ -3406,6 +3625,7 @@ class PersonalizationCustomization(BaseModel):
 
     uiFontSize: Optional[int] = Field(None, ge = 12, le = 20)
     codeFontSize: Optional[int] = Field(None, ge = 10, le = 20)
+    chatWidth: Literal["standard", "wide", "full"] = "standard"
     contrast: int = Field(50, ge = 0, le = 100)
     pointerCursors: bool = False
     reduceMotion: Literal["system", "on", "off"] = "system"
@@ -3419,6 +3639,20 @@ class PersonalizationCustomization(BaseModel):
         default_factory = _default_sidebar_nav,
         max_length = MAX_SIDEBAR_NAV_INPUT_ITEMS,
     )
+    # Rows still following an automatic rule rather than a choice the user made. None means the
+    # record predates the field, which the client tells apart from an explicit empty list: a
+    # server-filled default would reapply a rule the user had already overruled.
+    sidebarNavAuto: Optional[list[SidebarNavItemId]] = Field(
+        None, max_length = MAX_SIDEBAR_NAV_INPUT_ITEMS
+    )
+
+    @field_validator("sidebarNavAuto")
+    @classmethod
+    def _validate_sidebar_nav_auto(cls, value: Optional[list[str]]) -> Optional[list[str]]:
+        if value is None:
+            return None
+        seen: set[str] = set()
+        return [item for item in value if not (item in seen or seen.add(item))]
 
     @field_validator("sidebarMenu")
     @classmethod
@@ -3472,6 +3706,7 @@ class PersonalizationResponse(PersonalizationPayload):
     # False when the stored record predates a field, so the client keeps local
     # overrides instead of treating a server-filled default as an explicit value.
     customizationSaved: bool = False
+    chatWidthSaved: bool = False
     paletteSaved: bool = False
     greetingSlothSaved: bool = False
 
@@ -3484,8 +3719,10 @@ def get_personalization_settings(
     response = PersonalizationResponse.model_validate(stored or {})
     response.saved = bool(stored)
     appearance = stored.get("appearance") if isinstance(stored, dict) else None
+    customization = appearance.get("customization") if isinstance(appearance, dict) else None
     profile = stored.get("profile") if isinstance(stored, dict) else None
     response.customizationSaved = isinstance(appearance, dict) and "customization" in appearance
+    response.chatWidthSaved = isinstance(customization, dict) and "chatWidth" in customization
     response.paletteSaved = isinstance(appearance, dict) and "palette" in appearance
     response.greetingSlothSaved = isinstance(profile, dict) and "showGreetingSloth" in profile
     return response

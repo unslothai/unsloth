@@ -66,9 +66,20 @@ foreach ($pair in @(@("install.ps1", $installPath), @("studio/setup.ps1", $setup
     $body = Get-Content -LiteralPath $pair[1] -Raw
     # -MemberDefinition compiles as surely as -TypeDefinition does. -AssemblyName
     # only loads an assembly that already exists and reaches no compiler, so it is
-    # not what this bans.
+    # not what this bans. Both files, unconditionally: "compiles no C#" is the claim
+    # that has to hold everywhere.
     $compiles = [regex]::Matches($body, "(?m)^[ \t]*Add-Type\b(?![^\r\n]*-AssemblyName)")
     Check "$($pair[0]) compiles no C# at all" ($compiles.Count -eq 0)
+
+    # The rest only applies to a file that still declares native imports. studio/setup.ps1
+    # no longer does: its emit apparatus existed solely to colour a banner, and the console
+    # host turns out to enable virtual terminal processing before our code runs, so the
+    # whole thing went. Asserting "emits its imports" against a file with no imports would
+    # demand it grow some back, which is backwards.
+    if ($body -notmatch "DllImport|extern\s|DefinePInvokeMethod") {
+        Check "$($pair[0]) declares no native imports at all" $true
+        continue
+    }
     Check "$($pair[0]) emits its native imports instead" ($body -match "DefinePInvokeMethod")
     # Both spellings of "define a dynamic assembly". Windows PowerShell 5.1 on .NET
     # Framework and pwsh on .NET Core do not agree about which one exists, and only
@@ -152,7 +163,7 @@ Write-Host "NATIVE_ANSWER_NULL: `$([string]::IsNullOrEmpty(`$answer))"
 # 5. The other two emitted types must define with the same signatures the C# they
 #    replace declared. `out uint` has to arrive as a by-ref, and a void return has
 #    to stay void, or the call marshals wrongly on a host where it does run.
-`$vt = New-StudioEmittedNativeType -TypeName "StudioVTNative" -Imports @(
+`$vt = New-StudioEmittedNativeType -TypeName "UnslothEmitterOutParamProbe" -Imports @(
     @{ Name = "GetStdHandle"; Library = "kernel32.dll"; Return = [IntPtr]; Args = @([int]) },
     @{ Name = "GetConsoleMode"; Library = "kernel32.dll"; Return = [bool]
        Args = @([IntPtr], [uint32].MakeByRefType()) },
@@ -163,7 +174,7 @@ Write-Host "NATIVE_ANSWER_NULL: `$([string]::IsNullOrEmpty(`$answer))"
        Args = @([int], [uint32], [string], [IntPtr]) })
 Write-Host "VT_EMIT_OK: `$vt"
 Write-Host "ICON_EMIT_OK: `$icon"
-`$gcm = ("StudioVTNative" -as [type]).GetMethod("GetConsoleMode")
+`$gcm = ("UnslothEmitterOutParamProbe" -as [type]).GetMethod("GetConsoleMode")
 Write-Host "VT_BYREF_OUT: `$(`$gcm.GetParameters()[1].ParameterType.IsByRef)"
 `$shcn = ("UnslothShellIconRefresh" -as [type]).GetMethod("SHChangeNotify")
 Write-Host "ICON_RETURNS_VOID: `$(`$shcn.ReturnType -eq [System.Void])"
@@ -172,11 +183,11 @@ Write-Host "ICON_RETURNS_VOID: `$(`$shcn.ReturnType -eq [System.Void])"
 #    -as [type], but a partial first attempt would otherwise leave a half-built
 #    type behind, which is what Add-Type's "already exists" error used to prevent.
 `$redefineThrew = `$false
-try { `$null = New-StudioEmittedNativeType -TypeName "StudioVTNative" -Imports @(
+try { `$null = New-StudioEmittedNativeType -TypeName "UnslothEmitterOutParamProbe" -Imports @(
     @{ Name = "GetStdHandle"; Library = "kernel32.dll"; Return = [IntPtr]; Args = @([int]) }) }
 catch { `$redefineThrew = `$true }
 Write-Host "REDEFINE_THREW: `$redefineThrew"
-Write-Host "REDEFINE_TYPE_INTACT: `$(`$null -ne (("StudioVTNative" -as [type]).GetMethod("SetConsoleMode")))"
+Write-Host "REDEFINE_TYPE_INTACT: `$(`$null -ne (("UnslothEmitterOutParamProbe" -as [type]).GetMethod("SetConsoleMode")))"
 
 # 7. The other rung. Resolve-StudioFinalPathInfo is what every caller actually
 #    uses, and the point of the change is that it still answers when the native

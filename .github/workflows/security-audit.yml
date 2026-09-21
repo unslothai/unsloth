@@ -163,7 +163,7 @@ jobs:
       # crates.io advisories, GitHub release artefacts (osv-scanner
       # binary), Semgrep registry, and TruffleHog's own GitHub action.
       - name: Harden runner (egress block)
-        uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c  # v2.21.0
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1  # v2.21.1
         with:
           egress-policy: block
           disable-sudo: true
@@ -266,9 +266,19 @@ jobs:
           with open("pyproject.toml", "rb") as f:
               d = tomllib.load(f)
           core = d["project"]["dependencies"]
-          extras = d["project"]["optional-dependencies"]["huggingfacenotorch"]
+          def extra(name):
+              # A bare KeyError reads as a generic crash: that is how four scan jobs
+              # stayed dead for three weeks. Name the extra, for every extra indexed here.
+              try:
+                  return d["project"]["optional-dependencies"][name]
+              except KeyError:
+                  raise SystemExit(
+                      f"pyproject.toml has no [{name}] extra, so the hf-stack scan "
+                      "set cannot be built. Add the extra, or update this workflow."
+                  )
+          extras = extra("huggingfacenotorch")
           # extras-no-deps.txt no longer pins torchcodec, so the audit set would lose it.
-          audio = d["project"]["optional-dependencies"]["audio-torch211"]
+          audio = extra("audio-torch211")
           print("# Auto-generated from pyproject.toml by security-audit.yml.")
           print("# core deps + huggingfacenotorch extras + audio-torch211.")
           for spec in core + extras + audio:
@@ -284,9 +294,16 @@ jobs:
           # which the flavor and default-ROCm repairs still resolve. One file each: their
           # ranges are disjoint, so they cannot share a resolve with each other or with
           # audio-torch211's >=0.11.
+          try:
+              specs = d["project"]["optional-dependencies"][extra]
+          except KeyError:
+              raise SystemExit(
+                  f"pyproject.toml has no [{extra}] extra, so its scan set cannot be "
+                  "built. Add the extra, or update this workflow."
+              )
           print("# Auto-generated from pyproject.toml by security-audit.yml.")
           print(f"# {extra}.")
-          for spec in d["project"]["optional-dependencies"][extra]:
+          for spec in specs:
               print(spec)
           PY
           done
@@ -605,7 +622,7 @@ jobs:
       # ─────────────────────────────────────────────────────────────
       - name: TruffleHog (secrets in diff)
         continue-on-error: true
-        uses: trufflesecurity/trufflehog@bcfcf73aaf4759d4dadc2783177c245a02792318  # v3.97.0
+        uses: trufflesecurity/trufflehog@363923b901c911a9164f50b6c423f47c15372b1c  # v3.97.4
         with:
           path: ./
           base: ${{ github.event.pull_request.base.sha || '' }}
@@ -846,7 +863,7 @@ jobs:
       # Per-job allowlist: pip-scan-packages only fetches PyPI archives
       # via scan_packages.py + pip download. No npm or cargo traffic.
       - name: Harden runner (egress block)
-        uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c  # v2.21.0
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1  # v2.21.1
         with:
           egress-policy: block
           disable-sudo: true
@@ -888,9 +905,19 @@ jobs:
           with open("pyproject.toml", "rb") as f:
               d = tomllib.load(f)
           core = d["project"]["dependencies"]
-          extras = d["project"]["optional-dependencies"]["huggingfacenotorch"]
+          def extra(name):
+              # A bare KeyError reads as a generic crash: that is how four scan jobs
+              # stayed dead for three weeks. Name the extra, for every extra indexed here.
+              try:
+                  return d["project"]["optional-dependencies"][name]
+              except KeyError:
+                  raise SystemExit(
+                      f"pyproject.toml has no [{name}] extra, so the hf-stack scan "
+                      "set cannot be built. Add the extra, or update this workflow."
+                  )
+          extras = extra("huggingfacenotorch")
           # extras-no-deps.txt no longer pins torchcodec, so the audit set would lose it.
-          audio = d["project"]["optional-dependencies"]["audio-torch211"]
+          audio = extra("audio-torch211")
           print("# Auto-generated from pyproject.toml by security-audit.yml.")
           print("# core deps + huggingfacenotorch extras + audio-torch211.")
           for spec in core + extras + audio:
@@ -906,9 +933,16 @@ jobs:
           # which the flavor and default-ROCm repairs still resolve. One file each: their
           # ranges are disjoint, so they cannot share a resolve with each other or with
           # audio-torch211's >=0.11.
+          try:
+              specs = d["project"]["optional-dependencies"][extra]
+          except KeyError:
+              raise SystemExit(
+                  f"pyproject.toml has no [{extra}] extra, so its scan set cannot be "
+                  "built. Add the extra, or update this workflow."
+              )
           print("# Auto-generated from pyproject.toml by security-audit.yml.")
           print(f"# {extra}.")
-          for spec in d["project"]["optional-dependencies"][extra]:
+          for spec in specs:
               print(spec)
           PY
           done
@@ -1058,7 +1092,7 @@ jobs:
       # registry.npmjs.org. GitHub endpoints retained for checkout +
       # setup-python action machinery.
       - name: Harden runner (egress block)
-        uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c  # v2.21.0
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1  # v2.21.1
         with:
           egress-policy: block
           disable-sudo: true
@@ -1144,7 +1178,7 @@ jobs:
     timeout-minutes: 15
     steps:
       - name: Harden runner (egress block)
-        uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c  # v2.21.0
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1  # v2.21.1
         with:
           egress-policy: audit
           disable-sudo: true

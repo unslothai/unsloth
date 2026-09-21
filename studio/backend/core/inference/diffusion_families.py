@@ -304,9 +304,18 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         pipeline_class = "QwenImagePipeline",
         transformer_class = "QwenImageTransformer2DModel",
         base_repo = "Qwen/Qwen-Image",
-        # int8 only: no fp8 DiT checkpoint is published for this family yet. fp8 is no longer denied for inference, so
-        # adding one here would now be live rather than dead.
-        prequant_repos = (("int8", "unsloth/Qwen-Image-FP8"),),
+        # Qwen-Image-FP8.pt was rebuilt with the activation scale floor (LPIPS 0.044 against the bf16
+        # render at 1024, seed 20260914), so an fp8 host seeds it instead of quantising bf16 in memory.
+        prequant_repos = (
+            ("int8", "unsloth/Qwen-Image-FP8"),
+            ("fp8", "unsloth/Qwen-Image-FP8"),
+        ),
+        # 2512 is a different checkpoint with its own baked artifacts; without these rows a 2512 pick
+        # plans the Qwen-Image artifact, refused by base_model_id once the shards are already dropped.
+        prequant_variant_repos = (
+            ("qwen/qwen-image-2512", "int8", "unsloth/Qwen-Image-2512-FP8"),
+            ("qwen/qwen-image-2512", "fp8", "unsloth/Qwen-Image-2512-FP8"),
+        ),
         # Pre-cast Qwen2.5-VL-7B (16.6 -> 8.8 GB). Always was independent of the DiT scheme rules.
         te_prequant_repos = (("fp8", "text_encoder", "unsloth/Qwen-Image-FP8"),),
         cfg_kwarg = "true_cfg_scale",
@@ -436,6 +445,10 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
             ("int8", "unsloth/HiDream-I1-Full-FP8"),
             ("fp8", "unsloth/HiDream-I1-Full-FP8"),
         ),
+        # Dev and Fast are distillations of Full, so the hosted Full checkpoint is baked from other
+        # weights and neither has its own artifact. Excluded rather than inherited: base_model_id
+        # refuses the Full artifact only after the plan has dropped their released shards.
+        prequant_excluded_bases = ("hidream-ai/hidream-i1-dev", "hidream-ai/hidream-i1-fast"),
         # Pre-cast Llama-3.1-8B TE4 (16.1 -> 8.1 GB). The generic TE pass only covers text_encoder.._3, so TE4 engages
         # via hidream_te4_kwargs.
         te_prequant_repos = (("fp8", "text_encoder_4", "unsloth/HiDream-I1-Full-FP8"),),
@@ -1227,6 +1240,21 @@ def assert_pipeline_class_available(
     escaped ``/images/download-plan``, which catches only (ValueError, FileNotFoundError), as a bare
     500 with the message lost.
     """
+    # Here rather than at the call sites, because this is where the import is. Every caller runs
+    # on a request thread that can be racing the background torch warm: image validation, video
+    # validation, and the training preflight via _assert_family_pipeline_available. `import
+    # diffusers` pulls torch._dynamo in by itself (diffusers.hooks evaluates
+    # @torch.compiler.disable() at class-body time), and so does the hasattr below, which is what
+    # actually imports the pipeline's submodule (#10350, #10963). Guarded around the IMPORT as
+    # well as the call: utils.torch_warmup reaches importlib._bootstrap._ModuleLockManager, a
+    # private CPython name, and a build lacking it must not turn this check into a failure.
+    try:
+        from loggers import get_logger
+        from utils.torch_warmup import close_dynamo_import_window
+        close_dynamo_import_window(get_logger(__name__))
+    except Exception:  # noqa: BLE001, S110 - optimisation only, and this module has no logger
+        pass
+
     try:
         import diffusers
         present = hasattr(diffusers, pipeline_class)

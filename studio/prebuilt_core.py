@@ -51,6 +51,16 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Iterable, Iterator
 
+# Bootstrap studio/ like install_llama_prebuilt.py: an importlib spec load prepares no
+# path, so the absolute branch cannot rely on the caller. auth_safe imports only urllib.
+if __package__:
+    from .backend.utils.auth_safe import AuthSafeRedirectHandler
+else:
+    _STUDIO_DIR = os.path.dirname(os.path.abspath(__file__))
+    if _STUDIO_DIR not in sys.path:
+        sys.path.insert(0, _STUDIO_DIR)
+    from backend.utils.auth_safe import AuthSafeRedirectHandler
+
 try:
     from filelock import FileLock, Timeout as FileLockTimeout
 except ImportError:
@@ -389,23 +399,8 @@ def auth_headers(ops: ModuleOps, url: str | None = None) -> dict[str, str]:
     return headers
 
 
-class _CrossHostAuthStrippingRedirectHandler(urllib.request.HTTPRedirectHandler):
-    """Drop Authorization when a redirect leaves the original host.
-
-    huggingface.co redirects downloads to CDN hosts whose signed URLs can reject
-    a foreign Authorization header; urllib forwards headers across redirects by
-    default (requests/huggingface_hub strip them).
-    """
-
-    def redirect_request(self, req, fp, code, msg, headers, newurl):
-        new_request = super().redirect_request(req, fp, code, msg, headers, newurl)
-        if new_request is not None and parsed_hostname(newurl) != parsed_hostname(req.full_url):
-            new_request.headers.pop("Authorization", None)
-            new_request.unredirected_hdrs.pop("Authorization", None)
-        return new_request
-
-
-_URL_OPENER = urllib.request.build_opener(_CrossHostAuthStrippingRedirectHandler())
+_CrossHostAuthStrippingRedirectHandler = AuthSafeRedirectHandler
+_URL_OPENER = urllib.request.build_opener(AuthSafeRedirectHandler())
 
 
 def github_api_headers(ops: ModuleOps, url: str | None = None) -> dict[str, str]:
@@ -930,6 +925,31 @@ def release_asset_map(release: dict[str, Any]) -> dict[str, str]:
         and isinstance(asset.get("name"), str)
         and isinstance(asset.get("browser_download_url"), str)
     }
+
+
+def release_asset_digests(release: dict[str, Any]) -> dict[str, str]:
+    """asset name -> bare sha256 hex, for the assets whose digest GitHub reports.
+
+    Separate from release_asset_map because the name -> url mapping is what nearly every
+    caller wants and widening its return type would touch all of them. GitHub returns
+    `digest` as an algorithm-prefixed string ("sha256:<hex>"); anything else is skipped
+    rather than guessed at, so a future algorithm cannot be read as a sha256.
+    """
+    assets = release.get("assets")
+    if not isinstance(assets, list):
+        return {}
+    digests: dict[str, str] = {}
+    for asset in assets:
+        if not isinstance(asset, dict) or not isinstance(asset.get("name"), str):
+            continue
+        raw = asset.get("digest")
+        # The prefix is required, not stripped for convenience: normalize_sha256_digest accepts a bare 64-hex string, and an unprefixed digest is one whose algorithm GitHub did not state.
+        if not isinstance(raw, str) or not raw.lower().startswith("sha256:"):
+            continue
+        digest = normalize_sha256_digest(raw)
+        if digest:
+            digests[asset["name"]] = digest
+    return digests
 
 
 def github_release(
@@ -1509,12 +1529,21 @@ class CudaRuntimePreference:
     selection_log: list[str]
 
 
-def detect_torch_cuda_runtime_preference(host: Any) -> CudaRuntimePreference:
+def detect_torch_cuda_runtime_preference(
+    host: Any, *, gpu_hidden_by_mask: bool = False
+) -> CudaRuntimePreference:
+    """The runtime line Torch was built against, so the bundle matches the venv.
+
+    `gpu_hidden_by_mask` is for a caller that already established an NVIDIA GPU hidden by
+    CUDA_VISIBLE_DEVICES. Both usual gates answer "no GPU" under that mask, so selection
+    would fall back to newest-first and hand a cu12 venv a CUDA 13 bundle. No mask touches
+    torch.version.cuda, so it is read without the availability check.
+    """
     selection_log: list[str] = []
     if host.is_macos:
         selection_log.append("torch_cuda_preference: skipped on macOS")
         return CudaRuntimePreference(runtime_line = None, selection_log = selection_log)
-    if not (host.has_usable_nvidia and (host.is_linux or host.is_windows)):
+    if not ((host.has_usable_nvidia or gpu_hidden_by_mask) and (host.is_linux or host.is_windows)):
         selection_log.append(
             "torch_cuda_preference: skipped because CUDA host prerequisites were not met"
         )
@@ -1533,11 +1562,18 @@ def detect_torch_cuda_runtime_preference(host: Any) -> CudaRuntimePreference:
         )
         return CudaRuntimePreference(runtime_line = None, selection_log = selection_log)
 
-    try:
-        cuda_available = bool(torch.cuda.is_available())
-    except Exception as exc:
-        selection_log.append(f"torch_cuda_preference: torch.cuda.is_available() failed: {exc}")
-        return CudaRuntimePreference(runtime_line = None, selection_log = selection_log)
+    if gpu_hidden_by_mask:
+        cuda_available = True
+        selection_log.append(
+            "torch_cuda_preference: GPU hidden by CUDA_VISIBLE_DEVICES; reading "
+            "torch.version.cuda without the availability check"
+        )
+    else:
+        try:
+            cuda_available = bool(torch.cuda.is_available())
+        except Exception as exc:
+            selection_log.append(f"torch_cuda_preference: torch.cuda.is_available() failed: {exc}")
+            return CudaRuntimePreference(runtime_line = None, selection_log = selection_log)
 
     if not cuda_available:
         selection_log.append(

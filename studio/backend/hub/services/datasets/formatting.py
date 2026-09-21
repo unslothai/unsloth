@@ -49,7 +49,7 @@ from hub.utils.paths import (
     normalize_path,
     resolve_dataset_path,
 )
-from hub.utils.hf_tokens import cached_read_refused
+from hub.utils.hf_tokens import cached_read_refused, recording_a_request_token_fetch
 from utils.datasets.audio_decode import ensure_audio_decoding
 from utils.paths.path_utils import drop_shadowed_appledouble_names
 
@@ -128,9 +128,18 @@ def _serialize_binary_value(data):
         return f"<binary data, {len(data)} bytes>"
 
 
+def _is_sample_sequence(samples) -> bool:
+    # A list from the JSON path or a numpy array straight from the decoder; never text, bytes or a nested cell.
+    return hasattr(samples, "__len__") and not isinstance(
+        samples, (str, bytes, bytearray, memoryview, dict)
+    )
+
+
 def _serialize_decoded_audio(value):
     """Summarise a decoded Audio cell the way binary cells are summarised."""
-    samples = value.get("array") or []
+    samples = value.get("array")
+    if samples is None:
+        samples = []
     rate = value.get("sampling_rate")
     try:
         seconds = len(samples) / rate if rate else None
@@ -167,7 +176,7 @@ def _serialize_preview_value(value):
             return _serialize_binary_value(raw)
         # A decoded Audio cell becomes one float per sample under the soundfile fallback, so ten preview
         # rows of a few seconds each are tens of MB of JSON and the client dies rendering it.
-        if "sampling_rate" in value and isinstance(value.get("array"), (list, tuple)):
+        if "sampling_rate" in value and _is_sample_sequence(value.get("array")):
             return _serialize_decoded_audio(value)
         return {str(key): _serialize_preview_value(item) for key, item in value.items()}
 
@@ -468,8 +477,16 @@ def check_format_response(
                             "token": hf_token,
                         }
 
-                        streamed_ds = load_dataset(**load_kwargs)
-                        rows = list(islice(streamed_ds, PREVIEW_SIZE))
+                        # Recorded against the call that can materialise rows, not the
+                        # listing above it: a preview writes into the datasets cache under
+                        # what may be a one-off token, and unrecorded a later tokenless
+                        # caller reads "none needed one". Recording before `list_repo_files`
+                        # left a record for a fetch a 404 or outage never made.
+                        with recording_a_request_token_fetch(
+                            hf_token, request.dataset_name, "dataset"
+                        ):
+                            streamed_ds = load_dataset(**load_kwargs)
+                            rows = list(islice(streamed_ds, PREVIEW_SIZE))
                         if rows:
                             preview_slice = Dataset.from_list(rows)
                 except Exception as e:
@@ -491,9 +508,12 @@ def check_format_response(
                     if request.subset:
                         load_kwargs["name"] = request.subset
 
-                    streamed_ds = load_dataset(**load_kwargs)
+                    # Tier 2 reaches the network on its own, whether or not tier 1 ran, and
+                    # takes its record back if it fails having cached nothing.
+                    with recording_a_request_token_fetch(hf_token, request.dataset_name, "dataset"):
+                        streamed_ds = load_dataset(**load_kwargs)
 
-                    rows = list(islice(streamed_ds, PREVIEW_SIZE))
+                        rows = list(islice(streamed_ds, PREVIEW_SIZE))
                     if not rows:
                         raise HTTPException(
                             status_code = 400,

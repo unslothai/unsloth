@@ -22,6 +22,8 @@ already_imported = [mod for mod in critical_modules if mod in sys.modules]
 
 from .import_fixes import (
     fix_message_factory_issue,
+    patch_torch_missing_attribute_error,
+    check_triton_py_ssize_t_clean,
     fix_torch_check_is_size,
     fix_torchao_torch_symbol_skew,
     propagate_torchao_fix_to_subprocesses,
@@ -35,6 +37,7 @@ from .import_fixes import (
     disable_torchaudio_if_cuda_mismatched,
     fix_diffusers_warnings,
     fix_huggingface_hub,
+    fix_broken_hf_xet_wheel,
 )
 
 # Redirect a read-only Hugging Face cache before anything below imports huggingface_hub /
@@ -62,8 +65,20 @@ try:
 except Exception:
     pass
 
-# Configure libdrm ids table path early so ROCm can resolve AMD GPU names.
+# Before anything imports huggingface_hub (disable_broken_vllm, check_fbgemm_gpu_version and
+# fix_huggingface_hub all reach it): the Hub freezes HF_HUB_DISABLE_XET at import time. Stdlib
+# only, so it does not disturb the torch ordering the next comment describes.
+fix_broken_hf_xet_wheel()
+# Configure libdrm ids table path early so ROCm can resolve AMD GPU names. Stdlib only,
+# and it must stay ahead of the first `import torch` in this file: it sets
+# AMDGPU_ASIC_ID_TABLE_PATH, and a torch that has already brought up libdrm would not see
+# the discovered table.
 configure_amdgpu_asic_id_table_path()
+# Ahead of every fix below and of `import unsloth_zoo`, because those are what
+# import transformers, and a transformers newer than this torch raises its bare
+# AttributeError at the first one of them to reach it (#8933). It imports torch, which is
+# why the ROCm table above comes first.
+patch_torch_missing_attribute_error()
 # Must precede `import unsloth_zoo` below, which imports bnb on ROCm.
 fix_bitsandbytes_rocm_arch_detection()
 disable_broken_causal_conv1d()
@@ -76,6 +91,8 @@ fix_torchao_torch_symbol_skew()
 propagate_torchao_fix_to_subprocesses()
 # Warn, do not raise: this only adds the correct remedy just before transformers prints its misleading one.
 check_transformers_dependency_versions()
+# Same reason: nothing has failed yet, and a run that launches no Triton kernel never will.
+check_triton_py_ssize_t_clean()
 check_fbgemm_gpu_version()
 torchvision_compatibility_check()
 # Ahead of `import unsloth_zoo` below, deliberately not down with the other import fixes: unsloth_zoo's
@@ -91,14 +108,17 @@ del fix_bitsandbytes_rocm_arch_detection
 del disable_broken_causal_conv1d
 del disable_broken_vllm
 del fix_message_factory_issue
+del patch_torch_missing_attribute_error
 del fix_torch_check_is_size
 del fix_torchao_torch_symbol_skew
 del propagate_torchao_fix_to_subprocesses
 del check_fbgemm_gpu_version
 del check_transformers_dependency_versions
+del check_triton_py_ssize_t_clean
 del torchvision_compatibility_check
 del fix_diffusers_warnings
 del fix_huggingface_hub
+del fix_broken_hf_xet_wheel
 
 # Unsloth patches these libraries at import time; if they are imported first the unoptimized
 # versions run, risking OOM or slower training.
@@ -225,6 +245,7 @@ from .device_type import arch_lacks_bf16, hip_visible_archs
 from .import_fixes import (
     fix_transformers5_bare_annotation_configs,
     fix_transformers_fully_masked_rows,
+    fix_transformers_rope_scaling_drops_theta,
     fix_xformers_performance_issue,
     fix_flash_attn_4_namespace_shadow,
     fix_vllm_aimv2_issue,
@@ -256,6 +277,7 @@ from .import_fixes import (
     fix_peft_transformers_weight_conversion_import,
     patch_peft_weight_converter_compatibility,
     fix_peft_stale_torchao_import_error,
+    fix_peft_torchao_missing_tensor_subclass,
     patch_accelerate_recursively_apply,
 )
 
@@ -265,6 +287,10 @@ fix_transformers5_bare_annotation_configs()
 # nothing. Ordered here, before anything imports a model, so a plain transformers.generate in the
 # same process is covered too (#9708).
 fix_transformers_fully_masked_rows()
+# Probe-gated: no-ops unless replacing config.rope_scaling on this transformers really loses the
+# RoPE base frequency. Ordered here, before any config is built, so the object-style delegation
+# retry in models/llama.py sees a config that kept its base (#2405).
+fix_transformers_rope_scaling_drops_theta()
 fix_xformers_performance_issue()
 # Must run AFTER fix_xformers_performance_issue (it rewrites xformers' cutlass.py on disk) and
 # BEFORE models/_utils.py imports xformers.ops.
@@ -309,9 +335,13 @@ patch_peft_weight_converter_compatibility()
 # After peft is importable, so the already-bound is_torchao_available in peft.tuners.lora.torchao is
 # replaced too, not just import_utils'.
 fix_peft_stale_torchao_import_error()
+# Same reason, one layer on: peft.tuners.lora.model imported dispatch_torchao by value, so both
+# copies have to be replaced, and both modules exist by now.
+fix_peft_torchao_missing_tensor_subclass()
 patch_accelerate_recursively_apply()
 
 del fix_transformers5_bare_annotation_configs
+del fix_transformers_rope_scaling_drops_theta
 del fix_xformers_performance_issue
 del fix_flash_attn_4_namespace_shadow
 del fix_vllm_aimv2_issue
@@ -343,6 +373,7 @@ del fix_peft_transformers_tensor_parallel_import_compat
 del fix_peft_transformers_weight_conversion_import
 del patch_peft_weight_converter_compatibility
 del fix_peft_stale_torchao_import_error
+del fix_peft_torchao_missing_tensor_subclass
 del patch_accelerate_recursively_apply
 
 # Torch 2.4 has including_emulation
@@ -387,14 +418,49 @@ elif DEVICE_TYPE == "xpu":
     # torch.xpu.is_bf16_supported() does not have including_emulation set SUPPORTS_BFLOAT16 as
     # torch.xpu.is_bf16_supported()
     SUPPORTS_BFLOAT16 = torch.xpu.is_bf16_supported()
+elif DEVICE_TYPE == "npu":
+    # No arm left the name unbound, so consumers fell back to their own False.
+    SUPPORTS_BFLOAT16 = torch.npu.is_bf16_supported()
 
 # For Gradio HF Spaces?
 # if "SPACE_AUTHOR_NAME" not in os.environ and "SPACE_REPO_NAME" not in os.environ:
-import triton
+# `triton` is optional here, like bitsandbytes below. The PyPI `triton` project publishes no
+# Windows wheel (Windows is served by the separate `triton-windows` package), so a CPU only
+# Windows install has no `triton` at all, and an unconditional import here killed
+# `import unsloth` with a bare ModuleNotFoundError from a line whose only job is to resolve
+# `libcuda_dirs` on CUDA hosts. Everything below treats `triton is None` as "no Triton
+# kernels", which is already the state of a CPU only install.
+try:
+    import triton
+except Exception as _triton_import_exception:
+    triton = None
+    TRITON_IMPORT_ERROR = f"{type(_triton_import_exception).__name__}: {_triton_import_exception}"
+    del _triton_import_exception
+else:
+    TRITON_IMPORT_ERROR = None
+
+if TRITON_IMPORT_ERROR is not None:
+    if DEVICE_TYPE in ("cuda", "hip") and torch.cuda.is_available():
+        # A real accelerator with no Triton: the fused kernels are gone, so say so loudly.
+        warnings.warn(
+            f"Unsloth: `triton` could not be imported ({TRITON_IMPORT_ERROR}), so the fused Triton "
+            "kernels are unavailable and training will be slower or may fail.\n"
+            "On Windows install `triton-windows`, on Linux reinstall `triton`.",
+            stacklevel = 2,
+        )
+    else:
+        # No usable accelerator anyway (CPU only install, or UNSLOTH_ALLOW_CPU=1): expected state.
+        print(
+            f"Unsloth: `triton` is not available ({TRITON_IMPORT_ERROR}) - continuing without the "
+            "fused Triton kernels, which a CPU only install does not use.\n"
+            "On Windows, Triton is published as the separate `triton-windows` package."
+        )
 
 if DEVICE_TYPE == "cuda":
     libcuda_dirs = lambda: None
-    if Version(triton.__version__) >= Version("3.0.0"):
+    if triton is None:
+        pass
+    elif Version(triton.__version__) >= Version("3.0.0"):
         # Try loading bitsandbytes and triton
         try:
             from triton.backends.nvidia.driver import libcuda_dirs
@@ -453,11 +519,16 @@ if DEVICE_TYPE == "cuda":
 
             if bnb is not None:
                 importlib.reload(bnb)
-            importlib.reload(triton)
+            if triton is not None:
+                importlib.reload(triton)
             # Same degradation as the cuda branch above: no bnb means no 4bit, not a failed `import unsloth`.
+            # No triton either means there is nothing to re-resolve here, and the missing Triton was
+            # already reported above, so do not re-report it as a CUDA linking failure.
             try:
                 libcuda_dirs = lambda: None
-                if Version(triton.__version__) >= Version("3.0.0"):
+                if triton is None:
+                    pass
+                elif Version(triton.__version__) >= Version("3.0.0"):
                     try:
                         from triton.backends.nvidia.driver import libcuda_dirs
                     except:

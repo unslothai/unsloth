@@ -4408,6 +4408,7 @@ _LLAMA_CPP_NO_SPACE=false
 _LLAMA_CPP_DEGRADED=false
 _explicit_llama_backend=""
 _STUDIO_HOME_IS_CUSTOM=false
+_RUNTIME_ROOT_IS_CUSTOM=false
 _STUDIO_OWNED_MARKER=".unsloth-owned"
 step() { echo "step: $2"; }
 substep() { echo "substep: $1"; }
@@ -4531,6 +4532,9 @@ function Write-LlamaFailureLog { param($Output) }
 function Mark-StudioOwned { param($Path) }
 function Get-InstalledLlamaPrebuiltRelease { param($InstallDir) return $null }
 function Test-PathQuiet { param($p) return $false }
+# Nothing to keep, as in the bash mirror where the guard is absent: exit 2 falls back to a compile.
+function Get-GpuPrebuiltToKeepOverSourceBuild { param($InstallDir) return "" }
+function Get-LlamaUpdateFailReason { param($Output) return "network" }
 function Exit-SetupFailure {
     param($Message, $Code = 1)
     Write-Output "setup_fail: $Code"
@@ -6408,11 +6412,57 @@ def test_a_marker_naming_a_backend_this_platform_cannot_hold_is_not_current(tmp_
 
 
 def test_a_marker_whose_request_and_backend_disagree_is_not_current(tmp_path, monkeypatch):
-    """persisted_marker_backend_request stores "auto" whenever the request and the
-    bundle that landed disagree, so a concrete request must name the bundle's own
-    backend. Anything else was not written by this installer."""
+    """A concrete request must name the bundle's own backend, or say outright that it is
+    a request the install could not honour (the test below). A bare disagreement with no
+    such flag was not written by this installer."""
     install_dir = _current_install(tmp_path, monkeypatch, backend_request = "vulkan")
     assert _check(install_dir, backend_request = "vulkan") is False
+
+
+# A request the install could not honour is PRESERVED now (#11143), so the fast path holds two
+# lines at once: retry the choice when something moved, and do not pay the full listing plus
+# re-validation on every update of a host that simply cannot serve it.
+_UNSATISFIED = dict(backend_request = "vulkan", backend_request_unsatisfied = True)
+
+
+def test_an_unsatisfied_choice_read_off_the_marker_does_not_reinstall_every_update(
+    tmp_path, monkeypatch
+):
+    """Nothing moved, so the install on disk is still the one this run would produce. The
+    request stays recorded, owed a retry, not retried here."""
+    install_dir = _current_install(tmp_path, monkeypatch, **_UNSATISFIED)
+    assert _check(install_dir, backend_request = "vulkan") is True
+    marker = json.loads((install_dir / "UNSLOTH_PREBUILT_INFO.json").read_text(encoding = "utf-8"))
+    assert marker["backend_request"] == "vulkan"
+
+
+def test_an_unsatisfied_choice_named_by_this_run_is_re_asserted(tmp_path, monkeypatch):
+    """--llama-backend vulkan (or Settings, which passes it) is someone asking again by
+    hand: take the full path, where the request is re-asserted and, if it still cannot be
+    served, fails loudly instead of silently keeping the bundle it did not ask for."""
+    install_dir = _current_install(tmp_path, monkeypatch, **_UNSATISFIED)
+    assert _check(install_dir, backend_request = "vulkan", backend_request_mandatory = True) is False
+
+
+def test_an_unsatisfied_choice_is_retried_when_the_release_moves(tmp_path, monkeypatch):
+    """The "something changed" half: a new release republishes the bundles, so the choice
+    gets another go. Same for new hardware, which the host_profile check already covers."""
+    install_dir = _current_install(tmp_path, monkeypatch, **_UNSATISFIED)
+    monkeypatch.setattr(
+        INSTALL_LLAMA_PREBUILT, "_download_host_latest_release_tag", lambda _repo: "release-2"
+    )
+    assert _check(install_dir, backend_request = "vulkan") is False
+
+
+def test_an_old_marker_is_read_as_a_satisfied_choice(tmp_path, monkeypatch):
+    """No flag means satisfied, so every install made before the field behaves exactly as
+    it did: a recorded choice that names the installed backend stays current."""
+    install_dir = _current_install(tmp_path, monkeypatch, backend_request = "cpu", backend = "cpu")
+    marker = json.loads((install_dir / "UNSLOTH_PREBUILT_INFO.json").read_text(encoding = "utf-8"))
+    assert "backend_request_unsatisfied" not in marker
+    assert _check(install_dir, backend_request = "cpu") is True
+    # And the mandatory flag changes nothing for it: there is no unmet request to re-assert.
+    assert _check(install_dir, backend_request = "cpu", backend_request_mandatory = True) is True
 
 
 def test_a_truncated_shared_library_is_not_current(tmp_path, monkeypatch):
@@ -7005,6 +7055,23 @@ def test_the_planner_records_the_newest_release_a_mac_walked_past(monkeypatch):
     _, plans = module._fork_manifest_release_plans("latest", host, "unslothai/llama.cpp", "")
     assert plans[0].release_tag == "r2"
     assert plans[0].walk_back is None
+
+
+def test_a_late_rocm_listing_failure_keeps_the_vulkan_plan(monkeypatch):
+    module = INSTALL_LLAMA_PREBUILT
+    vulkan = release_plan([asset_choice(install_kind = "linux-vulkan")], release_checksums())
+
+    def rocm_plans():
+        yield vulkan
+        raise urllib.error.URLError("CDN down, API timed out")
+
+    monkeypatch.setattr(
+        module,
+        "resolve_simple_install_release_plans",
+        lambda *args: ("latest", module.LazyReleasePlans(rocm_plans())),
+    )
+    kept = module._with_rocm_behind_vulkan([vulkan], "latest", linux_host(), "", "")
+    assert [plan.release_tag for plan in kept] == [vulkan.release_tag]
 
 
 def test_a_reused_marker_takes_the_walk_back_this_run_made():

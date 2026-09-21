@@ -8,11 +8,19 @@ import {
 
 import {
   type ProviderRegistryEntry,
+  fetchModelCatalog,
   listProviderConfigs,
+  listProviderModelCapabilities,
   listProviderRegistry,
   migrateProviderApiKey,
   updateProviderConfig,
 } from "./api/providers-api";
+import {
+  modelsDevCatalogFetchedAt,
+  providerModelCatalogFetchedAt,
+  setModelsDevCatalog,
+  setProviderModelCatalog,
+} from "./model-catalog";
 import {
   CUSTOM_BACKEND_PROVIDER_TYPE,
   CUSTOM_PROVIDER_PRESETS,
@@ -311,5 +319,58 @@ export async function syncExternalProvidersFromBackend(
   if (isCurrent && !isCurrent()) return existingProviders;
 
   await settleTasksIfCurrent(backfillTasks, isCurrent);
+  void refreshProviderModelCatalogs(syncedProviders, isCurrent);
   return syncedProviders;
+}
+
+const MODEL_CATALOG_TTL_MS = 24 * 60 * 60 * 1000;
+// The live catalog is stored per provider type, so only the provider's own endpoint may write it; a connection
+// pointed at a compatible gateway keeps the built-in tables instead of overwriting OpenRouter's entries.
+const MODEL_CATALOG_PROVIDER_BASE_URLS: Record<string, string> = {
+  openrouter: "https://openrouter.ai/api/v1",
+};
+
+function usesProviderCatalogEndpoint(provider: ExternalProviderConfig): boolean {
+  const expected = MODEL_CATALOG_PROVIDER_BASE_URLS[provider.providerType];
+  if (!expected) return false;
+  const baseUrl = (provider.baseUrl ?? "").trim().replace(/\/+$/, "").toLowerCase();
+  return baseUrl === "" || baseUrl === expected;
+}
+
+export async function refreshProviderModelCatalogs(
+  providers: readonly ExternalProviderConfig[],
+  isCurrent?: () => boolean,
+): Promise<void> {
+  const modelsDevAge = modelsDevCatalogFetchedAt();
+  if (
+    providers.length > 0 &&
+    (modelsDevAge == null || Date.now() - modelsDevAge * 1000 >= MODEL_CATALOG_TTL_MS)
+  ) {
+    try {
+      const catalog = await fetchModelCatalog();
+      if (isCurrent && !isCurrent()) return;
+      setModelsDevCatalog(catalog);
+    } catch {
+      // Offline: the bundled snapshot answers until the next sync.
+    }
+  }
+  for (const provider of providers) {
+    const providerType = provider.providerType;
+    if (!usesProviderCatalogEndpoint(provider)) continue;
+    // A successful fetch makes the catalog fresh, so later connections of the same type skip;
+    // a failed one leaves it stale and the next connection gets a turn.
+    const fetchedAt = providerModelCatalogFetchedAt(providerType);
+    if (fetchedAt != null && Date.now() - fetchedAt < MODEL_CATALOG_TTL_MS) continue;
+    try {
+      const models = await listProviderModelCapabilities({
+        providerType,
+        providerId: provider.id,
+        apiKey: "",
+      });
+      if (isCurrent && !isCurrent()) return;
+      if (models.length > 0) setProviderModelCatalog(providerType, models);
+    } catch {
+      // Offline or unauthorized: the built-in tables answer until the next sync.
+    }
+  }
 }

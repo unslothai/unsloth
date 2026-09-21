@@ -69,6 +69,8 @@ const BLANK = {
   nParallel: null,
   nBatch: null,
   nUbatch: null,
+  reasoningBudget: -1,
+  reasoningBudgetMessage: "",
   tensorParallel: false,
   disableVision: false,
   chatTemplateOverride: null,
@@ -208,6 +210,18 @@ const FIELDS: FieldCase[] = [
     different: 8192,
   },
   {
+    key: "reasoningBudget",
+    statusKey: "reasoning_budget",
+    same: 1024,
+    different: 512,
+  },
+  {
+    key: "reasoningBudgetMessage",
+    statusKey: "reasoning_budget_message",
+    same: "Wrap up.",
+    different: "Stop here.",
+  },
+  {
     key: "chatTemplateOverride",
     statusKey: "chat_template_override",
     same: "{{ bos }}",
@@ -310,12 +324,20 @@ for (const [accelerator, base] of Object.entries(ACCELERATORS)) {
   }
 }
 
-test("placement compares as a set on a multi-GPU host, not as an order", () => {
-  // The backend narrows and reorders the pool at fit time, so only membership counts.
+test("placement compares as an order on a multi-GPU host, not as a set", () => {
+  // The picker's order is the order the backend pins, so the same cards in a
+  // different order are a different placement and the runner has to restart.
   assert.equal(
     residentRuntimeMatchesConfig(
       { ...ACCELERATORS["amd-rocm"], requested_gpu_ids: [0, 1] },
       { ...BLANK, selectedGpuIds: [1, 0] },
+    ),
+    false,
+  );
+  assert.equal(
+    residentRuntimeMatchesConfig(
+      { ...ACCELERATORS["amd-rocm"], requested_gpu_ids: [0, 1] },
+      { ...BLANK, selectedGpuIds: [0, 1] },
     ),
     true,
   );

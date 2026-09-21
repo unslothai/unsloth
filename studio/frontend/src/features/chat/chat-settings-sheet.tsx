@@ -66,7 +66,14 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import { Braces, ChevronDown, ExternalLink } from "lucide-react";
 import { Tooltip as TooltipPrimitive } from "radix-ui";
 import { type CSSProperties, Fragment, type ReactNode } from "react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from "react";
 import { OpenAICodeExecSection } from "./components/openai-code-exec-section";
 import { PermissionModeDropdown } from "./permission-mode-select";
 import { resyncInferenceStatusAfterServerModelChange } from "./hooks/use-chat-model-runtime";
@@ -101,9 +108,11 @@ import {
   type ProviderCapabilities,
   getExternalMaxOutputTokens,
   getExternalMinOutputTokens,
+  modelCatalogVersion,
   providerSupportsBuiltinCodeExecution,
   providerSupportsFastMode,
   resolveExternalMaxTokensClamp,
+  subscribeModelCatalog,
 } from "./provider-capabilities";
 import {
   isLocalModelPath,
@@ -207,8 +216,8 @@ export function ParamSlider({
     );
   }
   return (
-    <div className="space-y-3.5">
-      <div className="flex items-center justify-between gap-3">
+    <div className="space-y-2">
+      <div className="flex min-h-8 items-center justify-between gap-3">
         <div className="flex min-w-0 items-center gap-1.5">
           <span className="min-w-0 text-ui-13 font-medium leading-[1.25] tracking-nav text-nav-fg">
             {label}
@@ -381,7 +390,8 @@ function CollapsibleSection({
           </span>
         </button>
       )}
-      {open && <div className="pb-7">{children}</div>}
+      {/* Same gap below the last control as the header leaves above the first. */}
+      {open && <div className="pb-5">{children}</div>}
     </div>
   );
 }
@@ -547,6 +557,18 @@ export function ChatSettingsPanel({
   const disableVision = useChatRuntimeStore((s) => s.disableVision);
   const specDraftNMax = useChatRuntimeStore((s) => s.specDraftNMax);
   const nParallel = useChatRuntimeStore((s) => s.nParallel);
+  // subscribe to the same requested values that preset capture snapshots.
+  const reasoningBudget = useChatRuntimeStore((s) =>
+    s.reasoningBudget === s.loadedReasoningBudget
+      ? (s.loadedReasoningBudgetRequested ?? s.reasoningBudget)
+      : s.reasoningBudget,
+  );
+  const reasoningBudgetMessage = useChatRuntimeStore(
+    (s) =>
+      s.reasoningBudgetMessage === s.loadedReasoningBudgetMessage
+        ? (s.loadedReasoningBudgetMessageRequested ?? s.reasoningBudgetMessage)
+        : s.reasoningBudgetMessage,
+  );
   const nBatch = useChatRuntimeStore((s) => s.nBatch);
   const nUbatch = useChatRuntimeStore((s) => s.nUbatch);
   const speculativeType = useChatRuntimeStore((s) => s.speculativeType);
@@ -732,6 +754,8 @@ export function ChatSettingsPanel({
     speculativeType,
     specDraftNMax,
     nParallel,
+    reasoningBudget,
+    reasoningBudgetMessage,
     nBatch,
     nUbatch,
     params.maxSeqLength,
@@ -755,6 +779,8 @@ export function ChatSettingsPanel({
       speculativeType,
       specDraftNMax,
       nParallel,
+      reasoningBudget,
+      reasoningBudgetMessage,
       nBatch,
       nUbatch,
       params.maxSeqLength,
@@ -788,6 +814,8 @@ export function ChatSettingsPanel({
   const externalSelection = currentCheckpoint
     ? parseExternalModelId(currentCheckpoint)
     : null;
+  // The OpenRouter cap comes from the live catalog, which can land after this panel renders.
+  useSyncExternalStore(subscribeModelCatalog, modelCatalogVersion);
   const maxTokensMax = isExternalModel
     ? getExternalMaxOutputTokens(
         externalProviderType,
@@ -1050,7 +1078,7 @@ export function ChatSettingsPanel({
 
   const settingsContent = (
     <>
-      <div className="flex h-full min-h-0 flex-col">
+      <div className="hint-on-hover flex h-full min-h-0 flex-col">
       {/* Header is outside the scroll area so the scrollbar never shifts the close button.
           Reuse the chat header metrics so the toggle stays put when the panel opens. */}
       <div className="flex h-[var(--studio-chat-header-height,48px)] shrink-0 items-start gap-2 bg-panel-surface pl-[18px] pr-[18px] pt-[var(--studio-chat-header-padding-top,11px)]">
@@ -1097,7 +1125,7 @@ export function ChatSettingsPanel({
       <div className="px-[18px] pt-3">
         {(hasModelContent || modelConfig) && (
               <CollapsibleSection label="Model" defaultOpen={true} first={true}>
-            <div className="flex flex-col gap-3 pt-1">
+            <div className="flex flex-col gap-5">
               {modelConfig}
               {showSpecFallback && (
                 <div className="rounded-lg bg-amber-500/[0.08] px-3 py-2 text-ui-12 leading-[1.4] text-nav-fg/80">
@@ -1169,7 +1197,7 @@ export function ChatSettingsPanel({
           defaultOpen={true}
           first={!hasModelContent && !modelConfig}
         >
-          <div className="flex flex-col gap-3 pt-1">
+          <div className="flex flex-col gap-2">
             <DropdownMenu>
                   <DropdownMenuTrigger asChild={true}>
                 <div
@@ -1250,7 +1278,8 @@ export function ChatSettingsPanel({
                 ))}
               </DropdownMenuContent>
             </DropdownMenu>
-            <div className="grid grid-cols-2 gap-3">
+            {/* Each pill is as wide as its label, not half the panel. */}
+            <div className="flex flex-wrap items-center gap-2">
               <Button
                 type="button"
                 onClick={() => savePresetWithName(presetNameInput)}
@@ -1260,7 +1289,7 @@ export function ChatSettingsPanel({
                     }
                 size="sm"
                 className={cn(
-                  "h-9 w-full rounded-full text-ui-13 font-medium tracking-nav",
+                  "h-9 w-auto px-4 rounded-full text-ui-13 font-medium tracking-nav",
                   presetSaveState.isSaveReady &&
                     "bg-primary text-primary-foreground hover:bg-primary/90",
                 )}
@@ -1275,7 +1304,7 @@ export function ChatSettingsPanel({
                 disabled={!(settingsHydrated && activeCustomPreset)}
                 variant="outline"
                 size="sm"
-                className="h-9 w-full rounded-full text-ui-13 font-medium tracking-nav text-muted-foreground"
+                className="h-9 w-auto px-4 rounded-full text-ui-13 font-medium tracking-nav text-muted-foreground"
                 title={
                   activeCustomPreset
                     ? activeBuiltinPreset
@@ -1292,7 +1321,7 @@ export function ChatSettingsPanel({
 
         {showPromptCachingControl && activeExternalProvider ? (
           <CollapsibleSection label="Provider" defaultOpen={true}>
-            <div className="flex items-center justify-between gap-3 pt-1">
+            <div className="flex min-h-8 items-center justify-between gap-3">
               <div className="flex min-w-0 items-center gap-1.5">
                 <span className="min-w-0 text-ui-13 font-medium leading-[1.25] tracking-nav text-nav-fg">
                   Prompt caching
@@ -1315,7 +1344,7 @@ export function ChatSettingsPanel({
               />
             </div>
             {showPromptCacheTtlControl && promptCachingEnabled ? (
-              <div className="flex items-center justify-between gap-3 pt-3">
+              <div className="flex min-h-8 items-center justify-between gap-3 pt-5">
                 <div className="flex min-w-0 items-center gap-1.5">
                   <span className="min-w-0 text-ui-13 font-medium leading-[1.25] tracking-nav text-nav-fg">
                     Cache TTL
@@ -1339,7 +1368,10 @@ export function ChatSettingsPanel({
                   }}
                 >
                   <SelectTrigger
-                    className="panel-select-trigger h-8 w-[124px] shrink-0"
+                    size="sm"
+                    icon={ChevronDownStandardIcon}
+                    iconClassName="size-3.5"
+                    className="panel-select-trigger shrink-0"
                     aria-label="Prompt cache TTL"
                   >
                     <SelectValue />
@@ -1352,7 +1384,7 @@ export function ChatSettingsPanel({
               </div>
             ) : null}
             {showFastModeControl ? (
-              <div className="flex items-center justify-between gap-3 pt-3">
+              <div className="flex min-h-8 items-center justify-between gap-3 pt-5">
                 <div className="flex min-w-0 items-center gap-1.5">
                   <span className="min-w-0 text-ui-13 font-medium leading-[1.25] tracking-nav text-nav-fg">
                     Fast mode
@@ -1421,7 +1453,7 @@ export function ChatSettingsPanel({
           {/* Rounded wrapper clips overflowing text and the scrollbar. */}
           <div
             className={cn(
-              "panel-text-surface -mt-1 h-20 w-full overflow-hidden corner-squircle",
+              "panel-text-surface h-20 w-full overflow-hidden corner-squircle",
               systemPromptOverflows && "cursor-pointer",
             )}
           >
@@ -1451,7 +1483,7 @@ export function ChatSettingsPanel({
         </CollapsibleSection>
 
         <CollapsibleSection label="Sampling" defaultOpen={true}>
-          <div className="flex flex-col gap-5 pt-1">
+          <div className="flex flex-col gap-5">
             {showTemperature ? (
               <ParamSlider
                 label="Temperature"
@@ -1488,9 +1520,9 @@ export function ChatSettingsPanel({
               />
             ) : null}
             {showMinP ? (
-              <div className="space-y-3">
+              <div className="space-y-5">
                 {isVllm ? (
-                  <div className="space-y-2">
+                  <div className="space-y-1">
                     <Select
                       value={effectiveMinPMode(params)}
                       onValueChange={(value) => {
@@ -1508,7 +1540,7 @@ export function ChatSettingsPanel({
                       </SelectContent>
                     </Select>
                     {effectiveMinPMode(params) === "server-default" ? (
-                      <p className="text-xs text-muted-foreground">
+                      <p className="text-ui-11 text-muted-foreground">
                         Uses the server’s sampling settings.
                       </p>
                     ) : null}
@@ -1575,7 +1607,7 @@ export function ChatSettingsPanel({
               info="Maximum number of tokens to generate per response. Generation stops at this limit or when the model emits an end-of-sequence token."
             />
             {showSeed ? (
-              <div className="flex items-center justify-between gap-3">
+              <div className="flex min-h-8 items-center justify-between gap-3">
                 <div className="flex min-w-0 items-center gap-1.5">
                   <span className="min-w-0 text-ui-13 font-medium leading-[1.25] tracking-nav text-nav-fg">
                     Seed
@@ -1591,35 +1623,34 @@ export function ChatSettingsPanel({
                     are batched and that moves the result.
                   </InfoHint>
                 </div>
-                <InputGroup className="panel-input-group w-[8.5rem] shrink-0">
-                  <InputGroupInput
-                    id="inference-seed"
-                    // A TEXT input: type="number" reports an unreadable entry as "", clearing the pin.
-                    type="text"
-                    inputMode="numeric"
-                    autoComplete="off"
-                    spellCheck={false}
-                    value={
-                      seedDraft ??
-                      (params.seed == null ? "" : String(params.seed))
-                    }
-                    onChange={(e) =>
-                      setSeedDraft(e.target.value.replace(/\D/g, ""))
-                    }
-                    onBlur={() => {
-                      if (seedDraft === null) return;
-                      setSeedDraft(null);
-                      setSeed(committedSeed);
-                    }}
-                    onKeyDown={(e) => {
-                      // Blur is the only commit, so Enter has to reach it.
-                      if (e.key === "Enter") e.currentTarget.blur();
-                    }}
-                    placeholder="Random"
-                    aria-label="Seed"
-                    className="!h-9 min-h-0 min-w-0 self-stretch !px-3 py-0 text-ui-13 font-medium leading-9 text-nav-fg md:text-ui-13"
-                  />
-                </InputGroup>
+                {/* A plain field, sized like the model rows': the input group
+                    it used to sit in is 36px and full width. */}
+                <input
+                  id="inference-seed"
+                  // A TEXT input: type="number" reports an unreadable entry as "", clearing the pin.
+                  type="text"
+                  inputMode="numeric"
+                  autoComplete="off"
+                  spellCheck={false}
+                  value={
+                    seedDraft ?? (params.seed == null ? "" : String(params.seed))
+                  }
+                  onChange={(e) =>
+                    setSeedDraft(e.target.value.replace(/\D/g, ""))
+                  }
+                  onBlur={() => {
+                    if (seedDraft === null) return;
+                    setSeedDraft(null);
+                    setSeed(committedSeed);
+                  }}
+                  onKeyDown={(e) => {
+                    // Blur is the only commit, so Enter has to reach it.
+                    if (e.key === "Enter") e.currentTarget.blur();
+                  }}
+                  placeholder="Random"
+                  aria-label="Seed"
+                  className="panel-field h-8 w-[84px] shrink-0"
+                />
               </div>
             ) : null}
           </div>
@@ -1627,7 +1658,7 @@ export function ChatSettingsPanel({
 
             {isExternalModel ? null : (
           <CollapsibleSection label="Tools">
-            <div className="flex flex-col gap-5 pt-1">
+            <div className="flex flex-col gap-5">
               <AutoHealToolCallsToggle />
               <NudgeToolCallsToggle />
               <ConfirmToolCallsToggle />
@@ -1744,14 +1775,18 @@ export function ChatSettingsPanel({
                 )}
               </div>
             ) : null}
-            <Textarea
-              value={systemPromptDraft}
-              onChange={(event) => setSystemPromptDraft(event.target.value)}
-              placeholder="You are a helpful assistant..."
-              fieldSizing="fixed"
-              className="min-h-[20rem] max-h-[48dvh] overflow-y-auto border-0 text-sm leading-6 corner-squircle focus-visible:ring-0"
-              rows={14}
-            />
+            {/* Squircle on the wrapper: Chrome leaves a scroll area's own
+                corners square. */}
+            <div className="corner-squircle overflow-hidden rounded-xl">
+              <Textarea
+                value={systemPromptDraft}
+                onChange={(event) => setSystemPromptDraft(event.target.value)}
+                placeholder="You are a helpful assistant..."
+                fieldSizing="fixed"
+                className="min-h-[20rem] max-h-[48dvh] overflow-y-auto rounded-none border-0 text-sm leading-6 focus-visible:ring-0"
+                rows={14}
+              />
+            </div>
           </div>
           <DialogFooter className="flex-wrap gap-2 sm:justify-between">
             <Button
@@ -1915,7 +1950,7 @@ function AutoHealToolCallsToggle() {
   );
 
   return (
-    <div className="flex items-center justify-between gap-3">
+    <div className="flex min-h-8 items-center justify-between gap-3">
       <div className="flex min-w-0 items-center gap-1.5">
         <span className="min-w-0 text-ui-13 font-medium leading-[1.25] tracking-nav text-nav-fg">
           Auto-Healing Tool Calls
@@ -1926,7 +1961,7 @@ function AutoHealToolCallsToggle() {
         </InfoHint>
       </div>
       <Switch
-        className="panel-switch"
+        className="panel-switch shrink-0"
         checked={autoHealToolCalls}
         onCheckedChange={setAutoHealToolCalls}
       />
@@ -1939,7 +1974,7 @@ function NudgeToolCallsToggle() {
   const setNudgeToolCalls = useChatRuntimeStore((s) => s.setNudgeToolCalls);
 
   return (
-    <div className="flex items-center justify-between gap-3">
+    <div className="flex min-h-8 items-center justify-between gap-3">
       <div className="flex min-w-0 items-center gap-1.5">
         <span className="min-w-0 text-ui-13 font-medium leading-[1.25] tracking-nav text-nav-fg">
           Nudge Tool Calls
@@ -1950,7 +1985,7 @@ function NudgeToolCallsToggle() {
         </InfoHint>
       </div>
       <Switch
-        className="panel-switch"
+        className="panel-switch shrink-0"
         checked={nudgeToolCalls}
         onCheckedChange={setNudgeToolCalls}
       />
@@ -1963,7 +1998,7 @@ function ConfirmToolCallsToggle() {
   const permissionMode = useChatRuntimeStore((s) => s.permissionMode);
 
   return (
-    <div className="flex items-center justify-between gap-3">
+    <div className="flex min-h-8 items-center justify-between gap-3">
       <div className="flex min-w-0 flex-col gap-0.5">
         <div className="flex min-w-0 items-center gap-1.5">
           <span className="min-w-0 text-ui-13 font-medium leading-[1.25] tracking-nav text-nav-fg">
@@ -1984,7 +2019,7 @@ function ConfirmToolCallsToggle() {
         ) : null}
       </div>
       <Switch
-        className="panel-switch"
+        className="panel-switch shrink-0"
         checked={permissionMode === "ask"}
         onCheckedChange={setConfirmToolCalls}
         disabled={permissionMode === "full"}

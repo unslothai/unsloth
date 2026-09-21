@@ -27,12 +27,12 @@ import {
   Globe02Icon,
   HelpCircleIcon,
   HomeWifiIcon,
-  Message01Icon,
   PaintBrush02Icon,
   Search01Icon,
   Settings02Icon,
-  UserIcon,
+  UserCircleIcon,
 } from "@hugeicons/core-free-icons";
+import { MessageCircleIcon } from "@/lib/hugeicons-derived";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { motion, useReducedMotion } from "motion/react";
 import {
@@ -56,6 +56,11 @@ import {
   type SettingsTab,
   useSettingsDialogStore,
 } from "./stores/settings-dialog-store";
+
+interface SettingsPanelProps {
+  searchEntry?: string;
+}
+
 // Statically imported, every panel ran before first paint even though the dialog
 // starts closed. Load each on first view instead; this map also drives the prefetch.
 const TAB_LOADERS = {
@@ -91,12 +96,14 @@ const TAB_LOADERS = {
     import("./tabs/debugging-tab").then((m) => ({ default: m.DebuggingTab })),
   about: () =>
     import("./tabs/about-tab").then((m) => ({ default: m.AboutTab })),
-} satisfies Record<SettingsTab, () => Promise<{ default: FC }>>;
+} satisfies Record<SettingsTab, () => Promise<{ default: FC<SettingsPanelProps> }>>;
 
-function lazyTabs<T extends Record<string, () => Promise<{ default: FC }>>>(
+function lazyTabs<
+  T extends Record<string, () => Promise<{ default: FC<SettingsPanelProps> }>>,
+>(
   loaders: T,
-): Record<keyof T, ComponentType> {
-  const out = {} as Record<keyof T, ComponentType>;
+): Record<keyof T, ComponentType<SettingsPanelProps>> {
+  const out = {} as Record<keyof T, ComponentType<SettingsPanelProps>>;
   for (const id of Object.keys(loaders) as (keyof T)[]) {
     out[id] = lazy(loaders[id]);
   }
@@ -175,12 +182,11 @@ interface TabDef {
 }
 
 const TABS: TabDef[] = [
-  { id: "accounts", labelKey: "settings.tabs.accounts", icon: UserIcon },
   { id: "general", labelKey: "settings.tabs.general", icon: Settings02Icon },
   {
     id: "profile",
     labelKey: "settings.tabs.profile",
-    icon: UserIcon,
+    icon: UserCircleIcon,
   },
   {
     id: "appearance",
@@ -195,7 +201,7 @@ const TABS: TabDef[] = [
   {
     id: "chat",
     labelKey: "settings.tabs.chat",
-    icon: Message01Icon,
+    icon: MessageCircleIcon,
   },
   {
     id: "api-keys",
@@ -206,12 +212,17 @@ const TABS: TabDef[] = [
     id: "remote-lan",
     labelKey: "settings.tabs.remoteLan",
     icon: HomeWifiIcon,
-    badgeKey: "common.new",
   },
   {
     id: "connections",
     labelKey: "settings.tabs.connections",
     icon: CloudIcon,
+  },
+  {
+    id: "accounts",
+    labelKey: "settings.tabs.accounts",
+    icon: UserCircleIcon,
+    badgeKey: "common.new",
   },
   {
     id: "agents",
@@ -232,7 +243,6 @@ const TABS: TabDef[] = [
     id: "keyboard-shortcuts",
     labelKey: "settings.tabs.keyboardShortcuts",
     icon: EnergyRectangleIcon,
-    badgeKey: "common.new",
   },
   {
     id: "debugging",
@@ -252,11 +262,6 @@ const SETTINGS_SEARCH_INDEX = createSettingsSearchIndex({
       clientPlatform.includes("linux")),
 });
 
-function renderTab(tab: SettingsTab) {
-  const Tab = LAZY_TABS[tab];
-  return <Tab />;
-}
-
 export function SettingsDialog() {
   const t = useT();
   const isOwner = useIsAccountOwner();
@@ -273,6 +278,7 @@ export function SettingsDialog() {
   // the highlight lag the click. Render the panel from a deferred value so the nav updates first.
   const deferredTab = useDeferredValue(activeTab);
   const panelTab = resolveSettingsTab(deferredTab, isOwner);
+  const Tab = LAZY_TABS[panelTab];
   const [query, setQuery] = useState("");
 
   // Once opened, pull the other panels in on idle so a tab click never waits on the
@@ -619,7 +625,7 @@ export function SettingsDialog() {
               <button
                 type="button"
                 onClick={closeDialog}
-                className="absolute top-3 right-3 z-10 flex size-[30px] items-center justify-center rounded-[10px] text-[#383835] dark:text-[#c7c7c4] transition-colors hover:bg-accent hover:text-accent-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                className="absolute top-3 end-3 z-10 flex size-[30px] items-center justify-center rounded-[10px] text-[#383835] dark:text-[#c7c7c4] transition-colors hover:bg-accent hover:text-accent-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                 aria-label={t("settings.dialog.closeAriaLabel")}
               >
                 <HugeiconsIcon icon={Cancel01Icon} className="size-4" />
@@ -642,7 +648,13 @@ export function SettingsDialog() {
                       </div>
                     }
                   >
-                    {renderTab(panelTab)}
+                    <Tab
+                      searchEntry={
+                        pendingScroll?.tab === panelTab
+                          ? pendingScroll.entry
+                          : undefined
+                      }
+                    />
                   </Suspense>
                 </SettingsPanelBoundary>
               </div>

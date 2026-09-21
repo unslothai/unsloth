@@ -5,6 +5,67 @@ import type { DeepPartialMessageTree } from "../types";
 import type { en } from "./en";
 
 export const ar = {
+  composerSettings: {
+    title: "كتابة الرسائل",
+    plainText: "محرر نص عادي",
+    plainTextDescription: "إبقاء التعليمات البرمجية وMarkdown والروابط كنص حرفي. عطّل هذا الخيار لعرض معاينة منسقة.",
+    showContext: "إظهار استخدام نافذة السياق",
+    sendShortcut: "اختصار الإرسال",
+    sendDescription: "اختر ما إذا كان Enter يرسل الرسالة أو يضيف سطرًا جديدًا.",
+    followUp: "سلوك رسائل المتابعة",
+    followUpDescription: "اختر ما يحدث عند الإرسال أثناء الرد. اضغط {shortcut} لتنفيذ الإجراء المعاكس لرسالة واحدة.",
+    queue: "إضافة للطابور",
+    steer: "توجيه",
+    steerDescription: "التوجيه يوقف الرد الحالي ويرسل رسالة المتابعة بعده مباشرة.",
+    settings: "إعدادات كتابة الرسائل",
+    preview: "معاينة منسقة",
+  },
+  promptQueue: {
+    loading: "جارٍ تحميل الرسائل في الطابور",
+    listLabel: "الرسائل في الطابور",
+    regionLabel: "طابور الرسائل، {current} من {total}",
+    itemLabel: "الرسالة {position} من {total} في الطابور: {prompt}",
+    reorderInstructions: "اسحب المقبض لإعادة الترتيب. عند تركيز المقبض، استخدم السهم لأعلى أو لأسفل للتحريك موضعًا واحدًا، أو Home أو End للانتقال إلى البداية أو النهاية.",
+    dragTooltip: "اسحب لإعادة الترتيب",
+    reorderLabel: "إعادة ترتيب الرسالة {position} من {total} في الطابور",
+    paused: "متوقف مؤقتًا",
+    steer: "توجيه",
+    steerTooltip: "إيقاف الرد وإرسال هذه الرسالة بعده مباشرة",
+    steerLabel: "التوجيه بالرسالة {position} في الطابور",
+    removeTooltip: "إزالة من الطابور",
+    removeLabel: "إزالة الرسالة {position} من الطابور",
+    moreTooltip: "خيارات أخرى",
+    moreLabel: "خيارات أخرى للرسالة {position} في الطابور",
+    editItem: "تعديل الرسالة",
+    copyItem: "نسخ الرسالة",
+    editLabel: "تعديل الرسالة {position} في الطابور",
+    cancel: "إلغاء",
+    save: "حفظ",
+    turnOffQueueing: "إيقاف الطابور",
+    turnOnQueueing: "تشغيل الطابور",
+    resume: "استئناف الطابور",
+    queueButton: "إضافة الرسالة للطابور",
+    steerButton: "توجيه الرد",
+    sendTooltip: "إرسال الرسالة ({shortcut})",
+    sendLabel: "إرسال الرسالة",
+    followUpTooltip: "{action} ({send}) · {opposite} للإجراء المعاكس",
+    announceUpdated: "تم تحديث الرسالة في الطابور.",
+    announceEditFailed: "لم يعد بالإمكان تعديل هذه الرسالة لأن الطابور تغيّر.",
+    announceRemoved: "تمت إزالة الرسالة من الطابور.",
+    announceSteered: "ستوجّه هذه الرسالة الرد التالي.",
+    announceSteerFailed: "تعذّر توجيه الرد بهذه الرسالة. راجع الطابور وحاول مرة أخرى.",
+    announceCopied: "تم نسخ الرسالة.",
+    announceCopyFailed: "تعذّر نسخ هذه الرسالة. حاول مرة أخرى.",
+    announceQueueingOn: "ستُضاف رسائل المتابعة الجديدة إلى الطابور بعد الرد الحالي.",
+    announceQueueingOff: "ستوجّه رسائل المتابعة الجديدة الرد الحالي.",
+    announceMoved: "تم نقل الرسالة إلى الموضع {position} من {total}.",
+    announceMoveFailed: "تغيّر الطابور قبل التمكن من نقل هذه الرسالة. حاول مرة أخرى.",
+    announceDragReset: "تغيّر الطابور. اسحب مرة أخرى لإعادة ترتيب الرسائل المتبقية.",
+    editingHint: "جارٍ تعديل الرسالة",
+    queueingOffHint: "الرسائل الجديدة تقاطع الرد وتُنفَّذ بعده.",
+    queueingOnHint: "الرسائل الجديدة تنتظر دورها.",
+    queueingHintShared: "يبقى الطابور كما هو.",
+  },
   picker: {
     onDevice: "على الجهاز",
     huggingFace: "Hugging Face",
@@ -101,6 +162,8 @@ export const ar = {
       export: "تصدير",
       recents: "العناصر الأخيرة",
       noChatsYet: "لا توجد محادثات بعد",
+      // Shown under an empty project folder in the sidebar.
+      noChats: "لا توجد محادثات",
       showMore: "عرض المزيد",
       showLess: "عرض أقل",
       settings: "الإعدادات",
@@ -131,6 +194,7 @@ export const ar = {
       unpinChats: "إلغاء تثبيت المحادثات",
       archiveChats: "أرشفة المحادثات",
       markUnread: "وضع علامة كغير مقروءة",
+      markRead: "وضع علامة كمقروءة",
       deleteChats: "حذف المحادثات",
       deleteTitle: "حذف المحادثات",
       deleteDescription: "هل تريد حذف {count} محادثة؟ لا يمكن التراجع عن ذلك.",
@@ -149,11 +213,19 @@ export const ar = {
       priority: "الأولوية",
       lastUpdated: "آخر تحديث",
       manualOrder: "ترتيب يدوي",
-      moveUp: "تحريك لأعلى",
-      moveDown: "تحريك لأسفل",
+      switchedToManual: "الترتيب يدوي الآن: اسحب الصفوف لإعادة ترتيبها",
       organizeChats: "تنظيم المحادثات",
       organizeProjects: "تنظيم المشاريع",
       sortPinnedChats: "ترتيب المحادثات المثبتة",
+      moveUp: "تحريك لأعلى",
+      moveDown: "تحريك لأسفل",
+    },
+    drag: {
+      reorder: "إعادة ترتيب",
+      pin: "تثبيت",
+      unpin: "إلغاء التثبيت",
+      moveTo: "نقل إلى {name}",
+      moveToRecents: "نقل إلى الأخيرة",
     },
     dialog: {
       deleteChat: {
@@ -184,9 +256,19 @@ export const ar = {
   settings: {
     accounts: {
       title: "الحسابات",
-      description: "أنشئ حسابات Studio خاصة. يسجّل المستخدمون الجدد الدخول برمز إعداد يُستخدم مرة واحدة ثم يختارون كلمة مرور.",
+      description: "أنشئ حسابات Unsloth خاصة. يسجّل المستخدمون الجدد الدخول برمز إعداد يُستخدم مرة واحدة ثم يختارون كلمة مرور.",
       username: "اسم المستخدم",
       create: "إنشاء حساب",
+      createDescription: "شارك رمز إعداد ليختار صاحب الحساب كلمة مروره بنفسه.",
+      actionsFor: "إدارة {username}",
+      actions: "الإجراءات",
+      search: "البحث في الحسابات",
+      noResults: "لا توجد حسابات مطابقة",
+      created: "تاريخ الإنشاء",
+      status: "الحالة",
+      loginHint: "سجّل الدخول باسم {username} مستخدمًا هذا الرمز ككلمة مرور، ثم اختر كلمة مرور جديدة.",
+      privateAccount: "حساب خاص",
+      empty: "لا توجد حسابات أخرى بعد",
       setupCode: "رمز الإعداد",
       setupFor: "رمز الإعداد لـ {username}",
       shownOnce: "انسخ هذا الرمز الآن وشاركه مع صاحب الحساب. يظهر هنا فقط ويمكن استخدامه مرة واحدة خلال 60 دقيقة.",
@@ -196,13 +278,13 @@ export const ar = {
       copyFailed: "تعذّر النسخ. حدّد رمز الإعداد أعلاه وانسخه.",
       dismiss: "تم",
       owner: "مالك التثبيت",
-      active: "نشط",
-      inactive: "غير نشط",
+      active: "مُفعّل",
+      inactive: "مُعطّل",
       regenerate: "إعادة إنشاء رمز الإعداد",
       resetTitle: "إعادة تعيين كلمة مرور {username}؟",
       resetDescription: "إعادة إنشاء رمز الإعداد تستبدل كلمة مرور {username} وتُنهي جلساته وتُلغي مفاتيح API الخاصة به. أعطه الرمز الجديد ليختار كلمة مرور من جديد.",
       deactivate: "تعطيل",
-      reactivate: "إعادة التفعيل",
+      reactivate: "تفعيل",
       delete: "حذف الحساب",
       deleteTitle: "حذف {username}؟",
       deleteDescription: "سيؤدي هذا إلى إلغاء جلسات {username} وإيقاف أعماله الجارية. تُسحب محادثاته وإعداداته وبيانات اعتماده وملفاته المرفوعة ومجموعات بياناته وعمليات التدريب والمخرجات والتصديرات والمعارض وبيئات العزل والمشاريع والملفات المؤقتة. يُعاد تسمية المجلدات وتُنحّى جانبًا ولا تُحذف أبدًا. إنشاء اسم المستخدم هذا مرة أخرى يبدأ حسابًا جديدًا دون أيٍّ من هذه البيانات.",
@@ -239,9 +321,10 @@ export const ar = {
     },
     keyboardShortcuts: {
       title: "اختصارات لوحة المفاتيح",
-      description:
-        "غيّر أي اختصار، أو امسحه لتحرير التركيبة لمتصفحك أو نظام التشغيل.",
       searchPlaceholder: "بحث في الاختصارات…",
+      keystrokePlaceholder: "اضغط اختصارًا للبحث",
+      searchByKeystrokes: "البحث بضغط المفاتيح",
+      searchByName: "البحث بالاسم",
       noResults: "لا توجد اختصارات مطابقة لهذا البحث.",
       unassigned: "غير معيّن",
       recording: "اضغط المفاتيح…",
@@ -438,6 +521,14 @@ export const ar = {
           label: "إرسال الرسالة",
           description: "إرسال ما في مربع الكتابة",
         },
+        queueMessage: {
+          label: "إضافة الرسالة إلى الطابور",
+          description: "إرسال المسودة إلى نهاية الطابور",
+        },
+        steerMessage: {
+          label: "توجيه الرد",
+          description: "إيقاف الرد الحالي وإرسال المسودة بعده",
+        },
         cycleReasoningEffort: {
           label: "تدوير مستوى التفكير",
           description: "التنقل بين مستويات جهد التفكير",
@@ -504,7 +595,7 @@ export const ar = {
       openLogsFolderFailed: "تعذّر فتح مجلد السجلات.",
       exportFailed: "تعذّر تنزيل السجلات.",
       exportTooOld: "خادم Unsloth العامل أقدم من أن يدعم تصدير السجلات. حدِّثه وأعد تشغيله.",
-      exportForbidden: "يتطلب تنزيل كل السجلات جلسة Studio مسجّل الدخول إليها. لا يكفي مفتاح API.",
+      exportForbidden: "يتطلب تنزيل كل السجلات جلسة Unsloth مسجّل الدخول إليها. لا يكفي مفتاح API.",
       keywords: "تصحيح الأخطاء سجل السجلات خطأ أخطاء تعطل تتبع تشخيص استكشاف الأخطاء debug log logs error",
     },
     voice: {
@@ -797,6 +888,16 @@ export const ar = {
         revoked: "تم إلغاء جميع روابط المعاينة",
         revokeError: "تعذّر إلغاء روابط المعاينة",
       },
+      managedProviderUrls: {
+        sectionTitle: "الحسابات المُدارة",
+        enableLabel: "الاتصالات المحلية والشبكية",
+        enableDescription:
+          "اسمح للحسابات المُدارة بتوجيه اتصالاتها إلى عناوين محلية أو عناوين على الشبكة، مثل خادم Ollama أو llama.cpp على هذا الجهاز أو على شبكتك المحلية. معطّل افتراضيًا، لأنه يتيح لتلك الحسابات الوصول إلى الخدمات التي تعمل على جهازك وعلى شبكتك.",
+        lockedByEnvironment:
+          "محدَّد عبر UNSLOTH_STUDIO_BLOCK_PRIVATE_PROVIDER_URLS=1 على هذا الخادم، وهو يرفض العناوين الخاصة لكل الحسابات.",
+        loadError: "تعذّر تحميل إعدادات اتصال الحسابات المُدارة.",
+        saveError: "تعذّر حفظ إعدادات اتصال الحسابات المُدارة.",
+      },
       notifications: {
         sectionTitle: "الإشعارات",
         showLlamaUpdates: "إشعارات تحديث llama.cpp",
@@ -805,6 +906,9 @@ export const ar = {
         showLoadedModels: "مؤشر النماذج المحمّلة",
         showLoadedModelsDescription:
           "إظهار بطاقة صغيرة في الزاوية السفلية اليمنى تعرض كل نموذج موجود حاليًا في الذاكرة (الدردشة، الكلام، الصور، الفيديو)، مع زر لإخراج كل منها.",
+        showWhisperUpdates: "إشعارات تحديث whisper.cpp",
+        showWhisperUpdatesDescription:
+          "التنبيه عند توفر إصدار أحدث من whisper.cpp لنماذج تحويل الكلام إلى نص. أوقف التشغيل إذا كنت لا تفرّغ الصوت.",
       },
       startup: {
         sectionTitle: "بدء التشغيل",
@@ -1029,6 +1133,13 @@ export const ar = {
         minimal: "بسيطة",
       },
       custom: {
+        chatWidth: {
+          label: "عرض المحادثة",
+          description: "حدّد عرض الرسائل وحقل الكتابة. يستخدم العرض الكامل المساحة بين الشريطين الجانبيين.",
+          standard: "قياسي",
+          wide: "واسع",
+          full: "العرض الكامل",
+        },
         reset: "إعادة تعيين",
         resetAll: "إعادة تعيين التخصيص",
         preferencesTitle: "التفضيلات",
@@ -1078,6 +1189,10 @@ export const ar = {
           errorStorageFull:
             "لا توجد مساحة تخزين محلية كافية لهذا الخط. أزل خطًا مستوردًا أولًا.",
           errorFailed: "تعذّر تحميل ملف الخط هذا.",
+        },
+        interfaceScale: {
+          label: "مقياس الواجهة",
+          description: "غيّر حجم جميع عناصر الواجهة.",
         },
         uiFontSize: {
           label: "حجم خط الواجهة",
@@ -1163,7 +1278,11 @@ export const ar = {
       },
       gpu: {
         title: "أجهزة GPU",
-        ggufInference: "استدلال GGUF",
+        memory: "ذاكرة GPU",
+        sharedWithSystemRam: "مشتركة مع ذاكرة النظام",
+        estimatedAvailable: "المتاح تقديريًا: {value}",
+        sharedEstimatedAvailable: "ذاكرة النظام المشتركة: المتاح تقديريًا {value}",
+        ggufInference: "ذاكرة نماذج GGUF",
         unavailable: "غير متاح",
         detecting: "جارٍ البحث عن وحدات GPU...",
         unreadable: "تعذّرت قراءة عتاد هذا الخادم.",
@@ -1228,6 +1347,8 @@ export const ar = {
           sourceBuild: "بُني هذا الإصدار من llama.cpp من الشيفرة المصدرية، لذا لا يمكن تبديل خلفيته من هنا.",
           customPath: "تم تحديد مجلد llama.cpp مخصّص. يحدد هذا الإصدار خلفية الحوسبة.",
           unresolved: "تعذّر التحقق من الخلفيات المتاحة. تحقّق من اتصالك وحاول مرة أخرى.",
+          updateChecksDisabled:
+            "عمليات التحقق من التحديثات معطّلة (UNSLOTH_DISABLE_UPDATE_CHECK=1)، لذلك لا يتم البحث عن الخلفيات المتاحة.",
         },
         // لا يظهر: كلمات إضافية لبحث الإعدادات.
         llamaBackendKeywords:
@@ -1382,9 +1503,9 @@ export const ar = {
         yolo: "يتخطى طلبات الموافقة. استخدمه في البيئات الموثوقة فقط.",
       },
       remote: {
-        title: "الاتصال بنسخة بعيدة من Unsloth Studio",
+        title: "الاتصال بنسخة بعيدة من Unsloth",
         description:
-          "وجّه unsloth start إلى نسخة من Unsloth Studio تعمل في مكان آخر بضبط ما يلي قبل التشغيل (أو مرّر ‎--api-key مباشرة):",
+          "وجّه unsloth start إلى نسخة من Unsloth تعمل في مكان آخر بضبط ما يلي قبل التشغيل (أو مرّر ‎--api-key مباشرة):",
       },
       passthrough: {
         title: "تمرير وسائط إلى الوكيل",
@@ -1398,6 +1519,25 @@ export const ar = {
       },
     },
     chat: {
+      groups: {
+        conversations: { title: "المحادثات" },
+        files: { title: "الملفات واللصق" },
+        display: { title: "العرض" },
+        composer: { title: "مربع الرسالة" },
+        menu: { title: "قائمة الدردشة" },
+        advanced: { title: "إعدادات متقدمة" },
+        contextTitle: "السياق",
+      },
+      projectAttachmentsHint:
+        "يمكن تغيير هذا الإعداد لكل دردشة من قائمة المرفقات الخاصة بها.",
+      rememberParamsPerModelHint:
+        "عند إيقافه، تستخدم جميع النماذج الإعدادات نفسها.",
+      autoCompactHint:
+        "لمحادثات GGUF المحلية فقط. تُفهرس الأدوار التي تخرج من السياق ليتمكن النموذج من البحث عنها لاحقًا، ومع إعادة التعيين يُقتبس ما يتّسع من تعليماتك الدائمة بنصه الحرفي، مع تفضيل الأقدم والأحدث على ما بينهما. تتطلب الأرشفة محادثة محفوظة وفهرسًا متجهيًا؛ وبدونهما تُحذف الأدوار الأقدم. يعتمد على طول السياق الذي حددته، لا على ذاكرة VRAM المتاحة.",
+      pastedTextShortDescription:
+        "يصبح النص الملصق الذي يبلغ {count} حرفًا أو أكثر مرفقًا بصيغة .txt. يبقى النص الأقصر في مربع الرسالة.",
+      pastedTextOffDescription:
+        "يبقى كل النص الملصق في مربع الرسالة، مهما كان طوله.",
       projectsSection: "إظهار قسم المشاريع",
       projectsSectionDescription:
         "يجمع محادثات المشروع تحت عنوان المشاريع. أوقف هذا الخيار لعرضها ضمن الأخيرة بدلاً من ذلك.",
@@ -1421,13 +1561,14 @@ export const ar = {
           "ثبّت العناصر في القائمة الجانبية لعلامة + في المحادثة. تنتقل العناصر الأخرى إلى «المزيد».",
         chatWithFiles: "المحادثة مع الملفات (RAG)",
         mcp: "MCP",
-        skills: "مهارات الوكلاء",
+        skills: "المهارات",
         savedPrompts: "الموجّهات المحفوظة",
         compareChat: "مقارنة المحادثات",
         exportChat: "تصدير المحادثة",
       },
       pastedTextThreshold: "ضغط النصوص الملصقة الطويلة",
-      pastedTextThresholdDescription: "النص الملصق الأطول من هذا الحد يصبح مرفق \u200e.txt بدلاً من ملء مربع الرسالة. اضغط {shortcut} للصق في مربع الرسالة على أي حال.",
+      pastedTextThresholdDescription:
+        "اضغط {shortcut} للصق مباشرة في مربع الرسالة.",
       pastedTextThresholdOff: "إيقاف",
       showResponseModel: "إظهار نموذج الاستجابة",
       showResponseModelDescription:
@@ -1437,28 +1578,26 @@ export const ar = {
         'إظهار عبارة "LLMs can make mistakes" أسفل مربع المحادثة.',
       projectAttachments: "مشاركة الملفات عبر المشروع",
       projectAttachmentsDescription:
-        "الإعداد الافتراضي للملفات المرفقة في محادثة تنتمي إلى مشروع: فهرستها للمشروع بأكمله حتى تتمكن كل محادثة فيه من استخدامها. يمكن لكل محادثة تجاوز ذلك من قائمة الإرفاق.",
+        "أتِح مرفقات الدردشة الجديدة لكل دردشة في المشروع.",
       rememberParamsPerModel: "تذكر الإعدادات لكل نموذج",
       rememberParamsPerModelDescription:
-        "عند تبديل النموذج تُستعاد درجة الحرارة والموجّه وبقية الإعدادات التي استخدمتها آخر مرة مع ذلك النموذج. عند الإيقاف تبقى مجموعة إعدادات واحدة لكل النماذج.",
+        "استعد آخر موجّه ودرجة حرارة وإعدادات أخرى استُخدمت مع كل نموذج.",
       autoCompact: "ضغط المحادثات الطويلة تلقائيًا",
       autoCompactDescription:
-        "عندما تصل محادثة GGUF محلية إلى طول السياق المحدد، احذف الأدوار الأقدم بدلًا من إرجاع خطأ. لا يعتمد ذلك على ذاكرة VRAM المتاحة.",
-      compactionStyle: "عند امتلاء السياق",
-      compactionStyleDescription:
-        "يُبقي الخيار الافتراضي للخادم UNSLOTH_CONTEXT_POLICY. تحتفظ إعادة ضبط المحادثة بأحدث دور والتعليمات الدائمة. تحذف النافذة المنزلقة الأدوار الأقدم ويمكنها الاحتفاظ بمزيد من السجل الحديث.",
-      compactionStyleInherit: "استخدام إعداد الخادم الافتراضي",
-      compactionStyleCheckpoint: "إعادة ضبط المحادثة",
-      compactionStyleRollingDefault: "حذف الأدوار الأقدم (مساحة إضافية نحو 25%)",
-      compactionStyleRolling10: "حذف الأدوار الأقدم (مساحة إضافية نحو 10%)",
-      compactionStyleRolling5: "حذف الأدوار الأقدم (مساحة إضافية نحو 5%)",
-      compactionStyleRollingNone: "حذف الأدوار الأقدم (دون اقتطاع إضافي)",
+        "تنتقل الأدوار الأقدم إلى أرشيف قابل للبحث عندما تمتلئ نافذة سياق المحادثة.",
       autoCompactKeywords:
-        "ضغط تلقائي سياق نافذة اقتطاع منزلقة نقطة تحقق هامش compaction rolling checkpoint headroom",
+        "ضغط تلقائي سياق نافذة اقتطاع منزلقة نقطة تحقق هامش أرشيف استرجاع بحث compaction rolling checkpoint headroom archive retrieval rag",
+      visibility: {
+        collapsed: "مطوي",
+        auto: "التوسيع أثناء التشغيل",
+        expanded: "موسّع دائمًا",
+      },
+      visibilityKeywords:
+        "طي مطوي توسيع موسّع فتح مغلق تفكير استدعاءات الأدوات نشاط الأدوات تجميع بث",
       thinking: {
-        collapseByDefault: "طيّ التفكير افتراضيًا",
-        collapseByDefaultDescription:
-          "إبقاء التفكير مطويًا أثناء تفكير النموذج بدلًا من فتحه تلقائيًا. وسّع أي كتلة لقراءتها.",
+        visibility: "التفكير",
+        visibilityDescription:
+          "كيفية فتح التفكير. لا يزال بإمكانك توسيع أو طي أي كتلة بنفسك.",
       },
       currentDate: {
         label: "إخبار النموذج بتاريخ اليوم",
@@ -1468,15 +1607,20 @@ export const ar = {
         saveError: "تعذّر تحديث إعدادات التاريخ الحالي",
       },
       tools: {
-        collapseByDefault: "طيّ نشاط الأدوات افتراضيًا",
-        collapseByDefaultDescription:
-          "إبقاء مدخلات الأدوات ومخرجاتها مطوية أثناء التشغيل. وسّع أي صف أداة لفحصه.",
+        visibility: "استدعاءات الأدوات",
+        visibilityDescription:
+          "كيفية فتح نشاط الأدوات. لا يزال بإمكانك توسيع أو طي أي استدعاء بنفسك.",
+        foldIntoThinking: "تجميع استدعاءات الأدوات ضمن التفكير",
+        foldIntoThinkingDescription:
+          "عرض استدعاءات الأدوات في الدور داخل كتلة التفكير بدلًا من صفوف مستقلة.",
+        foldIntoThinkingBlocked:
+          "غير متاح بينما تكون استدعاءات الأدوات مضبوطة على «موسّع دائمًا»، وهو ما يبقيها في صفوف مستقلة.",
       },
       webSearch: {
         title: "البحث على الويب",
         images: "عرض الصور من البحث على الويب",
         imagesDescription:
-          "يتيح للبحث على الويب إرجاع صور، ويجلب صورة لكل عنصر تعدّده الإجابة. يجلب Unsloth الصور المصغّرة ويغيّر حجمها، لذا لا يتصل المتصفح بمضيفي الصور أبدًا.",
+          "تضمين الصور في نتائج البحث.",
       },
       artifacts: {
         title: "Canvas",
@@ -1510,7 +1654,7 @@ export const ar = {
       exportPerChatSuffix: "(لكل محادثة)",
       importChats: "استيراد المحادثات",
       importChatsDescription:
-        "استيراد ملف تصدير من Open WebUI أو JSONL أو NDJSON أو CSV إلى الأخيرة.",
+        "استيراد ملفات JSON أو JSONL أو NDJSON أو CSV إلى الأخيرة.",
       importChatsAction: "استيراد",
       importNoConversations: "لم يُعثر على محادثات في الملف.",
       importedOneChat: "تم استيراد محادثة واحدة إلى العناصر الأخيرة.",
@@ -1556,6 +1700,80 @@ export const ar = {
       failedToClearChats: "فشل مسح المحادثات",
     },
     data: {
+      library: {
+        defaultSort: "الافتراضي",
+        updated: "التحديث",
+        created: "الإنشاء",
+        oldest: "الأقدم أولاً",
+        alphabetical: "أبجديًا",
+        allChats: "كل المحادثات",
+        singleChats: "محادثات فردية",
+        compareChats: "محادثات المقارنة",
+        allProjects: "كل المشاريع",
+        noProject: "بلا مشروع",
+        unavailableProject: "المشروع غير متاح",
+        filterSort: "التصفية والترتيب",
+        sort: "الترتيب",
+        type: "النوع",
+        sortBy: "الترتيب حسب",
+        filterProject: "التصفية حسب المشروع",
+        searchProjects: "البحث في المشاريع",
+        noProjects: "لم يتم العثور على مشاريع.",
+        untitled: "بلا عنوان",
+        oneChat: "محادثة واحدة",
+        chatCount: "عدد المحادثات: {count}",
+        searchChats: "البحث في المحادثات أو المشاريع",
+        searchArchivedChats: "البحث في المحادثات المؤرشفة أو المشاريع",
+        searchImages: "البحث في الصور المؤرشفة",
+        searchVideos: "البحث في الفيديوهات المؤرشفة",
+        searchAudio: "البحث في المقاطع الصوتية المؤرشفة",
+        unarchive: "إلغاء الأرشفة",
+        unarchiveAll: "إلغاء أرشفة الكل",
+        unarchiveResults: "إلغاء أرشفة النتائج",
+        deleteResults: "حذف النتائج",
+        noChats: "لا توجد محادثات تطابق بحثك.",
+        noArchivedChats: "لا توجد محادثات مؤرشفة.",
+        noArchivedMatches: "لا توجد محادثات مؤرشفة تطابق بحثك.",
+        noMedia: "لا توجد عناصر مؤرشفة.",
+        noMediaMatches: "لا توجد عناصر مؤرشفة تطابق بحثك.",
+        itemCount: "عدد العناصر: {count}",
+        incompleteSearch: "البحث غير مكتمل. أعد محاولة تحميل العناصر المتبقية.",
+        searchingRemaining: "جارٍ البحث في العناصر المتبقية (تم تحميل {count})...",
+        noLoadedMatches: "لا توجد نتائج مطابقة في العناصر المحملة حتى الآن.",
+        deleteItem: "حذف: {title}",
+        unarchiveItem: "إلغاء الأرشفة: {title}",
+        deleteItemsTitle: "حذف العناصر المؤرشفة ({count})",
+        unarchiveItemsTitle: "إلغاء أرشفة العناصر ({count})",
+        deleteFilesWarning: "سيتم حذف هذه الملفات نهائيًا. لا يمكن التراجع عن هذا الإجراء.",
+        restoreWarning: "ستعود هذه العناصر إلى المعرض.",
+        working: "جارٍ التنفيذ...",
+        loadFailed: "تعذر تحميل العناصر المؤرشفة",
+        loadMoreFailed: "تعذر تحميل المزيد من العناصر المؤرشفة",
+        restoreFailed: "تعذر إلغاء أرشفة العناصر المحددة",
+        deleteFailed: "تعذر حذف العناصر المحددة",
+        projectsFailed: "تعذر تحميل المشاريع المؤرشفة",
+        pageStalled: "لم تتقدم صفحة الأرشيف. حاول مرة أخرى.",
+        pageChanged: "تغير الأرشيف أثناء التحميل. حاول مرة أخرى.",
+        selectAll: "تحديد كل المحادثات الظاهرة",
+        selectItem: "تحديد «{title}»",
+        selectedChats: "المحادثات المحددة: {count}",
+        move: "نقل",
+        pin: "تثبيت",
+        unpin: "إلغاء التثبيت",
+        archive: "أرشفة",
+        deletedChats: "المحادثات المحذوفة: {count}",
+        restoredChats: "المحادثات الملغاة أرشفتها: {count}",
+        pinnedChats: "المحادثات المثبتة: {count}",
+        unpinnedChats: "المحادثات الملغى تثبيتها: {count}",
+        movedChatsToProject: "المحادثات المنقولة إلى {project}: {count}",
+        movedChatsToRecents: "المحادثات المنقولة إلى الأخيرة: {count}",
+        moveFailed: "تعذر نقل المحادثات",
+        deleteChatsTitle: "حذف المحادثات ({count})",
+        deleteChatsWarning: "هل تريد حذف المحادثات المحددة ({count})؟ لا يمكن التراجع عن هذا الإجراء.",
+        deleteArchivedTitle: "حذف المحادثات المؤرشفة ({count})",
+        deleteArchivedWarning: "هل تريد حذف المحادثات المؤرشفة المحددة ({count})؟ لا يمكن التراجع عن هذا الإجراء.",
+        deleting: "جارٍ الحذف...",
+      },
       title: "البيانات",
       backToData: "العودة إلى البيانات",
       exportFailed: "تعذّر تصدير المحادثات",
@@ -1598,6 +1816,27 @@ export const ar = {
       alwaysDeleteFiles: "حذف الملفات دائمًا",
       alwaysDeleteFilesDescription:
         "حذف المحادثة يزيل أيضًا مجلد بيئة العزل الخاص بها من القرص. أما الملفات التي كتبتها داخل مشروع فتبقى في مساحة عمل ذلك المشروع.",
+      chatsSection: "المحادثات والأرشيف",
+      transferSection: "الاستيراد والتصدير",
+      deletionSection: "الحذف",
+      archives: "الأرشيف",
+      archiveChatsLabel: "المحادثات",
+      archiveVideosLabel: "الفيديو",
+      exportFormatsSummary:
+        "تصدير المحادثات الأخيرة ومحادثات المشاريع بالتنسيق المفضل لديك.",
+      trainingSummary: "تحويل محادثاتك إلى مجموعة بيانات للضبط الدقيق.",
+      confirmDeletionSummary: "طلب التأكيد قبل حذف المحادثات الفردية.",
+      sandboxFiles: "ملفات بيئة المحادثة المعزولة",
+      sandboxFilesDescription: "الإجراء الافتراضي عند حذف محادثة.",
+      keepSandboxFiles: "الاحتفاظ بملفات البيئة المعزولة",
+      deleteSandboxFiles: "حذف ملفات البيئة المعزولة",
+      projectFilesKept:
+        "البيئات المعزولة هي مجلدات تُنشأ لكل محادثة. تُحفظ الملفات الموجودة في مساحات عمل المشاريع.",
+      deleteAllAction: "حذف الكل",
+      deleteChatsOnly: "حذف المحادثات فقط…",
+      deleteChatsAndSandboxes: "حذف المحادثات والبيئات المعزولة…",
+      deleteSandboxFilesDescription:
+        "حذف مجلد البيئة المعزولة لكل محادثة والملفات الموجودة فيه أيضًا. تُحفظ الملفات الموجودة في مساحات عمل المشاريع.",
       filesSection: "الملفات",
       uploadedFiles: "الملفات المرفوعة",
       uploadedFilesDescription:
@@ -1753,7 +1992,7 @@ export const ar = {
         desktopAvailableDescription:
           "حدّث الآن، وسيُعاد تشغيل تطبيق سطح المكتب عند اكتمال التحديث.",
         desktopExternalServer:
-          "شغّل الأمر `unsloth studio update` في الطرفية التي شغّلت الخادم.",
+          "اتصل التطبيق بخادم Studio يعمل مسبقًا ولا يمكنه تحديثه. أوقف ذلك الخادم، ثم أغلق تطبيق سطح المكتب وأعد فتحه للتحديث.",
         desktopManualInstall:
           "افتح صفحة الإصدار لتثبيت أحدث حزمة لنظام Linux.",
         desktopCheckFailed: "تعذّر التحقق من وجود تحديثات",
@@ -2482,7 +2721,7 @@ export const ar = {
     tooLarge: "أكبر من ذاكرة الرسوميات، وسيُفرَّغ جزء منه إلى المعالج. التكميم الأصغر أسرع",
   },
   skills: {
-    title: "مهارات الوكلاء",
+    title: "المهارات",
     description: "تُكتشف المهارات من مجلدات الوكلاء القياسية. فعّلها هنا ثم اكتب @ في الدردشة لذكر إحداها.",
     precedence: "‎~/.agents/skills له الأولوية على ‎~/.claude/skills.",
     refresh: "تحديث",
@@ -2496,7 +2735,7 @@ export const ar = {
     shadowedBy: "مهارة أخرى ({source}) بالاسم نفسه لها الأولوية.",
     enable: "تفعيل {name}",
     disable: "تعطيل {name}",
-    updateError: "تعذّر تحديث مهارة الوكيل",
-    mentions: "مهارات الوكلاء",
+    updateError: "تعذّر تحديث المهارة",
+    mentions: "المهارات",
   },
 } satisfies DeepPartialMessageTree<typeof en>;

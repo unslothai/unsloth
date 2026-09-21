@@ -1241,10 +1241,18 @@ try:
     _STUDIO_ROOT_RESOLVED = _studio_root().resolve()
 except (OSError, ValueError):
     _STUDIO_ROOT_RESOLVED = _studio_root()
-if _STUDIO_ROOT_RESOLVED != _LEGACY_STUDIO_ROOT:
+from utils.paths.storage_roots import unsloth_home as _unsloth_home
+
+_MASTER_ROOT = _unsloth_home()
+# A master root pointed at the legacy path still owns runtimes beside it, so the equality alone
+# would skip the export and leave unsloth_zoo on ~/.unsloth/llama.cpp.
+if _STUDIO_ROOT_RESOLVED != _LEGACY_STUDIO_ROOT or _MASTER_ROOT is not None:
     if not os.environ.get("UNSLOTH_STUDIO_HOME"):
         os.environ["UNSLOTH_STUDIO_HOME"] = str(_STUDIO_ROOT_RESOLVED)
-    _MANAGED_LLAMA_CPP_PATH = _STUDIO_ROOT_RESOLVED / "llama.cpp"
+    # The runtimes sit at the master root, beside studio/; deriving from the Studio root would
+    # pin a path one level too deep for every worker.
+    _MANAGED_ROOT = _MASTER_ROOT or _STUDIO_ROOT_RESOLVED
+    _MANAGED_LLAMA_CPP_PATH = _MANAGED_ROOT / "llama.cpp"
     if not os.environ.get("UNSLOTH_LLAMA_CPP_PATH"):
         os.environ["UNSLOTH_LLAMA_CPP_PATH"] = str(_MANAGED_LLAMA_CPP_PATH)
     # The CLI and generated launchers can export this path before run.py starts.
@@ -1438,6 +1446,23 @@ def _graceful_shutdown(server = None):
         close_lan_listener_lifecycle()
     except Exception as e:
         logger.warning("Error stopping the LAN listener: %s", e)
+
+    try:
+        from core.training.training import _training_backend
+        if _training_backend is not None:
+            _training_backend.stop_for_shutdown()
+    except Exception as e:
+        logger.warning("Error stopping the training run for shutdown: %s", e)
+
+    try:
+        # sys.modules: an install that never trained a diffusion LoRA does not import it here.
+        _diffusion = sys.modules.get("core.training.diffusion_training_service")
+        if _diffusion is not None and _diffusion._service is not None:
+            from core.training.training import _SHUTDOWN_STOP_TIMEOUT_S
+            if not _diffusion._service.stop_for_shutdown(_SHUTDOWN_STOP_TIMEOUT_S):
+                logger.warning("Shutdown: diffusion training did not finish saving in time")
+    except Exception as e:
+        logger.warning("Error stopping the diffusion training run for shutdown: %s", e)
 
     if server is not None:
         server.should_exit = True
@@ -2091,13 +2116,17 @@ def _terminal_password_gate(
             return False, False
         # The public page will not auto-fill the bootstrap credential and the seeded file may already be gone,
         # so point recovery at a terminal-attached run / reset-password instead of reading it from disk.
+        # The ABSOLUTE form here: this line is stderr on the host, where naming the install is the point and
+        # a bare `unsloth` may not be on PATH. The 401 body deliberately carries only the PATH form.
+        from routes.auth import _reset_password_command
+
         print(
             "  WARNING: the default admin password is still active while "
             "Unsloth is about to be published on a public Cloudflare URL, and "
             "no terminal is attached to change it here. The public page will "
             "NOT auto-fill the bootstrap credential. Set a new password by "
             "running `unsloth studio` locally with a terminal attached, or "
-            "`unsloth studio reset-password`. Unsloth shuts down after the "
+            f"`{_reset_password_command()}`. Unsloth shuts down after the "
             "bootstrap deadline (UNSLOTH_STUDIO_BOOTSTRAP_TIMEOUT, default 1h) "
             "unless the password is changed.",
             file = sys.stderr,
@@ -2161,10 +2190,12 @@ def _terminal_password_gate(
             "(UNSLOTH_STUDIO_BOOTSTRAP_TIMEOUT=0), so nothing will stop it "
             "serving that credential."
         )
+    from routes.auth import _reset_password_command
+
     print(
         "  WARNING: continuing with the auto-generated admin password on a bind "
         f"that is reachable from the network. {tail} Change it by logging in, or "
-        "with `unsloth studio reset-password`.",
+        f"with `{_reset_password_command()}`.",
         file = sys.stderr,
         flush = True,
     )
@@ -2654,6 +2685,11 @@ def run_server(
     # A supplied --password / UNSLOTH_STUDIO_PASSWORD / stdin sets the initial admin password before the
     # gate and socket bind (direct `python run.py`; the CLI applies it in its own parent).
     _apply_supplied_password(password)
+
+    # Per launch, not per process: an embedded host may call run_server() again with different
+    # flags, and UNSLOTH_API_ONLY above is never cleared once set.
+    app.state.api_only = api_only
+    app.state.suppress_bootstrap_injection = False
 
     # Never publish with the seeded default password active: prompt first (or warn / fail closed headless; see
     # _terminal_password_gate). Runs BEFORE the socket binds so a pre-gate listener cannot hand out the

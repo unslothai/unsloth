@@ -288,3 +288,51 @@ def test_media_keeps_existing_allowance_without_native_embedding_count():
     count = inference._count_gguf_admission_prompt(backend, payload, payload.messages)
     assert count == 20 + inference._openai_llama_admission_image_tokens(backend)
     assert backend.count_chat_tokens.call_args.kwargs["prefer_native"] is False
+
+
+def test_counting_recovers_after_a_complete_outage(monkeypatch):
+    async def scenario():
+        queue = LlamaAdmissionQueue("count-recovery")
+        monkeypatch.setattr(inference, "get_llama_admission_queue", lambda _: queue)
+        backend = _backend(20)
+        payload = _payload()
+        payload.messages = [{"role": "user", "content": "Hello"}]
+        backend.count_chat_tokens.side_effect = RuntimeError("both count paths unavailable")
+        first, _ = await inference._reserve_counted_gguf_chat(
+            request = None, llama_backend = backend, payload = payload, messages = payload.messages
+        )
+        lease = first.lease_nowait()
+        assert lease is not None
+        assert queue.snapshot().committed == 30000
+        lease.release()
+        backend.count_chat_tokens.side_effect = None
+        reservations = [
+            (
+                await inference._reserve_counted_gguf_chat(
+                    request = None, llama_backend = backend, payload = payload, messages = payload.messages
+                )
+            )[0]
+            for _ in range(3)
+        ]
+        leases = [reservation.lease_nowait() for reservation in reservations]
+        try:
+            assert all(lease is not None for lease in leases)
+            assert queue.snapshot().committed == 3 * (20 + 1024)
+        finally:
+            for reservation, lease in zip(reservations, leases):
+                if lease is not None:
+                    lease.release()
+                else:
+                    reservation.cancel()
+
+    asyncio.run(scenario())
+
+
+def test_exact_count_preserves_video_allowance(monkeypatch):
+    backend = _backend(20)
+    payload = _payload()
+    monkeypatch.setattr(inference, "_conversation_video_clips", lambda _: 2)
+    media = Mock(return_value = 4096)
+    monkeypatch.setattr(inference, "_openai_llama_admission_media_tokens", media)
+    assert inference._count_gguf_admission_prompt(backend, payload, payload.messages) == 4116
+    assert media.call_args.kwargs["message_video_clips"] == 2

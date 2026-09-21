@@ -31,7 +31,7 @@ import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { normalizeEscapedInlineMath } from "@/lib/escaped-inline-math";
 import { preprocessLaTeX } from "@/lib/latex";
 import { withDataImageSupport } from "@/lib/markdown-data-images";
-import { downloadFile, isDownloadCancelled } from "@/lib/native-files";
+import { downloadFile, isDownloadCancelled, urlToBlob } from "@/lib/native-files";
 import { openLink } from "@/lib/open-link";
 import { safeMarkdownUrl } from "@/lib/safe-markdown-url";
 import { Tick02Icon } from "@/lib/tick-icon";
@@ -42,7 +42,11 @@ import {
   useAuiState,
   useMessagePartText,
 } from "@assistant-ui/react";
-import { Copy01Icon, Download01Icon } from "@hugeicons/core-free-icons";
+import {
+  Copy01Icon,
+  Download01Icon,
+  ExpandIcon,
+} from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { createMathPlugin } from "@streamdown/math";
 import { mermaid } from "@streamdown/mermaid";
@@ -85,6 +89,7 @@ import {
 } from "./sandbox-files";
 import { SearchImageElement, SearchImagesContext } from "./search-image";
 import { useSandboxImage } from "./use-sandbox-image";
+import { rehypeSandboxImages } from "./rehype-sandbox-images";
 import { unslothDarkTheme, unslothLightTheme } from "./code-themes";
 import { stabilizeStreamingMarkdown } from "./streaming-markdown";
 import {
@@ -122,6 +127,24 @@ const STREAMDOWN_SHIKI_THEME = [
   unslothLightTheme,
   unslothDarkTheme,
 ] satisfies NonNullable<StreamdownProps["shikiTheme"]>;
+// Streamdown ships its own glyphs for the table controls; swap in ours so copy,
+// download and expand match the icons used everywhere else.
+// `strokeWidth` is dropped, not forwarded: SVG types it `string | number`, HugeiconsIcon wants a number.
+function streamdownIcon(icon: typeof Copy01Icon) {
+  return function StreamdownIcon({
+    size,
+    strokeWidth: _strokeWidth,
+    ...props
+  }: ComponentProps<"svg"> & { size?: number }) {
+    return <HugeiconsIcon icon={icon} size={size} {...props} />;
+  };
+}
+const STREAMDOWN_ICONS = {
+  CopyIcon: streamdownIcon(Copy01Icon),
+  DownloadIcon: streamdownIcon(Download01Icon),
+  // Streamdown's key for the table's enlarge control.
+  Maximize2Icon: streamdownIcon(ExpandIcon),
+} satisfies NonNullable<StreamdownProps["icons"]>;
 const { withSmoothContextProvider } = INTERNAL;
 
 // Streamdown 2.5 schedules ordinary streaming blocks in an interruptible React transition, and a continuous token
@@ -230,16 +253,19 @@ const MarkdownImage = memo(function MarkdownImage(props: ComponentProps<"img">) 
         </span>
       )}
       {/* Kept from the replaced renderer: the hover tint over the image. */}
-      <div className="pointer-events-none absolute inset-0 hidden rounded-lg bg-black/10 group-hover:block" />
+      <span className="pointer-events-none absolute inset-0 hidden rounded-lg bg-black/10 group-hover:block" />
       {!failedNow && resolved ? (
         <button
           type="button"
           title="Download image"
           className="absolute right-2 bottom-2 flex h-8 w-8 cursor-pointer items-center justify-center rounded-md border border-border bg-background/90 opacity-0 backdrop-blur-sm transition-all duration-200 group-hover:opacity-100"
           onClick={async () => {
-            // By now the src is always blob:/data:, so a plain fetch carries it.
+            // Reuse fetched bytes under the desktop CSP.
             try {
-              const blob = await (await fetch(resolved)).blob();
+              const blob =
+                file !== null && sandbox.state.status === "loaded"
+                  ? sandbox.state.blob
+                  : await urlToBlob(resolved);
               await downloadFile(blob, downloadName(blob.type), blob.type);
             } catch (error) {
               if (!isDownloadCancelled(error)) toast.error("Could not save file.");
@@ -282,9 +308,6 @@ const STREAMDOWN_ALLOWED_TAGS = {
   [SEARCH_IMAGE_TAG]: ["token"],
 } satisfies NonNullable<StreamdownProps["allowedTags"]>;
 
-// Module-scoped: Streamdown extends its sanitize schema only for its default pipeline, so the
-// allowed-tag merge and the data-image protocol ride on a pipeline we pass ourselves (see lib).
-const STREAMDOWN_REHYPE_PLUGINS = withDataImageSupport(STREAMDOWN_ALLOWED_TAGS);
 const COPY_RESET_MS = 2000;
 const MERMAID_SOURCE_RE = /```mermaid\s*([\s\S]*?)```/i;
 const ACTION_PANEL_CLASS =
@@ -834,6 +857,20 @@ function MarkdownTextRenderer({
   statusType,
   text,
 }: MarkdownTextRendererProps) {
+  const remoteId = useAuiState(({ threadListItem }) => threadListItem.remoteId);
+  const activeThreadId = useChatRuntimeStore((state) => state.activeThreadId);
+  const projectId = useChatProjectScope();
+  const threadId = remoteId ?? activeThreadId ?? undefined;
+  // Streamdown's memo comparator ignores rehypePlugins.
+  const sandboxScopeKey = JSON.stringify([threadId, projectId]);
+  const rehypePlugins = useMemo(
+    () =>
+      // Streamdown caches processors by plugin name and serialized options.
+      withDataImageSupport(STREAMDOWN_ALLOWED_TAGS, [
+        [rehypeSandboxImages, { threadId, projectId }],
+      ]),
+    [threadId, projectId],
+  );
   const searchImages = useMemo(
     () => parseSearchImagesSignature(searchImagesKey),
     [searchImagesKey],
@@ -896,7 +933,7 @@ function MarkdownTextRenderer({
       <SearchImagesContext.Provider value={searchImages}>
         <div data-status={statusType} className="min-w-0 max-w-full">
           <Streamdown
-            key={`${messageId}:${incrementalCache.renderGeneration}:${renderKey}`}
+            key={`${messageId}:${incrementalCache.renderGeneration}:${renderKey}:${sandboxScopeKey}`}
             mode="streaming"
             parseIncompleteMarkdown={!incrementalRender}
             parseMarkdownIntoBlocksFn={
@@ -908,9 +945,10 @@ function MarkdownTextRenderer({
             plugins={STREAMDOWN_PLUGINS}
             components={STREAMDOWN_COMPONENTS}
             allowedTags={STREAMDOWN_ALLOWED_TAGS}
-            rehypePlugins={STREAMDOWN_REHYPE_PLUGINS}
+            rehypePlugins={rehypePlugins}
             urlTransform={safeMarkdownUrl}
             controls={STREAMDOWN_CONTROLS}
+            icons={STREAMDOWN_ICONS}
             shikiTheme={STREAMDOWN_SHIKI_THEME}
             BlockComponent={StreamdownBlock}
           >
