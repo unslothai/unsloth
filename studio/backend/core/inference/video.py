@@ -120,6 +120,7 @@ from .diffusion_precision import (
     quantize_text_encoders,
     te_quant_needs_resident_weights,
     te_quant_supported,
+    te_quant_unsupported_reason,
     torchao_quantize_importable,
 )
 from .video_families import (
@@ -339,10 +340,7 @@ def _assert_video_precision_for_target(
             "quantisations"
         )
     elif te_effective is not None and not te_quant_supported(target, te_effective):
-        te_reason = (
-            "this device does not have the tensor cores that backend needs (a CUDA GPU in "
-            "bf16, plus fp8 / int8 / NVFP4 support depending on the mode)"
-        )
+        te_reason = te_quant_unsupported_reason(te_effective)
     elif te_quant_needs_resident_weights(te_effective) and forces_offload:
         # Same fence on the encoder: the loader reports those modes unsupported once offload is active, and by then the
         # resident model is gone. Layerwise fp8 is a dtype cast.

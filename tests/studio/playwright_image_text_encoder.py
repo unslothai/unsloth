@@ -220,7 +220,7 @@ def main():
 
         for label, requested, displayed in [
             ("FP8 (compute)", "fp8_dynamic", "FP8 (compute)"),
-            ("NVFP4 (Blackwell)", "nvfp4", "NVFP4 (Blackwell)"),
+            ("NVFP4", "nvfp4", "NVFP4"),
             ("INT8", "int8", "FP8 (storage)"),
             ("Default", None, "Default"),
         ]:

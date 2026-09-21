@@ -3775,7 +3775,7 @@ export function ImagesPage({
       )}
       <AdvancedSelect
         label="Text encoder precision"
-        hint="Lower precision reduces text-encoder memory but can change image quality. Supported modes depend on the GPU and model. Default keeps the existing encoder precision; the loaded build below reports what was applied."
+        hint="Shrinks the text encoder, often the largest part of the model, at some cost to image quality. Default keeps it as shipped. FP8 (storage) halves it on any NVIDIA or AMD GPU that runs bf16 (NVIDIA RTX 30 series or newer). FP8 (compute) halves it and encodes faster, on RTX 40 series or newer. INT8 halves it on RTX 30 series or newer, and uses FP8 (storage) for models without a tuned INT8 schedule. NVFP4 is the smallest, about 3.5x, on RTX 30 series or newer, with a slower prompt encode. Every mode except FP8 (storage) keeps the encoder on the GPU, so it is refused when the memory mode offloads to CPU. Not available on the native engine used without a GPU. The loaded build below reports what was applied."
         badge={<ResolvedBadge status={status} controlKey="text_encoder_quant" />}
         value={textEncoderQuant}
         onValueChange={(v) => setTextEncoderQuant(v as typeof textEncoderQuant)}
@@ -3784,7 +3784,7 @@ export function ImagesPage({
           ["fp8", "FP8 (storage)"],
           ["fp8_dynamic", "FP8 (compute)"],
           ["int8", "INT8"],
-          ["nvfp4", "NVFP4 (Blackwell)"],
+          ["nvfp4", "NVFP4"],
         ]}
       />
       <AdvancedSelect
