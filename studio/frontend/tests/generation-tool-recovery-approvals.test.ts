@@ -278,3 +278,83 @@ test("a check that cannot be answered still arms the card", async () => {
   });
   assert.equal(spy.registered.length, 1, "a failed check must not cost a parked call its buttons");
 });
+
+// ── The check and the replay now run concurrently ───────────────────────────
+// runtime-provider no longer awaits armSeededApprovals at its call site: awaiting held the
+// /events stream closed, and that stream is the only thing marking the run attended server-side,
+// so a tab returning near the park ceiling lost its approval during the very request asking
+// whether it was still pending. The cost of un-blocking it is this window: `tool_end` can fold a
+// card while its status request is in flight. disarmApproval is a no-op then, because nothing is
+// armed yet, so arming afterwards registers an already-finished call. Nothing renders buttons over
+// it (a part with a result is not `awaiting`), but the store entry survives until disarmAll, which
+// is long enough to make a LATER approval non-sole and silently drop its Enter/Escape chord.
+
+const finishedEnd = (approvalId: string) => ({
+  _toolEvent: {
+    type: "tool_end",
+    tool_name: "terminal",
+    tool_call_id: "call-9",
+    approval_id: approvalId,
+    result: "4.0G\t/home/u/models",
+  },
+});
+
+test("a card finished while its status request was in flight is not armed afterwards", async () => {
+  const spy = spyConfirmations();
+  const carried = [
+    {
+      at: 12,
+      part: {
+        type: "tool-call",
+        toolCallId: "sess-1:thread-1:appr-9",
+        toolName: "terminal",
+        backendToolCallId: "call-9",
+        toolApprovalId: "appr-9",
+        args: { command: "du -sh ~/models" },
+      },
+    },
+  ];
+  const recovery = createGenerationToolRecovery(carried, "run-1", 40, spy.hooks);
+
+  // Held open so the replay lands strictly between the answer and the resume, which is the race.
+  let release: (value: boolean) => void = () => {};
+  const gate = new Promise<boolean>((resolve) => {
+    release = resolve;
+  });
+  const arming = recovery.armSeededApprovals("sess-1", () => gate);
+
+  // Another tab answered it, or it expired: the run streams tool_end while we are still waiting.
+  recovery.apply(finishedEnd("appr-9"), 0, 41, "sess-1");
+  release(true); // the backend still said "pending", because it was, when it was asked
+  await arming;
+
+  assert.deepEqual(
+    spy.registered,
+    [],
+    "the card gained a result while the status request was in flight, so arming it leaves a " +
+      "store entry nothing will ever clear until the run ends",
+  );
+});
+
+test("a card still unresolved when the status request returns is armed as before", async () => {
+  // The guard above must not cost the case the feature exists for.
+  const spy = spyConfirmations();
+  const carried = [
+    {
+      at: 12,
+      part: {
+        type: "tool-call",
+        toolCallId: "sess-1:thread-1:appr-10",
+        toolName: "terminal",
+        backendToolCallId: "call-10",
+        toolApprovalId: "appr-10",
+        args: { command: "du -sh ~/models" },
+      },
+    },
+  ];
+  const recovery = createGenerationToolRecovery(carried, "run-1", 40, spy.hooks);
+  await recovery.armSeededApprovals("sess-1", async () => true);
+  assert.deepEqual(spy.registered, [
+    { partId: "sess-1:thread-1:appr-10", approvalId: "appr-10", sessionId: "sess-1" },
+  ]);
+});
