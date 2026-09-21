@@ -347,17 +347,15 @@ def test_a_declared_name_that_another_tool_extends_is_not_stamped_early(monkeypa
     # turn as the PR intends, and with the right tool.
     assert len(stamps) == 1, f"expected exactly one stamp, got {stamps}"
     assert stamps[0]["c1"]["mcp_tool"] == "foo_bar"
-    assert not any('"mcp_tool": "foo"' in line for line in lines), (
-        "stamped the shorter declared name, so the card read as the wrong tool"
-    )
+    assert not any(
+        '"mcp_tool": "foo"' in line for line in lines
+    ), "stamped the shorter declared name, so the card read as the wrong tool"
 
     # A call that really IS the shorter tool has no unambiguous moment while streaming, so
     # it waits for tool_start rather than being relabelled on a guess. The cost of the fix,
     # and only for a name another tool extends.
     lines = _run(
-        FakeTransport(
-            [[_delta(short), _delta(arguments = "{}"), _finish()], [_DONE]]
-        ),
+        FakeTransport([[_delta(short), _delta(arguments = "{}"), _finish()], [_DONE]]),
         [_tool(short), _tool(long)],
     )
     assert _stamps(lines) == []
@@ -365,9 +363,7 @@ def test_a_declared_name_that_another_tool_extends_is_not_stamped_early(monkeypa
     # And the ordinary case is untouched: a declared name no other tool extends still
     # stamps on the chunk that completes it, or this fix would have disabled the feature.
     lines = _run(
-        FakeTransport(
-            [[_delta(long), _delta(arguments = "{}"), _finish()], [_DONE]]
-        ),
+        FakeTransport([[_delta(long), _delta(arguments = "{}"), _finish()], [_DONE]]),
         [_tool(long)],
     )
     assert _stamps(lines)[0]["c1"]["mcp_server"] == DISPLAY

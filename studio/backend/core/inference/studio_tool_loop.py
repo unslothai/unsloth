@@ -1089,9 +1089,7 @@ def _is_strict_prefix_of_declared(name: str, declared_names: set[str]) -> bool:
     Only a prefix of ANOTHER declared name counts, so the ordinary case -- a name no other
     tool extends -- is unaffected and still stamped on the chunk that completes it.
     """
-    return any(
-        other != name and other.startswith(name) for other in declared_names
-    )
+    return any(other != name and other.startswith(name) for other in declared_names)
 
 
 def _mcp_provenance_by_id(
