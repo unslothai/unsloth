@@ -19,11 +19,15 @@ export function KeyRevealCard({
 }) {
   const t = useT();
   const [copied, setCopied] = useState(false);
+  const [copyFailed, setCopyFailed] = useState(false);
 
   const handleCopy = async () => {
     if (await copyToClipboard(rawKey)) {
       setCopied(true);
+      setCopyFailed(false);
       setTimeout(() => setCopied(false), 1800);
+    } else {
+      setCopyFailed(true);
     }
   };
 
@@ -38,13 +42,21 @@ export function KeyRevealCard({
           {t("settings.apiKeys.newTokenCreated")}
         </span>
       </div>
-      <button
-        type="button"
+      <div
+        role="button"
+        tabIndex={0}
         onClick={handleCopy}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" || e.key === " ") {
+            e.preventDefault();
+            void handleCopy();
+          }
+        }}
         className={cn(
-          "flex w-full items-center justify-between gap-3 rounded-md border border-border bg-muted/40 px-3 py-2.5 font-mono text-sm transition-colors hover:bg-muted/60",
+          "flex w-full cursor-pointer select-text items-center justify-between gap-3 rounded-md border border-border bg-muted/40 px-3 py-2.5 font-mono text-sm transition-colors hover:bg-muted/60",
           "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
           copied && "border-emerald-500/40 bg-emerald-500/10",
+          copyFailed && "border-destructive/40",
         )}
         aria-label={
           copied
@@ -53,16 +65,25 @@ export function KeyRevealCard({
         }
       >
         <code
-          className="min-w-0 flex-1 break-all text-left text-foreground"
+          className="min-w-0 flex-1 select-text break-all text-left text-foreground"
           data-reload-snapshot-sensitive
         >
           {rawKey}
         </code>
         <HugeiconsIcon
           icon={copied ? Tick02Icon : Copy01Icon}
-          className={cn("size-4 shrink-0", copied && "text-emerald-600")}
+          className={cn(
+            "size-4 shrink-0",
+            copied && "text-emerald-600",
+            copyFailed && "text-destructive",
+          )}
         />
-      </button>
+      </div>
+      {copyFailed && (
+        <p className="text-ui-11 text-destructive">
+          {t("settings.apiKeys.copyTokenFailed")}
+        </p>
+      )}
       <div className="flex items-center justify-between gap-3 pt-0.5">
         <p className="text-ui-11 text-muted-foreground">
           {t("settings.apiKeys.copyNow")}

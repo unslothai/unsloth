@@ -1865,6 +1865,7 @@ export const hi = {
       newTokenCreated: "नया एक्सेस टोकन बनाया गया",
       accessTokenCopied: "एक्सेस टोकन कॉपी किया गया",
       copyAccessToken: "एक्सेस टोकन कॉपी करें",
+      copyTokenFailed: "क्लिपबोर्ड पर कॉपी नहीं हो सका। ऊपर दी गई कुंजी को चुनकर मैन्युअल रूप से कॉपी करें।",
       copyNow: "अभी कॉपी करें। यह दोबारा नहीं दिखाया जाएगा।",
       usageExamples: "उपयोग उदाहरण",
       usageTools: "टूल",

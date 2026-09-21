@@ -1811,6 +1811,7 @@ export const zhCN = {
       newTokenCreated: "新的访问 token 已创建",
       accessTokenCopied: "访问 token 已复制",
       copyAccessToken: "复制访问 token",
+      copyTokenFailed: "无法复制到剪贴板。请手动选择上方的密钥并复制。",
       copyNow: "请立即复制，此 token 不会再次显示。",
       usageExamples: "使用示例",
       usageTools: "工具",

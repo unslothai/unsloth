@@ -1851,6 +1851,7 @@ export const ko = {
       newTokenCreated: "새 액세스 토큰이 생성되었습니다",
       accessTokenCopied: "액세스 토큰이 복사되었습니다",
       copyAccessToken: "액세스 토큰 복사",
+      copyTokenFailed: "클립보드에 복사할 수 없습니다. 위의 키를 선택하여 수동으로 복사하세요.",
       copyNow: "지금 복사하세요. 이 토큰은 다시 표시되지 않습니다.",
       usageExamples: "사용 예시",
       usageTools: "도구",

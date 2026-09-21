@@ -1830,6 +1830,7 @@ export const ja = {
       newTokenCreated: "新規アクセストークンが作成されました",
       accessTokenCopied: "アクセストークンをコピーしました",
       copyAccessToken: "アクセストークンをコピー",
+      copyTokenFailed: "クリップボードにコピーできませんでした。上のキーを選択して手動でコピーしてください。",
       copyNow: "今すぐコピーしてください - これは二度と表示されません。",
       usageExamples: "使用例",
       usageTools: "ツール",

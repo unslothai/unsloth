@@ -1867,6 +1867,7 @@ export const it = {
       newTokenCreated: "Nuovo token di accesso creato",
       accessTokenCopied: "Token di accesso copiato",
       copyAccessToken: "Copia il token di accesso",
+      copyTokenFailed: "Impossibile copiare negli appunti. Seleziona la chiave qui sopra e copiala manualmente.",
       copyNow: "Copialo ora: non verrà mostrato di nuovo.",
       usageExamples: "Esempi d'uso",
       usageNoModel:
