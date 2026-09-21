@@ -100,6 +100,13 @@ EMPTY_SEARCH_RESULTS = (
 # ddgs signals an empty sweep by raising rather than returning [].
 _DDGS_EMPTY_SWEEP = "No results found"
 
+# Tier 2 is only asked when tier 1 found nothing. Naming is the only way ddgs reaches an engine, so
+# an engine in neither tier (yandex, bing, the mullvad_* mirrors) is never contacted.
+_SEARCH_ENGINE_TIERS = (
+    ("wikipedia", "brave", "duckduckgo", "mojeek", "startpage"),
+    ("grokipedia", "google", "yahoo"),
+)
+
 # Import at module level so the preexec_fn closure triggers no imports in the forked child (which can deadlock
 # multi-threaded servers).
 _libc = None
@@ -15185,6 +15192,27 @@ def _search_failure_message(exc: BaseException, timeout: int) -> str:
     return f"Search failed: {exc}"
 
 
+def _resolve_engine_tiers(text_engines) -> list:
+    """``_SEARCH_ENGINE_TIERS`` reduced to the engines this ddgs actually has, in tier order.
+
+    Naming an engine the registry lacks is not an error: ddgs 9.8.0 raises ``KeyError`` on the first
+    unknown name and silently re-runs the request as ``auto``, the Yandex fan-out this exists to
+    prevent, and tier 1 trips it there because 9.8.0 ships no ``startpage``. An empty tier is dropped
+    for the same reason.
+    """
+    engines = text_engines or {}
+    resolved = []
+    for tier in _SEARCH_ENGINE_TIERS:
+        live = [
+            name
+            for name in tier
+            if engines.get(name) is not None and not getattr(engines.get(name), "disabled", False)
+        ]
+        if live:
+            resolved.append(",".join(live))
+    return resolved
+
+
 def _image_search_or_none(subjects: list, timeout, cancel_event, website_policy) -> "str | None":
     """``_image_search`` that reports a failure as None instead of raising. Every caller sits inside
     ``_web_search``'s own ``except``, which would turn a raise into Search failed: ... and throw
@@ -15233,9 +15261,8 @@ def _web_search(
     include_images: bool = False,
     image_queries = None,
 ) -> str:
-    """Search the web and return formatted results. ddgs fans the query out across its search
-    engines, so a single engine refusing is already covered. If ``url`` is provided, fetches that
-    page directly instead of searching. ``include_images`` adds image results registered
+    """Search the web through the approved engine tiers and return formatted results. If ``url`` is provided,
+    fetches that page directly instead of searching. ``include_images`` adds image results registered
     server-side and offered to the model as ``[[img:<id>]]`` tokens, with a frontend-only
     envelope appended: one picture per ``image_queries`` subject when the model named them, else
     a handful for the query. ``image_queries`` alone (no query) is a pure image lookup."""
@@ -15268,8 +15295,13 @@ def _web_search(
         return "Search cancelled."
     try:
         from ddgs import DDGS
+        from ddgs.engines import ENGINES
 
         from .web_access_policy import check_url_access, scope_search_query
+
+        engine_tiers = _resolve_engine_tiers(ENGINES.get("text", {}))
+        if not engine_tiers:
+            return "Search failed: no approved search engine is available."
 
         effective_query = scope_search_query(query, website_policy)
         # The policy filters below, so ask for a deeper pool when one actually restricts: a page whose top hits are
@@ -15279,8 +15311,30 @@ def _web_search(
             (website_policy or {}).get(key) for key in ("allowedDomains", "blockedDomains")
         )
         wanted = max_results * _POLICY_OVERFETCH if restricted else max_results
+        # ddgs applies `timeout` per client, as both the engine HTTP timeout and its fan-out wait, so
+        # a client per tier would restart the budget and a 7s web_search could block ~14s.
+        deadline = time.monotonic() + timeout if timeout else None
         client = DDGS(timeout = timeout)
-        results = client.text(effective_query, max_results = wanted)
+        # ddgs signals an empty sweep by RAISING, so a tier's exception means try the next tier; the
+        # last is re-raised for _search_failure_message to classify as a single-tier failure would be.
+        results, last_error = [], None
+        for backend in engine_tiers:
+            if cancel_event is not None and cancel_event.is_set():
+                return "Search cancelled."
+            if deadline is not None:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                client = DDGS(timeout = remaining)
+            try:
+                results = client.text(effective_query, max_results = wanted, backend = backend)
+            except Exception as exc:  # noqa: BLE001 - re-raised below when no tier produced anything
+                last_error = exc
+                continue
+            if results:
+                break
+        if not results and last_error is not None:
+            raise last_error
         if cancel_event is not None and cancel_event.is_set():
             return "Search cancelled."
         if not results:

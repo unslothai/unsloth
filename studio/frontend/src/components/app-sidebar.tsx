@@ -86,7 +86,6 @@ import {
   Delete02Icon,
   Download01Icon,
   DragDropVerticalIcon,
-  DownloadSquare01Icon,
   Edit03Icon,
   FolderAddIcon,
   FolderAttachmentIcon,
@@ -2398,7 +2397,7 @@ export function AppSidebar() {
       },
     },
     export: {
-      icon: DownloadSquare01Icon,
+      icon: Download01Icon,
       label: t("shell.navigation.export"),
       active: pathname === "/export" || pathname.startsWith("/export/"),
       spinner: exportInProgress,

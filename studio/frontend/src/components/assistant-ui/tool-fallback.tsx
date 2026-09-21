@@ -237,7 +237,7 @@ function ToolFallbackTrigger({
           )}
         >
           {label}:{" "}
-          <span className="font-medium text-foreground/85">{displayName}</span>
+          <span className="font-medium">{displayName}</span>
         </span>
         {isRunning && (
           <span
@@ -249,7 +249,7 @@ function ToolFallbackTrigger({
             )}
           >
             {label}:{" "}
-            <span className="font-medium text-foreground/85">{displayName}</span>
+            <span className="font-medium">{displayName}</span>
           </span>
         )}
       </span>

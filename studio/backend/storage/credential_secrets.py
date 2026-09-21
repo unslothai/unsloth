@@ -200,6 +200,25 @@ def has_secret(credential_kind: str, scope_id: str) -> bool:
     return get_secret(credential_kind, scope_id) is not None
 
 
+def secret_row_exists(credential_kind: str, scope_id: str) -> bool:
+    """Whether a credential is STORED, readable or not. `get_secret` and `has_secret` answer
+    None for an absent row AND an undecryptable one, which callers that AUTHORIZE on the absence
+    of a credential must tell apart."""
+    conn = get_connection()
+    try:
+        row = conn.execute(
+            """
+            SELECT 1
+            FROM credential_secrets
+            WHERE credential_kind = ? AND scope_id = ?
+            """,
+            (credential_kind, scope_id),
+        ).fetchone()
+    finally:
+        conn.close()
+    return row is not None
+
+
 def delete_secret(
     credential_kind: str,
     scope_id: str,
@@ -226,15 +245,41 @@ def get_hf_token() -> Optional[str]:
     return get_secret(HF_TOKEN_KIND, HF_TOKEN_SCOPE)
 
 
+def hf_token_row_exists() -> bool:
+    """Whether an HF token is saved, readable or not. See `secret_row_exists`."""
+    return secret_row_exists(HF_TOKEN_KIND, HF_TOKEN_SCOPE)
+
+
+def _note_a_credential_this_host_held() -> None:
+    """Record the identity of the token being replaced or removed, while it is still here.
+
+    The ledger of credentials this host has EVER held is what stops a tokenless caller
+    inheriting the downloads of one that has since been removed, and it used to be written only
+    where an authorization probe happened to read it. An operator who cleared the token first
+    left nothing behind. A row that exists but cannot be decrypted records the sentinel, since
+    an unreadable credential is still a credential this host held.
+    """
+    try:
+        from hub.utils.hf_tokens import note_host_credential_identity
+        note_host_credential_identity(get_hf_token(), a_credential_was_held = hf_token_row_exists())
+    except Exception:  # noqa: BLE001 -- bookkeeping must never fail a settings write
+        pass
+
+
 def save_hf_token(token: str) -> None:
+    _note_a_credential_this_host_held()
     upsert_secret(HF_TOKEN_KIND, HF_TOKEN_SCOPE, token)
+    _note_a_credential_this_host_held()
 
 
 def save_hf_token_if_absent(token: str) -> bool:
-    return insert_secret_if_absent(HF_TOKEN_KIND, HF_TOKEN_SCOPE, token)
+    inserted = insert_secret_if_absent(HF_TOKEN_KIND, HF_TOKEN_SCOPE, token)
+    _note_a_credential_this_host_held()
+    return inserted
 
 
 def delete_hf_token() -> bool:
+    _note_a_credential_this_host_held()
     return delete_secret(HF_TOKEN_KIND, HF_TOKEN_SCOPE)
 
 
