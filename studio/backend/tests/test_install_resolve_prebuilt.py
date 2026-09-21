@@ -16,6 +16,7 @@ from __future__ import annotations
 import contextlib
 import ctypes
 import dataclasses
+import hashlib
 import importlib
 import json
 import ntpath
@@ -394,11 +395,25 @@ def test_sm103_host_drops_cuda128_windows_build():
     assert [a.name for a in kept_b200] == [cuda128.name, cuda129.name]
 
 
+def _fixture_digest(name: str) -> str:
+    """A stand-in for the per-asset digest GitHub publishes on a real release.
+
+    direct_upstream_release_plan drops an attempt the release states no digest for,
+    so a fixture release without one selects nothing.
+    """
+    return hashlib.sha256(name.encode()).hexdigest()
+
+
 def _upstream_release(tag, asset_names):
     return {
         "tag_name": tag,
         "assets": [
-            {"name": n, "browser_download_url": f"https://example/{n}"} for n in asset_names
+            {
+                "name": n,
+                "browser_download_url": f"https://example/{n}",
+                "digest": f"sha256:{_fixture_digest(n)}",
+            }
+            for n in asset_names
         ],
     }
 

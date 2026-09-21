@@ -1,5 +1,6 @@
 """Host-macOS-version-aware llama.cpp prebuilt selection; Mach-O samples synthesized in-process, all I/O monkeypatched."""
 
+import hashlib
 import importlib.util
 import struct
 import sys
@@ -371,6 +372,15 @@ class TestTheProbeEnvironment:
         assert "DYLD_INSERT_LIBRARIES" not in seen
 
 
+def _fixture_digest(name: str) -> str:
+    """A stand-in for the per-asset digest GitHub publishes on a real release.
+
+    direct_upstream_release_plan drops an attempt the release states no digest for,
+    so a fixture release without one selects nothing.
+    """
+    return hashlib.sha256(name.encode()).hexdigest()
+
+
 def _fake_macos_releases(tags):
     return [
         {
@@ -379,6 +389,7 @@ def _fake_macos_releases(tags):
                 {
                     "name": f"llama-{tag}-bin-macos-arm64.tar.gz",
                     "browser_download_url": f"https://example.com/{tag}.tar.gz",
+                    "digest": f"sha256:{_fixture_digest(tag)}",
                 }
             ],
         }

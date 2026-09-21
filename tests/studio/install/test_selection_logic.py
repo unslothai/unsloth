@@ -1,5 +1,6 @@
 """Binary selection logic in install_llama_prebuilt.py; all I/O monkeypatched."""
 
+import hashlib
 import importlib.util
 import inspect
 import json
@@ -33,6 +34,15 @@ ApprovedReleaseChecksums = INSTALL_LLAMA_PREBUILT.ApprovedReleaseChecksums
 PrebuiltFallback = INSTALL_LLAMA_PREBUILT.PrebuiltFallback
 LinuxCudaSelection = INSTALL_LLAMA_PREBUILT.LinuxCudaSelection
 UPSTREAM_REPO = INSTALL_LLAMA_PREBUILT.UPSTREAM_REPO
+
+
+def _fixture_digest(name: str) -> str:
+    """A stable stand-in for the per-asset digest GitHub publishes on a real release.
+
+    direct_upstream_release_plan now drops an attempt the release states no digest for,
+    so a fixture release without one selects nothing.
+    """
+    return hashlib.sha256(name.encode()).hexdigest()
 
 pick_windows_cuda_runtime = INSTALL_LLAMA_PREBUILT.pick_windows_cuda_runtime
 compatible_windows_runtime_lines = INSTALL_LLAMA_PREBUILT.compatible_windows_runtime_lines
@@ -2472,7 +2482,12 @@ class TestDirectUpstreamWindowsAmdTakesVulkan:
         return {
             "tag_name": self.TAG,
             "assets": [
-                {"name": n, "browser_download_url": f"https://example.com/{n}"} for n in names
+                {
+                    "name": n,
+                    "browser_download_url": f"https://example.com/{n}",
+                    "digest": f"sha256:{_fixture_digest(n)}",
+                }
+                for n in names
             ],
         }
 
@@ -2543,7 +2558,12 @@ class TestDirectUpstreamBlackwellPin:
         return {
             "tag_name": self.TAG,
             "assets": [
-                {"name": n, "browser_download_url": f"https://example.com/{n}"} for n in names
+                {
+                    "name": n,
+                    "browser_download_url": f"https://example.com/{n}",
+                    "digest": f"sha256:{_fixture_digest(n)}",
+                }
+                for n in names
             ],
         }
 
@@ -3465,7 +3485,12 @@ class TestWindowsMaskedNvidiaTakesCuda:
         release = {
             "tag_name": self.TAG,
             "assets": [
-                {"name": n, "browser_download_url": f"https://example.com/{n}"} for n in names
+                {
+                    "name": n,
+                    "browser_download_url": f"https://example.com/{n}",
+                    "digest": f"sha256:{_fixture_digest(n)}",
+                }
+                for n in names
             ],
         }
         plan = direct_upstream_release_plan(release, self._host(), UPSTREAM_REPO, "latest")
@@ -4107,6 +4132,7 @@ class TestResolveSimpleMacosPin:
                     {
                         "name": name,
                         "browser_download_url": f"https://example.com/{name}",
+                        "digest": f"sha256:{_fixture_digest(name)}",
                     }
                 ],
             }
@@ -4269,10 +4295,12 @@ class TestCpuFallback:
                 {
                     "name": f"llama-{tag}-bin-ubuntu-arm64.tar.gz",
                     "browser_download_url": f"https://x/llama-{tag}-bin-ubuntu-arm64.tar.gz",
+                    "digest": f"sha256:{_fixture_digest('arm64')}",
                 },
                 {
                     "name": f"llama-{tag}-bin-ubuntu-x64.tar.gz",
                     "browser_download_url": f"https://x/llama-{tag}-bin-ubuntu-x64.tar.gz",
+                    "digest": f"sha256:{_fixture_digest('x64')}",
                 },
             ],
         }
@@ -4849,3 +4877,59 @@ class TestExactSourceAssetUrl:
             checksums, source_repo, source_archive, exact_source, self.INSTALL_TAG
         )
         assert url == self._expected("unslothai/llama.cpp", self.INSTALL_TAG)
+
+
+# ===========================================================================
+class TestDirectUpstreamRequiresAssetDigests:
+    """The upstream planner must bind every attempt to a digest.
+
+    The fork path refuses an attempt no approved checksum covers. The upstream path used
+    to build every AssetChoice with expected_sha256 left at None and pair it with an
+    empty approved-checksums map, and download_file_verified treats a falsy digest as a
+    pass. The archive is then extracted, chmod 0o755'd and executed, so a release the
+    installer reroutes to by itself (Linux ARM64 Vulkan, and any --published-repo) got a
+    weaker integrity policy than the default one.
+    """
+
+    TAG = "b9365"
+
+    def _host(self, **overrides):
+        defaults = dict(
+            system = "Windows",
+            machine = "AMD64",
+            has_physical_nvidia = False,
+            has_usable_nvidia = False,
+            nvidia_smi = None,
+            driver_cuda_version = None,
+            compute_caps = [],
+        )
+        defaults.update(overrides)
+        return make_host(**defaults)
+
+    def _release(self, *, with_digests):
+        name = f"llama-{self.TAG}-bin-win-cpu-x64.zip"
+        asset = {"name": name, "browser_download_url": f"https://example.com/{name}"}
+        if with_digests:
+            asset["digest"] = f"sha256:{_fixture_digest(name)}"
+        return {"tag_name": self.TAG, "assets": [asset]}
+
+    def test_every_attempt_carries_the_published_digest(self):
+        plan = direct_upstream_release_plan(
+            self._release(with_digests = True), self._host(), UPSTREAM_REPO, "latest"
+        )
+        assert plan.attempts
+        for attempt in plan.attempts:
+            assert attempt.expected_sha256, f"{attempt.name} would be installed unverified"
+
+    def test_a_release_with_no_published_digest_is_refused(self):
+        """Fail closed, exactly as the fork path does when no checksum covers an asset."""
+        with pytest.raises(PrebuiltFallback):
+            direct_upstream_release_plan(
+                self._release(with_digests = False), self._host(), UPSTREAM_REPO, "latest"
+            )
+
+    def test_an_asset_whose_digest_names_another_algorithm_is_not_accepted(self):
+        release = self._release(with_digests = False)
+        release["assets"][0]["digest"] = "md5:" + "0" * 32
+        with pytest.raises(PrebuiltFallback):
+            direct_upstream_release_plan(release, self._host(), UPSTREAM_REPO, "latest")

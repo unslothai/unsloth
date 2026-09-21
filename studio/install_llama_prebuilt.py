@@ -1332,11 +1332,24 @@ def direct_upstream_release_plan(
             )
     if not attempts:
         raise PrebuiltFallback("no compatible upstream prebuilt asset was found")
+    # These archives are extracted, chmod 0o755'd and executed, so bind each one to a
+    # digest here rather than letting it through unverified. The fork path already
+    # refuses an attempt no checksum covers; this path used to leave expected_sha256 at
+    # None, which download_file_verified treats as a pass. GitHub states a per-asset
+    # digest on the release we were already handed, so this costs no extra request, and
+    # _apply_release_digests applies the same two rules the fork path uses: an attempt
+    # with no digest is dropped, and an unverifiable paired runtime archive unpairs.
+    verified = _apply_release_digests(attempts, release_asset_digests(release))
+    if not verified:
+        raise PrebuiltFallback(
+            f"{repo}@{release_tag} publishes no asset digest for any compatible prebuilt; "
+            "refusing to install one unverified"
+        )
     return InstallReleasePlan(
         requested_tag = requested_tag,
         llama_tag = release_tag,
         release_tag = release_tag,
-        attempts = attempts,
+        attempts = verified,
         approved_checksums = synthetic_checksums_for_release(
             repo,
             release_tag,
