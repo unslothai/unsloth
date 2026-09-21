@@ -655,6 +655,66 @@ else
     bad "a failed discard did not name the path left on disk"
 fi
 
+echo "=== a disk that fills before studio setup is still diagnosed (#11313) ==="
+# The venv and the torch install are the biggest writes and both exit long before the studio-setup
+# branch, so the diagnosis has to hang off the exit trap every failure passes through.
+DISK_DIR="$WORK/diskfull"
+mkdir -p "$DISK_DIR"
+DISK_OUT=$(
+    {
+        printf '%s\n' 'set -e'
+        printf '%s\n' 'substep() { :; }'
+        printf '%s\n' 'step() { :; }'
+        printf '%s\n' 'C_WARN=""'
+        printf '%s\n' 'TAURI_MODE=true'
+        printf '%s\n' '_restore_studio_venv_replacement() { :; }'
+        printf '%s\n' '_restore_uv_cache_marker() { :; }'
+        printf '%s\n' '_cleanup_install_temporaries() { :; }'
+        printf "STUDIO_HOME='%s'\n" "$DISK_DIR"
+        printf '%s\n' "$ROLLBACK_BLOCK"
+        # Stubbed after the extraction, so it shadows the real one: filling a disk is not
+        # something this suite can do, and df's own number is whatever the runner happens to have.
+        printf '%s\n' '_free_space_kb() { echo 1024; }'
+        # install.sh defines tauri_log hundreds of lines above this block; the slice starts below it.
+        printf '%s\n' 'tauri_log() { echo "[TAURI:$1] $2"; }'
+        # Any failure at all, standing in for the venv or torch install exiting early.
+        printf '%s\n' 'exit 3'
+    } | dash 2>&1
+) || true
+if printf '%s\n' "$DISK_OUT" | grep -q "the disk is full"; then
+    ok "an early failure names the full disk instead of a bare exit code"
+else
+    bad "an early failure still reports only its exit code: $DISK_OUT"
+fi
+if printf '%s\n' "$DISK_OUT" | grep -q "ERROR_DEFAULT"; then
+    ok "and the diagnosis reaches the Tauri marker the desktop UI reads"
+else
+    bad "the diagnosis never reached the Tauri marker"
+fi
+# A healthy disk must stay silent: the trap runs on every non-zero exit there is.
+DISK_OK_OUT=$(
+    {
+        printf '%s\n' 'set -e'
+        printf '%s\n' 'substep() { :; }'
+        printf '%s\n' 'step() { :; }'
+        printf '%s\n' 'C_WARN=""'
+        printf '%s\n' 'TAURI_MODE=true'
+        printf '%s\n' '_restore_studio_venv_replacement() { :; }'
+        printf '%s\n' '_restore_uv_cache_marker() { :; }'
+        printf '%s\n' '_cleanup_install_temporaries() { :; }'
+        printf "STUDIO_HOME='%s'\n" "$DISK_DIR"
+        printf '%s\n' "$ROLLBACK_BLOCK"
+        printf '%s\n' '_free_space_kb() { echo 104857600; }'
+        printf '%s\n' 'tauri_log() { echo "[TAURI:$1] $2"; }'
+        printf '%s\n' 'exit 3'
+    } | dash 2>&1
+) || true
+if printf '%s\n' "$DISK_OK_OUT" | grep -q "the disk is full"; then
+    bad "a failure with plenty of room blamed the disk: $DISK_OK_OUT"
+else
+    ok "a failure with room to spare does not blame the disk"
+fi
+
 echo ""
 echo "  PASS: $PASS"
 echo "  FAIL: $FAIL"

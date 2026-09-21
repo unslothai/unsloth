@@ -1555,26 +1555,58 @@ class TestDiskFullDiagnosisReachesTauri:
     def test_shell_folds_the_diagnosis_into_the_marker(self):
         text = INSTALL_SH.read_text(encoding = "utf-8")
         assert (
-            'tauri_log "ERROR_DEFAULT" "studio setup failed (exit code $_SETUP_EXIT)$_fail_suffix"'
+            'tauri_log "ERROR_DEFAULT" "studio setup failed (exit code $_SETUP_EXIT)$_DISK_FULL_SUFFIX"'
             in text
         ), "install.sh keeps the disk-full diagnosis out of the Tauri message"
 
     def test_windows_folds_the_diagnosis_into_the_failure_message(self):
+        """Appended inside Exit-InstallFailure, so every caller carries it rather than the one
+        site that remembered to build a suffix."""
         text = INSTALL_PS1.read_text(encoding = "utf-8")
-        assert (
-            'Exit-InstallFailure "unsloth studio setup failed (exit code $setupExit)$_failSuffix"'
-            in text
-        ), "install.ps1 keeps the disk-full diagnosis out of the Tauri message"
+        body = text.split("function Exit-InstallFailure", 1)[1].split("\n    }", 1)[0]
+        append = body.index('$Message = "$Message$_diskSuffix"')
+        marker = body.index('Write-TauriLog "ERROR_DEFAULT" $Message')
+        assert append < marker, "the diagnosis is appended after the Tauri marker is written"
 
     def test_windows_measures_in_both_modes(self):
         # The probe must sit OUTSIDE the non-Tauri console branch, or --tauri never measures.
         text = INSTALL_PS1.read_text(encoding = "utf-8")
-        block = text.split("if ($setupExit -ne 0) {", 1)[1].split("Clear-TauriInstallError", 1)[0]
-        probe = block.index("$_failFree = Get-StudioFreeSpaceBytes")
-        guard = block.index("if (-not $TauriMode) {")
+        body = text.split("function Exit-InstallFailure", 1)[1].split("\n    }", 1)[0]
+        probe = body.index("Get-StudioFreeSpaceBytes")
+        guard = body.index("if (-not $TauriMode) {")
         assert (
             probe < guard
         ), "the free-space probe runs only in the non-Tauri branch, so --tauri never measures"
+
+
+class TestDiskFullDiagnosisCoversTheBiggestWrites:
+    """The venv and the torch install are the largest writes an install makes, and both fail long
+    before studio setup is reached. A diagnosis attached only to the studio-setup branch therefore
+    misses the most likely moment for the disk to fill, and those exits report a bare exit code.
+    Both installers attach it to the one funnel every failure passes through instead."""
+
+    def test_windows_attaches_it_to_the_shared_exit(self):
+        text = INSTALL_PS1.read_text(encoding = "utf-8")
+        body = text.split("function Exit-InstallFailure", 1)[1].split("\n    }", 1)[0]
+        assert "Get-StudioFreeSpaceBytes" in body, "only the studio-setup branch is diagnosed"
+        # Probed rather than called outright: the early exits happen before it is defined.
+        assert (
+            "Get-Command Get-StudioFreeSpaceBytes" in body
+        ), "an exit before the helper is defined would report command-not-found instead"
+
+    def test_the_shell_attaches_it_to_the_exit_trap(self):
+        text = INSTALL_SH.read_text(encoding = "utf-8")
+        body = text.split("_on_install_exit() {", 1)[1].split("\n}", 1)[0]
+        assert "_set_disk_full_suffix" in body, "earlier failures exit without a diagnosis"
+        assert (
+            "command -v _set_disk_full_suffix" in body
+        ), "argument parsing exits before the helper exists"
+
+    def test_the_shell_does_not_report_it_twice(self):
+        """The studio-setup branch reports with its own wording, and the trap runs afterwards."""
+        text = INSTALL_SH.read_text(encoding = "utf-8")
+        assert "_DISK_FULL_REPORTED=true" in text
+        assert '"${_DISK_FULL_REPORTED:-false}" != true' in text
 
 
 class TestDiskFullRemedyIsNotTheFlagAlreadyGiven:

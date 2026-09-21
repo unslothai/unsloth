@@ -1579,6 +1579,37 @@ function Install-UnslothStudio {
             [int]$Code = 1
         )
         if ($Code -eq 0) { $Code = 1 }
+        # Here rather than at any one failure site: the largest writes are the venv and the torch
+        # install, and both exit through this function long before studio setup is reached, so a
+        # disk that filled during them used to surface as a bare exit code (#11313). Below 64 MB
+        # nothing useful unpacks, which makes it the cause rather than a coincidence. Folded into
+        # $Message as well as printed, because under --tauri nothing reaches the UI except the
+        # single line handed to Write-TauriLog.
+        $_diskSuffix = ""
+        try {
+            # Probed, not called outright: the early exits above happen before this file has
+            # defined the helper, and a command-not-found here would replace the real failure
+            # with a confusing one.
+            if ($StudioHome -and (Get-Command Get-StudioFreeSpaceBytes -CommandType Function -ErrorAction SilentlyContinue)) {
+                $_diskFree = Get-StudioFreeSpaceBytes -Path $StudioHome
+                if ($null -ne $_diskFree -and $_diskFree -lt 64MB) {
+                    $_diskMb = [math]::Round($_diskFree / 1MB)
+                    # Naming the opt-out to someone who already used it describes a re-run that
+                    # fails the same way: that copy was discarded before the install began.
+                    $_diskRemedy = if ($script:StudioNoRollback) {
+                        "Free some space and re-run. The previous environment was already discarded by --no-rollback, so the installer has nothing further of its own to reclaim."
+                    } else {
+                        "Free some space and re-run. --no-rollback (UNSLOTH_INSTALL_NO_ROLLBACK=1) drops the previous environment instead of keeping a copy of it during the install."
+                    }
+                    $_diskSuffix = ": $StudioHome has only $_diskMb MB free, so the disk is full, which is very likely the cause. $_diskRemedy"
+                    if (-not $TauriMode) {
+                        Write-StudioLine "        $StudioHome has only $_diskMb MB free -- the disk is full, which is very likely the cause." -ForegroundColor Red
+                        Write-StudioLine "        $_diskRemedy" -ForegroundColor Red
+                    }
+                }
+            }
+        } catch { $_diskSuffix = "" }
+        $Message = "$Message$_diskSuffix"
         Write-TauriLog "ERROR_DEFAULT" $Message
         # Under `irm | iex` the session survives a failure; a leaked handoff would re-pin it.
         Remove-Item Env:UNSLOTH_KEPT_TORCH -ErrorAction SilentlyContinue
@@ -10711,33 +10742,10 @@ sys.exit(2 if conflict else (0 if installed else 1))
     }
     Remove-Item Env:UNSLOTH_KEPT_TORCH -ErrorAction SilentlyContinue
     if ($setupExit -ne 0) {
-        # A full disk surfaces here as nothing but an exit code (#11313), so ask the volume and
-        # name it; below 64 MB nothing useful unpacks, making it the cause rather than a
-        # coincidence. Measured under --tauri too, where nothing reaches the UI except the single
-        # line Exit-InstallFailure hands to Write-TauriLog, so the diagnosis rides on that.
-        $_failFree = Get-StudioFreeSpaceBytes -Path $StudioHome
-        $_failSuffix = ""
-        $_failRemedy = ""
-        if ($null -ne $_failFree -and $_failFree -lt 64MB) {
-            $_failMb = [math]::Round($_failFree / 1MB)
-            # Naming the opt-out to someone who already used it describes a re-run that fails
-            # the same way: that copy was discarded before the install began, so there is
-            # nothing left here for the installer to give back. install.sh gates its twin too.
-            $_failRemedy = if ($script:StudioNoRollback) {
-                "Free some space and re-run. The previous environment was already discarded by --no-rollback, so the installer has nothing further of its own to reclaim."
-            } else {
-                "Free some space and re-run. --no-rollback (UNSLOTH_INSTALL_NO_ROLLBACK=1) drops the previous environment instead of keeping a copy of it during the install."
-            }
-            $_failSuffix = ": $StudioHome has only $_failMb MB free, so the disk is full, which is very likely the cause. $_failRemedy"
-        }
         if (-not $TauriMode) {
             Write-StudioLine "[ERROR] unsloth studio setup failed (exit code $setupExit)" -ForegroundColor Red
-            if ($_failSuffix) {
-                Write-StudioLine "        $StudioHome has only $_failMb MB free -- the disk is full, which is very likely the cause." -ForegroundColor Red
-                Write-StudioLine "        $_failRemedy" -ForegroundColor Red
-            }
         }
-        return (Exit-InstallFailure "unsloth studio setup failed (exit code $setupExit)$_failSuffix" $setupExit)
+        return (Exit-InstallFailure "unsloth studio setup failed (exit code $setupExit)" $setupExit)
     }
     Clear-TauriInstallError "studio setup completed"
 

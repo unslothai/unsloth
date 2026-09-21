@@ -1109,6 +1109,25 @@ _free_space_kb() {  # path
     df -Pk "$1" 2>/dev/null | awk 'NR == 2 { print $4 }'
 }
 
+# Sets _DISK_FULL_SUFFIX to a one-line diagnosis, or empty. Below 64 MiB nothing useful can be unpacked, so a full disk is the cause rather than a coincidence (#11313). Callers fold the suffix into the ERROR_DEFAULT message as well as printing it, because under --tauri the desktop app reads that message and a diagnosis printed only beside it is one the UI never shows.
+_set_disk_full_suffix() {
+    _DISK_FULL_SUFFIX=""
+    _DISK_FULL_REMEDY=""
+    _DISK_FULL_MB=""
+    [ -n "${STUDIO_HOME:-}" ] || return 0
+    _dfs_free=$(_free_space_kb "$STUDIO_HOME")
+    [ -n "$_dfs_free" ] || return 0
+    [ "$_dfs_free" -lt 65536 ] 2>/dev/null || return 0
+    _DISK_FULL_MB=$((_dfs_free / 1024))
+    # Naming the opt-out to someone who already used it describes a re-run that fails the same way: that copy was discarded before the install began, so there is nothing left here for the installer to give back.
+    if [ "${_NO_ROLLBACK:-false}" = true ]; then
+        _DISK_FULL_REMEDY="Free some space and re-run. The previous environment was already discarded by --no-rollback, so the installer has nothing further of its own to reclaim."
+    else
+        _DISK_FULL_REMEDY="Free some space and re-run. --no-rollback (UNSLOTH_INSTALL_NO_ROLLBACK=1) drops the previous environment instead of keeping a copy of it during the install."
+    fi
+    _DISK_FULL_SUFFIX=": $STUDIO_HOME has only $_DISK_FULL_MB MB free, so the disk is full, which is very likely the cause. $_DISK_FULL_REMEDY"
+}
+
 # uv creates only into a path that is absent or an empty directory. Everything else is occupied, hidden entries and non-resolving symlinks included.
 _dir_has_entries() {  # dir
     if [ ! -d "$1" ]; then
@@ -1248,6 +1267,15 @@ _cleanup_install_temporaries() {
 _on_install_exit() {
     _status=$?
     if [ "$_status" -ne 0 ]; then
+        # Every earlier failure lands here, and the largest writes -- the venv and the torch install -- are all earlier, so a disk that filled during them used to surface as a bare exit code (#11313). Guarded on the helper being defined, since the argument parsing above exits before it is.
+        if [ "${_DISK_FULL_REPORTED:-false}" != true ] && command -v _set_disk_full_suffix >/dev/null 2>&1; then
+            _set_disk_full_suffix
+            if [ -n "$_DISK_FULL_SUFFIX" ]; then
+                tauri_log "ERROR_DEFAULT" "unsloth studio install failed (exit code $_status)$_DISK_FULL_SUFFIX"
+                echo "       $STUDIO_HOME has only $_DISK_FULL_MB MB free -- the disk is full, which is very likely the cause." >&2
+                echo "       $_DISK_FULL_REMEDY" >&2
+            fi
+        fi
         _restore_studio_venv_replacement
         # Separate from the venv restore: an install can fail before one is in flight.
         _restore_uv_cache_marker
@@ -7392,26 +7420,18 @@ if [ "$_SETUP_EXIT" -ne 0 ]; then
     echo ""
     # A full disk surfaces here as nothing but an exit code, with the one "No space left on device" line buried in setup's output (#11313). Ask the filesystem directly and name it. Below 64 MiB nothing useful can be unpacked, so it is the cause rather than a coincidence.
     # Folded into the ERROR_DEFAULT message as well, not only stderr: under --tauri the desktop app reads that message, so a diagnosis printed beside it is one the UI never shows. One line, because a marker is one line.
-    _fail_free_kb=$(_free_space_kb "$STUDIO_HOME")
-    _fail_suffix=""
-    if [ -n "$_fail_free_kb" ] && [ "$_fail_free_kb" -lt 65536 ] 2>/dev/null; then
-        # Naming the opt-out to someone who already used it describes a re-run that fails the same way: that copy was discarded before the install began, so there is nothing left here for the installer to give back.
-        if [ "${_NO_ROLLBACK:-false}" = true ]; then
-            _fail_remedy="Free some space and re-run. The previous environment was already discarded by --no-rollback, so the installer has nothing further of its own to reclaim."
-        else
-            _fail_remedy="Free some space and re-run. --no-rollback (UNSLOTH_INSTALL_NO_ROLLBACK=1) drops the previous environment instead of keeping a copy of it during the install."
-        fi
-        _fail_suffix=": $STUDIO_HOME has only $((_fail_free_kb / 1024)) MB free, so the disk is full, which is very likely the cause. $_fail_remedy"
-    fi
+    _set_disk_full_suffix
     if [ "$TAURI_MODE" = true ]; then
-        tauri_log "ERROR_DEFAULT" "studio setup failed (exit code $_SETUP_EXIT)$_fail_suffix"
+        tauri_log "ERROR_DEFAULT" "studio setup failed (exit code $_SETUP_EXIT)$_DISK_FULL_SUFFIX"
     else
         step "error" "studio setup failed (exit code $_SETUP_EXIT)" "$C_ERR"
     fi
-    if [ -n "$_fail_suffix" ]; then
-        echo "       $STUDIO_HOME has only $((_fail_free_kb / 1024)) MB free -- the disk is full, which is very likely the cause." >&2
-        echo "       $_fail_remedy" >&2
+    if [ -n "$_DISK_FULL_SUFFIX" ]; then
+        echo "       $STUDIO_HOME has only $_DISK_FULL_MB MB free -- the disk is full, which is very likely the cause." >&2
+        echo "       $_DISK_FULL_REMEDY" >&2
     fi
+    # Reported here, so the exit trap does not say it twice.
+    _DISK_FULL_REPORTED=true
     echo ""
     exit "$_SETUP_EXIT"
 fi
