@@ -538,8 +538,10 @@ export interface DownloadProgressResponse {
 export async function getDownloadProgress(
   repoId: string,
   hfToken?: string | null,
+  mlxLoad = false,
 ): Promise<DownloadProgressResponse> {
   const params = new URLSearchParams({ repo_id: repoId });
+  if (mlxLoad) params.set("mlx_load", "true");
   const response = await authFetch(`/api/models/download-progress?${params}`, {
     headers: hubTokenHeader(hfToken),
   });

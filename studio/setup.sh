@@ -3501,6 +3501,48 @@ _setup_supported_gfx_from_name() {
     printf '%s\n' "$_sup_gfx_out"
 }
 
+# Mirror of install.sh's table, held to it by tests/studio/install/test_rocm_arch_table_parity.py,
+# which looks both helpers up by install.sh's names: keep the _amd_* prefix, not this file's _setup_*.
+_amd_gfx_is_shadowing_integrated() {
+    case "$1" in
+        gfx90c|gfx1013|gfx1033|gfx1035|gfx1036|gfx1103|gfx1153) return 0 ;;
+    esac
+    return 1
+}
+
+# Pick the card to install for when enumeration put an integrated GPU first (#7776). gfx906 is
+# never a candidate: naming it on a mixed host strands BOTH cards. install.sh also requires a
+# torch wheel route; deliberately omitted, since this arch selects a llama.cpp bundle resolved
+# per gfx installer-side, not a repo.amd.com wheel family. Do not "restore" that filter.
+_amd_prefer_discrete_gfx() {
+    _apdg_devs="$1"
+    _apdg_sel="$2"
+    if [ -z "$_apdg_sel" ] || ! _amd_gfx_is_shadowing_integrated "$_apdg_sel"; then
+        printf '%s' "$_apdg_sel"
+        return 0
+    fi
+    # A mask the user SET is their own device choice: `+x`, not `-n`, so empty still counts.
+    if [ -n "${HIP_VISIBLE_DEVICES+x}" ] || [ -n "${ROCR_VISIBLE_DEVICES+x}" ] || \
+       [ -n "${CUDA_VISIBLE_DEVICES+x}" ]; then
+        printf '%s' "$_apdg_sel"
+        return 0
+    fi
+    # Here-doc, not a pipe: a piped `while` is a subshell, and an early break SIGPIPEs under pipefail.
+    _apdg_pick=""
+    while IFS= read -r _apdg_g; do
+        if [ -n "$_apdg_g" ] && [ "$_apdg_g" != gfx906 ] && \
+           ! _amd_gfx_is_shadowing_integrated "$_apdg_g"; then
+            _apdg_pick="$_apdg_g"
+            break
+        fi
+    done <<EOF
+$_apdg_devs
+EOF
+    # All-integrated host, or no list: keep the pick. Never returns empty for a nonempty selection.
+    [ -n "$_apdg_pick" ] || _apdg_pick="$_apdg_sel"
+    printf '%s' "$_apdg_pick"
+}
+
 # NVIDIA priority: classify NVIDIA first and skip the AMD probes entirely on
 # a usable-NVIDIA host (mirrors _has_rocm_gpu in install_python_stack.py).
 # This also keeps a wedged rocminfo/amd-smi from hanging setup before the
@@ -3591,6 +3633,27 @@ elif [ "$_setup_amd_detected" = true ]; then
     if [ -z "$_setup_gfx" ]; then
         _setup_gfx=$(printf '%s\n' "$_setup_gfx_all" | awk -v idx="$_setup_vis_idx" \
             'NF && !seen[$0]++ { a[n++]=$0 } END { if(idx>=n) idx=0; if(n>0) print a[idx+0] }')
+    fi
+    # The arch resolved above is what --rocm-gfx forwards below, so an iGPU enumerated first
+    # takes the ROCm bundle while torch targets the dGPU (#7776; #11143 saw gfx1036 ahead of a
+    # gfx1200). Runs before, and is skipped under, the UNSLOTH_ROCM_GFX_ARCH override, so a
+    # declared arch wins with no repick line printed above the line that overrules it.
+    # Candidates: the records, else $_setup_gfx_all, the only inventory left on the amd-smi path.
+    _setup_gfx_pref=""
+    if [ -z "${UNSLOTH_ROCM_GFX_ARCH:-}" ]; then
+        _setup_gfx_cands="$_setup_gfx_all"
+        if [ -n "$_setup_amd_records" ]; then
+            _setup_gfx_cands=$(printf '%s\n' "$_setup_amd_records" | awk -F'|' '$1 != "" { print $1 }')
+        fi
+        _setup_gfx_pref=$(_amd_prefer_discrete_gfx "$_setup_gfx_cands" "$_setup_gfx")
+    fi
+    if [ -n "$_setup_gfx_pref" ] && [ "$_setup_gfx_pref" != "$_setup_gfx" ]; then
+        substep "Integrated $_setup_gfx enumerated first; installing for discrete $_setup_gfx_pref"
+        substep "Set UNSLOTH_ROCM_GFX_ARCH=$_setup_gfx to target the integrated GPU instead."
+        _setup_gfx="$_setup_gfx_pref"
+        # Re-pair the banner name; empty beats pairing the new arch with the APU's name.
+        _setup_mkt=$(printf '%s\n' "$_setup_amd_records" | awk -F'|' -v gfx="$_setup_gfx" \
+            '$1 == gfx { print $2; exit }')
     fi
     # UNSLOTH_ROCM_GFX_ARCH env override (mirrors setup.ps1)
     if [ -n "${UNSLOTH_ROCM_GFX_ARCH:-}" ]; then
