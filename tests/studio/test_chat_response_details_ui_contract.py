@@ -35,7 +35,13 @@ def _class_list(source: str, marker: str) -> str | None:
     start = source.find(marker)
     if start == -1:
         return None
-    opening = source[start : source.find(">", start) + 1]
+    # Back up to the `<` that opens the element before reading forward. Scanning only the
+    # suffix after the marker misses `className` written BEFORE it, which is the same
+    # attribute-order assumption one level down.
+    opens = source.rfind("<", 0, start + len(marker))
+    if opens == -1:
+        return None
+    opening = source[opens : source.find(">", start) + 1]
     found = re.search(r'className="([^"]*)"', opening)
     return found.group(1) if found else None
 
@@ -148,17 +154,20 @@ def test_response_model_badge_is_user_configurable_and_rendered_once_per_message
     # trigger unable to shrink at every width it was not qualified for.
     base = re.search(r'"(aui-reasoning-trigger[^"]*)"', reasoning_src)
     call_site = _class_list(reasoning_src, "<ReasoningTrigger")
-    assert base or call_site is not None, (
+    # In `cn(base, className)` order, and the LAST min-w-* wins: cn runs tailwind-merge, so a
+    # call site passing min-w-full or min-w-max drops the base min-w-0 and the trigger stops
+    # shrinking. A union of the two would still hold the base token and call that fine.
+    ordered = (base.group(1).split() if base else []) + (call_site.split() if call_site else [])
+    assert ordered, (
         "neither ReasoningTrigger's base classes nor its call site carries a class list this "
         "can read, so this guard cannot see the trigger's layout at all"
     )
-    effective = set(call_site.split() if call_site else ())
-    if base:
-        effective.update(base.group(1).split())
-    assert "min-w-0" in effective, (
+    widths = [token for token in ordered if token.startswith("min-w-")]
+    assert widths and widths[-1] == "min-w-0", (
         f"the reasoning trigger can no longer shrink below its content at every width, so a "
-        f"long summary widens the row past the thread. Base classes: "
-        f"{base.group(1) if base else None!r}. Call site: {call_site!r}"
+        f"long summary widens the row past the thread. min-w utilities in cn order: "
+        f"{widths}. Base classes: {base.group(1) if base else None!r}. Call site: "
+        f"{call_site!r}"
     )
     header = _class_list(reasoning_src, 'data-slot="reasoning-header"')
     assert header is not None, "the reasoning header row no longer carries a className"
