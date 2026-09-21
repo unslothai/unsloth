@@ -903,27 +903,57 @@ def test_chat_sidebar_row_actions_visible_on_coarse_pointers():
     # Per VARIANT, not once for the block. The two rows carry their own paddings, so a single
     # search over the whole function is satisfied by the project row on its own and would stay
     # green while recents lost theirs, which is the half of #7276 that was actually reported.
+    # Per VARIANT, not once for the block. The two rows carry their own paddings, so a single
+    # search over the whole function is satisfied by the project row on its own and would stay
+    # green while recents lost theirs, which is the half of #7276 that was actually reported.
+    #
+    # An earlier version of this worked out which padding WINS: last in cn order, across
+    # arguments, with conditional arguments applying only to their own branch and an
+    # important utility beating an ordinary one written after it. Every rule it gained was
+    # right and the next one was still missing, because that question is tailwind-merge plus
+    # the cascade and a test file should not hold a second copy of either.
+    #
+    # So it does not decide. Each variant's row states one hover gutter and one coarse
+    # padding, both written plainly, and the coarse one must be at least the hover one.
+    # Anything else, a second coarse padding anywhere in the row's own cn(), a variant
+    # qualifier, an importance marker, is refused as something this guard will not
+    # adjudicate. That is stricter than the framework and it is stricter LOUDLY, which is
+    # the half that matters: it cannot quietly approve a gutter nobody checked.
     for variant in ("project-chat-item", "recent-item"):
-        hovered = re.findall(rf'"[^"]*group-hover/{variant}:!?pr-\d+!?[^"]*"', block)
+        hovered = re.findall(rf'"[^"]*group-hover/{variant}:pr-\d+[^"]*"', block)
         assert hovered, (
             f"no {variant} row left that widens its padding to make room for the action, so "
             f"this guard can no longer tell whether the touch case is covered"
         )
-        # EVERY such class list, not any of them. Each one is an element that makes room for
-        # the action on hover, so each one owes the same room on touch. Asking for one match
-        # anywhere let a second padded element vouch for the row that had lost its gutter.
-        #
-        # The effective coarse padding is not necessarily written in the same string. These
-        # rows are built by one cn() over many arguments, and tailwind-merge keeps the LAST
-        # of a conflicting pair wherever it was written, so an argument further down carrying
-        # only `[@media(pointer:coarse)]:pr-0` overrides the gutter in the string above it.
-        # Which later arguments apply to THIS variant is the question, and the two variants
-        # here sit on opposite branches of a ternary: a string naming the other variant is on
-        # the branch that did not render, and a string naming neither is unconditional.
-        others = [name for name in ("project-chat-item", "recent-item") if name != variant]
-        # Only the arguments of the cn() that builds THIS row. Ranging over every quoted
-        # literal in the function let an unrelated element further down supply the gutter for
-        # a row that had lost its own, which is the same borrowed-vouching hole one level out.
+        for cls in hovered:
+            gutters = re.findall(rf"group-hover/{variant}:(!?pr-\d+!?)", cls)
+            coarse = re.findall(r"\[@media\(pointer:coarse\)\]:(!?pr-\d+!?)", cls)
+            assert len(set(gutters)) == 1 and not gutters[0].strip("!") != gutters[0], (
+                f"the {variant} row states more than one hover gutter, or states it with an "
+                f"importance marker: {gutters} in {cls!r}. This guard compares one gutter "
+                f"against one touch padding and will not work out which of several wins"
+            )
+            assert coarse, (
+                f"a {variant} element reserves room for its action on hover but not on a "
+                f"coarse pointer, so the kebab overlaps the title on a touch device "
+                f"(#7276): {cls!r}"
+            )
+            assert len(set(coarse)) == 1 and coarse[0].strip("!") == coarse[0], (
+                f"the {variant} row states more than one coarse-pointer padding, or states "
+                f"it with an importance marker: {coarse} in {cls!r}. Which one renders is "
+                f"tailwind-merge's answer and then the cascade's, and this guard refuses "
+                f"rather than guess: reduce it to one plain utility"
+            )
+            gutter = int(gutters[0].removeprefix("pr-"))
+            touch = int(coarse[0].removeprefix("pr-"))
+            assert touch >= gutter, (
+                f"the {variant} row reserves less room on a coarse pointer than it does on "
+                f"hover: {(gutter, touch)} as (hover, coarse). The action is always visible "
+                f"on touch, so it needs at least the gutter the hover case already says it "
+                f"needs, or it sits over the title (#7276)"
+            )
+        # Nothing else in the row's own cn() may add a coarse padding, because then which one
+        # renders is a precedence question again.
         anchor = block.index(hovered[-1])
         opens = block.rfind("cn(", 0, anchor)
         assert opens != -1, (
@@ -940,51 +970,21 @@ def test_chat_sidebar_row_actions_visible_on_coarse_pointers():
                     closes = index
                     break
         assert closes is not None, f"unbalanced cn() around the {variant} row classes"
-        # Conditional arguments do not count for anything but themselves. The row's own class
-        # string sits inside a ternary branch, so refusing conditionals outright would refuse
-        # the real thing; but a DIFFERENT conditional argument, `showWorkSpinner && "..."`,
-        # applies only when its condition holds and is absent precisely in the branch that
-        # carries the hover gutter. Only a bare string literal argument is unconditional, and
-        # only those may vouch for a row other than the one they are written in.
-        arguments = _cn_arguments(block[opens + len("cn(") : closes])
-        applicable = []
-        for argument in arguments:
-            literal = re.fullmatch(r'\s*("[^"]*")\s*', argument)
-            if literal is None:
-                # Conditional or computed: usable only as the row's own class string.
-                for quoted in re.findall(r'"[^"]*"', argument):
-                    if quoted == hovered[-1]:
-                        applicable.append(quoted)
-                continue
-            cls = literal.group(1)
-            if variant in cls or not any(other in cls for other in others):
-                applicable.append(cls)
-        applicable.extend(cls for cls in hovered if cls not in applicable)
-        trailing = [
-            int(value)
-            for cls in applicable
-            for value in re.findall(r"\[@media\(pointer:coarse\)\]:!?pr-(\d+)!?", cls)
+        # The other variant's own string is the opposite branch of the same ternary and
+        # carries its own pair; it is checked on its own pass, not borrowed into this one.
+        variants = ("project-chat-item", "recent-item")
+        elsewhere = [
+            cls
+            for cls in re.findall(r'"[^"]*"', block[opens:closes])
+            if "[@media(pointer:coarse)]:" in cls
+            and cls not in hovered
+            and not any(name in cls for name in variants)
         ]
-        missing, short = [], []
-        for cls in hovered:
-            # LAST wins: a later [@media(pointer:coarse)]:pr-0 replaces an earlier pr-16, so
-            # reading the first match reports a gutter that is not the one that renders.
-            gutters = re.findall(rf"group-hover/{variant}:!?pr-(\d+)!?", cls)
-            gutter = int(gutters[-1])
-            if not trailing:
-                missing.append((gutter, cls))
-            elif trailing[-1] < gutter:
-                short.append((gutter, trailing[-1], cls))
-        assert not missing, (
-            f"a {variant} element reserves room for its action on hover but not on a coarse "
-            f"pointer, so the kebab overlaps the title on a touch device (#7276): "
-            f"{[cls for _, cls in missing]}"
-        )
-        assert not short, (
-            f"a {variant} element reserves less room on a coarse pointer than it does on "
-            f"hover: {[(g, c) for g, c, _ in short]} as (hover, coarse). The action is always "
-            f"visible on touch, so it needs at least the gutter the hover case already says "
-            f"it needs, or it sits over the title (#7276)"
+        assert not elsewhere, (
+            f"the cn() that builds the {variant} row carries coarse-pointer padding outside "
+            f"the row's own class list: {elsewhere}. Which one renders depends on order and "
+            f"on which branches are live, and this guard will not work that out: keep the "
+            f"row's touch padding beside its hover gutter"
         )
     assert "sidebar-touch-reveal" in block
     # Coarse-pointer visibility must come after .sidebar-row-action { opacity-0 }.

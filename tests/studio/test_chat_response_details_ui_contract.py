@@ -127,41 +127,41 @@ def _split_arguments(body: str) -> list[str]:
     return [part for part in parts if part.strip()]
 
 
-def _effective_widths(tokens: list[str]) -> dict[str, str]:
-    """Variant -> the min-width utility that survives for it, in `cn` order.
+def _assert_only_shrinks(tokens: list[str], what: str, evidence: str) -> None:
+    """Exactly one min-width utility, unqualified, and it is `min-w-0`.
 
-    tailwind-merge resolves each variant separately and the last one wins, so `min-w-0
-    md:min-w-max` keeps both and the element stops shrinking above `md`. A scan that only
-    looks at unqualified utilities reads min-w-0 there and calls it fine.
+    An earlier version of this tried to work out which min-width WINS: last in `cn` order,
+    per responsive variant, with `!important` beating an ordinary utility written after it.
+    Every rule it gained was correct and the next one was still missing, because deciding
+    that question properly is tailwind-merge plus the cascade, and a test file is the wrong
+    place to keep a second copy of either.
+
+    So it does not decide. One min-width, no variants, no importance markers, and it has to
+    be the shrinking one. That is stricter than the framework: `min-w-0 md:min-w-0` really
+    does shrink everywhere and is refused anyway. It is refused LOUDLY, saying that this
+    guard does not adjudicate precedence, which is a message someone can act on, and it
+    cannot quietly approve a layout nobody checked. Between a guard that is occasionally
+    inconvenient and one that is occasionally wrong, this picks the first.
     """
-    widths: dict[str, str] = {}
-    for token in tokens:
-        variant, _, utility = token.rpartition(":")
-        # `!min-w-max` and `min-w-max!` are the same utility marked important, and important
-        # is exactly how an override that this guard must catch would be written. The marker
-        # is stripped for recognition and kept in the reported value, so a failure says
-        # which form it found.
-        bare = utility.removeprefix("!").removesuffix("!")
-        if bare.startswith("min-w-"):
-            widths[variant] = utility
-    return widths
+    widths = [token for token in tokens if _is_min_width(token)]
+    assert widths, (
+        f"{what} states no min-width at all, so whether it shrinks below its content is left "
+        f"to whatever the element defaults to. {evidence}"
+    )
+    # By distinct utility: the same class written on both the base and the call site is a
+    # duplicate, not a conflict, and tailwind-merge collapsing it changes nothing.
+    assert set(widths) == {"min-w-0"}, (
+        f"{what} carries min-width utilities this guard will not adjudicate between: "
+        f"{sorted(set(widths))}. Which one wins is tailwind-merge's answer and then the cascade's, and "
+        f"getting that wrong in either direction is worse than refusing: a variant-qualified "
+        f"or important min-width, or more than one of them, has to be reduced to a single "
+        f"unqualified min-w-0 for this to pass. {evidence}"
+    )
 
 
-def _assert_shrinks(widths: dict[str, str], what: str, evidence: str) -> None:
-    offenders = {
-        variant: utility
-        for variant, utility in widths.items()
-        if utility.removeprefix("!").removesuffix("!") != "min-w-0"
-    }
-    assert not offenders, (
-        f"{what} stops shrinking below its content at some width, so a long summary widens "
-        f"the row past the thread there: {offenders} as variant -> effective min-width. "
-        f"{evidence}"
-    )
-    assert "" in widths, (
-        f"{what} states no unqualified min-width, so whether it shrinks at the smallest "
-        f"widths is left to whatever the element defaults to. {evidence}"
-    )
+def _is_min_width(token: str) -> bool:
+    _, _, utility = token.rpartition(":")
+    return utility.removeprefix("!").removesuffix("!").startswith("min-w-")
 
 
 def test_assistant_more_menu_exposes_response_details_action():
@@ -285,8 +285,8 @@ def test_response_model_badge_is_user_configurable_and_rendered_once_per_message
         "neither ReasoningTrigger's base classes nor its call site carries a class list this "
         "can read, so this guard cannot see the trigger's layout at all"
     )
-    _assert_shrinks(
-        _effective_widths(ordered),
+    _assert_only_shrinks(
+        ordered,
         "the reasoning trigger",
         f"Base classes: {base.group(1) if base else None!r}. Call site: {call_site!r}",
     )
@@ -300,12 +300,10 @@ def test_response_model_badge_is_user_configurable_and_rendered_once_per_message
         f"the header row holding the trigger is no longer a flex row, so the trigger's own "
         f"shrinking is not what decides the layout any more: {header!r}"
     )
-    # Resolved the same way as the trigger: a header that shrinks everywhere except above one
+    # Read the same way as the trigger: a header that shrinks everywhere except above one
     # breakpoint puts the overflow back one level up at exactly those widths.
-    _assert_shrinks(
-        _effective_widths(header.split()),
-        "the header row holding the trigger",
-        f"Classes: {header!r}",
+    _assert_only_shrinks(
+        header.split(), "the header row holding the trigger", f"Classes: {header!r}"
     )
 
 
