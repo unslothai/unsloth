@@ -12,12 +12,19 @@ import {
   PASTED_TEXT_DEFAULT_MIN_CHARS,
   PASTED_TEXT_THRESHOLD_CHOICES,
 } from "../utils/pasted-text.ts";
+import {
+  DEFAULT_THINKING_VISIBILITY,
+  DEFAULT_TOOL_VISIBILITY,
+  type DisplayVisibility,
+  migrateVisibility,
+} from "../utils/display-visibility.ts";
 
 // Client-side chat UI prefs kept in localStorage, not the chat DB. confirmDeleteChats: off skips
 // the delete confirm dialog. alwaysDeleteChatFiles: on also removes the sandbox folder.
 // showModelDisclaimer: off hides the "LLMs can make mistakes" footer. showResponseModel: on shows
-// the producing model on responses. collapseThinkingByDefault: on keeps thinking collapsed.
-// foldToolActivityIntoThinking: on hides a round's tool calls until its thinking block is opened.
+// the producing model on responses. thinkingVisibility / toolVisibility: collapsed, auto or
+// expanded, see display-visibility.ts. foldToolActivityIntoThinking: on hides a round's tool calls
+// until its thinking block is opened, and has no effect while toolVisibility is "expanded".
 // pastedTextMinChars: paste length that becomes a .txt attachment; 0 is off.
 export interface ChatPreferencesState {
   plainTextComposer: boolean;
@@ -36,10 +43,10 @@ export interface ChatPreferencesState {
   setShowModelDisclaimer: (value: boolean) => void;
   showResponseModel: boolean;
   setShowResponseModel: (value: boolean) => void;
-  collapseThinkingByDefault: boolean;
-  setCollapseThinkingByDefault: (value: boolean) => void;
-  collapseToolActivityByDefault: boolean;
-  setCollapseToolActivityByDefault: (value: boolean) => void;
+  thinkingVisibility: DisplayVisibility;
+  setThinkingVisibility: (value: DisplayVisibility) => void;
+  toolVisibility: DisplayVisibility;
+  setToolVisibility: (value: DisplayVisibility) => void;
   foldToolActivityIntoThinking: boolean;
   setFoldToolActivityIntoThinking: (value: boolean) => void;
   pastedTextMinChars: number;
@@ -76,12 +83,11 @@ export const useChatPreferencesStore = create<ChatPreferencesState>()(
         set({ showModelDisclaimer }),
       showResponseModel: false,
       setShowResponseModel: (showResponseModel) => set({ showResponseModel }),
-      collapseThinkingByDefault: false,
-      setCollapseThinkingByDefault: (collapseThinkingByDefault) =>
-        set({ collapseThinkingByDefault }),
-      collapseToolActivityByDefault: true,
-      setCollapseToolActivityByDefault: (collapseToolActivityByDefault) =>
-        set({ collapseToolActivityByDefault }),
+      thinkingVisibility: DEFAULT_THINKING_VISIBILITY,
+      setThinkingVisibility: (thinkingVisibility) =>
+        set({ thinkingVisibility }),
+      toolVisibility: DEFAULT_TOOL_VISIBILITY,
+      setToolVisibility: (toolVisibility) => set({ toolVisibility }),
       // Off by default: it hides rows the thread shows today, so it stays opt in.
       foldToolActivityIntoThinking: false,
       setFoldToolActivityIntoThinking: (foldToolActivityIntoThinking) =>
@@ -94,6 +100,13 @@ export const useChatPreferencesStore = create<ChatPreferencesState>()(
       name: "unsloth_chat_preferences",
       merge: (persisted, current) => {
         const saved = persisted as Partial<ChatPreferencesState> | undefined;
+        // Records written before the three-state settings carry the two booleans instead.
+        const legacy = persisted as
+          | {
+              collapseThinkingByDefault?: unknown;
+              collapseToolActivityByDefault?: unknown;
+            }
+          | undefined;
         return {
           ...current,
           ...normalizeComposerPreferences(saved),
@@ -101,9 +114,16 @@ export const useChatPreferencesStore = create<ChatPreferencesState>()(
           alwaysDeleteChatFiles: saved?.alwaysDeleteChatFiles ?? false,
           showModelDisclaimer: saved?.showModelDisclaimer ?? false,
           showResponseModel: saved?.showResponseModel ?? false,
-          collapseThinkingByDefault: saved?.collapseThinkingByDefault ?? false,
-          collapseToolActivityByDefault:
-            saved?.collapseToolActivityByDefault ?? true,
+          thinkingVisibility: migrateVisibility(
+            saved?.thinkingVisibility,
+            legacy?.collapseThinkingByDefault,
+            DEFAULT_THINKING_VISIBILITY,
+          ),
+          toolVisibility: migrateVisibility(
+            saved?.toolVisibility,
+            legacy?.collapseToolActivityByDefault,
+            DEFAULT_TOOL_VISIBILITY,
+          ),
           foldToolActivityIntoThinking:
             saved?.foldToolActivityIntoThinking ?? false,
           pastedTextMinChars: normalisePastedTextMinChars(

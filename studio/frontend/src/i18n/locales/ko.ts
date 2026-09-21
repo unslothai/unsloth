@@ -213,9 +213,6 @@ export const ko = {
       priority: "우선순위",
       lastUpdated: "최근 업데이트",
       manualOrder: "수동 정렬",
-      priorityHint: "진행 중·읽지 않음 우선",
-      lastUpdatedHint: "최신순",
-      manualOrderHint: "행을 끌어 순서를 바꾸세요",
       switchedToManual: "수동 정렬로 전환됨: 행을 끌어 순서를 바꾸세요",
       organizeChats: "채팅 정리",
       organizeProjects: "프로젝트 정리",
@@ -1575,10 +1572,17 @@ export const ko = {
         "채팅이 컨텍스트를 모두 채우면 오래된 턴은 검색 가능한 보관소로 옮겨집니다.",
       autoCompactKeywords:
         "압축 자동 컨텍스트 윈도우 자르기 슬라이딩 체크포인트 여유 보관 검색 회수 compaction rolling checkpoint headroom archive retrieval rag",
+      visibility: {
+        collapsed: "접힘",
+        auto: "실행 중 펼치기",
+        expanded: "항상 펼침",
+      },
+      visibilityKeywords:
+        "접기 접힘 펼치기 펼침 열기 닫기 사고 과정 추론 도구 호출 도구 활동 그룹 스트리밍",
       thinking: {
-        collapseByDefault: "기본적으로 사고 과정 접기",
-        collapseByDefaultDescription:
-          "모델이 생각하는 동안 사고 과정을 자동으로 펼치지 않고 접어 둡니다. 읽으려면 블록을 펼치세요.",
+        visibility: "사고 과정",
+        visibilityDescription:
+          "사고 과정이 열리는 방식. 각 블록은 직접 펼치거나 접을 수 있습니다.",
       },
       currentDate: {
         label: "모델에 오늘 날짜 알려주기",
@@ -1588,12 +1592,14 @@ export const ko = {
         saveError: "현재 날짜 설정을 업데이트하지 못했습니다",
       },
       tools: {
-        collapseByDefault: "기본적으로 도구 활동 접기",
-        collapseByDefaultDescription:
-          "도구가 실행되는 동안 입력과 출력을 접어 둡니다. 확인하려면 도구 행을 펼치세요.",
-        foldIntoThinking: "도구 호출을 생각 안으로 접기",
+        visibility: "도구 호출",
+        visibilityDescription:
+          "도구 활동이 열리는 방식. 각 호출은 직접 펼치거나 접을 수 있습니다.",
+        foldIntoThinking: "도구 호출을 사고 과정으로 묶기",
         foldIntoThinkingDescription:
-          "생각 블록을 열기 전까지 해당 턴의 도구 호출을 숨깁니다.",
+          "해당 턴의 도구 호출을 별도 행 대신 사고 과정 블록 안에 표시합니다.",
+        foldIntoThinkingBlocked:
+          "도구 호출이 ‘항상 펼침’으로 설정된 동안에는 사용할 수 없습니다. 그 설정은 호출을 별도 행에 유지합니다.",
       },
       webSearch: {
         title: "웹 검색",

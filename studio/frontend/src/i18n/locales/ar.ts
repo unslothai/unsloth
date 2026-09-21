@@ -213,9 +213,6 @@ export const ar = {
       priority: "الأولوية",
       lastUpdated: "آخر تحديث",
       manualOrder: "ترتيب يدوي",
-      priorityHint: "النشطة وغير المقروءة أولاً",
-      lastUpdatedHint: "الأحدث أولاً",
-      manualOrderHint: "اسحب الصفوف لإعادة ترتيبها",
       switchedToManual: "الترتيب يدوي الآن: اسحب الصفوف لإعادة ترتيبها",
       organizeChats: "تنظيم المحادثات",
       organizeProjects: "تنظيم المشاريع",
@@ -1580,10 +1577,17 @@ export const ar = {
         "تنتقل الأدوار الأقدم إلى أرشيف قابل للبحث عندما تمتلئ نافذة سياق المحادثة.",
       autoCompactKeywords:
         "ضغط تلقائي سياق نافذة اقتطاع منزلقة نقطة تحقق هامش أرشيف استرجاع بحث compaction rolling checkpoint headroom archive retrieval rag",
+      visibility: {
+        collapsed: "مطوي",
+        auto: "التوسيع أثناء التشغيل",
+        expanded: "موسّع دائمًا",
+      },
+      visibilityKeywords:
+        "طي مطوي توسيع موسّع فتح مغلق تفكير استدعاءات الأدوات نشاط الأدوات تجميع بث",
       thinking: {
-        collapseByDefault: "طيّ التفكير افتراضيًا",
-        collapseByDefaultDescription:
-          "إبقاء التفكير مطويًا أثناء تفكير النموذج بدلًا من فتحه تلقائيًا. وسّع أي كتلة لقراءتها.",
+        visibility: "التفكير",
+        visibilityDescription:
+          "كيفية فتح التفكير. لا يزال بإمكانك توسيع أو طي أي كتلة بنفسك.",
       },
       currentDate: {
         label: "إخبار النموذج بتاريخ اليوم",
@@ -1593,12 +1597,14 @@ export const ar = {
         saveError: "تعذّر تحديث إعدادات التاريخ الحالي",
       },
       tools: {
-        collapseByDefault: "طيّ نشاط الأدوات افتراضيًا",
-        collapseByDefaultDescription:
-          "إبقاء مدخلات الأدوات ومخرجاتها مطوية أثناء التشغيل. وسّع أي صف أداة لفحصه.",
-        foldIntoThinking: "طيّ استدعاءات الأدوات داخل التفكير",
+        visibility: "استدعاءات الأدوات",
+        visibilityDescription:
+          "كيفية فتح نشاط الأدوات. لا يزال بإمكانك توسيع أو طي أي استدعاء بنفسك.",
+        foldIntoThinking: "تجميع استدعاءات الأدوات ضمن التفكير",
         foldIntoThinkingDescription:
-          "إخفاء استدعاءات الأدوات في الدور حتى فتح كتلة التفكير.",
+          "عرض استدعاءات الأدوات في الدور داخل كتلة التفكير بدلًا من صفوف مستقلة.",
+        foldIntoThinkingBlocked:
+          "غير متاح بينما تكون استدعاءات الأدوات مضبوطة على «موسّع دائمًا»، وهو ما يبقيها في صفوف مستقلة.",
       },
       webSearch: {
         title: "البحث على الويب",
