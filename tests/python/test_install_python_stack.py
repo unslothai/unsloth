@@ -1414,7 +1414,94 @@ class TestPackageManagerPolicyOptOut:
         # Naming the package proves a duplicate WAS detected, so the False above is the
         # decline and not the "nothing to repair" return that shares its value.
         assert ips._POLICY_OPT_OUT_ENV in err and "unsloth" in err
-        assert "leaving it as found" in err
+        assert "the install cannot continue" in err, (
+            "both callers do `if not _repair_duplicate_core_metadata(...): return 1`, so this "
+            "decline STOPS the install; a message implying it carried on would be a lie"
+        )
+
+    def test_the_repairs_false_return_is_the_documented_stop(self):
+        """The decline's return value is the caller's abort signal, not an aside.
+
+        Returning True instead would let write_manifest record a null version for a package
+        whose metadata is still ambiguous: the installer reports success and every later
+        check rejects the environment. Pinned here because the value is load-bearing and a
+        future "be less disruptive" edit would look harmless.
+        """
+        import ast
+
+        tree = ast.parse(STACK_SOURCE)
+        callers = [
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.If)
+            and isinstance(node.test, ast.UnaryOp)
+            and isinstance(node.test.op, ast.Not)
+            and isinstance(node.test.operand, ast.Call)
+            and getattr(node.test.operand.func, "id", "") == "_repair_duplicate_core_metadata"
+        ]
+        assert callers, "no `if not _repair_duplicate_core_metadata(...)` caller found"
+        for node in callers:
+            assert any(
+                isinstance(stmt, ast.Return)
+                and isinstance(stmt.value, ast.Constant)
+                and stmt.value.value == 1
+                for stmt in node.body
+            ), "a caller stopped treating a False return as a failed install"
+
+    @pytest.mark.parametrize(
+        ("environment", "expected"),
+        [
+            # uv would enforce it and pip has an exact equivalent: carry it, or the fallback
+            # installs exactly what uv just refused.
+            ({"UV_REQUIRE_HASHES": "1"}, {"PIP_REQUIRE_HASHES": "1"}),
+            ({"UV_OFFLINE": "1"}, {"PIP_NO_INDEX": "1"}),
+            ({"UV_REQUIRE_HASHES": "true", "UV_OFFLINE": "yes"},
+             {"PIP_REQUIRE_HASHES": "1", "PIP_NO_INDEX": "1"}),
+            # uv's own false spellings mean the control is off, so there is nothing to carry.
+            ({"UV_REQUIRE_HASHES": "0"}, {}),
+            ({"UV_REQUIRE_HASHES": "false"}, {}),
+            ({"UV_OFFLINE": "off"}, {}),
+            ({}, {}),
+            # An explicit pip value outranks a translation of the uv one, in either direction:
+            # the operator set that themselves.
+            ({"UV_REQUIRE_HASHES": "1", "PIP_REQUIRE_HASHES": "0"}, {}),
+            ({"UV_OFFLINE": "1", "PIP_NO_INDEX": "0"}, {}),
+        ],
+    )
+    def test_uv_expressed_policy_is_carried_to_the_pip_fallback(self, environment, expected):
+        """pip_install() falls back to pip on ANY uv failure, and pip reads no UV_ variable.
+
+        Without this the opt-out stops uv over UV_REQUIRE_HASHES and then lets pip install the
+        unhashed requirement anyway, which is the outcome the whole feature exists to prevent.
+        Refusing the fallback outright was the alternative and is worse: uv also exits non-zero
+        for network and resolver reasons, and those installs must still complete.
+        """
+        with self._environment(environment, opt_out = "1"):
+            assert ips._uv_policy_as_pip_env() == expected
+            cmd = [sys.executable, "-m", "pip", "install", "-r", "requirements.txt"]
+            env = ips._install_env_for_cmd(cmd)
+            for name, value in expected.items():
+                assert env is not None and env[name] == value
+            # The relaxation is still withheld whatever else is carried.
+            assert (env or {}).get("PIP_REQUIRE_HASHES") != "0"
+
+    def test_the_carried_policy_reaches_a_pinned_fallback_too(self):
+        """The fallback's pip command is itself pinned, so the pinned arm needs it as well.
+
+        `_pinned_cmd_and_env` routes through `_install_env_for_cmd`, whose opt-out arm returns
+        early; an edit that forgets the translation there leaves the exact hole this closes
+        open for every torch repair.
+        """
+        with self._environment({"UV_REQUIRE_HASHES": "1"}, opt_out = "1"):
+            env = ips._install_env_for_cmd(
+                [sys.executable, "-m", "pip", "install", "--index-url", "https://x", "torch"]
+            )
+        assert env is not None and env["PIP_REQUIRE_HASHES"] == "1"
+
+    def test_a_uv_command_is_not_given_pip_variables(self):
+        """uv reads UV_ itself; restating them as PIP_ for a uv command would be noise."""
+        with self._environment({"UV_REQUIRE_HASHES": "1"}, opt_out = "1"):
+            assert ips._relaxed_pip_policy_env(["uv", "pip", "install", "torch"]) == {}
 
 
 class TestProgressLineNotes:

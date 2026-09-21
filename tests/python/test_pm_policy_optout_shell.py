@@ -113,6 +113,12 @@ MATRIX: tuple[object, ...] = (
     # and "o n" then matched the allowlist in sh while Python rejected them, and "1 1"
     # became two words. Quoted now -- these cases exist to keep it that way.
     "t rue", "o n", "1 1", "y es", "tr ue", "1  1", "t\true", "o\nn", "y e s",
+    # UNICODE whitespace. str.strip() and .NET Trim() remove these; POSIX sh cannot
+    # portably, so all three trim an explicit ASCII set instead and these read as
+    # unrecognised, hence OFF, everywhere. Before that they were ON to Python and
+    # PowerShell and OFF to sh, so the shell phase relaxed a policy the Python phase
+    # withheld. A pasted non-breaking space is the realistic one.
+    "\xa01", "1\xa0", "\xa0true\xa0", "\u20021", "1\u3000", "\u200a1", "\u20281",
 )
 
 
@@ -159,6 +165,10 @@ def _python_predicate_status(value: object) -> int:
 
 ALLOWLIST = ("1", "true", "yes", "on")
 
+# The set all three trim. NOT str.strip(), which also removes Unicode whitespace that POSIX
+# sh cannot portably match; see _respect_pm_policy().
+ASCII_WHITESPACE = " \t\n\r\v\f"
+
 
 def _sh_semantics(value: object) -> int:
     """What a correct reading of the shipped sh text predicts, modelled independently.
@@ -166,19 +176,19 @@ def _sh_semantics(value: object) -> int:
     `case "$(printf '%s' "$VAR" | tr ... | tr ... | sed ...)"` -- the value is quoted
     throughout, so nothing is word-split or glob-expanded. The first tr maps every other
     whitespace character to a space (sed cannot trim across a newline), the second lowers
-    case, and the sed trims both ends, which together are Python's .strip().lower(). The
-    trim is at the ENDS only: internal whitespace survives, so "t rue" is the true
-    spelling on neither side.
+    case, and the sed trims both ends: together, an ASCII-only .strip().lower(). The trim is
+    at the ENDS only, so "t rue" is the true spelling on neither side, and it is ASCII only,
+    so a Unicode-padded value is unrecognised rather than trimmed.
     """
     raw = "" if value is None else value
     assert isinstance(raw, str)
-    return 0 if raw.strip().lower() in ALLOWLIST else 1
+    return 0 if raw.strip(ASCII_WHITESPACE).lower() in ALLOWLIST else 1
 
 
 def _python_semantics(value: object) -> int:
     raw = "" if value is None else value
     assert isinstance(raw, str)
-    return 0 if raw.strip().lower() in ALLOWLIST else 1
+    return 0 if raw.strip(ASCII_WHITESPACE).lower() in ALLOWLIST else 1
 
 
 @requires_sh

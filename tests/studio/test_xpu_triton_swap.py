@@ -71,6 +71,7 @@ def _load_real_index_env_scrub():
         # the predicate reads the constant, so extracting the function alone is a
         # NameError at call time rather than at exec time.
         ("_POLICY_OPT_OUT_ENV = ", "\n", 1),
+        ("_ASCII_WHITESPACE = ", "\n", 1),
         ("def _respect_pm_policy(", "\n\ndef ", 0),
         # Resolved from this namespace at CALL time, so an omission is a NameError later.
         ("_PM_HASH_ENV_VARS = (", "\n)\n", 2),

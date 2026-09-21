@@ -7643,6 +7643,9 @@ SDIST_ONLY_PACKAGES = (
 # forbids.
 _POLICY_OPT_OUT_ENV = "UNSLOTH_RESPECT_PM_POLICY"
 
+# What `tr` can map and `sed` can trim in a POSIX shell. See _respect_pm_policy().
+_ASCII_WHITESPACE = " \t\n\r\v\f"
+
 
 def _respect_pm_policy() -> bool:
     """The operator asked for their own pip/uv policy to be left in force.
@@ -7651,8 +7654,16 @@ def _respect_pm_policy() -> bool:
     variable, so _uv_env_flag() is not its reader), because one answer has to hold across
     install.sh, install.ps1, setup.ps1 and here. An allowlist, so a typo lands on the
     default rather than failing closed for this one control alone.
+
+    The strip set is spelled out rather than left to str.strip(), which also removes Unicode
+    whitespace. A non-breaking space is the one people actually paste, and bare .strip() read
+    "\xa01" as on while POSIX sh read it as off: the shell phase would relax the policy and
+    the Python phase withhold it, which is worse than either answer. Teaching sh the Unicode
+    set portably is not cheap; agreeing on ASCII is. So a Unicode-padded value is simply
+    unrecognised, and unrecognised is off everywhere.
     """
-    return os.environ.get(_POLICY_OPT_OUT_ENV, "").strip().lower() in ("1", "true", "yes", "on")
+    value = os.environ.get(_POLICY_OPT_OUT_ENV, "")
+    return value.strip(_ASCII_WHITESPACE).lower() in ("1", "true", "yes", "on")
 
 
 def _sdist_only_build_args(*names: str) -> list[str]:
@@ -8434,15 +8445,23 @@ def _repair_duplicate_core_metadata(
     # Decline with detection done and nothing touched yet. The repair rewrites METADATA and
     # moves pip's backups aside before reinstalling, and that reinstall cannot satisfy
     # require-hashes honestly: hashing the artifact we just fetched approves it with itself.
-    # Duplicate metadata is untidy; a venv with the core package uninstalled is not. Declining
-    # here rather than at the staging step because the finally below cannot run on a SIGKILL.
+    # Declining here rather than at the staging step because the finally below cannot run on
+    # a SIGKILL.
+    #
+    # False STOPS the install: both callers do `if not _repair...(): return 1`. That is the
+    # contract, not a side effect. Returning True would let write_manifest record a null
+    # version for a package whose metadata is still ambiguous, so the installer would report
+    # success while every later check rejected the environment -- the opt-out turning a
+    # refusal into a corrupt install is the one outcome worse than stopping. Hence the
+    # message says the install stops.
     if duplicates and _respect_pm_policy():
         _safe_print(
             _red(
                 f"   {_POLICY_OPT_OUT_ENV} is set and repairing duplicate metadata for "
                 + ", ".join(name for name, _ in duplicates)
-                + " would have to reinstall it from a source your policy may refuse; "
-                "leaving it as found. Unset the variable for one run to repair it."
+                + " would have to reinstall it from a source your policy may refuse, so the "
+                "install cannot continue. Nothing was changed. Unset the variable for one "
+                "run to repair it, or resolve the duplicate records yourself."
             ),
             file = sys.stderr,
         )
@@ -8831,14 +8850,44 @@ def _relaxed_pip_policy_env(cmd: "list[str]") -> "dict[str, str]":
     the duplicate-metadata repair stages with it, and require-hashes rejects that too
     (#8530).
 
-    Empty under UNSLOTH_RESPECT_PM_POLICY: an operator who would rather the install stop
-    than proceed unhashed gets exactly that.
+    Under UNSLOTH_RESPECT_PM_POLICY the relaxation is withheld and the operator's uv-expressed
+    policy is restated for pip instead; see _uv_policy_as_pip_env().
     """
-    if _respect_pm_policy():
-        return {}
     if not _is_pip_subcommand(cmd, ("install", "download", "wheel")):
         return {}
+    if _respect_pm_policy():
+        return _uv_policy_as_pip_env()
     return {"PIP_REQUIRE_HASHES": "0"}
+
+
+# Policy the operator expressed in uv's language that pip has an EXACT equivalent for.
+# pip_install() falls back to pip whenever uv exits non-zero, so without this the opt-out
+# stops uv over UV_REQUIRE_HASHES and then installs the very thing uv refused -- the one
+# outcome the feature exists to prevent. Refusing to fall back at all was the alternative
+# and is worse: uv exits non-zero for network and resolver reasons too, and those installs
+# must still complete. Translating only exact equivalents keeps the fallback honest without
+# inventing policy: UV_OFFLINE means "no network", and PIP_NO_INDEX is how pip is told that
+# while the find-links the opt-out keeps stay usable.
+_UV_TO_PIP_POLICY = (
+    ("UV_REQUIRE_HASHES", "PIP_REQUIRE_HASHES"),
+    ("UV_OFFLINE", "PIP_NO_INDEX"),
+)
+
+
+def _uv_policy_as_pip_env() -> "dict[str, str]":
+    """uv-expressed policy restated for the pip fallback. Opt-out only.
+
+    NOT a general bridge, and deliberately not one. A `uv.toml` `[pip] require-hashes = true`
+    is invisible here, since parsing uv's configuration is the unbounded surface this change
+    keeps out; that gap is real and documented rather than guessed at. An explicit pip value
+    wins in either direction, because the operator's own pip setting outranks a translation
+    of their uv one.
+    """
+    carried: "dict[str, str]" = {}
+    for uv_name, pip_name in _UV_TO_PIP_POLICY:
+        if _uv_env_flag(uv_name) and not os.environ.get(pip_name, "").strip():
+            carried[pip_name] = "1"
+    return carried
 
 
 def _executable_stem(path: str) -> str:
@@ -9229,6 +9278,10 @@ def _install_env_for_cmd(cmd: "list[str]") -> "dict[str, str] | None":
         # No _pinned_pip_config_overrides(): it re-asserts what PIP_CONFIG_FILE=devnull
         # removed, devnull is never set here, and only-binary ACCUMULATES, so re-asserting
         # would apply the same keys twice.
+        #
+        # The pinned pip command is the uv fallback's own, so it needs the translation too:
+        # _relaxed_pip_policy_env returns the carried uv policy on this arm, not a relaxation.
+        env.update(_relaxed_pip_policy_env(cmd))
         return env
     for name in _UV_INDEX_ENV_VARS:
         env.pop(name, None)

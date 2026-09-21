@@ -7035,8 +7035,12 @@ function Remove-UvOnlyResolverFlags {
 # Must answer as _respect_pm_policy() does in install.sh and install_python_stack.py.
 # A hand-maintained duplicate of install.ps1's copy, like the UNSLOTH_ENABLE_AMD_SMI pair.
 function Test-RespectPmPolicy {
+    # Trim the ASCII set only, matching _respect_pm_policy(): .Trim() also removes Unicode
+    # whitespace, which POSIX sh cannot portably, and a pasted non-breaking space then meant on
+    # here and off in install.sh. Unrecognised is off everywhere instead.
     $value = [string][Environment]::GetEnvironmentVariable('UNSLOTH_RESPECT_PM_POLICY')
-    return (@('1', 'true', 'yes', 'on') -contains $value.Trim().ToLowerInvariant())
+    $ws = [char[]]@(' ', "`t", "`n", "`r", [char]11, [char]12)
+    return (@('1', 'true', 'yes', 'on') -contains $value.Trim($ws).ToLowerInvariant())
 }
 
 # Helper: install a package, preferring uv with pip fallback

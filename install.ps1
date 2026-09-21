@@ -4140,8 +4140,12 @@ exit 1
     # A hand-maintained duplicate of setup.ps1's copy, like the UNSLOTH_ENABLE_AMD_SMI pair;
     # sits OUTSIDE the shared block above, so the sync script's contract does not cover it.
     function Test-RespectPmPolicy {
+        # Trim the ASCII set only, matching _respect_pm_policy(): .Trim() also removes Unicode
+        # whitespace, which POSIX sh cannot portably, and a pasted non-breaking space then meant on
+        # here and off in install.sh. Unrecognised is off everywhere instead.
         $value = [string][Environment]::GetEnvironmentVariable('UNSLOTH_RESPECT_PM_POLICY')
-        return (@('1', 'true', 'yes', 'on') -contains $value.Trim().ToLowerInvariant())
+        $ws = [char[]]@(' ', "`t", "`n", "`r", [char]11, [char]12)
+        return (@('1', 'true', 'yes', 'on') -contains $value.Trim($ws).ToLowerInvariant())
     }
 
     function Invoke-InstallCommand {
