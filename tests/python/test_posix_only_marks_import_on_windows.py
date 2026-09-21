@@ -136,6 +136,8 @@ def _geteuid_sites(expr: ast.AST):
     for node in ast.walk(expr):
         if not isinstance(node, ast.Call):
             continue
+        # a generator handed straight to a call is consumed by it: any(...), list(...)
+        invoked.update(arg for arg in node.args if isinstance(arg, ast.GeneratorExp))
         if isinstance(node.func, ast.Lambda):
             invoked.add(node.func)
             continue
@@ -168,6 +170,11 @@ def _geteuid_sites(expr: ast.AST):
                 and not _fallback_takes(inner.args[2], node)
             ):
                 yield inner
+        if isinstance(node, ast.GeneratorExp) and node not in invoked:
+            # `GEN = (os.geteuid() for _ in xs)` only builds a generator; nothing but the
+            # first iterable is evaluated until something iterates it
+            stack.append(node.generators[0].iter)
+            continue
         for child in ast.iter_child_nodes(node):
             if isinstance(node, ast.Lambda) and child is node.body and node not in invoked:
                 continue
@@ -294,6 +301,14 @@ def _definition_expressions(node: ast.AST, eager_annotations: bool):
 
 
 TRY_STATEMENTS = (ast.Try, ast.TryStar) if hasattr(ast, "TryStar") else (ast.Try,)
+MATCH_STATEMENT = getattr(ast, "Match", None)
+
+
+def _pattern_cannot_match_nt(pattern) -> bool:
+    """For `match os.name:`, whether this case is one Windows can never take."""
+    value = getattr(pattern, "value", None)
+    return isinstance(value, ast.Constant) and value.value != "nt"
+
 
 # A handler for any of these turns a missing os.geteuid from a collection failure into a
 # branch the module handles itself. Listed generously on purpose: a scan everybody has to
@@ -381,6 +396,18 @@ def _import_time_expressions(tree: ast.Module):
             for handler in statement.handlers:
                 yield from walk(handler)
             yield from block(statement.finalbody)
+            return
+        if MATCH_STATEMENT is not None and isinstance(statement, MATCH_STATEMENT):
+            # ast.Match holds match_case children rather than statements, so the generic
+            # branch would yield the whole thing and walk every function body under it
+            yield statement.subject
+            on_os_name = _is_os_name(statement.subject)
+            for case in statement.cases:
+                if on_os_name and _pattern_cannot_match_nt(case.pattern):
+                    continue
+                if case.guard is not None:
+                    yield case.guard
+                yield from block(case.body)
             return
         if isinstance(statement, ast.ExceptHandler):
             if statement.type is not None:
@@ -639,9 +666,10 @@ def test_a_try_that_catches_the_failure_is_the_portable_spelling():
     assert _flagged(
         "import os\ntry:\n    ROOT = os.geteuid() == 0\nexcept KeyError:\n    ROOT = False\n"
     )
-    # and the handler's own body is still walked, since that is what Windows runs
+    # and a handler the try body CAN reach is still walked, since that is what Windows
+    # runs when the import fails
     assert _flagged(
-        "import os\ntry:\n    pass\nexcept ImportError:\n    ROOT = os.geteuid() == 0\n"
+        "import os\ntry:\n    import numpy\nexcept ImportError:\n    ROOT = os.geteuid() == 0\n"
     )
 
 
@@ -717,3 +745,24 @@ def test_an_invoked_fallback_lambda_runs_its_body_on_windows():
     it, so its body is the one place Windows definitely reaches."""
     assert _flagged('import os\nROOT = getattr(os, "geteuid", lambda: os.geteuid())() == 0\n')
     assert not _flagged('import os\nROOT = getattr(os, "geteuid", lambda: 1)() == 0\n')
+
+
+def test_a_generator_expression_does_not_look_anything_up_yet():
+    """`GEN = (os.geteuid() for _ in xs)` builds a generator and evaluates nothing but the
+    first iterable. Consumed on the spot, it does."""
+    assert not _flagged("import os\nGEN = (os.geteuid() for _ in range(1))\n")
+    assert _flagged("import os\nROOT = any(os.geteuid() == 0 for _ in range(1))\n")
+    # the first iterable IS evaluated where the generator is written
+    assert _flagged("import os\nGEN = (x for x in [os.geteuid()])\n")
+
+
+def test_match_cases_are_statement_blocks():
+    """ast.Match holds match_case children, not statements, so the generic branch would
+    walk every function body under it. And `case "posix"` is one Windows never takes."""
+    assert not _flagged(
+        'import os\nmatch os.name:\n    case "posix":\n        ROOT = os.geteuid() == 0\n'
+    )
+    assert _flagged('import os\nmatch os.name:\n    case "nt":\n        ROOT = os.geteuid() == 0\n')
+    assert not _flagged(
+        "import os\nmatch value:\n    case 1:\n        def helper():\n            return os.geteuid()\n"
+    )
