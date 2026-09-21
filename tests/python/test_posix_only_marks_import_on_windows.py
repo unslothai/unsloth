@@ -20,9 +20,10 @@ rather than their presence:
 `os.name == "posix" or os.geteuid() == 0` mentions the same attribute and spares nothing,
 so it is flagged.
 
-A third form in the tree, `getattr(os, "geteuid", lambda: 1)()`, is a guard in itself: the
-fallback is what makes it safe, so the two-argument `getattr(os, "geteuid")()` is treated
-as the plain lookup it is. And nothing else counts as a guard merely for sitting to the
+A third form in the tree, `getattr(os, "geteuid", lambda: 1)()`, is a guard in itself, but
+only because the fallback is there and can be called: `getattr(os, "geteuid")()` and
+`getattr(os, "geteuid", None)()` both fail on Windows and are treated as the plain lookup.
+`from os import geteuid` fails earlier still, at the import, and counts too. And nothing else counts as a guard merely for sitting to the
 left of the call, since `is_ci() or os.geteuid() == 0` still raises on Windows every time
 is_ci() is false.
 
@@ -55,17 +56,7 @@ def _is_os_geteuid(node: ast.AST) -> bool:
         and node.value.id == "os"
     ):
         return True
-    if not (
-        isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Name)
-        and node.func.id == "getattr"
-        and not node.keywords
-        and len(node.args) in (2, 3)
-        and isinstance(node.args[0], ast.Name)
-        and node.args[0].id == "os"
-        and isinstance(node.args[1], ast.Constant)
-        and node.args[1].value == "geteuid"
-    ):
+    if _getattr_geteuid(node) is None:
         return False
     if len(node.args) == 2:
         return True  # no fallback: raises AttributeError exactly as the attribute does
@@ -77,6 +68,47 @@ def _is_os_geteuid(node: ast.AST) -> bool:
     return isinstance(node.args[2], ast.Constant)
 
 
+def _getattr_geteuid(node: ast.AST) -> ast.Call | None:
+    """The `getattr(os, "geteuid", ...)` call this node is, if it is one."""
+    if (
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "getattr"
+        and not node.keywords
+        and len(node.args) in (2, 3)
+        and isinstance(node.args[0], ast.Name)
+        and node.args[0].id == "os"
+        and isinstance(node.args[1], ast.Constant)
+        and node.args[1].value == "geteuid"
+    ):
+        return node
+    return None
+
+
+def _lambda_accepts(lam: ast.Lambda, call: ast.Call) -> bool:
+    """Whether this lambda could take this call's arguments. True when the source does
+    not say (a `*args` at the call site, say), since a false alarm is worse than a miss
+    in a scan everybody has to keep green."""
+    if any(isinstance(arg, ast.Starred) for arg in call.args) or any(
+        keyword.arg is None for keyword in call.keywords
+    ):
+        return True
+    given = len(call.args)
+    by_name = {keyword.arg for keyword in call.keywords}
+    positional = [*lam.args.posonlyargs, *lam.args.args]
+    required = positional[: len(positional) - len(lam.args.defaults)]
+    if given > len(positional) and lam.args.vararg is None:
+        return False
+    if any(arg.arg not in by_name for arg in required[given:]):
+        return False
+    missing_keywords = [
+        arg.arg
+        for arg, default in zip(lam.args.kwonlyargs, lam.args.kw_defaults)
+        if default is None and arg.arg not in by_name
+    ]
+    return not (missing_keywords and lam.args.kwarg is None)
+
+
 def _geteuid_sites(expr: ast.AST):
     """Every os.geteuid lookup performed when THIS expression is evaluated. A lambda's
     body is not: it runs when the lambda is called, so `helper = lambda: os.geteuid()`
@@ -86,6 +118,24 @@ def _geteuid_sites(expr: ast.AST):
         node = stack.pop()
         if _is_os_geteuid(node):
             yield node
+        elif (
+            isinstance(node, ast.ImportFrom)
+            and node.module == "os"
+            and any(alias.name == "geteuid" for alias in node.names)
+        ):
+            # `from os import geteuid` raises ImportError on Windows at the import
+            # itself, before any decorator gets a chance to skip anything
+            yield node
+        else:
+            inner = isinstance(node, ast.Call) and _getattr_geteuid(node.func)
+            if (
+                inner
+                and len(inner.args) == 3
+                and isinstance(inner.args[2], ast.Lambda)
+                and not _lambda_accepts(inner.args[2], node)
+            ):
+                # the fallback is picked on Windows and then called wrongly
+                yield inner
         for child in ast.iter_child_nodes(node):
             if isinstance(node, ast.Lambda) and child is node.body:
                 continue
@@ -178,18 +228,24 @@ def _is_guarded(expr: ast.AST) -> bool:
     else counts for merely sitting to the left of the call: `is_ci() or os.geteuid() == 0`
     still raises every time is_ci() is false.
 
-    The three-argument `getattr(os, "geteuid", lambda: 1)()` needs no case here: the
-    fallback means no lookup can fail, so it is not a site at all."""
+    The three-argument `getattr(os, "geteuid", lambda: 1)()` needs no case here: a
+    fallback that can be called means no lookup can fail, so it is not a site at all."""
     parents: dict[ast.AST, ast.AST] = {}
     for node in ast.walk(expr):
         for child in ast.iter_child_nodes(node):
             parents[child] = node
-    return all(_spared_on_windows(node, parents) for node in ast.walk(expr) if _is_os_geteuid(node))
+    return all(_spared_on_windows(node, parents) for node in _geteuid_sites(expr))
 
 
 def _definition_expressions(node: ast.AST, eager_annotations: bool):
     """The parts of a `def` or `class` evaluated where it is written, not where it runs."""
     yield from node.decorator_list
+    if isinstance(node, ast.ClassDef):
+        # `class C(Base if os.geteuid() else Other, metaclass = M())` is evaluated where
+        # the class is written, exactly as a decorator is
+        yield from node.bases
+        yield from (keyword.value for keyword in node.keywords)
+        return
     if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
         return
     args = node.args
@@ -498,3 +554,31 @@ def test_a_getattr_fallback_has_to_be_callable():
     assert _flagged('import os\nROOT = getattr(os, "geteuid", 1)() == 0\n')
     assert not _flagged('import os\nROOT = getattr(os, "geteuid", lambda: 1)() == 0\n')
     assert not _flagged('import os\nROOT = getattr(os, "geteuid", _fallback)() == 0\n')
+
+
+def test_a_direct_import_fails_before_any_decorator_can_skip():
+    """`from os import geteuid` raises ImportError on Windows at the import line, so no
+    skipif downstream can help. The statement guard still applies to it."""
+    assert _flagged("from os import geteuid\n")
+    assert _flagged("from os import getpid, geteuid\n")
+    assert not _flagged('import os\nif os.name == "posix":\n    from os import geteuid\n')
+    assert not _flagged("from os import getpid\n")
+
+
+def test_a_class_header_is_evaluated_where_the_class_is_written():
+    """Bases and keywords run at the `class`, exactly as a decorator does, and the body
+    was already traversed while they were not."""
+    assert _flagged("import os\nclass C(Base if os.geteuid() else Other):\n    pass\n")
+    assert _flagged("import os\nclass D(metaclass = meta(os.geteuid())):\n    pass\n")
+    assert not _flagged(
+        'import os\nclass E(Base if os.name != "posix" or os.geteuid() else Other):\n    pass\n'
+    )
+
+
+def test_a_lambda_fallback_has_to_take_the_call():
+    """`getattr(os, "geteuid", lambda required: 1)()` picks the lambda on Windows and
+    then calls it wrongly. Linux never shows it, because the real function is picked."""
+    assert _flagged('import os\nROOT = getattr(os, "geteuid", lambda required: 1)() == 0\n')
+    assert not _flagged('import os\nROOT = getattr(os, "geteuid", lambda: 1)() == 0\n')
+    assert not _flagged('import os\nROOT = getattr(os, "geteuid", lambda *a: 1)() == 0\n')
+    assert not _flagged('import os\nROOT = getattr(os, "geteuid", lambda x = 1: x)() == 0\n')
