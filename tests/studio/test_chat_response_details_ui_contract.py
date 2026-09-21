@@ -37,7 +37,12 @@ def _class_list(source: str, marker: str) -> str | None:
     `marker` and `className` as neighbours. JSX attribute order carries no meaning, so a
     `ref`, an `aria-*` or a test id inserted between them changes nothing about the element
     and must not fail a guard that is here to stop unrelated refactors reddening main.
+
+    Comments come out of the whole source first. A commented-out element still contains its
+    own `<`, so slicing from the marker found the tag inside `{/* ... */}` and reported the
+    class list of something the page does not render.
     """
+    source = _without_block_comments(source)
     start = source.find(marker)
     if start == -1:
         return None
@@ -252,6 +257,16 @@ def _opening_tag(source: str, marker: str) -> str | None:
     return None
 
 
+def _without_block_comments(source: str) -> str:
+    """`source` with `/* ... */` and its JSX `{...}` wrapper removed.
+
+    Kept separate from `_without_comments`, which takes a single opening tag: this one runs
+    over whole files, where a commented-out element has to disappear entirely rather than
+    have its attributes tidied.
+    """
+    return re.sub(r"\{?\s*/\*.*?\*/\s*\}?", " ", source, flags = re.S)
+
+
 def _spread_overrides(tag: str, attribute: str) -> bool:
     """True when `tag` spreads props in a position that can beat an explicit `attribute`.
 
@@ -402,7 +417,7 @@ def test_response_model_badge_is_user_configurable_and_rendered_once_per_message
     # component's own function can stay behind unused, so without this the header could stop
     # rendering the trigger entirely and the checks below would go on describing base classes
     # that reach nothing.
-    assert "<ReasoningTrigger" in reasoning_src, (
+    assert "<ReasoningTrigger" in _without_block_comments(reasoning_src), (
         "ReasoningTrigger is no longer rendered, so the shrinking this test is about belongs "
         "to an element that is not on the page"
     )

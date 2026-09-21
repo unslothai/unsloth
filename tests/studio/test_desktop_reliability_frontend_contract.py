@@ -1099,29 +1099,30 @@ def test_chat_sidebar_row_actions_visible_on_coarse_pointers():
     # The row's own builder, by name, and the classes are read only from inside it. Searching
     # the whole function let the same verified pairs be moved to any other cn() call and
     # still satisfy this, while the buttons that render carried no gutter at all.
-    builder = re.search(r"const buttonClass = cn\(", block)
-    assert builder, (
-        "renderChatSidebarItem no longer builds its row classes in a `const buttonClass = "
-        "cn(...)`, so this guard cannot tell which classes reach the row button"
-    )
-    depth, builder_end = 0, None
-    for index in range(builder.end() - 1, len(block)):
-        if block[index] == "(":
-            depth += 1
-        elif block[index] == ")":
-            depth -= 1
-            if depth == 0:
-                builder_end = index
-                break
-    assert builder_end is not None, "unbalanced `const buttonClass = cn(` in the sidebar"
-    # On an attribute boundary, and in code rather than in a comment: `data-className=` ends
-    # in the same text, and an assignment that survives only as a comment reads the same to a
-    # substring search while the button that renders receives none of these classes.
+    # Comments out of the way BEFORE anything is located, not after. An old builder left
+    # inside `/* ... */` sits earlier in the function than the live one, so a search over the
+    # raw text selected the dead declaration and the gutter analysis then described classes
+    # nothing renders, while the carrier check below saw the live `buttonClass` and agreed.
     # `{/* ... */}` is how a prop is commented out in JSX, and it is the spelling that would
     # be used here, so a stripper that only knew `//` left a disabled className reading as a
     # live one. Block form first, then line form.
     applied = re.sub(r"\{?\s*/\*.*?\*/\s*\}?", " ", block, flags = re.S)
     applied = "\n".join(re.sub(r"(?<!:)//.*$", "", line) for line in applied.splitlines())
+    builder = re.search(r"const buttonClass = cn\(", applied)
+    assert builder, (
+        "renderChatSidebarItem no longer builds its row classes in a `const buttonClass = "
+        "cn(...)`, so this guard cannot tell which classes reach the row button"
+    )
+    depth, builder_end = 0, None
+    for index in range(builder.end() - 1, len(applied)):
+        if applied[index] == "(":
+            depth += 1
+        elif applied[index] == ")":
+            depth -= 1
+            if depth == 0:
+                builder_end = index
+                break
+    assert builder_end is not None, "unbalanced `const buttonClass = cn(` in the sidebar"
     # On the row button itself, not merely somewhere in the function. The row also renders an
     # inline rename input and a pin, and handing buttonClass to one of those while the button
     # went without would leave every padding check below describing classes that reach nothing
@@ -1156,7 +1157,7 @@ def test_chat_sidebar_row_actions_visible_on_coarse_pointers():
     # Comments first: they hold commas and prose, and splitting arguments around them turns
     # a sentence into an unreadable "value".
     row_classes = "\n".join(
-        re.sub(r"(?<!:)//.*$", "", line) for line in block[builder.end() : builder_end].splitlines()
+        re.sub(r"(?<!:)//.*$", "", line) for line in applied[builder.end() : builder_end].splitlines()
     )
     # Every value the builder contributes has to be readable. An identifier holding a class
     # string is invisible to a scan over quoted literals, so `cn(..., coarseOverride)` would
