@@ -681,7 +681,9 @@ def run_export_process(*, cmd_queue: Any, resp_queue: Any, config: dict) -> None
                     _handle_load(backend, cmd, resp_queue)
 
             elif cmd_type == "export":
-                _handle_export(backend, cmd, resp_queue)
+                # Connectivity may change after loading; merge/save can consult the Hub too.
+                with _offline_window_if_unreachable(step = "exporting"):
+                    _handle_export(backend, cmd, resp_queue)
 
             elif cmd_type == "cleanup":
                 _handle_cleanup(backend, resp_queue)
