@@ -154,3 +154,35 @@ test("a run too short to close leaves the block streaming on both routes", () =>
     );
   }
 });
+
+test("an indented fence loses its indentation by COLUMNS, so a tab is not one character", () => {
+  /*
+   * CommonMark removes the opener's indentation from each content line by COLUMN, expanding tabs
+   * to a four-column tab stop. A tab opening a line of a one-space indented fence therefore spans
+   * columns 1 to 4 and loses only its first column, leaving three spaces. Stripping characters
+   * left the tab whole and the code came out a tab too deep, and the settled-fence rung renders
+   * this text directly instead of going through streamdown's parser, so it reaches the screen and
+   * the clipboard.
+   *
+   * Every expectation is `micromark`'s, read off its HTML.
+   */
+  const rows: [string, string][] = [
+    [" ```js\n\tx\n ```", "   x"],
+    ["  ```js\n\tx\n  ```", "  x"],
+    ["   ```js\n\tx\n   ```", " x"],
+    // Unindented: nothing is removed, so the tab survives whole.
+    ["```js\n\tx\n```", "\tx"],
+    // A tab that does NOT straddle the boundary is consumed with no spaces handed back.
+    ["   ```js\n \tx\n   ```", " x"],
+    // Spaces behave as before.
+    ["  ```js\n    x\n  ```", "  x"],
+    ["  ```js\n x\n  ```", "x"],
+  ];
+  for (const [block, expected] of rows) {
+    assert.equal(
+      markdownBlockFallback(block).text,
+      expected,
+      `indentation must match CommonMark for ${JSON.stringify(block)}`,
+    );
+  }
+});
