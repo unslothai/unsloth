@@ -852,6 +852,35 @@ def test_chat_sidebar_rows_are_compact_without_vertical_padding():
     assert 'variant === "project" ? "pl-[39px]" : "pl-3"' in block
 
 
+def _button_classes(block: str, tag: str) -> str | None:
+    """The literal classes a `<button>` tag ends up with, or None if they cannot be read.
+
+    Three forms appear here: a bare literal, `cn(...)` over literals, and a local constant
+    holding either. A fourth, an identifier this cannot resolve, is the one that matters:
+    moving an action's classes into a differently named constant used to make the button
+    invisible to the count, so the row's floor dropped while the action still rendered. None
+    means unreadable, and the caller refuses rather than omitting it.
+    """
+    match = re.search(r"className=(\{.*?\}|\"[^\"]*\")", tag, re.S)
+    if not match:
+        return ""
+    value = match.group(1).strip()
+    if value.startswith('"'):
+        return value.strip('"')
+    inner = value[1:-1].strip()
+    identifier = re.fullmatch(r"[A-Za-z_$][\w$]*", inner)
+    if identifier:
+        # A local constant: read its own definition out of the same function.
+        definition = re.search(
+            rf"const {re.escape(inner)} =(.*?);\n", block, re.S
+        )
+        if not definition:
+            return None
+        inner = definition.group(1)
+    literals = re.findall(r'"([^"]*)"', inner)
+    return " ".join(literals) if literals else None
+
+
 def _labelled_actions(block: str, variant: str) -> dict[str, bool]:
     """The row actions one variant renders: label -> whether it is the offset one.
 
@@ -876,14 +905,19 @@ def _labelled_actions(block: str, variant: str) -> dict[str, bool]:
                     break
     found = {}
     for tag in _opening_jsx_tags(block, "<button"):
-        if "sidebar-row-action" not in tag and "actionClass" not in tag:
+        classes = _button_classes(block, tag)
+        assert classes is not None, (
+            f"a button in renderChatSidebarItem carries classes this guard cannot read, so it "
+            f"cannot tell whether it is a row action or how far it reaches: {tag!r}"
+        )
+        if "sidebar-row-action" not in classes:
             continue
         at = block.find(tag)
         owners = [name for name, start, stop in gates if start <= at <= stop]
         if owners and variant not in owners:
             continue
         for label in re.findall(r"aria-label=\{?([^\n]{0,60})", tag):
-            found[label] = "is-unpin-action" in tag
+            found[label] = "is-unpin-action" in classes
     return found
 
 
@@ -1357,6 +1391,17 @@ def test_chat_sidebar_row_actions_visible_on_coarse_pointers():
             # width whatever the row says, so a row that claims less than one action's worth
             # has not been fixed, it has stopped claiming. The gutter's exact size is still
             # not pinned here, only that it holds at least one action.
+            # EVERY state that claims a gutter, not the largest of them. Each qualified class
+            # names a state in which the action is visible, and in that state the row reserves
+            # exactly that gutter, so one of them dropping to pr-0 removes the reservation
+            # there while `max` goes on reporting a sibling's 16. An open menu on a coarse
+            # pointer is such a state.
+            assert min(claimed) >= floors[variant], (
+                f"a {variant} row states an action gutter of {min(claimed)} among {claimed}, "
+                f"under the {floors[variant]} its furthest action reaches. The state that "
+                f"claims it reserves nothing, whatever the others claim, and the action is "
+                f"visible in it (#7276)"
+            )
             assert needed >= floors[variant], (
                 f"a {variant} row states its action gutter as {claimed}, under the "
                 f"{floors[variant]} that its furthest action reaches "

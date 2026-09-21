@@ -197,7 +197,12 @@ def _cn_literals(source: str, anchor: str) -> str | None:
     `className` itself is expected among the arguments: that is the caller's contribution,
     read separately. Any OTHER unresolved argument means this cannot say what the element
     composes to, which is _UNREADABLE rather than silence.
+
+    Comments out first, for the same reason `_class_list` does it: a dead `cn(...)` left in a
+    block comment sits before the live component, so the anchor was found there and this
+    validated classes nothing composes.
     """
+    source = _without_block_comments(source)
     at = source.find(anchor)
     if at == -1:
         return None
@@ -484,7 +489,7 @@ def test_reasoning_keeps_streaming_height_cap_through_automatic_collapse():
     # the retained height is bridging. Every such call has to hand the retained flag over.
     holders = [
         tag
-        for tag in _opening_tags(src, "<ReasoningBody")
+        for tag in _opening_tags(_without_block_comments(src), "<ReasoningBody")
         if "isStreaming={isReasoningStreaming}" in tag
     ]
     assert holders, (
