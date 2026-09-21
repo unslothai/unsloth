@@ -1778,17 +1778,30 @@ def _llm_compressor_module_is_usable(module):
                 roots += [entry or os.getcwd() for entry in pythonpath.split(os.pathsep)]
             import sysconfig
 
-            for key in ("purelib", "platlib", "stdlib", "platstdlib"):
+            # In the order site.main() builds them: the stdlib, then the USER site, then the
+            # system site directories. The user site coming first is the point -- a
+            # metadata-free checkout dropped there is what a fresh child imports ahead of the
+            # cached system-site wheel, and appending it last let the ordered scan below stop
+            # at the wheel. Only when the interpreter actually enables it.
+            for key in ("stdlib", "platstdlib"):
                 configured = sysconfig.get_paths().get(key)
                 if configured:
                     roots.append(configured)
             try:
                 import site
-
+                if site.ENABLE_USER_SITE:
+                    user_site = site.getusersitepackages()
+                    if isinstance(user_site, str):
+                        roots.append(user_site)
+            except Exception:
+                pass
+            for key in ("purelib", "platlib"):
+                configured = sysconfig.get_paths().get(key)
+                if configured:
+                    roots.append(configured)
+            try:
+                import site
                 roots += list(site.getsitepackages())
-                user_site = site.getusersitepackages()
-                if isinstance(user_site, str):
-                    roots.append(user_site)
             except Exception:
                 pass
             # The path entry the module would have to sit DIRECTLY under, since import

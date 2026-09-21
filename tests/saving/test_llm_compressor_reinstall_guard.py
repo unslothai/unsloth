@@ -686,3 +686,38 @@ def test_an_empty_pythonpath_component_is_the_current_directory(tmp_path, monkey
     # Without that component the cwd is on no path the child has, so the wheel answers.
     monkeypatch.setenv("PYTHONPATH", str(tmp_path / "unrelated"))
     assert _llm_compressor_module_is_usable(_module_at(str(wheel), "0.12.0")) is True
+
+
+def test_a_user_site_checkout_outranks_the_system_site_wheel(tmp_path, monkeypatch):
+    """site.main() adds the user site BEFORE the system site directories.
+
+    So a metadata-free checkout dropped in the user site is what a fresh child imports, and
+    appending the user site last let the ordered scan stop at the cached system-site wheel
+    and skip both the probe and the repair.
+    """
+    import site
+    import sysconfig
+
+    from unsloth.save import _llm_compressor_module_is_usable
+
+    def _provide(root: str):
+        package = tmp_path / root / "llmcompressor"
+        package.mkdir(parents = True)
+        (package / "__init__.py").write_text("")
+        return package / "__init__.py"
+
+    wheel = _provide("system-site")
+    _provide("user-site")
+    monkeypatch.setattr(sysconfig, "get_paths", lambda: {"purelib": str(tmp_path / "system-site")})
+    monkeypatch.setattr(site, "getsitepackages", lambda: [])
+    monkeypatch.setattr(site, "getusersitepackages", lambda: str(tmp_path / "user-site"))
+    monkeypatch.delenv("PYTHONPATH", raising = False)
+
+    monkeypatch.setattr(site, "ENABLE_USER_SITE", True)
+    assert (
+        _llm_compressor_module_is_usable(_module_at(str(wheel), "0.12.0")) is False
+    ), "the system-site wheel answered for a user-site checkout the child reaches first"
+
+    # With the user site DISABLED the child never sees it, so the wheel is the answer again.
+    monkeypatch.setattr(site, "ENABLE_USER_SITE", False)
+    assert _llm_compressor_module_is_usable(_module_at(str(wheel), "0.12.0")) is True
