@@ -1369,6 +1369,41 @@ def install_python_non_blocking(packages = []):
 _LLM_COMPRESSOR_SPEC = "llmcompressor>=0.6.0,<=0.12.0"
 
 
+def _llm_compressor_imports_cleanly():
+    """Does llm-compressor import in the conditions the compressed export actually runs in?
+
+    An in-process import failure has two very different causes, and metadata cannot tell them
+    apart. Either Unsloth's transformers patches broke it -- harmless, since the export
+    quantizes in an unpatched subprocess that re-imports fine -- or the distribution is
+    incomplete (a missing dependency such as compressed-tensors, a truncated install), which
+    pip is what fixes. Skipping the install on the second case turns an immediate, fixable
+    failure into one raised after the whole model merge, inside _compressed_quantize.py.
+
+    So ask the subprocess. _compressed_quantize.py is launched as `sys.executable <runner>`
+    with the ambient environment and imports exactly these two symbols, and `-c` never imports
+    unsloth, so this reproduces the runner's import conditions rather than approximating them.
+    Unknown answers (timeout, a python that will not spawn) count as importable: falling
+    through would trigger the destructive pip re-resolve this guard exists to avoid.
+    """
+    probe = (
+        "from llmcompressor import oneshot\n"
+        "from llmcompressor.modifiers.quantization import QuantizationModifier\n"
+    )
+    try:
+        completed = subprocess.run(
+            [sys.executable, "-c", probe],
+            stdout = subprocess.DEVNULL,
+            stderr = subprocess.DEVNULL,
+            # Generous: the import pulls in torch and transformers on a cold page cache. Only
+            # ever paid once, on a path where the in-process import has already failed and a
+            # multi-minute merge is next.
+            timeout = 600,
+        )
+    except Exception:
+        return True
+    return completed.returncode == 0
+
+
 def install_llm_compressor():
     """Import llm-compressor, installing it on first use for FP8/FP4 export.
 
@@ -1406,10 +1441,11 @@ def install_llm_compressor():
                 # No packaging, or a spec this cannot parse: treat presence as good enough
                 # rather than forcing the destructive re-resolve this guard exists to avoid.
                 _supported = True
-            if _supported:
-                # Present and supported; the compressed-export subprocess performs the real
-                # import. The caller only uses this to trigger the install and fail fast, so
-                # returning None here is safe.
+            if _supported and _llm_compressor_imports_cleanly():
+                # Present, supported, and importable in the same conditions the export runs
+                # under. The compressed-export subprocess performs the real import; the caller
+                # only uses this to trigger the install and fail fast, so returning None here
+                # is safe.
                 return None, None
         except _PNF:
             pass
