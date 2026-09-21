@@ -12489,3 +12489,43 @@ def test_a_helper_that_swallowed_a_read_failure_reports_it(monkeypatch):
         assert any("weights listing unreadable" in note for note in incidents), (
             f"a directory that could not be listed read as having no weights: {incidents}"
         )
+
+
+def test_snapshot_selection_read_failures_are_reported(monkeypatch):
+    """The last two suppressed read failures on the HF path.
+
+    select_gguf_cache_snapshot_for_repo_dir selects among the snapshots it could list, and
+    resolve_hf_cache_realpath answers None for a path it could not resolve. Both look from
+    outside like a repo with less in it, so a pass that came back short published as
+    complete and let the miss be memoized.
+    """
+    import pathlib
+
+    from core.inference.scan_incidents import collecting_scan_incidents
+    from hub.utils.gguf import select_gguf_cache_snapshot_for_repo_dir
+    from hub.utils.inventory_scan import resolve_hf_cache_realpath
+
+    with tempfile.TemporaryDirectory() as root:
+        repo_dir = pathlib.Path(root) / "models--unsloth--Qwen3-4B-GGUF"
+        (repo_dir / "snapshots").mkdir(parents = True)
+
+        def boom(self, *a, **k):
+            raise PermissionError("cache went away")
+
+        monkeypatch.setattr(pathlib.Path, "iterdir", boom)
+        with collecting_scan_incidents() as incidents:
+            select_gguf_cache_snapshot_for_repo_dir(repo_dir)
+        assert any("snapshots dir unreadable" in note for note in incidents), (
+            f"an unlistable snapshots dir read as a repo with no snapshots: {incidents}"
+        )
+        monkeypatch.undo()
+
+        def boom_resolve(self, *a, **k):
+            raise PermissionError("realpath refused")
+
+        monkeypatch.setattr(pathlib.Path, "resolve", boom_resolve)
+        with collecting_scan_incidents() as incidents:
+            assert resolve_hf_cache_realpath(repo_dir) is None
+        assert any("realpath unreadable" in note for note in incidents), (
+            f"a path that could not be resolved dropped its row silently: {incidents}"
+        )

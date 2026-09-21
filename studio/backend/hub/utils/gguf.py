@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Iterable, Optional, Sequence
 
 from loggers import get_logger
+from core.inference.scan_incidents import note_scan_incident
 from utils.paths.path_utils import (
     drop_shadowed_appledouble_names as _drop_shadowed_appledouble_names,
     file_contents_available_locally,
@@ -947,8 +948,12 @@ def select_gguf_cache_snapshot_for_repo_dir(
                     snapshots.append(snapshot)
             except OSError as exc:
                 logger.debug("Skipping unreadable cache snapshot %s: %s", snapshot, exc)
+                note_scan_incident(f"cache snapshot unreadable: {snapshot}")
     except OSError as exc:
         logger.debug("Stopping at unreadable cache snapshots dir %s: %s", snapshots_dir, exc)
+        # Selecting among fewer snapshots than exist looks exactly like selecting among all
+        # of them, so a caller memoizing a miss has to be told this pass came back short.
+        note_scan_incident(f"cache snapshots dir unreadable: {snapshots_dir}")
     snapshots.sort(key = snapshot_selection_key, reverse = True)
     return _select_gguf_snapshot(snapshots)
 
