@@ -73,12 +73,7 @@ NS = _load()
 
 @pytest.fixture
 def trl_like(monkeypatch):
-    """Rebuild the two-classes-of-one-name situation without importing trl.
-
-    The helper resolves the module with ``import trl.trainer.sft_trainer``, which
-    reads the attribute off the parent package, so stand in a whole fake chain
-    rather than only the leaf entry in ``sys.modules``.
-    """
+    """The helper resolves ``import trl.trainer.sft_trainer`` through the parent package, so the whole chain has to be stood in, not just the leaf ``sys.modules`` entry."""
     import sys
     import types
 
@@ -97,18 +92,13 @@ def trl_like(monkeypatch):
             self.lmbda = lmbda
             self.beta = beta
 
-    # What the compiler installs over the pristine class. `_patch_config_pickle_identity`
-    # gives it the pristine class's module and name so `torch.save(trainer.args, ...)`
-    # keeps working, and binds it wherever the pristine class used to live.
+    # `_patch_config_pickle_identity` gives the generated class the pristine module and name so it keeps pickling.
     patched = type(
         "SFTConfig",
         (SFTConfig,),
         {NS["_UNSLOTH_PATCHED_CONFIG_FLAG"]: True},
     )
-    # The pristine class's home is `trl.trainer.sft_config`, a DIFFERENT module
-    # from `trl.trainer.sft_trainer` where the guard reads the name. Model both,
-    # or a shim installed only at the guard's module looks reachable by pickle
-    # when it is not.
+    # The home module (`sft_config`) differs from the guard's (`sft_trainer`); model both, or the pickle test passes vacuously.
     patched.__module__ = "trl.trainer.sft_config"
     patched.__qualname__ = "SFTConfig"
 
@@ -213,15 +203,7 @@ def test_shim_keeps_the_name_and_answers_to_where_it_lives(trl_like):
 
 
 def test_the_shim_is_reachable_by_pickle_under_its_own_module_and_name(trl_like):
-    """``torch.save(trainer.args, ...)`` must keep working.
-
-    Pickle stores a class as ``__module__`` + ``__qualname__`` and refuses unless
-    the object living there IS the class, which is why
-    ``_patch_config_pickle_identity`` exists. A shim that advertises the displaced
-    class's home while the displaced class still sits there makes
-    ``Trainer._save_checkpoint`` raise ``PicklingError``, so the shim has to take
-    that attribute over.
-    """
+    """Pickle refuses a class unless the object at its ``__module__`` plus ``__qualname__`` IS it, so a shim advertising the displaced class's home raises PicklingError from ``Trainer._save_checkpoint``."""
     TrainingArguments, pristine, GKDConfig, patched, module, trl_pkg = trl_like
     NS["_widen_sft_config_instance_check"](patched)
     shim = module.SFTConfig
@@ -231,14 +213,7 @@ def test_the_shim_is_reachable_by_pickle_under_its_own_module_and_name(trl_like)
 
 
 def test_only_the_guards_own_module_is_rebound(trl_like):
-    """Widening takes over one attribute, not every binding of the name.
-
-    Rebinding `trl.SFTConfig` and the class's home module as well was tried and
-    is worse: the generated class stops being what `trl.SFTConfig` resolves to,
-    which is an invariant other patching passes and their tests rely on
-    (tests/python/test_rl_config_pickling.py, and the pristine-class walk in
-    tests/version_compat/). Only the module holding TRL's guard needs widening.
-    """
+    """Rebinding every holder of the name is WRONG: the generated class must stay what ``trl.SFTConfig`` resolves to (tests/python/test_rl_config_pickling.py, and the pristine-class walk in tests/version_compat/)."""
     TrainingArguments, pristine, GKDConfig, patched, module, trl_pkg = trl_like
     NS["_widen_sft_config_instance_check"](patched)
     assert module.SFTConfig is not patched, "the guard's module was not widened"
@@ -257,14 +232,7 @@ def test_the_displaced_class_keeps_its_own_home_and_pickles(trl_like):
 
 
 def test_the_shim_carries_the_patched_config_marker(trl_like):
-    """A walk back to TRL's pristine class must not stop on the shim.
-
-    Callers find the pristine class with
-    ``while "_unsloth_patched_rl_config" in cls.__dict__``, which is the right
-    test because the generated subclass is renamed onto TRL's own name. The
-    marker has to be in the shim's own __dict__, not inherited, or that walk
-    stops on the shim and reads back Unsloth's field set as if it were TRL's.
-    """
+    """Callers walk back with ``while "_unsloth_patched_rl_config" in cls.__dict__``, so an inherited marker is not enough: the walk would stop on the shim and read Unsloth's field set as TRL's."""
     TrainingArguments, pristine, GKDConfig, patched, module, trl_pkg = trl_like
     NS["_widen_sft_config_instance_check"](patched)
     cls = module.SFTConfig
