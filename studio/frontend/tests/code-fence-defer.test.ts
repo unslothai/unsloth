@@ -429,11 +429,15 @@ test("the mermaid source matches what the scanner renders", () => {
     /const open = MERMAID_INFO_RE\.exec\(blockContent\);/,
     "and must still find a fence embedded in a longer block, or the copy button disappears",
   );
-  // The close is matched with the opener's own run, not any run.
-  assert.match(
-    MARKDOWN_TEXT,
-    /const closeRe = new RegExp\(`\^ \{0,3\}\$\{marker\[0\]\.repeat\(marker\.length\)\}/,
-    "the close must repeat the opener's character",
+  // The close is "at least as many" of the opener's own character, and the opener's indentation
+  // comes off the body ("up to N spaces", so a deeper line keeps the remainder).
+  assert.ok(
+    MARKDOWN_TEXT.includes("marker[0]}{"),
+    "the close must be at least the opener's length",
+  );
+  assert.ok(
+    MARKDOWN_TEXT.includes("line.slice(Math.min(indent.length"),
+    "the body must lose the opener's indentation",
   );
   // The streaming branch keys on the opener: there is no close to match yet.
   assert.match(MARKDOWN_TEXT, /const hasMermaidFence = isMermaidFenceOpener\(props\.content\);/);

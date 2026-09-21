@@ -330,14 +330,23 @@ function getMermaidSource(blockContent: string): string | null {
   }
   const open = MERMAID_INFO_RE.exec(blockContent);
   if (!open) return null;
-  const marker = blockContent.slice(open.index).match(/^ {0,3}(`{3,}|~{3,})/)?.[1];
-  if (!marker) return null;
-  const closeRe = new RegExp(`^ {0,3}${marker[0].repeat(marker.length)}[\\t ]*\\r?$`, "m");
+  const opener = blockContent.slice(open.index).match(/^( {0,3})(`{3,}|~{3,})/);
+  if (!opener) return null;
+  const [, indent, marker] = opener;
+  // "At least as many" of the opener's own character, and the indentation comes off the body.
+  const closeRe = new RegExp(`^ {0,3}${marker[0]}{${marker.length},}[\\t ]*\\r?$`, "m");
   const bodyStart = blockContent.indexOf("\n", open.index) + 1;
   if (bodyStart === 0) return null;
   const rest = blockContent.slice(bodyStart);
   const close = closeRe.exec(rest);
-  const source = (close ? rest.slice(0, close.index) : rest).trim();
+  const body = close ? rest.slice(0, close.index) : rest;
+  const source = (indent
+    ? body
+        .split("\n")
+        .map((line) => line.slice(Math.min(indent.length, line.match(/^ */)?.[0].length ?? 0)))
+        .join("\n")
+    : body
+  ).replace(/[\t ]*\r?\n?$/, "");
   return source.length > 0 ? source : null;
 }
 
