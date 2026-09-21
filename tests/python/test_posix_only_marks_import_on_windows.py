@@ -413,9 +413,13 @@ def _import_time_expressions(tree: ast.Module):
             return
         if isinstance(statement, ast.AnnAssign) and not eager_annotations:
             # `x: os.geteuid() = 1` under `from __future__ import annotations` stores the
-            # annotation as a string; the value beside it is still evaluated
+            # annotation as a string; the value beside it is still evaluated, and so is a
+            # target that is not a plain name: `slots[os.geteuid()]: int` runs the
+            # subscript whatever the annotation does
             if statement.value is not None:
                 yield statement.value
+            if not isinstance(statement.target, ast.Name):
+                yield statement.target
             return
         if any(
             isinstance(child, (ast.stmt, ast.ExceptHandler, MATCH_CASE))
@@ -788,3 +792,12 @@ def test_a_lazy_type_alias_evaluates_nothing():
     if TYPE_ALIAS is None:
         pytest.skip("PEP 695 type aliases need Python 3.12")
     assert not _flagged("import os\ntype UID = os.geteuid()\n")
+
+
+def test_a_deferred_annotation_does_not_defer_its_target():
+    """`slots[os.geteuid()]: int` evaluates the subscript at import whatever PEP 563 or
+    649 does with the annotation beside it."""
+    assert _flagged(
+        "from __future__ import annotations\nimport os\nslots = {}\nslots[os.geteuid()]: int\n"
+    )
+    assert not _flagged("from __future__ import annotations\nimport os\nx: os.geteuid()\n")
