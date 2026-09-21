@@ -1659,7 +1659,7 @@ class TestDiskFullRemedyDescribesWhatHappened:
         assert (
             "UNSLOTH_INSTALL_NO_ROLLBACK=1) drops the previous environment" in block
         ), f"{path.name} lost the remedy for a run that never opted out"
-        flag = '_NO_ROLLBACK' if path is INSTALL_SH else "StudioNoRollback"
+        flag = "_NO_ROLLBACK" if path is INSTALL_SH else "StudioNoRollback"
         assert flag in block, f"{path.name} offers the flag unconditionally"
 
 
