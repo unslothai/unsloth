@@ -1681,8 +1681,17 @@ class TestPackageManagerPolicyOptOut:
             (":all:", b"", [":all:"]),
             ("", b"global.only-binary=':all:'\n", [":all:"]),
             ("numpy,scipy", b"", ["numpy", "scipy"]),
-            # the environment wins over the file here too
-            (":all:", b"global.only-binary='numpy'\n", [":all:"]),
+            # ACCUMULATES, unlike require-hashes. pip's own --help: "can be supplied multiple
+            # times, and each time adds to the existing value". Resolving it last-wins told
+            # uv to restrict numpy alone and silently allowed source builds for everything
+            # else, which is the opposite of what the operator configured.
+            ("numpy", b"global.only-binary=':all:'\n", [":all:", "numpy"]),
+            ("", b"global.only-binary='numpy'\ninstall.only-binary='scipy'\n", ["numpy", "scipy"]),
+            # ":none: to empty the set", also pip's own words.
+            ("", b"global.only-binary=':all:'\ninstall.only-binary=':none:,scipy'\n", ["scipy"]),
+            ("​:none:", b"global.only-binary=':all:'\n", [":all:"]),  # not the ASCII spelling
+            # the file is read in load order, then the environment is appended
+            ("numpy", b"global.only-binary='numpy'\n", ["numpy"]),  # no duplicate
             ("", b"", []),
         ],
     )
@@ -1704,6 +1713,11 @@ class TestPackageManagerPolicyOptOut:
             args = ips._pinned_binary_policy_args(unpinned_uv, None)
             # A plain pip command gains nothing: pip reads these settings itself.
             assert ips._pinned_binary_policy_args(self.UNPINNED, None) == []
+            # And the PINNED uv leg sees the file too, where it used to read only the
+            # scrubbed environment and so missed a pip.conf-only policy entirely.
+            assert ips._pinned_binary_policy_args(self.PINNED, {}) == [
+                arg for part in expected for arg in ("--only-binary", part)
+            ]
         assert args == [arg for part in expected for arg in ("--only-binary", part)]
         with self._environment({"PIP_ONLY_BINARY": variable}):
             assert (
@@ -1734,6 +1748,122 @@ class TestPackageManagerPolicyOptOut:
             (tmp_path / "pyproject.toml").unlink()
             (tmp_path / "uv.toml").write_text("")
             assert ips._uv_config_file_present() is True
+
+            # "configuration files are discovered in the current directory, parent
+            # directories, or user configuration directories" -- uv help pip install. A
+            # policy at the root of a checkout binds an installer run from a subdirectory,
+            # and checking the current directory alone missed that ordinary case.
+            nested = tmp_path / "a" / "b" / "c"
+            nested.mkdir(parents = True)
+            monkeypatch.chdir(nested)
+            assert ips._uv_config_file_present() is True, "the parent's uv.toml still applies"
+            (tmp_path / "uv.toml").unlink()
+            assert ips._uv_config_file_present() is False
+
+    @pytest.mark.parametrize(
+        ("listing", "variable", "expected"),
+        [
+            # last-wins, matching pip: [global] then the command's own section.
+            ("global.require-hashes='true'\ninstall.require-hashes='false'", "", ""),
+            ("global.require-hashes='false'\ninstall.require-hashes='true'", "", "1"),
+            ("global.require-hashes='true'", "", "1"),
+            ("global.require-hashes='true'", "0", ""),  # the environment outranks the file
+            ("global.require-hashes='false'", "1", "1"),
+            ("", "", ""),
+        ],
+    )
+    def test_the_shell_folds_pip_config_rows_in_order(self, listing, variable, expected):
+        """install.sh disagreeing with the Python phase is the bug class, not a detail.
+
+        Folding with `grep -q` made ANY truthy row win, so `[global] true` followed by
+        `[install] false` exported a hash requirement the operator's effective policy had
+        switched off -- and the Python and PowerShell halves of this same feature did not.
+        The real function is executed under /bin/sh rather than restated here.
+        """
+        library = "\n".join(
+            _shell_function_source(name)
+            for name in ("_respect_pm_policy", "_carry_pip_policy_into_uv")
+        )
+        script = f"""
+        {library}
+        _PM_PIP_CONFIG_LISTING='{listing}'
+        PIP_REQUIRE_HASHES='{variable}'
+        unset UV_REQUIRE_HASHES
+        _carry_pip_policy_into_uv
+        printf '%s' "${{UV_REQUIRE_HASHES:-}}"
+        """
+        result = subprocess.run(
+            ["/bin/sh", "-c", script], capture_output = True, text = True, timeout = 60
+        )
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == expected
+
+    @pytest.mark.parametrize(
+        ("listing", "variable", "expected"),
+        [
+            ("global.only-binary=':all:'", "numpy", "--only-binary :all: --only-binary numpy"),
+            (
+                "global.only-binary=':all:'\ninstall.only-binary=':none:,scipy'",
+                "",
+                "--only-binary scipy",
+            ),
+            ("", "numpy,scipy", "--only-binary numpy --only-binary scipy"),
+            # A value that could word-split into a command is dropped, not forwarded.
+            ("", "numpy,$(touch pwned),ok-pkg", "--only-binary numpy --only-binary ok-pkg"),
+            ("", "", ""),
+        ],
+    )
+    def test_the_shell_accumulates_only_binary_and_drops_unsafe_tokens(
+        self, listing, variable, expected, tmp_path
+    ):
+        """These tokens are word-split straight onto a uv command line.
+
+        So the charset is a safety requirement here rather than only agreement, and the
+        accumulation is pip's documented behaviour for this option, unlike require-hashes.
+        """
+        library = _shell_function_source("_resolve_only_binary_policy")
+        script = f"""
+        {library}
+        _PM_PIP_CONFIG_LISTING='{listing}'
+        PIP_ONLY_BINARY='{variable}'
+        _resolve_only_binary_policy
+        printf '%s' "$_PM_ONLY_BINARY_ARGS"
+        """
+        result = subprocess.run(
+            ["/bin/sh", "-c", script],
+            capture_output = True,
+            text = True,
+            timeout = 60,
+            cwd = tmp_path,
+        )
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.split() == expected.split()
+        assert not (tmp_path / "pwned").exists(), "a substitution in the value was executed"
+
+    def test_the_shell_inserts_only_binary_after_the_subcommand(self):
+        """Several call sites end with `-- <package>`, so an appended flag becomes a package.
+
+        install.sh:6991 is the live example: `uv pip install --no-deps ... -- "$PACKAGE_NAME"`.
+        """
+        body = _shell_function_source("run_install_cmd")
+        injection = body.index("_PM_ONLY_BINARY_ARGS")
+        assert injection < body.index(
+            "--default-index"
+        ), "the index scrub prepends `env ...`, which moves uv out of $1"
+        assert 'set -- uv pip "$_pm_verb" $_PM_ONLY_BINARY_ARGS "$@"' in body
+
+    def test_every_install_ps1_uv_install_carries_the_policy(self):
+        """33 call sites and no chokepoint: Invoke-InstallCommand takes a ScriptBlock.
+
+        The splat is empty on the default path, so this costs nothing there, but one missed
+        site is a silently unenforced policy rather than a visible error.
+        """
+        text = (Path(__file__).resolve().parents[2] / "install.ps1").read_text(encoding = "utf-8")
+        sites = re.findall(r"\$script:UvExe pip install (\S+)", text)
+        assert len(sites) >= 30, f"the call sites moved; found {len(sites)}"
+        assert set(sites) == {
+            "@script:PmOnlyBinaryArgs"
+        }, "every uv install must splat the resolved only-binary policy"
 
     def test_the_shell_declines_the_forced_pip_amd_wheel_too(self):
         """install.sh runs the same direct-URL install through pip, for the same reason.

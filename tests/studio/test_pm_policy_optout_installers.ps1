@@ -66,8 +66,11 @@ $removeUvFlagsSrc    = Get-FunctionText $setupAst   "Remove-UvOnlyResolverFlags"
 # Fast-Install asks these two which policy to carry into uv. Extracted by name rather than
 # stubbed: a stub would answer for the shipped code instead of letting it answer.
 $pipEnvFlagSrc       = Get-FunctionText $setupAst   "Test-PipEnvFlag" $setupPs1
-# Fast-Install resolves the pip hash policy through this now, environment then pip.conf.
+# Fast-Install resolves the pip hash policy through these now, environment then pip.conf,
+# and splats the only-binary policy, which uv can only be told as argv.
+$pipListingSrc       = Get-FunctionText $setupAst   "Get-PmPipConfigListing" $setupPs1
 $pipPolicySrc        = Get-FunctionText $setupAst   "Test-PipPolicyRequiresHashes" $setupPs1
+$onlyBinarySrc       = Get-FunctionText $setupAst   "Get-PipPolicyOnlyBinary" $setupPs1
 $uvEnvFlagSrc        = Get-FunctionText $setupAst   "Test-UvEnvFlag" $setupPs1
 
 Write-Host "== extraction =="
@@ -373,7 +376,9 @@ Check "Fast-Install consults Test-RespectPmPolicy" ($fastInstallSrc -match 'Test
 
 Invoke-Expression $removeUvFlagsSrc
 Invoke-Expression $pipEnvFlagSrc
+Invoke-Expression $pipListingSrc
 Invoke-Expression $pipPolicySrc
+Invoke-Expression $onlyBinarySrc
 Invoke-Expression $uvEnvFlagSrc
 Invoke-Expression $fastInstallSrc
 
@@ -576,5 +581,37 @@ if ($failures -gt 0) {
     Write-Host "FAILED ($failures)" -ForegroundColor Red
     exit 1
 }
+Write-Host ""
+Write-Host "== only-binary, which uv can only be told as argv =="
+Invoke-Expression $pipListingSrc
+Invoke-Expression $onlyBinarySrc
+# Stand in for the pip probe: these cases are about the fold, not about finding pip.
+function Get-PmPipConfigListing { return $script:FakeListing }
+
+$obCases = @(
+    @{ listing = @("global.only-binary=':all:'"); env = 'numpy';
+       expect = @('--only-binary', ':all:', '--only-binary', 'numpy');
+       why    = 'accumulates: pip documents each occurrence as adding to the set' },
+    @{ listing = @("global.only-binary=':all:'", "install.only-binary=':none:,scipy'"); env = '';
+       expect = @('--only-binary', 'scipy');
+       why    = ':none: empties the set, as pip says' },
+    @{ listing = @(); env = 'numpy,scipy';
+       expect = @('--only-binary', 'numpy', '--only-binary', 'scipy');
+       why    = 'the environment alone still resolves' },
+    @{ listing = @(); env = 'numpy,bad name,ok-pkg';
+       expect = @('--only-binary', 'numpy', '--only-binary', 'ok-pkg');
+       why    = 'a token outside the package charset is dropped, not forwarded' },
+    @{ listing = @(); env = '';
+       expect = @();
+       why    = 'an unconfigured host adds nothing' }
+)
+foreach ($case in $obCases) {
+    $script:FakeListing = $case.listing
+    $env:PIP_ONLY_BINARY = $case.env
+    $got = @(Get-PipPolicyOnlyBinary)
+    Check "$($case.why)" ((($got -join ' ')) -eq (($case.expect -join ' ')))
+}
+$env:PIP_ONLY_BINARY = $null
+
 Write-Host "all checks passed" -ForegroundColor Green
 exit 0

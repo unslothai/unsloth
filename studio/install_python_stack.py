@@ -8783,8 +8783,15 @@ def _pinned_binary_policy_args(cmd: "list[str]", env: "dict[str, str] | None") -
         if _respect_pm_policy() and cmd[:1] == ["uv"]:
             return [arg for part in _pip_policy_only_binary() for arg in ("--only-binary", part)]
         return []
-    parts = [part.strip() for part in (env or {}).get("PIP_ONLY_BINARY", "").split(",")]
-    parts = [part for part in parts if part]
+    if _respect_pm_policy() and cmd[:1] == ["uv"]:
+        # The opt-out arm leaves pip.conf readable instead of reasserting it as variables,
+        # so the scrubbed env below is not where the policy lives any more. uv reads neither
+        # the file nor PIP_ONLY_BINARY, and --only-binary has no env spelling on uv 0.10.7,
+        # so a pinned torch install would build an sdist the operator had forbidden.
+        parts = _pip_policy_only_binary()
+    else:
+        parts = [part.strip() for part in (env or {}).get("PIP_ONLY_BINARY", "").split(",")]
+        parts = [part for part in parts if part]
     if not parts:
         return []
     args: list[str] = []
@@ -8900,23 +8907,29 @@ def _uv_only_policy_active() -> bool:
     )
 
 
-def _pip_config_value(option: str, subcommand: str = "install") -> "str | None":
-    """The effective value of a pip config OPTION, or None when the files do not set it.
+def _pip_config_values(option: str, subcommand: str = "install") -> "list[str]":
+    """Every value pip's files give an OPTION, in the order pip loads them.
+
+    A list rather than a scalar because pip has two kinds of option. require-hashes is
+    last-wins, so `[global] true` then `[install] false` is off. only-binary ACCUMULATES:
+    pip documents it as "can be supplied multiple times, and each time adds to the existing
+    value", with `:none:` emptying the set. Collapsing both to one value silently dropped
+    half of an accumulating policy, so the fold is left to the caller that knows which it is.
 
     Reads the listing _pinned_pip_config_overrides() already fetches and memoises, so this
     costs no extra subprocess and inherits its timeout and attempt budget. These options are
     deliberately absent from _PINNED_PIP_CONFIG_KEEP_KEYS -- that allowlist decides what to
     RE-ASSERT after devnull, a different question from what the operator has asked for.
 
-    `:env:` rows are skipped here and reapplied by the caller, because pip ranks the
-    environment ABOVE the files and this returns the file half of that answer alone.
+    `:env:` rows are skipped and reapplied by the caller, because pip ranks the environment
+    ABOVE the files and this returns the file half of that answer alone.
     """
     _pinned_pip_config_overrides(subcommand)
     listing = _PINNED_PIP_CONFIG_LISTING
     if not listing:
-        return None
+        return []
     wanted = option.lower().replace("_", "-")
-    found: "str | None" = None
+    values: "list[str]" = []
     for line in _decode_pip_output(listing).splitlines():
         name, separator, raw = line.partition("=")
         if not separator or name.startswith(":env:"):
@@ -8930,10 +8943,8 @@ def _pip_config_value(option: str, subcommand: str = "install") -> "str | None":
             value = ast.literal_eval(raw.strip())
         except (ValueError, SyntaxError):
             value = raw.strip().strip("'\"")
-        # Printed in load order and the command's own section is read last, so a later
-        # entry -- including one that DISABLES it -- is the answer.
-        found = str(value).strip()
-    return found
+        values.append(str(value).strip())
+    return values
 
 
 def _effective_pip_policy(
@@ -8951,7 +8962,10 @@ def _effective_pip_policy(
     raw = os.environ.get(env_name)
     if raw is not None and raw.strip():
         return raw.strip()
-    return _pip_config_value(option, subcommand)
+    values = _pip_config_values(option, subcommand)
+    # Printed in load order and the command's own section is read last, so a later entry --
+    # including one that DISABLES the control -- is the answer.
+    return values[-1] if values else None
 
 
 def _pip_policy_requires_hashes(subcommand: str = "install") -> bool:
@@ -8963,15 +8977,38 @@ def _pip_policy_requires_hashes(subcommand: str = "install") -> bool:
 
 
 def _pip_policy_only_binary(subcommand: str = "install") -> "list[str]":
-    """The operator's only-binary targets, from PIP_ONLY_BINARY or pip.conf, as uv sees them.
+    """The operator's only-binary targets, as uv would have to be told them.
 
-    `:all:` and named packages are both returned verbatim: uv spells the same restriction
-    `--only-binary`, so the values carry across unchanged and no mapping table is needed.
+    NOT resolved through _effective_pip_policy: pip documents --only-binary as accumulating
+    across every source, so a `[global] only-binary = :all:` with PIP_ONLY_BINARY=numpy
+    restricts everything AND numpy, where last-wins would have restricted numpy alone and
+    quietly allowed source builds for the rest. The files are replayed in load order and the
+    environment appended, which is pip's order, and `:none:` empties the set as pip says.
+
+    `:all:` and named packages carry verbatim: uv spells the same restriction --only-binary,
+    so the values cross unchanged and no mapping table is needed.
     """
-    value = _effective_pip_policy("PIP_ONLY_BINARY", "only-binary", subcommand)
-    if not value:
-        return []
-    return [part.strip() for part in value.split(",") if part.strip()]
+    targets: "list[str]" = []
+    sources = list(_pip_config_values("only-binary", subcommand))
+    sources.append(os.environ.get("PIP_ONLY_BINARY", ""))
+    for source in sources:
+        for part in source.split(","):
+            part = part.strip()
+            if not part:
+                continue
+            if part == ":none:":
+                targets = []
+                continue
+            # The same charset the shell and PowerShell twins enforce, so an unrecognised
+            # token means the same thing at all four entry points. There it is a safety
+            # requirement, since those splat into a command line by word splitting; here it
+            # is only agreement, argv being a list -- but disagreement is the bug class this
+            # whole change exists to close, so the rule is stated once and applied thrice.
+            if not re.fullmatch(r"[A-Za-z0-9._:-]+", part):
+                continue
+            if part not in targets:
+                targets.append(part)
+    return targets
 
 
 def _uv_config_file_present() -> bool:
@@ -8988,14 +9025,20 @@ def _uv_config_file_present() -> bool:
     try:
         if os.environ.get("UV_CONFIG_FILE", "").strip():
             return True
-        if Path("uv.toml").is_file():
-            return True
-        pyproject = Path("pyproject.toml")
-        if pyproject.is_file():
-            # A substring, not a TOML parse: `[tool.uv]` cannot appear by accident, and a
-            # malformed file should not decide a security question by raising.
-            if "[tool.uv]" in pyproject.read_text(encoding = "utf-8", errors = "replace"):
+        # uv help pip install: "configuration files are discovered in the current directory,
+        # parent directories, or user configuration directories". Checking the current
+        # directory alone missed the ordinary case of a policy at the root of a checkout
+        # while the installer runs from a subdirectory.
+        here = Path.cwd().resolve()
+        for directory in (here, *here.parents):
+            if (directory / "uv.toml").is_file():
                 return True
+            pyproject = directory / "pyproject.toml"
+            if pyproject.is_file():
+                # A substring, not a TOML parse: `[tool.uv]` cannot appear by accident, and
+                # a malformed file should not decide a security question by raising.
+                if "[tool.uv]" in pyproject.read_text(encoding = "utf-8", errors = "replace"):
+                    return True
         if IS_WINDOWS:
             base = os.environ.get("APPDATA", "")
             user = Path(base) / "uv" / "uv.toml" if base else None

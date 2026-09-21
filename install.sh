@@ -228,8 +228,24 @@ _respect_pm_policy() {
 # pip-expressed hash requirement has to be restated ONCE for the whole run rather than per
 # command: the pinned arm below is not the only place uv is invoked. UV_REQUIRE_HASHES is
 # uv's documented spelling of --require-hashes. Never over a uv value the operator set.
+# One `pip config list`, shared by both policies below, because a hardened host is likelier
+# to express them in pip.conf than in the environment and two probes would cost twice. Only
+# ever reached once the opt-out is on, so the default path pays nothing.
+_PM_PIP_CONFIG_LISTING=""
+_load_pip_config_listing() {
+    for _pm_pip in pip3 pip; do
+        command -v "$_pm_pip" >/dev/null 2>&1 || continue
+        _PM_PIP_CONFIG_LISTING=$("$_pm_pip" config list 2>/dev/null || true)
+        break
+    done
+    unset _pm_pip
+}
+
+# uv reads no PIP_ variable, and this script runs many uv commands directly, so a
+# pip-expressed hash requirement has to be restated ONCE for the whole run rather than per
+# command. UV_REQUIRE_HASHES is uv's documented spelling of --require-hashes. Never over a
+# uv value the operator set.
 _carry_pip_policy_into_uv() {
-    _respect_pm_policy || return 0
     [ -n "${UV_REQUIRE_HASHES:-}" ] && return 0
     case "$(printf '%s' "${PIP_REQUIRE_HASHES:-}" | tr '[:upper:]' '[:lower:]')" in
         1|t|true|y|yes|on) UV_REQUIRE_HASHES=1; export UV_REQUIRE_HASHES; return 0 ;;
@@ -238,24 +254,58 @@ _carry_pip_policy_into_uv() {
         # the environment above its files, so the file is not consulted.
         *) return 0 ;;
     esac
-    # pip.conf is the likelier shape for a hardened host than the variable, and the Python
-    # phase already reads it. One `pip config list`, only ever on a host that has opted in,
-    # so the default path pays nothing. Any pip on PATH answers for the files, which are a
-    # property of the machine and the user rather than of a particular interpreter.
-    for _pm_pip in pip3 pip; do
-        command -v "$_pm_pip" >/dev/null 2>&1 || continue
-        if "$_pm_pip" config list 2>/dev/null \
-            | sed -n 's/^\(global\|install\)\.require[-_]hashes=//p' \
-            | tr -d "'\"" | tr '[:upper:]' '[:lower:]' \
-            | grep -qvE '^(0|false|no|off|n|f)?$'; then
-            UV_REQUIRE_HASHES=1; export UV_REQUIRE_HASHES
-        fi
-        break
+    # LAST row wins, not "any row is truthy": pip reads [global] then the command's own
+    # section, so `[global] true` followed by `[install] false` is off. Folding with a
+    # grep -q would have exported the requirement against the operator's effective policy,
+    # and would have disagreed with the Python and PowerShell halves of this same feature.
+    _pm_hashes=""
+    for _pm_row in $(printf '%s\n' "$_PM_PIP_CONFIG_LISTING" \
+        | sed -n "s/^\\(global\\|install\\)\\.require[-_]hashes=//p" \
+        | tr -d "'\"" | tr '[:upper:]' '[:lower:]'); do
+        _pm_hashes="$_pm_row"
     done
-    unset _pm_pip
+    case "$_pm_hashes" in
+        ""|0|false|no|off|n|f) ;;
+        *) UV_REQUIRE_HASHES=1; export UV_REQUIRE_HASHES ;;
+    esac
+    unset _pm_hashes _pm_row
     return 0
 }
-_carry_pip_policy_into_uv
+
+# only-binary has no environment spelling on `uv pip install` (uv 0.10.7, unlike
+# --require-hashes), so it can only reach uv as argv. Resolved once here and injected by
+# run_install_cmd below. pip documents the option as ACCUMULATING across sources, each
+# occurrence adding to the set and `:none:` emptying it, so the file rows are replayed in
+# load order and the environment appended rather than one of them winning.
+_PM_ONLY_BINARY_ARGS=""
+_resolve_only_binary_policy() {
+    _pm_set=""
+    for _pm_raw in $(printf '%s\n' "$_PM_PIP_CONFIG_LISTING" \
+        | sed -n "s/^\\(global\\|install\\)\\.only[-_]binary=//p" \
+        | tr -d "'\"" | tr ',' ' ') ${PIP_ONLY_BINARY:-}; do
+        _pm_raw=$(printf '%s' "$_pm_raw" | tr ',' ' ')
+        for _pm_one in $_pm_raw; do
+            if [ "$_pm_one" = ":none:" ]; then
+                _pm_set=""
+                continue
+            fi
+            # Word splitting puts these straight into a command line, so anything outside
+            # a package name or pip's own :all:/:none: is dropped rather than passed on.
+            case "$_pm_one" in
+                *[!A-Za-z0-9._:-]*) continue ;;
+            esac
+            _pm_set="$_pm_set --only-binary $_pm_one"
+        done
+    done
+    _PM_ONLY_BINARY_ARGS="$_pm_set"
+    unset _pm_set _pm_raw _pm_one
+}
+
+if _respect_pm_policy; then
+    _load_pip_config_listing
+    _carry_pip_policy_into_uv
+    _resolve_only_binary_policy
+fi
 
 # Policy that binds uv and that pip cannot be told about. The Python twin is
 # _uv_only_policy_active(); a uv configuration file counts by PRESENCE, unparsed, because
@@ -274,6 +324,16 @@ _uv_only_policy_active() {
 run_install_cmd() {
     _label="$1"
     shift
+    # Before the index scrub below, which may prepend `env ...` and move uv out of $1.
+    if [ -n "${_PM_ONLY_BINARY_ARGS:-}" ] && [ "$1" = "uv" ] && [ "$2" = "pip" ] \
+        && { [ "$3" = "install" ] || [ "$3" = "sync" ]; }; then
+        _pm_verb="$3"
+        shift 3
+        # Immediately after the subcommand, never appended: several call sites end with
+        # `-- <package>`, where a trailing flag would be read as another package name.
+        set -- uv pip "$_pm_verb" $_PM_ONLY_BINARY_ARGS "$@"
+        unset _pm_verb
+    fi
     # For --default-index, clear inherited uv index vars so a uv.toml cannot outrank the CLI pin.
     # Runs before install_python_stack.py, so the Python opt-out cannot cover it. Under the
     # opt-out the config file and the wheelhouse stay (a uv.toml `no-index` makes find-links the

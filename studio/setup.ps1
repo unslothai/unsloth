@@ -7043,32 +7043,70 @@ function Test-RespectPmPolicy {
     return (@('1', 'true', 'yes', 'on') -contains $value.Trim($ws).ToLowerInvariant())
 }
 
-# Same one-shot translation as install.sh and install.ps1: setup.ps1 drives uv directly in
-# places Fast-Install does not cover, and uv reads no PIP_ variable.
-# The pip half of the same question, resolved the way pip itself resolves it: PIP_* outranks
+# One `pip config list` for both policies below. Only ever run once the opt-out is on, so
+# the default path pays nothing for it.
+$script:PmPipConfigListing = $null
+function Get-PmPipConfigListing {
+    if ($null -ne $script:PmPipConfigListing) { return $script:PmPipConfigListing }
+    $script:PmPipConfigListing = @()
+    foreach ($exe in @('pip3', 'pip')) {
+        $found = Get-Command $exe -ErrorAction SilentlyContinue
+        if (-not $found) { continue }
+        try { $script:PmPipConfigListing = @(& $found.Source config list 2>$null) } catch { }
+        break
+    }
+    return $script:PmPipConfigListing
+}
+
+# The pip half of the hash question, resolved the way pip itself resolves it: PIP_* outranks
 # pip.conf, so an explicit variable is the answer and the files are never read. A hardened
 # host is likelier to express this in pip.conf than in the environment, and the Python phase
 # already reads it, so leaving it unread here let the shell phase run uv unhashed first.
-# One `pip config list`, and only ever on a host that has already opted in.
 function Test-PipPolicyRequiresHashes {
     $off = @('', '0', 'false', 'no', 'off', 'n', 'f')
     $raw = "$env:PIP_REQUIRE_HASHES".Trim()
     if ($raw) { return (@('1', 't', 'true', 'y', 'yes', 'on') -contains $raw.ToLowerInvariant()) }
-    foreach ($exe in @('pip3', 'pip')) {
-        $found = Get-Command $exe -ErrorAction SilentlyContinue
-        if (-not $found) { continue }
-        $on = $false
-        try { $listing = & $found.Source config list 2>$null } catch { return $false }
-        foreach ($line in @($listing)) {
-            # Printed in load order, so a later entry -- including one that DISABLES it -- wins.
-            if ("$line" -match "^(global|install)\.require[-_]hashes\s*=\s*'?([^']*)'?\s*$") {
-                $on = ($off -notcontains $Matches[2].Trim().ToLowerInvariant())
-            }
+    $on = $false
+    foreach ($line in (Get-PmPipConfigListing)) {
+        # Printed in load order, so a later entry -- including one that DISABLES it -- wins.
+        if ("$line" -match "^(global|install)\.require[-_]hashes\s*=\s*'?([^']*)'?\s*$") {
+            $on = ($off -notcontains $Matches[2].Trim().ToLowerInvariant())
         }
-        return $on
     }
-    return $false
+    return $on
 }
+
+# only-binary has no environment spelling on `uv pip install` (uv 0.10.7, unlike
+# --require-hashes), so it can only reach uv as argv. pip documents the option as
+# ACCUMULATING across sources, each occurrence adding to the set and `:none:` emptying it,
+# so the file rows are replayed in load order and the environment appended, rather than one
+# of them winning as the hash policy does.
+function Get-PipPolicyOnlyBinary {
+    $sources = @()
+    foreach ($line in (Get-PmPipConfigListing)) {
+        if ("$line" -match "^(global|install)\.only[-_]binary\s*=\s*'?([^']*)'?\s*$") {
+            $sources += $Matches[2]
+        }
+    }
+    $sources += "$env:PIP_ONLY_BINARY"
+    $targets = @()
+    foreach ($source in $sources) {
+        foreach ($part in ("$source" -split ',')) {
+            $part = $part.Trim()
+            if (-not $part) { continue }
+            if ($part -eq ':none:') { $targets = @(); continue }
+            # These go straight onto a command line, so anything outside a package name or
+            # pip's own :all:/:none: is dropped rather than passed on.
+            if ($part -notmatch '^[A-Za-z0-9._:-]+$') { continue }
+            if ($targets -notcontains $part) { $targets += $part }
+        }
+    }
+    return @($targets | ForEach-Object { '--only-binary'; $_ })
+}
+
+# Empty by default, so every splat below is a no-op on the default path.
+$script:PmOnlyBinaryArgs = @()
+if (Test-RespectPmPolicy) { $script:PmOnlyBinaryArgs = Get-PipPolicyOnlyBinary }
 
 if ((Test-RespectPmPolicy) -and -not "$env:UV_REQUIRE_HASHES".Trim() -and (Test-PipPolicyRequiresHashes)) {
     $env:UV_REQUIRE_HASHES = '1'
@@ -7117,7 +7155,7 @@ function Fast-Install {
                 $env:UV_REQUIRE_HASHES = '1'
             }
             $VenvPy = (Get-Command python).Source
-            $result = & uv pip install --python $VenvPy @Args_ 2>&1
+            $result = & uv pip install --python $VenvPy @script:PmOnlyBinaryArgs @Args_ 2>&1
             if ($LASTEXITCODE -eq 0) { return }
             # Same hand-off as pip_install(): pip reads neither uv.toml nor any UV_ variable,
             # so under the opt-out a uv refusal must not become a pip success. No translation
