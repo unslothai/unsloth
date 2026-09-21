@@ -331,7 +331,7 @@ def _self_test() -> int:
         (
             "a real duplicate after a fixture is still caught",
             'import { createServer } from "vite";\n'
-            "const FIXTURE = `\nimport { unrelated } from \"m\";\n`;\n"
+            'const FIXTURE = `\nimport { unrelated } from "m";\n`;\n'
             'import { createServer } from "vite";\n',
             ["createServer"],
         ),
@@ -347,7 +347,7 @@ def _self_test() -> int:
         ),
         (
             "an escaped backtick does not close a template",
-            "const FIXTURE = `\\`\nimport { a } from \"m\";\n`;\n"
+            'const FIXTURE = `\\`\nimport { a } from "m";\n`;\n'
             'import { b } from "m";\nimport { b } from "n";\n',
             ["b"],
         ),
