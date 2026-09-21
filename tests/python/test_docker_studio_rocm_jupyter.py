@@ -252,7 +252,7 @@ def test_every_supervisord_program_is_installed_by_the_dockerfile():
             # must never be started: studio_launch.sh's `command -v sshd` gate keeps
             # UNSLOTH_ENABLE_SSHD false, and the image default agrees.
             assert "openssh-server" not in apt
-            assert 'command -v sshd >/dev/null 2>&1' in _read(LAUNCH)
+            assert "command -v sshd >/dev/null 2>&1" in _read(LAUNCH)
             assert _env(ROCM_STUDIO)["UNSLOTH_ENABLE_SSHD"] == "false"
         elif command == "jupyter":
             pass  # the venv's, pinned above
