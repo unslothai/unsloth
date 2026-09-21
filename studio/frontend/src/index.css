@@ -1182,9 +1182,10 @@ html[data-chat-font] .aui-root {
 		@apply opacity-100 pointer-events-auto;
 	}
 	/* Secondary row action (the pinned-chat unpin button) sits just left of
-	   the primary "…" options button. */
+	   the primary "…" options button. 26px, not 30px: both glyphs are size-6
+	   boxes around a ~16px icon, so 30px left a 14px trough between them. */
 	.sidebar-row-action.is-unpin-action {
-		right: 1.875rem;
+		right: 1.625rem;
 	}
 
 	/* Branch picker chevron buttons sit beside action bar icon buttons

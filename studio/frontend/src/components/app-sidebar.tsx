@@ -3543,7 +3543,20 @@ export function AppSidebar() {
               <span className="truncate">
                 {pendingRename?.id === item.id ? pendingRename.title : item.title}
               </span>
-              {showWorkSpinner && (
+            </SidebarMenuButton>
+            {showWorkSpinner ? (
+              // Anchored to the row, not laid out in it. As ml-auto the spinner rested on
+              // the button's padding-right, and a working row swaps pr-4 for pr-16 to hold
+              // room for the pin and kebab, pushing it 64px in. right-4 is the 16px trailing
+              // column the nav spinner keeps. Fades on hover like the unread dot below.
+              <span
+                className={cn(
+                  "pointer-events-none absolute right-4 top-1/2 z-10 -translate-y-1/2 transition-opacity",
+                  variant === "project"
+                    ? "group-hover/project-chat-item:opacity-0 group-has-[.sidebar-row-action[data-state=open]]/project-chat-item:opacity-0"
+                    : "group-hover/recent-item:opacity-0 group-has-[.sidebar-row-action[data-state=open]]/recent-item:opacity-0",
+                )}
+              >
                 <Spinner
                   data-testid="chat-row-spinner"
                   // role="status" + label: announced, not motion-only.
@@ -3552,10 +3565,10 @@ export function AppSidebar() {
                       ? translate("shell.navigation.chatGenerating")
                       : "Queued"
                   }
-                  className="ml-auto size-3.5 shrink-0 text-muted-foreground"
+                  className="size-3.5 shrink-0 text-muted-foreground"
                 />
-              )}
-            </SidebarMenuButton>
+              </span>
+            ) : null}
             {hasUnreadActivity ? (
               <span
                 className={cn(

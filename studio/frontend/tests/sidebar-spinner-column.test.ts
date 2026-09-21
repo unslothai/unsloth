@@ -8,9 +8,10 @@ import { readSrc } from "./helpers/kit.ts";
 
 const APP_SIDEBAR = readSrc("components/app-sidebar.tsx");
 
-// Both spinners are ml-auto, so each one sits at its row's padding-right plus
-// its own margin-right. The two rows carry different padding, so the margins
-// have to make up the difference or the column visibly steps.
+// The nav spinner is ml-auto, so it sits at its row's padding-right plus its margin-right.
+// The chat spinner is anchored at right-N off the row's edge instead: in the flow a working
+// row swapped pr-4 for pr-16 and shoved it 64px in, which reading pr-4 off the base class
+// never saw. So measure the chat side from the edge it is anchored to.
 const TAILWIND_UNIT = 4;
 
 function inset(classes: string, prefix: string): number {
@@ -36,21 +37,15 @@ test("nav and Recents spinners land on one trailing column", async () => {
     /<Spinner className="(ml-auto[^"]*group-data-\[collapsible=icon\]:hidden)"/,
     "NavItem spinner",
   );
-  const chatRow = grab(
+  // The wrapper the chat spinner hangs off, anchored to the row rather than its text box.
+  const chatSpinnerAnchor = grab(
     APP_SIDEBAR,
-    // Row height is a density choice and moves independently of the trailing
-    // column, so match any h-[Npx]; cursor-pointer is what makes this the chat row.
-    /"(sidebar-nav-btn h-\[\d+px\] cursor-pointer rounded-full[^"]*)"/,
-    "Recents chat row",
-  );
-  const chatSpinner = grab(
-    APP_SIDEBAR,
-    /data-testid="chat-row-spinner"[\s\S]{0,400}?className="(ml-auto[^"]*)"/,
-    "Recents chat spinner",
+    /className=\{cn\(\s*"(pointer-events-none absolute right-[0-9.]+[^"]*)"[\s\S]{0,600}?data-testid="chat-row-spinner"/,
+    "Recents chat spinner anchor",
   );
 
   const nav = inset(navRow, "pr") + inset(navSpinner, "mr");
-  const chat = inset(chatRow, "pr") + inset(chatSpinner, "mr");
+  const chat = inset(chatSpinnerAnchor, "right");
 
   assert.equal(
     nav,
@@ -58,6 +53,12 @@ test("nav and Recents spinners land on one trailing column", async () => {
     `nav spinner sits ${nav}px in, chat spinner ${chat}px`,
   );
   assert.equal(nav, 16);
+
+  // The row's padding must not hold the chat spinner out: that coupling is the bug.
+  assert.ok(
+    !/data-testid="chat-row-spinner"[\s\S]{0,400}?className="ml-auto/.test(APP_SIDEBAR),
+    "the chat spinner is back in the flow, where the row's padding-right moves it",
+  );
 });
 
 // The kebab overlays the row's right edge, so a spinner row must pad past it.
