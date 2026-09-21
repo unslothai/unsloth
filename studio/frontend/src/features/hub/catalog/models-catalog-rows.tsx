@@ -26,6 +26,7 @@ import {
   pinKey,
   usePinnedModelsStore,
 } from "@/features/model-picker";
+import { useUiSpaceScale } from "@/hooks/use-ui-space-scale";
 import { cn, formatCompact } from "@/lib/utils";
 import {
   Download01Icon,
@@ -41,6 +42,7 @@ import {
   memo,
   useCallback,
   useContext,
+  useEffect,
   useMemo,
   useRef,
   useState,
@@ -916,11 +918,17 @@ export function VirtualRows<T>({
 }) {
   const lanes = Math.max(1, columns);
   const rowCount = Math.ceil(items.length / lanes);
+  // The rows inside these slots scale with the UI font size, so the slots do
+  // too, or tall rows run into the next absolutely positioned one.
+  const scale = useUiSpaceScale();
+  const slotHeight = Math.round(rowHeight * scale);
+  const slotCellHeight = Math.round(cellHeight * scale);
+  const laneGap = Math.round(columnGap * scale);
   // eslint-disable-next-line react-hooks/incompatible-library
   const virtualizer = useVirtualizer({
     count: rowCount,
     getScrollElement: () => scrollElement,
-    estimateSize: () => rowHeight,
+    estimateSize: () => slotHeight,
     overscan: 10,
     scrollMargin,
     getItemKey: (rowIndex) => {
@@ -928,6 +936,11 @@ export function VirtualRows<T>({
       return item ? getKey(item, rowIndex * lanes) : `row-${rowIndex}`;
     },
   });
+
+  // Sizes are cached from estimateSize, so a new scale has to invalidate them.
+  useEffect(() => {
+    virtualizer.measure();
+  }, [virtualizer, slotHeight]);
 
   return (
     <ul
@@ -952,7 +965,7 @@ export function VirtualRows<T>({
               transform: `translateY(${virtualRow.start - scrollMargin}px)`,
               // Fixed height matching estimateSize (no measureElement ref): dynamic per-row
               // measurement churns virtualizer state and causes visible jumps as new rows arrive.
-              height: `${rowHeight}px`,
+              height: `${slotHeight}px`,
               contain: "layout",
             }}
           >
@@ -960,8 +973,8 @@ export function VirtualRows<T>({
               style={{
                 display: "grid",
                 gridTemplateColumns: `repeat(${lanes}, minmax(0, 1fr))`,
-                columnGap: `${columnGap}px`,
-                height: `${cellHeight}px`,
+                columnGap: `${laneGap}px`,
+                height: `${slotCellHeight}px`,
               }}
             >
               {Array.from({ length: lanes }, (_, lane) => {

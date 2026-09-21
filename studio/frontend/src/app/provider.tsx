@@ -555,7 +555,7 @@ const CUSTOM_CHROME_STYLE = {
   "--studio-media-header-left-inset": "calc(0.5rem * var(--ui-space-scale, 1))",
   "--studio-chat-control-height": "calc(33px * var(--ui-space-scale, 1))",
   "--studio-chat-header-right-inset": "0px",
-  "--studio-window-control-inset": "112px",
+  "--studio-window-control-inset": "calc(112px * var(--ui-space-scale, 1))",
 } as CSSProperties;
 
 // Mirror the titlebar heights onto <html>: overlays portalled into document.body read the wrapper styles as empty.
@@ -577,7 +577,11 @@ function DesktopChromeVarsEffect({
       "--studio-mac-titlebar-height",
       usesNativeMacTitlebar ? NATIVE_MAC_TITLEBAR_HEIGHT_VAR : null,
     );
-    set("--studio-window-control-inset", usesCustomTitlebar ? "112px" : null);
+    // Holds the drag region clear of the window buttons, which scale with it.
+    set(
+      "--studio-window-control-inset",
+      usesCustomTitlebar ? "calc(112px * var(--ui-space-scale, 1))" : null,
+    );
     // How far body-portaled surfaces must stay clear of the top: either titlebar paints over them.
     set(
       "--studio-window-chrome-top",

@@ -85,3 +85,30 @@ test("the sidebar's hand-set spacing follows the scale", () => {
     "these sidebar paddings ignore the UI font size",
   );
 });
+
+test("fixed slots that hold scaled content scale with it", () => {
+  // These heights live in JS, so the CSS variable cannot reach them. A slot
+  // left at its 15px value clips or overlaps the row it holds.
+  const HOOK = "useUiSpaceScale";
+  const rows = readSrc("features/hub/catalog/models-catalog-rows.tsx");
+  assert.ok(rows.includes(HOOK), "the virtualizer ignores the UI font size");
+  assert.match(rows, /estimateSize: \(\) => slotHeight/);
+  assert.match(rows, /height: `\$\{slotHeight\}px`/);
+  // estimateSize is cached, so a new scale has to invalidate the sizes.
+  assert.match(rows, /virtualizer\.measure\(\)/);
+
+  const carousel = readSrc("features/hub/catalog/hub-section-row.tsx");
+  assert.ok(carousel.includes(HOOK), "the carousel slot ignores it");
+  assert.match(carousel, /itemHeight=\{cardHeight\}/);
+
+  const lists = readSrc("features/hub/catalog/models-catalog-lists.tsx");
+  assert.ok(lists.includes(HOOK), "the pinned grid ignores it");
+});
+
+test("the titlebar reserves room for its scaled controls", () => {
+  const titlebar = readSrc("components/tauri/window-titlebar.tsx");
+  // The drag region starts where this slot ends, so a fixed slot puts it on
+  // top of the last scaled button.
+  assert.match(titlebar, /calc\(7rem \* var\(--ui-space-scale, 1\)\)/);
+  assert.match(PROVIDER, /calc\(112px \* var\(--ui-space-scale, 1\)\)/);
+});
