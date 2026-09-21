@@ -1714,6 +1714,7 @@ class TestFreeSpaceIsNeverServedFromTheCache:
         )[0]
         assert "-Fresh" in helper, "free space is served from a snapshot taken earlier in the run"
 
+
 class TestVolumeLookupRefusesToGuess:
     """Get-StudioFinalPath strips the \\\\?\\ prefix unconditionally and deliberately, so a volume
     with no drive letter comes back as Volume{GUID}\\..., which is not rooted. GetFullPath would
@@ -1801,5 +1802,3 @@ class TestNoRollbackNeverPromisesAKeptCopy:
         # If a fourth call site appears, this fails and the promise above it has to be checked.
         text = INSTALL_PS1.read_text(encoding = "utf-8")
         assert text.count("Start-StudioVenvRollback -ExistingDir") == 3
-
-
