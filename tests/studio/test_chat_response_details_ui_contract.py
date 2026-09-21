@@ -169,7 +169,7 @@ def _assert_only_shrinks(tokens: list[str], what: str, evidence: str) -> None:
 # only knows `min-w-*` reads a class list containing it as stating nothing. Splitting on the
 # LAST colon breaks it too, since the value contains one, so the arbitrary form is matched
 # before any variant is stripped.
-_ARBITRARY_MIN_WIDTH = re.compile(r"(?:^|:)\[min-width:[^\]]*\]!?$")
+_ARBITRARY_MIN_WIDTH = re.compile(r"(?:^|:)!?\[min-width:[^\]]*\]!?$")
 
 
 def _is_min_width(token: str) -> bool:
@@ -440,6 +440,14 @@ def test_reasoning_keeps_streaming_height_cap_through_automatic_collapse():
     assert holders, (
         "no ReasoningBody receives isReasoningStreaming any more, so this guard cannot tell "
         "which render is the one whose collapse the retained height exists to smooth"
+    )
+    # A spread can supply the same prop and, written after it, wins. Nothing here can say
+    # what is in one, so a holder that spreads is refused rather than read.
+    spreading = [tag for tag in holders if re.search(r"\{\s*\.\.\.", tag)]
+    assert not spreading, (
+        f"a ReasoningBody holding this state spreads props, so whether the retained flag it "
+        f"is handed survives depends on what the spread contains, which this guard cannot "
+        f"resolve: {spreading!r}"
     )
     missing = [tag for tag in holders if "retainStreamingHeight={retainStreamingHeight}" not in tag]
     assert not missing, (

@@ -852,6 +852,64 @@ def test_chat_sidebar_rows_are_compact_without_vertical_padding():
     assert 'variant === "project" ? "pl-[39px]" : "pl-3"' in block
 
 
+def _values_are_readable(argument: str) -> bool:
+    """True when every value position in `argument` is a string literal or `undefined`.
+
+    Conditions are not values: in `a && "x"` and `c ? "x" : undefined` only the operands that
+    can BECOME the class string matter, so `a` and `c` may be anything. Split on the
+    operators at top level and treat an operand as a condition when the operator that
+    follows it is `?` or a short-circuit; everything else has to be readable.
+    """
+    parts, depth, quoted, current, operators = [], 0, False, [], []
+    index = 0
+    while index < len(argument):
+        char = argument[index]
+        if quoted:
+            current.append(char)
+            if char == '"':
+                quoted = False
+            index += 1
+            continue
+        if char == '"':
+            quoted = True
+        elif char in "([{":
+            depth += 1
+        elif char in ")]}":
+            depth -= 1
+        elif depth == 0 and argument.startswith("&&", index):
+            parts.append("".join(current))
+            operators.append("&&")
+            current = []
+            index += 2
+            continue
+        elif depth == 0 and argument.startswith("||", index):
+            parts.append("".join(current))
+            operators.append("||")
+            current = []
+            index += 2
+            continue
+        elif depth == 0 and char in "?:":
+            parts.append("".join(current))
+            operators.append(char)
+            current = []
+            index += 1
+            continue
+        current.append(char)
+        index += 1
+    parts.append("".join(current))
+
+    for position, part in enumerate(parts):
+        # An operand followed by `?` or a short-circuit is a condition, not a value.
+        if position < len(operators) and operators[position] in ("?", "&&", "||"):
+            continue
+        value = part.strip()
+        if value in ("", "undefined"):
+            continue
+        if not re.fullmatch(r'"[^"]*"', value):
+            return False
+    return True
+
+
 def _cn_arguments(body: str) -> list[str]:
     """`body` split on top-level commas, ignoring those inside brackets or strings."""
     parts, depth, quoted, current = [], 0, False, []
@@ -941,7 +999,23 @@ def test_chat_sidebar_row_actions_visible_on_coarse_pointers():
         "buttonClass is no longer applied to anything in renderChatSidebarItem, so checking "
         "it says nothing about the row that renders"
     )
-    row_classes = block[builder.end() : builder_end]
+    # Comments first: they hold commas and prose, and splitting arguments around them turns
+    # a sentence into an unreadable "value".
+    row_classes = "\n".join(
+        re.sub(r"(?<!:)//.*$", "", line) for line in block[builder.end() : builder_end].splitlines()
+    )
+    # Every value the builder contributes has to be readable. An identifier holding a class
+    # string is invisible to a scan over quoted literals, so `cn(..., coarseOverride)` would
+    # make pr-0 effective while this guard went on reporting the gutter above it. Conditions
+    # may be anything; it is the VALUES that have to be literals or undefined.
+    unresolved = [
+        argument for argument in _cn_arguments(row_classes) if not _values_are_readable(argument)
+    ]
+    assert not unresolved, (
+        f"buttonClass is built from values this guard cannot read: {unresolved}. A class "
+        f"string held in an identifier can override the row's gutters without appearing "
+        f"here, so keep the row's classes as literals"
+    )
 
     for variant in ("project-chat-item", "recent-item"):
         hovered = re.findall(
