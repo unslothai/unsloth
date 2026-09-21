@@ -983,20 +983,35 @@ def test_the_status_inference_block_is_not_the_mode_aware_one():
         # lands on the lowest level the dial has rather than on "none". Before the
         # controls were resolved, the client's contradictory "high" rode along and
         # the reply reasoned at high effort while the boolean said off.
-        ("reasoning_effort", {"enable_thinking": False, "reasoning_effort": "high"},
-         {"reasoning_effort": "low"}),
+        (
+            "reasoning_effort",
+            {"enable_thinking": False, "reasoning_effort": "high"},
+            {"reasoning_effort": "low"},
+        ),
         # The mirror case: the typed boolean wins and the contradictory level goes,
         # so the template's own default effort applies instead of "none".
-        ("reasoning_effort", {"enable_thinking": True, "reasoning_effort": "none"},
-         {"reasoning_effort": "high"}),
+        (
+            "reasoning_effort",
+            {"enable_thinking": True, "reasoning_effort": "none"},
+            {"reasoning_effort": "high"},
+        ),
         # A boolean-only template never saw the effort either way.
-        ("enable_thinking", {"enable_thinking": False, "reasoning_effort": "high"},
-         {"enable_thinking": False}),
-        ("enable_thinking", {"enable_thinking": True, "reasoning_effort": "none"},
-         {"enable_thinking": True}),
+        (
+            "enable_thinking",
+            {"enable_thinking": False, "reasoning_effort": "high"},
+            {"enable_thinking": False},
+        ),
+        (
+            "enable_thinking",
+            {"enable_thinking": True, "reasoning_effort": "none"},
+            {"enable_thinking": True},
+        ),
         # Agreeing controls are not touched.
-        ("reasoning_effort", {"enable_thinking": True, "reasoning_effort": "high"},
-         {"reasoning_effort": "high"}),
+        (
+            "reasoning_effort",
+            {"enable_thinking": True, "reasoning_effort": "high"},
+            {"reasoning_effort": "high"},
+        ),
     ],
 )
 def test_contradictory_controls_are_resolved_for_every_family(
@@ -1030,9 +1045,12 @@ def test_contradictory_controls_are_resolved_for_every_family(
     )
     inference_route._normalize_chat_reasoning_controls(payload)
 
-    assert LlamaCppBackend._request_reasoning_kwargs(
-        backend, payload.enable_thinking, payload.reasoning_effort, None
-    ) == expected_kwargs
+    assert (
+        LlamaCppBackend._request_reasoning_kwargs(
+            backend, payload.enable_thinking, payload.reasoning_effort, None
+        )
+        == expected_kwargs
+    )
 
 
 @pytest.mark.parametrize(
