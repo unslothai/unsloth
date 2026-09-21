@@ -121,7 +121,6 @@ import {
 import {
   Tooltip,
   TooltipContent,
-  TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { Tooltip as TooltipPrimitive } from "radix-ui";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -136,13 +135,16 @@ import {
   archiveChatItem,
   ChatSearchDialog,
   clearNewChatDraft,
+  chatExportOptions,
   EditProjectDialog,
+  OpenChatFolderUnavailableItem,
+  exportConversationByFormat,
+  getSidebarItemThreadIds,
+  sandboxSessionIdsHolding,
   deleteChatProject,
   deleteChatItem,
-  listStoredChatMessages,
   listStoredChatThreads,
   moveChatItemToProject,
-  allRecordedSandboxSessionIds,
   notifyChatHistoryUpdated,
   renameChatItem,
   useChatRuntimeStore,
@@ -167,8 +169,6 @@ import {
   RECENTS_ORDER_SCOPE,
   type SidebarChatSort,
   type SidebarOrganizeBy,
-  CONVERSATION_MARKDOWN_FORMAT,
-  CONVERSATION_MARKDOWN_LABEL,
   type ProjectRecord,
   type SidebarItem,
   type ChatNavigationState,
@@ -182,7 +182,6 @@ import {
 import { sandboxSessionIdFor } from "@/components/assistant-ui/sandbox-files";
 import {
   revealSandbox,
-  sandboxHasFiles,
 } from "@/components/assistant-ui/sandbox-reveal";
 import { NewProjectDialog } from "@/features/chat/components/new-project-dialog";
 import {
@@ -302,13 +301,6 @@ type NavRowDef = {
   children?: ReactNode;
 };
 
-type ConversationExportFormat =
-  | "raw-jsonl"
-  | "messages-jsonl"
-  | "csv"
-  | "sharegpt-jsonl"
-  | typeof CONVERSATION_MARKDOWN_FORMAT;
-
 // An expanded project shows this many recent chats before "Show more".
 const PROJECT_CHAT_LIMIT = 4;
 // And the Projects section shows this many folders before its own "Show more".
@@ -372,29 +364,14 @@ const REVEAL_WITH_OPEN_MENU_PROJECT_CHAT =
 const REVEAL_WITH_OPEN_MENU_RECENT =
   "group-has-[.sidebar-row-action[data-state=open]]/recent-item:opacity-100 group-has-[.sidebar-row-action[data-state=open]]/recent-item:pointer-events-auto";
 
-// Every list offers the same three orders. Each says what it actually does under its name: the
-// three read as synonyms otherwise, and Manual order in particular is a rule the user writes by
-// dragging rather than one the list applies.
+// Every list offers the same three orders.
 const CHAT_SORT_OPTIONS: Array<{
   value: SidebarChatSort;
   key: TranslationKey;
-  hint: TranslationKey;
 }> = [
-  {
-    value: "priority",
-    key: "shell.organize.priority",
-    hint: "shell.organize.priorityHint",
-  },
-  {
-    value: "updated",
-    key: "shell.organize.lastUpdated",
-    hint: "shell.organize.lastUpdatedHint",
-  },
-  {
-    value: "manual",
-    key: "shell.organize.manualOrder",
-    hint: "shell.organize.manualOrderHint",
-  },
+  { value: "priority", key: "shell.organize.priority" },
+  { value: "updated", key: "shell.organize.lastUpdated" },
+  { value: "manual", key: "shell.organize.manualOrder" },
 ];
 const ORGANIZE_OPTIONS: Array<{
   value: SidebarOrganizeBy;
@@ -403,43 +380,6 @@ const ORGANIZE_OPTIONS: Array<{
   { value: "project", key: "shell.organize.byProject" },
   { value: "list", key: "shell.organize.inOneList" },
 ];
-
-const CHAT_EXPORT_OPTIONS: Array<{
-  label: string;
-  format: ConversationExportFormat;
-}> = [
-  { label: "Training JSONL", format: "raw-jsonl" },
-  { label: "Message JSONL", format: "messages-jsonl" },
-  { label: "CSV", format: "csv" },
-  { label: "ShareGPT JSONL", format: "sharegpt-jsonl" },
-  { label: CONVERSATION_MARKDOWN_LABEL, format: CONVERSATION_MARKDOWN_FORMAT },
-];
-
-async function exportConversationByFormat(
-  threadId: string,
-  format: ConversationExportFormat,
-): Promise<void> {
-  const exports = await import(
-    "@/features/chat/prompt-storage/prompt-storage-dialog"
-  );
-  switch (format) {
-    case "raw-jsonl":
-      return exports.exportConversationRawJsonl(threadId);
-    case "messages-jsonl":
-      return exports.exportConversationMessagesJsonl(threadId);
-    case "csv":
-      return exports.exportConversationCsv(threadId);
-    case "sharegpt-jsonl":
-      return exports.exportConversationShareGPT(threadId);
-    case CONVERSATION_MARKDOWN_FORMAT:
-      return exports.exportConversationMarkdown(threadId);
-    default: {
-      // Exhaustive: a new format is a build error, not a menu item that does nothing.
-      const unhandled: never = format;
-      throw new Error(`Unhandled export format: ${String(unhandled)}`);
-    }
-  }
-}
 
 async function saveChatToProjectSources(
   item: SidebarItem,
@@ -490,51 +430,6 @@ function createNavigationNonce(): string {
 
 function preloadSilently(request: Promise<unknown>): void {
   void request.catch(() => undefined);
-}
-
-/**
- * "Open chat folder" for a browser session, where the backend's file manager is not the user's.
- * Radix's `disabled` takes the row's pointer events away and a tooltip is blocked while the menu
- * owns the screen, so the row stays enabled, refuses the select itself, and drives a controlled
- * tooltip off a pointer-events-none anchor (as the MCP rows do). The reason is carried twice: that
- * tooltip opens on hover, which a screen reader never reaches and a touch device does not have, so
- * `title` describes the row and selecting it opens the hint rather than doing nothing.
- */
-function OpenChatFolderUnavailableItem() {
-  const [hintOpen, setHintOpen] = useState(false);
-
-  return (
-    <DropdownMenuItem
-      aria-disabled={true}
-      title="Only the desktop app can open a chat's files folder. In a browser, download a file from the tool result that wrote it."
-      className="relative opacity-50"
-      onSelect={(event) => {
-        event.preventDefault();
-        setHintOpen(true);
-      }}
-      onPointerEnter={() => setHintOpen(true)}
-      onPointerLeave={() => setHintOpen(false)}
-      onFocus={() => setHintOpen(true)}
-      onBlur={() => setHintOpen(false)}
-    >
-      <HugeiconsIcon icon={FolderOpenIcon} strokeWidth={1.75} className="size-icon" />
-      <span>Open chat folder</span>
-      <Tooltip open={hintOpen}>
-        {/* Our wrapper, not the raw primitive: it registers the trigger element,
-            without which the tooltip counts itself blocked by the open menu. */}
-        <TooltipTrigger asChild={true}>
-          <span
-            aria-hidden={true}
-            className="pointer-events-none absolute inset-y-0 right-0 w-0"
-          />
-        </TooltipTrigger>
-        <TooltipContent side="right" className="max-w-[220px]">
-          Only the desktop app can open a chat's files folder. In a browser,
-          download a file from the tool result that wrote it.
-        </TooltipContent>
-      </Tooltip>
-    </DropdownMenuItem>
-  );
 }
 
 function NavBadge({ label, className }: { label: string; className?: string }) {
@@ -627,10 +522,6 @@ function NavItem({
       {children}
     </SidebarMenuItem>
   );
-}
-
-function getSidebarItemThreadIds(item: SidebarItem) {
-  return item.threadIds?.length ? item.threadIds : [item.id];
 }
 
 const WORKFLOW_UNAVAILABLE = "The loaded model cannot do this";
@@ -1397,12 +1288,12 @@ export function AppSidebar() {
   );
   // Pinned is one list of folders and chats, in the order they were dropped into. Folders lead
   // until a drop says otherwise; a chat sort other than Manual keeps the chats after them.
+  // Pinning is its own grouping: a pinned folder stays here whichever way the sidebar organizes,
+  // and "In one list" only takes the Projects section away.
   const pinnedRows = useMemo(() => {
     const rows: PinnedRow[] = [];
-    if (organizeBy === "project") {
-      for (const project of pinnedProjectBase) {
-        rows.push({ kind: "project", id: project.id, project });
-      }
+    for (const project of pinnedProjectBase) {
+      rows.push({ kind: "project", id: project.id, project });
     }
     for (const item of sortedPinnedChatItems) {
       rows.push({ kind: "chat", id: item.id, item });
@@ -1410,7 +1301,7 @@ export function AppSidebar() {
     return pinnedSort === "manual"
       ? applyManualOrder(rows, manualOrder[PINNED_ORDER_SCOPE], (row) => row.id)
       : rows;
-  }, [organizeBy, pinnedProjectBase, sortedPinnedChatItems, pinnedSort, manualOrder]);
+  }, [pinnedProjectBase, sortedPinnedChatItems, pinnedSort, manualOrder]);
   const pinnedRowIds = useMemo(() => pinnedRows.map((row) => row.id), [pinnedRows]);
   const pinnedProjectRecords = useMemo(
     () => pinnedRows.flatMap((row) => (row.kind === "project" ? [row.project] : [])),
@@ -1435,6 +1326,8 @@ export function AppSidebar() {
   // disclosure, not the Projects one, so each section collects its own.
   const folderChatItems = useCallback(
     (open: boolean, records: ProjectRecord[]) => {
+      // Not in one list: every project chat is a Recents row there, and a folder listing them
+      // again would draw and publish each one twice.
       if (!chatListsOnScreen || organizeBy !== "project" || !open) return [];
       const out: SidebarItem[] = [];
       for (const project of records) {
@@ -1498,24 +1391,22 @@ export function AppSidebar() {
   // section closes, the sidebar organizes by date, or a "show less" takes back the overflow. The chat
   // sets above say nothing about that, since a folder with no chats in view is still a row.
   const renderedProjectIds = useMemo(() => {
-    if (!chatListsOnScreen || organizeBy !== "project") {
-      return new Set<string>();
-    }
+    if (!chatListsOnScreen) return new Set<string>();
     const ids = new Set<string>();
-    // Each folder leaves with its own section.
+    // Each folder leaves with its own section, and Pinned keeps its folders in either organization.
     if (pinnedOpen) {
       for (const project of pinnedProjectRecords) ids.add(project.id);
     }
-    if (projectsOpen) {
+    if (projectsOpen && projectsSectionConfigured) {
       for (const project of visibleProjectRecords) ids.add(project.id);
     }
     return ids;
   }, [
     chatListsOnScreen,
-    organizeBy,
     pinnedOpen,
     pinnedProjectRecords,
     projectsOpen,
+    projectsSectionConfigured,
     visibleProjectRecords,
   ]);
   // Rows wanting attention, most urgent first. Same rule the Priority sort uses.
@@ -1571,6 +1462,7 @@ export function AppSidebar() {
   }, [sortedChatsByProjectId]);
   // Nested rows across both sections, so the bottom fade re-measures when the list height changes.
   const projectChatRowCount = useMemo(() => {
+    // Only folders list chats, and only this organization has folders that do.
     if (organizeBy !== "project") return 0;
     let rows = 0;
     for (const project of [...pinnedProjectRecords, ...visibleProjectRecords]) {
@@ -2847,47 +2739,6 @@ export function AppSidebar() {
     }
   }
 
-  /** The sandbox sessions this chat's stored tool results name, if any. */
-  async function recordedSandboxSessionIds(ids: string[]): Promise<string[]> {
-    const recorded: string[] = [];
-    // Every id a thread names, not just its latest: one chat that ran a tool, moved between projects
-    // and ran another wrote to two folders on its own, and the newest would answer for both. One at a
-    // time, not Promise.all: this file's export contract forbids a concurrent await here.
-    for (const threadId of ids) {
-      recorded.push(
-        ...allRecordedSandboxSessionIds(await listStoredChatMessages(threadId)),
-      );
-    }
-    return [...new Set(recorded)];
-  }
-
-  /**
-     * The folders this chat's files are actually in: what its tool results name, or, for a chat old
-     * enough that they name nothing, what is on disk. Chats stored before results carried a session
-     * recorded nothing, so one that ran loose and has since joined a project would be answered with
-     * the project workspace; its thread sandbox is the only other candidate, and files there are this
-     * chat's. The project workspace is not probed, because it belongs to every chat alike.
-     *
-     * A union rather than a fallback: one recorded id is not evidence that the others are recorded
-     * too, and taking it alone would answer for both folders while hiding the older. Shared by "Open
-     * chat folder" and "Copy session id", which drifted apart once, the copy path skipping the probe
-     * and reporting success on a folder the chat had never written to.
-     */
-  async function sandboxSessionIdsHolding(ids: string[]): Promise<string[]> {
-    const recorded = await recordedSandboxSessionIds(ids);
-    // Thread folders only. A project sandbox is shared by every chat in the project, so files there are
-    // no evidence that THIS chat wrote them, and counting one would report a second folder for any chat
-    // that joined a project someone else had used. Both callers already fall back to the folder
-    // membership gives them when nothing here names one.
-    const held: string[] = [];
-    for (const candidate of ids) {
-      // Already named, so there is nothing a probe could add.
-      if (recorded.includes(candidate)) continue;
-      if (await sandboxHasFiles(candidate)) held.push(candidate);
-    }
-    return [...new Set([...recorded, ...held])];
-  }
-
   /** The sandbox session this chat's tool calls write into. */
   async function copyChatSessionId(item: SidebarItem) {
     const threadIds = getSidebarItemThreadIds(item);
@@ -3223,14 +3074,9 @@ export function AppSidebar() {
             <DropdownMenuRadioItem
               key={option.value}
               value={option.value}
-              className={cn(menuRadioItemClass, "items-start py-1.5")}
+              className={menuRadioItemClass}
             >
-              <span className="flex flex-col gap-0.5">
-                <span>{t(option.key)}</span>
-                <span className="text-ui-12 leading-ui-16 text-muted-foreground">
-                  {t(option.hint)}
-                </span>
-              </span>
+              {t(option.key)}
             </DropdownMenuRadioItem>
           ))}
         </DropdownMenuRadioGroup>
@@ -3734,7 +3580,7 @@ export function AppSidebar() {
                   <span>Export</span>
                 </DropdownMenuSubTrigger>
                 <DropdownMenuSubContent sideOffset={8} alignOffset={-4} className="unsloth-plus-menu w-52">
-                  {CHAT_EXPORT_OPTIONS.map(({ label, format }) => (
+                  {chatExportOptions().map(({ label, format }) => (
                     <DropdownMenuItem
                       key={label}
                       onSelect={async () => {
@@ -3810,7 +3656,10 @@ export function AppSidebar() {
       sortedChatsByProjectId.get(project.id) ?? [];
     const projectChatIds =
       projectChatRowIds.get(project.id) ?? [];
-    const expanded = !collapsedProjectIds.has(project.id);
+    // With the sidebar in one list there is nothing to expand into: the chats are already Recents
+    // rows. The folder row stays, as a way into the project, and opens it rather than toggling.
+    const listsChats = organizeBy === "project";
+    const expanded = listsChats && !collapsedProjectIds.has(project.id);
     const showAll = expandedChatProjectIds.has(project.id);
     const visibleChats =
       expanded && !showAll
@@ -3883,7 +3732,8 @@ export function AppSidebar() {
             )
               return;
             clearSelection();
-            toggleProjectCollapsed(project.id);
+            if (listsChats) toggleProjectCollapsed(project.id);
+            else openProject(project.id);
           }}
             // Same gutter whether hover or this row's menu revealed the actions.
             className="sidebar-nav-btn h-[33px] rounded-full gap-[8.5px] pl-3 pr-2.5 font-medium group-hover/recent-item:pr-16 group-has-[.sidebar-row-action[data-state=open]]/recent-item:pr-16 [@media(pointer:coarse)]:pr-16"

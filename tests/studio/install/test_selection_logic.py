@@ -5028,7 +5028,7 @@ class TestUpstreamDigestKeepsTheFunctionalSmokeTest:
         would validate upstream attempts with an unresolved probe, which the probe gates'
         own comments say demotes a healthy GPU pick to CPU.
         """
-        source = pathlib.Path(INSTALL_LLAMA_PREBUILT.__file__).read_text()
+        source = pathlib.Path(INSTALL_LLAMA_PREBUILT.__file__).read_text(encoding = "utf-8")
         stale = [
             line.strip()
             for line in source.splitlines()
