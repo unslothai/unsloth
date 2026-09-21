@@ -15,6 +15,7 @@ import shutil
 import string
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -120,12 +121,30 @@ _TOOLCHAIN_PINNED = (
 )
 
 
+def _assert_no_unparseable_pin(sr, refused_root):
+    """Whatever the resolver published for the toolchain keys, a compiler must be able to read
+    it, and it must not sit inside the root we just refused.
+
+    The rule is not "unset". torch's own fallback is <gettempdir>/torchinductor_<login> and it
+    sanitises only [\\/:*?"<>|], so an o'brien or First Last login lands back on the character
+    that caused the refusal. Unset is only acceptable when the temporary directory is no better.
+    """
+    for key in _TOOLCHAIN_PINNED:
+        value = os.environ.get(key)
+        if value is None:
+            continue
+        assert value.strip(), f"{key} was left blank, which Inductor reads as a relative path"
+        assert not sr.toolchain_path_unparseable(value), f"{key} was pinned to {value!r}"
+        assert not value.startswith(str(refused_root)), f"{key} stayed inside {refused_root}"
+
+
 def test_a_spaced_root_leaves_the_compiler_caches_to_their_own_defaults(monkeypatch, tmp_path):
     """ "C:\\Users\\First Last" is an ordinary Windows account name, so the DEFAULT Studio root
     contains a space for a large share of installs. Before this file pinned these, Inductor used
-    its own whitespace-free temporary directory and the build worked; pinning it into a spaced
-    root broke torch.compile outright. Unset is the behaviour that shipped, so that is the
-    fallback: the rest of the caches, which nobody pastes into a command line, still move."""
+    its own temporary directory and the build worked; pinning it into a spaced root broke
+    torch.compile outright. The refusal now publishes a parseable directory rather than hoping
+    torch's own default is one, since for a First Last login it is not. The rest of the caches,
+    which nobody pastes into a command line, still move."""
     spaced = tmp_path / "my home" / "studio"
     spaced.mkdir(parents = True)
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(spaced))
@@ -133,8 +152,7 @@ def test_a_spaced_root_leaves_the_compiler_caches_to_their_own_defaults(monkeypa
 
     sr._setup_cache_env()
 
-    for key in _TOOLCHAIN_PINNED:
-        assert key not in os.environ, f"{key} was pinned to a path with a space"
+    _assert_no_unparseable_pin(sr, spaced)
     # Non-vacuity, and the point of the guard being narrow: everything else is still contained.
     for key in ("UV_CACHE_DIR", "NUMBA_CACHE_DIR", "MPLCONFIGDIR", "UNSLOTH_COMPILE_LOCATION"):
         assert os.environ[key].startswith(str(spaced.parent)), key
@@ -175,8 +193,7 @@ def test_a_quoted_root_leaves_the_compiler_caches_to_their_own_defaults(
 
     sr._setup_cache_env()
 
-    for key in _TOOLCHAIN_PINNED:
-        assert key not in os.environ, f"{key} was pinned to a path holding {name!r}"
+    _assert_no_unparseable_pin(sr, quoted)
     # Non-vacuity: the caches nobody pastes into a command line still move.
     for key in ("UV_CACHE_DIR", "NUMBA_CACHE_DIR", "UNSLOTH_COMPILE_LOCATION"):
         assert os.environ[key].startswith(str(quoted.parent)), key
@@ -194,8 +211,7 @@ def test_a_backslash_in_a_posix_root_leaves_the_compiler_caches_alone(monkeypatc
 
     sr._setup_cache_env()
 
-    for key in _TOOLCHAIN_PINNED:
-        assert key not in os.environ, key
+    _assert_no_unparseable_pin(sr, odd)
 
 
 @pytest.mark.parametrize(
@@ -266,6 +282,53 @@ def test_no_character_at_all_lets_a_mangled_path_through(tmp_path):
         "these characters would be pinned into a compiler command line that mangles them: "
         + ", ".join(repr(c) for c in leaked)
     )
+
+
+def test_a_refused_root_gets_a_parseable_cache_rather_than_torchs_own(monkeypatch, tmp_path):
+    """Leaving the variable unset is not automatically safe, which is the whole reason this
+    branch publishes something.
+
+    torch's default is <gettempdir>/torchinductor_<login>, sanitised against [\\\\/:*?"<>|] only,
+    so an o'brien or a First Last login is handed back the character that caused the refusal
+    (torch/_inductor/runtime/cache_dir_utils.py::default_cache_dir). The replacement is named
+    from a hex digest, so it cannot carry one itself, and it is keyed on the path we wanted, so
+    the same install returns to the same cache every launch."""
+    refused = tmp_path / "o'brien" / "studio"
+    refused.mkdir(parents = True)
+    temp_root = tmp_path / "tmp"
+    temp_root.mkdir()
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(refused))
+    monkeypatch.setattr(tempfile, "gettempdir", lambda: str(temp_root))
+    sr = _load_storage_roots()
+    monkeypatch.setattr(sr.tempfile, "gettempdir", lambda: str(temp_root))
+
+    sr._setup_cache_env()
+    first = os.environ["TORCHINDUCTOR_CACHE_DIR"]
+
+    assert not sr.toolchain_path_unparseable(first)
+    assert first.startswith(str(temp_root))
+    assert Path(first).is_dir()
+
+    # Stable: a cache that moved every launch would be a cold compile every launch.
+    for key in _TOOLCHAIN_PINNED:
+        monkeypatch.delenv(key, raising = False)
+    sr._setup_cache_env()
+    assert os.environ["TORCHINDUCTOR_CACHE_DIR"] == first
+
+
+def test_a_refused_root_with_no_usable_temp_root_still_publishes_nothing(monkeypatch, tmp_path):
+    """The other end of the same branch. When the temporary directory carries the character too
+    there is nowhere left to point, and an unset variable is better than a broken one."""
+    refused = tmp_path / "o'brien" / "studio"
+    refused.mkdir(parents = True)
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(refused))
+    sr = _load_storage_roots()
+    monkeypatch.setattr(sr.tempfile, "gettempdir", lambda: str(tmp_path / "also'bad"))
+
+    sr._setup_cache_env()
+
+    for key in _TOOLCHAIN_PINNED:
+        assert key not in os.environ, key
 
 
 def test_an_explicit_spaced_compiler_cache_is_left_alone(monkeypatch, tmp_path):
@@ -1247,7 +1310,9 @@ def test_a_blank_toolchain_override_is_dropped_on_a_spaced_root(monkeypatch, tmp
 
     sr._setup_cache_env()
 
-    assert "TORCHINDUCTOR_CACHE_DIR" not in os.environ
+    assert (os.environ.get("TORCHINDUCTOR_CACHE_DIR") or "").strip() != ""  \
+        or "TORCHINDUCTOR_CACHE_DIR" not in os.environ
+    _assert_no_unparseable_pin(sr, spaced)
 
 
 def test_an_unusable_managed_inductor_path_is_not_published(monkeypatch, tmp_path):

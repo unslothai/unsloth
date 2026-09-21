@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+import contextlib
+import hashlib
 import importlib.util
 import json
 import ntpath
@@ -1073,6 +1075,25 @@ def _toolchain_unsafe(key: str, value: str) -> bool:
     return key in _TOOLCHAIN_PATH_KEYS and toolchain_path_unparseable(value)
 
 
+def _parseable_toolchain_fallback(key: str, intended: str) -> str | None:
+    """A cache directory the C++ builders can read, or None when even the temp root is unusable.
+
+    Keyed on the path we WANTED, so the same install returns to the same directory on every
+    launch and two installs under one temp root do not share one cache. The digest is hex, so
+    the name this builds cannot itself carry an unparseable character.
+    """
+    try:
+        base = tempfile.gettempdir()
+    except (OSError, ValueError):
+        return None
+    if not base or toolchain_path_unparseable(base):
+        return None
+    digest = hashlib.sha256(intended.encode("utf-8", "replace")).hexdigest()[:12]
+    candidate = str(Path(base) / f"unsloth-{key.lower().replace('_', '-')}-{digest}")
+    # The join can still reintroduce one: gettempdir() is parseable but Path may normalise.
+    return None if toolchain_path_unparseable(candidate) else candidate
+
+
 def _setup_cache_env() -> None:
     """Set cache env vars for HuggingFace, uv, and vLLM.
 
@@ -1113,9 +1134,33 @@ def _setup_cache_env() -> None:
             # An explicit value is still honoured above: the caller chose it, and only a default
             # we invented is ours to withhold.
             if _toolchain_unsafe(key, value):
+                # Unset is not automatically safe. torch's own default is
+                # <gettempdir>/torchinductor_<user>, and it sanitises only [\\/:*?"<>|], so a
+                # login called o'brien or First Last lands right back on the character that
+                # started this. Measured against cache_dir_utils.default_cache_dir:
+                #     dan          /tmp/torchinductor_dan          parseable
+                #     o'brien      /tmp/torchinductor_o'brien      NOT parseable
+                #     First Last   /tmp/torchinductor_First Last   NOT parseable
+                #     say"hi       /tmp/torchinductor_say_hi       parseable (sanitised)
+                # So publish a path the builders can read instead of hoping for one. Named from
+                # a digest, which is hex and therefore always parseable, and only when the
+                # temporary directory itself is.
+                fallback = _parseable_toolchain_fallback(key, value)
+                if fallback is not None:
+                    logger.debug(
+                        "%s holds a character the C++ builders cannot paste into a command "
+                        "line unquoted; pinning %s to %s instead",
+                        value,
+                        key,
+                        fallback,
+                    )
+                    os.environ[key] = fallback
+                    with contextlib.suppress(OSError):
+                        Path(fallback).mkdir(parents = True, exist_ok = True)
+                    continue
                 logger.debug(
                     "leaving %s unset: %s holds a character the C++ builders cannot paste "
-                    "into a command line unquoted",
+                    "into a command line unquoted, and the temporary directory is no better",
                     key,
                     value,
                 )
