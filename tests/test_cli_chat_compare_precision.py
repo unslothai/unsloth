@@ -25,7 +25,7 @@ def test_recorded_precision_wins(tmp_path, recorded):
 @pytest.mark.parametrize(
     "method, base_model, expected",
     [
-        ("CPT", "unsloth/Qwen3-4B", False),
+        ("CPT", "unsloth/Qwen3-4B", True),
         ("CPT", "unsloth/Qwen3-4B-unsloth-bnb-4bit", True),
         ("lora", "unsloth/Qwen3-4B-unsloth-bnb-4bit", False),
         ("qlora", "unsloth/Qwen3-4B", True),

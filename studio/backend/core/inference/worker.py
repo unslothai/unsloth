@@ -208,7 +208,7 @@ def _resolve_lora_4bit(mc, load_in_4bit: bool) -> bool:
     """Reconcile load_in_4bit with a LoRA adapter's recorded training method.
 
     A recorded unsloth_load_in_4bit wins; otherwise lora -> base is full precision
-    (4bit off); qlora -> base is quantized (4bit on); any other method -> force off
+    (4bit off); qlora -> base is quantized (4bit on); unknown method -> force off
     only when the base is not a -bnb-4bit repo.
     A missing or unreadable adapter_config.json leaves the value unchanged.
     """
@@ -241,14 +241,13 @@ def _resolve_lora_4bit(mc, load_in_4bit: bool) -> bool:
             logger.info("adapter_config.json says qlora — setting load_in_4bit=True")
             return True
         if (
-            training_method != "qlora"
+            not training_method
             and mc.base_model
             and "-bnb-4bit" not in mc.base_model.lower()
             and load_in_4bit
         ):
             logger.info(
-                "Training method %r, base model has no -bnb-4bit — setting load_in_4bit=False",
-                training_method,
+                "No training method, base model has no -bnb-4bit — setting load_in_4bit=False"
             )
             return False
     except Exception as e:

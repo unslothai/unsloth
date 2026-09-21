@@ -895,12 +895,12 @@ class TestEffectiveLoadIn4bit(unittest.TestCase):
             cfg = SimpleNamespace(is_lora = True, path = d, base_model = "meta/Llama-3-8B")
             self.assertFalse(self.route._effective_load_in_4bit(cfg, True))
 
-    def test_cpt_method_non_bnb_base_flips_to_16bit(self):
+    def test_legacy_cpt_method_non_bnb_base_keeps_request(self):
         import tempfile
         with tempfile.TemporaryDirectory() as d:
             self._write_adapter(d, {"unsloth_training_method": "CPT"})
             cfg = SimpleNamespace(is_lora = True, path = d, base_model = "unsloth/Qwen3-4B")
-            self.assertFalse(self.route._effective_load_in_4bit(cfg, True))
+            self.assertTrue(self.route._effective_load_in_4bit(cfg, True))
 
     def test_cpt_method_bnb_base_keeps_4bit(self):
         import tempfile

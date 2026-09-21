@@ -4554,7 +4554,7 @@ class UnslothTrainer:
                 method = "lora"
 
             config["unsloth_training_method"] = method
-            config["unsloth_load_in_4bit"] = bool(self.load_in_4bit)
+            config["unsloth_load_in_4bit"] = bool(self.load_in_4bit) and _bitsandbytes_allows_4bit()
             logger.info(f"Patching adapter_config.json with unsloth_training_method='{method}'")
 
             with open(config_path, "w", encoding = "utf-8") as f:

@@ -85,7 +85,11 @@ def _get_base_load_in_4bit(model_config) -> bool:
             return False
         if training_method == "qlora":
             return True
-        if model_config.base_model and "-bnb-4bit" not in model_config.base_model.lower():
+        if (
+            not training_method
+            and model_config.base_model
+            and "-bnb-4bit" not in model_config.base_model.lower()
+        ):
             return False
         return True
     except Exception:

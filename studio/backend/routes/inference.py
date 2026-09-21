@@ -10620,7 +10620,7 @@ def _effective_load_in_4bit(config: ModelConfig, requested: bool) -> bool:
         return False
     if training_method == "qlora":
         return True
-    if config.base_model and "-bnb-4bit" not in config.base_model.lower():
+    if not training_method and config.base_model and "-bnb-4bit" not in config.base_model.lower():
         return False
     return load_in_4bit
 
