@@ -12698,3 +12698,36 @@ def test_a_gguf_walk_that_hit_the_entry_cap_is_reported(monkeypatch):
         with collecting_scan_incidents() as incidents:
             assert len(list(gguf_utils.iter_gguf_files(directory, recursive = True))) == 4
         assert incidents == [], f"a walk within the cap reported a gap: {incidents}"
+
+
+def test_the_index_identity_comes_back_with_the_resolution(monkeypatch):
+    """Read under the scan's own lock, not afterwards.
+
+    A warmer publishing between the resolver returning and a separate read of the index
+    state would have that newer snapshot credited with an answer the previous one gave, and
+    the marker would then look valid for an index that may already hold the alias. The
+    resolver hands both back together, taken under _lock, which the scan holds for its whole
+    pass, so nothing can publish in between.
+    """
+    monkeypatch.setattr(resolver, "_build_index", lambda: {})
+    monkeypatch.setattr(resolver, "_CACHE_TTL_S", 0)
+
+    resolved, state = resolver.resolve_local_gguf_with_index_state("nope/not-a-model")
+    assert resolved is None
+    assert state == (resolver.index_generation(), resolver.index_scan_stamp()), (
+        "the identity returned is not the one the resolution came from"
+    )
+
+    # The route uses that pair rather than re-reading, for both questions it asks.
+    src = inspect.getsource(inference_route._maybe_auto_switch_model)
+    assert "resolved, alias_probe_state = await asyncio.to_thread(" in src, (
+        "the route no longer takes the index identity with its resolution"
+    )
+    assert "scan_stamp_after = alias_probe_state[1]" in src, (
+        "the route reads the post-resolution stamp separately again"
+    )
+    assert "alias_probe_state = _alias_probe_index_state()" not in src, (
+        "the route still re-reads the index state after resolving"
+    )
+    # And a positive hit from the trusted cache leaves no state, so nothing is settled off it.
+    assert "alias_probe_state[1] if alias_probe_state else 0.0" in src

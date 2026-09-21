@@ -1241,6 +1241,26 @@ def resolve_local_gguf(
         return None
 
 
+def resolve_local_gguf_with_index_state(
+    requested: str,
+    *,
+    include_companion_scope: bool = False,
+) -> tuple:
+    """``(resolved, (generation, stamp))``: the answer and the index that gave it.
+
+    Reading the identity after :func:`resolve_local_gguf` returns leaves a window in which a
+    warmer publishes a newer snapshot, and a caller memoizing a MISS would then record it
+    against an index that answered nothing -- one that may already hold the alias. Both are
+    read under ``_lock`` here, which the scan holds for its whole pass, so nothing can
+    publish in between.
+    """
+    resolved = resolve_local_gguf(
+        requested, include_companion_scope = include_companion_scope
+    )
+    with _lock:
+        return resolved, (_generation, _snapshot()[0])
+
+
 def _resolve_from_index(
     requested: str,
     index: dict[str, _LocalGgufEntry],

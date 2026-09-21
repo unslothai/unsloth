@@ -9780,6 +9780,7 @@ async def _maybe_auto_switch_model(
         local_gguf_companion_state,
         local_target_is_gguf,
         resolve_local_gguf,
+        resolve_local_gguf_with_index_state,
         resolve_trusted_cached_local_gguf,
         warm_index_soon,
     )
@@ -9922,8 +9923,12 @@ async def _maybe_auto_switch_model(
             if resolved is not None:
                 warm_index_soon()
             else:
-                resolved = await asyncio.to_thread(
-                    resolve_local_gguf,
+                # The index identity comes back WITH the answer, read under the scan's
+                # own lock: a snapshot published between the resolver returning and a
+                # later read would be credited with an answer the previous one gave, and
+                # the marker would look valid for an index that may already hold the alias.
+                resolved, alias_probe_state = await asyncio.to_thread(
+                    resolve_local_gguf_with_index_state,
                     requested_model,
                     include_companion_scope = True,
                 )
@@ -9945,7 +9950,8 @@ async def _maybe_auto_switch_model(
             # or scan-folder failure publishes a fresh PARTIAL snapshot, and a miss read
             # from that is only what this pass could see. Memoizing it would keep the
             # shortcut answering with the filename after the scan recovered.
-            scan_stamp_after = index_scan_stamp()
+            # From the pair read WITH the resolution, never a fresh read.
+            scan_stamp_after = alias_probe_state[1] if alias_probe_state else 0.0
             alias_probe_answered = (
                 resolved is None
                 and index_last_scan_was_complete()
@@ -9954,10 +9960,6 @@ async def _maybe_auto_switch_model(
                     or index_answer_is_trustworthy()
                 )
             )
-            # WHICH index that answer came from. There is awaited work between here and the
-            # finally below, so a warmer can publish another snapshot in between, and the
-            # marker must not be recorded against an index this miss was never read from.
-            alias_probe_state = _alias_probe_index_state()
         if resolved is None:
             # Not on disk. Opt-in: fetch in the background and ask the caller to retry.
             if auto_switch_on and not reload_only:
