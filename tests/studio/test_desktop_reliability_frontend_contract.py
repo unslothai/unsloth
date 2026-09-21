@@ -1261,7 +1261,9 @@ def _labelled_actions(
             for token in worn
             if re.fullmatch(r"(?:\S*:)?!?[a-z][\w-]*!?", token) and not token.startswith("is-")
         }
-        moved_by = _classes_setting(live_css, named - _MODELLED_ACTION_CLASSES, _DECLARES_RIGHT_EDGE)
+        moved_by = _classes_setting(
+            live_css, named - _MODELLED_ACTION_CLASSES, _DECLARES_RIGHT_EDGE
+        )
         assert not moved_by, (
             f"the {name} action carries {moved_by}, whose rules in index.css move its right "
             f"edge or change its padding. The reach below is computed from the base rule and "
