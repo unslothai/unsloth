@@ -214,3 +214,39 @@ def test_the_held_answer_expires(monkeypatch, as_account):
         expiry, value = mpu._cached
         mpu._cached = (expiry - mpu._CACHE_TTL_SECONDS - 1.0, value)
     assert mpu.get_managed_private_provider_urls_allowed() is True
+
+
+def test_a_read_in_flight_cannot_republish_what_a_write_replaced(as_account):
+    """The owner disabling the switch is not undone by a read that started before it.
+
+    The losing interleaving is: a managed request finds nothing held and goes to
+    the store, the owner's PUT commits False and drops the cache, and only then
+    does the older read hand back the True it saw. Without the generation check
+    that True is held for the whole TTL, so private egress keeps working after
+    the owner switched it off. The write is driven from inside the store read,
+    which is that interleaving exactly rather than a sleep hoping to hit it.
+    """
+    as_account(OWNER)
+    mpu.set_managed_private_provider_urls_allowed(True)
+    mpu.forget_cached_setting()
+
+    import storage.studio_db as studio_db_module
+
+    real = studio_db_module.get_app_setting
+
+    def _write_lands_mid_read(*args, **kwargs):
+        stored = real(*args, **kwargs)
+        studio_db_module.get_app_setting = real  # the setter must not re-enter this
+        mpu.set_managed_private_provider_urls_allowed(False)
+        return stored
+
+    studio_db_module.get_app_setting = _write_lands_mid_read
+    try:
+        # The stale value is still what THIS call returns: it is the answer the
+        # caller was already committed to. What must not happen is it outliving
+        # the call.
+        assert mpu.get_managed_private_provider_urls_allowed() is True
+        assert mpu._remembered() is None
+        assert mpu.get_managed_private_provider_urls_allowed() is False
+    finally:
+        studio_db_module.get_app_setting = real

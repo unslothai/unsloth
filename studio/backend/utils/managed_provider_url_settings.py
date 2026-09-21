@@ -23,6 +23,10 @@ BLOCK_PRIVATE_ENV = "UNSLOTH_STUDIO_BLOCK_PRIVATE_PROVIDER_URLS"
 _CACHE_TTL_SECONDS = 1.0
 _cache_lock = threading.Lock()
 _cached: tuple[float, bool] | None = None
+# Bumped by every write. A read that started before a write must not publish what it saw after
+# it: the store has moved on, and the stale value would be served for the whole TTL, which on a
+# disable means private egress continuing after the owner switched it off.
+_generation = 0
 
 
 def _remembered() -> bool | None:
@@ -32,17 +36,20 @@ def _remembered() -> bool | None:
     return None
 
 
-def _remember(value: bool) -> None:
+def _remember(value: bool, generation: int) -> None:
     global _cached
     with _cache_lock:
+        if generation != _generation:
+            return
         _cached = (time.monotonic() + _CACHE_TTL_SECONDS, value)
 
 
 def forget_cached_setting() -> None:
-    """Drop the held answer. Called on write, and available to tests."""
-    global _cached
+    """Drop the held answer and retire any read already in flight. Called on write."""
+    global _cached, _generation
     with _cache_lock:
         _cached = None
+        _generation += 1
 
 
 def _coerce_bool(value: Any) -> bool | None:
@@ -76,6 +83,8 @@ def get_managed_private_provider_urls_allowed() -> bool:
     held = _remembered()
     if held is not None:
         return held
+    with _cache_lock:
+        generation = _generation
     try:
         from storage.studio_db import get_app_setting
         from utils.account_context import OWNER, run_as
@@ -84,7 +93,7 @@ def get_managed_private_provider_urls_allowed() -> bool:
         return False
     parsed = _coerce_bool(stored)
     allowed = parsed if parsed is not None else DEFAULT_MANAGED_PRIVATE_PROVIDER_URLS_ALLOWED
-    _remember(allowed)
+    _remember(allowed, generation)
     return allowed
 
 
