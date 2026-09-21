@@ -1434,6 +1434,13 @@ export const hi = {
             hfHub: "Hugging Face मॉडल कैश",
           },
         },
+        lowDisk: {
+          title: "डिस्क स्पेस कम हो रहा है",
+          criticalTitle: "डिस्क स्पेस बेहद कम है",
+          description:
+            "{total} में से {free} खाली। कैश साफ़ करने से जगह खाली हो सकती है।",
+          action: "कैश देखें",
+        },
         futureDownloads: "केवल नए डाउनलोड",
         environmentManaged: "{variable} एनवायरनमेंट वेरिएबल द्वारा प्रबंधित।",
         locationFree: "{free} खाली",

@@ -1400,6 +1400,12 @@ export const zhCN = {
             hfHub: "Hugging Face 模型缓存",
           },
         },
+        lowDisk: {
+          title: "磁盘空间不足",
+          criticalTitle: "磁盘空间严重不足",
+          description: "{total}中剩余{free}。清理缓存可以释放空间。",
+          action: "查看缓存",
+        },
         futureDownloads: "仅对新下载生效",
         environmentManaged: "由环境变量 {variable} 管理。",
         locationFree: "{free} 可用",

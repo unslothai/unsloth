@@ -1437,6 +1437,13 @@ export const ru = {
             hfHub: "Кеш моделей Hugging Face",
           },
         },
+        lowDisk: {
+          title: "Заканчивается место на диске",
+          criticalTitle: "Критически мало места на диске",
+          description:
+            "Свободно {free} из {total}. Очистка кешей может освободить место.",
+          action: "Посмотреть кеши",
+        },
         futureDownloads: "Только новые загрузки",
         environmentManaged: "Управляется переменной окружения {variable}.",
         locationFree: "{free} свободно",

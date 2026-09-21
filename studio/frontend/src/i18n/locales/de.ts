@@ -1470,6 +1470,13 @@ export const de = {
             hfHub: "Hugging Face-Modell-Cache",
           },
         },
+        lowDisk: {
+          title: "Der Speicherplatz wird knapp",
+          criticalTitle: "Der Speicherplatz ist kritisch knapp",
+          description:
+            "{free} frei von {total}. Das Leeren der Caches kann Speicherplatz freigeben.",
+          action: "Caches ansehen",
+        },
       },
       environment: {
         title: "Umgebung",
