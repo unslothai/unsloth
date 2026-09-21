@@ -13,6 +13,7 @@ import random
 import re
 import threading
 import time
+import weakref
 import wave
 from typing import Any, AsyncGenerator, Literal, NamedTuple, Optional, Union
 from urllib.parse import urlparse, urlsplit, urlunsplit
@@ -852,21 +853,116 @@ class _PinnedPublicTransport(httpx.AsyncBaseTransport):
             await transport.aclose()
 
 
-_managed_http_client: Optional[httpx.AsyncClient] = None
+class _PinnedNonMetadataTransport(_PinnedPublicTransport):
+    """Managed-account egress once the owner has allowed private addresses.
+
+    The public pin, one rule looser: the dialled address may be private, never metadata. The
+    re-resolve stays, or a name that validated as public could answer 169.254.169.254 by connect
+    time, which is the one destination this switch may not open.
+    """
+
+    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+        from core.inference.providers import (
+            _public_registry_hostname,
+            provider_address_excluding_metadata,
+        )
+
+        host = request.url.host
+        if _public_registry_hostname(host):
+            return await self._pool(("registry",)).handle_async_request(request)
+        try:
+            address = await asyncio.to_thread(provider_address_excluding_metadata, str(request.url))
+        except ValueError as exc:
+            raise httpx.ConnectError(str(exc), request = request) from exc
+        pinned = httpx.Request(
+            method = request.method,
+            url = request.url.copy_with(host = address),
+            headers = request.headers,
+            stream = request.stream,
+            extensions = {**request.extensions, "sni_hostname": host},
+        )
+        origin = (request.url.scheme, host, request.url.port)
+        return await self._pool(origin).handle_async_request(pinned)
+
+
+# (account_id, private allowed) -> client. Keyed by account because an AsyncClient persists cookies
+# across requests (python-httpx.org/advanced/clients): one shared client crosses a gateway session
+# from the account that collected it to the next account calling the same host.
+_managed_clients: dict[tuple[str, bool], httpx.AsyncClient] = {}
+_managed_clients_lock = threading.Lock()
+# Retired accounts. Bounded: it only outlives requests in flight when the account went away.
+_retired_accounts: set[str] = set()
+_RETIRED_ACCOUNTS_MAX = 1024
+# client -> the loop it was created on. Weak, so it never keeps a client alive by itself.
+_client_loops: "weakref.WeakKeyDictionary[httpx.AsyncClient, asyncio.AbstractEventLoop]" = (
+    weakref.WeakKeyDictionary()
+)
+
+
+def retire_account_clients(account_id: str) -> int:
+    """Drop and close a retired account's provider clients, returning how many were held.
+
+    Without it the cache is bounded by accounts ever CREATED, and a deleted account's cookie jar
+    and idle sockets outlive it for the life of the process.
+    """
+    with _managed_clients_lock:
+        retired = [
+            _managed_clients.pop(key) for key in list(_managed_clients) if key[0] == account_id
+        ]
+        # Tombstoned: a request that authenticated before deactivation can reach `_client()` after
+        # this sweep, and would otherwise re-insert an entry nothing sweeps again.
+        _retired_accounts.add(account_id)
+        while len(_retired_accounts) > _RETIRED_ACCOUNTS_MAX:
+            _retired_accounts.pop()
+    for client in retired:
+        loop = _client_loops.get(client)
+        try:
+            running = asyncio.get_running_loop()
+        except RuntimeError:
+            running = None
+        if running is not None and (loop is None or loop is running):
+            running.create_task(client.aclose())
+        elif loop is not None and not loop.is_closed():
+            # Deletion is a sync route with no loop of its own, and dropping the reference does
+            # not close a pool.
+            asyncio.run_coroutine_threadsafe(client.aclose(), loop)
+    return len(retired)
+
+
+def restore_account_clients(account_id: str) -> None:
+    """Lift the retirement tombstone: a failed delete leaves the account reactivatable, and one
+    reactivated under a tombstone would never be cached again, so no pooling and no cookies."""
+    with _managed_clients_lock:
+        _retired_accounts.discard(account_id)
 
 
 def _client() -> httpx.AsyncClient:
-    """The shared client for the owner; a pinning client for a managed account."""
-    from utils.account_context import is_owner_context
+    """The shared client for the owner; a screening client of its own for each managed account."""
+    from utils.account_context import current_account_id, is_owner_context
+    from utils.managed_provider_url_settings import get_managed_private_provider_urls_allowed
 
     if is_owner_context():
         return _http_client
-    global _managed_http_client
-    if _managed_http_client is None:
-        _managed_http_client = httpx.AsyncClient(
-            transport = _PinnedPublicTransport(), trust_env = False
-        )
-    return _managed_http_client
+    # Read per call, so a flip takes effect without a restart.
+    allowed = get_managed_private_provider_urls_allowed()
+    account_id = current_account_id()
+    key = (account_id, allowed)
+    with _managed_clients_lock:
+        client = _managed_clients.get(key)
+        if client is not None:
+            return client
+        transport = _PinnedNonMetadataTransport() if allowed else _PinnedPublicTransport()
+        client = httpx.AsyncClient(transport = transport, trust_env = False)
+        # Its pool holds streams bound to this loop, so closing from a different one is not
+        # equivalent.
+        try:
+            _client_loops[client] = asyncio.get_running_loop()
+        except RuntimeError:
+            pass
+        # Served but not cached for a retired account: nothing sweeps an entry made after the sweep.
+        if account_id not in _retired_accounts:
+            _managed_clients[key] = client
+        return client
 
 
 # Cap per-image fetch well below Gemini's ~20 MB total request budget.

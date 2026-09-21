@@ -138,6 +138,12 @@ from utils.preview_sharing_settings import (
     get_preview_sharing_enabled,
     set_preview_sharing_enabled,
 )
+from utils.managed_provider_url_settings import (
+    DEFAULT_MANAGED_PRIVATE_PROVIDER_URLS_ALLOWED,
+    get_managed_private_provider_urls_allowed,
+    private_urls_locked_by_environment,
+    set_managed_private_provider_urls_allowed,
+)
 from utils.current_date_prompt_settings import (
     DEFAULT_CURRENT_DATE_PROMPT_ENABLED,
     get_current_date_prompt_enabled,
@@ -1439,6 +1445,60 @@ def update_last_local_model(
     return LastLocalModelResponse(
         **payload.model_dump(exclude = {"client_now"}), server_now = _server_now
     )
+
+
+class DiffusionAcceleratorFallbackRecord(BaseModel):
+    accelerator: str
+    fallback: Optional[str] = None
+    # Qualifying failures under the current fingerprint; `proven` means one named the BUILD.
+    strikes: int = 0
+    proven: bool = False
+    diverting: bool = False
+    # Taken under a different driver, bundle or set of cards, so it is already inert.
+    stale: bool = False
+
+
+class DiffusionAcceleratorFallbackResponse(BaseModel):
+    records: list[DiffusionAcceleratorFallbackRecord] = []
+    # False when UNSLOTH_DIFFUSION_SD_CPP_VULKAN_FALLBACK is off, where no record can divert.
+    enabled: bool = True
+    diverting: bool = False
+
+
+def _diffusion_accelerator_fallback_response() -> DiffusionAcceleratorFallbackResponse:
+    from core.inference.sd_cpp_backend import accelerator_runtime_failure_state
+    return DiffusionAcceleratorFallbackResponse(**accelerator_runtime_failure_state())
+
+
+@_owner_settings_router.get(
+    "/diffusion-accelerator-fallback", response_model = DiffusionAcceleratorFallbackResponse
+)
+def get_diffusion_accelerator_fallback(
+    current_subject: str = Depends(get_current_subject),
+) -> DiffusionAcceleratorFallbackResponse:
+    """Which native diffusion accelerators this host has been recorded as unable to run.
+
+    Upstream publishes one generic ROCm stable-diffusion.cpp build, not one per gfx arch, so a card
+    it carries no kernels for cannot start it and the host moves to Vulkan (#9278, #8814).
+    """
+    return _diffusion_accelerator_fallback_response()
+
+
+@_owner_settings_router.delete(
+    "/diffusion-accelerator-fallback", response_model = DiffusionAcceleratorFallbackResponse
+)
+def clear_diffusion_accelerator_fallback(
+    current_subject: str = Depends(get_current_subject),
+) -> DiffusionAcceleratorFallbackResponse:
+    """Forget the records, so the next load tries this host's own accelerator again.
+
+    A driver upgrade or a new card retires them through the fingerprint; this is the way back for a
+    fix it cannot see. Reinstalling does not clear them: the record lives in settings, not the tree.
+    """
+    from core.inference.sd_cpp_backend import clear_accelerator_runtime_failures
+
+    clear_accelerator_runtime_failures()
+    return _diffusion_accelerator_fallback_response()
 
 
 @_owner_settings_router.get("/vram-budget", response_model = VramBudgetResponse)
@@ -2988,6 +3048,18 @@ class PreviewSharingResponse(BaseModel):
     default_enabled: bool = DEFAULT_PREVIEW_SHARING_ENABLED
 
 
+class ManagedProviderUrlsPayload(BaseModel):
+    allowed: StrictBool
+
+
+class ManagedProviderUrlsResponse(BaseModel):
+    allowed: bool
+    default_allowed: bool = DEFAULT_MANAGED_PRIVATE_PROVIDER_URLS_ALLOWED
+    # UNSLOTH_STUDIO_BLOCK_PRIVATE_PROVIDER_URLS=1 holds the answer: the UI says why rather than
+    # showing a switch that silently reverts.
+    locked_by_environment: bool = False
+
+
 class CurrentDatePromptPayload(BaseModel):
     enabled: StrictBool
 
@@ -3222,6 +3294,53 @@ def update_preview_sharing(
     return PreviewSharingResponse(enabled = enabled)
 
 
+def _managed_provider_urls_response() -> ManagedProviderUrlsResponse:
+    # The EFFECTIVE answer, not the stored preference: a switch reading back on while every save
+    # is refused would be the worst of the three things this could say.
+    return ManagedProviderUrlsResponse(
+        allowed = get_managed_private_provider_urls_allowed(),
+        locked_by_environment = private_urls_locked_by_environment(),
+    )
+
+
+@_shared_settings_router.get("/managed-provider-urls", response_model = ManagedProviderUrlsResponse)
+def get_managed_provider_urls(
+    current_subject: str = Depends(get_current_subject),
+) -> ManagedProviderUrlsResponse:
+    """Readable by any account: a managed one has to be able to tell a refusal the owner can lift
+    from one nobody on this installation can, and it learns the same bit by trying to save a URL."""
+    return _managed_provider_urls_response()
+
+
+@_owner_settings_router.put("/managed-provider-urls", response_model = ManagedProviderUrlsResponse)
+def update_managed_provider_urls(
+    payload: ManagedProviderUrlsPayload,
+    current_subject: str = Depends(get_current_subject),
+    # Installation policy: set at the console, not from a remote key that happens to be owned.
+    _ui_session: None = Depends(_require_ui_session),
+) -> ManagedProviderUrlsResponse:
+    """Allow or refuse private and LAN provider base URLs for the installation's managed accounts.
+
+    Off by default. The preference is stored either way, so removing
+    ``UNSLOTH_STUDIO_BLOCK_PRIVATE_PROVIDER_URLS`` later restores what the owner chose here rather
+    than a default.
+    """
+    try:
+        allowed = set_managed_private_provider_urls_allowed(payload.allowed)
+    except ValueError as exc:
+        raise log_and_http_error(
+            exc,
+            400,
+            safe_error_detail(exc, fallback = "Invalid managed provider URL setting."),
+            event = "settings.update_managed_provider_urls_failed",
+            log = logger,
+        ) from exc
+    logger.info(
+        "settings.managed_provider_urls_updated subject=%s allowed=%s", current_subject, allowed
+    )
+    return _managed_provider_urls_response()
+
+
 @_account_settings_router.get("/current-date-prompt", response_model = CurrentDatePromptResponse)
 def get_current_date_prompt(
     current_subject: str = Depends(get_current_subject),
@@ -3450,20 +3569,23 @@ def _default_sidebar_menu() -> "list[PersonalizationSidebarMenuItem]":
     ]
 
 
+SidebarNavItemId = Literal[
+    "hub",
+    "projects",
+    "images",
+    "video",
+    "audio",
+    "train",
+    "recipes",
+    "export",
+    "api",
+]
+
+
 class PersonalizationSidebarNavItem(BaseModel):
     model_config = ConfigDict(extra = "ignore")
 
-    id: Literal[
-        "hub",
-        "projects",
-        "images",
-        "video",
-        "audio",
-        "train",
-        "recipes",
-        "export",
-        "api",
-    ]
+    id: SidebarNavItemId
     pinned: bool = True
 
 
@@ -3517,6 +3639,20 @@ class PersonalizationCustomization(BaseModel):
         default_factory = _default_sidebar_nav,
         max_length = MAX_SIDEBAR_NAV_INPUT_ITEMS,
     )
+    # Rows still following an automatic rule rather than a choice the user made. None means the
+    # record predates the field, which the client tells apart from an explicit empty list: a
+    # server-filled default would reapply a rule the user had already overruled.
+    sidebarNavAuto: Optional[list[SidebarNavItemId]] = Field(
+        None, max_length = MAX_SIDEBAR_NAV_INPUT_ITEMS
+    )
+
+    @field_validator("sidebarNavAuto")
+    @classmethod
+    def _validate_sidebar_nav_auto(cls, value: Optional[list[str]]) -> Optional[list[str]]:
+        if value is None:
+            return None
+        seen: set[str] = set()
+        return [item for item in value if not (item in seen or seen.add(item))]
 
     @field_validator("sidebarMenu")
     @classmethod

@@ -179,7 +179,11 @@ backend_path = Path(__file__).parent.parent.parent
 if str(backend_path) not in sys.path:
     sys.path.insert(0, str(backend_path))
 
-from auth.authentication import allow_ambient_hf_token, get_current_subject
+from auth.authentication import (
+    allow_ambient_hf_token,
+    authenticated_via_api_key,
+    get_current_subject,
+)
 from hub.dependencies import get_hf_token, get_request_hf_token
 from hub.utils.hf_tokens import (
     HfTokenArg,
@@ -189,10 +193,26 @@ from hub.utils.hf_tokens import (
     is_anonymous,
     normalize_token,
 )
+from hub.utils.host_paths import (
+    redact_host_paths,
+    redact_inventory_host_paths,
+    resolve_host_path_reference,
+    scrub_paths,
+)
 from utils.utils import anonymous_and_offline
 
 
-_UNAUTHORIZED_OFFLINE = "This request cannot be authorized without network access."
+# Says both halves, or operators go looking for a credential problem that is not there.
+_UNAUTHORIZED_OFFLINE = (
+    "This request cannot be authorized without network access, and this repository is not in "
+    "the local cache."
+)
+
+# "unauthorized" alone reads as a broken credential, which a repo refusing this caller is not.
+_UNAUTHORIZED_CACHED_MODEL = (
+    "This model is cached on this host, but this repository does not authorize this caller to "
+    "read it."
+)
 
 
 def _resolve_hub_token(header_token: HfTokenArg, query_token: Optional[str]) -> HfTokenArg:
@@ -1141,8 +1161,13 @@ async def list_local_models(
         default = "./models", description = "Directory to scan for local model folders"
     ),
     current_subject: str = Depends(get_current_subject),
+    via_api_key: bool = Depends(authenticated_via_api_key),
 ):
-    """List local model candidates from the models dir, HF caches, LM Studio, Hermes, Ollama."""
+    """List local model candidates from the models dir, HF caches, LM Studio, Hermes, Ollama.
+
+    Redacted as ``/api/hub/local`` is: this router mirrors it over the same scan roots, so
+    leaving it alone recovers the layout that route hides.
+    """
     # Resolve all scan directories up front.
     sources = _compat_local_inventory_sources()
     hf_cache_dir = sources.hf_cache_dir
@@ -1180,12 +1205,15 @@ async def list_local_models(
         models = await _shared_compat_local_inventory_scan(models_root, sources)
         if account_access.managed_account():
             models = await asyncio.to_thread(account_access.filter_model_rows, models)
-        return LocalModelListResponse(
-            models_dir = str(models_root),
-            hf_cache_dir = str(hf_cache_dir),
-            lmstudio_dirs = [str(d) for d in lm_dirs],
-            hermes_dirs = [str(d) for d in sources.hermes_dirs],
-            models = models,
+        return redact_inventory_host_paths(
+            LocalModelListResponse(
+                models_dir = str(models_root),
+                hf_cache_dir = str(hf_cache_dir),
+                lmstudio_dirs = [str(d) for d in lm_dirs],
+                hermes_dirs = [str(d) for d in sources.hermes_dirs],
+                models = models,
+            ),
+            via_api_key = via_api_key,
         )
     except Exception as e:
         raise log_and_http_error(
@@ -1198,21 +1226,32 @@ async def list_local_models(
 
 
 @router.get("/scan-folders")
-async def get_scan_folders(current_subject: str = Depends(get_current_subject)):
-    """List all registered custom model scan folders."""
+async def get_scan_folders(
+    current_subject: str = Depends(get_current_subject),
+    via_api_key: bool = Depends(authenticated_via_api_key),
+):
+    """List all registered custom model scan folders. Redacted like ``/api/hub/scan-folders``."""
     from storage.studio_db import list_scan_folders
 
     folders = list_scan_folders()
     # Opening the dialog is how a fixed folder clears, so recheck the bad ones.
     await asyncio.to_thread(refresh_failed_scan_folders, folders)
-    return {"folders": annotate_scan_folders(folders)}
+    return redact_inventory_host_paths(
+        {"folders": annotate_scan_folders(folders)}, via_api_key = via_api_key
+    )
 
 
 @router.post("/scan-folders", response_model = ScanFolderInfo, status_code = 201)
 async def add_scan_folder_endpoint(
-    body: AddScanFolderRequest, current_subject: str = Depends(get_current_subject)
+    body: AddScanFolderRequest,
+    current_subject: str = Depends(get_current_subject),
+    via_api_key: bool = Depends(authenticated_via_api_key),
 ):
-    """Register a new directory to scan for local models."""
+    """Register a new directory to scan for local models. Redacted like the GET above.
+
+    The listings hide the normalized absolute path; submitting ``.`` here and reading the answer
+    recovered the server's working directory.
+    """
     if account_access.managed_account():
         body = body.model_copy(update = {"path": account_access.private_directory(body.path, "")})
     from storage.studio_db import add_scan_folder_with_status
@@ -1228,7 +1267,7 @@ async def add_scan_folder_endpoint(
         from core.inference.local_model_resolver import invalidate_index, warm_index_soon
         await asyncio.to_thread(invalidate_index)
         warm_index_soon()
-    return folder
+    return redact_inventory_host_paths(folder, via_api_key = via_api_key)
 
 
 @router.delete("/scan-folders/{folder_id}")
@@ -2083,6 +2122,12 @@ def _get_snapshot_model_size_bytes(snapshot_path: str) -> Optional[int]:
             return None
         blobs_dir = repo_dir / "blobs"
         resolved_blobs_dir = blobs_dir.resolve(strict = True) if blobs_dir.is_dir() else None
+        # hub 1.x keeps one content-addressed blob store per cache root and links each repo's
+        # blobs into it, so a weight file resolves outside the repo without leaving the cache.
+        shared_blobs_dir = repo_dir.parent / "blobs"
+        resolved_shared_blobs_dir = (
+            shared_blobs_dir.resolve(strict = True) if shared_blobs_dir.is_dir() else None
+        )
     except (OSError, RuntimeError, ValueError):
         return None
 
@@ -2107,9 +2152,9 @@ def _get_snapshot_model_size_bytes(snapshot_path: str) -> Optional[int]:
                     candidate = (root_path / filename).resolve(strict = True)
                     if not candidate.is_file():
                         continue
-                    if not candidate.is_relative_to(snapshot) and not (
-                        resolved_blobs_dir is not None
-                        and candidate.is_relative_to(resolved_blobs_dir)
+                    if not candidate.is_relative_to(snapshot) and not any(
+                        blob_root is not None and candidate.is_relative_to(blob_root)
+                        for blob_root in (resolved_blobs_dir, resolved_shared_blobs_dir)
                     ):
                         continue
                     total += candidate.stat().st_size
@@ -2198,8 +2243,16 @@ async def get_model_config(
     header_hf_token: Optional[str] = Depends(get_hf_token),
     allow_ambient_token: bool = Depends(allow_ambient_hf_token),
     current_subject: str = Depends(get_current_subject),
+    via_api_key: bool = Depends(authenticated_via_api_key),
 ):
     """Get configuration for a specific model (wraps load_model_defaults)."""
+    # An API-key caller is shown a filesystem-backed row under an opaque `ref:` handle and hands
+    # it back here, where it would otherwise read as a Hugging Face id.
+    from models.inference import resolve_inventory_handle
+
+    model_name = resolve_inventory_handle(model_name)
+    if local_path:
+        local_path = resolve_inventory_handle(local_path)
     if local_path:
         if account_access.managed_account():
             await asyncio.to_thread(account_access.require_model_access, local_path)
@@ -2227,7 +2280,9 @@ async def get_model_config(
         ):
             # Inside the context, not before: the guard forces offline itself when the hub
             # is unreachable, and every probe below then resolves from disk.
-            if anonymous_and_offline(hf_token) and not is_local_path(model_name):
+            if not is_local_path(model_name) and anonymous_and_offline(
+                hf_token, repo_id = canonical_model_repo_id(model_name)
+            ):
                 raise HTTPException(status_code = 404, detail = _UNAUTHORIZED_OFFLINE)
             if not is_local_path(model_name):
                 resolved = resolve_cached_repo_id_case(model_name)
@@ -2328,7 +2383,15 @@ async def get_model_config(
 
     try:
         # Off the loop: the guard blocks on DNS + HEAD + TCP, stalling every other request.
-        return await asyncio.to_thread(_resolve, model_name)
+        # Restore puts back the handle the CALLER sent; redaction covers a second path they
+        # never named (a LoRA's `base_model_name_or_path`). Referencing `echo`, the caller's own
+        # identifier, would make this route an oracle confirming their other references.
+        from hub.utils.host_paths import redact_host_paths, restore_inventory_handles
+        return redact_host_paths(
+            restore_inventory_handles(await asyncio.to_thread(_resolve, model_name)),
+            via_api_key = via_api_key,
+            echo = (model_name,),
+        )
 
     except HTTPException:
         raise
@@ -2375,6 +2438,17 @@ async def scan_model_remote_code(
     POST (not GET) so the ``hf_token`` for gated repos travels in the body and
     never lands in a URL, browser history, or access log.
     """
+    # Before the access checks, so they run on the resolved path.
+    from models.inference import resolve_inventory_handle
+
+    model_name = resolve_inventory_handle(model_name)
+    model_local_path = resolve_inventory_handle(model_local_path) if model_local_path else None
+    model_snapshot_path = (
+        resolve_inventory_handle(model_snapshot_path) if model_snapshot_path else None
+    )
+    model_snapshot_repo_id = (
+        resolve_inventory_handle(model_snapshot_repo_id) if model_snapshot_repo_id else None
+    )
     if account_access.managed_account():
         for ref in (model_name, model_local_path, model_snapshot_path, model_snapshot_repo_id):
             if isinstance(ref, str) and ref:
@@ -2385,7 +2459,9 @@ async def scan_model_remote_code(
     hf_token = hf_token_arg(hf_token, allow_ambient_token = allow_ambient_token)
     # Offline the scanner's hf_hub_download calls resolve config.json and the repo's
     # Python out of the cache, and the response carries source snippets.
-    if anonymous_and_offline(hf_token) and not is_local_path(model_name):
+    if not is_local_path(model_name) and anonymous_and_offline(
+        hf_token, repo_id = canonical_model_repo_id(model_name)
+    ):
         raise HTTPException(status_code = 404, detail = _UNAUTHORIZED_OFFLINE)
     try:
         from utils.security import (
@@ -2437,7 +2513,7 @@ async def scan_model_remote_code(
         ):
             raise HTTPException(
                 status_code = 404,
-                detail = "This model is not available to an unauthorized caller.",
+                detail = _UNAUTHORIZED_CACHED_MODEL,
             )
         scan_target = model_name
         exact_snapshot_path = (
@@ -2527,7 +2603,7 @@ async def scan_model_remote_code(
             ):
                 raise HTTPException(
                     status_code = 404,
-                    detail = "This model is not available to an unauthorized caller.",
+                    detail = _UNAUTHORIZED_CACHED_MODEL,
                 )
             if _target not in consent_load_subdirs:
                 security_targets.append(_target)
@@ -2579,7 +2655,7 @@ async def scan_model_remote_code(
                 ):
                     raise HTTPException(
                         status_code = 404,
-                        detail = "This model is not available to an unauthorized caller.",
+                        detail = _UNAUTHORIZED_CACHED_MODEL,
                     )
                 external_refs.append(_ext)
                 _mark_scan_created(_ext)
@@ -2627,7 +2703,10 @@ async def scan_model_remote_code(
             payload["approvable"] = False
             payload["requires_trust_remote_code"] = True
             payload["error_kind"] = "malware_blocked"
-        return payload
+        # The findings quote paths inside the model directory.
+        from hub.utils.host_paths import restore_inventory_handles
+
+        return restore_inventory_handles(payload)
     except HTTPException:
         raise
     except Exception as e:
@@ -4394,8 +4473,13 @@ async def get_gguf_variants(
     hf_token: Optional[str] = Query(None, description = "HuggingFace token for private repos"),
     hf_token_header: HfTokenArg = Depends(get_request_hf_token),
     current_subject: str = Depends(get_current_subject),
+    via_api_key: bool = Depends(authenticated_via_api_key),
 ):
     """List GGUF quantization variants for a HF repo or local directory."""
+    # Resolved before the access check, not after: a handle matches no allowlist entry, and
+    # it is the only name an API-key caller has for a local GGUF (see the /hub twin).
+    repo_id = resolve_host_path_reference(repo_id) or repo_id
+    local_path = resolve_host_path_reference(local_path) or local_path
     if account_access.managed_account():
         await asyncio.to_thread(account_access.require_model_access, repo_id)
     try:
@@ -4423,42 +4507,46 @@ async def get_gguf_variants(
             context_model = None
         local = context_model is not None and is_local_path(context_model)
 
-        return GgufVariantsResponse(
-            repo_id = response.repo_id,
-            variants = [
-                GgufVariantDetail(
-                    filename = v.filename,
-                    quant = v.quant,
-                    # A path-qualified key is not a label a picker can show; without this
-                    # the row reads as its whole relative path.
-                    display_label = getattr(v, "display_label", None),
-                    size_bytes = v.size_bytes,
-                    shard_count = int(getattr(v, "shard_count", 0) or 0),
-                    download_size_bytes = int(
-                        getattr(v, "download_size_bytes", v.size_bytes) or v.size_bytes
-                    ),
-                    pending_drafter_filename = getattr(v, "pending_drafter_filename", None),
-                    pending_drafter_size_bytes = int(
-                        getattr(v, "pending_drafter_size_bytes", 0) or 0
-                    ),
-                    downloaded = bool(v.downloaded),
-                    update_available = bool(getattr(v, "update_available", False)),
-                    partial = bool(getattr(v, "partial", False)),
-                    cleanable = bool(getattr(v, "cleanable", False)),
-                )
-                for v in response.variants
-            ],
-            has_vision = response.has_vision,
-            default_variant = response.default_variant,
-            context_length = (
-                await _read_native_context_length_bounded(context_model, local)
-                if context_model is not None
-                else None
+        # See the /hub twin: the identifier is resolved on the way in, so it has to be
+        # referenced again on the way out.
+        return redact_host_paths(
+            GgufVariantsResponse(
+                repo_id = response.repo_id,
+                variants = [
+                    GgufVariantDetail(
+                        filename = v.filename,
+                        quant = v.quant,
+                        # A path-qualified key is not a label a picker can show; without this
+                        # the row reads as its whole relative path.
+                        display_label = getattr(v, "display_label", None),
+                        size_bytes = v.size_bytes,
+                        download_size_bytes = int(
+                            getattr(v, "download_size_bytes", v.size_bytes) or v.size_bytes
+                        ),
+                        pending_drafter_filename = getattr(v, "pending_drafter_filename", None),
+                        pending_drafter_size_bytes = int(
+                            getattr(v, "pending_drafter_size_bytes", 0) or 0
+                        ),
+                        downloaded = bool(v.downloaded),
+                        update_available = bool(getattr(v, "update_available", False)),
+                        partial = bool(getattr(v, "partial", False)),
+                        cleanable = bool(getattr(v, "cleanable", False)),
+                    )
+                    for v in response.variants
+                ],
+                has_vision = response.has_vision,
+                default_variant = response.default_variant,
+                context_length = (
+                    await _read_native_context_length_bounded(context_model, local)
+                    if context_model is not None
+                    else None
+                ),
+                resolved_locally = bool(getattr(response, "resolved_locally", False)),
+                dependencies_resolved = bool(getattr(response, "dependencies_resolved", False)),
+                loadable_variants = getattr(response, "loadable_variants", None),
+                loadable = getattr(response, "loadable", None),
             ),
-            resolved_locally = bool(getattr(response, "resolved_locally", False)),
-            dependencies_resolved = bool(getattr(response, "dependencies_resolved", False)),
-            loadable_variants = getattr(response, "loadable_variants", None),
-            loadable = getattr(response, "loadable", None),
+            via_api_key = via_api_key,
         )
     except HTTPException:
         raise
@@ -4477,14 +4565,18 @@ async def get_gguf_download_progress(
     expected_bytes: int = Query(0, description = "Expected total download size in bytes"),
     hf_token: HfTokenArg = Depends(get_request_hf_token),
     current_subject: str = Depends(get_current_subject),
+    via_api_key: bool = Depends(authenticated_via_api_key),
 ):
     """Compatibility route backed by the shared multi-cache progress service."""
     from hub.services.models import downloads
-    return await downloads.get_gguf_download_progress_response(
-        repo_id,
-        variant = variant,
-        expected_bytes = expected_bytes,
-        hf_token = hf_token,
+    return redact_host_paths(
+        await downloads.get_gguf_download_progress_response(
+            repo_id,
+            variant = variant,
+            expected_bytes = expected_bytes,
+            hf_token = hf_token,
+        ),
+        via_api_key = via_api_key,
     )
 
 
@@ -4501,10 +4593,15 @@ async def get_download_progress(
     repo_id: str = Query(..., description = "HuggingFace repo ID"),
     hf_token: HfTokenArg = Depends(get_request_hf_token),
     current_subject: str = Depends(get_current_subject),
+    via_api_key: bool = Depends(authenticated_via_api_key),
 ):
-    """Compatibility route backed by the shared multi-cache progress service."""
+    """Compatibility route backed by the shared multi-cache progress service. The payload names
+    the cache directory it measured, so it takes the caller class like its ``/api/hub`` twin."""
     from hub.services.models import downloads
-    return await downloads.get_download_progress_response(repo_id, hf_token = hf_token)
+    return redact_host_paths(
+        await downloads.get_download_progress_response(repo_id, hf_token = hf_token),
+        via_api_key = via_api_key,
+    )
 
 
 def _repo_in_any_hf_cache(model_name: str) -> bool:
@@ -4850,13 +4947,18 @@ def _preferred_gguf_copy(
 
 
 @router.get("/cached-gguf")
-async def list_cached_gguf(current_subject: str = Depends(get_current_subject)):
+async def list_cached_gguf(
+    current_subject: str = Depends(get_current_subject),
+    via_api_key: bool = Depends(authenticated_via_api_key),
+):
     """List GGUF repos downloaded to HF cache, legacy Unsloth cache, and HF default cache."""
     try:
         # Off the loop: the filter can probe the Hub per ungranted repo.
-        return {"cached": await asyncio.to_thread(cached_gguf_rows)}
+        return redact_host_paths(
+            {"cached": await asyncio.to_thread(cached_gguf_rows)}, via_api_key = via_api_key
+        )
     except Exception as e:
-        logger.error(f"Error listing cached GGUF repos: {e}", exc_info = True)
+        logger.error("Error listing cached GGUF repos: %s", scrub_paths(e), exc_info = True)
         return {"cached": []}
 
 
@@ -4957,13 +5059,16 @@ def _cached_repo_partial(
 async def list_cached_models(
     current_subject: str = Depends(get_current_subject),
     hf_token: HfTokenArg = Depends(get_request_hf_token),
+    via_api_key: bool = Depends(authenticated_via_api_key),
 ):
     """List non-GGUF model repos downloaded to HF cache, legacy Unsloth cache, and HF default cache."""
     try:
         # Off the loop: the filter can probe the Hub per ungranted repo.
-        return {"cached": await asyncio.to_thread(cached_model_rows)}
+        return redact_host_paths(
+            {"cached": await asyncio.to_thread(cached_model_rows)}, via_api_key = via_api_key
+        )
     except Exception as e:
-        logger.error(f"Error listing cached models: {e}", exc_info = True)
+        logger.error("Error listing cached models: %s", scrub_paths(e), exc_info = True)
         return {"cached": []}
 
 
@@ -5231,7 +5336,11 @@ async def delete_cached_model(
     account_access.require_installation_owner()
     from hub.services.models import deletion
 
-    return await deletion.delete_cached_model_response(repo_id, variant, hf_token, cache_path)
+    # The reference is the only identifier an API-key caller has for one copy; omitting it acts
+    # on the active root instead.
+    return await deletion.delete_cached_model_response(
+        repo_id, variant, hf_token, resolve_host_path_reference(cache_path) or cache_path
+    )
 
 
 def _resolve_cached_model_path(repo_id: str, variant: Optional[str]) -> Path:

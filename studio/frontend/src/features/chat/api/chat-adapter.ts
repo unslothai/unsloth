@@ -211,6 +211,7 @@ import {
   awaitThreadScopedPairing,
   awaitPendingQwenDefaultsMigration,
   flushPendingChatSettings,
+  codeToolsOn,
   useChatRuntimeStore,
 } from "../stores/chat-runtime-store";
 import {
@@ -1927,10 +1928,10 @@ export function buildLocalTokenCountReasoning(): Record<string, unknown> {
 export async function buildLocalTokenCountExtras(
   threadId: string | undefined,
 ): Promise<Record<string, unknown>> {
+  const state = useChatRuntimeStore.getState();
   const {
     supportsTools,
     toolsEnabled,
-    codeToolsEnabled,
     artifactsEnabled,
     mcpEnabledForChat,
     ragEnabled,
@@ -1945,7 +1946,8 @@ export async function buildLocalTokenCountExtras(
     ragAutoInject,
     ragAutoInjectMinScore,
     residentCheckpoint,
-  } = useChatRuntimeStore.getState();
+  } = state;
+  const codeToolsEnabled = codeToolsOn(state);
   // Explicit false, as the completion sends: an omitted field lets the launcher's
   // tools-on default answer and the server renders a catalog the completion does not.
   // No budget, because the completion sends none either, so a policy that injects tools
@@ -4721,7 +4723,6 @@ export function createOpenAIStreamAdapter(
       const {
         supportsTools,
         toolsEnabled,
-        codeToolsEnabled,
         imageToolsEnabled,
         artifactsEnabled,
         mcpEnabledForChat,
@@ -4736,6 +4737,7 @@ export function createOpenAIStreamAdapter(
         ragAutoInject,
         ragAutoInjectMinScore,
       } = runtime;
+      const codeToolsEnabled = codeToolsOn(runtime);
       if (
         deepResearchArmed &&
         !supportsTools &&
@@ -6337,8 +6339,6 @@ export function createOpenAIStreamAdapter(
             ...ggufCompactionRequestFields({
               isGguf: isGgufForCompaction,
               autoCompactEnabled: runtime.autoCompactEnabled,
-              contextPolicy: runtime.contextPolicy,
-              compactionHeadroomRatio: runtime.compactionHeadroomRatio,
             }),
             temperature: params.temperature,
             top_p: params.topP,

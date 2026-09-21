@@ -23,6 +23,32 @@ test("the backend sidebar nav defaults match the frontend", async () => {
   assert.deepEqual(backend, DEFAULT_CUSTOMIZATION.sidebarNav);
 });
 
+// PersonalizationCustomization ignores unknown keys, so a field this side sends and that one
+// never declared is dropped on every save and rebuilt from defaults on the next load, quietly
+// undoing whatever the user set.
+test("the backend stores every customization field the frontend sends", () => {
+  const source = readText("../../backend/routes/settings.py");
+  const model = /class PersonalizationCustomization\(BaseModel\):([\s\S]*?)\nclass /.exec(
+    source,
+  );
+  assert.ok(model, "could not find PersonalizationCustomization in settings.py");
+  const fields = new Set(
+    [...model[1].matchAll(/^ {4}(\w+):/gm)]
+      .map((m) => m[1])
+      .filter((name) => name !== "model_config"),
+  );
+  for (const key of Object.keys(DEFAULT_CUSTOMIZATION)) {
+    assert.ok(fields.has(key), `the backend drops "${key}" on every save`);
+  }
+  // And this one defaults to None rather than a list: the client tells a record written before
+  // the field apart from one whose user chose an empty list, and a filled-in default would
+  // reapply a rule the user had already overruled.
+  assert.match(
+    model[1],
+    /sidebarNavAuto: Optional\[list\[SidebarNavItemId\]\] = Field\(\n\s*None,/,
+  );
+});
+
 // The two capability-gated rows. They are the ones that can render disabled without the user
 // having done anything, so they are also the ones a rename would silently un-gate: navRows is
 // keyed by SidebarNavItemId, so a dropped `pending` there just stops spinning, it does not
