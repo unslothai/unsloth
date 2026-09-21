@@ -1,6 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+use crate::native_path_policy::{
+    is_audio_only_3gp, is_binary_property_list, is_binary_tracker_mod, is_binary_vobsub,
+    is_binary_office_template, is_compiled_fortran_mod,
+};
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use serde::Serialize;
 use std::fs::File;
@@ -12,7 +16,10 @@ const MAX_CLIPBOARD_RGBA_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_CLIPBOARD_PNG_BYTES: usize = 20 * 1024 * 1024;
 const MAX_CLIPBOARD_SOURCE_BYTES: u64 = 20 * 1024 * 1024;
 const MAX_CLIPBOARD_AUDIO_BYTES: u64 = 25 * 1024 * 1024;
-const MAX_CLIPBOARD_TOTAL_BYTES: u64 = MAX_CLIPBOARD_AUDIO_BYTES;
+// Mirrors MAX_NATIVE_VIDEO_BYTES in native_intents.rs: a pasted clip and a
+// dropped one are the same file, and the 20 MB source cap skipped most videos.
+const MAX_CLIPBOARD_VIDEO_BYTES: u64 = 75_497_280;
+const MAX_CLIPBOARD_TOTAL_BYTES: u64 = MAX_CLIPBOARD_VIDEO_BYTES;
 const MAX_CLIPBOARD_FILES: usize = 8;
 const MAX_CLIPBOARD_CANDIDATES: usize = 32;
 #[cfg(target_os = "linux")]
@@ -62,6 +69,9 @@ fn validate_png_bytes(png: &[u8]) -> Result<(), String> {
 }
 
 fn clipboard_file_mime_type(path: &Path) -> Option<&'static str> {
+    if crate::native_path_policy::is_text_attachment_name(path) {
+        return Some("text/plain");
+    }
     let extension = path
         .extension()
         .and_then(|value| value.to_str())
@@ -72,30 +82,46 @@ fn clipboard_file_mime_type(path: &Path) -> Option<&'static str> {
         "md" | "markdown" | "mdx" => "text/markdown",
         "csv" => "text/csv",
         "html" | "htm" => "text/html",
-        "xml" => "application/xml",
+        "xml" | "plist" => "application/xml",
         "svg" => "image/svg+xml",
         "jpg" | "jpeg" => "image/jpeg",
         "png" => "image/png",
         "webp" => "image/webp",
         "gif" => "image/gif",
+        "mp4" => "video/mp4",
+        "m4v" => "video/x-m4v",
+        "mov" => "video/quicktime",
+        "webm" => "video/webm",
+        "mkv" => "video/x-matroska",
+        "avi" => "video/x-msvideo",
+        "mpg" | "mpeg" => "video/mpeg",
+        "wmv" => "video/x-ms-wmv",
+        "flv" => "video/x-flv",
+        "ogv" => "video/ogg",
         "pdf" => "application/pdf",
         "docx" => "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
         "odt" => "application/vnd.oasis.opendocument.text",
         "ods" => "application/vnd.oasis.opendocument.spreadsheet",
-        "mp3" => "audio/mpeg",
+        "mp3" | "mp2" => "audio/mpeg",
         "wav" => "audio/wav",
         "m4a" => "audio/mp4",
         "ogg" | "oga" => "audio/ogg",
+        "opus" => "audio/opus",
         "flac" => "audio/flac",
         "aac" => "audio/aac",
-        "txt" | "text" | "log" | "rst" | "tsv" | "yaml" | "yml" | "toml" | "ini" | "cfg"
-        | "conf" | "env" | "properties" | "css" | "scss" | "sass" | "less" | "js" | "jsx"
-        | "mjs" | "cjs" | "ts" | "tsx" | "py" | "pyi" | "ipynb" | "rb" | "php" | "go" | "rs"
-        | "java" | "kt" | "kts" | "scala" | "swift" | "c" | "h" | "cc" | "cpp" | "hpp" | "cxx"
-        | "cs" | "m" | "mm" | "sh" | "bash" | "zsh" | "fish" | "ps1" | "bat" | "lua" | "pl"
-        | "pm" | "r" | "jl" | "dart" | "vue" | "svelte" | "astro" | "sql" | "graphql" | "gql"
-        | "proto" | "tf" | "tfvars" | "gradle" | "dockerfile" | "makefile" | "cmake" | "diff"
-        | "patch" => "text/plain",
+        "aiff" | "aif" | "aifc" => "audio/aiff",
+        "caf" => "audio/x-caf",
+        "wma" => "audio/x-ms-wma",
+        "amr" => "audio/amr",
+        // Provisional until the BMFF handlers can be inspected after reading.
+        "3gp" => "video/3gpp",
+        "vtt" => "text/vtt",
+        "srt" => "application/x-subrip",
+        // .txt is a RAG type, so it is absent from TEXT_ATTACHMENT_EXTS and
+        // named here; the rest of the source and text formats come from the one
+        // list the composer and the drop path already share.
+        "txt" => "text/plain",
+        other if crate::native_path_policy::TEXT_ATTACHMENT_EXTS.contains(&other) => "text/plain",
         _ => return None,
     };
     Some(mime_type)
@@ -104,6 +130,8 @@ fn clipboard_file_mime_type(path: &Path) -> Option<&'static str> {
 fn clipboard_file_max_bytes(mime_type: &str) -> u64 {
     if mime_type.starts_with("audio/") {
         MAX_CLIPBOARD_AUDIO_BYTES
+    } else if mime_type.starts_with("video/") {
+        MAX_CLIPBOARD_VIDEO_BYTES
     } else {
         MAX_CLIPBOARD_SOURCE_BYTES
     }
@@ -152,7 +180,20 @@ fn read_clipboard_files(paths: Vec<PathBuf>) -> Result<Vec<NativeClipboardFile>,
         let Ok(metadata) = source.metadata() else {
             continue;
         };
-        let limit = clipboard_file_max_bytes(mime_type).min(remaining);
+        let is_3gp = path
+            .extension()
+            .and_then(|value| value.to_str())
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("3gp"));
+        // A 3GP recording cannot use its final size limit until its BMFF
+        // handlers have been read and classified as audio-only or video. Read it
+        // under the larger of the two, as the drop path does; the audio cap is
+        // reapplied below once the track handlers say it is audio-only.
+        let provisional_limit = if is_3gp {
+            MAX_CLIPBOARD_VIDEO_BYTES
+        } else {
+            clipboard_file_max_bytes(mime_type)
+        };
+        let limit = provisional_limit.min(remaining);
         if !metadata.is_file() || metadata.len() == 0 || metadata.len() > limit {
             continue;
         }
@@ -161,6 +202,22 @@ fn read_clipboard_files(paths: Vec<PathBuf>) -> Result<Vec<NativeClipboardFile>,
             || bytes.is_empty()
             || bytes.len() as u64 > limit
         {
+            continue;
+        }
+        if is_binary_property_list(&path, &bytes)
+            || is_binary_vobsub(&path, &bytes)
+            || is_binary_tracker_mod(&path, &bytes)
+            || is_compiled_fortran_mod(&path, &bytes)
+            || is_binary_office_template(&path, &bytes)
+        {
+            continue;
+        }
+        let mime_type = if is_3gp && is_audio_only_3gp(&bytes) {
+            "audio/3gpp"
+        } else {
+            mime_type
+        };
+        if bytes.len() as u64 > clipboard_file_max_bytes(mime_type).min(remaining) {
             continue;
         }
         remaining -= bytes.len() as u64;
@@ -362,6 +419,21 @@ pub async fn read_native_clipboard_png(
 mod tests {
     use super::*;
 
+    fn bmff_box(kind: &[u8; 4], payload: &[u8]) -> Vec<u8> {
+        let mut boxed = Vec::with_capacity(payload.len() + 8);
+        boxed.extend_from_slice(&((payload.len() + 8) as u32).to_be_bytes());
+        boxed.extend_from_slice(kind);
+        boxed.extend_from_slice(payload);
+        boxed
+    }
+
+    fn three_gp_with_handler(handler: &[u8; 4]) -> Vec<u8> {
+        let mut hdlr_payload = vec![0; 8];
+        hdlr_payload.extend_from_slice(handler);
+        let mdia = bmff_box(b"mdia", &bmff_box(b"hdlr", &hdlr_payload));
+        bmff_box(b"moov", &bmff_box(b"trak", &mdia))
+    }
+
     #[test]
     fn clipboard_dimensions_are_bounded() {
         assert!(validate_dimensions(3840, 2160).is_ok());
@@ -380,7 +452,35 @@ mod tests {
             clipboard_file_mime_type(Path::new("notes.md")),
             Some("text/markdown")
         );
+        assert_eq!(
+            clipboard_file_mime_type(Path::new("Containerfile")),
+            Some("text/plain")
+        );
+        assert_eq!(
+            clipboard_file_mime_type(Path::new("recording.3gp")),
+            Some("video/3gpp")
+        );
         assert_eq!(clipboard_file_mime_type(Path::new("unknown.bin")), None);
+    }
+
+    #[test]
+    fn clipboard_file_mime_types_cover_chat_video_attachments() {
+        for (name, mime_type) in [
+            ("clip.mp4", "video/mp4"),
+            ("clip.m4v", "video/x-m4v"),
+            ("clip.mov", "video/quicktime"),
+            ("clip.webm", "video/webm"),
+            ("clip.mkv", "video/x-matroska"),
+            ("clip.avi", "video/x-msvideo"),
+            ("clip.mpg", "video/mpeg"),
+            ("clip.mpeg", "video/mpeg"),
+            ("clip.wmv", "video/x-ms-wmv"),
+            ("clip.flv", "video/x-flv"),
+            ("clip.ogv", "video/ogg"),
+            ("clip.3gp", "video/3gpp"),
+        ] {
+            assert_eq!(clipboard_file_mime_type(Path::new(name)), Some(mime_type));
+        }
     }
 
     #[cfg(target_os = "linux")]
@@ -421,8 +521,103 @@ mod tests {
     }
 
     #[test]
+    fn clipboard_skips_binary_property_lists_but_keeps_text_forms() {
+        let directory = tempfile::tempdir().unwrap();
+        let binary = directory.path().join("binary.plist");
+        std::fs::write(&binary, b"bplist00payload").unwrap();
+        let binary_strings = directory.path().join("binary.strings");
+        std::fs::write(&binary_strings, b"bplist00payload").unwrap();
+        let xml = directory.path().join("xml.plist");
+        std::fs::write(&xml, b"<?xml version=\"1.0\"?><plist/>").unwrap();
+        let text_strings = directory.path().join("Localizable.strings");
+        std::fs::write(&text_strings, b"\"hello\" = \"world\";").unwrap();
+
+        let files = read_clipboard_files(vec![binary, binary_strings, xml, text_strings]).unwrap();
+        assert_eq!(files.len(), 2);
+        assert_eq!(files[0].name, "xml.plist");
+        assert_eq!(files[0].mime_type, "application/xml");
+        assert_eq!(files[1].name, "Localizable.strings");
+        assert_eq!(files[1].mime_type, "text/plain");
+    }
+
+    #[test]
+    fn clipboard_skips_binary_vobsub_but_keeps_text_subtitles() {
+        let directory = tempfile::tempdir().unwrap();
+        let binary = directory.path().join("binary.sub");
+        std::fs::write(&binary, b"\x00\x00\x01\xbapayload").unwrap();
+        let text = directory.path().join("text.sub");
+        std::fs::write(&text, b"{1}{24}Subtitle").unwrap();
+
+        let files = read_clipboard_files(vec![binary, text]).unwrap();
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].name, "text.sub");
+        assert_eq!(files[0].mime_type, "text/plain");
+    }
+
+    #[test]
+    fn clipboard_skips_tracker_mod_but_keeps_text_module_files() {
+        let directory = tempfile::tempdir().unwrap();
+        let binary = directory.path().join("track.mod");
+        let mut tracker = vec![0u8; 1084];
+        tracker[1080..].copy_from_slice(b"M.K.");
+        std::fs::write(&binary, tracker).unwrap();
+        let markerless = directory.path().join("classic.mod");
+        let mut soundtracker = vec![0u8; 600 + 1024 + 8];
+        soundtracker[43] = 4;
+        soundtracker[45] = 64;
+        soundtracker[470] = 1;
+        soundtracker[471] = 120;
+        std::fs::write(&markerless, soundtracker).unwrap();
+        let text = directory.path().join("go.mod");
+        std::fs::write(&text, b"module example.com/project\n").unwrap();
+
+        let files = read_clipboard_files(vec![binary, markerless, text]).unwrap();
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].name, "go.mod");
+        assert_eq!(files[0].mime_type, "text/plain");
+    }
+
+    #[test]
+    fn clipboard_3gp_uses_its_bmff_track_type() {
+        let directory = tempfile::tempdir().unwrap();
+        let audio = directory.path().join("recording.3gp");
+        std::fs::write(&audio, three_gp_with_handler(b"soun")).unwrap();
+        let video = directory.path().join("video.3gp");
+        std::fs::write(&video, three_gp_with_handler(b"vide")).unwrap();
+
+        let files = read_clipboard_files(vec![audio, video]).unwrap();
+        assert_eq!(files.len(), 2);
+        assert_eq!(files[0].mime_type, "audio/3gpp");
+        assert_eq!(files[1].mime_type, "video/3gpp");
+    }
+
+    #[test]
     fn clipboard_audio_uses_the_chat_upload_boundary() {
-        assert_eq!(clipboard_file_max_bytes("audio/mpeg"), 25 * 1024 * 1024);
+        assert_eq!(
+            clipboard_file_max_bytes("audio/mpeg"),
+            MAX_CLIPBOARD_AUDIO_BYTES
+        );
+        // A video gets the video budget, not the 20 MB source cap, which skipped
+        // most clips the picker and the drop path both accept.
+        assert_eq!(
+            clipboard_file_max_bytes("video/3gpp"),
+            MAX_CLIPBOARD_VIDEO_BYTES
+        );
+        assert_eq!(
+            clipboard_file_max_bytes("video/mp4"),
+            MAX_CLIPBOARD_VIDEO_BYTES
+        );
+        assert!(MAX_CLIPBOARD_TOTAL_BYTES >= MAX_CLIPBOARD_VIDEO_BYTES);
+        // The pasted and dropped limits are the same file's limit.
+        let intents = include_str!("native_intents.rs");
+        let native = intents
+            .split("const MAX_NATIVE_VIDEO_BYTES: u64 = ")
+            .nth(1)
+            .and_then(|rest| rest.split(';').next())
+            .map(|value| value.replace('_', ""))
+            .and_then(|value| value.parse::<u64>().ok())
+            .expect("native video cap not found");
+        assert_eq!(native, MAX_CLIPBOARD_VIDEO_BYTES);
         assert_eq!(
             clipboard_file_max_bytes("text/markdown"),
             MAX_CLIPBOARD_SOURCE_BYTES

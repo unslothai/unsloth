@@ -68,13 +68,12 @@ from tests.studio.studiobench.fixture.selftest.test_studiobench_parity_digest im
     run_js,
 )
 
+# Building a capture out of the SHIPPED signature. Not a hand-written digest: the thing under
+# test is `scene/parity.js` as it ships, so these fixtures are DOM trees and every digest is
+# produced by walking them with the real `signature()`.
+
+
 # ── building a capture out of the SHIPPED signature ──────────────────
-#
-# Not a hand-written digest. The whole point of the node harness is that the thing under test is
-# `scene/parity.js` as it ships, so these fixtures are DOM trees and every digest below is produced
-# by walking them with the real `signature()`.
-
-
 def message(
     index: int,
     *,
@@ -141,8 +140,8 @@ def capture(tree: dict, *, streaming_fields: bool = True) -> dict:
     """
     messages = tree["children"][0]["children"]
     overlays = tree.get("_overlays") or []
-    # `elide` marks EVERY message, which is what `capture()` in parity.js does: the scaffold has to
-    # be the same walk on both arms, and which message is in flight is not.
+    # `elide` marks EVERY message, as `capture()` in parity.js does: the scaffold has to be the same
+    # walk on both arms, and which message is in flight is not.
     scaffold_tree = _mark_elided(tree)
     got = run_js(
         {
@@ -187,10 +186,10 @@ def capture(tree: dict, *, streaming_fields: bool = True) -> dict:
     return out
 
 
-# The body of the reply, at four points in one stream. Not four different documents: the same one,
-# with the trailing construct repaired differently at each point, which is what the renderer
-# actually does. The `title` is the KaTeX parse error rehype-katex writes while the formula will
-# not parse, and its character offset moves with every arriving character.
+# The body of the reply at four points in one stream: the same document with the trailing
+# construct repaired differently at each point, which is what the renderer does. The `title` is
+# the KaTeX parse error rehype-katex writes while the formula will not parse, and its character
+# offset moves with every arriving character.
 def streamed_body(chars: int) -> list:
     text = "The bounded shard coalesces the retained layout, except that the fibre stays inter"
     return [
@@ -226,7 +225,7 @@ def streaming_arm(
     )
 
 
-#: Four points in one stream. Adjacent pairs are what two arms one paint apart look like.
+#:Four points in one stream. Adjacent pairs are what two arms one paint apart look like.
 STREAM_POINTS = (12, 24, 48, 81)
 
 
@@ -242,8 +241,7 @@ def test_the_same_document_at_two_points_in_one_stream_moves_the_raw_digest():
     """
     a, b = streaming_arm(24), streaming_arm(48)
     assert a["digest"] != b["digest"], "no drift to fix; the fixture is not reproducing the defect"
-    # ...and the settled thread is byte-identical, which is what makes it a false alarm rather
-    # than a finding.
+    # ...and the settled thread is byte-identical, which makes it a false alarm rather than a finding.
     assert a["digest_scaffold"] == b["digest_scaffold"]
 
 
@@ -270,9 +268,9 @@ def test_two_genuinely_different_documents_still_differ_while_a_reply_streams():
 
 
 def test_a_real_difference_survives_the_streamed_message_drifting_at_the_same_time():
-    # The realistic case: the arms are at different points in the stream AND something real
-    # changed. Excusing the first must not excuse the second, and the streamed message must not
-    # appear in `moved` and drown the finding.
+    # The realistic case: the arms are at different points in the stream AND something real changed.
+    # Excusing the first must not excuse the second, and the streamed message must not appear in
+    # `moved` and drown the finding.
     got = P.compare(
         streaming_arm(24, settled_body = "settled text"),
         streaming_arm(81, settled_body = "settled text, rewritten"),
@@ -300,7 +298,7 @@ def test_the_null_score_is_zero():
     differing = [r for r in results if r["verdict"] == P.DIFFER]
     assert len(results) == 6
     assert not differing, f"NULL SCORE {len(differing)}/{len(results)}: {differing}"
-    # And they are refused, not passed. A null that reports MATCH on a pair whose digests plainly
+    # And they are refused, not passed: a null reporting MATCH on a pair whose digests plainly
     # disagree would be the instrument certifying a surface it could not look at.
     assert all(r["verdict"] == P.NOT_COMPARABLE for r in results)
 
@@ -314,15 +312,15 @@ def test_the_null_battery_scores_the_old_instrument_too():
     """
     before = null_battery(streaming_fields = False)
     assert all(r["verdict"] == P.DIFFER for r in before), before
-    # Every one of them localised to the streamed message and to nothing else, which is what made
-    # them read as a UI change rather than as a clock.
+    # Every one localised to the streamed message and nothing else, which is what made them read as
+    # a UI change rather than a clock.
     for r in before:
         assert [m for m in r["moved"] if m.startswith("msg2(")] == r["moved"], r["moved"]
 
 
 def test_two_arms_that_landed_on_the_same_point_in_the_stream_still_match():
-    # The coverage this must NOT cost. Two arms at the same point serialise identically, which is
-    # exactly the claim this mode makes, so it stays a pass.
+    # The coverage this must NOT cost: two arms at the same point serialise identically, which is
+    # exactly the claim this mode makes.
     got = P.compare(streaming_arm(24), streaming_arm(24))
     assert got["verdict"] == P.MATCH, got
     assert got["in_flight"] == [2]
@@ -332,21 +330,20 @@ def test_a_settled_thread_is_scored_exactly_as_it_was():
     settled = capture(thread([message(0, role = "user", body = "hi"), message(1)]))
     assert settled["in_flight"] == [] and settled["streaming"] is False
     assert P.compare(settled, settled)["verdict"] == P.MATCH
-    # The scaffold is a SHORTER walk than the whole thread, not an equal one, and it has to be:
-    # every message is elided from it whether or not anything was streaming. What makes the reading
-    # complete again is the per-message rows, and the mutant battery is what shows they do.
+    # The scaffold is a SHORTER walk than the whole thread and has to be, since every message is
+    # elided whether or not anything was streaming. The per-message rows are what make the reading
+    # complete again, and the mutant battery is what shows they do.
     assert settled["chars_scaffold"] < settled["chars"]
 
 
+# The mutant score. Every mutant is a real, visible rendering difference injected WHILE A REPLY
+# IS IN FLIGHT at the SAME point in the stream on both arms, so the comparison can only be
+# reacting to the mutation. A normaliser never shown a difference is worthless, and one that
+# stopped seeing these because a stream happened to be running would be worse than the drift it
+# was written to fix.
+
+
 # ── 3. the mutant score ──────────────────────────────────────────────
-#
-# Every mutant is a real, visible rendering difference, injected WHILE A REPLY IS IN FLIGHT and at
-# the SAME point in the stream on both arms, so the only thing the comparison can be reacting to is
-# the mutation. A normaliser that reports "identical" without ever having been shown a difference
-# is worthless, and one that stopped seeing these because a stream happened to be running would be
-# worse than the drift it was written to fix.
-
-
 def mutants() -> list[tuple[str, dict, dict]]:
     at = 24
 
@@ -428,8 +425,8 @@ def mutants() -> list[tuple[str, dict, dict]]:
         )
     )
     # An overlay lives outside the thread root, so it has its own walk and its own way of going
-    # unnoticed. Both shapes, because a menu that mounts and a menu that is rewritten are
-    # different regressions.
+    # unnoticed. Both shapes, because a menu that mounts and a menu that is rewritten are different
+    # regressions.
     menu = {
         "sel": '[role="menu"]',
         "tree": {
@@ -474,17 +471,16 @@ def test_the_mutant_score_is_total():
 
 
 def test_no_mutant_is_ever_reported_as_a_match():
-    # The weaker bar, held separately, because it is the one that decides whether a change can ship
-    # green. DIFFER is the outcome that names the change; NOT COMPARABLE is the outcome that
-    # refuses to say; only MATCH lets it through, and nothing here may reach it.
+    # The weaker bar, held separately, because it decides whether a change can ship green: DIFFER
+    # names the change, NOT COMPARABLE refuses to say, and only MATCH lets it through.
     for name, before, after in mutants():
         assert P.compare(before, after)["verdict"] != P.MATCH, name
 
 
 def test_the_mutant_score_is_unchanged_by_the_streaming_fields():
     # The same battery scored as the OLD instrument would score it. Identical, which is the claim:
-    # nothing that used to be caught stopped being caught. If this ever diverges from the test
-    # above, the elision has started hiding something.
+    # nothing that used to be caught stopped being caught. Divergence from the test above means the
+    # elision has started hiding something.
     for name, before, after in mutants():
         old_before = {
             k: v
@@ -573,7 +569,7 @@ def test_a_real_change_inside_the_streamed_message_is_refused_not_caught():
 
 
 def test_a_message_that_is_in_flight_on_one_arm_only_is_still_excused():
-    # The ordinary case, and it must not read as a build difference: one arm finished the reply
+    # The ordinary case, which must not read as a build difference: one arm finished the reply
     # before its digest was taken and the other did not.
     a = streaming_arm(81)
     b = capture(
@@ -589,15 +585,14 @@ def test_a_message_that_is_in_flight_on_one_arm_only_is_still_excused():
 
 
 def test_a_message_that_vanished_is_never_excused_by_being_in_flight():
-    # The elision withholds a subtree, never an element. A streamed message that is absent on one
-    # arm is a lost message, and no amount of "it was still arriving" makes that not a difference.
+    # The elision withholds a subtree, never an element: a streamed message absent on one arm is a
+    # lost message, and 'it was still arriving' does not make that not a difference.
     a = streaming_arm(24)
     b = capture(thread([message(0, role = "user", body = "the prompt"), message(1)]))
     got = P.compare(a, b)
     assert got["verdict"] == P.DIFFER
     # Caught one level earlier than `localise`, by the mount-count check: neither arm is windowing
-    # and they mounted different numbers of messages, which is a lost conversation and is reported
-    # as such rather than as a row that moved.
+    # and they mounted different numbers of messages, which is a lost conversation.
     assert "different numbers of messages (3 vs 2)" in got["reason"], got
 
 
@@ -814,7 +809,7 @@ def test_the_streamed_row_itself_is_still_withheld_when_the_probe_is_blind():
 def test_a_user_row_flagged_in_flight_by_the_other_arm_is_still_withheld():
     """The arm that COULD place its stream is believed about which rows have no defined moment."""
     base = _blind_arm(24)
-    # The non-blind arm names index 0 as in flight. Whatever role it carries, its digest is a point
+    # The non-blind arm names index 0 as in flight; whatever role it carries, its digest is a point
     # in a stream on that arm, so it is not a settled row.
     treat = dict(_blind_arm(24, prompt = "a different prompt"), in_flight = [0])
     treat["in_flight_unplaced"] = True
@@ -824,8 +819,8 @@ def test_a_user_row_flagged_in_flight_by_the_other_arm_is_still_withheld():
 
 
 def test_an_old_payload_without_the_streaming_fields_is_scored_as_it_always_was():
-    # Not silently refused, and not silently excused: a capture recorded before the fields existed
-    # carries no claim about a stream, and falls back to the digest it does carry.
+    # Not silently refused and not silently excused: a capture recorded before the fields existed
+    # carries no claim about a stream and falls back to the digest it does carry.
     a = streaming_arm(24, streaming_fields = False)
     b = streaming_arm(24, streaming_fields = False)
     assert P.compare(a, b)["verdict"] == P.MATCH

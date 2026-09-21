@@ -10,6 +10,7 @@ import json
 import re
 import sqlite3
 from concurrent.futures import ThreadPoolExecutor
+from functools import partial
 from typing import Any
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
@@ -17,6 +18,9 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from auth.authentication import get_current_subject
+from auth import policy
+from state import active_generations
+from utils.account_context import current_account, current_account_id, run_as
 from core.inference.llama_keepwarm import inference_lifecycle_gate
 from models.inference import ChatCompletionRequest
 from storage import chat_generation_runs_db as db
@@ -148,6 +152,15 @@ def _sanitize_request(payload: CreateChatGenerationRun) -> dict[str, Any]:
             status_code = 422,
             detail = safe_validation_errors(exc.errors()),
         ) from exc
+    # Without this an unservable part is queued at 202 and fails where the caller cannot see it.
+    from routes.inference import (
+        _messages_have_input_audio,
+        _reject_unsupported_content_parts,
+        _request_has_video,
+    )
+
+    _reject_unsupported_content_parts(request)
+
     # Message content/reasoning are user-authored data, not routing configuration. Scan every
     # other persisted field, including extra message-envelope fields, with the credential policy.
     durable_config = {
@@ -171,19 +184,21 @@ def _sanitize_request(payload: CreateChatGenerationRun) -> dict[str, Any]:
             status_code = 400,
             detail = "Durable chat runs are available only for local inference",
         )
-    # Recovery rebuilds text and reasoning deltas. A media turn has neither the same
-    # chunk shape nor a replayable transcript, and its payload is persisted verbatim,
-    # so a base64 blob would live in request_json for the life of the thread. Studio's
-    # own composer already keeps these on the legacy stream; keep the server in step so
-    # a stale tab or a direct caller cannot open a path nothing replays.
-    if any(raw.get(field) not in (None, "") for field in _MEDIA_FIELDS):
+    # A media turn has no replayable transcript and its payload persists verbatim, so a base64 blob would live in
+    # request_json for the life of the thread. _MEDIA_FIELDS is field-shaped, so a video_url part
+    # needs _request_has_video.
+    if (
+        any(raw.get(field) not in (None, "") for field in _MEDIA_FIELDS)
+        or _messages_have_input_audio(request.messages)
+        or _request_has_video(request)
+    ):
         raise HTTPException(
             status_code = 400,
             detail = "Media chat runs use the legacy streaming path",
         )
-    # Recovery currently rebuilds text and reasoning deltas, not server-side tool
-    # events. Keep any request whose effective policy can enter the local tool loop
-    # on the legacy subscriber-owned stream until those events are replayable.
+    # Recovery currently rebuilds text and reasoning deltas, not server-side tool events. Keep any request whose
+    # effective policy can enter the local tool loop on the legacy subscriber-owned stream until those events are
+    # replayable.
     from routes.inference import _checkpoint_recall_may_enable_tools, _effective_enable_tools
 
     request = request.model_copy(update = {"thread_id": payload.threadId})
@@ -218,6 +233,31 @@ def _require_run(run_id: str) -> dict[str, Any]:
     return run
 
 
+def cancel_account_run(request: Request, run_id: str, *, supervisor_name: str) -> None:
+    """Signal only the caller's registration: another account may legitimately reuse a bare
+    cancel ID, so it is never stashed."""
+    if policy.installation_has_managed_accounts():
+        active_generations.cancel_run(run_id, account_id = current_account_id())
+        if supervisor_name == "chat_generation_supervisor":
+            return
+    supervisor = getattr(request.app.state, supervisor_name, None)
+    if supervisor is not None:
+        supervisor.cancel(run_id)
+    elif supervisor_name == "chat_generation_supervisor":
+        from routes.inference import _cancel_by_cancel_id_or_stash
+        active_generations.cancel_run(run_id)
+        _cancel_by_cancel_id_or_stash(run_id)
+
+
+def _require_available_supervisor_run_id(run_id: str) -> None:
+    """A legacy supervisor keys tasks by bare ID, and start() no-ops on a held id, so a foreign
+    active slot must be refused or an admitted owner run would never be scheduled."""
+    if policy.installation_has_managed_accounts():
+        for entry in active_generations.snapshot():
+            if entry["run_id"] == run_id:
+                policy.require_account_scope(entry.get("account_id"))
+
+
 def _event_cursor(after: int | None, last_event_id: str | None) -> int:
     if after is not None and after > _SQLITE_MAX_INTEGER:
         raise HTTPException(status_code = 400, detail = "Event cursor is too large")
@@ -242,11 +282,10 @@ async def create_chat_generation_run(
     current_subject: str = Depends(get_current_subject),
 ):
     sanitized = _sanitize_request(payload)
-    # Serialize the off-loop commit with model lifecycle work. If create wins,
-    # the run is registered before the gate opens; if unload/swap wins, the run
-    # is admitted afterward. SSE and unrelated requests stay responsive while
-    # SQLite waits on a lock.
+    # Serialize the off-loop commit with model lifecycle work, so a run is registered either before the gate opens or
+    # after an unload/swap, never mid-swap.
     async with inference_lifecycle_gate():
+        _require_available_supervisor_run_id(payload.runId)
         try:
             run, created = await asyncio.to_thread(
                 db.create_run,
@@ -297,9 +336,11 @@ def cancel_chat_generation_run(
     run = db.request_cancel(run_id)
     if run is None:
         raise HTTPException(status_code = 404, detail = "Chat generation run not found")
-    supervisor = getattr(request.app.state, "chat_generation_supervisor", None)
-    if supervisor is not None and run["status"] in {"cancelling", "cancelled"}:
-        supervisor.cancel(run_id)
+    if run["status"] in {"cancelling", "cancelled"} and (
+        getattr(request.app.state, "chat_generation_supervisor", None) is not None
+        or policy.installation_has_managed_accounts()
+    ):
+        cancel_account_run(request, run_id, supervisor_name = "chat_generation_supervisor")
     return run
 
 
@@ -313,15 +354,16 @@ async def chat_generation_events(
 ):
     _require_run(run_id)
     cursor = _event_cursor(after, last_event_id)
+    wait_for_events = db.wait_for_events
+    if policy.installation_has_managed_accounts():
+        # run_in_executor does not copy ContextVars, unlike asyncio.to_thread.
+        wait_for_events = partial(run_as, current_account(), db.wait_for_events)
 
     async def stream():
         nonlocal cursor
         loop = asyncio.get_running_loop()
-        # A client that reconnects already caught up on a settled run has nothing to replay,
-        # and wait_for_events would hold it for the full timeout: the finished answer reads
-        # as still generating and an event-wait worker is tied up meanwhile. Only the first
-        # wait needs this guard, since every later pass already returns on the same test
-        # against the snapshot it read after waiting.
+        # A reconnect to an already-settled run has nothing to replay, and wait_for_events would hold it for the full
+        # timeout and tie up an event-wait worker.
         opening = await asyncio.to_thread(db.get_run, run_id)
         if opening is None:
             return
@@ -330,7 +372,7 @@ async def chat_generation_events(
         while True:
             events = await loop.run_in_executor(
                 _EVENT_WAIT_EXECUTOR,
-                db.wait_for_events,
+                wait_for_events,
                 run_id,
                 cursor,
                 15,
@@ -357,7 +399,11 @@ async def chat_generation_events(
             if await request.is_disconnected():
                 return
             if not events:
-                yield ": keep-alive\n\n"
+                # Carries the run's progress stamp, which the lease renewals move. A bare keep-alive proves only that the
+                # CONNECTION is healthy, so a follower rearming its no-progress deadline on one could never settle a wedged
+                # run while the socket stayed up, the one case that fallback exists for. Comment framing, so _SSEDecoder
+                # still drops it and no client parsing it as an event is affected.
+                yield f": keep-alive {int(snapshot['updatedAt'])}\n\n"
 
     return StreamingResponse(
         stream(),

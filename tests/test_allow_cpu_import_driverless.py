@@ -45,9 +45,8 @@ import torch
 _ROOT = pathlib.Path(__file__).resolve().parents[1]
 _UNSLOTH_DIR = _ROOT / "unsloth"
 
-# Both spellings of "you asked a device that is not there what it can do". A
-# CUDA-built torch with the devices hidden raises the first out of _lazy_init();
-# a CPU-only wheel raises the second from the same place. CI's `Repo tests (CPU)`
+# Both spellings of "you asked a device that is not there what it can do". A CUDA-built torch with the devices hidden
+# raises the first out of _lazy_init(); a CPU-only wheel raises the second from the same place. CI's `Repo tests (CPU)`
 # job installs the CPU wheel, so the second shape is the one it would see.
 _NO_DEVICE = (
     "No CUDA GPUs are available",
@@ -69,8 +68,8 @@ def _run(
     path.append(str(_ROOT))
     if os.environ.get("PYTHONPATH"):
         path.append(os.environ["PYTHONPATH"])
-    # A runner (or a conftest) that exports UNSLOTH_ALLOW_CPU must not decide the
-    # cases for us: each one says for itself whether the child gets it.
+    # A runner (or a conftest) that exports UNSLOTH_ALLOW_CPU must not decide the cases for us: each one says for itself
+    # whether the child gets it.
     clean = {k: v for k, v in os.environ.items() if k != "UNSLOTH_ALLOW_CPU"}
     return subprocess.run(
         [sys.executable, "-c", textwrap.dedent(code)],
@@ -270,9 +269,7 @@ def test_a_driverless_import_does_not_try_to_repair_cuda_linkage(tmp_path):
     if out.returncode != 0 and _asked_a_missing_device(out.stderr):
         pytest.skip("the import does not complete here; covered by the cases above")
     assert out.returncode == 0, out.stderr[-3000:]
-    # Scoped to the two calls the repair arm makes. Other importers legitimately
-    # shell out here (bitsandbytes runs `file`, triton runs `uname`), so a bare
-    # "nothing was executed" assertion would be red for unrelated reasons.
+    # Scoped to the two calls the repair arm makes.
     calls = log.read_text(encoding = "utf-8")
     assert "ldconfig" not in calls, f"a driverless import ran ldconfig:\n{calls}"
     assert (

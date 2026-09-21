@@ -1,5 +1,6 @@
 """Host-macOS-version-aware llama.cpp prebuilt selection; Mach-O samples synthesized in-process, all I/O monkeypatched."""
 
+import hashlib
 import importlib.util
 import struct
 import sys
@@ -185,7 +186,6 @@ class TestPreflightMacosInstalledBinaries:
     def test_skips_the_minos_comparison_when_host_version_unknown(self, tmp_path):
         install_dir, binaries = self._install_dir(tmp_path, (26, 0))
         # No host version to compare against, so the static check cannot run.
-        # These fixtures are not executable, so the load probe finds nothing either.
         ILP.preflight_macos_installed_binaries(binaries, install_dir, make_macos_host(None))
 
     def test_noop_on_non_macos_host(self, tmp_path):
@@ -224,8 +224,8 @@ class TestMacosDyldLoadProbe:
         bin_dir = tmp_path / "build" / "bin"
         bin_dir.mkdir(parents = True)
         # A real spawnable file, not a Mach-O sample: the point is to reach dyld.
-        # macho_minimum_macos returns None for a non-Mach-O, so the minos gate
-        # ahead of the probe stays quiet and the probe is what decides.
+        # macho_minimum_macos returns None for a non-Mach-O, so the minos gate ahead of the probe stays quiet and the
+        # probe is what decides.
         server = bin_dir / "llama-server"
         server.write_text(f'#!/bin/sh\necho "{message}" >&2\nexit {exit_code}\n')
         server.chmod(0o755)
@@ -372,6 +372,11 @@ class TestTheProbeEnvironment:
         assert "DYLD_INSERT_LIBRARIES" not in seen
 
 
+def _fixture_digest(name: str) -> str:
+    """Stand-in for the digest GitHub publishes; a fixture without one selects nothing."""
+    return hashlib.sha256(name.encode()).hexdigest()
+
+
 def _fake_macos_releases(tags):
     return [
         {
@@ -380,6 +385,7 @@ def _fake_macos_releases(tags):
                 {
                     "name": f"llama-{tag}-bin-macos-arm64.tar.gz",
                     "browser_download_url": f"https://example.com/{tag}.tar.gz",
+                    "digest": f"sha256:{_fixture_digest(tag)}",
                 }
             ],
         }
@@ -394,7 +400,6 @@ class TestMacosReleasePin:
 
     def _patch_releases(self, monkeypatch):
         def fake_iter(repo, published_release_tag, requested_tag):
-            # Real iterator yields only the requested tag when one is pinned.
             if requested_tag and requested_tag != "latest":
                 return _fake_macos_releases([requested_tag])
             return _fake_macos_releases(self.TAGS)

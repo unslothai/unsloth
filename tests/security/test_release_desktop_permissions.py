@@ -81,7 +81,7 @@ def test_build_matrix_hands_off_assets_without_release_credentials():
         for step in build["steps"]
         if step.get("uses", "").startswith("tauri-apps/tauri-action@")
     ]
-    assert len(tauri_steps) == 3
+    assert len(tauri_steps) == 4
     for step in tauri_steps:
         assert "GITHUB_TOKEN" not in step.get("env", {})
         assert not {"releaseId", "tagName", "releaseName"} & step.get("with", {}).keys()
@@ -103,7 +103,15 @@ def test_build_matrix_hands_off_assets_without_release_credentials():
     wait_run = wait["run"]
 
     matrix_legs = {f"Build {entry['label']}" for entry in build["strategy"]["matrix"]["include"]}
-    assert len(matrix_legs) == len(tauri_steps)
+    # Legs outnumber the tauri-action steps: the two Windows legs (x64 and the
+    # cross-compiled ARM64) share one `build_windows` step and differ only by
+    # matrix.args. What matters is that every leg is named in the wait list, which
+    # the loop below asserts, and that every build step is still reachable from
+    # some leg's platform.
+    assert len(matrix_legs) >= len(tauri_steps)
+    leg_platforms = {entry["platform"] for entry in build["strategy"]["matrix"]["include"]}
+    for step in tauri_steps:
+        assert any(platform in step.get("if", "") for platform in leg_platforms), step.get("name")
     for leg in matrix_legs:
         assert f"'{leg}'" in wait_run, leg
 
@@ -112,11 +120,10 @@ def test_build_matrix_hands_off_assets_without_release_credentials():
     # Every one of those refusals has to be terminal.
     assert wait_run.count("exit 1") >= 3
 
-    # Assert the mechanism, not just the error strings: those survive a step
-    # that no longer loops or no longer reads a conclusion, and then the
-    # download races the matrix. Everything below is checked inside the loop
-    # body, because a one-shot `gh api` read beside a dead `while` would satisfy
-    # the same substrings while waiting for nothing.
+    # Assert the mechanism, not just the error strings: those survive a step that no longer loops or
+    # no longer reads a conclusion, and then the download races the matrix. Everything below is
+    # checked inside the loop body, because a one-shot `gh api` read beside a dead `while` would
+    # satisfy the same substrings while waiting for nothing.
     loop_body = _poll_loop_body(wait_run)
     assert "actions/runs/${GITHUB_RUN_ID}/jobs" in loop_body, wait_run
     assert ".status" in loop_body and ".conclusion" in loop_body, wait_run
@@ -129,8 +136,8 @@ def test_build_matrix_hands_off_assets_without_release_credentials():
 
     names = [step.get("name") for step in publish["steps"]]
     assert names.index("Wait for the build matrix") < names.index("Publish release assets")
-    # And it has to clear before the assets are pulled, or the download races the
-    # legs and publish-release dies on artifacts that do not exist yet.
+    # And it has to clear before the assets are pulled, or the download races the legs and publish-release dies on
+    # artifacts that do not exist yet.
     download = next(
         index
         for index, step in enumerate(publish["steps"])
@@ -268,9 +275,9 @@ def test_the_updater_workflow_skips_releases_without_desktop_bundles():
     assert "grep -q '^Unsloth-Desktop-'" in gate["run"]
     # An unreadable release must not look like one that simply has no bundles.
     assert "refusing to advance the channel" in gate["run"]
-    # Completeness is judged over the four public downloads, in whichever naming
-    # scheme the release was built with. tests/security/test_desktop_updater_pointer.py
-    # executes the classification; these only pin that all three steps share it.
+    # Completeness is judged over the four public downloads, in whichever naming scheme the release was built with.
+    # tests/security/test_desktop_updater_pointer.py executes the classification; these only pin that all three steps
+    # share it.
     for step_name in (
         "Check for desktop bundles",
         "Validate updater metadata",
@@ -280,8 +287,8 @@ def test_the_updater_workflow_skips_releases_without_desktop_bundles():
         for suffix in ("MacOS.dmg", "Linux.AppImage", "Ubuntu.deb", "Windows.exe"):
             assert suffix in run, (step_name, suffix)
         assert "Unsloth-Desktop" in run, step_name
-        # Every release published before the rename carries the version in each
-        # filename; refusing those would make the workflow unusable on all of them.
+        # Every release published before the rename carries the version in each filename; refusing those would make the
+        # workflow unusable on all of them.
         assert "version" in run, step_name
 
     for name in (

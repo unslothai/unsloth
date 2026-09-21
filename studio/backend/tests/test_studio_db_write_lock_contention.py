@@ -12,6 +12,8 @@ poll query, and log levels.
 """
 
 import asyncio
+import hashlib
+import inspect
 import logging
 import sqlite3
 import threading
@@ -23,6 +25,14 @@ import pytest
 import storage.research_runs_db as research_runs_db
 import storage.studio_db as studio_db
 
+
+def _shared_setup_1(threads):
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+
 FULL, NORMAL = 2, 1
 
 
@@ -30,10 +40,12 @@ FULL, NORMAL = 2, 1
 def db(tmp_path, monkeypatch):
     """A studio.db in a temp dir, with the per-process schema latch reset."""
     monkeypatch.setattr(studio_db, "studio_db_path", lambda: tmp_path / "studio.db")
-    monkeypatch.setattr(studio_db, "_schema_ready", False)
+    monkeypatch.setattr(studio_db, "_schema_ready", set())
     conn = studio_db.get_connection()
     conn.close()
-    return tmp_path / "studio.db"
+    yield tmp_path / "studio.db"
+    # A keeper left open would hold this temp database past the test that made it.
+    studio_db.close_wal_keeper()
 
 
 def _journal_mode(path: Path) -> str:
@@ -111,7 +123,7 @@ def test_non_wal_journal_keeps_full(db, monkeypatch, mode):
         setup.close()
     assert _journal_mode(db) != "wal"
 
-    monkeypatch.setattr(studio_db, "_schema_ready", True)
+    monkeypatch.setattr(studio_db, "_schema_ready", {db.resolve()})
     conn = studio_db.get_connection()
     try:
         assert _synchronous(conn) == FULL, f"{mode} must not lose its commit fsync"
@@ -175,10 +187,7 @@ def test_concurrent_openers_all_get_normal(db):
             errors.append(exc)
 
     threads = [threading.Thread(target = worker) for _ in range(16)]
-    for thread in threads:
-        thread.start()
-    for thread in threads:
-        thread.join()
+    _shared_setup_1(threads)
     assert not errors, errors
     assert results == [NORMAL] * 16
 
@@ -241,7 +250,7 @@ def test_upgrade_replaces_the_unscoped_trigger(tmp_path, monkeypatch):
     """
     path = tmp_path / "studio.db"
     monkeypatch.setattr(studio_db, "studio_db_path", lambda: path)
-    monkeypatch.setattr(studio_db, "_schema_ready", False)
+    monkeypatch.setattr(studio_db, "_schema_ready", set())
 
     conn = studio_db.get_connection()
     try:
@@ -268,7 +277,7 @@ def test_upgrade_replaces_the_unscoped_trigger(tmp_path, monkeypatch):
     finally:
         conn.close()
 
-    monkeypatch.setattr(studio_db, "_schema_ready", False)
+    monkeypatch.setattr(studio_db, "_schema_ready", set())
     conn = studio_db.get_connection()
     try:
         assert (
@@ -340,10 +349,7 @@ def test_eight_processes_upgrading_at_once_all_succeed(db):
             conn.close()
 
     threads = [threading.Thread(target = worker) for _ in range(8)]
-    for thread in threads:
-        thread.start()
-    for thread in threads:
-        thread.join()
+    _shared_setup_1(threads)
 
     assert not errors, errors
     assert len(seen) == 8
@@ -597,10 +603,7 @@ def test_concurrent_workers_claim_a_run_exactly_once(db):
             errors.append(exc)
 
     threads = [threading.Thread(target = worker, args = (f"w{i}",)) for i in range(8)]
-    for thread in threads:
-        thread.start()
-    for thread in threads:
-        thread.join()
+    _shared_setup_1(threads)
     assert not errors, errors
     assert len(claims) == 1, f"the read-first probe must not let two workers claim: {claims}"
 
@@ -738,3 +741,120 @@ def test_server_errors_keep_their_traceback(status):
     log_and_http_error(raised, status, "public", event = "e", log = log)
     level, kwargs = log.calls[0]
     assert level == "error" and kwargs.get("exc_info") is raised
+
+
+def _digest(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _short_lived_write(path: Path, value: str) -> None:
+    """One writer with the lifetime every studio_db accessor gives its connection."""
+    conn = studio_db.get_connection()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        conn.execute(
+            "INSERT OR REPLACE INTO app_settings (key, value_json, updated_at) "
+            "VALUES ('wal-probe', ?, '0')",
+            (value,),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def test_wal_keeper_keeps_short_lived_writers_out_of_the_main_database(db):
+    """The #9934 write amplification: without a keeper every close rewrites studio.db."""
+    wal = Path(f"{db}-wal")
+
+    for index in range(5):
+        _short_lived_write(db, f"unkept-{index}")
+        assert not wal.exists()
+    unkept = _digest(db)
+
+    assert studio_db.open_wal_keeper() is True
+    for index in range(5):
+        _short_lived_write(db, f"kept-{index}")
+        assert wal.is_file()
+    assert _digest(db) == unkept
+
+    studio_db.close_wal_keeper()
+    assert not wal.exists()
+    assert _digest(db) != unkept
+
+
+def test_a_second_database_gets_its_own_keeper(db, tmp_path, monkeypatch):
+    assert studio_db.open_wal_keeper() is True
+    stale = studio_db._wal_keepers[studio_db.studio_db_path().resolve()]
+
+    second = tmp_path / "second" / "studio.db"
+    second.parent.mkdir()
+    monkeypatch.setattr(studio_db, "studio_db_path", lambda: second)
+    monkeypatch.setattr(studio_db, "_schema_ready", set())
+
+    assert studio_db.open_wal_keeper() is True
+    assert studio_db._wal_keepers[studio_db.studio_db_path().resolve()] is not stale
+    assert stale.execute("SELECT 1").fetchone()[0] == 1
+    _short_lived_write(second, "kept")
+    assert Path(f"{second}-wal").is_file()
+
+    studio_db.close_wal_keeper()
+    assert not studio_db._wal_keepers
+    assert not Path(f"{second}-wal").exists()
+    studio_db.close_wal_keeper()
+
+
+def test_the_replaced_keeper_is_not_left_open(db):
+    """Replacing must release the old connection, not merely drop the reference."""
+    assert studio_db.open_wal_keeper() is True
+    stale = studio_db._wal_keepers[studio_db.studio_db_path().resolve()]
+    assert studio_db.open_wal_keeper() is True
+
+    with pytest.raises(sqlite3.ProgrammingError, match = "closed database"):
+        stale.execute("SELECT 1")
+    studio_db.close_wal_keeper()
+
+
+def test_a_keeper_left_by_a_dead_thread_is_replaced(db):
+    """sqlite refuses a cross-thread close, so replacing has to survive that failing."""
+    opened = threading.Thread(target = studio_db.open_wal_keeper)
+    opened.start()
+    opened.join()
+    stale = studio_db._wal_keepers[studio_db.studio_db_path().resolve()]
+    assert stale is not None
+
+    assert studio_db.open_wal_keeper() is True
+    assert studio_db._wal_keepers[studio_db.studio_db_path().resolve()] is not stale
+    _short_lived_write(db, "kept")
+    assert Path(f"{db}-wal").is_file()
+
+    studio_db.close_wal_keeper()
+    assert not Path(f"{db}-wal").exists()
+
+
+def test_wal_keeper_declines_when_the_filesystem_refused_wal(db, caplog):
+    """A rollback-journal install has nothing to hold open, and must still boot."""
+    conn = sqlite3.connect(str(db))
+    conn.execute("PRAGMA journal_mode=DELETE")
+    conn.close()
+    assert _journal_mode(db) == "delete"
+
+    with caplog.at_level(logging.INFO, logger = studio_db.logger.name):
+        assert studio_db.open_wal_keeper() is False
+    assert not studio_db._wal_keepers
+    assert "not WAL" in caplog.text
+
+
+def test_the_lifespan_holds_the_keeper_across_every_writer():
+    """A keeper nothing opens saves nothing, and one released early stops saving early.
+
+    Reads the source rather than running the lifespan, which imports the whole stack.
+    Anchored on the awaited call, since the bare name is also in a comment further up.
+    """
+    import main
+
+    source = inspect.getsource(main.lifespan)
+    served = source.index("yield")
+    assert source.index("open_wal_keeper()") < source.index("cleanup_orphaned_runs)") < served
+    assert (
+        served < source.index("await run_lifespan_shutdown(") < source.index("close_wal_keeper()")
+    )

@@ -10,11 +10,11 @@
 // gaps time the poller, not the transfer, and would read as the burst rate.
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import {
   installLocalStorageFake,
+  readSrc,
   registerBundlerResolver,
 } from "./helpers/kit.ts";
 
@@ -62,19 +62,13 @@ test("a total that grows drops the ETA measured against the old one", () => {
 test("the poll loop drops a hidden tab's throttled samples", () => {
   // Voice used to run a second estimator of its own for a progress bar beside
   // the shared panel. Both are gone, so this is the only one left to guard.
-  const voice = readFileSync(
-    new URL("../src/features/settings/tabs/voice-tab.tsx", import.meta.url),
-    "utf8",
-  );
+  const voice = readSrc("features/settings/tabs/voice-tab.tsx");
   assert.ok(
     !voice.includes("downloadSamplesRef"),
     "voice no longer estimates a rate of its own",
   );
 
-  const source = readFileSync(
-    new URL("../src/features/hub/download-manager/poll-loop.ts", import.meta.url),
-    "utf8",
-  );
+  const source = readSrc("features/hub/download-manager/poll-loop.ts");
   const guard = source.indexOf("document.hidden");
   assert.ok(guard > 0, "the poll loop should skip a hidden tab");
   const clear = source.indexOf("rt.speedSamples.length = 0", guard);

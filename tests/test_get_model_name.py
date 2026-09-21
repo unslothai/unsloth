@@ -22,7 +22,6 @@ class TestGetModelName(unittest.TestCase):
     @patch.object(loader_utils, "_get_new_mapper", _no_remote_mapper)
     def test_resolution_matrix(self):
         cases = [
-            # Core mappings
             ("meta-llama/Llama-2-7b-hf", True, "unsloth/llama-2-7b-bnb-4bit", True),
             ("meta-llama/Llama-2-7b-hf", False, "unsloth/llama-2-7b", True),
             (
@@ -116,7 +115,6 @@ class TestGetModelName(unittest.TestCase):
                 "unsloth/DeepScaleR-1.5B-Preview-unsloth-bnb-4bit",
                 True,
             ),
-            # Fallback-to-original behavior
             "nonexistent-user/nonexistent-model-123",
             "google/gemma-3-random-prototype-123",
             "imdatta0/nanoqwen-fp8",
@@ -125,7 +123,6 @@ class TestGetModelName(unittest.TestCase):
             ("unsloth/llama-2-7b-bnb-4bit", True, "unsloth/llama-2-7b-bnb-4bit", False),
             ("unsloth/llama-2-7b-bnb-4bit", False, "unsloth/llama-2-7b", True),
             ("google/gemma-2-9b", True, "unsloth/gemma-2-9b-bnb-4bit", True),
-            # GPT-OSS behavior
             ("openai/gpt-oss-20b", False, "unsloth/gpt-oss-20b", True),
             ("openai/gpt-oss-20b", True, "unsloth/gpt-oss-20b-unsloth-bnb-4bit", True),
             ("unsloth/gpt-oss-20b", True, "unsloth/gpt-oss-20b-unsloth-bnb-4bit", True),

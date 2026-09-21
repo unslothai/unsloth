@@ -114,21 +114,21 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Optional
 
 #: The two gate modes. `full` is the historical behaviour plus the settle and end-present
-#: conditions; it is STRICTLY STRONGER than what shipped and is what every normal arm runs.
-#: `windowed` is the one an arm that deliberately mounts fewer nodes may ask for.
+#: conditions, STRICTLY STRONGER than what shipped, and is what every normal arm runs.
+#: `windowed` is for an arm that deliberately mounts fewer nodes.
 MODE_FULL = "full"
 MODE_WINDOWED = "windowed"
 MODES = (MODE_FULL, MODE_WINDOWED)
 
-#: How far apart the two agreeing samples must be. 600ms rather than the old 500ms poll, because
-#: the thing being ruled out is a mount loop that pauses for a frame, and a gap shorter than a
-#: couple of React commits can be spanned by one.
+#: How far apart the two agreeing samples must be. 600ms rather than the old 500ms poll,
+#: because what is being ruled out is a mount loop that pauses for a frame, and a shorter gap
+#: can be spanned by one.
 STABLE_GAP_MS = 600
-#: How many consecutive agreeing samples are needed. Two, i.e. one confirmed repeat.
+#:How many consecutive agreeing samples are needed. Two, i.e. one confirmed repeat.
 STABLE_SAMPLES = 2
-#: Bottom tolerance, in CSS pixels. Not zero: a virtualised list settles on an estimated total
-#: height and corrects it as real rows are measured, so it lands a few pixels off the exact bottom
-#: and stays there. 24px is under one line of text, so it cannot hide a missing message.
+#: Bottom tolerance in CSS pixels. Not zero: a virtualised list settles on an estimated total
+#: height and lands a few pixels off. 24px is under one line of text, so it cannot hide a
+#: missing message.
 BOTTOM_TOLERANCE_PX = 24
 
 DEFAULT_TIMEOUT_S = 180
@@ -146,8 +146,8 @@ class ThreadNotReady(TimeoutError):
         self.detail = detail
 
 
-#: One reading of the page. Cheap enough to run every poll: the expensive part is
-#: `getElementsByTagName('*').length`, which is a live HTMLCollection length and not a walk.
+#: One reading of the page. Cheap enough to run every poll:
+#: `getElementsByTagName('*').length` is a live HTMLCollection length, not a walk.
 PROBE_JS = """
 (args) => {
   const [marker, tailChars] = args;
@@ -241,10 +241,9 @@ PROBE_JS = """
 }
 """
 
-#: The keys that must AGREE between two samples for the page to count as settled. Deliberately
-#: three quantities that move for three different reasons: the message list growing, any subtree
-#: growing (a highlighter still colouring a fence moves `elements` while `mounted` sits still), and
-#: the laid-out height changing (a virtualised list correcting its estimated row heights).
+#: The keys that must AGREE between two samples for the page to count as settled. Three
+#: quantities that move for three different reasons: the message list growing, any subtree
+#: growing (a highlighter still colouring a fence), and the laid-out height changing.
 SETTLE_KEYS = ("mounted", "elements", "scroll_height")
 
 
@@ -296,27 +295,20 @@ def evaluate(probe: dict, previous: Optional[dict], expected_messages: int, mode
         "composer_present": bool(probe.get("composer")),
         "any_message_mounted": (probe.get("mounted") or 0) > 0,
         "settled": bool(settled),
-        # The END of the thread is on screen. Both halves matter: the marker for the last user turn
-        # is mounted, AND it is near the end of the mounted run rather than in the middle of it.
-        # `2` because the thread ends user, assistant -- the marker's own row plus the reply.
+        # The END of the thread is on screen: the last user turn's marker is mounted AND near the end
+        # of the mounted run rather than in the middle. `2` because the thread ends user, assistant.
         "end_present": bool(probe.get("marker_found"))
         and (probe.get("marker_from_end") is not None and probe["marker_from_end"] <= 2),
     }
 
     if mode == MODE_WINDOWED:
-        # THE VIRTUALIZER'S OWN CLAIM about the thread's length, and it has to be the truth the
-        # seeder wrote. An arm that mounts a window without publishing aria-setsize has not given
-        # anyone -- this harness or a screen reader -- any way to know how long the thread is, and
-        # it is refused here rather than scored on the assumption that it is fine.
-        #
-        # UNLESS THE WHOLE THREAD IS MOUNTED, in which case there is nothing left to declare: the
-        # DOM is the total. This matters at the small rungs, where the thread is shorter than the
-        # window and a virtualised build mounts every message exactly like the shipped one. The
-        # requirement has to be true of a fully-mounted thread as well as of a correctly windowed
-        # one, or `windowed` becomes a mode that only some rungs of the same arm can pass.
-        #
-        # It cannot be used to slip past the gate: this branch needs `mounted >= expected`, which
-        # is the full-mount condition itself, so a thread that has mounted 9 of 18 gets none of it.
+        # THE VIRTUALIZER'S OWN CLAIM about the thread's length, which has to be the truth the seeder
+        # wrote. An arm that windows without publishing aria-setsize has given nobody, this harness or
+        # a screen reader, a way to know how long the thread is.
+        # UNLESS THE WHOLE THREAD IS MOUNTED, where the DOM is the total. This matters at small rungs,
+        # where a virtualised build mounts every message like the shipped one, or `windowed` becomes a
+        # mode only some rungs of an arm can pass. It cannot be used to slip past the gate: this
+        # branch needs `mounted >= expected`, the full-mount condition itself.
         fully_mounted = (probe.get("mounted") or 0) >= expected_messages
         out["total_declared"] = fully_mounted or probe.get("setsize") is not None
         out["total_matches_seeded"] = fully_mounted or probe.get("setsize") == expected_messages
@@ -325,22 +317,16 @@ def evaluate(probe: dict, previous: Optional[dict], expected_messages: int, mode
             probe.get("posinset_count") == probe.get("mounted") and (probe.get("mounted") or 0) > 0
         )
         # ORDINALS THAT ARE ACTUALLY POSITIONS. The condition above only asks whether a number was
-        # published on every row, and three malformed shapes satisfy it while carrying no
-        # information at all: every row publishing `0`, every row publishing the same ordinal, and
-        # a window numbered from 1 rather than from where it sits in the thread. Each is a real
-        # virtualizer bug, each leaves the mounted set unlocatable, and each used to pass here.
-        #
-        # So the numbers have to behave like positions in a set: at least 1, no two rows claiming
-        # the same one, and none pointing past the end those same rows declare in `aria-setsize`.
-        # `setsize` is the arm's own claim and is already required to equal the seeded total by
-        # `total_matches_seeded`; the seeded total stands in when no setsize was published, which
-        # is the fully-mounted case below.
-        #
-        # THE WAIVER, and it is the same one `total_declared` carries: a thread short enough to be
-        # mounted whole publishes no ordinals -- the shipped build publishes none anywhere -- and
-        # there is nothing to validate. It needs `mounted >= expected`, the full-mount condition
-        # itself, AND no ordinals at all, so an arm that publishes malformed ones cannot buy its
-        # way out of the check by also mounting everything.
+        # published, and three malformed shapes satisfy it carrying no information: every row
+        # publishing `0`, every row publishing the same ordinal, and a window numbered from 1 rather
+        # than from where it sits. Each is a real virtualizer bug and each used to pass here.
+        # So the numbers must behave like positions in a set: at least 1, no duplicates, and none past
+        # the end those rows declare in `aria-setsize` (already required to equal the seeded total by
+        # `total_matches_seeded`; the seeded total stands in when none was published).
+        # THE WAIVER, the same one `total_declared` carries: a thread mounted whole publishes no
+        # ordinals, and the shipped build publishes none anywhere, so there is nothing to validate. It
+        # needs `mounted >= expected` AND no ordinals at all, so an arm publishing malformed ones
+        # cannot buy its way out by also mounting everything.
         declared = probe.get("setsize")
         if declared is None:
             declared = expected_messages
@@ -353,49 +339,41 @@ def evaluate(probe: dict, previous: Optional[dict], expected_messages: int, mode
             and probe["max_posinset"] <= declared
         )
         # AND THE WINDOW IS AT THE END OF THE THREAD BY ITS OWN NUMBERING. `end_present` proves the
-        # last message's TEXT is mounted; this proves the ordinals agree with it. Without it a
-        # bottom-anchored window numbered 1..6 out of 18 -- a virtualizer publishing the index
-        # within the window instead of the position in the thread -- passes every other condition.
+        # last message's TEXT is mounted; this proves the ordinals agree. Without it a bottom-anchored
+        # window numbered 1..6 out of 18 passes every other condition.
         out["posinset_reaches_end"] = (fully_mounted and published == 0) or (
             probe.get("max_posinset") == expected_messages
         )
         # THE APP'S ANSWER FIRST, the arithmetic only when the app has not given one. A virtualised
-        # list settles on an estimated total height and corrects it as real rows are measured, so
-        # its scrollTop arithmetic can read tens of pixels off the bottom while the app -- which
-        # knows it is pinned -- is perfectly happy. Trusting the arithmetic over the app would fail
-        # a correct arm for a rounding error in a height estimate.
+        # list's scrollTop arithmetic can read tens of pixels off the bottom while the app, which
+        # knows it is pinned, is happy; trusting the arithmetic would fail a correct arm for a
+        # rounding error.
         app_bottom = probe.get("app_says_at_bottom")
         near_bottom = (
             probe.get("from_bottom") is not None and probe["from_bottom"] <= BOTTOM_TOLERANCE_PX
         )
         out["anchored_at_end"] = bool(app_bottom) if app_bottom is not None else near_bottom
-        # THE VIEWPORT ITSELF, ASSERTED RATHER THAN INFERRED. Every windowed condition above is
-        # about what is inside the scroller, and each one degrades to a pass when the scroller is
-        # not there: `from_bottom` is null so the arithmetic is skipped, and the app's own answer
-        # is read off `.aui-thread-scroll-to-bottom`, which is a DESCENDANT of the viewport but is
-        # looked up at DOCUMENT scope. So renaming the viewport class while leaving that control
-        # mounted leaves `app_says_at_bottom` true, `anchored_at_end` true, and the cell admitted
-        # with no viewport at all.
-        #
-        # What follows a cell admitted that way is silent in every direction: the completeness
-        # probe returns `probe_attempted: false`, the scroll actions return `not_run` and a not-run
-        # action blanks only its own timings, and the census viewport fields go null. Nothing
-        # refuses, so the film is scored without the surface it was measuring.
-        #
-        # The signal is already probed and costs nothing to read. It is asserted only here because
-        # a fully mounted arm that scrolls the window instead of a div is a shape this harness
-        # supports, and `MODE_FULL` must not start requiring a scroller it never needed.
+        # THE VIEWPORT ITSELF, ASSERTED RATHER THAN INFERRED. Every windowed condition above degrades
+        # to a pass without the scroller: `from_bottom` is null so the arithmetic is skipped, and the
+        # app's own answer is read off `.aui-thread-scroll-to-bottom`, a DESCENDANT of the viewport
+        # looked up at DOCUMENT scope. So renaming the viewport class admits a cell with no viewport.
+        # What follows is silent in every direction: the completeness probe returns
+        # `probe_attempted: false`, scroll actions return `not_run` and blank only their own timings,
+        # and the census viewport fields go null. Nothing refuses, so the film is scored without the
+        # surface it was measuring.
+        # `app_says_at_bottom` and `anchored_at_end` both read true on such a cell.
+        # Asserted only here because a fully mounted arm that scrolls the window instead of a div is a
+        # shape this harness supports, and `MODE_FULL` must not start requiring a scroller.
         out["viewport_present"] = bool(probe.get("viewport_present"))
-        # And the pin must have FINISHED. `--aui-scroll-stabilizer` is on the viewport while
-        # use-intent-aware-autoscroll is still pinning and comes off when it settles, so a page
-        # carrying it is mid-scroll no matter what its scrollTop says.
+        # And the pin must have FINISHED: `--aui-scroll-stabilizer` is on the viewport while
+        # use-intent-aware-autoscroll is still pinning, so a page carrying it is mid-scroll whatever
+        # its scrollTop says.
         out["pin_settled"] = not probe.get("pinning")
-        # Not a gate, a sanity check with teeth: a "windowed" arm that mounted MORE rows than the
-        # thread has is not windowed, it is broken, and the reading would be nonsense.
+        # Not a gate, a sanity check with teeth: a 'windowed' arm that mounted MORE rows than the
+        # thread has is broken, and the reading would be nonsense.
         out["not_over_mounted"] = (probe.get("mounted") or 0) <= expected_messages
     else:
         out["all_messages_mounted"] = (probe.get("mounted") or 0) >= expected_messages
-        # Recorded, never gated, in full mode. See the module docstring.
         out["total_declared"] = None
         out["total_matches_seeded"] = None
         out["posinset_on_every_row"] = None
@@ -412,9 +390,8 @@ def _describe(conditions: dict, probe: dict, expected: int, mode: str) -> str:
     bits = [
         f"mounted {probe.get('mounted')} of {expected}",
         f"aria-setsize {probe.get('setsize')}",
-        # The ordinals THEMSELVES, not just how many rows carried one: "posinset 0..0 on 6 rows,
-        # 1 distinct" is the whole diagnosis of a malformed contract, and reading it off the raw
-        # probe afterwards is what this message exists to save.
+        # The ordinals THEMSELVES, not just how many rows carried one: 'posinset 0..0 on 6 rows, 1
+        # distinct' is the whole diagnosis of a malformed contract.
         f"aria-posinset {probe.get('min_posinset')}..{probe.get('max_posinset')} on "
         f"{probe.get('posinset_count')} of {probe.get('mounted')} rows, "
         f"{probe.get('posinset_distinct')} distinct",
@@ -605,15 +582,14 @@ async ([toTop, steps, stepPx]) => {
 }
 """
 
-#: How the traversal is stepped. 400 steps of 2,000px covers 800,000px of thread, which clears the
-#: tallest rung this benchmark runs, and a step that lands at either end breaks out early.
+#: How the traversal is stepped. 400 steps of 2,000px covers 800,000px, clearing the tallest
+#: rung, and a step landing at either end breaks out early.
 TRAVERSE_STEPS = 400
 TRAVERSE_STEP_PX = 2000
 
-#: The ordinals mounted right now, read exactly the way PROBE_JS reads them. Run once at the top of
-#: the thread, after the wait for the head marker: the last stop of the gesture reads its rows the
-#: instant the paint lands, and an arm that materialises a row a beat later would otherwise have
-#: that row counted as one the traversal never saw.
+#: The ordinals mounted right now, read exactly as PROBE_JS reads them. Run once at the top
+#: after the wait for the head marker: the gesture's last stop reads its rows the instant the
+#: paint lands, so an arm materialising a row a beat later would be counted as never seen.
 COLLECT_ORDINALS_JS = """
 () => {
   const out = [];
@@ -627,30 +603,26 @@ COLLECT_ORDINALS_JS = """
 }
 """
 
-#: How many missing ordinals a verdict names. The COUNT is always exact; the list is capped so a
-#: thread that lost half of itself does not write a thousand integers into every payload.
+#: How many missing ordinals a verdict names. The COUNT is always exact; the list is capped so
+#: a thread that lost half of itself does not write a thousand integers into every payload.
 MISSING_ORDINALS_LISTED = 40
 
-#: WHY `ordinal_coverage` GAVE THE ANSWER IT GAVE, which the three-valued verdict on its own cannot
-#: say and which the `thread_complete` gate has to know.
-#:
-#: `not_applicable` and `unmeasured` are BOTH `None` and they are opposites. The first is a question
-#: that does not arise on this arm: a fully mounted thread publishes no `aria-posinset` anywhere --
-#: the shipped build publishes none -- so there are no ordinals to cover and none missing. The
-#: second is a question that does arise and was not answered: the gesture stopped short of the top,
-#: or its consecutive stops did not overlap, so rows nobody scrolled past are rows nobody looked at.
-#:
-#: A gate that passes both reads "we could not tell" as "it was fine", which is the store that kept
-#: only its first and last page staying scoreable. A gate that fails both fails the shipped build on
-#: every cell for publishing no ordinals. So the two are recorded apart, and only the second is
-#: withheld from a pass.
+#: WHY `ordinal_coverage` GAVE THE ANSWER IT GAVE, which the three-valued verdict cannot say
+#: and the `thread_complete` gate has to know.
+#: `not_applicable` and `unmeasured` are BOTH `None` and are opposites. The first is a question
+#: that does not arise: a fully mounted thread publishes no `aria-posinset`, so nothing is
+#: missing. The second is a question that arose and was not answered: the gesture stopped short
+#: of the top, or its stops did not overlap.
+#: A gate passing both reads 'we could not tell' as 'it was fine', which is the store that kept
+#: only its first and last page staying scoreable; a gate failing both fails the shipped build
+#: on every cell. So the two are recorded apart and only the second is withheld from a pass.
 COVERAGE_COMPLETE = "complete"
 COVERAGE_INCOMPLETE = "incomplete"
 COVERAGE_NOT_APPLICABLE = "not_applicable"
 COVERAGE_UNMEASURED = "unmeasured"
 
 #: The coverage states a cell may still be scored on. `unmeasured` is deliberately absent, and
-#: `incomplete` is excluded by the verdict itself rather than by this tuple.
+#: `incomplete` is excluded by the verdict itself.
 COVERAGE_STATES_SCOREABLE = (COVERAGE_COMPLETE, COVERAGE_NOT_APPLICABLE)
 
 
@@ -703,8 +675,8 @@ def ordinal_coverage(
     seen.update(int(n) for n in (extra_seen or ()))
     expected = set(range(1, expected_messages + 1)) if expected_messages > 0 else set()
     missing = sorted(expected - seen)
-    # Intersected with "never seen anywhere", so a row that was briefly absent while its window
-    # was still materialising and mounted at the next stop is not reported as a lost message.
+    # Intersected with 'never seen anywhere', so a row briefly absent while its window materialised
+    # is not reported as a lost message.
     holes = sorted({int(n) for n in (traverse.get("ordinals_in_window_holes") or [])} - seen)
     out: dict[str, Any] = {
         "ordinals_seen_count": len(seen),
@@ -718,9 +690,9 @@ def ordinal_coverage(
         "traversal_stops": traverse.get("traversal_stops"),
         "coverage_reason": None,
     }
-    # NOT APPLICABLE BEFORE UNMEASURED. An arm publishing no ordinals anywhere has nothing to cover
-    # whatever the gesture did, and asking about the gesture first would report the shipped build's
-    # own shape as a measurement this probe failed to take -- which the gate now refuses to score.
+    # NOT APPLICABLE BEFORE UNMEASURED. An arm publishing no ordinals has nothing to cover whatever
+    # the gesture did, and asking about the gesture first would report the shipped build's own
+    # shape as a failed measurement.
     if not seen:
         out["ordinal_coverage_complete"] = None
         out["ordinal_coverage_state"] = COVERAGE_NOT_APPLICABLE
@@ -827,25 +799,24 @@ def probe_thread_completeness(
             "mounted_at_top": seen.get("mounted"),
             "setsize_at_top": seen.get("setsize"),
             "scroll_height_at_top": top.get("scroll_height"),
-            # DID THE GESTURE ACTUALLY REACH THE TOP? Without this, "the head never mounted" and
-            # "the viewport never left the bottom" are the same reading, and the second one is a
-            # defect in this probe being reported as data loss in the app.
+            # DID THE GESTURE ACTUALLY REACH THE TOP? Without this, 'the head never mounted' and 'the
+            # viewport never left the bottom' read the same, and the second is a defect in this probe
+            # reported as data loss in the app.
             "reached_top": top.get("reached_target"),
             "scroll_top_after_gesture": top.get("scroll_top"),
             "traverse_step_px": step_px,
         }
     )
     out.update(coverage)
-    # `min_posinset_seen` before there were any ordinals to see: the head marker mounting means
-    # position 1 was on the page, whether or not the arm numbers its rows. Kept so an arm that
-    # publishes nothing still fills the field the way it always did.
+    # `min_posinset_seen` before there were ordinals to see: the head marker mounting means
+    # position 1 was on the page, whether or not the arm numbers its rows.
     if out.get("min_posinset_seen") is None and found:
         out["min_posinset_seen"] = 1
     # And back to the end, so the cell resumes from the state the readiness gate described.
     page.evaluate(TRAVERSE_JS, [False, steps, step_px])
     if not found and not top.get("reached_target"):
-        # NOT A VERDICT ABOUT THE ARM. The gesture did not get there, so nothing was learned about
-        # what the arm holds, and saying otherwise would blame the app for the probe.
+        # NOT A VERDICT ABOUT THE ARM: the gesture did not get there, so nothing was learned, and
+        # saying otherwise would blame the app for the probe.
         out["head_reached"] = None
         out["reason"] = (
             f"the scroll gesture never reached the top of the thread (stopped at "
@@ -860,14 +831,14 @@ def probe_thread_completeness(
         )
         log(f"  COMPLETENESS FAILED: {out['reason']}")
     elif out.get("ordinal_coverage_complete") is False:
-        # THE HEAD ARRIVED AND THE THREAD IS STILL INCOMPLETE. This is the case the marker check
-        # alone reported as a pass: first page kept, last page kept, middle gone.
+        # THE HEAD ARRIVED AND THE THREAD IS STILL INCOMPLETE: the case the marker check alone reported
+        # as a pass, first page kept, last page kept, middle gone.
         out["reason"] = f"the head of the thread mounted, but {out['coverage_reason']}"
         log(f"  COMPLETENESS FAILED: {out['reason']}")
     elif out.get("ordinal_coverage_state") == COVERAGE_UNMEASURED:
-        # THE HEAD ARRIVED AND THE MIDDLE WAS NEVER INSPECTED. Not a finding about the arm, and
-        # not a pass either: this is the same first-page-and-last-page store re-entering through
-        # the unknown state, so the cell carries a reason and the gate declines to score it.
+        # THE HEAD ARRIVED AND THE MIDDLE WAS NEVER INSPECTED. Not a finding about the arm and not a
+        # pass: the same store re-entering through the unknown state, so the cell carries a reason and
+        # the gate declines to score it.
         out["reason"] = (
             f"the head of the thread mounted, but coverage of the middle was NOT ESTABLISHED: "
             f"{out['coverage_reason']}"
@@ -881,7 +852,6 @@ def probe_thread_completeness(
             f"({out.get('ordinals_seen_count')} of {expected_messages} ordinals seen)"
         )
         if out.get("ordinal_coverage_complete") is None:
-            # Only the not-applicable kind reaches here; the unmeasured kind is caught above and
-            # carries a reason of its own.
+            # Only the not-applicable kind reaches here; the unmeasured kind is caught above with its own reason.
             log(f"  coverage DOES NOT APPLY: {out.get('coverage_reason')}")
     return out

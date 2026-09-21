@@ -44,6 +44,11 @@ on:
       - 'install.sh'
       - 'pyproject.toml'
       - '.github/actions/install-unsloth-local/action.yml'
+      # Reached through install-unsloth-local, which uses the dist and uv cache pairs.
+      - '.github/actions/frontend-dist-restore/action.yml'
+      - '.github/actions/frontend-dist-save/action.yml'
+      - '.github/actions/uv-cache-restore/action.yml'
+      - '.github/actions/uv-cache-save/action.yml'
       - '.github/scripts/boot-studio-api-only.sh'
       - '.github/scripts/wait-for-health.sh'
       # The Chromium install step shells out to this, so an edit to it changes what
@@ -140,7 +145,7 @@ jobs:
         continue-on-error: true
         with:
           path: ~/.cache/ms-playwright
-          key: ms-playwright-${{ runner.os }}-${{ steps.pw.outputs.version }}-sbench-v1
+          key: ms-playwright-${{ runner.os }}-${{ steps.pw.outputs.version }}-c-v2
 
       # Chromium alone. The other two engines are 470 MB each and this workflow
       # never asks for them: studiobench's Linux default is WebKit as a proxy for
@@ -212,7 +217,7 @@ jobs:
         continue-on-error: true
         with:
           path: ~/.cache/ms-playwright
-          key: ms-playwright-${{ runner.os }}-${{ steps.pw.outputs.version }}-sbench-v1
+          key: ms-playwright-${{ runner.os }}-${{ steps.pw.outputs.version }}-c-v2
 
       # No --api-only: studiobench drives the real SPA, so the server has to be
       # serving `studio/frontend/dist`. It needs no model, because the reply it

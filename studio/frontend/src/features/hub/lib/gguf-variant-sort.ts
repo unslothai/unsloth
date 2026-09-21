@@ -3,16 +3,8 @@
 
 import type { GgufVariantDetail } from "@/features/hub/inventory";
 import { formatBytes } from "@/features/hub/lib/format";
-import { classifyGgufFit } from "@/lib/gguf-fit";
 import { ggufVariantsMatch } from "@/features/hub/lib/model-identity";
-
-type GgufVariantResources = {
-  gpuGb?: number;
-  systemRamGb?: number;
-  /** The saved VRAM Budget, so the sort ranks against the line the loader will
-   *  actually admit at rather than against the default. */
-  budgetFraction?: number;
-};
+import { type GgufFitInput, classifyGgufVariantFit } from "@/lib/gguf-fit";
 
 export function ggufVariantDisplayLabel(
   variant: Pick<GgufVariantDetail, "display_label" | "quant">,
@@ -51,9 +43,9 @@ export function ggufVariantTransferLabel(variant: GgufVariantTransfer): string {
 
 export function ggufVariantFitRank(
   variant: GgufVariantDetail,
-  resources: GgufVariantResources,
+  resources: GgufFitInput,
 ): number {
-  switch (classifyGgufFit(variant.size_bytes, resources)) {
+  switch (classifyGgufVariantFit(variant, resources)) {
     case "fits":
       return 0;
     case "marginal":
@@ -69,7 +61,7 @@ export function ggufVariantFitRank(
 export function compareGgufVariantFitAndSize(
   a: GgufVariantDetail,
   b: GgufVariantDetail,
-  resources: GgufVariantResources,
+  resources: GgufFitInput,
 ): number {
   const aFit = ggufVariantFitRank(a, resources);
   const bFit = ggufVariantFitRank(b, resources);
@@ -87,7 +79,7 @@ export function ggufVariantDownloadStatusRank(
 
 export function sortDownloadableGgufVariants(
   variants: readonly GgufVariantDetail[],
-  resources: GgufVariantResources,
+  resources: GgufFitInput,
 ): GgufVariantDetail[] {
   return [...variants].sort((a, b) => {
     const statusDelta =
@@ -99,18 +91,47 @@ export function sortDownloadableGgufVariants(
 
 export function sortLocalGgufVariants(
   variants: readonly GgufVariantDetail[],
-  options: GgufVariantResources & {
-    activeGgufVariant?: string | null;
+  options: GgufFitInput & {
     defaultVariant?: string | null;
   },
 ): GgufVariantDetail[] {
+  const defaultVariant = options.defaultVariant?.trim();
   return [...variants].sort((a, b) => {
-    const aActive = ggufVariantsMatch(a.quant, options.activeGgufVariant);
-    const bActive = ggufVariantsMatch(b.quant, options.activeGgufVariant);
-    if (aActive !== bActive) return aActive ? -1 : 1;
-    const aDefault = ggufVariantsMatch(a.quant, options.defaultVariant);
-    const bDefault = ggufVariantsMatch(b.quant, options.defaultVariant);
-    if (aDefault !== bDefault) return aDefault ? -1 : 1;
+    if (defaultVariant) {
+      const aDefault = ggufVariantsMatch(a.quant, defaultVariant);
+      const bDefault = ggufVariantsMatch(b.quant, defaultVariant);
+      if (aDefault !== bDefault) return aDefault ? -1 : 1;
+    }
     return compareGgufVariantFitAndSize(a, b, options);
   });
+}
+
+export function resolveLocalGgufVariant<T extends { quant: string }>(
+  variants: readonly T[] | null | undefined,
+  options: {
+    selectedVariant?: string | null;
+    activeVariant?: string | null;
+    defaultVariant?: string | null;
+  },
+): T | null {
+  if (!variants || variants.length === 0) {
+    return null;
+  }
+  for (const candidate of [
+    options.selectedVariant,
+    options.activeVariant,
+    options.defaultVariant,
+  ]) {
+    // Blank candidates must not match a blank variant key.
+    if (!candidate?.trim()) {
+      continue;
+    }
+    const match = variants.find((variant) =>
+      ggufVariantsMatch(variant.quant, candidate),
+    );
+    if (match) {
+      return match;
+    }
+  }
+  return variants[0] ?? null;
 }

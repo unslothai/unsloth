@@ -2,18 +2,13 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
-import { fileURLToPath } from "node:url";
+
+import { readSrc } from "./helpers/kit.ts";
 
 // Normalized: the assertions below span lines, and while .gitattributes keeps this tree at
 // LF, a source archive or a stray core.autocrlf would make every multi-line marker miss.
-const source = readFileSync(
-  fileURLToPath(
-    new URL("../src/features/video/video-page.tsx", import.meta.url),
-  ),
-  "utf8",
-).replace(/\r\n/g, "\n");
+const source = readSrc("features/video/video-page.tsx").replace(/\r\n/g, "\n");
 
 /** The source between two markers. Throws if either moved: a silent empty slice would let
  *  the negative assertion below ("no longer calls handleClearAll") pass over nothing. */

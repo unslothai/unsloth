@@ -85,6 +85,7 @@ export interface AudioGalleryClip {
   sample_rate: number;
   duration_s: number;
   created_at: string;
+  archived?: boolean;
 }
 
 export interface AudioGalleryListResponse {
@@ -98,14 +99,30 @@ export async function listAudioGallery(
   offset: number,
   limit: number,
   before?: { mtime: number; id: string } | null,
+  archived = false,
 ): Promise<AudioGalleryListResponse> {
   const cursor = before
     ? `&before_mtime=${encodeURIComponent(before.mtime)}&before_id=${encodeURIComponent(before.id)}`
     : "";
   const response = await authFetch(
-    `/api/inference/audio/gallery?offset=${offset}&limit=${limit}${cursor}`,
+    `/api/inference/audio/gallery?offset=${offset}&limit=${limit}&archived=${archived}${cursor}`,
   );
   return parseJson<AudioGalleryListResponse>(response);
+}
+
+export async function setAudioClipFlags(
+  id: string,
+  flags: { archived?: boolean },
+): Promise<AudioGalleryClip> {
+  const response = await authFetch(
+    `/api/inference/audio/gallery/${encodeURIComponent(id)}`,
+    {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(flags),
+    },
+  );
+  return parseJson<AudioGalleryClip>(response);
 }
 
 export async function deleteAudioClip(id: string): Promise<void> {
@@ -131,4 +148,84 @@ export async function fetchClipObjectUrl(
   if (!response.ok) throw new Error(await readFastApiError(response));
   const blob = await response.blob();
   return { url: URL.createObjectURL(blob), bytes: blob.size };
+}
+
+export async function transcribeWithProgress(
+  blob: Blob,
+  title: string,
+  options: {
+    model: string;
+    engine: string;
+    device: string;
+    signal: AbortSignal;
+  },
+  onProgress: (
+    progress: import("./transcript-stream").TranscriptProgress,
+  ) => void,
+): Promise<import("./transcript-stream").TranscriptResult> {
+  const { readTranscriptStream } = await import("./transcript-stream");
+  const params = new URLSearchParams({
+    model: options.model,
+    engine: options.engine,
+    device: options.device,
+    fast: "true",
+    stream: "true",
+    title: title.slice(0, 255),
+  });
+  const response = await authFetch(
+    `/api/inference/audio/transcribe/raw?${params}`,
+    {
+      method: "POST",
+      headers: { "Content-Type": blob.type || "application/octet-stream" },
+      body: blob,
+      signal: options.signal,
+    },
+  );
+  if (!response.ok) throw new Error(await readFastApiError(response));
+  if (!response.body) throw new Error("The transcription response was empty.");
+  return readTranscriptStream(response.body, onProgress);
+}
+
+export async function listTranscripts(
+  archived = false,
+  before?: string | null,
+): Promise<{
+  transcripts: import("./transcript-stream").TranscriptRecord[];
+  next_cursor: string | null;
+}> {
+  const params = new URLSearchParams({
+    archived: String(archived),
+    limit: "50",
+  });
+  if (before) params.set("before", before);
+  return parseJson(
+    await authFetch(`/api/inference/audio/transcripts?${params}`),
+  );
+}
+
+export async function archiveTranscript(
+  id: string,
+  archived: boolean,
+): Promise<void> {
+  await parseJson(
+    await authFetch(
+      `/api/inference/audio/transcripts/${encodeURIComponent(id)}`,
+      {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ archived }),
+      },
+    ),
+  );
+}
+
+export async function deleteTranscript(id?: string): Promise<void> {
+  await parseJson(
+    await authFetch(
+      `/api/inference/audio/transcripts${id ? `/${encodeURIComponent(id)}` : ""}`,
+      {
+        method: "DELETE",
+      },
+    ),
+  );
 }

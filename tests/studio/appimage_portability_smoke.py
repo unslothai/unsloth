@@ -27,12 +27,11 @@ DESKTOP_SECRET = "appimage-portability-secret"
 
 
 # The dispositions that mean the app gave up on the fixture and went to repair.
-# Without this the run just times out after 45s on "never completed desktop
-# authentication", which says nothing about why; the reason is in tauri.log and
-# nobody reads it, so the nightly sat red for weeks looking like a webview fault.
-# ExternalConflict is here for the same reason though it is not a repair: another
-# backend already owns the port, so the fixture is never contacted and the wait can
-# only expire. It is what a developer box with a Studio already running produces.
+# Without this the run just times out after 45s on "never completed desktop authentication", which says nothing
+# about why; the reason is in tauri.log and nobody reads it, so the nightly sat red for weeks looking like a
+# webview fault. ExternalConflict is here for the same reason though it is not a repair: another backend already
+# owns the port, so the fixture is never contacted and the wait can only expire. It is what a developer box with
+# a Studio already running produces.
 _GAVE_UP_MARKERS = (
     "start_managed_repair command called",
     "disposition=ManagedStale",

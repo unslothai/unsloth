@@ -324,15 +324,24 @@
 	--ui-icon-size-sm: min(calc(0.875rem * var(--ui-font-scale, 1)), calc(0.4375rem + 0.4375rem * var(--ui-font-scale, 1)));
 	/* Model picker header controls. Padding and gaps come from the pinned
 	   --spacing, the icons and label both scale, so reserve each separately.
-	   The trigger is 2.25rem of padding and gaps, two icons, then the label.
-	   All match the h-9 / w-[110px] / 506px they replace at the 16px default. */
+	   The trigger is 2.25rem of padding and gaps, two icons, then the label,
+	   plus --picker-control-pad. Height matches the h-9 it replaces at the
+	   16px default. */
 	--picker-control-h: calc(1.125rem + 1.125rem * var(--ui-font-scale, 1));
-	--picker-control-w: calc(2.25rem + 2 * var(--ui-icon-size-sm) + 2.875rem * var(--ui-font-scale, 1));
+	/* Padding added to Search Hub and the two dropdowns, 0.375rem a side. Pinned
+	   like the rest: it pads, and it stops the "Trending" label clipping. */
+	--picker-control-pad: 0.75rem;
+	/* Same per section pill (Recommended / On Device / Connected), 0.25rem a
+	   side, i.e. px-3 to px-4 on the tabs. */
+	--picker-tab-pad: 0.5rem;
+	--picker-control-w: calc(2.25rem + var(--picker-control-pad) + 2 * var(--ui-icon-size-sm) + 2.875rem * var(--ui-font-scale, 1));
 	/* Panel: pl-4, two gaps and pr-2, the pills' padding, their two icons and
-	   label, then the two dropdowns. */
-	--picker-panel-w: calc(6.25rem + 2 * var(--ui-icon-size-sm) + 9.875rem * var(--ui-font-scale, 1) + 2 * var(--picker-control-w));
-	/* Provider row adds one more control; split like the rest. */
-	--picker-panel-w-external: calc(var(--picker-panel-w) + 4rem + 2.75rem * var(--ui-font-scale, 1));
+	   label, then the two dropdowns. The control row fills this exactly, which
+	   keeps the last dropdown flush with Search Hub above it. Widening a
+	   control takes the difference from the search field, not the panel. */
+	--picker-panel-w: calc(6.25rem + 2 * var(--picker-tab-pad) + 2 * var(--ui-icon-size-sm) + 9.875rem * var(--ui-font-scale, 1) + 2 * var(--picker-control-w));
+	/* Provider row adds one more control and the Connected pill; split like the rest. */
+	--picker-panel-w-external: calc(var(--picker-panel-w) + var(--picker-tab-pad) + 4rem + 2.75rem * var(--ui-font-scale, 1));
 	/* Inset of a centered .size-icon glyph within a 2rem (size-8) action
 	   button — i.e. (32px − icon-size) / 2. Use as a negative margin on a
 	   chat-message action bar so the leftmost icon's visual edge aligns
@@ -345,20 +354,20 @@
 	   sidebar, #212121 cards. Palette dark blocks override only accent
 	   tokens so dark mode stays consistent across themes. */
 	--background: #181818;
-	--foreground: #ececec;
+	--foreground: #ffffff;
 	--card: #212121;
-	--card-foreground: #ececec;
+	--card-foreground: #ffffff;
 	--popover: #212121;
-	--popover-foreground: #ececec;
+	--popover-foreground: #ffffff;
 	--primary: #17b88b;
 	--primary-foreground: oklch(1 0 0);
 	--secondary: #242424;
-	--secondary-foreground: #ececec;
+	--secondary-foreground: #ffffff;
 	--muted: #242424;
-	--muted-foreground: #9b9b9b;
+	--muted-foreground: #a3a3a3;
 	/* One step lighter than --popover so menu item hover reads clearly. */
 	--accent: #2e2e2e;
-	--accent-foreground: #ececec;
+	--accent-foreground: #ffffff;
 	--destructive: oklch(0.6368 0.2078 25.3313);
 	/* Bypass permissions accent: bright, saturated neon yellow on dark. */
 	--bypass: #ffd60a;
@@ -376,11 +385,11 @@
 	/* Elevated a step lighter than --background; the tone difference is
 	   the separator. */
 	--sidebar: #1f1f1f;
-	--sidebar-foreground: #ececec;
+	--sidebar-foreground: #ffffff;
 	--sidebar-primary: #17b88b;
 	--sidebar-primary-foreground: oklch(1 0 0);
 	--sidebar-accent: #2a2a2a;
-	--sidebar-accent-foreground: #ececec;
+	--sidebar-accent-foreground: #ffffff;
 	--sidebar-border: #2a2a2a;
 	--sidebar-ring: #ececec;
 	--destructive-foreground: oklch(1 0 0);
@@ -1172,10 +1181,28 @@ html[data-chat-font] .aui-root {
 	.sidebar-row-action.is-disclosure-open {
 		@apply opacity-100 pointer-events-auto;
 	}
-	/* Secondary row action (the pinned-chat unpin button) sits just left of
-	   the primary "…" options button. */
+	/* The pin sits just left of the "…" options button, and the 14px trough
+	   between their ~16px icons is the two paddings that face each other: the
+	   pin's pr-1.5 and the options button's pl-2. Drop those, and the pin's
+	   right edge lands exactly on the options button's left edge (30px = its
+	   pr-1.5 plus a size-6 glyph). Closing the gap by moving the pin instead
+	   would slide it under that pl-2, and the options button, later in the DOM,
+	   would take the clicks over the pin's own glyph. What is left of the pin's
+	   own padding-right is the whole gap: the glyph boxes meet at 30px, so 2px
+	   here is 2px between them and 10px between the drawn icons. */
 	.sidebar-row-action.is-unpin-action {
 		right: 1.875rem;
+		padding-right: 0.125rem;
+		/* The base pl-2 faces the options button, which is what opens the gap between the two
+		   icons. On the pin there is nothing to its left but the title, so that padding is
+		   dead space: invisible, but inside the button, and sidebar-touch-reveal makes the
+		   button clickable on a coarse pointer. It put 8px of the title under the pin on
+		   project rows, where a tap pinned the chat instead of opening it. Nothing moves
+		   visually; the glyph is positioned from the right. */
+		padding-left: 0;
+	}
+	.sidebar-row-action.is-unpin-action + .sidebar-row-action {
+		padding-left: 0;
 	}
 
 	/* Branch picker chevron buttons sit beside action bar icon buttons
@@ -1428,21 +1455,32 @@ html[data-chat-font] .aui-root {
 		);
 	}
 
-	/* Images and Video: a field's "i" only appears with the row it belongs to. Matched on the
-	   InfoHint itself so every field style is covered, including the shared chat slider.
-	   Two levels up is the field container; higher ancestors deliberately do not match. */
-	.diffusion-surface [data-slot="info-hint"] {
-		opacity: 0;
-		pointer-events: none;
-		transition: opacity 150ms;
-	}
-	.diffusion-surface *:hover > [data-slot="info-hint"],
-	.diffusion-surface *:hover > * > [data-slot="info-hint"],
-	.diffusion-surface *:focus-within > [data-slot="info-hint"],
-	.diffusion-surface *:focus-within > * > [data-slot="info-hint"],
-	.diffusion-surface [data-slot="info-hint"]:focus-visible {
-		opacity: 1;
-		pointer-events: auto;
+	/* Images, Video and Run settings: a field's "i" only appears with the row it belongs to.
+	   Matched on the InfoHint itself so every field style is covered, including the shared
+	   chat slider. Two levels up is the field container; higher ancestors deliberately do
+	   not match. Opacity, not display, so revealing one never reflows its row. */
+	/* Hover-capable pointers only. A tap is not hover and does not raise :focus-visible, so
+	   on a touch screen this would hide a control that has no other way to be reached. */
+	@media (hover: hover) {
+		:is(.diffusion-surface, .hint-on-hover) [data-slot="info-hint"] {
+			opacity: 0;
+			pointer-events: none;
+			transition: opacity 150ms;
+		}
+		/* :has(:focus-visible), not :focus-within: a select hands focus back to its trigger
+		   on close, which left the "i" up until something else was clicked. */
+		:is(.diffusion-surface, .hint-on-hover)
+			:is(*:hover, *:has(:focus-visible))
+			> [data-slot="info-hint"],
+		:is(.diffusion-surface, .hint-on-hover)
+			:is(*:hover, *:has(:focus-visible))
+			> *
+			> [data-slot="info-hint"],
+		:is(.diffusion-surface, .hint-on-hover)
+			[data-slot="info-hint"]:focus-visible {
+			opacity: 1;
+			pointer-events: auto;
+		}
 	}
 
 	/* Inline numeric input — used for slider values and Context Length.
@@ -1452,11 +1490,40 @@ html[data-chat-font] .aui-root {
 	   an inline width that hugs the value. Hover/focus: very light bg
 	   fade-in, just enough to read as interactive without competing
 	   with the slider row's quiet aesthetic. */
+	/* Wider right gutter: the value is right-aligned on the panel's own edge. */
+	/* 32px like every other inline control on the panel. */
 	.panel-number-input {
-		@apply h-7 min-w-8 shrink-0 rounded-full border-0 bg-transparent px-2 text-right text-ui-13! font-medium tabular-nums text-nav-fg shadow-none transition-colors hover:bg-black/[0.04] focus:bg-black/[0.05] focus-visible:ring-0! focus-visible:outline-none md:text-ui-13!;
+		@apply h-8 min-w-8 shrink-0 rounded-full border-0 bg-transparent pl-2 pr-3 text-right text-ui-13! font-medium tabular-nums text-nav-fg shadow-none transition-colors hover:bg-black/[0.04] focus:bg-black/[0.05] focus-visible:ring-0! focus-visible:outline-none md:text-ui-13!;
 	}
 	.dark .panel-number-input {
 		@apply hover:bg-white/[0.04] focus:bg-white/[0.06];
+	}
+
+	/* Select trigger on the panel: the surface and padding the model rows
+	   use. Height and width stay with the caller, since an inline select
+	   is 32px and a full-width one 36px. */
+	/* Inline field on the panel: the filled box a row's value is typed
+	   into. These share one width, so a left-aligned value puts them all
+	   on a single edge. Width and height stay with the caller. */
+	.panel-field {
+		@apply rounded-full border-transparent bg-[var(--panel-input-surface)] px-3.5 py-0 text-left text-ui-13 font-medium text-nav-fg outline-none hover:bg-[var(--panel-input-surface-hover)] focus-visible:ring-0;
+	}
+
+	/* Important like .panel-input-group: these all override a base
+	   SelectTrigger class of the same weight. 14px each side optically:
+	   the chevron's stroke fills 14 of its 24 viewBox units, so its box
+	   carries ~3px of slack and pr-[11px] pays that back. */
+	.panel-select-trigger {
+		@apply rounded-full! border-transparent! bg-[var(--panel-input-surface)]! py-0! pl-3.5! pr-[11px]! text-ui-13! font-medium! text-nav-fg shadow-none! hover:bg-[var(--panel-input-surface-hover)]! focus-visible:ring-0!;
+	}
+
+	/* These controls suppress the ring, so keyboard focus would otherwise
+	   land with nothing drawn. Same soft 1px halo as .composer-pill-btn. */
+	.panel-field:focus-visible,
+	.panel-select-trigger:focus-visible,
+	.panel-number-input:focus-visible {
+		outline: none;
+		box-shadow: 0 0 0 1px var(--ring-soft) !important;
 	}
 
 	/* Switch — unsloth-green track when active, slider-gray thumb in
@@ -1477,6 +1544,11 @@ html[data-chat-font] .aui-root {
 
 	.tooltip-compact {
 		@apply rounded-[11px] border-transparent bg-black px-2.5 py-1.5 text-ui-11 font-medium leading-snug text-white shadow-md;
+	}
+
+	/* Queue hints must not block menu actions. */
+	[data-radix-popper-content-wrapper]:has(> .prompt-queue-option-tooltip) {
+		pointer-events: none;
 	}
 
 	/* Dialog popups: borderless; chatbox shadow in light, flat card
@@ -1908,11 +1980,9 @@ html[data-chat-font] .aui-root {
 		font-family: var(--font-sans);
 	}
 
-	/* Pill composer; own classes so compare-mode keeps its stacked layout. py
-	   12px matches the send circle's gap to the right edge, so it sits evenly
-	   inside the 32px corner. */
+	/* 28px corner: the send circle sits at an even 10px inset inside it. */
 	.unsloth-composer-surface {
-		@apply relative flex w-full flex-col rounded-[32px] bg-background dark:bg-card px-3 py-3 outline-none transition-shadow;
+		@apply relative flex w-full flex-col rounded-[28px] bg-background dark:bg-card p-2.5 outline-none transition-shadow;
 		container-type: inline-size;
 		font-family: var(--font-sans);
 		background-clip: padding-box;
@@ -1953,10 +2023,11 @@ html[data-chat-font] .aui-root {
 	}
 
 	.unsloth-composer-left {
-		@apply flex min-w-0 flex-wrap items-center gap-0.5;
+		@apply relative top-px flex min-w-0 flex-wrap items-center gap-0.5;
 		order: 1;
-		/* Pull the plus button closer to the composer edge. */
-		margin-left: -0.25rem;
+		/* Pull the plus button closer to the composer edge. Logical, so RTL
+		   pulls it outward instead of into the action group. */
+		margin-inline-start: -0.25rem;
 	}
 
 	.unsloth-composer-line .unsloth-composer-input {
@@ -1965,9 +2036,9 @@ html[data-chat-font] .aui-root {
 
 	.unsloth-composer-line .aui-composer-action-wrapper {
 		order: 3;
-		margin-left: auto;
-		/* 12px surface + 4px line padding minus this = 12px edge gap. */
-		margin-right: -0.25rem;
+		margin-inline-start: auto;
+		/* Cancel the line padding to preserve the surface's 10px edge gap. */
+		margin-inline-end: -0.25rem;
 	}
 
 	.unsloth-composer-line[data-expanded="true"] .unsloth-composer-input {
@@ -1975,15 +2046,13 @@ html[data-chat-font] .aui-root {
 		flex-basis: 100%;
 		width: 100%;
 		/* Sits close to the left edge, near the plus. */
-		padding-left: 0.375rem;
+		padding-left: calc(0.375rem + 1px);
 		padding-top: 0.5rem;
 		padding-bottom: 0.5rem;
 	}
 
-	/* Two-row gap between text and controls. On the line, not the input, so
-	   the placeholder max-height clamp never crops it like padding would. */
 	.unsloth-composer-line[data-expanded="true"] {
-		row-gap: 0.75rem;
+		row-gap: 0.375rem;
 	}
 
 	.unsloth-composer-line[data-expanded="true"] .unsloth-composer-left {
@@ -2000,6 +2069,42 @@ html[data-chat-font] .aui-root {
 
 	.unsloth-composer-input {
 		@apply min-h-[40px] min-w-0 flex-1 resize-none overflow-y-auto bg-transparent pl-0.5 pr-2 py-2 text-ui-15 font-[450] leading-6 outline-none placeholder:text-muted-foreground focus-visible:ring-0;
+	}
+
+	/* Animate the frame so the textarea stays mounted and keeps selection/undo. */
+	.unsloth-composer-editor {
+		position: relative;
+		order: 1;
+		flex-basis: 100%;
+		width: 100%;
+		height: var(--composer-editor-height, 40px);
+		transition: height 280ms cubic-bezier(0.22, 1, 0.36, 1);
+	}
+
+	.unsloth-composer-editor .unsloth-composer-input {
+		display: block;
+		min-height: 100%;
+		max-height: 100% !important;
+		/* Reserved before typing, or the toggle appearing would reflow the text. */
+		padding-right: 2.25rem;
+	}
+
+	/* max(): at 480px tall the clamp is 192px, under the twelve-row compact
+	   height, so expanding would clip. svh, since dvh tracks Safari's bar. */
+	.aui-composer-root[data-writing-expanded="true"] .unsloth-composer-editor {
+		height: max(
+			var(--composer-editor-height, 40px),
+			clamp(8rem, calc(80svh - 12rem), 42rem)
+		);
+	}
+
+	/* The welcome composer starts mid-page; move it up so the toolbar stays in view. */
+	.aui-thread-welcome-center {
+		transition: padding-top 280ms cubic-bezier(0.22, 1, 0.36, 1);
+	}
+
+	.aui-thread-welcome-center:has([data-writing-expanded="true"]) {
+		padding-top: 1rem;
 	}
 
 	.unsloth-composer-plus {
@@ -2023,6 +2128,153 @@ html[data-chat-font] .aui-root {
 
 	.unsloth-composer-plus[data-state="open"] svg {
 		transform: rotate(45deg);
+	}
+
+	/* Size container for the composer. Sits outside the surface so the tight
+	   rules below can trim the surface's own padding. */
+	.unsloth-composer-shell {
+		container-type: inline-size;
+		container-name: composer-shell;
+	}
+
+	/* Mobile and very shrunk windows: the dictate/send cluster was dropping to
+	   a second line. Take the width back from the gutters, not the controls. */
+	@container composer-shell (max-width: 30rem) {
+		.unsloth-composer-line {
+			padding-left: 0;
+			padding-right: 0;
+			/* One gap for every control, so the row spaces evenly. */
+			--composer-tight-gap: 0.125rem;
+		}
+
+		.unsloth-composer-left,
+		.unsloth-composer-line .aui-composer-action-wrapper {
+			gap: var(--composer-tight-gap);
+		}
+
+		/* Plus and send hug their edges by the same amount. */
+		.unsloth-composer-left {
+			margin-inline-start: -0.125rem;
+		}
+
+		.unsloth-composer-line .aui-composer-action-wrapper {
+			margin-inline-end: -0.125rem;
+		}
+
+		/* Send's own inset stacks on the gap above; drop it. The running state
+		   puts that inset on a wrapper div instead of the button. */
+		.unsloth-composer-line .aui-composer-action-wrapper > button.aui-composer-send,
+		.unsloth-composer-line .aui-composer-action-wrapper > button.aui-composer-cancel,
+		.unsloth-composer-line .aui-composer-run-controls {
+			margin-left: 0;
+		}
+
+		/* Keeps the text starting just right of the plus glyph below it. */
+		.unsloth-composer-line[data-expanded="true"] .unsloth-composer-input {
+			padding-left: calc(0.5rem + 1px);
+		}
+
+		/* Recording swaps the input for the dictation bar, whose timer and
+		   actions are shrink-0. They set its floor, and the fieldset is
+		   min-width 0, so past that floor it overflows the surface instead of
+		   shrinking. Trim the same paddings the rest of the row gives up. */
+		.unsloth-dictation-wave {
+			padding-left: 0.5rem;
+			padding-right: 0.25rem;
+		}
+
+		.unsloth-dictation-timer {
+			margin-inline-end: 0.5rem;
+		}
+
+		/* Past its floor the bar has to stop taking width it cannot use. Left
+		   at min-width 0 it keeps shrinking and its shrink-0 children spill
+		   out of the surface, taking send with them; with a floor the pill
+		   row yields first and wraps, which is recoverable. */
+		.unsloth-composer-line[data-dictating="true"] .unsloth-dictation-bar {
+			min-width: min-content;
+		}
+	}
+
+	/* ~375px and under. Each control is a circle around a much smaller glyph,
+	   so the built-in air, not the gap, sets the spacing. Shrink the circles
+	   by 4px; overlapping them instead would make adjacent hit areas share
+	   pixels, and the later button would win the taps in between. */
+	@container composer-shell (max-width: 22rem) {
+		.unsloth-composer-line {
+			--composer-tight-gap: 0rem;
+		}
+
+
+		.unsloth-composer-surface {
+			border-radius: 1.5rem;
+		}
+
+		/* 32px to 28px for every control, and 36px to 28px for plus and send,
+		   which were the row's only oversized ends. Each selector has to
+		   outrank the compact pill rules, hence the longer shapes. */
+		/* Scoped to the right-control cluster. The dictation bar also renders
+		   an .aui-composer-send inside this line, and its stop button carries
+		   neither of our classes, so a looser selector shrinks one of that
+		   pair and not the other. */
+		.unsloth-composer-left > .unsloth-composer-plus,
+		.unsloth-composer-line .aui-composer-action-wrapper > button,
+		.unsloth-composer-line .aui-composer-run-controls > button {
+			width: 1.75rem;
+			height: 1.75rem;
+			/* The thinking pill reserves a text line; that would win over height. */
+			min-height: 1.75rem;
+		}
+
+		/* Tool pills only once the fit hook has collapsed their labels. Applied
+		   unconditionally, a 28px box makes a labelled pill measure as if it
+		   fit, and the hook keeps labels that then overflow it. */
+		.unsloth-composer-left[data-pill-compact="true"] > button.composer-pill-btn,
+		.unsloth-composer-left[data-pill-compact="first"]
+			> button.composer-pill-btn.composer-pill-permissions {
+			width: 1.75rem;
+			height: 1.75rem;
+			min-height: 1.75rem;
+		}
+
+		/* Send commits, so keep it clear of the toggle strip. Needs the same
+		   `> button` shape as the pull above to outrank it. */
+		.unsloth-composer-line
+			.aui-composer-action-wrapper
+			> button.aui-composer-send,
+		.unsloth-composer-line
+			.aui-composer-action-wrapper
+			> button.aui-composer-cancel,
+		.unsloth-composer-line
+			.aui-composer-action-wrapper
+			> .aui-composer-run-controls {
+			margin-left: 0.25rem;
+		}
+
+		/* Same 28px as the row above, and both of the bar's buttons together:
+		   stop carries none of our classes, so they have to be sized as a
+		   pair or the recording controls come out mismatched. */
+		.unsloth-dictation-actions {
+			gap: 0.375rem;
+		}
+
+		.unsloth-dictation-actions > button {
+			width: 1.75rem;
+			height: 1.75rem;
+			min-height: 1.75rem;
+		}
+
+		/* The wave is flex-1 and min-width 0, so all it still contributes at
+		   this size is its own padding. Drop it and the bar's min-content is
+		   exactly the timer plus the two buttons. */
+		.unsloth-dictation-wave {
+			padding-left: 0;
+			padding-right: 0;
+		}
+
+		.unsloth-dictation-timer {
+			margin-inline-end: 0.25rem;
+		}
 	}
 
 	/* Keyboard focus shows a subtle brand ring, not the browser's blue outline;
@@ -2073,6 +2325,64 @@ html[data-chat-font] .aui-root {
 			var(--font-sans)
 		);
 		font-weight: 500;
+	}
+
+	/* Narrow panes shrink the greeting along with the composer under it, or a
+	   30px title wraps over two lines above a tightened box. Sized off the
+	   text tokens so the UI font scale still applies.
+
+	   The gutters here are on the pane's width, not the window's: an artifact
+	   split can leave a 42% thread pane inside a wide window, and a viewport
+	   breakpoint would keep the full 20px there. */
+	@container (max-width: 31.5rem) {
+		.unsloth-composer-dock-inner {
+			padding-left: 0.75rem;
+			padding-right: 0.75rem;
+		}
+
+		/* The welcome screen is inside the viewport's own 20px gutter, so pull
+		   back to the dock's 12px rather than adding to it; otherwise the empty
+		   state is 40px narrower than the thread it turns into. */
+		.aui-thread-welcome-message {
+			padding-left: 0;
+			padding-right: 0;
+			margin-left: -0.5rem;
+			margin-right: -0.5rem;
+			/* w-full would pin the width and the margins would only shift the
+			   box left. An explicit width widens it into the gutter instead;
+			   auto would shrink-wrap, since the parent centres its children. */
+			width: calc(100% + 1rem);
+		}
+
+		.unsloth-welcome-title {
+			font-size: var(--text-2xl);
+		}
+
+		.unsloth-welcome-sloth {
+			width: 2.125rem;
+			height: 2.125rem;
+		}
+
+		.unsloth-welcome-greeting {
+			gap: 0.625rem;
+		}
+	}
+
+	/* ~300px and under: one step further, so the greeting holds a single line
+	   beside the mascot instead of wrapping over the composer. */
+	@container (max-width: 18.75rem) {
+		.unsloth-welcome-title {
+			font-size: var(--text-xl);
+		}
+
+		.unsloth-welcome-sloth {
+			width: 1.75rem;
+			height: 1.75rem;
+		}
+
+		.unsloth-welcome-greeting {
+			gap: 0.5rem;
+		}
 	}
 
 	/* Right-side Thinking pill (toggle or dropdown). pl-2 matches the left
@@ -2496,6 +2806,19 @@ html[data-chat-font] .aui-root {
 		margin-bottom: 0 !important;
 	}
 
+	/* One vertical rhythm for everything stacked inside an assistant reply: text, thinking
+	   headers, tool-call groups and single tool rows all sit 1rem apart, the same gap
+	   streamdown puts between two paragraphs. The parts themselves own no outer margin or
+	   padding, so a header next to a paragraph reads the same as a paragraph next to a
+	   paragraph. `:where()` keeps this at zero specificity so a part that does set its own
+	   `mt-*` still wins. The first real child follows a zero-height badge anchor and gets none. */
+	:where(.aui-assistant-message-content > * + *) {
+		margin-top: 1rem;
+	}
+	:where(.aui-assistant-message-content > .h-0 + *) {
+		margin-top: 0;
+	}
+
 	/* The streamdown code-block wrapper carries `my-4` (16px top + 16px
 	   bottom margin). The bottom margin is what stretches the gap
 	   between the code-block box and the action-bar below it on a
@@ -2898,6 +3221,18 @@ html[data-chat-font] .aui-root {
 	background: oklch(0.67 0 0 / 0.5);
 }
 
+/* Avoid iOS Safari focus zoom. Important in the base layer, because an important
+   declaration in an earlier layer beats important utilities such as text-ui-13!. */
+@layer base {
+	@media (hover: none) and (pointer: coarse) {
+		input:not([type="checkbox"], [type="radio"], [type="range"], [type="color"], [type="file"], [type="button"], [type="submit"], [type="reset"], [type="image"]),
+		textarea,
+		select {
+			font-size: max(16px, 1rem * var(--ui-font-scale, 1)) !important;
+		}
+	}
+}
+
 /* Composer textarea: keep the scroll thumb faint until the user hovers or
    drags the thumb itself, so a tall draft never shows a heavy dark rail. */
 .composer-input,
@@ -2972,6 +3307,20 @@ html[data-chat-font] .aui-root {
 	background: oklch(0.72 0 0 / 0.4);
 }
 
+/* Chromium ignores ::-webkit-scrollbar styling while scrollbar-width/color are
+   set; on Windows reset both (:hover too, or it flips back) to restore it. */
+@supports selector(::-webkit-scrollbar) {
+	:root.client-windows .sidebar-scroll-fade,
+	:root.client-windows .sidebar-scroll-fade:hover,
+	:root.client-windows .run-settings-scroll,
+	:root.client-windows .run-settings-scroll:hover,
+	:root.client-windows .hover-scrollbar,
+	:root.client-windows .hover-scrollbar:hover {
+		scrollbar-width: auto;
+		scrollbar-color: auto;
+	}
+}
+
 /* Run settings: always reserve the scrollbar gutter so the header close
    button keeps its position whether or not the scrollbar is showing. */
 .run-settings-scroll {
@@ -2988,8 +3337,10 @@ html[data-chat-font] .aui-root {
 .aui-thread-viewport {
 	scrollbar-color: oklch(0.5 0 0 / 0.54) var(--sidebar);
 	/* Reserve scrollbar space always so absolute-positioned overlays (topbar)
-	   can stop flush with the gutter edge without covering the scrollbar. */
-	scrollbar-gutter: stable;
+	   can stop flush with the gutter edge without covering the scrollbar.
+	   both-edges: a one-sided gutter pushes the centred column off-centre by
+	   half the scrollbar, and away from the dock, which sits outside here. */
+	scrollbar-gutter: stable both-edges;
 }
 
 /* An unregistered custom property always inherits, so writing
@@ -3300,29 +3651,31 @@ html[data-chat-font] .aui-root {
 	& svg.size-\[20px\] { width: var(--ui-icon-size); height: var(--ui-icon-size); }
 	& svg.size-\[21px\] { width: var(--ui-icon-size); height: var(--ui-icon-size); }
 	& svg.size-\[22px\] { width: var(--ui-icon-size); height: var(--ui-icon-size); }
-	/* Mic and send arrow sit above the shared glyph size: both fill their
-	   viewBox, so they read smaller than the stroked icons beside them. Keep
-	   after the size-[NN] rules they override. */
+	/* Mic and send sit above the shared glyph size. Must follow size-[NN]. */
 	& svg.unsloth-dictate-icon {
 		width: calc(var(--ui-icon-size) * 1.2);
 		height: calc(var(--ui-icon-size) * 1.2);
+		transform: translateY(2px);
 	}
+	/* Flex centers both symmetric glyphs; pixel offsets vary by display scale. */
 	& svg.unsloth-send-icon {
-		width: calc(var(--ui-icon-size) * 1.15);
-		height: calc(var(--ui-icon-size) * 1.15);
-		/* The stroked arrow rasterizes half a Retina pixel to the right. */
-		transform: translateX(-0.25px);
-	}
-	/* The filled stop glyph lands one Retina pixel right of the circular
-	   action's center even though its SVG box is flex-centered. */
-	& svg.aui-composer-cancel-icon {
-		transform: translateX(-0.5px);
+		width: calc(var(--ui-icon-size) * 1.3);
+		height: calc(var(--ui-icon-size) * 1.3);
 	}
 	/* Composer plus keeps its pre-#7400 22px base (1.375x the token is the same
 	   curve a 22px glyph would follow), so only its scaling changed. */
 	& .unsloth-composer-plus svg {
 		width: calc(var(--ui-icon-size) * 1.375);
 		height: calc(var(--ui-icon-size) * 1.375);
+	}
+	/* ~375px and under the plus sits in a 32px circle, which 1.375x fills.
+	   Step down to the dictate glyph's 1.2x. Must live here: this block is
+	   unlayered, so a copy in @layer utilities would lose to it. */
+	@container composer-shell (max-width: 22rem) {
+		& .unsloth-composer-plus svg {
+			width: calc(var(--ui-icon-size) * 1.2);
+			height: calc(var(--ui-icon-size) * 1.2);
+		}
 	}
 	& svg.size-\[36px\] { width: min(calc(36px * var(--ui-font-scale, 1)), calc(18px + 18px * var(--ui-font-scale, 1))); height: min(calc(36px * var(--ui-font-scale, 1)), calc(18px + 18px * var(--ui-font-scale, 1))); }
 	& svg.w-3 { width: min(calc(0.75rem * var(--ui-font-scale, 1)), calc(0.375rem + 0.375rem * var(--ui-font-scale, 1))); }
@@ -3449,4 +3802,57 @@ html[data-chat-font] .aui-root {
 .reload-snapshot-shell *::after {
 	animation: none !important;
 	transition: none !important;
+}
+
+/* Find in page. The bar paints matches through the CSS Custom Highlight API,
+   so these two pseudo-elements are the whole visual: nothing is inserted into
+   the thread and nothing reflows when a match moves. An engine without the
+   registry falls back to selecting the active match.
+
+   Fixed colours in both themes, not palette tokens: a highlight has to stay
+   legible over body text, over a code fence with its own background, and over
+   a badge, and the accent colours move with the palette while that text does
+   not. `color` is set alongside the background because the API paints over
+   text of any colour. */
+::highlight(unsloth-find) {
+	background-color: #ffd84d;
+	color: #1a1a1a;
+}
+
+::highlight(unsloth-find-active) {
+	background-color: #ff8c1a;
+	color: #1a1a1a;
+}
+
+/* The find bar's surface: no border in either mode, so colour and shadow are
+   what separate it from the conversation.
+
+   Light is the chatbox's own background and shadow, so the panel a reader
+   summons over the conversation is made of the same material as the one they
+   type into. Dark cannot copy it: the composer sits at `--card` with no shadow,
+   because nothing overlaps it. This bar floats over cards that are themselves
+   `--card`, so it sits one step lighter, which also gives the ghost buttons
+   inside somewhere to go: their default `--muted/50` hover lands within a shade
+   of `--card` and reads as nothing. The shadow is the page background rather
+   than black, a halo that fades what passes underneath instead of a dark edge
+   around a panel that has given up its border. */
+.find-bar-surface {
+	background-color: #ffffff;
+	/* The composer's shadow spread wider and softened: that one sits at the
+	   bottom of the page with nothing under it, this one floats over content and
+	   needs more to sit on, but not more weight. Kept in step by
+	   tests/find-in-page.test.ts. */
+	box-shadow: 0 3px 14px -1px rgba(0, 0, 0, 0.13);
+}
+
+.dark .find-bar-surface {
+	background-color: #2c2c2c;
+	box-shadow: 0 4px 20px 6px var(--background);
+}
+
+@layer components {
+	/* Align the arrow with page content while retaining its hit area. */
+	.settings-back-button {
+		margin-inline-start: -0.75rem;
+	}
 }

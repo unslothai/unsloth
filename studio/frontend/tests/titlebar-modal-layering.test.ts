@@ -2,11 +2,9 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
 import test from "node:test";
 
-const source = (path: string) =>
-  readFile(new URL(`../src/${path}`, import.meta.url), "utf8");
+import { readSrc } from "./helpers/kit.ts";
 
 const Z_INDEX_PATTERN = /z-\[(\d+)\]|\bz-(\d+)\b/;
 const DECORATION_PATTERN =
@@ -27,9 +25,9 @@ function zIndex(block: string): number {
 
 test("titlebar decoration stays below modal backdrops and window controls", async () => {
   const [titlebar, dialog, alertDialog] = await Promise.all([
-    source("components/tauri/window-titlebar.tsx"),
-    source("components/ui/dialog.tsx"),
-    source("components/ui/alert-dialog.tsx"),
+    readSrc("components/tauri/window-titlebar.tsx"),
+    readSrc("components/ui/dialog.tsx"),
+    readSrc("components/ui/alert-dialog.tsx"),
   ]);
 
   const decoration = titlebar.match(DECORATION_PATTERN);
@@ -52,7 +50,7 @@ test("titlebar decoration stays below modal backdrops and window controls", asyn
 });
 
 test("below-titlebar decoration is not trapped in the titlebar stacking context", async () => {
-  const titlebar = await source("components/tauri/window-titlebar.tsx");
+  const titlebar = await readSrc("components/tauri/window-titlebar.tsx");
   const decorationIndex = titlebar.indexOf(
     'data-slot="window-titlebar-decoration"',
   );

@@ -6,6 +6,8 @@
 import re
 from pathlib import Path
 
+from tests.studio._js_source import gates_the_markup
+
 
 REPO = Path(__file__).resolve().parents[2]
 FRONTEND = REPO / "studio/frontend/src"
@@ -182,7 +184,10 @@ def test_composer_only_queues_behind_the_current_chat():
     # share it. Assert the delegation here and the queueing there, rather than
     # expecting the call inline, so this stays a contract on behaviour instead
     # of on where the code happens to sit.
-    assert "queueComposerText(liveThreadIsRunning || livePreStreamRunActive)" in submit
+    assert re.search(
+        r"queueComposerText\(\s*liveThreadIsRunning \|\| livePreStreamRunActive,\s*behavior,?\s*\)",
+        submit,
+    )
 
     queue_composer_text = _between(
         THREAD,
@@ -190,8 +195,8 @@ def test_composer_only_queues_behind_the_current_chat():
         "const dismissWaitToast = useCallback(",
     )
     assert "startHydratedPromptQueue(" in queue_composer_text
-    # Read into a local first: the send guard arms on the untrimmed value too,
-    # since that is what a late DOM write carries.
+    # Read into a local first: the send guard arms on the untrimmed value too, since that is what a late DOM write
+    # carries.
     assert "const cleared = aui.composer().getState().text" in queue_composer_text
     assert "cleared.trim() !== queuedPrompt" in queue_composer_text
     assert "promptQueueStartPendingRef.current" in THREAD
@@ -201,12 +206,14 @@ def test_composer_only_queues_behind_the_current_chat():
     # Read out of the guard that actually dispatches, not out of the file: the
     # abort and cleanup branches beside it hold the same comparison, so a
     # whole-file search stays green while the dispatch alone regresses to `.has`.
-    dispatch_guard = _guard_for(THREAD, "startPromptQueue(items, target, waitForCurrentRun);")
+    dispatch_guard = _guard_for(
+        THREAD,
+        "startPromptQueue(\n              items,\n              target,\n              reservation.waitForCurrentRun,\n              reservation.behavior,\n            );",
+    )
     assert "promptQueueStartPendingRef.current.get(reservationKey) ===" in dispatch_guard
     assert "promptQueueStartPendingRef.current.has(" not in dispatch_guard
-    # The other two are load-bearing as well. Abort without the identity check
-    # reports the successor's start as this one's failure; cleanup without it
-    # deletes the successor's entry.
+    # The other two are load-bearing as well. Abort without the identity check reports the successor's start as this
+    # one's failure; cleanup without it deletes the successor's entry.
     assert THREAD.count("promptQueueStartPendingRef.current.get(reservationKey) ===") == 3
     assert "promptQueueStartPendingRef.current.delete(reservationKey)" in THREAD
     assert "promptQueueStartPendingRef.current.set(reservationKey, reservation)" in THREAD
@@ -325,8 +332,8 @@ def test_a_send_parked_on_the_settings_gate_queues_if_a_run_started_meanwhile():
     """
     release = _between(
         THREAD,
-        "// Fire the parked send once indexing clears",
-        "// Drop any queued send + toast on unmount",
+        "      parkIfWaitingOnAttachments,\n    ],\n  );",
+        "  useEffect(\n    () => () => {\n      pendingSendRef.current = false;",
     )
     code = re.sub(r"//[^\n]*", "", release)
     assert "const waitForCurrentRun =" in code
@@ -334,22 +341,20 @@ def test_a_send_parked_on_the_settings_gate_queues_if_a_run_started_meanwhile():
         "the release no longer asks whether a run started while the send was "
         "parked, so a parked prompt is sent into a streaming thread again"
     )
-    # A pre-stream reservation is a run that has been accepted and has not
-    # reached isRunning yet. handleSubmit treats it as running; so must this,
-    # or the same prompt is lost in a narrower window.
+    # A pre-stream reservation is a run that has been accepted and has not reached isRunning yet. handleSubmit treats
+    # it as running; so must this, or the same prompt is lost in a narrower window.
     assert "hasPreStreamRunReservation(preStreamThreadIds)" in code
 
-    # The gate on the queue branches, which is the fix itself: an active run
-    # governs the release, not the Cmd/Ctrl+Enter intent.
-    running = code.index("if (waitForCurrentRun) {")
-    branch = code[running : code.index("if (forceQueue && !disableQueue) {")]
-    assert "queueComposerText(true);" in branch, (
+    # The gate on the queue branches, which is the fix itself: an active run governs the release, not the
+    # Cmd/Ctrl+Enter intent.
+    running = code.index("if (waitForCurrentRun || queueAlreadyActive) {")
+    branch = code[running : code.index("clearStoredDraft();")]
+    assert "queueComposerText(waitForCurrentRun, behavior);" in branch, (
         "the release no longer queues behind the run that started while the "
         "send was parked, so the prompt goes back to being dropped silently"
     )
-    # Every refusal handleSubmit makes, made here too. A parked send is the
-    # same submit arriving late, so a branch it does not mirror is a state the
-    # UI forbids being reachable through the settings gate.
+    # Every refusal handleSubmit makes, made here too. A parked send is the same submit arriving late, so a branch it
+    # does not mirror is a state the UI forbids being reachable through the settings gate.
     for rule, why in (
         (
             "if (disableQueue) {",
@@ -369,8 +374,8 @@ def test_a_send_parked_on_the_settings_gate_queues_if_a_run_started_meanwhile():
         "be queued may be dispatched into a streaming thread"
     )
 
-    # Research disables input outright -- handleSubmit returns before anything
-    # else and the UI shows Stop research instead of Send.
+    # Research disables input outright -- handleSubmit returns before anything else and the UI shows Stop research
+    # instead of Send.
     research = code.index("if (isResearchActive) {")
     assert research < running, (
         "the research refusal is not ahead of the queue path, so a prompt "
@@ -383,12 +388,11 @@ def test_a_send_parked_on_the_settings_gate_queues_if_a_run_started_meanwhile():
     # clears it from its own onStarted callback, so clearing it up front loses
     # the text whenever the queue does not start -- a null target, an
     # invalidated start -- and after the composer is replaced it is gone.
-    assert code.index("clearStoredDraft();") > code.index("if (forceQueue && !disableQueue) {"), (
+    assert code.index("clearStoredDraft();") > running, (
         "the stored draft is cleared before the queue and refusal paths, so a "
         "prompt that is neither queued nor sent cannot be recovered"
     )
-    # Unchanged: with nothing running the chord still queues, and an ordinary
-    # send still sends. A fix that stopped sending would strand that case.
+    # With nothing running, both shortcuts send normally.
     assert "sendReservedComposer();" in code
 
 
@@ -401,11 +405,11 @@ def test_queued_settings_are_thread_scoped_without_cross_chat_fallback():
     assert "await useChatRuntimeStore.getState().hydratePersistedSettings()" in target
     assert target.index(
         "await useChatRuntimeStore.getState().hydratePersistedSettings()"
-    ) < target.index("snapshotQueuedChatRunSettings(chatStateAtQueueStart)")
+    ) < target.index("snapshotQueuedChatRunSettings(")
     assert "!promptQueueTargetMountedRef.current" in target
     assert "const currentState = aui.threadListItem().getState()" in target
     assert "initialRunningThreadIds.includes(id)" in target
-    assert "snapshotQueuedChatRunSettings(chatStateAtQueueStart)" in target
+    assert re.search(r"snapshotQueuedChatRunSettings\(\s*chatStateAtQueueStart,", target)
     assert "registerQueuedChatRunSettings(" in target
     assert "params: { ...runSettingsAtQueueStart.params }" in target
     assert "runSettingsAtQueueStart.deepResearchEnabled = false" in target
@@ -468,7 +472,7 @@ def test_queued_settings_are_thread_scoped_without_cross_chat_fallback():
     assert "...queuedRunSettings" in research
     auto_load_merge = _between(
         CHAT_ADAPTER,
-        "// Re-read store after auto-load / model-ready wait.",
+        "      const liveRuntime = useChatRuntimeStore.getState();",
         "const { params } = runtime",
     )
     assert "...queuedRunSettings.params" in auto_load_merge
@@ -476,15 +480,17 @@ def test_queued_settings_are_thread_scoped_without_cross_chat_fallback():
     assert "liveRuntime.params.checkpoint" in auto_load_merge
     assert "liveRuntime.supportsTools" in auto_load_merge
     assert "liveRuntime.supportsReasoning" in auto_load_merge
-    assert "liveRuntime.ggufContextLength" in auto_load_merge
+    assert "liveRuntime.loadedContextLength" in auto_load_merge
+    assert "queuedEmptyModelRuntime.loadedIsGguf" in auto_load_merge
+    assert "liveRuntime.loadedIsGguf" in auto_load_merge
     assert "isExternalModelId(visibleState.params.checkpoint)" in CHAT_ADAPTER
     assert "resolveInferenceCheckpointId(status)" in CHAT_ADAPTER
     assert "skipAdoptServerModel: true" in CHAT_ADAPTER
     assert "snapshotVisibleModelState(" in CHAT_ADAPTER
     assert "restoreVisibleModelState(visibleExternalState)" in CHAT_ADAPTER
-    assert '"ggufContextLength"' in CHAT_ADAPTER
-    assert '"ggufMaxContextLength"' in CHAT_ADAPTER
-    assert '"ggufNativeContextLength"' in CHAT_ADAPTER
+    assert '"loadedContextLength"' in CHAT_ADAPTER
+    assert '"maxContextLength"' in CHAT_ADAPTER
+    assert '"nativeContextLength"' in CHAT_ADAPTER
     assert '"loadedIsMultimodal"' in CHAT_ADAPTER
     assert '"loadedIsDiffusion"' in CHAT_ADAPTER
     assert (
@@ -511,20 +517,37 @@ def test_queued_settings_are_thread_scoped_without_cross_chat_fallback():
     assert "await resolveQueuedEmptyLocalModel(transitionSignal)" in CHAT_ADAPTER
     assert "await resolveQueuedEmptyLocalModel(abortSignal)" in CHAT_ADAPTER
     assert "persist: !options?.preserveVisibleSettings" in CHAT_ADAPTER
-    assert "beginModelLoading()" in CHAT_ADAPTER
+    assert 'beginModelLoading("loading")' in CHAT_ADAPTER
     assert "endModelLoading(lifecycleLease)" in CHAT_ADAPTER
     lifecycle = _between(
         CHAT_ADAPTER,
         "async function resolveQueuedEmptyLocalModel(",
         "export function createOpenAIStreamAdapter",
     )
-    assert lifecycle.index("beginModelLoading()") < lifecycle.index("await getInferenceStatus()")
-    assert lifecycle.index("await getInferenceStatus()") < lifecycle.index(
-        "await autoLoadSmallestModel("
-    )
+    # The probe waits out an in-flight load rather than reading a status taken
+    # mid-replacement, which names the outgoing model alongside the incoming one.
+    probe = "await waitForSettledServerStatus({ abortSignal })"
+    assert lifecycle.index('beginModelLoading("loading")') < lifecycle.index(probe)
+    assert lifecycle.index(probe) < lifecycle.index("await autoLoadSmallestModel(")
     assert "getInferenceStatus().catch(() => null)" not in lifecycle
-    assert "const status = await getInferenceStatus();" in lifecycle
+    assert f"const settled = {probe};" in lifecycle
+    assert "const status = settled.status;" in lifecycle
     assert "options?.abortSignal?.throwIfAborted()" in CHAT_ADAPTER
+    # Into the request, not only around it, and capped by the loop's own deadline, or a
+    # half-open read parks the send past its cancellation. The abort goes ahead of the failure
+    # counter, or a cancelled read surfaces as "could not reach the model server".
+    poll = _between(
+        CHAT_ADAPTER,
+        "const deadline = Date.now() + CLI_LOAD_ADOPT_MAX_MS;",
+        "function reportBlockedServerLoad(",
+    )
+    assert "const poll = statusPollSignal(options?.abortSignal);" in poll
+    assert "await getInferenceStatus(poll.signal)" in poll
+    assert "poll.dispose();" in poll
+    assert poll.index("options?.abortSignal?.throwIfAborted();") < poll.index("++failures")
+    # And the loop registers as a settlement wait, so a refresh cannot publish a status taken
+    # mid-replacement as the pick that stopEarly then reads as a user selection.
+    assert "const release = beginServerModelWait(options?.abortSignal);" in poll
     assert (
         len(
             re.findall(
@@ -560,7 +583,7 @@ def test_queued_settings_are_thread_scoped_without_cross_chat_fallback():
     )
     assert "if (failedRun)" in queue_failure_handler
     assert "retainPendingPromptQueueItemsAfterFailure(failedRun)" in queue_failure_handler
-    assert "deletePromptQueueRun(failedRun);" in queue_failure_handler
+    assert "pausePromptQueueRun([threadId]);" in queue_failure_handler
     retained_failure = _between(
         THREAD,
         "function retainPendingPromptQueueItemsAfterFailure(run: PromptQueueRun)",
@@ -587,6 +610,8 @@ def test_queued_settings_are_thread_scoped_without_cross_chat_fallback():
         QUEUED_MODEL_CAPABILITIES
     )
     assert "loadedIsMultimodal: state.loadedIsMultimodal" in CHAT_ADAPTER
+    assert "loadedIsGguf: state.loadedIsGguf" in CHAT_ADAPTER
+    assert "loadedIsGguf: loadedContextFields(status).loadedIsGguf" in lifecycle
     assert "queuedEmptyModelRuntime?.loadedIsMultimodal" in auto_load_merge
     assert "usesLocalModel:" in target
     assert "usePromptQueueUI.getState().byThreadId" in CONFIRM_MODEL_SWAP
@@ -607,14 +632,25 @@ def test_queued_settings_are_thread_scoped_without_cross_chat_fallback():
         "const ejectModel = useCallback(",
     )
     assert (
-        select_model.index("beginModelLoading()")
+        select_model.index('beginModelLoading("preparing")')
         < select_model.index("await confirmStopRunningChatsIfNeeded(")
         < select_model.index("cancelPreStreamRunReservations(stopDecision.preStreamRunTokens)")
         < select_model.index("requestLocalPromptQueueStop(stopDecision.promptQueueThreadIds)")
     )
-    assert "beginModelLoading()" in eject
+    assert 'beginModelLoading("unloading")' in eject
     assert "endModelLoading(lifecycleLease)" in eject
-    assert "beginModelLoading()" in SHARED_COMPOSER
+    assert 'beginModelLoading("preparing")' in SHARED_COMPOSER
+    assert MODEL_RUNTIME.index(
+        "chatModelLifecycleGate.markLoading(lifecycleLease)"
+    ) > MODEL_RUNTIME.index("requestLocalPromptQueueStop();")
+    failure = MODEL_RUNTIME.split("notifyLocalPromptQueueLoadFailed(lifecycleLease);", 1)[1]
+    assert failure.index("if (abortCtrl.signal.aborted)") < failure.index(
+        "const rollbackResponse = await loadModel("
+    )
+    cancellation = MODEL_RUNTIME.split("const cancelLoading = useCallback(", 1)[1]
+    assert cancellation.index("notifyLocalPromptQueueLoadFailed(") < cancellation.index(
+        "loadAbortRef.current?.abort()"
+    )
     assert "endModelLoading(compareLifecycleLease)" in SHARED_COMPOSER
     assert SHARED_COMPOSER.count("releaseCompareModelLifecycle();") >= 3
     compare_upgrade = _between(
@@ -635,15 +671,15 @@ def test_queued_settings_are_thread_scoped_without_cross_chat_fallback():
     assert "useChatRuntimeStore.subscribe(" not in compare_handle
     gpu_discovery = _between(
         SHARED_COMPOSER,
-        "// Warm the device cache before the snapshot below",
-        "// The GPU/offload knobs both compare loads must use",
+        "      try {\n        if (store.selectedGpuIds != null) {",
+        "      const compareLoadKnobs = {",
     )
     assert "await ensureGpuDeviceCache();" in gpu_discovery
     assert "catch (error) {\n        releaseCompareModelLifecycle();" in gpu_discovery
     side_one = _between(
         SHARED_COMPOSER,
-        "// Side 1: load → generate → wait",
-        "// Side 2: load → generate → wait",
+        "        if (handle1 && model1?.id) {",
+        "        if (handle2 && model2?.id) {",
     )
     assert (
         side_one.index("const status1 = await ensureModelLoaded(model1)")
@@ -652,7 +688,7 @@ def test_queued_settings_are_thread_scoped_without_cross_chat_fallback():
     )
     side_two = _between(
         SHARED_COMPOSER,
-        "// Side 2: load → generate → wait",
+        "        if (handle2 && model2?.id) {",
         "compareStepSucceededRef.current = true",
     )
     assert (
@@ -665,7 +701,7 @@ def test_queued_settings_are_thread_scoped_without_cross_chat_fallback():
     )
     assert "requestLocalPromptQueueStop" in eject
     assert (
-        eject.index("beginModelLoading()")
+        eject.index('beginModelLoading("unloading")')
         < eject.index("await confirmStopRunningChatsIfNeeded(")
         < eject.index("cancelPreStreamRunReservations(stopDecision.preStreamRunTokens)")
         < eject.index("requestLocalPromptQueueStop(stopDecision.promptQueueThreadIds)")
@@ -747,7 +783,7 @@ def test_queued_settings_are_thread_scoped_without_cross_chat_fallback():
         gpu_discovery_index,
     )
     assert (
-        send_flow.index("beginModelLoading()")
+        send_flow.index('beginModelLoading("preparing")')
         < confirm_index
         < first_draft_check
         < gpu_discovery_index
@@ -762,7 +798,7 @@ def test_queued_settings_are_thread_scoped_without_cross_chat_fallback():
     apply_compare_stop = _between(
         send_flow,
         "const applyCompareStopDecision = () => {",
-        "// Helper: load a model and update store checkpoint",
+        "      async function ensureModelLoaded(",
     )
     assert "cancelPreStreamRunReservations(" in apply_compare_stop
     assert "compareStopDecision?.preStreamRunTokens ?? []" in apply_compare_stop
@@ -771,7 +807,7 @@ def test_queued_settings_are_thread_scoped_without_cross_chat_fallback():
     ensure_compare_model = _between(
         send_flow,
         "async function ensureModelLoaded(",
-        "// Side 1: load",
+        "        if (handle1 && model1?.id) {",
     )
     already_active = _between(
         ensure_compare_model,
@@ -884,8 +920,8 @@ def test_compare_prompt_list_resets_when_preflight_never_starts_a_run():
 
     failed_gpu_discovery = _between(
         send_flow,
-        "// Warm the device cache before the snapshot below",
-        "// The GPU/offload knobs both compare loads must use",
+        "      try {\n        if (store.selectedGpuIds != null) {",
+        "      const compareLoadKnobs = {",
     )
     assert "resetPromptQueue();" in failed_gpu_discovery
 
@@ -919,8 +955,8 @@ def test_clear_all_invalidates_and_removes_late_fresh_thread_initialization():
     assert CLEAR_ALL_CHATS.index("chatHistoryClearBoundary.advance();") < CLEAR_ALL_CHATS.index(
         "requestPromptQueueStop();"
     )
-    # Matched on the call prefix, not the whole call: #8932 gave clearStoredChats an options
-    # argument, which changes nothing about the ordering this pins.
+    # Matched on the call prefix, not the whole call: #8932 gave clearStoredChats an options argument, which changes
+    # nothing about the ordering this pins.
     assert CLEAR_ALL_CHATS.index("requestPromptQueueStop();") < CLEAR_ALL_CHATS.index(
         "return await clearStoredChats("
     )
@@ -993,7 +1029,15 @@ def test_sidebar_exposes_queue_activity_for_each_thread():
     assert "const queueByThreadId = usePromptQueueUI((s) => s.byThreadId);" in APP_SIDEBAR
     assert "hasQueuedActivity" in APP_SIDEBAR
     assert "showWorkSpinner" in APP_SIDEBAR
-    assert "{showWorkSpinner && (" in APP_SIDEBAR
+    # That it gates mounted markup, not that it does so with `&&`. #11408 moved the spinner to
+    # the trailing column and wrote the gate as `{showWorkSpinner ? (`, which renders the same
+    # element under the same condition, and pinning the `&&` spelling failed a correct change.
+    # `showWorkSpinner` also picks class strings in this file, so a plain substring search would
+    # go on passing once the spinner itself stopped being rendered; this asks for the gate.
+    assert gates_the_markup(APP_SIDEBAR, "showWorkSpinner"), (
+        "app-sidebar.tsx no longer mounts anything under showWorkSpinner, so a working chat "
+        "row shows no spinner however much room it reserves for one"
+    )
     assert "hasUnreadActivity" in APP_SIDEBAR
     assert "clearChatNotifications(item)" in APP_SIDEBAR
 
@@ -1011,7 +1055,6 @@ def test_a_backgrounded_pane_autosaves_without_naming_itself_active():
         "\nexport function useChatActive(",
     )
 
-    # The pane knows it is hidden.
     assert (
         "backgrounded: boolean;" in autosave
     ), "ThreadBackendAutosave has to be told, like every other sync component here"
@@ -1019,9 +1062,8 @@ def test_a_backgrounded_pane_autosaves_without_naming_itself_active():
         "backgrounded={backgrounded}" in RUNTIME_PROVIDER
     ), "and the provider has to pass it, or the prop is inert"
 
-    # Read at publish time, not captured when the save was queued: the save that publishes
-    # may have been scheduled while the pane was on screen and resolve long after Compare
-    # hid it.
+    # Read at publish time, not captured when the save was queued: the save that publishes may have been scheduled
+    # while the pane was on screen and resolve long after Compare hid it.
     assert "const backgroundedRef = useRef(backgrounded);" in autosave
     assert "backgroundedRef.current = backgrounded;" in autosave
 
@@ -1032,9 +1074,9 @@ def test_a_backgrounded_pane_autosaves_without_naming_itself_active():
     publish_at = autosave.index("store.setActiveThreadId(remoteId)")
     guard_at = autosave.index("!backgroundedRef.current")
 
-    # ...and on no switch away from this thread being in flight. switchToNewThread() is
-    # async, so mainThreadId still reads as this pane for the whole gap, and a save landing
-    # in it republishes the chat the user just left into the view they navigated to.
+    # ...and on no switch away from this thread being in flight. switchToNewThread() is async, so mainThreadId still
+    # reads as this pane for the whole gap, and a save landing in it republishes the chat the user just left into the
+    # view they navigated to.
     assert "!switchInFlight" in autosave, (
         "the publication must also stand down while this provider's own New Chat switch is "
         "still resolving"
@@ -1044,8 +1086,8 @@ def test_a_backgrounded_pane_autosaves_without_naming_itself_active():
     ), "the in-flight window is attempt != landedAttempt, not merely activeNonce being set"
     assert guard_at < publish_at, "the guard has to come before the write it guards"
 
-    # The save itself is untouched: gating it would defeat the PR, which exists so a run
-    # that outlives its view still lands on disk.
+    # The save itself is untouched: gating it would defeat the PR, which exists so a run that outlives its view still
+    # lands on disk.
     for call in (
         "await ensureStoredChatThread(remoteId)",
         "await syncExportedRepositoryToBackend(remoteId, exported)",
@@ -1066,7 +1108,7 @@ def test_the_history_adapters_publish_stands_down_with_the_autosaves():
     append = _between(
         RUNTIME_PROVIDER,
         "      append({ parentId, message }: ExportedMessageRepositoryItem) {",
-        "\n  // Always register the adapter so the mic stays clickable",
+        "\n  const dictation = useMemo(() => new StudioDictationAdapter(), []);",
     )
 
     assert (
@@ -1080,8 +1122,8 @@ def test_the_history_adapters_publish_stands_down_with_the_autosaves():
         "resolving; see the autosave test for why mainThreadId cannot be trusted in that gap"
     )
 
-    # Read at publish time, through a ref, for the same reason the autosave does: the write
-    # is queued when the message arrives and resolves after Compare may have hidden the pane.
+    # Read at publish time, through a ref, for the same reason the autosave does: the write is queued when the message
+    # arrives and resolves after Compare may have hidden the pane.
     assert "const backgroundedRef = useRef(backgrounded);" in RUNTIME_PROVIDER
     assert "backgroundedRef.current = backgrounded;" in RUNTIME_PROVIDER
 

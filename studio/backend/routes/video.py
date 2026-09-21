@@ -3,16 +3,13 @@
 
 """API routes for local text-to-video inference.
 
-The video backend is a deliberate sibling of the diffusion (image) backend, so
-these routes mirror the /images/* routes one-for-one: the same validate-before-evict
-load ordering, the same GPU arbiter handoff (VIDEO owner in place of DIFFUSION),
-the same error boundary mapping backend exceptions to HTTP, and the same gallery
-CRUD shape. The backend runs in-process and is synchronous, so the blocking
-calls are offloaded with asyncio.to_thread to keep the event loop free; the slow
-operations (load AND generate) run as background jobs whose begin_* calls return
-at once, with progress + terminal outcome polled from their *-progress routes.
-This module is the single error boundary: backend methods raise, we map to HTTP
-here.
+The video backend is a deliberate sibling of the diffusion (image) backend, so these routes mirror the
+/images/* routes one-for-one: the same validate-before-evict load ordering, the same GPU arbiter handoff (VIDEO
+owner in place of DIFFUSION), the same error boundary mapping backend exceptions to HTTP, and the same gallery
+CRUD shape. The backend runs in-process and is synchronous, so the blocking calls are offloaded with
+asyncio.to_thread to keep the event loop free; the slow operations (load AND generate) run as background jobs
+whose begin_* calls return at once, with progress + terminal outcome polled from their *-progress routes. This
+module is the single error boundary: backend methods raise, we map to HTTP here.
 """
 
 from __future__ import annotations
@@ -20,6 +17,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import hashlib as _hashlib
+import inspect
 import hmac as _hmac
 import re as _re
 import secrets as _secrets
@@ -34,10 +32,24 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from pydantic import ValidationError
 from starlette.datastructures import UploadFile
 
-from auth.authentication import get_current_subject, request_admitted_without_credential
+from auth.authentication import (
+    authenticated_via_api_key,
+    get_current_subject,
+    request_admitted_without_credential,
+)
 from core.inference.model_ids import public_model_id
 from hub.dependencies import get_hf_token
+from hub.services.models import account_access
+from hub.services.models.account_access import media_link_account, media_link_target
+from utils.account_context import run_as
 from loggers import get_logger
+from loggers.media_progress import (
+    byte_fraction,
+    log_media_generation_progress,
+    log_media_load_progress,
+    reset_media_generation_progress,
+    reset_media_load_progress,
+)
 from models.inference import (
     DiffusionDownloadPlanResponse,
     GalleryFlagsPatch,
@@ -55,6 +67,7 @@ from models.inference import (
     VideoLoadRequest,
     VideoStatusResponse,
 )
+from utils.account_context import current_account_id, is_owner_context
 from utils.api_errors import openai_error_body
 from utils.upload_limits import VIDEO_INPUT_REFERENCE_MAX_BYTES
 
@@ -91,11 +104,10 @@ def _derived_h3_task(gguf_filename: Optional[str], kind: str) -> Optional[str]:
 
 
 def _guard_video_load_against_training() -> None:
-    """Refuse loading a video model while a training run is active. Unlike chat,
-    a video pipeline's VRAM can't be cheaply estimated before the load, so the
-    load is refused outright rather than fit-checked. No-op when training is
-    inactive or its state can't be read. Raises HTTP 409. Mirrors the image
-    load's _guard_diffusion_load_against_training."""
+    """Refuse loading a video model while a training run is active. Unlike chat, a video pipeline's VRAM can't be
+    cheaply estimated before the load, so the load is refused outright rather than fit-checked. No-op when
+    training is inactive or its state can't be read. Raises HTTP 409. Mirrors the image load's
+    _guard_diffusion_load_against_training."""
     from core.training import get_training_backend
 
     try:
@@ -129,6 +141,17 @@ async def video_download_plan(
 ):
     """The repos + files this pick needs, so the frontend stages them through the Hub
     download manager instead of the load downloading inline. Mirrors /images/download-plan."""
+    if account_access.managed_account():
+        await asyncio.to_thread(account_access.require_media_references, request)
+    if account_access.managed_account():
+        await asyncio.to_thread(account_access.require_model_access, request.model_path)
+    if request.base_repo:
+        if account_access.managed_account():
+            await asyncio.to_thread(account_access.require_model_access, request.base_repo)
+    if account_access.managed_account():
+        request = request.model_copy(
+            update = {"hf_token": account_access.account_hf_token(request.hf_token)}
+        )
     from core.inference.diffusion import resolve_local_single_file
     from core.inference.video import (
         assert_video_precision_available,
@@ -152,28 +175,17 @@ async def video_download_plan(
             family_override = request.family_override,
             model_kind = kind,
             base_repo = request.base_repo,
-            # Validation is quant-keyed: a scheme this family can serve only from a hosted
-            # pre-quantized checkpoint has to be refused HERE, on the route that stages the
-            # download, or the panel fetches ~98.7 GB before /video/load can say no.
             transformer_quant = request.transformer_quant,
-            # And the partition, because one of those quant-keyed refusals is task-keyed: the
-            # hosted pre-quantized H3 checkpoints are fl2va denoisers, so a quantized ref2va is
-            # rejected. /video/load passes this and refuses; without it here the plan below staged
-            # the 66 GB dense transformer_ref/ AND the incompatible fl2va quant first.
+            # And the partition, because one of those quant-keyed refusals is task-keyed. Without it here the plan below
+            # staged the 66 GB dense transformer_ref/ AND the incompatible fl2va quant first: the hosted pre-quantized
+            # H3 checkpoints are fl2va denoisers, so a quantized ref2va is rejected.
             h3_task = request.h3_task,
         )
-        # BEFORE the plan is staged, as on the images side: /video/load refuses a precision this
-        # host cannot honour, but the UI plans and downloads first, so an explicit FP8 on an
-        # unsupported host paid for tens of GB of weights to be told afterwards. Network-free.
-        #
-        # Skipped while a trainer holds the GPU: an uncached scheme takes this into a
-        # quantise-and-matmul smoke probe that initialises CUDA in the Unsloth process, and the
-        # plan runs before the load's training guard can refuse. Staging needs no GPU.
-        # Ranking opens a CUDA context per candidate, which the training guard exists to prevent,
-        # so the RANKING waits until training is known idle. Validating and translating the ids
-        # does not, so that happens either way: a plan that skipped it accepted a GPU the load
-        # would refuse and sized its file set for the wrong card. ONE resolution, reused by
-        # preflight and plan.
+        # BEFORE the plan is staged, as on the images side: /video/load refuses a precision this host cannot honour,
+        # but the UI plans and downloads first, so an explicit FP8 on an unsupported host paid for tens of GB of
+        # weights to be told afterwards. Network-free. Skipped while a trainer holds the GPU: an uncached scheme takes
+        # this into a quantise-and-matmul smoke probe that initialises CUDA. RANKING opens a CUDA context per
+        # candidate, so it waits until training is known idle. ONE resolution, reused by preflight and plan.
         gpu_ordinal = None
         training = fam is not None and await asyncio.to_thread(_training_is_active)
         if fam is not None:
@@ -198,15 +210,14 @@ async def video_download_plan(
             family_override = request.family_override,
             model_kind = kind,
             hf_token = request.hf_token,
-            # The plan must see the encoder policy the load will use: an fp8 request takes a hosted pre-cast encoder, so staging the dense one wastes ~49 GB on LTX-2.
+            # The plan must see the encoder policy the load will use: an fp8 request takes a hosted pre-cast encoder, so
+            # staging the dense one wastes ~49 GB on LTX-2.
             text_encoder_quant = request.text_encoder_quant,
-            # And the denoiser policy, for the same reason: a scheme with a hosted pre-quantized
-            # checkpoint replaces the dense DiT, so without this the plan stages 66.3 GB of shards
-            # the load never opens.
+            # And the denoiser policy: a scheme with a hosted pre-quantized checkpoint replaces the dense DiT, so without
+            # this the plan stages 66.3 GB of shards the load never opens.
             transformer_quant = request.transformer_quant,
-            # And the MiniMax-H3 partition, because the two denoisers live in separate 66.28 GB
-            # subfolders: a ref2va load opens transformer_ref/, which the plan would otherwise
-            # miss entirely while staging the fl2va transformer/ it never opens.
+            # And the MiniMax-H3 partition: the two denoisers live in separate 66.28 GB subfolders, so a ref2va load opens
+            # transformer_ref/, which the plan would otherwise miss while staging the fl2va transformer/.
             h3_task = request.h3_task,
         )
         return DiffusionDownloadPlanResponse(**plan)
@@ -219,10 +230,31 @@ async def video_download_plan(
 
 
 @router.post("/video/load", response_model = VideoStatusResponse)
+@account_access.gpu_busy_route
 async def load_video_model(
-    request: VideoLoadRequest, current_subject: str = Depends(get_current_subject)
+    request: VideoLoadRequest,
+    current_subject: str = Depends(get_current_subject),
+    via_api_key: bool = Depends(authenticated_via_api_key),
 ):
-    return await load_video_model_gated(request, current_subject, user_initiated = True)
+    # The status describes whatever is resident, which on a second load is the PREVIOUS model,
+    # resolved by an earlier request this context has no handle for. In the route rather than the
+    # gated body, whose internal callers serve no API-key request.
+    from hub.utils.host_paths import (
+        raised_inventory_detail,
+        redact_host_paths,
+        restore_inventory_handles,
+    )
+    try:
+        loaded = await load_video_model_gated(request, current_subject, user_initiated = True)
+    except HTTPException as exc:
+        # A load that RAISES skips both wrappers below, and the inner loader redacted only
+        # native paths, which do not know inventory handles.
+        exc.detail = raised_inventory_detail(exc.detail, via_api_key = via_api_key)
+        raise
+    return redact_host_paths(
+        restore_inventory_handles(loaded),
+        via_api_key = via_api_key,
+    )
 
 
 async def load_video_model_gated(
@@ -231,17 +263,45 @@ async def load_video_model_gated(
     *,
     user_initiated: bool = False,
 ):
-    """Everything ``POST /video/load`` does, plus who asked for it.
-
-    Media auto-switch awaits this rather than the route so the idle unload can tell an
-    API-loaded pipeline from one the user picked on the Video page.
+    """Everything ``POST /video/load`` does, plus who asked for it. Media auto-switch awaits this rather than the
+    route so the idle unload can tell an API-loaded pipeline from one the user picked on the Video page.
     """
+    if account_access.managed_account():
+        await asyncio.to_thread(account_access.require_media_references, request)
+    account_access.require_idle_other_accounts()
+    if account_access.managed_account():
+        await asyncio.to_thread(account_access.require_model_access, request.model_path)
+    if request.base_repo:
+        if account_access.managed_account():
+            await asyncio.to_thread(account_access.require_model_access, request.base_repo)
+    if account_access.managed_account():
+        request = request.model_copy(
+            update = {"hf_token": account_access.account_hf_token(request.hf_token)}
+        )
+    # Same as the image load: tested at entry, because `begin_load` returns before the worker
+    # moves a byte, and written at the launch below, because the validation in between 400s
+    # without starting one and the record would be permanent.
+    from routes.inference import (
+        _note_load_fetched_with_a_request_token,
+        _repo_is_in_the_hub_cache,
+    )
+
+    _media_repos_to_record = [
+        ref
+        for ref in (request.model_path, request.base_repo)
+        if ref and _repo_is_in_the_hub_cache(ref) is not True
+    ]
     from core.inference.diffusion import resolve_local_single_file
     from core.inference.diffusion_device import (
         resolve_diffusion_device_target,
         resolve_selected_cuda_ordinal,
     )
-    from core.inference.gpu_arbiter import VIDEO, acquire_for, release
+    from core.inference.gpu_arbiter import (
+        VIDEO,
+        acquire_for_request,
+        release,
+        require_no_foreign_generations,
+    )
     from core.inference.media_keepwarm import note_load_origin
     from hub.utils.gguf import extract_quant_token
     from core.inference.video import (
@@ -253,9 +313,11 @@ async def load_video_model_gated(
 
     backend = get_video_backend()
     try:
-        # Resolve the load kind once (gguf / single_file / pipeline) so validation and the load agree; a bad kind raises here, so a 400.
+        # Resolve the load kind once (gguf / single_file / pipeline) so validation and the load agree; a bad kind raises
+        # here, so a 400.
         kind = resolve_video_model_kind(request.gguf_filename, request.model_kind)
-        # A local On-Device pick can be a bare single-file .safetensors dir the picker starts as a pipeline; if it holds exactly one checkpoint, load it as single_file. Mirrors images.
+        # A local On-Device pick can be a bare single-file .safetensors dir the picker starts as a pipeline; if it holds
+        # exactly one checkpoint, load it as single_file. Mirrors images.
         if kind == "pipeline" and not request.gguf_filename:
             sole = await asyncio.to_thread(resolve_local_single_file, request.model_path)
             if sole is not None:
@@ -273,19 +335,13 @@ async def load_video_model_gated(
             text_encoder_quant = request.text_encoder_quant,
             h3_task = request.h3_task,
         )
-        # Refuse while training is running (VRAM competition) BEFORE the precision check below:
-        # that check runs an uncached quantise+matmul probe on the GPU, which would initialise a
-        # CUDA context and allocate alongside the training subprocess for a load that is about to
-        # be rejected anyway. Mirrors the image-load route, which already guards first.
+        # Refuse while training is running BEFORE the precision check, which runs a GPU probe that would initialise a
+        # CUDA context alongside the training subprocess for a load about to be rejected.
         _guard_video_load_against_training()
-        # Same bar for an EXPLICIT precision this host can never honor. begin_load makes the
-        # identical network-free check, but it runs inside acquire_for, which evicts chat under the
-        # arbiter lock BEFORE the register callback -- so a refusal raised there arrives having
-        # already taken the GPU away from the model it was meant to preserve. `auto` is never
-        # refused, so a caller that left the precision to the backend cannot reach this.
-        # Ahead of the precision gate, which has to judge the card this pick would load on.
-        # Refused here too, before anything is evicted or staged; begin_load re-checks, but only
-        # after the arbiter has taken the GPU.
+        # Same bar for an EXPLICIT precision this host can never honor. begin_load makes the identical network-free
+        # check, but it runs inside acquire_for, which evicts chat under the arbiter lock BEFORE the register callback,
+        # so a refusal raised there arrives having already taken the GPU away from the model it was meant to preserve.
+        # `auto` is never refused.
         gpu_ordinal = await _selected_gpu_ordinal(request.gpu_ids)
         await asyncio.to_thread(
             assert_video_precision_available,
@@ -298,11 +354,9 @@ async def load_video_model_gated(
             memory_mode = request.memory_mode,
             gpu_ordinal = gpu_ordinal,
         )
-        # Same bar again, for a speech GGUF picked out of a mixed video repo. The backend's own
-        # assertion runs on the load worker, INSIDE acquire_for, so a refusal there arrives
-        # having already evicted the chat model this gate exists to preserve. Off-thread because
-        # the probe reads a header, and cache-only when the load is not user-initiated, matching
-        # the locality promise begin_load makes below.
+        # Same bar again, for a speech GGUF picked out of a mixed video repo. The backend's own assertion runs on the
+        # load worker, INSIDE acquire_for, so a refusal there arrives having already evicted the chat model.
+        # Off-thread because the probe reads a header, and cache-only when the load is not user-initiated.
         from core.inference.diffusion_compat import assert_pick_is_not_speech
 
         await asyncio.to_thread(
@@ -312,11 +366,19 @@ async def load_video_model_gated(
             request.hf_token,
             user_initiated,
         )
-        # Take the GPU from chat only for a non-CPU load. Release stale VIDEO ownership on a CPU load (owner-guarded no-op).
+        # Take the GPU from chat only for a non-CPU load. Release stale VIDEO ownership on a CPU load (owner-guarded
+        # no-op).
         device = await asyncio.to_thread(lambda: resolve_diffusion_device_target().device)
 
-        def _begin_load():
-            # Kicks the (slow) load onto a background thread and returns at once; begin_load itself validates network-free.
+        def _start_load():
+            # Recorded HERE, inside the admitted callback: every cheap refusal (the busy guard
+            # above, the arbiter, the retirement check inside admit_media_load) has already let
+            # this load through, and the worker below has not been handed the credential yet. A
+            # record left by a load that was refused withholds a repo nobody fetched.
+            for _ref in _media_repos_to_record:
+                _note_load_fetched_with_a_request_token(_ref, request.hf_token)
+            # Kicks the (slow) load onto a background thread and returns at once; begin_load itself validates
+            # network-free.
             return backend.begin_load(
                 request.model_path,
                 # a load nobody asked for may not reach the hub: the switch verified locality
@@ -341,20 +403,25 @@ async def load_video_model_gated(
                 gpu_ordinal = gpu_ordinal,
             )
 
+        def _begin_load():
+            return account_access.admit_media_load("video", _start_load, request.model_path)
+
+        # begin_load signals whatever generation is running, so guard on every device.
+        require_no_foreign_generations()
         if device != "cpu":
-            # Register the in-flight load UNDER the arbiter lock: otherwise a competing acquire in that gap evicts VIDEO before the
-            # load is marked, finds nothing to cancel, and both allocate at once. The training admission wraps the same span.
+            # Register the in-flight load UNDER the arbiter lock: otherwise a competing acquire in that gap evicts VIDEO
+            # before the load is marked, finds nothing to cancel, and both allocate at once. The training admission wraps
+            # the same span.
             from routes.inference import _diffusion_training_admission
             def _acquire_and_begin():
                 with _diffusion_training_admission():
-                    return acquire_for(VIDEO, _begin_load)
+                    return acquire_for_request(VIDEO, _begin_load)
 
             status_dict = await asyncio.to_thread(_acquire_and_begin)
         else:
             await asyncio.to_thread(release, VIDEO)
             status_dict = await asyncio.to_thread(_begin_load)
-        # Keyed to the target: this load can still fail with the previous model resident, and
-        # its origin must not be read off that model.
+        # Keyed to the target: this load can still fail with the previous model resident
         note_load_origin(
             VIDEO,
             request.model_path,
@@ -363,21 +430,104 @@ async def load_video_model_gated(
             request.h3_task or _derived_h3_task(request.gguf_filename, kind),
             user_action = user_initiated,
         )
+        account_access.note_resident_components(
+            "video",
+            request.model_path,
+            request.base_repo,
+            *account_access.media_adapter_references(request),
+        )
+        reset_media_load_progress("video")
         return VideoStatusResponse(**status_dict)
     except (ValueError, FileNotFoundError) as exc:
         raise HTTPException(status_code = 400, detail = redact_native_paths(str(exc)))
+    except account_access.GpuBusyForAnotherAccountError as exc:
+        raise account_access.gpu_busy_error() from exc
     except RuntimeError as exc:
         # A video load is already in progress.
         raise HTTPException(status_code = 409, detail = str(exc))
 
 
 @router.get("/video/load-progress", response_model = VideoLoadProgressResponse)
-async def video_load_progress(current_subject: str = Depends(get_current_subject)):
+async def video_load_progress(
+    current_subject: str = Depends(get_current_subject),
+    via_api_key: bool = Depends(authenticated_via_api_key),
+):
+    if account_access.resident_hidden("video"):
+        return account_access.hidden_resident_response()
     from core.inference.video import get_video_backend
-    return VideoLoadProgressResponse(**get_video_backend().load_progress())
+
+    if account_access.managed_account() and account_access.resident_hidden(
+        "video", get_video_backend().status().get("repo_id")
+    ):
+        return account_access.hidden_resident_response()
+    progress = get_video_backend().load_progress()
+    fraction = byte_fraction(progress.get("downloaded_bytes"), progress.get("expected_bytes"))
+    log_media_load_progress("video", progress.get("phase"), fraction)
+    from hub.utils.host_paths import redact_load_progress
+
+    return VideoLoadProgressResponse(**redact_load_progress(progress, via_api_key = via_api_key))
+
+
+_generation_account: Optional[str] = None
+_generation_lock = threading.Lock()
+
+
+def _note_generation_account() -> None:
+    global _generation_account
+    from utils.account_context import current_account
+    with _generation_lock:
+        _generation_account = current_account().account_id
+
+
+def _reserved_generation_account(backend) -> Optional[str]:
+    reserved = getattr(backend, "generate_job_account", None)
+    return reserved() if callable(reserved) else None
+
+
+def _generation_started_by(backend) -> Optional[str]:
+    """The backend's own reservation wins: it is taken before begin_generate returns."""
+    reserved = _reserved_generation_account(backend)
+    if reserved is not None:
+        return reserved
+    with _generation_lock:
+        return _generation_account
+
+
+def _read_generate_progress(backend, expected_account):
+    """Recheck progress against the authorized reservation, if the backend supports it."""
+    if expected_account is None:
+        return backend.generate_progress()
+    try:
+        params = inspect.signature(backend.generate_progress).parameters
+    except (TypeError, ValueError):
+        params = {}
+    accepts = "expected_account" in params or any(
+        p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values()
+    )
+    if not accepts:
+        return backend.generate_progress()
+    return backend.generate_progress(expected_account = expected_account)
+
+
+_UNREAD = object()
+
+
+def _generation_hidden(backend, started_by = _UNREAD) -> bool:
+    """A caller that acts on the reservation passes the read it will act on."""
+    if started_by is _UNREAD:
+        started_by = _generation_started_by(backend)
+    if started_by is not None:
+        # Owner included: administering the machine covers a resident model, not a clip's prompt.
+        from utils.account_context import current_account
+        return started_by != current_account().account_id
+    return account_access.resident_hidden("video") or (
+        account_access.managed_account()
+        and account_access.resident_hidden("video", backend.status().get("repo_id"))
+    )
 
 
 @router.post("/video/generate", response_model = VideoGenerateResponse)
+@account_access.gpu_busy_route
 async def generate_video(
     request: VideoGenerateRequest,
     current_subject: str = Depends(get_current_subject),
@@ -396,18 +546,17 @@ async def generate_video(
     from core.inference.video import get_video_backend
     from core.inference.video_families import (
         VIDEO_GENERATION_BUSY_MSG,
+        VIDEO_MODEL_CHANGED_MSG,
         VIDEO_NOT_LOADED_MSG,
         VideoShapeError,
     )
 
     def _refuse_unservable_request(pick) -> None:
         """Judge the request against the family being switched TO, before it evicts anything.
-
-        begin_generate judges it against the loaded family under the lock, which is what makes
-        the answer race-proof, but by then a request no model could have served has already cost
-        the resident pipeline and a multi-minute load. The same rules, applied to the target's
-        family and MiniMax-H3 partition, both of which the pick already determines.
-        """
+        begin_generate judges it against the loaded family under the lock, which is what makes the
+        answer race-proof, but by then a request no model could have served has already cost the
+        resident pipeline and a multi-minute load. The same rules, applied to the target's family
+        and MiniMax-H3 partition, both of which the pick already determines."""
         from core.inference.media_model_index import expected_partition
         from core.inference.video import _detect_load_family, resolve_video_model_kind
         from core.inference.video_minimax_h3 import is_h3_native
@@ -459,85 +608,168 @@ async def generate_video(
         raise HTTPException(status_code = 400, detail = str(exc))
 
     backend = get_video_backend()
-    # The request bounds on VideoGenerateRequest are a coarse outer guard; the real rule is the LOADED
-    # family's (its presets and frame lattice), and begin_generate applies it under the same lock that
-    # reserves the state the job will run against, so a load committing concurrently cannot leave the
-    # shape judged against one family and denoised by another. Unloaded still falls through to the
-    # not-loaded 409; a family with no declared presets keeps the old SIZE snapping, though its frame
-    # lattice is enforced either way (frame_step is declared regardless).
-    try:
-        await asyncio.to_thread(
-            backend.begin_generate,
-            prompt = request.prompt,
-            negative_prompt = request.negative_prompt,
-            width = request.width,
-            height = request.height,
-            num_frames = request.num_frames,
-            fps = request.fps,
-            steps = request.steps,
-            guidance = request.guidance,
-            guidance_2 = request.guidance_2,
-            seed = request.seed,
-            first_frame = request.first_frame,
-            last_frame = request.last_frame,
-            reference_images = request.reference_images,
-            reference_videos = [r.model_dump() for r in request.reference_videos or []] or None,
-            reference_audios = request.reference_audios,
-            reference_image_size = request.reference_image_size,
-            flow_shift = request.flow_shift,
-            audio_flow_shift = request.audio_flow_shift,
-        )
-    except VideoShapeError as exc:
-        # 422 before the 400 below, and it must stay first: VideoShapeError IS a ValueError. The body
-        # parses and is in range, but the shape is not one this model can render.
-        raise HTTPException(status_code = 422, detail = str(exc))
-    except ValueError as exc:
-        # Bad client input -- a 400 with the reason, not a generic 500.
-        raise HTTPException(status_code = 400, detail = str(exc))
-    except RuntimeError as exc:
-        # Only the not-loaded / busy sentinels are client-state (409); match exactly so an unrelated failure cannot leak its message.
-        msg = str(exc)
-        if msg in (VIDEO_NOT_LOADED_MSG, VIDEO_GENERATION_BUSY_MSG):
-            raise HTTPException(status_code = 409, detail = msg)
-        logger.error("video.generate_failed: %s", exc, exc_info = True)
-        raise HTTPException(status_code = 500, detail = "Video generation failed.")
+    generate_kwargs = dict(
+        prompt = request.prompt,
+        negative_prompt = request.negative_prompt,
+        width = request.width,
+        height = request.height,
+        num_frames = request.num_frames,
+        fps = request.fps,
+        steps = request.steps,
+        guidance = request.guidance,
+        guidance_2 = request.guidance_2,
+        seed = request.seed,
+        first_frame = request.first_frame,
+        last_frame = request.last_frame,
+        reference_images = request.reference_images,
+        reference_videos = [r.model_dump() for r in request.reference_videos or []] or None,
+        reference_audios = request.reference_audios,
+        reference_image_size = request.reference_image_size,
+        flow_shift = request.flow_shift,
+        audio_flow_shift = request.audio_flow_shift,
+    )
+    # Authorize the exact resident token from generation_snapshot and pin it to the reservation,
+    # so a load committing in the gap cannot render another account's weights here; on a mismatch,
+    # re-authorize once and retry. begin_generate judges shape against the LOADED family under the
+    # same lock that reserves the state, so a concurrent load cannot judge and denoise against two.
+    for attempt in range(2):
+        expected_state = None
+        if account_access.managed_account():
+            status, expected_state = await asyncio.to_thread(backend.generation_snapshot)
+            await asyncio.to_thread(account_access.require_media_generation_access, status, "video")
+        try:
+            await asyncio.to_thread(
+                backend.begin_generate,
+                **generate_kwargs,
+                **({"expected_state": expected_state} if expected_state is not None else {}),
+            )
+        except VideoShapeError as exc:
+            # Must stay before the 400 below: VideoShapeError IS a ValueError.
+            raise HTTPException(status_code = 422, detail = str(exc))
+        except ValueError as exc:
+            # Bad client input: 400 with the reason, not a generic 500.
+            raise HTTPException(status_code = 400, detail = str(exc))
+        except RuntimeError as exc:
+            # Only the not-loaded / busy / replaced sentinels are 409; match exactly so
+            # an unrelated failure cannot leak its message.
+            msg = str(exc)
+            if msg == VIDEO_MODEL_CHANGED_MSG and attempt == 0:
+                continue
+            if msg in (
+                VIDEO_NOT_LOADED_MSG,
+                VIDEO_GENERATION_BUSY_MSG,
+                VIDEO_MODEL_CHANGED_MSG,
+            ):
+                raise HTTPException(status_code = 409, detail = msg)
+            logger.error("video.generate_failed: %s", exc, exc_info = True)
+            raise HTTPException(status_code = 500, detail = "Video generation failed.")
+        break
 
+    _note_generation_account()
+    reset_media_generation_progress("video")
     return VideoGenerateResponse()
 
 
 @router.get("/video/generate-progress", response_model = VideoGenerateProgressResponse)
 async def video_generate_progress(current_subject: str = Depends(get_current_subject)):
     from core.inference.video import get_video_backend
-    return VideoGenerateProgressResponse(**get_video_backend().generate_progress())
+
+    backend = get_video_backend()
+    # One reservation read serves the visibility check; the backend rechecks the owner under
+    # its lock, since begin_generate runs on a worker thread and a successor can reserve mid-poll.
+    reserved = _reserved_generation_account(backend)
+    if reserved is not None:
+        started_by = reserved
+    else:
+        with _generation_lock:
+            started_by = _generation_account
+    if _generation_hidden(backend, started_by):
+        return account_access.hidden_generate_progress_response(VideoGenerateProgressResponse)
+    progress = _read_generate_progress(backend, reserved)
+    if progress is None:
+        # The reservation changed hands mid-poll; the successor's progress is not ours to see.
+        return account_access.hidden_generate_progress_response(VideoGenerateProgressResponse)
+    log_media_generation_progress("video", progress)
+    return VideoGenerateProgressResponse(**progress)
 
 
 @router.post("/video/generate/cancel")
 async def cancel_video_generation(current_subject: str = Depends(get_current_subject)):
     from core.inference.video import get_video_backend
-    cancelled = await asyncio.to_thread(get_video_backend().cancel_generate)
+
+    backend = get_video_backend()
+    # One read serves check and recheck: a second read could name a successor and hand it back
+    # as expected_account.
+    reserved = _reserved_generation_account(backend)
+    if reserved is not None:
+        started_by = reserved
+    else:
+        with _generation_lock:
+            started_by = _generation_account
+    if _generation_hidden(backend, started_by):
+        return {"cancelled": False}
+    if started_by is None and account_access.foreign_work_active():
+        return {"cancelled": False}
+    if reserved is None:
+        # No reservation yet: bind the cancel to the caller, else an account reserving before the
+        # executor runs would receive it.
+        from utils.account_context import current_account
+        expected = current_account().account_id
+    else:
+        expected = reserved
+    cancelled = await asyncio.to_thread(backend.cancel_generate, expected_account = expected)
     return {"cancelled": cancelled}
 
 
 @router.get("/video/status", response_model = VideoStatusResponse)
-async def video_status(current_subject: str = Depends(get_current_subject)):
+async def video_status(
+    current_subject: str = Depends(get_current_subject),
+    via_api_key: bool = Depends(authenticated_via_api_key),
+):
+    if account_access.resident_hidden("video"):
+        return account_access.hidden_resident_response()
     from core.inference.video import get_video_backend
-    return VideoStatusResponse(**get_video_backend().status())
+    from hub.utils.host_paths import redact_host_paths
+
+    status_dict = get_video_backend().status()
+    if account_access.resident_hidden("video", status_dict.get("repo_id")):
+        return account_access.hidden_resident_response()
+    # This route answers long after the request that resolved the reference ended, so there is
+    # no handle in context to put back.
+    return redact_host_paths(VideoStatusResponse(**status_dict), via_api_key = via_api_key)
 
 
 @router.post("/video/unload", response_model = VideoStatusResponse)
-async def unload_video_model(current_subject: str = Depends(get_current_subject)):
+@account_access.gpu_busy_route
+async def unload_video_model(
+    current_subject: str = Depends(get_current_subject),
+    via_api_key: bool = Depends(authenticated_via_api_key),
+):
+    account_access.require_resident_control("video")
     from core.inference.gpu_arbiter import VIDEO, release_if
     from core.inference.video import get_video_backend
 
     backend = get_video_backend()
-    status_dict = await asyncio.to_thread(backend.unload)
-    # Drop VIDEO ownership only if nothing is resident AND no load is in flight; the check and release must be ATOMIC (release_if). Mirrors images.
+    if account_access.managed_account():
+        account_access.require_resident_control("video", backend.status().get("repo_id"))
+    unload_kwargs = {}
+    if account_access.account_scope() is not None:
+        unload_kwargs["expected_account"] = current_account_id()
+    status_dict = await asyncio.to_thread(backend.unload, **unload_kwargs)
+    # Drop VIDEO ownership only if nothing is resident AND no load is in flight; the check and release must be ATOMIC
+    # (release_if). Mirrors images.
     await asyncio.to_thread(
         release_if,
         VIDEO,
         lambda: not backend.loading_repo_ids() and not backend.status()["loaded"],
     )
-    return VideoStatusResponse(**status_dict)
+    # An unload answers with the state it left behind, which still names the model it dropped.
+    from hub.utils.host_paths import redact_host_paths, restore_inventory_handles
+
+    return redact_host_paths(
+        restore_inventory_handles(VideoStatusResponse(**status_dict)),
+        via_api_key = via_api_key,
+    )
 
 
 @router.get("/video/gallery", response_model = VideoGalleryListResponse)
@@ -552,7 +784,8 @@ async def list_gallery_videos(
     limit = max(1, min(limit, 200))
     offset = max(0, offset)
 
-    # Validate inside the pager so offset / limit / has_more count over the accepted domain: dropping bad records only after slicing stalled infinite scroll at offset 0.
+    # Validate inside the pager so offset / limit / has_more count over the accepted domain: dropping bad records only
+    # after slicing stalled infinite scroll at offset 0.
     def _valid_gallery_video(record: dict) -> bool:
         try:
             GalleryVideo(**record)
@@ -579,13 +812,13 @@ async def get_gallery_video_file(
 ):
     from core.inference import video_gallery
 
-    # Ownership-gate the serve like delete/clear: resolve only an Unsloth-owned MP4, so a guessed stem cannot stream out a foreign clip.
+    # Ownership-gate the serve like delete/clear: resolve only an Unsloth-owned MP4, so a guessed stem cannot stream out
+    # a foreign clip.
     path = await asyncio.to_thread(video_gallery.owned_video_path, video_id)
     if path is None:
         raise HTTPException(status_code = 404, detail = "Video not found.")
     from fastapi.responses import FileResponse
 
-    # FileResponse streams from disk and serves range requests. Immutable per id, so let the browser cache it.
     return FileResponse(
         path,
         media_type = "video/mp4",
@@ -593,15 +826,16 @@ async def get_gallery_video_file(
     )
 
 
-# A clip is tens to hundreds of MB, so the gallery cannot fetch it into a blob like a PNG: that buffers the whole MP4, defeats seeking and
-# pins the bytes in the webview. The /file route streams ranges but is bearer-gated, so mint a 12-hour HMAC link (<video> re-requests on seek).
+# A clip is tens to hundreds of MB, so the gallery cannot fetch it into a blob like a PNG: that buffers the whole
+# MP4, defeats seeking and pins the bytes in the webview. The /file route streams ranges but is bearer-gated, so
+# mint a 12-hour HMAC link (<video> re-requests on seek).
 _VIDEO_LINK_TTL = 12 * 3600
 _VIDEO_LINK_SECRET = _secrets.token_bytes(32)
 
 
 def _sign_video_id(video_id: str) -> str:
     exp = int(_time.time()) + _VIDEO_LINK_TTL
-    payload = f"{video_id}.{exp}"
+    payload = f"{media_link_target(video_id)}.{exp}"
     sig = _hmac.new(_VIDEO_LINK_SECRET, payload.encode(), _hashlib.sha256).hexdigest()
     return f"{payload}.{sig}"
 
@@ -657,9 +891,10 @@ async def get_gallery_video_file_signed(video_id: str, token: str = Query(...)):
     the token names the single clip it may serve."""
     from core.inference import video_gallery
 
-    if _verify_video_link_token(token) != video_id:
+    account = media_link_account(_verify_video_link_token(token), video_id)
+    if account is None:
         raise HTTPException(status_code = 401, detail = "Invalid or expired video link.")
-    path = await asyncio.to_thread(video_gallery.owned_video_path, video_id)
+    path = await asyncio.to_thread(run_as, account, video_gallery.owned_video_path, video_id)
     if path is None:
         raise HTTPException(status_code = 404, detail = "Video not found.")
     from fastapi.responses import FileResponse
@@ -712,9 +947,9 @@ async def export_gallery_video(
 
 
 def _forget_terminal_video(video_id: Optional[str]) -> None:
-    """Clear the backend's completed-job record for a clip that just left the gallery, so a page
-    reload does not merge it back as a card whose file is gone. Best-effort: an unavailable backend
-    only means the stale record survives, which is what happened before this call existed."""
+    """Clear the backend's completed-job record for a clip that just left the gallery, so a page reload does not
+    merge it back as a card whose file is gone. Best-effort: an unavailable backend only means the stale record
+    survives, which is what happened before this call existed."""
     try:
         from core.inference.video import get_video_backend
         get_video_backend().forget_terminal_video(video_id)
@@ -742,8 +977,7 @@ async def update_gallery_video_flags(
         raise HTTPException(status_code = 500, detail = "Could not save the change to this video.")
     if record is None:
         raise HTTPException(status_code = 404, detail = "Video not found.")
-    # Archiving takes the clip off the strip, so the completed-job record must go with it: the page
-    # merges that snapshot on mount, which would keep resurrecting the clip it just archived.
+    # Archiving takes the clip off the strip.
     if patch.archived:
         _forget_terminal_video(video_id)
     return GalleryVideo(**record)
@@ -785,8 +1019,6 @@ async def clear_gallery_videos(current_subject: str = Depends(get_current_subjec
     return {"removed": len(cleared)}
 
 
-# ── OpenAI-compatible videos API (/v1/videos) ──
-
 _VIDEO_SIZE_RE = _re.compile(r"^(\d{1,5})\s*x\s*(\d{1,5})$")
 _VIDEO_SECONDS_MAX = 120.0
 _VIDEO_JOB_ID_PREFIX = "video_"
@@ -819,6 +1051,14 @@ class _VideoJob:
 
 _jobs: dict[str, _VideoJob] = {}
 _jobs_lock = threading.Lock()
+_managed_jobs: dict[str, dict[str, _VideoJob]] = {}
+
+
+def _account_jobs() -> dict[str, _VideoJob]:
+    """Called under _jobs_lock; the owner's registry and ids stay unchanged."""
+    if is_owner_context():
+        return _jobs
+    return _managed_jobs.setdefault(current_account_id(), {})
 
 
 def _forget_openai_job(video_id: str) -> bool:
@@ -828,7 +1068,7 @@ def _forget_openai_job(video_id: str) -> bool:
     with _jobs_lock:
         if not video_gallery.forget_job(video_id):
             return False
-        _jobs.pop(video_id, None)
+        _account_jobs().pop(video_id, None)
     return True
 
 
@@ -978,19 +1218,19 @@ def _remember_job(job: _VideoJob) -> None:
     from core.inference import video_gallery
 
     with _jobs_lock:
-        pending = [existing for existing in _jobs.values() if not existing.terminal]
+        pending = [existing for existing in _account_jobs().values() if not existing.terminal]
     for existing in pending:
         persisted = _job_from_record(video_gallery.get_job(existing.id) or {})
         if persisted is not None and persisted.terminal:
             with _jobs_lock:
-                if _jobs.get(existing.id) is existing:
-                    _jobs[existing.id] = persisted
+                if _account_jobs().get(existing.id) is existing:
+                    _account_jobs()[existing.id] = persisted
     with _jobs_lock:
-        _jobs[job.id] = job
-        excess = len(_jobs) - _MAX_REMEMBERED_JOBS
+        _account_jobs()[job.id] = job
+        excess = len(_account_jobs()) - _MAX_REMEMBERED_JOBS
         if excess > 0:
-            for stale in [j for j in _jobs.values() if j.terminal][:excess]:
-                _jobs.pop(stale.id, None)
+            for stale in [j for j in _account_jobs().values() if j.terminal][:excess]:
+                _account_jobs().pop(stale.id, None)
         try:
             video_gallery.save_job(job.id, asdict(job))
         except OSError as exc:
@@ -1026,11 +1266,11 @@ def _job_from_record(record: dict) -> Optional[_VideoJob]:
 def _hydrate_job(video_id: str) -> None:
     from core.inference import video_gallery
     with _jobs_lock:
-        if video_id in _jobs:
+        if video_id in _account_jobs():
             return
         job = _job_from_record(video_gallery.get_job(video_id) or {})
         if job is not None:
-            _jobs.setdefault(job.id, job)
+            _account_jobs().setdefault(job.id, job)
 
 
 def _hydrate_jobs() -> list[_VideoJob]:
@@ -1041,7 +1281,7 @@ def _hydrate_jobs() -> list[_VideoJob]:
         ]
         jobs.sort(key = lambda job: job.created_at, reverse = True)
         for job in jobs[:_MAX_REMEMBERED_JOBS]:
-            _jobs.setdefault(job.id, job)
+            _account_jobs().setdefault(job.id, job)
     return jobs
 
 
@@ -1051,7 +1291,7 @@ def _sync_jobs() -> None:
     from core.inference.video_families import VIDEO_CANCELLED_MSG
 
     with _jobs_lock:
-        open_jobs = [job for job in _jobs.values() if not job.terminal]
+        open_jobs = [job for job in _account_jobs().values() if not job.terminal]
     if not open_jobs:
         return
     gen = get_video_backend().generate_progress()
@@ -1060,8 +1300,8 @@ def _sync_jobs() -> None:
         persisted_job = _job_from_record(video_gallery.get_job(job.id) or {})
         if persisted_job is not None and persisted_job.terminal:
             with _jobs_lock:
-                if _jobs.get(job.id) is job:
-                    _jobs[job.id] = persisted_job
+                if _account_jobs().get(job.id) is job:
+                    _account_jobs()[job.id] = persisted_job
             continue
         status: Optional[str] = None
         progress = 0
@@ -1094,7 +1334,7 @@ def _sync_jobs() -> None:
                     "message": "The generation ended before a clip was saved.",
                 }
         with _jobs_lock:
-            if _jobs.get(job.id) is not job:
+            if _account_jobs().get(job.id) is not job:
                 continue
             if job.terminal:
                 continue
@@ -1116,13 +1356,10 @@ def _sync_jobs() -> None:
 
 
 def _await_generate_settled(video_id: str, timeout: float = _DELETE_SETTLE_TIMEOUT_S) -> bool:
-    """Block until the run started for ``video_id`` is no longer in flight.
-
-    Bounded, so a wedged backend cannot hold the request open. Returns False when the
-    wait expired with the run still live: the caller must not report a deletion it
-    could not observe, or the worker commits its sidecar afterwards and the clip
-    reappears through retrieve/list.
-    """
+    """Block until the run started for ``video_id`` is no longer in flight. Bounded, so a wedged
+    backend cannot hold the request open. Returns False when the wait expired with the run still
+    live: the caller must not report a deletion it could not observe, or the worker commits its
+    sidecar afterwards and the clip reappears through retrieve/list."""
     from core.inference.video import get_video_backend
 
     backend = get_video_backend()
@@ -1141,7 +1378,7 @@ def _lookup_video(video_id: str) -> Optional[VideoJob]:
     _hydrate_job(video_id)
     _sync_jobs()
     with _jobs_lock:
-        job = _jobs.get(video_id)
+        job = _account_jobs().get(video_id)
     if job is not None and job.status != "completed":
         return _job_to_openai(job)
     record = video_gallery.get_record(video_id)
@@ -1157,7 +1394,7 @@ def _all_videos() -> list[VideoJob]:
     _sync_jobs()
     with _jobs_lock:
         jobs = {job.id: job for job in persisted_jobs}
-        jobs.update(_jobs)
+        jobs.update(_account_jobs())
     records = video_gallery.list_videos(None, 0, valid = _valid_gallery_video_record)
     records.extend(
         video_gallery.list_videos(None, 0, valid = _valid_gallery_video_record, archived = True)
@@ -1262,6 +1499,7 @@ async def _reference_to_data_url(reference: Any) -> Optional[str]:
 
 
 @openai_router.post("/videos", response_model = VideoJob)
+@account_access.gpu_busy_route
 async def openai_create_video(
     request: Request,
     current_subject: str = Depends(get_current_subject),
@@ -1352,9 +1590,9 @@ async def _create_openai_video(
         fam = _detect_load_family(pick.model_path, pick.gguf_filename, None)
         if fam is None:
             return
-        # Judge the duration against the family being switched TO, using its own lattice.
-        # Passing None here accepted any seconds and only refused it in begin_generate --
-        # after the resident pipeline had been evicted and the target fully loaded.
+        # Judge the duration against the family being switched TO, using its own lattice. Passing None here accepted any
+        # seconds and only refused it in begin_generate, after the resident pipeline had been evicted and the target
+        # fully loaded.
         want_frames = (
             _frames_for_seconds(
                 seconds,
@@ -1399,55 +1637,67 @@ async def _create_openai_video(
         raise _openai_video_error(400, str(exc), param = "input_reference")
 
     backend = get_video_backend()
-    expected_state = None
-    if pin_requested_model:
-        status, expected_state = await asyncio.to_thread(backend.generation_snapshot)
-        if not await asyncio.to_thread(
-            resident_answers_media_request, status, body.model, owner = VIDEO
-        ):
-            raise _openai_video_error(
-                409,
-                VIDEO_MODEL_CHANGED_MSG,
-                code = "model_changed",
-                param = "model",
-            )
-    else:
-        status = await asyncio.to_thread(backend.status)
-    if not status.get("loaded"):
-        raise HTTPException(status_code = 503, detail = _NO_VIDEO_MODEL_MSG)
-    defaults = status.get("defaults") or {}
-    num_frames = _frames_for_seconds(seconds, defaults) if seconds is not None else None
     video_id = _VIDEO_JOB_ID_PREFIX + uuid.uuid4().hex
-    try:
-        generate_kwargs = dict(
-            prompt = body.prompt,
-            width = width,
-            height = height,
-            duration_s = seconds,
-            input_reference = reference,
-            video_id = video_id,
-        )
-        if expected_state is not None:
-            generate_kwargs["expected_state"] = expected_state
-        resolved = await asyncio.to_thread(backend.begin_generate, **generate_kwargs)
-    except VideoShapeError as exc:
-        raise _openai_video_error(
-            400, str(exc), param = "seconds" if "frame count" in str(exc) else "size"
-        )
-    except ValueError as exc:
-        raise _openai_video_error(
-            400, str(exc), param = "input_reference" if reference is not None else None
-        )
-    except RuntimeError as exc:
-        msg = str(exc)
-        if msg == VIDEO_NOT_LOADED_MSG:
+    # Managed callers are authorized against the exact resident state, pinned to the reservation;
+    # on a mismatch, re-authorize once and retry, as /video/generate does.
+    pin_state = pin_requested_model or account_access.managed_account()
+    for attempt in range(2):
+        expected_state = None
+        if pin_state:
+            status, expected_state = await asyncio.to_thread(backend.generation_snapshot)
+            if pin_requested_model and not await asyncio.to_thread(
+                resident_answers_media_request, status, body.model, owner = VIDEO
+            ):
+                raise _openai_video_error(
+                    409,
+                    VIDEO_MODEL_CHANGED_MSG,
+                    code = "model_changed",
+                    param = "model",
+                )
+        else:
+            status = await asyncio.to_thread(backend.status)
+        if not status.get("loaded"):
             raise HTTPException(status_code = 503, detail = _NO_VIDEO_MODEL_MSG)
-        if msg == VIDEO_GENERATION_BUSY_MSG:
-            raise _openai_video_error(409, msg)
-        if msg == VIDEO_MODEL_CHANGED_MSG:
-            raise _openai_video_error(409, msg, code = "model_changed", param = "model")
-        logger.error("openai_videos.generate_failed: %s", exc, exc_info = True)
-        raise HTTPException(status_code = 500, detail = "Video generation failed.")
+        if account_access.managed_account():
+            await asyncio.to_thread(account_access.require_media_generation_access, status, "video")
+        defaults = status.get("defaults") or {}
+        num_frames = _frames_for_seconds(seconds, defaults) if seconds is not None else None
+        try:
+            generate_kwargs = dict(
+                prompt = body.prompt,
+                width = width,
+                height = height,
+                duration_s = seconds,
+                input_reference = reference,
+                video_id = video_id,
+            )
+            if expected_state is not None:
+                generate_kwargs["expected_state"] = expected_state
+            resolved = await asyncio.to_thread(backend.begin_generate, **generate_kwargs)
+        except VideoShapeError as exc:
+            raise _openai_video_error(
+                400, str(exc), param = "seconds" if "frame count" in str(exc) else "size"
+            )
+        except ValueError as exc:
+            raise _openai_video_error(
+                400, str(exc), param = "input_reference" if reference is not None else None
+            )
+        except RuntimeError as exc:
+            msg = str(exc)
+            if msg == VIDEO_NOT_LOADED_MSG:
+                raise HTTPException(status_code = 503, detail = _NO_VIDEO_MODEL_MSG)
+            if msg == VIDEO_GENERATION_BUSY_MSG:
+                raise _openai_video_error(409, msg)
+            if msg == VIDEO_MODEL_CHANGED_MSG:
+                if attempt == 0:
+                    continue
+                raise _openai_video_error(409, msg, code = "model_changed", param = "model")
+            logger.error("openai_videos.generate_failed: %s", exc, exc_info = True)
+            raise HTTPException(status_code = 500, detail = "Video generation failed.")
+        break
+
+    _note_generation_account()
+    reset_media_generation_progress("video")
 
     # begin_generate hands back the canvas it resolved. Without it a reference-image
     # request reported the family's first preset while the clip rendered at the source
@@ -1458,10 +1708,9 @@ async def _create_openai_video(
         presets = defaults.get("resolution_presets") or []
         if size is None and presets:
             width, height = int(presets[0][0]), int(presets[0][1])
-    # Describe the job from what begin_generate reserved, falling back to the status()
-    # snapshot only where it said nothing. A load committing between that snapshot and
-    # the reservation swaps the family underneath, and the snapshot's fps would then
-    # date a frame count the new model never used.
+    # Describe the job from what begin_generate reserved, falling back to the status() snapshot only where it said
+    # nothing: a load committing in between swaps the family, and the snapshot's fps would then date a frame count
+    # the new model never used.
     reserved = resolved if isinstance(resolved, dict) else {}
     run_frames = reserved.get("num_frames") or num_frames
     fps = reserved.get("fps") or defaults.get("fps")
@@ -1558,7 +1807,7 @@ async def openai_download_video_content(
             thumbnail = await asyncio.to_thread(video_gallery.thumbnail, video_id)
         except RuntimeError as exc:
             raise _openai_video_error(501, str(exc), code = "video_thumbnail_unavailable") from exc
-        if thumbnail is None:  # The clip was deleted between the ownership check and decode.
+        if thumbnail is None:
             raise _not_found(video_id)
         return Response(
             content = thumbnail,
@@ -1588,11 +1837,7 @@ async def openai_delete_video(video_id: str, current_subject: str = Depends(get_
         raise _not_found(video_id)
     if video.status in ("queued", "in_progress"):
         await asyncio.to_thread(get_video_backend().cancel_generate, video_id)
-        # The run can reach its terminal state between the lookup and the cancel, so a
-        # refused cancellation is not proof that nothing was written. Let the worker
-        # settle, then fall through to the same delete the completed branch performs --
-        # otherwise the clip persists and the "deleted" job reappears through
-        # retrieve/list on the very next call.
+        # The run can reach its terminal state between the lookup and the cancel
         if not await asyncio.to_thread(_await_generate_settled, video_id):
             raise _openai_video_error(
                 409,

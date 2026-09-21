@@ -25,6 +25,8 @@ on:
       - 'install.ps1'
       - '.github/actions/frontend-dist-restore/action.yml'
       - '.github/actions/frontend-dist-save/action.yml'
+      - '.github/actions/uv-cache-restore/action.yml'
+      - '.github/actions/uv-cache-save/action.yml'
       - 'scripts/uninstall.ps1'
       - 'tests/studio/test_uninstall_*.ps1'
       - 'tests/studio/test_psmodulepath_normalization.ps1'
@@ -171,6 +173,13 @@ jobs:
       # inputs are byte-identical; the action's own reasoning, and the assertion that
       # a hit was actually REUSED rather than rebuilt, live in
       # .github/actions/frontend-dist-restore and -save.
+      # The uv download cache, which install-unsloth-local restores for the Linux and
+      # macOS jobs and this hand-written pwsh install never had. install.ps1 preserves the
+      # UV_CACHE_DIR the action exports; the key lives in .github/actions/uv-cache-restore.
+      - name: Restore the uv download cache
+        id: uv-cache
+        uses: ./.github/actions/uv-cache-restore
+
       - name: Restore the built frontend
         id: fe-dist
         uses: ./.github/actions/frontend-dist-restore
@@ -212,6 +221,13 @@ jobs:
         with:
           cache-hit: ${{ steps.fe-dist.outputs.cache-hit }}
           key: ${{ steps.fe-dist.outputs.key }}
+
+      # Paired with the uv restore above: pruned to built wheels, saved on main only.
+      - name: Save the uv download cache
+        uses: ./.github/actions/uv-cache-save
+        with:
+          cache-hit: ${{ steps.uv-cache.outputs.cache-hit }}
+          key: ${{ steps.uv-cache.outputs.key }}
 
       - name: Assert install.ps1 used the Windows llama.cpp prebuilt
         run: |

@@ -1,38 +1,11 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""HF cache inspection, download registry state, and orphan-worker reaping.
+"""HF cache inspection, download registry state, and orphan-worker reaping. Worker spawning and exit handling live in :mod:`hub.services.download_lifecycle`; this module owns the registry state machine plus the cache/marker inspection those workers depend on.
 
-Worker spawning and exit handling live in
-:mod:`hub.services.download_lifecycle`; this module owns the registry state
-machine plus the cache/marker inspection those workers depend on.
+Resume model: up to huggingface_hub 1.17 the HTTP transport supported true partial-file resume, opening ``<etag>.incomplete`` in append mode and sending ``Range: bytes={resume_size}-``. 1.18 replaced that with a process-unique ``<etag>.<nonce>.incomplete`` opened ``"wb"`` and unlinked on the way out, so no transport resumes within a file any more and a surviving partial is litter (see :func:`hf_partials_are_resumable`); resume is now whole-file only, with ``snapshot_download`` skipping shards already materialized. The XET transport CANNOT resume from a ``.incomplete`` partial at all, since ``hf_xet.download_files`` rewrites the destination from scratch, though network-level dedup still happens through the separate chunk cache these helpers never touch.
 
-Resume model
-------------
-Up to huggingface_hub 1.17 the HTTP transport supported true partial-file
-resume: the resumer opened ``<etag>.incomplete`` in append mode and sent
-``Range: bytes={resume_size}-`` to continue from disk. 1.18 replaced that with
-a process-unique ``<etag>.<nonce>.incomplete`` opened ``"wb"`` and unlinked on
-the way out, so no transport resumes within a file any more and a surviving
-partial is litter (see :func:`hf_partials_are_resumable`). Resume is now
-whole-file only: ``snapshot_download`` skips shards already materialized.
-
-The XET transport CANNOT resume from a ``.incomplete`` partial:
-``hf_xet.download_files`` rewrites the destination from scratch.
-Network-level dedup still happens, but through the separate chunk cache at
-``~/.cache/huggingface/xet/chunk-cache``, which these helpers never touch.
-
-Cross-transport corruption: a partial written by XET (or ``hf_transfer``'s
-parallel-Range writer) can be sparse — high reported size, zero-filled
-gaps below. Feeding it to the HTTP resumer would produce a correct-sized
-blob whose internal bytes are silently wrong. To prevent that, we keep
-transport markers at the download's scope (repo for snapshots/datasets,
-variant for GGUF) and refuse to inherit an HTTP partial unless the marker
-proves the previous writer was the same single-stream sequential writer.
-
-Marker writes go through tmp+rename in :func:`prepare_cache_for_transport`
-before the worker hands off to ``snapshot_download``, so the next process
-always sees a consistent provenance signal.
+Cross-transport corruption: a partial written by XET (or ``hf_transfer``'s parallel-Range writer) can be sparse, with a high reported size and zero-filled gaps below, and feeding it to the HTTP resumer would produce a correct-sized blob whose internal bytes are silently wrong. So transport markers are kept at the download's scope (repo for snapshots/datasets, variant for GGUF) and an HTTP partial is never inherited unless the marker proves the previous writer was the same single-stream sequential writer. Marker writes go through tmp+rename in :func:`prepare_cache_for_transport` before the worker hands off to ``snapshot_download``, so the next process always sees a consistent provenance signal.
 """
 
 from __future__ import annotations
@@ -55,9 +28,7 @@ from typing import Callable, Iterator, Literal, NamedTuple, Optional, Sequence
 
 from loggers import get_logger
 
-# One floor, one name, shared. Written out by hand in each module it was needed
-# in at first, and the site that got missed was missed because "who enforces it"
-# was a question you answered by reading rather than by grepping.
+# One floor, one name, shared: hand-written copies meant the site that got missed was missed because "who enforces it" had to be read rather than grepped.
 from utils.process_lifetime import is_signalable_pid
 
 from hub.utils import state_dir
@@ -89,6 +60,56 @@ from hub.utils.hf_cache_state import (
 )
 
 
+# HTTP cannot fetch files above huggingface_hub's limit. Read the installed value when available.
+_HTTP_MAX_FILE_BYTES_FALLBACK = 50 * 1000 * 1000 * 1000
+
+_HTTP_SIZE_CEILING_MARKER = "too large to be downloaded using the regular download method"
+
+
+def http_max_file_bytes() -> int:
+    """The largest single file the HTTP transport can fetch."""
+    try:
+        from huggingface_hub import constants as hf_constants
+        value = int(getattr(hf_constants, "MAX_HTTP_DOWNLOAD_SIZE", 0) or 0)
+    except Exception:  # noqa: BLE001 - an unreadable constant is not a reason to fail a download
+        value = 0
+    return value if value > 0 else _HTTP_MAX_FILE_BYTES_FALLBACK
+
+
+def http_size_ceiling_reason(largest_file_bytes: Optional[int]) -> Optional[str]:
+    """Why HTTP cannot serve a download whose biggest file is *largest_file_bytes*, or None.
+
+    An unknown size (``None``/0, e.g. metadata that could not be read) is not evidence of anything and
+    leaves the transport choice exactly as it was.
+    """
+    try:
+        largest = int(largest_file_bytes or 0)
+    except (TypeError, ValueError):
+        return None
+    ceiling = http_max_file_bytes()
+    if largest <= ceiling:
+        return None
+    return (
+        f"HTTPS cannot fetch this download: its largest file is {largest / 1e9:.1f}GB and "
+        f"huggingface_hub refuses a plain HTTPS transfer above {ceiling / 1e9:.0f}GB. "
+        "Only the Xet transport can fetch a file this large."
+    )
+
+
+def humanize_worker_error(text: str, *, largest_file_bytes: Optional[int] = None) -> str:
+    """Replace the hub's misleading >50GB dependency error with the transport limit."""
+    if not text or _HTTP_SIZE_CEILING_MARKER not in text:
+        return text
+    reason = http_size_ceiling_reason(largest_file_bytes)
+    if reason is not None:
+        return reason
+    return (
+        "HTTPS cannot fetch this download: one of its files is larger than the "
+        f"{http_max_file_bytes() / 1e9:.0f}GB limit huggingface_hub allows over plain HTTPS. "
+        "Only the Xet transport can fetch a file this large."
+    )
+
+
 @dataclass(frozen = True)
 class DownloadTransportCapability:
     available: bool
@@ -99,26 +120,26 @@ class DownloadTransportCapability:
 class DownloadTransportCapabilities:
     http: DownloadTransportCapability
     xet: DownloadTransportCapability
-    # What "auto" would pick right now, and why, so the picker can say
-    # "Auto (HTTP -- Xet stalled twice on this machine)" instead of just "Auto".
+    # What "auto" would pick right now, and why, so the picker can say "Auto (HTTP -- Xet stalled twice on this machine)" instead of just "Auto".
     auto_resolves_to: str = TRANSPORT_XET
     auto_reason: Optional[str] = None
-    # Whether an interrupted HTTP transfer leaves bytes the next attempt can append to. False on
-    # huggingface_hub >= 1.18, so the UI stops offering a byte-resume no writer can honour.
+    # False on huggingface_hub >= 1.18, so the UI stops offering a byte-resume no writer can honour.
     partials_resumable: bool = True
 
 
 def get_download_transport_capabilities(
-    *, probe: bool = False, ram_gate: bool = False
+    *,
+    probe: bool = False,
+    ram_gate: bool = False,
+    largest_file_bytes: Optional[int] = None,
 ) -> DownloadTransportCapabilities:
-    """What this machine can do, and what Auto resolves to on it.
+    """Return transport availability and the current Auto choice.
 
-    ``probe`` runs the live Xet health check and is only for the frontend resolving Auto at
-    download start. ``ram_gate`` applies the free-RAM half of that same verdict WITHOUT the
-    network probe, for a surface that has to state what the next download will pick: the
-    settings row said "Auto is using Xet" while the download path, which probes, chose HTTP.
+    ``probe`` checks live Xet health, ``ram_gate`` applies memory pressure, and
+    ``largest_file_bytes`` applies the HTTP size limit.
     """
     xet_available = importlib.util.find_spec("hf_xet") is not None
+    http_reason = http_size_ceiling_reason(largest_file_bytes)
     auto_transport = TRANSPORT_XET if xet_available else TRANSPORT_HTTP
     auto_reason: Optional[str] = None
     auto_forced = False
@@ -126,22 +147,13 @@ def get_download_transport_capabilities(
         try:
             from utils.hf_xet_fallback import cached_xet_health, xet_health
 
-            # Ordinary UI polls are read-only and must not load Zoo. `probe=True` is different:
-            # the frontend sends it only while resolving Auto for a download, then submits the
-            # concrete answer as xet/http, so this is the actual first-download decision.
-            # `ram_gate` loads it too, without probing: an empty cache reads as the optimistic
-            # Xet, so the row promised Xet while the next download loaded an unhealthy verdict
-            # and chose HTTP. Still `probe=probe`, so only a download start probes live.
+            # Ordinary UI polls are read-only and must not load Zoo; probe=True is the actual first-download decision, and ram_gate loads it too without probing: an empty cache reads as the optimistic Xet, so the row promised Xet while the next download chose HTTP.
             health_fn = xet_health if (probe or ram_gate) else cached_xet_health
             health = health_fn(probe = probe)
             if health is not None:
                 auto_transport = TRANSPORT_XET if health.use_xet else TRANSPORT_HTTP
                 auto_reason = str(health.reason)
-                # UNSLOTH_FORCE_XET=1: an operator override, not a measurement, so the free-RAM
-                # gate below stands down exactly as `resolve_auto_use_xet` does. Same helper, so
-                # the probe and the API "auto" path cannot disagree about what "forced" means.
-                # Imported separately and guarded: an older or stubbed shim that lacks it must not
-                # cost us the health verdict just recorded above.
+                # UNSLOTH_FORCE_XET=1 is an operator override, not a measurement, so the free-RAM gate below stands down exactly as resolve_auto_use_xet does.
                 try:
                     from utils.hf_xet_fallback import xet_health_is_forced
                     auto_forced = bool(xet_health_is_forced(health))
@@ -156,10 +168,7 @@ def get_download_transport_capabilities(
         and auto_transport == TRANSPORT_XET
         and not auto_forced
     ):
-        # Free RAM belongs in the same verdict: this IS the Auto decision, since the UI submits the
-        # answer as an explicit xet/http. Read outside the health try, because a health module that
-        # is missing or raising says nothing about RAM. Never on an ordinary poll, which stays
-        # read-only and still does not load Zoo -- only for a probe or an explicit ram_gate.
+        # Free RAM belongs in the same verdict, since the UI submits the answer as an explicit xet/http. Read outside the health try, because a missing health module says nothing about RAM, and never on an ordinary poll: only for a probe or an explicit ram_gate.
         try:
             from utils.hf_xet_fallback import free_ram_pressure_reason
             pressure = free_ram_pressure_reason()
@@ -168,8 +177,12 @@ def get_download_transport_capabilities(
         if pressure is not None:
             auto_transport = TRANSPORT_HTTP
             auto_reason = pressure
+    if http_reason is not None and xet_available:
+        # The size limit overrides preferences for HTTP based on health or RAM.
+        auto_transport = TRANSPORT_XET
+        auto_reason = "Xet (HTTPS cannot fetch a file this large)"
     return DownloadTransportCapabilities(
-        http = DownloadTransportCapability(available = True),
+        http = DownloadTransportCapability(available = http_reason is None, reason = http_reason),
         xet = DownloadTransportCapability(
             available = xet_available,
             reason = None
@@ -182,9 +195,11 @@ def get_download_transport_capabilities(
     )
 
 
-def download_transport_unavailable_reason(transport: str) -> Optional[str]:
+def download_transport_unavailable_reason(
+    transport: str, *, largest_file_bytes: Optional[int] = None
+) -> Optional[str]:
     if transport == TRANSPORT_HTTP:
-        return None
+        return http_size_ceiling_reason(largest_file_bytes)
     if transport == TRANSPORT_XET:
         caps = get_download_transport_capabilities().xet
         return None if caps.available else caps.reason
@@ -200,9 +215,7 @@ def _worker_breadcrumb_path(key: str) -> Optional[Path]:
 
 
 def write_worker_breadcrumb(key: str, pid: int, metadata: Optional["DownloadMetadata"]) -> None:
-    """Record a live worker's PID so a restarted backend can reap it. Best
-    effort: a write failure only forfeits boot-time reaping for this worker,
-    still covered by the worker's own parent-death watchdog."""
+    """Record a live worker's PID so a restarted backend can reap it. Best effort: a write failure only forfeits boot-time reaping for this worker, still covered by the worker's own parent-death watchdog."""
     path = _worker_breadcrumb_path(key)
     if path is None:
         return
@@ -305,25 +318,15 @@ def _is_our_worker(pid: int, repo_id: Optional[str]) -> bool:
         return False
     if "hub.workers.hf_download" not in cmdline:
         return False
-    # Exact --repo-id match: a substring match would let a stale breadcrumb for
-    # Org/Model reap a live worker for Org/Model-v2.
+    # Exact --repo-id match: a substring match would let a stale breadcrumb for Org/Model reap a live worker for Org/Model-v2.
     if isinstance(repo_id, str) and repo_id:
         return _cmdline_repo_id(cmdline) == repo_id
     return True
 
 
 def _kill_orphan(pid: int) -> bool:
-    """Signal the process and wait for it to actually be gone. True once it is.
-
-    The wait is what makes the boot sweep meaningful: the signal only schedules the death, and
-    a sweep that runs a microsecond later still sees the worker's Hugging Face blob lock and
-    spares a partial nothing will ever finish. Bounded, because a pid we cannot reap is not a
-    reason to hold up startup -- and answering False there matters: a survivor must keep its
-    breadcrumb and must not have its live partial claimed as ours to delete.
-    """
-    # Its caller floors the pid too. Repeated here because this one sends the
-    # signal, and a helper that kills should not depend on every future caller
-    # having checked first.
+    """Signal the process and wait for it to actually be gone; True once it is. The wait is what makes the boot sweep meaningful: the signal only schedules the death, and a sweep that runs a microsecond later still sees the worker's Hugging Face blob lock and spares a partial nothing will ever finish. Bounded, because a pid we cannot reap is not a reason to hold up startup, and answering False there matters: a survivor must keep its breadcrumb and must not have its live partial claimed as ours to delete."""
+    # Repeated here because this one sends the signal, and a helper that kills should not depend on every future caller having checked first.
     if not is_signalable_pid(pid):
         return False
     try:
@@ -350,16 +353,7 @@ def _settle_orphaned_download(
     transport: Optional[str],
     hub_cache: Optional[str] = None,
 ) -> None:
-    """Persist a cancel marker for a reaped orphan still mid-download so the next
-    launch settles it to a resumable "cancelled" state instead of a phantom-running
-    row.
-
-    Gated on surviving partial state and on the recorded manifest not already
-    verifying against an active snapshot, so a download that finished before its
-    breadcrumb was cleaned up is never mislabeled cancelled. For a GGUF variant
-    manifest with blob hashes, the partial-state check is scoped to those hashes so
-    a sibling variant cannot contaminate this orphan's state. The recorded
-    transport is preserved so the resume affordance stays accurate."""
+    """Persist a cancel marker for a reaped orphan still mid-download so the next launch settles it to a resumable "cancelled" state instead of a phantom-running row. Gated on surviving partial state and on the recorded manifest not already verifying against an active snapshot, so a download that finished before its breadcrumb was cleaned up is never mislabeled cancelled. For a GGUF variant manifest with blob hashes, the partial-state check is scoped to those hashes so a sibling variant cannot contaminate this orphan's state. The recorded transport is preserved so the resume affordance stays accurate."""
     if repo_type not in ("model", "dataset") or not repo_id:
         return
     from hub.utils import download_manifest
@@ -403,16 +397,7 @@ def _settle_orphaned_download(
 
 
 def reap_orphan_workers() -> None:
-    """Kill download workers left running by a previous backend instance.
-
-    Verifies each breadcrumb's PID is alive AND its command line is one of our
-    workers before terminating, so a recycled PID can't take down an unrelated
-    process. A resumable partial is never touched, so a reaped download stays
-    resumable; an interrupted one with bytes on disk is settled to a cancelled
-    marker (see :func:`_settle_orphaned_download`) so its resume affordance
-    survives a hard crash like a graceful shutdown's does. A partial nothing can
-    resume has no affordance to preserve and is swept
-    (see :func:`sweep_abandoned_partials`). Runs once at startup and never raises."""
+    """Kill download workers left running by a previous backend instance. Verifies each breadcrumb's PID is alive AND its command line is one of our workers before terminating, so a recycled PID cannot take down an unrelated process. A resumable partial is never touched; an interrupted one with bytes on disk is settled to a cancelled marker (see :func:`_settle_orphaned_download`) so its resume affordance survives a hard crash as a graceful shutdown's does, and a partial nothing can resume is swept (see :func:`sweep_abandoned_partials`). Runs once at startup and never raises."""
     reaped: list[tuple[str, str, Optional[str]]] = []
     parent = state_dir.workers_dir()
     if parent is None:
@@ -421,8 +406,7 @@ def reap_orphan_workers() -> None:
     try:
         entries = list(parent.iterdir())
     except OSError:
-        # Unreadable breadcrumbs means no worker can be claimed as reaped, not that the caches
-        # go unswept: they are a separate tree and may well be readable.
+        # Unreadable breadcrumbs means no worker can be claimed as reaped, not that the caches go unswept: they are a separate tree.
         _boot_sweep(reaped)
         return
     for entry in entries:
@@ -435,26 +419,18 @@ def reap_orphan_workers() -> None:
             continue
         pid = data.get("pid") if isinstance(data, dict) else None
         repo_id = data.get("repo_id") if isinstance(data, dict) else None
-        # pid 1 as well as 0 and negatives. The cmdline check below is what
-        # actually keeps this honest and init cannot pass it, but the same was
-        # true of the reaper's start-time check until a record naming pid 1
-        # slipped through it, so the cheap bound goes in front of the clever one.
+        # pid 1 as well as 0 and negatives: the cmdline check below is what keeps this honest, but a record naming pid 1 once slipped through the reaper's start-time check.
         signalable = is_signalable_pid(pid)
         try:
             if not signalable:
-                # Nothing is signalled on this record's word, but its repo fields
-                # are still readable, and the settle below is what preserves the
-                # partial's resume marker. Unlinking straight from here would cost
-                # the user a restarted download to pay for a bug that is ours.
+                # Its repo fields are still readable, and the settle below preserves the partial's resume marker: unlinking from here would cost the user a restarted download to pay for a bug that is ours.
                 pass
             elif not _process_alive(pid):
-                # Already gone, which is better proof than killing it ourselves. Its partial
-                # is ours to sweep even though this invocation reaped nothing.
+                # Already gone, which is better proof than killing it ourselves; its partial is ours to sweep even though this invocation reaped nothing.
                 reaped.append((data.get("repo_type") or "model", repo_id, data.get("hub_cache")))
             elif _is_our_worker(pid, repo_id):
                 if not _kill_orphan(pid):
-                    # Still running. Keeping the breadcrumb keeps it tracked for the next boot,
-                    # and claiming no ownership keeps its live partial out of the sweep.
+                    # Still running: keeping the breadcrumb keeps it tracked for the next boot, and claiming no ownership keeps its live partial out of the sweep.
                     logger.warning(
                         "Could not reap download worker pid=%s repo=%s; leaving its "
                         "breadcrumb and partial in place.",
@@ -462,9 +438,7 @@ def reap_orphan_workers() -> None:
                         repo_id,
                     )
                     continue
-                # Its partial is unreadable now and its writer is gone, but only as of this
-                # line. The sweep has to come after the kill, not before, or it reads the
-                # still-held blob lock and spares a file nothing will ever finish.
+                # The sweep has to come after the kill, not before, or it reads the still-held blob lock and spares a file nothing will ever finish.
                 reaped.append((data.get("repo_type") or "model", repo_id, data.get("hub_cache")))
                 logger.warning(
                     "Reaped orphaned download worker pid=%s repo=%s from a "
@@ -486,13 +460,7 @@ def reap_orphan_workers() -> None:
 
 
 def _boot_sweep(reaped: "Sequence[tuple[str, str, Optional[str]]]") -> None:
-    """Startup cleanup, run only once every surviving worker above has been killed.
-
-    The reaped repos are swept inline: that work is bounded by the breadcrumbs and it settles
-    the caches a returning user is most likely to look at. The all-caches pass is not bounded
-    by anything -- it walks every repo dir, stats every partial and probes locks -- so it goes
-    to a thread rather than holding the lifespan open ahead of the first request.
-    """
+    """Startup cleanup, run only once every surviving worker above has been killed. The reaped repos are swept inline, since that work is bounded by the breadcrumbs and settles the caches a returning user is most likely to look at; the all-caches pass is bounded by nothing (it walks every repo dir, stats every partial and probes locks) so it goes to a thread rather than holding the lifespan open ahead of the first request."""
     swept = 0
     try:
         for repo_type, repo_id, hub_cache in reaped:
@@ -533,8 +501,7 @@ class _PurgeOutcome(NamedTuple):
     failed: int
 
 
-# Only the unresumable sweep waits out ABANDONED_PARTIAL_SECONDS: it reclaims disk, while a
-# marker-mismatch purge exists to stop a corrupt append and cannot defer.
+# Only the unresumable sweep waits out ABANDONED_PARTIAL_SECONDS: it reclaims disk, while a marker-mismatch purge exists to stop a corrupt append and cannot defer.
 
 
 def _purge_incomplete_blobs(
@@ -546,23 +513,11 @@ def _purge_incomplete_blobs(
     owned_hashes: Optional[frozenset[str]] = None,
     owns_all_blobs: bool = False,
 ) -> _PurgeOutcome:
-    """Delete selected partials while preserving protected concurrent writes.
+    """Delete selected partials while preserving protected concurrent writes, reporting failed deletions so sparse partials cannot receive an HTTP marker.
 
-    Report failed deletions so sparse partials cannot receive an HTTP marker.
+    ``unresumable_only`` restricts the sweep to partials no writer can reuse AND that nothing has touched for ``ABANDONED_PARTIAL_SECONDS``. Unlinking a live partial does not stop its writer on POSIX: it keeps filling an unlinked inode and then fails at the rename, so the cost of that mistake is another client's whole download.
 
-    ``unresumable_only`` restricts the sweep to partials no writer can reuse AND that nothing
-    has touched for ``ABANDONED_PARTIAL_SECONDS``. Unlinking a live partial does not stop its
-    writer on POSIX; it keeps filling an unlinked inode and then fails at the rename, so the
-    cost of that mistake is another client's whole download.
-
-    ``owned_hashes``, or ``owns_all_blobs`` for a job that owns its whole repo dir (one with no
-    variant, which claim() will not let a sibling share), are blobs whose only Unsloth-side
-    writer has just been reaped. Those do not wait out the full grace -- the corpse would
-    outlive the retry that follows a cancel, which is the frozen bar this whole change is
-    about -- but they are not simply trusted either: registry ownership proves OUR writer is
-    gone, never that no independent process shares the cache. They go through a stillness
-    probe instead, which is the one liveness test that survives a filesystem where flock is
-    granted to every caller and the lock therefore reads free while somebody writes.
+    ``owned_hashes``, or ``owns_all_blobs`` for a job that owns its whole repo dir, are blobs whose only Unsloth-side writer has just been reaped. Those do not wait out the full grace, since the corpse would outlive the retry that follows a cancel, but they are not simply trusted either: registry ownership proves OUR writer is gone, never that no independent process shares the cache. They go through a stillness probe instead, the one liveness test that survives a filesystem where flock is granted to every caller.
     """
     now = time.time()
     blobs_dir = entry / "blobs"
@@ -590,10 +545,7 @@ def _purge_incomplete_blobs(
             if unresumable_only:
                 if partial_is_resumable(blob.name, entry.parent):
                     continue
-                # Two independent ways to spot a live writer, because neither is sufficient
-                # alone: the lock is the precise signal but upstream calls it best-effort and
-                # some filesystems grant it to everyone, while mtime cannot tell a dead writer
-                # from one stalled on a slow network for longer than the grace.
+                # Neither signal is sufficient alone: the lock is precise but upstream calls it best-effort and some filesystems grant it to everyone, while mtime cannot tell a dead writer from a stalled one.
                 if blob_download_lock_held(entry, blob_hash):
                     continue
                 owned = owns_all_blobs or bool(owned_hashes and blob_hash in owned_hashes)
@@ -607,8 +559,7 @@ def _purge_incomplete_blobs(
             blob.unlink()
             removed += 1
         except FileNotFoundError:
-            # A peer finalized or removed it after enumeration. The requested
-            # end state was reached, so this is not a failed purge.
+            # A peer finalized or removed it after enumeration, so the requested end state was reached and this is not a failed purge.
             continue
         except OSError:
             failed += 1
@@ -617,18 +568,12 @@ def _purge_incomplete_blobs(
     return _PurgeOutcome(removed + watched_outcome.removed, failed + watched_outcome.failed)
 
 
-# One shared pause is enough to tell a frozen corpse from a writer mid-transfer: hf writes a
-# partial continuously, so anything untouched across it is not being written by anyone.
+# One shared pause is enough to tell a frozen corpse from a writer mid-transfer: hf writes a partial continuously.
 _STILLNESS_PROBE_SECONDS = 2.0
 
 
 def _purge_still_partials(watched: "Sequence[tuple[Path, str, int, float]]") -> _PurgeOutcome:
-    """Delete the owned partials that do not move while we watch them.
-
-    Sampled once before, once after a single shared sleep, so the cost is one pause per sweep
-    rather than one per file. Anything that grew or was touched in between has a live writer,
-    whatever the advisory lock had to say about it.
-    """
+    """Delete the owned partials that do not move while we watch them. Sampled once before and once after a single shared sleep, so the cost is one pause per sweep rather than one per file. Anything that grew or was touched in between has a live writer, whatever the advisory lock had to say about it."""
     if not watched:
         return _PurgeOutcome(0, 0)
     time.sleep(_STILLNESS_PROBE_SECONDS)
@@ -638,7 +583,7 @@ def _purge_still_partials(watched: "Sequence[tuple[Path, str, int, float]]") -> 
         try:
             stat = blob.stat()
             if stat.st_size != size or stat.st_mtime != mtime:
-                continue  # it moved, so somebody owns it after all
+                continue
             blob.unlink()
             removed += 1
         except FileNotFoundError:
@@ -713,9 +658,7 @@ def _marker_path(entry: Path, variant: Optional[str] = None) -> Path:
 
 
 def _is_transport_marker_file(path: Path) -> bool:
-    # Matches ".transport", its tmps, and variant-scoped ".transport.gguf-*".
-    # Real HF cache entries (blobs/refs/snapshots/.no_exist) never start with
-    # ".transport.".
+    # Matches ".transport", its tmps and variant-scoped ".transport.gguf-*"; real HF cache entries (blobs/refs/snapshots/.no_exist) never start with ".transport.".
     return path.name == TRANSPORT_MARKER_NAME or path.name.startswith(f"{TRANSPORT_MARKER_NAME}.")
 
 
@@ -729,22 +672,19 @@ def _read_marker_value(marker: Path) -> Optional[str]:
             return None
         value = marker.read_text(encoding = "utf-8").strip()
     except (OSError, UnicodeDecodeError):
-        # UnicodeDecodeError is a ValueError, so it would escape and abort
-        # prepare_cache_for_transport. An unknown value just purges and restarts.
+        # UnicodeDecodeError is a ValueError, so it would escape and abort prepare_cache_for_transport; an unknown value just purges and restarts.
         return None
     return value if value in VALID_TRANSPORTS else None
 
 
 def _write_marker_value(marker: Path, mode: str) -> None:
     try:
-        # tmp + rename so a SIGKILL mid-write can't leave a half-written marker.
-        # The tmp name is per-process so concurrent writers don't clobber tmps.
+        # tmp + rename so a SIGKILL mid-write cannot leave a half-written marker, with a per-process tmp name so concurrent writers do not clobber tmps.
         tmp = marker.with_name(f"{marker.name}.tmp-{os.getpid()}")
         tmp.write_text(mode, encoding = "utf-8")
         os.replace(tmp, marker)
     except OSError:
-        # Best-effort: a missing marker next run purges the partial defensively,
-        # the safe failure mode.
+        # Best-effort: a missing marker next run purges the partial defensively, which is the safe failure mode.
         pass
 
 
@@ -778,44 +718,17 @@ def prepare_cache_for_transport(
     protected_blob_hashes: Optional[frozenset[str]] = None,
     root: Optional[Path] = None,
 ) -> int:
-    """Guarantee any pre-existing ``.incomplete`` blobs are SAFE to resume under
-    *mode*. Returns the number of partial blobs purged for untrusted provenance.
+    """Guarantee any pre-existing ``.incomplete`` blobs are SAFE to resume under *mode*. Returns the number of partial blobs purged for untrusted provenance.
 
-    Two marker scopes govern GGUF downloads. ``only_blob_hashes`` are the
-    variant's own (main quant) blobs, judged by the ``variant``-scoped marker;
-    ``None`` widens the scope to every partial for full-repo snapshots/datasets.
-    ``companion_blob_hashes`` are blobs shared across sibling variants (a vision
-    mmproj), judged by a separate repo-scoped companion marker — so a companion
-    partial is trusted against the transport that wrote it, not against
-    whichever sibling variant resumes next.
+    Two marker scopes govern GGUF downloads: ``only_blob_hashes`` are the variant's own main-quant blobs, judged by the ``variant``-scoped marker, and ``None`` widens the scope to every partial for full-repo snapshots/datasets. ``companion_blob_hashes`` are blobs shared across sibling variants (a vision mmproj), judged by a separate repo-scoped companion marker, so a companion partial is trusted against the transport that wrote it rather than whichever sibling variant resumes next.
 
-    The contract:
-    - HTTP mode: a partial is trusted ONLY when its governing marker equals
-      ``"http"``. Any other case (missing/unreadable/mismatched marker) purges,
-      since the HTTP resumer would otherwise append to a sparse
-      XET/parallel-Range partial and silently produce a corrupt blob. On
-      huggingface_hub >= 1.18 there is no resumer left to trust a partial for
-      (see ``hf_partials_are_resumable``), so the marker is bypassed and every
-      selected partial purges.
-    - XET mode: incomplete blobs are purged (``hf_xet.download_files`` rewrites
-      from scratch, so this only fixes UI accounting — bytes already in CAS are
-      reused via the chunk-cache). Scoped to ``only_blob_hashes``: companion
-      blobs fall outside that set and survive (shared, and XET overwrites them).
+    In HTTP mode a partial is trusted ONLY when its governing marker equals ``"http"``; any missing, unreadable or mismatched marker purges, since the HTTP resumer would otherwise append to a sparse XET/parallel-Range partial and silently produce a corrupt blob. On huggingface_hub >= 1.18 there is no resumer left to trust a partial for, so the marker is bypassed and every selected partial purges. In XET mode incomplete blobs are purged (``hf_xet.download_files`` rewrites from scratch, so this only fixes UI accounting), scoped to ``only_blob_hashes`` so companion blobs survive.
 
-    ``protected_blob_hashes`` are blobs a concurrent same-repo peer is writing;
-    they are excluded from every purge so a shared companion is never deleted
-    mid-write.
-
-    Scope: ``root`` selects the cache captured by the caller. It defaults to the
-    active ``HF_HUB_CACHE`` root for workers that inherit their cache through
-    the environment. Markers are written for the new mode before returning,
-    except when an HTTP purge cannot remove every selected partial. Withholding
-    the marker keeps the surviving partial untrusted.
+    ``protected_blob_hashes`` are blobs a concurrent same-repo peer is writing and are excluded from every purge. ``root`` selects the cache captured by the caller, defaulting to the active ``HF_HUB_CACHE`` root for workers that inherit their cache through the environment. Markers are written for the new mode before returning, except when an HTTP purge cannot remove every selected partial, since withholding the marker keeps the surviving partial untrusted.
     """
     if mode not in VALID_TRANSPORTS:
         if mode == TRANSPORT_AUTO:
-            # "auto" is a request preference, not a cache writer: it must be resolved to xet/http
-            # before reaching this layer. Naming it turns "invalid transport" into the actual bug.
+            # "auto" is a request preference, not a cache writer: naming it turns "invalid transport" into the actual bug.
             raise ValueError(
                 f"{TRANSPORT_AUTO!r} must be resolved to a concrete transport before preparing the "
                 f"cache; expected one of {sorted(VALID_TRANSPORTS)}"
@@ -833,9 +746,7 @@ def prepare_cache_for_transport(
     except OSError:
         return 0
     if not entries:
-        # First download: pre-create the repo dir so the marker lands before the
-        # worker writes any bytes. Otherwise a SIGKILL mid-download leaves a
-        # partial with no marker that the resume then purges.
+        # Pre-create the repo dir so the marker lands before the worker writes any bytes; otherwise a SIGKILL mid-download leaves a partial with no marker that the resume then purges.
         canonical = repo_cache_dir_name(repo_type, repo_id)
         new_entry = root / canonical
         try:
@@ -852,11 +763,7 @@ def prepare_cache_for_transport(
         if mode == TRANSPORT_XET:
             main_purge = _purge_incomplete_blobs(entry, only_blob_hashes, protected)
         else:
-            # A matching marker vouches for provenance, which is only worth something if
-            # something can still append to the partial it vouches for. When nothing can, what
-            # survives is dead weight that holds the disk the refetch needs and, carrying the
-            # etag of the blob being refetched, pins the bar to its own stale high-water mark
-            # until the new attempt overtakes it. Sweep it, but only once abandoned.
+            # A matching marker vouches for provenance, which is only worth something while something can still append to the partial it vouches for. When nothing can, what survives is dead weight that holds the disk the refetch needs and, carrying the etag of the blob being refetched, pins the bar to its own stale high-water mark until the new attempt overtakes it. Sweep it, but only once abandoned.
             if _read_marker(entry, variant) != mode:
                 main_purge = _purge_incomplete_blobs(entry, only_blob_hashes, protected)
             else:
@@ -909,17 +816,7 @@ def purge_empty_marker_dir(
     repo_id: str,
     variant: Optional[str] = None,
 ) -> bool:
-    """Remove the failed download's own transport marker from a marker-only dir.
-
-    ``prepare_cache_for_transport`` pre-creates the dir + marker before any
-    download; a failure during validation/auth/network setup leaves the dir as
-    marker-only litter. Only the failed download's OWN marker is removed (the
-    repo-scope ``.transport`` or the variant-scoped ``.transport.gguf-*`` plus
-    its ``.tmp-*`` siblings); a sibling variant's marker and the shared
-    ``.transport.companion`` are left intact, so cancelling one quant never
-    strips a peer's provenance. A dir holding ``blobs/``/``snapshots/``/``refs/``
-    won't match and is left untouched, so a resumable partial isn't blown away.
-    """
+    """Remove the failed download's own transport marker from a marker-only dir. ``prepare_cache_for_transport`` pre-creates the dir and marker before any download, so a failure during validation/auth/network setup leaves the dir as marker-only litter. Only the failed download's OWN marker is removed (the repo-scope ``.transport`` or the variant-scoped ``.transport.gguf-*`` plus its ``.tmp-*`` siblings); a sibling variant's marker and the shared ``.transport.companion`` are left intact, so cancelling one quant never strips a peer's provenance. A dir holding ``blobs/``/``snapshots/``/``refs/`` will not match, so a resumable partial is not blown away."""
     cleaned = False
     for entry in iter_repo_cache_dirs(repo_type, repo_id):
         try:
@@ -973,22 +870,12 @@ def sweep_abandoned_partials(
     owns_all_blobs: bool = False,
     root: Optional[str | Path] = None,
 ) -> int:
-    """Remove partials nothing can resume and nothing has touched. Returns how many went.
-
-    ``prepare_cache_for_transport`` runs once, before a download, and skips anything still
-    inside the abandonment grace. That skip lands on the common case: the orphan is the file a
-    hard kill left behind, and the user restarts within seconds of the kill that made it. Run
-    this when a download reaches a terminal state and every file skipped then gets a second
-    look, by which point the grace has long since elapsed.
-    """
-    # DownloadMetadata.hub_cache is a str, and every caller hands its captured root straight
-    # through, so normalize here rather than trusting each one to remember.
+    """Remove partials nothing can resume and nothing has touched; returns how many went. ``prepare_cache_for_transport`` runs once, before a download, and skips anything still inside the abandonment grace, which lands on the common case: the orphan is the file a hard kill left behind and the user restarts within seconds. Run this when a download reaches a terminal state and every file skipped then gets a second look, by which point the grace has long since elapsed."""
+    # DownloadMetadata.hub_cache is a str and every caller hands its captured root straight through, so normalize here rather than trusting each one.
     if isinstance(root, str):
         root = Path(root) if root else None
     removed = 0
-    # The destructive iterator, not the active one: this deletes, and on a case-insensitive
-    # collision the active iterator yields every spelling while this one resolves to the exact
-    # directory or refuses. A job owning "its" repo does not own a differently-cased neighbour.
+    # The destructive iterator, not the active one: on a case-insensitive collision the active iterator yields every spelling while this one resolves to the exact directory or refuses.
     for entry in iter_destructive_repo_cache_dirs(repo_type, repo_id, root = root):
         outcome = _purge_incomplete_blobs(
             entry,
@@ -1003,14 +890,7 @@ def sweep_abandoned_partials(
 
 
 def sweep_abandoned_partials_in_all_caches() -> int:
-    """Boot-time sweep across every known HF cache root. Returns how many partials went.
-
-    Not driven off worker breadcrumbs, because ``drop_process`` removes a breadcrumb during
-    ``finalize_worker_exit`` -- before the terminal-state sweep runs -- so a partial that sweep
-    skips for being freshly written has no breadcrumb left to be found by. Walking the caches
-    instead needs no record to survive, and every deletion still has to clear the same
-    unresumable, unlocked and abandoned gates.
-    """
+    """Boot-time sweep across every known HF cache root; returns how many partials went. Not driven off worker breadcrumbs, because ``drop_process`` removes a breadcrumb during ``finalize_worker_exit``, before the terminal-state sweep runs, so a partial that sweep skips for being freshly written has no breadcrumb left to be found by. Walking the caches needs no record to survive, and every deletion still has to clear the same unresumable, unlocked and abandoned gates."""
     removed = 0
     for root in hf_cache_roots():
         try:
@@ -1033,26 +913,11 @@ def is_resumable_partial(
 ) -> bool:
     """True only when a partial exists AND something can still resume from it.
 
-    Two ways to fail that. XET partials exist on disk but ``hf_xet`` rewrites the destination
-    from scratch, so the marker has to say HTTP. And an HTTP partial is only resumable while a
-    writer that reopens it is installed; the UI turns this flag into "Resume with HTTP to keep
-    the progress you already have", which must not be promised for bytes about to be swept.
+    Two ways to fail that: XET partials exist on disk but ``hf_xet`` rewrites the destination from scratch, so the marker has to say HTTP; and an HTTP partial is only resumable while a writer that reopens it is installed, and the UI turns this flag into "Resume with HTTP to keep the progress you already have", which must not be promised for bytes about to be swept.
 
-    Decided per cache entry, the way :func:`prepare_cache_for_transport` decides what to purge,
-    because one repo can own several active directories at once (a case-sensitive filesystem
-    holds ``models--Org--Model`` beside ``models--org--model``). A marker only vouches for
-    partials sitting beside it.
+    Decided per cache entry, the way :func:`prepare_cache_for_transport` decides what to purge, because one repo can own several active directories at once (a case-sensitive filesystem holds ``models--Org--Model`` beside ``models--org--model``) and a marker only vouches for partials sitting beside it. Within an entry the split matters too: main blobs answer to the variant marker while a shared companion answers to ``.transport.companion``, and a blob in neither set, or a variant with no manifest, backs nothing rather than an unscoped yes.
 
-    Within an entry the split matters too: main blobs answer to the variant marker, while a
-    shared companion (mmproj, MTP drafter) answers to ``.transport.companion``. With a
-    ``variant`` the manifest says which hashes are which; a blob in neither set, and a variant
-    with no manifest, back nothing rather than an unscoped yes.
-
-    ``root`` is the hub cache the row being judged was found in. A row can come from a
-    remembered, legacy or custom cache, and that root holds both its own partials and its own
-    manifest scope (state is keyed by a per-cache digest), so leaving it out asked the ACTIVE
-    root about a directory it does not contain. ``None`` keeps the active root, for callers
-    that have no particular row in hand.
+    ``root`` is the hub cache the row being judged was found in: a row can come from a remembered, legacy or custom cache, and that root holds both its own partials and its own manifest scope, so leaving it out asked the ACTIVE root about a directory it does not contain. ``None`` keeps the active root.
     """
     main, companion = (
         _manifest_hash_split(repo_type, repo_id, variant, root = root) if variant else (set(), set())
@@ -1094,9 +959,7 @@ def _manifest_hash_split(
     *,
     root: Optional[Path] = None,
 ) -> tuple[set[str], set[str]]:
-    """``(main, companion)`` blob hashes from the variant's manifest, split the way the worker
-    splits them when it asks for a purge. Empty pair when either step cannot answer, which
-    reads as "no resume to promise"."""
+    """``(main, companion)`` blob hashes from the variant's manifest, split the way the worker splits them when it asks for a purge. Empty pair when either step cannot answer, which reads as "no resume to promise"."""
     from hub.utils import download_manifest
 
     manifest = download_manifest.read_manifest(repo_type, repo_id, variant, hub_cache = root)
@@ -1119,11 +982,7 @@ def incomplete_blob_hashes(
     resumable_only: bool = False,
     root: Optional[Path] = None,
 ) -> set[str]:
-    """Logical blob hashes with a partial on disk.
-
-    ``resumable_only`` keeps just the ones a later attempt could actually append to, which is
-    what a "resume and keep your progress" claim has to be built on.
-    """
+    """Logical blob hashes with a partial on disk. ``resumable_only`` keeps just the ones a later attempt could actually append to, which is what a "resume and keep your progress" claim has to be built on."""
     out: set[str] = set()
     entries = (
         iter_active_repo_cache_dirs(repo_type, repo_id, root = root)
@@ -1156,13 +1015,7 @@ def completed_blob_bytes(
     *,
     root: Optional[Path] = None,
 ) -> int:
-    """Sum finalized blob bytes for *blob_hashes* in a single HF cache root.
-
-    A worker only writes to its captured ``HF_HUB_CACHE`` root, so a baseline
-    must be scoped to that root (``root``), not re-resolved to whatever cache is
-    active now; otherwise a runtime cache switch makes the retry baseline count
-    bytes from the wrong disk.
-    """
+    """Sum finalized blob bytes for *blob_hashes* in a single HF cache root. A worker only writes to its captured ``HF_HUB_CACHE`` root, so a baseline must be scoped to that root rather than re-resolved to whatever cache is active now; otherwise a runtime cache switch makes the retry baseline count bytes from the wrong disk."""
     if not blob_hashes:
         return 0
     total = 0
@@ -1180,6 +1033,32 @@ def completed_blob_bytes(
     return total
 
 
+def finalized_blob_hashes(
+    repo_type: str,
+    repo_id: str,
+    blob_hashes: frozenset[str],
+    *,
+    root: Optional[Path] = None,
+) -> frozenset[str]:
+    """Return requested blob hashes that are finalized in the active cache."""
+    if not blob_hashes:
+        return frozenset()
+    found: set[str] = set()
+    for entry in iter_active_repo_cache_dirs(repo_type, repo_id, root = root):
+        blobs_dir = entry / "blobs"
+        if not blobs_dir.is_dir():
+            continue
+        for blob_hash in blob_hashes:
+            if blob_hash in found:
+                continue
+            try:
+                if (blobs_dir / blob_hash).is_file():
+                    found.add(blob_hash)
+            except OSError:
+                continue
+    return frozenset(found)
+
+
 def existing_blob_bytes(
     repo_type: str,
     repo_id: str,
@@ -1187,19 +1066,10 @@ def existing_blob_bytes(
     *,
     root: Optional[Path] = None,
 ) -> int:
-    """Bytes a download will NOT have to fetch again for *blob_hashes*, in *root* or, when it is
-    None, the active HF cache root: finalized blobs, plus partials something can still resume
-    from. A row pinned to another root must pass it, since a resume writes into the root the row
-    names and blobs in the active one are not bytes it can reuse. A blob is in exactly one state,
-    so summing both candidate names never double-counts. Used to size what a (possibly resumed)
-    download still needs to write before the run starts."""
+    """Bytes a download will NOT have to fetch again for *blob_hashes*, in *root* or, when it is None, the active HF cache root: finalized blobs plus partials something can still resume from. A row pinned to another root must pass it, since a resume writes into the root the row names. A blob is in exactly one state, so summing both candidate names never double-counts. Used to size what a (possibly resumed) download still needs to write before the run starts."""
     if not blob_hashes:
         return 0
-    # One tally for ALL the repo dirs the root holds, not one per dir. The Hub resolves repo ids
-    # case-insensitively while huggingface_hub keeps the caller's casing in the folder name, so
-    # a case-sensitive filesystem really does end up with models--Org--Model beside
-    # models--org--model, each holding its own copy of the same blob. Summing the dirs counted
-    # that shard twice, and the caller's max(0, total - have) then clamped to zero.
+    # One tally for ALL the repo dirs the root holds: the Hub resolves repo ids case-insensitively while huggingface_hub keeps the caller's casing, so a case-sensitive filesystem holds two copies of one blob and summing the dirs counted that shard twice.
     present = {blob_hash: 0 for blob_hash in blob_hashes}
     for entry in iter_active_repo_cache_dirs(repo_type, repo_id, root = root):
         blobs_dir = entry / "blobs"
@@ -1222,28 +1092,15 @@ def existing_blob_bytes(
                     and not partial_is_resumable(blob.name, entry.parent)
                     and not blob_download_lock_held(entry, blob_hash)
                 ):
-                    # Callers spend this on "bytes we will not have to fetch again", and
-                    # _preflight_disk_space subtracts it from the space a download needs. An
-                    # unresumable partial is refetched in full into a new path, so counting it
-                    # would clear a download for a disk that cannot hold it. A LOCKED one is
-                    # different: a live peer is finishing it and snapshot_download will block
-                    # on that lock and reuse the result, so those bytes are not ours to find
-                    # room for. Two GGUF variants sharing an mmproj hit this every time.
+                    # Callers spend this on "bytes we will not have to fetch again", and _preflight_disk_space subtracts it from the space a download needs. An unresumable partial is refetched in full into a new path, so counting it would clear a download for a disk that cannot hold it. A LOCKED one is different: a live peer is finishing it and snapshot_download blocks on that lock and reuses the result, so those bytes are not ours to find room for. Two GGUF variants sharing an mmproj hit this every time.
                     continue
-                # A partial is measured by the bytes actually ON DISK, not by its logical
-                # length: hf_transfer's parallel Range writer leaves a sparse file whose
-                # st_size runs ahead of what has been written -- observed at 1.2 GB reported
-                # against 112 MB present, and once st_size reached the declared size the
-                # remainder read as zero for a file barely started. A finalized blob is whole
-                # by construction, so it keeps st_size: st_blocks is smaller than the file on
-                # a compressing filesystem.
+                # Measured by the bytes actually ON DISK: hf_transfer's parallel Range writer leaves a sparse file whose st_size runs ahead of what was written, observed at 1.2 GB reported against 112 MB. A finalized blob is whole by construction, so it keeps st_size, since st_blocks is smaller on a compressing filesystem.
                 bytes_here = (
                     blob_bytes_present(blob)
                     if partial_hash is not None
                     else max(0, int(blob.stat().st_size))
                 )
-                # Broken advisory locks can leave several process-unique writers for one etag.
-                # They are duplicate attempts, not additive completion, so keep the largest.
+                # Broken advisory locks can leave several process-unique writers for one etag: duplicate attempts, not additive completion, so keep the largest.
                 present[blob_hash] = max(present[blob_hash], max(0, int(bytes_here)))
             except OSError:
                 continue
@@ -1269,14 +1126,10 @@ class DownloadMetadata:
     variant: Optional[str]
     transport: Optional[str]
     cancel_marker_transport: Optional[str] = None
-    # GGUF variant main/writable hashes, identifying the variant-specific shards
-    # for concurrency decisions.
+    # GGUF variant main/writable hashes, identifying the variant-specific shards for concurrency decisions.
     blob_hashes: frozenset[str] = field(default_factory = frozenset)
-    # Full required hash set for progress/completion (includes the shared mmproj
-    # companion for vision GGUF repos).
     progress_blob_hashes: frozenset[str] = field(default_factory = frozenset)
-    # Bytes already complete before this job started; not counted as this run's
-    # progress.
+    # Bytes already complete before this job started; not counted as this run's progress.
     completed_baseline_bytes: int = 0
     hub_cache: Optional[str] = None
     xet_cache: Optional[str] = None
@@ -1307,9 +1160,7 @@ def _repo_of_key(key: str) -> str:
 
 
 def variant_from_key(key: str) -> Optional[str]:
-    """Parse the variant suffix from a 'repo_id::variant' key. Empty
-    variant returns None — matches the manifest/marker calling
-    convention for full-snapshot models and datasets."""
+    """Parse the variant suffix from a 'repo_id::variant' key. An empty variant returns None, matching the manifest/marker calling convention for full-snapshot models and datasets."""
     if "::" not in key:
         return None
     _, _, variant = key.partition("::")
@@ -1347,15 +1198,7 @@ _NAMED_REGISTRIES_LOCK = threading.Lock()
 
 
 def terminate_active_downloads() -> None:
-    """Best-effort shutdown hook called from the FastAPI lifespan.
-
-    Walks every live DownloadRegistry instance and SIGKILLs any in-flight
-    workers so the parent exit path doesn't leak zombies. The WeakSet drops
-    ad-hoc registries (e.g. test fixtures) automatically once their last
-    strong reference is gone; the long-lived named registries stay reachable
-    via ``_NAMED_REGISTRIES``. Quiet on its own failures: shutdown must not
-    raise.
-    """
+    """Best-effort shutdown hook called from the FastAPI lifespan. Walks every live DownloadRegistry instance and SIGKILLs any in-flight workers so the parent exit path does not leak zombies. The WeakSet drops ad-hoc registries (e.g. test fixtures) once their last strong reference is gone, while the long-lived named registries stay reachable via ``_NAMED_REGISTRIES``. Quiet on its own failures: shutdown must not raise."""
     for registry in list(_REGISTRIES):
         try:
             registry.terminate_all("download")
@@ -1364,13 +1207,7 @@ def terminate_active_downloads() -> None:
 
 
 class DownloadRegistry:
-    """Thread-safe state machine for background HF download jobs.
-
-    One instance backs model downloads (keys ``repo_id::variant``) and another
-    backs dataset downloads (keys ``repo_id``). Repo-scoped tracking serializes
-    full snapshots, datasets, cross-transport work, and deletes; same-transport
-    GGUF variants may run concurrently.
-    """
+    """Thread-safe state machine for background HF download jobs. One instance backs model downloads (keys ``repo_id::variant``) and another backs dataset downloads (keys ``repo_id``). Repo-scoped tracking serializes full snapshots, datasets, cross-transport work and deletes; same-transport GGUF variants may run concurrently."""
 
     def __init__(self, max_terminal: int = 64) -> None:
         self._jobs: dict[str, DownloadState] = {}
@@ -1380,8 +1217,7 @@ class DownloadRegistry:
         self._cancel_marker_transports: dict[str, str] = {}
         self._pending_cancel: dict[str, Optional[int]] = {}
         self._generations: dict[str, int] = {}
-        # Monotonic across keys so an evicted then re-claimed key never reuses a
-        # prior generation (which would let a stale cancel match a new run).
+        # Monotonic across keys so an evicted then re-claimed key never reuses a prior generation, which would let a stale cancel match a new run.
         self._generation_seq = 0
         self._deleting: dict[str, set[Optional[str]]] = {}
         # Publish external cache owners under the same lock as Model Hub jobs.
@@ -1513,9 +1349,7 @@ class DownloadRegistry:
         return generation is None or self._generations.get(key, 0) == generation
 
     def register_process(self, key: str, proc: subprocess.Popen) -> bool:
-        """Register *proc* for *key*. Returns ``False`` when a cancel was
-        requested during the claim→register window (the caller must kill
-        *proc* immediately); ``True`` otherwise."""
+        """Register *proc* for *key*. Returns ``False`` when a cancel was requested during the claim to register window (the caller must kill *proc* immediately), ``True`` otherwise."""
         key = normalize_job_key(key)
         metadata_to_persist: Optional[DownloadMetadata] = None
         registered = False
@@ -1568,9 +1402,7 @@ class DownloadRegistry:
         key: str,
         generation: Optional[int] = None,
     ) -> bool:
-        """Record a cancel for an active job whose worker process hasn't
-        registered yet. Returns ``True`` when the pending cancel was armed,
-        so :func:`register_process` will kill the process on arrival."""
+        """Record a cancel for an active job whose worker process has not registered yet. Returns ``True`` when the pending cancel was armed, so :func:`register_process` will kill the process on arrival."""
         key = normalize_job_key(key)
         with self._lock:
             if self._jobs.get(key, DownloadState("idle")).state not in _ACTIVE_STATES:
@@ -1582,10 +1414,7 @@ class DownloadRegistry:
             return True
 
     def cancel_requested(self, key: str) -> bool:
-        """True when *we* initiated a stop for *key* (a pending cancel armed
-        before the worker registered, or the job already moved to
-        ``cancelling``). Lets exit classification tell an intentional kill
-        apart from an OOM/external SIGKILL."""
+        """True when *we* initiated a stop for *key* (a pending cancel armed before the worker registered, or the job already moved to ``cancelling``). Lets exit classification tell an intentional kill apart from an OOM/external SIGKILL."""
         key = normalize_job_key(key)
         with self._lock:
             if key in self._pending_cancel:
@@ -1633,11 +1462,7 @@ class DownloadRegistry:
         with self._lock:
             if repo in self._repository_owners:
                 return False, "repository_owned"
-            # Run the final external admission check while the registry lock is
-            # held, immediately before inspecting and publishing active state.
-            # The GGUF load path establishes its marker before calling
-            # its active-job probe, so either this claim observes that marker
-            # or the load's later probe observes this claim.
+            # Run the final admission check under the registry lock: the GGUF load path establishes its marker before its active-job probe, so either this claim sees that marker or the load sees this claim.
             if admission_check is not None and not admission_check():
                 return False, "admission_blocked"
             deleting_scopes = self._deleting.get(repo)
@@ -1656,11 +1481,7 @@ class DownloadRegistry:
                     stale_keys.append(other_key)
                     continue
                 other_metadata = self._metadata.get(other_key)
-                # Same-transport variants of one model run concurrently: each
-                # worker purges only its own re-resolved main blobs and the
-                # shared companion is guarded by its marker. Cross-transport
-                # stays serialized so an HTTP resume and an XET rewrite never
-                # write one shared blob at once.
+                # Same-transport variants of one model run concurrently, since each worker purges only its own re-resolved main blobs and the shared companion is guarded by its marker; cross-transport stays serialized so an HTTP resume and an XET rewrite never write one blob at once.
                 concurrent_gguf_variants = (
                     repo_type == "model"
                     and bool(variant)
@@ -1679,8 +1500,7 @@ class DownloadRegistry:
                 return False, conflict_state
             current = self._jobs.get(key, DownloadState("idle")).state
             if current in _ACTIVE_STATES and not replace_active:
-                # A scope slot is shared by every file set that rides it (two quants of one repo both key as "@diffusion"), so adopting
-                # the live job would let the caller wait on files it never asked for. Reject instead, under the lock.
+                # A scope slot is shared by every file set that rides it (the images and video pages both key as "@diffusion"), so adopting the live job would let the caller wait on files it never asked for. Reject instead, under the lock.
                 live = self._metadata.get(key)
                 if (
                     scoped_files is not None
@@ -1723,11 +1543,7 @@ class DownloadRegistry:
             return True, "running"
 
     def claim_repository_owner(self, repo_id: str, owner: object) -> tuple[bool, str]:
-        """Atomically reserve all cache writes for one repository.
-
-        This covers snapshots, GGUF variants, and deletion. The opaque owner
-        prevents a stale run from releasing a newer claim.
-        """
+        """Atomically reserve all cache writes for one repository, covering snapshots, GGUF variants and deletion. The opaque owner prevents a stale run from releasing a newer claim."""
         repo = normalize_repo_key(repo_id)
         with self._lock:
             if repo in self._repository_owners:
@@ -1752,11 +1568,7 @@ class DownloadRegistry:
             return True
 
     def adoptable(self, key: str) -> bool:
-        """True when *key* itself has a live job a client can attach to.
-
-        Lets a rejected claim distinguish a collision with this key's own
-        in-flight job (pollable) from one blocked by a different repo job
-        or an in-progress delete, where no job exists for this key."""
+        """True when *key* itself has a live job a client can attach to. Lets a rejected claim distinguish a collision with this key's own in-flight job (pollable) from one blocked by a different repo job or an in-progress delete, where no job exists for this key."""
         key = normalize_job_key(key)
         with self._lock:
             return self._jobs.get(key, DownloadState("idle")).state in _ACTIVE_STATES
@@ -1768,12 +1580,7 @@ class DownloadRegistry:
         return variant_from_key(key)
 
     def _delete_blocked_by_active_locked(self, repo_id: str, variant: Optional[str]) -> bool:
-        """Whether an active download conflicts with deleting *repo_id*/*variant*.
-
-        A whole-repo delete (``variant is None``) conflicts with any active
-        download. A variant delete conflicts only with that same variant or a
-        whole-repo download writing the shared snapshot; other quantizations
-        download concurrently and never block it."""
+        """Whether an active download conflicts with deleting *repo_id*/*variant*. A whole-repo delete (``variant is None``) conflicts with any active download; a variant delete conflicts only with that same variant or a whole-repo download writing the shared snapshot, so other quantizations download concurrently and never block it."""
         active_keys = self._repo_active.get(repo_id, set())
         for key in active_keys:
             job = self._jobs.get(key)
@@ -1797,10 +1604,7 @@ class DownloadRegistry:
         return False
 
     def peer_blob_hashes(self, key: str) -> frozenset[str]:
-        """Union of the writable blob hashes of every OTHER active download for
-        this key's repo. A worker excludes these from its purge so it never
-        deletes an ``.incomplete`` a concurrent same-repo variant is writing
-        (e.g. a shared mmproj bundled with two GGUF quants)."""
+        """Union of the writable blob hashes of every OTHER active download for this key's repo. A worker excludes these from its purge so it never deletes an ``.incomplete`` a concurrent same-repo variant is writing (e.g. a shared mmproj bundled with two GGUF quants)."""
         key = normalize_job_key(key)
         repo = _repo_of_key(key)
         out: set[str] = set()
@@ -1840,9 +1644,7 @@ class DownloadRegistry:
                 candidate_keys = list(self._repo_active.get(repo_key, set()))
             else:
                 candidate_keys = [key for active in self._repo_active.values() for key in active]
-            # An XET->HTTP retry handoff briefly drops its key from _repo_active
-            # while its job stays active; include those released-but-active jobs
-            # so the waiting retry still lists and can be adopted or cancelled.
+            # An XET->HTTP retry handoff briefly drops its key from _repo_active while its job stays active, so include those released-but-active jobs.
             seen = set(candidate_keys)
             for key, job in self._jobs.items():
                 if key in seen or job.state not in _ACTIVE_STATES:
@@ -1866,12 +1668,7 @@ class DownloadRegistry:
             return refs
 
     def has_active_variant(self, repo_id: str, variant: Optional[str]) -> bool:
-        """Whether an active model job targets this exact GGUF variant.
-
-        Scans the job table rather than only ``_repo_active`` so an XET-to-HTTP
-        retry handoff remains visible while it has temporarily released its
-        active slot.
-        """
+        """Whether an active model job targets this exact GGUF variant. Scans the job table rather than only ``_repo_active`` so an XET-to-HTTP retry handoff remains visible while it has temporarily released its active slot."""
         repo_key = normalize_repo_key(repo_id)
         target = (variant or "").strip().lower() or None
         with self._lock:
@@ -1887,13 +1684,7 @@ class DownloadRegistry:
         repo_id: str,
         variant: Optional[str] = None,
     ) -> bool:
-        """Reserve *repo_id* (or one GGUF *variant* of it) for deletion. Returns
-        ``False`` when a conflicting download is active (a whole-repo delete vs
-        any download, a variant delete vs that same variant or a whole-repo
-        download), so sibling quantizations keep downloading. On success the
-        scope is marked so :func:`claim` rejects overlapping downloads until
-        :func:`end_delete` runs, closing the check-then-delete race against a
-        concurrently spawned worker."""
+        """Reserve *repo_id* (or one GGUF *variant* of it) for deletion. Returns ``False`` when a conflicting download is active (a whole-repo delete vs any download, a variant delete vs that same variant or a whole-repo download), so sibling quantizations keep downloading. On success the scope is marked so :func:`claim` rejects overlapping downloads until :func:`end_delete` runs, closing the check-then-delete race against a concurrently spawned worker."""
         repo_id = normalize_repo_key(repo_id)
         variant_key = (variant or "").strip().lower() or None
         with self._lock:
@@ -1920,13 +1711,7 @@ class DownloadRegistry:
                 self._deleting.pop(repo_id, None)
 
     def has_active_peer_variant(self, repo_id: str, variant: Optional[str]) -> bool:
-        """Whether a DIFFERENT quantization of *repo_id* is downloading while
-        *variant* is being deleted. When one is, the delete reclaims only this
-        variant's files and leaves the shared companion (mmproj) for the live
-        sibling. Point-in-time (a sibling may claim just after it returns), but
-        safe: the finalized companion is held by deletion's reference-count
-        walk and a sibling starting mid-delete re-fetches it, so protection
-        never depends on the sibling having resolved its blob hashes."""
+        """Whether a DIFFERENT quantization of *repo_id* is downloading while *variant* is being deleted. When one is, the delete reclaims only this variant's files and leaves the shared companion (mmproj) for the live sibling. Point-in-time, but safe: the finalized companion is held by deletion's reference-count walk and a sibling starting mid-delete re-fetches it, so protection never depends on the sibling having resolved its blob hashes."""
         repo_id = normalize_repo_key(repo_id)
         target = (variant or "").strip().lower() or None
         with self._lock:
@@ -1937,11 +1722,7 @@ class DownloadRegistry:
                     continue
                 if self._active_job_variant_locked(key) != target:
                     return True
-            # An XET->HTTP retry peer between release_active_slot() and its reclaim
-            # is briefly absent from _repo_active while its job stays active and
-            # still owns the shared companion; mirror the released-but-active scan
-            # used by _delete_blocked_by_active_locked so it still blocks companion
-            # deletion of a different variant.
+            # A retry peer between release_active_slot() and its reclaim is briefly absent from _repo_active while it still owns the shared companion, so mirror the released-but-active scan.
             for key, job in self._jobs.items():
                 if key in active_keys or _repo_of_key(key) != repo_id:
                     continue
@@ -1957,9 +1738,7 @@ class DownloadRegistry:
         proc: subprocess.Popen,
         generation: Optional[int] = None,
     ) -> bool:
-        """Authorize a SIGKILL for the registered *proc*. Idempotent across an
-        active job's lifetime: a repeated cancel while already ``cancelling``
-        still returns ``True`` so a kill that raced and lost can be re-sent."""
+        """Authorize a SIGKILL for the registered *proc*. Idempotent across an active job's lifetime: a repeated cancel while already ``cancelling`` still returns ``True`` so a kill that raced and lost can be re-sent."""
         key = normalize_job_key(key)
         with self._lock:
             if self._processes.get(key) is not proc:
@@ -1980,19 +1759,11 @@ class DownloadRegistry:
                 if proc.poll() is None
             ]
             live_keys = {key for key, _proc, _metadata in live}
-            # Flag as an intentional stop so the watcher's exit classification
-            # reports them cancelled rather than an OOM/crash once SIGKILL lands.
+            # Flag as an intentional stop so the watcher's exit classification reports them cancelled rather than an OOM/crash once SIGKILL lands.
             for key, _proc, _metadata in live:
                 if self._jobs.get(key, DownloadState("idle")).state == "running":
                     self._jobs[key] = DownloadState("cancelling")
-            # Settle active jobs without a live worker too. Two cases: an
-            # XET->HTTP retry parked in the reclaim wait loop has dropped its
-            # worker and slot guard, so it is absent from `live`; and a
-            # registered worker that already exited with an error but whose
-            # watcher has not yet run would otherwise stay `running` and spawn an
-            # HTTP retry after this shutdown snapshot. Skip a registered worker
-            # that exited cleanly (rc == 0): it completed and the watcher will
-            # mark it done, so marking it cancelling would strand a stale marker.
+            # Settle active jobs without a live worker: a retry parked in the reclaim wait has dropped its worker, and a registered worker that errored before its watcher ran would stay running and spawn an HTTP retry. Skip one that exited cleanly, which would strand a stale marker.
             for key, job in list(self._jobs.items()):
                 if job.state not in _ACTIVE_STATES or key in live_keys:
                     continue
@@ -2000,22 +1771,14 @@ class DownloadRegistry:
                 if proc is not None:
                     if proc.poll() == 0:
                         continue
-                    # A registered worker that exited nonzero on its own over HTTP
-                    # is a genuine terminal download failure, not a shutdown cancel
-                    # and not retry-capable: leave its error status intact rather
-                    # than persisting a cancel marker that would read as
-                    # cancelled/resumable after restart. Only an exited XET worker
-                    # could still spawn a post-shutdown HTTP retry, so only that
-                    # needs settling here.
+                    # A registered worker that exited nonzero over HTTP is a genuine terminal failure, not a shutdown cancel: only an exited XET worker could still spawn a post-shutdown HTTP retry.
                     metadata = self._metadata.get(key)
                     if metadata is not None and metadata.transport == TRANSPORT_HTTP:
                         continue
                 self._pending_cancel[key] = self._generations.get(key)
                 self._jobs[key] = DownloadState("cancelling")
                 settled_no_proc.append(self._metadata.get(key))
-        # Persist a cancel marker for each settled no-live-worker job outside the
-        # lock (mirroring the reaped path) so shutdown records resumable/cancelled
-        # state even if it returns before the daemon watcher wakes to do so.
+        # Persist the cancel marker outside the lock so shutdown records resumable state even if it returns before the daemon watcher wakes.
         for metadata in settled_no_proc:
             if metadata is not None:
                 persist_cancel_marker(
@@ -2051,9 +1814,7 @@ class DownloadRegistry:
                 logger.warning(f"shutdown: {kind} worker for {key} did not exit after kill")
             except Exception:
                 pass
-            # Mark only genuinely interrupted workers (rc != 0, or None on wait
-            # timeout); persisting before the exit is known would strand a stale
-            # marker on a worker that completed cleanly during shutdown.
+            # Mark only genuinely interrupted workers: persisting before the exit is known would strand a stale marker on a worker that completed cleanly during shutdown.
             if metadata is not None and proc.poll() != 0:
                 persist_cancel_marker(
                     metadata.repo_type,
