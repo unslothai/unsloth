@@ -1626,7 +1626,8 @@ class TestDiagnosticsNeverCostTheRollback:
         text = INSTALL_SH.read_text(encoding = "utf-8")
         body = text.split("_on_install_exit() {", 1)[1].split("\n}", 1)[0]
         writes = [
-            line.strip() for line in body.splitlines()
+            line.strip()
+            for line in body.splitlines()
             if ("echo " in line or "tauri_log " in line) and not line.strip().startswith("#")
         ]
         assert writes, "the trap no longer writes anything, so this test pins nothing"
