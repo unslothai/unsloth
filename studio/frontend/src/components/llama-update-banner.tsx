@@ -1,0 +1,394 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+import { Button } from "@/components/ui/button";
+import { LlamaUpdateChangelogPanel } from "@/components/update/llama-update-changelog-panel";
+import { resyncInferenceStatusAfterServerModelChange } from "@/features/chat";
+import {
+  llamaUpdateOffered,
+  useLlamaUpdateCheck,
+} from "@/hooks/use-llama-update-check";
+import {
+  useShowLlamaUpdateBanner,
+  useShowWhisperUpdateBanner,
+} from "@/hooks/use-llama-update-pref";
+import {
+  heldUpdateBannerPref,
+  llamaReleaseChanged,
+  llamaUpdateToastMessage,
+  updateBannerComponent,
+  updateToastTag,
+} from "@/lib/llama-job-lifecycle";
+import { toast } from "@/lib/toast";
+import { cn } from "@/lib/utils";
+import { Download } from "lucide-react";
+import { type ReactElement, useEffect, useRef, useState } from "react";
+// Creep toward this cap between coarse backend progress updates.
+const RUNNING_CAP = 0.95;
+
+// The banner is not translated, so these mirror features/settings/lib/llama-backend-
+// labels.ts. An unknown backend prints its own identifier rather than nothing.
+const BACKEND_LABELS: Record<string, string> = {
+  auto: "Automatic",
+  cpu: "CPU",
+  cuda: "CUDA",
+  rocm: "ROCm",
+  vulkan: "Vulkan",
+  metal: "Metal",
+};
+
+function backendLabel(backend: string | null | undefined): string {
+  if (!backend) {
+    return "";
+  }
+  return BACKEND_LABELS[backend] ?? backend;
+}
+
+// Smooth coarse backend progress without freezing between milestones.
+function useSmoothedProgress(
+  active: boolean,
+  progress: number | null,
+  done: boolean,
+): number {
+  const [display, setDisplay] = useState(0);
+  const displayRef = useRef(0);
+  const progressRef = useRef<number | null>(progress);
+  const doneRef = useRef(done);
+  progressRef.current = progress;
+  doneRef.current = done;
+
+  useEffect(() => {
+    if (!active) {
+      displayRef.current = 0;
+      setDisplay(0);
+      return;
+    }
+    let raf = 0;
+    let last = performance.now();
+    const tick = (now: number) => {
+      // Guard against a first rAF timestamp before the captured start time.
+      const dt = Math.max(0, Math.min((now - last) / 1000, 0.1));
+      last = now;
+      const current = displayRef.current;
+      const real = progressRef.current ?? 0;
+      let target: number;
+      let speed: number; // approach rate (fraction of remaining gap per second)
+      if (doneRef.current) {
+        target = 1;
+        speed = 5;
+      } else if (real > current) {
+        target = real; // catch up to a freshly observed milestone
+        speed = 4;
+      } else {
+        target = RUNNING_CAP; // no signal: creep toward the cap, never frozen
+        speed = 0.3;
+      }
+      const cap = doneRef.current ? 1 : RUNNING_CAP;
+      const next = Math.min(
+        current + (target - current) * Math.min(speed * dt, 1),
+        cap,
+      );
+      displayRef.current = next;
+      setDisplay(next);
+      if (doneRef.current && next > 0.999) {
+        return;
+      }
+      raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, [active]);
+
+  return display;
+}
+
+interface LlamaUpdateBannerProps {
+  enabled?: boolean;
+  // false fills a shared stack; true self-anchors.
+  positioned?: boolean;
+}
+
+/** Bottom-right llama.cpp update toast. */
+export function LlamaUpdateBanner({
+  enabled = true,
+  positioned = true,
+}: LlamaUpdateBannerProps): ReactElement | null {
+  const showLlamaBannerPref = useShowLlamaUpdateBanner();
+  const showWhisperBannerPref = useShowWhisperUpdateBanner();
+  const [changelogVersion, setChangelogVersion] = useState<string | null>(null);
+  // Not gated on showBannerPref: this hook instance is the app-wide listener
+  // for a cross-tab reload_required resync (the settings-sheet's own instance
+  // only runs during an MTP-fallback rebuild), so muting the banner must not
+  // also silence that resync -- it only suppresses the UI below.
+  const { status, visible, applying, apply, dismiss, snooze } =
+    useLlamaUpdateCheck({
+      enabled,
+      onReloadRequired: resyncInferenceStatusAfterServerModelChange,
+    });
+
+  // The card names one component and the switches answer per component, so the
+  // shown one is picked here, before the version line and the toast read it.
+  const migrationPending = Boolean(status?.backend_migration_available);
+  const component = updateBannerComponent(
+    status?.component ?? "llama.cpp",
+    {
+      llama: Boolean(status?.llama.update_available) || migrationPending,
+      whisper: Boolean(status?.whisper?.update_available),
+    },
+    { llama: showLlamaBannerPref, whisper: showWhisperBannerPref },
+  );
+  // Its own release pair and download size, not the ones the backend put at the
+  // top level: those are llama's whatever the card shows.
+  const offer =
+    component === "whisper.cpp" ? status?.whisper : status?.llama;
+  const sizeBytes = offer?.update_size_bytes ?? null;
+  const latestTag = offer?.latest_tag ?? null;
+  const installedTag = offer?.installed_tag ?? null;
+
+  async function handleUpdate() {
+    // Read before applying: the status refreshes as the job runs.
+    const migrating = migrationPending;
+    const result = await apply();
+    if (result?.ok) {
+      const updatedTag =
+        updateToastTag(component, result.tag, latestTag) ?? "the latest build";
+      toast.success(
+        llamaUpdateToastMessage({
+          component,
+          migrating,
+          jobMessage: result.message,
+          updatedTag,
+          reloadRequired: result.reloadRequired,
+        }),
+      );
+    } else if (result) {
+      toast.error(
+        `${component} update failed: ${result.error ?? "unknown error"}`,
+      );
+    }
+  }
+
+  // Muted by the component the card shows.
+  const livePref =
+    component === "whisper.cpp" ? showWhisperBannerPref : showLlamaBannerPref;
+  // Held across a chained apply, which renames the card mid-job. An error counts
+  // as in flight so a failed phase keeps its retry on screen.
+  const jobState = status?.job.state;
+  const [heldPref, setHeldPref] = useState<boolean | null>(null);
+  useEffect(() => {
+    setHeldPref((prev) =>
+      heldUpdateBannerPref(prev, applying || jobState === "error", livePref),
+    );
+  }, [applying, jobState, livePref]);
+  const showBannerPref = heldPref ?? livePref;
+  const show =
+    showBannerPref &&
+    visible &&
+    status != null &&
+    (llamaUpdateOffered(status) || applying);
+  // A migration re-applies the install's own automatic choice, so it can be offered at a
+  // release the machine already has, where the backend pair replaces the version line.
+  const backendChange =
+    status?.backend_migration_available && status.to_backend
+      ? `${backendLabel(status.from_backend)} \u2192 ${backendLabel(status.to_backend)}`
+      : null;
+  const versionChanged = llamaReleaseChanged(
+    Boolean(offer?.update_available),
+    installedTag,
+    latestTag,
+  );
+  // Only the migration offer, and only the pair it was measured on: a version update
+  // or a hand-picked switch keeps the plain line.
+  const restartNote =
+    backendChange &&
+    !versionChanged &&
+    status?.from_backend === "rocm" &&
+    status?.to_backend === "vulkan"
+      ? "Vulkan is >10% faster than ROCM. No restart needed after update"
+      : "No restart needed after update";
+  const changelogKey =
+    component === "llama.cpp" && versionChanged
+      ? `${installedTag}\0${latestTag}`
+      : null;
+  const changelogAvailable = Boolean(changelogKey && !status?.source_build);
+  const changelogOpen =
+    changelogKey !== null && changelogVersion === changelogKey;
+  // Use the same predicate for the panel and its protective height floor.
+  const changelogPanelOpen = Boolean(
+    !applying &&
+      changelogAvailable &&
+      changelogOpen &&
+      installedTag &&
+      latestTag,
+  );
+  const sizeLabel =
+    sizeBytes && sizeBytes > 0
+      ? `${Math.round(sizeBytes / (1024 * 1024))} MB`
+      : null;
+  const updateProgress = status?.job.progress ?? null;
+  const jobSucceeded = status?.job.state === "success";
+  // Display value animates; aria uses the real progress.
+  const displayProgress = useSmoothedProgress(
+    applying,
+    updateProgress,
+    jobSucceeded,
+  );
+
+  // Avoid opacity/transform transitions; GPU layer churn can flash.
+  return show ? (
+    <div
+      className={cn(
+        positioned
+          ? "fixed bottom-4 right-4 z-[9998] w-[calc(100vw-2rem)] max-w-[448px]"
+          : cn(
+              "pointer-events-auto flex w-[calc(100vw-2rem)] max-w-[448px] flex-col",
+              // Only an open changelog needs a shrinkable height floor.
+              changelogPanelOpen
+                ? "min-h-[calc(117px+93px*var(--ui-font-scale,1))] max-[383px]:min-h-[calc(24px+224px*var(--ui-font-scale,1))]"
+                : "shrink-0",
+            ),
+      )}
+      data-testid="llama-update-banner"
+    >
+      {/* Paint the full floor even when the changelog content is short. */}
+      <div className="relative flex max-h-[calc(100dvh_-_2rem)] min-h-0 grow flex-col overflow-hidden rounded-[24px] bg-white px-5 pb-4 pt-5 shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] dark:bg-card dark:shadow-[0_8px_28px_-6px_rgba(0,0,0,0.28)]">
+        {applying ? null : (
+          <button
+            type="button"
+            onClick={dismiss}
+            className="absolute top-2.5 right-3 flex size-6 items-center justify-center rounded-full text-muted-foreground/60 transition-colors hover:bg-muted hover:text-foreground"
+            aria-label={`Dismiss ${component} update notification`}
+          >
+            <svg
+              aria-hidden="true"
+              width="12"
+              height="12"
+              viewBox="0 0 14 14"
+              fill="none"
+              xmlns="http://www.w3.org/2000/svg"
+            >
+              <path
+                d="M11 3L3 11M3 3l8 8"
+                stroke="currentColor"
+                strokeWidth="1.5"
+                strokeLinecap="round"
+              />
+            </svg>
+          </button>
+        )}
+
+        <div className="flex min-w-0 shrink-0 items-start gap-4 pr-6">
+          <Download
+            aria-hidden="true"
+            className="mt-1 size-5 shrink-0 text-foreground"
+            strokeWidth={1.75}
+          />
+          <div className="min-w-0">
+            <p className="font-heading text-base font-medium text-foreground">
+              {applying
+                ? `Updating ${component}...`
+                : backendChange && !versionChanged
+                  ? `New ${component} backend`
+                  : `New ${component} update`}
+            </p>
+            <p className="mt-0.5 text-xs text-muted-foreground">
+              {versionChanged || !backendChange ? (
+                <>
+                  {installedTag ?? "unknown"} &rarr;{" "}
+                  <span className="font-medium text-foreground">
+                    {latestTag ?? ""}
+                  </span>
+                </>
+              ) : (
+                <>
+                  {backendLabel(status?.from_backend)} &rarr;{" "}
+                  <span className="font-medium text-foreground">
+                    {backendLabel(status?.to_backend)}
+                  </span>
+                </>
+              )}
+            </p>
+            <p className="mt-1 text-ui-11 text-muted-foreground/70">
+              {sizeLabel ? `${sizeLabel} download · ` : ""}
+              {versionChanged && backendChange
+                ? `${backendChange} backend · `
+                : ""}
+              {restartNote}
+            </p>
+          </div>
+        </div>
+
+        {changelogPanelOpen && installedTag && latestTag ? (
+          <LlamaUpdateChangelogPanel
+            installedTag={installedTag}
+            latestTag={latestTag}
+          />
+        ) : null}
+
+        {applying ? (
+          // biome-ignore lint/a11y/useFocusableInteractive: a read-only progress indicator must not add a keyboard stop
+          <div
+            className="mb-1.5 mt-4 h-1 overflow-hidden rounded-full bg-muted"
+            role="progressbar"
+            aria-label={`Updating ${component}`}
+            aria-valuemin={0}
+            aria-valuemax={100}
+            aria-valuenow={
+              updateProgress != null
+                ? Math.round(updateProgress * 100)
+                : Math.round(displayProgress * 100)
+            }
+            data-testid="llama-update-progress"
+          >
+            <div
+              className="h-full rounded-full bg-primary"
+              style={{ width: `${Math.max(displayProgress * 100, 2)}%` }}
+            />
+          </div>
+        ) : (
+          <div
+            className={cn(
+              "mt-4 flex shrink-0 flex-wrap items-center gap-x-1 gap-y-2",
+              changelogAvailable ? "justify-between" : "justify-end",
+            )}
+          >
+            {changelogAvailable ? (
+              <Button
+                size="sm"
+                variant="ghost"
+                className="-ml-2 h-auto whitespace-nowrap rounded-full px-2.5 py-2 text-ui-13 font-medium text-foreground"
+                onClick={() =>
+                  setChangelogVersion(changelogOpen ? null : changelogKey)
+                }
+                aria-expanded={changelogOpen}
+                data-testid="llama-update-changelog-toggle"
+              >
+                {changelogOpen ? "Hide what's new" : "Show what's new"}
+              </Button>
+            ) : null}
+            <div className="flex flex-wrap items-center justify-end gap-x-1 gap-y-2">
+              <Button
+                size="sm"
+                variant="ghost"
+                className="h-auto whitespace-nowrap rounded-full px-2.5 py-2 text-ui-13 font-medium text-foreground"
+                onClick={snooze}
+                data-testid="llama-update-snooze-button"
+              >
+                Remind me later
+              </Button>
+              <Button
+                size="sm"
+                // Align pill edge with card padding.
+                className="-mr-1 h-auto whitespace-nowrap rounded-full px-3 py-2 text-ui-13"
+                onClick={handleUpdate}
+                data-testid="llama-update-button"
+              >
+                Update
+              </Button>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  ) : null;
+}

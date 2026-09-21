@@ -1,15 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-/**
- * Wrappers for the three OpenAI shell-tool container management
- * endpoints exposed by the backend (studio/backend/routes/inference.py).
- * Each one proxies to OpenAI's /v1/containers REST surface using the
- * user's encrypted API key. Backend rejects any base URL that isn't
- * api.openai.com — the shell tool only exists on the managed cloud.
- */
+/** Wrappers for the backend's three OpenAI shell-tool container endpoints (routes/inference.py).
+ *  Each proxies to OpenAI's /v1/containers using a saved provider key or encrypted request
+ *  override. The backend rejects any base URL but api.openai.com. */
 
 import { authFetch } from "@/features/auth";
+import { readFastApiError } from "@/lib/format-fastapi-error";
 import { encryptProviderApiKey } from "./providers-api";
 
 export interface OpenAIContainerSummary {
@@ -42,23 +39,21 @@ function fromRaw(raw: RawSummary): OpenAIContainerSummary {
 }
 
 async function parseError(response: Response): Promise<string> {
-  try {
-    const body = (await response.json()) as { detail?: string };
-    if (body && typeof body.detail === "string") return body.detail;
-  } catch {
-    /* fall through */
-  }
-  return `HTTP ${response.status}`;
+  return readFastApiError(response, "HTTP");
 }
 
 interface AuthInputs {
-  apiKey: string;
+  providerId: string;
+  apiKey?: string | null;
   baseUrl: string | null;
 }
 
 async function buildAuthBody(auth: AuthInputs) {
   return {
-    encrypted_api_key: await encryptProviderApiKey(auth.apiKey),
+    provider_id: auth.providerId,
+    ...(auth.apiKey
+      ? { encrypted_api_key: await encryptProviderApiKey(auth.apiKey) }
+      : {}),
     provider_base_url: auth.baseUrl,
   };
 }
@@ -115,9 +110,8 @@ export async function deleteOpenAIContainer(
       }),
     },
   );
-  // 404 = container already gone (deleted elsewhere, or expired-then-purged).
-  // Treat as idempotent success so a stale list entry doesn't surface as a
-  // confusing error — the caller will refresh and the entry will disappear.
+  // 404 means the container is already gone; treat as idempotent success so a stale list entry does
+  // not surface as a confusing error.
   if (!response.ok && response.status !== 204 && response.status !== 404) {
     throw new Error(await parseError(response));
   }

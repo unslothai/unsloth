@@ -12,80 +12,120 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Spinner } from "@/components/ui/spinner";
+import { fetchDeviceType, usePlatformStore } from "@/config/env";
+import { bumpInventoryVersion } from "@/features/hub";
 import type { TrainingRunSummary } from "@/features/training";
 import {
+  HistoryRequestError,
   deleteTrainingRun,
   emitTrainingRunDeleted,
+  getTrainingRunDisplayTitle,
+  getTrainingRunModelSubtitle,
   listTrainingRuns,
   onTrainingRunDeleted,
-  onTrainingRunsChanged,
   onTrainingRunUpdated,
+  onTrainingRunsChanged,
+  shouldShowTrainingArtifactsDeleted,
   useTrainingActions,
-  useTrainingRuntimeStore,
 } from "@/features/training";
-import { formatDuration } from "@/features/studio/sections/progress-section-lib";
+import {
+  type Locale,
+  type TranslationKey,
+  formatRelativeTime,
+  translate,
+  useLocale,
+  useT,
+} from "@/i18n";
+import { copyToClipboard } from "@/lib/copy-to-clipboard";
+import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import { Delete02Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { type ReactElement, useCallback, useEffect, useRef, useState } from "react";
-import { Spinner } from "@/components/ui/spinner";
+import {
+  type ReactElement,
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
+import { formatDuration } from "./sections/progress-section-lib";
+
+type StudioT = ReturnType<typeof useT>;
 
 const PAGE_SIZE = 12;
 const RUNNING_POLL_INTERVAL_MS = 5000;
 
-const statusBadge: Record<
-  string,
-  { label: string; className: string }
-> = {
+const statusBadge: Record<string, { className: string }> = {
   completed: {
-    label: "Completed",
     className:
       "bg-emerald-100 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-400",
   },
   stopped: {
-    label: "Stopped",
     className:
       "bg-amber-100 text-amber-700 dark:bg-amber-950 dark:text-amber-400",
   },
   error: {
-    label: "Error",
     className: "bg-red-100 text-red-700 dark:bg-red-950 dark:text-red-400",
   },
   running: {
-    label: "Running",
-    className:
-      "bg-blue-100 text-blue-700 dark:bg-blue-950 dark:text-blue-400",
+    className: "bg-blue-100 text-blue-700 dark:bg-blue-950 dark:text-blue-400",
   },
   resumed_later: {
-    label: "Continued",
     className:
       "bg-emerald-100 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-400",
   },
 };
 
+function formatStatusLabel(status: string, t: StudioT): string {
+  if (status === "completed") return t("studio.history.status.completed");
+  if (status === "stopped") return t("studio.history.status.stopped");
+  if (status === "running") return t("studio.history.status.running");
+  if (status === "resumed_later") return t("studio.history.status.continued");
+  return t("studio.history.status.error");
+}
+
 function wasContinuedInVisibleRuns(
   run: TrainingRunSummary,
   runs: TrainingRunSummary[],
 ): boolean {
-  if (run.status !== "stopped" || !run.output_dir) return false;
+  if ((run.status !== "stopped" && run.status !== "error") || !run.output_dir)
+    return false;
   const startedAt = new Date(run.started_at).getTime();
   return runs.some(
     (other) =>
       other.id !== run.id &&
       other.output_dir === run.output_dir &&
-      (other.status === "stopped" || other.status === "completed") &&
+      (other.status === "stopped" ||
+        other.status === "completed" ||
+        other.status === "error" ||
+        other.status === "running") &&
       new Date(other.started_at).getTime() > startedAt,
+  );
+}
+
+function sharesOutputDirInVisibleRuns(
+  run: TrainingRunSummary,
+  runs: TrainingRunSummary[],
+): boolean {
+  if (!run.output_dir) return false;
+  return runs.some(
+    (other) => other.id !== run.id && other.output_dir === run.output_dir,
   );
 }
 
 function catmullRomPath(points: { x: number; y: number }[]): string {
   if (points.length < 2) return "";
-  const d = [`M${points[0]!.x.toFixed(1)},${points[0]!.y.toFixed(1)}`];
+  const firstPoint = points[0];
+  if (!firstPoint) return "";
+  const d = [`M${firstPoint.x.toFixed(1)},${firstPoint.y.toFixed(1)}`];
   for (let i = 0; i < points.length - 1; i++) {
-    const p0 = points[Math.max(i - 1, 0)]!;
-    const p1 = points[i]!;
-    const p2 = points[i + 1]!;
-    const p3 = points[Math.min(i + 2, points.length - 1)]!;
+    const p0 = points[Math.max(i - 1, 0)];
+    const p1 = points[i];
+    const p2 = points[i + 1];
+    const p3 = points[Math.min(i + 2, points.length - 1)];
+    if (!p0 || !p1 || !p2 || !p3) break;
     const cp1x = p1.x + (p2.x - p0.x) / 6;
     const cp1y = p1.y + (p2.y - p0.y) / 6;
     const cp2x = p2.x - (p3.x - p1.x) / 6;
@@ -97,13 +137,25 @@ function catmullRomPath(points: { x: number; y: number }[]): string {
   return d.join(" ");
 }
 
-function Sparkline({ values, id }: { values: number[]; id: string }): ReactElement | null {
+function Sparkline({
+  values,
+  id,
+  ariaLabel,
+}: {
+  values: number[];
+  id: string;
+  ariaLabel: string;
+}): ReactElement | null {
   if (!values || values.length < 2) return null;
-  let min = values[0]!;
-  let max = values[0]!;
+  const firstValue = values[0];
+  if (firstValue === undefined) return null;
+  let min = firstValue;
+  let max = firstValue;
   for (let i = 1; i < values.length; i++) {
-    if (values[i]! < min) min = values[i]!;
-    if (values[i]! > max) max = values[i]!;
+    const value = values[i];
+    if (value === undefined) continue;
+    if (value < min) min = value;
+    if (value > max) max = value;
   }
   const range = max - min || 1;
   const pad = 1.5; // half stroke-width so peaks aren't clipped
@@ -111,19 +163,26 @@ function Sparkline({ values, id }: { values: number[]; id: string }): ReactEleme
   const w = 120;
   const gradientId = `sparkFill-${id}`;
 
-  // Build points with vertical padding so the stroke isn't clipped
+  // Vertical padding so the stroke isn't clipped.
   const pts = values.map((v, i) => ({
     x: (i / (values.length - 1)) * w,
     y: pad + (1 - (v - min) / range) * (h - pad * 2),
   }));
 
   const linePath = catmullRomPath(pts);
-  const last = pts[pts.length - 1]!;
-  const first = pts[0]!;
+  const last = pts.at(-1);
+  const first = pts[0];
+  if (!last || !first) return null;
   const fillPath = `${linePath} L${last.x.toFixed(1)},${h} L${first.x.toFixed(1)},${h} Z`;
 
   return (
-    <svg viewBox={`0 0 ${w} ${h}`} className="h-8 w-full" preserveAspectRatio="none" role="img" aria-label="Loss trend sparkline">
+    <svg
+      viewBox={`0 0 ${w} ${h}`}
+      className="h-8 w-full"
+      preserveAspectRatio="none"
+      role="img"
+      aria-label={ariaLabel}
+    >
       <defs>
         <linearGradient id={gradientId} x1="0" y1="0" x2="0" y2="1">
           <stop offset="0%" stopColor="currentColor" stopOpacity="0.12" />
@@ -148,17 +207,30 @@ function Sparkline({ values, id }: { values: number[]; id: string }): ReactEleme
   );
 }
 
-function formatRelativeTime(isoDate: string): string {
+function formatRunRelativeTime(
+  isoDate: string,
+  t: StudioT,
+  locale: Locale,
+): string {
   const diff = Date.now() - new Date(isoDate).getTime();
   const mins = Math.floor(diff / 60000);
-  if (mins < 1) return "just now";
-  if (mins < 60) return `${mins}m ago`;
+  if (mins < 1) return t("studio.history.relativeJustNow");
+  if (mins < 60) return formatRelativeTime(locale, -mins, "minute");
   const hrs = Math.floor(mins / 60);
-  if (hrs < 24) return `${hrs}h ago`;
+  if (hrs < 24) return formatRelativeTime(locale, -hrs, "hour");
   const days = Math.floor(hrs / 24);
-  return `${days}d ago`;
+  return formatRelativeTime(locale, -days, "day");
 }
 
+function hasTextSelectionWithin(element: HTMLElement): boolean {
+  const selection = window.getSelection();
+  return (
+    !!selection &&
+    !selection.isCollapsed &&
+    element.contains(selection.anchorNode) &&
+    element.contains(selection.focusNode)
+  );
+}
 
 interface HistoryCardGridProps {
   onSelectRun: (runId: string) => void;
@@ -169,16 +241,20 @@ export function HistoryCardGrid({
   onSelectRun,
   onResumeStarted,
 }: HistoryCardGridProps): ReactElement {
+  const t = useT();
+  const locale = useLocale();
   const [runs, setRuns] = useState<TrainingRunSummary[]>([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [deleteError, setDeleteError] = useState<string | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<string | null>(null);
+  const [deleteArtifacts, setDeleteArtifacts] = useState(false);
   const [resumeTarget, setResumeTarget] = useState<string | null>(null);
   const [manualFetchInFlight, setManualFetchInFlight] = useState(false);
-  const { resumeTrainingRunFromHistory } = useTrainingActions();
-  const isStarting = useTrainingRuntimeStore((state) => state.isStarting);
+  const { resumeTrainingRunFromHistory, startBlocked, stopRequested } =
+    useTrainingActions();
+  // Copy-link base: Cloudflare tunnel > LAN host:port > origin. The tunnel can now
+  // start and stop at any time, so refresh on click instead of polling at mount.
 
   const userControllerRef = useRef<AbortController | null>(null);
   const pollControllerRef = useRef<AbortController | null>(null);
@@ -190,37 +266,42 @@ export function HistoryCardGrid({
     runsLengthRef.current = runs.length;
   }, [runs.length]);
 
-  const fetchRuns = useCallback(async (offset = 0, append = false, limit = PAGE_SIZE) => {
-    // Cancel any in-flight poll so its stale response can't clobber this fresher fetch
-    pollControllerRef.current?.abort();
-    userControllerRef.current?.abort();
-    const controller = new AbortController();
-    userControllerRef.current = controller;
-    const id = ++fetchIdRef.current;
+  const fetchRuns = useCallback(
+    async (offset = 0, append = false, limit = PAGE_SIZE) => {
+      pollControllerRef.current?.abort();
+      userControllerRef.current?.abort();
+      const controller = new AbortController();
+      userControllerRef.current = controller;
+      const id = ++fetchIdRef.current;
 
-    setManualFetchInFlight(true);
-    setLoading(true);
-    setError(null);
-    try {
-      const result = await listTrainingRuns(limit, offset, controller.signal);
-      if (fetchIdRef.current !== id) return;
-      setRuns((prev) => (append ? [...prev, ...result.runs] : result.runs));
-      setTotal(result.total);
-    } catch (err) {
-      if (err instanceof DOMException && err.name === "AbortError") return;
-      if (fetchIdRef.current !== id) return;
-      if (!append) setError("Failed to load training runs");
-    } finally {
-      if (fetchIdRef.current === id) {
-        setLoading(false);
-        setManualFetchInFlight(false);
+      setManualFetchInFlight(true);
+      setLoading(true);
+      setError(null);
+      try {
+        const result = await listTrainingRuns(limit, offset, controller.signal);
+        if (fetchIdRef.current !== id) return;
+        setRuns((prev) => (append ? [...prev, ...result.runs] : result.runs));
+        setTotal(result.total);
+      } catch (err) {
+        if (err instanceof DOMException && err.name === "AbortError") return;
+        if (fetchIdRef.current !== id) return;
+        if (!append) setError(translate("studio.history.loadError"));
+      } finally {
+        if (fetchIdRef.current === id) {
+          setLoading(false);
+          setManualFetchInFlight(false);
+        }
       }
-    }
-  }, []);
+    },
+    [],
+  );
 
   useEffect(() => {
-    void fetchRuns(0);
+    const timer = window.setTimeout(() => {
+      void fetchRuns(0);
+    }, 0);
     return () => {
+      window.clearTimeout(timer);
       userControllerRef.current?.abort();
     };
   }, [fetchRuns]);
@@ -246,7 +327,7 @@ export function HistoryCardGrid({
     };
   }, [fetchRuns]);
 
-  // Poll while any run is still "running" so the card shows live progress
+  // Poll while any run is "running" so cards show live progress.
   const hasRunningRun = runs.some((r) => r.status === "running");
   const visibleCount = runs.length;
   useEffect(() => {
@@ -260,11 +341,11 @@ export function HistoryCardGrid({
       try {
         const limit = Math.max(PAGE_SIZE, visibleCount);
         const result = await listTrainingRuns(limit, 0, controller.signal);
-        if (pollIdRef.current !== pid) return; // stale poll — discard
+        if (pollIdRef.current !== pid) return; // stale poll
         setRuns(result.runs);
         setTotal(result.total);
       } catch {
-        // silently handle — poll will retry
+        // ignore; poll will retry
       }
     }, RUNNING_POLL_INTERVAL_MS);
     return () => {
@@ -275,20 +356,45 @@ export function HistoryCardGrid({
 
   const handleDelete = async () => {
     if (!deleteTarget) return;
-    setDeleteError(null);
+    const shouldDeleteArtifacts = deleteArtifacts && !deleteTargetShared;
     try {
-      await deleteTrainingRun(deleteTarget);
+      const result = await deleteTrainingRun(deleteTarget, {
+        deleteArtifacts: shouldDeleteArtifacts,
+      });
+      if (shouldDeleteArtifacts) {
+        bumpInventoryVersion();
+        if (result.artifacts_kept_reason === "shared_output_dir") {
+          toast.info(translate("studio.history.artifactsKeptShared"));
+        } else if (!result.artifacts_deleted) {
+          toast.error(translate("studio.history.deleteArtifactsFailed"));
+        }
+      }
       emitTrainingRunDeleted(deleteTarget);
-      // Re-fetch preserving visible count so offsets stay consistent for "Load more"
+      // Re-fetch preserving visible count so "Load more" offsets stay consistent.
       const currentCount = runs.length - 1;
       const limit = Math.max(PAGE_SIZE, currentCount);
       fetchRuns(0, false, limit).catch(() => {
-        // Refresh failed — card is already removed, no stale display
+        // Refresh failed; card is already removed, no stale display.
       });
-    } catch {
-      setDeleteError("Failed to delete training run. Please try again.");
+    } catch (err) {
+      let errorKey: TranslationKey = "studio.history.deleteError";
+      let errorDescription: string | undefined;
+      if (err instanceof HistoryRequestError && shouldDeleteArtifacts) {
+        if (err.errorCode === "training_artifacts_in_use") {
+          errorKey = "studio.history.deleteArtifactsActiveError";
+        } else if (err.errorCode === "training_artifacts_shared") {
+          errorKey = "studio.history.deleteArtifactsRetainedError";
+          errorDescription = translate(
+            "studio.history.deleteArtifactsSharedNote",
+          );
+        } else if (err.errorCode === "training_artifact_deletion_failed") {
+          errorKey = "studio.history.deleteArtifactsRetainedError";
+        }
+      }
+      toast.error(translate(errorKey), { description: errorDescription });
     }
     setDeleteTarget(null);
+    setDeleteArtifacts(false);
   };
 
   const handleResume = async (runId: string) => {
@@ -305,10 +411,13 @@ export function HistoryCardGrid({
 
   if (!loading && error && runs.length === 0) {
     return (
-      <div className="flex flex-col items-center gap-2 py-16 text-center">
+      <div
+        className="flex flex-col items-center gap-2 py-16 text-center"
+        aria-label={t("studio.history.title")}
+      >
         <p className="text-sm text-destructive">{error}</p>
         <Button variant="outline" size="sm" onClick={() => void fetchRuns(0)}>
-          Retry
+          {t("studio.history.retry")}
         </Button>
       </div>
     );
@@ -316,22 +425,25 @@ export function HistoryCardGrid({
 
   if (!loading && runs.length === 0) {
     return (
-      <div className="flex flex-col items-center gap-2 py-16 text-center">
+      <div
+        className="flex flex-col items-center gap-2 py-16 text-center"
+        aria-label={t("studio.history.title")}
+      >
         <p className="text-sm text-muted-foreground">
-          No training runs yet. Start your first training run in the Configure
-          tab.
+          {t("studio.history.emptyDescription")}
         </p>
       </div>
     );
   }
 
+  const deleteTargetRun = runs.find((run) => run.id === deleteTarget);
+  const deleteTargetShared =
+    !!deleteTargetRun &&
+    (deleteTargetRun.resumed_later ||
+      sharesOutputDirInVisibleRuns(deleteTargetRun, runs));
+
   return (
-    <>
-      {deleteError && (
-        <div className="mb-4 rounded-lg border border-destructive/50 bg-destructive/10 px-4 py-2 text-sm text-destructive">
-          {deleteError}
-        </div>
-      )}
+    <div className="contents" aria-label={t("studio.history.title")}>
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3">
         {runs.map((run) => {
           const wasContinued =
@@ -340,103 +452,195 @@ export function HistoryCardGrid({
             ? statusBadge.resumed_later
             : (statusBadge[run.status] ?? statusBadge.error);
           const isRunning = run.status === "running";
-          const canResume = run.can_resume && !wasContinued;
+          const artifactsMissing = shouldShowTrainingArtifactsDeleted(run);
+          const canResume =
+            run.can_resume && !wasContinued && !artifactsMissing;
           const isResuming = resumeTarget === run.id;
+
+          const title = getTrainingRunDisplayTitle(run);
+          const modelSubtitle = getTrainingRunModelSubtitle(run);
+          const cardId = `training-run-${encodeURIComponent(run.id)}`;
+
+          const projectSubtitle =
+            run.project_name && title !== run.project_name
+              ? run.project_name
+              : null;
+          // Backend /p ref + its capability token. Both are required: the link 404s without the signature.
+          const canCopyPreview = !!run.preview_ref && !!run.preview_sig;
           return (
             <div
-              role="button"
-              tabIndex={0}
               key={run.id}
               className={cn(
-                "group relative flex h-[11.5rem] cursor-pointer flex-col gap-3 rounded-xl border bg-card p-4 text-left transition-colors hover:border-border hover:bg-accent/30",
-                isRunning
-                  ? "border-blue-400/50 dark:border-blue-500/30"
-                  : "border-border/60",
-                canResume && "gap-2",
+                "elevated-card group relative h-[11.5rem] cursor-pointer bg-card transition-colors hover:bg-accent/30",
+                isRunning && "!border-blue-400/50 dark:!border-blue-500/30",
               )}
-              onClick={() => onSelectRun(run.id)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" || e.key === " ") {
-                  e.preventDefault();
-                  onSelectRun(run.id);
-                }
-              }}
             >
-              <div className="flex items-center justify-between pr-6">
+              <button
+                type="button"
+                aria-labelledby={`${cardId}-title`}
+                aria-describedby={`${cardId}-status ${cardId}-details ${cardId}-metrics`}
+                className={cn(
+                  "relative z-0 flex h-full w-full cursor-pointer select-text flex-col gap-3 rounded-[inherit] border-0 bg-transparent p-4 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2",
+                  (canResume || canCopyPreview) && "gap-2",
+                )}
+                onClick={(event) => {
+                  if (
+                    event.detail > 0 &&
+                    hasTextSelectionWithin(event.currentTarget)
+                  ) {
+                    return;
+                  }
+                  onSelectRun(run.id);
+                }}
+              >
                 <span
-                  className={cn(
-                    "inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-[10px] font-semibold",
-                    badge.className,
-                  )}
+                  id={`${cardId}-status`}
+                  className="flex items-center justify-between pr-6"
                 >
-                  {isRunning && <Spinner className="size-2.5" />}
-                  {badge.label}
+                  <span
+                    className={cn(
+                      "inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-ui-10 font-semibold",
+                      badge.className,
+                    )}
+                  >
+                    {isRunning && <Spinner className="size-2.5" />}
+                    {formatStatusLabel(
+                      wasContinued ? "resumed_later" : run.status,
+                      t,
+                    )}
+                  </span>
+                  {artifactsMissing && (
+                    <span className="inline-flex items-center rounded-full bg-foreground/[0.05] px-2 py-0.5 text-ui-10 font-medium text-muted-foreground dark:bg-white/[0.06]">
+                      {t("studio.history.filesDeleted")}
+                    </span>
+                  )}
+                  <span className="text-ui-10 text-muted-foreground">
+                    {formatRunRelativeTime(run.started_at, t, locale)}
+                  </span>
                 </span>
-                <span className="text-[10px] text-muted-foreground">
-                  {formatRelativeTime(run.started_at)}
+                <span className="block min-w-0 cursor-text">
+                  <span
+                    id={`${cardId}-title`}
+                    className="block truncate text-sm font-medium"
+                    title={title}
+                  >
+                    {title}
+                  </span>
+                  <span id={`${cardId}-details`} className="block">
+                    {modelSubtitle && (
+                      <span
+                        className="block truncate text-xs text-muted-foreground"
+                        title={modelSubtitle}
+                      >
+                        {modelSubtitle}
+                      </span>
+                    )}
+                    <span
+                      className="block truncate text-xs text-muted-foreground"
+                      title={run.dataset_name}
+                    >
+                      {run.dataset_name}
+                    </span>
+                    {projectSubtitle && (
+                      <span
+                        className="block truncate text-xs text-muted-foreground/80"
+                        title={projectSubtitle}
+                      >
+                        {projectSubtitle}
+                      </span>
+                    )}
+                  </span>
                 </span>
-              </div>
+                {run.loss_sparkline && run.loss_sparkline.length >= 2 && (
+                  <span
+                    className={cn(
+                      "block",
+                      (canResume || canCopyPreview) && "h-7 overflow-hidden",
+                    )}
+                  >
+                    <Sparkline
+                      values={run.loss_sparkline}
+                      id={run.id}
+                      ariaLabel={t("studio.history.lossTrendSparkline")}
+                    />
+                  </span>
+                )}
+                <span
+                  id={`${cardId}-metrics`}
+                  className="flex flex-wrap gap-x-4 gap-y-1 text-ui-11 text-muted-foreground"
+                >
+                  <span>
+                    {t("studio.history.loss")}:{" "}
+                    {run.final_loss != null ? run.final_loss.toFixed(4) : "--"}
+                  </span>
+                  <span>
+                    {t("studio.history.steps")}: {run.final_step ?? 0}/
+                    {run.total_steps ?? "--"}
+                  </span>
+                  <span>{formatDuration(run.duration_seconds)}</span>
+                </span>
+              </button>
               {canResume && (
                 <Button
                   type="button"
                   size="xs"
                   variant="outline"
-                  className="absolute bottom-3 left-4 h-6 rounded-full px-2.5 text-[11px] leading-none shadow-sm"
-                  disabled={isStarting || isResuming}
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    void handleResume(run.id);
-                  }}
+                  className="absolute bottom-3 left-4 z-10 h-6 rounded-full px-2.5 text-ui-11 leading-none shadow-sm"
+                  disabled={startBlocked || isResuming}
+                  onClick={() => void handleResume(run.id)}
                 >
-                  {isResuming ? "Resuming..." : "Resume training"}
+                  {stopRequested
+                    ? t("studio.training.stopping")
+                    : isResuming
+                      ? t("studio.history.resuming")
+                      : t("studio.history.resumeTraining")}
                 </Button>
               )}
-              <div className="min-w-0">
-                <p
-                  className="truncate text-sm font-medium"
-                  title={run.display_name ?? run.model_name}
+              {canCopyPreview && (
+                <Button
+                  type="button"
+                  size="xs"
+                  variant="outline"
+                  className="absolute bottom-3 right-4 z-10 h-6 rounded-full px-2.5 text-ui-11 leading-none shadow-sm"
+                  onClick={async (e) => {
+                    e.stopPropagation();
+                    try {
+                      await fetchDeviceType({ force: true });
+                    } catch {
+                      // Fall back to the last known server URL or this origin.
+                    }
+                    // Encode each segment but keep "/" so the /p route matches.
+                    const ref = (run.preview_ref ?? "")
+                      .split("/")
+                      .map(encodeURIComponent)
+                      .join("/");
+                    const { cloudflareUrl, serverUrl } =
+                      usePlatformStore.getState();
+                    const base = (
+                      cloudflareUrl ??
+                      serverUrl ??
+                      window.location.origin
+                    ).replace(/\/+$/, "");
+                    const url = `${base}/p/${ref}?k=${encodeURIComponent(run.preview_sig ?? "")}`;
+                    const ok = await copyToClipboard(url);
+                    toast[ok ? "success" : "error"](
+                      t(
+                        ok
+                          ? "studio.history.previewLinkCopied"
+                          : "studio.history.previewLinkCopyFailed",
+                      ),
+                    );
+                  }}
                 >
-                  {run.display_name ?? run.model_name}
-                </p>
-                {run.display_name && (
-                  <p
-                    className="truncate text-xs text-muted-foreground"
-                    title={run.model_name}
-                  >
-                    {run.model_name}
-                  </p>
-                )}
-                <p
-                  className="truncate text-xs text-muted-foreground"
-                  title={run.dataset_name}
-                >
-                  {run.dataset_name}
-                </p>
-              </div>
-              {run.loss_sparkline && run.loss_sparkline.length >= 2 && (
-                <div className={cn(canResume && "h-7 overflow-hidden")}>
-                  <Sparkline values={run.loss_sparkline} id={run.id} />
-                </div>
+                  {t("studio.history.copyPreviewLink")}
+                </Button>
               )}
-              <div className="flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-muted-foreground">
-                <span>
-                  Loss:{" "}
-                  {run.final_loss != null ? run.final_loss.toFixed(4) : "--"}
-                </span>
-                <span>
-                  Steps: {run.final_step ?? 0}/{run.total_steps ?? "--"}
-                </span>
-                <span>{formatDuration(run.duration_seconds)}</span>
-              </div>
               {!isRunning && (
                 <button
                   type="button"
-                  className="absolute right-3 top-3 rounded-md p-1 text-muted-foreground/50 opacity-0 transition-opacity hover:bg-destructive/10 hover:text-destructive group-hover:opacity-100 focus-visible:opacity-100"
-                  aria-label="Delete run"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    setDeleteTarget(run.id);
-                  }}
+                  className="absolute right-3 top-3 z-10 rounded-md p-1 text-muted-foreground/50 opacity-0 transition-opacity hover:bg-destructive/10 hover:text-destructive group-hover:opacity-100 focus-visible:opacity-100 pointer-coarse:opacity-100"
+                  aria-label={t("studio.history.deleteRun")}
+                  onClick={() => setDeleteTarget(run.id)}
                 >
                   <HugeiconsIcon icon={Delete02Icon} className="size-3.5" />
                 </button>
@@ -453,15 +657,17 @@ export function HistoryCardGrid({
             onClick={() => void fetchRuns(runs.length, true)}
             disabled={loading}
           >
-            {loading ? "Loading..." : "Load more"}
+            {loading
+              ? t("studio.history.loading")
+              : t("studio.history.loadMore")}
           </Button>
         </div>
       )}
       {loading && runs.length === 0 && (
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3">
-          {Array.from({ length: 3 }).map((_, i) => (
+          {["first", "second", "third"].map((skeletonId) => (
             <div
-              key={`skeleton-${i}`}
+              key={`skeleton-${skeletonId}`}
               className="h-40 animate-pulse rounded-xl border bg-muted/30"
             />
           ))}
@@ -470,28 +676,63 @@ export function HistoryCardGrid({
       <AlertDialog
         open={deleteTarget !== null}
         onOpenChange={(open) => {
-          if (!open) setDeleteTarget(null);
+          if (!open) {
+            setDeleteTarget(null);
+            setDeleteArtifacts(false);
+          }
         }}
       >
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Delete training run?</AlertDialogTitle>
+            <AlertDialogTitle>
+              {t("studio.history.deleteTitle")}
+            </AlertDialogTitle>
             <AlertDialogDescription>
-              This will permanently delete this training run and all its metrics.
-              This action cannot be undone.
+              {t("studio.history.deleteDescription")}
             </AlertDialogDescription>
           </AlertDialogHeader>
+          {deleteTargetRun?.artifacts_available === true && (
+            <label
+              htmlFor="delete-run-artifacts"
+              className="flex cursor-pointer items-start gap-2 text-sm"
+            >
+              <Checkbox
+                id="delete-run-artifacts"
+                checked={!deleteTargetShared && deleteArtifacts}
+                onCheckedChange={(value) => {
+                  if (!deleteTargetShared) {
+                    setDeleteArtifacts(!!value);
+                  }
+                }}
+                disabled={deleteTargetShared}
+                className="mt-0.5"
+              />
+              <span className="flex flex-col gap-0.5">
+                <span className="text-foreground">
+                  {t("studio.history.deleteArtifactsLabel")}
+                </span>
+                <span className="text-xs text-muted-foreground">
+                  {t("studio.history.deleteArtifactsDescription")}
+                </span>
+                {deleteTargetShared && (
+                  <span className="text-xs text-amber-600 dark:text-amber-400">
+                    {t("studio.history.deleteArtifactsSharedNote")}
+                  </span>
+                )}
+              </span>
+            </label>
+          )}
           <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogCancel>{t("common.cancel")}</AlertDialogCancel>
             <AlertDialogAction
               variant="destructive"
               onClick={() => void handleDelete()}
             >
-              Delete
+              {t("common.delete")}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
-    </>
+    </div>
   );
 }

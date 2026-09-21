@@ -1,11 +1,8 @@
 # Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
-#
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
 # You may obtain a copy of the License at
-#
 #     http://www.apache.org/licenses/LICENSE-2.0
-#
 # Unless required by applicable law or agreed to in writing, software
 # distributed under the License is distributed on an "AS IS" BASIS,
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
@@ -75,16 +72,17 @@ def _cross_entropy_forward(
     mask = col_offsets < VOCAB_SIZE
 
     label_idx = tl.load(labels_ptr).to(tl.int32)
-    logits = tl.load(logits_ptr + col_offsets, mask = mask, other = -float("inf")).to(
-        tl.float32
-    )
+    logits = tl.load(logits_ptr + col_offsets, mask = mask, other = -float("inf")).to(tl.float32)
 
-    # Go logit scaling for Cohere: t * x
+    # Cohere logit scaling t * x; Gemma 2 softcapping t * tanh(1/t * x).
     if DO_LOGIT_SCALING:
         logits = LOGIT_SCALE * logits
     # Do logit softcapping for Gemma 2: t * tanh(1/t * x)
     if DO_SOFTCAPPING:
         logits = SOFTCAP * triton_tanh(logits / SOFTCAP)
+    if DO_LOGIT_SCALING or DO_SOFTCAPPING:
+        # Either transform makes the -inf padding finite: -SOFTCAP via tanh, +inf via a negative scale.
+        logits = tl.where(mask, logits, -float("inf"))
 
     c = tl.max(logits, 0)
     logsumexp = c + tl.log(tl.sum(tl.exp(logits - c), 0))
@@ -162,29 +160,27 @@ def _chunked_cross_entropy_forward(
     mask = col_offsets < VOCAB_SIZE
 
     label_idx = tl.load(labels_ptr).to(tl.int32)
-    logits = tl.load(logits_ptr + col_offsets, mask = mask, other = -float("inf")).to(
-        tl.float32
-    )
+    logits = tl.load(logits_ptr + col_offsets, mask = mask, other = -float("inf")).to(tl.float32)
 
-    # Go logit scaling for Cohere: t * x
+    # Cohere logit scaling t * x; Gemma 2 softcapping t * tanh(1/t * x).
+    # Do logit scaling for Cohere
     if DO_LOGIT_SCALING:
         logits = LOGIT_SCALE * logits
-    # Do logit softcapping for Gemma 2: t * tanh(1/t * x)
     if DO_SOFTCAPPING:
         logits = SOFTCAP * triton_tanh(logits / SOFTCAP)
+    if DO_LOGIT_SCALING or DO_SOFTCAPPING:
+        # Either transform makes the -inf padding finite: -SOFTCAP via tanh, +inf via a negative scale.
+        logits = tl.where(mask, logits, -float("inf"))
 
     c = tl.max(logits, 0)
     logsumexp = c + tl.log(tl.sum(tl.exp(logits - c), 0))
 
     if chunk_idx == 0:
-        # logsumexp(chunked_logsumexp) - x
-        # Do the -x separately
+        # logsumexp(chunked_logsumexp) - x, with the -x done separately.
         if label_idx != -100:
             x = tl.load(logits_ptr + label_idx).to(tl.float32)
-            # Go logit scaling for Cohere: t * x
             if DO_LOGIT_SCALING:
                 x = LOGIT_SCALE * x
-            # Do logit softcapping for Gemma 2: t * tanh(1/t * x)
             if DO_SOFTCAPPING:
                 x = SOFTCAP * triton_tanh(x / SOFTCAP)
             loss = -1.0 * x
@@ -248,7 +244,7 @@ def _cross_entropy_backward(
 
     x = tl.load(logits_ptr + col_offsets, mask = mask, other = -float("inf")).to(tl.float32)
 
-    # Do logit scaling for Cohere
+    # d/dx [s * x] = s for Cohere scaling; d/dx [t * tanh(1/t * x)] = 1 - tanh^2(1/t * x) for Gemma 2 softcapping.
     if DO_LOGIT_SCALING:
         # d/dx [s * x] = s
         x = x * LOGIT_SCALE
@@ -276,7 +272,7 @@ def _cross_entropy_backward(
         # d/dx [t * tanh(1/t * x)] = 1 - tanh^2(1/t * x)
         y = y * (1.0 - partial * partial)
 
-    # If y == 0: dC/dx = 0 ==> we already masked it to be = 0, so dloss = 0.
+    # If y == 0 then dC/dx = 0, and it is already masked to 0, so dloss = 0.
     tl.store(logits_ptr + col_offsets, dloss * y, mask = mask)
 
 
@@ -289,13 +285,14 @@ _cross_entropy_backward = triton.heuristics(
 )(_cross_entropy_backward)
 
 
-MAX_FUSED_SIZE = 65536  # 2**16
-
-
 class Fast_CrossEntropyLoss(torch.autograd.Function):
     @staticmethod
     def forward(
-        ctx, logits, labels, logit_softcapping: float = 0, logit_scaling: float = 0
+        ctx,
+        logits,
+        labels,
+        logit_softcapping: float = 0,
+        logit_scaling: float = 0,
     ):
         n_rows: int
         vocab_size: int
@@ -313,7 +310,7 @@ class Fast_CrossEntropyLoss(torch.autograd.Function):
         BLOCK_SIZE: int
         num_warps: int
         if n_chunks == 1:
-            # For small vocabs <= 65336 like Llama, Mistral
+            # Small vocabs <= 65336 (Llama, Mistral) versus large vocabs like Gemma 256K below.
             BLOCK_SIZE, num_warps = calculate_settings(vocab_size)
             if is_cdna():
                 num_warps = num_warps // 2
@@ -366,9 +363,8 @@ class Fast_CrossEntropyLoss(torch.autograd.Function):
                     LOGIT_SCALE = logit_scaling,
                     num_warps = 32 if not is_cdna() else 16,
                 )
-            # logsumexp(chunked_logsumexp) - x
-            # Do the -x separately
-            logsumexp = torch.logsumexp(logsumexp, dim = 1)  # Row sum
+            # logsumexp(chunked_logsumexp) - x, with the -x done separately.
+            logsumexp = torch.logsumexp(logsumexp, dim = 1)
             losses += logsumexp
             losses.masked_fill_(labels == -100, 0)  # Don't forget to mask padding out!
 
@@ -458,6 +454,18 @@ if (Version(torch.__version__) < Version("2.4.0")) and not hasattr(
     fast_cross_entropy_loss = torch._disable_dynamo(fast_cross_entropy_loss)
 
 
-# Patch CE Losses in transformers
 def patch_loss_functions(torch_compile = True):
     _patch_loss_functions(fast_cross_entropy_loss, torch_compile = torch_compile)
+
+    # Redirect LOSS_MAPPING aliases still pointing at stock ForCausalLMLoss (e.g.
+    # ForConditionalGeneration for Qwen3.5, Csm). unsloth_zoo also does this; remove once the floor
+    # pin passes unslothai/unsloth-zoo#656.
+    try:
+        import transformers.loss.loss_utils as _lu
+        _unsloth_loss = _lu.LOSS_MAPPING.get("ForCausalLM")
+        if _unsloth_loss is not None:
+            for _key, _fn in list(_lu.LOSS_MAPPING.items()):
+                if getattr(_fn, "__name__", "") == "ForCausalLMLoss":
+                    _lu.LOSS_MAPPING[_key] = _unsloth_loss
+    except (ImportError, AttributeError):
+        pass

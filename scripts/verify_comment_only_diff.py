@@ -1,11 +1,9 @@
 # Unsloth - 2x faster, 60% less VRAM LLM training and finetuning
 # Copyright 2023-present Daniel Han-Chen, Michael Han-Chen & the Unsloth team. All rights reserved.
-#
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU Lesser General Public License as published by
 # the Free Software Foundation, either version 3 of the License, or
 # (at your option) any later version.
-#
 # This program is distributed in the hope that it will be useful,
 # but WITHOUT ANY WARRANTY; without even the implied warranty of
 # MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
@@ -57,9 +55,7 @@ def _git_show(rev: str, path: str) -> str:
 
 
 def _strip_docstrings(tree: ast.AST) -> ast.AST:
-    """Remove every string-literal docstring (Module / FunctionDef /
-    AsyncFunctionDef / ClassDef). Empty body becomes ``pass`` so
-    ast.unparse stays valid."""
+    """Remove docstrings; empty bodies become ``pass`` so unparse stays valid."""
     for node in ast.walk(tree):
         if isinstance(
             node,
@@ -87,9 +83,8 @@ def _normalize_py(src: str) -> str:
 
 
 def _strip_shell_comments(s: str) -> str:
-    """Strip pure-comment lines and inline trailing comments from a shell
-    snippet, then collapse runs of blank lines. Heuristic only: leaves a
-    line untouched if it has an odd quote count (open string)."""
+    """Strip shell comments and collapse blank lines. Heuristic: skips lines
+    with an odd quote count (open string)."""
     out = []
     for line in s.splitlines():
         stripped = line.lstrip()
@@ -116,9 +111,7 @@ def _strip_shell_comments(s: str) -> str:
 
 
 def _normalize_yaml_run_strings(obj: Any) -> Any:
-    """Walk the parsed YAML object; for any multi-line string (i.e. a
-    ``run: |`` script body), strip shell comments. Returns a normalised
-    copy."""
+    """Strip shell comments from any multi-line string (``run: |`` body)."""
     if isinstance(obj, dict):
         return {k: _normalize_yaml_run_strings(v) for k, v in obj.items()}
     if isinstance(obj, list):
@@ -128,12 +121,15 @@ def _normalize_yaml_run_strings(obj: Any) -> Any:
     return obj
 
 
-def _walk_yaml_diff(b: Any, a: Any, prefix: str = "") -> None:
+def _walk_yaml_diff(
+    b: Any,
+    a: Any,
+    prefix: str = "",
+) -> None:
     """Print a path-keyed summary of the first structural / scalar diff."""
     if type(b) is not type(a):
         print(
-            f"     type-diff at {prefix or '/'}: "
-            f"{type(b).__name__} -> {type(a).__name__}",
+            f"     type-diff at {prefix or '/'}: " f"{type(b).__name__} -> {type(a).__name__}",
         )
         return
     if isinstance(b, dict):

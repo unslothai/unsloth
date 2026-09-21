@@ -22,6 +22,8 @@ export interface NativePathRef {
   displayLabel: string;
   allowedOperations: NativePathOperation[];
   expiresAtMs: number;
+  sizeBytes?: number | null;
+  modifiedMs?: number | null;
 }
 
 export interface NativeIntent {

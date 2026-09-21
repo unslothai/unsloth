@@ -1,30 +1,13 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""
-Unit tests for OpenAI's server-side `shell` tool translation in
+"""Unit tests for OpenAI's server-side `shell` tool translation in
 `_stream_openai_responses`.
 
-Covers:
-- Request body: ``enabled_tools=["code_execution"]`` on the OpenAI
-  cloud base_url appends ``{"type": "shell", "environment": {"type":
-  "container_auto"}}`` to ``tools``.
-- Container reuse: when ``openai_code_exec_container_id`` is provided,
-  the outgoing ``environment.type`` flips to ``"container_reference"``
-  and the id propagates.
-- Cloud guard: code_execution on a non-cloud base_url (e.g. a local
-  OpenAI-compat preset / ollama / llama.cpp / vLLM) does NOT add the
-  shell tool, preventing a guaranteed 400 from those servers.
-- SSE translation: a `shell_call` + `shell_call_output` pair emits one
-  ``_toolEvent`` `tool_start` (`tool_name="code_execution"`,
-  `arguments.kind="bash"`) and one `tool_end` whose `result` contains
-  the joined stdout from the shell_call_output entries.
-- Container surfacing: container_id captured from
-  `response.completed.container_id` is emitted as a synthetic
-  `container_ready` `_toolEvent` (only when it differs from the
-  inbound id).
-- Stale-container handling: 400 with "container expired" body emits a
-  `container_invalidated` event before propagating the error.
+Covers: request body shaping (container_auto, container_reference), the cloud
+guard (no shell tool on non-cloud base_urls), SSE translation of a
+shell_call/shell_call_output pair into tool_start/tool_end events, container_id
+surfacing as container_ready, and stale-container invalidation.
 """
 
 import asyncio
@@ -34,6 +17,23 @@ import httpx
 
 from core.inference import external_provider as ep_mod
 from core.inference.external_provider import ExternalProviderClient
+
+
+async def run():
+    client = _make_client()
+    return await _collect(
+        client._stream_openai_responses(
+            messages = [{"role": "user", "content": "hi"}],
+            model = "gpt-5.5",
+            temperature = 0.7,
+            top_p = 0.95,
+            max_tokens = 4096,
+            enable_thinking = None,
+            reasoning_effort = None,
+            enabled_tools = ["code_execution"],
+            openai_code_exec_container_id = "cntr_stale_999",
+        )
+    )
 
 
 def _drive(coro):
@@ -117,10 +117,7 @@ def test_shell_tool_added_on_cloud_with_container_auto(monkeypatch):
     _drive(run())
 
     tools = captured["body"].get("tools") or []
-    assert {
-        "type": "shell",
-        "environment": {"type": "container_auto"},
-    } in tools
+    assert {"type": "shell", "environment": {"type": "container_auto"}} in tools
 
 
 def test_shell_tool_uses_container_reference_when_id_supplied(monkeypatch):
@@ -195,8 +192,7 @@ def test_shell_tool_refused_for_non_cloud_base_url(monkeypatch):
     _drive(run())
 
     tools = captured["body"].get("tools") or []
-    # Shell tool must NOT leak to local OpenAI-compat servers — those
-    # 400 on the unknown tool type.
+    # Shell tool must not leak to local OpenAI-compat servers (they 400 on it).
     assert all(t.get("type") != "shell" for t in tools)
 
 
@@ -269,7 +265,9 @@ def test_shell_call_emits_tool_start_and_end(monkeypatch):
     assert len(ends) == 1
     assert starts[0]["tool_name"] == "code_execution"
     assert starts[0]["tool_call_id"] == "scall_1"
-    assert starts[0]["arguments"] == {"kind": "bash", "command": "ls -la"}
+    # `_server_tool: True` marks a synthetic builtin so the frontend can tell
+    # hosted tools from user-declared functions on history replay.
+    assert starts[0]["arguments"] == {"kind": "bash", "command": "ls -la", "_server_tool": True}
     assert ends[0]["tool_call_id"] == "scall_1"
     assert "total 24" in ends[0]["result"]
 
@@ -369,23 +367,116 @@ def test_stale_container_emits_invalidated(monkeypatch):
 
     _mock_http_client(monkeypatch, handler)
 
-    async def run():
-        client = _make_client()
-        return await _collect(
-            client._stream_openai_responses(
-                messages = [{"role": "user", "content": "hi"}],
-                model = "gpt-5.5",
-                temperature = 0.7,
-                top_p = 0.95,
-                max_tokens = 4096,
-                enable_thinking = None,
-                reasoning_effort = None,
-                enabled_tools = ["code_execution"],
-                openai_code_exec_container_id = "cntr_stale_999",
-            )
-        )
-
     lines = _drive(run())
     events = _tool_events(lines)
     invalidated = [e for e in events if e["type"] == "container_invalidated"]
     assert len(invalidated) == 1
+
+
+def test_expired_container_triggers_transparent_retry(monkeypatch):
+    """On a 'Container is expired' 400 for a container_reference request, the
+    streamer retries once with the container stripped; the user sees only
+    container_invalidated then the retry stream, never an error line.
+    """
+    calls: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content.decode("utf-8"))
+        calls.append(body)
+        # Inspect the shell tool's environment.type.
+        shell_env_type = None
+        for tool in body.get("tools", []) or []:
+            if tool.get("type") == "shell":
+                shell_env_type = tool.get("environment", {}).get("type")
+                break
+        # container_reference -> 400 expired; retry omits container -> normal stream.
+        if shell_env_type == "container_reference":
+            return httpx.Response(
+                400,
+                content = json.dumps(
+                    {
+                        "error": {
+                            "message": "Container is expired.",
+                            "type": "invalid_request_error",
+                        }
+                    }
+                ).encode("utf-8"),
+                headers = {"content-type": "application/json"},
+            )
+        # Successful retry: minimal SSE — completed response with a fresh
+        # container_id so container_ready latches.
+        sse = _openai_sse(
+            [
+                {
+                    "type": "response.completed",
+                    "response": {"container_id": "cntr_fresh_111"},
+                },
+            ]
+        )
+        return httpx.Response(
+            200,
+            content = sse,
+            headers = {"content-type": "text/event-stream"},
+        )
+
+    _mock_http_client(monkeypatch, handler)
+
+    lines = _drive(run())
+    events = _tool_events(lines)
+
+    # Two outbound calls: the expired-container attempt, then the retry
+    # without the container field.
+    assert len(calls) == 2
+    shell_types = []
+    for body in calls:
+        for tool in body.get("tools", []) or []:
+            if tool.get("type") == "shell":
+                shell_types.append(tool.get("environment", {}).get("type"))
+    assert shell_types == ["container_reference", "container_auto"]
+
+    # container_invalidated emitted (frontend nulls its stored id).
+    assert any(e.get("type") == "container_invalidated" for e in events)
+    # container_ready emitted from the retry stream with the fresh id.
+    assert any(
+        e.get("type") == "container_ready" and e.get("container_id") == "cntr_fresh_111"
+        for e in events
+    )
+    # CRUCIALLY: no SSE error line surfaced to the chat.
+    error_lines = [
+        line
+        for line in lines
+        if line.startswith("data:") and '"error"' in line and '"_toolEvent"' not in line
+    ]
+    assert error_lines == [], f"unexpected error line(s): {error_lines}"
+
+
+def test_expired_container_retries_only_once(monkeypatch):
+    """If the retry ALSO fails (any 4xx), the error surfaces normally —
+    no infinite retry loop.
+    """
+    call_count = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        call_count["n"] += 1
+        return httpx.Response(
+            400,
+            content = json.dumps(
+                {
+                    "error": {
+                        "message": "Container is expired.",
+                        "type": "invalid_request_error",
+                    }
+                }
+            ).encode("utf-8"),
+            headers = {"content-type": "application/json"},
+        )
+
+    _mock_http_client(monkeypatch, handler)
+
+    lines = _drive(run())
+
+    # Exactly two calls (first + one retry); a third would be a loop.
+    assert call_count["n"] == 2
+    # The second failure surfaces normally as an error SSE line.
+    error_lines = [line for line in lines if '"error"' in line and "_toolEvent" not in line]
+    assert len(error_lines) >= 1

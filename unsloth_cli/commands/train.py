@@ -7,8 +7,44 @@ from typing import Optional
 
 import typer
 
-from unsloth_cli.config import Config, load_config
+from unsloth_cli._inference import ensure_studio_backend_path
+from unsloth_cli._studio_deps import studio_backend_imports
+from unsloth_cli.config import Config, ConfigError, load_config
 from unsloth_cli.options import add_options_from_config
+
+
+def _should_use_mlx_backend_for_cli() -> bool:
+    ensure_studio_backend_path()
+    with studio_backend_imports("unsloth train"):
+        from studio.backend.core.training.training import should_use_mlx_training_backend
+    return should_use_mlx_training_backend()
+
+
+def _activate_mlx_transformers(model_name: str, hf_token: Optional[str]) -> None:
+    # Activate before any transformers import: adapter model-type detection imports utils.models.
+    ensure_studio_backend_path()
+    from utils.transformers_version import activate_transformers_for_subprocess
+    try:
+        activate_transformers_for_subprocess(model_name, hf_token)
+    except Exception as exc:
+        typer.echo(f"Warning: failed to activate Transformers sidecar: {exc}", err = True)
+
+
+def _create_cli_trainer(model_name: str, hf_token: Optional[str]):
+    if _should_use_mlx_backend_for_cli():
+        _activate_mlx_transformers(model_name, hf_token)
+        # MLX is torch-free: use the lightweight adapter, not trainer.py (imports torch/unsloth/trl at load).
+        ensure_studio_backend_path()
+        with studio_backend_imports("unsloth train"):
+            from studio.backend.core.training.training import create_mlx_trainer_adapter
+
+        return create_mlx_trainer_adapter()
+
+    ensure_studio_backend_path()
+    with studio_backend_imports("unsloth train"):
+        from studio.backend.core.training.trainer import UnslothTrainer
+
+    return UnslothTrainer()
 
 
 @add_options_from_config(Config)
@@ -35,14 +71,14 @@ def train(
     """Launch training using the existing Unsloth training backend."""
     try:
         cfg = load_config(config)
-    except FileNotFoundError as e:
+    except (FileNotFoundError, ConfigError) as e:
         typer.echo(f"Error: {e}", err = True)
         raise typer.Exit(code = 2)
 
+    config_overrides = config_overrides or {}
     cfg.apply_overrides(**config_overrides)
 
-    # CLI/env tokens take precedence over config
-    # Handle case where typer.Option isn't resolved (decorator interaction)
+    # CLI/env tokens take precedence; guard against unresolved typer.Option.
     from typer.models import OptionInfo
 
     if isinstance(hf_token, OptionInfo):
@@ -57,6 +93,11 @@ def train(
 
         data = cfg.model_dump()
         data["training"]["output_dir"] = str(data["training"]["output_dir"])
+        # model_dump carries the config file's tokens verbatim, and this goes to stdout: CI logs,
+        # notebook output, scrollback. Mask only what is set, so an unset token still reads as null.
+        for name in ("hf_token", "wandb_token"):
+            if data["logging"].get(name) is not None:
+                data["logging"][name] = "[redacted]"
         typer.echo(yaml.dump(data, default_flow_style = False, sort_keys = False))
         raise typer.Exit(code = 0)
 
@@ -65,17 +106,12 @@ def train(
         raise typer.Exit(code = 2)
 
     if not cfg.data.dataset and not cfg.data.local_dataset:
-        typer.echo(
-            "Error: provide --dataset or --local-dataset (or via --config)", err = True
-        )
+        typer.echo("Error: provide --dataset or --local-dataset (or via --config)", err = True)
         raise typer.Exit(code = 2)
 
-    # Check if the model path is a LoRA adapter (has adapter_config.json)
     model_path = Path(cfg.model) if cfg.model else None
     model_is_lora = (
-        model_path
-        and model_path.is_dir()
-        and (model_path / "adapter_config.json").exists()
+        model_path and model_path.is_dir() and (model_path / "adapter_config.json").exists()
     )
     use_lora = cfg.training.training_type.lower() == "lora"
 
@@ -87,16 +123,15 @@ def train(
         )
         raise typer.Exit(code = 2)
 
-    from studio.backend.core.training.trainer import UnslothTrainer
+    trainer = _create_cli_trainer(cfg.model, hf_token)
 
-    trainer = UnslothTrainer()
-
-    # Load model (trainer.is_vlm is set after this)
     if not trainer.load_model(
         model_name = cfg.model,
         max_seq_length = cfg.training.max_seq_length,
         load_in_4bit = cfg.training.load_in_4bit if use_lora else False,
+        full_finetuning = not use_lora,
         hf_token = hf_token,
+        use_gradient_checkpointing = cfg.training.gradient_checkpointing,
     ):
         typer.echo("Model load failed", err = True)
         raise typer.Exit(code = 1)
@@ -111,6 +146,7 @@ def train(
         dataset_source = cfg.data.dataset or "",
         format_type = cfg.data.format_type,
         local_datasets = cfg.data.local_dataset,
+        hf_token = hf_token,
     )
     if result is None:
         typer.echo("Dataset load failed", err = True)
@@ -119,26 +155,35 @@ def train(
     ds, eval_ds = result
 
     training_kwargs = cfg.training_kwargs()
-    training_kwargs["wandb_token"] = wandb_token  # CLI/env takes precedence
-    started = trainer.start_training(
-        dataset = ds, eval_dataset = eval_ds, **training_kwargs
-    )
+    training_kwargs["wandb_token"] = wandb_token
+    started = trainer.start_training(dataset = ds, eval_dataset = eval_ds, **training_kwargs)
 
     if not started:
         typer.echo("Training failed to start", err = True)
         raise typer.Exit(code = 1)
 
+    interrupted = False
     try:
         while trainer.training_thread and trainer.training_thread.is_alive():
+            progress = trainer.get_training_progress()
+            if getattr(progress, "error", None):
+                break
             time.sleep(1)
     except KeyboardInterrupt:
+        interrupted = True
         typer.echo("Stopping training (Ctrl+C detected)...")
         trainer.stop_training()
     finally:
         if trainer.training_thread:
-            trainer.training_thread.join()
+            progress = trainer.get_training_progress()
+            if getattr(progress, "error", None):
+                trainer.training_thread.join(timeout = 5)
+            else:
+                trainer.training_thread.join()
 
     final = trainer.get_training_progress()
     if getattr(final, "error", None):
         typer.echo(f"Training error: {final.error}", err = True)
         raise typer.Exit(code = 1)
+    if interrupted and not getattr(final, "is_completed", False):
+        raise typer.Exit(code = 130)

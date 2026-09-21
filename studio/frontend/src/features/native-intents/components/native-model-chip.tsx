@@ -3,7 +3,7 @@ import { useNativeIntentStore } from "../store";
 import type { NativeIntent } from "../types";
 import { XIcon } from "lucide-react";
 import { useEffect, useState } from "react";
-import { toast } from "sonner";
+import { toast } from "@/lib/toast";
 
 interface NativeModelChipProps {
   intent: NativeIntent;

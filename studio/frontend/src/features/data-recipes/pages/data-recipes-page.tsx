@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { useAppShellReadySignal } from "@/components/app-readiness";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -25,10 +26,11 @@ import {
   EmptyTitle,
 } from "@/components/ui/empty";
 import { ShineBorder } from "@/components/ui/shine-border";
+import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
+import { OPEN_LEARNING_RECIPES_ON_ARRIVAL_KEY } from "@/lib/navigation-intents";
 import { toastError } from "@/shared/toast";
 import {
   Album02Icon,
-  ArrowDown01Icon,
   CodeIcon,
   CookBookIcon,
   Database02Icon,
@@ -42,7 +44,7 @@ import {
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useNavigate } from "@tanstack/react-router";
 import type { ReactElement } from "react";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   createRecipeDraft,
   createRecipeFromLearningRecipe,
@@ -51,9 +53,8 @@ import {
   useRecipes,
 } from "../data/recipes-db";
 import { LEARNING_RECIPES } from "../learning-recipes";
-
-const OPEN_LEARNING_RECIPES_ON_ARRIVAL_KEY =
-  "data-recipes:open-learning-recipes";
+import { GuidedTour, useGuidedTourController } from "@/features/tour";
+import { buildDataRecipesTourSteps } from "../tour";
 
 type TemplateCard = {
   title: string;
@@ -75,7 +76,7 @@ const TEMPLATE_CARDS: TemplateCard[] = [
     difficulty: "Easy",
     learningBadges: ["Seed Dataset", "LLM Text", "Prompting"],
     surfaceClassName:
-      "from-emerald-500/15 via-green-500/5 to-transparent dark:from-emerald-400/30 dark:via-green-400/14 dark:to-emerald-950/16",
+      "from-emerald-500/15 via-green-500/5 to-transparent dark:from-emerald-400/20 dark:via-green-400/10 dark:to-emerald-950/16",
     shineColor: [
       "rgb(16 185 129 / 0.45)",
       "rgb(34 197 94 / 0.4)",
@@ -91,7 +92,7 @@ const TEMPLATE_CARDS: TemplateCard[] = [
     difficulty: "Easy",
     learningBadges: ["Unstructured", "LLM Text"],
     surfaceClassName:
-      "from-violet-500/15 via-fuchsia-500/5 to-transparent dark:from-violet-400/30 dark:via-fuchsia-400/14 dark:to-violet-950/16",
+      "from-violet-500/15 via-fuchsia-500/5 to-transparent dark:from-violet-400/20 dark:via-fuchsia-400/10 dark:to-violet-950/16",
     shineColor: [
       "rgb(139 92 246 / 0.45)",
       "rgb(217 70 239 / 0.4)",
@@ -107,7 +108,7 @@ const TEMPLATE_CARDS: TemplateCard[] = [
     difficulty: "Starter",
     learningBadges: ["Vision", "LLM Text", "Image Context"],
     surfaceClassName:
-      "from-lime-500/15 via-emerald-500/5 to-transparent dark:from-lime-400/30 dark:via-emerald-400/14 dark:to-lime-950/16",
+      "from-lime-500/15 via-emerald-500/5 to-transparent dark:from-lime-400/20 dark:via-emerald-400/10 dark:to-lime-950/16",
     shineColor: [
       "rgb(132 204 22 / 0.45)",
       "rgb(16 185 129 / 0.4)",
@@ -123,7 +124,7 @@ const TEMPLATE_CARDS: TemplateCard[] = [
     difficulty: "Intermediate",
     learningBadges: ["LLM Judge", "LLM Code", "Subcategory", "Category"],
     surfaceClassName:
-      "from-amber-500/15 via-orange-500/5 to-transparent dark:from-amber-400/30 dark:via-orange-400/14 dark:to-amber-950/16",
+      "from-amber-500/15 via-orange-500/5 to-transparent dark:from-amber-400/20 dark:via-orange-400/10 dark:to-amber-950/16",
     shineColor: [
       "rgb(245 158 11 / 0.45)",
       "rgb(249 115 22 / 0.4)",
@@ -139,7 +140,7 @@ const TEMPLATE_CARDS: TemplateCard[] = [
     difficulty: "Intermediate",
     learningBadges: ["LLM Code", "Prompting", "Drop Columns"],
     surfaceClassName:
-      "from-blue-500/15 via-indigo-500/5 to-transparent dark:from-blue-400/30 dark:via-indigo-400/14 dark:to-blue-950/16",
+      "from-blue-500/15 via-indigo-500/5 to-transparent dark:from-blue-400/20 dark:via-indigo-400/10 dark:to-blue-950/16",
     shineColor: [
       "rgb(59 130 246 / 0.45)",
       "rgb(99 102 241 / 0.4)",
@@ -155,7 +156,7 @@ const TEMPLATE_CARDS: TemplateCard[] = [
     difficulty: "Advanced",
     learningBadges: ["Structured LLM", "Expression", "Jinja"],
     surfaceClassName:
-      "from-cyan-500/15 via-sky-500/5 to-transparent dark:from-cyan-400/30 dark:via-sky-400/14 dark:to-cyan-950/16",
+      "from-cyan-500/15 via-sky-500/5 to-transparent dark:from-cyan-400/20 dark:via-sky-400/10 dark:to-cyan-950/16",
     shineColor: [
       "rgb(6 182 212 / 0.45)",
       "rgb(56 189 248 / 0.4)",
@@ -171,7 +172,7 @@ const TEMPLATE_CARDS: TemplateCard[] = [
     difficulty: "Intermediate",
     learningBadges: ["GitHub", "LLM Text", "Structured LLM"],
     surfaceClassName:
-      "from-slate-500/15 via-zinc-500/5 to-transparent dark:from-slate-400/30 dark:via-zinc-400/14 dark:to-slate-950/16",
+      "from-slate-500/15 via-zinc-500/5 to-transparent dark:from-slate-400/20 dark:via-zinc-400/10 dark:to-slate-950/16",
     shineColor: [
       "rgb(71 85 105 / 0.45)",
       "rgb(100 116 139 / 0.4)",
@@ -241,7 +242,7 @@ function LearningRecipeCards({
             type="button"
             disabled={isDisabled}
             onClick={() => onSelect(template)}
-            className={`group shadow-border relative overflow-hidden rounded-2xl bg-gradient-to-br text-left transition-transform ${template.surfaceClassName} enabled:cursor-pointer enabled:hover:-translate-y-0.5 enabled:hover:shadow-md disabled:cursor-not-allowed disabled:opacity-70`}
+            className={`group shadow-border relative overflow-hidden rounded-2xl bg-gradient-to-br dark:bg-white/[0.05] text-left transition-transform ${template.surfaceClassName} enabled:cursor-pointer enabled:hover:-translate-y-0.5 disabled:cursor-not-allowed disabled:opacity-70`}
           >
             <ShineBorder
               borderWidth={1.2}
@@ -267,7 +268,7 @@ function LearningRecipeCards({
                 <p className="line-clamp-2 text-sm font-semibold leading-tight text-foreground">
                   {template.title}
                 </p>
-                <p className="line-clamp-2 text-xs text-muted-foreground">
+                <p className="line-clamp-2 text-xs text-muted-foreground dark:text-zinc-300">
                   {template.description}
                 </p>
               </div>
@@ -280,7 +281,7 @@ function LearningRecipeCards({
                       <Badge
                         key={`${template.title}-${badge}`}
                         variant="outline"
-                        className="h-5 shrink-0 px-1.5 text-[10px]"
+                        className="h-5 shrink-0 px-1.5 text-ui-10 dark:text-zinc-300"
                       >
                         {badge}
                       </Badge>
@@ -288,7 +289,7 @@ function LearningRecipeCards({
                     {extraLearningBadgeCount > 0 ? (
                       <Badge
                         variant="outline"
-                        className="h-5 shrink-0 px-1.5 text-[10px]"
+                        className="h-5 shrink-0 px-1.5 text-ui-10 dark:text-zinc-300"
                       >
                         +{extraLearningBadgeCount}
                       </Badge>
@@ -296,7 +297,7 @@ function LearningRecipeCards({
                     {isReady ? null : (
                       <Badge
                         variant="secondary"
-                        className="h-5 shrink-0 px-1.5 text-[10px]"
+                        className="h-5 shrink-0 px-1.5 text-ui-10 dark:text-zinc-300"
                       >
                         Soon
                       </Badge>
@@ -313,6 +314,7 @@ function LearningRecipeCards({
 }
 
 export function DataRecipesPage(): ReactElement {
+  const signalReady = useAppShellReadySignal();
   const navigate = useNavigate();
   const { recipes, ready } = useRecipes();
   const [creatingRecipe, setCreatingRecipe] = useState(false);
@@ -320,6 +322,23 @@ export function DataRecipesPage(): ReactElement {
   const [loadingTemplateId, setLoadingTemplateId] = useState<string | null>(
     null,
   );
+  const reloadReadySent = useRef(false);
+  const tourSteps = useMemo(
+    () => buildDataRecipesTourSteps({ ready, hasRecipes: recipes.length > 0 }),
+    [ready, recipes.length],
+  );
+  const tour = useGuidedTourController({
+    id: "data-recipes",
+    steps: tourSteps,
+  });
+
+  useEffect(() => {
+    if (!ready || reloadReadySent.current) {
+      return;
+    }
+    reloadReadySent.current = true;
+    signalReady();
+  }, [ready, signalReady]);
 
   useEffect(() => {
     if (sessionStorage.getItem(OPEN_LEARNING_RECIPES_ON_ARRIVAL_KEY) !== "1") {
@@ -400,10 +419,11 @@ export function DataRecipesPage(): ReactElement {
 
   return (
     <div className="min-h-[calc(100dvh-var(--studio-titlebar-height,0px))] bg-background">
-      <main className="mx-auto w-full max-w-7xl px-6 py-8">
+      <main className="mx-auto w-full max-w-7xl px-5 py-8 sm:px-9">
+        <GuidedTour {...tour.tourProps} />
         <div className="flex items-center justify-between gap-4">
           <div>
-            <h1 className="text-2xl font-semibold tracking-tight">
+            <h1 className="text-ui-30 font-semibold leading-[1.04] tracking-[-0.028em] text-foreground sm:text-ui-34">
               Data Recipes
             </h1>
             <p className="mt-1 text-sm text-muted-foreground">
@@ -412,10 +432,13 @@ export function DataRecipesPage(): ReactElement {
           </div>
           <DropdownMenu>
             <DropdownMenuTrigger asChild={true}>
-              <Button type="button" disabled={isBusy}>
+              <Button type="button" data-tour="recipes-new" disabled={isBusy}>
                 <HugeiconsIcon icon={PlusSignIcon} className="size-4" />
                 New Recipe
-                <HugeiconsIcon icon={ArrowDown01Icon} className="size-4" />
+                <HugeiconsIcon
+                  icon={ChevronDownStandardIcon}
+                  className="size-4"
+                />
               </Button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end">
@@ -439,7 +462,91 @@ export function DataRecipesPage(): ReactElement {
           </DropdownMenu>
         </div>
 
-        {!ready ? (
+        {ready ? (
+          recipes.length === 0 ? (
+            <Empty
+              data-tour="recipes-templates"
+              className="mt-8 border border-dashed border-border/70 dark:border-none"
+            >
+              <EmptyHeader>
+                <EmptyMedia variant="icon">
+                  <HugeiconsIcon icon={CookBookIcon} className="size-5" />
+                </EmptyMedia>
+                <EmptyTitle>No recipes yet</EmptyTitle>
+                <EmptyDescription>
+                  Browse Learning Recipes below to understand how recipe
+                  workflows work.
+                </EmptyDescription>
+              </EmptyHeader>
+              <EmptyContent className="max-w-6xl items-stretch">
+                {/*<Button*/}
+                {/*  type="button"*/}
+                {/*  variant="secondary"*/}
+                {/*  className="mx-auto"*/}
+                {/*  onClick={() => setLearningDialogOpen(true)}*/}
+                {/*  disabled={isBusy}*/}
+                {/*>*/}
+                {/*  <HugeiconsIcon icon={CookBookIcon} className="size-4" />*/}
+                {/*  Start Tutorial*/}
+                {/*</Button>*/}
+                <LearningRecipeCards
+                  onSelect={(template) => {
+                    openLearningRecipe(template).catch(() => undefined);
+                  }}
+                  loadingTemplateId={loadingTemplateId}
+                />
+              </EmptyContent>
+            </Empty>
+          ) : (
+            <div data-tour="recipes-list" className="mt-8 space-y-2">
+              {recipes.map((recipe) => (
+                <div
+                  key={recipe.id}
+                  className="flex items-center gap-3 rounded-xl border bg-card px-4 py-3"
+                >
+                  <button
+                    type="button"
+                    className="flex min-w-0 flex-1 items-center gap-3 text-left"
+                    onClick={() => openRecipe(recipe)}
+                  >
+                    <div className="flex size-9 shrink-0 items-center justify-center rounded-lg border border-border/70 bg-muted/20">
+                      <HugeiconsIcon
+                        icon={CookBookIcon}
+                        className="size-4 text-muted-foreground"
+                      />
+                    </div>
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-2">
+                        <p className="truncate text-sm font-medium">
+                          {recipe.name}
+                        </p>
+                        {recipe.learningRecipeId ? (
+                          <Badge variant="outline">Learning Recipe</Badge>
+                        ) : null}
+                      </div>
+                      <p className="text-xs text-muted-foreground">
+                        Last updated {formatRelativeTime(recipe.updatedAt)} |
+                        Created {formatRelativeTime(recipe.createdAt)}
+                      </p>
+                    </div>
+                  </button>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon"
+                    className="size-8"
+                    onClick={() => {
+                      handleDeleteRecipe(recipe.id).catch(() => undefined);
+                    }}
+                    aria-label={`Delete ${recipe.name}`}
+                  >
+                    <HugeiconsIcon icon={Delete02Icon} className="size-4" />
+                  </Button>
+                </div>
+              ))}
+            </div>
+          )
+        ) : (
           <div className="mt-8 rounded-2xl border border-border/70 bg-card px-6 py-10 text-center">
             <p className="text-sm font-medium text-foreground">
               Loading recipes
@@ -447,85 +554,6 @@ export function DataRecipesPage(): ReactElement {
             <p className="mt-1 text-xs text-muted-foreground">
               Fetching your saved recipes and learning templates.
             </p>
-          </div>
-        ) : recipes.length === 0 ? (
-          <Empty className="mt-8 border border-dashed border-border/70">
-            <EmptyHeader>
-              <EmptyMedia variant="icon">
-                <HugeiconsIcon icon={CookBookIcon} className="size-5" />
-              </EmptyMedia>
-              <EmptyTitle>No recipes yet</EmptyTitle>
-              <EmptyDescription>
-                Browse Learning Recipes below to understand how recipe workflows
-                work.
-              </EmptyDescription>
-            </EmptyHeader>
-            <EmptyContent className="max-w-6xl items-stretch">
-              {/*<Button*/}
-              {/*  type="button"*/}
-              {/*  variant="secondary"*/}
-              {/*  className="mx-auto"*/}
-              {/*  onClick={() => setLearningDialogOpen(true)}*/}
-              {/*  disabled={isBusy}*/}
-              {/*>*/}
-              {/*  <HugeiconsIcon icon={CookBookIcon} className="size-4" />*/}
-              {/*  Start Tutorial*/}
-              {/*</Button>*/}
-              <LearningRecipeCards
-                onSelect={(template) => {
-                  openLearningRecipe(template).catch(() => undefined);
-                }}
-                loadingTemplateId={loadingTemplateId}
-              />
-            </EmptyContent>
-          </Empty>
-        ) : (
-          <div className="mt-8 space-y-2">
-            {recipes.map((recipe) => (
-              <div
-                key={recipe.id}
-                className="flex items-center gap-3 rounded-xl border bg-card px-4 py-3"
-              >
-                <button
-                  type="button"
-                  className="flex min-w-0 flex-1 items-center gap-3 text-left"
-                  onClick={() => openRecipe(recipe)}
-                >
-                  <div className="flex size-9 shrink-0 items-center justify-center rounded-lg border border-border/70 bg-muted/20">
-                    <HugeiconsIcon
-                      icon={CookBookIcon}
-                      className="size-4 text-muted-foreground"
-                    />
-                  </div>
-                  <div className="min-w-0">
-                    <div className="flex items-center gap-2">
-                      <p className="truncate text-sm font-medium">
-                        {recipe.name}
-                      </p>
-                      {recipe.learningRecipeId ? (
-                        <Badge variant="outline">Learning Recipe</Badge>
-                      ) : null}
-                    </div>
-                    <p className="text-xs text-muted-foreground">
-                      Last updated {formatRelativeTime(recipe.updatedAt)} |
-                      Created {formatRelativeTime(recipe.createdAt)}
-                    </p>
-                  </div>
-                </button>
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="icon"
-                  className="size-8"
-                  onClick={() => {
-                    handleDeleteRecipe(recipe.id).catch(() => undefined);
-                  }}
-                  aria-label={`Delete ${recipe.name}`}
-                >
-                  <HugeiconsIcon icon={Delete02Icon} className="size-4" />
-                </Button>
-              </div>
-            ))}
           </div>
         )}
       </main>

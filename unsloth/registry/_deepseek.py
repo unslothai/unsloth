@@ -12,9 +12,7 @@ class DeepseekV3ModelInfo(ModelInfo):
     @classmethod
     def construct_model_name(cls, base_name, version, size, quant_type, instruct_tag):
         key = f"{base_name}-V{version}"
-        return super().construct_model_name(
-            base_name, version, size, quant_type, instruct_tag, key
-        )
+        return super().construct_model_name(base_name, version, size, quant_type, instruct_tag, key)
 
 
 class DeepseekR1ModelInfo(ModelInfo):
@@ -23,12 +21,9 @@ class DeepseekR1ModelInfo(ModelInfo):
         key = f"{base_name}-{version}" if version else base_name
         if size:
             key = f"{key}-{size}B"
-        return super().construct_model_name(
-            base_name, version, size, quant_type, instruct_tag, key
-        )
+        return super().construct_model_name(base_name, version, size, quant_type, instruct_tag, key)
 
 
-# Deepseek V3 Model Meta
 DeepseekV3Meta = ModelMeta(
     org = "deepseek-ai",
     base_name = "DeepSeek",
@@ -84,7 +79,6 @@ DeepseekR1DistillLlamaMeta = ModelMeta(
     quant_types = {"8": [QuantType.UNSLOTH, QuantType.GGUF], "70": [QuantType.GGUF]},
 )
 
-# Deepseek R1 Distill Qwen Model Meta
 DeepseekR1DistillQwenMeta = ModelMeta(
     org = "deepseek-ai",
     base_name = "DeepSeek-R1-Distill",
@@ -138,9 +132,7 @@ def register_deepseek_r1_distill_llama_models(include_original_model: bool = Fal
     global _IS_DEEPSEEK_R1_DISTILL_LLAMA_REGISTERED
     if _IS_DEEPSEEK_R1_DISTILL_LLAMA_REGISTERED:
         return
-    _register_models(
-        DeepseekR1DistillLlamaMeta, include_original_model = include_original_model
-    )
+    _register_models(DeepseekR1DistillLlamaMeta, include_original_model = include_original_model)
     _IS_DEEPSEEK_R1_DISTILL_LLAMA_REGISTERED = True
 
 
@@ -148,9 +140,7 @@ def register_deepseek_r1_distill_qwen_models(include_original_model: bool = Fals
     global _IS_DEEPSEEK_R1_DISTILL_QWEN_REGISTERED
     if _IS_DEEPSEEK_R1_DISTILL_QWEN_REGISTERED:
         return
-    _register_models(
-        DeepseekR1DistillQwenMeta, include_original_model = include_original_model
-    )
+    _register_models(DeepseekR1DistillQwenMeta, include_original_model = include_original_model)
     _IS_DEEPSEEK_R1_DISTILL_QWEN_REGISTERED = True
 
 
@@ -159,33 +149,25 @@ def register_deepseek_models(include_original_model: bool = False):
     register_deepseek_v3_0324_models(include_original_model = include_original_model)
     register_deepseek_r1_models(include_original_model = include_original_model)
     register_deepseek_r1_zero_models(include_original_model = include_original_model)
-    register_deepseek_r1_distill_llama_models(
-        include_original_model = include_original_model
-    )
-    register_deepseek_r1_distill_qwen_models(
-        include_original_model = include_original_model
-    )
+    register_deepseek_r1_distill_llama_models(include_original_model = include_original_model)
+    register_deepseek_r1_distill_qwen_models(include_original_model = include_original_model)
 
 
 def _list_deepseek_r1_distill_models():
     from unsloth.utils.hf_hub import ModelInfo as HfModelInfo
     from unsloth.utils.hf_hub import list_models
 
-    models: list[HfModelInfo] = list_models(
-        author = "unsloth", search = "Distill", limit = 1000
-    )
+    models: list[HfModelInfo] = list_models(author = "unsloth", search = "Distill", limit = 1000)
     distill_models = []
     for model in models:
         model_id = model.id
         model_name = model_id.split("/")[-1]
-        # parse out only the version
+        # Parse out only the version.
         version = model_name.removeprefix("DeepSeek-R1-Distill-")
         distill_models.append(version)
 
     return distill_models
 
-
-register_deepseek_models(include_original_model = True)
 
 if __name__ == "__main__":
     from unsloth.registry.registry import MODEL_REGISTRY, _check_model_info
@@ -200,7 +182,3 @@ if __name__ == "__main__":
             print(f"\u2718 {model_id}")
         else:
             print(f"\u2713 {model_id}")
-    # distill_models = _list_deepseek_r1_distill_models()
-    # for model in sorted(distill_models):
-    #     if "qwen" in model.lower():
-    #         print(model)

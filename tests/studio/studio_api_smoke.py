@@ -1,32 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""End-to-end Studio API & Auth tests.
-
-Boots a fresh Studio externally (CI workflow handles install + boot)
-and runs a battery of HTTP-level integration tests against it. No
-Playwright, no model load by this test (the workflow loads gemma-3-270m
-beforehand if needed).
-
-Sections:
-  1. CORS hardening (no wildcard + credentials, no bootstrap leak)
-  2. /api/system + /api/system/hardware require auth
-  3. Auth state machine (rotation invariants, body validation, login burst)
-  4. JWT-expiry rejection (forge an expired token using the install's secret)
-  5. API key lifecycle E2E (create -> list -> use -> delete -> reject)
-  6. Auth file-mode hardening (Linux only)
-  7. Inference lifecycle gaps (force reload, bogus variant, /v1/models,
-     /v1/embeddings, /v1/responses)
-  8. Endpoint-by-endpoint auth audit (pin EXPECTED auth posture per route)
-
-Env:
-  BASE_URL              http://127.0.0.1:18893 (or wherever Studio is)
-  STUDIO_OLD_PW         the bootstrap password (must rotate it)
-  STUDIO_NEW_PW         what to rotate to
-  STUDIO_NEW2_PW        out-of-band rotation target
-  STUDIO_AUTH_DIR       (optional) path to the auth dir for file-mode checks
-  GGUF_REPO             (optional) the model the workflow loaded for /v1 tests
-"""
+"""End-to-end Unsloth API & Auth HTTP integration tests against an externally-booted Unsloth."""
 
 import json
 import os
@@ -50,10 +25,8 @@ _section = [0]
 _failed: list[str] = []
 _warned: list[str] = []
 
-# When 1, audit-finding assertions (e.g. CORS leak, file modes, 5xx vs
-# 4xx) become hard fails. Off by default: we surface them as WARN so the
-# test can be added before the underlying Studio fixes ship; the
-# warnings are still printed in CI so they're visible.
+# When 1, audit-finding assertions become hard fails.
+# Off by default: surfaced as WARN.
 STRICT_AUDIT = os.environ.get("STUDIO_API_STRICT_AUDIT", "0") == "1"
 
 
@@ -63,15 +36,7 @@ def section(title: str) -> None:
 
 
 def _shape(value):
-    """Return a credential-free shape descriptor for an HTTP body.
-
-    Returns ONLY the container type + element count -- never the keys,
-    never the values. Used in failure messages so a CI log can never
-    carry credential material (matches the intent of CodeQL's
-    py/clear-text-logging-sensitive-data rule). For richer detail
-    while debugging, set STUDIO_API_VERBOSE=1 locally; verbose mode
-    is OFF in CI.
-    """
+    """Credential-free shape descriptor (container type + count only) for an HTTP body."""
     if isinstance(value, dict):
         return f"<dict with {len(value)} keys>"
     if isinstance(value, list):
@@ -82,18 +47,7 @@ def _shape(value):
 
 
 def _emit(prefix: str, msg: str) -> None:
-    """Write a status line via os.write.
-
-    CodeQL's py/clear-text-logging-sensitive-data rule treats `print`
-    (and the standard `logging` calls) as logging sinks. Even though
-    `_shape()` already strips credential material from anything
-    `msg` could carry, the rule's data-flow can't see through the
-    helper and flags `print(msg)` as clear-text logging. Routing
-    through a raw fd write keeps the same observable CI output
-    while not matching the rule's sink pattern. The msg payload is
-    still credential-free by construction (callers wrap response
-    bodies in `_shape(...)`).
-    """
+    """Write a status line via raw os.write to dodge CodeQL's clear-text-logging sink on print()."""
     os.write(1, prefix.encode("utf-8"))
     os.write(1, msg.encode("utf-8", errors = "replace"))
     os.write(1, b"\n")
@@ -104,21 +58,13 @@ def ok(msg: str) -> None:
 
 
 def fail(msg: str) -> None:
-    """Record a failure but keep running so we report ALL failures.
-
-    `msg` must be free of credential material -- callers should pass
-    only the HTTP status code + a short description (and `_shape(body)`
-    if shape is informative). Never `body` directly.
-    """
+    """Record a failure but keep running so we report ALL failures. `msg` must be credential-free."""
     _emit("  FAIL ", msg)
     _failed.append(f"{_section[0]}: {msg}")
 
 
 def audit(msg: str) -> None:
-    """Record an audit finding -- a real backend regression that we
-    want surfaced in CI logs but not gating until the underlying fix
-    ships. Set STUDIO_API_STRICT_AUDIT=1 to escalate to hard fail.
-    """
+    """Record a non-gating backend regression; STUDIO_API_STRICT_AUDIT=1 escalates to hard fail."""
     if STRICT_AUDIT:
         fail(msg)
     else:
@@ -154,6 +100,23 @@ def http(
             return exc.code, json.loads(raw)
         except (json.JSONDecodeError, UnicodeDecodeError):
             return exc.code, raw
+    except (TimeoutError, ConnectionError, urllib.error.URLError) as exc:
+        # A transport failure is a failed check, not a crashed run. Only
+        # HTTPError was caught here, so a socket timeout propagated out of
+        # http() and killed the script at module level: the traceback named
+        # urlopen and the line number, and nothing about which endpoint had
+        # been slow or what the rest of the suite would have said. Observed on
+        # three unrelated PRs whose /v1/embeddings call hit the 30s ceiling.
+        # Returned as status 0 so every existing `if code == 200 ... else
+        # fail(...)` site reports it with its own diagnosis and the run
+        # continues to the remaining sections.
+        #
+        # Emitted here as well as returned: the call sites report the status
+        # code and not the body, so status 0 on its own would say a request
+        # failed without saying that it timed out or after how long.
+        detail = f"{type(exc).__name__}: {exc}"
+        _emit("  NET   ", f"{method} {path} failed after {timeout}s -- {detail}")
+        return 0, {"error": detail, "timeout": timeout}
 
 
 def login(password: str) -> tuple[int, str | None]:
@@ -169,15 +132,9 @@ def login(password: str) -> tuple[int, str | None]:
 
 
 # ─────────────────────────────────────────────────────────────────────────
-# 1. CORS hardening
-# ─────────────────────────────────────────────────────────────────────────
 section("CORS hardening")
 
-# Cross-origin OPTIONS preflight. FastAPI explicitly forbids
-# Access-Control-Allow-Origin: <origin> together with
-# Access-Control-Allow-Credentials: true. (Wildcard + credentials is
-# also forbidden by the browser.) Either response is acceptable; the
-# bad pattern is a wildcard origin echoed alongside credentials.
+# Cross-origin OPTIONS preflight.
 req = urllib.request.Request(
     f"{BASE}/api/auth/login",
     method = "OPTIONS",
@@ -192,21 +149,16 @@ try:
         acao = r.headers.get("Access-Control-Allow-Origin", "")
         acac = r.headers.get("Access-Control-Allow-Credentials", "")
         if acao == "*" and acac.lower() == "true":
-            fail(
-                f"CORS: wildcard origin + credentials=true (acao={acao!r}, acac={acac!r})"
-            )
+            fail(f"CORS: wildcard origin + credentials=true (acao={acao!r}, acac={acac!r})")
         else:
             ok(f"CORS preflight acao={acao!r} acac={acac!r}")
 except Exception as exc:
     ok(f"CORS preflight unreachable (acceptable): {exc!r}")
 
-# GET / from a cross-origin Origin header. The response body must NOT
-# contain the literal bootstrap password (the security audit flagged
-# that __UNSLOTH_BOOTSTRAP__ injection in the served HTML can be
-# fetched cross-origin under wildcard CORS).
+# GET / cross-origin must NOT leak the bootstrap password in the served HTML.
 boot_path = AUTH_DIR / ".bootstrap_password"
 if boot_path.exists():
-    bootstrap_pw = boot_path.read_text().strip()
+    bootstrap_pw = boot_path.read_text(encoding = "utf-8").strip()
     if bootstrap_pw:
         req = urllib.request.Request(
             f"{BASE}/",
@@ -216,11 +168,7 @@ if boot_path.exists():
             with urllib.request.urlopen(req, timeout = 10) as r:
                 body = r.read().decode("utf-8", errors = "ignore")
                 if bootstrap_pw in body:
-                    # AUDIT finding (P0 from security review): the
-                    # __UNSLOTH_BOOTSTRAP__ injection in served HTML is
-                    # readable cross-origin under the current wildcard
-                    # CORS policy. Tracked separately; the test surfaces
-                    # the regression but does not gate CI on it.
+                    # AUDIT (P0): bootstrap pw in served HTML is readable cross-origin under wildcard CORS.
                     audit("CORS: GET / leaks bootstrap pw to cross-origin caller")
                 else:
                     ok("CORS: GET / does not include bootstrap pw")
@@ -244,8 +192,7 @@ for endpoint in ("/api/system", "/api/system/hardware", "/api/system/gpu-visibil
         fail(f"GET {endpoint} unauthenticated returned {code} (expected 401/403)")
 
 
-# Rotate password to NEW so we have a working bearer for the rest.
-# (Bootstrap login -> change-password -> login with NEW.)
+# Rotate password to NEW for a working bearer: bootstrap login -> change-password -> login NEW.
 section("Rotate bootstrap password for downstream tests")
 code, old_token = login(OLD)
 if code != 200 or not old_token:
@@ -269,7 +216,6 @@ if code != 200 or not NEW_TOKEN:
 ok("login with NEW -> 200")
 AUTH_HEADER = {"Authorization": f"Bearer {NEW_TOKEN}"}
 
-# Re-test /api/system endpoints WITH auth: must succeed now.
 for endpoint in ("/api/system", "/api/system/hardware", "/api/system/gpu-visibility"):
     code, _ = http("GET", endpoint, headers = AUTH_HEADER)
     if code == 200:
@@ -277,7 +223,6 @@ for endpoint in ("/api/system", "/api/system/hardware", "/api/system/gpu-visibil
     else:
         fail(f"GET {endpoint} authenticated returned {code} (expected 200)")
 
-# Load the model. Sections 5 + 7 below need a loaded model.
 section("Load the GGUF for /v1 tests")
 code, body = http(
     "POST",
@@ -298,11 +243,8 @@ ok(f"loaded {GGUF_REPO}")
 
 
 # ─────────────────────────────────────────────────────────────────────────
-# 3. Auth state machine
-# ─────────────────────────────────────────────────────────────────────────
 section("Auth state machine")
 
-# OLD bootstrap pw must now be rejected.
 code, _ = login(OLD)
 if code == 401:
     ok("login with OLD bootstrap pw -> 401")
@@ -317,9 +259,8 @@ else:
     fail(f"/api/auth/refresh without body returned {code} (expected 400/422)")
 
 
-# Wrong-password burst: expect 401 until the per-IP bucket fills, then
-# 429 with Retry-After. Bucket cannot be reset between tests, so we
-# assert the observable invariant rather than a fixed transition index.
+# Wrong-password burst: 401 until the per-IP bucket fills, then 429 with Retry-After.
+# Bucket can't be reset between tests, so assert the invariant, not a fixed transition index.
 def _login_with_headers(password: str) -> tuple[int, str | None]:
     """Like ``login`` but returns ``(status, retry_after_header)``."""
     url = f"{BASE}/api/auth/login"
@@ -360,11 +301,9 @@ else:
 
 
 # ─────────────────────────────────────────────────────────────────────────
-# 4. JWT-expiry rejection
-# ─────────────────────────────────────────────────────────────────────────
 section("JWT expiry")
 # Forge a JWT with exp=now-1 using the install's signing secret.
-# auth/storage.py:get_user_and_secret('unsloth') returns (salt, hash, jwt_secret, must_change_pw).
+# get_user_and_secret('unsloth') returns (salt, hash, jwt_secret, must_change_pw).
 try:
     sys.path.insert(
         0,
@@ -380,7 +319,6 @@ try:
             / "backend"
         ),
     )
-    # Best-effort import; not all installs ship the backend at this path.
     import jwt  # type: ignore[import-not-found]
     from auth import storage  # type: ignore[import-not-found]
 
@@ -408,8 +346,6 @@ except Exception as exc:
 
 
 # ─────────────────────────────────────────────────────────────────────────
-# 5. API key lifecycle E2E
-# ─────────────────────────────────────────────────────────────────────────
 section("API key lifecycle")
 
 code, body = http(
@@ -421,9 +357,8 @@ code, body = http(
 if code != 200 or not isinstance(body, dict):
     fail(f"POST /api/auth/api-keys -> {code}: {_shape(body)}")
 else:
-    # Response shape: {"key": "sk-unsloth-...", "api_key": {"id": ...,
-    # "name": ..., "key_prefix": ..., ...}}. The flat "key" carries the
-    # one-time bearer; the "api_key" sub-dict carries the metadata.
+    # Flat "key" is the one-time bearer;
+    # the "api_key" sub-dict carries metadata.
     api_key = body.get("key")
     api_meta = body.get("api_key") if isinstance(body.get("api_key"), dict) else {}
     api_id = api_meta.get("id") or body.get("id")
@@ -431,9 +366,6 @@ else:
         fail(f"create-key missing key/id: {_shape(body)}")
     else:
         ok(f"created key id={api_id}")
-        # The API key may use sk-unsloth-* or another prefix; we don't
-        # pin the literal prefix.
-        # List must include this id.
         code, body = http("GET", "/api/auth/api-keys", headers = AUTH_HEADER)
         if code == 200 and isinstance(body, dict):
             ids = [k.get("id") for k in body.get("api_keys", body.get("keys", []))]
@@ -444,8 +376,6 @@ else:
         else:
             fail(f"GET /api/auth/api-keys -> {code}: {_shape(body)}")
 
-        # Use the key against /v1/chat/completions (the workflow has
-        # already loaded gemma-3-270m).
         code, body = http(
             "POST",
             "/v1/chat/completions",
@@ -463,7 +393,6 @@ else:
         else:
             fail(f"/v1/chat/completions with API key -> {code}: {_shape(body)}")
 
-        # Delete + verify rejection.
         code, _ = http(
             "DELETE",
             f"/api/auth/api-keys/{api_id}",
@@ -514,19 +443,13 @@ else:
         if actual_mode == expected_mode:
             ok(f"{path} mode={oct(actual_mode)}")
         else:
-            # AUDIT finding (P1 from security review): auth.db inherits
-            # the process umask (0o644 on most CI runners) instead of
-            # being chmod 0o600 like the bootstrap pw file. Tracked
-            # separately; surface, don't gate.
+            # AUDIT (P1): auth.db inherits the umask instead of being chmod 0o600.
             audit(f"{path} mode={oct(actual_mode)} (expected {oct(expected_mode)})")
 
 
 # ─────────────────────────────────────────────────────────────────────────
-# 7. Inference lifecycle gaps
-# ─────────────────────────────────────────────────────────────────────────
 section("Inference lifecycle")
 
-# /v1/models must list the loaded model.
 code, body = http("GET", "/v1/models", headers = AUTH_HEADER)
 if code == 200 and isinstance(body, dict):
     ids = [m.get("id") for m in body.get("data", [])]
@@ -537,14 +460,20 @@ if code == 200 and isinstance(body, dict):
 else:
     fail(f"/v1/models -> {code}: {_shape(body)}")
 
-# /v1/embeddings either returns embedding OR a structured 4xx/5xx.
-# 501 "Not Implemented" is acceptable for non-embedding-capable models.
+# /v1/embeddings returns an embedding OR a structured 4xx (501 OK for non-embedding models).
 code, body = http(
     "POST",
     "/v1/embeddings",
     body = {"model": GGUF_REPO, "input": "hello"},
     headers = AUTH_HEADER,
-    timeout = 30,
+    # This is the first request in the section that forces a model load, so it
+    # pays the load on top of the embedding. Measured at 23.8s on a healthy
+    # macOS runner against a 30s ceiling, i.e. 79% of budget, which is not a
+    # margin: three unrelated PRs timed out here at exactly 30.0s on the same
+    # base while main passed. Raised to leave room for a loaded runner rather
+    # than to hide a slow endpoint -- if this starts taking 90s that is a real
+    # regression and it will still be reported, now as a failed check.
+    timeout = 90,
 )
 if code == 200 and isinstance(body, dict) and body.get("data"):
     ok("/v1/embeddings -> 200 with data")
@@ -553,7 +482,6 @@ elif 400 <= code < 600 and code != 500:
 else:
     fail(f"/v1/embeddings -> {code} (expected 200 or 4xx/501)")
 
-# /v1/responses minimal request.
 code, body = http(
     "POST",
     "/v1/responses",
@@ -570,10 +498,7 @@ if code == 200 or 400 <= code < 500:
 else:
     fail(f"/v1/responses -> {code} (expected 200 or 4xx)")
 
-# Bogus variant must be rejected. The contract: 4xx for an obviously
-# bad input is the right code. Today the backend returns 500 for
-# unknown variants -- rejected, but with the wrong status. Surface as
-# AUDIT (not gating) until the variant validator returns 4xx.
+# Bogus variant must be rejected with 4xx. Backend currently 500s; surface as AUDIT until fixed.
 code, _ = http(
     "POST",
     "/api/inference/load",
@@ -594,8 +519,7 @@ else:
     fail(f"bogus gguf_variant returned {code} (expected 4xx)")
 
 
-# Force-reload of the same repo: child PID must change.
-# Read the inference status before.
+# Force-reload of the same repo: the child PID must change.
 def _llama_pid() -> int | None:
     code, body = http("GET", "/api/inference/status", headers = AUTH_HEADER)
     if code != 200 or not isinstance(body, dict):
@@ -628,12 +552,8 @@ else:
 
 
 # ─────────────────────────────────────────────────────────────────────────
-# 8. Endpoint-by-endpoint auth audit
-# ─────────────────────────────────────────────────────────────────────────
 section("Endpoint auth audit")
-# Pin the EXPECTED auth posture for known routes. A new route added
-# without an entry here fails the audit, forcing the author to make
-# the auth decision explicit.
+# Pin the EXPECTED auth posture per route; a new unlisted route fails the audit.
 PUBLIC = {
     ("GET", "/api/health"),
     ("GET", "/api/auth/status"),
@@ -642,7 +562,6 @@ PUBLIC = {
     ("POST", "/api/auth/refresh"),
 }
 EXPECTED_AUTH_ENDPOINTS = [
-    # Auth-required (sample -- not exhaustive; covers the key surfaces)
     ("GET", "/api/inference/status"),
     ("GET", "/api/inference/models"),
     ("GET", "/v1/models"),
@@ -656,10 +575,7 @@ EXPECTED_AUTH_ENDPOINTS = [
 for method, path in EXPECTED_AUTH_ENDPOINTS:
     if (method, path) in PUBLIC:
         continue
-    # Don't actually shut Studio down -- verify auth check by sending
-    # an empty body / no auth header. If the check happens BEFORE the
-    # shutdown trigger (which is the design), we get a 401/403 without
-    # any side effects.
+    # Don't actually shut Unsloth down: an unauthenticated call must 401/403 before the trigger fires.
     if path == "/api/shutdown":
         code, _ = http(method, path)
         if code in (401, 403):
@@ -674,17 +590,12 @@ for method, path in EXPECTED_AUTH_ENDPOINTS:
         fail(f"{method} {path} unauthenticated returned {code} (expected 401/403)")
 for method, path in PUBLIC:
     code, _ = http(method, path)
-    if (
-        200 <= code < 500
-    ):  # public endpoints either 200 or 4xx (bad input), never connection-refused
+    if 200 <= code < 500:  # public endpoints: 200 or 4xx, never connection-refused
         ok(f"{method} {path} public -> {code}")
     else:
         fail(f"{method} {path} public returned unexpected {code}")
 
 
-# ─────────────────────────────────────────────────────────────────────────
-# Summary
-# ─────────────────────────────────────────────────────────────────────────
 os.write(1, b"\n")
 if _warned:
     _emit(
@@ -700,6 +611,6 @@ if _failed:
     sys.exit(1)
 _emit(
     "",
-    "PASS all Studio API & Auth assertions"
+    "PASS all Unsloth API & Auth assertions"
     + (f" ({len(_warned)} audit findings logged)" if _warned else ""),
 )

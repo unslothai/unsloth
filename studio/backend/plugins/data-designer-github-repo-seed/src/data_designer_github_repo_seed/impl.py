@@ -16,14 +16,8 @@ from .config import GitHubRepoSeedSource
 from .scraper import ScrapeConfig, materialize_to_jsonl
 
 
-# In-process cache mapping a stable config signature to the JSONL materialization
-# path. A single recipe job invokes the seed reader multiple times (validation,
-# preview, per-column sampling), and the default flow re-scrapes the repo on
-# every call: for a 2-repo preview that is ~15s of redundant GitHub GraphQL
-# traffic before any generation fires. Memoize the materialization so the second
-# and third passes reuse the file the first pass wrote. Cache key excludes the
-# raw token and uses a short SHA-256 digest so token values never hit memory
-# twice and token rotation invalidates cleanly.
+# Memoize seed materialization so a recipe job does not re-scrape GitHub on every call; the key
+# uses a short SHA-256 of the token, so the raw value never hits memory twice.
 _SCRAPE_CACHE: dict[tuple, str] = {}
 _SCRAPE_CACHE_LOCK = threading.Lock()
 
@@ -47,8 +41,7 @@ def _lookup_cached_scrape(key: tuple) -> Optional[str]:
         path = _SCRAPE_CACHE.get(key)
     if path and Path(path).exists():
         return path
-    # Stale entry (tmp cleanup, user restarted, ...); drop it so the caller
-    # materializes a fresh file rather than returning a dangling path.
+    # Stale entry (tmp cleanup/restart); drop it so the caller re-materializes.
     if path:
         with _SCRAPE_CACHE_LOCK:
             _SCRAPE_CACHE.pop(key, None)

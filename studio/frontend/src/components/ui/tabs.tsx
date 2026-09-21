@@ -54,7 +54,7 @@ export const tabsListVariants = cva(
     variants: {
       variant: {
         default: "bg-muted",
-        line: "gap-1 bg-transparent",
+        line: "gap-2 bg-transparent group-data-horizontal/tabs:h-auto",
       },
     },
     defaultVariants: {
@@ -66,25 +66,38 @@ export const tabsListVariants = cva(
 export function TabsList({
   className,
   variant = "default",
+  unstyled = false,
   ...props
 }: React.ComponentProps<typeof TabsPrimitive.List> &
-  VariantProps<typeof tabsListVariants>): React.ReactElement {
+  VariantProps<typeof tabsListVariants> & {
+    unstyled?: boolean;
+  }): React.ReactElement {
   return (
     <TabsPrimitive.List
       data-slot="tabs-list"
       data-variant={variant}
-      className={cn(tabsListVariants({ variant }), className)}
+      className={cn(
+        unstyled
+          ? "group/tabs-list text-muted-foreground inline-flex items-center justify-center group-data-[orientation=vertical]/tabs:flex-col"
+          : tabsListVariants({ variant }),
+        className,
+      )}
       {...props}
     />
   );
 }
 
+type TabsTriggerProps = React.ComponentProps<typeof TabsPrimitive.Trigger> & {
+  indicatorClassName?: string;
+};
+
 export function TabsTrigger({
   className,
+  indicatorClassName,
   value,
   children,
   ...props
-}: React.ComponentProps<typeof TabsPrimitive.Trigger>): React.ReactElement {
+}: TabsTriggerProps): React.ReactElement {
   const ctx = React.useContext(TabsContext);
   const isActive = ctx.value === value;
 
@@ -93,10 +106,14 @@ export function TabsTrigger({
       data-slot="tabs-trigger"
       value={value}
       className={cn(
-        "gap-1.5 rounded-xl corner-squircle border border-transparent px-2 py-1 text-sm font-medium group-data-vertical/tabs:px-2.5 group-data-vertical/tabs:py-1.5 [&_svg:not([class*='size-'])]:size-4 focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:outline-ring text-foreground/60 hover:text-foreground dark:text-muted-foreground dark:hover:text-foreground relative inline-flex h-[calc(100%-1px)] flex-1 items-center justify-center whitespace-nowrap transition-colors group-data-[orientation=vertical]/tabs:w-full group-data-[orientation=vertical]/tabs:justify-start focus-visible:ring-[3px] focus-visible:outline-1 disabled:pointer-events-none disabled:opacity-50 [&_svg]:pointer-events-none [&_svg]:shrink-0",
+        "gap-1.5 rounded-xl corner-squircle border border-transparent px-2 py-1 text-sm font-medium group-data-vertical/tabs:px-2.5 group-data-vertical/tabs:py-1.5 [&_svg:not([class*='size-'])]:size-4 focus-visible:border-ring dark:focus-visible:border-ring text-foreground/60 hover:text-foreground dark:text-muted-foreground dark:hover:text-foreground relative inline-flex h-[calc(100%-1px)] flex-1 items-center justify-center whitespace-nowrap transition-colors group-data-[orientation=vertical]/tabs:w-full group-data-[orientation=vertical]/tabs:justify-start disabled:pointer-events-none disabled:opacity-50 [&_svg]:pointer-events-none [&_svg]:shrink-0",
         "group-data-[variant=line]/tabs-list:bg-transparent group-data-[variant=line]/tabs-list:data-active:bg-transparent dark:group-data-[variant=line]/tabs-list:data-active:border-transparent dark:group-data-[variant=line]/tabs-list:data-active:bg-transparent",
+        // Line variant is a roomier pill (no underline); padding overrides px-2 py-1.
+        "group-data-[variant=line]/tabs-list:px-3.5 group-data-[variant=line]/tabs-list:py-2.5",
         "data-active:text-foreground dark:data-active:text-foreground",
-        "after:bg-foreground after:absolute after:opacity-0 after:transition-opacity group-data-[orientation=horizontal]/tabs:after:inset-x-0 group-data-[orientation=horizontal]/tabs:after:bottom-[-5px] group-data-[orientation=horizontal]/tabs:after:h-0.5 group-data-[orientation=vertical]/tabs:after:inset-y-0 group-data-[orientation=vertical]/tabs:after:-right-1 group-data-[orientation=vertical]/tabs:after:w-0.5 group-data-[variant=line]/tabs-list:data-active:after:opacity-100",
+        // The sliding pill marks the active tab; no focus ring on top of it.
+        "data-active:focus-visible:ring-0 data-active:focus-visible:border-transparent dark:data-active:focus-visible:border-transparent data-active:focus-visible:outline-none",
+        "after:bg-foreground after:absolute after:opacity-0 after:transition-opacity group-data-[orientation=horizontal]/tabs:after:inset-x-0 group-data-[orientation=horizontal]/tabs:after:bottom-[-5px] group-data-[orientation=horizontal]/tabs:after:h-0.5 group-data-[orientation=vertical]/tabs:after:inset-y-0 group-data-[orientation=vertical]/tabs:after:-right-1 group-data-[orientation=vertical]/tabs:after:w-0.5",
         className,
       )}
       {...props}
@@ -104,7 +121,11 @@ export function TabsTrigger({
       {isActive && (
         <motion.span
           layoutId={`tab-bg-${ctx.id}`}
-          className="absolute inset-0 rounded-xl bg-background dark:bg-input/30 dark:border dark:border-input"
+          className={cn(
+            "absolute inset-0",
+            indicatorClassName ??
+              "rounded-xl bg-background dark:bg-input/30 group-data-[variant=line]/tabs-list:bg-[#ececec] dark:group-data-[variant=line]/tabs-list:bg-[#2d2f33] dark:group-data-[variant=line]/tabs-list:border-0",
+          )}
           transition={{
             type: "spring",
             stiffness: 500,

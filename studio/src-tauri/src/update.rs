@@ -1,4 +1,5 @@
 use crate::diagnostics::{self, AttemptLog, DiagnosticsState};
+use crate::process::trim_line_endings;
 use log::{error, info, warn};
 use process_wrap::std::*;
 use std::io::BufRead;
@@ -6,22 +7,13 @@ use std::process::{Command, ExitStatus, Stdio};
 use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Emitter};
 
-// ── Types ──
 
+#[derive(Default)]
 pub struct UpdateProcess {
     pub child: Option<Box<dyn ChildWrapper + Send>>,
     pub intentional_stop: bool,
     pub current_attempt: Option<AttemptLog>,
-}
-
-impl Default for UpdateProcess {
-    fn default() -> Self {
-        Self {
-            child: None,
-            intentional_stop: false,
-            current_attempt: None,
-        }
-    }
+    repair_in_flight: bool,
 }
 
 pub type UpdateState = Arc<Mutex<UpdateProcess>>;
@@ -30,7 +22,65 @@ pub fn new_update_state() -> UpdateState {
     Arc::new(Mutex::new(UpdateProcess::default()))
 }
 
-// ── Spawn ──
+const UPDATE_ARGS: &[&str] = &["studio", "update"];
+
+pub(crate) enum UpdateKind {
+    Backend,
+    Repair(String),
+}
+
+impl UpdateKind {
+    fn progress_event(&self) -> &'static str {
+        match self {
+            UpdateKind::Backend => "update-progress",
+            UpdateKind::Repair(_) => "repair-progress",
+        }
+    }
+
+    fn terminal_events(&self) -> Option<(&'static str, &'static str)> {
+        match self {
+            UpdateKind::Backend => Some(("update-complete", "update-failed")),
+            UpdateKind::Repair(_) => None,
+        }
+    }
+}
+
+fn build_update_command(bin: &std::path::Path, args: &[&str]) -> Result<Command, String> {
+    // Only the Windows arm below mutates it.
+    #[cfg_attr(not(windows), allow(unused_mut))]
+    // Isolated, as this call site shipped: it is the one managed invocation nobody types by
+    // hand and the one that decides which install gets rewritten, so a user-site unsloth_cli
+    // must not answer `from unsloth_cli import app` here.
+    let mut cmd = crate::process::build_managed_cli_command_with(
+        bin,
+        args,
+        crate::process::Isolation::Isolated,
+    )?;
+    // The only managed invocation that scrubs: a foreign PYTHONHOME stops the managed
+    // interpreter finding its own site-packages, and a PYTHONPATH pointing at another checkout
+    // updates the wrong install.
+    cmd.env_remove("PYTHONHOME");
+    cmd.env_remove("PYTHONPATH");
+    Ok(cmd)
+}
+
+fn configure_tauri_update_environment(cmd: &mut Command) {
+    // The desktop owns its shortcuts and frontend bundle; this update needs only backend deps.
+    cmd.env_remove("UNSLOTH_STUDIO_HOME");
+    cmd.env_remove("STUDIO_HOME");
+    cmd.env("UNSLOTH_TAURI_UPDATE", "1");
+    cmd.env("SKIP_STUDIO_FRONTEND", "1");
+    cmd.env(
+        "UNSLOTH_DESKTOP_BACKEND_VERSION",
+        crate::preflight::expected_backend_version(),
+    );
+}
+
+// The shell holds the retained POSIX flock around the whole update child, so the CLI must
+// inherit the gate rather than take it again. Set everywhere, as Windows always did.
+fn configure_runtime_gate_environment(cmd: &mut Command) {
+    cmd.env(crate::process::STUDIO_RUNTIME_GATE_HANDOFF_ENV, "1");
+}
 
 fn spawn_update(
     bin: &std::path::Path,
@@ -48,23 +98,33 @@ fn spawn_update(
     }
     update.intentional_stop = false;
 
-    let mut cmd = Command::new(bin);
-    cmd.args(["studio", "update"])
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
+    let mut cmd = build_update_command(bin, UPDATE_ARGS)?;
+    cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
 
-    // AppImage sets LD_LIBRARY_PATH to its bundled libs, which breaks Python
+    // A login-started desktop inherits C:\Windows\system32, which the CLI refuses to run from.
+    crate::process::apply_managed_cli_context(&mut cmd).map_err(|error| {
+        format!(
+            "Failed to pick a working directory for the update: {}",
+            error
+        )
+    })?;
+
+    // PYTHONPATH is dropped by the context itself on Windows, where -I covers only the first
+    // interpreter and the update starts more.
+
     #[cfg(target_os = "linux")]
-    if std::env::var_os("APPIMAGE").is_some() {
-        cmd.env_remove("LD_LIBRARY_PATH");
-        cmd.env_remove("PYTHONHOME");
-        cmd.env_remove("PYTHONPATH");
-    }
+    crate::process::scrub_appimage_python_env(&mut cmd);
 
-    // Tauri manages the legacy root; scrub so 'unsloth studio update' targets
-    // the same install the desktop app uses, not an inherited custom root.
-    cmd.env_remove("UNSLOTH_STUDIO_HOME");
-    cmd.env_remove("STUDIO_HOME");
+    // Keep the update on the desktop-managed install and skip assets already in the bundle.
+    configure_tauri_update_environment(&mut cmd);
+    configure_runtime_gate_environment(&mut cmd);
+
+    // read_lossy_lines decodes as UTF-8; the child is Python, which otherwise uses the locale page.
+    #[cfg(windows)]
+    {
+        cmd.env("PYTHONUTF8", "1");
+        cmd.env("PYTHONIOENCODING", "utf-8");
+    }
 
     #[cfg(windows)]
     let mut child: Box<dyn ChildWrapper + Send> = {
@@ -91,13 +151,35 @@ fn spawn_update(
     Ok((stdout, stderr))
 }
 
-// ── Stream ──
+
+fn read_lossy_lines<R: std::io::Read>(
+    stream: R,
+    mut on_line: impl FnMut(String),
+) -> std::io::Result<()> {
+    let mut reader = std::io::BufReader::new(stream);
+    let mut buf = Vec::new();
+    loop {
+        buf.clear();
+        if reader.read_until(b'\n', &mut buf)? == 0 {
+            return Ok(());
+        }
+        on_line(String::from_utf8_lossy(trim_line_endings(&buf)).into_owned());
+    }
+}
+
+fn structured_update_error(text: &str) -> Option<String> {
+    text.strip_prefix("[TAURI:ERROR] ")
+        .map(str::trim)
+        .filter(|message| !message.is_empty())
+        .map(str::to_owned)
+}
 
 fn stream_output(
     app: &AppHandle,
     progress_event: &'static str,
     diagnostics: DiagnosticsState,
     attempt: AttemptLog,
+    explicit_error: Arc<Mutex<Option<String>>>,
     stdout: Option<std::process::ChildStdout>,
     stderr: Option<std::process::ChildStderr>,
 ) -> Vec<std::thread::JoinHandle<()>> {
@@ -107,35 +189,26 @@ fn stream_output(
         let app_clone = app.clone();
         let diagnostics_clone = diagnostics.clone();
         let attempt_clone = attempt.clone();
+        let explicit_error_clone = explicit_error.clone();
         threads.push(std::thread::spawn(move || {
-            let reader = std::io::BufReader::new(out);
-            for line in reader.lines() {
-                match line {
-                    Ok(text) => {
-                        diagnostics::append_phase_line(&attempt_clone.handle, "stdout", &text);
-                        if let Some(step) = text.strip_prefix("[TAURI:STEP] ") {
-                            diagnostics::record_step(&diagnostics_clone, &attempt_clone, step);
-                        } else if let Some(progress) = text.strip_prefix("[TAURI:PROGRESS] ") {
-                            diagnostics::record_progress(
-                                &diagnostics_clone,
-                                &attempt_clone,
-                                progress,
-                            );
-                        } else if let Some(marker) = text.strip_prefix("[TAURI:DIAG] ") {
-                            diagnostics::record_diag_marker(
-                                &diagnostics_clone,
-                                &attempt_clone,
-                                marker,
-                            );
-                        }
-                        info!("[update][stdout] {}", text);
-                        let _ = app_clone.emit(progress_event, &text);
-                    }
-                    Err(e) => {
-                        warn!("[update] Error reading stdout: {}", e);
-                        break;
+            if let Err(e) = read_lossy_lines(out, |text| {
+                diagnostics::append_phase_line(&attempt_clone.handle, "stdout", &text);
+                if let Some(step) = text.strip_prefix("[TAURI:STEP] ") {
+                    diagnostics::record_step(&diagnostics_clone, &attempt_clone, step);
+                } else if let Some(progress) = text.strip_prefix("[TAURI:PROGRESS] ") {
+                    diagnostics::record_progress(&diagnostics_clone, &attempt_clone, progress);
+                } else if let Some(marker) = text.strip_prefix("[TAURI:DIAG] ") {
+                    diagnostics::record_diag_marker(&diagnostics_clone, &attempt_clone, marker);
+                }
+                if let Some(message) = structured_update_error(&text) {
+                    if let Ok(mut error) = explicit_error_clone.lock() {
+                        *error = Some(message);
                     }
                 }
+                info!("[update][stdout] {}", text);
+                let _ = app_clone.emit(progress_event, &text);
+            }) {
+                warn!("[update] Error reading stdout: {}", e);
             }
         }));
     }
@@ -144,19 +217,12 @@ fn stream_output(
         let app_clone = app.clone();
         let attempt_clone = attempt.clone();
         threads.push(std::thread::spawn(move || {
-            let reader = std::io::BufReader::new(err);
-            for line in reader.lines() {
-                match line {
-                    Ok(text) => {
-                        diagnostics::append_phase_line(&attempt_clone.handle, "stderr", &text);
-                        warn!("[update][stderr] {}", text);
-                        let _ = app_clone.emit(progress_event, &text);
-                    }
-                    Err(e) => {
-                        warn!("[update] Error reading stderr: {}", e);
-                        break;
-                    }
-                }
+            if let Err(e) = read_lossy_lines(err, |text| {
+                diagnostics::append_phase_line(&attempt_clone.handle, "stderr", &text);
+                warn!("[update][stderr] {}", text);
+                let _ = app_clone.emit(progress_event, &text);
+            }) {
+                warn!("[update] Error reading stderr: {}", e);
             }
         }));
     }
@@ -164,12 +230,13 @@ fn stream_output(
     threads
 }
 
-// ── Wait ──
 
 fn wait_for_exit(state: &UpdateState) -> Result<(ExitStatus, bool), String> {
     const MAX_WAIT_ITERATIONS: u32 = 72_000; // 2h at 100ms intervals
     for _ in 0..MAX_WAIT_ITERATIONS {
-        let mut update = state.lock().map_err(|e| e.to_string())?;
+        let mut update = state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let intentional = update.intentional_stop;
 
         match update.child.as_mut() {
@@ -184,7 +251,7 @@ fn wait_for_exit(state: &UpdateState) -> Result<(ExitStatus, bool), String> {
                     return Err(format!("Error waiting for update: {}", e));
                 }
             },
-            None if intentional => return Err("Update stopped.".to_string()),
+            None if intentional => return Err(UPDATE_STOPPED.to_string()),
             None => return Err("Update process disappeared unexpectedly.".to_string()),
         }
 
@@ -195,14 +262,13 @@ fn wait_for_exit(state: &UpdateState) -> Result<(ExitStatus, bool), String> {
     Err("Update timed out after 2 hours".to_string())
 }
 
-// ── Public API ──
 
 pub fn run_backend_update(
     app: AppHandle,
     state: UpdateState,
     diagnostics: DiagnosticsState,
 ) -> Result<(), String> {
-    run_backend_update_with_terminal_events(app, state, diagnostics, true, None)
+    run_update(app, state, diagnostics, UpdateKind::Backend)
 }
 
 pub(crate) fn run_backend_update_for_repair(
@@ -211,19 +277,20 @@ pub(crate) fn run_backend_update_for_repair(
     diagnostics: DiagnosticsState,
     repair_group_id: String,
 ) -> Result<(), String> {
-    run_backend_update_with_terminal_events(app, state, diagnostics, false, Some(repair_group_id))
+    run_update(app, state, diagnostics, UpdateKind::Repair(repair_group_id))
 }
 
-fn run_backend_update_with_terminal_events(
+fn run_update(
     app: AppHandle,
     state: UpdateState,
     diagnostics: DiagnosticsState,
-    terminal_events: bool,
-    repair_group_id: Option<String>,
+    kind: UpdateKind,
 ) -> Result<(), String> {
-    let attempt = match repair_group_id.as_deref() {
-        Some(group_id) => diagnostics::begin_repair_child(&diagnostics, group_id, "update"),
-        None => diagnostics::begin_update_attempt(&diagnostics),
+    let attempt = match &kind {
+        UpdateKind::Repair(group_id) => {
+            diagnostics::begin_repair_child(&diagnostics, group_id, "update")
+        }
+        _ => diagnostics::begin_update_attempt(&diagnostics),
     };
     if let Ok(mut update) = state.lock() {
         update.current_attempt = Some(attempt.clone());
@@ -245,40 +312,38 @@ fn run_backend_update_with_terminal_events(
         "meta",
         &format!("Starting backend update via {:?}", bin),
     );
-    let progress_event = if terminal_events {
-        "update-progress"
-    } else {
-        "repair-progress"
-    };
+    let progress_event = kind.progress_event();
     let _ = app.emit(progress_event, "Starting backend update...");
 
-    let (stdout, stderr) = match spawn_update(&bin, &state) {
-        Ok(handles) => handles,
-        Err(msg) => {
-            diagnostics::finish_attempt(
-                &diagnostics,
-                &attempt,
-                None,
-                false,
-                Some(format!("spawn_update: {msg}")),
-            );
-            clear_current_attempt(&state);
-            return Err(msg);
-        }
-    };
-    let threads = stream_output(
-        &app,
-        progress_event,
-        diagnostics.clone(),
-        attempt.clone(),
-        stdout,
-        stderr,
-    );
+    let explicit_error = Arc::new(Mutex::new(None));
+    // Update mutates the managed environment for its whole lifetime. Synchronous, so the
+    // thread-owned Win32 mutex never crosses an await.
+    let result = crate::process::with_studio_runtime_launch_guard(|| {
+        crate::process::ensure_managed_environment_is_idle(&bin)?;
+        // Under the gate and after the idle scan. A 805-807 rollback the last launch deferred
+        // still names the live runtime as something to undo, and updating on top of that journal
+        // has the next idle launch restoring the pre-update trees over everything installed here.
+        crate::staged_update::reconcile_before_update(&crate::diagnostics::studio_dir())?;
+        let (stdout, stderr) =
+            spawn_update(&bin, &state).map_err(|msg| format!("spawn_update: {msg}"))?;
+        let threads = stream_output(
+            &app,
+            progress_event,
+            diagnostics.clone(),
+            attempt.clone(),
+            explicit_error.clone(),
+            stdout,
+            stderr,
+        );
 
-    let result = wait_for_exit(&state);
-    for handle in threads {
-        let _ = handle.join();
-    }
+        let result = wait_for_exit(&state);
+        for handle in threads {
+            let _ = handle.join();
+        }
+        result
+    });
+    // Read only after the guard returned, so both reader threads are joined.
+    let explicit_error = explicit_error.lock().ok().and_then(|error| error.clone());
 
     match result {
         Ok((status, _)) if status.success() => {
@@ -291,8 +356,8 @@ fn run_backend_update_with_terminal_events(
             );
             clear_current_attempt(&state);
             info!("[update] Backend update complete");
-            if terminal_events {
-                let _ = app.emit("update-complete", ());
+            if let Some((complete, _)) = kind.terminal_events() {
+                let _ = app.emit(complete, ());
             }
             Ok(())
         }
@@ -302,15 +367,15 @@ fn run_backend_update_with_terminal_events(
                 &attempt,
                 Some(status.to_string()),
                 true,
-                Some("Update stopped.".to_string()),
+                Some(UPDATE_STOPPED.to_string()),
             );
             clear_current_attempt(&state);
             info!("[update] Update stopped intentionally");
-            Err("Update stopped.".to_string())
+            Err(UPDATE_STOPPED.to_string())
         }
         Ok((status, intentional)) => {
             let code = status.code().unwrap_or(-1);
-            let msg = format!("Update exited with code {}", code);
+            let msg = explicit_error.unwrap_or_else(|| format!("Update exited with code {}", code));
             diagnostics::finish_attempt(
                 &diagnostics,
                 &attempt,
@@ -320,8 +385,8 @@ fn run_backend_update_with_terminal_events(
             );
             clear_current_attempt(&state);
             error!("[update] {}", msg);
-            if terminal_events {
-                let _ = app.emit("update-failed", &msg);
+            if let Some((_, failed)) = kind.terminal_events() {
+                let _ = app.emit(failed, &msg);
             }
             Err(msg)
         }
@@ -329,8 +394,8 @@ fn run_backend_update_with_terminal_events(
             diagnostics::finish_attempt(&diagnostics, &attempt, None, false, Some(msg.clone()));
             clear_current_attempt(&state);
             error!("[update] {}", msg);
-            if terminal_events {
-                let _ = app.emit("update-failed", &msg);
+            if let Some((_, failed)) = kind.terminal_events() {
+                let _ = app.emit(failed, &msg);
             }
             Err(msg)
         }
@@ -340,6 +405,46 @@ fn run_backend_update_with_terminal_events(
 fn clear_current_attempt(state: &UpdateState) {
     if let Ok(mut update) = state.lock() {
         update.current_attempt = None;
+    }
+}
+
+pub fn is_update_running(state: &UpdateState) -> bool {
+    state
+        .lock()
+        .map(|update| update.child.is_some())
+        .unwrap_or(false)
+}
+
+pub fn is_repair_running(state: &UpdateState) -> bool {
+    state
+        .lock()
+        .map(|update| update.repair_in_flight)
+        .unwrap_or(false)
+}
+
+/// Held for a whole repair: between its update and installer phases no child runs.
+pub struct RepairInFlight(UpdateState);
+
+impl RepairInFlight {
+    pub fn claim(state: &UpdateState) -> Result<Self, String> {
+        let mut update = state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if update.child.is_some() || update.repair_in_flight {
+            return Err("An update or repair is already running.".to_string());
+        }
+        update.repair_in_flight = true;
+        Ok(Self(state.clone()))
+    }
+}
+
+impl Drop for RepairInFlight {
+    fn drop(&mut self) {
+        let mut update = self
+            .0
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        update.repair_in_flight = false;
     }
 }
 
@@ -357,6 +462,29 @@ pub fn record_update_intentional_stop(state: &UpdateState, diagnostics: &Diagnos
             Some("intentional_stop".to_string()),
         );
     }
+}
+
+pub const UPDATE_STOPPED: &str = "Update stopped.";
+
+#[cfg(unix)]
+fn process_group_alive(process_group: i32) -> bool {
+    let result = unsafe { libc::kill(-process_group, 0) };
+    result == 0 || std::io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH)
+}
+
+#[cfg(unix)]
+fn signal_process_group(process_group: i32, signal: i32) -> Result<(), String> {
+    let result = unsafe { libc::kill(-process_group, signal) };
+    if result == 0 {
+        return Ok(());
+    }
+    let error = std::io::Error::last_os_error();
+    if error.raw_os_error() == Some(libc::ESRCH) {
+        return Ok(());
+    }
+    Err(format!(
+        "Could not signal update process group {process_group}: {error}"
+    ))
 }
 
 pub fn stop_update(state: &UpdateState) -> Result<(), String> {
@@ -387,20 +515,44 @@ pub fn stop_update(state: &UpdateState) -> Result<(), String> {
             let _ = child.wait();
             return Ok(());
         }
-        unsafe {
-            libc::kill(-(pid as i32), libc::SIGTERM);
+        let process_group = pid as i32;
+        signal_process_group(process_group, libc::SIGTERM)?;
+        let mut leader_exited = false;
+        for _ in 0..50 {
+            if !leader_exited {
+                match child.try_wait() {
+                    Ok(Some(status)) => {
+                        leader_exited = true;
+                        info!("Update leader exited with status: {:?}", status);
+                    }
+                    Ok(None) => {}
+                    Err(error) => warn!("Could not poll update leader: {error}"),
+                }
+            }
+            if !process_group_alive(process_group) {
+                if !leader_exited {
+                    let _ = child.wait();
+                }
+                info!("Update process group stopped gracefully");
+                return Ok(());
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+        warn!("Update process group did not exit gracefully, force killing");
+        signal_process_group(process_group, libc::SIGKILL)?;
+        if !leader_exited {
+            let _ = child.wait();
         }
         for _ in 0..50 {
-            match child.try_wait() {
-                Ok(Some(status)) => {
-                    info!("Update exited gracefully with status: {:?}", status);
-                    return Ok(());
-                }
-                Ok(None) => std::thread::sleep(std::time::Duration::from_millis(100)),
-                Err(_) => break,
+            if !process_group_alive(process_group) {
+                info!("Update process group force stopped");
+                return Ok(());
             }
+            std::thread::sleep(std::time::Duration::from_millis(100));
         }
-        warn!("Update did not exit gracefully, force killing");
+        return Err(format!(
+            "Update process group {process_group} is still running after SIGKILL"
+        ));
     }
 
     #[cfg(windows)]
@@ -408,12 +560,215 @@ pub fn stop_update(state: &UpdateState) -> Result<(), String> {
         crate::process::force_kill_process_tree(pid, child, "Update");
         return Ok(());
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Cursor;
+
+    #[test]
+    fn a_repair_is_running_until_its_claim_drops() {
+        let state = new_update_state();
+        let repair = RepairInFlight::claim(&state).unwrap();
+        assert!(is_repair_running(&state));
+        assert!(RepairInFlight::claim(&state).is_err());
+
+        drop(repair);
+        assert!(!is_repair_running(&state));
+        assert!(RepairInFlight::claim(&state).is_ok());
+    }
+
+    #[test]
+    fn tauri_backend_update_skips_the_web_frontend_build() {
+        use std::ffi::OsStr;
+
+        let mut cmd = Command::new("unused");
+        configure_tauri_update_environment(&mut cmd);
+
+        for name in ["UNSLOTH_STUDIO_HOME", "STUDIO_HOME"] {
+            assert!(cmd
+                .get_envs()
+                .any(|(key, value)| key == OsStr::new(name) && value.is_none()));
+        }
+        for (name, expected) in [("UNSLOTH_TAURI_UPDATE", "1"), ("SKIP_STUDIO_FRONTEND", "1")] {
+            assert!(cmd.get_envs().any(|(key, value)| {
+                key == OsStr::new(name) && value == Some(OsStr::new(expected))
+            }));
+        }
+    }
+
+    #[test]
+    fn lossy_reader_keeps_invalid_utf8_and_later_lines() {
+        let mut lines = Vec::new();
+        read_lossy_lines(Cursor::new(b"bad\xff\r\n[TAURI:STEP] next\n"), |line| {
+            lines.push(line)
+        })
+        .unwrap();
+
+        assert_eq!(lines, ["bad\u{fffd}", "[TAURI:STEP] next"]);
+    }
+
+    #[test]
+    fn structured_update_error_is_promoted_from_stdout() {
+        assert_eq!(
+            structured_update_error("[TAURI:ERROR] Access denied reading llama.cpp"),
+            Some("Access denied reading llama.cpp".to_string())
+        );
+        assert_eq!(structured_update_error("[TAURI:ERROR]   "), None);
+        assert_eq!(structured_update_error("ordinary update output"), None);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_update_command_uses_python_not_replaceable_console_stub() {
+        use std::ffi::OsString;
+
+        let dir =
+            std::env::temp_dir().join(format!("unsloth-update-command-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let python = dir.join("python.exe");
+        let bin = dir.join("unsloth.exe");
+        std::fs::write(&python, b"").unwrap();
+
+        let cmd = build_update_command(&bin, UPDATE_ARGS).unwrap();
+
+        assert_eq!(cmd.get_program(), python.as_os_str());
+        assert_ne!(cmd.get_program(), bin.as_os_str());
+        assert_eq!(
+            cmd.get_args().map(OsString::from).collect::<Vec<_>>(),
+            vec![
+                // -I here and nowhere else: this invocation decides which install gets
+                // rewritten, and a user-site unsloth_cli would update the wrong one.
+                OsString::from("-X"),
+                OsString::from("utf8"),
+                OsString::from("-I"),
+                OsString::from("-c"),
+                OsString::from(crate::process::WINDOWS_CLI_ENTRYPOINT),
+                OsString::from("studio"),
+                OsString::from("update")
+            ]
+        );
+        // PYTHONHOME / PYTHONPATH handling is asserted in
+        // windows_update_command_still_scrubs_the_python_search_path below.
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_update_command_fails_closed_without_managed_python() {
+        let bin = std::env::temp_dir()
+            .join("missing-managed-python")
+            .join("unsloth.exe");
+        assert!(build_update_command(&bin, UPDATE_ARGS)
+            .unwrap_err()
+            .contains("python.exe"));
+    }
+
+    // Without -E the child reads PYTHONHOME and PYTHONPATH; see build_update_command.
+    #[test]
+    fn update_command_scrubs_the_python_search_path() {
+        let dir = std::env::temp_dir().join(format!(
+            "unsloth-update-scrub-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let python = dir.join("python.exe");
+        let bin = dir.join("unsloth.exe");
+        std::fs::write(&python, "").unwrap();
+        std::fs::write(&bin, "").unwrap();
+
+        let cmd = build_update_command(&bin, UPDATE_ARGS).unwrap();
+        for name in ["PYTHONHOME", "PYTHONPATH"] {
+            assert!(
+                cmd.get_envs()
+                    .any(|(key, value)| key == std::ffi::OsStr::new(name) && value.is_none()),
+                "{name} is not scrubbed for the updater"
+            );
+        }
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    // macOS and Linux still exec the console script.
+    #[cfg(not(windows))]
+    #[test]
+    fn posix_update_command_still_execs_the_console_script() {
+        use std::ffi::OsString;
+
+        let bin = std::path::Path::new("/opt/unsloth/bin/unsloth");
+        let cmd = build_update_command(bin, UPDATE_ARGS).unwrap();
+
+        assert_eq!(cmd.get_program(), bin.as_os_str());
+        assert_eq!(
+            cmd.get_args().map(OsString::from).collect::<Vec<_>>(),
+            vec![OsString::from("studio"), OsString::from("update")]
+        );
+        for name in ["PYTHONHOME", "PYTHONPATH"] {
+            assert!(cmd
+                .get_envs()
+                .any(|(key, value)| key == std::ffi::OsStr::new(name) && value.is_none()));
+        }
+    }
+
+    // POSIX updates fail "busy" against the shell's own retained flock unless the child
+    // inherits it, so the handoff is set on every platform.
+    #[test]
+    fn update_child_uses_the_parent_runtime_gate_on_every_platform() {
+        use std::ffi::OsStr;
+
+        let mut cmd = Command::new("unused");
+        configure_runtime_gate_environment(&mut cmd);
+
+        assert!(cmd.get_envs().any(|(key, value)| {
+            key == OsStr::new(crate::process::STUDIO_RUNTIME_GATE_HANDOFF_ENV)
+                && value == Some(OsStr::new("1"))
+        }));
+    }
 
     #[cfg(unix)]
-    {
-        let _ = child.kill();
-        let _ = child.wait();
-        info!("Update process group force stopped");
-        Ok(())
+    #[test]
+    fn stop_update_kills_descendants_after_the_group_leader_exits() {
+        let dir = tempfile::tempdir().unwrap();
+        let child_pid_file = dir.path().join("child.pid");
+        let mut command = Command::new("/bin/sh");
+        command
+            .args([
+                "-c",
+                "trap 'exit 0' TERM; /bin/sh -c 'trap \"\" TERM; while :; do sleep 1; done' & echo $! > \"$1\"; while :; do sleep 1; done",
+                "update-test",
+            ])
+            .arg(&child_pid_file)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        let mut wrapped = CommandWrap::from(command);
+        wrapped.wrap(ProcessGroup::leader());
+        let child = wrapped.spawn().unwrap();
+        let process_group = child.id() as i32;
+        let state = new_update_state();
+        state.lock().unwrap().child = Some(child);
+
+        // Wait for a pid that PARSES, not merely for the path to appear: the redirection above
+        // creates the file before anything is written, so is_file() can win that race and read "".
+        let mut descendant = None;
+        for _ in 0..100 {
+            if let Ok(text) = std::fs::read_to_string(&child_pid_file) {
+                if let Ok(pid) = text.trim().parse::<i32>() {
+                    descendant = Some(pid);
+                    break;
+                }
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        let descendant = descendant.expect("the test child never wrote a usable descendant pid");
+
+        stop_update(&state).unwrap();
+
+        assert!(!process_group_alive(process_group));
+        assert_eq!(unsafe { libc::kill(descendant, 0) }, -1);
     }
 }
