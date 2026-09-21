@@ -4193,9 +4193,22 @@ def _rocm_linux_shared_pool_host_gb_by_index(devices: list[Dict[str, Any]]) -> D
         # `0.00 GiB VRAM + 64.00 GiB shared`. Measured on the AMD CI Strix Halo
         # against main; unsloth#7449 defect 1.
         #
-        # The 0.1 band is kept as the threshold for BELIEVING an excess, not for
-        # publishing a figure at all: below it the difference is rounding between
-        # two independently reported totals, and rounding is not host memory.
+        # The 0.1 band is the threshold for BELIEVING an excess, not for publishing a
+        # figure at all. It is NOT a rounding allowance: both totals carry 0.01 GiB, so
+        # rounding cannot reach a whole GiB, and a 4 GiB gap on a 64 GiB part is a real
+        # disagreement between two sources that count different things.
+        #
+        # Inside the band the split is genuinely undecided, and all three answers are
+        # imperfect. Publishing the excess would call the budget shared (see the caller:
+        # host_gb > 0 sets shared_memory, which collapses several rows into one pool) on
+        # a difference we do not trust. Omitting the index renders as "all of it is host
+        # memory", which IS unsloth#7449 defect 1 and the thing this function exists to
+        # stop. Zero attributes the disagreement to the dedicated heap, which is the
+        # smallest error of the three: at 64 vs 60 GiB it overstates dedicated memory by
+        # 4 GiB, where omitting understates it by all 64.
+        #
+        # Not settled on hardware: neither AMD CI runner has a small BIOS carve-out, so
+        # the in-band case was never measured, only reasoned about.
         shared[index] = round(excess, 2) if excess > 0.1 * torch_total else 0.0
     return shared
 
