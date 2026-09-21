@@ -14,8 +14,7 @@ was validated under the minter's root and then resolved under the owner's.
 from __future__ import annotations
 
 import asyncio
-
-import pytest
+import time
 
 from utils.account_context import (
     OWNER,
@@ -83,10 +82,17 @@ def test_an_owner_link_is_redeemed_as_the_owner(monkeypatch):
 
 
 def test_a_managed_link_dies_with_its_account(monkeypatch):
-    """get_account_by_id returning None means deactivated or deleted."""
+    """get_account_by_id returning None means deactivated or deleted.
+
+    Asserted on the resolver rather than by driving the dependency with request = None: a bare
+    pytest.raises(Exception) there passes on the AttributeError that the None request raises
+    before the fallback is ever consulted, which is true of the unpatched tree too.
+    """
     token = _mint_as(ALICE)
-    with pytest.raises(Exception):
-        _redeem(token, lambda account_id: None, monkeypatch)
+    import auth.storage
+
+    monkeypatch.setattr(auth.storage, "get_account_by_id", lambda account_id: None)
+    assert jobs._download_link_account(token, **PARTS) is None
 
 
 def test_one_accounts_link_does_not_verify_for_another(monkeypatch):
@@ -120,3 +126,31 @@ def test_the_account_lookup_is_offloaded_to_the_threadpool():
     source = inspect.getsource(jobs._authorize_dataset_download)
     assert "run_in_threadpool(" in source
     assert "_download_link_account(\n" not in source
+
+
+def test_a_non_ascii_signature_is_rejected_rather_than_raising():
+    """compare_digest on two str raises TypeError for non-ASCII, which would be a 500 on a route
+    whose whole job is to answer 401. Both token shapes reach the comparison, because the MAC is
+    checked before the expiry is parsed."""
+    for token in (f"{int(time.time()) + 60}.acct.ééé", "notanumber.acct.ééé"):
+        assert jobs._download_link_account(token, **PARTS) is None
+
+
+def test_the_signed_payload_is_injective_across_field_boundaries():
+    """A bare separator join lets one signature authorize two different parameter sets: the
+    separator is legal inside artifact_path and filename, so the boundary can be moved."""
+    shifted_left = jobs._download_link_payload(
+        account_id = ALICE.account_id,
+        job_id = "j",
+        export_format = "jsonl",
+        artifact_path = "a",
+        filename = "b\x1fc",
+    )
+    shifted_right = jobs._download_link_payload(
+        account_id = ALICE.account_id,
+        job_id = "j",
+        export_format = "jsonl",
+        artifact_path = "a\x1fb",
+        filename = "c",
+    )
+    assert shifted_left != shifted_right

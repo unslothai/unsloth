@@ -86,8 +86,11 @@ def _download_link_payload(
     # Every parameter the export reads, or the holder could swap artifact_path for another run's,
     # plus the account whose roots it will be read from: recipe roots are derived from the account
     # ContextVar, so the tenant is part of the object this capability names.
+    # Length-prefixed, because a bare separator join is not injective: artifact_path "a" with
+    # filename "b\x1fc" and artifact_path "a\x1fb" with filename "c" share one payload, so one
+    # signature would authorize both.
     parts = [account_id, job_id, export_format, artifact_path or "", filename or ""]
-    return "\x1f".join(parts)
+    return "\x1f".join(f"{len(part)}:{part}" for part in parts)
 
 
 def _sign_download_link(**parts: Any) -> str:
@@ -111,9 +114,16 @@ def _download_link_account(token: str, **parts: Any) -> AccountContext | None:
         return None
     if "." in signature:
         return None
+    # Compare as bytes: compare_digest on two str raises TypeError for a non-ASCII signature, which
+    # a %-encoded query value can carry, and that is a 500 where an invalid token owes a 401. The
+    # preview share link guards the same way.
+    try:
+        provided = signature.encode("ascii")
+    except UnicodeEncodeError:
+        return None
     payload = f"{_download_link_payload(account_id = account_id, **parts)}\x1f{expires_at}"
     expected = hmac.new(_DOWNLOAD_LINK_SECRET, payload.encode(), hashlib.sha256).hexdigest()
-    if not hmac.compare_digest(signature, expected):
+    if not hmac.compare_digest(provided, expected.encode("ascii")):
         return None
     try:
         if int(expires_at) < int(time.time()):
