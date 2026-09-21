@@ -14,7 +14,11 @@ const { extractDeltaText, parseAssistantContent } = await import(
 const { createSegmentedAssistantText } = await import(
   "../src/features/chat/utils/incremental-assistant-content.ts"
 );
-const { generationRawContent, restoreCarriedPartsFromRaw } = await import(
+const {
+  generationRawContent,
+  requestParsesThinkTags,
+  restoreCarriedPartsFromRaw,
+} = await import(
   "../src/features/chat/utils/chat-generation-recovery.ts"
 );
 
@@ -101,6 +105,31 @@ test("recovery replay keeps literal think text when the turn stamped it", () => 
   );
 });
 
+test("a recovery before the first client save reads the choice from the request", () => {
+  assert.equal(
+    requestParsesThinkTags({ thinking: { type: "disabled" } }),
+    false,
+  );
+  assert.equal(requestParsesThinkTags({ enable_thinking: false }), false);
+  assert.equal(requestParsesThinkTags({ reasoning_effort: "none" }), false);
+  assert.equal(requestParsesThinkTags({ thinking: { type: "enabled" } }), true);
+  assert.equal(
+    requestParsesThinkTags({ enable_thinking: true, reasoning_effort: "high" }),
+    true,
+  );
+  assert.equal(requestParsesThinkTags({ reasoning_effort: "low" }), true);
+  assert.equal(requestParsesThinkTags({}), true);
+
+  const { raw, carried } = generationRawContent([]);
+  const replayed = `${raw}Use <think>hi</think> in your prompt.`;
+  assert.deepEqual(
+    restoreCarriedPartsFromRaw(replayed, carried, {
+      parseThink: requestParsesThinkTags({ thinking: { type: "disabled" } }),
+    }),
+    [{ type: "text", text: "Use <think>hi</think> in your prompt." }],
+  );
+});
+
 test("the adapter and recovery follow the turn's think parse state", () => {
   const adapter = readSrc("features/chat/api/chat-adapter.ts");
   assert.match(adapter, /parseThinkTags: parseThink,/);
@@ -125,6 +154,11 @@ test("the adapter and recovery follow the turn's think parse state", () => {
     /let parseThink = metadata\.parseThinkTags !== false;/,
   );
   assert.match(recovery, /carried,\s*\{ parseThink \},/);
+  assert.match(
+    recovery,
+    /if \(typeof metadata\.parseThinkTags !== "boolean"\) \{\s*parseThink = requestParsesThinkTags\(update\.run\.requestPayload\);\s*currentMetadata = \{\s*\.\.\.currentMetadata,\s*parseThinkTags: parseThink,\s*\};/,
+    "the server placeholder has no flag until the first client save",
+  );
   assert.match(
     recovery,
     /if \(!parseThink && \(reasoning \|\| hasStructuredReasoning\)\) \{\s*parseThink = true;\s*currentMetadata = \{ \.\.\.currentMetadata, parseThinkTags: true \};/,

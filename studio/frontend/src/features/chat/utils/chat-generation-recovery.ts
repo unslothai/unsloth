@@ -357,6 +357,20 @@ export function restoreCarriedPartsFromRaw(
   return out;
 }
 
+// The adapter's think-parse decision, read back from the request it sent: the server-created
+// placeholder carries no parseThinkTags until the first client save.
+export function requestParsesThinkTags(payload: {
+  enable_thinking?: boolean | null;
+  reasoning_effort?: string | null;
+  thinking?: { type?: string } | null;
+}): boolean {
+  return !(
+    payload.thinking?.type === "disabled" ||
+    payload.enable_thinking === false ||
+    payload.reasoning_effort === "none"
+  );
+}
+
 function carriedPartKey({ at, part }: CarriedPart): string {
   const record = part as { type?: string; toolCallId?: string; id?: string };
   const id = record.toolCallId ?? record.id;

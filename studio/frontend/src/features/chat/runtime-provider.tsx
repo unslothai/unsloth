@@ -113,6 +113,7 @@ import {
   generationIsCorroboratedLive,
   threadHasDurableGenerationRun,
   generationNeedsRecovery,
+  requestParsesThinkTags,
   restoreCarriedPartsFromRaw,
   isLiveGenerationRun,
   generationRawContent,
@@ -1044,6 +1045,13 @@ function scheduleGenerationRecovery(
                 // request instead.
                 raw = lastRequestMessage.content;
               }
+            }
+            if (typeof metadata.parseThinkTags !== "boolean") {
+              parseThink = requestParsesThinkTags(update.run.requestPayload);
+              currentMetadata = {
+                ...currentMetadata,
+                parseThinkTags: parseThink,
+              };
             }
             identityValidated = true;
           }
