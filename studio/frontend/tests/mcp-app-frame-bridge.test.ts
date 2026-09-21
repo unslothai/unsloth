@@ -116,7 +116,7 @@ test("the token is minted per fetched template", () => {
 
 test("the view is seeded from the server's own blocks", () => {
   // _flatten_result builds the model-facing transcript: an image-only result reads
-  // "[1 image attached; displayed to the user]" and a structuredContent-only one is
+  // "[1 image returned]" and a structuredContent-only one is
   // a Python repr of the payload. Neither is in the server's CallToolResult, so the
   // seed comes from the blocks the envelope carries, image bytes put back from the
   // image sentinel rather than duplicated on the seed line.

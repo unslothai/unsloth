@@ -23,7 +23,6 @@ import {
 import { McpAppFrame } from "@/features/chat/mcp-apps/mcp-app-frame";
 import { sandboxSessionIdFor } from "@/components/assistant-ui/sandbox-files";
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
-import { useAuiState } from "@assistant-ui/react";
 import { stripAnsi, stringifyToolResult } from "@/lib/strip-ansi";
 import { cn } from "@/lib/utils";
 import {

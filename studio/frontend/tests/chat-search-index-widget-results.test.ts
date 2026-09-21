@@ -8,8 +8,10 @@ import { fileURLToPath } from "node:url";
 
 import ts from "typescript";
 
+import { splitMcpImages } from "../src/features/chat/api/mcp-images.ts";
+
 // Lifted out of the hook rather than imported: the module pulls in chat storage
-// and the runtime store for what is, here, three pure functions.
+// and the runtime store for what is, here, two pure functions.
 const source = readFileSync(
   fileURLToPath(new URL("../src/features/chat/hooks/use-chat-search-index.ts", import.meta.url)),
   "utf8",
@@ -27,18 +29,18 @@ const binaryKey = /^const BINARY_KEY = .*$/m.exec(source)?.[0];
 assert.ok(binaryKey, "BINARY_KEY is no longer defined in use-chat-search-index.ts");
 
 const searchableText = new Function(
+  "splitMcpImages",
   `${
     ts.transpileModule(
       [
         binaryKey,
-        slice("function stripMcpImageSuffix("),
         slice("function mcpWidgetText("),
         slice("function searchableText("),
       ].join("\n"),
       { compilerOptions: { target: ts.ScriptTarget.ES2020 } },
     ).outputText
   }; return searchableText;`,
-)() as (value: unknown, depth?: number, toolName?: string) => string;
+)(splitMcpImages) as (value: unknown, depth?: number, toolName?: string) => string;
 
 // What chat-adapter.ts persists for an MCP Apps result. `text` was on screen;
 // everything under `ui` is seed data for the frame.
