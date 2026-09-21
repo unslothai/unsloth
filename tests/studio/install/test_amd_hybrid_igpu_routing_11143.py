@@ -19,8 +19,6 @@ import importlib.util
 import sys
 from pathlib import Path
 
-import dataclasses
-
 import pytest
 
 
@@ -198,131 +196,87 @@ def test_only_a_flagged_marker_may_disagree_with_its_own_backend():
     assert ILP._marker_backend_fits_host(flagged, host) is True
 
 
-# ── The repick must not cost a host its published bundle ─────────────────────
-# Found by simulating the discrete preference above over the REAL published arch
-# coverage: among the shadowing arches only gfx1103 is served (by the gfx110X
-# family), so a gfx1103 APU beside a discrete arch this release does not build
-# (RDNA1 gfx1010-1012, or gfx1152) used to get a working prebuilt for the iGPU and
-# would have got a source build instead. Selection therefore tries the preferred
-# arch first and then the host's remaining physical arches, and only source-builds
-# when NO physical arch is served.
-
-_PUBLISHED_ROCM_COVERAGE = {
-    "gfx103X": ["gfx1030", "gfx1031", "gfx1032", "gfx1034"],
-    "gfx110X": ["gfx1100", "gfx1101", "gfx1102", "gfx1103"],
-    "gfx1150": ["gfx1150"],
-    "gfx1151": ["gfx1151"],
-    "gfx120X": ["gfx1200", "gfx1201"],
-    "gfx908": ["gfx908"],
-    "gfx90a": ["gfx90a"],
-}
+# ── What the discrete preference deliberately does NOT do ────────────────────
 
 
-def _rocm_bundle() -> "ILP.PublishedReleaseBundle":
-    """A bundle mirroring the fork's published linux-rocm families."""
-    artifacts, assets = [], {}
-    for family, mapped in _PUBLISHED_ROCM_COVERAGE.items():
-        asset = f"app-b11030-mix-linux-x64-rocm-{family}.tar.gz"
-        artifacts.append(
-            ILP.PublishedLlamaArtifact(
-                asset_name = asset,
-                install_kind = "linux-rocm",
-                runtime_line = None,
-                coverage_class = None,
-                supported_sms = [],
-                min_sm = None,
-                max_sm = None,
-                bundle_profile = None,
-                rank = 0,
-                gfx_target = family,
-                mapped_targets = list(mapped),
+def test_an_unserved_preferred_arch_source_builds_rather_than_using_the_igpus_bundle():
+    """The trade-off the preference accepts, pinned so changing it is deliberate.
+
+    Among the shadowing arches only gfx1103 is served (by the gfx110X family), so a
+    gfx1103 APU beside a discrete card this release does not build -- RDNA1 gfx1010 to
+    gfx1012 -- now resolves to the discrete arch, finds no bundle, and source builds,
+    where before the preference it silently ran on the iGPU.
+
+    That is the intended direction, not a regression to paper over: running the iGPU
+    while a discrete card sits idle IS the complaint in #11143, and
+    test_rdna1_unsupported_message_8529 records that CPU is the correct outcome on
+    RDNA1 rather than a working-looking install on the wrong device. A fallback to the
+    iGPU's bundle was tried and reverted: it selected a bundle for a device the user
+    may have masked off, and left _kept_install_covers_host rejecting the very bundle
+    it had just installed, because that check reads only host.rocm_gfx_target.
+    """
+    assert ILP._pick_rocm_gfx_target(_rocminfo("gfx1103", "gfx1010")) == "gfx1010"
+
+
+def test_the_fast_path_keeps_the_callers_forwarded_rocm_detection():
+    """An unsatisfied recorded request re-derives the route as "auto" inside
+    existing_install_current_without_plan. It has to re-derive it from the SAME
+    forwarded detection, or on every Linux AMD host -- setup.sh always forwards
+    --rocm-gfx -- the rebuilt host profile cannot match the recorded one, the fast path
+    fails, and each update pays the full listing plus re-validation.
+
+    Asserted on the call site because the cost is a missing keyword argument, and a
+    behavioural test would have to stand up a whole install tree to observe it.
+    """
+    import ast
+    import inspect
+
+    tree = ast.parse(inspect.getsource(ILP.install_prebuilt))
+    for node in ast.walk(tree):
+        if (
+            isinstance(node, ast.Call)
+            and getattr(node.func, "id", None) == "existing_install_current_without_plan"
+        ):
+            passed = {kw.arg for kw in node.keywords}
+            missing = {"override_has_rocm", "override_rocm_gfx", "route"} - passed
+            assert not missing, (
+                f"install_prebuilt calls existing_install_current_without_plan without "
+                f"{sorted(missing)}, so its re-derived route describes a different host"
             )
-        )
-        assets[asset] = f"https://example.invalid/{asset}"
-    return ILP.PublishedReleaseBundle(
-        repo = "unslothai/llama.cpp",
-        release_tag = "b11030-mix-test",
-        upstream_tag = "b11030",
-        manifest_sha256 = None,
-        source_repo = None,
-        source_repo_url = None,
-        source_ref_kind = None,
-        requested_source_ref = None,
-        resolved_source_ref = None,
-        source_commit = None,
-        source_commit_short = None,
-        assets = assets,
-        manifest_asset_name = None,
-        artifacts = artifacts,
+            return
+    raise AssertionError("no existing_install_current_without_plan call found")
+
+
+def test_an_explicit_false_flag_is_canonicalised_away_on_reuse():
+    """Absent is the only spelling of satisfied. A marker already carrying an explicit
+    false has to lose the key, or readers get two spellings of one state."""
+    marker = {
+        "backend_request": "vulkan",
+        "backend": "vulkan",
+        ILP.MARKER_BACKEND_REQUEST_UNSATISFIED: False,
+    }
+    patch = ILP._marker_selection_patch(
+        marker,
+        choice = _choice("linux-vulkan"),
+        backend_request = "vulkan",
+        persist_force_cpu = False,
+        persist_llama_backend = None,
+        ggml_tree = None,
+        rocm_gfx = None,
     )
+    assert ILP.MARKER_BACKEND_REQUEST_UNSATISFIED in patch
+    assert patch[ILP.MARKER_BACKEND_REQUEST_UNSATISFIED] is None
 
 
-def _rocm_host(active: str, physical: list[str]) -> "ILP.HostInfo":
-    return dataclasses.replace(
-        _linux_host(), has_rocm = True, rocm_gfx_target = active, rocm_gfx_targets = list(physical)
+def test_a_satisfied_marker_without_the_flag_is_left_alone():
+    """The negative control for the above: no key, nothing to canonicalise."""
+    patch = ILP._marker_selection_patch(
+        {"backend_request": "vulkan", "backend": "vulkan"},
+        choice = _choice("linux-vulkan"),
+        backend_request = "vulkan",
+        persist_force_cpu = False,
+        persist_llama_backend = None,
+        ggml_tree = None,
+        rocm_gfx = None,
     )
-
-
-def test_the_preferred_arch_is_served_when_a_bundle_covers_it():
-    """The ordinary hybrid host: the discrete card's own family, not the iGPU's."""
-    choice = ILP.published_rocm_choice_for_host(
-        _rocm_bundle(), _rocm_host("gfx1200", ["gfx1036", "gfx1200"]), "linux-rocm"
-    )
-    assert choice is not None
-    assert choice.gfx_target == "gfx120X"
-
-
-def test_an_unserved_preferred_arch_falls_back_to_a_served_physical_arch():
-    """gfx1103 APU + an RDNA1 dGPU this release does not build. Before the fallback
-    this returned None and the install source-built, losing a prebuilt the same host
-    used to get."""
-    choice = ILP.published_rocm_choice_for_host(
-        _rocm_bundle(), _rocm_host("gfx1010", ["gfx1103", "gfx1010"]), "linux-rocm"
-    )
-    assert choice is not None
-    assert choice.gfx_target == "gfx110X"
-    assert any("has no published bundle" in line for line in choice.selection_log)
-
-
-def test_a_host_with_no_served_arch_at_all_still_source_builds():
-    """The contract the None return exists for must survive the fallback."""
-    assert (
-        ILP.published_rocm_choice_for_host(
-            _rocm_bundle(), _rocm_host("gfx1010", ["gfx1013", "gfx1010"]), "linux-rocm"
-        )
-        is None
-    )
-
-
-def test_the_fallback_never_loses_a_bundle_the_leading_arch_would_have_had():
-    """Every shadowing-iGPU + discrete pair: head must serve a bundle wherever the
-    pre-repick arch would have, over the real published coverage."""
-    bundle = _rocm_bundle()
-    candidates = [
-        "gfx1200",
-        "gfx1201",
-        "gfx1100",
-        "gfx1030",
-        "gfx1150",
-        "gfx1151",
-        "gfx1152",
-        "gfx1010",
-        "gfx1011",
-        "gfx1012",
-        "gfx90a",
-        "gfx908",
-    ]
-    lost = []
-    for igpu in sorted(ILP.SHADOWING_INTEGRATED_GFX):
-        for discrete in candidates:
-            physical = [igpu, discrete]
-            preferred = ILP._pick_rocm_gfx_target(_rocminfo(*physical))
-            head = ILP.published_rocm_choice_for_host(
-                bundle, _rocm_host(preferred, physical), "linux-rocm"
-            )
-            leading = ILP.published_rocm_choice_for_host(
-                bundle, _rocm_host(igpu, physical), "linux-rocm"
-            )
-            if leading is not None and head is None:
-                lost.append((igpu, discrete, preferred))
-    assert not lost, f"the repick cost these hosts their published bundle: {lost}"
+    assert ILP.MARKER_BACKEND_REQUEST_UNSATISFIED not in patch

@@ -3784,31 +3784,7 @@ def published_rocm_choice_for_host(
     build."""
     if not host.rocm_gfx_target:
         return None
-    # The active arch first, then the host's remaining physical arches. One arch picks the
-    # bundle for the whole host, and _pick_rocm_gfx_target now prefers a discrete card over a
-    # leading integrated one (#7776, #11143) -- so on a host whose discrete arch this release
-    # does not build (a gfx1103 APU beside an RDNA1 gfx1010, say) the preferred arch has no
-    # bundle while the iGPU's does. Trying only the active arch there would turn an install
-    # that used to get a working prebuilt into a source build, which is slower and can fail;
-    # a source build still happens when NO physical arch is served, which is the case the
-    # "falls back to a HIP source build" contract below is really about.
-    _candidates = [host.rocm_gfx_target] + [
-        target for target in (host.rocm_gfx_targets or []) if target != host.rocm_gfx_target
-    ]
-    for _candidate in _candidates:
-        _choice = _published_rocm_choice_for_gfx(release, host, install_kind, _candidate)
-        if _choice is not None:
-            return _choice
-    return None
-
-
-def _published_rocm_choice_for_gfx(
-    release: PublishedReleaseBundle, host: HostInfo, install_kind: str, gfx_target: str
-) -> AssetChoice | None:
-    """published_rocm_choice_for_host for ONE arch, so the caller can try several."""
-    if not gfx_target:
-        return None
-    gfx = gfx_target.lower().strip()
+    gfx = host.rocm_gfx_target.lower().strip()
     for artifact in release.artifacts:
         if artifact.install_kind != install_kind:
             continue
@@ -3835,13 +3811,8 @@ def _published_rocm_choice_for_gfx(
             mapped_targets = list(artifact.mapped_targets),
             selection_log = list(release.selection_log)
             + [
-                f"rocm_selection: gpu={gfx_target}"
-                + (
-                    f" (preferred {host.rocm_gfx_target} has no published bundle)"
-                    if gfx_target != host.rocm_gfx_target
-                    else ""
-                )
-                + f" selected published {artifact.asset_name}"
+                f"rocm_selection: gpu={host.rocm_gfx_target} "
+                f"selected published {artifact.asset_name}"
             ],
         )
     return None
@@ -7532,7 +7503,12 @@ def _marker_selection_patch(
     # could not clears the flag (None pops the key, keeping "absent means satisfied" the
     # only spelling), and reusing one that still misses it re-asserts the flag.
     unsatisfied = not marker_backend_request_was_satisfied(backend_request, choice)
-    if bool(marker.get(MARKER_BACKEND_REQUEST_UNSATISFIED)) != unsatisfied:
+    # The `in marker` half canonicalises an explicit false a build may already have
+    # written: absent is the only spelling of satisfied, so leaving a false behind would
+    # serialise a second one and give readers two ways to say the same thing.
+    if bool(marker.get(MARKER_BACKEND_REQUEST_UNSATISFIED)) != unsatisfied or (
+        not unsatisfied and MARKER_BACKEND_REQUEST_UNSATISFIED in marker
+    ):
         patch[MARKER_BACKEND_REQUEST_UNSATISFIED] = True if unsatisfied else None
     # Unlike the fields above, None here means "this release declares none"
     # (upstream ggml-org tags), not "clear it".
@@ -10632,6 +10608,15 @@ def install_prebuilt(
                 # another is a request to CHANGE the install.
                 backend_request = backend,
                 force_cpu = force_cpu,
+                # The SAME forwarded detection initial_route was built from. An unsatisfied
+                # recorded request re-derives the route as "auto" in there, and without these
+                # it re-derives from a bare probe: on a host whose AMD identity arrives as a
+                # forwarded --rocm-gfx (every Linux AMD host, setup.sh always forwards one)
+                # the rebuilt profile then cannot match the one the install recorded, the fast
+                # path fails, and every update pays the whole listing plus re-validation --
+                # the exact cost the recorded-request retry policy exists to avoid.
+                override_has_rocm = override_has_rocm,
+                override_rocm_gfx = override_rocm_gfx,
                 route = initial_route,
                 # Only an explicit name re-asserts a request the last install could not
                 # honour; a request read back off the marker retries when something moves.
