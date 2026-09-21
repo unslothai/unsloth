@@ -1793,9 +1793,9 @@ def test_the_measured_strix_halo_is_not_reported_as_having_no_vram(monkeypatch):
     device = hw.get_backend_visible_gpu_info()["devices"][0]
 
     assert device["memory_total_gb"] == 64.0
-    assert device["shared_memory_host_backed_gb"] == 0.0, (
-        "a readable sysfs total that torch does not exceed is a measured zero, not an unknown"
-    )
+    assert (
+        device["shared_memory_host_backed_gb"] == 0.0
+    ), "a readable sysfs total that torch does not exceed is a measured zero, not an unknown"
     # Still a unified-memory part for every rule that cares; only the SPLIT is known.
     assert device["unified_memory"] is True
     # NOT flipped on: `shared_memory` also means "these rows are one pool", and a
