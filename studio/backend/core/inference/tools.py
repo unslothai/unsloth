@@ -16348,6 +16348,9 @@ def _check_signal_escape_patterns(code: str):
         }
     )
 
+    # Their handlers rebind first and then register, so generic_visit must not sweep them again.
+    _REBOUND_BY_HANDLER = (ast.Import, ast.ImportFrom, ast.Assign)
+
     def _binding_names(node) -> "list[str]":
         """Every name a node binds, in whatever form: assignment, unpacking, walrus, import, def,
         class, parameter, for target, `as` clause, del. One definition of "this name now means
@@ -16478,7 +16481,7 @@ def _check_signal_escape_patterns(code: str):
             self.star_modules: set[str] = set()
             self.shadowed: set[str] = set()
 
-        def visit(self, node):
+        def _rebind(self, node) -> None:
             # Rebinding a name drops the alias it carried. `import socket as requests; import
             # requests` runs the real `requests.get`, and a kept entry rewrote the call to
             # `socket.get`, which matches no network prefix and so went unscreened.
@@ -16487,7 +16490,25 @@ def _check_signal_escape_patterns(code: str):
                     self.module_aliases.pop(name, None)
                     self.func_aliases.pop(name, None)
                     self.shadowed.add(name)
-            super().visit(node)
+
+        def generic_visit(self, node):
+            """`ast.NodeVisitor.generic_visit`, inlined, plus the rebinding hook.
+
+            Wrapping it instead would spend a third Python frame per level of nesting and so cut
+            the nesting this screen survives by a third: measured, a 494-term `+` chain analysed
+            and a 329-term one raised RecursionError, where the limit is 494 either side now. The
+            handlers that record an alias do their own rebinding FIRST, so they are skipped here:
+            they call this after registering, and a second sweep would pop what they just set.
+            """
+            if not isinstance(node, _REBOUND_BY_HANDLER):
+                self._rebind(node)
+            for _field, value in ast.iter_fields(node):
+                if isinstance(value, list):
+                    for item in value:
+                        if isinstance(item, ast.AST):
+                            self.visit(item)
+                elif isinstance(value, ast.AST):
+                    self.visit(value)
 
         def _star_imported_fq(self, name: str) -> "str | None":
             if name in self.shadowed:
@@ -16499,12 +16520,14 @@ def _check_signal_escape_patterns(code: str):
             return None
 
         def visit_Import(self, node):
+            self._rebind(node)
             for alias in node.names:
                 if alias.asname and alias.name in _NETWORK_MODULES:
                     self.module_aliases[alias.asname] = alias.name
             self.generic_visit(node)
 
         def visit_ImportFrom(self, node):
+            self._rebind(node)
             module = node.module or ""
             for alias in node.names:
                 if alias.name == "*":
@@ -16536,6 +16559,7 @@ def _check_signal_escape_patterns(code: str):
             return fq if fq in _NETWORK_MODULES else None
 
         def visit_Assign(self, node):
+            self._rebind(node)
             carried = self._module_named_by(node.value)
             if carried:
                 for target in node.targets:
