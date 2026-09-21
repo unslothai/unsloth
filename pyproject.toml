@@ -245,7 +245,23 @@ huggingfacenotorch = [
     # on 3.9 and the whole extra becomes unresolvable.
     "diffusers>=0.39.0 ; python_version >= '3.10'",
     "diffusers ; python_version < '3.10'",
-    "transformers>=4.51.3,!=4.52.0,!=4.52.1,!=4.52.2,!=4.52.3,!=4.53.0,!=4.54.0,!=4.55.0,!=4.55.1,!=4.57.0,!=4.57.4,!=4.57.5,!=5.0.0,!=5.1.0,<=5.5.0",
+    # 5.4.0 and 5.5.0 to 5.5.4 are excluded, not merely capped under. In that window
+    # transformers discards the bitsandbytes quant_state sidecar tensors of every
+    # pre-quantized COMPOSITE checkpoint: 5.4.0 (transformers PR #44300) made the
+    # conversion mapping recurse into PreTrainedModel submodules, which pulled the text
+    # model's `^model.language_model.` -> `^model.` WeightRenaming into the composite
+    # model's mapping, so `weight.absmax`, `weight.quant_map`, `weight.nested_absmax`,
+    # `weight.nested_quant_map` and `weight.quant_state.bitsandbytes__nf4` renamed to keys
+    # the model does not have and were dropped as unexpected, while the packed `weight`
+    # loaded raw. Every quantized Linear then has quant_state None and the first forward
+    # raises "mat1 and mat2 shapes cannot be multiplied". transformers PR #45567 fixed it
+    # in 5.6.0. Measured on one B200 with unsloth/qwen3.8-27b-unsloth-bnb-4bit: 352 of 352
+    # quantized Linear modules lose quant_state on 5.4.0 and 5.5.4, 0 of 352 on 5.2.0,
+    # 5.3.0 and every release 5.6.2 through 5.17.0. Reported as #9867, #10010, #10017,
+    # #10276. Affected text sub-types are qwen3_5_text, qwen3_5_moe_text and gemma3n_text;
+    # flat text-only checkpoints have no `model.language_model.` prefix and are fine.
+    # These exclusions stay correct when the <=5.5.0 ceiling above is later raised.
+    "transformers>=4.51.3,!=4.52.0,!=4.52.1,!=4.52.2,!=4.52.3,!=4.53.0,!=4.54.0,!=4.55.0,!=4.55.1,!=4.57.0,!=4.57.4,!=4.57.5,!=5.0.0,!=5.1.0,!=5.4.0,!=5.5.0,!=5.5.1,!=5.5.2,!=5.5.3,!=5.5.4,<=5.5.0",
     "trl>=0.18.2,!=0.19.0,<=0.24.0",
     "sentence-transformers",
 ]
@@ -906,7 +922,23 @@ colab-new = [
     "unsloth_zoo>=2026.9.6",
     "packaging",
     "tyro",
-    "transformers>=4.51.3,!=4.52.0,!=4.52.1,!=4.52.2,!=4.52.3,!=4.53.0,!=4.54.0,!=4.55.0,!=4.55.1,!=4.57.0,!=4.57.4,!=4.57.5,!=5.0.0,!=5.1.0,<=5.5.0",
+    # 5.4.0 and 5.5.0 to 5.5.4 are excluded, not merely capped under. In that window
+    # transformers discards the bitsandbytes quant_state sidecar tensors of every
+    # pre-quantized COMPOSITE checkpoint: 5.4.0 (transformers PR #44300) made the
+    # conversion mapping recurse into PreTrainedModel submodules, which pulled the text
+    # model's `^model.language_model.` -> `^model.` WeightRenaming into the composite
+    # model's mapping, so `weight.absmax`, `weight.quant_map`, `weight.nested_absmax`,
+    # `weight.nested_quant_map` and `weight.quant_state.bitsandbytes__nf4` renamed to keys
+    # the model does not have and were dropped as unexpected, while the packed `weight`
+    # loaded raw. Every quantized Linear then has quant_state None and the first forward
+    # raises "mat1 and mat2 shapes cannot be multiplied". transformers PR #45567 fixed it
+    # in 5.6.0. Measured on one B200 with unsloth/qwen3.8-27b-unsloth-bnb-4bit: 352 of 352
+    # quantized Linear modules lose quant_state on 5.4.0 and 5.5.4, 0 of 352 on 5.2.0,
+    # 5.3.0 and every release 5.6.2 through 5.17.0. Reported as #9867, #10010, #10017,
+    # #10276. Affected text sub-types are qwen3_5_text, qwen3_5_moe_text and gemma3n_text;
+    # flat text-only checkpoints have no `model.language_model.` prefix and are fine.
+    # These exclusions stay correct when the <=5.5.0 ceiling above is later raised.
+    "transformers>=4.51.3,!=4.52.0,!=4.52.1,!=4.52.2,!=4.52.3,!=4.53.0,!=4.54.0,!=4.55.0,!=4.55.1,!=4.57.0,!=4.57.4,!=4.57.5,!=5.0.0,!=5.1.0,!=5.4.0,!=5.5.0,!=5.5.1,!=5.5.2,!=5.5.3,!=5.5.4,<=5.5.0",
     "datasets>=3.4.1,!=4.0.*,!=4.1.0,<4.4.0",
     "sentencepiece>=0.2.0",
     "tqdm",
