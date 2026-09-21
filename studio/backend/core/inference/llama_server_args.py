@@ -941,10 +941,9 @@ def _as_float32(value: float) -> float:
 # Largest share llama.cpp's float array can hold; anything above is out_of_range to std::stof.
 _FLOAT32_MAX = struct.unpack("=f", struct.pack("=f", 3.4028234663852886e38))[0]
 
-# FLT_MIN, the smallest NORMAL float. libstdc++'s std::stof reports every subnormal result as
-# ERANGE and throws out_of_range, so the usable range has a floor as well as a ceiling: measured
-# here, stof("1e-38") and stof("1e-45") both throw while stof("0") is fine. Rounding decides, not
-# the literal -- 1.1754943508222874e-38 rounds UP to FLT_MIN and is accepted.
+# FLT_MIN. libstdc++ throws out_of_range on any SUBNORMAL result too, so the range has a floor as
+# well as a ceiling (measured: stof("1e-38") throws, stof("0") is fine). Rounding decides, not the
+# literal: 1.1754943508222874e-38 rounds UP to FLT_MIN and is accepted.
 _FLOAT32_MIN_NORMAL = struct.unpack("=f", struct.pack("=f", 1.1754943508222875e-38))[0]
 
 

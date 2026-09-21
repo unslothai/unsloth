@@ -248,8 +248,7 @@ function dropUnusableValues(tokens: readonly string[]): string[] {
     const minimum = INTEGER_VALUE_MINIMUM[flag];
     const unusable =
       missing ||
-      // false: repairing a STORED list, where the mode is not known. Only what no mode can
-      // run is dropped, so a value that is fine as pass-through survives the repair.
+      // false: a STORED list, whose mode is unknown, so only what NO mode can run is dropped.
       (RATIO_VALUE_FLAGS.has(flag) &&
         ratioValueProblem(flag, value, false) !== null) ||
       (INTEGER_VALUE_FLAGS.has(flag) &&
@@ -666,7 +665,7 @@ const VALUE_REQUIRED_FLAGS = new Set([
 const GPU_LAYERS_FLAGS = new Set(["--gpu-layers", "--n-gpu-layers", "-ngl"]);
 
 /** The last-wins integer value for `flags` in `tokens`, or null. Mirrors parse_gpu_layers_override
- *  closely enough for the one question asked of it: is the resolved layer count non-negative. */
+ *  only as far as the one question asked here: is the resolved layer count non-negative. */
 function lastIntegerFlagValue(
   tokens: readonly string[],
   flags: ReadonlySet<string>,
@@ -816,9 +815,8 @@ export type ExtraArgsContext = {
   gpuSelectionActive?: boolean;
   /** GPU Memory is Manual, which removes the offload flags its controls own. */
   manualGpuMemory?: boolean;
-  /** The control's GPU Layers value. Only manual mode with a RESOLVED count of 0 or more makes
-   *  the launcher rewrite --tensor-split; at Auto layers it drops the flag instead, so judging
-   *  the rewritten text there would refuse a value that never reaches llama-server. */
+  /** The control's GPU Layers value. Only manual mode with a RESOLVED count of 0 or more rewrites
+   *  --tensor-split; at Auto layers the flag is dropped, so it never reaches llama-server. */
   gpuLayers?: number;
   /** Smallest --batch-size this launch can run, max(slots, 2). */
   batchFloor?: number;

@@ -15774,11 +15774,10 @@ async def _load_model_impl(
             _gpu_layers_override = parse_gpu_layers_override(extra_llama_args)
             if _gpu_layers_override is not None:
                 _manual_updates["gpu_layers"] = _gpu_layers_override
-            # reserialized only when the launcher will actually REWRITE the ratio, which is the
-            # same predicate _should_strip_tensor_split uses: manual with the RESOLVED layer
-            # count non-negative. At Auto layers both copies are dropped before argv, so judging
-            # a six-digit rendering nothing emits would 400 a flag that never reaches the child.
-            # A 400 rather than the 500 an unhandled raise here would be.
+            # reserialized only where the launcher REWRITES the ratio, the same predicate
+            # _should_strip_tensor_split uses: manual with the RESOLVED layer count non-negative.
+            # At Auto layers both copies are dropped before argv, so judging a rendering nothing
+            # emits would refuse a flag the child never sees. 400, not the 500 a raise gives.
             _resolved_layers = (
                 _gpu_layers_override
                 if _gpu_layers_override is not None
