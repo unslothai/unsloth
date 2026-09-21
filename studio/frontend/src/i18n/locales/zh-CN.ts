@@ -1469,9 +1469,9 @@ export const zhCN = {
         yolo: "跳过确认提示。请仅在可信环境中使用。",
       },
       remote: {
-        title: "连接到远程 Unsloth Studio",
+        title: "连接到远程 Unsloth",
         description:
-          "在启动前设置以下内容，即可让 unsloth start 指向运行在别处的 Unsloth Studio（也可以直接传入 --api-key）：",
+          "在启动前设置以下内容，即可让 unsloth start 指向运行在别处的 Unsloth（也可以直接传入 --api-key）：",
       },
       passthrough: {
         title: "向智能体传递参数",

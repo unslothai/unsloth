@@ -1515,9 +1515,9 @@ export const ptBR = {
         yolo: "Pula os pedidos de aprovação. Use apenas em ambientes confiáveis.",
       },
       remote: {
-        title: "Conectar a um Unsloth Studio remoto",
+        title: "Conectar a um Unsloth remoto",
         description:
-          "Aponte o unsloth start para um Unsloth Studio em execução em outro lugar, definindo estas variáveis antes de iniciar (ou passe --api-key diretamente):",
+          "Aponte o unsloth start para um Unsloth em execução em outro lugar, definindo estas variáveis antes de iniciar (ou passe --api-key diretamente):",
       },
       passthrough: {
         title: "Repassar argumentos ao agente",

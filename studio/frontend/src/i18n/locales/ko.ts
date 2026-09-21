@@ -1497,9 +1497,9 @@ export const ko = {
         yolo: "승인 확인을 건너뜁니다. 신뢰할 수 있는 환경에서만 사용하세요.",
       },
       remote: {
-        title: "원격 Unsloth Studio에 연결",
+        title: "원격 Unsloth에 연결",
         description:
-          "실행 전에 다음을 설정하면 unsloth start를 다른 곳에서 실행 중인 Unsloth Studio로 연결할 수 있습니다(또는 --api-key를 직접 전달):",
+          "실행 전에 다음을 설정하면 unsloth start를 다른 곳에서 실행 중인 Unsloth로 연결할 수 있습니다(또는 --api-key를 직접 전달):",
       },
       passthrough: {
         title: "에이전트에 인자 전달",

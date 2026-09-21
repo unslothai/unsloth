@@ -1500,9 +1500,9 @@ export const it = {
         yolo: "Salta le richieste di approvazione. Usa solo in ambienti fidati.",
       },
       remote: {
-        title: "Connettersi a un Unsloth Studio remoto",
+        title: "Connettersi a un Unsloth remoto",
         description:
-          "Punta unsloth start a un Unsloth Studio in esecuzione altrove impostando queste variabili prima dell'avvio (oppure passa direttamente --api-key):",
+          "Punta unsloth start a un Unsloth in esecuzione altrove impostando queste variabili prima dell'avvio (oppure passa direttamente --api-key):",
       },
       passthrough: {
         title: "Passare argomenti all'agente",

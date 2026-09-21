@@ -1527,9 +1527,9 @@ export const es = {
           "Omite las solicitudes de aprobación. Úsalo solo en entornos de confianza.",
       },
       remote: {
-        title: "Conectar con un Unsloth Studio remoto",
+        title: "Conectar con un Unsloth remoto",
         description:
-          "Apunta unsloth start a un Unsloth Studio que se ejecuta en otro lugar definiendo estas variables antes de iniciar el agente (o pasa --api-key directamente):",
+          "Apunta unsloth start a un Unsloth que se ejecuta en otro lugar definiendo estas variables antes de iniciar el agente (o pasa --api-key directamente):",
       },
       passthrough: {
         title: "Pasar argumentos al agente",

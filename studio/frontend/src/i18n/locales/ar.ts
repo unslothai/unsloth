@@ -1500,9 +1500,9 @@ export const ar = {
         yolo: "يتخطى طلبات الموافقة. استخدمه في البيئات الموثوقة فقط.",
       },
       remote: {
-        title: "الاتصال بنسخة بعيدة من Unsloth Studio",
+        title: "الاتصال بنسخة بعيدة من Unsloth",
         description:
-          "وجّه unsloth start إلى نسخة من Unsloth Studio تعمل في مكان آخر بضبط ما يلي قبل التشغيل (أو مرّر ‎--api-key مباشرة):",
+          "وجّه unsloth start إلى نسخة من Unsloth تعمل في مكان آخر بضبط ما يلي قبل التشغيل (أو مرّر ‎--api-key مباشرة):",
       },
       passthrough: {
         title: "تمرير وسائط إلى الوكيل",

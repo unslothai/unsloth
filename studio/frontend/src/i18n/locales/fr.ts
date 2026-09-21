@@ -1533,9 +1533,9 @@ export const fr = {
           "Ignore les demandes d'autorisation. À n'utiliser que dans des environnements de confiance.",
       },
       remote: {
-        title: "Se connecter à un Unsloth Studio distant",
+        title: "Se connecter à un Unsloth distant",
         description:
-          "Faites pointer unsloth start vers un Unsloth Studio exécuté ailleurs en définissant ces variables avant le lancement (ou passez --api-key directement) :",
+          "Faites pointer unsloth start vers un Unsloth exécuté ailleurs en définissant ces variables avant le lancement (ou passez --api-key directement) :",
       },
       passthrough: {
         title: "Transmettre des arguments à l'agent",
