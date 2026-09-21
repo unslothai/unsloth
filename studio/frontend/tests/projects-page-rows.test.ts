@@ -44,8 +44,12 @@ test("a project row opens its chats in place", () => {
   // Each one opens the chat it names; a comparison opens as one.
   assert.match(PAGE, /onClick=\{\(\) => openChat\(chat, project\.id\)\}/);
   assert.match(PAGE, /search: \{ compare: item\.id, project: projectId \}/);
-  // A key on a control inside the row is that control's, not the row's.
-  assert.match(PAGE, /if \(e\.target !== e\.currentTarget\) return;\n\s*if \(e\.key === "Enter" \|\| e\.key === " "\)/);
+  // Opening is a real button holding only text, so Enter and Space come with it and the row's
+  // own pin and menu stay separate controls rather than its contents.
+  assert.match(
+    PAGE,
+    /<button\n\s*type="button"\n\s*onClick=\{\(\) => openChat\(chat, project\.id\)\}/,
+  );
 });
 
 // Out by the Modified column the arrow read as another row action, and said nothing about which
@@ -59,7 +63,13 @@ test("the disclosure sits with the name it opens", () => {
   // rather than the column's.
   assert.match(
     PAGE,
-    /<span className="flex min-w-0 flex-1 items-center gap-2">\n\s*<span className="min-w-0 truncate text-ui-15 font-semibold text-foreground">\n\s*\{project\.name\}/,
+    /<span className="flex min-w-0 flex-1 items-center gap-2">[\s\S]{0,1200}?<span className="min-w-0 truncate text-ui-15 font-semibold text-foreground">\n\s*\{project\.name\}/,
+  );
+  // Opening the project is a button inside that group, so the arrow still follows the name
+  // and the row's own controls stay outside it.
+  assert.match(
+    PAGE,
+    /<button\n\s*type="button"\n\s*onClick=\{\(\) => openProject\(project\.id\)\}/,
   );
   assert.ok(
     PAGE.indexOf(
@@ -192,9 +202,15 @@ test("a chat row carries its own actions, revealed by hovering it", async () => 
   );
   assert.match(row, /chatPinned \? "opacity-100" : "opacity-0",/);
   assert.match(row, /aria-label="Chat options"/);
-  // Nested buttons are invalid, so the row is a div that still opens on Enter and Space.
-  assert.match(row, /role="button"\n\s*tabIndex=\{0\}/);
-  assert.match(row, /if \(e\.target !== e\.currentTarget\) return;/);
+  // role="button" on the row made its own pin and menu presentational children, so a screen
+  // reader read one control where there are three. The row is a plain container now.
+  assert.ok(!row.includes('role="button"'), "the row is a button again");
+  assert.ok(!row.includes("tabIndex={0}"), "the row is focusable again");
+  assert.ok(!row.includes("e.currentTarget"), "the row still fakes key handling");
+  assert.match(
+    row,
+    /<button\n\s*type="button"\n\s*onClick=\{\(\) => openChat\(chat, project\.id\)\}\n\s*className="flex min-w-0 flex-1 cursor-pointer items-center gap-3/,
+  );
   // The same columns as a project row, so the two line up.
   // Same column as the project row above it, and gone with it on a phone, where 160px of date
   // left the title no width and pushed the actions past the screen.
@@ -308,4 +324,31 @@ test("both confirmations offer the files, and neither carries the last one's ans
     /id="projects-delete-project-files"[\s\S]{0,200}?deleting\?\.rootPath \?\?\n\s*"The project workspace folder will be removed from disk\."/,
   );
   assert.equal((PAGE.match(/deleteFilesOnDelete \? "Delete all" : "Delete"/g) ?? []).length, 2);
+});
+
+// `role="button"` puts an element in ARIA's presentational-children set, so a row carrying it
+// swallowed the roles of the pin and the menu inside it: one control where there are three.
+test("a row is a container, and each of its controls is its own button", () => {
+  const list = PAGE.slice(PAGE.indexOf("{visibleProjects.map((project) => {"));
+  assert.ok(!list.includes('role="button"'), "a row still carries the button role");
+  assert.ok(!list.includes("tabIndex={0}"), "a row is still focusable itself");
+  // With no row handler to stop, nothing fakes Enter and Space either.
+  assert.ok(!list.includes("e.currentTarget"), "a row still fakes key handling");
+  // Opening is a real button, and it holds only text: an interactive descendant would put the
+  // problem back.
+  for (const opener of [
+    /<button\n\s*type="button"\n\s*onClick=\{\(\) => openProject\(project\.id\)\}\n\s*className="flex min-w-0 cursor-pointer items-center gap-3/,
+    /<button\n\s*type="button"\n\s*onClick=\{\(\) => openChat\(chat, project\.id\)\}\n\s*className="flex min-w-0 flex-1 cursor-pointer items-center gap-3/,
+  ]) {
+    assert.match(PAGE, opener);
+  }
+  // The row keeps the hover it paints its controls from, and gives up the focus ring to them.
+  assert.match(
+    PAGE,
+    /className="group\/project-row relative flex items-center gap-3 rounded-xl px-5 py-4 text-left transition-colors duration-150 hover:bg-muted\/70 dark:hover:bg-white\/\[0\.055\]"/,
+  );
+  assert.match(
+    PAGE,
+    /className="group\/chat-row flex items-center gap-3 rounded-xl py-1\.5 pl-2 pr-5 text-left text-sm/,
+  );
 });

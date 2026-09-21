@@ -855,32 +855,29 @@ export function ProjectsPage() {
             />
             <div
               key={project.id}
-              role="button"
-              tabIndex={0}
-              onClick={() => openProject(project.id)}
-              onKeyDown={(e) => {
-                // A key pressed on a control inside the row is that control's.
-                if (e.target !== e.currentTarget) return;
-                if (e.key === "Enter" || e.key === " ") {
-                  e.preventDefault();
-                  openProject(project.id);
-                }
-              }}
-              className="group/project-row relative flex cursor-pointer items-center gap-3 rounded-xl px-5 py-4 text-left transition-colors duration-150 hover:bg-muted/70 dark:hover:bg-white/[0.055] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+              className="group/project-row relative flex items-center gap-3 rounded-xl px-5 py-4 text-left transition-colors duration-150 hover:bg-muted/70 dark:hover:bg-white/[0.055]"
             >
-              <span className="mr-1 flex size-9 shrink-0 items-center justify-center rounded-[10px] bg-muted text-foreground/70 transition-colors group-hover/project-row:bg-primary/10 group-hover/project-row:text-primary">
-                <HugeiconsIcon
-                  icon={Folder02Icon}
-                  strokeWidth={1.75}
-                  className="size-5"
-                />
-              </span>
               {/* The disclosure belongs to the name, so it sits beside it rather than out by
                   the Updated column, where it read as another row action. */}
               <span className="flex min-w-0 flex-1 items-center gap-2">
-                <span className="min-w-0 truncate text-ui-15 font-semibold text-foreground">
-                  {project.name}
-                </span>
+                {/* A real button holding only text. Giving the whole row the button role made
+                    its pin and menu presentational children: one control where there are four. */}
+                <button
+                  type="button"
+                  onClick={() => openProject(project.id)}
+                  className="flex min-w-0 cursor-pointer items-center gap-3 rounded-lg text-left focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                >
+                  <span className="mr-1 flex size-9 shrink-0 items-center justify-center rounded-[10px] bg-muted text-foreground/70 transition-colors group-hover/project-row:bg-primary/10 group-hover/project-row:text-primary">
+                    <HugeiconsIcon
+                      icon={Folder02Icon}
+                      strokeWidth={1.75}
+                      className="size-5"
+                    />
+                  </span>
+                  <span className="min-w-0 truncate text-ui-15 font-semibold text-foreground">
+                    {project.name}
+                  </span>
+                </button>
                 {/* Opens the project's chats in place, without leaving the list. */}
                 <button
                   type="button"
@@ -1021,30 +1018,27 @@ export function ProjectsPage() {
                       return (
                       <div
                         key={chat.id}
-                        role="button"
-                        tabIndex={0}
-                        onClick={() => openChat(chat, project.id)}
-                        onKeyDown={(e) => {
-                          // A key pressed on a control inside the row is that control's.
-                          if (e.target !== e.currentTarget) return;
-                          if (e.key === "Enter" || e.key === " ") {
-                            e.preventDefault();
-                            openChat(chat, project.id);
-                          }
-                        }}
-                        className="group/chat-row flex cursor-pointer items-center gap-3 rounded-xl py-1.5 pl-2 pr-5 text-left text-sm text-muted-foreground transition-colors hover:bg-muted/70 hover:text-foreground dark:hover:bg-white/[0.055]"
+                        className="group/chat-row flex items-center gap-3 rounded-xl py-1.5 pl-2 pr-5 text-left text-sm text-muted-foreground transition-colors hover:bg-muted/70 hover:text-foreground dark:hover:bg-white/[0.055]"
                       >
-                        <HugeiconsIcon
-                          icon={MessageCircleIcon}
-                          strokeWidth={1.75}
-                          className="size-4 shrink-0"
-                        />
-                        <span className="min-w-0 flex-1 truncate">{chat.title}</span>
-                        {/* Same widths as a project row, so the columns line up under it, and
-                            gone with it below sm, where a nested row has no room for both. */}
-                        <span className="hidden w-40 shrink-0 sm:block">
-                          {formatUpdated(chat.updatedAt)}
-                        </span>
+                        {/* A real button holding only text. Giving the whole row the button role
+                            made its pin and menu presentational children. */}
+                        <button
+                          type="button"
+                          onClick={() => openChat(chat, project.id)}
+                          className="flex min-w-0 flex-1 cursor-pointer items-center gap-3 rounded-lg text-left focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                        >
+                          <HugeiconsIcon
+                            icon={MessageCircleIcon}
+                            strokeWidth={1.75}
+                            className="size-4 shrink-0"
+                          />
+                          <span className="min-w-0 flex-1 truncate">{chat.title}</span>
+                          {/* Same widths as a project row, so the columns line up under it, and
+                              gone with it below sm, where a nested row has no room for both. */}
+                          <span className="hidden w-40 shrink-0 sm:block">
+                            {formatUpdated(chat.updatedAt)}
+                          </span>
+                        </button>
                         {/* A chat's actions belong to the row the cursor is on, so they stay
                             hover-revealed, and show outright without a cursor to hover with. */}
                         <button
