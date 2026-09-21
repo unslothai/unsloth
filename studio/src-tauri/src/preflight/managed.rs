@@ -594,7 +594,41 @@ fn inferred_studio_llama_root(bin: &Path) -> Option<PathBuf> {
     if !looks_like_installer_managed_studio_home(root) {
         return None;
     }
+    // A master root puts the runtimes BESIDE studio/, and the CLI recovers that note
+    // and grades <master>/llama.cpp. Fingerprinting <root>/llama.cpp here would watch a
+    // tree nothing loads, so one healthy cached result would survive quarantine in the
+    // runtime actually in use.
+    if let Some(master) = recorded_master_root(root) {
+        return Some(master.join("llama.cpp"));
+    }
     Some(root.join("llama.cpp"))
+}
+
+/// The master root `<studio home>/share/.unsloth-master-root` records, or None.
+///
+/// Same rule as `_recorded_master_root` in unsloth_cli/commands/studio.py: the
+/// recorded root must exist and must CONTAIN this Studio tree, so a tree copied from
+/// one master root to another does not point the fingerprint back at the original.
+/// The legacy shape is declined by the caller before this runs, as it is there.
+fn recorded_master_root(studio_home: &Path) -> Option<PathBuf> {
+    let note = studio_home.join("share").join(".unsloth-master-root");
+    let recorded = std::fs::read_to_string(note).ok()?;
+    let recorded = recorded.trim();
+    if recorded.is_empty() {
+        return None;
+    }
+    let master = PathBuf::from(recorded);
+    if !master.is_dir() {
+        return None;
+    }
+    let master = master.canonicalize().unwrap_or_else(|_| master.clone());
+    let here = studio_home
+        .canonicalize()
+        .unwrap_or_else(|_| studio_home.to_path_buf());
+    if here == master || here.ancestors().any(|ancestor| ancestor == master) {
+        return Some(master);
+    }
+    None
 }
 
 /// Whether a folder holds a llama-server in one of the layouts the backend
@@ -2790,6 +2824,65 @@ mod tests {
         assert_eq!(inferred_studio_llama_root(&loose), None);
 
         let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_recorded_master_root_names_the_runtime_beside_studio() {
+        // Codex 4063549060, P1. `UNSLOTH_HOME=<master>` puts llama.cpp beside studio/,
+        // and the CLI recovers that note and grades <master>/llama.cpp. Fingerprinting
+        // <master>/studio/llama.cpp here watched a tree nothing loads, so one cached
+        // Ready survived quarantine in the runtime the backend actually opens.
+        let master = scratch_dir("master-root-runtime");
+        let studio = master.join("studio");
+        let bin = studio.join("unsloth_studio").join("bin").join("unsloth");
+        fs::create_dir_all(bin.parent().unwrap()).unwrap();
+        fs::write(&bin, b"launcher").unwrap();
+        fs::create_dir_all(studio.join("share")).unwrap();
+        fs::write(studio.join("share").join("studio.conf"), b"managed").unwrap();
+
+        // Without the note this is an ordinary custom root and the runtime is under it.
+        assert_eq!(
+            inferred_studio_llama_root(&bin),
+            Some(studio.join("llama.cpp"))
+        );
+
+        fs::write(
+            studio.join("share").join(".unsloth-master-root"),
+            master.to_string_lossy().as_bytes(),
+        )
+        .unwrap();
+        let expected = master.canonicalize().unwrap_or_else(|_| master.clone());
+        assert_eq!(
+            inferred_studio_llama_root(&bin),
+            Some(expected.join("llama.cpp")),
+            "the recorded master root names the runtime beside studio/"
+        );
+
+        // A note naming a root this tree does not live under is somebody else's
+        // install, exactly as the CLI reads it, so the tree under studio/ stands.
+        let elsewhere = scratch_dir("master-root-elsewhere");
+        fs::write(
+            studio.join("share").join(".unsloth-master-root"),
+            elsewhere.to_string_lossy().as_bytes(),
+        )
+        .unwrap();
+        assert_eq!(
+            inferred_studio_llama_root(&bin),
+            Some(studio.join("llama.cpp"))
+        );
+
+        // An empty note, and one naming a directory that is not there, say nothing.
+        for body in ["", "/nonexistent-master-root-9d3f"] {
+            fs::write(studio.join("share").join(".unsloth-master-root"), body).unwrap();
+            assert_eq!(
+                inferred_studio_llama_root(&bin),
+                Some(studio.join("llama.cpp")),
+                "note body {body:?}"
+            );
+        }
+
+        let _ = fs::remove_dir_all(&elsewhere);
+        let _ = fs::remove_dir_all(&master);
     }
 
     #[cfg(not(windows))]
