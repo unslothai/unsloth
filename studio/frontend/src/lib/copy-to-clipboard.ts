@@ -58,7 +58,9 @@ export async function copyToClipboard(text: string): Promise<boolean> {
     return true;
   }
 
-  // Primary: async Clipboard API
+  // Primary: async Clipboard API. Requires a secure context (HTTPS or
+  // localhost). HTTP on a LAN IP has no clipboard permission; the write
+  // rejects with NotAllowedError. That is browser policy, not a Studio bug.
   if (typeof navigator?.clipboard?.writeText === "function") {
     try {
       await navigator.clipboard.writeText(text);

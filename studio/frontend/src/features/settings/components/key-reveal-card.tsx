@@ -21,6 +21,14 @@ export function KeyRevealCard({
   const [copied, setCopied] = useState(false);
   const [copyFailed, setCopyFailed] = useState(false);
 
+  // The Clipboard API (navigator.clipboard.writeText) is only available in a
+  // *secure context*: HTTPS, or loopback (http://127.0.0.1 / localhost).
+  // Plain HTTP on a LAN/public IP is not a secure context, so the browser
+  // rejects the write. That is intentional: an HTTP page can be MITM'd, and
+  // a silent clipboard overwrite is a common attack (wallet addresses, tokens).
+  // Unsloth cannot override that. copyToClipboard still tries Tauri IPC, then
+  // the Clipboard API, then execCommand; when all three fail we show an error
+  // and the key stays selectable so the user can copy it by hand.
   const handleCopy = async () => {
     if (await copyToClipboard(rawKey)) {
       setCopied(true);
@@ -42,6 +50,12 @@ export function KeyRevealCard({
           {t("settings.apiKeys.newTokenCreated")}
         </span>
       </div>
+      {/*
+        Not a <button>: browsers disable user-select on <button>, so the key
+        could not be highlighted when programmatic copy failed (#11387).
+        role="button" + tabIndex keep keyboard/click-to-copy; select-text
+        is the fallback when the Clipboard API is blocked (non-HTTPS).
+      */}
       <div
         role="button"
         tabIndex={0}
