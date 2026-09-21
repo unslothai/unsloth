@@ -59,6 +59,8 @@ ASSET_NAMES = (
     f"llama-{TAG}-bin-win-vulkan-x64.zip",
     f"llama-{TAG}-bin-win-hip-radeon-x64.zip",
 )
+
+
 def _fixture_digest(name: str) -> str:
     """A stand-in for the per-asset digest GitHub publishes on a real release.
 

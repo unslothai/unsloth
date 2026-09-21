@@ -44,6 +44,7 @@ def _fixture_digest(name: str) -> str:
     """
     return hashlib.sha256(name.encode()).hexdigest()
 
+
 pick_windows_cuda_runtime = INSTALL_LLAMA_PREBUILT.pick_windows_cuda_runtime
 compatible_windows_runtime_lines = INSTALL_LLAMA_PREBUILT.compatible_windows_runtime_lines
 apply_approved_hashes = INSTALL_LLAMA_PREBUILT.apply_approved_hashes
