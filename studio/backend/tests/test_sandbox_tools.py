@@ -463,6 +463,25 @@ class TestStarImportedNetworkFunctions:
     def test_star_imported_call_blocked(self, code):
         _blocked(code, expect_phrase = "Blocked: host not in sandbox allowlist")
 
+    def test_a_star_import_overwrites_a_name_bound_before_it(self):
+        # The import rebinds every exported name, so the earlier `def get` no longer shadows and
+        # this really calls `requests.get`.
+        _blocked(
+            "def get(url):\n"
+            "    return url\n"
+            "from requests import *\n"
+            'get("https://evil.example/x")',
+            expect_phrase = "Blocked: host not in sandbox allowlist",
+        )
+
+    def test_a_binding_after_the_star_import_still_shadows(self):
+        _ok(
+            "from requests import *\n"
+            "def get(url):\n"
+            "    return url\n"
+            'get("https://evil.example/x")'
+        )
+
     def test_star_imported_call_fails_closed_on_a_dynamic_host(self):
         _blocked(
             'from requests import *\nget("http://" + h)',
@@ -2367,7 +2386,6 @@ class TestEscapedNewlineIsNotACommandBoundary:
         [
             pytest.param("echo hi \\\nA=1 rm -rf x", id = "continuation_then_assignment"),
             pytest.param("echo hi \\\nrm -rf x", id = "continuation_then_blocked_word"),
-            pytest.param("echo hi \\\r\nA=1 rm -rf x", id = "continuation_crlf"),
             pytest.param('echo "hi \\\nA=1 rm -rf x"', id = "continuation_in_double_quotes"),
             pytest.param(
                 "python train.py \\\n  --lr 1e-4 \\\n  --out /tmp/x", id = "ordinary_continuation"
@@ -2390,6 +2408,12 @@ class TestEscapedNewlineIsNotACommandBoundary:
             ),
             # An escaped backslash consumes both characters, so the newline still stands.
             pytest.param("echo hi \\\\\nrm -rf x", "rm", id = "escaped_backslash_then_newline"),
+            # Checked against bash 5.2.21: the backslash escapes the CARRIAGE RETURN, so the
+            # newline still starts a command and this really runs `rm`.
+            pytest.param("echo hi \\\r\nrm -rf ./build", "rm", id = "backslash_crlf_is_a_boundary"),
+            pytest.param(
+                "echo hi \\\r\nA=1 rm -rf ./build", "rm", id = "backslash_crlf_then_assignment"
+            ),
         ],
     )
     def test_real_command_position_still_blocked(self, command, blocked_cmd):

@@ -1345,6 +1345,10 @@ def _join_escaped_newlines(text: str) -> str:
     `sed -n '1e touch a\\<newline>rm -f victim' f` continues the executed payload onto the next
     line, so joining there would drop a command that really runs. An escaped backslash consumes
     both characters, which leaves a following newline standing, as the shell does.
+
+    Only a backslash-LF continues. Checked against bash 5.2.21: a backslash before CRLF escapes
+    the CARRIAGE RETURN, so the newline still starts a command and `echo hi \\<CRLF>rm -rf x`
+    really runs `rm`. Joining all three characters made that read as one `echo`.
     """
     out: list[str] = []
     i, n = 0, len(text)
@@ -1362,10 +1366,6 @@ def _join_escaped_newlines(text: str) -> str:
             if nxt == "\n":
                 out.append(" ")
                 i += 2
-                continue
-            if nxt == "\r" and i + 2 < n and text[i + 2] == "\n":
-                out.append(" ")
-                i += 3
                 continue
             out.append(ch)
             out.append(nxt)
@@ -16594,6 +16594,13 @@ def _check_signal_escape_patterns(code: str):
                 if alias.name == "*":
                     if module in _NETWORK_MODULES:
                         self.star_modules.add(module)
+                        # The import rebinds every name the module exports, so a binding that came
+                        # BEFORE it no longer shadows: `def get(url): ...` then
+                        # `from requests import *` really calls `requests.get`. Which names are
+                        # exported is not knowable here, and the ones that matter are exactly the
+                        # module's own functions, so all prior shadows are dropped. A binding after
+                        # the import still shadows, since those are recorded as they are reached.
+                        self.shadowed.clear()
                     continue
                 bound = alias.asname or alias.name
                 fq = f"{module}.{alias.name}"
