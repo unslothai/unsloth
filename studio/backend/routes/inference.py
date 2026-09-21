@@ -9780,7 +9780,6 @@ async def _maybe_auto_switch_model(
         local_gguf_companion_state,
         local_target_is_gguf,
         resolve_local_gguf,
-        resolve_local_gguf_with_index_state,
         resolve_trusted_cached_local_gguf,
         warm_index_soon,
     )
@@ -9923,15 +9922,20 @@ async def _maybe_auto_switch_model(
             if resolved is not None:
                 warm_index_soon()
             else:
-                # The index identity comes back WITH the answer, read under the scan's
-                # own lock: a snapshot published between the resolver returning and a
-                # later read would be credited with an answer the previous one gave, and
-                # the marker would look valid for an index that may already hold the alias.
-                resolved, alias_probe_state = await asyncio.to_thread(
-                    resolve_local_gguf_with_index_state,
-                    requested_model,
-                    include_companion_scope = True,
+                # The resolver reports WHICH index answered, taken beside the snapshot it
+                # resolved against: a separate read afterwards would label this answer with
+                # the identity of a snapshot published since, and the marker would look
+                # valid for an index that may already hold the alias.
+                resolved_from: list = []
+                resolved = await asyncio.to_thread(
+                    functools.partial(
+                        resolve_local_gguf,
+                        requested_model,
+                        include_companion_scope = True,
+                        index_state = resolved_from,
+                    )
                 )
+                alias_probe_state = resolved_from[0] if resolved_from else None
             # The marker means "this load path has no alias to record", so only a
             # CONFIRMED ABSENCE earns it. A positive resolution is the opposite claim and
             # must not settle: the switch may still abort before recording the alias

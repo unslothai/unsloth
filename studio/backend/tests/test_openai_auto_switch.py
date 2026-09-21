@@ -447,7 +447,10 @@ def test_auto_switch_reads_an_additions_only_snapshot_without_rebuilding_it(monk
     assert resolver.index_is_built() is False
 
     def _resolve(name, **kwargs):
-        calls.append((name, kwargs))
+        # index_state is the sink the route hands in for the alias probe; it is an out
+        # parameter rather than part of WHAT was asked, so it is recorded separately.
+        recorded = {k: v for k, v in kwargs.items() if k != "index_state"}
+        calls.append((name, recorded))
         return real_resolve(name, **kwargs)
 
     monkeypatch.setattr(resolver, "warm_index_soon", lambda: warmed.append(1))
@@ -509,7 +512,10 @@ def test_an_expired_positive_hit_refreshes_before_switching(monkeypatch):
     monkeypatch.setattr(resolver, "_build_index", lambda: scans.append(1) or {})
 
     def _resolve(name, **kwargs):
-        calls.append((name, kwargs))
+        # index_state is the sink the route hands in for the alias probe; it is an out
+        # parameter rather than part of WHAT was asked, so it is recorded separately.
+        recorded = {k: v for k, v in kwargs.items() if k != "index_state"}
+        calls.append((name, recorded))
         return real_resolve(name, **kwargs)
 
     monkeypatch.setattr(resolver, "resolve_local_gguf", _resolve)
@@ -550,7 +556,10 @@ def test_a_stale_miss_refreshes_before_the_resident_model_can_answer(monkeypatch
     )
 
     def _resolve(name, **kwargs):
-        calls.append((name, kwargs))
+        # index_state is the sink the route hands in for the alias probe; it is an out
+        # parameter rather than part of WHAT was asked, so it is recorded separately.
+        recorded = {k: v for k, v in kwargs.items() if k != "index_state"}
+        calls.append((name, recorded))
         return real_resolve(name, **kwargs)
 
     monkeypatch.setattr(resolver, "resolve_local_gguf", _resolve)
@@ -12700,35 +12709,71 @@ def test_a_gguf_walk_that_hit_the_entry_cap_is_reported(monkeypatch):
         assert incidents == [], f"a walk within the cap reported a gap: {incidents}"
 
 
-def test_the_index_identity_comes_back_with_the_resolution(monkeypatch):
-    """Read under the scan's own lock, not afterwards.
+def test_the_answer_and_the_index_that_gave_it_describe_one_snapshot(monkeypatch):
+    """Reported by the resolver beside the snapshot it resolved against.
 
-    A warmer publishing between the resolver returning and a separate read of the index
-    state would have that newer snapshot credited with an answer the previous one gave, and
-    the marker would then look valid for an index that may already hold the alias. The
-    resolver hands both back together, taken under _lock, which the scan holds for its whole
-    pass, so nothing can publish in between.
+    A caller memoizing a MISS has to know which index said so. Resolving first and reading
+    the identity afterwards labels an answer from the old index with the new one's identity
+    whenever an invalidation and a rebuild land in between, and the marker then looks valid
+    for a snapshot that may already hold the alias.
     """
-    monkeypatch.setattr(resolver, "_build_index", lambda: {})
     monkeypatch.setattr(resolver, "_CACHE_TTL_S", 0)
 
-    resolved, state = resolver.resolve_local_gguf_with_index_state("nope/not-a-model")
-    assert resolved is None
-    assert state == (
-        resolver.index_generation(),
-        resolver.index_scan_stamp(),
-    ), "the identity returned is not the one the resolution came from"
+    entry = resolver._LocalGgufEntry(
+        "unsloth/B-GGUF", "/models/unsloth/B-GGUF", ("Q4_K_M",)
+    )
+    monkeypatch.setattr(resolver, "_build_index", lambda: {"unsloth/b-gguf": entry})
 
-    # The route uses that pair rather than re-reading, for both questions it asks.
+    state: list = []
+    assert resolver.resolve_local_gguf("unsloth/B-GGUF", index_state = state) is not None
+    assert state == [(resolver.index_generation(), resolver.index_scan_stamp())], (
+        "the identity reported is not the one the answer came from"
+    )
+
+    # A rebuild that REPLACES the index between two resolutions is reported as a different
+    # identity, which is what retires a marker taken against the older one.
+    before = state[0]
+    monkeypatch.setattr(resolver, "_build_index", lambda: {})
+    state = []
+    assert resolver.resolve_local_gguf("unsloth/B-GGUF", index_state = state) is None
+    assert state and state[0] != before
+
+    # The discriminating case, and the only one that separates this from reading the
+    # identity afterwards: something publishes DURING the resolution. The pair must name the
+    # index that answered, not the one that landed while it was answering.
+    monkeypatch.setattr(resolver, "_build_index", lambda: {"unsloth/b-gguf": entry})
+    resolver._index()
+    answered_by = (resolver.index_generation(), resolver.index_scan_stamp())
+    real_resolve_from_index = resolver._resolve_from_index
+
+    def _publish_midway(requested, index, **kwargs):
+        # An invalidation landing between the snapshot being read and the answer coming back.
+        resolver.invalidate_index()
+        return real_resolve_from_index(requested, index, **kwargs)
+
+    monkeypatch.setattr(resolver, "_resolve_from_index", _publish_midway)
+    state = []
+    assert resolver.resolve_local_gguf(
+        "unsloth/B-GGUF", allow_scan = False, index_state = state
+    ) is not None
+    now = (resolver.index_generation(), resolver.index_scan_stamp())
+    assert now != answered_by, "the harness did not change the index during the resolution"
+    assert state == [answered_by], (
+        "the identity reported names the index that landed during the resolution, not the "
+        "one that answered"
+    )
+
+    # Nothing to answer means nothing to memoize against.
+    state = []
+    assert resolver.resolve_local_gguf("", index_state = state) is None
+    assert state == [], "an unanswerable request still reported an index"
+
+    # And the route hands its own sink in rather than reading the state separately.
     src = inspect.getsource(inference_route._maybe_auto_switch_model)
-    assert (
-        "resolved, alias_probe_state = await asyncio.to_thread(" in src
-    ), "the route no longer takes the index identity with its resolution"
-    assert (
-        "scan_stamp_after = alias_probe_state[1]" in src
-    ), "the route reads the post-resolution stamp separately again"
-    assert (
-        "alias_probe_state = _alias_probe_index_state()" not in src
-    ), "the route still re-reads the index state after resolving"
-    # And a positive hit from the trusted cache leaves no state, so nothing is settled off it.
-    assert "alias_probe_state[1] if alias_probe_state else 0.0" in src
+    assert "index_state = resolved_from," in src, (
+        "the route no longer asks the resolver which index answered"
+    )
+    assert "alias_probe_state = resolved_from[0] if resolved_from else None" in src
+    assert "alias_probe_state = _alias_probe_index_state()" not in src, (
+        "the route reads the index state separately again"
+    )

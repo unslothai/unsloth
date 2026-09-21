@@ -1209,6 +1209,7 @@ def resolve_local_gguf(
     *,
     allow_scan: bool = True,
     include_companion_scope: bool = False,
+    index_state: Optional[list] = None,
 ) -> Optional[tuple]:
     """Return ``(load_path, gguf_variant, loader_id)`` for a local match, else None.
 
@@ -1218,6 +1219,10 @@ def resolve_local_gguf(
     ``repo:VARIANT``: an exact id match wins first (so ids containing a colon still resolve), else
     the last ``:VARIANT`` is split off and resolves only when that quant is on disk, unless it names
     no quant at all (an Ollama-style ":latest"), which means the repo.
+
+    ``index_state``, when given a list, receives one ``(generation, stamp)`` pair naming the
+    index this answer came from. For a caller that memoizes a miss: the pair and the answer
+    describe the same snapshot, which a separate read afterwards cannot promise.
 
     ``allow_scan=False`` answers from the last built index and never rebuilds. It is a raw snapshot
     read for callers that separately decide whether the snapshot is trustworthy; use
@@ -1229,32 +1234,28 @@ def resolve_local_gguf(
         return None
     requested = requested.strip()
     try:
-        index = _index() if allow_scan else _snapshot()[1]
+        if allow_scan:
+            _index()
+        # The snapshot and its identity, read under one acquisition of the lock the scan
+        # holds for its whole pass. A caller memoizing a MISS has to know which index said
+        # so, and resolving first and reading the identity afterwards labels an answer from
+        # the old index with the new one's identity when an invalidation and a rebuild land
+        # in between -- so the marker looks valid for a snapshot that may hold the alias.
+        # Resolving outside the lock is still atomic in the sense that matters: published
+        # snapshots are rebound, never mutated, so this dict is the one the identity names.
+        with _lock:
+            generation, snapshot = _generation, _snapshot()
+        if index_state is not None:
+            index_state.append((generation, snapshot[0]))
         return _resolve_from_index(
             requested,
-            index,
+            snapshot[1],
             include_companion_scope = include_companion_scope,
         )
     except Exception:
         # Best-effort: any resolver failure falls through to the loaded model, so a malformed name can never turn a
         # servable request into a 500.
         return None
-
-
-def resolve_local_gguf_with_index_state(
-    requested: str, *, include_companion_scope: bool = False
-) -> tuple:
-    """``(resolved, (generation, stamp))``: the answer and the index that gave it.
-
-    Reading the identity after :func:`resolve_local_gguf` returns leaves a window in which a
-    warmer publishes a newer snapshot, and a caller memoizing a MISS would then record it
-    against an index that answered nothing -- one that may already hold the alias. Both are
-    read under ``_lock`` here, which the scan holds for its whole pass, so nothing can
-    publish in between.
-    """
-    resolved = resolve_local_gguf(requested, include_companion_scope = include_companion_scope)
-    with _lock:
-        return resolved, (_generation, _snapshot()[0])
 
 
 def _resolve_from_index(
