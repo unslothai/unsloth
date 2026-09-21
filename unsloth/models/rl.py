@@ -541,6 +541,8 @@ pass
 _UNSLOTH_PATCHED_CONFIG_FLAG = "_unsloth_patched_rl_config"
 # Set on the PRISTINE config class, pointing at the Unsloth subclass that has taken over its module attribute.
 _UNSLOTH_CONFIG_PICKLE_TARGET = "_unsloth_config_pickle_target"
+# Marks the SFTConfig stand-in whose isinstance test also accepts the pristine class, so a second pass does not stack another one.
+_UNSLOTH_SFT_CONFIG_SHIM_FLAG = "_unsloth_sft_config_widened_instance_check"
 
 
 def _is_unsloth_patched_config(config_class):
@@ -1001,6 +1003,48 @@ def _pin_pristine_sft_loss_type(config_cls):
     field.default = "nll"
     # The class attribute is the other copy of the default: dataclasses seeds it at class creation and a later subclass reads the field, so leave the two agreeing rather than half-patched.
     setattr(config_cls, "loss_type", "nll")
+    return True
+
+
+def _widen_sft_config_instance_check(patched_config):
+    """Keep a config that subclasses TRL's own ``SFTConfig`` from being downcast to one.
+
+    Replacing ``trl.trainer.sft_trainer.SFTConfig`` leaves two live classes of that name: ours, and the pristine one every ``SFTConfig`` subclass in TRL still derives from (``GKDConfig``, and any other trainer whose config builds on SFT). ``SFTTrainer.__init__`` guards with ``isinstance(args, TrainingArguments) and not isinstance(args, SFTConfig)`` and rebuilds ``args = SFTConfig(**args.to_dict())`` when it fires. Against our class that test is true for a ``GKDConfig``, so the config is rebuilt as a plain SFT one and every field the subclass added is dropped: ``lmbda``, ``beta``, ``temperature``, ``teacher_model_name_or_path``, ``teacher_model_init_kwargs``, ``disable_dropout`` and ``seq_kd`` all vanish with only an "is not a valid SFTConfig argument" line each, and the rebuilt config carries the mirrored ``eos_token`` placeholder, which then raises. See unslothai/unsloth#1941.
+
+    The guard exists to convert a plain ``TrainingArguments``; a subclass of ``SFTConfig`` already is an SFT config, so widen the test to accept the pristine class while calling the name still builds ours. A plain ``TrainingArguments`` is still converted, so SFT itself is untouched.
+    """
+    import trl.trainer.sft_trainer as sft_trainer_module
+
+    installed = getattr(sft_trainer_module, "SFTConfig", None)
+    if installed is None or getattr(installed, _UNSLOTH_SFT_CONFIG_SHIM_FLAG, False):
+        return False
+    # Only the class we just installed needs widening; if the module still holds the pristine class the guard already behaves.
+    if installed is not patched_config:
+        return False
+    pristine = None
+    for base in getattr(installed, "__mro__", ())[1:]:
+        if not _is_unsloth_patched_config(base) and base.__name__ == installed.__name__:
+            pristine = base
+            break
+    if pristine is None:
+        return False
+
+    class _WidenedInstanceCheck(type(installed)):
+        def __instancecheck__(cls, instance):
+            return isinstance(instance, (pristine, installed))
+
+        def __subclasscheck__(cls, subclass):
+            return issubclass(subclass, (pristine, installed))
+
+    shim = _WidenedInstanceCheck(
+        installed.__name__,
+        (installed,),
+        {_UNSLOTH_SFT_CONFIG_SHIM_FLAG: True},
+    )
+    # Answer to the same module and name as the class it stands in for, so pickling and every repr are unchanged.
+    shim.__qualname__ = installed.__qualname__
+    shim.__module__ = installed.__module__
+    sft_trainer_module.SFTConfig = shim
     return True
 
 
@@ -2939,6 +2983,10 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
                     break
         except Exception as e:
             logger.info(f"Unsloth: Could not pin the {RLConfig_name} loss_type: {e}")
+        try:
+            _widen_sft_config_instance_check(_patched_config)
+        except Exception as e:
+            logger.info(f"Unsloth: Could not widen the {RLConfig_name} isinstance check: {e}")
         try:
             _wrap_sft_evaluate_cap(getattr(created_module, f"Unsloth{RLTrainer_name}"))
         except Exception as e:
