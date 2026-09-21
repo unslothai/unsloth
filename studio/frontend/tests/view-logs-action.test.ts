@@ -211,9 +211,18 @@ test("the family and the path are read from the same diagnostic", () => {
     /viewLogsAction\(\s*loadFailureLogFamily\(isGguf, isDiffusion, runnerLogPath\),\s*runnerLogPath,\s*\)/,
     "the family and the path handed to the action are no longer the same value",
   );
+  // loadRequestIssued is read again, for a different question: whether the backend could
+  // have logged ANYTHING for this failure, which decides if the action exists at all. It
+  // must not reach the family, which is what equating the two got wrong -- a request
+  // issued is not a runner started, and that pairing opened someone else's log.
   assert.ok(
-    !src.includes("loadRequestIssued"),
+    !/loadFailureLogFamily\([^)]*loadRequestIssued/.test(src),
     "the hook still equates issuing the request with a runner having started",
+  );
+  assert.match(
+    src,
+    /runnerLogPath \|\| loadRequestIssued\s*\?\s*viewLogsAction\(/,
+    "a failure before the request was sent still offers the server log",
   );
 });
 

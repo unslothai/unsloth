@@ -78,6 +78,9 @@ export interface DiffusionGenerateProgress {
    * a reason. A lost POST that never arrived started no run, so nothing carries its id,
    * and a later run may be another client's. Only an exact match is this attempt's. */
   generation_attempt?: string | null;
+  // Whether that reason reached the server log. False for a client-input failure the
+  // route answers without logging, which no log can explain.
+  error_logged?: boolean | null;
 }
 
 export interface DiffusionLoadProgress {

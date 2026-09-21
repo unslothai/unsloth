@@ -36,20 +36,58 @@ def attempt_scope_key(attempt_id) -> Optional[str]:
 
 # One store per process, not per engine instance: a request can switch the active engine,
 # and an outcome kept on the instance that ran the generation goes with it.
-_OUTCOMES: "OrderedDict[str, str]" = OrderedDict()
+# reason, and whether the server LOGGED it. The second is not inferable from the first: a
+# validation failure is answered with its reason and never logged, and once classified it
+# is indistinguishable from an internal one, so a client offering "View logs" off the
+# message opened an unrelated current log.
+_OUTCOMES: "OrderedDict[str, tuple[str, bool]]" = OrderedDict()
 _OUTCOMES_LOCK = threading.Lock()
 
 
-def _retain_generate_failure(attempt_id, reason: str) -> None:
-    """Record *reason* against *attempt_id*, oldest entries first out."""
+def _retain_generate_failure(
+    attempt_id,
+    reason: str,
+    logged: bool = True,
+) -> None:
+    """Record *reason* against *attempt_id*, oldest entries first out.
+
+    *logged* travels with it: the engine retains a reason before the route decides whether
+    to log it, so the route corrects the record with ``mark_generate_failure_unlogged``.
+    """
     attempt_id = attempt_scope_key(attempt_id)
     if not attempt_id:
         return
     with _OUTCOMES_LOCK:
         _OUTCOMES.pop(attempt_id, None)
-        _OUTCOMES[attempt_id] = reason
+        _OUTCOMES[attempt_id] = (reason, logged)
         while len(_OUTCOMES) > _RETAINED_GENERATE_FAILURES:
             _OUTCOMES.popitem(last = False)
+
+
+def mark_generate_failure_unlogged(attempt_id) -> None:
+    """Note that this attempt's retained reason never reached a log.
+
+    The branches that answer a client-input failure deliberately do not log it, and a
+    settling caller reads the retained reason rather than that response, so without this
+    the reason looked like one the log would explain.
+    """
+    attempt_id = attempt_scope_key(attempt_id)
+    if not attempt_id:
+        return
+    with _OUTCOMES_LOCK:
+        record = _OUTCOMES.get(attempt_id)
+        if record is not None:
+            _OUTCOMES[attempt_id] = (record[0], False)
+
+
+def generate_failure_was_logged(attempt_id) -> Optional[bool]:
+    """Whether this attempt's retained reason reached a log, or None if nothing is held."""
+    attempt_id = attempt_scope_key(attempt_id)
+    if not attempt_id:
+        return None
+    with _OUTCOMES_LOCK:
+        record = _OUTCOMES.get(attempt_id)
+    return None if record is None else record[1]
 
 
 def generate_failure_for_attempt(attempt_id) -> Optional[str]:
@@ -63,4 +101,5 @@ def generate_failure_for_attempt(attempt_id) -> Optional[str]:
     if not attempt_id:
         return None
     with _OUTCOMES_LOCK:
-        return _OUTCOMES.get(attempt_id)
+        record = _OUTCOMES.get(attempt_id)
+    return None if record is None else record[0]

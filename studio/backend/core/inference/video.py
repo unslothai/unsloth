@@ -5600,6 +5600,8 @@ class VideoBackend:
                 job_token = job_token,
                 cancel_event = cancel,
                 error = "Video generation could not start.",
+                # Nothing ran, so nothing was logged for it here.
+                error_logged = False,
             )
             raise
         # What this run reserved, read off the same state the lock committed. A caller that describes the job from an
@@ -5680,18 +5682,28 @@ class VideoBackend:
         try:
             result = self.generate(cancel_event = cancel_event, **gen_kwargs)
         except ValueError as exc:
+            # Bad client input: reported with its own reason, deliberately never logged.
             _record_outcome(str(exc))
             self._finish_generate_job(
-                job_token = job_token, cancel_event = cancel_event, error = str(exc)
+                job_token = job_token,
+                cancel_event = cancel_event,
+                error = str(exc),
+                error_logged = False,
             )
             return
         except RuntimeError as exc:
             msg = str(exc)
-            if msg not in (VIDEO_NOT_LOADED_MSG, VIDEO_CANCELLED_MSG):
+            client_state = msg in (VIDEO_NOT_LOADED_MSG, VIDEO_CANCELLED_MSG)
+            if not client_state:
                 logger.error("video.generate_failed: %s", exc, exc_info = True)
                 msg = video_failure_detail(exc, self._last_request_shape)
             _record_outcome(msg)
-            self._finish_generate_job(job_token = job_token, cancel_event = cancel_event, error = msg)
+            self._finish_generate_job(
+                job_token = job_token,
+                cancel_event = cancel_event,
+                error = msg,
+                error_logged = not client_state,
+            )
             return
         except Exception as exc:  # noqa: BLE001 -- worker thread: never propagate
             logger.error("video.generate_failed: %s", exc, exc_info = True)
@@ -5768,6 +5780,7 @@ class VideoBackend:
         cancel_event: Optional[threading.Event] = None,
         video: Optional[dict] = None,
         error: Optional[str] = None,
+        error_logged: bool = True,
         total: int = 0,
     ) -> None:
         """Record a job's terminal state as one atomic swap. The terminal dict
@@ -5795,6 +5808,10 @@ class VideoBackend:
                     "active": False,
                     "phase": "failed",
                     "error": error,
+                    # Said rather than inferred from the text: a client-input failure is
+                    # answered with its reason and never logged, so a page offering
+                    # "View logs" off the message alone opened an unrelated current log.
+                    "error_logged": error_logged,
                     "step": 0,
                     "total": 0,
                     "eta_seconds": None,

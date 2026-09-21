@@ -178,6 +178,7 @@ import { useStagedDownload, type StagedDownloadEntry } from "@/features/hub/down
 import {
   generationFailureForAttempt,
   generationFailureWasLogged,
+  retainedFailureWasLogged,
   newGenerationAttemptId,
 } from "./lib/generation-failure";
 import { DiffusionTrainPanel } from "./train/diffusion-train-panel";
@@ -500,12 +501,16 @@ async function settleLostGeneration(
     if (!isCurrent()) return;
     let idle = false;
     let reported: string | null = null;
+    // Whether that reason reached a log, read from the SAME poll: the classified message
+    // cannot say, and the catch at the call site decides whether to offer Logs.
+    let reportedWasLogged = true;
     try {
       // Named, so the answer is about THIS generation: the engine's retained slot holds
       // only the last run, and a queued client can start one before this poll comes round.
       const p = await getGenerateProgress(attemptId);
       fails = 0;
       reported = generationFailureForAttempt(p, attemptId);
+      reportedWasLogged = retainedFailureWasLogged(p);
       if (p.active) sawActive = true;
       else idle = true;
     } catch {
@@ -516,7 +521,13 @@ async function settleLostGeneration(
     // run that failed after its POST was lost goes active-to-idle exactly like one that
     // finished, so returning here read as success and could advance a batch past an
     // output that never arrived. Already classified by the backend.
-    if (reported) throw new Error(reported);
+    if (reported)
+      // The flag rides along, since the message cannot carry it: classification puts a
+      // client-input failure behind the same prefix as an internal one, and the catch
+      // below decides whether to offer Logs.
+      throw Object.assign(new Error(reported), {
+        errorLogged: reportedWasLogged,
+      });
     if (!idle) continue;
     if (sawActive) return;
     // Idle on the very first look: the run may have finished or never started, so a gallery
@@ -3587,8 +3598,14 @@ export function ImagesPage({
         })
       )
         toast.error(msg, {
-          // Only when the server logged it: see generationFailureWasLogged.
-          action: generationFailureWasLogged(msg)
+          // Only when the server logged it. A settled failure says so explicitly (the
+          // retained reason is already classified, so its text cannot); anything else is
+          // judged by the classified prefix, which the unlogged 400s do not carry.
+          action: (
+            typeof (err as { errorLogged?: boolean }).errorLogged === "boolean"
+              ? (err as { errorLogged?: boolean }).errorLogged
+              : generationFailureWasLogged(msg)
+          )
             ? viewLogsAction("server")
             : undefined,
         });

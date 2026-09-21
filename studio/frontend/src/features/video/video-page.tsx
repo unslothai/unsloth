@@ -2265,7 +2265,13 @@ function VideoGenerator({
             const msg = p.error || "Video generation failed";
             // The user's own Cancel surfaces as the backend's cancelled sentinel; not an error.
             if (!msg.toLowerCase().includes("cancelled"))
-              toast.error(msg, { action: viewLogsAction("server") });
+              toast.error(msg, {
+                // Only where the log can hold the failure: a client-input one is answered
+                // with its reason and never logged, and opening Logs then shows an
+                // unrelated current log.
+                action:
+                  p.error_logged === false ? undefined : viewLogsAction("server"),
+              });
           }
           return;
         }
@@ -2336,7 +2342,11 @@ function VideoGenerator({
           // generation shows an idle page and loses the error.
           const msg = g.error || "Video generation failed";
           if (!msg.toLowerCase().includes("cancelled"))
-            toast.error(msg, { action: viewLogsAction("server") });
+            toast.error(msg, {
+              // Same gate as the live poll above.
+              action:
+                g.error_logged === false ? undefined : viewLogsAction("server"),
+            });
         }
       } catch {
         // Resume is best-effort; a failed probe just leaves the idle view.

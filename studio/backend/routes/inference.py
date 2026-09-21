@@ -39040,6 +39040,11 @@ async def generate_diffusion_image(
                 )
             break
         except ValueError as exc:
+            # Answered with its own reason and never logged. A settling caller reads the
+            # RETAINED reason instead of this response, so the record has to say so or the
+            # page offers logs that cannot hold it.
+            from core.inference.generate_outcomes import mark_generate_failure_unlogged
+            mark_generate_failure_unlogged(request.attempt_id)
             raise HTTPException(status_code = 400, detail = str(exc))
         except DiffusionModelReplacedError as exc:
             if attempt > 0:
@@ -39569,7 +39574,10 @@ async def diffusion_generate_progress(
     # reads as success to a client that had already seen its own run active. The key is
     # account-qualified, so this can only ever answer about the caller's own attempt.
     if attempt_id is not None:
-        from core.inference.generate_outcomes import generate_failure_for_attempt
+        from core.inference.generate_outcomes import (
+            generate_failure_for_attempt,
+            generate_failure_was_logged,
+        )
         retained = generate_failure_for_attempt(attempt_id)
         if retained:
             return DiffusionGenerateProgressResponse(
@@ -39580,6 +39588,7 @@ async def diffusion_generate_progress(
                 eta_seconds = None,
                 error = _generate_failure_detail(retained),
                 generation_attempt = attempt_id,
+                error_logged = generate_failure_was_logged(attempt_id) is not False,
             )
     if account_access.managed_account() and account_access.generation_is_foreign("diffusion"):
         return account_access.hidden_generate_progress_response(DiffusionGenerateProgressResponse)
@@ -39640,6 +39649,13 @@ async def diffusion_generate_progress(
         **progress,
         "error": _generate_failure_detail(raw_error) if raw_error else None,
     }
+    if progress.get("error"):
+        # Classification erases the difference between a failure the server logged and a
+        # client-input one it answered without logging, and both end up behind the same
+        # prefix. Said explicitly, so the page does not have to infer it from the text.
+        from core.inference.generate_outcomes import generate_failure_was_logged
+        was_logged = generate_failure_was_logged(attempt_id) if attempt_id else None
+        progress = {**progress, "error_logged": True if was_logged is None else was_logged}
     # Only meaningful beside the reason it dates, and only its own sender can match it:
     # without a reason there is nothing to attribute, and a concurrent client has no
     # business reading which attempt last failed.

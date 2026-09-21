@@ -1263,6 +1263,12 @@ export function useChatModelRuntime() {
           hfToken = preparedToken.token;
         }
 
+        // Whether /api/inference/load was actually SENT. A load can fail before that -- a
+        // token prompt the user declines, an abort, a guard in the preflight above -- and the
+        // backend then has nothing about it in any log, so offering "View logs" there opens
+        // an unrelated current log and points at a false diagnosis.
+        let loadRequestIssued = false;
+
         async function performLoad(): Promise<void> {
           if (abortCtrl.signal.aborted) throw new Error("Cancelled");
           let previousWasUnloaded = false;
@@ -1807,6 +1813,7 @@ export function useChatModelRuntime() {
             if (lifecycleLease !== null) {
               chatModelLifecycleGate.markLoading(lifecycleLease);
             }
+            loadRequestIssued = true;
             const loadResponse = await loadModel({
               model_path: loadPath,
               nativePathLease: loadNativePathLease,
@@ -2173,6 +2180,7 @@ export function useChatModelRuntime() {
                 }
               }
               try {
+                loadRequestIssued = true;
                 const rollbackResponse = await loadModel({
                   // The pin it loaded from: without it this retries the ref that needed pinning.
                   model_path: previousActiveLoadId || previousCheckpoint,
@@ -2673,10 +2681,16 @@ export function useChatModelRuntime() {
             // runner of this attempt's ever wrote one (a Transformers or MLX load, or a
             // failure before the launch), whose reason is in the current server log.
             const runnerLogPath = failureLogPath(message);
-            const logsAction = viewLogsAction(
-              loadFailureLogFamily(isGguf, isDiffusion, runnerLogPath),
-              runnerLogPath,
-            );
+            // A named log pins the attempt, so it is evidence on its own; without one, the
+            // request having been sent is what says the backend could have logged anything
+            // at all.
+            const logsAction =
+              runnerLogPath || loadRequestIssued
+                ? viewLogsAction(
+                    loadFailureLogFamily(isGguf, isDiffusion, runnerLogPath),
+                    runnerLogPath,
+                  )
+                : undefined;
             if (loadToastDismissedRef.current) {
               toast.error(summary, {
                 description: detail || undefined,

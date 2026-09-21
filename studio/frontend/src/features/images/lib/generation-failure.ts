@@ -11,6 +11,7 @@
 export interface RetainedGenerationFailure {
   error?: string | null;
   generation_attempt?: string | null;
+  error_logged?: boolean | null;
 }
 
 /** The failure reason that belongs to THIS attempt, if any.
@@ -56,4 +57,18 @@ export const GENERATE_FAILURE_LOGGED_PREFIX = "Image generation failed.";
  */
 export function generationFailureWasLogged(message: string): boolean {
   return message.startsWith(GENERATE_FAILURE_LOGGED_PREFIX);
+}
+
+/** The same question for a RETAINED failure, where the message cannot answer it.
+ *
+ * A caller settling a lost POST reads the reason off the progress poll, and by then it has
+ * been classified: a client-input failure the route answered WITHOUT logging carries the
+ * same prefix as an internal one. So the backend says which it was, and only an explicit
+ * false withholds the action -- an older backend sends nothing, and the reasons it retains
+ * are the logged ones.
+ */
+export function retainedFailureWasLogged(
+  progress: RetainedGenerationFailure,
+): boolean {
+  return progress.error_logged !== false;
 }

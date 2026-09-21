@@ -581,3 +581,53 @@ def test_an_unscoped_poll_on_a_multi_account_install_is_not_told_someone_elses_r
     # legacy answer an older client depends on is unchanged.
     solo = answer(None)
     assert solo.error, "a single-account install lost the unscoped legacy answer"
+
+
+def test_a_client_input_failure_is_not_reported_as_one_the_log_explains():
+    """Classification hides WHICH failure it was, so the record has to carry it.
+
+    The route answers a ValueError with its own reason and deliberately never logs it, and
+    a caller settling a lost POST reads the RETAINED reason rather than that response. By
+    then it wears the same "Image generation failed." prefix as an internal failure, so a
+    page judging the message alone offered "View logs" for a failure no log can explain.
+    """
+    import core.inference.generate_outcomes as outcomes
+    from core.inference.generate_outcomes import (
+        _retain_generate_failure,
+        generate_failure_for_attempt,
+        generate_failure_was_logged,
+        mark_generate_failure_unlogged,
+    )
+
+    _retain_generate_failure("attempt-logged", "CUDA out of memory")
+    assert (
+        generate_failure_was_logged("attempt-logged") is True
+    ), "the engine's own retention defaults to logged, which is what its handlers do"
+
+    _retain_generate_failure("attempt-input", "negative_prompt is not supported")
+    mark_generate_failure_unlogged("attempt-input")
+    assert generate_failure_was_logged("attempt-input") is False
+    # The reason itself is untouched: the client still gets told why.
+    assert generate_failure_for_attempt("attempt-input") == "negative_prompt is not supported"
+    # Nothing retained says nothing either way.
+    assert generate_failure_was_logged("attempt-never-ran") is None
+    assert generate_failure_was_logged(None) is None
+    # And marking an attempt nothing is held for does not invent a record.
+    before = len(outcomes._OUTCOMES)
+    mark_generate_failure_unlogged("attempt-never-ran")
+    assert len(outcomes._OUTCOMES) == before
+
+
+def test_the_route_marks_and_publishes_whether_the_failure_was_logged():
+    """Wiring, from the route's own source: the 400 branch marks, the poll publishes."""
+    src = _src("routes/inference.py")
+    at = src.index("async def generate_diffusion_image")
+    body = src[at : at + 6000]
+    assert (
+        "mark_generate_failure_unlogged(request.attempt_id)" in body
+    ), "the branch that answers without logging leaves the record saying it logged"
+
+    at = src.index("async def diffusion_generate_progress")
+    body = src[at : at + 7000]
+    assert '"error_logged"' in body, "the poll does not say whether the reason was logged"
+    assert "generate_failure_was_logged(attempt_id)" in body

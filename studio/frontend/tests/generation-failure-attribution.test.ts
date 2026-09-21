@@ -16,6 +16,7 @@ import test from "node:test";
 import {
   generationFailureForAttempt,
   generationFailureWasLogged,
+  retainedFailureWasLogged,
   newGenerationAttemptId,
 } from "../src/features/images/lib/generation-failure.ts";
 
@@ -172,9 +173,82 @@ test("only a failure the server logged offers the logs action", () => {
     new URL("../src/features/images/images-page.tsx", import.meta.url),
     "utf8",
   );
+  // The prefix judgement is still the fallback for a failure the POST reported directly,
+  // where there is no retained record to ask.
   assert.match(
     page,
-    /action: generationFailureWasLogged\(msg\)\s*\?\s*viewLogsAction\("server"\)\s*:\s*undefined/,
+    /: generationFailureWasLogged\(msg\)\s*\)\s*\?\s*viewLogsAction\("server"\)\s*:\s*undefined/,
     "the generate error toast still offers logs for a failure that was never logged",
+  );
+});
+
+test("a retained failure says whether it was logged, since its text cannot", () => {
+  // The reason a settling caller reads has already been classified, so a client-input
+  // failure the route answered WITHOUT logging carries the same prefix as an internal one.
+  assert.equal(
+    retainedFailureWasLogged({
+      error: "Image generation failed.",
+      error_logged: false,
+    }),
+    false,
+    "a failure the server never logged was offered as one the log explains",
+  );
+  assert.equal(
+    retainedFailureWasLogged({
+      error: "Image generation failed. The GPU ran out of memory.",
+      error_logged: true,
+    }),
+    true,
+  );
+  // An older backend sends nothing, and the reasons it retains are the logged ones.
+  assert.equal(retainedFailureWasLogged({ error: "Image generation failed." }), true);
+  assert.equal(
+    retainedFailureWasLogged({ error: "Image generation failed.", error_logged: null }),
+    true,
+  );
+
+  // The page carries the answer out of the settling loop with the error it throws, and
+  // prefers it over the prefix guess when it is there.
+  const page = readFileSync(
+    new URL("../src/features/images/images-page.tsx", import.meta.url),
+    "utf8",
+  );
+  assert.match(page, /errorLogged: reportedWasLogged/);
+  assert.match(page, /reportedWasLogged = retainedFailureWasLogged\(p\)/);
+  assert.match(
+    page,
+    /typeof \(err as \{ errorLogged\?: boolean \}\)\.errorLogged === "boolean"/,
+  );
+});
+
+test("a video failure the backend did not log offers no logs action", () => {
+  const page = readFileSync(
+    new URL("../src/features/video/video-page.tsx", import.meta.url),
+    "utf8",
+  );
+  // Both sites: the live poll and the mount-time resume, which shows the same terminal
+  // phase after a reload.
+  const gates = page.match(/error_logged === false \? undefined : viewLogsAction\("server"\)/g);
+  assert.equal(
+    gates?.length,
+    2,
+    "a video failure the server never logged still offers to open its log",
+  );
+});
+
+test("a load that never reached the server offers no logs action", () => {
+  const runtime = readFileSync(
+    new URL("../src/features/chat/hooks/use-chat-model-runtime.ts", import.meta.url),
+    "utf8",
+  );
+  // The flag is set immediately before the request goes out, on both the main load and
+  // the rollback, and nowhere else.
+  const sets = runtime.match(/loadRequestIssued = true;/g);
+  assert.equal(sets?.length, 2, "the request-issued flag is not set where the load is sent");
+  assert.match(runtime, /let loadRequestIssued = false;/);
+  assert.match(
+    runtime,
+    /runnerLogPath \|\| loadRequestIssued\s*\?\s*viewLogsAction\(/,
+    "a failure before the request was sent still offers the server log",
   );
 });
