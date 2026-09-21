@@ -1571,11 +1571,12 @@ export const de = {
         "Eingefügter Text ab {count} Zeichen wird als .txt-Datei angehängt. Kürzerer Text bleibt im Nachrichtenfeld.",
       pastedTextOffDescription:
         "Eingefügter Text bleibt unabhängig von seiner Länge im Nachrichtenfeld.",
-      compactionDescriptionInherit: "Folgt der Kontextrichtlinie des Servers.",
+      compactionDescriptionInherit:
+        "Verdichtet nach der auf dem Server eingestellten Richtlinie, ausgeliefert als Gespräch zurücksetzen.",
       compactionDescriptionCheckpoint:
-        "Behält den letzten Austausch und so viele der dauerhaft geltenden Anweisungen bei, wie hineinpassen, und archiviert den Rest zum Nachschlagen.",
+        "Verdichtet, indem der letzte Austausch und so viele der dauerhaft geltenden Anweisungen wie möglich behalten werden und der Rest zum Nachschlagen archiviert wird.",
       compactionDescriptionRolling:
-        "Archiviert die ältesten Gesprächsrunden und behält neuere Inhalte mit dem gewählten zusätzlichen Freiraum.",
+        "Verdichtet, indem die ältesten Gesprächsrunden archiviert werden und neuere Inhalte mit dem gewählten zusätzlichen Freiraum erhalten bleiben.",
       projectsSection: "Projektbereich anzeigen",
       projectsSectionDescription:
         "Gruppiert Projekt-Chats unter einer Überschrift für Projekte. Deaktiviere dies, um sie stattdessen unter den zuletzt verwendeten Chats aufzulisten.",
@@ -1625,7 +1626,7 @@ export const de = {
         "Ältere Runden wandern in ein durchsuchbares Archiv, wenn ein Chat voll läuft.",
       compactionStyle: "Wenn der Kontext voll ist",
       compactionStyleDescription:
-        "Die Servervorgabe behält UNSLOTH_CONTEXT_POLICY bei. Gespräch zurücksetzen behält die letzte Runde und so viele dauerhafte Anweisungen, wie hineinpassen. Ein gleitendes Fenster verwirft die ältesten Runden und kann mehr aktuellen Verlauf behalten.",
+        "Wie ein Chat verdichtet wird, sobald er seinen Kontext füllt. Die Servervorgabe folgt UNSLOTH_CONTEXT_POLICY auf dem Server, die als checkpoint ausgeliefert wird und damit Gespräch zurücksetzen entspricht, bis sie geändert wird. Gespräch zurücksetzen behält die letzte Runde und so viele dauerhafte Anweisungen, wie hineinpassen. Das Archivieren der ältesten Runden verwirft die ältesten und kann mehr aktuellen Verlauf behalten.",
       compactionStyleInherit: "Servervorgabe verwenden",
       compactionStyleCheckpoint: "Gespräch zurücksetzen",
       compactionStyleRollingDefault:

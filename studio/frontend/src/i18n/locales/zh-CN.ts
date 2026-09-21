@@ -1501,10 +1501,12 @@ export const zhCN = {
         "粘贴的文本达到 {count} 个字符时会转为 .txt 附件，较短的文本则保留在消息输入框中。",
       pastedTextOffDescription:
         "无论长度如何，粘贴的文本都会保留在消息输入框中。",
-      compactionDescriptionInherit: "遵循服务器的上下文策略。",
-      compactionDescriptionCheckpoint: "保留最新一轮对话和放得下的持续生效指令，其余内容归档以便检索。",
+      compactionDescriptionInherit:
+        "按服务器配置的策略压缩，默认即「重置对话」。",
+      compactionDescriptionCheckpoint:
+        "压缩时保留最新一轮对话和放得下的持续生效指令，其余内容归档以便检索。",
       compactionDescriptionRolling:
-        "归档最早的对话轮次，保留近期记录并预留所选的额外空间。",
+        "压缩时归档最早的对话轮次，保留近期记录并预留所选的额外空间。",
       projectsSection: "显示项目分区",
       projectsSectionDescription:
         "将项目对话归到「项目」标题下。关闭后改为显示在「最近」中。",
@@ -1553,7 +1555,7 @@ export const zhCN = {
         "聊天填满上下文时，较早的轮次会转入可检索的归档。",
       compactionStyle: "上下文已满时",
       compactionStyleDescription:
-        "使用服务器默认值会保留 UNSLOTH_CONTEXT_POLICY。重置对话会保留最新轮次和放得下的持续指令。滑动窗口会丢弃最早的轮次，并可保留更多近期历史。",
+        "对话填满上下文后的压缩方式。使用服务器默认值会遵循服务器上的 UNSLOTH_CONTEXT_POLICY，其出厂值为 checkpoint，因此在未更改前与「重置对话」一致。重置对话会保留最新轮次和放得下的持续指令。归档最早的轮次会丢弃最久远的内容，并可保留更多近期历史。",
       compactionStyleInherit: "使用服务器默认值",
       compactionStyleCheckpoint: "重置对话",
       compactionStyleRollingDefault: "归档最早的轮次（约 25% 额外空间）",

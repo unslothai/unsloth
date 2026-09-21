@@ -1568,11 +1568,12 @@ export const fr = {
         "Le texte collé de {count} caractères ou plus devient une pièce jointe .txt. Le texte plus court reste dans le champ de message.",
       pastedTextOffDescription:
         "Tout le texte collé reste dans le champ de message, quelle que soit sa longueur.",
-      compactionDescriptionInherit: "Suit la politique de contexte du serveur.",
+      compactionDescriptionInherit:
+        "Compacte selon la politique configurée sur le serveur, livrée comme Réinitialiser la discussion.",
       compactionDescriptionCheckpoint:
-        "Conserve le dernier échange et les instructions permanentes qui tiennent, et archive le reste pour pouvoir le retrouver.",
+        "Compacte en conservant le dernier échange et les instructions permanentes qui tiennent, et en archivant le reste pour pouvoir le retrouver.",
       compactionDescriptionRolling:
-        "Archive les échanges les plus anciens pour conserver les plus récents et la marge choisie.",
+        "Compacte en archivant les échanges les plus anciens, en conservant les plus récents et la marge choisie.",
       projectsSection: "Afficher la section Projets",
       projectsSectionDescription:
         "Regroupe les discussions de projet sous un titre Projets. Désactivez cette option pour les lister dans Récents.",
@@ -1622,7 +1623,7 @@ export const fr = {
         "Les anciens échanges vont dans une archive consultable quand un chat sature son contexte.",
       compactionStyle: "Lorsque le contexte est plein",
       compactionStyleDescription:
-        "La valeur par défaut du serveur conserve UNSLOTH_CONTEXT_POLICY. Réinitialiser la discussion garde le dernier tour et les instructions permanentes qui tiennent. Une fenêtre glissante supprime les tours les plus anciens et peut conserver davantage d’historique récent.",
+        "Comment une discussion est compactée lorsqu'elle remplit son contexte. La valeur par défaut du serveur suit UNSLOTH_CONTEXT_POLICY sur le serveur, livrée comme checkpoint et donc équivalente à Réinitialiser la discussion tant qu'elle n'est pas modifiée. Réinitialiser la discussion garde le dernier tour et les instructions permanentes qui tiennent. Archiver les tours les plus anciens supprime les plus vieux et peut conserver davantage d'historique récent.",
       compactionStyleInherit: "Utiliser la valeur du serveur",
       compactionStyleCheckpoint: "Réinitialiser la discussion",
       compactionStyleRollingDefault:

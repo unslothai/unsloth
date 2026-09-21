@@ -1530,11 +1530,12 @@ export const ko = {
         "붙여넣은 텍스트가 {count}자 이상이면 .txt 첨부 파일이 됩니다. 더 짧은 텍스트는 입력창에 남습니다.",
       pastedTextOffDescription:
         "길이와 관계없이 붙여넣은 모든 텍스트가 입력창에 남습니다.",
-      compactionDescriptionInherit: "서버의 컨텍스트 정책을 따릅니다.",
+      compactionDescriptionInherit:
+        "서버에 설정된 정책으로 압축합니다. 기본값은 대화 재설정입니다.",
       compactionDescriptionCheckpoint:
-        "최신 대화 턴과 들어갈 수 있는 만큼의 계속 적용되는 지침을 유지하고, 나머지는 검색할 수 있도록 보관합니다.",
+        "최신 대화 턴과 들어갈 수 있는 만큼의 계속 적용되는 지침을 유지하고, 나머지는 검색할 수 있도록 보관하며 압축합니다.",
       compactionDescriptionRolling:
-        "가장 오래된 턴을 보관소로 옮겨 최근 기록을 유지하고 선택한 만큼의 여유 공간을 확보합니다.",
+        "가장 오래된 턴을 보관소로 옮겨 압축하고, 최근 기록과 선택한 만큼의 여유 공간을 유지합니다.",
       projectsSection: "프로젝트 섹션 표시",
       projectsSectionDescription:
         "프로젝트 채팅을 프로젝트 제목 아래에 모읍니다. 끄면 최근 항목에 표시됩니다.",
@@ -1584,7 +1585,7 @@ export const ko = {
         "채팅이 컨텍스트를 모두 채우면 오래된 턴은 검색 가능한 보관소로 옮겨집니다.",
       compactionStyle: "컨텍스트가 가득 찼을 때",
       compactionStyleDescription:
-        "서버 기본값을 사용하면 UNSLOTH_CONTEXT_POLICY가 유지됩니다. 대화 재설정은 최신 턴과 들어갈 수 있는 만큼의 지속 지침을 남깁니다. 슬라이딩 윈도우는 가장 오래된 턴을 삭제하고 최근 기록을 더 많이 유지할 수 있습니다.",
+        "채팅이 컨텍스트를 채웠을 때 압축하는 방식입니다. 서버 기본값은 서버의 UNSLOTH_CONTEXT_POLICY를 따르며, checkpoint로 출시되므로 변경하기 전까지는 대화 재설정과 동일하게 동작합니다. 대화 재설정은 최신 턴과 들어갈 수 있는 만큼의 지속 지침을 남깁니다. 가장 오래된 턴 보관은 가장 오래된 것을 삭제하고 최근 기록을 더 많이 유지할 수 있습니다.",
       compactionStyleInherit: "서버 기본값 사용",
       compactionStyleCheckpoint: "대화 재설정",
       compactionStyleRollingDefault: "오래된 턴 보관(약 25% 추가 여유)",

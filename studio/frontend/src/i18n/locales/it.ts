@@ -1535,11 +1535,12 @@ export const it = {
         "Il testo incollato di almeno {count} caratteri diventa un allegato .txt. Il testo più breve resta nel campo del messaggio.",
       pastedTextOffDescription:
         "Tutto il testo incollato resta nel campo del messaggio, indipendentemente dalla lunghezza.",
-      compactionDescriptionInherit: "Segue la politica del contesto del server.",
+      compactionDescriptionInherit:
+        "Compatta secondo la politica configurata sul server, distribuita come Reimposta la conversazione.",
       compactionDescriptionCheckpoint:
-        "Mantiene l’ultimo scambio e le istruzioni permanenti che rientrano, e archivia il resto per poterlo recuperare.",
+        "Compatta mantenendo l'ultimo scambio e le istruzioni permanenti che rientrano, e archiviando il resto per poterlo recuperare.",
       compactionDescriptionRolling:
-        "Archivia i turni più vecchi per conservare la cronologia recente e lo spazio aggiuntivo selezionato.",
+        "Compatta archiviando i turni più vecchi, conservando la cronologia recente e lo spazio aggiuntivo selezionato.",
       projectsSection: "Mostra la sezione Progetti",
       projectsSectionDescription:
         "Raggruppa le chat di progetto sotto un titolo Progetti. Disattivalo per elencarle in Recenti.",
@@ -1590,7 +1591,7 @@ export const it = {
         "I turni più vecchi passano in un archivio consultabile quando una chat riempie il contesto.",
       compactionStyle: "Quando il contesto è pieno",
       compactionStyleDescription:
-        "Il valore predefinito del server mantiene UNSLOTH_CONTEXT_POLICY. Reimpostare la conversazione conserva l'ultimo turno e le istruzioni permanenti che rientrano. Una finestra scorrevole elimina i turni più vecchi e può conservare più cronologia recente.",
+        "Come una chat viene compattata quando riempie il suo contesto. Il valore predefinito del server segue UNSLOTH_CONTEXT_POLICY sul server, distribuito come checkpoint e quindi equivalente a Reimposta la conversazione finché non viene cambiato. Reimposta la conversazione conserva l'ultimo turno e le istruzioni permanenti che rientrano. Archiviare i turni più vecchi elimina i più antichi e può conservare più cronologia recente.",
       compactionStyleInherit: "Usa il valore del server",
       compactionStyleCheckpoint: "Reimposta la conversazione",
       compactionStyleRollingDefault:

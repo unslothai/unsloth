@@ -1531,11 +1531,12 @@ export const en = {
       pastedTextShortDescription:
         "Pastes of {count} characters or more become .txt attachments.",
       pastedTextOffDescription: "Pasted text always stays in the message box.",
-      compactionDescriptionInherit: "Follow the server's context policy.",
+      compactionDescriptionInherit:
+        "Compact using the server's configured policy, which ships as Reset conversation.",
       compactionDescriptionCheckpoint:
-        "Keep the latest turn and the standing instructions that fit, and archive the rest for retrieval.",
+        "Compact by keeping the latest turn and the standing instructions that fit, and archiving the rest for retrieval.",
       compactionDescriptionRolling:
-        "Archive the oldest turns to keep recent history and the selected amount of extra room.",
+        "Compact by archiving the oldest turns, keeping recent history and the selected amount of extra room.",
       projectsSection: "Show projects section",
       projectsSectionDescription:
         "Group project chats under Projects. When off, show them in Recents.",
@@ -1584,7 +1585,7 @@ export const en = {
         "Older turns move to a searchable archive when a chat fills its context.",
       compactionStyle: "When context fills",
       compactionStyleDescription:
-        "Use server default keeps UNSLOTH_CONTEXT_POLICY. Reset conversation keeps the latest turn and the standing instructions that fit. A sliding window drops oldest turns and can keep more recent history.",
+        "How a chat is compacted once it fills its context. Use server default follows UNSLOTH_CONTEXT_POLICY on the server, which ships as checkpoint and so matches Reset conversation until an operator changes it. Reset conversation keeps the latest turn and the standing instructions that fit. Archiving oldest turns drops the oldest and can keep more recent history.",
       compactionStyleInherit: "Use server default",
       compactionStyleCheckpoint: "Reset conversation",
       compactionStyleRollingDefault: "Archive oldest turns (~25% extra room)",

@@ -12,6 +12,7 @@ import {
 } from "../src/features/chat/utils/auto-compaction.ts";
 
 import { readSrc } from "./helpers/kit.ts";
+import { en } from "../src/i18n/locales/en.ts";
 
 test("the default preserves the server context policy", () => {
   assert.equal(DEFAULT_CONTEXT_POLICY, "inherit");
@@ -184,4 +185,31 @@ test("a queued run keeps its own model's llama.cpp verdict after the picker move
       compaction_headroom_ratio: 0.1,
     },
   );
+});
+
+test("the copy names compaction and matches the server's shipped default", () => {
+  // "Use server default" sends no context_policy, so the backend falls back to
+  // UNSLOTH_CONTEXT_POLICY, which ships as "checkpoint" and is what "Reset conversation"
+  // sends. The copy says so; this keeps the two from drifting apart.
+  const backend = readSrc("../../backend/core/inference/checkpoint.py");
+  assert.match(
+    backend,
+    /UNSLOTH_CONTEXT_POLICY"\s*,\s*"checkpoint"/,
+    "the server default moved, so the Display copy now describes the wrong behaviour",
+  );
+  assert.match(backend, /CONTEXT_POLICY == "checkpoint"/);
+
+  const chat = en.settings.chat;
+  assert.equal(chat.compactionStyleCheckpoint, "Reset conversation");
+  assert.match(chat.compactionDescriptionInherit, /Reset conversation/);
+  // Each description says which operation it is describing.
+  for (const copy of [
+    chat.compactionDescriptionInherit,
+    chat.compactionDescriptionCheckpoint,
+    chat.compactionDescriptionRolling,
+  ]) {
+    assert.match(copy, /^Compact/, `"${copy}" does not say it is about compaction`);
+  }
+  assert.match(chat.compactionStyleDescription, /UNSLOTH_CONTEXT_POLICY/);
+  assert.match(chat.compactionStyleDescription, /checkpoint/);
 });

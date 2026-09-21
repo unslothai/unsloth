@@ -1520,10 +1520,12 @@ export const ja = {
         "{count}文字以上の貼り付けテキストは .txt 添付ファイルになります。短いテキストは入力欄に残ります。",
       pastedTextOffDescription:
         "長さに関係なく、貼り付けたテキストはすべて入力欄に残ります。",
-      compactionDescriptionInherit: "サーバーのコンテキストポリシーに従います。",
-      compactionDescriptionCheckpoint: "最新のやり取りと、収まる範囲の継続的な指示を保持し、残りは検索できるようアーカイブします。",
+      compactionDescriptionInherit:
+        "サーバーで設定されたポリシーで圧縮します。既定は「会話をリセット」です。",
+      compactionDescriptionCheckpoint:
+        "最新のやり取りと、収まる範囲の継続的な指示を保持し、残りは検索できるようアーカイブして圧縮します。",
       compactionDescriptionRolling:
-        "古いターンをアーカイブし、最近の履歴と選択した余裕分の空きを確保します。",
+        "古いターンをアーカイブして圧縮し、最近の履歴と選択した余裕分の空きを確保します。",
       projectsSection: "プロジェクトセクションを表示",
       projectsSectionDescription:
         "プロジェクトのチャットを「プロジェクト」の見出しにまとめます。オフにすると「最近」に表示されます。",
@@ -1572,7 +1574,7 @@ export const ja = {
         "チャットの文脈が満杯になると、古いターンは検索可能なアーカイブに移ります。",
       compactionStyle: "コンテキストが満杯になったとき",
       compactionStyleDescription:
-        "サーバー既定値を使うと UNSLOTH_CONTEXT_POLICY が維持されます。会話をリセットすると最新ターンと、収まる範囲の継続指示が残ります。スライディングウィンドウは古いターンを削除し、より多くの最近の履歴を残せます。",
+        "チャットがコンテキストを使い切ったときの圧縮方法です。サーバー既定値はサーバーの UNSLOTH_CONTEXT_POLICY に従います。これは checkpoint として出荷されるため、変更されるまで「会話をリセット」と同じ動作になります。会話をリセットすると最新ターンと、収まる範囲の継続指示が残ります。古いターンのアーカイブは最も古いものを削除し、より多くの最近の履歴を残せます。",
       compactionStyleInherit: "サーバー既定値を使用",
       compactionStyleCheckpoint: "会話をリセット",
       compactionStyleRollingDefault: "古いターンをアーカイブ（約 25% の追加余裕）",

@@ -1549,11 +1549,12 @@ export const ptBR = {
         "Texto colado com {count} caracteres ou mais vira um anexo .txt. Textos menores ficam na caixa de mensagem.",
       pastedTextOffDescription:
         "Todo o texto colado fica na caixa de mensagem, independentemente do tamanho.",
-      compactionDescriptionInherit: "Segue a política de contexto do servidor.",
+      compactionDescriptionInherit:
+        "Compacta seguindo a política configurada no servidor, que vem como Redefinir a conversa.",
       compactionDescriptionCheckpoint:
-        "Mantém a última troca de mensagens e as instruções permanentes que couberem, e arquiva o restante para consulta.",
+        "Compacta mantendo a última troca de mensagens e as instruções permanentes que couberem, e arquivando o restante para consulta.",
       compactionDescriptionRolling:
-        "Arquiva os turnos mais antigos para manter o histórico recente e o espaço extra selecionado.",
+        "Compacta arquivando os turnos mais antigos, mantendo o histórico recente e o espaço extra selecionado.",
       projectsSection: "Mostrar a seção Projetos",
       projectsSectionDescription:
         "Agrupa as conversas de projeto sob um título Projetos. Desative para listá-las em Recentes.",
@@ -1603,7 +1604,7 @@ export const ptBR = {
         "Os turnos antigos vão para um arquivo pesquisável quando um chat enche o contexto.",
       compactionStyle: "Quando o contexto estiver cheio",
       compactionStyleDescription:
-        "Usar o padrão do servidor preserva UNSLOTH_CONTEXT_POLICY. Redefinir a conversa mantém o turno mais recente e as instruções permanentes que couberem. Uma janela deslizante descarta os turnos mais antigos e pode manter mais histórico recente.",
+        "Como uma conversa é compactada quando enche o contexto. Usar o padrão do servidor segue UNSLOTH_CONTEXT_POLICY no servidor, que vem como checkpoint e equivale a Redefinir a conversa até ser alterado. Redefinir a conversa mantém o turno mais recente e as instruções permanentes que couberem. Arquivar os turnos mais antigos descarta os mais velhos e pode manter mais histórico recente.",
       compactionStyleInherit: "Usar padrão do servidor",
       compactionStyleCheckpoint: "Redefinir conversa",
       compactionStyleRollingDefault:
