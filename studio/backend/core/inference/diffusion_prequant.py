@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import threading as _threading
 from dataclasses import dataclass
+from collections.abc import Sequence
 from typing import Any, Optional
 
 # torch.save dict layout tag; bump on an on-disk change so old/foreign artifacts are rejected
@@ -620,7 +621,14 @@ def usable_prequant_source(
 
     if src.kind == "repo" and all(is_safetensors_checkpoint(n) for n in readable):
         declared = set(getattr(src, "declared_filenames", ()) or ())
-        if not any(n in declared for n in readable) and cached_checkpoint_path(src) is None:
+        # The cache probe is scoped to the READABLE names for the same reason the list above is: a
+        # cached legacy pickle is not evidence for a safetensors artifact nobody has published, and
+        # an install that cannot open that pickle would take the cache hit as proof, plan without
+        # the dense shards, then resolve neither file.
+        if (
+            not any(n in declared for n in readable)
+            and cached_checkpoint_path(src, names = readable) is None
+        ):
             return None
     if src.kind == "path":
         if not local_prequant_path_ready(src.location):
@@ -630,7 +638,12 @@ def usable_prequant_source(
     return src
 
 
-def cached_checkpoint_path(source: Any, *, cache_dir: Optional[str] = None) -> Optional[str]:
+def cached_checkpoint_path(
+    source: Any,
+    *,
+    cache_dir: Optional[str] = None,
+    names: Optional[Sequence[str]] = None,
+) -> Optional[str]:
     """The path of a hosted (``kind == "repo"``) checkpoint ALREADY in the local Hub cache. A pure
     lookup (a refs read plus a stat, no network), so memory planning can ask on every pick.
 
@@ -641,10 +654,18 @@ def cached_checkpoint_path(source: Any, *, cache_dir: Optional[str] = None) -> O
     its checkpoint is sitting in the cache. Walking the chain in order keeps the anti-staleness
     property that motivated primary-only: the better name still wins whenever it is present.
 
+    ``names`` narrows the chain to a caller's own subset, for the one question this cannot answer
+    on its own: whether the cached file is one this install could actually OPEN. A cached legacy
+    pickle is a real hit for sizing and a non-answer for an install that cannot deserialize one,
+    and only the caller knows which question it is asking.
+
     Both cache roots are searched: Unsloth pins the LIVE cache setting while an unpinned
     ``hf_hub_download`` falls back to huggingface_hub's import-time constant. Never raises."""
     roots = (cache_dir, None) if cache_dir else (None,)
+    wanted = set(names) if names is not None else None
     for name in candidate_filenames_of(source):
+        if wanted is not None and name not in wanted:
+            continue
         for root in roots:
             hit = _cached_in_root(source, root, name)
             if hit is not None:
@@ -778,7 +799,7 @@ def load_prequantized_transformer(
             return None
 
         path = _resolve_checkpoint_path(
-            source, hf_token, cache_dir, local_files_only = local_files_only
+            source, hf_token, cache_dir, local_files_only = local_files_only, scheme = scheme
         )
         if path is None:
             return None
@@ -954,11 +975,19 @@ def _resolve_checkpoint_path(
     cache_dir: Optional[str] = None,
     *,
     local_files_only: bool = False,
+    scheme: Optional[str] = None,
 ) -> Optional[str]:
     """The local file path for ``source``, downloading from the Hub if needed; None if absent.
     ``local_files_only`` is the caller's promise that this load may not fetch anything, so a
     cache miss answers None and the build falls back rather than pulling several GB nobody asked
-    for."""
+    for.
+
+    ``scheme`` drops the names this install could not deserialize anyway, which is the SAME filter
+    the download plan applies. It has to be the same one: with only the plan filtering, a repo
+    hosting both containers would have the plan stage the readable one while this fetched the
+    other, downloading a second artifact to fail on it and then falling back to dense weights the
+    plan had already left out. Unset keeps the whole chain, for the callers that have no scheme to
+    offer."""
     if source.kind == "path":
         import os
 
@@ -968,6 +997,12 @@ def _resolve_checkpoint_path(
     if source.kind == "repo":
         EntryNotFoundError, _ = _entry_not_found_errors()
         names = list(candidate_filenames_of(source))
+        if scheme is not None:
+            readable = [n for n in names if restricted_prequant_load_supported(scheme, n)]
+            # Only when it leaves something. An empty filter means the source should never have
+            # been offered, and resolving nothing here would turn that into a silent None rather
+            # than the refusal the loader reports.
+            names = readable or names
         if not names:
             return None
         for index, name in enumerate(names):
