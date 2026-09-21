@@ -358,7 +358,8 @@ function findMermaidFence(blockContent: string): MermaidFence {
           : raw;
         return { open: false, indent, body: stripped.replace(/[\t ]*\r?\n?$/, "") };
       }
-      if (isClose) continue;
+      // A bare run at top level is an OPENER (an info string may be empty). Reading it as a close
+      // made a four-backtick outer fence holding a nested mermaid example look like a diagram.
       enclosing = { char: marker[0], run: marker.length };
     } else if (marker[0] === enclosing.char && marker.length >= enclosing.run && isClose) {
       enclosing = null;
@@ -384,7 +385,6 @@ function getMermaidSource(blockContent: string): string | null {
 
 /** True while a mermaid fence is still streaming, when there is no source to extract yet. */
 function isMermaidFenceOpener(blockContent: string): boolean {
-  if (markdownBlockFallback(blockContent).fenced) return false;
   return findMermaidFence(blockContent).open;
 }
 
