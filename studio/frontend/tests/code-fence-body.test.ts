@@ -114,6 +114,33 @@ test("a streaming open fence is highlighted rather than shown plain", () => {
   );
 });
 
+test("a completed fence on a non-``` form keeps the bounded renderer", () => {
+  // The other half of the same route. `getCodeFence` accepts exactly three unindented backticks, so
+  // a tilde / four-backtick / indented fence that streamed through `StreamingFenceBlock` had no
+  // `codeFence` once it completed and fell to the branch below -- streamdown's whole-token `Block`,
+  // which remounts every span at the final frame. A stopped reply does the same and never settles.
+  assert.ok(
+    /const settledFence = props\.isIncomplete \? null : markdownBlockFallback\(props\.content\);\s*if \(settledFence\?\.fenced\)/.test(
+      MARKDOWN_TEXT,
+    ),
+    "a completed fence must be recognised by the CommonMark-complete scanner",
+  );
+  const settled = MARKDOWN_TEXT.slice(MARKDOWN_TEXT.indexOf("const settledFence ="));
+  const branch = settled.slice(0, settled.indexOf("if (props.isIncomplete)"));
+  assert.ok(
+    /<StreamingFenceBlock language=\{settledFence\.language\} source=\{settledFence\.text\} \/>/.test(
+      branch,
+    ),
+    "and it must render the per-line body rather than Block, or the spans remount",
+  );
+  // Deliberately NOT `FenceBlock`: that branch owns the reach latch, the action bar and the
+  // fence-mode switch, which are wired to `getCodeFence`'s narrower form on purpose.
+  assert.ok(
+    !/<FenceBlock[\s\S]{0,200}settledFence/.test(MARKDOWN_TEXT),
+    "widening FenceBlock would add controls and artifact paths to blocks that do not have them",
+  );
+});
+
 test("markdownBlockFallback is what recognises the open fence, not getCodeFence", () => {
   // `CODE_FENCE_RE` behind `getCodeFence` accepts exactly three unindented backticks. CommonMark
   // also allows tildes, four or more backticks, and up to three spaces of indent, and a fence this

@@ -787,12 +787,18 @@ export const fencePrinting = (): boolean => printing;
  * update lands after the next paint, and there is no next paint before the print snapshot.
  */
 const setPrinting = (value: boolean): void => {
-  if (printing === value || windowedFences.size === 0) return;
+  // BEFORE the window check, not after it. A fence still showing its shell has no window to
+  // remeasure, but a print that starts then still has to be on the record: the tokens can arrive
+  // while the preview is open, and `useLineWindow` would then register and window the fence
+  // normally, leaving most printed pages uncoloured. The state is global, so it changes even when
+  // there is nothing to remeasure right now.
+  if (printing === value) return;
   printing = value;
   if (windowFrame !== 0) {
     cancelAnimationFrame(windowFrame);
     windowFrame = 0;
   }
+  if (windowedFences.size === 0) return;
   flushSync(remeasureWindows);
 };
 
