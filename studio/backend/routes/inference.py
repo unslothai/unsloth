@@ -15774,12 +15774,19 @@ async def _load_model_impl(
             _gpu_layers_override = parse_gpu_layers_override(extra_llama_args)
             if _gpu_layers_override is not None:
                 _manual_updates["gpu_layers"] = _gpu_layers_override
-            # reserialized: manual mode writes the ratio back out itself, so the six-digit
-            # text the child parses is what has to be in range, not the double read here.
+            # reserialized only when the launcher will actually REWRITE the ratio, which is the
+            # same predicate _should_strip_tensor_split uses: manual with the RESOLVED layer
+            # count non-negative. At Auto layers both copies are dropped before argv, so judging
+            # a six-digit rendering nothing emits would 400 a flag that never reaches the child.
             # A 400 rather than the 500 an unhandled raise here would be.
+            _resolved_layers = (
+                _gpu_layers_override
+                if _gpu_layers_override is not None
+                else getattr(request, "gpu_layers", -1)
+            )
             try:
                 _tensor_split_override = parse_tensor_split_override(
-                    extra_llama_args, reserialized = True
+                    extra_llama_args, reserialized = _resolved_layers >= 0
                 )
             except ValueError as exc:
                 raise HTTPException(status_code = 400, detail = redact_native_paths(str(exc))) from exc
@@ -17130,9 +17137,14 @@ async def validate_model(
             if _validate_ngl_override is not None:
                 _validate_manual_updates["gpu_layers"] = _validate_ngl_override
             # Same reserialized judgement, and the same 400, as the load path above.
+            _validate_resolved_layers = (
+                _validate_ngl_override
+                if _validate_ngl_override is not None
+                else getattr(request, "gpu_layers", -1)
+            )
             try:
                 _validate_ts_override = parse_tensor_split_override(
-                    effective_extra_args, reserialized = True
+                    effective_extra_args, reserialized = _validate_resolved_layers >= 0
                 )
             except ValueError as exc:
                 raise HTTPException(status_code = 400, detail = str(exc)) from exc

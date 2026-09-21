@@ -1487,10 +1487,13 @@ test("the mirror judges the share the launcher will write, and totals it in floa
   // Both halves of the round-3 review: six-significant-digit emission can move a value out of
   // range after validation, and a single float64 reduction disagrees with llama.cpp's stepwise
   // float32 prefix sum near the top of the range.
+  // gpuLayers: 49, because only a manual load with a resolved count of 0 or more rewrites the
+  // ratio, and the rewritten text is what these cases are about.
   const manual = (input: string) =>
-    diagnoseExtraArgs(input, CATALOG, { manualGpuMemory: true }).find(
-      (d) => d.level === "error",
-    )?.message ?? null;
+    diagnoseExtraArgs(input, CATALOG, {
+      manualGpuMemory: true,
+      gpuLayers: 49,
+    }).find((d) => d.level === "error")?.message ?? null;
   assert.match(manual("-ts 1.1754943508222874e-38,1") ?? "", /0 or at least/);
   assert.equal(manual("-ts 1.2e-38,1"), null);
   // Real libstdc++ sums the emitted text to 3.40282e+38, which fits, so this must NOT be refused.
@@ -1503,7 +1506,7 @@ test("the mirror judges the share the launcher will write, and totals it in floa
 
 test("the ratio rounding follows the mode, and each share rounds before it is added", () => {
   const err = (input: string, manualGpuMemory: boolean) =>
-    diagnoseExtraArgs(input, CATALOG, { manualGpuMemory }).find(
+    diagnoseExtraArgs(input, CATALOG, { manualGpuMemory, gpuLayers: 49 }).find(
       (d) => d.level === "error",
     )?.message ?? null;
   // Pass-through hands llama-server the user's own text, which std::stof accepts; only the
@@ -1517,4 +1520,25 @@ test("the ratio rounding follows the mode, and each share rounds before it is ad
       /adds up past/,
     );
   }
+});
+
+test("only a manual load that will rewrite the split judges the rewritten text", () => {
+  // At Auto layers the launcher drops both copies rather than reserializing either, so the
+  // six-digit rendering is never produced and refusing it would 400 a flag with no effect.
+  const at = (input: string, ctx: object) =>
+    diagnoseExtraArgs(input, CATALOG, ctx).find((d) => d.level === "error")
+      ?.message ?? null;
+  const v = "-ts 1.1754943508222874e-38,1";
+  assert.match(at(v, { manualGpuMemory: true, gpuLayers: 49 }) ?? "", /0 or at least/);
+  assert.equal(at(v, { manualGpuMemory: true, gpuLayers: -1 }), null);
+  assert.equal(at(v, { manualGpuMemory: false, gpuLayers: 49 }), null);
+  // The RESOLVED count decides, so an -ngl in the extras wins over the control either way.
+  assert.equal(
+    at(`-ngl -1 ${v}`, { manualGpuMemory: true, gpuLayers: 49 }),
+    null,
+  );
+  assert.match(
+    at(`-ngl 49 ${v}`, { manualGpuMemory: true, gpuLayers: -1 }) ?? "",
+    /0 or at least/,
+  );
 });

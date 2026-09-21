@@ -662,6 +662,30 @@ const VALUE_REQUIRED_FLAGS = new Set([
   "-ts",
 ]);
 
+/** The spellings the GPU Layers control also emits. */
+const GPU_LAYERS_FLAGS = new Set(["--gpu-layers", "--n-gpu-layers", "-ngl"]);
+
+/** The last-wins integer value for `flags` in `tokens`, or null. Mirrors parse_gpu_layers_override
+ *  closely enough for the one question asked of it: is the resolved layer count non-negative. */
+function lastIntegerFlagValue(
+  tokens: readonly string[],
+  flags: ReadonlySet<string>,
+): number | null {
+  let found: number | null = null;
+  for (const [index, token] of tokens.entries()) {
+    const flag = extraArgFlagName(token);
+    if (flag === null || !flags.has(flag)) {
+      continue;
+    }
+    const attached = valueIsAttached(token, flag);
+    const raw = attached ? token.split("=")[1] : tokens[index + 1];
+    if (raw !== undefined && INTEGER.test(raw.trim())) {
+      found = Number(raw.trim());
+    }
+  }
+  return found;
+}
+
 /** Flags whose value the backend reads as a per-GPU ratio, refusing unreadable, negative or
  *  non-finite entries and a zero total with a 400 (parse_tensor_split_override). */
 const RATIO_VALUE_FLAGS = new Set(["--tensor-split", "-ts"]);
@@ -792,6 +816,10 @@ export type ExtraArgsContext = {
   gpuSelectionActive?: boolean;
   /** GPU Memory is Manual, which removes the offload flags its controls own. */
   manualGpuMemory?: boolean;
+  /** The control's GPU Layers value. Only manual mode with a RESOLVED count of 0 or more makes
+   *  the launcher rewrite --tensor-split; at Auto layers it drops the flag instead, so judging
+   *  the rewritten text there would refuse a value that never reaches llama-server. */
+  gpuLayers?: number;
   /** Smallest --batch-size this launch can run, max(slots, 2). */
   batchFloor?: number;
   /** Model Memory keeps the weights resident, which owns the load mode. */
@@ -815,6 +843,11 @@ export function diagnoseExtraArgs(
   const noRamReserve = context.noRamReserve ?? false;
   const out: ExtraArgsDiagnostic[] = [];
   const { tokens, unterminatedQuote, quotedIndices } = parseExtraArgs(input);
+  // Mirrors _should_strip_tensor_split: an -ngl in the extras is promoted first, so the count
+  // that decides is the RESOLVED one, not the control's.
+  const nglOverride = lastIntegerFlagValue(tokens, GPU_LAYERS_FLAGS);
+  const resolvedGpuLayers = nglOverride ?? context.gpuLayers ?? -1;
+  const reserializesSplit = manualGpuMemory && resolvedGpuLayers >= 0;
   // Tokens the walk below consumed as somebody's value. A quoted token in value POSITION is a value
   // whatever it starts with, since llama.cpp takes the next argv element without looking.
   // Position matters as much as the quotes: a user quoting out of habit still wrote a flag.
@@ -976,7 +1009,7 @@ export function diagnoseExtraArgs(
           ? `${flag} needs a number after it.`
           : `${flag} needs a value after it.`;
       } else if (RATIO_VALUE_FLAGS.has(flag)) {
-        message = ratioValueProblem(flag, value, manualGpuMemory);
+        message = ratioValueProblem(flag, value, reserializesSplit);
       } else if (!numeric) {
         message = null;
       } else if (!INTEGER.test(value.trim())) {

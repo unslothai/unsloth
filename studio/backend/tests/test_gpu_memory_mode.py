@@ -1561,3 +1561,15 @@ def test_manual_explicit_layers_emits_the_promoted_ratio_once(tmp_path):
     assert cmd.count("--tensor-split") == 1
     assert cmd[cmd.index("--tensor-split") + 1] == "2.2,1"
     assert backend.tensor_split == [2.2, 1.0]
+
+
+def test_manual_auto_layers_does_not_judge_a_rewrite_that_never_happens():
+    """At Auto layers the launcher drops both copies of the ratio, so the route must not refuse
+    a value over the six-digit rendering it will never produce (the strip predicate and the
+    reserialized predicate are the same question)."""
+    route_src = (Path(_BACKEND_DIR) / "routes" / "inference.py").read_text(encoding = "utf-8")
+    for marker in (
+        "reserialized = _resolved_layers >= 0",
+        "reserialized = _validate_resolved_layers >= 0",
+    ):
+        assert marker in route_src, marker
