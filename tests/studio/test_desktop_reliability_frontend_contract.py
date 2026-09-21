@@ -1149,6 +1149,7 @@ def _labelled_actions(
     paddings: dict[str, float | None],
     base_padding: float,
     base_offset: float,
+    live_css: str,
 ) -> dict[int, tuple[str, float]]:
     """The row actions one variant renders: label -> whether it is the offset one.
 
@@ -1250,6 +1251,21 @@ def _labelled_actions(
         assert not utility, (
             f"the {name} action is positioned with {utility}, which this guard does not model: "
             f"it reads the row's action offsets from index.css, so state the offset there"
+        )
+        # Plain classes on the action, looked up the same way the row's are. Only `is-*` is
+        # resolved through the stylesheet below, and `_escapes_the_model` reads inline styles
+        # and utility tokens, so an ordinary class with `.pushed-action { right: 5rem }`
+        # behind it moved the pin with nothing here the wiser.
+        named = {
+            token.rpartition(":")[2].strip("!")
+            for token in worn
+            if re.fullmatch(r"(?:\S*:)?!?[a-z][\w-]*!?", token) and not token.startswith("is-")
+        }
+        moved_by = _classes_setting(live_css, named - _MODELLED_ACTION_CLASSES, _DECLARES_RIGHT_EDGE)
+        assert not moved_by, (
+            f"the {name} action carries {moved_by}, whose rules in index.css move its right "
+            f"edge or change its padding. The reach below is computed from the base rule and "
+            f"the is-* modifiers alone, so it would not describe where this action renders"
         )
         modifiers = [token for token in worn if token.startswith("is-")]
         unknown = [token for token in modifiers if token not in offsets]
@@ -1443,7 +1459,21 @@ _MOVES_HORIZONTALLY = (
 )
 
 
-def _classes_setting_the_gutter(live_css: str, classes: set[str]) -> list[str]:
+# The two the reach model already reads in full, so they are not "unmodelled".
+_MODELLED_ACTION_CLASSES = {"sidebar-row-action", "sidebar-row-action-glyph"}
+
+_DECLARES_RIGHT_PADDING = (
+    r"(?<![\w-])padding(?:-right|-inline-end)?:|@apply[^;]*(?<![\w-])!?(?:p|px|pe|pr)-"
+)
+# What moves an action's right edge, as a stylesheet declaration rather than a utility token.
+_DECLARES_RIGHT_EDGE = (
+    _DECLARES_RIGHT_PADDING
+    + r"|(?<![\w-])(?:right|inset(?:-inline)?|left|transform|translate|margin(?:-right)?):"
+    + r"|@apply[^;]*(?<![\w-])!?(?:right|inset|inset-x|left|-?mr|-?me|-?translate-x)-"
+)
+
+
+def _classes_setting(live_css: str, classes: set[str], declares: str) -> list[str]:
     """Which of *classes* index.css gives a right padding of its own.
 
     The gutter comparison reads `pr-N` utilities off the row and nothing else, so an ordinary
@@ -1456,15 +1486,26 @@ def _classes_setting_the_gutter(live_css: str, classes: set[str]) -> list[str]:
     """
     offenders = []
     for name in sorted(classes):
-        for match in re.finditer(rf"\.{re.escape(name)}(?![\w-])[^{{}}]*\{{", live_css):
+        for match in re.finditer(r"([^{}]*)\{", live_css):
+            selectors = match.group(1)
+            if not re.search(rf"\.{re.escape(name)}(?![\w-])", selectors):
+                continue
+            # On the element that carries the class, not on a descendant of it.
+            # `.sidebar-nav-btn .decorative-child { padding-right: 0 }` styles the child and
+            # leaves the row's gutter alone; reading it as the row's own padding would refuse
+            # harmless descendant styling. The class has to appear in the LAST compound of
+            # some selector in the list, which is the element the rule targets.
+            targets = any(
+                re.search(rf"\.{re.escape(name)}(?![\w-])", re.split(r"[\s>+~]+", one.strip())[-1])
+                for one in selectors.split(",")
+                if one.strip()
+            )
+            if not targets:
+                continue
             body = _declarations_at(live_css, match.end() - 1)
             if body is None:
                 continue
-            if re.search(
-                r"(?<![\w-])padding(?:-right|-inline-end)?:"
-                r"|@apply[^;]*(?<![\w-])!?(?:p|px|pe|pr)-",
-                body,
-            ):
+            if re.search(declares, body):
                 offenders.append(name)
                 break
     return offenders
@@ -1847,7 +1888,7 @@ def test_chat_sidebar_row_actions_visible_on_coarse_pointers():
         for token in every_class
         if re.fullmatch(r"(?:\S*:)?!?[a-z][\w-]*!?", token)
     }
-    gutter_classes = _classes_setting_the_gutter(live_css, named)
+    gutter_classes = _classes_setting(live_css, named, _DECLARES_RIGHT_PADDING)
     assert not gutter_classes, (
         f"the row carries {gutter_classes}, whose rules in index.css set a right padding of "
         f"their own. That is the gutter that renders, and the comparison below reads the pr-N "
@@ -2022,6 +2063,7 @@ def test_chat_sidebar_row_actions_visible_on_coarse_pointers():
             _row_action_paddings(live_css, inner_padding, spacing),
             inner_padding,
             base_offset,
+            live_css,
         )
         for name in ("project", "recent")
     }

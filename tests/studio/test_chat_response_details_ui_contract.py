@@ -682,6 +682,16 @@ def test_reasoning_clears_manual_open_on_a_new_stream():
         f"visibility setting and a hand toggle has nowhere to live: {opener.group(1)!r}"
     )
     held = field.group(1) or "override"
+    # The identifier holding the live streaming flag, read the same way, because the predicate
+    # below has to be handed it first.
+    streaming_field = re.search(
+        r"(?:^|,)\s*isStreaming\s*(?::\s*([A-Za-z_$][\w$]*))?\s*(?:,|$)", opener.group(1)
+    )
+    assert streaming_field, (
+        f"resolveReasoningOpen is no longer passed an isStreaming, so this guard cannot tell "
+        f"which value is the live stream: {opener.group(1)!r}"
+    )
+    held_streaming = streaming_field.group(1) or "isStreaming"
     setter = re.search(rf"const \[{re.escape(held)},\s*(set\w+)\]\s*=\s*useState", src)
     assert setter, (
         f"{held!r} reaches resolveReasoningOpen but is not a useState in reasoning.tsx, so "
@@ -741,6 +751,26 @@ def test_reasoning_clears_manual_open_on_a_new_stream():
     # that one instead. Found by sabotage: emptying the new-round branch left this guard
     # reading the visibility-change branch, which clears the override too, so the guard passed
     # while the reset it exists for was gone.
+    # In the order the predicate reads them. It is `isStreaming && !wasStreaming`, so swapping
+    # the two type-checks and inverts the meaning: it then fires when a round ENDS, leaving a
+    # hand-set override alive into the next one, which is the defect this whole test is about.
+    # The current flag is the one resolveReasoningOpen is given; the previous one is the state
+    # seeded from it.
+    previous = re.search(rf"const \[(\w+), set\w+\] = useState\({re.escape(held_streaming)}\)", src)
+    assert previous, (
+        f"reasoning.tsx no longer keeps the previous streaming value in a useState seeded "
+        f"from {held_streaming!r}, so this guard cannot tell which argument is which"
+    )
+    arguments = re.match(r"startsNewReasoningRound\(([^()]*)\)", src[round_at:])
+    assert arguments and [part.strip() for part in arguments.group(1).split(",")] == [
+        held_streaming,
+        previous.group(1),
+    ], (
+        f"startsNewReasoningRound is called with "
+        f"{arguments.group(1).strip() if arguments else 'arguments this guard cannot read'!r}. "
+        f"It reads (current, previous) and returns true only when a round begins; the other "
+        f"order type-checks and fires when one ends, leaving the override alive into the next"
+    )
     # Nothing between the call and the brace but the `)` that closes the `if`. That rejects the
     # other way to invert it, `if (startsNewReasoningRound(...) === false) {`, which the older
     # form of this check let through because it only refused a statement or block boundary.
