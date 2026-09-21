@@ -111,12 +111,15 @@ test("fixed slots that hold scaled content scale with it", () => {
   assert.ok(lists.includes(HOOK), "the pinned grid ignores it");
 });
 
-test("the titlebar reserves room for its scaled controls", () => {
+test("the titlebar reserves room for its controls, which stay in the band", () => {
   const titlebar = readSrc("components/tauri/window-titlebar.tsx");
-  // The drag region starts where this slot ends, so a fixed slot puts it on
-  // top of the last scaled button.
+  // The band is a fixed 34px and clips nothing, so a grown button would hang
+  // over the page and take its clicks.
+  assert.match(titlebar, /inline-flex size-\[30px\] shrink-0/);
+  assert.match(titlebar, /inline-flex h-\[26px\] w-\[26px\] shrink-0/);
+  // The padding and gaps around them still scale, so the drag region has to
+  // start further out or it covers the last button.
   assert.match(titlebar, /calc\(7rem \* var\(--ui-space-scale, 1\)\)/);
-  assert.match(PROVIDER, /calc\(112px \* var\(--ui-space-scale, 1\)\)/);
 });
 
 test("the composer's one-row clamp is one row at any size", () => {
