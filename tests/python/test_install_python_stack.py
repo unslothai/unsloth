@@ -2095,10 +2095,25 @@ class TestPackageManagerPolicyOptOut:
                 b"global.no-binary='mypkg'\n",
                 ["--no-binary", "mypkg", "--no-binary", "other"],
             ),
+            # The two controls are one FormatControl pair in pip, so `:all:` in either
+            # CLEARS the other. Emitting both independently gave uv a pair of flags it
+            # reports as leaving no usable artifact.
             (
                 {"PIP_ONLY_BINARY": ":all:", "PIP_NO_BINARY": "mypkg"},
                 b"",
-                ["--only-binary", ":all:", "--no-binary", "mypkg"],
+                ["--only-binary", ":all:"],
+            ),
+            # And naming a package in one removes it from the other, so a later
+            # PIP_ONLY_BINARY wins over a pip.conf no-binary for the same package.
+            (
+                {"PIP_ONLY_BINARY": "numpy"},
+                b"global.no-binary='numpy'\n",
+                ["--only-binary", "numpy"],
+            ),
+            (
+                {"PIP_NO_BINARY": "numpy"},
+                b"global.only-binary='numpy'\n",
+                ["--no-binary", "numpy"],
             ),
             ({}, b"", []),
         ],
@@ -2252,6 +2267,65 @@ class TestPackageManagerPolicyOptOut:
         ), "a constraint narrows what may be selected, so a pin is no reason to drop it"
         # No default-path assertion here: this function has no internal gate, its two
         # callers do, and the 90-cell environment comparison is what holds that line.
+
+    @requires_sh
+    @pytest.mark.reads_real_pip_config
+    @pytest.mark.parametrize(
+        ("listing", "no_binary", "only_binary"),
+        [
+            ("", "", ""),
+            ("global.only-binary=':all:'", "", "numpy"),
+            ("global.no-binary='numpy'", "", "numpy"),
+            ("global.only-binary='numpy'", "numpy", ""),
+            ("global.only-binary=':all:'\ninstall.only-binary=':none:,scipy'", "", ""),
+            ("global.no-binary=':all:'", "", ":all:"),
+            ("global.only-binary='a,b'", "b", "c"),
+            ("", "", "numpy,bad name,ok-pkg"),
+            ("", "numpy,$(touch pwned)", ""),
+            ("install.no-binary='x'\nglobal.only-binary='x'", "", ""),
+            ("global.only-binary=':all:'", "mypkg", ""),
+            ("", ":none:", "a,b"),
+        ],
+    )
+    def test_the_shell_and_python_resolve_format_control_identically(
+        self, listing, no_binary, only_binary, monkeypatch, tmp_path
+    ):
+        """Two transcriptions of pip's handle_mutual_excludes have to agree, value by value.
+
+        This is the bug class the whole change exists to close, and the pair semantics are
+        the fiddliest thing in it: `:all:` clears the OTHER set, `:none:` clears its own,
+        and a named package moves between them. Comparing the real sh function's output
+        against the real Python one over the same inputs is the only way to know, and it
+        also covers the charset filter, which in the shell is a safety requirement rather
+        than a nicety.
+        """
+        library = "\n".join(
+            _shell_function_source(name)
+            for name in ("_pm_config_rows", "_pm_without", "_resolve_only_binary_policy")
+        )
+        script = f"""
+        {library}
+        _PM_PIP_CONFIG_LISTING='{listing}'
+        PIP_NO_BINARY='{no_binary}'; PIP_ONLY_BINARY='{only_binary}'
+        _resolve_only_binary_policy
+        printf '%s' "$_PM_ONLY_BINARY_ARGS"
+        """
+        shell = subprocess.run(
+            ["/bin/sh", "-c", script],
+            capture_output = True,
+            text = True,
+            timeout = 60,
+            cwd = tmp_path,
+        )
+        assert shell.returncode == 0, shell.stderr
+        monkeypatch.setattr(ips, "_PINNED_PIP_CONFIG_LISTING", (listing + "\n").encode())
+        monkeypatch.setattr(ips, "_pinned_pip_config_overrides", lambda *a, **k: {})
+        with self._environment(
+            {"PIP_NO_BINARY": no_binary, "PIP_ONLY_BINARY": only_binary}, opt_out = "1"
+        ):
+            python = ips._pm_build_policy_uv_args()
+        assert shell.stdout.split() == python
+        assert not (tmp_path / "pwned").exists(), "a substitution in the value was executed"
 
     def test_the_shell_declines_the_forced_pip_amd_wheel_too(self):
         """install.sh runs the same direct-URL install through pip, for the same reason.

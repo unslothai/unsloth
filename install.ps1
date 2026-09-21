@@ -4228,7 +4228,10 @@ exit 1
     function Test-PipPolicyRequiresHashes {
         $off = @('', '0', 'false', 'no', 'off', 'n', 'f')
         $raw = "$env:PIP_REQUIRE_HASHES".Trim()
-        if ($raw) { return (@('1', 't', 'true', 'y', 'yes', 'on') -contains $raw.ToLowerInvariant()) }
+        # Only the documented false spellings disable it. pip exits on anything else, and
+    # the Python twin reads every non-false value as active, so treating a typo as OFF both
+    # disagreed with the rest of this feature and failed in the one direction it must not.
+    if ($raw) { return ($off -notcontains $raw.ToLowerInvariant()) }
         $on = $false
         foreach ($line in (Get-PmPipConfigListing)) {
             # Printed in load order, so a later entry -- including one that DISABLES it -- wins.
@@ -4244,48 +4247,60 @@ exit 1
     # ACCUMULATING across sources, each occurrence adding to the set and `:none:` emptying
     # it, so the file rows are replayed in load order and the environment appended, rather
     # than one of them winning as the hash policy does.
-    function Get-PipPolicyBuildTargets {
-        param([string]$Option, [string]$EnvName)
-        $sources = @()
+    # no-binary and only-binary are ONE FormatControl pair in pip, not two lists: `:all:` in
+    # either clears the other, `:none:` empties its own, and naming a package in one discards
+    # it from the other. Resolving them separately let a pip.conf `no-binary = numpy` and a
+    # PIP_ONLY_BINARY=numpy both survive, and uv given both flags for one package reports that
+    # no artifact is usable, so a policy pip accepts became an unsatisfiable install. This is a
+    # transcription of pip's own handle_mutual_excludes.
+    function Get-PipPolicyFormatControl {
+        $rows = @()
         foreach ($line in (Get-PmPipConfigListing)) {
-            if ("$line" -match "^(global|install)\.$Option\s*=\s*'?([^']*)'?\s*$") {
-                $sources += $Matches[2]
+            foreach ($pair in @(@('no-binary', 'no[-_]binary'), @('only-binary', 'only[-_]binary'))) {
+                if ("$line" -match "^(global|install)\.$($pair[1])\s*=\s*'?([^']*)'?\s*$") {
+                    $rows += , @($pair[0], $Matches[2])
+                }
             }
         }
-        $sources += [Environment]::GetEnvironmentVariable($EnvName)
-        $targets = @()
-        foreach ($source in $sources) {
-            foreach ($part in ("$source" -split ',')) {
+        foreach ($pair in @(@('no-binary', 'PIP_NO_BINARY'), @('only-binary', 'PIP_ONLY_BINARY'))) {
+            $value = "$([Environment]::GetEnvironmentVariable($pair[1]))".Trim()
+            if ($value) { $rows += , @($pair[0], $value) }
+        }
+        $sets = @{ 'no-binary' = @(); 'only-binary' = @() }
+        foreach ($row in $rows) {
+            $which = $row[0]
+            $otherKey = if ($which -eq 'no-binary') { 'only-binary' } else { 'no-binary' }
+            # Commas only, which is pip's own value.split(","). Splitting on whitespace too
+        # turned `bad name` into two acceptable tokens instead of one rejected one.
+        foreach ($part in ("$($row[1])" -split ',')) {
                 $part = $part.Trim()
                 if (-not $part) { continue }
-                if ($part -eq ':none:') { $targets = @(); continue }
                 # These go straight onto a command line, so anything outside a package name or
                 # pip's own :all:/:none: is dropped rather than passed on.
                 if ($part -notmatch '^[A-Za-z0-9._:-]+$') { continue }
-                if ($targets -notcontains $part) { $targets += $part }
+                if ($part -eq ':all:') {
+                    $sets[$otherKey] = @()
+                    $sets[$which] = @(':all:')
+                    continue
+                }
+                if ($part -eq ':none:') { $sets[$which] = @(); continue }
+                $sets[$otherKey] = @($sets[$otherKey] | Where-Object { $_ -ne $part })
+                if ($sets[$which] -notcontains $part) { $sets[$which] += $part }
             }
         }
-        return $targets
+        return $sets
     }
 
     function Get-PipPolicyOnlyBinary {
-        return @(Get-PipPolicyBuildTargets 'only[-_]binary' 'PIP_ONLY_BINARY' |
-            ForEach-Object { '--only-binary'; $_ })
+        $sets = Get-PipPolicyFormatControl
+        return @($sets['only-binary'] | ForEach-Object { '--only-binary'; $_ })
     }
 
-    # The mirror control: "install nothing prebuilt" is as much a supply-chain rule as "never
-    # build", accumulates the same way, and uv reads neither pip spelling for it. --no-binary
-    # has no environment binding on uv 0.10.7 either, so argv is the only channel.
     function Get-PipPolicyNoBinary {
-        return @(Get-PipPolicyBuildTargets 'no[-_]binary' 'PIP_NO_BINARY' |
-            ForEach-Object { '--no-binary'; $_ })
+        $sets = Get-PipPolicyFormatControl
+        return @($sets['no-binary'] | ForEach-Object { '--no-binary'; $_ })
     }
 
-    # uv spells this --no-index and gives it NO environment binding (uv 0.10.7), unlike
-    # --find-links which reads UV_FIND_LINKS. So keeping PIP_NO_INDEX in the environment left uv
-    # reaching the registry anyway. find-links is carried as the variable uv does read, because
-    # --no-index without it leaves uv nowhere to look: the operator's wheelhouse is the source
-    # their no-index policy presupposes.
     function Get-PipPolicyIndexArgs {
         $off = @('', '0', 'false', 'no', 'off', 'n', 'f')
         $noIndex = "$env:PIP_NO_INDEX".Trim()
@@ -4324,8 +4339,22 @@ exit 1
         if ($links -and -not "$env:UV_FIND_LINKS".Trim()) {
             $env:UV_FIND_LINKS = ConvertTo-UvFindLinks $links
         }
-        if ($off -contains $noIndex.ToLowerInvariant()) { return @() }
-        return @('--no-index')
+        $args = @()
+        if ($off -notcontains $noIndex.ToLowerInvariant()) { $args += '--no-index' }
+        # uv exposes --cert with no environment binding, so a corporate CA reached it not at
+        # all. Worse under the opt-out than it looks: the index URL IS carried, so uv is sent to
+        # the private index and then refuses its certificate, and the pip fallback that knows
+        # PIP_CERT has already been declined on purpose.
+        $cert = "$env:PIP_CERT".Trim()
+        if (-not $cert) {
+            foreach ($line in (Get-PmPipConfigListing)) {
+                if ("$line" -match "^(global|install)\.cert\s*=\s*'?([^']*)'?\s*$") {
+                    $cert = $Matches[2].Trim()
+                }
+            }
+        }
+        if ($cert) { $args += @('--cert', $cert) }
+        return $args
     }
 
     # Empty by default, so every splat at the uv call sites is a no-op unless opted in.

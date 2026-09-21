@@ -8989,36 +8989,72 @@ def _pip_policy_requires_hashes(subcommand: str = "install") -> bool:
     return value.strip().lower() not in ("", "0", "false", "no", "off", "n", "f")
 
 
-def _pip_policy_build_targets(
-    option: str,
-    env_name: str,
-    subcommand: str = "install",
-) -> "list[str]":
-    """An ACCUMULATING pip format-control option, resolved across every source.
+def _pip_format_control_source_rows(subcommand: str = "install") -> "list[tuple[str, str]]":
+    """Every no-binary / only-binary value on this host, as (which, value), in pip's order.
 
-    only-binary and no-binary share this shape exactly. pip documents both as "can be
-    supplied multiple times, and each time adds to the existing value", with `:none:`
-    emptying the set, so neither may be resolved last-wins the way require-hashes is: a
-    `[global] only-binary = :all:` with PIP_ONLY_BINARY=numpy restricts everything AND
-    numpy, where last-wins would restrict numpy alone and quietly allow source builds for
-    the rest. The files are replayed in load order and the environment appended, which is
-    pip's order.
+    One list rather than two, because the two options are not independent: pip keeps them
+    as a single FormatControl pair, and naming a package in one REMOVES it from the other.
+    Resolving them separately let a file `no-binary = numpy` and an environment
+    `PIP_ONLY_BINARY=numpy` both survive, and uv given `--no-binary numpy --only-binary
+    numpy` reports that no artifact is usable -- so a policy pip accepts became an
+    unsatisfiable install.
 
-    Values carry verbatim: uv spells both restrictions the same way, so no mapping is
-    needed -- only the charset filter below, which is shared with the shell twins where
-    these tokens are word-split onto a command line.
+    Config rows first, in the order `pip config list` prints them, then the environment.
+    Between the two variables the order is arbitrary in pip as well, since it comes from
+    option parsing; no-binary is applied first here so that the more permissive control
+    wins a direct tie, which is what pip does for the file-then-environment case that
+    actually occurs.
+    """
+    rows: "list[tuple[str, str]]" = []
+    listing = _decode_pip_output(_PINNED_PIP_CONFIG_LISTING or b"")
+    for line in listing.splitlines():
+        name, separator, raw = line.partition("=")
+        if not separator or name.startswith(":env:"):
+            continue
+        section, _, key = name.strip().rpartition(".")
+        key = key.strip().lower().replace("_", "-")
+        if key not in ("no-binary", "only-binary") or section not in ("global", subcommand):
+            continue
+        try:
+            value = ast.literal_eval(raw.strip())
+        except (ValueError, SyntaxError):
+            value = raw.strip().strip("'\"")
+        rows.append((key, str(value).strip()))
+    for key, env_name in (("no-binary", "PIP_NO_BINARY"), ("only-binary", "PIP_ONLY_BINARY")):
+        value = os.environ.get(env_name, "").strip()
+        if value:
+            rows.append((key, value))
+    return rows
+
+
+def _pip_policy_format_control(subcommand: str = "install") -> "tuple[list[str], list[str]]":
+    """(no_binary, only_binary) resolved as pip resolves them.
+
+    A port of pip's own FormatControl.handle_mutual_excludes: `:all:` clears BOTH sets and
+    becomes the whole of its own, `:none:` empties its own, and a named package is discarded
+    from the opposing set before being added to its own. Lists rather than sets so the argv
+    order is stable and the tests can say what they expect.
     """
     _require_readable_pip_policy()
-    targets: "list[str]" = []
-    sources = list(_pip_config_values(option, subcommand))
-    sources.append(os.environ.get(env_name, ""))
-    for source in sources:
-        for part in source.split(","):
+    sets: "dict[str, list[str]]" = {"no-binary": [], "only-binary": []}
+    for key, value in _pip_format_control_source_rows(subcommand):
+        target = sets[key]
+        other = sets["only-binary" if key == "no-binary" else "no-binary"]
+        parts = value.split(",")
+        while ":all:" in parts:
+            other.clear()
+            target.clear()
+            target.append(":all:")
+            del parts[: parts.index(":all:") + 1]
+            if ":none:" not in parts:
+                parts = []
+                break
+        for part in parts:
             part = part.strip()
             if not part:
                 continue
             if part == ":none:":
-                targets = []
+                target.clear()
                 continue
             # The same charset the shell and PowerShell twins enforce, so an unrecognised
             # token means the same thing at all four entry points. There it is a safety
@@ -9027,25 +9063,32 @@ def _pip_policy_build_targets(
             # whole change exists to close, so the rule is stated once and applied thrice.
             if not re.fullmatch(r"[A-Za-z0-9._:-]+", part):
                 continue
-            if part not in targets:
-                targets.append(part)
-    return targets
+            if part in other:
+                other.remove(part)
+            if part not in target:
+                target.append(part)
+    return sets["no-binary"], sets["only-binary"]
 
 
 def _pip_policy_only_binary(subcommand: str = "install") -> "list[str]":
     """The operator's only-binary targets, as uv would have to be told them."""
-    return _pip_policy_build_targets("only-binary", "PIP_ONLY_BINARY", subcommand)
+    return _pip_policy_format_control(subcommand)[1]
 
 
 def _pip_policy_no_binary(subcommand: str = "install") -> "list[str]":
-    """The operator's no-binary targets: "install nothing prebuilt", the mirror of the above.
+    """The operator's no-binary targets: "install nothing prebuilt", the mirror of the above."""
+    return _pip_policy_format_control(subcommand)[0]
 
-    A policy that says build from source is as much a supply-chain control as one that says
-    never build, and uv reads neither PIP_NO_BINARY nor pip.conf. --no-binary has no
-    environment spelling on uv 0.10.7 either, so like --only-binary it can only reach uv as
-    argv, and preserving the pip variable achieved nothing on the leg that runs.
+
+def _pip_policy_cert() -> "str | None":
+    """The CA bundle pip has been told to trust, if any.
+
+    uv exposes this as --cert with no environment binding (uv 0.10.7), so a corporate CA
+    reached uv not at all. That is worse under the opt-out than it would otherwise be: the
+    index URL IS carried, so uv is sent to the private index and then rejects its TLS
+    certificate, and the pip fallback that would have read PIP_CERT is refused on purpose.
     """
-    return _pip_policy_build_targets("no-binary", "PIP_NO_BINARY", subcommand)
+    return _effective_pip_policy("PIP_CERT", "cert")
 
 
 def _uv_config_file_present() -> bool:
@@ -9198,11 +9241,12 @@ def _pip_policy_no_index() -> bool:
 
 
 def _pm_build_policy_uv_args() -> "list[str]":
-    """Both format controls as uv argv. Opt-out only, and only for a uv command."""
+    """Both format controls as uv argv, resolved together. Opt-out only, uv commands only."""
+    no_binary, only_binary = _pip_policy_format_control()
     args: "list[str]" = []
-    for part in _pip_policy_only_binary():
+    for part in only_binary:
         args.extend(["--only-binary", part])
-    for part in _pip_policy_no_binary():
+    for part in no_binary:
         args.extend(["--no-binary", part])
     return args
 
@@ -9217,7 +9261,14 @@ def _pm_index_policy_uv_args(cmd: "list[str]") -> "list[str]":
     """
     if not (_respect_pm_policy() and cmd[:1] == ["uv"]):
         return []
-    return ["--no-index"] if _pip_policy_no_index() else []
+    args = ["--no-index"] if _pip_policy_no_index() else []
+    # The CA belongs with the index, not apart from it: carrying the operator's private
+    # index without the certificate that authenticates it sends uv somewhere it will refuse
+    # to connect, and the opt-out has already refused the pip fallback that knows the CA.
+    cert = _pip_policy_cert()
+    if cert:
+        args.extend(["--cert", cert])
+    return args
 
 
 def _pip_policy_as_uv_env(pinned: bool = False) -> "dict[str, str]":

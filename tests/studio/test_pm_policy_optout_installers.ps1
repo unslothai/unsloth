@@ -70,7 +70,7 @@ $pipEnvFlagSrc       = Get-FunctionText $setupAst   "Test-PipEnvFlag" $setupPs1
 # and splats the only-binary policy, which uv can only be told as argv.
 $pipListingSrc       = Get-FunctionText $setupAst   "Get-PmPipConfigListing" $setupPs1
 $pipPolicySrc        = Get-FunctionText $setupAst   "Test-PipPolicyRequiresHashes" $setupPs1
-$buildTargetsSrc     = Get-FunctionText $setupAst   "Get-PipPolicyBuildTargets" $setupPs1
+$buildTargetsSrc     = Get-FunctionText $setupAst   "Get-PipPolicyFormatControl" $setupPs1
 $onlyBinarySrc       = Get-FunctionText $setupAst   "Get-PipPolicyOnlyBinary" $setupPs1
 $noBinarySrc         = Get-FunctionText $setupAst   "Get-PipPolicyNoBinary" $setupPs1
 $uvEnvFlagSrc        = Get-FunctionText $setupAst   "Test-UvEnvFlag" $setupPs1
@@ -581,11 +581,6 @@ finally {
 }
 
 Write-Host ""
-if ($failures -gt 0) {
-    Write-Host "FAILED ($failures)" -ForegroundColor Red
-    exit 1
-}
-Write-Host ""
 Write-Host "== only-binary, which uv can only be told as argv =="
 Invoke-Expression $pipListingSrc
 Invoke-Expression $buildTargetsSrc
@@ -615,6 +610,9 @@ $nbCases = @(
     @{ listing = @("global.no-binary='mypkg'"); env = 'other';
        expect = @('--no-binary', 'mypkg', '--no-binary', 'other');
        why    = 'no-binary accumulates the same way as its mirror' },
+    @{ listing = @("global.only-binary='numpy'"); env = 'numpy';
+       expect = @('--no-binary', 'numpy');
+       why    = 'naming a package in one control discards it from the other' },
     @{ listing = @(); env = ':all:';
        expect = @('--no-binary', ':all:');
        why    = 'build everything from source carries across verbatim' },
@@ -638,5 +636,10 @@ foreach ($case in $nbCases) {
 $env:PIP_ONLY_BINARY = $null
 $env:PIP_NO_BINARY = $null
 
+Write-Host ""
+if ($failures -gt 0) {
+    Write-Host "FAILED ($failures)" -ForegroundColor Red
+    exit 1
+}
 Write-Host "all checks passed" -ForegroundColor Green
 exit 0

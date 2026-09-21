@@ -309,9 +309,12 @@ _carry_pip_policy_into_uv() {
     case "$(printf '%s' "${PIP_REQUIRE_HASHES:-}" | tr '[:upper:]' '[:lower:]')" in
         1|t|true|y|yes|on) UV_REQUIRE_HASHES=1; export UV_REQUIRE_HASHES; return 0 ;;
         "") ;;
-        # Any other explicit value is the operator DISABLING it for this run, and pip ranks
-        # the environment above its files, so the file is not consulted.
-        *) return 0 ;;
+        # Only the documented false spellings disable it. pip exits on anything else --
+        # "not a valid value for require-hashes" -- and the Python twin reads every
+        # non-false value as active, so treating a typo as OFF both disagreed with the rest
+        # of this feature and failed in the one direction it must not.
+        0|f|false|n|no|off) return 0 ;;
+        *) UV_REQUIRE_HASHES=1; export UV_REQUIRE_HASHES; return 0 ;;
     esac
     # LAST row wins, not "any row is truthy": pip reads [global] then the command's own
     # section, so `[global] true` followed by `[install] false` is off. Folding with a
@@ -336,42 +339,83 @@ _carry_pip_policy_into_uv() {
 # load order and the environment appended rather than one of them winning.
 _PM_ONLY_BINARY_ARGS=""
 _PM_INDEX_POLICY_ARGS=""
+# Remove one word from a space-separated set. sh has no sets, and the pairing below needs
+# "discard from the other" to be exact rather than approximate.
+_pm_without() {
+    _pm_out=""
+    for _pm_w in $2; do
+        [ "$_pm_w" = "$1" ] && continue
+        _pm_out="$_pm_out $_pm_w"
+    done
+    printf '%s' "$_pm_out"
+}
+
+# no-binary and only-binary are ONE FormatControl pair in pip, not two lists: `:all:` in
+# either clears the other, `:none:` empties its own, and naming a package in one discards it
+# from the other. Resolving them separately let a pip.conf `no-binary = numpy` and a
+# PIP_ONLY_BINARY=numpy both survive, and uv given both flags for one package reports that
+# no artifact is usable -- a policy pip accepts became an unsatisfiable install. This is a
+# transcription of pip's own handle_mutual_excludes.
 _resolve_only_binary_policy() {
-    _pm_set=""
-    for _pm_raw in $(_pm_config_rows "only[-_]binary" | tr ',' ' ') ${PIP_ONLY_BINARY:-}; do
-        _pm_raw=$(printf '%s' "$_pm_raw" | tr ',' ' ')
-        for _pm_one in $_pm_raw; do
-            if [ "$_pm_one" = ":none:" ]; then
-                _pm_set=""
-                continue
-            fi
-            # Word splitting puts these straight into a command line, so anything outside
-            # a package name or pip's own :all:/:none: is dropped rather than passed on.
+    _pm_no=""
+    _pm_only=""
+    _pm_rows=$(
+        _pm_config_rows "no[-_]binary" | sed 's/^/no-binary /'
+        _pm_config_rows "only[-_]binary" | sed 's/^/only-binary /'
+        [ -n "${PIP_NO_BINARY:-}" ] && printf 'no-binary %s\n' "$PIP_NO_BINARY"
+        [ -n "${PIP_ONLY_BINARY:-}" ] && printf 'only-binary %s\n' "$PIP_ONLY_BINARY"
+        true
+    )
+    # IFS is a newline for the row walk, so a whitespace-separated row stays one row, and
+    # is restored inside the loop for the word walk over that row's own value.
+    _pm_ifs="$IFS"
+    IFS='
+'
+    for _pm_line in $_pm_rows; do
+        [ -n "$_pm_line" ] || continue
+        IFS="$_pm_ifs"
+        _pm_which=${_pm_line%% *}
+        _pm_value=${_pm_line#* }
+        # Commas only, which is pip's own value.split(","). Splitting on whitespace too
+        # turned `bad name` into two acceptable tokens instead of one rejected one.
+        _pm_saved_ifs="$IFS"; IFS=,
+        for _pm_one in $_pm_value; do
+            IFS="$_pm_saved_ifs"
+            [ -n "$_pm_one" ] || continue
             case "$_pm_one" in
                 *[!A-Za-z0-9._:-]*) continue ;;
             esac
-            _pm_set="$_pm_set --only-binary $_pm_one"
+            if [ "$_pm_one" = ":all:" ]; then
+                if [ "$_pm_which" = "no-binary" ]; then
+                    _pm_only=""; _pm_no=" :all:"
+                else
+                    _pm_no=""; _pm_only=" :all:"
+                fi
+                continue
+            fi
+            if [ "$_pm_one" = ":none:" ]; then
+                if [ "$_pm_which" = "no-binary" ]; then _pm_no=""; else _pm_only=""; fi
+                continue
+            fi
+            if [ "$_pm_which" = "no-binary" ]; then
+                _pm_only=$(_pm_without "$_pm_one" "$_pm_only")
+                case " $_pm_no " in *" $_pm_one "*) ;; *) _pm_no="$_pm_no $_pm_one" ;; esac
+            else
+                _pm_no=$(_pm_without "$_pm_one" "$_pm_no")
+                case " $_pm_only " in *" $_pm_one "*) ;; *) _pm_only="$_pm_only $_pm_one" ;; esac
+            fi
+            IFS=,
         done
+        IFS="$_pm_saved_ifs"
+        IFS='
+'
     done
+    IFS="$_pm_ifs"
+    _pm_set=""
+    for _pm_one in $_pm_only; do _pm_set="$_pm_set --only-binary $_pm_one"; done
+    for _pm_one in $_pm_no; do _pm_set="$_pm_set --no-binary $_pm_one"; done
     _PM_ONLY_BINARY_ARGS="$_pm_set"
-    _pm_set=""
-    # The mirror control: "install nothing prebuilt" is as much a supply-chain rule as
-    # "never build", accumulates the same way, and uv reads neither pip spelling for it.
-    for _pm_raw in $(_pm_config_rows "no[-_]binary" | tr ',' ' ') ${PIP_NO_BINARY:-}; do
-        _pm_raw=$(printf '%s' "$_pm_raw" | tr ',' ' ')
-        for _pm_one in $_pm_raw; do
-            if [ "$_pm_one" = ":none:" ]; then
-                _pm_set=""
-                continue
-            fi
-            case "$_pm_one" in
-                *[!A-Za-z0-9._:-]*) continue ;;
-            esac
-            _pm_set="$_pm_set --no-binary $_pm_one"
-        done
-    done
-    _PM_ONLY_BINARY_ARGS="$_PM_ONLY_BINARY_ARGS$_pm_set"
-    unset _pm_set _pm_raw _pm_one
+    unset _pm_set _pm_one _pm_no _pm_only _pm_rows _pm_line _pm_which _pm_value _pm_ifs _pm_out _pm_w _pm_saved_ifs
 }
 
 # A private or required index is the commonest hardening of all, and uv reads none of pip's
@@ -410,6 +454,18 @@ _resolve_index_policy() {
         ""|0|false|no|off|n|f) ;;
         *) _PM_INDEX_POLICY_ARGS="--no-index" ;;
     esac
+    # uv exposes --cert with no environment binding, so a corporate CA reached it not at
+    # all. Worse under the opt-out than it looks: the index URL IS carried, so uv is sent to
+    # the private index and then refuses its certificate, and the pip fallback that knows
+    # PIP_CERT has already been declined on purpose.
+    _pm_cert="${PIP_CERT:-}"
+    [ -z "$_pm_cert" ] && _pm_cert=$(_pm_config_rows "cert" | tail -n 1)
+    case "$_pm_cert" in
+        "") ;;
+        *[!A-Za-z0-9._/:-]*) ;;  # word-split onto a command line; anything exotic is dropped
+        *) _PM_INDEX_POLICY_ARGS="$_PM_INDEX_POLICY_ARGS --cert $_pm_cert" ;;
+    esac
+    unset _pm_cert
     if [ -z "${UV_FIND_LINKS:-}" ]; then
         _pm_fl="${PIP_FIND_LINKS:-}"
         if [ -z "$_pm_fl" ]; then
