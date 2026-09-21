@@ -38975,6 +38975,18 @@ def _attempt_execution_is_live(attempt_id) -> bool:
     return bool(_diffusion_queued_attempts.get(key) or _diffusion_persist_attempts.get(key))
 
 
+def _clear_unscoped_generate_failure(backend) -> None:
+    """Drop the engine's unscoped reason after a save of ours succeeded.
+
+    That slot means "the last thing that happened", and the engine only clears it when a run
+    STARTS, so a persist failure written after a newer run began outlived it: the newer run
+    could generate and save successfully and an unscoped probe still read the older failure.
+    The attempt field is left alone, since a run in flight publishes it and it is only read
+    beside a reason.
+    """
+    backend._last_generate_error = None
+
+
 def _note_unscoped_generate_failure(backend, attempt_id, reason: str) -> None:
     """Park *reason* in the engine's unscoped slot, the only channel a reload has left.
 
@@ -39281,6 +39293,10 @@ async def generate_diffusion_image(
         # duplicate execution of one retried POST can fail while this one is still writing,
         # and its reason would otherwise answer a settling client whose images now exist.
         _clear_outcome(request.attempt_id)
+        # And the unscoped slot, which means "the last thing that happened": an older run's
+        # persist failure can land there after this one started, and the engine only clears
+        # it when a run BEGINS.
+        _clear_unscoped_generate_failure(backend)
     except Exception as exc:
         logger.error("diffusion.persist_failed: %s", exc)
         # The only failure raised after the attempt was reported ACTIVE, so a settling client
@@ -39740,14 +39756,25 @@ async def diffusion_generate_progress(
                 generation_attempt = attempt_id,
                 error_logged = generate_failure_was_logged(attempt_id) is not False,
             )
-    if account_access.managed_account() and account_access.generation_is_foreign("diffusion"):
-        return account_access.hidden_generate_progress_response(DiffusionGenerateProgressResponse)
+    # A live attempt of the CALLER'S OWN survives the guards below. They answer idle for
+    # anything foreign, and idle told a settling client whose POST was lost that its request
+    # never arrived, while it was queued behind another account's run and would still spend
+    # GPU time. Nothing foreign is exposed by passing through: a named poll zeroes the step
+    # counter unless the running attempt is this one, and the reason is already suppressed
+    # while live, so the answer this produces is "pending" and nothing else. Only a request
+    # this caller made can set the marker, since the key is account-qualified.
+    if not live:
+        if account_access.managed_account() and account_access.generation_is_foreign("diffusion"):
+            return account_access.hidden_generate_progress_response(
+                DiffusionGenerateProgressResponse
+            )
     mine = account_access.generation_is_mine("diffusion")
-    if not mine and account_access.resident_hidden("diffusion"):
+    if not live and not mine and account_access.resident_hidden("diffusion"):
         return account_access.hidden_generate_progress_response(DiffusionGenerateProgressResponse)
 
     if (
-        not mine
+        not live
+        and not mine
         and account_access.managed_account()
         and account_access.resident_hidden(
             "diffusion", get_active_diffusion_engine().status().get("repo_id")

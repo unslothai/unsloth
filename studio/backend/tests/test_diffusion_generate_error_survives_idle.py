@@ -1106,3 +1106,118 @@ def test_a_saved_generation_clears_what_was_retained_under_its_id():
     # After the save, not before it: clearing first would drop the reason of the execution
     # that is still the newest if this save then fails.
     assert window.index("_clear_outcome") > window.index("_persist)")
+
+
+def test_a_queued_attempt_survives_the_foreign_run_guard():
+    """The guards answer idle for anything foreign, including our own queued request.
+
+    A managed account's attempt can be queued behind ANOTHER account's generation; a poll
+    naming it was answered with the hidden idle response, and a settling client whose POST
+    was lost read that as "the request never arrived" while it was still queued and would
+    later spend GPU time and create images.
+    """
+    import asyncio
+    import types as _types
+
+    import routes.inference as route
+    from core.inference.generate_outcomes import attempt_scope_key
+    from models.inference import DiffusionGenerateProgressResponse
+
+    running_for_another_account = {
+        "active": True,
+        "step": 11,
+        "total_steps": 30,
+        "fraction": 11 / 30,
+        "eta_seconds": 9.0,
+        "generation_attempt": "attempt-theirs",
+    }
+
+    class _Engine:
+        def generate_progress(self):
+            return dict(running_for_another_account)
+
+        def status(self):
+            return {"loaded": True, "repo_id": "someone/model"}
+
+    def answer(attempt_id):
+        original = route.account_access
+        try:
+            route.account_access = _types.SimpleNamespace(
+                managed_account = lambda: True,
+                account_scope = lambda: "acct-mine",
+                # Someone ELSE is generating.
+                generation_is_foreign = lambda *_a, **_k: True,
+                generation_is_mine = lambda *_a, **_k: False,
+                resident_hidden = lambda *_a, **_k: True,
+                hidden_generate_progress_response = lambda cls: cls(
+                    active = False, step = 0, total_steps = 0, fraction = 0.0
+                ),
+            )
+            import core.inference.diffusion_engine_router as router
+
+            original_get = router.get_active_diffusion_engine
+            router.get_active_diffusion_engine = lambda: _Engine()
+            try:
+                return asyncio.run(
+                    route.diffusion_generate_progress(attempt_id = attempt_id, current_subject = "mine")
+                )
+            finally:
+                router.get_active_diffusion_engine = original_get
+        finally:
+            route.account_access = original
+
+    hidden = answer("attempt-queued-mine")
+    assert isinstance(hidden, DiffusionGenerateProgressResponse)
+    assert hidden.active is False, "nothing is queued yet, so the guards still hide the run"
+
+    key = attempt_scope_key("attempt-queued-mine")
+    route._note_queued_attempt(key, 1)
+    try:
+        pending = answer("attempt-queued-mine")
+        assert (
+            pending.active is True
+        ), "a queued attempt of the caller's own was hidden as someone else's run"
+        # And nothing of the foreign run leaks with it.
+        assert (pending.step, pending.total_steps, pending.eta_seconds) == (
+            0,
+            0,
+            None,
+        ), "another account's step counter was published to this caller"
+        assert pending.error is None
+    finally:
+        route._note_queued_attempt(key, -1)
+
+    # Someone else's attempt id gets nothing from the marker: the key is account-qualified,
+    # so a foreign poll cannot even name it.
+    assert answer("attempt-theirs").active is False
+
+
+def test_a_successful_save_clears_the_unscoped_reason():
+    """That slot means "the last thing that happened", and the engine clears it at a START.
+
+    So a persist failure written after a newer run began outlived it: the newer run could
+    generate and save successfully and an unscoped probe still read the older failure.
+    """
+    import routes.inference as route
+
+    class _Backend:
+        pass
+
+    backend = _Backend()
+    route._note_unscoped_generate_failure(
+        backend, "attempt-older", "Failed to save the generated image."
+    )
+    route._clear_unscoped_generate_failure(backend)
+    assert (
+        backend._last_generate_error is None
+    ), "an older run's failure outlived a newer run that saved successfully"
+    # The attempt is left alone: a run in flight publishes it, and it is only read beside a
+    # reason.
+    assert backend._last_generate_attempt == "attempt-older"
+
+    # Wired at the successful save.
+    src = _src("routes/inference.py")
+    at = src.index("records = await asyncio.to_thread(_persist)")
+    assert (
+        "_clear_unscoped_generate_failure(backend)" in src[at : at + 900]
+    ), "a successful save leaves an older run's failure in the unscoped slot"
