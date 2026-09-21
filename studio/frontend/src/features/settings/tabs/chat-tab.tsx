@@ -30,12 +30,12 @@ import { type TranslationKey, useT } from "@/i18n";
 import { toast } from "@/lib/toast";
 import {
   Bookmark02Icon,
-  BookOpen01Icon,
   Download01Icon,
   FileDatabaseIcon,
   Folder01Icon,
   McpServerIcon,
   PencilRulerIcon,
+  Scroll01Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { Columns2Icon } from "lucide-react";
@@ -86,7 +86,7 @@ const PLUS_MENU_SETTINGS: {
     labelKey: "settings.chat.menu.skills",
     icon: (
       <HugeiconsIcon
-        icon={BookOpen01Icon}
+        icon={Scroll01Icon}
         strokeWidth={2}
         className={PLUS_MENU_ICON_CLASS}
       />
