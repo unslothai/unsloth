@@ -307,20 +307,34 @@ torch_bfloat16 = torch.bfloat16
 
 # torch's autocast APIs take the TORCH device name, so ROCm is "cuda" and mlx is "mps";
 # passing DEVICE_TYPE straight in raises `unknown device type for autocast`. Resolve the
-# name once here rather than per matmul, and if this torch still does not accept it (npu
-# on a build without the backend registered), fail OPEN to "assume no ambient autocast"
-# so matmul_lora reconciles the dtypes itself instead of erroring on the probe.
+# probe once here rather than per matmul, in three tiers:
+#   "device" -- torch >= 2.4, the device-name form works;
+#   "legacy" -- torch 2.1-2.3 (the cu118onlytorch211 / cu121onlytorch220 extras), where
+#               is_autocast_enabled takes no argument and only ever means CUDA. Answering
+#               "disabled" there would make matmul_lora pre-cast the activation and then
+#               let autocast cast it again, changing results by the extra rounding;
+#   None     -- torch will not answer at all (npu on a build without that backend), so
+#               fail OPEN to "assume no ambient autocast" and let matmul_lora reconcile
+#               the dtypes itself rather than erroring on the probe.
 try:
     torch.is_autocast_enabled(DEVICE_TYPE_TORCH)
-    _AUTOCAST_DEVICE = DEVICE_TYPE_TORCH
+    _AUTOCAST_PROBE = "device"
+except TypeError:
+    try:
+        torch.is_autocast_enabled()
+        _AUTOCAST_PROBE = "legacy"
+    except Exception:
+        _AUTOCAST_PROBE = None
 except Exception:
-    _AUTOCAST_DEVICE = None
+    _AUTOCAST_PROBE = None
 
 
 def torch_is_autocast_enabled():
-    if _AUTOCAST_DEVICE is None:
-        return False
-    return torch.is_autocast_enabled(_AUTOCAST_DEVICE)
+    if _AUTOCAST_PROBE == "device":
+        return torch.is_autocast_enabled(DEVICE_TYPE_TORCH)
+    if _AUTOCAST_PROBE == "legacy":
+        return torch.is_autocast_enabled()
+    return False
 
 
 if importlib.util.find_spec("torchao") is not None:

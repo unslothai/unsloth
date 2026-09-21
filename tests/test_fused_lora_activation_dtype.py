@@ -119,14 +119,19 @@ def test_autocast_probe_uses_the_torch_device_name():
     """
     from unsloth.kernels import utils as U
 
-    assert U._AUTOCAST_DEVICE in (None, U.DEVICE_TYPE_TORCH)
-    assert U._AUTOCAST_DEVICE != "hip" and U._AUTOCAST_DEVICE != "mlx"
-    # never raises, whatever the device
+    assert U._AUTOCAST_PROBE in ("device", "legacy", None)
+    # DEVICE_TYPE_TORCH is what gets passed, never the raw DEVICE_TYPE
+    assert U.DEVICE_TYPE_TORCH not in ("hip", "mlx")
+    # never raises, whatever the device or torch version
     assert U.torch_is_autocast_enabled() in (True, False)
 
-    saved = U._AUTOCAST_DEVICE
+    saved = U._AUTOCAST_PROBE
     try:
-        U._AUTOCAST_DEVICE = None
+        U._AUTOCAST_PROBE = None
         assert U.torch_is_autocast_enabled() is False, "unresolvable device fails open"
+        # torch 2.1-2.3 has only the zero-argument form; it must still be asked,
+        # not written off as "autocast disabled"
+        U._AUTOCAST_PROBE = "legacy"
+        assert U.torch_is_autocast_enabled() in (True, False)
     finally:
-        U._AUTOCAST_DEVICE = saved
+        U._AUTOCAST_PROBE = saved
