@@ -520,10 +520,20 @@ def test_reasoning_keeps_streaming_height_cap_through_automatic_collapse():
     )
     # A spread can supply the same prop and, written after it, wins. Nothing here can say
     # what is in one, so a holder that spreads is refused rather than read.
-    spreading = [tag for tag in holders if _spread_overrides(tag, "retainStreamingHeight")]
+    # BOTH props, not the retained flag alone. What is being kept is the OR of the two, so a
+    # spread that replaces `isStreaming` loses just as much: written between the two
+    # attributes, `{...{ isStreaming: false }}` leaves the retained flag untouched and this
+    # check green while ReasoningText stops seeing the live stream and renders uncapped until
+    # the retained state catches up. `isStreaming` is also what picks the holders above, so a
+    # spread overriding it makes the selection itself wrong.
+    spreading = [
+        tag
+        for tag in holders
+        if any(_spread_overrides(tag, prop) for prop in ("isStreaming", "retainStreamingHeight"))
+    ]
     assert not spreading, (
-        f"a ReasoningBody holding this state spreads props, so whether the retained flag it "
-        f"is handed survives depends on what the spread contains, which this guard cannot "
+        f"a ReasoningBody holding this state spreads props, so whether the streaming flags it "
+        f"is handed survive depends on what the spread contains, which this guard cannot "
         f"resolve: {spreading!r}"
     )
     # On an attribute boundary. Both props are optional, so `data-retainStreamingHeight=`

@@ -1029,7 +1029,11 @@ def _labelled_actions(
             f"a button in renderChatSidebarItem carries classes this guard cannot read, so it "
             f"cannot tell whether it is a row action or how far it reaches: {tag!r}"
         )
-        if "sidebar-row-action" not in classes:
+        # Whole tokens, both here and below. CSS matches a class name exactly, so a substring
+        # test answers a different question than the stylesheet does: `sidebar-row-action-glyph`
+        # contains `sidebar-row-action` and would enrol a button that no rule positions.
+        worn = classes.split()
+        if "sidebar-row-action" not in worn:
             continue
         owners = [name for name, start, stop in gates if start <= at <= stop]
         if owners and variant not in owners:
@@ -1043,20 +1047,25 @@ def _labelled_actions(
         # Visible on touch, which is the whole affordance. An action that keeps its row-action
         # class but loses `sidebar-touch-reveal` stays counted, so the gutter still looks
         # right while the button is transparent and inert on a coarse pointer.
-        assert "sidebar-touch-reveal" in classes, (
+        # A whole token for the same reason, and it matters more in this direction. A typo or
+        # a rename to something longer, `sidebar-touch-reveal-disabled` being the obvious one,
+        # satisfies a substring test while matching no rule: the CSS that reveals the action
+        # still exists, so every other check here stays green, and the button goes on being
+        # transparent and inert on a coarse pointer.
+        assert "sidebar-touch-reveal" in worn, (
             f"the {name} action on the {variant} row no longer carries sidebar-touch-reveal, "
             f"so it is invisible and inert on a coarse pointer however much room the row "
-            f"reserves for it (#7276)"
+            f"reserves for it (#7276). It carries {worn}"
         )
         # Where it sits, read from the stylesheet. A `right-*` utility or a modifier the CSS
         # does not define is positioning this guard has not modelled, and recording it as
         # flush right would understate the reach of an action that renders further in.
-        utility = [token for token in classes.split() if re.fullmatch(r"right-\S+", token)]
+        utility = [token for token in worn if re.fullmatch(r"right-\S+", token)]
         assert not utility, (
             f"the {name} action is positioned with {utility}, which this guard does not model: "
             f"it reads the row's action offsets from index.css, so state the offset there"
         )
-        modifiers = [token for token in classes.split() if token.startswith("is-")]
+        modifiers = [token for token in worn if token.startswith("is-")]
         unknown = [token for token in modifiers if token not in offsets]
         assert not unknown, (
             f"the {name} action carries {unknown}, which index.css does not define for "
