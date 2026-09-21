@@ -2803,10 +2803,8 @@ exit 1
         return (Resolve-StudioFinalPathInfo -Path $Path).Path
     }
 
-    # Disk arithmetic for the rollback copy and the uv cache (#11313), answering $null rather than
-    # guessing: a number this cannot produce is a warning it does not print. Above
-    # Set-StudioUvCacheEnvironment's call site, since a nested function does not exist until its
-    # defining statement has run.
+    # Free space for the disk-full diagnosis (#11313), answering $null rather than guessing: a
+    # number this cannot produce is a diagnosis it does not print.
     # A Windows volume can be mounted at a DIRECTORY, and then the drive root is the wrong answer:
     # GetPathRoot reduces C:\studio to C:\, so two paths on different volumes compare equal.
     # Win32_Volume lists mount points by the path they are mounted at, so the longest Name that
@@ -2855,10 +2853,8 @@ exit 1
 
     # Bounded out of process, as Invoke-BoundedVideoControllerScan documents: a degraded WMI
     # repository blocks a CIM query indefinitely, and neither -ErrorAction nor try/catch bounds a
-    # query that never returns. Cached, timeouts included, so a broken repository costs once.
-    # -Fresh for callers that want the NUMBER: FreeSpace in a cached row is a snapshot, and the
-    # failure handler asks after setup has consumed the disk, where a stale row reads as having
-    # room and misses the disk-full diagnosis. Mount paths do not move, so those callers cache.
+    # query that never returns. Cached, timeouts included, so a broken repository costs once, and
+    # -Fresh for the free-space caller, whose cached FreeSpace would be a pre-failure snapshot.
     function Get-StudioVolumeList {
         param([switch]$Fresh)
         if (-not $Fresh -and $null -ne $script:StudioVolumeList) { return $script:StudioVolumeList }
@@ -2910,12 +2906,6 @@ exit 1
         } catch { return $null }
     }
 
-    # Known limit: this sums every file, so a tree hardlinked to a surviving cache is billed for
-    # blocks a discard would not free. install.sh asks st_nlink and counts only what the tree
-    # owns; on Windows that is a P/Invoke per file across tens of thousands. Over-counting costs
-    # a line of advice, never a failed install, so it stays until it is worth that cost.
-    # Junctions and symlinks lie about which volume a path is on, so canonicalise first. Unknown
-    # answers $true -- "same volume" is the quiet case, and a guess must not invent a warning.
     # Custom Unsloth roots are not supported with --tauri (the desktop app uses
     # the Windows profile folder). Pass through if the override is that same root.
     if ($TauriMode -and $envOverride) {
@@ -7129,19 +7119,6 @@ exit 0
         return ($null -ne (Get-Item -LiteralPath $Path -Force -ErrorAction SilentlyContinue))
     }
 
-    # Did the tree about to be moved aside keep its own copy of everything? It did if the cache it
-    # was built against is gone or was on another volume, since uv can only hardlink within one.
-    # $script:StudioUvMarkerPrevious is the marker's value before this run overwrote it, which is
-    # the previous run's cache; unknown answers "shared", the quiet direction used throughout.
-    # What the run that BUILT a tree knew about its own linking, written beside the tree at commit
-    # and read back by the next run: a cache path that still exists says nothing about whether
-    # anything was ever linked into it, so UV_LINK_MODE=copy would otherwise look like sharing.
-    # install.sh needs no equivalent because st_nlink measures this exactly; Windows has no
-    # per-file link count without a P/Invoke, and fsutil requires elevation this must not ask for.
-    # A function, not a script variable, so a call-graph extraction picks the name up with them.
-    # $true owns its blocks, $false shares them, $null nothing recorded. Three states on purpose:
-    # the caller must be able to tell "measured as sharing" from "no measurement", because only
-    # the second should fall through to the marker comparison.
     # A wedged torch import or a hanging Intel driver init -- what the XPU probes below exist to
     # detect -- would block a bare `& python -c ...` forever. ProcessStartInfo, not &, so stderr
     # cannot trip $ErrorActionPreference; BOTH streams drain async so a noisy import cannot
@@ -7234,13 +7211,11 @@ exit 0
         # commit path does too: an interrupt must not restore a half-deleted backup.
         if ($script:StudioNoRollback) {
             $discard = $script:StudioVenvRollbackDir
-            # The Intel scan later rescues an adapter WMI cannot classify by asking the PREVIOUS
-            # environment's torch whether XPU works, because the replacement has no torch yet.
-            # Deleting that tree here would take the only interpreter that can answer with it,
-            # and the machine would be routed to CPU wheels for having opted out of a rollback
-            # copy. Opting out must cost disk, never hardware, so the verdict is taken first and
-            # the scan reads it instead. Wrapped: this runs under the installer's "Stop", and a
-            # probe that cannot run must not cost the rename.
+            # The Intel scan rescues an adapter WMI cannot classify by asking the PREVIOUS
+            # environment's torch whether XPU works, and deleting that tree takes the only
+            # interpreter that can answer. Opting out must cost disk, never hardware, so the
+            # verdict is taken first and the scan reads it. Wrapped, because a probe that cannot
+            # run must not cost the rename.
             try {
                 $_discardPy = Join-Path $discard "Scripts\python.exe"
                 if (Test-Path -LiteralPath $_discardPy -ErrorAction SilentlyContinue) {
