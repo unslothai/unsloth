@@ -3317,11 +3317,10 @@ class SdCppDiffusionBackend:
                     ),
                 }
             except SdCppCancelled as exc:
-                # Recorded per attempt as well, like the branch below: a cancel by an
-                # unload or a superseding load produced no image, so a client settling a
-                # lost POST must not read the transition to idle as its own success. The
-                # diffusers engine reaches its generic handler for this and is covered
-                # there; this branch is separate and would otherwise be silent.
+                # Per attempt too, like the branch below: a cancel by an unload or
+                # a superseding load produced no image, so a client settling a lost POST
+                # must not read the transition to idle as success. The diffusers engine
+                # reaches its generic handler for this; this branch would be silent.
                 self._last_generate_error = DIFFUSION_CANCELLED_MSG
                 _retain_generate_failure(self, attempt_id, DIFFUSION_CANCELLED_MSG)
                 raise RuntimeError(DIFFUSION_CANCELLED_MSG) from exc
@@ -3661,9 +3660,8 @@ class SdCppDiffusionBackend:
             "total_steps": gen.total_steps,
             "fraction": min(gen.step / gen.total_steps, 1.0),
             "eta_seconds": gen.eta_seconds,
-            # WHOSE run this is. A caller settling a lost POST that never arrived would
-            # otherwise read a concurrent client's activity as its own and take the run
-            # going idle for its own success.
+            # WHOSE run this is: a caller settling a lost POST that never arrived
+            # would otherwise take a concurrent client's run going idle for its own.
             "generation_attempt": getattr(self, "_last_generate_attempt", None),
         }
 

@@ -7275,9 +7275,8 @@ class DiffusionBackend:
                 # clearing _gen alone reported "not running" for a failure, which the
                 # settling path read as success. Raw; the route classifies it through
                 # _generate_failure_detail, so engine text never escapes from here.
-                #
-                # Both: the slot answers a client with no attempt id (an older one), and
-                # the per-attempt record survives the runs that follow this one.
+                # Both: the slot answers a client with no attempt id, and the
+                # per-attempt record survives the runs that follow this one.
                 self._last_generate_error = str(exc) or type(exc).__name__
                 _retain_generate_failure(self, attempt_id, self._last_generate_error)
                 raise
@@ -7316,9 +7315,8 @@ class DiffusionBackend:
             "total_steps": gen.total_steps,
             "fraction": gen.step / gen.total_steps,  # step is 1..total, never over 1.0
             "eta_seconds": gen.eta_seconds,
-            # WHOSE run this is. A caller settling a lost POST that never arrived would
-            # otherwise read a concurrent client's activity as its own and take the run
-            # going idle for its own success.
+            # WHOSE run this is: a caller settling a lost POST that never arrived
+            # would otherwise take a concurrent client's run going idle for its own.
             "generation_attempt": getattr(self, "_last_generate_attempt", None),
         }
 

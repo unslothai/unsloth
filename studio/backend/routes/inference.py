@@ -38908,8 +38908,8 @@ async def load_diffusion_model_gated(
 
 # Count of finished generations still writing their PNG/gallery records; generate-progress reports active while above 0. Mutated only on the event loop, so no lock.
 _diffusion_persist_active = 0
-# Which ATTEMPTS are inside that window, so a poll naming one is told about its own records
-# rather than about anyone else's. Same account-qualified key as the retained outcomes.
+# Which ATTEMPTS are in that window, so a named poll hears about its own records and nobody
+# else's. Same account-qualified key as the retained outcomes.
 _diffusion_persist_attempts: dict[str, int] = {}
 
 

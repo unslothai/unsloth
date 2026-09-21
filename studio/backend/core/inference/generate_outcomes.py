@@ -15,10 +15,7 @@ from __future__ import annotations
 from collections import OrderedDict
 from typing import Optional
 
-# A failed generation's reason has to outlive the run AND the runs after it: a queued client
-# can take the slot before the client whose POST was lost gets its next one-second poll, and
-# one retained slot would hand that client either nothing or someone else's outcome. Small
-# and bounded, since only a settling caller reads one and it reads it within seconds.
+# Bounded: only a settling caller reads an outcome, and it reads it within seconds.
 _RETAINED_GENERATE_FAILURES = 16
 
 
