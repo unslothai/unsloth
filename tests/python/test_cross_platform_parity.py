@@ -1615,12 +1615,23 @@ class TestDiagnosticsNeverCostTheRollback:
     and under `set -e` that used to abort the exit trap before the restore ran, leaving the
     previous environment moved aside and the install gone (#11313)."""
 
-    def test_the_shell_restores_before_it_diagnoses(self):
+    def test_the_shell_restores_before_it_reports(self):
+        """Measure first, restore, then report. Reporting before the restore lets a failed write
+        abort the trap; measuring after it reads a disk the restore has just emptied."""
         text = INSTALL_SH.read_text(encoding = "utf-8")
         body = text.split("_on_install_exit() {", 1)[1].split("\n}", 1)[0]
+        measure = body.index("_set_disk_full_suffix || true")
         restore = body.index("_restore_studio_venv_replacement")
-        diagnose = body.index("_set_disk_full_suffix")
-        assert restore < diagnose, "a failed diagnostic write can abort the trap before the restore"
+        report = body.index("tauri_log")
+        assert measure < restore, "the restore frees space before the disk is measured"
+        assert restore < report, "a failed diagnostic write can abort the trap before the restore"
+
+    def test_the_windows_probe_precedes_its_restore_too(self):
+        text = INSTALL_PS1.read_text(encoding = "utf-8")
+        body = text.split("function Exit-InstallFailure", 1)[1].split("\n    }", 1)[0]
+        assert (
+            body.index("Get-StudioFreeSpaceBytes") < body.index("Restore-StudioVenvRollback")
+        ), "the rollback restore frees space before the disk is measured"
 
     def test_the_shell_diagnostics_are_best_effort(self):
         text = INSTALL_SH.read_text(encoding = "utf-8")

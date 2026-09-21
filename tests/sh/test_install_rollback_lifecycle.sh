@@ -752,6 +752,37 @@ else
     bad "a failed diagnostic write aborted the trap before the marker restore"
 fi
 
+echo "=== the restore frees space, so the measurement has to precede it (#11313) ==="
+# The restore deletes the half-built replacement. On the failure this diagnosis exists for that
+# tree is gigabytes, so asking the filesystem afterwards reports a disk that is no longer full and
+# the failure it just caused goes back to being a bare exit code.
+FREED_DIR="$WORK/freed"
+mkdir -p "$FREED_DIR"
+FREED_OUT=$(
+    {
+        printf '%s\n' 'set -e'
+        printf '%s\n' 'substep() { :; }'
+        printf '%s\n' 'step() { :; }'
+        printf '%s\n' 'C_WARN=""'
+        printf '%s\n' 'TAURI_MODE=true'
+        printf "STUDIO_HOME='%s'\n" "$FREED_DIR"
+        printf '%s\n' "$ROLLBACK_BLOCK"
+        # Stubbed after the extraction so these shadow the real ones. The restore is what frees
+        # the space, exactly as deleting the partial venv does on a real failure.
+        printf "_restore_studio_venv_replacement() { : > '%s/restored'; }\n" "$FREED_DIR"
+        printf '%s\n' '_restore_uv_cache_marker() { :; }'
+        printf '%s\n' '_cleanup_install_temporaries() { :; }'
+        printf "_free_space_kb() { if [ -f '%s/restored' ]; then echo 104857600; else echo 1024; fi; }\n" "$FREED_DIR"
+        printf '%s\n' 'tauri_log() { echo "[TAURI:$1] $2"; }'
+        printf '%s\n' 'exit 3'
+    } | dash 2>&1
+) || true
+if printf '%s\n' "$FREED_OUT" | grep -q "the disk is full"; then
+    ok "the full disk is still named after the restore has freed the space"
+else
+    bad "the restore hid the full disk from the diagnosis: $FREED_OUT"
+fi
+
 echo "=== the disk-full remedy describes what happened, not what was asked for (#11313) ==="
 # A discard that failed left a tree on disk, and deleting it is very likely what makes the retry
 # fit. Telling that user there is nothing left to reclaim points them away from the one thing that

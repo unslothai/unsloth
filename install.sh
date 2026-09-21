@@ -1282,17 +1282,18 @@ _on_install_exit() {
         # that puts the user's environment back: a closed --tauri stdout, or a redirected stderr,
         # fails the write, and the trap then aborts with the previous environment still moved
         # aside. A diagnostic must never be able to cost someone their install.
+        # Measured here and reported further down, which is not the same thing as doing both in one place. The restore immediately below deletes the half-built replacement, and that can free gigabytes: ask afterwards and a disk that really was full reads as healthy, so the early failure it just caused goes back to being a bare exit code. `|| true` because a measurement must not be able to abort the restore either.
+        if [ "${_DISK_FULL_REPORTED:-false}" != true ] && command -v _set_disk_full_suffix >/dev/null 2>&1; then
+            _set_disk_full_suffix || true
+        fi
         _restore_studio_venv_replacement
         # Separate from the venv restore: an install can fail before one is in flight.
         _restore_uv_cache_marker
-        # Every earlier failure lands here, and the largest writes -- the venv and the torch install -- are all earlier, so a disk that filled during them used to surface as a bare exit code (#11313). Guarded on the helper being defined, since the argument parsing above exits before it is, and each write is `|| true` for the reason above.
-        if [ "${_DISK_FULL_REPORTED:-false}" != true ] && command -v _set_disk_full_suffix >/dev/null 2>&1; then
-            _set_disk_full_suffix || true
-            if [ -n "${_DISK_FULL_SUFFIX:-}" ]; then
-                tauri_log "ERROR_DEFAULT" "unsloth studio install failed (exit code $_status)$_DISK_FULL_SUFFIX" || true
-                echo "       $STUDIO_HOME has only $_DISK_FULL_MB MB free -- the disk is full, which is very likely the cause." >&2 || true
-                echo "       $_DISK_FULL_REMEDY" >&2 || true
-            fi
+        # Every earlier failure lands here, and the largest writes -- the venv and the torch install -- are all earlier, so a disk that filled during them used to surface as a bare exit code (#11313). Written only after the restore, and every write `|| true`, because a closed --tauri stdout must not abort the trap before the environment is back.
+        if [ "${_DISK_FULL_REPORTED:-false}" != true ] && [ -n "${_DISK_FULL_SUFFIX:-}" ]; then
+            tauri_log "ERROR_DEFAULT" "unsloth studio install failed (exit code $_status)$_DISK_FULL_SUFFIX" || true
+            echo "       $STUDIO_HOME has only $_DISK_FULL_MB MB free -- the disk is full, which is very likely the cause." >&2 || true
+            echo "       $_DISK_FULL_REMEDY" >&2 || true
         fi
     fi
     _cleanup_install_temporaries
