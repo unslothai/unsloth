@@ -2,6 +2,8 @@
 
 mod app_layout;
 mod commands;
+#[cfg(target_os = "linux")]
+mod debian_update;
 mod desktop_auth;
 mod desktop_backend_owner;
 mod desktop_update_policy;
@@ -2048,6 +2050,17 @@ fn extend_csp_with_hf_endpoints<R: tauri::Runtime>(context: &mut tauri::Context<
 }
 
 fn main() {
+    #[cfg(target_os = "linux")]
+    if let Some(result) = debian_update::run_installer() {
+        match result {
+            Ok(()) => std::process::exit(0),
+            Err(error) => {
+                eprintln!("{error}");
+                std::process::exit(1);
+            }
+        }
+    }
+
     // Must precede any Xlib call: GTK3 never calls XInitThreads and this
     // process drives X from several threads. See x11_threads for the crash.
     x11_threads::init_x11_threads();
@@ -2126,6 +2139,7 @@ fn main() {
             commands::stop_server,
             commands::check_health,
             commands::check_backend_present,
+            commands::check_backend_is_gone,
             commands::get_server_logs,
             commands::open_logs_dir,
             commands::open_models_dir,

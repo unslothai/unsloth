@@ -164,6 +164,8 @@ export const ptBR = {
       export: "Exportar",
       recents: "Recentes",
       noChatsYet: "Nenhum chat ainda",
+      // Shown under an empty project folder in the sidebar.
+      noChats: "Nenhum chat",
       showMore: "Mostrar mais",
       showLess: "Mostrar menos",
       settings: "Configurações",
@@ -194,6 +196,7 @@ export const ptBR = {
       unpinChats: "Desafixar conversas",
       archiveChats: "Arquivar conversas",
       markUnread: "Marcar como não lida",
+      markRead: "Marcar como lida",
       deleteChats: "Excluir conversas",
       deleteTitle: "Excluir conversas",
       deleteDescription: "Excluir {count} conversas? Esta ação não pode ser desfeita.",
@@ -212,11 +215,22 @@ export const ptBR = {
       priority: "Prioridade",
       lastUpdated: "Última atualização",
       manualOrder: "Ordem manual",
-      moveUp: "Mover para cima",
-      moveDown: "Mover para baixo",
+      priorityHint: "Ativos e não lidos primeiro",
+      lastUpdatedHint: "Mais recentes primeiro",
+      manualOrderHint: "Arraste as linhas para reordenar",
+      switchedToManual: "Ordem manual: arraste as linhas para reordenar",
       organizeChats: "Organizar conversas",
       organizeProjects: "Organizar projetos",
       sortPinnedChats: "Ordenar conversas fixadas",
+      moveUp: "Mover para cima",
+      moveDown: "Mover para baixo",
+    },
+    drag: {
+      reorder: "Reordenar",
+      pin: "Fixar",
+      unpin: "Desafixar",
+      moveTo: "Mover para {name}",
+      moveToRecents: "Mover para Recentes",
     },
     dialog: {
       deleteChat: {
@@ -1267,7 +1281,11 @@ export const ptBR = {
       },
       gpu: {
         title: "Dispositivos de GPU",
-        ggufInference: "Inferência com GGUF",
+        memory: "Memória da GPU",
+        sharedWithSystemRam: "Compartilhada com a RAM do sistema",
+        estimatedAvailable: "Disponibilidade estimada: {value}",
+        sharedEstimatedAvailable: "RAM compartilhada do sistema: disponibilidade estimada de {value}",
+        ggufInference: "Memória para modelos GGUF",
         unavailable: "indisponível",
         detecting: "Procurando GPUs...",
         unreadable: "Não foi possível ler o hardware deste servidor.",
@@ -1493,9 +1511,9 @@ export const ptBR = {
         yolo: "Pula os pedidos de aprovação. Use apenas em ambientes confiáveis.",
       },
       remote: {
-        title: "Conectar a um Unsloth Studio remoto",
+        title: "Conectar a um Unsloth remoto",
         description:
-          "Aponte o unsloth start para um Unsloth Studio em execução em outro lugar, definindo estas variáveis antes de iniciar (ou passe --api-key diretamente):",
+          "Aponte o unsloth start para um Unsloth em execução em outro lugar, definindo estas variáveis antes de iniciar (ou passe --api-key diretamente):",
       },
       passthrough: {
         title: "Repassar argumentos ao agente",
@@ -1522,16 +1540,11 @@ export const ptBR = {
         "Altere esta configuração para cada chat pelo menu de anexos.",
       rememberParamsPerModelHint:
         "Quando desativado, todos os modelos usam as mesmas configurações.",
-      autoCompactHint: "Usa o tamanho de contexto definido, não a VRAM disponível.",
+      autoCompactHint: "Apenas chats GGUF locais. Os turnos removidos são indexados para que o modelo possa buscá-los de volta, e uma reinicialização cita palavra por palavra as instruções permanentes que couberem, priorizando as mais antigas e as mais recentes em vez das intermediárias. Arquivar exige um chat salvo e o índice vetorial; sem eles, os turnos antigos são descartados. Usa o tamanho de contexto definido, não a VRAM disponível.",
       pastedTextShortDescription:
         "Texto colado com {count} caracteres ou mais vira um anexo .txt. Textos menores ficam na caixa de mensagem.",
       pastedTextOffDescription:
         "Todo o texto colado fica na caixa de mensagem, independentemente do tamanho.",
-      compactionDescriptionInherit: "Segue a política de contexto do servidor.",
-      compactionDescriptionCheckpoint:
-        "Mantém a última troca de mensagens e as instruções permanentes.",
-      compactionDescriptionRolling:
-        "Remove os turnos mais antigos para manter o histórico recente e o espaço extra selecionado.",
       projectsSection: "Mostrar a seção Projetos",
       projectsSectionDescription:
         "Agrupa as conversas de projeto sob um título Projetos. Desative para listá-las em Recentes.",
@@ -1555,7 +1568,7 @@ export const ptBR = {
           "Fixe itens no menu lateral do botão + do chat. Os demais ficam em “Mais”.",
         chatWithFiles: "Chat com arquivos (RAG)",
         mcp: "MCP",
-        skills: "Habilidades de agentes",
+        skills: "Habilidades",
         savedPrompts: "Prompts salvos",
         compareChat: "Comparar chats",
         exportChat: "Exportar chat",
@@ -1578,22 +1591,9 @@ export const ptBR = {
         "Restaura o último prompt, a temperatura e as outras configurações usadas com cada modelo.",
       autoCompact: "Compactar automaticamente chats longos",
       autoCompactDescription:
-        "Remove turnos antigos quando um chat GGUF local atinge o limite de contexto.",
-      compactionStyle: "Quando o contexto estiver cheio",
-      compactionStyleDescription:
-        "Usar o padrão do servidor preserva UNSLOTH_CONTEXT_POLICY. Redefinir a conversa mantém o turno mais recente e as instruções permanentes. Uma janela deslizante descarta os turnos mais antigos e pode manter mais histórico recente.",
-      compactionStyleInherit: "Usar padrão do servidor",
-      compactionStyleCheckpoint: "Redefinir conversa",
-      compactionStyleRollingDefault:
-        "Descartar turnos antigos (~25% de espaço extra)",
-      compactionStyleRolling10:
-        "Descartar turnos antigos (~10% de espaço extra)",
-      compactionStyleRolling5:
-        "Descartar turnos antigos (~5% de espaço extra)",
-      compactionStyleRollingNone:
-        "Descartar turnos antigos (sem corte extra)",
+        "Os turnos antigos vão para um arquivo pesquisável quando um chat enche o contexto.",
       autoCompactKeywords:
-        "compactação compactar automaticamente contexto janela truncar deslizante checkpoint margem compaction rolling headroom",
+        "compactação compactar automaticamente contexto janela truncar deslizante checkpoint margem arquivo recuperação busca compaction rolling headroom archive retrieval rag",
       thinking: {
         collapseByDefault: "Recolher o raciocínio por padrão",
         collapseByDefaultDescription:
@@ -1610,6 +1610,9 @@ export const ptBR = {
         collapseByDefault: "Recolher atividade de ferramentas por padrão",
         collapseByDefaultDescription:
           "Mantém entradas e saídas das ferramentas recolhidas durante a execução. Expanda uma linha para inspecioná-la.",
+        foldIntoThinking: "Recolher chamadas de ferramentas no Pensamento",
+        foldIntoThinkingDescription:
+          "Oculta as chamadas de ferramentas de um turno até abrir o bloco de Pensamento.",
       },
       webSearch: {
         title: "Busca na web",
@@ -1990,7 +1993,7 @@ export const ptBR = {
         desktopAvailableDescription:
           "Atualize agora. O aplicativo de desktop será reiniciado quando a atualização terminar.",
         desktopExternalServer:
-          "Execute `unsloth studio update` no terminal usado para iniciar o servidor.",
+          "O aplicativo se conectou a um servidor Studio que já estava em execução e não pode atualizá-lo. Pare esse servidor, feche e reabra o aplicativo desktop para atualizar.",
         desktopManualInstall:
           "Abra a página de lançamentos para instalar o pacote mais recente para Linux.",
         desktopCheckFailed: "Não foi possível verificar se há atualizações",
@@ -2728,7 +2731,7 @@ export const ptBR = {
     tooLarge: "Maior que a VRAM, será descarregado para a CPU. Uma quantização menor roda mais rápido",
   },
   skills: {
-    title: "Habilidades de agentes",
+    title: "Habilidades",
     description: "As habilidades são descobertas nas suas pastas padrão de agentes. Ative-as aqui e digite @ no chat para mencionar uma.",
     precedence: "~/.agents/skills tem precedência sobre ~/.claude/skills.",
     refresh: "Atualizar",
@@ -2743,6 +2746,6 @@ export const ptBR = {
     enable: "Ativar {name}",
     disable: "Desativar {name}",
     updateError: "Não foi possível atualizar a habilidade",
-    mentions: "Habilidades de agentes",
+    mentions: "Habilidades",
   },
 } satisfies DeepPartialMessageTree<typeof en>;

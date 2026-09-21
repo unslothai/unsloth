@@ -35,6 +35,7 @@
     "smoke-find-in-page-main.tsx",
     "smoke-autoscroll-main.tsx",
     "smoke-research-main.tsx",
+    "smoke-research-review-main.tsx",
     "smoke-heavy-thread-main.tsx",
     "smoke-thread-weight-main.tsx",
     "smoke-settings-main.tsx",

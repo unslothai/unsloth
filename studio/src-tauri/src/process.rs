@@ -1189,6 +1189,38 @@ pub(crate) fn owned_backend_on_port_is_running(state: &BackendState, port: u16) 
     }
 }
 
+/// Whether anything of ours COULD be on *port*, which is the question ABSENCE needs.
+///
+/// A handle we spawned names no port until a probe validates one, and for that whole window
+/// `owned_backend_on_port_is_running` calls our own starting backend somebody else's: right
+/// for presence, wrong here, since a refusal about a port we are about to bind proves nothing.
+pub(crate) fn owned_backend_could_bind_port(state: &BackendState, port: u16) -> bool {
+    let mut proc = match state.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    let handle = match proc.owned.as_mut() {
+        Some(handle) => handle,
+        None => return false,
+    };
+    match handle {
+        // A port it has not claimed yet is a port it may still claim.
+        OwnedBackendHandle::Spawned {
+            child,
+            reported_port,
+            ..
+        } => {
+            reported_port.is_none_or(|bound| bound == port)
+                && !matches!(child.try_wait(), Ok(Some(_)))
+        }
+        OwnedBackendHandle::Adopted {
+            port: owned_port,
+            pid,
+            ..
+        } => *owned_port == port && backend_pid_is_running(*pid),
+    }
+}
+
 /// Whether *pid* still exists: false only when the pid is PROVABLY gone. A zombie has exited
 /// but is unreaped, which `kill(pid, 0)` alone cannot see.
 pub(crate) fn backend_pid_is_running(pid: u32) -> bool {
@@ -1932,6 +1964,7 @@ fn windows_roots_from(
 /// PATH are absent: they are not single paths. Mirrors `_RELATIVE_PATH_ENV` in
 /// unsloth_cli/_system_dir_guard.py, held identical by a parity test.
 pub(crate) const RELATIVE_PATH_ENV: &[&str] = &[
+    "UNSLOTH_HOME",
     "UNSLOTH_STUDIO_HOME",
     "STUDIO_HOME",
     "UNSLOTH_STUDIO_DOCUMENTS_HOME",
@@ -1965,6 +1998,18 @@ pub(crate) const RELATIVE_PATH_ENV: &[&str] = &[
     "UNSLOTH_DG_SHIM",
     "UNSLOTH_COMPILE_LOCATION",
     "TORCHINDUCTOR_CACHE_DIR",
+    // storage_roots.py fills these only when blank, so a relative value the user set is kept as
+    // written and would name a different folder after the move.
+    "TORCH_EXTENSIONS_DIR",
+    "TORCH_HOME",
+    "TRITON_HOME",
+    "TRITON_CACHE_DIR",
+    "TRITON_DUMP_DIR",
+    "CUDA_CACHE_PATH",
+    "MPLCONFIGDIR",
+    "NUMBA_CACHE_DIR",
+    "DATA_DESIGNER_HOME",
+    "DATA_DESIGNER_MANAGED_ASSETS_PATH",
     "UNSLOTH_DIFFUSION_COMPILE_CACHE_DIR",
     "UNSLOTH_DIFFUSION_COND_CACHE_DIR",
     "HF_HOME",
@@ -1973,6 +2018,9 @@ pub(crate) const RELATIVE_PATH_ENV: &[&str] = &[
     "HF_XET_CACHE",
     "HF_DATASETS_CACHE",
     "HF_ASSETS_CACHE",
+    // transformers appends this to sys.path, so a relative value would import a
+    // different generated module after the move.
+    "HF_MODULES_CACHE",
     // huggingface_hub resolves the credential file from here; a relative value
     // would follow the child and silently lose access to gated repos.
     "HF_TOKEN_PATH",
@@ -2283,7 +2331,17 @@ fn names_a_path(name: &str, value: &str) -> bool {
 /// Names every managed spawn removes before starting the child: Tauri uses the
 /// legacy Unsloth root whatever the environment says. Resolving one can only
 /// invent a failure for a value the child is never going to see.
-const MANAGED_CHILD_SCRUBBED_ENV: &[&str] = &["UNSLOTH_STUDIO_HOME", "STUDIO_HOME"];
+///
+/// UNSLOTH_HOME moves the databases, assets and caches exactly as
+/// UNSLOTH_STUDIO_HOME does, plus the managed llama.cpp, node and whisper.cpp
+/// dirs. UNSLOTH_PORTABLE names no root but portable_mode() reads it on its own,
+/// repointing the Hugging Face and torch caches away from the shared user ones.
+pub(crate) const MANAGED_CHILD_SCRUBBED_ENV: &[&str] = &[
+    "UNSLOTH_HOME",
+    "UNSLOTH_STUDIO_HOME",
+    "STUDIO_HOME",
+    "UNSLOTH_PORTABLE",
+];
 
 /// Read only by the update and installer path (install_python_stack.py), so a
 /// stale value must not be able to fail a probe, a backend start or an auth
@@ -3534,11 +3592,13 @@ pub fn start_backend(
     #[cfg(target_os = "linux")]
     scrub_appimage_python_env(&mut cmd);
 
-    // Tauri uses the legacy root regardless of UNSLOTH_STUDIO_HOME / STUDIO_HOME;
-    // scrub so the spawned Python backend can't diverge. UNSLOTH_LLAMA_CPP_PATH
-    // is a pre-existing user-controlled llama.cpp dir override; keep it.
-    cmd.env_remove("UNSLOTH_STUDIO_HOME");
-    cmd.env_remove("STUDIO_HOME");
+    // Tauri uses the legacy root whatever the environment says; scrub so the
+    // spawned Python backend can't diverge. Off the shared list, so a name added
+    // there cannot be honoured by the backend and missed here.
+    // UNSLOTH_LLAMA_CPP_PATH is a pre-existing user-controlled override; keep it.
+    for name in MANAGED_CHILD_SCRUBBED_ENV {
+        cmd.env_remove(name);
+    }
 
     // read_output_stream decodes as UTF-8; without these, Python encodes its
     // redirected streams with the locale code page and non-ASCII lands as U+FFFD.
@@ -6354,6 +6414,69 @@ mod owned_backend_liveness_tests {
     fn no_handle_at_all_is_not_a_managed_backend() {
         let state = new_backend_state();
         assert!(!owned_backend_on_port_is_running(&state, 8765));
+        assert!(!owned_backend_could_bind_port(&state, 8765));
+    }
+
+    /// While a handle has no port yet, presence reads every port as "not ours". Absence must
+    /// not agree, or a refusal during our own start becomes proof of death.
+    #[test]
+    fn a_child_that_has_not_reported_a_port_could_still_bind_the_one_asked_about() {
+        let state = new_backend_state();
+        {
+            let mut proc = state.lock().unwrap();
+            proc.owned = Some(OwnedBackendHandle::spawned(
+                spawn_owned(&LIVE_CHILD),
+                None,
+                0,
+                1,
+            ));
+        }
+        assert!(
+            !owned_backend_on_port_is_running(&state, 8765),
+            "presence is unchanged: a handle with no port names no port"
+        );
+        assert!(
+            owned_backend_could_bind_port(&state, 8765),
+            "a live backend of ours that has not bound a port yet was ruled out as the owner \
+             of the port it is starting on, which is the slow start #10520 exists to survive"
+        );
+        let mut proc = state.lock().unwrap();
+        if let Some(handle) = proc.owned.as_mut() {
+            if let Some(child) = handle.spawned_child_mut() {
+                let _ = child.start_kill();
+            }
+        }
+    }
+
+    #[test]
+    fn a_child_that_died_before_reporting_a_port_cannot_bind_anything() {
+        let mut child = spawn_owned(&DEAD_CHILD);
+        let _ = child.wait();
+        let state = new_backend_state();
+        {
+            let mut proc = state.lock().unwrap();
+            proc.owned = Some(OwnedBackendHandle::spawned(child, None, 0, 1));
+        }
+        assert!(
+            !owned_backend_could_bind_port(&state, 8765),
+            "an exited child kept the fast path switched off for every port"
+        );
+    }
+
+    #[test]
+    fn a_handle_that_reported_another_port_does_not_cover_this_one() {
+        let state = state_owning(spawn_owned(&LIVE_CHILD), 8765);
+        assert!(
+            !owned_backend_could_bind_port(&state, 8766),
+            "a backend that has told us its port was still treated as a candidate for others"
+        );
+        assert!(owned_backend_could_bind_port(&state, 8765));
+        let mut proc = state.lock().unwrap();
+        if let Some(handle) = proc.owned.as_mut() {
+            if let Some(child) = handle.spawned_child_mut() {
+                let _ = child.start_kill();
+            }
+        }
     }
 
     // The adopted half, where there is no child handle to wait on.

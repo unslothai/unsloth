@@ -360,6 +360,67 @@ def test_toggle_disengages_below_the_bar(monkeypatch):
     assert t.disables == 1
 
 
+class _DiffusersLikeTransformer(_ToggleTransformer):
+    """A toggle fake that records ``_cache_config`` the way diffusers itself does.
+
+    diffusers sets it inside ``enable_cache`` and clears it inside ``disable_cache``, and the cache
+    layer reads THAT (never our own marker) to tell a cache it installed from one adopted through
+    the low-level ``apply_first_block_cache``. A fake without it models a transformer whose hooks
+    can never be accounted for, which is not what a real DiT looks like after a successful engage.
+    """
+
+    def enable_cache(self, config):
+        super().enable_cache(config)
+        self._cache_config = config
+        self.is_cache_enabled = True
+
+    def disable_cache(self):
+        super().disable_cache()
+        self._cache_config = None
+        self.is_cache_enabled = False
+
+
+def _hide_private_hook_names(monkeypatch):
+    """Make ``diffusers.hooks.first_block_cache`` unimportable, as a shifted diffusers would."""
+    monkeypatch.setitem(sys.modules, "diffusers.hooks.first_block_cache", None)
+
+
+def test_toggle_disengages_even_when_the_private_hook_names_are_gone(monkeypatch):
+    """A cache diffusers owns comes off on diffusers' word, not on the private-name sweep.
+
+    The sweep exists for an ADOPTED low-level cache, where disable_cache removes nothing because
+    _cache_config is None. Requiring it for our own cache too makes every disengage depend on
+    `diffusers.hooks.first_block_cache` staying importable, and on the versions where it is not,
+    FBCache stays engaged on short trajectories forever -- the quality regression the auto policy
+    exists to prevent. That is what took test_video_backend's auto-toggle test red on main.
+    """
+    _stub_diffusers(monkeypatch)
+    t = _DiffusersLikeTransformer()
+    maybe_toggle_step_cache(_pipe(t), steps = 28)
+    assert t._cache_config is not None, "the engage did not leave a live config to key on"
+
+    _hide_private_hook_names(monkeypatch)
+    mode = maybe_toggle_step_cache(_pipe(t), steps = 8)
+    assert mode is None, "a cache diffusers removed itself is still being reported as engaged"
+    assert t.disables == 1
+    assert not t._unsloth_step_cache
+
+
+def test_toggle_keeps_an_adopted_cache_it_cannot_verify_removed(monkeypatch):
+    """The other half: with no live config, disable_cache removed nothing, so the marker stays.
+
+    Clearing it over live hooks is what would let the CUDA graph wrapper capture a graph across
+    them, so "cannot verify" has to mean "still engaged" here.
+    """
+    _stub_diffusers(monkeypatch)
+    t = _ToggleTransformer()  # never sets _cache_config: the adopted low-level shape
+    maybe_toggle_step_cache(_pipe(t), steps = 28)
+
+    _hide_private_hook_names(monkeypatch)
+    assert maybe_toggle_step_cache(_pipe(t), steps = 8) == TC_FBCACHE
+    assert t._unsloth_step_cache, "the marker came off hooks that were never verified gone"
+
+
 def test_toggle_reengages_after_a_disable(monkeypatch):
     _stub_diffusers(monkeypatch)
     t = _ToggleTransformer()

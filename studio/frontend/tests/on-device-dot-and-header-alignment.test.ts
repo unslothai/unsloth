@@ -385,10 +385,16 @@ test("chat and the Hub answer the fit question with one formula", () => {
     "and that is every expander there is",
   );
   // The APU window comes out of the RAM tier where the figure is built, so every rule downstream
-  // sees one pool counted once.
+  // sees one pool counted once. The tier hands the RAW devices to gpuSharedHostMemoryGb, which
+  // folds the two flags itself: pre-folding here collapsed a multi-socket unified host to one
+  // socket's worth, so it subtracted 48 GiB of a 96 GiB pool (#11366).
   assert.ok(
-    GPU_INFO.includes("shared_memory: sharesHostMemory({"),
-    "the RAM tier folds unified in",
+    GPU_INFO.includes("gpuSharedHostMemoryGb(devices)"),
+    "the RAM tier folds unified in, on the raw devices",
+  );
+  assert.ok(
+    !GPU_INFO.includes("shared_memory: sharesHostMemory({"),
+    "and never pre-folds them on the way in",
   );
   assert.ok(HUB_CARD.includes("gpuCount?: number;"));
   assert.ok(RECOMMENDED.includes("budgetFraction: opts.budgetFraction,"));
@@ -640,10 +646,12 @@ test("list header actions end where a hovered row's action does", () => {
 test("all three list headers take the same alignment", () => {
   // Pinned and Projects share one class string; Recents has its own because of
   // the translate. Two of the first, one of the second.
-  const shared =
-    SIDEBAR.split(
-      '"sidebar-sticky-label sidebar-sticky-label-following group/sidebar-header gap-1", headerRightPadding,',
-    ).length - 1;
+  // Both headers are drop zones now, so the class list is spread over lines.
+  const shared = (
+    SIDEBAR.match(
+      /"sidebar-sticky-label sidebar-sticky-label-following group\/sidebar-header gap-1",\n\s*headerRightPadding,/g,
+    ) ?? []
+  ).length;
   assert.equal(shared, 2, "Pinned and Projects");
   assert.ok(
     SIDEBAR.includes("recentsHeaderRightPadding,"),
