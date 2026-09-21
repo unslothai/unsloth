@@ -7053,6 +7053,7 @@ function Fast-Install {
     # the operator's pip.conf and uv.toml are bypassed for the pinned torch install. Same split
     # as _install_env_for_cmd(): ADDITIVE index vars go, policy-bearing config files stay.
     $respectPolicy = Test-RespectPmPolicy
+    $carriedRequireHashes = $false
     if ($pinned) {
         $scrub = @('UV_DEFAULT_INDEX', 'UV_INDEX_URL', 'UV_INDEX', 'UV_EXTRA_INDEX_URL',
                    'UV_TORCH_BACKEND', 'UV_FIND_LINKS', 'PIP_EXTRA_INDEX_URL', 'PIP_FIND_LINKS',
@@ -7081,6 +7082,22 @@ function Fast-Install {
             $VenvPy = (Get-Command python).Source
             $result = & uv pip install --python $VenvPy @Args_ 2>&1
             if ($LASTEXITCODE -eq 0) { return }
+            # Same hand-off as pip_install(): pip reads no UV_ variable and no uv.toml, so
+            # under the opt-out a uv refusal must not become a pip success. Hashes translate
+            # exactly; UV_OFFLINE does not, because --no-index ignores the INDEXES only and a
+            # direct git+https requirement is still fetched, so offline stops here instead.
+            if ($respectPolicy) {
+                if (Test-UvEnvFlag 'UV_OFFLINE') {
+                    Write-Host $result
+                    substep "[ERROR] UV_OFFLINE told uv not to touch the network and pip has no equivalent: --no-index ignores the package indexes only, and a direct git+https or URL requirement is still fetched. Clear UV_OFFLINE, or unset UNSLOTH_RESPECT_PM_POLICY for one run to allow the pip fallback." "Red"
+                    $global:LASTEXITCODE = 1
+                    return
+                }
+                if ((Test-UvEnvFlag 'UV_REQUIRE_HASHES') -and -not "$env:PIP_REQUIRE_HASHES".Trim()) {
+                    $carriedRequireHashes = $true
+                    $env:PIP_REQUIRE_HASHES = '1'
+                }
+            }
         }
         $pipArgs = Remove-UvOnlyResolverFlags -Arguments $Args_
         & python -m pip install @pipArgs 2>&1
@@ -7092,6 +7109,7 @@ function Fast-Install {
             Remove-Item "Env:UV_NO_CONFIG" -ErrorAction SilentlyContinue
             Remove-Item "Env:PIP_CONFIG_FILE" -ErrorAction SilentlyContinue
         }
+        if ($carriedRequireHashes) { Remove-Item "Env:PIP_REQUIRE_HASHES" -ErrorAction SilentlyContinue }
         foreach ($n in $saved.Keys) { if ($null -ne $saved[$n]) { Set-Item "Env:$n" $saved[$n] } }
     }
 }

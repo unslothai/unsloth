@@ -8865,12 +8865,16 @@ def _relaxed_pip_policy_env(cmd: "list[str]") -> "dict[str, str]":
 # stops uv over UV_REQUIRE_HASHES and then installs the very thing uv refused -- the one
 # outcome the feature exists to prevent. Refusing to fall back at all was the alternative
 # and is worse: uv exits non-zero for network and resolver reasons too, and those installs
-# must still complete. Translating only exact equivalents keeps the fallback honest without
-# inventing policy: UV_OFFLINE means "no network", and PIP_NO_INDEX is how pip is told that
-# while the find-links the opt-out keeps stay usable.
+# must still complete.
+#
+# EXACT is the bar, and UV_OFFLINE does not clear it. PIP_NO_INDEX looks like the
+# equivalent and is not: pip documents --no-index as "Ignore package index (only looking at
+# --find-links URLs instead)", so a direct reference is still fetched, and the installer
+# has one -- _UNSLOTH_ZOO_GIT_URL, `unsloth-zoo @ git+https://github.com/...`. Mapping it
+# would have claimed an offline guarantee pip cannot give. Offline refuses the fallback
+# instead; see pip_install().
 _UV_TO_PIP_POLICY = (
     ("UV_REQUIRE_HASHES", "PIP_REQUIRE_HASHES"),
-    ("UV_OFFLINE", "PIP_NO_INDEX"),
 )
 
 
@@ -9571,6 +9575,27 @@ def pip_install(
                     )
                 )
                 _safe_print(_red("   Install uv and re-run, or re-run install.ps1."))
+                _report_failed_command(label, result)
+            if _respect_pm_policy() and _uv_is_offline():
+                # pip cannot stand in for UV_OFFLINE, the same shape as the Windows on ARM
+                # bail above. --no-index only ignores the INDEXES, so the pip fallback would
+                # still clone _UNSLOTH_ZOO_GIT_URL over the network uv was told not to touch.
+                # Stopping is the opt-out's own contract: the install fails where the policy
+                # forbids it, rather than succeeding by a route the policy did not cover.
+                _step("error", f"{label} failed and pip cannot stand in for it", _red)
+                _safe_print(
+                    _red(
+                        "   UV_OFFLINE told uv not to touch the network and pip has no "
+                        "equivalent: --no-index ignores the package indexes only, and a "
+                        "direct git+https or URL requirement is still fetched."
+                    )
+                )
+                _safe_print(
+                    _red(
+                        f"   Clear UV_OFFLINE, or unset {_POLICY_OPT_OUT_ENV} for one run to "
+                        "allow the pip fallback."
+                    )
+                )
                 _report_failed_command(label, result)
             _safe_print(_red(f"   uv failed, falling back to pip..."))
             if result.stdout:
