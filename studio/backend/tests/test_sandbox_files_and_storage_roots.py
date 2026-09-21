@@ -3308,7 +3308,11 @@ def _forget_sandbox_state(tools):
     getattr(tools, "_claimed_here", set()).clear()
 
 
-def _studio_modules(tmp_path, monkeypatch, projects_home = False):
+def _studio_modules(
+    tmp_path,
+    monkeypatch,
+    projects_home = False,
+):
     """Studio home under *tmp_path*, sandbox caches cleared, both modules ready.
 
     The cache reset is the load-bearing part: a workdir map left over from the
@@ -3324,7 +3328,11 @@ def _studio_modules(tmp_path, monkeypatch, projects_home = False):
     return tools, studio_db
 
 
-def _project_row(project_id, name = "Notes", **extra):
+def _project_row(
+    project_id,
+    name = "Notes",
+    **extra,
+):
     """A chat_projects row as the routes hand it to storage."""
     return {
         "id": project_id,
@@ -5175,6 +5183,7 @@ def test_external_project_delete_keeps_its_current_session_reachable(tmp_path, m
 def test_reused_project_id_keeps_each_workspace_session_record(tmp_path, monkeypatch):
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
     from core.inference import tools
+
     _forget_sandbox_state(tools)
 
     first = tmp_path / "first"
@@ -5363,6 +5372,7 @@ def test_orphan_collection_checks_every_session_sharing_a_workspace(tmp_path, mo
 def test_forgetting_one_project_session_keeps_other_incarnations(tmp_path, monkeypatch):
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
     from core.inference import tools
+
     _forget_sandbox_state(tools)
 
     first = tmp_path / "first"
@@ -5383,6 +5393,7 @@ def test_forgetting_one_project_session_keeps_other_incarnations(tmp_path, monke
 def test_project_id_cannot_overwrite_another_projects_session_record(tmp_path, monkeypatch):
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
     from core.inference import tools
+
     _forget_sandbox_state(tools)
 
     first = tmp_path / "first"
@@ -5404,6 +5415,7 @@ def test_project_id_cannot_overwrite_another_projects_session_record(tmp_path, m
 def test_version_shaped_legacy_project_session_resolves_its_orphan(tmp_path, monkeypatch):
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
     from core.inference import tools
+
     _forget_sandbox_state(tools)
 
     workspace = tmp_path / "legacy-workspace"
@@ -6682,6 +6694,7 @@ def test_deleted_project_record_is_not_restored_over_a_live_workspace(tmp_path, 
 def test_external_adoption_fails_closed_when_orphan_scan_is_truncated(tmp_path, monkeypatch):
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
     from core.inference import tools
+
     _forget_sandbox_state(tools)
 
     first = tmp_path / "first"
