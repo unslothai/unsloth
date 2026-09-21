@@ -1811,10 +1811,6 @@ export function useChatModelRuntime() {
             if (lifecycleLease !== null) {
               chatModelLifecycleGate.markLoading(lifecycleLease);
             }
-            // The request is about to go out, so from here on a runner may have written
-            // its own log. Everything before this point is preflight, and its failures
-            // reach the same catch with no runner log to open.
-            loadRequestIssued = true;
             const loadResponse = await loadModel({
               model_path: loadPath,
               nativePathLease: loadNativePathLease,
@@ -1860,6 +1856,15 @@ export function useChatModelRuntime() {
               force_cancel_active: forceCancelActive,
 
               force_reload: forceReload,
+            }, {
+              // loadModel prepares the HF token and checks the abort signal BEFORE it
+              // calls this, and only then sends the request, so this is the first point
+              // at which a runner may have written a log of its own. Setting the flag
+              // before the call counted a cancelled token prompt as an attempt and
+              // offered the newest unrelated runner log for it.
+              onRequestStart: () => {
+                loadRequestIssued = true;
+              },
             });
             cpuFallbackReason = loadResponse.cpu_fallback_reason ?? null;
             mmprojFallbackReason = loadResponse.mmproj_fallback_reason ?? null;
