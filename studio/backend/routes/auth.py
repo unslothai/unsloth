@@ -218,6 +218,10 @@ def _overflow_take(ip: str, now: float) -> tuple[int, float]:
 # Unrepresentable as a real username (leading NUL); folds unknown-user attempts
 # into one slot so attacker cardinality can't blow the bucket dict.
 _UNKNOWN_LOGIN_USER = "\x00unknown-user"
+# /desktop-login's own slot. NOT _UNKNOWN_LOGIN_USER: /login reads that bucket and 429s on it, so
+# sharing it lets an unauthenticated caller lock every account out of /login with five desktop
+# attempts a minute, and behind a tunnel every visitor arrives as the same cloudflared peer.
+_DESKTOP_LOGIN_USER = "\x00desktop-login"
 
 
 def _trust_forwarded_for() -> bool:
@@ -287,6 +291,10 @@ def _bucket_key(request: Request | None, username: str) -> tuple[str, str]:
 
 def _unknown_user_key(request: Request | None) -> tuple[str, str]:
     return (_client_ip(request), _UNKNOWN_LOGIN_USER)
+
+
+def _desktop_login_key(request: Request | None) -> tuple[str, str]:
+    return (_client_ip(request), _DESKTOP_LOGIN_USER)
 
 
 def _prune_bucket(bucket: deque, now: float) -> None:
@@ -545,9 +553,9 @@ async def logout(
 def desktop_login(payload: DesktopLoginRequest, request: Request) -> Token | Response:
     """Exchange a local desktop secret for normal admin-subject tokens. Per-IP rate-limited.
 
-    Throttled on the same bucket as /login's unknown usernames: the route takes no credential and
-    the KDF runs before an attacker-chosen secret can be rejected, so without it one unauthenticated
-    request buys unbounded work.
+    Throttled because the route takes no credential and the KDF runs before an attacker-chosen
+    secret can be rejected, so without it one unauthenticated request buys unbounded work. On its
+    own account bucket, contributing to the shared per-IP aggregate exactly as /login does.
     """
     # Before the bucket is read, not just before it is written. The shipped desktop shell posts a
     # deliberately invalid secret here on every preflight, every 15s watchdog tick and once per live
@@ -561,7 +569,7 @@ def desktop_login(payload: DesktopLoginRequest, request: Request) -> Token | Res
             detail = "Desktop authentication failed",
         )
 
-    key = _unknown_user_key(request)
+    key = _desktop_login_key(request)
     blocked_for = _login_blocked(key)
     if blocked_for > 0:
         raise HTTPException(

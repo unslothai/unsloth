@@ -1312,6 +1312,35 @@ def test_a_minute_of_watchdog_ticks_does_not_lock_the_shell_out():
     assert admitted.json()["access_token"]
 
 
+def test_desktop_login_failures_do_not_lock_everyone_out_of_login():
+    """/desktop-login must not fill the bucket /login reads for every account.
+
+    /login 429s on max(its own account bucket, the unknown-user bucket), but it never WRITES the
+    unknown-user one: an unknown username is recorded per name, deliberately, so the shared slot
+    is not an existence oracle. Nothing filled it before this route did. Sharing it means five
+    unauthenticated desktop attempts a minute reject every account's correct password, and behind
+    a tunnel UNSLOTH_STUDIO_TRUST_FORWARDED is off by default, so every visitor arrives as the
+    same cloudflared peer and one caller locks out the whole installation.
+    """
+    seed_user(must_change_password = False)
+    auth_route = auth_route_module()
+    client = auth_client(auth_route)
+    good = {"username": storage.DEFAULT_ADMIN_USERNAME, "password": "human-password-123"}
+
+    assert client.post("/api/auth/login", json = good).status_code == 200
+
+    guess = well_formed_wrong_secret()
+    for _ in range(auth_route._LOGIN_MAX_FAILS + 1):
+        client.post("/api/auth/desktop-login", json = {"secret": guess})
+
+    assert client.post("/api/auth/login", json = good).status_code == 200, (
+        "unauthenticated desktop-login attempts rejected a correct password"
+    )
+    # Its own throttle still works, on its own slot.
+    assert client.post("/api/auth/desktop-login", json = {"secret": guess}).status_code == 429
+    assert auth_route._desktop_login_key(None)[1] != auth_route._unknown_user_key(None)[1]
+
+
 def test_a_desktop_exchange_does_not_reset_the_shared_password_throttle():
     """The desktop secret proves the shell owns the backend, not that anyone signed in.
 
@@ -1337,7 +1366,7 @@ def test_a_desktop_exchange_does_not_reset_the_shared_password_throttle():
         len(auth_route._LOGIN_IP_BUCKETS.get(ip, [])) == sprayed
     ), "a desktop exchange cleared /login's per-IP aggregate"
     # Its own bucket is still cleared: the shell must not be locked out by its own earlier miss.
-    assert auth_route._unknown_user_key(None)[1] not in {k[1] for k in auth_route._LOGIN_BUCKETS}
+    assert auth_route._desktop_login_key(None)[1] not in {k[1] for k in auth_route._LOGIN_BUCKETS}
 
 
 def test_multi_user_desktop_exchange_grants_no_session_and_clears_no_aggregate(monkeypatch):
