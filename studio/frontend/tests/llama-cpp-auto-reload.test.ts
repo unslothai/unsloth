@@ -288,6 +288,298 @@ test("monitor refreshes once per connection, retains selections, retries failure
   }
 });
 
+test("cross-tab edits replace the monitored llama.cpp endpoint", async () => {
+  const storage = new Map<string, string>([["unsloth_auth_token", "test-token"]]);
+  const originalWindow = globalThis.window;
+  const originalStorage = globalThis.localStorage;
+  const originalFetch = globalThis.fetch;
+  let storageListener: ((event: Partial<StorageEvent>) => void) | undefined;
+  Object.defineProperty(globalThis, "window", {
+    configurable: true,
+    value: {
+      addEventListener(type: string, listener: typeof storageListener) {
+        if (type === "storage") storageListener = listener;
+      },
+      removeEventListener(type: string) {
+        if (type === "storage") storageListener = undefined;
+      },
+    },
+  });
+  Object.defineProperty(globalThis, "localStorage", {
+    configurable: true,
+    value: {
+      getItem: (key: string) => storage.get(key) ?? null,
+      setItem: (key: string, value: string) => storage.set(key, value),
+      removeItem: (key: string) => storage.delete(key),
+    },
+  });
+  const { startLlamaCppAutoReload } = await vite.ssrLoadModule(
+    "/src/features/chat/llama-cpp-auto-reload.ts",
+  );
+  const { useExternalProvidersStore: store } = await vite.ssrLoadModule(
+    "/src/features/chat/stores/external-providers-store.ts",
+  );
+  const baseProvider = {
+    id: "endpoint-race",
+    providerType: "llama_cpp",
+    name: "llama.cpp",
+    baseUrl: "http://old.example/v1",
+    models: ["model"],
+    availableModels: ["model"],
+    createdAt: 1,
+    updatedAt: 1,
+    autoReloadModels: true,
+  };
+  const probedBaseUrls: string[] = [];
+  globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+    const url = String(input);
+    if (url.endsWith("/test")) {
+      probedBaseUrls.push(JSON.parse(String(init?.body)).base_url);
+      return Response.json({ success: false });
+    }
+    throw new Error(`Unexpected request ${url}`);
+  }) as typeof fetch;
+  const waitFor = async (predicate: () => boolean) => {
+    for (let attempt = 0; attempt < 200 && !predicate(); attempt++)
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    assert.ok(predicate(), JSON.stringify(probedBaseUrls));
+  };
+  store.setState({ providers: [baseProvider], connectionsEnabled: true });
+  const stop = startLlamaCppAutoReload(10);
+  try {
+    await waitFor(() => probedBaseUrls.includes("http://old.example/v1"));
+    const edited = { ...baseProvider, baseUrl: "http://new.example/v1" };
+    const preferenceKey = "unsloth_chat_external_providers";
+    storage.set(preferenceKey, JSON.stringify([edited]));
+    assert.ok(storageListener);
+    storageListener({ key: preferenceKey, storageArea: localStorage });
+    await waitFor(() => probedBaseUrls.includes("http://new.example/v1"));
+    assert.equal(store.getState().providers[0].baseUrl, edited.baseUrl);
+  } finally {
+    stop();
+    globalThis.fetch = originalFetch;
+    Object.defineProperty(globalThis, "window", {
+      configurable: true,
+      value: originalWindow,
+    });
+    Object.defineProperty(globalThis, "localStorage", {
+      configurable: true,
+      value: originalStorage,
+    });
+  }
+});
+
+test("credential-state replacement retires an in-flight llama.cpp poll", async () => {
+  const storage = new Map<string, string>([["unsloth_auth_token", "test-token"]]);
+  const originalWindow = globalThis.window;
+  const originalStorage = globalThis.localStorage;
+  const originalFetch = globalThis.fetch;
+  Object.defineProperty(globalThis, "window", {
+    configurable: true,
+    value: { addEventListener() {}, removeEventListener() {} },
+  });
+  Object.defineProperty(globalThis, "localStorage", {
+    configurable: true,
+    value: {
+      getItem: (key: string) => storage.get(key) ?? null,
+      setItem: (key: string, value: string) => storage.set(key, value),
+      removeItem: (key: string) => storage.delete(key),
+    },
+  });
+  const { startLlamaCppAutoReload } = await vite.ssrLoadModule(
+    "/src/features/chat/llama-cpp-auto-reload.ts",
+  );
+  const { useExternalProvidersStore: store } = await vite.ssrLoadModule(
+    "/src/features/chat/stores/external-providers-store.ts",
+  );
+  const provider = {
+    id: "credential-race",
+    providerType: "llama_cpp",
+    name: "llama.cpp",
+    baseUrl: "http://localhost:8080/v1",
+    models: ["old"],
+    availableModels: ["old"],
+    hasApiKey: false,
+    autoReloadModels: true,
+    createdAt: 1,
+    updatedAt: 1,
+  };
+  let releaseFirstProbe!: () => void;
+  const firstProbe = new Promise<void>((resolve) => {
+    releaseFirstProbe = resolve;
+  });
+  let probes = 0;
+  let catalogs = 0;
+  let saves = 0;
+  globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+    const url = String(input);
+    if (url.endsWith("/test")) {
+      probes++;
+      if (probes === 1) await firstProbe;
+      return Response.json({ success: true });
+    }
+    if (url.endsWith("/models")) {
+      catalogs++;
+      return Response.json([{ id: "fresh" }]);
+    }
+    if (url.replace(/\/$/, "").endsWith("/providers")) {
+      return Response.json([{
+        id: provider.id,
+        base_url: provider.baseUrl,
+        models: ["old"],
+        available_models: ["old"],
+      }]);
+    }
+    if (init?.method === "PUT") {
+      saves++;
+      return Response.json(JSON.parse(String(init.body)));
+    }
+    throw new Error(`Unexpected request ${url}`);
+  }) as typeof fetch;
+  const waitFor = async (predicate: () => boolean) => {
+    for (let attempt = 0; attempt < 200 && !predicate(); attempt++)
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    assert.ok(predicate(), JSON.stringify({ probes, catalogs, saves }));
+  };
+  store.setState({ providers: [provider], connectionsEnabled: true });
+  const stop = startLlamaCppAutoReload(60_000);
+  try {
+    await waitFor(() => probes === 1);
+    store.setState({
+      providers: store.getState().providers.map((item: typeof provider) => ({
+        ...item,
+        hasApiKey: true,
+      })),
+    });
+    await waitFor(() => probes === 2 && catalogs === 1 && saves === 1);
+    releaseFirstProbe();
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    assert.deepEqual(
+      { probes, catalogs, saves },
+      { probes: 2, catalogs: 1, saves: 1 },
+      "the retired request must not continue to the catalog or save",
+    );
+    assert.equal(store.getState().providers[0].hasApiKey, true);
+  } finally {
+    stop();
+    globalThis.fetch = originalFetch;
+    Object.defineProperty(globalThis, "window", {
+      configurable: true,
+      value: originalWindow,
+    });
+    Object.defineProperty(globalThis, "localStorage", {
+      configurable: true,
+      value: originalStorage,
+    });
+  }
+});
+
+test("delayed llama.cpp backfill does not overwrite a newer catalog", async () => {
+  const storage = new Map<string, string>([["unsloth_auth_token", "test-token"]]);
+  const originalWindow = globalThis.window;
+  const originalStorage = globalThis.localStorage;
+  const originalFetch = globalThis.fetch;
+  Object.defineProperty(globalThis, "window", {
+    configurable: true,
+    value: { addEventListener() {}, removeEventListener() {} },
+  });
+  Object.defineProperty(globalThis, "localStorage", {
+    configurable: true,
+    value: {
+      getItem: (key: string) => storage.get(key) ?? null,
+      setItem: (key: string, value: string) => storage.set(key, value),
+      removeItem: (key: string) => storage.delete(key),
+    },
+  });
+  const { syncExternalProvidersFromBackend } = await vite.ssrLoadModule(
+    "/src/features/chat/sync-external-providers.ts",
+  );
+  const baseConfig = {
+    id: "backfill-race",
+    provider_type: "llama_cpp",
+    display_name: "llama.cpp",
+    base_url: "http://localhost:8080/v1",
+    is_enabled: true,
+    has_api_key: false,
+    models: [] as string[],
+    available_models: [] as string[],
+    created_at: "2026-01-01T00:00:00Z",
+    updated_at: "2026-01-01T00:00:00Z",
+  };
+  const fresh = { models: ["fresh"], available_models: ["fresh"] };
+  let releaseSnapshot!: () => void;
+  const snapshotGate = new Promise<void>((resolve) => {
+    releaseSnapshot = resolve;
+  });
+  let listCalls = 0;
+  const writes: unknown[] = [];
+  globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+    const url = String(input);
+    if (url.includes("/api/providers/registry")) {
+      return Response.json([{
+        provider_type: "llama_cpp",
+        display_name: "llama.cpp",
+        base_url: baseConfig.base_url,
+        default_models: [],
+        supports_streaming: true,
+        supports_vision: false,
+        supports_tool_calling: true,
+        supports_studio_tools: true,
+        hidden: true,
+        model_list_mode: "remote",
+      }]);
+    }
+    if (url.replace(/\/$/, "").endsWith("/api/providers") && !init?.method) {
+      listCalls++;
+      if (listCalls === 1) {
+        await snapshotGate;
+        return Response.json([baseConfig]);
+      }
+      return Response.json([{ ...baseConfig, ...fresh }]);
+    }
+    if (init?.method === "PUT") {
+      writes.push(JSON.parse(String(init.body)));
+      return Response.json({ ...baseConfig, ...fresh });
+    }
+    if (url.endsWith("/api/models/catalog")) {
+      return Response.json({ detail: "offline" }, { status: 503 });
+    }
+    throw new Error(`Unexpected request ${url}`);
+  }) as typeof fetch;
+  const existing = {
+    id: baseConfig.id,
+    providerType: "llama_cpp",
+    name: "llama.cpp",
+    baseUrl: baseConfig.base_url,
+    models: ["stale"],
+    availableModels: ["stale"],
+    hasApiKey: false,
+    autoReloadModels: true,
+    createdAt: 1,
+    updatedAt: 1,
+  };
+  try {
+    const sync = syncExternalProvidersFromBackend([existing]);
+    for (let attempt = 0; attempt < 200 && listCalls === 0; attempt++)
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    assert.equal(listCalls, 1);
+    releaseSnapshot();
+    await sync;
+    assert.equal(listCalls, 2, "backfill must re-read the durable provider");
+    assert.deepEqual(writes, [], "the newer catalog must win over the stale snapshot");
+  } finally {
+    globalThis.fetch = originalFetch;
+    Object.defineProperty(globalThis, "window", {
+      configurable: true,
+      value: originalWindow,
+    });
+    Object.defineProperty(globalThis, "localStorage", {
+      configurable: true,
+      value: originalStorage,
+    });
+  }
+});
+
 test("manual saves follow delayed automatic saves, and a failed save does not block later updates", async () => {
   const { withProviderModelUpdate } = await vite.ssrLoadModule(
     "/src/features/chat/stores/external-providers-store.ts",
@@ -322,8 +614,8 @@ test("manual saves follow delayed automatic saves, and a failed save does not bl
   assert.equal(writes.at(-1), "retry");
 });
 
-test("late settings sync preserves refreshed models while accepting unrelated server changes", async () => {
-  const { preserveConcurrentProviderUpdates } = await vite.ssrLoadModule(
+test("late settings sync preserves refreshed llama.cpp models without changing other providers", async () => {
+  const { preserveConcurrentLlamaCppModelUpdates } = await vite.ssrLoadModule(
     "/src/features/chat/sync-external-providers.ts",
   );
   const previous = {
@@ -340,7 +632,7 @@ test("late settings sync preserves refreshed models while accepting unrelated se
     availableModels: ["old"],
   };
   const current = { ...previous, models: ["new"], availableModels: ["new"] };
-  const merged = preserveConcurrentProviderUpdates(
+  const merged = preserveConcurrentLlamaCppModelUpdates(
     [synced],
     [previous],
     [current],
@@ -355,12 +647,18 @@ test("late settings sync preserves refreshed models while accepting unrelated se
     availableModels: ["external"],
   };
   assert.deepEqual(
-    preserveConcurrentProviderUpdates([external], [previous], [previous])[0]
+    preserveConcurrentLlamaCppModelUpdates([external], [previous], [previous])[0]
       .models,
     ["external"],
   );
   assert.deepEqual(
-    preserveConcurrentProviderUpdates([], [previous], [current]),
+    preserveConcurrentLlamaCppModelUpdates([], [previous], [current]),
     [],
+  );
+  const other = { ...synced, providerType: "ollama" };
+  assert.equal(
+    preserveConcurrentLlamaCppModelUpdates([other], [previous], [current])[0],
+    other,
+    "non-llama providers keep the existing sync behavior",
   );
 });

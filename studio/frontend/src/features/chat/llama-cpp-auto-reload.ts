@@ -21,6 +21,7 @@ import {
 
 interface ConnectionState {
   baseUrl: string;
+  hasApiKey: boolean;
   connected: boolean;
   busy: boolean;
 }
@@ -46,7 +47,8 @@ export function startLlamaCppAutoReload(intervalMs = 10_000): () => void {
       (provider) =>
         provider.id === id &&
         eligible(provider) &&
-        provider.baseUrl === connection.baseUrl,
+        provider.baseUrl === connection.baseUrl &&
+        (provider.hasApiKey === true) === connection.hasApiKey,
     );
   }
 
@@ -148,7 +150,9 @@ export function startLlamaCppAutoReload(intervalMs = 10_000): () => void {
       if (
         !providers.some(
           (provider) =>
-            provider.id === id && provider.baseUrl === connection.baseUrl,
+            provider.id === id &&
+            provider.baseUrl === connection.baseUrl &&
+            (provider.hasApiKey === true) === connection.hasApiKey,
         )
       ) {
         connections.delete(id);
@@ -158,6 +162,7 @@ export function startLlamaCppAutoReload(intervalMs = 10_000): () => void {
       if (connections.has(provider.id)) continue;
       const connection = {
         baseUrl: provider.baseUrl,
+        hasApiKey: provider.hasApiKey === true,
         connected: false,
         busy: false,
       };
@@ -178,10 +183,15 @@ export function startLlamaCppAutoReload(intervalMs = 10_000): () => void {
     const state = useExternalProvidersStore.getState();
     const providers = state.providers.map((provider) => {
       if (provider.providerType !== "llama_cpp") return provider;
-      const autoReloadModels = saved.get(provider.id)?.autoReloadModels === true;
-      return provider.autoReloadModels === autoReloadModels
+      const savedProvider = saved.get(provider.id);
+      const autoReloadModels = savedProvider?.autoReloadModels === true;
+      const baseUrl = savedProvider?.baseUrl ?? provider.baseUrl;
+      const hasApiKey = savedProvider?.hasApiKey === true;
+      return provider.autoReloadModels === autoReloadModels &&
+        provider.baseUrl === baseUrl &&
+        provider.hasApiKey === hasApiKey
         ? provider
-        : { ...provider, autoReloadModels };
+        : { ...provider, autoReloadModels, baseUrl, hasApiKey };
     });
     if (providers.some((provider, index) => provider !== state.providers[index])) {
       useExternalProvidersStore.setState({ providers });

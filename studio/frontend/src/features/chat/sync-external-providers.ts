@@ -40,6 +40,7 @@ import {
   supportsProviderPromptCacheTtl,
   supportsProviderReasoningToggle,
 } from "./external-providers";
+import { withProviderModelUpdate } from "./stores/external-providers-store";
 
 const OPENAI_DEPRECATED_MODELS = new Set(["gpt-5.3"]);
 // Rejected for every ChatGPT account, so drop it from selections saved earlier.
@@ -190,7 +191,7 @@ export function mergeLocalProviderOptions(
 
 
 
-export function preserveConcurrentProviderUpdates(
+export function preserveConcurrentLlamaCppModelUpdates(
   syncedProviders: ExternalProviderConfig[],
   previousProviders: ExternalProviderConfig[],
   currentProviders: ExternalProviderConfig[],
@@ -202,6 +203,7 @@ export function preserveConcurrentProviderUpdates(
     currentProviders.map((provider) => [provider.id, provider]),
   );
   return syncedProviders.map((synced) => {
+    if (synced.providerType !== "llama_cpp") return synced;
     const previous = previousById.get(synced.id);
     const current = currentById.get(synced.id);
     const merged = mergeLocalProviderOptions(current, synced);
@@ -311,11 +313,38 @@ export async function syncExternalProvidersFromBackend(
       const needsAvailableBackfill =
         serverAvailableModels.length === 0 && savedAvailableModels.length > 0;
       if (needsModelBackfill || needsAvailableBackfill) {
-        backfillTasks.push(() =>
+        const backfill = () =>
           updateProviderConfig(config.id, {
             models: resolvedModels,
             availableModels: resolvedAvailableModels,
-          }),
+          });
+        backfillTasks.push(
+          uiProviderType === "llama_cpp"
+            ? () => withProviderModelUpdate(config.id, async () => {
+                const current = (await listProviderConfigs()).find(
+                  (provider) => provider.id === config.id,
+                );
+                if (!current) return;
+                const currentModels = pruneProviderModelIds(
+                  uiProviderType,
+                  current.models ?? [],
+                );
+                const currentAvailableModels = pruneProviderModelIds(
+                  uiProviderType,
+                  current.available_models ?? [],
+                );
+                const models =
+                  needsModelBackfill && currentModels.length === 0
+                    ? resolvedModels
+                    : undefined;
+                const availableModels =
+                  needsAvailableBackfill && currentAvailableModels.length === 0
+                    ? resolvedAvailableModels
+                    : undefined;
+                if (!models && !availableModels) return;
+                await updateProviderConfig(config.id, { models, availableModels });
+              })
+            : backfill,
         );
       }
       const synced: ExternalProviderConfig = {

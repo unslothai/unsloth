@@ -87,7 +87,7 @@ import {
 import {
   mergeLearnedModelCapabilities,
   pruneProviderModelIds,
-  preserveConcurrentProviderUpdates,
+  preserveConcurrentLlamaCppModelUpdates,
   refreshProviderModelCatalogs,
   syncExternalProvidersFromBackend,
 } from "./sync-external-providers";
@@ -460,7 +460,7 @@ export function ChatProvidersSettings({
         });
         // Trust the backend response. An empty array means every connection was removed, often from
         // another tab; mirror that locally, else stale entries are un-removable here.
-        onProvidersChange(preserveConcurrentProviderUpdates(
+        onProvidersChange(preserveConcurrentLlamaCppModelUpdates(
           syncedProviders, previousProviders, useExternalProvidersStore.getState().providers,
         ));
         setProvidersReady(true);
@@ -718,7 +718,7 @@ export function ChatProvidersSettings({
       }
       if (editingProviderId) {
         onProvidersChange(
-          useExternalProvidersStore.getState().providers.map((provider) =>
+          providersRef.current.map((provider) =>
             provider.id === editingProviderId
               ? { ...provider, availableModels: modelIds }
               : provider,
@@ -776,7 +776,7 @@ export function ChatProvidersSettings({
           : Date.now(),
       };
       const nextProviders = [
-        ...useExternalProvidersStore.getState().providers.filter((current) => current.id !== created.id),
+        ...providersRef.current.filter((current) => current.id !== created.id),
         provider,
       ];
       providersRef.current = nextProviders;
@@ -907,7 +907,7 @@ export function ChatProvidersSettings({
         updatedAt,
       };
       onProvidersChange([
-        ...useExternalProvidersStore.getState().providers.filter((p) => p.id !== created.id),
+        ...providers.filter((p) => p.id !== created.id),
         provider,
       ]);
       void refreshProviderModelCatalogs([provider]);
@@ -1006,9 +1006,10 @@ export function ChatProvidersSettings({
       autoReloadModels === autoReloadBaselineRef.current;
     const sessionEpoch = getAuthSessionEpoch();
     const isCurrent = () =>
-      hasAuthToken() && getAuthSessionEpoch() === sessionEpoch;
+      existing.providerType !== "llama_cpp" ||
+      (hasAuthToken() && getAuthSessionEpoch() === sessionEpoch);
     setMutatingProvider(true);
-    await withProviderModelUpdate(editingProviderId, async () => {
+    const saveProvider = async () => {
       try {
         if (!isCurrent()) return;
         const baseUrl = parseBaseUrlForProvider(
@@ -1019,10 +1020,11 @@ export function ChatProvidersSettings({
         const maxOutputTokens = supportsMaxOutputTokens
           ? parseMaxOutputTokens(maxOutputTokensDraft)
           : undefined;
-        const latestProvider =
-          useExternalProvidersStore.getState().providers.find(
-            (provider) => provider.id === editingProviderId,
-          ) ?? existing;
+        const latestProvider = existing.providerType === "llama_cpp"
+          ? useExternalProvidersStore.getState().providers.find(
+              (provider) => provider.id === editingProviderId,
+            ) ?? existing
+          : existing;
         const savedModels = preserveCurrentModels
           ? latestProvider.models
           : modelsToSave;
@@ -1082,8 +1084,11 @@ export function ChatProvidersSettings({
             : undefined,
           updatedAt,
         };
+        const currentProviders = existing.providerType === "llama_cpp"
+          ? useExternalProvidersStore.getState().providers
+          : providers;
         onProvidersChange(
-          useExternalProvidersStore.getState().providers.map((provider) =>
+          currentProviders.map((provider) =>
             provider.id === editingProviderId ? editedProvider : provider,
           ),
         );
@@ -1098,7 +1103,12 @@ export function ChatProvidersSettings({
       } finally {
         setMutatingProvider(false);
       }
-    });
+    };
+    if (existing.providerType === "llama_cpp") {
+      await withProviderModelUpdate(editingProviderId, saveProvider);
+    } else {
+      await saveProvider();
+    }
   }
 
   async function applyCodexSubscriptionModels(
@@ -1134,7 +1144,7 @@ export function ChatProvidersSettings({
       const previousProviders = useExternalProvidersStore.getState().providers;
       void syncExternalProvidersFromBackend(previousProviders)
         .then((synced) => {
-          const merged = preserveConcurrentProviderUpdates(
+          const merged = preserveConcurrentLlamaCppModelUpdates(
             synced, previousProviders, useExternalProvidersStore.getState().providers,
           );
           providersRef.current = merged;
@@ -1298,7 +1308,7 @@ export function ChatProvidersSettings({
       await deleteProviderConfig(providerId);
       removeExternalProviderApiKey(providerId);
       onProvidersChange(
-        useExternalProvidersStore.getState().providers.filter((provider) => provider.id !== providerId),
+        providers.filter((provider) => provider.id !== providerId),
       );
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unknown error";
@@ -1746,7 +1756,7 @@ export function ChatProvidersSettings({
                 try {
                   const previousProviders = useExternalProvidersStore.getState().providers;
                   const response = await syncExternalProvidersFromBackend(previousProviders);
-                  const synced = preserveConcurrentProviderUpdates(
+                  const synced = preserveConcurrentLlamaCppModelUpdates(
                     response, previousProviders, useExternalProvidersStore.getState().providers,
                   );
                   providersRef.current = synced;

@@ -201,7 +201,10 @@ test("the connection request is one-shot and tab-scoped", () => {
 test("the deep link waits for the provider and fires once", () => {
   // Cached providers must not seed the form before the first backend sync.
   assert.match(providersDialog, /\[providersReady, setProvidersReady\] = useState\(false\)/);
-  assert.match(providersDialog, /onProvidersChange\(syncedProviders\);\s*setProvidersReady\(true\);/);
+  assert.match(
+    providersDialog,
+    /onProvidersChange\(preserveConcurrentLlamaCppModelUpdates\([\s\S]*?useExternalProvidersStore\.getState\(\)\.providers,[\s\S]*?\)\);\s*setProvidersReady\(true\);/,
+  );
   assert.match(providersDialog, /if \(!providersReady\) return;/);
   // Ready either way: a failed sync leaves the hydrated list as all there is, and waiting on a
   // success the backend may never give would leave the gear opening nothing offline.
