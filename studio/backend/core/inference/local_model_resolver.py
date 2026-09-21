@@ -22,6 +22,7 @@ from dataclasses import dataclass
 from typing import Optional
 
 from core.inference.model_ids import public_model_id
+from core.inference.scan_incidents import note_scan_incident
 from loggers import get_logger
 from utils.account_context import account_thread, current_account_id, is_owner_context
 
@@ -283,7 +284,8 @@ def _local_gguf_entry(
             try:
                 if p.name.startswith("models--") and (p / "snapshots").is_dir():
                     cache_repo_dir = p
-            except OSError:
+            except OSError as exc:
+                note_scan_incident(f"hf cache entry unreadable: {path} ({type(exc).__name__})")
                 return None
             if (
                 cache_repo_dir is None
@@ -349,6 +351,12 @@ def _local_gguf_entry(
             repo_level_companions = cache_repo_dir is not None,
             aliases = _legacy_variant_aliases(variants),
         )
+    except OSError as exc:
+        # A read that FAILED, not a model that is not servable: the entry is dropped, and
+        # published as complete that omission is memoized as an absence. Anything else
+        # here is a classification refusal, which is an answer rather than a gap.
+        note_scan_incident(f"gguf entry unreadable: {path} ({type(exc).__name__})")
+        return None
     except Exception:
         return None
 
@@ -621,6 +629,10 @@ def _local_weights_entry(loader_id: str, info) -> Optional[_LocalGgufEntry]:
             return None
         # No quants: quantization is baked in, so there is no ":<quant>" to pin.
         return _LocalGgufEntry(loader_id, str(load_dir), (), is_gguf = False)
+    except OSError as exc:
+        # As in _local_gguf_entry: unreadable is not unservable.
+        note_scan_incident(f"weights entry unreadable: {path} ({type(exc).__name__})")
+        return None
     except Exception:
         return None
 

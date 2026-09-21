@@ -12388,3 +12388,49 @@ def test_a_suppressed_sibling_revision_walk_is_not_a_complete_scan(monkeypatch):
     assert resolver._scan_sources_skipped >= 1, (
         "a sibling revision walk that failed was counted as a complete look"
     )
+
+
+def test_an_entry_dropped_by_a_read_failure_is_not_a_complete_scan(monkeypatch):
+    """The classifiers are the last suppressed-failure path into the index.
+
+    _local_gguf_entry and _local_weights_entry return None for anything they cannot
+    classify, which is correct for a model that is not servable here and wrong for one whose
+    variants or weights could not be READ: the scanner found the model, the entry is
+    dropped, and published as complete that omission is memoized as an absence, leaving an
+    exact-path request advertising the filename for the rest of the load. Only OSError
+    counts; a classification refusal is an answer, not a gap.
+    """
+    import pathlib
+    from types import SimpleNamespace
+
+    from core.inference.scan_incidents import collecting_scan_incidents
+
+    with tempfile.TemporaryDirectory() as root:
+        model_dir = pathlib.Path(root) / "Qwen3-4B-Instruct"
+        model_dir.mkdir()
+
+        def boom(self, *a, **k):
+            raise OSError("snapshot went away mid-classification")
+
+        # A read failure while inspecting what the scanner already found.
+        monkeypatch.setattr(resolver, "_resolve_load_dir", boom)
+        monkeypatch.setattr(resolver, "_host_has_a_non_gguf_backend", lambda: True)
+        with collecting_scan_incidents() as incidents:
+            assert resolver._local_weights_entry(
+                "loader", SimpleNamespace(path = str(model_dir))
+            ) is None
+        assert any("unreadable" in note for note in incidents), (
+            f"a dropped entry left no trace for the caller: {incidents}"
+        )
+
+        # And a model this host simply cannot serve is NOT an incident, or every scan on
+        # every host would read as incomplete and nothing would ever be memoized.
+        def refuse(*a, **k):
+            raise ValueError("not servable here")
+
+        monkeypatch.setattr(resolver, "_resolve_load_dir", refuse)
+        with collecting_scan_incidents() as incidents:
+            assert resolver._local_weights_entry(
+                "loader", SimpleNamespace(path = str(model_dir))
+            ) is None
+        assert incidents == [], f"a classification refusal was reported as a gap: {incidents}"
