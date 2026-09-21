@@ -374,6 +374,7 @@ _carry_pip_policy_into_uv() {
 # load order and the environment appended rather than one of them winning.
 _PM_ONLY_BINARY_ARGS=""
 _PM_INDEX_POLICY_ARGS=""
+_PM_CERT=""
 # Remove one word from a space-separated set. sh has no sets, and the pairing below needs
 # "discard from the other" to be exact rather than approximate.
 _pm_without() {
@@ -507,14 +508,18 @@ _resolve_index_policy() {
     # all. Worse under the opt-out than it looks: the index URL IS carried, so uv is sent to
     # the private index and then refuses its certificate, and the pip fallback that knows
     # PIP_CERT has already been declined on purpose.
-    _pm_cert="${PIP_CERT:-}"
-    [ -z "$_pm_cert" ] && _pm_cert=$(_pm_config_rows "cert" | tail -n 1)
-    case "$_pm_cert" in
-        "") ;;
-        *[!A-Za-z0-9._/:-]*) ;;  # word-split onto a command line; anything exotic is dropped
-        *) _PM_INDEX_POLICY_ARGS="$_PM_INDEX_POLICY_ARGS --cert $_pm_cert" ;;
+    # Carried in its OWN variable, not appended to the word-split argument string: a CA
+    # bundle is a path, `/opt/My CA/ca.pem` is an ordinary one, and the charset filter that
+    # protects the package names would silently drop it. The injection site expands it as
+    # ${_PM_CERT:+"$_PM_CERT"}, which is one argument with its spaces intact, or nothing.
+    _PM_CERT="${PIP_CERT:-}"
+    [ -z "$_PM_CERT" ] && _PM_CERT=$(_pm_config_rows "cert" | tail -n 1)
+    case "$_PM_CERT" in
+        # A newline cannot survive as one argument and is the one value that could inject a
+        # second; everything else a filesystem allows is passed through untouched.
+        *"
+"*) _PM_CERT="" ;;
     esac
-    unset _pm_cert
     if [ -z "${UV_FIND_LINKS:-}" ]; then
         _pm_fl="${PIP_FIND_LINKS:-}"
         if [ -z "$_pm_fl" ]; then
@@ -556,6 +561,7 @@ _pm_policy_ready() {
     # they had prohibited. Restrictive, so it is carried for pinned commands too.
     _carry_pip_index_into_uv PIP_CONSTRAINT UV_CONSTRAINT "constraint"
     _carry_pip_index_into_uv PIP_INDEX_URL UV_INDEX_URL "index[-_]url"
+    _carry_pip_index_into_uv PIP_EXTRA_INDEX_URL UV_EXTRA_INDEX_URL "extra[-_]index[-_]url"
     return 0
 }
 
@@ -616,13 +622,15 @@ run_install_cmd() {
     shift
     _pm_policy_ready
     # Before the index scrub below, which may prepend `env ...` and move uv out of $1.
-    if [ -n "${_PM_ONLY_BINARY_ARGS:-}${_PM_INDEX_POLICY_ARGS:-}" ] && [ "$1" = "uv" ] && [ "$2" = "pip" ] \
+    if [ -n "${_PM_ONLY_BINARY_ARGS:-}${_PM_INDEX_POLICY_ARGS:-}${_PM_CERT:-}" ] \
+        && [ "$1" = "uv" ] && [ "$2" = "pip" ] \
         && { [ "$3" = "install" ] || [ "$3" = "sync" ]; }; then
         _pm_verb="$3"
         shift 3
         # Immediately after the subcommand, never appended: several call sites end with
         # `-- <package>`, where a trailing flag would be read as another package name.
-        set -- uv pip "$_pm_verb" $_PM_ONLY_BINARY_ARGS $_PM_INDEX_POLICY_ARGS "$@"
+        set -- uv pip "$_pm_verb" $_PM_ONLY_BINARY_ARGS $_PM_INDEX_POLICY_ARGS \
+            ${_PM_CERT:+--cert} ${_PM_CERT:+"$_PM_CERT"} "$@"
         unset _pm_verb
     fi
     # For --default-index, clear inherited uv index vars so a uv.toml cannot outrank the CLI pin.

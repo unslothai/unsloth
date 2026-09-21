@@ -1257,18 +1257,52 @@ class TestPackageManagerPolicyOptOut:
         "UV_TORCH_BACKEND": "cu128",
     }
 
+    # Every setting this feature reads, cleared before `extra` is applied. Two staging legs
+    # were lost to ambient values deciding a result -- a runner's PIP_CERT appending --cert
+    # to an exact-list assertion, a machine's own uv.toml making three negative cases
+    # vacuous -- and the fix each time was to answer the host "unset" for one more name.
+    # Doing it once, for the whole surface, is what stops the next one.
+    POLICY_SURFACE = (
+        "PIP_REQUIRE_HASHES",
+        "PIP_ONLY_BINARY",
+        "PIP_NO_BINARY",
+        "PIP_NO_INDEX",
+        "PIP_NO_DEPS",
+        "PIP_FIND_LINKS",
+        "PIP_INDEX_URL",
+        "PIP_EXTRA_INDEX_URL",
+        "PIP_CONSTRAINT",
+        "PIP_CERT",
+        "PIP_CONFIG_FILE",
+        "UV_REQUIRE_HASHES",
+        "UV_OFFLINE",
+        "UV_EXCLUDE_NEWER",
+        "UV_CONSTRAINT",
+        "UV_OVERRIDE",
+        "UV_EXCLUDE",
+        "UV_FIND_LINKS",
+        "UV_INDEX_URL",
+        "UV_EXTRA_INDEX_URL",
+        "UV_CONFIG_FILE",
+        "UV_NO_CONFIG",
+    )
+
     @staticmethod
     @contextlib.contextmanager
     def _environment(extra, opt_out = None):
-        """``extra`` exported, with the opt-out set to ``opt_out`` or definitively absent.
+        """``extra`` exported over a cleared policy surface, opt-out set or definitively absent.
 
         mock.patch.dict cannot express "not set", and a host or CI image that happens to
         export UNSLOTH_RESPECT_PM_POLICY would otherwise turn every control arm below into
-        a second opt-out arm that agrees with anything. The pop is inside the patch, so the
-        whole environment is restored on exit either way.
+        a second opt-out arm that agrees with anything. The same is true of every other name
+        this feature reads, so the whole surface is cleared rather than the one variable.
+        The pops are inside the patch, so the environment is restored on exit either way.
         """
-        with mock.patch.dict(os.environ, extra):
+        with mock.patch.dict(os.environ, {}):
+            for name in TestPackageManagerPolicyOptOut.POLICY_SURFACE:
+                os.environ.pop(name, None)
             os.environ.pop(ips._POLICY_OPT_OUT_ENV, None)
+            os.environ.update({name: value for name, value in extra.items()})
             if opt_out is not None:
                 os.environ[ips._POLICY_OPT_OUT_ENV] = opt_out
             yield
@@ -1899,7 +1933,18 @@ class TestPackageManagerPolicyOptOut:
         assert injection < body.index(
             "--default-index"
         ), "the index scrub prepends `env ...`, which moves uv out of $1"
-        assert 'set -- uv pip "$_pm_verb" $_PM_ONLY_BINARY_ARGS $_PM_INDEX_POLICY_ARGS "$@"' in body
+        injected = body[body.index('set -- uv pip "$_pm_verb"') :]
+        injected = injected[: injected.index('"$@"') + 4]
+        for fragment in (
+            "$_PM_ONLY_BINARY_ARGS",
+            "$_PM_INDEX_POLICY_ARGS",
+            # The cert is expanded separately and quoted, so a CA path with spaces stays
+            # ONE argument instead of being word-split into several.
+            "${_PM_CERT:+--cert}",
+            '${_PM_CERT:+"$_PM_CERT"}',
+        ):
+            assert fragment in injected, injected
+        assert injected.rstrip().endswith('"$@"'), injected
 
     def test_every_install_ps1_uv_install_carries_the_policy(self):
         """33 call sites and no chokepoint: Invoke-InstallCommand takes a ScriptBlock.
@@ -2484,6 +2529,75 @@ class TestPackageManagerPolicyOptOut:
             assert ips._uv_only_policy_active() is True, f"{variable} left a pip step permitted"
         body = _shell_function_source("_uv_only_policy_active")
         assert variable in body, f"install.sh's twin does not know about {variable}"
+
+    @requires_sh
+    @pytest.mark.parametrize(
+        "cert",
+        ["/opt/My CA/ca.pem", "/etc/ssl/corp.pem", "/opt/ca (2024).pem", ""],
+    )
+    def test_the_shell_passes_a_spaced_certificate_path_as_one_argument(self, cert, tmp_path):
+        """A CA bundle is a path, and `/opt/My CA/ca.pem` is an ordinary one.
+
+        The charset filter that protects the package names would silently drop it, and the
+        result is the worst kind of failure this feature can produce: uv is sent to the
+        operator's private index, cannot validate its certificate, and the pip fallback that
+        knows the CA has already been declined on purpose. So the cert is carried in its own
+        variable and expanded as one argument rather than appended to a word-split string.
+        """
+        library = "\n".join(
+            _shell_function_source(name)
+            for name in ("_pm_config_rows", "_resolve_index_policy", "run_install_cmd")
+        )
+        script = f"""
+        {library}
+        _is_verbose() {{ return 1; }}
+        step() {{ :; }}
+        substep() {{ :; }}
+        tauri_stream_log() {{ :; }}
+        tauri_clear_install_error() {{ :; }}
+        _uv_download_markers() {{ cat; }}
+        _redact_install_output() {{ cat; }}
+        _pm_policy_ready() {{ :; }}
+        uv() {{ printf '[%s]' "$@"; }}
+        _PM_PIP_CONFIG_LISTING=''
+        _PM_ONLY_BINARY_ARGS=''; _PM_INDEX_POLICY_ARGS=''
+        PIP_CERT='{cert}'
+        unset UV_FIND_LINKS PIP_FIND_LINKS PIP_NO_INDEX
+        _resolve_index_policy
+        run_install_cmd "test" uv pip install pkg
+        """
+        result = subprocess.run(
+            ["/bin/sh", "-c", script],
+            capture_output = True,
+            text = True,
+            timeout = 60,
+            cwd = tmp_path,
+        )
+        assert result.returncode == 0, result.stderr
+        if cert:
+            assert f"[--cert][{cert}]" in result.stdout, result.stdout
+        else:
+            assert "--cert" not in result.stdout, result.stdout
+        # The stub prints "$@", which does not include the command name, so the run is
+        # identified by its own arguments rather than by `uv`.
+        assert result.stdout.startswith("[pip][install]"), result.stdout
+        assert result.stdout.endswith("[pkg]"), result.stdout
+
+    def test_the_shell_carries_both_index_variables(self):
+        """The extra index mapping was dropped when the block became a function.
+
+        Python and PowerShell kept it, so a host expressing its private source only through
+        PIP_EXTRA_INDEX_URL was served by three entry points and not by the fourth.
+        """
+        body = _shell_function_source("_pm_policy_ready")
+        for pip_name, uv_name in (
+            ("PIP_CONSTRAINT", "UV_CONSTRAINT"),
+            ("PIP_INDEX_URL", "UV_INDEX_URL"),
+            ("PIP_EXTRA_INDEX_URL", "UV_EXTRA_INDEX_URL"),
+        ):
+            assert (
+                f"_carry_pip_index_into_uv {pip_name} {uv_name}" in body
+            ), f"{pip_name} is carried by the other entry points but not by install.sh"
 
     def test_the_shell_declines_the_forced_pip_amd_wheel_too(self):
         """install.sh runs the same direct-URL install through pip, for the same reason.

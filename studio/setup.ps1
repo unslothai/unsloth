@@ -7299,14 +7299,17 @@ function Resolve-PmPolicy {
     if ($script:PmPolicyResolved) { return }
     $script:PmPolicyResolved = $true
     if (-not (Test-RespectPmPolicy)) { return }
+    # uv reads no PIP_ variable and these scripts drive uv directly, so a pip-expressed
+    # hash requirement is restated once for the run. Inside the resolver, not at file
+    # scope: it asks Get-PmPipConfigListing, which memoises, so an eager call pinned a
+    # listing from whichever pip was on PATH before the target was named.
+    if (-not "$env:UV_REQUIRE_HASHES".Trim() -and (Test-PipPolicyRequiresHashes)) {
+        $env:UV_REQUIRE_HASHES = '1'
+    }
     Assert-ReadablePipPolicy
     Assert-CarryablePipPolicy
     $script:PmPolicyArgs = @(Get-PipPolicyOnlyBinary) + @(Get-PipPolicyNoBinary) +
         @(Get-PipPolicyIndexArgs)
-}
-
-if ((Test-RespectPmPolicy) -and -not "$env:UV_REQUIRE_HASHES".Trim() -and (Test-PipPolicyRequiresHashes)) {
-    $env:UV_REQUIRE_HASHES = '1'
 }
 
 # Helper: install a package, preferring uv with pip fallback
