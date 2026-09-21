@@ -137,13 +137,22 @@ def _effective_widths(tokens: list[str]) -> dict[str, str]:
     widths: dict[str, str] = {}
     for token in tokens:
         variant, _, utility = token.rpartition(":")
-        if utility.startswith("min-w-"):
+        # `!min-w-max` and `min-w-max!` are the same utility marked important, and important
+        # is exactly how an override that this guard must catch would be written. The marker
+        # is stripped for recognition and kept in the reported value, so a failure says
+        # which form it found.
+        bare = utility.removeprefix("!").removesuffix("!")
+        if bare.startswith("min-w-"):
             widths[variant] = utility
     return widths
 
 
 def _assert_shrinks(widths: dict[str, str], what: str, evidence: str) -> None:
-    offenders = {variant: utility for variant, utility in widths.items() if utility != "min-w-0"}
+    offenders = {
+        variant: utility
+        for variant, utility in widths.items()
+        if utility.removeprefix("!").removesuffix("!") != "min-w-0"
+    }
     assert not offenders, (
         f"{what} stops shrinking below its content at some width, so a long summary widens "
         f"the row past the thread there: {offenders} as variant -> effective min-width. "
@@ -325,17 +334,28 @@ def test_reasoning_keeps_streaming_height_cap_through_automatic_collapse():
     )
     # On ReasoningText specifically. It is the element that writes data-streaming and so owns
     # the height cap; the same OR on a sibling reads identically here and caps nothing.
-    text_element = re.search(r"<ReasoningText\b[^>]*>", src, re.S)
-    assert text_element, "ReasoningText is no longer rendered, so nothing here caps the height"
+    # The same balanced scan the class reader uses: `[^>]*` ends at the first `>`, which an
+    # arrow function in an earlier prop supplies, and the tag would come back truncated.
+    opens = src.find("<ReasoningText")
+    assert opens != -1, "ReasoningText is no longer rendered, so nothing here caps the height"
+    depth, closes = 0, None
+    for index in range(opens, len(src)):
+        if src[index] == "{":
+            depth += 1
+        elif src[index] == "}":
+            depth -= 1
+        elif src[index] == ">" and depth == 0:
+            closes = index
+            break
+    assert closes is not None, "the ReasoningText opening tag is unterminated"
+    tag = src[opens : closes + 1]
     # The left operand has to be the component's own streaming input. `\w+` accepted any
     # identifier, so `streaming={somethingElse || retainStreamingHeight}` passed while an
     # actively streaming block went uncapped whenever the retained flag was false.
-    assert re.search(
-        r"streaming=\{isStreaming \|\| retainStreamingHeight\}", text_element.group(0)
-    ), (
+    assert re.search(r"streaming=\{isStreaming \|\| retainStreamingHeight\}", tag), (
         f"ReasoningText's streaming prop no longer ORs in retainStreamingHeight, so the block "
         f"collapses to its idle height the moment streaming stops, which is the jump this "
-        f"test exists for: {text_element.group(0)!r}"
+        f"test exists for: {tag!r}"
     )
 
 

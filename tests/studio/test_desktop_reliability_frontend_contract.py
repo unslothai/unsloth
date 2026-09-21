@@ -904,7 +904,7 @@ def test_chat_sidebar_row_actions_visible_on_coarse_pointers():
     # search over the whole function is satisfied by the project row on its own and would stay
     # green while recents lost theirs, which is the half of #7276 that was actually reported.
     for variant in ("project-chat-item", "recent-item"):
-        hovered = re.findall(rf'"[^"]*group-hover/{variant}:pr-\d+[^"]*"', block)
+        hovered = re.findall(rf'"[^"]*group-hover/{variant}:!?pr-\d+!?[^"]*"', block)
         assert hovered, (
             f"no {variant} row left that widens its padding to make room for the action, so "
             f"this guard can no longer tell whether the touch case is covered"
@@ -963,13 +963,13 @@ def test_chat_sidebar_row_actions_visible_on_coarse_pointers():
         trailing = [
             int(value)
             for cls in applicable
-            for value in re.findall(r"\[@media\(pointer:coarse\)\]:pr-(\d+)", cls)
+            for value in re.findall(r"\[@media\(pointer:coarse\)\]:!?pr-(\d+)!?", cls)
         ]
         missing, short = [], []
         for cls in hovered:
             # LAST wins: a later [@media(pointer:coarse)]:pr-0 replaces an earlier pr-16, so
             # reading the first match reports a gutter that is not the one that renders.
-            gutters = re.findall(rf"group-hover/{variant}:pr-(\d+)", cls)
+            gutters = re.findall(rf"group-hover/{variant}:!?pr-(\d+)!?", cls)
             gutter = int(gutters[-1])
             if not trailing:
                 missing.append((gutter, cls))
