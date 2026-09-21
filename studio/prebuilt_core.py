@@ -1022,6 +1022,120 @@ def fetch_download_host_json(ops: ModuleOps, url: str) -> Any:
     return json.loads(data.decode("utf-8"))
 
 
+_WEB_METADATA_MAX_BYTES = 4 * 1024 * 1024
+
+_ATOM_RELEASE_TAG_RE = re.compile(
+    r"<link[^>]+href=\"[^\"]*/releases/tag/(?P<tag>[^\"/?#]+)\"", re.IGNORECASE
+)
+
+_DOWNLOAD_HREF_RE = re.compile(
+    r"href=\"[^\"]*?/releases/download/(?P<tag>[^\"/]+)/(?P<name>[^\"/]+)\"", re.IGNORECASE
+)
+
+_CLIPBOARD_TAG_RE = re.compile(r"<clipboard-copy\b(?P<attrs>[^>]*)>", re.IGNORECASE)
+
+_ARIA_DIGEST_FOR_RE = re.compile(
+    r"aria-label=\"Copy to clipboard digest for (?P<name>[^\"]+)\"", re.IGNORECASE
+)
+
+_ATTR_DIGEST_RE = re.compile(r"value=\"sha256:(?P<hex>[0-9a-f]{64})\"", re.IGNORECASE)
+
+
+def _fetch_web_metadata(ops: ModuleOps, url: str) -> str:
+    """GET a github.com (not api.github.com) metadata page, unauthenticated.
+
+    The web host is outside the 60-request-per-hour anonymous API budget, which is
+    the whole point of the callers below. No token is ever attached.
+    """
+    data = ops.download_bytes(
+        url,
+        timeout = 30,
+        headers = {"User-Agent": ops.USER_AGENT},
+    )
+    if len(data) > _WEB_METADATA_MAX_BYTES:
+        raise RuntimeError(f"release metadata page at {url} was implausibly large")
+    return data.decode("utf-8", "replace")
+
+
+def web_release_tags(ops: ModuleOps, repo: str, *, limit: int = 30) -> list[str]:
+    """Recent release tags, newest first, from github.com/<repo>/releases.atom.
+
+    The atom feed is the only tokenless surface that ORDERS releases, so it is what
+    restores the older-release walk-back when the API listing is unavailable. It is
+    also the only one that answers "newest nightly": /releases/latest resolves by
+    make_latest, which upstream points at a versioned pointer release (v0.4.1) that
+    publishes no prebuilt at all.
+    """
+    url = f"https://github.com/{urllib.parse.quote(repo, safe = '/')}/releases.atom"
+    body = _fetch_web_metadata(ops, url)
+    tags: list[str] = []
+    for match in _ATOM_RELEASE_TAG_RE.finditer(body):
+        tag = urllib.parse.unquote(match.group("tag")).strip()
+        if tag and tag not in tags:
+            tags.append(tag)
+        if len(tags) >= limit:
+            break
+    return tags
+
+
+def web_release_payload(ops: ModuleOps, repo: str, tag: str) -> dict[str, Any]:
+    """An ordinary release payload for <repo>@<tag>, built without api.github.com.
+
+    github.com/<repo>/releases/expanded_assets/<tag> is the fragment the release page
+    lazy-loads; it carries one row per asset with the download link and the sha256
+    GitHub itself computed. Shaping it like the REST payload is deliberate: every
+    caller downstream, release_asset_map and release_asset_digests included, keeps
+    reading the same fields, so digest enforcement stays authoritative rather than
+    being bypassed by a second code path.
+
+    An asset whose link does not match the deterministic URL for this exact repo and
+    tag, or whose digest is missing or not a sha256, is dropped rather than guessed
+    at: the archives these URLs name are extracted, chmod 0o755'd and executed.
+    """
+    quoted_repo = urllib.parse.quote(repo, safe = "/")
+    url = (
+        f"https://github.com/{quoted_repo}/releases/expanded_assets/"
+        f"{urllib.parse.quote(tag, safe = '')}"
+    )
+    body = _fetch_web_metadata(ops, url)
+    published = {
+        urllib.parse.unquote(row.group("name")).strip()
+        for row in _DOWNLOAD_HREF_RE.finditer(body)
+        if urllib.parse.unquote(row.group("tag")).strip() == tag
+    }
+    # Read the digest off the copy-to-clipboard control, which names its asset in the
+    # same element. Two independent lists paired by position would hand one asset
+    # another asset's hash the first time GitHub reorders or omits a row.
+    digests: dict[str, str] = {}
+    conflicting: set[str] = set()
+    for control in _CLIPBOARD_TAG_RE.finditer(body):
+        attrs = control.group("attrs")
+        labelled = _ARIA_DIGEST_FOR_RE.search(attrs)
+        value = _ATTR_DIGEST_RE.search(attrs)
+        if labelled is None or value is None:
+            continue
+        name = labelled.group("name").strip()
+        digest = value.group("hex").lower()
+        if digests.setdefault(name, digest) != digest:
+            conflicting.add(name)
+    assets = [
+        {
+            "name": name,
+            "browser_download_url": release_asset_download_url(repo, tag, name),
+            "digest": f"sha256:{digests[name]}",
+        }
+        for name in sorted(published & (digests.keys() - conflicting))
+    ]
+    if not assets:
+        raise RuntimeError(f"no digest-bearing assets were published for {repo}@{tag}")
+    return {
+        "tag_name": tag,
+        "draft": False,
+        "prerelease": False,
+        "assets": assets,
+    }
+
+
 # ── Archive extraction (traversal/symlink guarded) ──
 def extract_archive(archive_path: Path, destination: Path) -> None:
     def safe_extract_path(base: Path, member_name: str) -> Path:

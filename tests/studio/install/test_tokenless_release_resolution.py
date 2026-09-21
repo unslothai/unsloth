@@ -1,12 +1,15 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
 """Tests for tokenless (no GH_TOKEN) llama.cpp release resolution.
 
-Cover the github.com release-redirect fallback that resolves the latest upstream
-release when the rate-limited api.github.com REST surface is unavailable.
+Cover the github.com fallback that resolves upstream releases, their assets and
+their sha256 digests when the rate-limited api.github.com REST surface is
+unavailable. All I/O is monkeypatched.
 """
 
 import sys
 import urllib.error
-from email.message import Message
 from pathlib import Path
 
 import pytest
@@ -17,9 +20,15 @@ if str(STUDIO_DIR) not in sys.path:
     sys.path.insert(0, str(STUDIO_DIR))
 
 import install_llama_prebuilt as INSTALL_LLAMA_PREBUILT  # noqa: E402
+import prebuilt_core as PREBUILT_CORE  # noqa: E402
 from install_llama_prebuilt import HostInfo  # noqa: E402
 
 MOD = INSTALL_LLAMA_PREBUILT
+CORE = PREBUILT_CORE
+UPSTREAM = MOD.UPSTREAM_REPO
+
+DIGEST_A = "8a3a5d19721cbb5cfef58a28eb197d39ffc19a8cbf8a9a9927ecbff36d5c5806"
+DIGEST_B = "758b9df442bf57eb68f1aee566a9c6582601386703dc993ecc68b8fa91a5e3bc"
 
 
 def _host(**overrides) -> HostInfo:
@@ -48,7 +57,6 @@ def _linux_cpu(**overrides) -> HostInfo:
     return _host(
         system = "Linux",
         machine = "x86_64",
-        is_windows = False,
         is_linux = True,
         is_macos = False,
         is_x86_64 = True,
@@ -57,374 +65,407 @@ def _linux_cpu(**overrides) -> HostInfo:
     )
 
 
-def _win_cuda(**overrides) -> HostInfo:
-    return _host(
-        system = "Windows",
-        machine = "AMD64",
-        is_windows = True,
-        is_linux = False,
-        is_macos = False,
-        is_x86_64 = True,
-        is_arm64 = False,
-        has_physical_nvidia = True,
-        has_usable_nvidia = True,
-        **overrides,
+def _asset_row(repo: str, tag: str, name: str, digest: str | None) -> str:
+    """One asset row shaped like the fragment github.com serves for a release."""
+    row = (
+        f'<a href="/{repo}/releases/download/{tag}/{name}" rel="nofollow" '
+        f'class="wb-break-all"><span class="text-bold">{name}</span></a>'
     )
+    if digest is not None:
+        row += (
+            f'<span class="Truncate-text">sha256:{digest}</span>'
+            f'<clipboard-copy id="clipboard-button-sha256:{digest}" '
+            f'aria-label="Copy to clipboard digest for {name}" type="button" '
+            f'value="sha256:{digest}" class="Button--invisible">copy</clipboard-copy>'
+        )
+    return row
 
 
-def _headers(**pairs) -> Message:
-    message = Message()
-    for key, value in pairs.items():
-        message[key] = value
-    return message
+def _expanded_assets(repo: str, tag: str, assets: dict[str, str | None]) -> str:
+    rows = "".join(_asset_row(repo, tag, name, digest) for name, digest in assets.items())
+    return f'<div class="Box">{rows}</div>'
 
 
-class _FakeRedirectResponse:
-    def __init__(self, headers: Message):
-        self._headers = headers
+def _atom(repo: str, tags: list[str]) -> str:
+    entries = "".join(
+        f'<entry><link rel="alternate" type="text/html" '
+        f'href="https://github.com/{repo}/releases/tag/{tag}"/><title>{tag}</title></entry>'
+        for tag in tags
+    )
+    return f'<?xml version="1.0"?><feed>{entries}</feed>'
 
-    def __enter__(self):
-        return self
 
-    def __exit__(self, *exc):
-        return False
+class _Web:
+    """Stands in for the github.com web host, recording every URL fetched."""
 
-    @property
-    def headers(self) -> Message:
-        return self._headers
+    def __init__(self, pages: dict[str, str]):
+        self.pages = pages
+        self.urls: list[str] = []
+
+    def __call__(self, url: str, **kwargs) -> bytes:
+        self.urls.append(url)
+        for suffix, body in self.pages.items():
+            if url.endswith(suffix):
+                return body.encode("utf-8")
+        raise urllib.error.HTTPError(url, 404, "Not Found", None, None)
+
+
+def _install_web(monkeypatch, pages: dict[str, str]) -> _Web:
+    web = _Web(pages)
+    monkeypatch.setattr(CORE, "download_bytes", lambda ops, url, **kw: web(url, **kw))
+    return web
 
 
 def _rest_403(*args, **kwargs):
-    # Matches how fetch_json / github_releases surface an anonymous rate limit.
     raise RuntimeError(
         "GitHub API returned 403 for "
         "https://api.github.com/repos/ggml-org/llama.cpp/releases?per_page=100&page=1"
+        "; set GH_TOKEN or GITHUB_TOKEN to avoid GitHub API rate limits"
     )
 
 
-# --- pure helpers -----------------------------------------------------------
+def _boom(*args, **kwargs):
+    raise AssertionError("the tokenless path must not be used here")
 
 
-def test_upstream_release_download_url_is_deterministic():
-    url = MOD.upstream_release_download_url(
-        "ggml-org/llama.cpp", "b9999", "llama-b9999-bin-macos-arm64.tar.gz"
-    )
-    assert url == (
-        "https://github.com/ggml-org/llama.cpp/releases/download/"
-        "b9999/llama-b9999-bin-macos-arm64.tar.gz"
-    )
+# ── the release feed ──
 
 
-def test_tag_from_release_location_parses_tag():
-    assert (
-        MOD._tag_from_release_location(
-            "https://github.com/ggml-org/llama.cpp/releases/tag/b9437"
+class TestWebReleaseTags:
+    def test_parses_tags_newest_first(self, monkeypatch):
+        _install_web(monkeypatch, {"releases.atom": _atom(UPSTREAM, ["b11070", "b11069"])})
+        assert MOD.web_release_tags(UPSTREAM) == ["b11070", "b11069"]
+
+    def test_skips_the_versioned_pointer_release(self, monkeypatch):
+        # Upstream's /releases/latest points at v0.4.1, whose only asset is a text
+        # file naming a nightly. Selecting it would build 404-bound archive URLs.
+        _install_web(
+            monkeypatch, {"releases.atom": _atom(UPSTREAM, ["v0.4.1", "b11070", "b11069"])}
         )
-        == "b9437"
-    )
-    # URL-encoded tag is decoded.
-    assert (
-        MOD._tag_from_release_location(
-            "https://github.com/owner/repo/releases/tag/v1.2.3%2Bcuda"
+        assert MOD.web_release_tags(UPSTREAM)[0] == "v0.4.1"
+        assert MOD.upstream_web_release_tags(UPSTREAM) == ["b11070", "b11069"]
+
+    def test_honours_the_limit(self, monkeypatch):
+        _install_web(
+            monkeypatch, {"releases.atom": _atom(UPSTREAM, [f"b{n}" for n in range(11070, 11060, -1)])}
         )
-        == "v1.2.3+cuda"
-    )
+        assert MOD.web_release_tags(UPSTREAM, limit = 3) == ["b11070", "b11069", "b11068"]
 
 
-@pytest.mark.parametrize(
-    "location",
-    [None, "", "https://github.com/owner/repo/releases", "not a url at all"],
-)
-def test_tag_from_release_location_rejects_non_tag_urls(location):
-    assert MOD._tag_from_release_location(location) is None
+# ── the release page ──
 
 
-# --- redirect resolver ------------------------------------------------------
-
-
-def test_resolve_latest_tag_via_redirect_reads_location(monkeypatch):
-    captured = {}
-
-    def fake_build_opener(*handlers):
-        class _Opener:
-            def open(self, request, timeout = None):
-                captured["url"] = request.full_url
-                captured["has_auth"] = "Authorization" in request.headers
-                return _FakeRedirectResponse(
-                    _headers(
-                        Location = "https://github.com/ggml-org/llama.cpp/releases/tag/b9999"
-                    )
-                )
-
-        return _Opener()
-
-    monkeypatch.setattr(MOD.urllib.request, "build_opener", fake_build_opener)
-    tag = MOD._resolve_latest_release_tag_via_redirect("ggml-org/llama.cpp")
-    assert tag == "b9999"
-    assert captured["url"] == "https://github.com/ggml-org/llama.cpp/releases/latest"
-    # The redirect call must never be authenticated (no token leakage).
-    assert captured["has_auth"] is False
-
-
-def test_resolve_latest_tag_via_redirect_handles_httperror_3xx(monkeypatch):
-    def fake_build_opener(*handlers):
-        class _Opener:
-            def open(self, request, timeout = None):
-                raise urllib.error.HTTPError(
-                    request.full_url,
-                    302,
-                    "Found",
-                    _headers(
-                        Location = "https://github.com/ggml-org/llama.cpp/releases/tag/b1234"
-                    ),
-                    None,
-                )
-
-        return _Opener()
-
-    monkeypatch.setattr(MOD.urllib.request, "build_opener", fake_build_opener)
-    assert MOD._resolve_latest_release_tag_via_redirect("ggml-org/llama.cpp") == "b1234"
-
-
-def test_resolve_latest_tag_via_redirect_returns_none_on_failure(monkeypatch):
-    def fake_build_opener(*handlers):
-        class _Opener:
-            def open(self, request, timeout = None):
-                raise urllib.error.URLError("connection reset")
-
-        return _Opener()
-
-    monkeypatch.setattr(MOD.urllib.request, "build_opener", fake_build_opener)
-    monkeypatch.setattr(MOD, "sleep_backoff", lambda *a, **k: None)
-    assert MOD._resolve_latest_release_tag_via_redirect("ggml-org/llama.cpp") is None
-
-
-# --- latest_upstream_release_tag: REST first, redirect fallback -------------
-
-
-def test_latest_upstream_release_tag_uses_rest_first(monkeypatch):
-    monkeypatch.setattr(MOD, "fetch_json", lambda url: {"tag_name": "b500"})
-
-    def boom(repo):
-        raise AssertionError("redirect must not be used when REST succeeds")
-
-    monkeypatch.setattr(MOD, "_resolve_latest_release_tag_via_redirect", boom)
-    assert MOD.latest_upstream_release_tag() == "b500"
-
-
-def test_latest_upstream_release_tag_falls_back_to_redirect_on_403(monkeypatch):
-    monkeypatch.setattr(MOD, "fetch_json", _rest_403)
-    monkeypatch.setattr(
-        MOD, "_resolve_latest_release_tag_via_redirect", lambda repo: "b600"
-    )
-    assert MOD.latest_upstream_release_tag() == "b600"
-
-
-def test_latest_upstream_release_tag_falls_back_to_redirect_on_missing_tag(monkeypatch):
-    monkeypatch.setattr(MOD, "fetch_json", lambda url: {})
-    monkeypatch.setattr(
-        MOD, "_resolve_latest_release_tag_via_redirect", lambda repo: "b601"
-    )
-    assert MOD.latest_upstream_release_tag() == "b601"
-
-
-# --- iter_release_payloads_by_time: REST first, redirect fallback -----------
-
-
-def test_iter_release_payloads_uses_rest_listing_first(monkeypatch):
-    rest_release = {
-        "tag_name": "b800",
-        "assets": [],
-        "published_at": "2026-01-01T00:00:00Z",
-        "id": 800,
-    }
-    monkeypatch.setattr(MOD, "github_releases", lambda *a, **k: [rest_release])
-
-    def boom(repo):
-        raise AssertionError("redirect must not be used when REST succeeds")
-
-    monkeypatch.setattr(MOD, "_resolve_latest_release_tag_via_redirect", boom)
-
-    releases = list(
-        MOD.iter_release_payloads_by_time(MOD.UPSTREAM_REPO, "", "latest", _host())
-    )
-    assert releases == [rest_release]
-
-
-def test_iter_release_payloads_falls_back_to_redirect_on_403(monkeypatch):
-    monkeypatch.setattr(MOD, "github_releases", _rest_403)
-    monkeypatch.setattr(
-        MOD, "_resolve_latest_release_tag_via_redirect", lambda repo: "b900"
-    )
-
-    releases = list(
-        MOD.iter_release_payloads_by_time(MOD.UPSTREAM_REPO, "", "latest", _host())
-    )
-    assert len(releases) == 1
-    assert releases[0]["tag_name"] == "b900"
-    assert releases[0]["assets"] == []
-    assert releases[0]["_unsloth_download_repo"] == MOD.UPSTREAM_REPO
-
-
-def test_windows_cuda_host_does_not_use_redirect_fallback(monkeypatch):
-    win = _win_cuda()
-    assert MOD._needs_dynamic_asset_enumeration(win) is True
-    assert MOD._needs_dynamic_asset_enumeration(_host()) is False
-
-    monkeypatch.setattr(MOD, "github_releases", _rest_403)
-
-    def boom(repo):
-        raise AssertionError("Windows CUDA hosts must not use the redirect fallback")
-
-    monkeypatch.setattr(MOD, "_resolve_latest_release_tag_via_redirect", boom)
-
-    with pytest.raises(RuntimeError):
-        list(MOD.iter_release_payloads_by_time(MOD.UPSTREAM_REPO, "", "latest", win))
-
-
-# --- end to end: REST 403 falls back to a redirect-resolved prebuilt --------
-
-
-def test_macos_latest_prebuilt_via_redirect_when_rest_403(monkeypatch):
-    monkeypatch.setattr(MOD, "github_releases", _rest_403)
-    monkeypatch.setattr(
-        MOD, "_resolve_latest_release_tag_via_redirect", lambda repo: "b9999"
-    )
-
-    requested_tag, plans = MOD.resolve_simple_install_release_plans(
-        "latest", _host(), "ggml-org/llama.cpp", ""
-    )
-    assert requested_tag == "latest"
-    assert len(plans) == 1
-    plan = plans[0]
-    assert plan.llama_tag == "b9999"
-    assert len(plan.attempts) == 1
-    assert plan.attempts[0].url == (
-        "https://github.com/ggml-org/llama.cpp/releases/download/"
-        "b9999/llama-b9999-bin-macos-arm64.tar.gz"
-    )
-    assert plan.attempts[0].name == "llama-b9999-bin-macos-arm64.tar.gz"
-
-
-def test_linux_cpu_latest_prebuilt_via_redirect_when_rest_403(monkeypatch):
-    monkeypatch.setattr(MOD, "github_releases", _rest_403)
-    monkeypatch.setattr(
-        MOD, "_resolve_latest_release_tag_via_redirect", lambda repo: "b9999"
-    )
-
-    _requested, plans = MOD.resolve_simple_install_release_plans(
-        "latest", _linux_cpu(), "ggml-org/llama.cpp", ""
-    )
-    assert plans[0].attempts[0].url == (
-        "https://github.com/ggml-org/llama.cpp/releases/download/"
-        "b9999/llama-b9999-bin-ubuntu-x64.tar.gz"
-    )
-
-
-# --- negative paths: fail closed and asset precedence ----------------------
-
-
-def test_resolve_latest_tag_via_redirect_rejects_non_release_tag(monkeypatch):
-    class _Resp:
-        def __init__(self, location):
-            self.headers = {"Location": location}
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *a):
-            return False
-
-    def fake_build_opener(handler):
-        class _Op:
-            def open(self, request, timeout = None):
-                return _Resp(
-                    "https://github.com/ggml-org/llama.cpp/releases/tag/nightly"
-                )
-
-        return _Op()
-
-    monkeypatch.setattr(MOD.urllib.request, "build_opener", fake_build_opener)
-    # A non b1234 redirect target must fail closed to the REST/source path.
-    assert MOD._resolve_latest_release_tag_via_redirect("ggml-org/llama.cpp") is None
-
-
-def test_iter_release_payloads_both_paths_fail_raises(monkeypatch):
-    def boom(repo, max_pages = 5):
-        raise RuntimeError("GitHub API returned 403")
-
-    monkeypatch.setattr(MOD, "github_releases", boom)
-    monkeypatch.setattr(
-        MOD, "_resolve_latest_release_tag_via_redirect", lambda repo: None
-    )
-    with pytest.raises(RuntimeError) as excinfo:
-        list(MOD.iter_release_payloads_by_time(MOD.UPSTREAM_REPO, "", "latest"))
-    message = str(excinfo.value)
-    assert "release redirect fallback" in message
-    assert "also failed" in message
-
-
-def test_iter_release_payloads_pinned_tag_never_uses_redirect(monkeypatch):
-    def missing(repo, tag):
-        raise urllib.error.HTTPError(
-            f"https://api.github.com/repos/{repo}/releases/tags/{tag}",
-            404,
-            "Not Found",
-            None,
-            None,
-        )
-
-    def listing_403(repo, max_pages = 5):
-        raise RuntimeError("GitHub API returned 403")
-
-    monkeypatch.setattr(MOD, "github_release", missing)
-    monkeypatch.setattr(MOD, "github_releases", listing_403)
-    monkeypatch.setattr(
-        MOD,
-        "_resolve_latest_release_tag_via_redirect",
-        lambda repo: (_ for _ in ()).throw(AssertionError("redirect used")),
-    )
-    # A pinned tag is not "latest", so the redirect fast path must never run.
-    with pytest.raises(RuntimeError):
-        list(MOD.iter_release_payloads_by_time(MOD.UPSTREAM_REPO, "", "b1234"))
-
-
-def test_direct_release_real_asset_takes_precedence_over_redirect(monkeypatch):
-    host = _host(
-        system = "Darwin",
-        machine = "arm64",
-        is_windows = False,
-        is_linux = False,
-        is_macos = True,
-        is_x86_64 = False,
-        is_arm64 = True,
-    )
-    custom_url = "https://cdn.example.test/custom-macos-arm64.tar.gz"
-    release = {
-        "tag_name": "b1234",
-        "assets": [
+class TestWebReleasePayload:
+    def test_binds_each_digest_to_its_own_asset(self, monkeypatch):
+        _install_web(
+            monkeypatch,
             {
-                "name": "llama-b1234-bin-macos-arm64.tar.gz",
-                "browser_download_url": custom_url,
-            }
-        ],
-    }
-    monkeypatch.setattr(MOD, "github_releases", lambda repo, max_pages = 5: [release])
-    monkeypatch.setattr(
-        MOD,
-        "fetch_json",
-        lambda *a, **k: (_ for _ in ()).throw(AssertionError("fetch_json used")),
-    )
-    monkeypatch.setattr(
-        MOD,
-        "_resolve_latest_release_tag_via_redirect",
-        lambda repo: (_ for _ in ()).throw(AssertionError("redirect used")),
-    )
-    _requested, plans = MOD.resolve_simple_install_release_plans(
-        "latest", host, "ggml-org/llama.cpp", ""
-    )
-    assert plans
-    attempt_urls = [a.url for p in plans for a in p.attempts]
-    # The real REST asset URL wins; the synthetic redirect URL is additive only.
-    assert custom_url in attempt_urls
-    assert all("releases/download/b1234" not in u for u in attempt_urls)
+                "expanded_assets/b11070": _expanded_assets(
+                    UPSTREAM,
+                    "b11070",
+                    {
+                        "llama-b11070-bin-macos-arm64.tar.gz": DIGEST_A,
+                        "llama-b11070-bin-ubuntu-x64.tar.gz": DIGEST_B,
+                    },
+                )
+            },
+        )
+        release = MOD.web_release_payload(UPSTREAM, "b11070")
+        assert release["tag_name"] == "b11070"
+        assert MOD.release_asset_digests(release) == {
+            "llama-b11070-bin-macos-arm64.tar.gz": DIGEST_A,
+            "llama-b11070-bin-ubuntu-x64.tar.gz": DIGEST_B,
+        }
+
+    def test_urls_are_the_deterministic_release_asset_urls(self, monkeypatch):
+        _install_web(
+            monkeypatch,
+            {
+                "expanded_assets/b11070": _expanded_assets(
+                    UPSTREAM, "b11070", {"llama-b11070-bin-macos-arm64.tar.gz": DIGEST_A}
+                )
+            },
+        )
+        release = MOD.web_release_payload(UPSTREAM, "b11070")
+        assert release["assets"][0]["browser_download_url"] == (
+            "https://github.com/ggml-org/llama.cpp/releases/download/b11070/"
+            "llama-b11070-bin-macos-arm64.tar.gz"
+        )
+
+    def test_drops_an_asset_with_no_published_digest(self, monkeypatch):
+        _install_web(
+            monkeypatch,
+            {
+                "expanded_assets/b11070": _expanded_assets(
+                    UPSTREAM,
+                    "b11070",
+                    {
+                        "llama-b11070-bin-macos-arm64.tar.gz": None,
+                        "llama-b11070-bin-ubuntu-x64.tar.gz": DIGEST_B,
+                    },
+                )
+            },
+        )
+        release = MOD.web_release_payload(UPSTREAM, "b11070")
+        assert [asset["name"] for asset in release["assets"]] == [
+            "llama-b11070-bin-ubuntu-x64.tar.gz"
+        ]
+
+    def test_drops_an_asset_whose_digest_is_stated_twice_and_differs(self, monkeypatch):
+        page = _expanded_assets(
+            UPSTREAM, "b11070", {"llama-b11070-bin-macos-arm64.tar.gz": DIGEST_A}
+        ) + (
+            '<clipboard-copy aria-label="Copy to clipboard digest for '
+            f'llama-b11070-bin-macos-arm64.tar.gz" value="sha256:{DIGEST_B}"></clipboard-copy>'
+        )
+        _install_web(monkeypatch, {"expanded_assets/b11070": page})
+        with pytest.raises(RuntimeError, match = "no digest-bearing assets"):
+            MOD.web_release_payload(UPSTREAM, "b11070")
+
+    def test_ignores_a_link_belonging_to_another_release(self, monkeypatch):
+        page = _expanded_assets(
+            UPSTREAM, "b11069", {"llama-b11069-bin-macos-arm64.tar.gz": DIGEST_A}
+        )
+        _install_web(monkeypatch, {"expanded_assets/b11070": page})
+        with pytest.raises(RuntimeError, match = "no digest-bearing assets"):
+            MOD.web_release_payload(UPSTREAM, "b11070")
+
+    def test_a_digest_without_a_published_asset_is_not_invented(self, monkeypatch):
+        page = (
+            '<clipboard-copy aria-label="Copy to clipboard digest for ghost.tar.gz" '
+            f'value="sha256:{DIGEST_A}"></clipboard-copy>'
+        )
+        _install_web(monkeypatch, {"expanded_assets/b11070": page})
+        with pytest.raises(RuntimeError, match = "no digest-bearing assets"):
+            MOD.web_release_payload(UPSTREAM, "b11070")
+
+    def test_refuses_an_implausibly_large_page(self, monkeypatch):
+        monkeypatch.setattr(
+            CORE, "download_bytes", lambda ops, url, **kw: b"x" * (8 * 1024 * 1024)
+        )
+        with pytest.raises(RuntimeError, match = "implausibly large"):
+            MOD.web_release_payload(UPSTREAM, "b11070")
+
+    def test_never_sends_an_authorization_header(self, monkeypatch):
+        seen = {}
+
+        def capture(ops, url, **kwargs):
+            seen[url] = kwargs.get("headers") or {}
+            return _expanded_assets(
+                UPSTREAM, "b11070", {"llama-b11070-bin-macos-arm64.tar.gz": DIGEST_A}
+            ).encode("utf-8")
+
+        monkeypatch.setattr(CORE, "download_bytes", capture)
+        MOD.web_release_payload(UPSTREAM, "b11070")
+        assert seen
+        for headers in seen.values():
+            assert not any(key.lower() == "authorization" for key in headers)
+
+
+# ── latest_upstream_release_tag ──
+
+
+class TestLatestUpstreamReleaseTag:
+    def test_uses_the_rest_api_first(self, monkeypatch):
+        monkeypatch.setattr(MOD, "fetch_json", lambda url: {"tag_name": "b500"})
+        monkeypatch.setattr(MOD, "web_release_tags", _boom)
+        assert MOD.latest_upstream_release_tag() == "b500"
+
+    def test_falls_back_to_the_feed_on_a_rate_limit(self, monkeypatch):
+        monkeypatch.setattr(MOD, "fetch_json", _rest_403)
+        _install_web(monkeypatch, {"releases.atom": _atom(UPSTREAM, ["v0.4.1", "b11070"])})
+        assert MOD.latest_upstream_release_tag() == "b11070"
+
+    def test_falls_back_when_rest_states_no_tag(self, monkeypatch):
+        monkeypatch.setattr(MOD, "fetch_json", lambda url: {})
+        _install_web(monkeypatch, {"releases.atom": _atom(UPSTREAM, ["b11070"])})
+        assert MOD.latest_upstream_release_tag() == "b11070"
+
+    def test_both_paths_failing_reports_both_causes(self, monkeypatch):
+        monkeypatch.setattr(MOD, "fetch_json", _rest_403)
+        _install_web(monkeypatch, {})
+        with pytest.raises(RuntimeError) as excinfo:
+            MOD.latest_upstream_release_tag()
+        assert "403" in str(excinfo.value)
+        assert "feed fallback also failed" in str(excinfo.value)
+
+
+# ── iter_release_payloads_by_time ──
+
+
+class TestIterReleasePayloads:
+    def test_rest_listing_wins_when_it_answers(self, monkeypatch):
+        rest = {"tag_name": "b1234", "assets": []}
+        monkeypatch.setattr(MOD, "github_releases", lambda repo, **kw: [rest])
+        monkeypatch.setattr(MOD, "web_release_payload", _boom)
+        monkeypatch.setattr(MOD, "web_release_tags", _boom)
+        assert list(MOD.iter_release_payloads_by_time(UPSTREAM, "", "latest")) == [rest]
+
+    def test_rate_limited_listing_walks_the_feed_newest_first(self, monkeypatch):
+        monkeypatch.setattr(MOD, "github_releases", _rest_403)
+        _install_web(
+            monkeypatch,
+            {
+                "releases.atom": _atom(UPSTREAM, ["b11070", "b11069"]),
+                "expanded_assets/b11070": _expanded_assets(
+                    UPSTREAM, "b11070", {"llama-b11070-bin-macos-arm64.tar.gz": DIGEST_A}
+                ),
+                "expanded_assets/b11069": _expanded_assets(
+                    UPSTREAM, "b11069", {"llama-b11069-bin-macos-arm64.tar.gz": DIGEST_B}
+                ),
+            },
+        )
+        got = list(MOD.iter_release_payloads_by_time(UPSTREAM, "", "latest"))
+        assert [release["tag_name"] for release in got] == ["b11070", "b11069"]
+
+    def test_the_walk_is_lazy(self, monkeypatch):
+        monkeypatch.setattr(MOD, "github_releases", _rest_403)
+        web = _install_web(
+            monkeypatch,
+            {
+                "releases.atom": _atom(UPSTREAM, ["b11070", "b11069"]),
+                "expanded_assets/b11070": _expanded_assets(
+                    UPSTREAM, "b11070", {"llama-b11070-bin-macos-arm64.tar.gz": DIGEST_A}
+                ),
+                "expanded_assets/b11069": _expanded_assets(
+                    UPSTREAM, "b11069", {"llama-b11069-bin-macos-arm64.tar.gz": DIGEST_B}
+                ),
+            },
+        )
+        releases = MOD.iter_release_payloads_by_time(UPSTREAM, "", "latest")
+        assert next(iter(releases))["tag_name"] == "b11070"
+        assert not any("b11069" in url for url in web.urls)
+
+    def test_an_unreadable_release_is_skipped_not_fatal(self, monkeypatch):
+        monkeypatch.setattr(MOD, "github_releases", _rest_403)
+        _install_web(
+            monkeypatch,
+            {
+                "releases.atom": _atom(UPSTREAM, ["b11070", "b11069"]),
+                "expanded_assets/b11069": _expanded_assets(
+                    UPSTREAM, "b11069", {"llama-b11069-bin-macos-arm64.tar.gz": DIGEST_B}
+                ),
+            },
+        )
+        got = list(MOD.iter_release_payloads_by_time(UPSTREAM, "", "latest"))
+        assert [release["tag_name"] for release in got] == ["b11069"]
+
+    def test_a_pinned_tag_resolves_through_its_release_page(self, monkeypatch):
+        # The macOS floor pin (b9415) arrives here as requested_tag, and is exactly the
+        # population the pin exists to serve, so it must not be left on the source build.
+        monkeypatch.setattr(MOD, "github_release", _rest_403)
+        _install_web(
+            monkeypatch,
+            {
+                "expanded_assets/b9415": _expanded_assets(
+                    UPSTREAM, "b9415", {"llama-b9415-bin-macos-arm64.tar.gz": DIGEST_A}
+                )
+            },
+        )
+        got = list(MOD.iter_release_payloads_by_time(UPSTREAM, "", "b9415"))
+        assert [release["tag_name"] for release in got] == ["b9415"]
+
+    def test_the_fork_never_uses_the_upstream_web_path(self, monkeypatch):
+        monkeypatch.setattr(MOD, "github_releases", _rest_403)
+        monkeypatch.setattr(MOD, "web_release_tags", _boom)
+        with pytest.raises(RuntimeError, match = "403"):
+            list(MOD.iter_release_payloads_by_time(MOD.DEFAULT_PUBLISHED_REPO, "", "latest"))
+
+    def test_the_escape_hatch_disables_the_web_path(self, monkeypatch):
+        monkeypatch.setenv("UNSLOTH_LLAMA_DISABLE_DOWNLOAD_HOST_RESOLVE", "1")
+        monkeypatch.setattr(MOD, "github_releases", _rest_403)
+        monkeypatch.setattr(MOD, "web_release_tags", _boom)
+        with pytest.raises(RuntimeError, match = "403"):
+            list(MOD.iter_release_payloads_by_time(UPSTREAM, "", "latest"))
+
+    def test_both_paths_failing_reports_both_causes(self, monkeypatch):
+        monkeypatch.setattr(MOD, "github_releases", _rest_403)
+        _install_web(monkeypatch, {})
+        with pytest.raises(RuntimeError) as excinfo:
+            list(MOD.iter_release_payloads_by_time(UPSTREAM, "", "latest"))
+        assert "403" in str(excinfo.value)
+        assert "feed fallback also failed" in str(excinfo.value)
+
+
+# ── end to end, through the real planner ──
+
+
+def _plans(host, requested = "latest"):
+    return MOD.resolve_simple_install_release_plans(requested, host, UPSTREAM, "")
+
+
+class TestEndToEnd:
+    def test_macos_installs_a_digest_verified_prebuilt_when_rest_is_rate_limited(
+        self, monkeypatch
+    ):
+        monkeypatch.setattr(MOD, "github_releases", _rest_403)
+        _install_web(
+            monkeypatch,
+            {
+                "releases.atom": _atom(UPSTREAM, ["v0.4.1", "b11070"]),
+                "expanded_assets/b11070": _expanded_assets(
+                    UPSTREAM, "b11070", {"llama-b11070-bin-macos-arm64.tar.gz": DIGEST_A}
+                ),
+            },
+        )
+        requested, plans = _plans(_host())
+        assert requested == "latest"
+        assert len(plans) == 1
+        attempt = plans[0].attempts[0]
+        assert attempt.name == "llama-b11070-bin-macos-arm64.tar.gz"
+        assert attempt.url == (
+            "https://github.com/ggml-org/llama.cpp/releases/download/b11070/"
+            "llama-b11070-bin-macos-arm64.tar.gz"
+        )
+        # The point of the whole path: the archive is still bound to a published digest.
+        assert attempt.expected_sha256 == DIGEST_A
+
+    def test_linux_x64_installs_a_digest_verified_prebuilt(self, monkeypatch):
+        monkeypatch.setattr(MOD, "github_releases", _rest_403)
+        _install_web(
+            monkeypatch,
+            {
+                "releases.atom": _atom(UPSTREAM, ["b11070"]),
+                "expanded_assets/b11070": _expanded_assets(
+                    UPSTREAM, "b11070", {"llama-b11070-bin-ubuntu-x64.tar.gz": DIGEST_B}
+                ),
+            },
+        )
+        _requested, plans = _plans(_linux_cpu())
+        attempt = plans[0].attempts[0]
+        assert attempt.name == "llama-b11070-bin-ubuntu-x64.tar.gz"
+        assert attempt.expected_sha256 == DIGEST_B
+
+    def test_an_asset_with_no_digest_is_refused_not_installed(self, monkeypatch):
+        monkeypatch.setattr(MOD, "github_releases", _rest_403)
+        _install_web(
+            monkeypatch,
+            {
+                "releases.atom": _atom(UPSTREAM, ["b11070"]),
+                "expanded_assets/b11070": _expanded_assets(
+                    UPSTREAM, "b11070", {"llama-b11070-bin-macos-arm64.tar.gz": None}
+                ),
+            },
+        )
+        with pytest.raises(MOD.PrebuiltFallback):
+            _plans(_host())
+
+    def test_a_release_without_this_hosts_archive_falls_back_to_an_older_one(
+        self, monkeypatch
+    ):
+        monkeypatch.setattr(MOD, "github_releases", _rest_403)
+        _install_web(
+            monkeypatch,
+            {
+                "releases.atom": _atom(UPSTREAM, ["b11070", "b11069"]),
+                # b11070 published Linux only, so a macOS host must walk back.
+                "expanded_assets/b11070": _expanded_assets(
+                    UPSTREAM, "b11070", {"llama-b11070-bin-ubuntu-x64.tar.gz": DIGEST_B}
+                ),
+                "expanded_assets/b11069": _expanded_assets(
+                    UPSTREAM, "b11069", {"llama-b11069-bin-macos-arm64.tar.gz": DIGEST_A}
+                ),
+            },
+        )
+        _requested, plans = _plans(_host())
+        assert plans[0].attempts[0].name == "llama-b11069-bin-macos-arm64.tar.gz"
