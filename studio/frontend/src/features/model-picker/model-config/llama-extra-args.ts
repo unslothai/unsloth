@@ -654,16 +654,13 @@ const VALUE_REQUIRED_FLAGS = new Set([
   "--spec-draft-type-v",
   "-ctvd",
   "--cache-type-v-draft",
-  // parse_tensor_split_override reads this with _last_flag_value too, so a bare or empty -ts is a
-  // 400 rather than a flag left to llama-server. Its VALUE is checked by RATIO_VALUE_FLAGS below.
+  // read with _last_flag_value, so a bare -ts is a 400, not a flag left to llama-server
   "--tensor-split",
   "-ts",
 ]);
 
-/** Flags whose value the backend reads as a per-GPU ratio. parse_tensor_split_override splits on
- *  llama.cpp's own [,/]+ and refuses what std::stof would throw on, what it would read as a
- *  negative or non-finite share, and a list that totals nothing -- each a 400, so the same three
- *  rules are checked here rather than letting the load answer for them. */
+/** Flags whose value the backend reads as a per-GPU ratio, refusing unreadable, negative or
+ *  non-finite entries and a zero total with a 400 (parse_tensor_split_override). */
 const RATIO_VALUE_FLAGS = new Set(["--tensor-split", "-ts"]);
 
 /** llama.cpp splits --tensor-split on this exact class, so "3/1" is "3,1". */
@@ -681,9 +678,8 @@ function ratioValueProblem(flag: string, value: string): string | null {
     return `${flag} takes a comma- or slash-separated list of numbers.`;
   }
   const numbers = parts.map((part) => Number(part.trim()));
-  // Python's float() reads "nan" / "inf" / "-Infinity" and the backend refuses them a step later,
-  // as non-finite, so they are NOT the unreadable case here even though Number("nan") is NaN.
-  // Getting this the wrong way round shows the user a different message than the load would.
+  // Number("nan") is NaN but Python's float() reads it, so "nan"/"inf" are the non-finite case
+  // below, not the unreadable one here, or the user is shown a message the load would not give.
   if (numbers.some((entry, at) => Number.isNaN(entry) && !NON_FINITE.test(parts[at].trim()))) {
     return `${flag} takes a comma- or slash-separated list of numbers, and "${value}" is not one.`;
   }

@@ -1504,16 +1504,11 @@ def test_zero_vram_chat_load_treats_an_absent_mode_as_auto(not_vulkan):
 
 
 def test_manual_auto_layers_never_emits_two_tensor_splits(tmp_path):
-    """Manual + Auto layers is the one cell where the route holds the ratio twice.
-
-    ``_should_strip_tensor_split`` is False at ``gpu_layers < 0``, so the promotion
-    added for #11330 sets ``tensor_split`` while the raw ``-ts`` stays in extras. That
-    is one instruction in two places, and llama.cpp reads the LAST ``--tensor-split``
-    on the line -- so if either copy ever reached argv alone the placement would be the
-    other one's, and if both reached it the emitted order would decide. Neither does
-    today: the Auto-layers branch runs ``strip_split_mode_only`` over the extras and
-    the first-class emitter is gated on ``gpu_layers >= 0``. This pins that, because
-    the route's correctness in this cell rests on the launcher, not on itself.
+    """Manual + Auto layers is the one cell where the route holds the ratio twice: the
+    strip is False at ``gpu_layers < 0`` while the promotion still fires (#11330).
+    llama.cpp reads the LAST ``--tensor-split``, so a launch path that kept either copy
+    would place by the wrong one; both die here, and that is the launcher's doing rather
+    than the route's, which is why it is pinned.
     """
     from test_llama_cpp_placement import _backend, _launch
 

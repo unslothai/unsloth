@@ -1378,11 +1378,9 @@ test("a managed answer from the previous binary is never published", () => {
   );
 });
 
-// ── --tensor-split, mirroring parse_tensor_split_override ─────────────
-// The backend parses this flag's value in validate_extra_args for EVERY gpu memory
-// mode, so each of these is a 400 on Load, on the pre-load /validate, and on saving a
-// per-model override. Without the same rules here the editor stays quiet and the user
-// meets an opaque server error instead of an inline one (#11330).
+// validate_extra_args parses -ts in EVERY gpu memory mode, so each case below is a 400 on
+// Load, on /validate and on saving an override; without the mirror the user sees only that
+// server error, with nothing inline first (#11330).
 
 const _tsError = (input: string): string | null =>
   diagnoseExtraArgs(input, CATALOG).find((d) => d.level === "error")?.message ??
