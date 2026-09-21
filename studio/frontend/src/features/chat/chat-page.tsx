@@ -21,6 +21,8 @@ import {
   SidebarModelConfig,
   useActiveModelConfig,
   useModelConfigHandoffStore,
+  pinnedReasoningEffort,
+  useModelReasoningEffortStore,
 } from "@/features/model-picker";
 import { ProjectComposer, Thread } from "@/components/assistant-ui/thread";
 import { usePlatformStore } from "@/config/env";
@@ -44,14 +46,6 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
-import {
-  Dialog,
-  DialogContent,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
-import { Input } from "@/components/ui/input";
 import {
   ResizableHandle,
   ResizablePanel,
@@ -97,11 +91,11 @@ import {
 } from "./utils/conversation-markdown";
 import {
   Archive03Icon,
-  BookOpen01Icon,
   BubbleChatTemporaryIcon,
   Delete02Icon,
   Download01Icon,
   Edit03Icon,
+  FolderAttachmentIcon,
   Folder01Icon,
   Folder02Icon,
   FolderExportIcon,
@@ -153,6 +147,7 @@ import {
 import { ContextUsageBar } from "./components/context-usage-bar";
 import { ModelLoadInlineStatus } from "./components/model-load-status";
 import { ProjectSwitcher } from "./components/project-switcher";
+import { EditProjectDialog } from "./components/edit-project-dialog";
 import {
   buildExternalModelId,
   isExternalModelId,
@@ -165,7 +160,6 @@ import type { SelectedModelInput } from "./hooks/use-chat-model-runtime";
 import {
   deleteChatProject,
   moveChatItemToProject,
-  renameChatProject,
   useChatProjects,
 } from "./hooks/use-chat-projects";
 import {
@@ -182,7 +176,7 @@ import {
   getTrainingCompareHandoff,
 } from "./lib/training-compare-handoff";
 import {
-  clampReasoningEffortToLevels,
+  externalReasoningTakesEffort,
   getExternalReasoningCapabilities,
   getProviderCapabilities,
   modelCatalogVersion,
@@ -193,6 +187,7 @@ import {
   providerSupportsBuiltinWebSearch,
   providerSupportsFastMode,
   reasoningFieldsAfterCatalogRefresh,
+  resolveExternalReasoningEffort,
   subscribeModelCatalog,
 } from "./provider-capabilities";
 import {
@@ -220,7 +215,11 @@ import {
   CHAT_WEB_FETCH_TOOLS_ENABLED_KEY,
   PENDING_CHAT_ATTACHMENT_KEY,
   loadOptionalBool,
+  noteEffortDisplacedByPin,
+  pinHoldsLiveEffort,
   readPendingAttachmentTargetClaim,
+  reconcilePinnedReasoningEffort,
+  takeEffortDisplacedByPin,
   threadScopedOverride,
   useChatRuntimeStore,
 } from "./stores/chat-runtime-store";
@@ -1382,8 +1381,7 @@ function ProjectLanding({
   const pinnedProjectIds = usePinnedProjectsStore((s) => s.pinnedIds);
   const togglePinProject = usePinnedProjectsStore((s) => s.togglePin);
   const projectPinned = pinnedProjectIds.includes(projectId);
-  const [renamingProject, setRenamingProject] = useState(false);
-  const [projectNameDraft, setProjectNameDraft] = useState("");
+  const [editingProject, setEditingProject] = useState(false);
   const [deletingProject, setDeletingProject] = useState(false);
 
   async function handleProjectExport(
@@ -1401,23 +1399,19 @@ function ProjectLanding({
     }
   }
 
-  async function commitProjectRename(): Promise<void> {
-    const name = projectNameDraft.trim();
-    setRenamingProject(false);
-    if (!name || name === projectName) return;
-    try {
-      await renameChatProject(projectId, name);
-    } catch (err) {
-      toast.error("Failed to rename project", {
-        description: err instanceof Error ? err.message : undefined,
-      });
-    }
+  /** A project workspace is a bigger thing to remove than a chat's sandbox, so it asks from
+   *  scratch rather than following the chat preference, as the sidebar does it. */
+  function openProjectDelete(): void {
+    setDeleteFilesOnDelete(false);
+    setDeletingProject(true);
   }
 
   async function commitProjectDelete(): Promise<void> {
+    const deleteFiles = deleteFilesOnDelete;
     setDeletingProject(false);
+    setDeleteFilesOnDelete(false);
     try {
-      await deleteChatProject(projectId);
+      await deleteChatProject(projectId, { deleteFiles });
       // Refresh chat history so the project's now-deleted chats do not linger in the sidebar, matching
       // the sidebar delete path.
       notifyChatHistoryUpdated();
@@ -1471,6 +1465,11 @@ function ProjectLanding({
 
   // Full chat actions, matching the sidebar chat menu.
   const { projects } = useChatProjects();
+  // The record behind the header, for the Edit dialog.
+  const currentProject = useMemo(
+    () => projects.find((project) => project.id === projectId),
+    [projects, projectId],
+  );
   const pinnedChatIds = usePinnedChatsStore((s) => s.pinnedIds);
   const togglePinnedChat = usePinnedChatsStore((s) => s.togglePin);
   const confirmDeleteChats = useChatPreferencesStore(
@@ -1748,14 +1747,9 @@ function ProjectLanding({
                   </button>
                 )}
               >
-                <DropdownMenuItem
-                  onSelect={() => {
-                    setProjectNameDraft(projectName);
-                    setRenamingProject(true);
-                  }}
-                >
+                <DropdownMenuItem onSelect={() => setEditingProject(true)}>
                   <HugeiconsIcon icon={Edit03Icon} strokeWidth={1.75} className="size-icon" />
-                  <span>Rename project</span>
+                  <span>Edit project</span>
                 </DropdownMenuItem>
                 <DropdownMenuItem onSelect={() => togglePinProject(projectId)}>
                   <HugeiconsIcon icon={projectPinned ? PinOffIcon : PinIcon} strokeWidth={1.75} className="size-icon" />
@@ -1780,7 +1774,7 @@ function ProjectLanding({
                 <DropdownMenuSeparator />
                 <DropdownMenuItem
                   variant="destructive"
-                  onSelect={() => setDeletingProject(true)}
+                  onSelect={() => openProjectDelete()}
                 >
                   <HugeiconsIcon icon={Delete02Icon} strokeWidth={1.75} className="size-icon" />
                   <span>Delete project</span>
@@ -1960,7 +1954,8 @@ function ProjectLanding({
                               strokeWidth={1.75}
                               className="size-icon"
                             />
-                            <span>Move to project</span>
+                            {/* Same label the sidebar row menu uses. */}
+                            <span>Project</span>
                           </DropdownMenuSubTrigger>
                           <DropdownMenuSubContent className="unsloth-plus-menu w-52">
                             <DropdownMenuItem
@@ -2017,11 +2012,11 @@ function ProjectLanding({
                           onSelect={() => void handleSaveAsSource(item)}
                         >
                           <HugeiconsIcon
-                            icon={BookOpen01Icon}
+                            icon={FolderAttachmentIcon}
                             strokeWidth={1.75}
                             className="size-icon"
                           />
-                          <span>Save to project sources</span>
+                          <span>Project sources</span>
                         </DropdownMenuItem>
                         <DropdownMenuSeparator />
                         <DropdownMenuItem
@@ -2088,47 +2083,18 @@ function ProjectLanding({
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
-      <Dialog
-        open={active && renamingProject}
+      {/* The sidebar's dialog, so a project is edited the same way wherever it is opened from.
+          Delete hands back here, which owns the confirmation below. */}
+      <EditProjectDialog
+        project={active && editingProject ? (currentProject ?? null) : null}
         onOpenChange={(open) => {
-          if (!open) setRenamingProject(false);
+          if (!open) setEditingProject(false);
         }}
-      >
-        <DialogContent className="corner-squircle dialog-soft-surface sm:max-w-md">
-          <DialogHeader>
-            <DialogTitle>Rename project</DialogTitle>
-          </DialogHeader>
-          <Input
-            value={projectNameDraft}
-            onChange={(e) => setProjectNameDraft(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") {
-                e.preventDefault();
-                void commitProjectRename();
-              }
-            }}
-            autoFocus={true}
-            maxLength={120}
-            placeholder="Project name"
-            aria-label="Project name"
-            className="focus-visible:border-input focus-visible:ring-0"
-          />
-          <DialogFooter className="flex-wrap gap-2 sm:justify-end">
-            <Button type="button" variant="ghost" onClick={() => setRenamingProject(false)}>
-              Cancel
-            </Button>
-            <Button
-              type="button"
-              onClick={() => void commitProjectRename()}
-              disabled={
-                !projectNameDraft.trim() || projectNameDraft.trim() === projectName
-              }
-            >
-              Save
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+        onDelete={() => {
+          setEditingProject(false);
+          openProjectDelete();
+        }}
+      />
       <AlertDialog
         open={active && deletingProject}
         onOpenChange={(open) => {
@@ -2142,10 +2108,20 @@ function ProjectLanding({
               Delete "{projectName}"? Its chats will be permanently deleted.
             </AlertDialogDescription>
           </AlertDialogHeader>
+          {/* Same offer the sidebar makes, naming the folder when the record carries one. */}
+          <DeleteChatFilesSwitch
+            id="chat-landing-delete-project-files"
+            checked={deleteFilesOnDelete}
+            onCheckedChange={setDeleteFilesOnDelete}
+            description={
+              currentProject?.rootPath ??
+              "The project workspace folder will be removed from disk."
+            }
+          />
           <AlertDialogFooter>
             <AlertDialogCancel>Cancel</AlertDialogCancel>
             <AlertDialogAction onClick={() => void commitProjectDelete()}>
-              Delete
+              {deleteFilesOnDelete ? "Delete all" : "Delete"}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
@@ -2538,41 +2514,28 @@ export function ChatPage({
       },
     );
     const state = useChatRuntimeStore.getState();
-    const preferredEffort = state.reasoningEffort;
     const effortLevels = reasoningCaps.reasoningEffortLevels;
-    const clampedEffort = clampReasoningEffortToLevels(
-      preferredEffort,
-      effortLevels,
-    );
-    // Per-provider default effort: Anthropic gets the highest level, since Claude's adaptive thinking
-    // adjusts cost per turn; OpenAI gets "high"; everyone else "medium". Overridable via Think.
-    const isAnthropic = provider?.providerType === "anthropic";
-    const isOpenAI = provider?.providerType === "openai";
-    const anthropicTopEffort = effortLevels.includes("xhigh")
-      ? "xhigh"
-      : effortLevels.includes("high")
-        ? "high"
-        : clampedEffort;
-    const openaiDefaultEffort = effortLevels.includes("high")
-      ? "high"
-      : effortLevels.includes("medium")
-        ? "medium"
-        : clampedEffort;
-    const catalogDefaultEffort =
-      reasoningCaps.defaultEffort &&
-      effortLevels.includes(reasoningCaps.defaultEffort)
-        ? reasoningCaps.defaultEffort
-        : null;
-    const nextReasoningEffort = reasoningCaps.supportsReasoning
-      ? (catalogDefaultEffort ??
-        (isAnthropic
-          ? anthropicTopEffort
-          : isOpenAI
-            ? openaiDefaultEffort
-            : effortLevels.includes("medium")
-              ? "medium"
-              : clampedEffort))
-      : state.reasoningEffort;
+    // Through the shared resolver, pin included: this runs on reload and on every provider
+    // resync, and resolving it without the pin is what put the provider default back over a
+    // level the user had set on the model's row.
+    const pinnedEffort = externalReasoningTakesEffort(reasoningCaps)
+      ? pinnedReasoningEffort(inferenceParams.checkpoint, effortLevels)
+      : null;
+    const nextReasoningEffort = resolveExternalReasoningEffort({
+      caps: reasoningCaps,
+      providerType: provider?.providerType,
+      // Same as the switch below: a checkpoint that changed without going through it leaves the
+      // previous model's pin in the live level, which an unpinned model must not inherit.
+      current:
+        !pinnedEffort && pinHoldsLiveEffort()
+          ? (takeEffortDisplacedByPin() ?? state.reasoningEffort)
+          : state.reasoningEffort,
+      pinned: pinnedEffort,
+    });
+    // The chat's own level, before the pin takes its place, so clearing the pin can put it back.
+    if (pinnedEffort && nextReasoningEffort !== state.reasoningEffort) {
+      noteEffortDisplacedByPin(state.reasoningEffort);
+    }
     const supportsBuiltinWebSearch = providerSupportsBuiltinWebSearch(
       provider?.providerType,
       selection.modelId,
@@ -2668,6 +2631,36 @@ export function ChatPage({
     // Reruns once settings hydrate: this normalization reads the stored pills and clamps them to the
     // model, and hydration refreshes what it reads, so it has to be applied last.
   }, [externalProvidersForChat, inferenceParams.checkpoint, settingsHydrated]);
+  // Another tab can change the active model's pin (the pin store listens for the storage event),
+  // and the normalization above reads the pin through a getState helper without subscribing, so
+  // the composer kept the old level until a switch. Only the effort here: the pills and the rest
+  // of that block are not this one's to rerun.
+  const activePinnedEffort = useModelReasoningEffortStore(
+    (state) => state.effortByModel[inferenceParams.checkpoint],
+  );
+  const appliedPinnedEffort = useRef(activePinnedEffort);
+  useEffect(() => {
+    if (appliedPinnedEffort.current === activePinnedEffort) return;
+    appliedPinnedEffort.current = activePinnedEffort;
+    const selection = parseExternalModelId(inferenceParams.checkpoint);
+    if (!selection) return;
+    const provider = externalProvidersForChat.find(
+      (p) => p.id === selection.providerId,
+    );
+    const caps = getExternalReasoningCapabilities(
+      provider?.providerType,
+      selection.modelId,
+      {
+        isReasoningProvider: provider?.isReasoningModel === true,
+        baseUrl: provider?.baseUrl ?? null,
+      },
+    );
+    reconcilePinnedReasoningEffort({
+      checkpoint: inferenceParams.checkpoint,
+      caps,
+      providerType: provider?.providerType,
+    });
+  }, [activePinnedEffort, externalProvidersForChat, inferenceParams.checkpoint]);
   // A catalog that lands after selection refreshes only the stored reasoning fields (the effort shortcut reads them),
   // never the selection defaults above, so a chosen effort and the pills survive the refresh.
   const modelCatalogChange = useSyncExternalStore(
@@ -2695,6 +2688,13 @@ export function ChatPage({
     useChatRuntimeStore.setState(
       reasoningFieldsAfterCatalogRefresh(useChatRuntimeStore.getState(), caps),
     );
+    // After the levels, not before: a pin is only applied while the catalogue calls it legal, so
+    // the refresh that publishes the level is what puts the model's own pin in force.
+    reconcilePinnedReasoningEffort({
+      checkpoint: inferenceParams.checkpoint,
+      caps,
+      providerType: provider?.providerType,
+    });
   }, [modelCatalogChange, inferenceParams.checkpoint]);
   const canCompare = useMemo(() => {
     return Boolean(inferenceParams.checkpoint) && !isExternalModel;
@@ -3190,41 +3190,25 @@ export function ChatPage({
             baseUrl: selectedProvider?.baseUrl ?? null,
           },
         );
-        const preferredEffort = store.reasoningEffort;
         const effortLevels = reasoningCaps.reasoningEffortLevels;
-        const clampedEffort = clampReasoningEffortToLevels(
-          preferredEffort,
-          effortLevels,
-        );
-        // Same per-provider default policy as the useEffect above: Anthropic highest level, OpenAI
-        // "high", everyone else "medium".
-        const isAnthropic = selectedProvider?.providerType === "anthropic";
-        const isOpenAI = selectedProvider?.providerType === "openai";
-        const anthropicTopEffort = effortLevels.includes("xhigh")
-          ? "xhigh"
-          : effortLevels.includes("high")
-            ? "high"
-            : clampedEffort;
-        const openaiDefaultEffort = effortLevels.includes("high")
-          ? "high"
-          : effortLevels.includes("medium")
-            ? "medium"
-            : clampedEffort;
-        const catalogDefaultEffort =
-          reasoningCaps.defaultEffort &&
-          effortLevels.includes(reasoningCaps.defaultEffort)
-            ? reasoningCaps.defaultEffort
-            : null;
-        const nextReasoningEffort = reasoningCaps.supportsReasoning
-          ? (catalogDefaultEffort ??
-            (isAnthropic
-              ? anthropicTopEffort
-              : isOpenAI
-                ? openaiDefaultEffort
-                : effortLevels.includes("medium")
-                  ? "medium"
-                  : clampedEffort))
-          : store.reasoningEffort;
+        const pinnedEffort = externalReasoningTakesEffort(reasoningCaps)
+          ? pinnedReasoningEffort(value, effortLevels)
+          : null;
+        const nextReasoningEffort = resolveExternalReasoningEffort({
+          caps: reasoningCaps,
+          providerType: selectedProvider?.providerType,
+          // The outgoing model's pin is what the live level holds, so an unpinned target resolves
+          // from the chat's own effort rather than inheriting one model's override.
+          current:
+            !pinnedEffort && pinHoldsLiveEffort()
+              ? (takeEffortDisplacedByPin() ?? store.reasoningEffort)
+              : store.reasoningEffort,
+          pinned: pinnedEffort,
+        });
+        // The chat's own level, before the pin takes its place, so clearing it can put it back.
+        if (pinnedEffort && nextReasoningEffort !== store.reasoningEffort) {
+          noteEffortDisplacedByPin(store.reasoningEffort);
+        }
         // Clear any cached router-picked openrouter/free model unless staying on openrouter/free, else
         // the chip keeps a stale ":<chosen>" suffix.
         const stillOnOpenRouterFree =
@@ -3337,6 +3321,9 @@ export function ChatPage({
       }
       // Local model picked: drop any cached openrouter/free chosen model.
       useChatRuntimeStore.setState({ lastOpenRouterChosenModel: null });
+      // The chat's own effort goes back where the load applies its own reasoning fields, since
+      // everything from here on can still abort or only queue a download, leaving the pinned
+      // model the one running.
       void (async () => {
         let showImageCompatibilityWarning = false;
         if (view.mode === "single" && activeThreadId) {

@@ -68,6 +68,69 @@ export function llamaUpdatePresentation(
   };
 }
 
+export type UpdateComponent = "llama.cpp" | "whisper.cpp";
+
+export interface UpdateComponentFlags {
+  llama: boolean;
+  whisper: boolean;
+}
+
+/**
+ * Which component's offer the single update card shows.
+ *
+ * Both can be pending at once and the backend names only one: llama.cpp when its
+ * release is behind, whisper.cpp otherwise, so a llama.cpp backend migration is
+ * named whisper.cpp when whisper is stale too. If the named one's switch is off
+ * and the other has an offer the user does allow, the card shows that one rather
+ * than nothing. Update installs everything pending either way.
+ */
+export function updateBannerComponent(
+  named: UpdateComponent,
+  pending: UpdateComponentFlags,
+  allow: UpdateComponentFlags,
+): UpdateComponent {
+  const key = named === "whisper.cpp" ? "whisper" : "llama";
+  if (allow[key]) {
+    return named;
+  }
+  const other = key === "whisper" ? "llama" : "whisper";
+  return allow[other] && pending[other]
+    ? ((other === "whisper" ? "whisper.cpp" : "llama.cpp") as UpdateComponent)
+    : named;
+}
+
+/**
+ * The tag a finished update reports.
+ *
+ * The job's `to_tag` is the llama.cpp build by definition, so a card showing the
+ * whisper.cpp offer reports the release it advertised instead of llama's.
+ */
+export function updateToastTag(
+  component: UpdateComponent,
+  jobTag: string | null | undefined,
+  offerTag: string | null | undefined,
+): string | null {
+  const preferred = component === "whisper.cpp" ? offerTag : jobTag;
+  return preferred ?? offerTag ?? jobTag ?? null;
+}
+
+/**
+ * Which notification switch answers for the update card, held across a job.
+ *
+ * The card is muted by the component it names, and a chained apply renames it
+ * when the llama.cpp phase lands and the whisper.cpp phase starts. Reading the
+ * live switch there would take a running update off screen halfway through, so
+ * the switch the card started under is held until the job is over. `null` means
+ * nothing is held and the live switch applies.
+ */
+export function heldUpdateBannerPref(
+  held: boolean | null,
+  inFlight: boolean,
+  live: boolean,
+): boolean | null {
+  return inFlight ? (held ?? live) : null;
+}
+
 /**
  * Whether the banner's version line has anything to say.
  *

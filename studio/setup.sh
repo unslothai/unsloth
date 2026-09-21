@@ -1443,6 +1443,63 @@ _STUDIO_HOME_IS_CUSTOM=false
 if [ "$_studio_home_canon" != "$_LEGACY_STUDIO_HOME" ]; then
     _STUDIO_HOME_IS_CUSTOM=true
 fi
+# The master root storage_roots.unsloth_home() reads. llama.cpp, node and whisper.cpp sit BESIDE
+# studio/ under it, so installing them under $STUDIO_HOME would put them one level below where
+# every runtime resolver looks. Captured here because section 7 assigns over UNSLOTH_HOME.
+# Stripped before anything else, like _studio_override above: " " counts as unset and " /opt/uns "
+# names /opt/uns, which is what the Python resolver and the CLI both see.
+_MASTER_ROOT=$(printf '%s' "${UNSLOTH_HOME:-}" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
+if [ -n "$_MASTER_ROOT" ]; then
+    case "$_MASTER_ROOT" in
+        "~") _MASTER_ROOT="$HOME" ;;
+        "~/"*) _MASTER_ROOT="$HOME/${_MASTER_ROOT#'~/'}" ;;
+    esac
+    # Absolute against the CALLER's directory even when it does not exist yet, as Path.resolve()
+    # does: node is chosen before the first `cd "$SCRIPT_DIR"` and llama.cpp after it, so a
+    # relative value names two different directories and matches the backend's neither.
+    case "$_MASTER_ROOT" in
+        /*) ;;
+        *) _MASTER_ROOT="$PWD/$_MASTER_ROOT" ;;
+    esac
+    if [ -d "$_MASTER_ROOT" ]; then
+        # Keep the expanded value when it cannot be canonicalized, as the Python resolver does:
+        # dropping it here would send the runtimes to a root nothing else agrees on.
+        _master_root_canon=$(CDPATH= cd -P -- "$_MASTER_ROOT" 2>/dev/null && pwd -P) || _master_root_canon=""
+        [ -z "$_master_root_canon" ] || _MASTER_ROOT="$_master_root_canon"
+        unset _master_root_canon
+    fi
+fi
+
+# Ownership applies to node/, llama.cpp/ and whisper.cpp/ whenever a master root moves them,
+# even with STUDIO_HOME left at the legacy path, where _STUDIO_HOME_IS_CUSTOM is false and
+# "false" licenses the installers to os.replace() and rm -rf unmarked trees. The Studio home
+# and its venvs keep the other flag.
+_RUNTIME_ROOT_IS_CUSTOM="$_STUDIO_HOME_IS_CUSTOM"
+# Keyed on where the runtimes LAND, not on whether a master root was named: UNSLOTH_HOME set to
+# the root an install already uses moves nothing, and calling that custom would demand an owner
+# marker from a legacy source-built ~/.unsloth/llama.cpp that predates markers.
+#
+# Staging is excluded for the same reason, not as an exception to it: the placement below gives
+# STAGE_ROOT precedence over the master root, so during a staged update the master root is not
+# where anything lands and must not decide ownership. Assigned rather than raised, or a custom
+# STUDIO_HOME kept the flag true while the runtimes went to the legacy root, which demanded
+# markers from exactly the pre-marker trees this comparison exists to spare.
+if [ -z "${STAGE_ROOT:-}" ] && [ -n "$_MASTER_ROOT" ]; then
+    # Canonicalised like _MASTER_ROOT, or a symlinked $HOME compares unequal to itself and the
+    # legacy root reads as custom after all.
+    _rrc_legacy="$HOME/.unsloth"
+    if [ -d "$_rrc_legacy" ]; then
+        _rrc_canon=$(CDPATH= cd -P -- "$_rrc_legacy" 2>/dev/null && pwd -P) || _rrc_canon=""
+        [ -z "$_rrc_canon" ] || _rrc_legacy="$_rrc_canon"
+        unset _rrc_canon
+    fi
+    if [ "$_MASTER_ROOT" = "$_rrc_legacy" ]; then
+        _RUNTIME_ROOT_IS_CUSTOM=false
+    else
+        _RUNTIME_ROOT_IS_CUSTOM=true
+    fi
+    unset _rrc_legacy
+fi
 # Directory-local evidence Unsloth created "$1": only prebuilt-installer metadata
 # counts (UNSLOTH_PREBUILT_INFO.json for llama.cpp, UNSLOTH_NODE_PREBUILT_INFO.json
 # for Node, UNSLOTH_WHISPER_PREBUILT_INFO.json for whisper.cpp), all written only
@@ -1527,11 +1584,37 @@ _report_denied_ancestor() {
     fi
 }
 
+# What is at "$1", for the refusal message. A user told the path is "not an Unsloth install"
+# when it is their own dangling symlink has no idea what to move aside.
+_studio_path_shape() {
+    if [ -L "$1" ]; then
+        if [ -e "$1" ]; then printf 'a symlink'; else printf 'a dangling symlink'; fi
+    elif [ -f "$1" ]; then printf 'a regular file'
+    elif [ -d "$1" ]; then printf 'a directory'
+    else printf 'an existing path'
+    fi
+}
+
+# $3 is the ownership flag: the runtime children pass _RUNTIME_ROOT_IS_CUSTOM, everything
+# under the Studio home keeps _STUDIO_HOME_IS_CUSTOM.
 _assert_studio_owned_or_absent() {
     _aso_dir="$1"
     _aso_label="$2"
-    [ -d "$_aso_dir" ] || return 0
-    if [ "$_STUDIO_HOME_IS_CUSTOM" = true ] && [ ! -f "$_aso_dir/$_STUDIO_OWNED_MARKER" ]; then
+    _aso_custom="${3:-$_STUDIO_HOME_IS_CUSTOM}"
+    # -d alone read a dangling symlink or a regular file as "nothing is here", and the caller
+    # then rm -rf'd it or os.replace()d over it. A dangling link is the ordinary case: its
+    # volume is simply not mounted, and following it later installs onto somebody's other disk.
+    if [ ! -d "$_aso_dir" ] && [ ! -e "$_aso_dir" ] && [ ! -L "$_aso_dir" ]; then
+        return 0
+    fi
+    if [ "$_aso_custom" = true ] && [ ! -f "$_aso_dir/$_STUDIO_OWNED_MARKER" ]; then
+        # Only a directory can carry the marker or the prebuilt metadata, so anything else here
+        # is unowned by construction and the adoption path below cannot apply to it.
+        if [ ! -d "$_aso_dir" ]; then
+            echo "ERROR: $_aso_dir already exists and is not an Unsloth-owned $_aso_label." >&2
+            echo "       It is $(_studio_path_shape "$_aso_dir"). Move it aside before re-running." >&2
+            setup_fail 1 "$_aso_label path is not an Unsloth-owned install: $_aso_dir"
+        fi
         if _studio_owned_adoptable "$_aso_dir"; then
             : > "$_aso_dir/$_STUDIO_OWNED_MARKER" 2>/dev/null || true
             return 0
@@ -1641,6 +1724,8 @@ decide_node_source() {
 # Mirror the llama.cpp UNSLOTH_HOME derivation; the frontend build runs first.
 if [ -n "$STAGE_ROOT" ]; then
     _NODE_PARENT="$RUNTIME_ROOT"
+elif [ -n "$_MASTER_ROOT" ]; then
+    _NODE_PARENT="$_MASTER_ROOT"
 elif [ "$_STUDIO_HOME_IS_CUSTOM" = true ]; then
     _NODE_PARENT="$STUDIO_HOME"
 else
@@ -1659,8 +1744,8 @@ elif [ "$NODE_SOURCE" = bundled ]; then
     mkdir -p "$_NODE_PARENT"
     # install_node_prebuilt.py uses os.replace(); guard a custom-home dir so we
     # never displace a user-owned $UNSLOTH_STUDIO_HOME/node.
-    if [ "$_STUDIO_HOME_IS_CUSTOM" = true ]; then
-        _assert_studio_owned_or_absent "$NODE_DIR" "Node install"
+    if [ "$_RUNTIME_ROOT_IS_CUSTOM" = true ]; then
+        _assert_studio_owned_or_absent "$NODE_DIR" "Node install" "$_RUNTIME_ROOT_IS_CUSTOM"
     fi
     substep "installing isolated Node (system Node/npm left untouched)..."
     # Runs before the venv is activated, so bare `python` may be absent; resolve
@@ -1695,7 +1780,7 @@ elif [ "$NODE_SOURCE" = bundled ]; then
     fi
     grep -Fq "already matches" "$_NODE_LOG" && verbose_substep "isolated Node already up to date"
     rm -f "$_NODE_LOG"
-    if [ "$_STUDIO_HOME_IS_CUSTOM" = true ] && [ -d "$NODE_DIR" ]; then
+    if [ "$_RUNTIME_ROOT_IS_CUSTOM" = true ] && [ -d "$NODE_DIR" ]; then
         : > "$NODE_DIR/$_STUDIO_OWNED_MARKER" 2>/dev/null || true
     fi
     # Prepend the isolated bin (this process only) so node/npm/bun resolve here.
@@ -2035,14 +2120,121 @@ _setup_uv_sha256() {
     fi
 }
 
-# Bounded liveness probe: no stdin, so a build that prompts reads EOF, and a ceiling where
-# `timeout` exists (stock macOS has none).
-_setup_uv_probe_exec() {
-    if command -v timeout >/dev/null 2>&1; then
-        timeout 20 "$1" --version >/dev/null 2>&1 </dev/null
+_SETUP_UV_PROBE_TARGET=""
+_SETUP_UV_PROBE_PID=""
+_SETUP_UV_PROBE_PREV_TRAP=""
+
+# A process group is signalled as a negative pid, and the two shells that get here disagree about
+# how to write one: bash reads a bare `-123` as a signal spec and refuses it, dash refuses the
+# `--` that fixes bash. Only a shell that made a group can produce a negative target, so the sign
+# picks the spelling. Measured both ways: the wrong one fails silently under 2>/dev/null and the
+# group survives the ceiling.
+_setup_uv_signal_target() {
+    case "$2" in
+        -*) kill "-$1" -- "$2" 2>/dev/null || : ;;
+        *)  kill "-$1" "$2" 2>/dev/null || : ;;
+    esac
+}
+
+# TERM, then KILL what ignored it, exactly as `timeout -k` does on the hosts that have it.
+# $1 target (a group when one was made, else the pid), $2 pid to watch, $3 seconds of grace.
+_setup_uv_probe_terminate() {
+    _supt_grace=0
+    _setup_uv_signal_target TERM "$1"
+    while [ "$_supt_grace" -lt "$3" ] && kill -0 "$2" 2>/dev/null; do
+        sleep 1
+        _supt_grace=$((_supt_grace + 1))
+    done
+    # Only if it is still there: the loop also ends when TERM worked, and an unconditional KILL
+    # then goes to a number this shell no longer owns. Narrows the window, not closes it.
+    if kill -0 "$2" 2>/dev/null; then _setup_uv_signal_target KILL "$1"; fi
+    unset _supt_grace
+}
+
+# The watchdog's ceiling lives in the calling shell, so a cancel during the wait would leave the
+# candidate, and under monitor mode its whole group, running with nobody left to stop it. These
+# two chain rather than replace: the pinned installer's own handlers still have to run.
+_setup_uv_probe_restore_trap() {
+    _SETUP_UV_PROBE_TARGET=""
+    _SETUP_UV_PROBE_PID=""
+    if [ -n "${_SETUP_UV_PROBE_PREV_TRAP:-}" ]; then
+        eval "$_SETUP_UV_PROBE_PREV_TRAP"
     else
-        "$1" --version >/dev/null 2>&1 </dev/null
+        trap - HUP INT TERM
     fi
+    _SETUP_UV_PROBE_PREV_TRAP=""
+}
+
+_setup_uv_probe_on_signal() {
+    # The same TERM/KILL the ceiling uses, on a shorter leash: a cancel that waited the full five
+    # seconds for a binary ignoring TERM would read as a setup that ignored the cancel.
+    if [ -n "${_SETUP_UV_PROBE_TARGET:-}" ] && [ -n "${_SETUP_UV_PROBE_PID:-}" ]; then
+        _setup_uv_probe_terminate "$_SETUP_UV_PROBE_TARGET" "$_SETUP_UV_PROBE_PID" 2
+        wait "$_SETUP_UV_PROBE_PID" 2>/dev/null || :
+    fi
+    _setup_uv_probe_restore_trap
+    # Hand the signal back to whoever had it: the installer's handler, or the default action.
+    kill -s "$1" "$$" 2>/dev/null || :
+}
+
+# Bounded liveness probe: no stdin (a prompting build reads EOF), 20 s ceiling held by GNU
+# timeout or, without it (stock macOS), a background job killed when the ceiling passes.
+# $2 takes the binary's stdout, /dev/null by default: reuse needs the version line, and running
+# the binary again to read it would be a second chance to hang.
+_setup_uv_probe_exec() {
+    _supe_secs="${_SETUP_UV_PROBE_SECONDS:-20}"
+    _supe_out="${2:-/dev/null}"
+    # KILL after TERM (TERM can be ignored): `timeout -k` where supported, else the watchdog below.
+    if command -v timeout >/dev/null 2>&1 && timeout -k 1 5 true >/dev/null 2>&1; then
+        timeout -k 5 "$_supe_secs" "$1" --version >"$_supe_out" 2>/dev/null </dev/null
+        return $?
+    fi
+    # Monitor mode gives the probe a process group of its own, so the signals below reach what IT
+    # started, as `timeout`'s setpgid does. Off again at once: it changes how later jobs report.
+    _supe_monitor=off
+    case "$-" in *m*) _supe_monitor=on ;; esac
+    [ "$_supe_monitor" = on ] || set -m 2>/dev/null || :
+    "$1" --version >"$_supe_out" 2>/dev/null </dev/null &
+    _supe_pid=$!
+    [ "$_supe_monitor" = on ] || set +m 2>/dev/null || :
+    # The group only where it is provably not this shell's own (zsh shares them, and a group TERM
+    # there kills setup); otherwise the single pid, as before. Parameter expansion, not `tr`: this
+    # branch has to hold on a PATH as bare as the shell and sleep.
+    _supe_target="$_supe_pid"
+    if command -v ps >/dev/null 2>&1; then
+        _supe_pgid=$(ps -o pgid= -p "$_supe_pid" 2>/dev/null)
+        _supe_self=$(ps -o pgid= -p $$ 2>/dev/null)
+        _supe_pgid=${_supe_pgid##* }
+        _supe_self=${_supe_self##* }
+        case "$_supe_pgid$_supe_self" in
+            ''|*[!0-9]*) : ;;
+            *) [ "$_supe_pgid" = "$_supe_self" ] || _supe_target="-$_supe_pgid" ;;
+        esac
+    fi
+    _SETUP_UV_PROBE_TARGET="$_supe_target"
+    _SETUP_UV_PROBE_PID="$_supe_pid"
+    _SETUP_UV_PROBE_PREV_TRAP=$(trap -p HUP INT TERM 2>/dev/null) || _SETUP_UV_PROBE_PREV_TRAP=""
+    trap '_setup_uv_probe_on_signal HUP' HUP
+    trap '_setup_uv_probe_on_signal INT' INT
+    trap '_setup_uv_probe_on_signal TERM' TERM
+    _supe_waited=0
+    while kill -0 "$_supe_pid" 2>/dev/null; do
+        if [ "$_supe_waited" -ge "$_supe_secs" ]; then
+            # Escalate as timeout -k does: a binary ignoring TERM would hold the wait.
+            _setup_uv_probe_terminate "$_supe_target" "$_supe_pid" 5
+            wait "$_supe_pid" 2>/dev/null
+            _setup_uv_probe_restore_trap
+            unset _supe_pid _supe_waited _supe_target _supe_pgid _supe_self
+            return 124
+        fi
+        sleep 1
+        _supe_waited=$((_supe_waited + 1))
+    done
+    wait "$_supe_pid"
+    _supe_rc=$?
+    _setup_uv_probe_restore_trap
+    unset _supe_pid _supe_waited _supe_target _supe_pgid _supe_self
+    return $_supe_rc
 }
 
 # The function's own cleanup only runs when it returns, so an interrupt left the unpacked
@@ -2179,6 +2371,60 @@ _setup_path_has_dir() {
     return "$_sphd_found"
 }
 
+# Is a conda environment ACTIVE in this shell? Both variables, matching install.ps1: a hook
+# exporting only CONDA_DEFAULT_ENV still leaves the caller inside conda's PATH ordering.
+# A prepend a previous run persisted is repositioned, not accepted: otherwise a rerun
+# inside conda leaves our directory ahead of it for ever (#5871).
+# Only an exact whole-line match on what this writer writes is touched, and the content is
+# copied back into the ORIGINAL file so a symlinked rc keeps its link, mode and owner.
+_unsloth_repoint_rc_line() {
+    [ -f "$1" ] || return 1
+    # OURS, not merely matching: a hand-written `export PATH="$HOME/.local/bin:$PATH"` is a
+    # line users have too, and demoting theirs would move that whole directory behind the
+    # rest of PATH for good. The `# Added by Unsloth` marker above the line is the ownership
+    # record, so a line without one is left alone.
+    _URRL_OLD="$2" awk '
+        $0 == ENVIRON["_URRL_OLD"] && prev ~ /^# Added by Unsloth/ { found = 1 }
+        { prev = $0 }
+        END { exit(found ? 0 : 1) }
+    ' "$1" 2>/dev/null || return 1
+    # Staged and renamed, because `cat tmp > file` truncates the profile first and an
+    # interrupt leaves wreckage. Onto the RESOLVED path: renaming over a chezmoi or stow
+    # symlink would replace it with a regular file. `readlink -f` is GNU-only, hence the walk.
+    _urrl_real="$1"
+    _urrl_hops=0
+    while [ -L "$_urrl_real" ] && [ "$_urrl_hops" -lt 40 ]; do
+        _urrl_hops=$((_urrl_hops + 1))
+        _urrl_target="$(readlink -- "$_urrl_real" 2>/dev/null)" || break
+        [ -n "$_urrl_target" ] || break
+        case "$_urrl_target" in
+            /*) _urrl_real="$_urrl_target" ;;
+            *) _urrl_real="$(dirname -- "$_urrl_real")/$_urrl_target" ;;
+        esac
+    done
+    [ -f "$_urrl_real" ] || return 1
+    _urrl_tmp="$_urrl_real.unsloth-tmp.$$"
+    # `cp -p` keeps the original's mode; without it the umask masks it and a 0644 .bashrc
+    # comes back 0600. ENVIRON, not `-v`: POSIX awk decodes backslash escapes in `-v`, so an
+    # escaped path arrived as something else and renamed an unchanged file.
+    if { cp -p -- "$_urrl_real" "$_urrl_tmp" 2>/dev/null \
+        || cp -- "$_urrl_real" "$_urrl_tmp" 2>/dev/null; } \
+        && _URRL_OLD="$2" _URRL_NEW="$3" awk '
+            $0 == ENVIRON["_URRL_OLD"] && prev ~ /^# Added by Unsloth/ { print ENVIRON["_URRL_NEW"]; prev = $0; next }
+            { print; prev = $0 }
+        ' "$_urrl_real" > "$_urrl_tmp" 2>/dev/null \
+        && mv -f -- "$_urrl_tmp" "$_urrl_real" 2>/dev/null; then
+        return 0
+    fi
+    # The original is untouched on every failure above; only the staged copy needs removing.
+    rm -f -- "$_urrl_tmp" 2>/dev/null
+    return 1
+}
+
+_unsloth_conda_env_active() {
+    [ -n "${CONDA_PREFIX:-}" ] || [ -n "${CONDA_DEFAULT_ENV:-}" ]
+}
+
 _setup_persist_uv_path() {
     _supp_dir="$1"
     [ -n "$_supp_dir" ] || return 0
@@ -2187,7 +2433,15 @@ _setup_persist_uv_path() {
     [ -z "${UV_UNMANAGED_INSTALL:-}" ] || return 0
     # The PATH a new shell inherits, not the one this process has already prepended to, and
     # compared entry by entry: a directory holding *, ? or [ is a glob inside a case pattern.
-    _setup_path_has_dir "${_SETUP_LOGIN_PATH:-$PATH}" "$_supp_dir" && return 0
+    # Already on the login PATH BECAUSE a previous run wrote the line, and inside a conda
+    # environment that line is in the wrong place, so the repointing pass has to run before
+    # this early return rather than after it. `_setup_repoint_only` makes the rest of the
+    # function a no-op: it repositions what is there and adds nothing.
+    _setup_repoint_only=false
+    if _setup_path_has_dir "${_SETUP_LOGIN_PATH:-$PATH}" "$_supp_dir"; then
+        _unsloth_conda_env_active || return 0
+        _setup_repoint_only=true
+    fi
     # ~/.config, not XDG_CONFIG_HOME, because that is where astral's installer put its own fish
     # file, and it is written regardless of the current shell for the same reason.
     _supp_fish_dir="$HOME/.config/fish/conf.d"
@@ -2195,10 +2449,35 @@ _setup_persist_uv_path() {
         _supp_fish="$_supp_fish_dir/unsloth.fish"
         # Single-quoted: an unquoted path with a space is two arguments to fish_add_path.
         _supp_quoted=$(printf '%s' "$_supp_dir" | sed "s/\\\\/\\\\\\\\/g; s/'/\\\\'/g")
-        # The exact line, not any occurrence: /opt/uv-old must not pass for /opt/uv.
-        if ! grep -v '^[[:space:]]*#' "$_supp_fish" 2>/dev/null | grep -qxF "fish_add_path '$_supp_quoted'"; then
+        # fish_add_path PREPENDS, and that ordering outlives the conda activation (#5871),
+        # so the conda arm appends. All three flags are load-bearing:
+        #   -a alone appends to $fish_user_paths, which fish prepends to PATH, so -P is what
+        #      makes it an append to PATH at all
+        #   -P edits $PATH for the session, right for a conf.d drop-in read after conda.fish
+        #   -m moves an entry a bare `fish_add_path` from an older install already put in
+        #      the universal $fish_user_paths; without it the append is a no-op
+        # https://fishshell.com/docs/current/cmds/fish_add_path.html
+        _supp_fish_line="fish_add_path '$_supp_quoted'"
+        if _unsloth_conda_env_active; then
+            _supp_fish_line="fish_add_path -a -P -m '$_supp_quoted'"
+            # Every earlier spelling puts the directory in front of PATH, the bare -a by way of
+            # $fish_user_paths, and the -a -P line without -m cannot move an entry already in PATH,
+            # so any of them left by a previous run is repointed rather than accepted as present.
+            for _supp_stale in "fish_add_path '$_supp_quoted'" "fish_add_path -a '$_supp_quoted'" \
+                               "fish_add_path -a -P '$_supp_quoted'"; do
+                _unsloth_repoint_rc_line "$_supp_fish" "$_supp_stale" "$_supp_fish_line" || true
+            done
+        fi
+        # The exact line, not any occurrence: /opt/uv-old must not pass for /opt/uv. EVERY
+        # spelling counts as present, or a run outside conda adds a second line for a
+        # directory a run inside it already registered; the bare -a one is kept because an
+        # install from before this fix wrote it.
+        if [ "$_setup_repoint_only" != true ] && ! grep -v '^[[:space:]]*#' "$_supp_fish" 2>/dev/null \
+            | grep -qxF -e "fish_add_path '$_supp_quoted'" -e "fish_add_path -a '$_supp_quoted'" \
+                        -e "fish_add_path -a -P '$_supp_quoted'" \
+                        -e "fish_add_path -a -P -m '$_supp_quoted'"; then
             echo "# Added by Unsloth setup" >> "$_supp_fish"
-            echo "fish_add_path '$_supp_quoted'" >> "$_supp_fish"
+            echo "$_supp_fish_line" >> "$_supp_fish"
         fi
     fi
     # An entry has to be active, whole and on a line that SETS PATH: a commented-out export,
@@ -2209,6 +2488,43 @@ _setup_persist_uv_path() {
     # Escaped: the line is double-quoted, so a path holding $, ` or " would be expanded or
     # terminated by the shell that reads it.
     _supp_literal=$(printf '%s' "$_supp_dir" | sed 's/[\\"$`]/\\&/g')
+    # A persisted PREPEND outlives the activation and leaves conda resolving out of our
+    # directory in every later shell (#5871). Inside one, write the same line as an APPEND;
+    # the grep below matches either spelling, so no second line is added. install.ps1 makes
+    # the same choice for the Windows registry.
+    _supp_export_line="export PATH=\"$_supp_literal:\$PATH\""
+    _supp_export_prepend="$_supp_export_line"
+    # And the $HOME-relative spelling of the same prepend, because install.sh writes the shim
+    # line that way and this script runs standalone on an update: _SETUP_LOGIN_PATH holds the
+    # EXPANDED directory, which is what selects the repoint-only branch below, while the line
+    # sitting in the profile says $HOME. Matching only the expanded form meant the rewrite
+    # never fired and the stale prepend stayed ahead of the active conda environment. $HOME is
+    # left unexpanded on purpose; only the rest of the path is escaped.
+    _supp_export_home_prepend=""
+    case "$_supp_dir" in
+        "$HOME"/*)
+            _supp_home_literal='$HOME'$(printf '%s' "${_supp_dir#$HOME}" | sed 's/[\\"$`]/\\&/g')
+            _supp_export_home_prepend="export PATH=\"$_supp_home_literal:\$PATH\""
+            ;;
+    esac
+    if _unsloth_conda_env_active; then
+        _supp_export_line="export PATH=\"\$PATH:$_supp_literal\""
+    fi
+    if [ "$_setup_repoint_only" = true ]; then
+        # The POSIX repointing pass, then out: nothing here may append a line the caller's
+        # guard decided against.
+        for _supp_profile in "$HOME/.profile" "$HOME/.bashrc" "$HOME/.bash_profile" \
+                             "$HOME/.bash_login" "${ZDOTDIR:-$HOME}/.zshrc" "${ZDOTDIR:-$HOME}/.zshenv"; do
+            [ -f "$_supp_profile" ] || continue
+            _unsloth_repoint_rc_line "$_supp_profile" "$_supp_export_prepend" \
+                "$_supp_export_line" || true
+            if [ -n "$_supp_export_home_prepend" ]; then
+                _unsloth_repoint_rc_line "$_supp_profile" "$_supp_export_home_prepend" \
+                    "$_supp_export_line" || true
+            fi
+        done
+        return 0
+    fi
     # Every startup file astral's installer wired, because it is the installer this replaced:
     # ~/.profile always, each bash file that exists, and zsh under ZDOTDIR. Writing only the
     # file for the shell that happens to be running would leave a bash user whose .bash_profile
@@ -2216,23 +2532,151 @@ _setup_persist_uv_path() {
     for _supp_profile in "$HOME/.profile" "$HOME/.bashrc" "$HOME/.bash_profile" \
                          "$HOME/.bash_login" "${ZDOTDIR:-$HOME}/.zshrc" "${ZDOTDIR:-$HOME}/.zshenv"; do
         if [ "$_supp_profile" != "$HOME/.profile" ] && [ ! -f "$_supp_profile" ]; then continue; fi
+        # Repointing comes BEFORE the presence check, not inside it. The check below matches
+        # the EXPANDED directory, so it cannot see the $HOME-relative prepend install.sh
+        # writes: gating the rewrite on it left that spelling in place and appended a second
+        # line underneath it, which is both a duplicate entry and the original ordering bug,
+        # since the surviving prepend still resolves ahead of the active conda environment.
+        # Rewriting first also makes the check find the append it just produced.
+        if _unsloth_conda_env_active; then
+            _unsloth_repoint_rc_line "$_supp_profile" "$_supp_export_prepend" \
+                "$_supp_export_line" || true
+            if [ -n "$_supp_export_home_prepend" ]; then
+                _unsloth_repoint_rc_line "$_supp_profile" "$_supp_export_home_prepend" \
+                    "$_supp_export_line" || true
+            fi
+        fi
         # Only lines that actually set PATH count: `UV_CACHE=/opt/uv` and `PYTHONPATH=/opt/uv`
         # are not PATH entries, and taking one for an entry leaves the next shell without uv.
         if grep -v '^[[:space:]]*#' "$_supp_profile" 2>/dev/null \
             | grep -E "$_supp_path_line" \
-            | grep -qE "(^|[^[:alnum:]_.~/-])$_supp_grep([^[:alnum:]_.~/-]|\$)"; then continue; fi
+            | grep -qE "(^|[^[:alnum:]_.~/-])$_supp_grep([^[:alnum:]_.~/-]|\$)"; then
+            continue
+        fi
         echo '' >> "$_supp_profile"
         echo '# Added by Unsloth setup' >> "$_supp_profile"
-        echo "export PATH=\"$_supp_literal:\$PATH\"" >> "$_supp_profile"
+        echo "$_supp_export_line" >> "$_supp_profile"
     done
+}
+
+_SETUP_UV_PROBE_MISS=""
+_SETUP_UV_LOOKED=""
+_SETUP_UV_DIR=""
+_SETUP_UV_TOO_OLD=""
+# install.sh's UV_MIN_VERSION, for its reason: below it uv's managed-Python manifest tops out at
+# a CPython that cannot import torch, which the installer refuses to build on.
+_SETUP_UV_MIN_VERSION="0.9.3"
+
+# True when uv's --version line names a release at least as new as $2. Unreadable is false: the
+# candidate is left alone and the download runs, as it did before this search existed.
+_setup_uv_version_at_least() {
+    [ -n "$1" ] || return 1
+    printf '%s\n' "$1" | awk -v floor="$2" '
+        NR == 1 {
+            # It has to be uv saying it. Another binary that runs and prints a version of its
+            # own ("curl 8.9.1") would otherwise clear a floor of 0.9.3 on the strength of
+            # being curl 8.
+            if ($1 != "uv") { exit 1 }
+            # A prerelease is the version it precedes minus something, so it is compared as that
+            # version and refused when that lands exactly on the floor, as install.sh does.
+            core = $2
+            pre = (sub(/[-+].*$/, "", core) > 0)
+            split(core, have, ".")
+            if (have[1] !~ /^[0-9]+$/) { exit 1 }
+            split(floor, want, ".")
+            for (i = 1; i <= 3; i++) {
+                h = (have[i] ~ /^[0-9]+$/) ? have[i] + 0 : 0
+                w = (want[i] ~ /^[0-9]+$/) ? want[i] + 0 : 0
+                if (h > w) { exit 0 }
+                if (h < w) { exit 1 }
+            }
+            if (pre) { exit 1 }
+            # Braced, like every other exit in this program: setup.sh is allowed exactly two
+            # exits of its own (tests/sh/test_tauri_retry_failure_context.sh counts the lines),
+            # and an awk exit indented on a line of its own reads as a third.
+            { exit 0 }
+        }
+        { exit 1 }
+    '
+}
+
+# Answers in _SETUP_UV_DIR: under command substitution the miss diagnostics above would die
+# with the subshell.
+_setup_find_installed_uv() {
+    # The uv a previous run installed but this process's PATH lacks (a desktop shell launched
+    # before the install, a CI step, an unread profile line): the miss re-downloaded the pinned
+    # archive on every update, 42 of a 53 s Windows no-op. Same priority list
+    # _setup_install_uv_pinned writes to; it has to run, not merely exist.
+    # Cleared on entry: a second search would otherwise report the first one's destinations.
+    _SETUP_UV_PROBE_MISS=""
+    _SETUP_UV_LOOKED=""
+    _SETUP_UV_DIR=""
+    _SETUP_UV_TOO_OLD=""
+    _sfu_seen=""
+    # A file, not a command substitution: whatever the candidate starts inherits the probe's
+    # stdout, so a pipe holds this open until the last descendant lets go, which is the hang the
+    # ceiling exists to prevent. No file means no version, so no reuse: the old download path.
+    _sfu_ver_file=""
+    if command -v mktemp >/dev/null 2>&1; then
+        _sfu_ver_file=$(mktemp 2>/dev/null) || _sfu_ver_file=""
+    fi
+    for _sfu_dir in "${UV_INSTALL_DIR:-}" "${UV_UNMANAGED_INSTALL:-}" "${XDG_BIN_HOME:-}" \
+        "${XDG_DATA_HOME:+$XDG_DATA_HOME/../bin}" "${HOME:+$HOME/.local/bin}"; do
+        [ -n "$_sfu_dir" ] || continue
+        # Once per directory however many variables name it, as the PowerShell finder does: a
+        # hanging candidate costs the ceiling once per name (126 s over four tiers, 42 s for one).
+        case "$_sfu_seen" in *"|$_sfu_dir|"*) continue ;; esac
+        _sfu_seen="$_sfu_seen|$_sfu_dir|"
+        _SETUP_UV_LOOKED="${_SETUP_UV_LOOKED:+$_SETUP_UV_LOOKED, }$_sfu_dir/uv"
+        [ -x "$_sfu_dir/uv" ] || continue
+        # Bounded, like the pinned installer's probe. Asked twice: one miss (an antivirus scan
+        # holding a fresh binary) sent setup to the pinned download, which put an OLDER uv
+        # over this one and moved the manifest's uv_version on the next pass.
+        if _setup_uv_probe_exec "$_sfu_dir/uv" "${_sfu_ver_file:-/dev/null}" ||
+           { sleep 2; _setup_uv_probe_exec "$_sfu_dir/uv" "${_sfu_ver_file:-/dev/null}"; }; then
+            # `read`, not `cat`: this branch has to hold on a bare PATH, and an empty file
+            # returning non-zero is not a reason for `set -e` to end setup.
+            _sfu_ver=""
+            if [ -n "$_sfu_ver_file" ]; then
+                read -r _sfu_ver < "$_sfu_ver_file" 2>/dev/null || _sfu_ver=""
+            fi
+            if _setup_uv_version_at_least "$_sfu_ver" "$_SETUP_UV_MIN_VERSION"; then
+                _SETUP_UV_DIR="$_sfu_dir"
+                if [ -n "$_sfu_ver_file" ]; then rm -f "$_sfu_ver_file" 2>/dev/null || :; fi
+                unset _sfu_dir _sfu_ver _sfu_seen _sfu_ver_file
+                return 0
+            fi
+            _SETUP_UV_TOO_OLD="$_sfu_dir/uv"
+            continue
+        fi
+        _SETUP_UV_PROBE_MISS="$_sfu_dir/uv"
+    done
+    if [ -n "$_sfu_ver_file" ]; then rm -f "$_sfu_ver_file" 2>/dev/null || :; fi
+    unset _sfu_dir _sfu_ver _sfu_seen _sfu_ver_file
+    return 1
 }
 
 USE_UV=false
 if command -v uv &>/dev/null; then
     USE_UV=true
+elif _setup_find_installed_uv; then
+    _setup_uv_dir="$_SETUP_UV_DIR"
+    # Read-only reuse, fine under a stage root. Appended: a python beside uv (~/.local/bin
+    # often has one) must not step in front of the staged $VENV_DIR/bin/python.
+    export PATH="$PATH:$_setup_uv_dir"
+    step "uv" "reusing the uv installed at $_setup_uv_dir (it was not on PATH)"
+    USE_UV=true
+    unset _setup_uv_dir
 elif [ -n "$STAGE_ROOT" ]; then
     step "uv" "using pip inside the staged environment"
 elif {
+    if [ -n "${_SETUP_UV_TOO_OLD:-}" ]; then
+        step "uv" "the uv at $_SETUP_UV_TOO_OLD is older than $_SETUP_UV_MIN_VERSION; installing the pinned release"
+    elif [ -n "${_SETUP_UV_PROBE_MISS:-}" ]; then
+        step "uv" "the uv at $_SETUP_UV_PROBE_MISS did not answer --version twice; installing the pinned release"
+    elif [ -n "${_SETUP_UV_LOOKED:-}" ]; then
+        step "uv" "no installed uv at $_SETUP_UV_LOOKED; installing the pinned release"
+    fi
     _SETUP_UV_PINNED_OK=false
     if _setup_install_uv_pinned; then
         _SETUP_UV_PINNED_OK=true
@@ -3057,6 +3501,48 @@ _setup_supported_gfx_from_name() {
     printf '%s\n' "$_sup_gfx_out"
 }
 
+# Mirror of install.sh's table, held to it by tests/studio/install/test_rocm_arch_table_parity.py,
+# which looks both helpers up by install.sh's names: keep the _amd_* prefix, not this file's _setup_*.
+_amd_gfx_is_shadowing_integrated() {
+    case "$1" in
+        gfx90c|gfx1013|gfx1033|gfx1035|gfx1036|gfx1103|gfx1153) return 0 ;;
+    esac
+    return 1
+}
+
+# Pick the card to install for when enumeration put an integrated GPU first (#7776). gfx906 is
+# never a candidate: naming it on a mixed host strands BOTH cards. install.sh also requires a
+# torch wheel route; deliberately omitted, since this arch selects a llama.cpp bundle resolved
+# per gfx installer-side, not a repo.amd.com wheel family. Do not "restore" that filter.
+_amd_prefer_discrete_gfx() {
+    _apdg_devs="$1"
+    _apdg_sel="$2"
+    if [ -z "$_apdg_sel" ] || ! _amd_gfx_is_shadowing_integrated "$_apdg_sel"; then
+        printf '%s' "$_apdg_sel"
+        return 0
+    fi
+    # A mask the user SET is their own device choice: `+x`, not `-n`, so empty still counts.
+    if [ -n "${HIP_VISIBLE_DEVICES+x}" ] || [ -n "${ROCR_VISIBLE_DEVICES+x}" ] || \
+       [ -n "${CUDA_VISIBLE_DEVICES+x}" ]; then
+        printf '%s' "$_apdg_sel"
+        return 0
+    fi
+    # Here-doc, not a pipe: a piped `while` is a subshell, and an early break SIGPIPEs under pipefail.
+    _apdg_pick=""
+    while IFS= read -r _apdg_g; do
+        if [ -n "$_apdg_g" ] && [ "$_apdg_g" != gfx906 ] && \
+           ! _amd_gfx_is_shadowing_integrated "$_apdg_g"; then
+            _apdg_pick="$_apdg_g"
+            break
+        fi
+    done <<EOF
+$_apdg_devs
+EOF
+    # All-integrated host, or no list: keep the pick. Never returns empty for a nonempty selection.
+    [ -n "$_apdg_pick" ] || _apdg_pick="$_apdg_sel"
+    printf '%s' "$_apdg_pick"
+}
+
 # NVIDIA priority: classify NVIDIA first and skip the AMD probes entirely on
 # a usable-NVIDIA host (mirrors _has_rocm_gpu in install_python_stack.py).
 # This also keeps a wedged rocminfo/amd-smi from hanging setup before the
@@ -3147,6 +3633,27 @@ elif [ "$_setup_amd_detected" = true ]; then
     if [ -z "$_setup_gfx" ]; then
         _setup_gfx=$(printf '%s\n' "$_setup_gfx_all" | awk -v idx="$_setup_vis_idx" \
             'NF && !seen[$0]++ { a[n++]=$0 } END { if(idx>=n) idx=0; if(n>0) print a[idx+0] }')
+    fi
+    # The arch resolved above is what --rocm-gfx forwards below, so an iGPU enumerated first
+    # takes the ROCm bundle while torch targets the dGPU (#7776; #11143 saw gfx1036 ahead of a
+    # gfx1200). Runs before, and is skipped under, the UNSLOTH_ROCM_GFX_ARCH override, so a
+    # declared arch wins with no repick line printed above the line that overrules it.
+    # Candidates: the records, else $_setup_gfx_all, the only inventory left on the amd-smi path.
+    _setup_gfx_pref=""
+    if [ -z "${UNSLOTH_ROCM_GFX_ARCH:-}" ]; then
+        _setup_gfx_cands="$_setup_gfx_all"
+        if [ -n "$_setup_amd_records" ]; then
+            _setup_gfx_cands=$(printf '%s\n' "$_setup_amd_records" | awk -F'|' '$1 != "" { print $1 }')
+        fi
+        _setup_gfx_pref=$(_amd_prefer_discrete_gfx "$_setup_gfx_cands" "$_setup_gfx")
+    fi
+    if [ -n "$_setup_gfx_pref" ] && [ "$_setup_gfx_pref" != "$_setup_gfx" ]; then
+        substep "Integrated $_setup_gfx enumerated first; installing for discrete $_setup_gfx_pref"
+        substep "Set UNSLOTH_ROCM_GFX_ARCH=$_setup_gfx to target the integrated GPU instead."
+        _setup_gfx="$_setup_gfx_pref"
+        # Re-pair the banner name; empty beats pairing the new arch with the APU's name.
+        _setup_mkt=$(printf '%s\n' "$_setup_amd_records" | awk -F'|' -v gfx="$_setup_gfx" \
+            '$1 == gfx { print $2; exit }')
     fi
     # UNSLOTH_ROCM_GFX_ARCH env override (mirrors setup.ps1)
     if [ -n "${UNSLOTH_ROCM_GFX_ARCH:-}" ]; then
@@ -3305,12 +3812,107 @@ fi
 # default keeps ~/.unsloth/llama.cpp so pre-PR builds are still discovered.
 if [ -n "$STAGE_ROOT" ]; then
     UNSLOTH_HOME="$RUNTIME_ROOT"
+elif [ -n "$_MASTER_ROOT" ]; then
+    UNSLOTH_HOME="$_MASTER_ROOT"
 elif [ "$_STUDIO_HOME_IS_CUSTOM" = true ]; then
     UNSLOTH_HOME="$STUDIO_HOME"
 else
     UNSLOTH_HOME="$HOME/.unsloth"
 fi
 mkdir -p "$UNSLOTH_HOME"
+# Record the master root inside the Studio tree, for the uninstaller: UNSLOTH_HOME can be set
+# for a single command, and without the note the uninstaller removed the Studio tree and
+# stranded multi-gigabyte llama.cpp, node and whisper.cpp trees beside it.
+#
+# Only for a master root (the other branches derive UNSLOTH_HOME from paths the uninstaller
+# already knows), and only when a reader will honour it: both rejected shapes were being
+# written, so the file on disk claimed a recorded root while every reader refused it.
+_master_root_note_is_honoured() {
+    # Canonicalised here rather than trusting the value from the top of the script: that one was
+    # resolved before the mkdir above, so a root created by this run kept its uncanonical
+    # spelling, and the containment test below is textual.
+    _mrn_root=$(CDPATH= cd -P -- "$1" 2>/dev/null && pwd -P) || _mrn_root=""
+    [ -n "$_mrn_root" ] || return 1
+    # The legacy default is the one root every reader finds without help, and both uninstallers
+    # refuse it outright. Writing it turned a one-command `UNSLOTH_HOME=$HOME/.unsloth` into a
+    # permanent portable install: every later bare launch read the note back and HF_HUB_CACHE
+    # moved off ~/.cache/huggingface, the one cache this change promises not to move.
+    _mrn_legacy=$(CDPATH= cd -P -- "${HOME:-}/.unsloth" 2>/dev/null && pwd -P) || _mrn_legacy="${HOME:-}/.unsloth"
+    [ "$_mrn_root" != "$_mrn_legacy" ] || return 1
+    # Keyed on the TREE as well, because that is what the readers key on: storage_roots'
+    # _is_legacy_studio_tree and the CLI both decline ANY note found in ~/.unsloth/studio,
+    # whatever it records. Without this, UNSLOTH_HOME=$HOME passed containment (the legacy tree
+    # is inside $HOME) and the value is not the legacy root, so the note was written, warned
+    # about nothing, and then honoured by nobody.
+    _mrn_studio=$(CDPATH= cd -P -- "$STUDIO_HOME" 2>/dev/null && pwd -P) || _mrn_studio="$STUDIO_HOME"
+    _mrn_legacy_studio=$(CDPATH= cd -P -- "${HOME:-}/.unsloth/studio" 2>/dev/null && pwd -P) \
+        || _mrn_legacy_studio="${HOME:-}/.unsloth/studio"
+    if [ "$_mrn_studio" = "$_mrn_legacy_studio" ]; then
+        echo "NOTE: the managed runtimes were installed under $_mrn_root, but Studio itself is the" >&2
+        echo "      default install at $_mrn_studio, where no reader honours a recorded root. That" >&2
+        echo "      root cannot be recorded, so a later launch or uninstall will not find them." >&2
+        echo "      Set UNSLOTH_STUDIO_HOME=$_mrn_root/studio, or re-export UNSLOTH_HOME whenever" >&2
+        echo "      you run Unsloth." >&2
+        return 1
+    fi
+    # A note must describe the tree it is written into: all four readers require the Studio
+    # directory to lie INSIDE the root it names, so a tree copied between master roots cannot
+    # aim a removal at the original install. install.sh and install.ps1 do not read UNSLOTH_HOME
+    # yet, so `UNSLOTH_HOME=/mnt/portable unsloth studio update` leaves Studio at
+    # ~/.unsloth/studio with the runtimes at /mnt/portable, which is exactly that shape: warn,
+    # rather than leave a file that reads as a recorded root and behaves as none.
+    case "$STUDIO_HOME" in
+        "$_mrn_root"|"$_mrn_root"/*) return 0 ;;
+    esac
+    echo "NOTE: the managed runtimes were installed under $_mrn_root, but Studio itself lives at" >&2
+    echo "      $STUDIO_HOME, which is outside it. That root cannot be recorded, so a later launch" >&2
+    echo "      or uninstall will not find them. Set UNSLOTH_STUDIO_HOME=$_mrn_root/studio, or" >&2
+    echo "      re-export UNSLOTH_HOME whenever you run Unsloth." >&2
+    return 1
+}
+if [ -n "$_MASTER_ROOT" ] && [ -z "$STAGE_ROOT" ] && _master_root_note_is_honoured "$UNSLOTH_HOME"; then
+    if mkdir -p "$STUDIO_HOME/share" 2>/dev/null; then
+        # Staged then renamed: a reader catching a half-written note would name a truncated
+        # path, and this note licenses deletions. mktemp rather than "$$", as
+        # _uv_cache_root_is_writable states above: a redirection into a predictable name follows
+        # a symlink anyone who can write share/ could have precreated there.
+        if ! _mrn_tmp=$(mktemp "$STUDIO_HOME/share/.unsloth-master-root.XXXXXX" 2>/dev/null); then
+            _mrn_tmp=""
+        fi
+        if [ -n "$_mrn_tmp" ] && printf '%s\n' "$UNSLOTH_HOME" > "$_mrn_tmp" 2>/dev/null; then
+            mv -f "$_mrn_tmp" "$STUDIO_HOME/share/.unsloth-master-root" 2>/dev/null \
+                || rm -f "$_mrn_tmp" 2>/dev/null || true
+        elif [ -n "$_mrn_tmp" ]; then
+            rm -f "$_mrn_tmp" 2>/dev/null || true
+        fi
+        unset _mrn_tmp
+    fi
+fi
+# Clear a note an earlier run left naming the legacy default root, whatever this run was asked
+# to do. The gate above stops new ones, but an install that already has one keeps reading it
+# back on every bare launch -- portable mode on, the Hugging Face hub cache moved off
+# ~/.cache/huggingface -- and no later `unsloth studio update` would ever pass through the write
+# block to correct it, since that block only runs when UNSLOTH_HOME is set again. Narrow on
+# purpose: this is the single value both uninstallers already refuse, so removing it takes
+# nothing any reader was entitled to act on. A note naming any other root is left alone, since
+# an unreadable or unexpected one may simply describe an install this run cannot see.
+if [ -f "$STUDIO_HOME/share/.unsloth-master-root" ]; then
+    _mrn_old=$(head -n 1 "$STUDIO_HOME/share/.unsloth-master-root" 2>/dev/null \
+        | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//') || _mrn_old=""
+    if [ -n "$_mrn_old" ]; then
+        case "$_mrn_old" in
+            "~") _mrn_old="${HOME:-}" ;;
+            "~/"*) _mrn_old="${HOME:-}/${_mrn_old#'~/'}" ;;
+        esac
+        _mrn_old_canon=$(CDPATH= cd -P -- "$_mrn_old" 2>/dev/null && pwd -P) || _mrn_old_canon=""
+        [ -n "$_mrn_old_canon" ] && _mrn_old="$_mrn_old_canon"
+        _mrn_legacy=$(CDPATH= cd -P -- "${HOME:-}/.unsloth" 2>/dev/null && pwd -P) || _mrn_legacy="${HOME:-}/.unsloth"
+        if [ "$_mrn_old" = "$_mrn_legacy" ]; then
+            rm -f "$STUDIO_HOME/share/.unsloth-master-root" 2>/dev/null || true
+        fi
+    fi
+    unset _mrn_old _mrn_old_canon
+fi
 LLAMA_CPP_DIR="$UNSLOTH_HOME/llama.cpp"
 LLAMA_SERVER_BIN="$LLAMA_CPP_DIR/build/bin/llama-server"
 _NEED_LLAMA_SOURCE_BUILD=false
@@ -3655,8 +4257,8 @@ if [ -n "${UNSLOTH_LOCAL_LLAMA_CPP_DIR:-}" ]; then
         # for a custom UNSLOTH_STUDIO_HOME (the assert would otherwise follow the
         # link into the user's dir and reject it as unowned).
         [ -L "$LLAMA_CPP_DIR" ] && rm -f "$LLAMA_CPP_DIR"
-        if [ "$_STUDIO_HOME_IS_CUSTOM" = true ]; then
-            _assert_studio_owned_or_absent "$LLAMA_CPP_DIR" "llama.cpp install"
+        if [ "$_RUNTIME_ROOT_IS_CUSTOM" = true ]; then
+            _assert_studio_owned_or_absent "$LLAMA_CPP_DIR" "llama.cpp install" "$_RUNTIME_ROOT_IS_CUSTOM"
         fi
         rm -rf "$LLAMA_CPP_DIR" || true
         if [ -e "$LLAMA_CPP_DIR" ]; then
@@ -3681,8 +4283,8 @@ fi
 # swap only reaches its own guards after the whole build, so check here instead.
 # Local-link paths are excluded: they already replaced or reused the tree above.
 if [ "$_LOCAL_LLAMA_CPP_LINKED" != true ]; then
-    if [ "$_STUDIO_HOME_IS_CUSTOM" = true ]; then
-        _assert_studio_owned_or_absent "$LLAMA_CPP_DIR" "llama.cpp install"
+    if [ "$_RUNTIME_ROOT_IS_CUSTOM" = true ]; then
+        _assert_studio_owned_or_absent "$LLAMA_CPP_DIR" "llama.cpp install" "$_RUNTIME_ROOT_IS_CUSTOM"
     fi
     if _studio_dir_unreadable "$LLAMA_CPP_DIR"; then
         _path_access_denied "$LLAMA_CPP_DIR" "llama.cpp install"
@@ -3712,8 +4314,8 @@ else
     # why: install_llama_prebuilt.py uses os.replace(), which would displace
     # an unrelated $UNSLOTH_STUDIO_HOME/llama.cpp before the source-build
     # ownership check below ever runs.
-    if [ "$_STUDIO_HOME_IS_CUSTOM" = true ]; then
-        _assert_studio_owned_or_absent "$LLAMA_CPP_DIR" "llama.cpp install"
+    if [ "$_RUNTIME_ROOT_IS_CUSTOM" = true ]; then
+        _assert_studio_owned_or_absent "$LLAMA_CPP_DIR" "llama.cpp install" "$_RUNTIME_ROOT_IS_CUSTOM"
     fi
     # The ownership check above misses the default cache; stop before pathlib
     # turns an unreadable one into a traceback.
@@ -3786,7 +4388,7 @@ else
         else
             step "llama.cpp" "prebuilt installed and validated"
         fi
-        if [ "$_STUDIO_HOME_IS_CUSTOM" = true ] && [ -d "$LLAMA_CPP_DIR" ]; then
+        if [ "$_RUNTIME_ROOT_IS_CUSTOM" = true ] && [ -d "$LLAMA_CPP_DIR" ]; then
             : > "$LLAMA_CPP_DIR/$_STUDIO_OWNED_MARKER" 2>/dev/null || true
         fi
         print_installed_llama_prebuilt_release "$LLAMA_CPP_DIR"
@@ -3864,7 +4466,7 @@ if [ "$_NEED_LLAMA_SOURCE_BUILD" = true ] && \
    [ -x "$LLAMA_CPP_DIR/build/bin/llama-quantize" ]; then
     step "llama.cpp" "existing source build found; skipping rebuild"
     ln -sf build/bin/llama-quantize "$LLAMA_CPP_DIR/llama-quantize"
-    if [ "$_STUDIO_HOME_IS_CUSTOM" = true ]; then
+    if [ "$_RUNTIME_ROOT_IS_CUSTOM" = true ]; then
         : > "$LLAMA_CPP_DIR/$_STUDIO_OWNED_MARKER" 2>/dev/null || true
     fi
     _NEED_LLAMA_SOURCE_BUILD=false
@@ -4425,7 +5027,7 @@ else
         fi
         # Swap only after build succeeds -- preserves existing install on failure
         if [ "$BUILD_OK" = true ]; then
-            _assert_studio_owned_or_absent "$LLAMA_CPP_DIR" "llama.cpp install"
+            _assert_studio_owned_or_absent "$LLAMA_CPP_DIR" "llama.cpp install" "$_RUNTIME_ROOT_IS_CUSTOM"
             # || true: without it a raw rm error aborts under errexit to a bare exit
             # code, build stranded. Keep stderr: rm names the exact subpath, we cannot.
             rm -rf "$LLAMA_CPP_DIR" || true
@@ -4503,7 +5105,7 @@ if [ "$_LLAMA_CPP_DEGRADED" = true ] \
 fi
 
 if [ ! -L "$LLAMA_CPP_DIR" ] && {
-    [ "$_STUDIO_HOME_IS_CUSTOM" != true ] ||
+    [ "$_RUNTIME_ROOT_IS_CUSTOM" != true ] ||
         [ -f "$LLAMA_CPP_DIR/$_STUDIO_OWNED_MARKER" ] ||
         _studio_owned_adoptable "$LLAMA_CPP_DIR"
 }; then
@@ -4522,8 +5124,8 @@ if [ -n "${WHISPER_SERVER_PATH:-}" ] || [ -n "${UNSLOTH_WHISPER_CPP_PATH:-}" ]; 
 elif [ "${UNSLOTH_SKIP_WHISPER_INSTALL:-0}" = "1" ]; then
     verbose_substep "whisper.cpp: install skipped (UNSLOTH_SKIP_WHISPER_INSTALL=1)"
 else
-    if [ "$_STUDIO_HOME_IS_CUSTOM" = true ]; then
-        _assert_studio_owned_or_absent "$WHISPER_CPP_DIR" "whisper.cpp install"
+    if [ "$_RUNTIME_ROOT_IS_CUSTOM" = true ]; then
+        _assert_studio_owned_or_absent "$WHISPER_CPP_DIR" "whisper.cpp install" "$_RUNTIME_ROOT_IS_CUSTOM"
     fi
     _WHISPER_CMD=(python "$SCRIPT_DIR/install_whisper_prebuilt.py" --install-dir "$WHISPER_CPP_DIR")
     if [ -n "${UNSLOTH_WHISPER_RELEASE_TAG:-}" ]; then
@@ -4555,7 +5157,7 @@ else
         else
             step "whisper.cpp" "prebuilt installed"
         fi
-        if [ "$_STUDIO_HOME_IS_CUSTOM" = true ] && [ -d "$WHISPER_CPP_DIR" ]; then
+        if [ "$_RUNTIME_ROOT_IS_CUSTOM" = true ] && [ -d "$WHISPER_CPP_DIR" ]; then
             : > "$WHISPER_CPP_DIR/$_STUDIO_OWNED_MARKER" 2>/dev/null || true
         fi
         rm -f "$_WHISPER_LOG"
@@ -4581,7 +5183,7 @@ else
                     env UNSLOTH_HOME="$UNSLOTH_HOME" sh "$_WHISPER_BUILD"; then
                 _WHISPER_RECOVERED=true
                 step "whisper.cpp" "source build installed"
-                if [ "$_STUDIO_HOME_IS_CUSTOM" = true ] && [ -d "$WHISPER_CPP_DIR" ]; then
+                if [ "$_RUNTIME_ROOT_IS_CUSTOM" = true ] && [ -d "$WHISPER_CPP_DIR" ]; then
                     : > "$WHISPER_CPP_DIR/$_STUDIO_OWNED_MARKER" 2>/dev/null || true
                 fi
             else

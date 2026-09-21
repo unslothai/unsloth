@@ -342,6 +342,17 @@ class TestResolverEnvironmentRestore:
         install, setup = _ps_copies("Get-UvSafePath")
         assert install == setup
 
+    def test_the_alias_is_only_used_once_it_resolves(self):
+        """A space-free 8.3 name is not necessarily a name that exists (#11290).
+
+        This helper's result reaches UV_OVERRIDE and --find-links, which every later uv call reads,
+        so an alias that does not resolve breaks the whole resolve rather than one file.
+        """
+        for source, body in zip(("install.ps1", "studio/setup.ps1"), _ps_copies("Get-UvSafePath")):
+            assert (
+                "Test-Path -LiteralPath $short" in body
+            ), f"{source}: Get-UvSafePath accepts an 8.3 alias on 'contains no space' alone"
+
     def test_the_dependency_that_makes_this_necessary_is_still_there(self):
         """If studio.txt ever drops ddgs, this restore stops being load-bearing for brotli."""
         studio_txt = PACKAGE_ROOT / "studio" / "backend" / "requirements" / "studio.txt"
@@ -2410,7 +2421,14 @@ class TestThePipFallbackKeepsTheIndexArguments:
             clear_env(UV_INDEX_ENV),
             "$env:UV_NO_CONFIG = '1'",
             UV_SAFE_PATH,
-            functions(SETUP_SRC, "Get-WoaUvConfigIndexPolicy", "Get-WoaDependencyIndexArgs"),
+            functions(
+                SETUP_SRC,
+                "Test-UvEnvFlag",
+                "Test-PipEnvFlag",
+                "Test-NoIndexRequested",
+                "Get-WoaUvConfigIndexPolicy",
+                "Get-WoaDependencyIndexArgs",
+            ),
             f"$StudioHome = '{tmp_path}'",
             "$WinArm64Venv = $true",
             f"$UseUv = ${str(use_uv).lower()}",
@@ -3895,6 +3913,8 @@ class TestThePyPIProbeHonoursUvConfiguration:
             # Read-WoaUvTomlIndexKeys scans for quotes, so its two scanners come with it.
             functions(
                 INSTALL_SRC,
+                "Test-UvEnvFlag",
+                "Test-NoIndexRequested",
                 "Test-WoaUrlIsPublicPyPI",
                 "Remove-WoaTomlComment",
                 "Split-WoaTomlKey",
@@ -4255,6 +4275,7 @@ class TestTheEarlyNvidiaProbesAreBounded:
             _function_source(INSTALL_SRC, "Invoke-NvidiaSmiBounded"),
             # The probe resolves its executable through this; without it the call is
             # unresolved and the probe answers False for a reason the test is not about.
+            _function_source(INSTALL_SRC, "Get-NvidiaSmiCandidatePaths"),
             _function_source(INSTALL_SRC, "Get-WoaNvidiaSmiPath"),
             _function_source(INSTALL_SRC, "Test-WoaNvidiaPresent"),
             f"$env:PATH = '{tmp_path}' + [System.IO.Path]::PathSeparator + $env:PATH",
@@ -4274,6 +4295,7 @@ class TestTheEarlyNvidiaProbesAreBounded:
             # Required, and easy to miss: an unresolved lookup makes Get-WoaDriverCudaVersion
             # return $null before it ever calls nvidia-smi, so the "[]" below would pass
             # without the timeout this test exists to bound ever being exercised.
+            _function_source(INSTALL_SRC, "Get-NvidiaSmiCandidatePaths"),
             _function_source(INSTALL_SRC, "Get-WoaNvidiaSmiPath"),
             _function_source(INSTALL_SRC, "Get-WoaDriverCudaVersion"),
             f"$env:PATH = '{tmp_path}' + [System.IO.Path]::PathSeparator + $env:PATH",
@@ -5111,6 +5133,9 @@ class TestTheDependencyIndexFollowsTheResolverPolicy:
             "\n".join(f"$env:{k} = '{v}'" for k, v in env.items()),
             functions(
                 src,
+                "Test-UvEnvFlag",
+                "Test-PipEnvFlag",
+                "Test-NoIndexRequested",
                 "Remove-WoaTomlComment",
                 "Split-WoaTomlKey",
                 "Read-WoaUvTomlIndexKeys",
@@ -5266,6 +5291,9 @@ class TestTheDependencyIndexFollowsTheResolverPolicy:
     @pytest.mark.parametrize(
         "name",
         [
+            "Test-UvEnvFlag",
+            "Test-PipEnvFlag",
+            "Test-NoIndexRequested",
             "Remove-WoaTomlComment",
             "Split-WoaTomlKey",
             "Read-WoaUvInlineIndexArray",
@@ -5408,6 +5436,9 @@ class TestANoIndexNativeTrioStillSeesItsSources:
             SUBSTEP_NOOP,
             functions(
                 INSTALL_SRC,
+                "Test-UvEnvFlag",
+                "Test-PipEnvFlag",
+                "Test-NoIndexRequested",
                 "Get-UvSafePath",
                 "Get-WoaUvConfigIndexPolicy",
                 "Get-WoaDependencyIndexArgs",
@@ -5447,6 +5478,10 @@ class TestANoIndexNativeTrioStillSeesItsSources:
     def test_no_index_yields_for_the_command_and_is_put_back(self, value, yields):
         script = _script(
             substep_collector(),
+            # The yield is gated on Test-UvEnvFlag, and PowerShell does not hoist: without
+            # the lift the call is a non-terminating command-not-found, the `if` sees $null
+            # and the block quietly never runs, which pwsh still exits 0 on.
+            functions(INSTALL_SRC, "Test-UvEnvFlag", "Test-NoIndexRequested"),
             "$script:WoaNativeCudaTorch = $true",
             "$VenvPlatform = 'win-arm64'",
             f"$env:UV_NO_INDEX = '{value}'",
@@ -5478,7 +5513,14 @@ class TestANoIndexNativeTrioStillSeesItsSourcesInSetup:
             "$env:UV_NO_CONFIG = '1'",
             "\n".join(f"$env:{k} = '{v}'" for k, v in env.items()),
             UV_SAFE_PATH,
-            functions(SETUP_SRC, "Get-WoaUvConfigIndexPolicy", "Get-WoaDependencyIndexArgs"),
+            functions(
+                SETUP_SRC,
+                "Test-UvEnvFlag",
+                "Test-PipEnvFlag",
+                "Test-NoIndexRequested",
+                "Get-WoaUvConfigIndexPolicy",
+                "Get-WoaDependencyIndexArgs",
+            ),
             f"$StudioHome = '{tmp_path}'",
             "$WinArm64Venv = $true",
             "$UseUv = $true",
@@ -5526,6 +5568,8 @@ class TestANoIndexNativeTrioStillSeesItsSourcesInSetup:
     def test_no_index_yields_for_the_command_and_is_put_back(self, value, yields):
         script = _script(
             substep_collector(),
+            # As above: the UV_NO_INDEX yield calls Test-UvEnvFlag, so it comes with it.
+            functions(SETUP_SRC, "Test-UvEnvFlag", "Test-NoIndexRequested"),
             "$WinArm64Venv = $true",
             f"$env:UV_NO_INDEX = '{value}'",
             "$env:UV_EXCLUDE_NEWER = '2026-01-01'",
@@ -5551,6 +5595,10 @@ class TestANoIndexNativeTrioStillSeesItsSourcesInSetup:
     def test_off_arm64_nothing_is_touched(self):
         script = _script(
             SUBSTEP_NOOP,
+            # The arm64 guard means the yield never runs here, so the reader is never
+            # called. Lifted anyway: a command-not-found inside a lifted block is
+            # non-terminating, so without it this test could only ever pass.
+            functions(SETUP_SRC, "Test-UvEnvFlag", "Test-NoIndexRequested"),
             "$WinArm64Venv = $false",
             "$env:UV_NO_INDEX = '1'",
             "$_woaCutoffSaved = @{}",
@@ -5701,8 +5749,22 @@ class TestBothNvidiaSmiProbesSearchTheSameLocations:
     def test_the_shared_helper_lists_every_supported_location(self):
         body = _function_source(INSTALL_SRC, "Get-WoaNvidiaSmiPath")
         assert "Get-Command nvidia-smi" in body
+        # The candidate list moved into Get-NvidiaSmiCandidatePaths, which install.ps1 and
+        # studio/setup.ps1 share, so the WoA probe and the ordinary Windows probe cannot drift
+        # apart either. What this class is about is unchanged: one list, and both probes on it.
+        assert "Get-NvidiaSmiCandidatePaths" in body, "the WoA probe no longer uses the shared list"
+        candidates = _function_source(INSTALL_SRC, "Get-NvidiaSmiCandidatePaths")
+        assert '"nvidia-smi.exe"' in candidates
+        # The list builds each directory with Join-Path, so a whole path literal never appears in
+        # it. Check the parts, which is what it actually promises. Behaviour, including the
+        # locations added beyond these two, is driven for real against a planted filesystem in
+        # tests/studio/test_nvidia_smi_discovery.ps1.
         for location in self.LOCATIONS:
-            assert location in body, location
+            directory, _, leaf = location.rpartition("\\")
+            assert leaf == "nvidia-smi.exe", location
+            root, _, rest = directory.partition("\\")
+            assert root in candidates, location
+            assert f'"{rest}"' in candidates, location
 
     @pytest.mark.parametrize("name", ("Test-WoaNvidiaPresent", "Get-WoaDriverCudaVersion"))
     def test_neither_probe_keeps_its_own_candidate_list(self, name):
@@ -5730,16 +5792,25 @@ class TestBothNvidiaSmiProbesSearchTheSameLocations:
             if "Get-WoaNvidiaSmiPath" in _function_source(INSTALL_SRC, name)
         ]
         assert callers, "neither probe routes through the shared lookup any more"
+        # Follow the chain rather than naming one helper: Get-WoaNvidiaSmiPath now calls
+        # Get-NvidiaSmiCandidatePaths, and a composition missing the second one fails in exactly
+        # the silent way this test exists to catch.
+        needed = ["Get-WoaNvidiaSmiPath"]
+        for helper in needed:
+            for callee in ("Get-NvidiaSmiCandidatePaths",):
+                if callee in _function_source(INSTALL_SRC, helper) and callee not in needed:
+                    needed.append(callee)
         own = pathlib.Path(__file__).read_text(encoding = "utf-8")
         for name in callers:
             for match in re.finditer(rf'_function_source\(INSTALL_SRC, "{re.escape(name)}"\)', own):
                 # The _script(...) call this appears in, back to its opening paren.
                 start = own.rindex("_script(", 0, match.start())
                 block = own[start : own.index("\n        )", match.end())]
-                assert '_function_source(INSTALL_SRC, "Get-WoaNvidiaSmiPath")' in block, (
-                    f"a composed script injects {name}, which calls Get-WoaNvidiaSmiPath, "
-                    "without injecting that helper"
-                )
+                for helper in needed:
+                    assert f'_function_source(INSTALL_SRC, "{helper}")' in block, (
+                        f"a composed script injects {name}, which reaches {helper}, "
+                        "without injecting that helper"
+                    )
 
     def test_the_guard_this_protects_is_still_there(self):
         # If the CUDA-major check ever goes away, this whole class is pointless; say so loudly.
@@ -6028,10 +6099,11 @@ class TestFoldedCallerOverridesDoNotOutliveTheRun:
     def test_the_exit_path_removes_it(self):
         """Beside the torch overrides file, which is deleted on exit for the same reason."""
         tail = INSTALL_SRC[INSTALL_SRC.index("try {\n    Install-UnslothStudio @args") :]
-        assert (
-            "Remove-Item -LiteralPath $script:WoaSessionOverrides -Force -ErrorAction SilentlyContinue"
-            in tail
-        )
+        # Through the guarded helper: Remove-Item's -ErrorAction does not cover the terminating
+        # error the FileSystem provider raises for a path it cannot resolve (#11290), so an
+        # unguarded removal here would abort the rest of the sweep.
+        assert "Remove-UnslothTempFileQuietly -Path $script:WoaSessionOverrides" in tail
+        assert "Remove-UnslothTempFileQuietly -Path $script:TorchOverridesFile" in tail
         head = INSTALL_SRC[: INSTALL_SRC.index("try {\n    Install-UnslothStudio @args")]
         assert head.rstrip().endswith(
             "$script:WoaSessionOverrides = $null\n$script:TorchOverridesFile = $null"

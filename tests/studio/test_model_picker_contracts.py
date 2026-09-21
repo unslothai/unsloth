@@ -2355,10 +2355,18 @@ def test_remembered_slots_are_read_through_the_cached_repo_alias():
     blanks on the model change and the next Save writes the blank over the saved
     ``n_parallel``, locally and through the server mirror."""
     config = " ".join(_read("features/model-picker/model-config/per-model-config.ts").split())
-    # The raw identifier still wins, so a path-keyed record is never shadowed.
+    # The raw identifier still wins, so a path-keyed record is never shadowed. A standalone
+    # file drops the reported quant first, since nothing is ever written under that key.
     assert (
-        "const direct = resolveInitialConfig(modelId, ggufVariant); "
+        "const direct = resolveInitialConfig(modelId, standalone ? null : ggufVariant); "
         "if (direct.remembered) {" in config
+    )
+    # Then the label, the order override_lookup_candidates reads a loose .gguf in: a picker
+    # before #7473 keyed the label, and those records are still on disk.
+    assert (
+        "if (standalone && ggufVariant) { const labelled = "
+        "resolveInitialConfig(modelId, ggufVariant); if (labelled.remembered) { "
+        "return labelled; } }" in config
     )
     assert "const alias = publicModelId(modelId);" in config
     # Only a namespaced collapse, the rule residentModelIdMatches applies: every other
@@ -2649,16 +2657,22 @@ def test_auth_retries_tag_transport_failures_like_the_first_attempt():
     src = (WORKDIR / "studio" / "frontend" / "src" / "features" / "auth" / "api.ts").read_text(
         encoding = "utf-8"
     )
-    assert src.count("unslothTransportFailure: true") == 2, "one tag per message, in one helper"
-    tagger = src.split("function asTransportFailure", 1)[1].split("\n}\n", 1)[0]
+    tagger = src.split("async function asTransportFailure", 1)[1].split("\n}\n", 1)[0]
     assert "err instanceof TypeError" in tagger
     assert "navigator.onLine === false" in tagger
+    # Counted against the helper's own raises, not pinned to a number that a new message would trip.
+    assert tagger.count("unslothTransportFailure: true") == tagger.count("new Error(")
+    assert tagger.count("unslothTransportFailure: true") >= 2
+    assert src.count("unslothTransportFailure: true") == tagger.count(
+        "unslothTransportFailure: true"
+    ), "every tag belongs to the one helper"
     retry = src.split("async function retryWithCurrentToken", 1)[1]
     retry = retry.split("\n}\n", 1)[0]
     assert "fetchWithTauriNetworkRetry" in retry
-    assert "throw asTransportFailure(err);" in retry
+    # Awaited since #10520: dropping the await throws a pending promise and the tag is never seen.
+    assert "throw await asTransportFailure(err);" in retry
     first = src.split("export async function authFetch", 1)[1]
-    assert "throw asTransportFailure(err);" in first
+    assert "throw await asTransportFailure(err);" in first
 
 
 def test_adoption_takes_its_own_pin_before_moving_the_checkpoint():
