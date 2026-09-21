@@ -150,7 +150,7 @@ def _require_public_provider_endpoint(endpoint: str) -> None:
     from urllib.parse import urlsplit
 
     from core.inference.providers import (
-        MANAGED_PRIVATE_URL_HINT,
+        managed_private_url_hint,
         provider_address_excluding_metadata,
         public_provider_address,
     )
@@ -169,7 +169,7 @@ def _require_public_provider_endpoint(endpoint: str) -> None:
     try:
         if urlsplit(url).scheme != "https":
             raise ValueError(
-                "Managed accounts may only use HTTPS provider endpoints." + MANAGED_PRIVATE_URL_HINT
+                "Managed accounts may only use HTTPS provider endpoints." + managed_private_url_hint()
             )
         public_provider_address(url)
     except ValueError as exc:

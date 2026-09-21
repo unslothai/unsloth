@@ -615,9 +615,20 @@ _BLOCK_PRIVATE_ENV = "UNSLOTH_STUDIO_BLOCK_PRIVATE_PROVIDER_URLS"
 MANAGED_PRIVATE_URL_HINT = (
     " The installation owner can allow private and LAN addresses in Settings > General."
 )
-MANAGED_PUBLIC_ONLY_REASON = (
-    "Managed accounts may only use public-network provider base URLs." + MANAGED_PRIVATE_URL_HINT
-)
+MANAGED_PUBLIC_ONLY_TEXT = "Managed accounts may only use public-network provider base URLs."
+
+
+def managed_private_url_hint() -> str:
+    """The hint, unless this server's environment means the owner cannot act on it either.
+
+    Sending someone to a switch that is held off by ``UNSLOTH_STUDIO_BLOCK_PRIVATE_PROVIDER_URLS``
+    costs them a conversation with an owner who then finds the control disabled.
+    """
+    return "" if os.environ.get(_BLOCK_PRIVATE_ENV) == "1" else MANAGED_PRIVATE_URL_HINT
+
+
+def managed_public_only_reason() -> str:
+    return MANAGED_PUBLIC_ONLY_TEXT + managed_private_url_hint()
 
 
 # An all-numeric host is an IPv4 literal to the resolver, in decimal, octal or
@@ -922,7 +933,7 @@ def public_provider_address(url: str) -> str:
     hostname = (parts.hostname or "").rstrip(".")
     if not hostname:
         raise ValueError("Provider URL must contain a hostname.")
-    reason = MANAGED_PUBLIC_ONLY_REASON
+    reason = managed_public_only_reason()
     try:
         addresses = [ipaddress.ip_address(_canonical_host(hostname))]
     except ValueError:
@@ -1035,7 +1046,7 @@ def validate_provider_base_url(base_url: str) -> str:
     ):
         # Caller-controlled egress must not reach the owner's loopback models or LAN, unless the
         # owner has said the accounts on this installation share one local model on purpose.
-        _reject_non_public(hostname, port, scheme, MANAGED_PUBLIC_ONLY_REASON)
+        _reject_non_public(hostname, port, scheme, managed_public_only_reason())
 
     return raw.rstrip("/")
 

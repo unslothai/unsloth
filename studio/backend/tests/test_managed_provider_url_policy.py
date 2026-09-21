@@ -233,3 +233,20 @@ def test_the_recipe_guard_follows_a_later_flip(monkeypatch, as_alice):
         assert "public-network" in str(refusal.value)
     finally:
         socket.getaddrinfo = original
+
+
+@pytest.mark.parametrize("url", PRIVATE_URLS)
+def test_the_refusal_stops_naming_the_switch_when_the_environment_holds_it(
+    monkeypatch, as_alice, url
+):
+    """Sending someone to a control their owner cannot use either is worse than saying nothing."""
+    monkeypatch.setenv(setting.BLOCK_PRIVATE_ENV, "1")
+    with pytest.raises(ValueError) as refusal:
+        providers.validate_provider_base_url(url)
+    assert "Settings > General" not in str(refusal.value)
+
+    monkeypatch.delenv(setting.BLOCK_PRIVATE_ENV)
+    _allow(monkeypatch, False)
+    with pytest.raises(ValueError) as refusal:
+        providers.validate_provider_base_url(url)
+    assert "Settings > General" in str(refusal.value)
