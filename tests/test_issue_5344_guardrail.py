@@ -205,8 +205,6 @@ _PretendLinear8bitLt.__name__ = "Linear8bitLt"
 
 
 def test_fires_when_4bit_request_lands_as_8bit():
-    # A 4-bit request satisfied only by Linear8bitLt is a dropped request: the
-    # caller budgeted ~0.5 bytes/param and got ~1, so the load can still OOM.
     model = nn.Sequential(nn.Linear(4, 4), _PretendLinear8bitLt())
     with warnings.catch_warnings(record = True) as caught:
         warnings.simplefilter("always")
@@ -267,9 +265,7 @@ def test_silent_when_unquantized_module_was_configured_as_skipped():
 
 
 def test_fires_when_the_skip_list_does_not_cover_it():
-    # Negative control for the test above: same model, same call, a skip list
-    # that names something else. Without this, the suppression could be
-    # unconditional and the test above would still pass.
+    # Negative control: same model, a skip list naming something else.
     model = nn.Sequential(_PretendLinear4bit(), _SkippedOutProj())
     with warnings.catch_warnings(record = True) as caught:
         warnings.simplefilter("always")
@@ -303,8 +299,7 @@ class _ModelWithConfig(nn.Sequential):
 
 
 def test_silent_when_the_checkpoint_is_natively_the_other_width():
-    # load_in_4bit defaults to True, so loading a pre-quantized 8-bit repo with
-    # defaults must stay quiet: bnb honoured the checkpoint, nothing was dropped.
+    # load_in_4bit defaults True, so a pre-quantized 8-bit repo must stay quiet.
     model = _ModelWithConfig(
         nn.Linear(4, 4),
         _PretendLinear8bitLt(),
@@ -323,8 +318,7 @@ def test_silent_when_the_checkpoint_is_natively_the_other_width():
 
 
 def test_fires_when_the_checkpoint_declares_the_width_it_did_not_produce():
-    # Negative control: the config claims 4-bit, the modules are 8-bit. That is
-    # a real drop, so the suppression above must not swallow it.
+    # Negative control: config claims 4-bit, modules are 8-bit. A real drop.
     model = _ModelWithConfig(
         nn.Linear(4, 4),
         _PretendLinear8bitLt(),
@@ -389,8 +383,7 @@ def test_silent_when_the_bulk_weight_is_offloaded_off_the_quantized_device():
 
 
 def test_fires_when_the_bulk_weight_shares_the_quantized_device():
-    # Negative control for the test above. Same shapes, same dtypes, one device.
-    # If the placement check were unconditional this would go silent too.
+    # Negative control: same shapes and dtypes, one device.
     model = nn.Sequential(_Quantized("cpu"), _OffloadedExperts("cpu"))
     with warnings.catch_warnings(record = True) as caught:
         warnings.simplefilter("always")
@@ -431,9 +424,6 @@ _Linear4bitFloatStorage.__name__ = "Linear4bit"
 
 
 def test_float_storage_payload_counts_as_quantized_not_as_a_suspect():
-    # The packed payload is larger than the fused experts here, so if it were
-    # miscounted as a suspect the ratio would fire; and if it counted as nothing
-    # at all, the quantized_bytes > 0 gate would silence a real partial bypass.
     model = nn.Sequential(_Linear4bitFloatStorage(), _MoEFusedExpertWrapper())
     with warnings.catch_warnings(record = True) as caught:
         warnings.simplefilter("always")
@@ -448,8 +438,7 @@ def test_float_storage_payload_counts_as_quantized_not_as_a_suspect():
 
 
 def test_float_storage_still_reports_a_real_partial_bypass():
-    # Negative control: shrink the packed payload so the fused experts really do
-    # dominate. The warning must survive the type-based accounting.
+    # Negative control: the experts dominate, so the warning must survive.
     model = nn.Sequential(_Linear4bitFloatStorage(numel = 1024), _MoEFusedExpertWrapper())
     with warnings.catch_warnings(record = True) as caught:
         warnings.simplefilter("always")
@@ -514,7 +503,7 @@ def test_check_partial_false_still_catches_a_total_bypass():
 
 
 def test_the_same_model_does_warn_when_partial_checking_is_on():
-    # And the gate is really a gate: default True still runs the ratio.
+    # The gate is a gate: default True still runs the ratio.
     model = _Conv2dHeavyUNet()
     with warnings.catch_warnings(record = True) as caught:
         warnings.simplefilter("always")
