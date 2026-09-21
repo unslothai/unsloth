@@ -33,8 +33,11 @@ the test already reached, and a POSIX-only test that gets that far has a skip of
 A default argument is not a runtime use, because it is evaluated where the `def` is, and
 neither is an annotation in a module without `from __future__ import annotations`. A `def`
 nested inside another function is the other way round: nothing of it is evaluated until
-the outer one runs, so none of it can break collection. Nor is a lambda's body, though
-its defaults are.
+the outer one runs, so none of it can break collection. Nor is a lambda's body or a
+generator's, though the defaults of the one and the first iterable of the other are.
+
+The scan is deliberately incomplete and silent where it is; `_import_time_expressions`
+says exactly what it models and why everything else is skipped whole.
 """
 
 from __future__ import annotations
@@ -136,8 +139,6 @@ def _geteuid_sites(expr: ast.AST):
     for node in ast.walk(expr):
         if not isinstance(node, ast.Call):
             continue
-        # a generator handed straight to a call is consumed by it: any(...), list(...)
-        invoked.update(arg for arg in node.args if isinstance(arg, ast.GeneratorExp))
         if isinstance(node.func, ast.Lambda):
             invoked.add(node.func)
             continue
@@ -170,9 +171,10 @@ def _geteuid_sites(expr: ast.AST):
                 and not _fallback_takes(inner.args[2], node)
             ):
                 yield inner
-        if isinstance(node, ast.GeneratorExp) and node not in invoked:
+        if isinstance(node, ast.GeneratorExp):
             # `GEN = (os.geteuid() for _ in xs)` only builds a generator; nothing but the
-            # first iterable is evaluated until something iterates it
+            # first iterable is evaluated until something iterates it, and whether the
+            # call around it does cannot be read off the source: `iter(...)` does not.
             stack.append(node.generators[0].iter)
             continue
         for child in ast.iter_child_nodes(node):
@@ -300,32 +302,9 @@ def _definition_expressions(node: ast.AST, eager_annotations: bool):
         yield from (arg.annotation for arg in every if arg is not None and arg.annotation)
 
 
-TRY_STATEMENTS = (ast.Try, ast.TryStar) if hasattr(ast, "TryStar") else (ast.Try,)
-MATCH_STATEMENT = getattr(ast, "Match", None)
-
-
-def _pattern_cannot_match_nt(pattern) -> bool:
-    """For `match os.name:`, whether this case is one Windows can never take."""
-    value = getattr(pattern, "value", None)
-    return isinstance(value, ast.Constant) and value.value != "nt"
-
-
-# A handler for any of these turns a missing os.geteuid from a collection failure into a
-# branch the module handles itself. Listed generously on purpose: a scan everybody has to
-# keep green should err towards silence, not towards rejecting portable code.
-CAUGHT = frozenset(
-    {"ImportError", "AttributeError", "TypeError", "OSError", "Exception", "BaseException"}
-)
-
-
-def _catches_a_missing_geteuid(statement) -> bool:
-    for handler in statement.handlers:
-        if handler.type is None:  # bare except
-            return True
-        named = handler.type.elts if isinstance(handler.type, ast.Tuple) else [handler.type]
-        if any(isinstance(node, ast.Name) and node.id in CAUGHT for node in named):
-            return True
-    return False
+# ast.match_case is not an ast.stmt, so a `match` would otherwise read as a plain
+# statement; 3.9 has no Match at all, and then nothing can be one.
+MATCH_CASE = getattr(ast, "match_case", ())
 
 
 def _normalise_os_aliases(tree: ast.Module) -> ast.Module:
@@ -358,10 +337,24 @@ def _has_future_annotations(tree: ast.Module) -> bool:
 def _import_time_expressions(tree: ast.Module):
     """Yield the expressions evaluated when the module is imported.
 
-    Walked as statements rather than as one flat tree, because control flow decides what
-    runs: a lookup under `if os.name == "posix":` is never reached on Windows, and a
-    function body is never reached at import however deeply it is nested. Yielding whole
-    statements and walking those would report both."""
+    Walked as statements, not as one flat tree, because control flow decides what runs: a
+    lookup under `if os.name == "posix":` is never reached on Windows, and a function body
+    is never reached at import however deeply it is nested.
+
+    Deliberately incomplete, and silent where it is. Three contexts are modelled, because
+    between them they are where every real case in this tree lives and where the next one
+    will be:
+
+      - the module body and class bodies, statement by statement
+      - `if`, whose branches are taken by the Windows value of the test
+      - a definition's decorators, defaults and eager annotations, wherever it is reached
+
+    Any other compound statement (`try`, `while`, `for`, `with`, `match`) is skipped
+    whole. Modelling those means deciding whether a `try` body can raise, which branch of
+    a `match` Windows takes, whether a `while` runs at all: that is an interpreter, not a
+    lint, and every approximation of it rejects somebody's correct code. A missed lookup
+    three levels inside a module-level `while` is a cost worth paying for a check that
+    never cries wolf. It would not have missed the six sites that started this."""
     _normalise_os_aliases(tree)
     eager_annotations = not _has_future_annotations(tree)
 
@@ -386,53 +379,21 @@ def _import_time_expressions(tree: ast.Module):
             if reached is not True:
                 yield from block(statement.orelse)
             return
-        if isinstance(statement, TRY_STATEMENTS):
-            # `try: from os import geteuid / except ImportError: geteuid = None` is the
-            # portable spelling, and Windows lands in the handler. The handler, the else
-            # and the finally all still run, so they are walked.
-            if not _catches_a_missing_geteuid(statement):
-                yield from block(statement.body)
-            yield from block(statement.orelse)
-            for handler in statement.handlers:
-                yield from walk(handler)
-            yield from block(statement.finalbody)
+        if isinstance(statement, ast.AnnAssign) and not eager_annotations:
+            # `x: os.geteuid() = 1` under `from __future__ import annotations` stores the
+            # annotation as a string; the value beside it is still evaluated
+            if statement.value is not None:
+                yield statement.value
             return
-        if MATCH_STATEMENT is not None and isinstance(statement, MATCH_STATEMENT):
-            # ast.Match holds match_case children rather than statements, so the generic
-            # branch would yield the whole thing and walk every function body under it
-            yield statement.subject
-            on_os_name = _is_os_name(statement.subject)
-            for case in statement.cases:
-                if on_os_name and _pattern_cannot_match_nt(case.pattern):
-                    continue
-                if case.guard is not None:
-                    yield case.guard
-                yield from block(case.body)
-            return
-        if isinstance(statement, ast.ExceptHandler):
-            if statement.type is not None:
-                yield statement.type
-            yield from block(statement.body)
-            return
-        nested = [
-            child
+        if any(
+            isinstance(child, (ast.stmt, ast.ExceptHandler, MATCH_CASE))
             for child in ast.iter_child_nodes(statement)
-            if isinstance(child, (ast.stmt, ast.ExceptHandler))
-        ]
-        if not nested:
-            # a plain statement holds only expressions, and the WHOLE statement is
-            # yielded rather than its parts: a guard lives in the enclosing `or`, and
-            # yielding the bare call too would report every guarded site as unguarded
-            yield statement
-            return
-        # a compound statement whose header runs at import (for/while/with/try/match):
-        # the header expressions here, the blocks through walk
-        for _, value in ast.iter_fields(statement):
-            for item in value if isinstance(value, list) else [value]:
-                if isinstance(item, (ast.stmt, ast.ExceptHandler)):
-                    yield from walk(item)
-                elif isinstance(item, ast.AST):
-                    yield item
+        ):
+            return  # unmodelled control flow, skipped whole; see the docstring
+        # a plain statement holds only expressions, and the WHOLE statement is yielded
+        # rather than its parts: a guard lives in the enclosing `or`, and yielding the
+        # bare call too would report every guarded site as unguarded
+        yield statement
 
     yield from block(tree.body)
 
@@ -632,47 +593,6 @@ def test_a_statement_level_platform_guard_is_honoured():
     assert _flagged("import os\nif is_ci():\n    ROOT = os.geteuid() == 0\n")
 
 
-def test_a_function_body_under_a_compound_statement_is_still_runtime():
-    """A def nested in a `for` or a `with` is reached at import, but its BODY is not, so a
-    lookup there cannot break collection however deep the statement nesting goes."""
-    assert not _flagged(
-        "import os\n"
-        "with open('x') as fh:\n"
-        "    for _ in range(1):\n"
-        "        def helper():\n"
-        "            return os.geteuid()\n"
-    )
-    # the def's own decorator under the same nesting IS reached
-    assert _flagged(
-        "import os, pytest\n"
-        "with open('x') as fh:\n"
-        "    for _ in range(1):\n"
-        '        @pytest.mark.skipif(os.geteuid() == 0, reason = "x")\n'
-        "        def test_a(): pass\n"
-    )
-
-
-def test_a_try_that_catches_the_failure_is_the_portable_spelling():
-    """`try: from os import geteuid / except ImportError: geteuid = None` is how portable
-    code is written, and Windows lands in the handler. Rejecting it would be the scan
-    telling people to stop doing the right thing."""
-    assert not _flagged(
-        "try:\n    from os import geteuid\nexcept ImportError:\n    geteuid = None\n"
-    )
-    assert not _flagged(
-        "import os\ntry:\n    ROOT = os.geteuid() == 0\nexcept AttributeError:\n    ROOT = False\n"
-    )
-    # a handler that cannot catch it leaves the body reported
-    assert _flagged(
-        "import os\ntry:\n    ROOT = os.geteuid() == 0\nexcept KeyError:\n    ROOT = False\n"
-    )
-    # and a handler the try body CAN reach is still walked, since that is what Windows
-    # runs when the import fails
-    assert _flagged(
-        "import os\ntry:\n    import numpy\nexcept ImportError:\n    ROOT = os.geteuid() == 0\n"
-    )
-
-
 def test_a_getattr_fallback_has_to_be_callable():
     """getattr(os, "geteuid", None)() picks None on Windows and raises TypeError there,
     which Linux never shows because the real function is picked. A literal fallback is
@@ -747,22 +667,41 @@ def test_an_invoked_fallback_lambda_runs_its_body_on_windows():
     assert not _flagged('import os\nROOT = getattr(os, "geteuid", lambda: 1)() == 0\n')
 
 
+def test_unmodelled_control_flow_is_skipped_whole():
+    """try, while, for, with and match are not modelled, and the scan says nothing about
+    what is inside them rather than guessing. Each of these is code somebody writes, and
+    each needed a different piece of Python semantics to judge: whether the try body can
+    raise, which branch Windows takes, whether the loop runs at all."""
+    for source in (
+        "try:\n    from os import geteuid\nexcept ImportError:\n    geteuid = None\n",
+        'import os\nwhile os.name == "posix":\n    ROOT = os.geteuid() == 0\n',
+        "import os\nfor _ in range(1):\n    ROOT = os.geteuid() == 0\n",
+        "import os\nwith open('x') as fh:\n    ROOT = os.geteuid() == 0\n",
+        'import os\nmatch os.name:\n    case "posix":\n        ROOT = os.geteuid() == 0\n',
+    ):
+        assert not _flagged(source), source
+    # and a def under one of them is skipped with it, decorator and all
+    assert not _flagged(
+        "import os, pytest\n"
+        "for _ in range(1):\n"
+        '    @pytest.mark.skipif(os.geteuid() == 0, reason = "x")\n'
+        "    def test_a(): pass\n"
+    )
+
+
 def test_a_generator_expression_does_not_look_anything_up_yet():
-    """`GEN = (os.geteuid() for _ in xs)` builds a generator and evaluates nothing but the
-    first iterable. Consumed on the spot, it does."""
+    """`(os.geteuid() for _ in xs)` builds a generator and evaluates nothing but the first
+    iterable. Whether the call around it consumes the generator is not readable from the
+    source, `iter(...)` does not, so the body stays deferred either way."""
     assert not _flagged("import os\nGEN = (os.geteuid() for _ in range(1))\n")
-    assert _flagged("import os\nROOT = any(os.geteuid() == 0 for _ in range(1))\n")
+    assert not _flagged("import os\nROOT = any(os.geteuid() == 0 for _ in range(1))\n")
     # the first iterable IS evaluated where the generator is written
     assert _flagged("import os\nGEN = (x for x in [os.geteuid()])\n")
 
 
-def test_match_cases_are_statement_blocks():
-    """ast.Match holds match_case children, not statements, so the generic branch would
-    walk every function body under it. And `case "posix"` is one Windows never takes."""
-    assert not _flagged(
-        'import os\nmatch os.name:\n    case "posix":\n        ROOT = os.geteuid() == 0\n'
-    )
-    assert _flagged('import os\nmatch os.name:\n    case "nt":\n        ROOT = os.geteuid() == 0\n')
-    assert not _flagged(
-        "import os\nmatch value:\n    case 1:\n        def helper():\n            return os.geteuid()\n"
-    )
+def test_an_annotation_is_a_string_under_the_future_import():
+    """`x: os.geteuid() = 1` looks nothing up when the module carries
+    `from __future__ import annotations`, though the value beside it is still evaluated."""
+    assert _flagged("import os\nx: os.geteuid() = 1\n")
+    assert not _flagged("from __future__ import annotations\nimport os\nx: os.geteuid() = 1\n")
+    assert _flagged("from __future__ import annotations\nimport os\nx: int = os.geteuid()\n")
