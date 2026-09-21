@@ -6,9 +6,12 @@ import {
   type GgufVariantsResponse,
   buildLocalInventoryRows,
   fetchInventorySource,
+  ggufVariantsMatch,
   hubTokenHeader,
+  residentModelIdMatches,
   useDeviceInventoryStore,
 } from "@/features/hub";
+// These request/cache helpers are internal leaf APIs.
 import {
   ggufVariantsQuery,
   runBoundedVariantsRequest,
@@ -18,10 +21,6 @@ import {
   isInventoryStampFresh,
 } from "../hub/inventory/inventory-freshness";
 import { withAbort } from "../hub/lib/abort-signals";
-import {
-  ggufVariantsMatch,
-  residentModelIdMatches,
-} from "../model-picker/model-config/model-identity";
 import type { resolveRunConfigTarget } from "./target";
 
 type RunConfigTarget = NonNullable<ReturnType<typeof resolveRunConfigTarget>>;

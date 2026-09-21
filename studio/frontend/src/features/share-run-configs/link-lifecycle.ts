@@ -1,5 +1,9 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
 import { clearNewChatDraft, useChatRuntimeStore } from "@/features/chat";
 import { toast } from "@/lib/toast";
+// The model-picker barrel imports this feature; use its draft and handoff modules.
 import { modelConfigDraftKey } from "../model-picker/model-config/model-config-draft";
 import {
   clearModelConfigHandoff,
@@ -40,7 +44,7 @@ export function navigateRunConfig({
     !canOpen ||
     !settingsHydrated ||
     runConfigInbox.getSnapshot() !== pending ||
-    !(pending.value.model ?? currentModel)
+    !(pending.selectedModel ?? pending.value.model ?? currentModel)
   ) {
     return;
   }
@@ -95,7 +99,7 @@ export function openRunConfigTarget({
     !canOpen ||
     !settingsHydrated ||
     !routeReady ||
-    !(pending.value.model ?? currentModel) ||
+    !(pending.selectedModel ?? pending.value.model ?? currentModel) ||
     location.pathname !== "/chat" ||
     new URLSearchParams(location.searchStr).get("new") !== pending.id ||
     runConfigInbox.getSnapshot() !== pending
@@ -105,6 +109,7 @@ export function openRunConfigTarget({
   const target = resolveRunConfigTarget(
     pending.value,
     useChatRuntimeStore.getState(),
+    pending.selectedModel,
   );
   if (!target) {
     return;

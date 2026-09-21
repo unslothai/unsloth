@@ -7,7 +7,9 @@ import {
   AUTH_SESSION_STORED_EVENT,
   hasAuthToken,
 } from "@/features/auth";
+import { isTauri } from "@/lib/api-base";
 import { toast } from "@/lib/toast";
+// Leaf modules keep startup intake independent of the routing and model-picker barrels.
 import { createDeepLinkIntentGate } from "../deep-links/deep-link-intent";
 import { parseUnslothDeepLink } from "../deep-links/parse-deep-link";
 import { markModelConfigDraftEdited } from "../model-picker/model-config/model-config-draft";
@@ -24,6 +26,7 @@ import {
 
 const acceptNativeIntent = createDeepLinkIntentGate(2_000);
 const nativeScheme = /^unsloth:/i;
+// Only the startup URL is eligible; hash changes during this session are ignored.
 let startupUrl = typeof window === "undefined" ? "" : window.location.href;
 const recoveryKey = "unsloth.run-config-login.v1";
 let awaitingLogin = false;
@@ -127,15 +130,7 @@ function receiveParsedLink(
   return true;
 }
 
-export function receiveRunConfigUrl(url: string): boolean {
-  const parsed = parseRunConfigLink(url);
-  if (parsed.kind !== "unrelated") {
-    acceptNativeIntent.clear();
-  }
-  return receiveParsedLink(parsed, true);
-}
-
-export function receiveStartupRunConfigUrl(currentUrl: string): void {
+export function receiveStartupRunConfigUrl(): void {
   let recovery: {
     url?: unknown;
     replaceHistory?: boolean;
@@ -152,8 +147,7 @@ export function receiveStartupRunConfigUrl(currentUrl: string): void {
   startupUrl = "";
   if (
     !initial ||
-    receiveRunConfigUrl(currentUrl) ||
-    receiveRunConfigUrl(initial)
+    (!isTauri && receiveParsedLink(parseRunConfigLink(initial), true))
   ) {
     return;
   }

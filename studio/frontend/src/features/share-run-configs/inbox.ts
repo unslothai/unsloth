@@ -8,6 +8,7 @@ import type { SharedRunConfig } from "./links";
 export type RunConfigRequest = {
   id: string;
   value: SharedRunConfig;
+  selectedModel?: string;
   draftKey?: string;
   replaceHistory?: boolean;
 };

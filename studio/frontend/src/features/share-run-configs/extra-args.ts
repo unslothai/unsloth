@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+// Leaf imports avoid a cycle through the model-picker barrel.
 import {
   EXTRA_ARGS_MAX_BYTES,
   EXTRA_ARGS_MAX_TOKENS,
@@ -130,7 +131,9 @@ function sharedValueError(
   const equals = token.indexOf("=");
   if (permits === null) {
     return equals === -1
-      ? upstreamError([token])
+      ? flagName.test(token)
+        ? null
+        : upstreamError([token])
       : `${flag} does not take a value.`;
   }
   const argument =
@@ -139,7 +142,9 @@ function sharedValueError(
     return `${flag} requires a value.`;
   }
   return permits(argument)
-    ? upstreamError(equals === -1 ? [token, argument] : [token])
+    ? flagName.test(token)
+      ? null
+      : upstreamError(equals === -1 ? [token, argument] : [token])
     : `${flag} has an invalid or unsupported value.`;
 }
 

@@ -51,6 +51,7 @@ function harness(sharedLinks = true) {
       import.meta.url,
     ),
     {
+      "@/lib/api-base": { isTauri: true },
       "@/lib/toast": {
         toast: { error: (message: string) => errors.push(message) },
       },

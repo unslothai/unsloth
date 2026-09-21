@@ -2539,6 +2539,7 @@ export function ModelConfigPage({
     pinnableGpuContext(gpuDevices, resolvedIsDiffusion).indexKind ?? null;
   const update = (patch: Partial<PerModelConfig>) => {
     cancelRunConfigImportForEdit(draftKey);
+    setImportedConfig(null);
     // Every control lands here and nothing else does: the hydration effect's own sanitising
     // writes go through setConfig, and marking those would have the read refuse its result.
     markModelConfigDraftEdited(draftKey);
@@ -3118,6 +3119,7 @@ export function ModelConfigPage({
       onChange={(event) => {
         if (isRunConfigEditorChange(event)) {
           cancelRunConfigImportForEdit(draftKey);
+          setImportedConfig(null);
         }
       }}
     >
@@ -3149,7 +3151,11 @@ export function ModelConfigPage({
         </div>
       )}
 
-      <SharedRunConfigReview config={importedConfig} />
+      <SharedRunConfigReview
+        config={importedConfig}
+        draftConfig={configState}
+        currentConfig={config}
+      />
       <div className="space-y-5">
         {target.isGguf && (
           <>
@@ -3328,6 +3334,7 @@ export function ModelConfigPage({
             checked={remember}
             onCheckedChange={(checked) => {
               cancelRunConfigImportForEdit(draftKey);
+              setImportedConfig(null);
               // Not in setRemember, which the save path calls again to settle the box. An
               // unticked Remember is a pending Forget the next read would otherwise re-tick.
               markModelConfigDraftEdited(draftKey);
@@ -3376,6 +3383,7 @@ export function ModelConfigPage({
             disabled={atDefault}
             onClick={() => {
               cancelRunConfigImportForEdit(draftKey);
+              setImportedConfig(null);
               // Reset writes through setConfig, not update, so it marks the draft itself.
               markModelConfigDraftEdited(draftKey);
               // And drops the raw edit: token equality alone would make the discarded text

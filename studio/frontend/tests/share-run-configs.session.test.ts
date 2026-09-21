@@ -21,8 +21,10 @@ const { createRunConfigInbox } = await import(
 const events = await import("../src/features/auth/session-events.ts");
 const sessionMark = "unsloth_auth_session_mark";
 const run = "unsloth://run?model=owner/model&nParallel=3";
+const browserRun = "http://localhost/chat#run?model=owner/model&nParallel=3";
+const otherBrowserRun = "http://localhost/chat#run?model=owner/other&nParallel=4";
 
-function harness() {
+function harness({ url = "http://localhost/chat", desktop = false } = {}) {
   const browser = installLocalStorageFake();
   const recovery = new Map<string, string>();
   const sessionStorage = {
@@ -31,7 +33,7 @@ function harness() {
     removeItem: (key: string) => recovery.delete(key),
   };
   Object.assign(globalThis, { sessionStorage });
-  window.location.href = "http://localhost/chat";
+  window.location.href = url;
   let signedIn = false;
   let nextId = 0;
   const errors: string[] = [];
@@ -44,6 +46,7 @@ function harness() {
         import.meta.url,
       ),
       {
+        "@/lib/api-base": { isTauri: desktop },
         "@/lib/toast": {
           toast: { error: (message: string) => errors.push(message) },
         },
@@ -88,25 +91,23 @@ function harness() {
 
 test("login recovery survives the account purge and document replacement exactly once", () => {
   for (const native of [true, false]) {
-    const app = harness();
+    const app = harness({ url: native ? "http://localhost/chat" : browserRun });
     const before = app.loadDocument();
     if (native) before.receiver.receiveSharedRunConfigUrls([run]);
-    else
-      before.receiver.receiveRunConfigUrl(
-        "http://localhost/chat#run?model=owner/model&nParallel=3",
-      );
+    else before.receiver.receiveStartupRunConfigUrl();
     app.recovery.clear();
     app.signIn();
     assert.equal(app.recovery.size, 1);
     before.dispose();
+    window.location.href = "http://localhost/chat";
     const after = app.loadDocument();
-    after.receiver.receiveStartupRunConfigUrl(window.location.href);
+    after.receiver.receiveStartupRunConfigUrl();
     assert.equal(after.inbox.getSnapshot()?.value.config.nParallel, 3);
     assert.equal(after.inbox.getSnapshot()?.replaceHistory, !native);
     assert.equal(app.recovery.size, 0);
     after.dispose();
     const next = app.loadDocument();
-    next.receiver.receiveStartupRunConfigUrl(window.location.href);
+    next.receiver.receiveStartupRunConfigUrl();
     assert.equal(next.inbox.getSnapshot(), null);
     next.dispose();
     assert.deepEqual(app.errors, []);
@@ -149,7 +150,7 @@ for (const change of ["session", "expired", "invalid", "newer"] as const) {
       after.receiver.receiveSharedRunConfigUrls([
         "unsloth://open_from_hf?model=owner/other",
       ]);
-    after.receiver.receiveStartupRunConfigUrl(window.location.href);
+    after.receiver.receiveStartupRunConfigUrl();
     assert.equal(after.inbox.getSnapshot(), null);
     assert.equal(app.recovery.size, 0);
     after.dispose();
@@ -170,3 +171,77 @@ test("binding or cancelling an in-document import removes login recovery", () =>
     doc.dispose();
   }
 });
+
+test("startup imports the captured URL once even after a router redirect or anchor change", () => {
+  for (const current of ["http://localhost/login", otherBrowserRun]) {
+    const app = harness({ url: browserRun });
+    const doc = app.loadDocument();
+    window.location.href = current;
+    doc.receiver.receiveStartupRunConfigUrl();
+    const pending = doc.inbox.getSnapshot();
+    assert.equal(pending?.value.config.nParallel, 3);
+    assert.equal(pending?.replaceHistory, true);
+    assert.ok(pending);
+    doc.inbox.clear(pending.id);
+    doc.receiver.receiveStartupRunConfigUrl();
+    assert.equal(doc.inbox.getSnapshot(), null);
+    assert.deepEqual(app.errors, []);
+    doc.dispose();
+  }
+});
+
+test("anchors added before or after startup intake cannot create an import", () => {
+  for (const url of [browserRun, `${browserRun}&unknown=true`]) {
+    const app = harness();
+    const doc = app.loadDocument();
+    window.location.href = url;
+    doc.receiver.receiveStartupRunConfigUrl();
+    assert.equal(doc.inbox.getSnapshot(), null);
+    doc.receiver.receiveStartupRunConfigUrl();
+    assert.equal(doc.inbox.getSnapshot(), null);
+    assert.deepEqual(app.errors, []);
+    doc.dispose();
+  }
+});
+
+for (const origin of [
+  "http://tauri.localhost",
+  "tauri://localhost",
+  "http://localhost:1420",
+]) {
+  test(`desktop startup ignores web fragments at ${origin} and still accepts native links`, () => {
+    const app = harness({
+      url: `${origin}/chat#run?model=owner/model&nParallel=4`,
+      desktop: true,
+    });
+    const doc = app.loadDocument();
+    doc.receiver.receiveStartupRunConfigUrl();
+    assert.equal(doc.inbox.getSnapshot(), null);
+    doc.receiver.receiveSharedRunConfigUrls([run]);
+    assert.equal(doc.inbox.getSnapshot()?.value.config.nParallel, 3);
+    assert.equal(doc.inbox.getSnapshot()?.replaceHistory, false);
+    assert.deepEqual(app.errors, []);
+    doc.dispose();
+  });
+}
+
+for (const newer of [
+  run,
+  "unsloth://run?unknown=true",
+  "unsloth://open_from_hf?model=owner/other",
+]) {
+  test(`startup cannot supersede the newer native intent ${newer}`, () => {
+    const app = harness({ url: otherBrowserRun });
+    const doc = app.loadDocument();
+    doc.receiver.receiveSharedRunConfigUrls([newer]);
+    const pending = doc.inbox.getSnapshot();
+    doc.receiver.receiveStartupRunConfigUrl();
+    assert.equal(doc.inbox.getSnapshot(), pending);
+    assert.equal(
+      pending?.value.config.nParallel,
+      newer === run ? 3 : undefined,
+    );
+    assert.equal(app.errors.length, newer.includes("unknown") ? 1 : 0);
+    doc.dispose();
+  });
+}

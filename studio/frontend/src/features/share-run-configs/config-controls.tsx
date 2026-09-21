@@ -9,6 +9,7 @@ import {
   useState,
   useSyncExternalStore,
 } from "react";
+// The model-picker barrel imports this feature; use its draft module directly.
 import { modelConfigDraftKey } from "../model-picker/model-config/model-config-draft";
 import { SHARED_RUN_CONFIG_FOCUS_ATTRIBUTE } from "./editor-events";
 import { scheduleRunConfigImport } from "./import-config";

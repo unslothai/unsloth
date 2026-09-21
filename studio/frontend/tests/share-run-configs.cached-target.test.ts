@@ -31,8 +31,8 @@ const { hubTokenHeader } = await import(
 const { buildLocalInventoryRows } = await import(
   "../src/features/hub/inventory/view-models.ts"
 );
-const identity = await import(
-  "../src/features/model-picker/model-config/model-identity.ts"
+const { ggufVariantsMatch, residentModelIdMatches } = await import(
+  "../src/features/hub/lib/model-identity.ts"
 );
 const { resolveRunConfigTarget } = await import(
   "../src/features/share-run-configs/target.ts"
@@ -124,7 +124,9 @@ function harness({
       },
       "@/features/hub": {
         buildLocalInventoryRows,
+        ggufVariantsMatch,
         hubTokenHeader,
+        residentModelIdMatches,
         useDeviceInventoryStore: {
           getState: () =>
             Object.fromEntries(
@@ -150,7 +152,6 @@ function harness({
       "../chat/api/gguf-variants-request": variantsRequest,
       "../hub/inventory/inventory-freshness": inventoryFreshness,
       "../hub/lib/abort-signals": abortSignals,
-      "../model-picker/model-config/model-identity": identity,
     },
   );
   return {
@@ -160,6 +161,33 @@ function harness({
       resolveCachedRunConfigTarget(input, { inventoryVersion: 0, signal }),
   };
 }
+
+test("recipient-selected local files, native folders and Ollama references need no inventory or network lookup", async () => {
+  for (const [id, isGguf] of [
+    ["/Users/test/Models/model.gguf", true],
+    ["C:\\Models\\model.gguf", true],
+    ["\\\\server\\models\\model.gguf", true],
+    ["/mnt/c/Models/model.gguf", true],
+    ["ollama-manifest:registry.ollama.ai/library/llama3/latest", true],
+    ["/home/models/native", false],
+  ] as const) {
+    const app = harness({ inventoryError: true });
+    const target = resolveRunConfigTarget(
+      { config: { nParallel: 3 }, isGguf: false, ggufVariant: "Q4_K_M" },
+      selection,
+      id,
+    );
+    assert.ok(target);
+    const resolved = await app.resolve(target);
+    assert.equal(resolved.id, id);
+    assert.equal(resolved.meta.isGguf, isGguf);
+    assert.equal(resolved.meta.ggufVariant, undefined);
+    assert.equal(resolved.meta.source, "local");
+    assert.equal(wantsDownloadManagerStaging({ id, ...resolved.meta }), false);
+    assert.deepEqual(app.scans, []);
+    assert.deepEqual(app.requests, []);
+  }
+});
 
 for (const loadId of [
   "/secondary/cache/models--owner--Model-GGUF/snapshots/pinned",

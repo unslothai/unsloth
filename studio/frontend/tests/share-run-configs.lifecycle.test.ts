@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
 import assert from "node:assert/strict";
 import test from "node:test";
 import type * as Lifecycle from "../src/features/share-run-configs/link-lifecycle.ts";
@@ -42,6 +45,7 @@ function harness() {
   const calls: unknown[] = [];
   const errors: string[] = [];
   const lookups: {
+    target: Target;
     signal: AbortSignal;
     result: ReturnType<typeof deferred<Target>>;
   }[] = [];
@@ -90,11 +94,11 @@ function harness() {
       },
       "./cached-target": {
         resolveCachedRunConfigTarget: (
-          _target: Target,
+          target: Target,
           options: { signal: AbortSignal },
         ) => {
           const result = deferred<Target>();
-          lookups.push({ signal: options.signal, result });
+          lookups.push({ target, signal: options.signal, result });
           return result.promise;
         },
       },
@@ -230,6 +234,36 @@ test("availability binds the canonical draft before handing off the editor", asy
     app.inbox.getSnapshot()?.draftKey,
     modelConfigDraftKey(app.target.id, "Q4_K_M"),
   );
+});
+
+test("a recipient's local model choice carries a settings-only import through navigation and handoff", async () => {
+  const app = harness();
+  const pending = {
+    ...app.nav.pending,
+    selectedModel: "C:\\Models\\model.gguf",
+    value: { config: { nParallel: 3 } },
+  };
+  app.inbox.submit(pending);
+  app.navigateRunConfig({ ...app.nav, pending });
+  assert.ok(
+    app.calls.some((call) => Array.isArray(call) && call[0] === "navigate"),
+  );
+  app.openRunConfigTarget({ ...app.open, pending });
+  assert.equal(app.lookups.length, 1);
+  const target = app.lookups[0].target;
+  assert.equal(target.id, pending.selectedModel);
+  assert.equal(target.meta.source, "local");
+  assert.equal(target.meta.isGguf, true);
+  app.lookups[0].result.resolve(target);
+  await settle();
+  const key = modelConfigDraftKey(pending.selectedModel, undefined);
+  assert.equal(app.inbox.getSnapshot()?.draftKey, key);
+  assert.deepEqual(app.calls.at(-1), [
+    "handoff",
+    { requestId: pending.id, ...target },
+  ]);
+  assert.deepEqual(app.inbox.take(pending.id, key), pending.value.config);
+  assert.equal(app.inbox.take(pending.id, key), null);
 });
 
 for (const failure of [false, true]) {

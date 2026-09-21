@@ -1,7 +1,11 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { SharedRunConfigControls as Controls } from "../src/features/share-run-configs/config-controls.tsx";
 import type { SharedRunConfigReview as Review } from "../src/features/share-run-configs/config-review.tsx";
+import type { SharedRunConfigLinkEditor as LinkEditor } from "../src/features/share-run-configs/link-editor.tsx";
 import * as events from "../src/features/share-run-configs/editor-events.ts";
 import {
   installLocalStorageFake,
@@ -25,6 +29,8 @@ const { modelConfigDraftKey } = await import(
 const { createRunConfigInbox } = await import(
   "../src/features/share-run-configs/inbox.ts"
 );
+const targetModule = await import("../src/features/share-run-configs/target.ts");
+const { reconcileGpuSelection } = await import("../src/hooks/gpu-selection.ts");
 
 function elements(node: unknown): StubElement[] {
   if (Array.isArray(node)) return node.flatMap(elements);
@@ -181,15 +187,25 @@ test("review renders field labels and full prompt/argument values as text withou
     ),
     { "react/jsx-runtime": stubJsxRuntime(), "./fields": fields },
   );
-  assert.equal(SharedRunConfigReview({ config: null }), null);
+  assert.equal(
+    SharedRunConfigReview({
+      config: null,
+      draftConfig: DEFAULT_PER_MODEL_CONFIG,
+      currentConfig: DEFAULT_PER_MODEL_CONFIG,
+    }),
+    null,
+  );
   const prompt = "<img src=x onerror=alert(1)>\nContinue after thinking";
   const args = ["--rope-scaling", "yarn"];
+  const imported = {
+    reasoningBudgetMessage: prompt,
+    llamaExtraArgs: args,
+    maxSeqLength: null,
+  };
   const tree = SharedRunConfigReview({
-    config: {
-      reasoningBudgetMessage: prompt,
-      llamaExtraArgs: args,
-      maxSeqLength: null,
-    },
+    config: imported,
+    draftConfig: { ...DEFAULT_PER_MODEL_CONFIG, ...imported },
+    currentConfig: { ...DEFAULT_PER_MODEL_CONFIG, ...imported },
   });
   assert.ok(text(tree).includes("Settings changed by link (3)"));
   assert.ok(text(tree).includes("Reasoning budget message"));
@@ -202,14 +218,219 @@ test("review renders field labels and full prompt/argument values as text withou
     ),
   );
   assert.ok(
-    text(SharedRunConfigReview({ config: {} })).includes("already match"),
+    text(
+      SharedRunConfigReview({
+        config: {},
+        draftConfig: DEFAULT_PER_MODEL_CONFIG,
+        currentConfig: DEFAULT_PER_MODEL_CONFIG,
+      }),
+    ).includes("already match"),
+  );
+  for (const changed of [
+    { reasoningBudgetMessage: "Edited through the other editor" },
+    { llamaExtraArgs: ["--threads", "4"] },
+    DEFAULT_PER_MODEL_CONFIG,
+  ]) {
+    assert.equal(
+      SharedRunConfigReview({
+        config: imported,
+        draftConfig: { ...DEFAULT_PER_MODEL_CONFIG, ...imported, ...changed },
+        currentConfig: { ...DEFAULT_PER_MODEL_CONFIG, ...imported, ...changed },
+      }),
+      null,
+    );
+  }
+  assert.notEqual(
+    SharedRunConfigReview({
+      config: imported,
+      draftConfig: { ...DEFAULT_PER_MODEL_CONFIG, ...imported },
+      currentConfig: {
+        ...DEFAULT_PER_MODEL_CONFIG,
+        ...imported,
+        llamaExtraArgs: [...args],
+      },
+    }),
+    null,
   );
 });
 
+test("GPU reconciliation keeps imported settings visible and explains removed or filtered GPU choices", () => {
+  const { SharedRunConfigReview } = loadWithStubs<{
+    SharedRunConfigReview: typeof Review;
+  }>(
+    new URL(
+      "../src/features/share-run-configs/config-review.tsx",
+      import.meta.url,
+    ),
+    { "react/jsx-runtime": stubJsxRuntime(), "./fields": fields },
+  );
+  const imported = {
+    selectedGpuIds: [0, 1],
+    selectedGpuIndexKind: "physical" as const,
+    nParallel: 3,
+  };
+  const draftConfig = { ...DEFAULT_PER_MODEL_CONFIG, ...imported };
+  for (const [indexKind, deviceIds] of [
+    [null, []],
+    ["vulkan", [0, 1]],
+    ["physical", [0, 2]],
+  ] as const) {
+    const reconciled = reconcileGpuSelection(
+      imported.selectedGpuIds,
+      imported.selectedGpuIndexKind,
+      indexKind,
+      [...deviceIds],
+    );
+    const currentConfig = {
+      ...draftConfig,
+      selectedGpuIds: reconciled.ids ?? undefined,
+      selectedGpuIndexKind:
+        reconciled.ids === null ? undefined : reconciled.indexKind,
+    };
+    const tree = SharedRunConfigReview({
+      config: imported,
+      draftConfig,
+      currentConfig,
+    });
+    assert.ok(text(tree).includes("Settings changed by link (3)"));
+    const values = elements(tree)
+      .filter((element) => element.type === "dd")
+      .map(text);
+    assert.ok(values.includes("3"));
+    assert.ok(
+      values.some((value) =>
+        value.startsWith(reconciled.ids ? "[0]" : "Default"),
+      ),
+    );
+    assert.ok(text(tree).includes("Requested: [0,1]"));
+    assert.ok(text(tree).includes("unsupported values will not be used"));
+  }
+});
+
+test("settings-only chooser keeps the import while accepting recipient-local models", () => {
+  const inbox = createRunConfigInbox();
+  const dialog = Symbol("dialog");
+  const input = Symbol("input");
+  const button = Symbol("button");
+  let modelInput = "";
+  const runtime = { params: { checkpoint: "" }, settingsHydrated: true };
+  const { SharedRunConfigLinkEditor } = loadWithStubs<{
+    SharedRunConfigLinkEditor: typeof LinkEditor;
+  }>(
+    new URL(
+      "../src/features/share-run-configs/link-editor.tsx",
+      import.meta.url,
+    ),
+    {
+      "react/jsx-runtime": stubJsxRuntime(),
+      react: {
+        useState: () => [
+          modelInput,
+          (value: string) => {
+            modelInput = value;
+          },
+        ],
+        useRef: () => ({ current: null }),
+        useEffect: () => undefined,
+      },
+      "@/components/ui/button": { Button: button },
+      "@/components/ui/input": { Input: input },
+      "@/components/ui/dialog": {
+        Dialog: dialog,
+        DialogContent: "content",
+        DialogDescription: "description",
+        DialogHeader: "header",
+        DialogTitle: "title",
+      },
+      "@/features/auth": {
+        hasAuthToken: () => true,
+        mustChangePassword: () => false,
+      },
+      "@/features/chat": {
+        isExternalModelId: () => false,
+        useChatRuntimeStore: (select: (state: typeof runtime) => unknown) =>
+          select(runtime),
+      },
+      "@/features/hub": {
+        useHfTokenStore: () => "",
+        useInventoryVersion: () => 0,
+      },
+      "@tanstack/react-router": {
+        useNavigate: () => undefined,
+        useRouterState: () => ({ pathname: "/chat" }),
+      },
+      "./inbox": { runConfigInbox: inbox },
+      "./link-lifecycle": {},
+      "./target": targetModule,
+    },
+  );
+  const value = { config: { nParallel: 3 } };
+  const render = () => {
+    const pending = inbox.getSnapshot();
+    assert.ok(pending);
+    return elements(SharedRunConfigLinkEditor({ pending }));
+  };
+  for (const model of [
+    "owner/model",
+    "/home/models/my model.gguf",
+    "C:\\Models\\my model.gguf",
+    "\\\\server\\models\\model.gguf",
+    "/mnt/c/Models/model.gguf",
+    "./models/native",
+    "~/models/native",
+    "ollama-manifest:registry.ollama.ai/library/llama3/latest",
+  ]) {
+    inbox.submit({ id: "local-choice", value });
+    modelInput = "";
+    let tree = render();
+    assert.equal(
+      tree.find((element) => element.type === dialog)?.props.open,
+      true,
+    );
+    assert.equal(
+      tree.find((element) => element.type === button)?.props.disabled,
+      true,
+    );
+    const modelField = tree.find((element) => element.type === input);
+    assert.ok(modelField);
+    (modelField.props.onChange as (event: unknown) => void)({
+      target: { value: model },
+    });
+    assert.equal(inbox.getSnapshot()?.value, value);
+    tree = render();
+    assert.equal(
+      tree.find((element) => element.type === button)?.props.disabled,
+      false,
+      model,
+    );
+    const form = tree.find((element) => element.type === "form");
+    assert.ok(form);
+    (form.props.onSubmit as (event: unknown) => void)({
+      preventDefault: () => undefined,
+    });
+    assert.equal(inbox.getSnapshot()?.selectedModel, model);
+    assert.equal(inbox.getSnapshot()?.value, value);
+    assert.equal(
+      render().find((element) => element.type === dialog)?.props.open,
+      false,
+    );
+  }
+  for (const model of [
+    "",
+    "https://example.com/model.gguf",
+    "external::provider::model",
+    "/model\u0000.gguf",
+    "/model\ud800.gguf",
+  ]) {
+    assert.equal(targetModule.isRunConfigModelInput(model), false, model);
+  }
+});
+
 test("startup intake remains mounted while navigation UI loads only for a pending link", () => {
+  const browser = installLocalStorageFake();
   const inbox = createRunConfigInbox();
   const effects: (() => void | (() => void))[] = [];
-  const received: string[] = [];
+  let received = 0;
   const editor = Symbol("lazy link editor");
   let authChanged: (() => void) | undefined;
   let disposed = false;
@@ -236,16 +457,15 @@ test("startup intake remains mounted while navigation UI loads only for a pendin
             revisions += 1;
           },
         ],
-        useRef: (current: unknown) => ({ current }),
         useSyncExternalStore: (_subscribe: unknown, get: () => unknown) =>
           get(),
         useEffect: (effect: () => void | (() => void)) => effects.push(effect),
       },
-      "@tanstack/react-router": { useRouterState: () => ({ href: "/chat" }) },
       "./inbox": { runConfigInbox: inbox },
       "./receive-link": {
-        receiveStartupRunConfigUrl: (url: string) => received.push(url),
-        receiveRunConfigUrl: (url: string) => received.push(url),
+        receiveStartupRunConfigUrl: () => {
+          received += 1;
+        },
         subscribeRunConfigSession: (onChange: () => void) => {
           authChanged = onChange;
           return () => {
@@ -257,8 +477,14 @@ test("startup intake remains mounted while navigation UI loads only for a pendin
   );
   assert.equal(SharedRunConfigLinkHandler(), null);
   const cleanup = effects[0]();
-  effects[1]();
-  assert.deepEqual(received, ["http://localhost/chat"]);
+  assert.equal(received, 1);
+  for (const event of ["hashchange", "popstate"]) {
+    window.location.href =
+      "http://localhost/chat#run?model=owner/model&nParallel=3";
+    browser.fireWindowEvent(event, {});
+    assert.equal(inbox.getSnapshot(), null);
+    assert.equal(received, 1);
+  }
   inbox.submit({ id: "link", value: { config: { nParallel: 3 } } });
   const shown = elements(SharedRunConfigLinkHandler()).find(
     (element) => element.type === editor,

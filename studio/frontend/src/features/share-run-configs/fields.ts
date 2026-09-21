@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import type { PerModelConfig } from "@/features/model-picker";
+// Leaf imports avoid a cycle through the model-picker barrel.
 import {
   CACHE_RAM_MAX,
   CACHE_RAM_MIN,

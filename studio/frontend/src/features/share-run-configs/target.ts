@@ -2,16 +2,33 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import type { ModelConfigHandoffRequest } from "@/features/model-picker";
+import { looksLikeLocalPath } from "@/lib/local-path";
+// Leaf imports keep target resolution out of the chat/model-picker barrel cycle.
 import { isExternalModelId } from "../chat/external-providers";
 import type { ChatLoraSummary, ChatModelSummary } from "../chat/types/runtime";
 import {
   ggufVariantsMatch,
+  isOllamaModelId,
   isStandaloneGgufPath,
   residentModelIdMatches,
 } from "../model-picker/model-config/model-identity";
 import { type SharedRunConfig, isShareableModelId } from "./links";
 
 const ggufName = /(?:-gguf|\.gguf)$/i;
+const invalidCharacters = /[\p{Cc}\p{Cs}]/u;
+
+export function isRunConfigModelInput(model: string): boolean {
+  return (
+    model.length > 0 &&
+    model === model.trim() &&
+    !invalidCharacters.test(model) &&
+    !model.includes("://") &&
+    (isShareableModelId(model) ||
+      looksLikeLocalPath(model) ||
+      isStandaloneGgufPath(model) ||
+      isOllamaModelId(model))
+  );
+}
 
 type ModelSelection = {
   params: { checkpoint: string };
@@ -44,8 +61,9 @@ function resolveFormat(
 export function resolveRunConfigTarget(
   value: SharedRunConfig,
   selection: ModelSelection,
+  selectedModel?: string,
 ): Pick<ModelConfigHandoffRequest, "id" | "meta"> | null {
-  const id = value.model ?? selection.params.checkpoint;
+  const id = selectedModel ?? value.model ?? selection.params.checkpoint;
   if (!id || isExternalModelId(id)) {
     return null;
   }
@@ -60,7 +78,9 @@ export function resolveRunConfigTarget(
   const knownFormat =
     (sameModel ? selection.loadedIsGguf : null) ?? model?.isGguf ?? loraFormat;
   const { isGguf, ggufVariant } = resolveFormat(
-    value,
+    selectedModel && (isStandaloneGgufPath(id) || isOllamaModelId(id))
+      ? { ...value, isGguf: true, ggufVariant: undefined }
+      : value,
     id,
     knownFormat,
     sameModel ? selection.activeGgufVariant : null,

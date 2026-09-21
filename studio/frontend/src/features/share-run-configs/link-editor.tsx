@@ -11,18 +11,17 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { hasAuthToken, mustChangePassword } from "@/features/auth";
-import { useChatRuntimeStore } from "@/features/chat";
+import { isExternalModelId, useChatRuntimeStore } from "@/features/chat";
 import { useHfTokenStore, useInventoryVersion } from "@/features/hub";
 import { useNavigate, useRouterState } from "@tanstack/react-router";
 import { useEffect, useRef, useState } from "react";
-import { isExternalModelId } from "../chat/external-providers";
 import { type RunConfigRequest, runConfigInbox } from "./inbox";
 import {
   type RunConfigNavigation,
   navigateRunConfig,
   openRunConfigTarget,
 } from "./link-lifecycle";
-import { isShareableModelId } from "./links";
+import { isRunConfigModelInput } from "./target";
 
 export function SharedRunConfigLinkEditor({
   pending,
@@ -90,6 +89,7 @@ export function SharedRunConfigLinkEditor({
     canOpen &&
     settingsHydrated &&
     !pending.draftKey &&
+    !pending.selectedModel &&
     !pending.value.model &&
     !currentModel;
   return (
@@ -105,37 +105,38 @@ export function SharedRunConfigLinkEditor({
         <DialogHeader>
           <DialogTitle>Choose a model</DialogTitle>
           <DialogDescription>
-            This link contains settings without a model. Enter a model ID to
-            open its run settings.
+            This link contains settings without a model. Enter a Hugging Face
+            model ID, a local model path on this Studio machine, or an Ollama
+            reference to review the settings with that model.
           </DialogDescription>
         </DialogHeader>
         <form
           className="space-y-4"
           onSubmit={(event) => {
             event.preventDefault();
-            if (!isShareableModelId(modelInput.trim())) {
+            if (!isRunConfigModelInput(modelInput.trim())) {
               return;
             }
             runConfigInbox.submit({
               ...pending,
-              value: { ...pending.value, model: modelInput.trim() },
+              selectedModel: modelInput.trim(),
             });
             setModelInput("");
           }}
         >
           <label htmlFor="shared-run-model" className="text-sm font-medium">
-            Hugging Face model ID
+            Model ID or local path
           </label>
           <Input
             id="shared-run-model"
             autoComplete="off"
-            placeholder="owner/model"
+            placeholder="owner/model or local model path"
             value={modelInput}
             onChange={(event) => setModelInput(event.target.value)}
           />
           <Button
             type="submit"
-            disabled={!isShareableModelId(modelInput.trim())}
+            disabled={!isRunConfigModelInput(modelInput.trim())}
           >
             Open run settings
           </Button>

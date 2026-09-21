@@ -22,7 +22,8 @@ import type { ModelPickTarget } from "@/features/model-picker";
 import { isTauri } from "@/lib/api-base";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { toast } from "@/lib/toast";
-import { useId, useState } from "react";
+import { useId, useMemo, useState } from "react";
+// Leaf imports avoid a cycle through the model-picker barrel.
 import { formatExtraArgs } from "../model-picker/model-config/llama-extra-args";
 import {
   DEFAULT_PER_MODEL_CONFIG,
@@ -58,12 +59,16 @@ function linkPreview(value: SharedRunConfig, destination: string) {
   }
 }
 
-function configDetail(key: SharedConfigKey, config: PerModelConfig) {
+function configDetail(
+  key: SharedConfigKey,
+  config: PerModelConfig,
+  error: string | null,
+) {
   const value = config[key];
-  if (!SHARED_CONFIG_FIELDS[key].valid(value)) {
+  if (error !== null) {
     return key === "llamaExtraArgs"
-      ? `Excluded: ${sharedExtraArgsError(value)} Edit Extra Arguments in Run settings to share them.`
-      : (SHARED_CONFIG_FIELDS[key].error ?? "This value cannot be shared.");
+      ? `Excluded: ${error} Edit Extra Arguments in Run settings to share them.`
+      : error;
   }
   if (key === "llamaExtraArgs") {
     return formatExtraArgs(config.llamaExtraArgs) || "No extra arguments";
@@ -86,6 +91,26 @@ export function ShareRunConfigDialog({
   const id = useId();
   const model = target.configId ?? target.id;
   const shareableModel = isShareableModelId(model);
+  const fields = useMemo(
+    () =>
+      SHARED_CONFIG_KEYS.filter((key) => config[key] !== undefined).map(
+        (key) => {
+          const error =
+            key === "llamaExtraArgs" && config[key] !== null
+              ? sharedExtraArgsError(config[key])
+              : SHARED_CONFIG_FIELDS[key].valid(config[key])
+                ? null
+                : (SHARED_CONFIG_FIELDS[key].error ??
+                  "This value cannot be shared.");
+          return {
+            key,
+            valid: error === null,
+            detail: configDetail(key, config, error),
+          };
+        },
+      ),
+    [config],
+  );
   const [includeModel, setIncludeModel] = useState(shareableModel);
   const [includeVariant, setIncludeVariant] = useState(
     Boolean(target.ggufVariant),
@@ -97,29 +122,43 @@ export function ShareRunConfigDialog({
   const [selected, setSelected] = useState<Set<SharedConfigKey>>(
     () =>
       new Set(
-        SHARED_CONFIG_KEYS.filter(
-          (key) =>
-            config[key] !== undefined &&
-            SHARED_CONFIG_FIELDS[key].valid(config[key]) &&
-            JSON.stringify(config[key]) !==
-              JSON.stringify(DEFAULT_PER_MODEL_CONFIG[key]),
-        ),
+        fields
+          .filter(
+            ({ key, valid }) =>
+              valid &&
+              JSON.stringify(config[key]) !==
+                JSON.stringify(DEFAULT_PER_MODEL_CONFIG[key]),
+          )
+          .map(({ key }) => key),
       ),
   );
   const [copying, setCopying] = useState(false);
-  const patch = Object.fromEntries(
-    [...selected].map((key) => [key, config[key]]),
-  );
-  const { link, error } = linkPreview(
-    {
-      ...(includeModel ? { model } : {}),
-      ...(includeVariant && target.ggufVariant
-        ? { ggufVariant: target.ggufVariant }
-        : {}),
-      ...(includeFormat ? { isGguf: target.isGguf } : {}),
-      config: patch,
-    },
-    destination,
+  const { link, error } = useMemo(
+    () =>
+      linkPreview(
+        {
+          ...(includeModel ? { model } : {}),
+          ...(includeVariant && target.ggufVariant
+            ? { ggufVariant: target.ggufVariant }
+            : {}),
+          ...(includeFormat ? { isGguf: target.isGguf } : {}),
+          config: Object.fromEntries(
+            [...selected].map((key) => [key, config[key]]),
+          ),
+        },
+        destination,
+      ),
+    [
+      config,
+      selected,
+      includeModel,
+      model,
+      includeVariant,
+      target.ggufVariant,
+      includeFormat,
+      target.isGguf,
+      destination,
+    ],
   );
   const choice = (
     key: string,
@@ -202,8 +241,8 @@ export function ShareRunConfigDialog({
             setIncludeFormat,
             target.isGguf ? "GGUF" : "Native weights",
           )}
-          {SHARED_CONFIG_KEYS.filter((key) => config[key] !== undefined).map(
-            (key) =>
+          {fields.map(
+            ({ key, valid, detail }) =>
               choice(
                 key,
                 SHARED_CONFIG_FIELDS[key].label,
@@ -218,8 +257,8 @@ export function ShareRunConfigDialog({
                     }
                     return next;
                   }),
-                configDetail(key, config),
-                !SHARED_CONFIG_FIELDS[key].valid(config[key]),
+                detail,
+                !valid,
               ),
           )}
         </div>
