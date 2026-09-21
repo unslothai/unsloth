@@ -1712,3 +1712,112 @@ def test_a_per_layer_snapshot_never_becomes_a_scalar_rope_theta():
         written = config.rope_parameters.get("rope_theta", None)
         assert not isinstance(written, dict), written
         assert not isinstance(getattr(config, "rope_theta", None), dict)
+
+
+# ===========================================================================
+# transformers -- a submodule's prefix renaming leaks into the composite model
+# ===========================================================================
+
+
+def test_transformers_scopes_a_submodules_conversion_mapping():
+    """``fix_transformers_composite_prefix_renaming``: transformers 5.4.0 to 5.5.4
+    merge a submodule's own prefix renaming into the parent's conversion mapping
+    verbatim, which renames a composite model's real weight names into names it does
+    not have and throws away the bitsandbytes quant_state sidecars with them."""
+    pytest.importorskip("transformers")
+    from unsloth.import_fixes import _transformers_rescopes_submodule_prefix_renamings
+
+    if not _transformers_rescopes_submodule_prefix_renamings():
+        pytest.fail(
+            "DRIFT DETECTED: this transformers recurses into submodules for "
+            "conversion mappings without scoping them to where the submodule lives "
+            "(no model_prefix argument, no PrefixChange.with_submodel_prefix, no "
+            "scope_prefix field) -- fix_transformers_composite_prefix_renaming would "
+            "wrap get_model_conversion_mapping. Pre-quantized multimodal checkpoints "
+            "load with quant_state=None here; install transformers>=5.6.0."
+        )
+
+
+def test_composite_renaming_probe_agrees_with_the_real_mapping():
+    """The install gate is a claim about behaviour, so check it against the behaviour.
+
+    Builds a real composite Qwen3.5 on the meta device -- no weights, no download --
+    and asks whether the mapping transformers really produces rewrites that model's
+    own parameter names into names it does not have.
+    """
+    torch = pytest.importorskip("torch")
+    pytest.importorskip("transformers")
+    from unsloth.import_fixes import _transformers_rescopes_submodule_prefix_renamings
+
+    try:
+        import transformers
+        from transformers.conversion_mapping import get_model_conversion_mapping
+        from transformers.core_model_loading import WeightRenaming
+        from transformers.models.auto.configuration_auto import CONFIG_MAPPING
+    except Exception as exc:
+        pytest.skip(f"this transformers has no conversion mapping machinery: {exc!r}")
+    if "qwen3_5" not in CONFIG_MAPPING:
+        pytest.skip("this transformers has no qwen3_5 model type")
+
+    config = CONFIG_MAPPING["qwen3_5"]()
+    config.text_config.num_hidden_layers = 2
+    config.text_config.layer_types = ["linear_attention", "full_attention"]
+    if hasattr(config.text_config, "mtp_num_hidden_layers"):
+        config.text_config.mtp_num_hidden_layers = 0
+    config.vision_config.depth = 1
+    try:
+        with torch.device("meta"):
+            model = transformers.AutoModelForImageTextToText.from_config(config)
+    except Exception as exc:
+        pytest.skip(f"cannot build a meta qwen3_5: {exc!r}")
+
+    # Past EVERY wrapper, not just the first: unsloth_zoo patches the same function and
+    # keeps its original in a closure cell, so stopping at `__wrapped__` would measure this
+    # fix through this fix and report no pathology on a transformers that has one.
+    mapping = get_model_conversion_mapping
+    seen = set()
+    while id(mapping) not in seen:
+        seen.add(id(mapping))
+        nxt = getattr(mapping, "__wrapped__", None)
+        if nxt is None:
+            for cell in getattr(mapping, "__closure__", None) or ():
+                try:
+                    candidate = cell.cell_contents
+                except ValueError:
+                    continue
+                if callable(candidate) and getattr(candidate, "__name__", "") == (
+                    "get_model_conversion_mapping"
+                ):
+                    nxt = candidate
+                    break
+        if nxt is None:
+            break
+        mapping = nxt
+    keys = {name for name, _ in model.named_parameters(remove_duplicate = False)}
+    keys |= {name for name, _ in model.named_buffers(remove_duplicate = False)}
+    leaks = []
+    for conversion in mapping(model):
+        if not isinstance(conversion, WeightRenaming):
+            continue
+        for key in sorted(keys):
+            renamed, matched = conversion.rename_source_key(key)
+            if matched is not None and renamed != key and renamed not in keys:
+                leaks.append((conversion.source_patterns, key, renamed))
+                break
+
+    rescopes = _transformers_rescopes_submodule_prefix_renamings()
+    assert bool(leaks) != bool(rescopes), (
+        f"DRIFT DETECTED: the probe says rescopes={rescopes}, but the mapping this "
+        f"transformers builds for a composite Qwen3.5 {'does' if leaks else 'does not'} "
+        f"rewrite the model's own weight names off the map: {leaks[:3]}"
+    )
+
+
+def test_composite_renaming_patch_wired_into_gpu_init():
+    """The patch must be installed at startup, not only importable."""
+    source = Path(__file__).resolve().parent.parent / "unsloth" / "_gpu_init.py"
+    source = source.read_text(encoding = "utf-8")
+    assert "fix_transformers_composite_prefix_renaming()" in source, (
+        "DRIFT DETECTED: fix_transformers_composite_prefix_renaming is defined but "
+        "never called in _gpu_init.py, so real imports never install it."
+    )
