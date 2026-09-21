@@ -147,18 +147,45 @@ class TePrequantSource:
     kind: str
     location: str
     filename: Optional[str] = None
+    # Names to try after ``filename``, in order, when the repo does not carry it. Only the "repo"
+    # kind uses this: a local path either exists or it does not.
+    fallback_filenames: tuple = ()
 
 
-def te_prequant_repo_filename(repo_id: str, component: str, scheme: str) -> str:
-    """The checkpoint filename for ``(component, scheme)`` in ``repo_id``: hosted repos are
-    named <Model>-FP8 (or -INT8 / -quantized) and carry <Model>-<component>-<SCHEME>.pt
-    files, e.g. unsloth/LTX-2-FP8 -> LTX-2-text_encoder-FP8.pt."""
+def te_prequant_repo_stem(repo_id: str, component: str, scheme: str) -> str:
+    """The extensionless checkpoint name for ``(component, scheme)`` in ``repo_id``: hosted repos
+    are named <Model>-FP8 (or -INT8 / -quantized) and carry <Model>-<component>-<SCHEME> files,
+    e.g. unsloth/LTX-2-FP8 -> LTX-2-text_encoder-FP8."""
     model = repo_id.rsplit("/", 1)[-1]
     for suffix in ("-fp8", "-int8", "-quantized"):
         if model.lower().endswith(suffix):
             model = model[: -len(suffix)]
             break
-    return f"{model}-{component}-{scheme.upper()}.pt"
+    return f"{model}-{component}-{scheme.upper()}"
+
+
+def te_prequant_repo_filenames(repo_id: str, component: str, scheme: str) -> tuple:
+    """Candidate filenames for ``(component, scheme)``, safetensors first.
+
+    Both extensions are live. The reader handles either, but the NAME has to be asked for, and a
+    single hardcoded extension is why a hosted safetensors encoder was unreachable: the resolver
+    requested ``.pt``, the Hub returned 404 and the loader fell back to the dense encoder without
+    saying anything, which costs a user the whole point of the artifact (17.5 GB instead of 9.4 GB
+    on Qwen-Image-2.1). Preference order rather than a registry entry, so a repo that swaps its
+    encoder to safetensors is picked up with no code change, and every repo still hosting a
+    ``.pt`` (Qwen-Image, LTX-2 and the rest) keeps resolving exactly as before.
+    """
+    # Imported here, not at module scope: prequant_safetensors pulls torchao in, and this module is
+    # imported during pipeline assembly on hosts that may not have it.
+    from .prequant_safetensors import SAFETENSORS_SUFFIX
+
+    stem = te_prequant_repo_stem(repo_id, component, scheme)
+    return (f"{stem}{SAFETENSORS_SUFFIX}", f"{stem}.pt")
+
+
+def te_prequant_repo_filename(repo_id: str, component: str, scheme: str) -> str:
+    """The preferred checkpoint filename for ``(component, scheme)`` in ``repo_id``."""
+    return te_prequant_repo_filenames(repo_id, component, scheme)[0]
 
 
 def family_te_prequant_repo(fam: Any, scheme: str, component: str) -> Optional[str]:
@@ -195,10 +222,12 @@ def resolve_te_prequant_source(
         return TePrequantSource(kind = "path", location = override, filename = None)
     repo_id = family_te_prequant_repo(fam, scheme, component)
     if repo_id:
+        names = te_prequant_repo_filenames(repo_id, component, scheme)
         return TePrequantSource(
             kind = "repo",
             location = repo_id,
-            filename = te_prequant_repo_filename(repo_id, component, scheme),
+            filename = names[0],
+            fallback_filenames = names[1:],
         )
     return None
 
@@ -501,13 +530,27 @@ def _resolve_checkpoint_path(
         return expanded if os.path.isfile(expanded) else None
     if source.kind == "repo":
         from huggingface_hub import hf_hub_download
-        return hf_hub_download(
-            repo_id = source.location,
-            filename = source.filename,
-            token = hf_token,
-            cache_dir = cache_dir,
-            local_files_only = local_files_only,
-        )
+        from huggingface_hub.errors import EntryNotFoundError, LocalEntryNotFoundError
+
+        names = [source.filename, *(source.fallback_filenames or ())]
+        last: Optional[Exception] = None
+        for name in [n for n in names if n]:
+            try:
+                return hf_hub_download(
+                    repo_id = source.location,
+                    filename = name,
+                    token = hf_token,
+                    cache_dir = cache_dir,
+                    local_files_only = local_files_only,
+                )
+            except (EntryNotFoundError, LocalEntryNotFoundError) as exc:
+                # This name is not in this repo (or not in the cache offline). Try the next
+                # extension rather than giving up: only "no candidate exists" is a real miss, and
+                # anything else (auth, network, a corrupt cache) must still surface as itself.
+                last = exc
+                continue
+        if last is not None:
+            raise last
     return None
 
 

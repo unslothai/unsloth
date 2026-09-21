@@ -21,7 +21,7 @@ from core.inference.diffusion_te_prequant import (
     family_te_prequant_repo,
     resolve_te_prequant_source,
     te_prequant_pipe_kwargs,
-    te_prequant_repo_filename,
+    te_prequant_repo_filenames,
 )
 
 
@@ -39,17 +39,18 @@ def _fam(
 
 # ── resolution ───────────────────────────────────────────────────────────────
 def test_repo_filename_convention():
+    # safetensors first, the historical pickle second: both are live and the reader takes either.
     assert (
-        te_prequant_repo_filename("unsloth/LTX-2-FP8", "text_encoder", "fp8")
-        == "LTX-2-text_encoder-FP8.pt"
+        te_prequant_repo_filenames("unsloth/LTX-2-FP8", "text_encoder", "fp8")
+        == ("LTX-2-text_encoder-FP8.safetensors", "LTX-2-text_encoder-FP8.pt")
     )
     assert (
-        te_prequant_repo_filename("org/Some-Model-quantized", "text_encoder_2", "fp8")
-        == "Some-Model-text_encoder_2-FP8.pt"
+        te_prequant_repo_filenames("org/Some-Model-quantized", "text_encoder_2", "fp8")
+        == ("Some-Model-text_encoder_2-FP8.safetensors", "Some-Model-text_encoder_2-FP8.pt")
     )
     assert (
-        te_prequant_repo_filename("org/PlainRepo", "text_encoder", "fp8")
-        == "PlainRepo-text_encoder-FP8.pt"
+        te_prequant_repo_filenames("org/PlainRepo", "text_encoder", "fp8")
+        == ("PlainRepo-text_encoder-FP8.safetensors", "PlainRepo-text_encoder-FP8.pt")
     )
 
 
@@ -80,12 +81,79 @@ def test_resolve_priority_and_scheme_gate():
     # Hosted repo second.
     src = resolve_te_prequant_source(fam, "text_encoder", "fp8")
     assert src.kind == "repo" and src.location == "org/hosted-fp8"
-    assert src.filename == "hosted-text_encoder-FP8.pt"
+    assert src.filename == "hosted-text_encoder-FP8.safetensors"
+    assert src.fallback_filenames == ("hosted-text_encoder-FP8.pt",)
     # Nothing configured -> None.
     assert resolve_te_prequant_source(_fam(), "text_encoder", "fp8") is None
     # v1 hosts the layerwise fp8 storage scheme only.
     assert resolve_te_prequant_source(fam, "text_encoder", "int8") is None
     assert resolve_te_prequant_source(fam, "text_encoder", "fp8_dynamic") is None
+
+
+def test_a_hosted_safetensors_encoder_is_asked_for_and_a_pickle_repo_still_resolves(monkeypatch):
+    """The regression this exists for: the resolver only ever asked for ``.pt``.
+
+    A repo hosting the encoder as safetensors then 404'd, and because the loader is best effort the
+    user silently got the dense encoder instead (17.5 GB against 9.4 GB on Qwen-Image-2.1) with no
+    error anywhere. Both extensions have to be reachable, and the repos that still host a pickle
+    have to keep working, so this drives the download path with each in turn.
+    """
+    from huggingface_hub.errors import EntryNotFoundError
+
+    asked = []
+
+    def fake_download(*, repo_id, filename, token, cache_dir, local_files_only):
+        asked.append(filename)
+        if filename not in hosted:
+            raise EntryNotFoundError(f"no {filename} in {repo_id}")
+        return f"/cache/{filename}"
+
+    monkeypatch.setattr("huggingface_hub.hf_hub_download", fake_download)
+    src = resolve_te_prequant_source(
+        _fam(te_prequant_repos = (("fp8", "text_encoder", "org/hosted-fp8"),)),
+        "text_encoder", "fp8",
+    )
+
+    # A safetensors repo is found first, with no wasted request for the pickle.
+    hosted = {"hosted-text_encoder-FP8.safetensors"}
+    asked.clear()
+    assert tpq._resolve_checkpoint_path(src, None, cache_dir = "/cache") == (
+        "/cache/hosted-text_encoder-FP8.safetensors"
+    )
+    assert asked == ["hosted-text_encoder-FP8.safetensors"]
+
+    # A repo that still hosts the pickle resolves through the fallback.
+    hosted = {"hosted-text_encoder-FP8.pt"}
+    asked.clear()
+    assert tpq._resolve_checkpoint_path(src, None, cache_dir = "/cache") == (
+        "/cache/hosted-text_encoder-FP8.pt"
+    )
+    assert asked == ["hosted-text_encoder-FP8.safetensors", "hosted-text_encoder-FP8.pt"]
+
+    # Neither present: the miss surfaces rather than being swallowed into a None the caller
+    # cannot tell apart from "this family hosts nothing".
+    hosted = set()
+    with pytest.raises(EntryNotFoundError):
+        tpq._resolve_checkpoint_path(src, None, cache_dir = "/cache")
+
+
+def test_a_transport_failure_is_not_mistaken_for_a_missing_file(monkeypatch):
+    """Only "this name is not in this repo" may advance to the next candidate.
+
+    An auth failure or a dead network must not be retried as a different extension and then
+    reported as an absent artifact: that would turn a fixable error into a silent 17.5 GB
+    download on every load.
+    """
+    def fake_download(*, repo_id, filename, token, cache_dir, local_files_only):
+        raise PermissionError("401 unauthorized")
+
+    monkeypatch.setattr("huggingface_hub.hf_hub_download", fake_download)
+    src = resolve_te_prequant_source(
+        _fam(te_prequant_repos = (("fp8", "text_encoder", "org/hosted-fp8"),)),
+        "text_encoder", "fp8",
+    )
+    with pytest.raises(PermissionError):
+        tpq._resolve_checkpoint_path(src, None, cache_dir = "/cache")
 
 
 # ── checkpoint validation ────────────────────────────────────────────────────
@@ -419,32 +487,32 @@ def test_hosted_te_prequant_entries():
     )
     # The hosted filenames follow the repo naming convention the resolver derives.
     assert (
-        te_prequant_repo_filename("unsloth/Qwen-Image-FP8", "text_encoder", "fp8")
-        == "Qwen-Image-text_encoder-FP8.pt"
+        te_prequant_repo_filenames("unsloth/Qwen-Image-FP8", "text_encoder", "fp8")
+        == ("Qwen-Image-text_encoder-FP8.safetensors", "Qwen-Image-text_encoder-FP8.pt")
     )
     assert (
-        te_prequant_repo_filename("unsloth/FLUX.2-dev-FP8", "text_encoder", "fp8")
-        == "FLUX.2-dev-text_encoder-FP8.pt"
+        te_prequant_repo_filenames("unsloth/FLUX.2-dev-FP8", "text_encoder", "fp8")
+        == ("FLUX.2-dev-text_encoder-FP8.safetensors", "FLUX.2-dev-text_encoder-FP8.pt")
     )
     assert (
-        te_prequant_repo_filename("unsloth/LTX-2-FP8", "text_encoder", "fp8")
-        == "LTX-2-text_encoder-FP8.pt"
+        te_prequant_repo_filenames("unsloth/LTX-2-FP8", "text_encoder", "fp8")
+        == ("LTX-2-text_encoder-FP8.safetensors", "LTX-2-text_encoder-FP8.pt")
     )
     # HiDream's heavyweight is TE4 (Llama-3.1-8B), engaged via hidream_te4_kwargs since the generic pass only covers text_encoder.._3.
     assert detect_family("HiDream-ai/HiDream-I1-Full").te_prequant_repos == (
         ("fp8", "text_encoder_4", "unsloth/HiDream-I1-Full-FP8"),
     )
     assert (
-        te_prequant_repo_filename("unsloth/HiDream-I1-Full-FP8", "text_encoder_4", "fp8")
-        == "HiDream-I1-Full-text_encoder_4-FP8.pt"
+        te_prequant_repo_filenames("unsloth/HiDream-I1-Full-FP8", "text_encoder_4", "fp8")
+        == ("HiDream-I1-Full-text_encoder_4-FP8.safetensors", "HiDream-I1-Full-text_encoder_4-FP8.pt")
     )
     # Round 2: T5-XXL for every flux.1 base (byte-identical, one artifact), Gemma2-2B, Qwen3-4B, Qwen3-VL-4B, and hunyuanimage reusing the Qwen-Image artifact.
     assert detect_family("black-forest-labs/FLUX.1-schnell").te_prequant_repos == (
         ("fp8", "text_encoder_2", "unsloth/FLUX.1-schnell-FP8"),
     )
     assert (
-        te_prequant_repo_filename("unsloth/FLUX.1-schnell-FP8", "text_encoder_2", "fp8")
-        == "FLUX.1-schnell-text_encoder_2-FP8.pt"
+        te_prequant_repo_filenames("unsloth/FLUX.1-schnell-FP8", "text_encoder_2", "fp8")
+        == ("FLUX.1-schnell-text_encoder_2-FP8.safetensors", "FLUX.1-schnell-text_encoder_2-FP8.pt")
     )
     assert detect_family("Alpha-VLLM/Lumina-Image-2.0").te_prequant_repos == (
         ("fp8", "text_encoder", "unsloth/Lumina-Image-2.0-FP8"),
