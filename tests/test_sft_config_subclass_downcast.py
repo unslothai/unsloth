@@ -76,7 +76,11 @@ def trl_like(monkeypatch):
         pass
 
     class GKDConfig(SFTConfig):  # a TRL config that builds on SFT
-        def __init__(self, lmbda = 0.5, beta = 0.5):
+        def __init__(
+            self,
+            lmbda = 0.5,
+            beta = 0.5,
+        ):
             self.lmbda = lmbda
             self.beta = beta
 
