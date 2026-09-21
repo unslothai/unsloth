@@ -109,3 +109,14 @@ def test_a_tampered_artifact_path_still_fails_the_mac():
     token = _mint_as(OWNER)
     other = dict(PARTS, artifact_path = "recipe_someone_elses_run")
     assert jobs._download_link_account(token, **other) is None
+
+
+def test_the_account_lookup_is_offloaded_to_the_threadpool():
+    """get_account_by_id is synchronous SQLite under a 5s busy timeout, and the dependency that
+    redeems the link is async, so on the loop a contended auth database stalls unrelated requests.
+    The sibling RAG link avoids this by being a sync def that FastAPI offloads for us."""
+    import inspect
+
+    source = inspect.getsource(jobs._authorize_dataset_download)
+    assert "run_in_threadpool(" in source
+    assert "_download_link_account(\n" not in source

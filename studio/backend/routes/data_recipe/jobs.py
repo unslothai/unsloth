@@ -37,6 +37,7 @@ from auth.authentication import (
 from auth.storage import CredentialRotated
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from pydantic import ValidationError
+from starlette.concurrency import run_in_threadpool
 
 from core.data_recipe.export import (
     ExportFormat,
@@ -138,8 +139,12 @@ async def _authorize_dataset_download(
 ):
     """A signed link for exactly this export, or the ordinary Authorization header for an API
     client. The session bearer is deliberately not read from the query."""
+    # In a threadpool: get_account_by_id is synchronous SQLite under a 5s busy timeout, and this
+    # dependency is async, so on the loop a contended auth database would stall every other request.
+    # The sibling RAG link gets this for free by being a sync def, which FastAPI offloads itself.
     account = (
-        _download_link_account(
+        await run_in_threadpool(
+            _download_link_account,
             token,
             job_id = job_id,
             export_format = export_format,
