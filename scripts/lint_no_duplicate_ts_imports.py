@@ -228,12 +228,49 @@ def _without_embedded_source(source: str) -> str:
     return "".join(out)
 
 
+def _top_level(source: str) -> list[bool]:
+    """Per character, whether it sits outside every bracket.
+
+    An `import` declaration is only legal at the top level of a module, so anything that
+    looks like one inside a bracket is something else wearing the shape. The case that
+    matters is a component rendering a code sample as element text:
+
+        export function Sample() {
+          return (
+            <pre>
+        import Widget from "a";
+            </pre>
+          );
+        }
+
+    TypeScript reads those lines as JSX text and accepts the file. They are unindented,
+    because indentation would show up in what the page renders, so anchoring to the start of
+    the line does not separate them; what does is that they are inside the function body and
+    the parenthesised return. Recognising JSX properly would need a real lexer, and this does
+    not pretend to be one: it just declines to read a declaration anywhere the language would
+    not allow one.
+
+    Read after masking, so brackets inside strings, comments and regexes are already gone.
+    """
+    depths, depth = [], 0
+    for char in source:
+        if char in ")]}":
+            depth -= 1
+        depths.append(depth <= 0)
+        if char in "([{":
+            depth += 1
+    return depths
+
+
 def duplicates_in(source: str) -> list[tuple[int, str]]:
     """(line number, name) for every binding this file introduces twice."""
     seen: dict[str, int] = {}
     found: list[tuple[int, str]] = []
     source = _without_embedded_source(source)
+    outside = _top_level(source)
     for match in _IMPORT.finditer(source):
+        if not outside[match.start()]:
+            continue
         line = source.count("\n", 0, match.start()) + 1
         for name in _bindings(match.group("clause")):
             if name in seen:
@@ -274,6 +311,27 @@ def _self_test() -> int:
             'import {\n  type ExternalConnectionRef,\n} from "./model-selector/missing";\n'
             'import { HubModelPicker, hasDownloadedModels } from "./model-selector/pickers";\n',
             ["HubModelPicker", "hasDownloadedModels"],
+        ),
+        (
+            "a code sample rendered as JSX text is not a declaration",
+            'import { Fragment } from "react";\n'
+            "\n"
+            "export function Sample() {\n"
+            "  return (\n"
+            "    <pre>\n"
+            'import Widget from "a";\n'
+            'import Widget from "b";\n'
+            "    </pre>\n"
+            "  );\n"
+            "}\n",
+            [],
+        ),
+        (
+            "a real duplicate after such a component is still caught",
+            'import { A } from "m";\n'
+            'function C() { return (<pre>\nimport X from "z";\n</pre>); }\n'
+            'import { A } from "n";\n',
+            ["A"],
         ),
         (
             "a backtick inside a regex does not open a template",
