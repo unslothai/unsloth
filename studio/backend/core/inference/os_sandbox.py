@@ -665,7 +665,6 @@ def prepare_tool_launch(plan: ToolLaunchPlan) -> PreparedSandboxLaunch:
 def verify_prepared_completion(prepared: PreparedSandboxLaunch, proc) -> dict | None:
     if prepared.backend == "mxc-processcontainer":
         from .sandbox_windows_mxc import verify_success
-
         return verify_success(prepared, proc)
     reason = getattr(proc, "_unsloth_completion_reason", None)
     if prepared.execution_record is None or reason not in {"finished", "timed_out", "cancelled"}:
