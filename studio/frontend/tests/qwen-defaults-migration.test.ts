@@ -523,3 +523,52 @@ test("a space or bracket ends the Qwen family name", () => {
     assert.equal(isPresenceBumpQwen(id), false, id);
   }
 });
+
+test("the prior Qwen3.8 thinking snapshot is recognized with Think off", () => {
+  // A session can come up with Think off, and then the row it resolves is the
+  // non-thinking one, whose presencePenalty is 1.5. Recognition of the stale
+  // snapshot cannot depend on that: the snapshot was written in the other mode,
+  // and keying on the current row left 0.6/0.95 standing against a 0.7/0.8
+  // default until the user happened to toggle Think.
+  const off = migrateLegacyQwenDefaults(
+    settingsFor(QWEN38, PREVIOUS_QWEN38_THINKING_SNAPSHOT),
+    QWEN38,
+    false,
+    true,
+  );
+  assert.deepEqual(off.migratedModelIds, [QWEN38]);
+  assert.deepEqual(off.patch?.inferenceParamsByModel?.[QWEN38], {
+    temperature: 0.7,
+    topP: 0.8,
+  });
+  assert.equal(
+    off.settings.inferenceParamsByModel?.[QWEN38]?.presencePenalty,
+    1.5,
+  );
+
+  const on = migrateLegacyQwenDefaults(
+    settingsFor(QWEN38, PREVIOUS_QWEN38_THINKING_SNAPSHOT),
+    QWEN38,
+    true,
+    true,
+  );
+  assert.deepEqual(on.patch?.inferenceParamsByModel?.[QWEN38], {
+    temperature: 1,
+    presencePenalty: 0,
+  });
+});
+
+test("only the family that had the zero-presence thinking row is migrated", () => {
+  // Qwen3.6 never generated 0.6/0.95/1.5 with minP 0, so an identical stored row
+  // there is the user's own and stays untouched in either mode.
+  const QWEN36 = "unsloth/Qwen3.6-27B-GGUF";
+  for (const thinkingOn of [true, false]) {
+    const result = migrateLegacyQwenDefaults(
+      settingsFor(QWEN36, PREVIOUS_QWEN38_THINKING_SNAPSHOT),
+      QWEN36,
+      thinkingOn,
+      true,
+    );
+    assert.deepEqual(result.migratedModelIds, [], String(thinkingOn));
+  }
+});

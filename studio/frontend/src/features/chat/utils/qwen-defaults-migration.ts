@@ -93,26 +93,40 @@ function matchesDefaults(
   );
 }
 
+/**
+ * Whether the prior migration would have written its Qwen3.8 thinking row for
+ * this model: the family whose THINKING row carries zero presence penalty,
+ * which is Qwen3.8 alone.
+ *
+ * Asked of the model, not of the row the session currently resolves to. The
+ * snapshot was written in thinking mode, but a session can come up with Think
+ * off, and then the current row is the non-thinking one with presencePenalty
+ * 1.5. Keying recognition on that left the stale 0.6/0.95 in place against a
+ * 0.7/0.8 default until the user happened to toggle Think.
+ */
+function wrotePriorQwen38ThinkingSnapshot(modelId: string): boolean {
+  return resolveQwenThinkingParams(modelId, true)?.presencePenalty === 0;
+}
+
 function isLegacyQwenDefaultSnapshot(
   params: PersistedInferenceParams,
-  currentDefaults: PersistedInferenceParams,
+  modelId: string,
 ): boolean {
-  // The shared resolver returns zero presence only for Qwen3.8 thinking.
   return (
     matchesDefaults(params, LEGACY_QWEN_DEFAULTS) ||
-    (currentDefaults.presencePenalty === 0 &&
+    (wrotePriorQwen38ThinkingSnapshot(modelId) &&
       matchesDefaults(params, PREVIOUS_QWEN38_THINKING_DEFAULTS))
   );
 }
 
 function isLegacyGlobalQwenDefaultSnapshot(
   params: PersistedInferenceParams | undefined,
-  currentDefaults: PersistedInferenceParams,
+  modelId: string,
 ): boolean {
   return (
     params !== undefined &&
     (matchesDefaults(params, LEGACY_GLOBAL_QWEN_DEFAULTS) ||
-      (currentDefaults.presencePenalty === 0 &&
+      (wrotePriorQwen38ThinkingSnapshot(modelId) &&
         matchesDefaults(params, PREVIOUS_QWEN38_THINKING_GLOBAL_DEFAULTS))) &&
     Object.entries(LEGACY_OPTIONAL_GLOBAL_QWEN_DEFAULTS).every(
       ([key, value]) => {
@@ -191,7 +205,7 @@ function migrateStoredModelDefaults(
     if (
       isActiveCheckpoint &&
       isPresenceBumpQwen(modelId) &&
-      isLegacyQwenDefaultSnapshot(entry, currentDefaults)
+      isLegacyQwenDefaultSnapshot(entry, modelId)
     ) {
       const normalizedModelId = activeCheckpoint;
       const migratedEntry = { ...entry, ...currentDefaults };
@@ -259,7 +273,7 @@ export function migrateLegacyQwenDefaults(
     isPresenceBumpQwen(activeCheckpoint) &&
     isLegacyGlobalQwenDefaultSnapshot(
       settings.inferenceParams,
-      currentDefaults,
+      activeCheckpoint,
     );
   const globalChanges = migrateGlobal
     ? changedDefaults(settings.inferenceParams ?? {}, currentGlobalDefaults)
