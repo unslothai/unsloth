@@ -5313,3 +5313,39 @@ class TestModuleAliasChainsAreBounded:
         links = "\n".join(f"n{i + 1} = n{i}" for i in range(5))
         code = f'import requests\nn0 = requests\n{links}\nn5.get("{_METADATA_URL}")'
         _blocked(code, expect_phrase = "Blocked: cloud-metadata host")
+
+
+class TestConcurrentChecksDoNotShareState:
+    """The resolver's depth counter lives in thread-local storage, so two checks running at once
+    must not spend each other's budget and stop resolving early."""
+
+    def test_the_same_programs_give_the_same_verdicts_under_threads(self):
+        import concurrent.futures
+
+        programs = [
+            f'import requests as r\nr.get("{_METADATA_URL}")',
+            "import requests\n"
+            + "\n".join(f"n{i + 1} = n{i}" for i in range(12))
+            + f'\nn12.get("{_METADATA_URL}")',
+            'import requests\nrequests.get("https://huggingface.co/api/models")',
+            'import os, requests\nrequests.get(os.environ["TARGET"])',
+            "x = 1",
+        ] * 8
+        expected = [_check_code_safety(p) for p in programs]
+        with concurrent.futures.ThreadPoolExecutor(8) as pool:
+            got = list(pool.map(_check_code_safety, programs))
+        assert got == expected
+
+    def test_a_deep_chain_beside_shallow_ones_still_resolves(self):
+        import concurrent.futures
+
+        deep = (
+            "import requests\nn0 = requests\n"
+            + "\n".join(f"n{i + 1} = n{i}" for i in range(8))
+            + f'\nn8.get("{_METADATA_URL}")'
+        )
+        shallow = 'import requests\nrequests.get("https://huggingface.co/api/models")'
+        with concurrent.futures.ThreadPoolExecutor(8) as pool:
+            got = list(pool.map(_check_code_safety, [deep, shallow] * 16))
+        assert all(("Blocked: cloud-metadata host" in got[i]) for i in range(0, len(got), 2))
+        assert all(got[i] is None for i in range(1, len(got), 2))
