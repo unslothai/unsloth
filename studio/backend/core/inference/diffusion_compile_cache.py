@@ -145,6 +145,16 @@ def _portable_mode() -> bool:
         return False
 
 
+def _toolchain_path_unparseable(value: str) -> bool:
+    """storage_roots' test, imported per call like _default_root's, with a whitespace-only
+    fallback for the CLI paths that reach this module without studio/backend on sys.path."""
+    try:
+        from utils.paths.storage_roots import toolchain_path_unparseable
+    except ImportError:
+        return any(ch.isspace() for ch in value)
+    return toolchain_path_unparseable(value)
+
+
 def _default_root() -> Path:
     """Resolved per call, not a module constant: this module is imported before startup sets
     UNSLOTH_STUDIO_HOME, which storage_roots reads."""
@@ -367,9 +377,23 @@ def begin(
 
     try:
         cdir.mkdir(parents = True, exist_ok = True)
-        ctx.prev_inductor_dir = os.environ.get("TORCHINDUCTOR_CACHE_DIR")
-        ctx.prev_inductor_dir_set = True
-        os.environ["TORCHINDUCTOR_CACHE_DIR"] = str(cdir / "inductor")
+        inductor_dir = str(cdir / "inductor")
+        # Startup applies this same test before pinning TORCHINDUCTOR_CACHE_DIR, and this
+        # assignment used to overwrite whatever it decided. A Studio root the C++ builders cannot
+        # parse therefore came back on the first compiled diffusion run, having looked fine in
+        # the environment right after launch. The bundle still lives under cdir either way; only
+        # the Inductor pin is withheld, which returns it to the temporary directory it picks on
+        # its own.
+        if _toolchain_path_unparseable(inductor_dir):
+            _warn(
+                logger,
+                f"compile-cache: leaving TORCHINDUCTOR_CACHE_DIR as it is: {inductor_dir} holds "
+                "a character the C++ builders cannot paste into a command line unquoted",
+            )
+        else:
+            ctx.prev_inductor_dir = os.environ.get("TORCHINDUCTOR_CACHE_DIR")
+            ctx.prev_inductor_dir_set = True
+            os.environ["TORCHINDUCTOR_CACHE_DIR"] = inductor_dir
     except Exception as exc:  # noqa: BLE001
         _warn(logger, f"could not set TORCHINDUCTOR_CACHE_DIR: {exc}")
 

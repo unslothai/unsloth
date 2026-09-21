@@ -10,6 +10,7 @@ import json
 import os
 import platform
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -139,7 +140,8 @@ def test_a_spaced_root_leaves_the_compiler_caches_to_their_own_defaults(monkeypa
 
 
 def test_a_root_without_spaces_still_pins_the_compiler_caches(monkeypatch, tmp_path):
-    """The other half of the guard: it must fire on whitespace and nothing else."""
+    """The other half of the guard: it must fire on a path a compiler cannot take, not on
+    every path."""
     plain = tmp_path / "plain_home" / "studio"
     plain.mkdir(parents = True)
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(plain))
@@ -149,6 +151,70 @@ def test_a_root_without_spaces_still_pins_the_compiler_caches(monkeypatch, tmp_p
 
     for key in _TOOLCHAIN_PINNED:
         assert os.environ.get(key, "").startswith(str(plain)), key
+
+
+@pytest.mark.parametrize("name", [
+    pytest.param("o'brien", id = "an apostrophe, which shlex reads as an opening quote"),
+    pytest.param('say"hi', id = "a double quote"),
+])
+def test_a_quoted_root_leaves_the_compiler_caches_to_their_own_defaults(
+        name, monkeypatch, tmp_path):
+    """Whitespace was the only character the guard knew, and a quote is worse than a space: in
+    POSIX mode shlex swallows the rest of the command into one argument and deletes the quote,
+    so the build fails somewhere less obvious than a split path. "/home/o'brien" is an ordinary
+    account name."""
+    quoted = tmp_path / name / "studio"
+    quoted.mkdir(parents = True)
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(quoted))
+    sr = _load_storage_roots()
+
+    sr._setup_cache_env()
+
+    for key in _TOOLCHAIN_PINNED:
+        assert key not in os.environ, f"{key} was pinned to a path holding {name!r}"
+    # Non-vacuity: the caches nobody pastes into a command line still move.
+    for key in ("UV_CACHE_DIR", "NUMBA_CACHE_DIR", "UNSLOTH_COMPILE_LOCATION"):
+        assert os.environ[key].startswith(str(quoted.parent)), key
+
+
+@pytest.mark.skipif(os.name == "nt", reason = "on Windows the separator is not an escape")
+def test_a_backslash_in_a_posix_root_leaves_the_compiler_caches_alone(monkeypatch, tmp_path):
+    """Legal in a POSIX filename and an escape to shlex, so the character is eaten and the
+    compiler is handed a path that does not exist. Windows is exempt because cpp_builder
+    rewrites the separator to "/" before it builds the command."""
+    odd = tmp_path / "a\\b" / "studio"
+    odd.mkdir(parents = True)
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(odd))
+    sr = _load_storage_roots()
+
+    sr._setup_cache_env()
+
+    for key in _TOOLCHAIN_PINNED:
+        assert key not in os.environ, key
+
+
+@pytest.mark.parametrize("name", [
+    "plain", "my dir", "o'brien", 'say"hi', "a\tb",
+    pytest.param("a\\b", marks = pytest.mark.skipif(
+        os.name == "nt", reason = "cpp_builder rewrites the separator before building the command")),
+])
+def test_the_guard_agrees_with_what_shlex_actually_does_to_the_command(name, tmp_path):
+    """The test that keeps the character list honest. Rather than restating the predicate, this
+    builds the command shape cpp_builder builds and asks shlex.split whether the path comes back
+    whole, then requires the predicate to have said so. A character added to one and not the
+    other fails here."""
+    path = str(tmp_path / name / "cache" / "torchinductor")
+    command = f"g++ {path}/main.cpp -o {path}/main.so"
+    sr = _load_storage_roots()
+
+    try:
+        survives = shlex.split(command) == ["g++", f"{path}/main.cpp", "-o", f"{path}/main.so"]
+    except ValueError:
+        survives = False  # an odd number of quotes raises rather than mangling
+
+    assert sr.toolchain_path_unparseable(path) is not survives, (
+        f"{name!r}: predicate says {sr.toolchain_path_unparseable(path)}, "
+        f"shlex.split round trip says {survives}")
 
 
 def test_an_explicit_spaced_compiler_cache_is_left_alone(monkeypatch, tmp_path):

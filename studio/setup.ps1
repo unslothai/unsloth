@@ -7453,15 +7453,19 @@ if ($script:UnslothVerbose) {
 #
 # Two things outrank that. Long paths off keeps the short drive-root directory, since Inductor's
 # filenames hit MAX_PATH and a contained cache that cannot be written is worse than an
-# uncontained one. And a path containing a space is refused as
-# storage_roots._TOOLCHAIN_PATH_KEYS refuses one: cpp_builder.py pastes it into a compiler
-# command line unquoted, and "C:\Users\First Last" is an ordinary account name.
+# uncontained one. And a path holding whitespace or an apostrophe is refused as
+# storage_roots.toolchain_path_unparseable refuses one: cpp_builder.py pastes it into a compiler
+# command line unquoted and reparses it with shlex in POSIX mode, where an apostrophe swallows
+# the rest of the command. "C:\Users\First Last" and "C:\Users\O'Brien" are both ordinary
+# account names. The other two characters that predicate rejects cannot arise here: a double
+# quote is illegal in an NTFS name, and a backslash is the separator, which cpp_builder rewrites
+# to "/" on Windows before it builds the command.
 $TorchCacheDir = $null
 if ($StageRoot) {
     $TorchCacheDir = Join-Path $RuntimeRoot "TORCHINDUCTOR_CACHE_DIR"
 } elseif ($LongPathsEnabled) {
     $candidate = Join-Path (Join-Path $StudioHome "cache") "torchinductor"
-    if ($candidate -notmatch '\s') { $TorchCacheDir = $candidate }
+    if ($candidate -notmatch '[\s'']') { $TorchCacheDir = $candidate }
 }
 if (-not $TorchCacheDir) {
     $TorchCacheDir = "C:\tc"

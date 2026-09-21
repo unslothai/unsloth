@@ -343,6 +343,30 @@ def test_restore_inductor_dir(monkeypatch, tmp_path, fake_megacache):
     assert os.environ["TORCHINDUCTOR_CACHE_DIR"] == "/tmp/prior-inductor"  # restored
 
 
+@pytest.mark.parametrize("name", [
+    pytest.param("my studio", id = "a space"),
+    pytest.param("o'brien", id = "an apostrophe"),
+])
+def test_an_unparseable_cache_root_leaves_the_inductor_pin_alone(
+        name, monkeypatch, tmp_path, fake_megacache):
+    """Startup declines to pin TORCHINDUCTOR_CACHE_DIR into a root the C++ builders cannot
+    parse, and this assignment used to overwrite that decision on the first compiled diffusion
+    run. Checking the environment just after launch would not have caught it."""
+    import os
+
+    root = tmp_path / name
+    monkeypatch.setenv(cc._ENV_MODE, "auto")
+    monkeypatch.setenv(cc._ENV_DIR, str(root))
+    monkeypatch.delenv("TORCHINDUCTOR_CACHE_DIR", raising = False)
+
+    ctx = cc.begin(transformer = _transformer(), **_BEGIN_KW)
+
+    assert "TORCHINDUCTOR_CACHE_DIR" not in os.environ
+    assert ctx.prev_inductor_dir_set is False  # so restore() has nothing to put back
+    # The bundle is unaffected: only the Inductor pin is withheld.
+    assert ctx.dir.is_dir() and ctx.dir.is_relative_to(root)
+
+
 # -------------------------------------------------------------------------- legacy root
 def _seed_legacy_bundle(monkeypatch, tmp_path, fake_megacache) -> tuple:
     """Write a bundle under a fake pre-relocation root, then hand back an upgraded install:

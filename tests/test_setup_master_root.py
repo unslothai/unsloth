@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import os
 import pathlib
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -749,14 +750,18 @@ def test_the_windows_inductor_cache_agrees_with_the_resolver():
     applies on Windows and the containment this branch is for does not happen there. It has to
     name the directory the resolver would have chosen. Two things still outrank that, and both
     are recorded here so a later edit cannot quietly drop them: long paths off keeps the short
-    drive-root directory for MAX_PATH headroom, and a path containing a space is refused for the
-    same reason storage_roots does, since the C++ builders paste it in unquoted.
+    drive-root directory for MAX_PATH headroom, and a path holding whitespace or an apostrophe is
+    refused for the same reason storage_roots.toolchain_path_unparseable refuses one, since the
+    C++ builders paste it in unquoted and reparse it with shlex in POSIX mode.
     """
     ps = SETUP_PS1.read_text(encoding = "utf-8")
     block = _slice(ps, "$TorchCacheDir = $null", "$env:TORCHINDUCTOR_CACHE_DIR = $TorchCacheDir")
     assert 'Join-Path (Join-Path $StudioHome "cache") "torchinductor"' in block
     assert "$LongPathsEnabled" in block
-    assert "'\\s'" in block or '"\\s"' in block, "the whitespace refusal is gone"
+    refusal = re.search(r"-notmatch\s+'(\[[^']*(?:''[^']*)*\])'", block)
+    assert refusal, "the unparseable-path refusal is gone"
+    assert "\\s" in refusal.group(1), "the whitespace refusal is gone"
+    assert "''" in refusal.group(1), "the apostrophe refusal is gone"
     assert '"C:\\tc"' in block
 
     roots = (REPO_ROOT / "studio" / "backend" / "utils" / "paths" / "storage_roots.py").read_text(

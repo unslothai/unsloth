@@ -999,8 +999,9 @@ def _torch_runtime_tag() -> str:
 # torch/_inductor/cpp_builder.py joins the g++ invocation with spaces and reparses it with
 # shlex.split, so a root containing a space splits in two and the build fails outright
 # ("g++: fatal error: input file .../my is the same as output file"). The quoting is PyTorch's
-# to fix; skipping the pin just returns to the temporary directory Inductor used before. Not a
-# rare shape: "C:\Users\First Last" is an ordinary Windows account name.
+# to fix; skipping the pin just returns to the temporary directory Inductor used before. Neither
+# shape is rare: "C:\Users\First Last" is an ordinary Windows account name and "/home/o'brien"
+# an ordinary POSIX one. toolchain_path_unparseable has the full character list.
 _TOOLCHAIN_PATH_KEYS = frozenset(
     {
         "TORCHINDUCTOR_CACHE_DIR",
@@ -1044,9 +1045,32 @@ def _usable_dir(value: str) -> bool:
     return True
 
 
+def toolchain_path_unparseable(value: str) -> bool:
+    """Whether a compiler command line holding *value* survives shlex.split intact.
+
+    Whitespace splits the path in two. A quote is worse: shlex is in POSIX mode, so one
+    apostrophe swallows the rest of the command into a single argument and drops the quotes,
+    and an odd number of them raises ValueError instead. Measured against shlex.split on the
+    real command shape, path "/data/O'Brien/cache":
+
+        plain         4 args, intact
+        space         6 args
+        apostrophe    2 args, and the apostrophes are gone
+
+    A backslash is POSIX-only: it is an escape to shlex there, while on Windows it is the
+    separator and cpp_builder.normalize_path_separator rewrites it to "/" before the command is
+    built, so rejecting it there would reject every Windows path.
+    """
+    if any(ch.isspace() for ch in value):
+        return True
+    if "'" in value or '"' in value:
+        return True
+    return os.name != "nt" and "\\" in value
+
+
 def _toolchain_unsafe(key: str, value: str) -> bool:
     """Whether pinning *key* to *value* would hand a compiler a path it cannot parse."""
-    return key in _TOOLCHAIN_PATH_KEYS and any(ch.isspace() for ch in value)
+    return key in _TOOLCHAIN_PATH_KEYS and toolchain_path_unparseable(value)
 
 
 def _setup_cache_env() -> None:
@@ -1090,8 +1114,8 @@ def _setup_cache_env() -> None:
             # we invented is ours to withhold.
             if _toolchain_unsafe(key, value):
                 logger.debug(
-                    "leaving %s unset: %s contains whitespace, which the C++ builders "
-                    "paste into a command line unquoted",
+                    "leaving %s unset: %s holds a character the C++ builders cannot paste "
+                    "into a command line unquoted",
                     key,
                     value,
                 )
