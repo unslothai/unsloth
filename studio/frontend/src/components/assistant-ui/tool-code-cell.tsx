@@ -3,11 +3,6 @@
 
 "use client";
 
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipTrigger,
-} from "@/components/ui/tooltip";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { MAX_HIGHLIGHT_CHARS, codeFence } from "@/lib/markdown-plugins";
 import { downloadFile, isDownloadCancelled } from "@/lib/native-files";
@@ -16,7 +11,7 @@ import { toast } from "@/lib/toast";
 import { Copy01Icon, Download01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { code as codePlugin } from "@streamdown/code";
-import type { ReactNode } from "react";
+import { IconActionButton } from "./icon-action-button";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Streamdown } from "streamdown";
 
@@ -27,39 +22,6 @@ const SHIKI_THEME = ["github-light", "github-dark"] as [
 ];
 /** Within this many px of the bottom counts as following the stream. */
 const PIN_SLACK_PX = 40;
-
-/**
- * A code cell's toolbar button. Icon only: the cell header is narrow and these sit next to
- * each other, so the word doubles the width to say what the glyph already says. The label is
- * still the accessible name and is what the tooltip shows.
- */
-function CellAction({
-  label,
-  onClick,
-  children,
-}: {
-  label: string;
-  onClick: () => void;
-  children: ReactNode;
-}) {
-  return (
-    <Tooltip>
-      <TooltipTrigger asChild={true}>
-        <button
-          type="button"
-          onClick={onClick}
-          className="inline-flex items-center justify-center rounded p-1 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-          aria-label={label}
-        >
-          {children}
-        </button>
-      </TooltipTrigger>
-      <TooltipContent side="top" className="tooltip-compact">
-        {label}
-      </TooltipContent>
-    </Tooltip>
-  );
-}
 
 export function CopyBtn({ text }: { text: string }) {
   const [copied, setCopied] = useState(false);
@@ -84,13 +46,13 @@ export function CopyBtn({ text }: { text: string }) {
   }, [text]);
 
   return (
-    <CellAction label={copied ? "Copied" : "Copy to clipboard"} onClick={copy}>
+    <IconActionButton label={copied ? "Copied" : "Copy to clipboard"} onClick={copy}>
       {copied ? (
         <HugeiconsIcon icon={Tick02Icon} strokeWidth={2} className="size-3" />
       ) : (
         <HugeiconsIcon icon={Copy01Icon} className="size-3" />
       )}
-    </CellAction>
+    </IconActionButton>
   );
 }
 
@@ -106,9 +68,9 @@ function DownloadBtn({ code, name }: { code: string; name: string }) {
   }, [code, name]);
 
   return (
-    <CellAction label="Download" onClick={download}>
+    <IconActionButton label="Download" onClick={download}>
       <HugeiconsIcon icon={Download01Icon} className="size-3" />
-    </CellAction>
+    </IconActionButton>
   );
 }
 
