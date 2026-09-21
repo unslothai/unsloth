@@ -338,9 +338,7 @@ def test_a_writers_own_spelling_of_a_path_resolves_to_its_source():
     spelling UNSLOTH_STUDIO_HOME held, while list_sources() reports os.path.realpath().
     """
     path = _seed("llama-server", "llama-1765000101-port-8080.log")
-    expected = next(
-        s for s in debug_log_sources.list_sources() if s.label == path.name
-    ).id
+    expected = next(s for s in debug_log_sources.list_sources() if s.label == path.name).id
     assert debug_log_sources.source_id_for_path(str(path)) == expected
     # The realpath spelling too, which is what the listing itself reports.
     assert debug_log_sources.source_id_for_path(os.path.realpath(path)) == expected
@@ -352,9 +350,7 @@ def test_a_relative_spelling_resolves_to_the_same_source(monkeypatch):
     viewer silently falls back to family recency -- after a rolled-back load, the NEWER log
     of the attempt that succeeded, which is the confusion the path exists to prevent."""
     path = _seed("llama-server", "llama-1765000102-port-8080.log")
-    expected = next(
-        s for s in debug_log_sources.list_sources() if s.label == path.name
-    ).id
+    expected = next(s for s in debug_log_sources.list_sources() if s.label == path.name).id
     monkeypatch.chdir(_home())
     relative = os.path.join("logs", "llama-server", path.name)
     assert not os.path.isabs(relative)
