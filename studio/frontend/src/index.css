@@ -2788,6 +2788,19 @@ html[data-chat-font] .aui-root {
 		margin-bottom: 0 !important;
 	}
 
+	/* One vertical rhythm for everything stacked inside an assistant reply: text, thinking
+	   headers, tool-call groups and single tool rows all sit 1rem apart, the same gap
+	   streamdown puts between two paragraphs. The parts themselves own no outer margin or
+	   padding, so a header next to a paragraph reads the same as a paragraph next to a
+	   paragraph. `:where()` keeps this at zero specificity so a part that does set its own
+	   `mt-*` still wins. The first real child follows a zero-height badge anchor and gets none. */
+	:where(.aui-assistant-message-content > * + *) {
+		margin-top: 1rem;
+	}
+	:where(.aui-assistant-message-content > .h-0 + *) {
+		margin-top: 0;
+	}
+
 	/* The streamdown code-block wrapper carries `my-4` (16px top + 16px
 	   bottom margin). The bottom margin is what stretches the gap
 	   between the code-block box and the action-bar below it on a

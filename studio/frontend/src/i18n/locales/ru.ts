@@ -196,6 +196,7 @@ export const ru = {
       unpinChats: "Открепить чаты",
       archiveChats: "Архивировать чаты",
       markUnread: "Отметить как непрочитанное",
+      markRead: "Отметить как прочитанное",
       deleteChats: "Удалить чаты",
       deleteTitle: "Удалить чаты",
       deleteDescription: "Удалить чаты ({count})? Это действие необратимо.",
@@ -214,11 +215,26 @@ export const ru = {
       priority: "Приоритету",
       lastUpdated: "Последнему обновлению",
       manualOrder: "Вручную",
-      moveUp: "Переместить вверх",
-      moveDown: "Переместить вниз",
+      priorityHint: "Сначала активные и непрочитанные",
+      lastUpdatedHint: "Сначала новые",
+      manualOrderHint: "Перетащите строки, чтобы изменить порядок",
+      switchedToManual: "Ручной порядок: перетащите строки, чтобы изменить порядок",
       organizeChats: "Настроить чаты",
       organizeProjects: "Настроить проекты",
       sortPinnedChats: "Сортировать закреплённые чаты",
+      dragDrop: "Перетаскивание",
+      dragHints: "Показывать подсказку при перетаскивании",
+      reorderSwitchesSort: "Перестановка включает ручной порядок",
+      dragOpensFolders: "Открывать папки под указателем",
+      moveUp: "Переместить вверх",
+      moveDown: "Переместить вниз",
+    },
+    drag: {
+      reorder: "Переставить",
+      pin: "Закрепить",
+      unpin: "Открепить",
+      moveTo: "Переместить в {name}",
+      moveToRecents: "Переместить в Недавние",
     },
     dialog: {
       deleteChat: {
@@ -1613,6 +1629,9 @@ export const ru = {
         collapseByDefault: "Сворачивать действия инструментов по умолчанию",
         collapseByDefaultDescription:
           "Входные и выходные данные инструментов остаются свёрнутыми во время работы. Разверните строку инструмента для просмотра.",
+        foldIntoThinking: "Сворачивать вызовы инструментов в Размышление",
+        foldIntoThinkingDescription:
+          "Скрывает вызовы инструментов хода, пока не открыт блок размышления.",
       },
       webSearch: {
         title: "Веб-поиск",

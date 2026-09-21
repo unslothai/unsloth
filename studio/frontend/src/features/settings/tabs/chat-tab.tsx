@@ -266,6 +266,12 @@ export function ChatTab() {
   const setCollapseToolActivityByDefault = useChatPreferencesStore(
     (state) => state.setCollapseToolActivityByDefault,
   );
+  const foldToolActivityIntoThinking = useChatPreferencesStore(
+    (state) => state.foldToolActivityIntoThinking,
+  );
+  const setFoldToolActivityIntoThinking = useChatPreferencesStore(
+    (state) => state.setFoldToolActivityIntoThinking,
+  );
   const pastedTextMinChars = useChatPreferencesStore(
     (state) => state.pastedTextMinChars,
   );
@@ -515,6 +521,16 @@ export function ChatTab() {
             aria-label={t("settings.chat.tools.collapseByDefault")}
             checked={collapseToolActivityByDefault}
             onCheckedChange={setCollapseToolActivityByDefault}
+          />
+        </SettingsRow>
+        <SettingsRow
+          label={t("settings.chat.tools.foldIntoThinking")}
+          description={t("settings.chat.tools.foldIntoThinkingDescription")}
+        >
+          <Switch
+            aria-label={t("settings.chat.tools.foldIntoThinking")}
+            checked={foldToolActivityIntoThinking}
+            onCheckedChange={setFoldToolActivityIntoThinking}
           />
         </SettingsRow>
         <SettingsRow

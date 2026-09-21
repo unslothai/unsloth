@@ -198,6 +198,7 @@ export const en = {
       unpinChats: "Unpin chats",
       archiveChats: "Archive chats",
       markUnread: "Mark as unread",
+      markRead: "Mark as read",
       deleteChats: "Delete chats",
       deleteTitle: "Delete chats",
       deleteDescription: "Delete {count} chats? This cannot be undone.",
@@ -217,11 +218,26 @@ export const en = {
       priority: "Priority",
       lastUpdated: "Last updated",
       manualOrder: "Manual order",
-      moveUp: "Move up",
-      moveDown: "Move down",
+      priorityHint: "Active and unread first",
+      lastUpdatedHint: "Newest first",
+      manualOrderHint: "Drag rows to reorder",
+      switchedToManual: "Sorted manually: drag rows to reorder",
       organizeChats: "Organize chats",
       organizeProjects: "Organize projects",
       sortPinnedChats: "Sort pinned chats",
+      dragDrop: "Drag and drop",
+      dragHints: "Show a hint while dragging",
+      reorderSwitchesSort: "Reordering sets Manual order",
+      dragOpensFolders: "Open folders while hovering",
+      moveUp: "Move up",
+      moveDown: "Move down",
+    },
+    drag: {
+      reorder: "Reorder",
+      pin: "Pin",
+      unpin: "Unpin",
+      moveTo: "Move to {name}",
+      moveToRecents: "Move to Recents",
     },
     dialog: {
       deleteChat: {
@@ -1593,6 +1609,9 @@ export const en = {
         collapseByDefault: "Collapse tool activity by default",
         collapseByDefaultDescription:
           "Keep tool details collapsed. Expand a row to inspect it.",
+        foldIntoThinking: "Fold tool calls into Thinking",
+        foldIntoThinkingDescription:
+          "Hide a turn's tool calls until its Thinking block is opened.",
       },
       webSearch: {
         title: "Web search",
