@@ -24,6 +24,7 @@ import {
   ToolFallbackTrigger,
 } from "./tool-fallback";
 import { useToolActivityOpen } from "./use-tool-activity-open";
+import { ScrollPane } from "./scroll-pane";
 
 /**
  * Renders synthetic `_toolEvent` chunks from `_stream_anthropic` for the
@@ -123,9 +124,12 @@ export function CodeExecutionResultOutput({ result }: { result: unknown }) {
       <div className="flex justify-end">
         <CopyBtn text={resultText} />
       </div>
-      <pre className="mt-1 max-h-64 overflow-auto whitespace-pre-wrap break-words rounded bg-muted/50 p-2 text-xs">
+      <ScrollPane
+        className="mt-1 rounded bg-muted/50 p-2"
+        scrollerClassName="max-h-64 overflow-auto whitespace-pre-wrap break-words text-xs"
+      >
         {displayedResult}
-      </pre>
+      </ScrollPane>
     </div>
   );
 }
