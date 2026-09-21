@@ -1085,12 +1085,22 @@ def _private_dir(path: str) -> bool:
     in the Studio process. So create it with owner-only bits, and accept an existing one only
     when it is a real directory, ours, and closed to group and other.
 
+    The parent is asked FIRST and for both branches. Creating the directory ourselves settles
+    who owns it and nothing about who can rename it away afterwards, so checking the parent only
+    on the already-exists path left the fresh-creation path wide open.
+
     lstat, not stat: a symlink planted at the name would otherwise be judged by its target.
     Ownership is POSIX-only. On Windows the temporary root is already per-account under
     %LOCALAPPDATA%, and st_uid carries no meaning there.
     """
+    parent = Path(path).parent
     try:
-        Path(path).parent.mkdir(parents = True, exist_ok = True)
+        parent.mkdir(parents = True, exist_ok = True)
+    except (OSError, ValueError):
+        return False
+    if not _holding_dir_is_safe(parent):
+        return False
+    try:
         os.mkdir(path, 0o700)
         return True
     except FileExistsError:
@@ -1110,12 +1120,42 @@ def _private_dir(path: str) -> bool:
     return not info.st_mode & (stat_module.S_IWGRP | stat_module.S_IWOTH)
 
 
+def _holding_dir_is_safe(parent: Path) -> bool:
+    """Whether another account could swap the directory we just validated for one of its own.
+
+    Checking the child settles who may write INSIDE it and nothing else. On POSIX, renaming or
+    unlinking an entry is authorised by the write bit on the PARENT, and the sticky bit is what
+    narrows that to the entry's owner. So a shared parent that is group or world writable and
+    NOT sticky lets someone rename ours aside and put theirs at the same name after the check
+    and before the compiler reads the variable. /tmp is 1777 and safe; a TMPDIR pointed at an
+    ordinary shared directory is not, which is why this is asked rather than assumed.
+    """
+    if os.name == "nt":
+        return True
+    try:
+        info = os.stat(parent)
+    except (OSError, ValueError):
+        return False
+    # Deliberately NOT keyed on who owns the parent. Owning a directory does not stop anyone
+    # else writing in it; the write bits do. A world-writable parent we own ourselves is just
+    # as renameable by a third account as one we do not.
+    if not info.st_mode & (stat_module.S_IWGRP | stat_module.S_IWOTH):
+        return True
+    return bool(info.st_mode & stat_module.S_ISVTX)
+
+
 def _parseable_toolchain_fallback(key: str, intended: str) -> str | None:
     """A cache directory the C++ builders can read, or None when even the temp root is unusable.
 
     Keyed on the path we WANTED, so the same install returns to the same directory on every
     launch and two installs under one temp root do not share one cache. The digest is hex, so
     the name this builds cannot itself carry an unparseable character.
+
+    The ACCOUNT goes into the digest too. Two OS accounts sharing one install under one
+    temporary root would otherwise derive the same name, the first would create it 0700, and
+    every later account would fail the ownership check and get nothing pinned at all. Folded
+    into the hash rather than spelled out in the name, because a login is exactly the kind of
+    string that started this: torch puts an unsanitised one in its own default.
     """
     try:
         base = tempfile.gettempdir()
@@ -1123,7 +1163,9 @@ def _parseable_toolchain_fallback(key: str, intended: str) -> str | None:
         return None
     if not base or toolchain_path_unparseable(base):
         return None
-    digest = hashlib.sha256(intended.encode("utf-8", "replace")).hexdigest()[:12]
+    account = str(os.geteuid()) if hasattr(os, "geteuid") else (os.environ.get("USERNAME") or "")
+    digest = hashlib.sha256(
+        f"{account}\0{intended}".encode("utf-8", "replace")).hexdigest()[:12]
     candidate = str(Path(base) / f"unsloth-{key.lower().replace('_', '-')}-{digest}")
     # The join can still reintroduce one: gettempdir() is parseable but Path may normalise.
     return None if toolchain_path_unparseable(candidate) else candidate

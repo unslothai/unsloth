@@ -5,7 +5,6 @@
 
 import contextlib
 import errno
-import hashlib
 import importlib.util
 import json
 import os
@@ -336,11 +335,27 @@ def test_a_refused_root_gets_a_parseable_cache_rather_than_torchs_own(monkeypatc
     assert os.environ["TORCHINDUCTOR_CACHE_DIR"] == first
 
 
+def _fallback_path(sr, key, intended):
+    """The exact path the resolver will choose, asked OF the resolver.
+
+    Recomputing the digest here duplicated the naming rule, and the moment the account was
+    folded into it these fixtures silently stopped colliding with the real name: the planted
+    directory sat unused and the tests passed while proving nothing."""
+    return Path(sr._parseable_toolchain_fallback(key, intended))
+
+
 @pytest.mark.parametrize(
     "occupy",
     [
         pytest.param("file", id = "the name is already a regular file"),
-        pytest.param("readonly", id = "the directory exists but cannot be written"),
+        pytest.param(
+            "readonly",
+            id = "the directory exists but cannot be written",
+            marks = pytest.mark.skipif(
+                os.name == "nt",
+                reason = "a read-only bit does not stop a write on Windows",
+            ),
+        ),
     ],
 )
 def test_an_unusable_fallback_is_not_published_either(occupy, monkeypatch, tmp_path):
@@ -360,8 +375,7 @@ def test_an_unusable_fallback_is_not_published_either(occupy, monkeypatch, tmp_p
 
     # Occupy the exact name the fallback will choose, derived the way the resolver derives it.
     intended = str(sr.cache_root() / "torchinductor")
-    digest = hashlib.sha256(intended.encode("utf-8", "replace")).hexdigest()[:12]
-    squatter = temp_root / f"unsloth-torchinductor-cache-dir-{digest}"
+    squatter = _fallback_path(sr, "TORCHINDUCTOR_CACHE_DIR", intended)
     if occupy == "file":
         squatter.write_text("not a directory", encoding = "utf-8")
     else:
@@ -375,12 +389,6 @@ def test_an_unusable_fallback_is_not_published_either(occupy, monkeypatch, tmp_p
             squatter.chmod(0o700)
 
     assert "TORCHINDUCTOR_CACHE_DIR" not in os.environ
-
-
-def _fallback_name(sr, key, intended):
-    """The name the resolver will choose, derived the way the resolver derives it."""
-    digest = hashlib.sha256(intended.encode("utf-8", "replace")).hexdigest()[:12]
-    return f"unsloth-{key.lower().replace('_', '-')}-{digest}"
 
 
 @pytest.mark.skipif(os.name == "nt", reason = "the temporary root is per-account on Windows")
@@ -407,7 +415,7 @@ def test_a_fallback_another_user_could_have_planted_is_refused(plant, monkeypatc
     monkeypatch.setattr(sr.tempfile, "gettempdir", lambda: str(shared))
 
     intended = str(sr.cache_root() / "torch-extensions" / sr._torch_runtime_tag())
-    planted = shared / _fallback_name(sr, "TORCH_EXTENSIONS_DIR", intended)
+    planted = _fallback_path(sr, "TORCH_EXTENSIONS_DIR", intended)
     if plant == "world-writable":
         planted.mkdir(mode = 0o777)
         planted.chmod(0o777)
@@ -438,6 +446,65 @@ def test_the_fallback_it_creates_is_closed_to_everyone_else(monkeypatch, tmp_pat
     mode = published.stat().st_mode
     assert not mode & (stat.S_IWGRP | stat.S_IWOTH), oct(mode & 0o777)
     assert published.stat().st_uid == os.geteuid()
+
+
+@pytest.mark.skipif(os.name == "nt", reason = "POSIX rename permissions")
+@pytest.mark.parametrize(
+    "mode, published",
+    [
+        pytest.param(0o755, True, id = "a private holding directory"),
+        pytest.param(0o1777, True, id = "world-writable WITH the sticky bit, which is /tmp"),
+        pytest.param(0o1775, True, id = "group-writable WITH the sticky bit"),
+        pytest.param(0o777, False, id = "world-writable and NOT sticky"),
+        pytest.param(0o775, False, id = "group-writable and NOT sticky"),
+    ],
+)
+def test_the_holding_directory_decides_whether_the_fallback_can_be_swapped(
+    mode, published, monkeypatch, tmp_path
+):
+    """Validating the cache directory settles who may write inside it and nothing else.
+
+    Renaming an entry is authorised by the write bit on its PARENT, and the sticky bit is what
+    narrows that to the entry's owner. So a shared temporary root that is writable and not
+    sticky lets another account rename ours aside and leave theirs at the same name between the
+    check and the compiler reading the variable. /tmp is 1777 and fine; a TMPDIR pointed at an
+    ordinary shared directory is not."""
+    refused = tmp_path / "o'brien" / "studio"
+    refused.mkdir(parents = True)
+    shared = tmp_path / "shared"
+    shared.mkdir()
+    shared.chmod(mode)
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(refused))
+    sr = _load_storage_roots()
+    monkeypatch.setattr(sr.tempfile, "gettempdir", lambda: str(shared))
+
+    try:
+        sr._setup_cache_env()
+    finally:
+        shared.chmod(0o755)
+
+    assert ("TORCH_EXTENSIONS_DIR" in os.environ) is published
+
+
+@pytest.mark.skipif(os.name == "nt", reason = "the identity is the euid on POSIX")
+def test_two_accounts_under_one_temp_root_do_not_collide(monkeypatch, tmp_path):
+    """Keyed on the intended path alone, two OS accounts sharing one install derived the same
+    name. The first created it 0700 and every later account then failed the ownership check and
+    got nothing pinned, which for a login that is itself unparseable means the build fails after
+    all. The account goes into the digest, not into the visible name: a login is exactly the
+    kind of string that started this."""
+    sr = _load_storage_roots()
+    intended = "/srv/o'brien/studio/cache/torch-extensions/tag"
+
+    monkeypatch.setattr(sr.os, "geteuid", lambda: 1000)
+    mine = sr._parseable_toolchain_fallback("TORCH_EXTENSIONS_DIR", intended)
+    monkeypatch.setattr(sr.os, "geteuid", lambda: 1001)
+    theirs = sr._parseable_toolchain_fallback("TORCH_EXTENSIONS_DIR", intended)
+
+    assert mine and theirs and mine != theirs
+    # Still parseable, and still stable for one account across calls.
+    assert not sr.toolchain_path_unparseable(mine)
+    assert sr._parseable_toolchain_fallback("TORCH_EXTENSIONS_DIR", intended) == theirs
 
 
 def test_a_refused_root_with_no_usable_temp_root_still_publishes_nothing(monkeypatch, tmp_path):
