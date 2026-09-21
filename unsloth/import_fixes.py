@@ -687,6 +687,203 @@ def fix_transformers5_bare_annotation_configs():
         logger.info(f"Unsloth: Failed patching PretrainedConfig ({e})")
 
 
+# Where the image helpers that `modeling_*.py` files reach for actually live.
+# Ordered so the image modules win: `resize` exists in image_transforms and is
+# the one a preprocessor means, and `transformers.utils` is last because it is
+# broad enough to shadow a name by accident.
+_IMAGE_PROCESSING_SYMBOL_HOMES = (
+    "transformers.image_transforms",
+    "transformers.image_utils",
+    "transformers.image_processing_utils",
+    "transformers.feature_extraction_utils",
+    "transformers.utils",
+)
+
+# Vision backbones whose image-processing module third-party remote code imports
+# as a namespace (`import ... as siglip2_ips`) and then reads helpers off.
+_IMAGE_PROCESSING_MODULES = (
+    "transformers.models.siglip2.image_processing_siglip2",
+    "transformers.models.siglip.image_processing_siglip",
+)
+
+_IMAGE_REEXPORT_FLAG = "_unsloth_legacy_image_reexports"
+
+# Names this fix bound onto a module, so the patch can be fully undone: the
+# forwarder caches each hit with setattr, and removing only __getattr__ would
+# leave those bindings behind.
+_IMAGE_REEXPORT_BOUND = "_unsloth_legacy_image_bound"
+
+# One name per module that transformers 5 stopped re-exporting, used to decide
+# whether this environment is affected at all.
+_IMAGE_REEXPORT_PROBE = "filter_out_non_signature_kwargs"
+
+
+def _image_processing_reexports_are_missing(module):
+    """Is this module missing the helpers remote code expects on it?
+
+    Asked of the live module rather than of a transformers version, because the
+    re-export lists were trimmed per model over several releases and a version
+    window would mislabel builds that lost them early or kept them late.
+    """
+    return not hasattr(module, _IMAGE_REEXPORT_PROBE)
+
+
+def _install_legacy_image_reexports(module_name):
+    """Resolve dropped image helpers off `module_name` from their current homes.
+
+    A module-level ``__getattr__`` (PEP 562) rather than a fixed list of names:
+    the set that was dropped differs per transformers release, and a list
+    written today would miss the next one. Only names transformers still
+    defines somewhere resolve, so a genuine typo in remote code keeps raising
+    ``AttributeError`` instead of turning into a confusing failure later.
+    """
+    try:
+        module = importlib.import_module(module_name)
+    except Exception:
+        return False
+    if getattr(module, _IMAGE_REEXPORT_FLAG, False):
+        return False
+    if not _image_processing_reexports_are_missing(module):
+        return False
+
+    previous = getattr(module, "__getattr__", None)
+    bound = set()
+
+    def __getattr__(name):
+        # Dunders are looked up on the type for real modules; anything private
+        # is not a re-export, so leave both alone.
+        if not name.startswith("_"):
+            for home in _IMAGE_PROCESSING_SYMBOL_HOMES:
+                try:
+                    source = importlib.import_module(home)
+                except Exception:
+                    continue
+                if hasattr(source, name):
+                    value = getattr(source, name)
+                    # Bind it so later reads skip this lookup entirely.
+                    setattr(module, name, value)
+                    bound.add(name)
+                    return value
+        if previous is not None:
+            return previous(name)
+        raise AttributeError(f"module {module_name!r} has no attribute {name!r}")
+
+    # Keep the original reachable, so the patch can be tested and undone.
+    __getattr__.__wrapped__ = previous
+    module.__getattr__ = __getattr__
+    setattr(module, _IMAGE_REEXPORT_FLAG, True)
+    setattr(module, _IMAGE_REEXPORT_BOUND, bound)
+    return True
+
+
+def _remove_legacy_image_reexports(module_name):
+    """Undo `_install_legacy_image_reexports`, including the cached bindings."""
+    module = sys.modules.get(module_name)
+    if module is None or not getattr(module, _IMAGE_REEXPORT_FLAG, False):
+        return False
+    for name in getattr(module, _IMAGE_REEXPORT_BOUND, ()):  # drop cached hits
+        try:
+            delattr(module, name)
+        except AttributeError:
+            pass
+    previous = getattr(module.__getattr__, "__wrapped__", None)
+    if previous is None:
+        try:
+            del module.__getattr__
+        except AttributeError:
+            pass
+    else:
+        module.__getattr__ = previous
+    for attr in (_IMAGE_REEXPORT_FLAG, _IMAGE_REEXPORT_BOUND):
+        try:
+            delattr(module, attr)
+        except AttributeError:
+            pass
+    return True
+
+
+def _install_legacy_image_reexports_now():
+    """Patch every target module, importing the ones not yet loaded."""
+    patched = []
+    for module_name in _IMAGE_PROCESSING_MODULES:
+        try:
+            if _install_legacy_image_reexports(module_name):
+                patched.append(module_name.rsplit(".", 1)[-1])
+        except Exception as e:
+            logger.info(f"Unsloth: Skipping image re-export fix for {module_name} ({e})")
+    if patched:
+        logger.info(
+            "Unsloth: Restoring transformers 4.x image processing re-exports on "
+            + ", ".join(patched)
+        )
+    return patched
+
+
+def fix_transformers5_image_processing_reexports():
+    """Let remote-code image processors keep reading helpers off siglip modules.
+
+    transformers 5 stopped re-exporting the generic image helpers
+    (``filter_out_non_signature_kwargs``, ``resize``, ``to_numpy_array``,
+    ``ChannelDimension`` and friends) from each model's ``image_processing_*``
+    module. Remote code pinned to the 4.x layout does
+    ``import transformers.models.siglip2.image_processing_siglip2 as siglip2_ips``
+    and then uses ``@siglip2_ips.filter_out_non_signature_kwargs()`` at class
+    definition time, so the import raises ``AttributeError`` and the model
+    cannot be loaded at all. microsoft/Phi-4-reasoning-vision-15B is one such
+    checkpoint.
+
+    The helpers themselves were not removed, only the re-exports, so this
+    forwards attribute reads to wherever transformers keeps them now. No-op on
+    transformers 4.x, where the names are still there.
+
+    Applied when remote code is about to run rather than at import: plain
+    ``import transformers`` does not pull in the siglip2 image-processing
+    module, and importing it eagerly to patch it costs every user about three
+    seconds of PIL and torchvision setup for a checkpoint they may never load.
+    """
+    try:
+        import transformers
+        if Version(transformers.__version__) < Version("5.0.0"):
+            return
+        from transformers import dynamic_module_utils
+    except Exception as e:
+        logger.info(f"Unsloth: Skipping image processing re-export fix ({e})")
+        return
+
+    # Anything already imported can be fixed right now for free.
+    for module_name in _IMAGE_PROCESSING_MODULES:
+        if module_name in sys.modules:
+            try:
+                _install_legacy_image_reexports(module_name)
+            except Exception as e:
+                logger.info(f"Unsloth: Skipping image re-export fix for {module_name} ({e})")
+
+    if getattr(dynamic_module_utils, "_unsloth_patched_get_class_in_module", False):
+        return
+
+    original = getattr(dynamic_module_utils, "get_class_in_module", None)
+    if original is None:
+        return
+
+    @functools.wraps(original)
+    def get_class_in_module(*args, **kwargs):
+        # Runs immediately before a checkpoint's own modeling file is executed,
+        # which is the only place the missing re-exports are read.
+        try:
+            _install_legacy_image_reexports_now()
+        except Exception as e:
+            logger.info(f"Unsloth: image re-export fix skipped ({e})")
+        return original(*args, **kwargs)
+
+    # Keep the original reachable, so the patch can be tested and undone.
+    get_class_in_module.__wrapped__ = original
+    try:
+        dynamic_module_utils.get_class_in_module = get_class_in_module
+        dynamic_module_utils._unsloth_patched_get_class_in_module = True
+    except Exception as e:
+        logger.info(f"Unsloth: Failed patching get_class_in_module ({e})")
+
+
 _SDPA_MASK_PATCH_FLAG = "_unsloth_patched_sdpa_mask"
 
 
