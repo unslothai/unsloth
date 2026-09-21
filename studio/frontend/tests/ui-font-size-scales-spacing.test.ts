@@ -100,6 +100,12 @@ test("fixed slots that hold scaled content scale with it", () => {
   const carousel = readSrc("features/hub/catalog/hub-section-row.tsx");
   assert.ok(carousel.includes(HOOK), "the carousel slot ignores it");
   assert.match(carousel, /itemHeight=\{cardHeight\}/);
+  // The stride and the arrow's centre line are measured in JS against gap-4
+  // and pt-2, which scale, so an unscaled stride stops short of the next card.
+  const strip = readSrc("features/hub/catalog/card-carousel.tsx");
+  assert.ok(strip.includes(HOOK), "the carousel stride ignores it");
+  assert.match(strip, /const gapPx = CARD_GAP_PX \* scale;/);
+  assert.match(strip, /const topPaddingPx = CAROUSEL_TOP_PADDING_PX \* scale;/);
 
   const lists = readSrc("features/hub/catalog/models-catalog-lists.tsx");
   assert.ok(lists.includes(HOOK), "the pinned grid ignores it");

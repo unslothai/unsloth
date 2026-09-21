@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { useUiSpaceScale } from "@/hooks/use-ui-space-scale";
 import { cn } from "@/lib/utils";
 import {
   type MouseEvent as ReactMouseEvent,
@@ -73,8 +74,13 @@ export function CardCarousel<T>({
   const scrollerRef = useRef<HTMLDivElement>(null);
   const [canLeft, setCanLeft] = useState(false);
   const [canRight, setCanRight] = useState(false);
-  const stepPx = itemWidth + CARD_GAP_PX;
-  const arrowCenterPx = CAROUSEL_TOP_PADDING_PX + itemHeight / 2;
+  // gap-4 and pt-2 scale with the UI font size, like the cards themselves, so
+  // the stride and the arrow's centre line take the same scale.
+  const scale = useUiSpaceScale();
+  const gapPx = CARD_GAP_PX * scale;
+  const topPaddingPx = CAROUSEL_TOP_PADDING_PX * scale;
+  const stepPx = itemWidth + gapPx;
+  const arrowCenterPx = topPaddingPx + itemHeight / 2;
 
   const updateArrows = useCallback(() => {
     const el = scrollerRef.current;
@@ -194,13 +200,13 @@ export function CardCarousel<T>({
         aria-hidden="true"
         data-visible={canLeft || undefined}
         className="hub-carousel-fade hub-carousel-fade-left"
-        style={{ top: CAROUSEL_TOP_PADDING_PX, height: itemHeight }}
+        style={{ top: topPaddingPx, height: itemHeight }}
       />
       <div
         aria-hidden="true"
         data-visible={canRight || undefined}
         className="hub-carousel-fade hub-carousel-fade-right"
-        style={{ top: CAROUSEL_TOP_PADDING_PX, height: itemHeight }}
+        style={{ top: topPaddingPx, height: itemHeight }}
       />
       <CarouselArrow
         side="left"
