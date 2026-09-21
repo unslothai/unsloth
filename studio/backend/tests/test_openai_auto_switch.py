@@ -13159,6 +13159,46 @@ def test_a_checkpoint_directory_that_cannot_be_enumerated_is_reported():
         assert incidents == [], f"an empty directory was reported as a gap: {incidents}"
 
 
+def test_an_hf_cache_root_that_cannot_be_enumerated_is_reported():
+    """``_scan_hf_cache`` globbed its root for ``models--*``.
+
+    A cache root that stats as a directory but cannot be enumerated answers that glob with
+    no rows, so every repo under it was dropped while the pass still published as complete
+    and the alias probe could memoize the miss. Real filesystem, since the suppression is
+    pathlib's. The route caller is unguarded, so this degrades to an empty result AND an
+    incident rather than raising into a 500.
+    """
+    import os
+    import pathlib
+
+    from core.inference.scan_incidents import collecting_scan_incidents
+    from routes import models as models_route
+
+    with tempfile.TemporaryDirectory() as root:
+        cache = pathlib.Path(root) / "hub"
+        repo = cache / "models--unsloth--gemma-3-4b-it-GGUF"
+        repo.mkdir(parents = True)
+        os.chmod(cache, 0o000)
+        try:
+            assert (
+                list(cache.glob("models--*")) == []
+            ), "glob no longer suppresses the enumeration failure, so this case is stale"
+            with collecting_scan_incidents() as incidents:
+                assert models_route._scan_hf_cache(cache) == []
+            assert any(
+                "hf cache root unreadable" in note for note in incidents
+            ), f"an unreadable HF cache root read as an empty one: {incidents}"
+        finally:
+            os.chmod(cache, 0o755)
+
+        # A readable cache holding no repos is an ANSWER, and stays silent.
+        empty = pathlib.Path(root) / "empty-hub"
+        empty.mkdir()
+        with collecting_scan_incidents() as incidents:
+            assert models_route._scan_hf_cache(empty) == []
+        assert incidents == [], f"an empty HF cache root was reported as a gap: {incidents}"
+
+
 def test_the_scanners_match_a_gguf_suffix_the_way_windows_does():
     """glob is case-INSENSITIVE on Windows, so a staged MODEL.GGUF was discovered there.
 

@@ -596,7 +596,16 @@ def _scan_hf_cache(
     from hub.utils import inventory_scan as hf_cache_scan
 
     found: List[LocalModelInfo] = []
-    for repo_dir in cache_dir.glob("models--*"):
+    try:
+        # A root that stats as a directory but cannot be enumerated answered ``glob`` with no
+        # rows, so the empty result was certified as a complete scan and a probe could memoize a
+        # miss against a cache it never managed to read. Prefix compared case-insensitively
+        # because that is how the pattern matched on Windows.
+        repo_dirs = [p for p in _dir_entries(cache_dir) if p.name.lower().startswith("models--")]
+    except OSError as exc:
+        note_scan_incident(f"hf cache root unreadable: {cache_dir} ({type(exc).__name__})")
+        return []
+    for repo_dir in repo_dirs:
         if not repo_dir.is_dir():
             continue
 
