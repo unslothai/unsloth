@@ -942,6 +942,10 @@ def _sibling_revision_entries(raw_id: str, loader_id: str):
     try:
         siblings = [p for p in snapshots.iterdir() if p.is_dir() and p.name != Path(raw_id).name]
     except OSError:
+        # A revision omitted because the cache blinked, not because it is not there. Left
+        # unreported, the pass publishes as complete and a caller memoizes the absence of a
+        # sibling that comes back.
+        _note_scan_source_skipped()
         return
     for sibling in siblings:
         if not snapshot_variants_all_complete(str(sibling)):

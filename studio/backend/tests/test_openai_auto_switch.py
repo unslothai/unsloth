@@ -12318,3 +12318,73 @@ def test_the_hermes_and_ollama_scanners_report_a_directory_they_could_not_walk(m
         assert any("ollama" in note for note in incidents), (
             f"the Ollama scanner reported an unreadable directory as empty: {incidents}"
         )
+
+
+def test_a_newly_published_scan_reopens_a_settled_probe(monkeypatch):
+    """A settled negative belongs to the snapshot that answered it, not to the process.
+
+    invalidate_index only fires on a scan-ROOT change. A model dropped into an existing LM
+    Studio, Hermes, Ollama or HF root is picked up by an ordinary TTL or background scan,
+    which publishes a fresh stamp and leaves the generation alone, so a marker tied to the
+    generation alone survived an index that now HAS the alias: the resident shortcut went on
+    answering with the filename until a reload.
+    """
+    path = "/elsewhere/unscanned-model.gguf"
+    backend = _FakeBackend(path)
+    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: backend)
+    monkeypatch.setattr(inference_route, "_alias_probed_load_paths", set())
+    monkeypatch.setattr(inference_route, "_alias_probe_answered_at", {})
+    monkeypatch.setattr(inference_route, "_alias_probe_inflight", {})
+    monkeypatch.setattr(inference_route, "_alias_probe_generation", -1)
+    monkeypatch.setattr(resolver, "_build_index", lambda: {})
+    monkeypatch.setattr(resolver, "_CACHE_TTL_S", 0)
+
+    resolver._index()
+    assert inference_route._loaded_identity_satisfies(path) is False
+    inference_route._alias_probe_settle(path)
+    generation_at_settle = resolver.index_generation()
+    assert inference_route._loaded_identity_satisfies(path) is True, (
+        "a settled probe must answer for the snapshot it was taken against"
+    )
+
+    # A later scan publishes a new stamp WITHOUT touching the generation: exactly what a
+    # TTL expiry or a warm does after something appeared under an existing root.
+    resolver._index()
+    assert resolver.index_generation() == generation_at_settle, (
+        "the harness invalidated the index, which is not the case under test"
+    )
+    assert inference_route._loaded_identity_satisfies(path) is False, (
+        "a probe settled against an older snapshot answered for a newer one"
+    )
+    # And it is reopened, not merely refused: the pass it sends to the resolver can record
+    # the alias the new scan indexed.
+    assert inference_route._alias_probe_inflight == {KEY(path): 1}
+
+
+def test_a_suppressed_sibling_revision_walk_is_not_a_complete_scan(monkeypatch):
+    """_sibling_revision_entries omits a revision it could not list, without raising.
+
+    An HF cache that blinks while an older snapshot is resident drops the sibling revision
+    from the index, and published as complete that miss was memoized: the resident model
+    stayed advertised by its snapshot filename after the cache came back.
+    """
+    import pathlib
+
+    monkeypatch.setattr(resolver, "_scan_sources_skipped", 0)
+
+    def boom(self):
+        raise OSError("hf cache went away mid-walk")
+
+    with tempfile.TemporaryDirectory() as root:
+        snapshots = pathlib.Path(root) / "models--unsloth--Qwen3-4B-GGUF" / "snapshots"
+        snapshots.mkdir(parents = True)
+        resident = snapshots / "abc123"
+        resident.mkdir()
+        monkeypatch.setattr(pathlib.Path, "iterdir", boom)
+        # The id is the snapshot DIRECTORY, which is what the scan carries for an
+        # inactive-cache repo.
+        list(resolver._sibling_revision_entries(str(resident), "loader"))
+
+    assert resolver._scan_sources_skipped >= 1, (
+        "a sibling revision walk that failed was counted as a complete look"
+    )

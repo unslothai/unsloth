@@ -9037,6 +9037,8 @@ _alias_probed_load_paths: set[str] = set()
 _alias_probe_inflight: dict[str, int] = {}
 # The resolver index generation the two collections describe.
 _alias_probe_generation = -1
+# The index state each settled marker answered against, so a later scan retires it.
+_alias_probe_answered_at: dict[str, tuple[int, float]] = {}
 _alias_probe_lock = threading.Lock()
 
 
@@ -9055,12 +9057,30 @@ def _alias_probe_key(identifier: str) -> str:
     return f"{current_account_id()}\x00{identifier}"
 
 
+def _alias_probe_index_state() -> tuple[int, float]:
+    """Which index a negative answer was read from: its configuration and its snapshot.
+
+    The generation alone is not enough. ``invalidate_index`` bumps it on every scan-root
+    change, but a model added externally under an LM Studio, Hermes, Ollama or HF root is
+    picked up by an ordinary TTL or background scan, which publishes a fresh stamp and
+    leaves the generation where it was. A marker that survived that kept the resident
+    shortcut answering with the filename until a reload, even though the alias was by then
+    indexed. Paired with the stamp, a probe costs one resolver pass per scan rather than
+    one per message, which is the cost it exists to remove.
+    """
+    from core.inference.local_model_resolver import index_generation, index_scan_stamp
+
+    return (index_generation(), index_scan_stamp())
+
+
 def _alias_probe_forget_stale_locked() -> None:
-    """Drop probes recorded against a resolver index that no longer exists.
+    """Drop probes recorded against a scan-root configuration that no longer exists.
 
     ``invalidate_index`` bumps the generation on every scan-root change, and a path that
-    had no alias under the old roots can have one under the new ones, so a negative probe
-    must not outlive the configuration it was taken under.
+    had no alias under the old roots can have one under the new ones, so nothing taken
+    under the old configuration survives, in flight or settled. A new SNAPSHOT under the
+    same roots retires a settled marker too, but per marker rather than wholesale: see
+    ``_alias_probe_taken``.
     """
     global _alias_probe_generation
     from core.inference.local_model_resolver import index_generation
@@ -9068,6 +9088,7 @@ def _alias_probe_forget_stale_locked() -> None:
     generation = index_generation()
     if generation != _alias_probe_generation:
         _alias_probed_load_paths.clear()
+        _alias_probe_answered_at.clear()
         _alias_probe_inflight.clear()
         _alias_probe_generation = generation
 
@@ -9078,7 +9099,12 @@ def _alias_probe_taken(identifier: str) -> bool:
     with _alias_probe_lock:
         _alias_probe_forget_stale_locked()
         if key in _alias_probed_load_paths:
-            return False
+            if _alias_probe_answered_at.get(key) == _alias_probe_index_state():
+                return False
+            # Answered against a snapshot that has since been replaced, so the answer is
+            # not this index's. Ask again rather than keep it.
+            _alias_probed_load_paths.discard(key)
+            _alias_probe_answered_at.pop(key, None)
         _alias_probe_inflight[key] = _alias_probe_inflight.get(key, 0) + 1
         return True
 
@@ -9117,6 +9143,7 @@ def _alias_probe_settle(identifier: str) -> None:
             # the same path has nothing left to contribute.
             _alias_probe_inflight.pop(key, None)
             _alias_probed_load_paths.add(key)
+            _alias_probe_answered_at[key] = _alias_probe_index_state()
 
 
 def _clear_advertised_alias(backend) -> None:
@@ -9133,6 +9160,7 @@ def _clear_advertised_alias(backend) -> None:
     backend._openai_advertised_id = None
     with _alias_probe_lock:
         _alias_probed_load_paths.clear()
+        _alias_probe_answered_at.clear()
         _alias_probe_inflight.clear()
 
 
