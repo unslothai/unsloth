@@ -43,6 +43,7 @@ says exactly what it models and why everything else is skipped whole.
 from __future__ import annotations
 
 import ast
+import sys
 from pathlib import Path
 
 import pytest
@@ -322,6 +323,8 @@ def _definition_expressions(node: ast.AST, eager_annotations: bool):
 # statement; 3.9 has no Match at all, and then nothing can be one.
 MATCH_CASE = getattr(ast, "match_case", ())
 TYPE_ALIAS = getattr(ast, "TypeAlias", None)  # PEP 695, 3.12+
+LAZY_ANNOTATIONS = sys.version_info >= (3, 14)  # PEP 649
+MATCH_SYNTAX = sys.version_info >= (3, 10)
 
 
 def _normalise_os_aliases(tree: ast.Module) -> ast.Module:
@@ -379,7 +382,9 @@ def _import_time_expressions(tree: ast.Module):
     which is a different kind of analysis than reading one expression, and it would have
     to be right about rebinding, shadowing and imports to be worth trusting."""
     _normalise_os_aliases(tree)
-    eager_annotations = not _has_future_annotations(tree)
+    # PEP 649 makes annotations lazy by default from 3.14, and this project's
+    # requires-python is >=3.9,<3.15, so both halves of that range are live
+    eager_annotations = not _has_future_annotations(tree) and not LAZY_ANNOTATIONS
 
     def block(statements):
         for statement in statements:
@@ -567,8 +572,12 @@ def test_an_annotation_is_import_time_only_without_the_future_import():
     """Without `from __future__ import annotations` an annotation is evaluated at the
     `def`; with it, it is a string and cannot raise."""
     body = "import os\ndef helper(uid: os.geteuid() = 1) -> os.geteuid():\n    return uid\n"
+    # the default beside it is evaluated whatever the annotation does, so this is flagged
+    # on every version; the annotation-only case below is the one PEP 649 changes
     assert _flagged(body)
     assert not _flagged("from __future__ import annotations\n" + body)
+    annotation_only = "import os\ndef helper(uid: os.geteuid()):\n    return uid\n"
+    assert bool(_flagged(annotation_only)) is not LAZY_ANNOTATIONS
 
 
 def test_a_nested_definition_is_not_import_time():
@@ -704,9 +713,12 @@ def test_unmodelled_control_flow_is_skipped_whole():
         'import os\nwhile os.name == "posix":\n    ROOT = os.geteuid() == 0\n',
         "import os\nfor _ in range(1):\n    ROOT = os.geteuid() == 0\n",
         "import os\nwith open('x') as fh:\n    ROOT = os.geteuid() == 0\n",
-        'import os\nmatch os.name:\n    case "posix":\n        ROOT = os.geteuid() == 0\n',
     ):
         assert not _flagged(source), source
+    if MATCH_SYNTAX:  # `match` is a SyntaxError below 3.10, and requires-python is >=3.9
+        assert not _flagged(
+            'import os\nmatch os.name:\n    case "posix":\n        ROOT = os.geteuid() == 0\n'
+        )
     # and a def under one of them is skipped with it, decorator and all
     assert not _flagged(
         "import os, pytest\n"
@@ -729,7 +741,8 @@ def test_a_generator_expression_does_not_look_anything_up_yet():
 def test_an_annotation_is_a_string_under_the_future_import():
     """`x: os.geteuid() = 1` looks nothing up when the module carries
     `from __future__ import annotations`, though the value beside it is still evaluated."""
-    assert _flagged("import os\nx: os.geteuid() = 1\n")
+    # PEP 649 makes this lazy from 3.14, where nothing is looked up either way
+    assert bool(_flagged("import os\nx: os.geteuid() = 1\n")) is not LAZY_ANNOTATIONS
     assert not _flagged("from __future__ import annotations\nimport os\nx: os.geteuid() = 1\n")
     assert _flagged("from __future__ import annotations\nimport os\nx: int = os.geteuid()\n")
 
