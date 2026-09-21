@@ -378,12 +378,23 @@ _VISUAL_TOKEN_ID_KEYS = (
 
 
 def _read_json(path):
-    """Parsed JSON for *path*, or None when it is absent or unreadable."""
+    """Parsed JSON for *path*, or None when it is absent or unreadable.
+
+    Absent and unreadable answer the same to a caller, so the difference is reported
+    here: a config that could not be READ drops the row, and a scan publishing that
+    omission as complete lets the miss be memoized. Malformed JSON is not a gap -- that
+    file will not parse on the next pass either.
+    """
     import json
     try:
         with path.open(encoding = "utf-8") as handle:
             return json.load(handle)
-    except (OSError, ValueError):
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        note_scan_incident(f"json unreadable: {path} ({type(exc).__name__})")
+        return None
+    except ValueError:
         return None
 
 
@@ -442,7 +453,10 @@ def _has_safetensors_weights(load_dir) -> bool:
         return any(
             re.fullmatch(r"model-\d+-of-\d+\.safetensors", f.name) for f in load_dir.iterdir()
         )
-    except OSError:
+    except OSError as exc:
+        # False here means "no weights", which is what a caller acts on, so the fact that
+        # the directory could not be listed has to be said separately.
+        note_scan_incident(f"weights listing unreadable: {load_dir} ({type(exc).__name__})")
         return False
 
 

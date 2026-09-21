@@ -12434,3 +12434,58 @@ def test_an_entry_dropped_by_a_read_failure_is_not_a_complete_scan(monkeypatch):
                 "loader", SimpleNamespace(path = str(model_dir))
             ) is None
         assert incidents == [], f"a classification refusal was reported as a gap: {incidents}"
+
+
+def test_a_helper_that_swallowed_a_read_failure_reports_it(monkeypatch):
+    """The classifiers' own helpers answer absent and unreadable the same way.
+
+    _read_json returns None for a config it could not read and _has_safetensors_weights
+    returns False for a directory it could not list, so the handler around them sees an
+    ordinary "not servable" and the row is dropped from a scan still published as complete.
+    A malformed config is NOT reported: it will not parse on the next pass either, so it is
+    an answer rather than a gap.
+    """
+    import pathlib
+
+    from core.inference.scan_incidents import collecting_scan_incidents
+
+    with tempfile.TemporaryDirectory() as root:
+        load_dir = pathlib.Path(root)
+        config = load_dir / "config.json"
+        config.write_text("{}")
+
+        real_open = pathlib.Path.open
+
+        def boom_open(self, *a, **k):
+            if self.name == "config.json":
+                raise PermissionError("config unreadable")
+            return real_open(self, *a, **k)
+
+        monkeypatch.setattr(pathlib.Path, "open", boom_open)
+        with collecting_scan_incidents() as incidents:
+            assert resolver._read_json(config) is None
+        assert any("json unreadable" in note for note in incidents), (
+            f"an unreadable config was indistinguishable from an absent one: {incidents}"
+        )
+        monkeypatch.undo()
+
+        # Absent is not a gap: most of these files simply do not exist.
+        with collecting_scan_incidents() as incidents:
+            assert resolver._read_json(load_dir / "nope.json") is None
+        assert incidents == [], f"an absent file was reported as unreadable: {incidents}"
+
+        # Nor is malformed.
+        config.write_text("{not json")
+        with collecting_scan_incidents() as incidents:
+            assert resolver._read_json(config) is None
+        assert incidents == [], f"a malformed config was reported as a gap: {incidents}"
+
+        def boom_iterdir(self):
+            raise PermissionError("cannot list")
+
+        monkeypatch.setattr(pathlib.Path, "iterdir", boom_iterdir)
+        with collecting_scan_incidents() as incidents:
+            assert resolver._has_safetensors_weights(load_dir) is False
+        assert any("weights listing unreadable" in note for note in incidents), (
+            f"a directory that could not be listed read as having no weights: {incidents}"
+        )
