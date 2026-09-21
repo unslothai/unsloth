@@ -17,7 +17,6 @@ export function SettingsRow({
   hint,
   icon,
   children,
-  below,
   destructive,
   className,
   alignTop,
@@ -31,8 +30,6 @@ export function SettingsRow({
   hint?: string;
   icon?: ReactNode;
   children?: ReactNode;
-  /** Full-width content on its own line under the row, e.g. a slider track. */
-  below?: ReactNode;
   destructive?: boolean;
   className?: string;
   /** Top-align the control instead of centering it, for tall descriptions. */
@@ -116,8 +113,6 @@ export function SettingsRow({
           {children}
         </div>
       ) : null}
-      {/* basis-full so the wrapping row puts it on its own line. */}
-      {below ? <div className="basis-full">{below}</div> : null}
     </div>
   );
 }

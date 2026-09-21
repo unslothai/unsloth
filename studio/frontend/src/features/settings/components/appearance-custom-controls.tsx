@@ -919,41 +919,34 @@ export function ChatWidthSelect() {
   );
 }
 
-/** Typed value for the contrast row, in the run settings field. */
-export function ContrastValueInput() {
+/** Run settings track and field, sized like the other controls in the column. */
+export function ContrastSliderRow() {
   const t = useT();
   const contrast = useAppearanceCustomStore((s) => s.customization.contrast);
   const patch = useAppearanceCustomStore((s) => s.patch);
   return (
-    <NumericValueInput
-      value={contrast}
-      min={0}
-      max={100}
-      step={1}
-      onChange={(value) => patch({ contrast: value })}
-      ariaLabel={t("settings.appearance.custom.contrast.label")}
-      className="panel-field h-8 w-[84px] shrink-0"
-      fixedWidth={true}
-      size={4}
-    />
-  );
-}
-
-/** Full-width track under the row, same drag as the run settings sliders. */
-export function ContrastSlider() {
-  const t = useT();
-  const contrast = useAppearanceCustomStore((s) => s.customization.contrast);
-  const patch = useAppearanceCustomStore((s) => s.patch);
-  return (
-    <Slider
-      value={[contrast]}
-      min={0}
-      max={100}
-      step={1}
-      onValueChange={(values: number[]) => patch({ contrast: values[0] })}
-      className="panel-slider"
-      aria-label={t("settings.appearance.custom.contrast.label")}
-    />
+    <div className="flex w-64 items-center gap-3">
+      <Slider
+        value={[contrast]}
+        min={0}
+        max={100}
+        step={1}
+        onValueChange={(values: number[]) => patch({ contrast: values[0] })}
+        className="panel-slider"
+        aria-label={t("settings.appearance.custom.contrast.label")}
+      />
+      <NumericValueInput
+        value={contrast}
+        min={0}
+        max={100}
+        step={1}
+        onChange={(value) => patch({ contrast: value })}
+        ariaLabel={t("settings.appearance.custom.contrast.label")}
+        className="panel-field h-8 w-[84px] shrink-0"
+        fixedWidth={true}
+        size={4}
+      />
+    </div>
   );
 }
 
