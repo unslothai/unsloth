@@ -1728,6 +1728,26 @@ def _path_entry_provides_llm_compressor(entry):
     return spec.loader is not None and spec.origin not in (None, "namespace")
 
 
+def _version_satisfies_llm_compressor_spec(version):
+    """Whether *version* is one the pin allows. Absent or unparseable is False.
+
+    Unknown is False here, unlike in the usability checks: this is what overrides
+    out-of-range METADATA, so it has to be evidence rather than an absence of doubt.
+    """
+    if not version:
+        return False
+    try:
+        from packaging.requirements import Requirement
+        return Requirement(_LLM_COMPRESSOR_SPEC).specifier.contains(str(version), prereleases = True)
+    except Exception:
+        return False
+
+
+def _llm_compressor_module_version_is_in_range(module):
+    """POSITIVE evidence from the module itself: a version it declares, inside the pin."""
+    return _version_satisfies_llm_compressor_spec(getattr(module, "__version__", None))
+
+
 def _llm_compressor_module_is_usable(module):
     """Whether the module THIS process imported is the one the export will get, in range.
 
@@ -1827,16 +1847,24 @@ def install_llm_compressor():
     # is accepted here and the pin is decorative. And on the module actually imported, not on
     # metadata: an import only this process can perform says nothing about the subprocess
     # that does the quantizing.
-    if _llm_compressor_version_is_supported():
-        try:
-            import llmcompressor
-            from llmcompressor import oneshot
-            from llmcompressor.modifiers.quantization import QuantizationModifier
+    metadata_supported = _llm_compressor_version_is_supported()
+    try:
+        import llmcompressor
+        from llmcompressor import oneshot
+        from llmcompressor.modifiers.quantization import QuantizationModifier
 
-            if _llm_compressor_module_is_usable(llmcompressor):
-                return oneshot, QuantizationModifier
-        except Exception:
-            pass
+        # Metadata answers for a DISTRIBUTION; the export imports a MODULE. An in-range
+        # checkout shadowing an out-of-range installed wheel is usable, and gating the
+        # import on metadata alone sent it to the destructive re-resolve this guard exists
+        # to avoid, or failed outright under the autoinstall opt-out. Overriding metadata
+        # takes POSITIVE evidence: a version the module declares, inside the pin. Unknown
+        # is enough only where metadata already agrees.
+        if _llm_compressor_module_is_usable(llmcompressor) and (
+            metadata_supported or _llm_compressor_module_version_is_in_range(llmcompressor)
+        ):
+            return oneshot, QuantizationModifier
+    except Exception:
+        pass
 
     # Installed but not importable in THIS process is not a reason to reinstall: the import can
     # fail under Unsloth's transformers patches, and the compressed export quantizes in an
@@ -1847,7 +1875,16 @@ def install_llm_compressor():
         from importlib.metadata import version as _iv, PackageNotFoundError as _PNF
         try:
             _iv("llmcompressor")
-            if _llm_compressor_version_is_supported() and _llm_compressor_imports_cleanly():
+            # The same override, for a checkout the in-process import cannot perform: the
+            # probe reports the version it actually RESOLVED, and that version, checked here
+            # rather than trusted from imports_cleanly, is the evidence.
+            probe_ok = _llm_compressor_imports_cleanly()
+            probe_named_a_version = _LLM_COMPRESSOR_PROBE_RESULT.get(
+                "imported"
+            ) is True and _version_satisfies_llm_compressor_spec(
+                _LLM_COMPRESSOR_PROBE_RESULT.get("version")
+            )
+            if probe_ok and (metadata_supported or probe_named_a_version):
                 # Present, supported, and importable in the same conditions the export runs
                 # under. The compressed-export subprocess performs the real import; the caller
                 # only uses this to trigger the install and fail fast, so returning None here

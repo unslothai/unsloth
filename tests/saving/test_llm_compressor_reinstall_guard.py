@@ -445,8 +445,13 @@ def test_the_fast_path_asks_before_returning_its_symbols():
 
     src = inspect.getsource(install_llm_compressor)
     assert (
-        "if _llm_compressor_module_is_usable(llmcompressor):" in src
+        "_llm_compressor_module_is_usable(llmcompressor)" in src
     ), "the fast path returns its symbols without asking whether the runner can use them"
+    # And metadata cannot admit a module on its own: overriding out-of-range metadata takes
+    # the module's own declared version, inside the pin.
+    assert (
+        "_llm_compressor_module_version_is_in_range(llmcompressor)" in src
+    ), "an out-of-range wheel's metadata is overridden without evidence from the module"
 
 
 def test_a_shadow_pip_cannot_replace_is_named_rather_than_reinstalled(monkeypatch):
@@ -755,6 +760,9 @@ def test_a_stale_module_is_evicted_before_the_reimport(monkeypatch):
     monkeypatch.setattr(subprocess, "check_call", lambda cmd, *a, **k: None)
     # The probe answers that the install worked, so the shadow error does not fire.
     monkeypatch.setattr(save, "_llm_compressor_imports_cleanly", lambda: True)
+    # The probe result is a module global, so a previous case's values would decide this one.
+    monkeypatch.setitem(save._LLM_COMPRESSOR_PROBE_RESULT, "imported", None)
+    monkeypatch.setitem(save._LLM_COMPRESSOR_PROBE_RESULT, "version", None)
 
     try:
         save.install_llm_compressor()
@@ -822,3 +830,58 @@ def test_a_zip_on_the_path_is_a_provider_too(tmp_path, monkeypatch):
     namespace = tmp_path / "ns" / "llmcompressor"
     namespace.mkdir(parents = True)
     assert _path_entry_provides_llm_compressor(str(tmp_path / "ns")) is False
+
+
+def test_an_in_range_checkout_is_not_reinstalled_over_out_of_range_metadata(monkeypatch):
+    """Metadata answers for a DISTRIBUTION; the export imports a MODULE.
+
+    An in-range checkout on PYTHONPATH shadowing an out-of-range installed wheel is exactly
+    what the child will import, and gating the fast path on metadata alone sent it to the
+    destructive re-resolve this guard exists to prevent, or failed outright under the
+    autoinstall opt-out.
+    """
+    import types
+
+    import unsloth.save as save
+
+    calls: list[list[str]] = []
+    real_version = md.version
+
+    def fake_version(dist: str) -> str:
+        # The unused installed distribution: out of range, and not what gets imported.
+        if dist == "llmcompressor":
+            return "0.13.0"
+        return real_version(dist)
+
+    monkeypatch.setattr(md, "version", fake_version)
+    monkeypatch.setattr(subprocess, "check_call", lambda cmd, *a, **k: calls.append(list(cmd)))
+
+    module = types.ModuleType("llmcompressor")
+    module.__version__ = "0.12.0"
+    module.oneshot = object()
+    quant = types.ModuleType("llmcompressor.modifiers.quantization")
+    quant.QuantizationModifier = object()
+    modifiers = types.ModuleType("llmcompressor.modifiers")
+    modifiers.quantization = quant
+    monkeypatch.setitem(sys.modules, "llmcompressor", module)
+    monkeypatch.setitem(sys.modules, "llmcompressor.modifiers", modifiers)
+    monkeypatch.setitem(sys.modules, "llmcompressor.modifiers.quantization", quant)
+    # Reachable by the child, which is the other half of usable.
+    monkeypatch.setattr(save, "_llm_compressor_module_is_usable", lambda m: True)
+
+    oneshot, modifier = save.install_llm_compressor()
+    assert (oneshot, modifier) == (
+        module.oneshot,
+        quant.QuantizationModifier,
+    ), "the imported in-range module was not returned"
+    assert calls == [], "an in-range checkout was reinstalled because of unrelated metadata"
+
+    # And the override needs the module's OWN version: unknown is not evidence, so a module
+    # that declares nothing still defers to the metadata verdict.
+    del module.__version__
+    monkeypatch.setattr(save, "_llm_compressor_imports_cleanly", lambda: False)
+    try:
+        save.install_llm_compressor()
+    except Exception:
+        pass
+    assert calls, "an unknown module version overrode out-of-range metadata"
