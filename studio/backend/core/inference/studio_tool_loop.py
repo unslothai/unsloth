@@ -1122,11 +1122,10 @@ def _mcp_provenance_by_id(
             continue
         if _is_strict_prefix_of_declared(name, declared_names):
             continue
-        # Declared means the name is whole, so the call is judged either way. Mark it BEFORE
-        # asking whether it resolves: mcp_display_parts is a SQLite lookup that answers falsy
-        # for a server with no display_name or no row, so stamping only on success re-ran it
-        # on every later chunk of the turn. tool_start still carries the authoritative
-        # provenance, which is what an unnameable server relied on anyway.
+        # Declared means the name is whole, so the call is judged either way. Marked
+        # BEFORE asking whether it resolves: mcp_display_parts is a SQLite lookup that
+        # answers falsy for a server with no display_name, so stamping only on success
+        # re-ran it per chunk. tool_start still carries the authoritative provenance.
         stamped.add(call_id)
         if not mcp_display_parts(name):
             continue
@@ -1341,8 +1340,8 @@ async def stream_with_studio_tools(
             break
         provider_turns += 1
         turn = _Turn(round = provider_turns)
-        # Per turn, not per run: ids restart each turn and the client drops its mapping at
-        # tool_end, so the second call_0 is a new card that still needs naming.
+        # Per turn, not per run: ids restart each turn and the client drops its mapping
+        # at tool_end, so the second call_0 is a new card needing its own name.
         mcp_stamped_ids: set[str] = set()
         healer = StreamToolCallHealer(heal_names, tools) if heal_names else None
         # A healed text-form call never reaches the wire as a tool_calls key, so a headerless caller's stripper cannot
