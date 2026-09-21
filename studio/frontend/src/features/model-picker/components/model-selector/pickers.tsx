@@ -1169,9 +1169,9 @@ function ModelRow({
       className={cn(
         // pl-[5.5px]: the dot is centred in a 14px hover target, so 5.5 + (14 - 5) / 2 lands it on
         // 10px, level with the section labels at px-2.5.
-        "group/row flex w-full flex-col items-stretch py-1.5 pl-[5.5px] pr-2 text-left text-sm transition-colors hover:bg-[#ececec] focus-visible:bg-[#ececec] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring dark:hover:bg-[var(--sidebar-accent)] dark:focus-visible:bg-[var(--sidebar-accent)]",
+        "group/row flex w-full flex-col items-stretch py-1.5 pl-[5.5px] pr-2 text-left text-sm transition-colors hover:bg-sidebar-accent focus-visible:bg-sidebar-accent focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
         showMemoryBar ? "rounded-2xl" : "rounded-full",
-        selected && "bg-[#ececec] dark:bg-[var(--sidebar-accent)]",
+        selected && "bg-sidebar-accent",
         className,
       )}
     >
@@ -2145,7 +2145,7 @@ function GgufVariantExpander({
               )
             }
             className={cn(
-              "flex min-w-0 flex-1 items-center justify-between gap-2 rounded-full py-1 pl-2 pr-1.5 text-left text-sm transition-colors hover:bg-[#ececec] focus-visible:bg-[#ececec] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring dark:hover:bg-[var(--sidebar-accent)] dark:focus-visible:bg-[var(--sidebar-accent)]",
+              "flex min-w-0 flex-1 items-center justify-between gap-2 rounded-full py-1 pl-2 pr-1.5 text-left text-sm transition-colors hover:bg-sidebar-accent focus-visible:bg-sidebar-accent focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
               unusableLocal &&
                 "cursor-default opacity-50 hover:bg-transparent dark:hover:bg-transparent",
             )}
@@ -5361,9 +5361,9 @@ export function HubModelPicker({
     hasMemoryBar = false,
   ) =>
     cn(
-      "group flex items-center transition-colors hover:bg-[#ececec] has-[:focus-visible]:bg-[#ececec] has-[[data-state=open]]:bg-[#ececec] dark:hover:bg-[var(--sidebar-accent)] dark:has-[:focus-visible]:bg-[var(--sidebar-accent)] dark:has-[[data-state=open]]:bg-[var(--sidebar-accent)]",
+      "group flex items-center transition-colors hover:bg-sidebar-accent has-[:focus-visible]:bg-sidebar-accent has-[[data-state=open]]:bg-sidebar-accent",
       hasMemoryBar ? "rounded-2xl" : "rounded-full",
-      selected && "bg-[#ececec] dark:bg-[var(--sidebar-accent)]",
+      selected && "bg-sidebar-accent",
     );
 
   // One connected model, through ModelRow like every On Device row, so the badges and the hover

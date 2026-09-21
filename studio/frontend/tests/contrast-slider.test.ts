@@ -38,6 +38,9 @@ const SURFACE_TOKENS = [
   "panel-surface-hover",
   "panel-input-surface",
   "panel-input-surface-hover",
+  "sidebar-accent",
+  "chat-icon-bg-hover",
+  "tabs-line-indicator",
 ];
 const LINE_TOKENS = ["border", "input", "sidebar-border"];
 

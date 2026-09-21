@@ -219,8 +219,10 @@
 	--sidebar-foreground: oklch(0.1281 0.0179 169.2764);
 	--sidebar-primary: #17b88b;
 	--sidebar-primary-foreground: oklch(1 0 0);
-	--sidebar-accent: #ececec;
+	--sidebar-accent-base: #ececec;
 	--sidebar-accent-foreground: #262626;
+	/* Selected tab on the line variant, a step above the page. */
+	--tabs-line-indicator-base: #ececec;
 	--sidebar-border-base: #f2f2f2;
 	--sidebar-ring: #262626;
 	--destructive-foreground: oklch(1 0 0);
@@ -291,7 +293,7 @@
 	   text. */
 	--chat-icon-fg: #555555;
 	--chat-icon-fg-hover: var(--foreground);
-	--chat-icon-bg-hover: #ededec;
+	--chat-icon-bg-hover-base: #ededec;
 
 	/* Control accent: switches, "New" badges, notification-style chips.
 	   Follows the brand accent by default; palettes that keep their primary
@@ -388,8 +390,9 @@
 	--sidebar-foreground: #ffffff;
 	--sidebar-primary: #17b88b;
 	--sidebar-primary-foreground: oklch(1 0 0);
-	--sidebar-accent: #2a2a2a;
+	--sidebar-accent-base: #2a2a2a;
 	--sidebar-accent-foreground: #ffffff;
+	--tabs-line-indicator-base: #2d2f33;
 	--sidebar-border-base: #2a2a2a;
 	--sidebar-ring: #ececec;
 	--destructive-foreground: oklch(1 0 0);
@@ -443,7 +446,7 @@
 	   hover restores full --foreground for affordance. */
 	--chat-icon-fg: #d8d8d8;
 	--chat-icon-fg-hover: var(--foreground);
-	--chat-icon-bg-hover: #2a2a2a;
+	--chat-icon-bg-hover-base: #2a2a2a;
 }
 
 /* ---------------------------------------------------------------------------
@@ -500,7 +503,7 @@
 	--sidebar-foreground: #1a1c1f;
 	--sidebar-primary: #0d0d0d;
 	--sidebar-primary-foreground: #ffffff;
-	--sidebar-accent: #ececec;
+	--sidebar-accent-base: #ececec;
 	--sidebar-accent-foreground: #1a1c1f;
 	--sidebar-border-base: #f2f2f2;
 	--sidebar-ring: #1a1c1f;
@@ -516,7 +519,7 @@
 	--panel-surface-fg-muted: #7a7c7e;
 	--panel-slider-fg-base: #9b9d9f;
 	--chat-icon-fg: #5d5f61;
-	--chat-icon-bg-hover: #ececec;
+	--chat-icon-bg-hover-base: #ececec;
 }
 
 /* Dark surfaces come from the shared base .dark block; Classic only swaps
@@ -569,7 +572,7 @@
 	--sidebar-foreground: #171717;
 	--sidebar-primary: #171717;
 	--sidebar-primary-foreground: #ffffff;
-	--sidebar-accent: #ebebeb;
+	--sidebar-accent-base: #ebebeb;
 	--sidebar-accent-foreground: #171717;
 	--sidebar-border-base: #e8e8e8;
 	--sidebar-ring: #171717;
@@ -585,7 +588,7 @@
 	--panel-surface-fg-muted: #757575;
 	--panel-slider-fg-base: #9b9b9b;
 	--chat-icon-fg: #555555;
-	--chat-icon-bg-hover: #ececec;
+	--chat-icon-bg-hover-base: #ececec;
 }
 
 /* Dark surfaces come from the shared base .dark block; Minimal only swaps
@@ -632,6 +635,9 @@
 	--panel-surface-hover: var(--panel-surface-hover-base);
 	--panel-input-surface: var(--panel-input-surface-base);
 	--panel-input-surface-hover: var(--panel-input-surface-hover-base);
+	--sidebar-accent: var(--sidebar-accent-base);
+	--chat-icon-bg-hover: var(--chat-icon-bg-hover-base);
+	--tabs-line-indicator: var(--tabs-line-indicator-base);
 	/* Lines: borders, dividers, control outlines. */
 	--border: var(--border-base);
 	--input: var(--input-base);
@@ -655,6 +661,10 @@ html[data-contrast-adjust] {
 	--panel-input-surface: color-mix(in oklab, var(--panel-input-surface-base), var(--contrast-target) var(--contrast-surface-mix));
 	/* Same curve as its resting twin, or the hover inverts at high contrast. */
 	--panel-input-surface-hover: color-mix(in oklab, var(--panel-input-surface-hover-base), var(--contrast-target) var(--contrast-surface-mix));
+	/* Sidebar and model picker rows, and the chat control hovers. */
+	--sidebar-accent: color-mix(in oklab, var(--sidebar-accent-base), var(--contrast-target) var(--contrast-surface-mix));
+	--chat-icon-bg-hover: color-mix(in oklab, var(--chat-icon-bg-hover-base), var(--contrast-target) var(--contrast-surface-mix));
+	--tabs-line-indicator: color-mix(in oklab, var(--tabs-line-indicator-base), var(--contrast-target) var(--contrast-surface-mix));
 	--border: color-mix(in oklab, var(--border-base), var(--contrast-target) var(--contrast-line-mix));
 	/* Control outlines and switch tracks stop short of the hairlines: an
 	   affordance still has to be findable at the bottom of the range. */
@@ -874,6 +884,7 @@ html[data-chat-font] .aui-root {
 	--color-sidebar-border: var(--sidebar-border);
 	--color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
 	--color-sidebar-accent: var(--sidebar-accent);
+	--color-tabs-line-indicator: var(--tabs-line-indicator);
 	--color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
 	--color-sidebar-primary: var(--sidebar-primary);
 	--color-sidebar-foreground: var(--sidebar-foreground);

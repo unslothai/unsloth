@@ -171,7 +171,7 @@ function MetricTile({
         <Progress
           value={percentKnown ? safePercent : 0}
           aria-label={label}
-          className="h-1.5 rounded-full bg-muted dark:bg-black/40"
+          className="h-1.5 rounded-full bg-muted dark:bg-[rgb(0_0_0_/_calc(0.4*var(--contrast-wash-gain,1)))]"
           indicatorClassName={usageIndicatorClass(safePercent)}
         />
       )}
@@ -770,7 +770,7 @@ export function ResourcesTab() {
                     <Progress
                       value={safePercent}
                       aria-label={device.name ?? "GPU"}
-                      className="h-1.5 w-full rounded-full bg-muted dark:bg-black/40"
+                      className="h-1.5 w-full rounded-full bg-muted dark:bg-[rgb(0_0_0_/_calc(0.4*var(--contrast-wash-gain,1)))]"
                       indicatorClassName={usageIndicatorClass(safePercent)}
                     />
                   </div>
