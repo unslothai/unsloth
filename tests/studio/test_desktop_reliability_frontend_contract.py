@@ -873,10 +873,20 @@ def test_chat_sidebar_row_actions_visible_on_coarse_pointers():
     # exact width tracks how many actions the row carries: it was pr-10, and became pr-14 for
     # project rows and pr-16 for recents when the row gained one. That number is not the
     # contract; reserving SOMETHING on a coarse pointer is.
-    assert re.search(r"\[@media\(pointer:coarse\)\]:pr-\d+", block), (
-        "no coarse-pointer padding left on the chat sidebar row, so the kebab overlaps the "
-        "title on a touch device (#7276)"
-    )
+    #
+    # Per VARIANT, not once for the block. The two rows carry their own paddings, so a single
+    # search over the whole function is satisfied by the project row on its own and would stay
+    # green while recents lost theirs, which is the half of #7276 that was actually reported.
+    for variant in ("project-chat-item", "recent-item"):
+        hovered = re.findall(rf'"[^"]*group-hover/{variant}:pr-\d+[^"]*"', block)
+        assert hovered, (
+            f"no {variant} row left that widens its padding to make room for the action, so "
+            f"this guard can no longer tell whether the touch case is covered"
+        )
+        assert any(re.search(r"\[@media\(pointer:coarse\)\]:pr-\d+", cls) for cls in hovered), (
+            f"the {variant} row reserves room for its action on hover but not on a coarse "
+            f"pointer, so the kebab overlaps the title on a touch device (#7276)"
+        )
     assert "sidebar-touch-reveal" in block
     # Coarse-pointer visibility must come after .sidebar-row-action { opacity-0 }.
     coarse_idx = css_source.index("@media (pointer: coarse)")
