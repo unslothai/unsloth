@@ -1574,7 +1574,7 @@ export const ru = {
           "Закрепляйте пункты в боковом меню «+» чата. Остальные будут доступны в разделе «Ещё».",
         chatWithFiles: "Чат с файлами (RAG)",
         mcp: "MCP",
-        skills: "Навыки агентов",
+        skills: "Навыки",
         savedPrompts: "Сохранённые промпты",
         compareChat: "Сравнить чаты",
         exportChat: "Экспортировать чат",
@@ -2753,7 +2753,7 @@ export const ru = {
     tooLarge: "Больше объёма VRAM, часть уйдёт на CPU. Меньшая квантизация работает быстрее",
   },
   skills: {
-    title: "Навыки агентов",
+    title: "Навыки",
     description: "Навыки находятся в стандартных папках агентов. Включите их здесь, затем введите @ в чате, чтобы упомянуть навык.",
     precedence: "~/.agents/skills имеет приоритет над ~/.claude/skills.",
     refresh: "Обновить",
@@ -2767,7 +2767,7 @@ export const ru = {
     shadowedBy: "Другой навык ({source}) с таким именем имеет приоритет.",
     enable: "Включить {name}",
     disable: "Отключить {name}",
-    updateError: "Не удалось обновить навык агента",
-    mentions: "Навыки агентов",
+    updateError: "Не удалось обновить навык",
+    mentions: "Навыки",
   },
 } satisfies DeepPartialMessageTree<typeof en>;
