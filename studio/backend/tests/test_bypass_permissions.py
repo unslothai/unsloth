@@ -123,15 +123,26 @@ class _FakeProc:
 
 @pytest.fixture
 def captured_popen(monkeypatch):
-    cap = {}
+    cap = {"calls": []}
 
     def fake_popen(cmd, **kwargs):
+        cap["calls"].append({"cmd": cmd, "kwargs": kwargs})
         cap["cmd"] = cmd
         cap["kwargs"] = kwargs
         return _FakeProc()
 
     monkeypatch.setattr(tools.subprocess, "Popen", fake_popen)
     return cap
+
+
+def _python_tool_call(captured_popen):
+    calls = [
+        call
+        for call in captured_popen["calls"]
+        if any(os.path.basename(os.fspath(arg)).startswith("studio_exec_") for arg in call["cmd"])
+    ]
+    assert len(calls) == 1
+    return calls[0]
 
 
 def _carries(preexec, expected) -> bool:
@@ -148,8 +159,9 @@ def _carries(preexec, expected) -> bool:
 def test_python_sandboxed_uses_sandbox_preexec_and_safe_env(captured_popen, monkeypatch):
     monkeypatch.setenv("HF_TOKEN", "secret-abc")
     _python_exec("print(1)", None, 5, "t", disable_sandbox = False)
-    assert _carries(captured_popen["kwargs"]["preexec_fn"], tools._sandbox_preexec)
-    assert "HF_TOKEN" not in captured_popen["kwargs"]["env"]
+    call = _python_tool_call(captured_popen)
+    assert _carries(call["kwargs"]["preexec_fn"], tools._sandbox_preexec)
+    assert "HF_TOKEN" not in call["kwargs"]["env"]
 
 
 @_POSIX_ONLY
