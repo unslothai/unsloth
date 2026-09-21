@@ -342,6 +342,69 @@ def test_fires_when_the_checkpoint_declares_the_width_it_did_not_produce():
     assert any("came back quantized to 8bit" in m for m in msgs), msgs
 
 
+class _OffloadedExperts(nn.Module):
+    """A fused expert block left in float because device_map put it on CPU.
+
+    With `llm_int8_enable_fp32_cpu_offload=True`, transformers appends every key
+    mapped to "cpu" or "disk" to `modules_to_not_convert`
+    (quantizers/quantizer_bnb_8bit.py), so these weights are unquantized BY
+    DESIGN and consume no accelerator memory.
+    """
+
+    def __init__(self, device):
+        super().__init__()
+        self.gate_up_proj = nn.Parameter(
+            torch.zeros((2, 1024, 4100), dtype = torch.bfloat16, device = device),
+            requires_grad = False,
+        )
+
+
+class _Quantized(nn.Module):
+    def __init__(self, device):
+        super().__init__()
+        self.weight = nn.Parameter(
+            torch.zeros(1, dtype = torch.uint8, device = device),
+            requires_grad = False,
+        )
+
+
+_Quantized.__name__ = "Linear4bit"
+
+
+def test_silent_when_the_bulk_weight_is_offloaded_off_the_quantized_device():
+    # The quantized payload is on meta (standing in for an accelerator); the
+    # float experts are on CPU. Warning that VRAM is near full precision would
+    # be wrong: those bytes are not on the device the claim is about.
+    model = nn.Sequential(_Quantized("meta"), _OffloadedExperts("cpu"))
+    with warnings.catch_warnings(record = True) as caught:
+        warnings.simplefilter("always")
+        _warn_if_quantization_silently_dropped(
+            model,
+            load_in_4bit = True,
+            load_in_8bit = False,
+            full_finetuning = False,
+        )
+    msgs = [str(w.message) for w in caught]
+    assert not any("partially applied" in m for m in msgs), msgs
+
+
+def test_fires_when_the_bulk_weight_shares_the_quantized_device():
+    # Negative control for the test above. Same shapes, same dtypes, one device.
+    # If the placement check were unconditional this would go silent too.
+    model = nn.Sequential(_Quantized("cpu"), _OffloadedExperts("cpu"))
+    with warnings.catch_warnings(record = True) as caught:
+        warnings.simplefilter("always")
+        _warn_if_quantization_silently_dropped(
+            model,
+            load_in_4bit = True,
+            load_in_8bit = False,
+            full_finetuning = False,
+        )
+    msgs = [str(w.message) for w in caught]
+    assert any("partially applied" in m for m in msgs), msgs
+    assert not any("sits off those devices" in m for m in msgs), msgs
+
+
 if __name__ == "__main__":
     test_fires_when_4bit_requested_but_no_bnb_modules()
     test_silent_when_4bit_succeeded()
@@ -356,4 +419,6 @@ if __name__ == "__main__":
     test_fires_when_the_skip_list_does_not_cover_it()
     test_silent_when_the_checkpoint_is_natively_the_other_width()
     test_fires_when_the_checkpoint_declares_the_width_it_did_not_produce()
-    print("All 13 guardrail tests passed.")
+    test_silent_when_the_bulk_weight_is_offloaded_off_the_quantized_device()
+    test_fires_when_the_bulk_weight_shares_the_quantized_device()
+    print("All 15 guardrail tests passed.")

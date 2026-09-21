@@ -305,9 +305,23 @@ def _warn_if_quantization_silently_dropped(
         quantization_config,
         getattr(getattr(model, "config", None), "quantization_config", None),
     )
+    # Where the quantized payload actually sits. The warning below is a claim
+    # about memory pressure on those devices, so only weights sharing them can
+    # be evidence for it. With llm_int8_enable_fp32_cpu_offload every key mapped
+    # to "cpu" or "disk" is appended to modules_to_not_convert by transformers
+    # (quantizer_bnb_8bit.py), i.e. left in float ON PURPOSE, and disk-backed
+    # weights are meta tensors occupying nothing anywhere. Counting either as
+    # bulk weight warns that a correctly quantized model is near full precision.
+    quantized_devices = {
+        p.device
+        for p in model.parameters()
+        if p is not None and p.dtype in (torch.uint8, torch.int8)
+    }
+
     quantized_bytes = 0
     suspect_bytes = 0
     suspect_samples = []
+    offloaded_bytes = 0
     for name, p in model.named_parameters():
         if p is None:
             continue
@@ -323,6 +337,9 @@ def _warn_if_quantization_silently_dropped(
         lname = name.lower()
         if any(pat in lname for pat in skip_patterns):
             continue
+        if quantized_devices and p.device not in quantized_devices:
+            offloaded_bytes += nbytes
+            continue
         suspect_bytes += nbytes
         if len(suspect_samples) < 3:
             suspect_samples.append((name, str(p.dtype), tuple(p.shape)))
@@ -330,6 +347,12 @@ def _warn_if_quantization_silently_dropped(
     if quantized_bytes > 0 and suspect_bytes >= 2 * quantized_bytes:
         kind = "4bit" if load_in_4bit else "8bit"
         suspect_human = ", ".join(f"{n} ({d}, {s})" for n, d, s in suspect_samples)
+        offload_note = (
+            f" A further ~{offloaded_bytes/1024**3:.2f} GB sits off those "
+            f"devices (CPU or disk offload) and is excluded from this count."
+            if offloaded_bytes
+            else ""
+        )
         warnings.warn(
             f"Unsloth: load_in_{kind}=True is partially applied. "
             f"bitsandbytes quantized ~{quantized_bytes/1024**3:.2f} GB of "
@@ -337,7 +360,7 @@ def _warn_if_quantization_silently_dropped(
             f"non-nn.Linear floating Parameters were left unquantized (e.g. "
             f"fused MoE expert tensors, custom Linear-like wrappers). "
             f"Examples: {suspect_human}. The model's effective VRAM "
-            f"footprint is close to its full-precision size. See "
+            f"footprint is close to its full-precision size.{offload_note} See "
             f"https://github.com/unslothai/unsloth/issues/5344.",
             stacklevel = 3,
         )
