@@ -968,3 +968,55 @@ def test_a_stalled_persist_does_not_answer_for_a_retry_that_already_saved():
     ), "the unscoped slot is written even when a later execution has superseded this one"
     # And a finished run marks itself, or nothing is ever superseded.
     assert "_note_attempt_run_finished(queued_attempt, execution_serial)" in src
+
+
+def test_the_finished_run_bookkeeping_is_bounded():
+    """Every generation supplies a fresh id, so this cannot grow per generation forever.
+
+    The serial only matters while a duplicate of the SAME id is still persisting, which is
+    seconds, so an evicted key is an id nothing is racing over any more.
+    """
+    import routes.inference as route
+
+    saved = dict(route._diffusion_attempt_last_run)
+    try:
+        route._diffusion_attempt_last_run.clear()
+        for index in range(route._RETAINED_ATTEMPT_RUNS + 10):
+            route._note_attempt_run_finished(f"acct\x00attempt-{index}", index + 1)
+        assert (
+            len(route._diffusion_attempt_last_run) == route._RETAINED_ATTEMPT_RUNS
+        ), "the finished-run bookkeeping grows without bound"
+        # Oldest out first: the newest ids, which are the ones a retry could still share,
+        # are the ones kept.
+        assert "acct\x00attempt-0" not in route._diffusion_attempt_last_run
+        newest = f"acct\x00attempt-{route._RETAINED_ATTEMPT_RUNS + 9}"
+        assert newest in route._diffusion_attempt_last_run
+        # An id with no attempt is not stored at all.
+        route._note_attempt_run_finished(None, 1)
+        assert None not in route._diffusion_attempt_last_run
+    finally:
+        route._diffusion_attempt_last_run.clear()
+        route._diffusion_attempt_last_run.update(saved)
+
+
+def test_clearing_a_retained_outcome_takes_the_same_lock():
+    """Every other mutation of the store holds it, and the bound is read-then-pop.
+
+    Unlocked, a clear could land between the eviction test in _retain_generate_failure and
+    its popitem, dropping one MORE outcome than the bound calls for and leaving that client
+    reading its failed generation as absent.
+    """
+    import inspect
+
+    from core.inference import generate_outcomes
+
+    src = inspect.getsource(generate_outcomes.clear_generate_failure)
+    assert "with _OUTCOMES_LOCK:" in src, "the outcome store is mutated without its lock"
+    assert src.index("with _OUTCOMES_LOCK:") < src.index(
+        "_OUTCOMES.pop("
+    ), "the pop happens outside the lock"
+    # Still does its job.
+    generate_outcomes._retain_generate_failure("attempt-locked-clear", "boom")
+    assert generate_outcomes.generate_failure_for_attempt("attempt-locked-clear") == "boom"
+    generate_outcomes.clear_generate_failure("attempt-locked-clear")
+    assert generate_outcomes.generate_failure_for_attempt("attempt-locked-clear") is None

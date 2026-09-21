@@ -89,7 +89,13 @@ def clear_generate_failure(attempt_id) -> None:
     the attempt failed and ignored the images the retry had produced.
     """
     key = attempt_scope_key(attempt_id)
-    if key:
+    if not key:
+        return
+    # Under the same lock as every other mutation: unlocked, this could land between the
+    # eviction test in _retain_generate_failure and its popitem, dropping one MORE retained
+    # outcome than the bound calls for and leaving that client reading its failed generation
+    # as absent.
+    with _OUTCOMES_LOCK:
         _OUTCOMES.pop(key, None)
 
 

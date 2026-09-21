@@ -42,6 +42,7 @@ from typing import (
 import functools
 import itertools
 import json
+from collections import OrderedDict
 import httpx
 from hub.services.models import account_access
 from hub.services.models.account_access import media_link_account, media_link_target
@@ -38936,7 +38937,12 @@ def _note_queued_attempt(attempt_id, delta: int) -> None:
 # engine slot is released, so two executions of one retried POST can be persisting at once,
 # and the loser finishing last must not answer for the winner's saved images.
 _diffusion_execution_serial = itertools.count(1)
-_diffusion_attempt_last_run: dict[str, int] = {}
+_diffusion_attempt_last_run: "OrderedDict[str, int]" = OrderedDict()
+# Bounded, because every generation supplies a fresh id and an unbounded dict would keep one
+# key per generation for the life of the server. The serial only matters while a duplicate of
+# the SAME id is still persisting, which is seconds, so an evicted key is an id nothing is
+# racing over any more. Oldest out first, like the retained outcomes.
+_RETAINED_ATTEMPT_RUNS = 64
 
 
 def _note_attempt_run_finished(attempt_id, serial: int) -> None:
@@ -38944,6 +38950,9 @@ def _note_attempt_run_finished(attempt_id, serial: int) -> None:
         return
     if _diffusion_attempt_last_run.get(attempt_id, 0) < serial:
         _diffusion_attempt_last_run[attempt_id] = serial
+        _diffusion_attempt_last_run.move_to_end(attempt_id)
+    while len(_diffusion_attempt_last_run) > _RETAINED_ATTEMPT_RUNS:
+        _diffusion_attempt_last_run.popitem(last = False)
 
 
 def _attempt_run_was_superseded(attempt_id, serial: int) -> bool:
