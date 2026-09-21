@@ -71,11 +71,13 @@ from core.inference.tool_stream_exec import (
 )
 from core.inference.tools import build_rag_autoinject, execute_tool, is_high_risk_tool_call
 from state.tool_approvals import (
+    DECISION_EXPIRED,
+    TOOL_APPROVAL_EXPIRED_MESSAGE,
     TOOL_REJECTED_MESSAGE,
     abort_tool_decision,
     begin_tool_decision,
     new_approval_id,
-    wait_tool_decision,
+    wait_tool_decision_detail,
 )
 
 
@@ -1643,10 +1645,11 @@ async def stream_with_studio_tools(
                 )
                 yield _sse(start_event)
                 verdict = None
+                decision_reason = None
                 if decision_slot is not None:
                     waiter = asyncio.ensure_future(
                         asyncio.to_thread(
-                            wait_tool_decision, decision_slot, approval_id, cancel_event
+                            wait_tool_decision_detail, decision_slot, approval_id, cancel_event
                         )
                     )
                     try:
@@ -1663,7 +1666,9 @@ async def stream_with_studio_tools(
                     finally:
                         if not waiter.done():
                             waiter.cancel()
-                    verdict = waiter.result() if waiter.done() else None
+                    verdict, decision_reason = (
+                        waiter.result() if waiter.done() else (None, None)
+                    )
                 if verdict == "deny":
                     decision_slot = None
                     denied = True
@@ -1676,19 +1681,27 @@ async def stream_with_studio_tools(
                     abort_tool_decision(decision_slot, approval_id)
 
             if denied:
+                # An approval nobody answered is not the user's decision, and this string is the only
+                # account of the call both the model and the reopened card get: the buttons are gone
+                # by the time it lands. Saying "the user declined" there is simply false.
+                denied_text = (
+                    TOOL_APPROVAL_EXPIRED_MESSAGE
+                    if decision_reason == DECISION_EXPIRED
+                    else TOOL_REJECTED_MESSAGE
+                )
                 yield _sse(
                     {
                         "type": "tool_end",
                         "tool_name": name,
                         "tool_call_id": card_id,
-                        "result": TOOL_REJECTED_MESSAGE,
+                        "result": denied_text,
                         "provenance": decision.provenance,
                     }
                 )
                 denied_message: dict[str, Any] = {
                     "role": "tool",
                     "name": name,
-                    "content": TOOL_REJECTED_MESSAGE,
+                    "content": denied_text,
                 }
                 if call_id:
                     denied_message["tool_call_id"] = call_id

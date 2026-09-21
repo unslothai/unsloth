@@ -498,8 +498,12 @@ class ChatGenerationSupervisor:
         # 3600s ceiling a browser-owned run uses. In-memory only, so a backend restart still loses
         # the slot. Two things end an abandoned park, whichever comes first:
         #   1. the park ceiling itself, UNSLOTH_STUDIO_TOOL_APPROVAL_TIMEOUT_S, default 300s. The gate
-        #      denies, the model is told the call was declined and adapts, and the run carries on. A
-        #      user who returns after that finds the call already refused, not still waiting.
+        #      denies, the model is told the call timed out unanswered and adapts, and the run carries
+        #      on. A user who returns after that finds the call already refused, not still waiting.
+        #      The ceiling only counts time with NOBODY WATCHING: durable means cancel_on_disconnect
+        #      is off, not that the tab is gone, and a user who is sitting there reading what the tool
+        #      wants to do must keep the full _DECISION_TIMEOUT they had before this path existed.
+        #      durable_run_id below is how the gate asks (state/run_subscribers.py).
         #   2. the lease sweeper, for a producer wedged before it ever reaches the gate. Parking does
         #      not renew the progress lease, so once progress has aged past the lease timeout
         #      reconcile_runs settles the run as interrupted and supervisor.cancel() sets THIS event,
@@ -511,6 +515,7 @@ class ChatGenerationSupervisor:
         # therefore hold it for several ceilings, and the progress between them renews the lease. The
         # sweeper is the only bound on a producer that stops making progress at all.
         cancel_event.durable = True
+        cancel_event.durable_run_id = run_id
         activity = InferenceActivityReservation()
         activity.reserve()
         registration = active_generations.ActiveGeneration(

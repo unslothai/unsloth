@@ -21,7 +21,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from auth.authentication import get_current_subject
 from auth import policy
-from state import active_generations
+from state import active_generations, run_subscribers
 from utils.account_context import current_account, current_account_id, run_as
 from core.inference.llama_keepwarm import inference_lifecycle_gate
 from models.inference import ChatCompletionRequest
@@ -387,6 +387,12 @@ async def chat_generation_events(
         if opening["status"] in db.TERMINAL_STATUSES and cursor >= int(opening["lastEventSeq"]):
             return
         while True:
+            # Someone is watching this run. A parked tool approval asks about this before it applies
+            # its park ceiling, so that the ceiling bounds an ABANDONED decision rather than a user
+            # who is still reading what the tool wants to do. Stamped before the wait, so a follower
+            # that attaches while a call is already parked counts immediately rather than only after
+            # its first keep-alive. See state/run_subscribers.py.
+            run_subscribers.mark_subscriber_seen(run_id)
             events = await loop.run_in_executor(
                 _EVENT_WAIT_EXECUTOR,
                 wait_for_events,
@@ -422,8 +428,22 @@ async def chat_generation_events(
                 # still drops it and no client parsing it as an event is affected.
                 yield f": keep-alive {int(snapshot['updatedAt'])}\n\n"
 
+    async def stream_while_attended():
+        """``stream`` plus the bookend that says this follower has gone.
+
+        Wrapped rather than folded into ``stream`` as a try/finally so the loop body keeps its
+        indentation and stays diffable. The stamp expires on its own anyway (run_subscribers ages
+        entries out), so this only makes the common case prompt: a tab closed cleanly stops
+        counting as attended now rather than ~45s from now.
+        """
+        try:
+            async for frame in stream():
+                yield frame
+        finally:
+            run_subscribers.subscriber_departed(run_id)
+
     return StreamingResponse(
-        stream(),
+        stream_while_attended(),
         media_type = "text/event-stream",
         headers = {"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )

@@ -15,6 +15,8 @@ import secrets
 import threading
 from typing import Optional
 
+from state import run_subscribers
+
 # Generous ceiling so a user can deliberate; the stop button or a disconnect still breaks the wait early via cancel_event.
 _DECISION_TIMEOUT = 3600.0
 
@@ -58,6 +60,20 @@ _PARK_TIMEOUT_S = _park_timeout_from_env()
 # Fed to the model as the tool result when the user denies a call, so it can adapt instead of the turn ending abruptly.
 TOOL_REJECTED_MESSAGE = "The user declined to run this tool call."
 
+# The same, for a call that reached its park ceiling with nobody there to answer it. Distinct from
+# TOOL_REJECTED_MESSAGE because this one is NOT the user's decision, and both the model and the card
+# read the result verbatim: telling a returning user that they declined something they never saw is
+# false, and it is the only account of the call they get, since the buttons are gone by then.
+TOOL_APPROVAL_EXPIRED_MESSAGE = (
+    "This tool call was not run: nobody answered the approval request in time."
+)
+
+# Why wait_tool_decision returned. The verdict stays "allow"/"deny" so every existing caller is
+# unaffected; a caller that wants to report the difference asks for the reason as well.
+DECISION_ANSWERED = "answered"
+DECISION_CANCELLED = "cancelled"
+DECISION_EXPIRED = "expired"
+
 _lock = threading.Lock()
 # approval_id -> {"event": threading.Event, "decision": str|None, "session": str}
 _pending: dict[str, dict] = {}
@@ -86,18 +102,62 @@ def wait_tool_decision(
     cancel_event = None,
     timeout = _DECISION_TIMEOUT,
 ):
-    """Block on a slot from ``begin_tool_decision`` until the user decides. Returns ``"allow"`` or ``"deny"``, falling back to ``"deny"`` if the wait times out or generation is cancelled first. A durable run's cancel_event is never set on a browser disconnect, so a parked gate does NOT auto-deny at the 3600s ceiling; instead it denies at the shorter park timeout (default 300s, ``UNSLOTH_STUDIO_TOOL_APPROVAL_TIMEOUT_S``) so an unattended agent adapts and continues. An explicit Stop still denies immediately. Always removes its own slot on exit."""
+    """Block on a slot from ``begin_tool_decision`` until the user decides. Returns ``"allow"`` or ``"deny"``, falling back to ``"deny"`` if the wait times out or generation is cancelled first. A durable run's cancel_event is never set on a browser disconnect, so a parked gate does NOT auto-deny at the 3600s ceiling; instead it denies at the shorter park timeout (default 300s, ``UNSLOTH_STUDIO_TOOL_APPROVAL_TIMEOUT_S``) once nobody is watching the run. An explicit Stop still denies immediately. Always removes its own slot on exit."""
+    return wait_tool_decision_detail(
+        slot,
+        approval_id,
+        cancel_event = cancel_event,
+        timeout = timeout,
+    )[0]
+
+
+def wait_tool_decision_detail(
+    slot,
+    approval_id,
+    cancel_event = None,
+    timeout = _DECISION_TIMEOUT,
+):
+    """``wait_tool_decision`` plus WHY it returned, as ``(verdict, reason)``.
+
+    Three very different things used to come back as a bare ``"deny"``: the user pressed Deny, the
+    run was cancelled, and nobody answered before the ceiling. A caller that reports the result to
+    the user needs them apart, because "The user declined to run this tool call." is a statement
+    about the user that is only true in the first case.
+
+    The park ceiling measures time with NOBODY WATCHING, not time since the call parked. A durable
+    run outlives its tab by design, so its cancel_event says nothing about whether a human is there;
+    ``run_subscribers`` is what knows. While a follower is attached the deadline keeps re-arming and
+    the wait is bounded by ``timeout`` exactly as a browser-owned run always was, so a user who is
+    still reading what the tool wants to do does not lose the decision out from under them. Once the
+    followers go the ceiling runs, and an unattended agentic loop still refuses and carries on.
+    """
     park = bool(getattr(cancel_event, "durable", False))
-    effective_timeout = _PARK_TIMEOUT_S if park else timeout
+    run_id = getattr(cancel_event, "durable_run_id", "") or ""
     try:
+        # `waited` is time with nobody watching and resets when a follower is seen; `total` is the
+        # whole wait and never resets. A park is bounded by both.
         waited = 0.0
+        total = 0.0
         while not slot["event"].wait(timeout = 0.5):
             if cancel_event is not None and cancel_event.is_set():
-                return "deny"
+                return "deny", DECISION_CANCELLED
             waited += 0.5
-            if waited >= effective_timeout:
-                return "deny"
-        return slot["decision"] or "deny"
+            total += 0.5
+            if not park:
+                # Unchanged: the caller's ceiling is the only one a browser-owned run has ever had.
+                if total >= timeout:
+                    return "deny", DECISION_EXPIRED
+                continue
+            # A durable park ignores the caller's timeout by design, so the attended backstop is this
+            # module's own ceiling - the same hour a browser-owned run gets - rather than `timeout`.
+            if total >= _DECISION_TIMEOUT:
+                return "deny", DECISION_EXPIRED
+            if run_subscribers.is_attended(run_id):
+                # Someone is watching, so this is deliberation, not abandonment.
+                waited = 0.0
+            elif waited >= _PARK_TIMEOUT_S:
+                return "deny", DECISION_EXPIRED
+        return slot["decision"] or "deny", DECISION_ANSWERED
     finally:
         with _lock:
             if _pending.get(approval_id) is slot:

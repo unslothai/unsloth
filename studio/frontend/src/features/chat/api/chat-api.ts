@@ -451,9 +451,23 @@ export async function unloadModel(payload: UnloadModelRequest): Promise<void> {
   dismissCarveoutAdviceForModel(payload.model_path);
 }
 
+/** The approval this decision was for is no longer waiting: it expired unanswered, the run was
+ *  cancelled, or the backend restarted and took its in-memory slot with it.
+ *
+ *  Distinct from a transport failure because the advice is the opposite. A failed post is worth
+ *  retrying; this one can never succeed, and telling the user to try again sends them at a button
+ *  that will keep failing until the tool_end frame clears the card out from under them. */
+export class ToolApprovalGoneError extends Error {
+  constructor(message = "No pending tool call confirmation") {
+    super(message);
+    this.name = "ToolApprovalGoneError";
+  }
+}
+
 /** Allow or deny a tool call paused awaiting user confirmation, identified by the backend
  *  `approvalId` echoed in the tool_start event, with `sessionId` as a scope check. Resolves to
- *  true only when the backend matched a pending call. */
+ *  true only when the backend matched a pending call, and throws `ToolApprovalGoneError` when the
+ *  slot has already gone. */
 export async function resolveToolConfirmation(
   sessionId: string,
   approvalId: string,
@@ -468,6 +482,9 @@ export async function resolveToolConfirmation(
       decision,
     }),
   });
+  // Ahead of parseJsonOrThrow, which folds every non-ok status into one bare Error and loses the
+  // only thing that separates an expired approval from a network blip.
+  if (response.status === 404) throw new ToolApprovalGoneError();
   const parsed = await parseJsonOrThrow<{ resolved?: boolean }>(response);
   return parsed.resolved === true;
 }
