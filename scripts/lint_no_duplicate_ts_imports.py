@@ -95,10 +95,75 @@ def _bindings(clause: str) -> list[str]:
     return names
 
 
+def _without_embedded_source(source: str) -> str:
+    """`source` with comment and string bodies blanked, character count and lines preserved.
+
+    A test fixture holds TypeScript as data, and a template literal is how it holds it:
+
+        const RENDER_SOURCE = String.raw`
+        import { createServer } from "vite";
+        ...
+
+    Those lines begin with optional indentation and `import`, so a scan of the raw text reads
+    them as real imports of the enclosing file. Two fixtures quoting the same module then look
+    like a duplicate, and the gate fails CI on a file tsc accepts. Both frontend test files
+    that do this were reported before this masking existed.
+
+    A block comment is the same problem: commented-out imports are not imports. A `//` line
+    is already safe, since the pattern anchors `import` to the start of the line, but it is
+    handled here too rather than left to that coincidence.
+
+    Blanked, not deleted, so offsets and line numbers still point at the real source. Module
+    specifiers survive as whitespace inside their quotes, which the pattern still matches, so
+    masking cannot hide a genuine import.
+
+    A regex literal holding an unpaired quote or backtick can desync this scanner. That fails
+    OPEN, missing a duplicate rather than inventing one, which is the right way round for a
+    gate that runs on every push.
+    """
+    out = list(source)
+    length = len(source)
+
+    def blank(start: int, stop: int) -> None:
+        for index in range(max(start, 0), min(stop, length)):
+            if out[index] != "\n":
+                out[index] = " "
+
+    index = 0
+    while index < length:
+        char = source[index]
+        pair = source[index : index + 2]
+        if pair == "//":
+            stop = source.find("\n", index)
+            stop = length if stop == -1 else stop
+            blank(index, stop)
+            index = stop
+        elif pair == "/*":
+            stop = source.find("*/", index + 2)
+            stop = length if stop == -1 else stop + 2
+            blank(index, stop)
+            index = stop
+        elif char in "'\"`":
+            cursor = index + 1
+            while cursor < length and source[cursor] != char:
+                # A single- or double-quoted string cannot span a line; treating one that
+                # reaches a newline as unterminated stops a stray apostrophe in prose from
+                # swallowing the rest of the file.
+                if char != "`" and source[cursor] == "\n":
+                    break
+                cursor += 2 if source[cursor] == "\\" else 1
+            blank(index + 1, cursor)
+            index = cursor + 1
+        else:
+            index += 1
+    return "".join(out)
+
+
 def duplicates_in(source: str) -> list[tuple[int, str]]:
     """(line number, name) for every binding this file introduces twice."""
     seen: dict[str, int] = {}
     found: list[tuple[int, str]] = []
+    source = _without_embedded_source(source)
     for match in _IMPORT.finditer(source):
         line = source.count("\n", 0, match.start()) + 1
         for name in _bindings(match.group("clause")):
@@ -140,6 +205,41 @@ def _self_test() -> int:
             'import {\n  type ExternalConnectionRef,\n} from "./model-selector/missing";\n'
             'import { HubModelPicker, hasDownloadedModels } from "./model-selector/pickers";\n',
             ["HubModelPicker", "hasDownloadedModels"],
+        ),
+        (
+            "TypeScript quoted as a fixture in a template literal is data, not imports",
+            'import { createServer } from "vite";\n'
+            "const FIXTURE = String.raw`\n"
+            'import { createServer } from "vite";\n'
+            'import { renderToStaticMarkup } from "react-dom/server";\n'
+            "`;\n"
+            "const OTHER = `\n"
+            'import { createServer } from "vite";\n'
+            "`;\n",
+            [],
+        ),
+        (
+            "a real duplicate after a fixture is still caught",
+            'import { createServer } from "vite";\n'
+            "const FIXTURE = `\nimport { unrelated } from \"m\";\n`;\n"
+            'import { createServer } from "vite";\n',
+            ["createServer"],
+        ),
+        (
+            "imports commented out in a block are not imports",
+            'import { a } from "m";\n/*\nimport { a } from "m";\nimport { a } from "n";\n*/\n',
+            [],
+        ),
+        (
+            "a backtick inside a string does not open a template",
+            'const tick = "`";\nimport { a } from "m";\nimport { a } from "n";\n',
+            ["a"],
+        ),
+        (
+            "an escaped backtick does not close a template",
+            "const FIXTURE = `\\`\nimport { a } from \"m\";\n`;\n"
+            'import { b } from "m";\nimport { b } from "n";\n',
+            ["b"],
         ),
         (
             "two imports of one module under different names are legal",
