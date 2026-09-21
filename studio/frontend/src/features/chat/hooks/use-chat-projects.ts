@@ -210,6 +210,18 @@ export function useScopedChatProject(projectId: string | null | undefined): {
   const resolvedFor = fetched?.id === projectId ? fetched : null;
   const alreadyRead = resolvedFor !== null;
 
+  // An archived row is never in the shared list, so `listed` stays undefined and the
+  // first read would be the only one. A workspace change publishes the update event,
+  // and without dropping what was read here the markdown scope keeps the old session
+  // and its bare images start answering 410 until the component remounts.
+  useEffect(() => {
+    const onProjectsUpdated = () => setFetched(null);
+    window.addEventListener(CHAT_PROJECTS_UPDATED_EVENT, onProjectsUpdated);
+    return () => {
+      window.removeEventListener(CHAT_PROJECTS_UPDATED_EVENT, onProjectsUpdated);
+    };
+  }, []);
+
   useEffect(() => {
     if (!projectId || listed || !hasLoaded || alreadyRead) return;
     let cancelled = false;

@@ -2664,3 +2664,44 @@ def test_a_deleted_projects_first_session_refuses_instead_of_finding_a_sandbox(
 
     # A chat that merely calls itself something project-shaped is untouched.
     assert tools.resolve_sandbox_workdir("project-not-a-real-project-id")
+
+
+def test_two_accounts_with_the_same_project_id_do_not_fence_each_other(
+    tmp_path, monkeypatch, workspace_projects_home
+):
+    """Project ids are client-supplied, so two accounts can hold ones that match.
+
+    The workspace update fence was a bare string, unlike every other lifecycle key,
+    so one account's in-flight change sat in `_removing_sessions` under a key the
+    other account's change also computed, and that one was told to wait.
+    """
+    from core.inference import tools
+    from utils.account_context import AccountContext, bind_account, reset_account
+
+    _reset_studio_db(tmp_path, monkeypatch, projects_home = workspace_projects_home)
+    folder = workspace_projects_home / "folder-a"
+    folder.mkdir()
+    project = studio_db.upsert_chat_project(_project(), external_workspace_path = str(folder))
+
+    # Somebody else's account is part way through a change on the same id.
+    stranger = AccountContext("acct-stranger", "stranger", "user")
+    token = bind_account(stranger)
+    try:
+        # Derived the way the code derives it, so reverting the scoping makes this the
+        # SAME key ours resolves to, which is the collision under test.
+        held = tools._project_update_key(project["id"])
+    finally:
+        reset_account(token)
+    assert held != tools._project_update_key(project["id"]), (
+        "the workspace update fence does not distinguish accounts"
+    )
+    with tools._sessions_free:
+        tools._removing_sessions.add(held)
+    try:
+        changed, _ = tools.update_project_workspace_when_idle(
+            project["id"], lambda: "ours")
+        assert changed, "another account's update fenced this account's project"
+    finally:
+        with tools._sessions_free:
+            tools._removing_sessions.discard(held)
+            tools._sessions_free.notify_all()

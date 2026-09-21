@@ -11465,11 +11465,20 @@ def _project_generation_in_flight(project_id: str) -> bool:
         return True
 
 
+def _project_update_key(project_id: str) -> tuple[str, str]:
+    """The fence a workspace change holds, carrying the account like every other one.
+
+    Project ids are client-supplied, so a bare string is the same key for two accounts
+    that happen to hold one that matches, and one sees the other's change and waits.
+    """
+    return _session_key(f"\x00project-update:{project_id}")
+
+
 def update_project_workspace_when_idle(project_id: str, update):
     """change storage while no tool can start in either workspace."""
     session_id = project_session_id(project_id)
     key = _session_key(session_id)
-    update_key = f"\x00project-update:{project_id.casefold()}"
+    update_key = _project_update_key(project_id)
     locked_keys = {key, update_key}
     if _project_generation_in_flight(project_id):
         return False, None
