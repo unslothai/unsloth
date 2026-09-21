@@ -269,6 +269,27 @@ def _is_model_dir(path: Path) -> bool:
     return (path / "config.json").exists() or (path / "adapter_config.json").exists()
 
 
+def is_unquantized_full_model_dir(path: str | Path) -> bool:
+    model_dir = Path(path)
+    try:
+        if (model_dir / "adapter_config.json").exists():
+            return False
+        config = json.loads((model_dir / "config.json").read_text(encoding = "utf-8-sig"))
+    except (OSError, ValueError):
+        return False
+    return isinstance(config, dict) and "quantization_config" not in config
+
+
+def is_full_finetune_output(path: Optional[str]) -> bool:
+    if not path:
+        return False
+    try:
+        Path(path).resolve().relative_to(outputs_root().resolve())
+    except (OSError, ValueError):
+        return False
+    return is_unquantized_full_model_dir(path)
+
+
 def has_preview_model(output_dir: Optional[str]) -> bool:
     """True when ``output_dir`` holds a previewable root model (what ``/p/{run}``
     resolves). A cancelled run keeps ``output_dir`` but saves no root adapter."""

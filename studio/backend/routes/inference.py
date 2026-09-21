@@ -74,6 +74,7 @@ from urllib.parse import quote as _urlquote
 
 # Model size extraction (shared with core/inference/llama_cpp.py)
 from utils.models import extract_model_size_b as _extract_model_size_b
+from utils.models.checkpoints import is_full_finetune_output
 
 from utils.api_errors import openai_error_body, anthropic_error_body, error_body_for_path
 from utils.audio_tokens import GGUF_TTS_AUDIO_TYPES as _GGUF_TTS_AUDIO_TYPES
@@ -10599,6 +10600,10 @@ def _effective_load_in_4bit(config: ModelConfig, requested: bool) -> bool:
     if getattr(config, "audio_type", None) in NATIVE_AUDIO_TYPES:
         return False
     load_in_4bit = requested
+    if not getattr(config, "is_lora", False) and is_full_finetune_output(
+        getattr(config, "path", None)
+    ):
+        return False
     if not getattr(config, "is_lora", False) or not getattr(config, "path", None):
         return load_in_4bit
     adapter_cfg_path = Path(config.path) / "adapter_config.json"
