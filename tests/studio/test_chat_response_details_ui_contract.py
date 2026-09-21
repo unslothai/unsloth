@@ -62,7 +62,13 @@ def _class_list(source: str, marker: str) -> str | None:
             break
     if end is None:
         return None
-    opening = source[opens : end + 1]
+    opening = _without_comments(source[opens : end + 1])
+    # A spread can carry className, and nothing here can say what is in it. An element that
+    # spreads props is an element whose class list is unknown, which is not the same as one
+    # that states none: returning None would send the caller back to the base classes and
+    # let an override through.
+    if re.search(r"\{\s*\.\.\.", opening):
+        return _UNREADABLE
     literal = re.search(r'className="([^"]*)"', opening)
     if literal:
         return literal.group(1)

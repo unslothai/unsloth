@@ -919,8 +919,34 @@ def test_chat_sidebar_row_actions_visible_on_coarse_pointers():
     # qualifier, an importance marker, is refused as something this guard will not
     # adjudicate. That is stricter than the framework and it is stricter LOUDLY, which is
     # the half that matters: it cannot quietly approve a gutter nobody checked.
+    # The row's own builder, by name, and the classes are read only from inside it. Searching
+    # the whole function let the same verified pairs be moved to any other cn() call and
+    # still satisfy this, while the buttons that render carried no gutter at all.
+    builder = re.search(r"const buttonClass = cn\(", block)
+    assert builder, (
+        "renderChatSidebarItem no longer builds its row classes in a `const buttonClass = "
+        "cn(...)`, so this guard cannot tell which classes reach the row button"
+    )
+    depth, builder_end = 0, None
+    for index in range(builder.end() - 1, len(block)):
+        if block[index] == "(":
+            depth += 1
+        elif block[index] == ")":
+            depth -= 1
+            if depth == 0:
+                builder_end = index
+                break
+    assert builder_end is not None, "unbalanced `const buttonClass = cn(` in the sidebar"
+    assert re.search(r"className=\{buttonClass\}", block), (
+        "buttonClass is no longer applied to anything in renderChatSidebarItem, so checking "
+        "it says nothing about the row that renders"
+    )
+    row_classes = block[builder.end() : builder_end]
+
     for variant in ("project-chat-item", "recent-item"):
-        hovered = re.findall(rf'"[^"]*group-hover/{variant}:pr-\d+[^"]*"', block)
+        hovered = re.findall(
+            rf'"[^"]*group-hover/{variant}:pr-\d+(?:\.\d+)?(?![\w.-])[^"]*"', row_classes
+        )
         assert hovered, (
             f"no {variant} row left that widens its padding to make room for the action, so "
             f"this guard can no longer tell whether the touch case is covered"
@@ -951,9 +977,11 @@ def test_chat_sidebar_row_actions_visible_on_coarse_pointers():
             )
             # `[padding-right:0]` sets the same property by another spelling, and this guard
             # compares `pr-N` numbers. It cannot compare that, so it refuses it.
-            arbitrary = re.findall(r"\S*\[padding(?:-right)?:[^\]]*\]\S*", cls)
+            arbitrary = re.findall(
+                r"\S*(?:\[padding(?:-right)?:[^\]]*\]|(?<![\w-])!?p[rxe]?-\[[^\]]*\])\S*", cls
+            )
             assert not arbitrary, (
-                f"the {variant} row sets its right padding through an arbitrary property: "
+                f"the {variant} row sets its right padding through an arbitrary value: "
                 f"{arbitrary} in {cls!r}. This guard compares pr-N gutters and will not "
                 f"work out how that interacts with them: state the touch padding as a pr-N "
                 f"utility"
@@ -977,48 +1005,26 @@ def test_chat_sidebar_row_actions_visible_on_coarse_pointers():
                 f"on touch, so it needs at least the gutter the hover case already says it "
                 f"needs, or it sits over the title (#7276)"
             )
-        # Nothing else in the row's own cn() may add a coarse padding, because then which one
-        # renders is a precedence question again.
-        anchor = block.index(hovered[-1])
-        opens = block.rfind("cn(", 0, anchor)
-        assert opens != -1, (
-            f"the {variant} row's classes are no longer built by a cn() call this guard can "
-            f"find, so it cannot tell which arguments render together"
-        )
-        depth, closes = 0, None
-        for index in range(opens + 2, len(block)):
-            if block[index] == "(":
-                depth += 1
-            elif block[index] == ")":
-                depth -= 1
-                if depth == 0:
-                    closes = index
-                    break
-        assert closes is not None, f"unbalanced cn() around the {variant} row classes"
-        # And that call has to be the one the gutter is written in. rfind finds the nearest
-        # PRECEDING cn(, which may already have closed, and then the scan below would read a
-        # different element's arguments and call them this row's.
-        assert closes > anchor, (
-            f"the {variant} row's hover gutter is not inside the cn() call this guard found, "
-            f"so it would be reading another element's classes. Locate the row's own builder"
-        )
-        # Exempt the OTHER variant's own row strings, identified the same way this variant's
-        # were, and nothing else. Exempting any literal that merely contains a variant name
-        # let `"group/recent-item [@media(pointer:coarse)]:pr-0"` through, and that zero is
-        # what would render.
+        # Nothing else in the builder may add a coarse padding, because then which one
+        # renders is a precedence question again. The OTHER variant's own row strings are
+        # exempt, identified the same way this variant's were, and nothing else: exempting
+        # any literal that merely contains a variant name let a group-naming literal carry an
+        # override through.
         siblings = {
             match
             for other in ("project-chat-item", "recent-item")
             if other != variant
-            for match in re.findall(rf'"[^"]*group-hover/{other}:pr-\d+[^"]*"', block)
+            for match in re.findall(
+                rf'"[^"]*group-hover/{other}:pr-\d+(?:\.\d+)?(?![\w.-])[^"]*"', row_classes
+            )
         }
         elsewhere = [
             cls
-            for cls in re.findall(r'"[^"]*"', block[opens:closes])
+            for cls in re.findall(r'"[^"]*"', row_classes)
             if "[@media(pointer:coarse)]:" in cls and cls not in hovered and cls not in siblings
         ]
         assert not elsewhere, (
-            f"the cn() that builds the {variant} row carries coarse-pointer padding outside "
+            f"buttonClass carries coarse-pointer padding for the {variant} row outside "
             f"the row's own class list: {elsewhere}. Which one renders depends on order and "
             f"on which branches are live, and this guard will not work that out: keep the "
             f"row's touch padding beside its hover gutter"
