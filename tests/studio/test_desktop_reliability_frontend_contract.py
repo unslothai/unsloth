@@ -1107,7 +1107,22 @@ def test_chat_sidebar_row_actions_visible_on_coarse_pointers():
         f"state the touch padding as a pr-N utility"
     )
 
-    base = re.compile(r"pr-(\d+(?:\.\d+)?)")
+    # Everything below compares pr-N numbers, and tailwind-merge drops an earlier `pr-` for a
+    # later one whatever the later one's value is. `pr-px` is a real utility worth one pixel:
+    # it replaces the checked gutter and, being unnumbered, was read by nothing here. So any
+    # right padding the builder can contribute has to be a number this guard can compare.
+    unnumbered = [
+        cls
+        for cls in every_class
+        if re.fullmatch(r"(?:\S*:)?pr-\S+", cls)
+        and not re.fullmatch(r"(?:\S*:)?pr-\d+(?:\.\d+)?", cls)
+    ]
+    assert not unnumbered, (
+        f"buttonClass states a right padding this guard cannot compare: {unnumbered}. It "
+        f"still replaces the numeric gutters through tailwind-merge, so the comparison below "
+        f"would go on reporting a value that no longer renders"
+    )
+
     coarse_prefix = r"\[@media\(pointer:coarse\)\]:"
     for variant in ("project-chat-item", "recent-item"):
         # Any qualified gutter for this variant, not the hover one alone: hover, an open menu
@@ -1144,6 +1159,16 @@ def test_chat_sidebar_row_actions_visible_on_coarse_pointers():
             # Tailwind emits variants after base and a media query adds no specificity.
             reserved = touch[-1] if touch else (plain[-1] if plain else None)
             needed = max(claimed)
+            # Zero on both sides satisfies the comparison and reserves nothing, which is the
+            # state this test was written against: the action has a width whatever the row
+            # says, so a row that claims no room for it has not passed, it has stopped
+            # claiming. The gutter's size is still not pinned here, only that there is one.
+            assert needed > 0, (
+                f"a {variant} row states its action gutter as {claimed}, so nothing reserves "
+                f"room for an action that still has a width. The comparison below is "
+                f"satisfied by zero against zero, which is the overlap this test exists to "
+                f"catch rather than a row that has been fixed (#7276)"
+            )
             assert reserved is not None and reserved >= needed, (
                 f"a {variant} row reserves less room on a coarse pointer than it says its "
                 f"action needs: {reserved} against {needed}, on the row that renders as "

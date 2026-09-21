@@ -251,10 +251,11 @@ def _without_comments(tag: str) -> str:
     A prop commented out is a prop that is not passed, and every check here is a substring
     test, so leaving the text in place lets a disabled prop satisfy the guard that exists to
     notice it went away. Only a `//` that begins a line counts, so a `//` inside a value is
-    left alone.
+    left alone; `/* ... */` is removed wherever it sits, because between two attributes is
+    exactly where it sits when it is being used to switch a prop off.
     """
     kept = [line for line in tag.splitlines() if not line.lstrip().startswith("//")]
-    return "\n".join(kept)
+    return re.sub(r"/\*.*?\*/", " ", "\n".join(kept), flags = re.S)
 
 
 def test_assistant_more_menu_exposes_response_details_action():
