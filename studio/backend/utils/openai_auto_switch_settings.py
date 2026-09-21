@@ -412,6 +412,10 @@ def normalize_model_override(
 ) -> dict[str, Any]:
     """Validate one per-model launch config, dropping anything unusable. Silently drops rather than raising: an override is a convenience mirror of the UI's config, so one stale field (a KV dtype this llama.cpp build lost, a GPU id from another host) must not block persisting the rest or fail the API load that reads it. ``validate_extra_args`` is the caller's job, since it lives in the llama_server_args allow-list module this one must not import. ``keep_empty_extra_args`` keeps an explicit empty list, the difference between "this model has no launch flags" and "nothing is stored for this model": the same thing everywhere except under a fallback, where a quant whose row is gone reads the bare repository row instead and a cleared box would come back holding whatever that legacy row carries."""
     entry: dict[str, Any] = {}
+    if payload.get("engine_parallelism") in ("tensor", "pipeline", "data"):
+        entry["engine_parallelism"] = payload["engine_parallelism"]
+    if payload.get("engine_precision") in ("auto", "bf16", "fp16", "int4", "int8", "fp8"):
+        entry["engine_precision"] = payload["engine_precision"]
     if payload.get("engine") in ("vllm", "sglang"):
         entry["engine"] = payload["engine"]
 
@@ -560,13 +564,21 @@ def resolve_fit_max_seq_length(override: dict[str, Any], *, is_gguf: bool) -> Op
 
 
 def model_override_load_kwargs(override: dict[str, Any], *, is_gguf: bool) -> dict[str, Any]:
-    """Map a stored per-model config onto ``LoadRequest`` keyword arguments. Mirrors the UI's load payload (features/chat/api/chat-adapter.ts) so an API auto-switch load and a picker load of the same model produce the same command line. GPU placement is GGUF-only there, so it is gated the same way here: a safetensors model loads through HF auto-placement and must not inherit a hidden GGUF GPU pin."""
+    """Map remembered settings onto the same load options used by the picker.
+
+    GGUF and optional engines accept explicit GPU selection. The default
+    safetensors backend uses automatic placement and must not inherit that pin.
+    """
     if not override:
         return {}
     kwargs: dict[str, Any] = {}
     if not is_gguf and override.get("engine") in ("vllm", "sglang"):
         kwargs["engine"] = override["engine"]
+        kwargs["engine_parallelism"] = override.get("engine_parallelism", "tensor")
+        kwargs["engine_precision"] = override.get("engine_precision", "auto")
         kwargs["load_in_4bit"] = False
+        if override.get("gpu_ids") is not None:
+            kwargs["gpu_ids"] = override["gpu_ids"]
 
     max_seq_length = resolve_fit_max_seq_length(override, is_gguf = is_gguf)
     if max_seq_length is not None:

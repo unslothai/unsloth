@@ -86,7 +86,7 @@ function EngineInstall({
           aria-live="polite"
           className="flex items-center justify-between gap-3"
         >
-          <span>{engine.job.message}</span>
+          <span>{t("managedEngines.installing")}</span>
           <Button
             size="sm"
             variant="outline"
@@ -105,7 +105,7 @@ function EngineInstall({
               })}
             </span>
           )}
-          {(!engine.installed || management) && (
+          {(!engine.installed || !engine.current || management) && (
             <Button
               size="sm"
               variant="outline"
@@ -115,7 +115,11 @@ function EngineInstall({
               onClick={() => setConfirm(true)}
             >
               {engine.installed
-                ? t("managedEngines.repair")
+                ? t(
+                    engine.current
+                      ? "managedEngines.repair"
+                      : "managedEngines.update",
+                  )
                 : t("managedEngines.install")}
             </Button>
           )}
@@ -222,6 +226,10 @@ export function InferenceEnginePicker({
   onReadyChange,
   onUse,
   gpuIds,
+  parallelism = "tensor",
+  onParallelismChange,
+  precision = "auto",
+  onPrecisionChange,
   onGpuChange,
 }: {
   value: InferenceEngine;
@@ -229,6 +237,12 @@ export function InferenceEnginePicker({
   onReadyChange: (ready: boolean) => void;
   onUse: () => void;
   gpuIds?: number[] | null;
+  parallelism?: "tensor" | "pipeline" | "data";
+  onParallelismChange: (mode: "tensor" | "pipeline" | "data") => void;
+  precision?: "auto" | "bf16" | "fp16" | "int4" | "int8" | "fp8";
+  onPrecisionChange: (
+    precision: "auto" | "bf16" | "fp16" | "int4" | "int8" | "fp8",
+  ) => void;
   onGpuChange: (ids: number[]) => void;
 }) {
   const { engines, error } = useEngines();
@@ -241,6 +255,7 @@ export function InferenceEnginePicker({
   const ready =
     value === "auto" ||
     (!!selected?.installed &&
+      selected.current &&
       !selected.unsupported_reason &&
       selected.job.state !== "running");
   useEffect(() => {
@@ -333,14 +348,62 @@ export function InferenceEnginePicker({
                 );
               })}
               {selectedGpuIds.length > 1 && (
-                <p className="text-ui-12 text-muted-foreground">
-                  {t("managedEngines.tensorParallel", {
-                    count: selectedGpuIds.length,
-                  })}
-                </p>
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between gap-3 text-ui-13">
+                    <span>{t("managedEngines.parallelism")}</span>
+                    <Select value={parallelism} onValueChange={value => onParallelismChange(value as typeof parallelism)}>
+                      <SelectTrigger className="w-52" aria-label={t("managedEngines.parallelism")}>
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="tensor">{t("managedEngines.tensor")}</SelectItem>
+                        <SelectItem value="pipeline">{t("managedEngines.pipeline")}</SelectItem>
+                        <SelectItem value="data">{t("managedEngines.data")}</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <p className="text-ui-12 text-muted-foreground">
+                    {parallelism === "tensor"
+                      ? t("managedEngines.tensorParallel", { count: selectedGpuIds.length })
+                      : parallelism === "pipeline"
+                        ? t("managedEngines.pipelineHelp")
+                        : t("managedEngines.dataHelp")}
+                  </p>
+                </div>
               )}
             </div>
           )}
+          <div className="space-y-2">
+            <div className="flex items-center justify-between gap-3 text-ui-13">
+              <span>{t("managedEngines.precision")}</span>
+              <Select
+                value={precision}
+                onValueChange={(value) =>
+                  onPrecisionChange(value as typeof precision)
+                }
+              >
+                <SelectTrigger
+                  className="w-44"
+                  aria-label={t("managedEngines.precision")}
+                >
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="auto">
+                    {t("managedEngines.precisionAuto")}
+                  </SelectItem>
+                  <SelectItem value="bf16">BF16 (16-bit)</SelectItem>
+                  <SelectItem value="fp16">FP16 (16-bit)</SelectItem>
+                  <SelectItem value="int4">4-bit</SelectItem>
+                  <SelectItem value="int8">INT8 (8-bit)</SelectItem>
+                  <SelectItem value="fp8">FP8 (8-bit)</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <p className="text-ui-12 text-muted-foreground">
+              {t("managedEngines.precisionHelp")}
+            </p>
+          </div>
           <EngineInstall
             key={selected.engine}
             engine={selected}

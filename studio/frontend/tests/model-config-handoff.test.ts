@@ -284,3 +284,10 @@ test("submitting a cached handoff adopts legacy path-keyed settings", () => {
   assert.equal(adopted.config.maxSeqLength, 32768);
   assert.equal(resolveInitialConfig(loadId, ggufVariant).remembered, false);
 });
+
+
+test("full checkpoints mirror remembered engine settings to API loads", () => {
+  const meta = { source: "hub", isLora: false, isGguf: false, isDownloaded: true } as const;
+  assert.equal(modelConfigTarget("unsloth/Qwen3.5-0.8B", meta).apiLoadable, true);
+  assert.equal(modelConfigTarget("local-adapter", { ...meta, isLora: true }).apiLoadable, false);
+});

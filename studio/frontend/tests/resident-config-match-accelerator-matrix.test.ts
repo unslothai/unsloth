@@ -482,6 +482,9 @@ test("every PerModelConfig field is either compared or deliberately excluded", (
   const excluded = new Set([
     // A client-side generation cap: no status echoes it, so it cannot force a reload.
     "maxSeqLength",
+    // Optional engine precision is covered separately below.
+    "enginePrecision",
+    "engineParallelism",
     // Qualifies selectedGpuIds rather than adding a dimension of its own: it is read, as
     // the reconciler's namespace argument, but /status has no field to compare it against.
     "selectedGpuIndexKind",
@@ -554,4 +557,25 @@ for (const engine of ["vllm", "sglang"] as const) {
       );
     }
   });
+}
+
+for (const engine of ["vllm", "sglang"] as const) {
+  test(`${engine}: precision changes require a reload`, () => {
+    const status = { engine, engine_precision: "int4" as const, gpu_ids: [0] };
+    const config = { ...BLANK, engine, selectedGpuIds: [0], enginePrecision: "int4" as const };
+    assert.equal(residentRuntimeMatchesConfig(status, config), true);
+    assert.equal(residentRuntimeMatchesConfig(status, { ...config, enginePrecision: "int8" }), false);
+  });
+}
+
+for (const engine of ["vllm", "sglang"] as const) {
+  for (const mode of ["tensor", "pipeline", "data"] as const) {
+    test(`${engine}: ${mode} mode is compared before reusing a resident model`, () => {
+      const status = { engine, engine_parallelism: mode, gpu_ids: [0, 1] };
+      const config = { ...BLANK, engine, engineParallelism: mode, selectedGpuIds: [0, 1] };
+      assert.equal(residentRuntimeMatchesConfig(status, config), true);
+      const other = mode === "tensor" ? "pipeline" : "tensor";
+      assert.equal(residentRuntimeMatchesConfig(status, { ...config, engineParallelism: other }), false);
+    });
+  }
 }

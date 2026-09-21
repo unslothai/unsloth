@@ -6,6 +6,7 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import { useEngines } from "@/features/model-picker/hooks/use-engines";
 import { hasAuthToken, mustChangePassword } from "@/features/auth/session";
 import { isTauri } from "@/lib/api-base";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
@@ -179,7 +180,16 @@ function DownloadRow({ jobKey }: { jobKey: string }) {
           bytesPerSec={job.bytesPerSec}
           cancelling={job.state === "cancelling"}
           etaSeconds={job.etaSeconds}
+          activity={job.activity}
         />
+      ) : null}
+      {job.details?.length ? (
+        <details className="text-ui-11">
+          <summary>Installation details</summary>
+          <pre className="max-h-40 overflow-auto whitespace-pre-wrap break-all">
+            {job.details.join("\n")}
+          </pre>
+        </details>
       ) : null}
       {terminal || job.state === "cancelling" || job.error ? (
         <div className="px-0 text-ui-11 text-muted-foreground tabular-nums">
@@ -195,6 +205,7 @@ export function DownloadManagerPanel({
 }: { positioned?: boolean } = {}) {
   const pathname = useRouterState({ select: (s) => s.location.pathname });
   const enabled = canUseDownloadManager(pathname);
+  useEngines(enabled, true);
   const [collapsed, setCollapsed] = useState(false);
 
   useEffect(() => {

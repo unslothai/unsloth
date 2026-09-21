@@ -1774,6 +1774,7 @@ class InferenceOrchestrator:
         anonymous_hf_access: bool = False,
         audio_codec_path: Optional[str] = None,
         engine: str = "auto",
+        engine_options = None,
     ) -> bool:
         """Load a model for inference. Always spawns a fresh subprocess per load for a clean
         interpreter (no stale unsloth patches, torch.compile caches, or getsource failures)."""
@@ -1787,6 +1788,8 @@ class InferenceOrchestrator:
                 load_cancel_event,
                 cache_environment,
                 anonymous_hf_access,
+                engine_options,
+                trust_remote_code,
             )
         if getattr(self, "_managed_engine", None) is not None:
             if not self._shutdown_subprocess():
@@ -2082,7 +2085,17 @@ class InferenceOrchestrator:
                 self._shutdown_subprocess()
 
     def _load_managed_engine(
-        self, engine, config, context, gpu_ids, hf_token, cancel, cache_environment, anonymous
+        self,
+        engine,
+        config,
+        context,
+        gpu_ids,
+        hf_token,
+        cancel,
+        cache_environment,
+        anonymous,
+        options = None,
+        trust_remote_code = False,
     ):
         from core.inference.managed_engine import ManagedEngine
         from utils.hf_cache_settings import get_hf_cache_paths
@@ -2102,7 +2115,7 @@ class InferenceOrchestrator:
             if cache_environment:
                 env.update(cache_environment)
             apply_token_to_child_env(env, False if anonymous else hf_token)
-            managed.start(model, context, gpu_ids, env, cancel)
+            managed.start(model, context, gpu_ids, env, cancel, options, trust_remote_code)
             with self._subprocess_shutdown_lock:
                 if (
                     self._managed_engine is not managed
@@ -2113,7 +2126,14 @@ class InferenceOrchestrator:
                     raise RuntimeError("Model load cancelled")
                 self.models[model] = {
                     "engine": engine,
-                    "is_vision": False,
+                    "engine_parallelism": (options or {}).get("parallelism", "tensor"),
+                    "engine_precision": (options or {}).get("precision", "auto"),
+                    "is_vision": (options or {}).get("is_vision", config.is_vision),
+                    "chat_template_info": {
+                        "accepts_multiple_images": bool(
+                            (options or {}).get("is_vision", config.is_vision)
+                        )
+                    },
                     "is_audio": False,
                     "is_lora": False,
                     "context_length": managed.context,
@@ -2124,7 +2144,8 @@ class InferenceOrchestrator:
                     "load_in_4bit_requested": False,
                     "gpu_ids_requested": gpu_ids,
                     "gpu_ids": list(gpu_ids or [0]),
-                    "tensor_parallel": len(gpu_ids or [0]) > 1,
+                    "tensor_parallel": len(gpu_ids or [0]) > 1
+                    and (options or {}).get("parallelism", "tensor") == "tensor",
                     "supports_tools": False,
                 }
                 self.active_model_name = model

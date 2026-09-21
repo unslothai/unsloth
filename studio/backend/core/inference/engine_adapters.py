@@ -7,6 +7,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import subprocess
+import json
+from pathlib import Path
 
 
 @dataclass(frozen = True)
@@ -19,15 +21,20 @@ class EngineAdapter:
     extra_args: tuple[str, ...] = ()
     exact_token_count: bool = False
 
-    def environment(self, tensor_parallel_size):
-        if self.name == "vllm" and tensor_parallel_size > 1:
+    def environment(self, gpu_count):
+        if self.name == "vllm" and gpu_count > 1:
             return {"VLLM_HOST_IP": "127.0.0.1"}
-        if self.name == "sglang" and tensor_parallel_size > 1:
+        if self.name == "sglang" and gpu_count > 1:
             # SGLang otherwise rejects GPUs whose free capacities differ by
             # more than 10%, including idle 24/48 GiB cards. Studio budgets
             # every device and SGLang sizes KV pools from the minimum free
             # memory across ranks, so equal capacities are not required.
-            return {"SGLANG_ENABLE_TP_MEMORY_INBALANCE_CHECK": "0"}
+            return {
+                "SGLANG_ENABLE_TP_MEMORY_INBALANCE_CHECK": "0",
+                # CuTe RMSNorm can compile for rank zero's architecture on every
+                # rank. The CUDA implementation supports mixed Ampere/Ada groups.
+                "FLASHINFER_USE_CUDA_NORM": "1",
+            }
         return {}
 
     def command(
@@ -38,29 +45,101 @@ class EngineAdapter:
         key,
         context,
         memory_fraction,
-        tensor_parallel_size = 1,
+        gpu_count = 1,
+        options = None,
+        trust_remote_code = False,
     ):
-        parallel_args = ["--tensor-parallel-size", str(tensor_parallel_size)]
-        if tensor_parallel_size > 1:
-            # Keep vLLM on this machine. SGLang must probe peer access before
-            # choosing its custom collective, including PCIe-only GPU pairs.
+        options = options or {}
+        mode = options.get("parallelism", "tensor")
+        # Exactly one parallel dimension spans the selected devices;
+        # the others stay at one.
+        parallel_args = [
+            "--tensor-parallel-size", str(gpu_count if mode == "tensor" else 1)
+        ]
+        if mode != "tensor":
+            flag = "--pipeline-parallel-size" if mode == "pipeline" else "--data-parallel-size"
+            parallel_args += [flag, str(gpu_count)]
+        if gpu_count > 1:
             parallel_args += (
-                ["--distributed-executor-backend", "mp"]
+                ["--data-parallel-backend" if mode == "data" else "--distributed-executor-backend", "mp"]
                 if self.name == "vllm"
                 else ["--enable-p2p-check"]
             )
+        precision = options.get("precision", "auto")
+        precision_args = []
+        if precision in ("bf16", "fp16"):
+            precision_args = ["--dtype", "bfloat16" if precision == "bf16" else "float16"]
+        elif self.name == "vllm" and (
+            precision in ("int8", "fp8") or (precision == "int4" and mode == "pipeline")
+        ):
+            # Native online INT8 only converts MoE experts; online FP8 and
+            # BitsAndBytes INT4 pipeline loads can return invalid output.
+            # Use the native TorchAO loader for those configurations.
+            config = {
+                "_type": {
+                    "int4": "Int4WeightOnlyConfig",
+                    "int8": "Int8WeightOnlyConfig",
+                    "fp8": "Float8WeightOnlyConfig",
+                }[precision],
+                "_version": 1 if precision == "int8" else 2,
+                "_data": {"set_inductor_config": True},
+            }
+            if precision == "int4":
+                config["_data"].update(
+                    {
+                        "group_size": 32,
+                        "int4_packing_format": {
+                            "_type": "Int4PackingFormat", "_data": "TILE_PACKED_TO_4D"
+                        },
+                        "int4_choose_qparams_algorithm": {
+                            "_type": "Int4ChooseQParamsAlgorithm", "_data": "HQQ"
+                        },
+                    }
+                )
+            precision_args = [
+                "--quantization",
+                "torchao",
+                "--hf-overrides",
+                json.dumps({"quantization_config_dict_json": json.dumps(config)}),
+            ]
+        elif precision == "int4":
+            precision_args = (
+                ["--quantization", "bitsandbytes"]
+                if self.name == "vllm"
+                else ["--torchao-config", "int4wo-32"]
+            )
+        elif precision == "int8":
+            precision_args = ["--torchao-config", "int8wo"]
+        elif precision == "fp8":
+            precision_args = (
+                ["--torchao-config", "fp8wo"]
+                if options.get("disable_cuda_graph")
+                else ["--quantization", "fp8"]
+            )
+        if options.get("disable_cuda_graph"):
+            precision_args.extend(
+                ["--enforce-eager"]
+                if self.name == "vllm"
+                else ["--disable-cuda-graph", "--disable-piecewise-cuda-graph"]
+            )
+        if self.name == "sglang":
+            entrypoint = [str(Path(__file__).with_name("sglang_server.py")), self.model_option, model]
+        elif mode == "data":
+            # The native serve CLI owns data-parallel worker/API orchestration.
+            entrypoint = ["-m", "vllm.entrypoints.cli.main", "serve", model]
+        else:
+            entrypoint = ["-m", self.module, self.model_option, model]
         return [
             python,
             "-I",
-            "-m",
-            self.module,
-            self.model_option,
-            model,
+            *entrypoint,
             self.context_option,
             str(context),
             self.memory_option,
             str(memory_fraction),
             *parallel_args,
+            *precision_args,
+            *(["--trust-remote-code"] if trust_remote_code else []),
             *self.extra_args,
             "--host",
             "127.0.0.1",
@@ -71,7 +150,7 @@ class EngineAdapter:
             "--served-model-name",
             model,
             "--load-format",
-            "safetensors",
+            options.get("load_format", "auto"),
         ]
 
     def progress(self, line):

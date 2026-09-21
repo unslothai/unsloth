@@ -267,21 +267,33 @@ def test_install_routes_require_owner(isolated, monkeypatch):
     assert called == []
 
 
-def test_model_metadata_validation_rejects_quantized_and_multimodal(tmp_path):
+@pytest.mark.parametrize("engine", ["vllm", "sglang"])
+def test_model_metadata_allows_native_vision_and_quantization(tmp_path, engine):
     from types import SimpleNamespace
     from core.inference.managed_engine import validate_model
 
     config = SimpleNamespace(is_local = True, path = str(tmp_path))
     path = tmp_path / "config.json"
-    path.write_text(json.dumps({"model_type": "qwen2"}))
-    validate_model(config)
-    for extra in (
-        {"quantization_config": {"quant_method": "awq"}},
-        {"vision_config": {"hidden_size": 32}},
-    ):
-        path.write_text(json.dumps({"model_type": "qwen2", **extra}))
-        with pytest.raises(ValueError, match = "full precision"):
-            validate_model(config)
+    path.write_text(
+        json.dumps(
+            {
+                "model_type": "qwen3_5",
+                "vision_config": {"hidden_size": 32},
+                "text_config": {"num_attention_heads": 8},
+                "quantization_config": {"quant_method": "awq"},
+            }
+        )
+    )
+    options = validate_model(config, gpu_ids = [0, 1], engine = engine)
+    assert options["is_vision"] and options["quantization"] == "awq"
+    with pytest.raises(ValueError, match = "already quantized"):
+        validate_model(config, engine = engine, precision = "int4")
+    path.write_text(
+        json.dumps({"quantization_config": {"quant_method": "bitsandbytes", "load_in_8bit": True}})
+    )
+    assert validate_model(config, engine = engine)["load_format"] == "bitsandbytes"
+    with pytest.raises(ValueError, match = "do not support tensor parallelism"):
+        validate_model(config, gpu_ids = [0, 1], engine = engine)
 
 
 def test_engine_override_only_applies_to_safetensors():
@@ -293,6 +305,8 @@ def test_engine_override_only_applies_to_safetensors():
     saved = normalize_model_override({"engine": "sglang"})
     assert model_override_load_kwargs(saved, is_gguf = False) == {
         "engine": "sglang",
+        "engine_precision": "auto",
+        "engine_parallelism": "tensor",
         "load_in_4bit": False,
     }
     assert "engine" not in model_override_load_kwargs(saved, is_gguf = True)
@@ -467,9 +481,10 @@ def test_server_outlives_short_lived_start_thread(isolated, monkeypatch, gpu_ids
         assert engine.alive()
         import httpx
 
-        assert httpx.get(engine.base_url, trust_env = False).text == (
-            ",".join(map(str, gpu_ids)) + "|" + str(isolated / "vllm" / "cache" / "triton")
-        )
+        visible, cache_path = httpx.get(engine.base_url, trust_env = False).text.split("|")
+        assert visible == ",".join(map(str, gpu_ids))
+        assert Path(cache_path).parent.parent == isolated / "vllm" / "cache"
+        assert Path(cache_path).name == "triton"
         with pytest.raises(RuntimeError):
             install.remove("vllm")
     finally:
@@ -702,7 +717,10 @@ def test_tensor_parallel_launch_stays_on_selected_local_devices(engine, size):
     assert ADAPTERS[engine].environment(size) == (
         {
             "vllm": {"VLLM_HOST_IP": "127.0.0.1"},
-            "sglang": {"SGLANG_ENABLE_TP_MEMORY_INBALANCE_CHECK": "0"},
+            "sglang": {
+                "SGLANG_ENABLE_TP_MEMORY_INBALANCE_CHECK": "0",
+                "FLASHINFER_USE_CUDA_NORM": "1",
+            },
         }[engine]
         if size > 1
         else {}
@@ -785,3 +803,241 @@ def test_tensor_parallel_model_validation_before_handoff(tmp_path, overrides, si
     else:
         with pytest.raises(ValueError, match = "GPUs"):
             validate_model(config, gpu_ids = list(range(size)))
+
+
+def test_installer_publishes_bounded_output_before_exit(isolated):
+    import sys
+    import time
+
+    errors = []
+    cancel = threading.Event()
+    code = "import time; print('Downloading torch (900 MiB)', flush=True); time.sleep(2); [print('Downloaded package-' + str(i), flush=True) for i in range(30)]"
+
+    def run():
+        try:
+            install._run("vllm", [sys.executable, "-u", "-c", code], cancel)
+        except Exception as exc:
+            errors.append(exc)
+
+    thread = threading.Thread(target = run)
+    thread.start()
+    try:
+        deadline = time.monotonic() + 2
+        while time.monotonic() < deadline:
+            path = isolated / "vllm.job.json"
+            if path.exists():
+                job = json.loads(path.read_text())
+                if job.get("activity") == "Downloading torch (900 MiB)":
+                    break
+            time.sleep(0.02)
+        else:
+            pytest.fail("Installer output was not published while the subprocess was running")
+        assert thread.is_alive()
+    finally:
+        thread.join(10)
+    assert not thread.is_alive() and not errors
+    job = json.loads((isolated / "vllm.job.json").read_text())
+    assert len(job["log"]) == 20
+    assert job["activity"] == "Downloaded package-29"
+
+
+@pytest.mark.parametrize("engine", ["vllm", "sglang"])
+@pytest.mark.parametrize("precision", ["auto", "bf16", "fp16", "int4", "int8", "fp8"])
+def test_native_precision_arguments(engine, precision):
+    from core.inference.engine_adapters import ADAPTERS
+
+    args = ADAPTERS[engine].command(
+        "python",
+        "model",
+        12345,
+        "key",
+        4096,
+        0.8,
+        options = {
+            "precision": precision,
+            "load_format": "bitsandbytes" if engine == "vllm" and precision == "int4" else "auto",
+        },
+    )
+    expected = {
+        "bf16": "bfloat16",
+        "fp16": "float16",
+        "int4": "bitsandbytes" if engine == "vllm" else "int4wo-32",
+        "fp8": "torchao" if engine == "vllm" else "fp8",
+        "int8": "torchao" if engine == "vllm" else "int8wo",
+    }
+    if precision == "auto":
+        assert "--quantization" not in args and "--dtype" not in args
+    else:
+        assert expected[precision] in args
+    assert args[args.index("--load-format") + 1] == (
+        "bitsandbytes" if engine == "vllm" and precision == "int4" else "auto"
+    )
+
+
+def test_managed_images_keep_their_conversation_positions(peer):
+    from PIL import Image
+
+    engine, requests = peer
+    messages = [
+        {"role": "user", "content": [{"type": "image"}, {"type": "text", "text": "First?"}]},
+        {"role": "assistant", "content": "Red"},
+        {"role": "user", "content": [{"type": "text", "text": "Second?"}, {"type": "image"}]},
+    ]
+    list(
+        engine.generate(
+            messages = messages,
+            images = [Image.new("RGB", (4, 4), "red"), Image.new("RGB", (4, 4), "blue")],
+        )
+    )
+    sent = requests[0][2]["messages"]
+    assert sent[0]["content"][0]["type"] == "image_url"
+    assert sent[2]["content"][1]["type"] == "image_url"
+    assert sent[0]["content"][0]["image_url"] != sent[2]["content"][1]["image_url"]
+    assert messages[0]["content"][0]["type"] == "image"
+
+
+@pytest.mark.parametrize("engine", ["vllm", "sglang"])
+def test_prequantized_int8_uses_uncaptured_sglang_execution(tmp_path, engine):
+    from types import SimpleNamespace
+    from core.inference.managed_engine import validate_model
+    from core.inference.engine_adapters import ADAPTERS
+
+    (tmp_path / "config.json").write_text(
+        json.dumps({"quantization_config": {"quant_method": "bitsandbytes", "load_in_8bit": True}})
+    )
+    options = validate_model(SimpleNamespace(is_local = True, path = str(tmp_path)), engine = engine)
+    args = ADAPTERS[engine].command("python", "model", 12345, "key", 4096, 0.8, options = options)
+    assert ("--disable-cuda-graph" in args) == (engine == "sglang")
+    assert ("--disable-piecewise-cuda-graph" in args) == (engine == "sglang")
+
+
+@pytest.mark.parametrize(
+    "capabilities, eager", [("8.9\n", False), ("8.6\n", True), ("8.9\n8.6\n", True)]
+)
+@pytest.mark.parametrize("engine", ["vllm", "sglang"])
+def test_fp8_conversion_uses_eager_on_ampere(tmp_path, monkeypatch, capabilities, eager, engine):
+    from types import SimpleNamespace
+    from core.inference import managed_engine
+
+    (tmp_path / "config.json").write_text('{"model_type":"qwen2"}')
+    monkeypatch.setattr(
+        managed_engine.subprocess,
+        "run",
+        lambda *args, **kwargs: SimpleNamespace(stdout = capabilities),
+    )
+    options = managed_engine.validate_model(
+        SimpleNamespace(is_local = True, path = str(tmp_path)), engine = engine, precision = "fp8"
+    )
+    assert options["disable_cuda_graph"] is eager
+
+
+@pytest.mark.parametrize("engine, load_format", [("vllm", "bitsandbytes"), ("sglang", "auto")])
+def test_online_int4_uses_the_native_loader(tmp_path, engine, load_format):
+    from types import SimpleNamespace
+    from core.inference.managed_engine import validate_model
+
+    (tmp_path / "config.json").write_text('{"model_type":"qwen3_5"}')
+    options = validate_model(
+        SimpleNamespace(is_local = True, path = str(tmp_path)), engine = engine, precision = "int4"
+    )
+    assert options["load_format"] == load_format
+
+
+@pytest.mark.parametrize("engine", ["vllm", "sglang"])
+@pytest.mark.parametrize("mode", ["tensor", "pipeline", "data"])
+@pytest.mark.parametrize("devices", [1, 2, 4])
+def test_parallel_mode_uses_exactly_the_selected_devices(engine, mode, devices):
+    from core.inference.engine_adapters import ADAPTERS
+
+    args = ADAPTERS[engine].command(
+        "python", "model", 12345, "key", 2048, 0.8, devices,
+        options = {"parallelism": mode},
+    )
+    sizes = {}
+    for name in ("tensor", "pipeline", "data"):
+        flag = f"--{name}-parallel-size"
+        sizes[name] = int(args[args.index(flag) + 1]) if flag in args else 1
+    assert sizes[mode] == devices
+    assert all(size == 1 for name, size in sizes.items() if name != mode)
+    assert args[args.index("--host") + 1] == "127.0.0.1"
+    if engine == "vllm" and mode == "data":
+        assert "vllm.entrypoints.cli.main" in args and "serve" in args
+        assert "--distributed-executor-backend" not in args
+        if devices > 1:
+            assert args[args.index("--data-parallel-backend") + 1] == "mp"
+
+
+@pytest.mark.parametrize("engine", ["vllm", "sglang"])
+@pytest.mark.parametrize("mode", ["pipeline", "data"])
+def test_non_tensor_modes_do_not_require_divisible_heads(tmp_path, engine, mode):
+    from types import SimpleNamespace
+    from core.inference.managed_engine import validate_model
+
+    (tmp_path / "config.json").write_text(json.dumps({
+        "text_config": {"num_attention_heads": 3, "hidden_size": 15, "num_hidden_layers": 12},
+    }))
+    config = SimpleNamespace(is_local = True, path = str(tmp_path))
+    with pytest.raises(ValueError, match = "cannot be split"):
+        validate_model(config, gpu_ids = [0, 1], engine = engine)
+    options = validate_model(config, gpu_ids = [0, 1], engine = engine, parallelism = mode)
+    assert options["parallelism"] == mode
+
+
+@pytest.mark.parametrize("engine", ["vllm", "sglang"])
+@pytest.mark.parametrize("mode", ["pipeline", "data"])
+def test_non_tensor_modes_validate_prequantized_bitsandbytes(tmp_path, engine, mode):
+    from types import SimpleNamespace
+    from core.inference.managed_engine import validate_model
+
+    (tmp_path / "config.json").write_text(json.dumps({"quantization_config": {"quant_method": "bitsandbytes"}}))
+    config = SimpleNamespace(is_local = True, path = str(tmp_path))
+    if engine == "sglang" and mode == "pipeline":
+        with pytest.raises(ValueError, match = "SGLang cannot load prequantized BitsAndBytes"):
+            validate_model(config, gpu_ids = [0, 1], engine = engine, parallelism = mode)
+        # A retained pipeline selection still permits a single-device load.
+        assert validate_model(config, gpu_ids = [0], engine = engine, parallelism = mode)["load_format"] == "bitsandbytes"
+        return
+    options = validate_model(
+        config,
+        gpu_ids = [0, 1], engine = engine, parallelism = mode,
+    )
+    assert options["parallelism"] == mode and options["load_format"] == "bitsandbytes"
+
+
+@pytest.mark.parametrize("mode", ["pipeline", "data"])
+def test_resident_engine_parallel_mode_requires_reload(mode):
+    from types import SimpleNamespace
+    from routes.inference import _non_gguf_runtime_settings_match
+    from models.inference import LoadRequest
+
+    backend = SimpleNamespace(active_model_name = "model", models = {"model": {
+        "engine": "vllm", "engine_parallelism": mode, "gpu_ids_requested": [0, 1],
+    }})
+    request = LoadRequest(model_path = "model", engine = "vllm", engine_parallelism = mode, gpu_ids = [0, 1])
+    assert _non_gguf_runtime_settings_match(backend, request)
+    assert not _non_gguf_runtime_settings_match(backend, request.model_copy(update = {"engine_parallelism": "tensor"}))
+
+
+def test_native_api_key_cannot_be_parsed_as_a_cli_option(monkeypatch):
+    import core.inference.managed_engine as managed
+
+    monkeypatch.setattr(managed.secrets, "token_urlsafe", lambda _: "--random-token")
+    assert managed.ManagedEngine("vllm").key == "studio---random-token"
+
+
+def test_vllm_int4_pipeline_uses_native_torchao_loader(tmp_path):
+    from types import SimpleNamespace
+    from core.inference.managed_engine import validate_model
+    from core.inference.engine_adapters import ADAPTERS
+
+    (tmp_path / "config.json").write_text('{"model_type":"qwen2"}')
+    options = validate_model(
+        SimpleNamespace(is_local = True, path = str(tmp_path)),
+        engine = "vllm", gpu_ids = [0, 1], precision = "int4", parallelism = "pipeline",
+    )
+    args = ADAPTERS["vllm"].command("python", "model", 12345, "key", 2048, 0.8, 2, options = options)
+    assert args[args.index("--load-format") + 1] == "auto"
+    assert args[args.index("--quantization") + 1] == "torchao"
+    config = json.loads(json.loads(args[args.index("--hf-overrides") + 1])["quantization_config_dict_json"])
+    assert config["_type"] == "Int4WeightOnlyConfig"
+    assert config["_data"]["int4_choose_qparams_algorithm"]["_data"] == "HQQ"

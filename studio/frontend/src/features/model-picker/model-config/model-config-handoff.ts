@@ -68,7 +68,7 @@ export function modelConfigTarget(
     displayName: meta.ggufVariant ? `${name} · ${meta.ggufVariant}` : name,
     ggufVariant: meta.ggufVariant ?? null,
     isGguf,
-    apiLoadable: isGguf && !isOllamaLinkPath(id) && !isOllamaLinkPath(loadId),
+    apiLoadable: !meta.isLora && !isOllamaLinkPath(id) && !isOllamaLinkPath(loadId),
     ...(separateLoadId ? { configId: id } : {}),
     meta,
   };

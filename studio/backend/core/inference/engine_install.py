@@ -176,7 +176,10 @@ def status(engine: str) -> dict:
 
 def _update(engine: str, **values) -> None:
     with _lock:
-        _jobs.setdefault(engine, {}).update(values)
+        job = _jobs.setdefault(engine, {})
+        if "phase" in values and values["phase"] != job.get("phase"):
+            values.setdefault("activity", "")
+        job.update(values)
         root = engine_root()
         root.mkdir(parents = True, exist_ok = True)
         _atomic_json(root / f"{engine}.job.json", _jobs[engine])
@@ -277,8 +280,31 @@ def _run(engine: str, argv: list[str], cancel: threading.Event) -> None:
 
     def drain():
         from utils.log_redaction import redact_log_text
+
+        last_update = 0.0
+        activity = ""
         for line in proc.stdout:
-            tail.append(redact_log_text(line.rstrip())[-1000:])
+            line = redact_log_text(line.rstrip())[-1000:]
+            if not line:
+                continue
+            tail.append(line)
+            if line.startswith(
+                (
+                    "Downloading ",
+                    "Downloaded ",
+                    "Resolved ",
+                    "Prepared ",
+                    "Installed ",
+                    "Uninstalled ",
+                )
+            ):
+                activity = line
+            now = time.monotonic()
+            if now - last_update >= 1:
+                _update(engine, activity = activity, log = list(tail))
+                last_update = now
+        if tail:
+            _update(engine, activity = activity, log = list(tail))
 
     reader = threading.Thread(target = drain, daemon = True)
     deadline = time.monotonic() + 3600
@@ -366,7 +392,7 @@ def _install(
                     python,
                     "-I",
                     "-c",
-                    f"import {profile(engine)['module']}; import torch; assert torch.__version__.split('+')[0] == '2.11.0'; assert torch.version.cuda == '13.0'",
+                    f"import {profile(engine)['module']}; import torch; import bitsandbytes; import torchao; assert torch.__version__.split('+')[0] == '2.11.0'; assert torch.version.cuda == '13.0'",
                 ],
                 cancel,
             )
@@ -430,7 +456,14 @@ def start_install(engine: str) -> dict:
         _cancels[engine] = cancel
         try:
             (engine_root() / f"{engine}.cancel").unlink(missing_ok = True)
-            _update(engine, state = "running", phase = "queued", message = "Preparing installation")
+            _update(
+                engine,
+                state = "running",
+                phase = "queued",
+                message = "Preparing installation",
+                activity = "",
+                log = [],
+            )
             threading.Thread(target = _install, args = (engine, cancel, lease), daemon = True).start()
         except Exception:
             lease.__exit__(None, None, None)

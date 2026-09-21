@@ -1,11 +1,12 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""HTTP server lifecycle for optional text inference engines."""
+"""HTTP server lifecycle for optional inference engines."""
 
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import secrets
 import socket
@@ -13,6 +14,7 @@ import subprocess
 import threading
 import time
 from collections import deque
+from pathlib import Path
 
 import httpx
 
@@ -35,38 +37,84 @@ def validate_load(engine: str, request) -> None:
         raise ValueError(f"Install {engine} in Settings > System > Inference engines first.")
     if request.gguf_variant or request.model_path.lower().endswith(".gguf") or request.is_lora:
         raise ValueError(
-            "Optional engines currently support full text checkpoints in safetensors format."
+            "Optional engines require a full model checkpoint. GGUF files and LoRA adapters use Default."
         )
-    if request.trust_remote_code or request.chat_template_override:
-        raise ValueError(
-            "Optional engines do not yet support custom model code or template overrides."
-        )
+    if request.chat_template_override:
+        raise ValueError("Optional engines do not yet support template overrides.")
 
 
 def validate_model(
     config,
     hf_token = None,
     gpu_ids = None,
-) -> None:
+    engine = "vllm",
+    precision = "auto",
+    parallelism = "tensor",
+) -> dict:
     """Check plain metadata before releasing the previous resident model."""
-    from pathlib import Path
-
     if config.is_local:
         path = Path(config.path) / "config.json"
     else:
         from huggingface_hub import hf_hub_download
         path = Path(hf_hub_download(config.identifier, "config.json", token = hf_token))
     metadata = json.loads(path.read_text(encoding = "utf-8"))
-    if metadata.get("model_type") not in {"llama", "mistral", "qwen2", "qwen3"}:
+    quant = (
+        metadata.get("quantization_config")
+        or metadata.get("text_config", {}).get("quantization_config")
+        or {}
+    )
+    if quant and precision != "auto":
         raise ValueError(
-            "This engine profile currently supports Llama, Mistral, Qwen2 and Qwen3 text checkpoints."
+            "This checkpoint is already quantized. Choose Model default to use its stored precision."
         )
-    if metadata.get("quantization_config") or metadata.get("vision_config"):
+    if quant.get("quant_method") == "bitsandbytes" and len(gpu_ids or [0]) > 1 and parallelism == "tensor":
         raise ValueError(
-            "Choose a full precision text checkpoint for this optional engine profile."
+            "Prequantized BitsAndBytes checkpoints do not support tensor parallelism with this engine. Select one GPU, another multi-GPU mode, or a tensor-parallel compatible checkpoint such as AWQ or GPTQ."
         )
+    if (
+        quant.get("quant_method") == "bitsandbytes"
+        and engine == "sglang"
+        and parallelism == "pipeline"
+        and len(gpu_ids or [0]) > 1
+    ):
+        raise ValueError(
+            "SGLang cannot load prequantized BitsAndBytes checkpoints across pipeline stages. "
+            "Select one GPU, use Replicas, or load an unquantized checkpoint with 4-bit precision."
+        )
+    options = {
+        "precision": precision,
+        "parallelism": parallelism,
+        "is_vision": bool(metadata.get("vision_config") or getattr(config, "is_vision", False)),
+        "quantization": quant.get("quant_method"),
+        # BNB's INT8 outlier extraction synchronizes on the CPU and cannot be captured.
+        "disable_cuda_graph": engine == "sglang"
+        and quant.get("quant_method") == "bitsandbytes"
+        and quant.get("load_in_8bit", False),
+        "load_format": "bitsandbytes"
+        if quant.get("quant_method") == "bitsandbytes" or (engine == "vllm" and precision == "int4" and parallelism != "pipeline")
+        else "auto",
+    }
+    if precision == "fp8":
+        # Use eager TorchAO FP8 storage on Ampere. Triton cannot compile
+        # its FP8 casts, and SGLang's online FP8 kernels produce invalid output.
+        result = subprocess.run(
+            [
+                "nvidia-smi",
+                "--id",
+                ",".join(str(i) for i in (gpu_ids or [0])),
+                "--query-gpu=compute_cap",
+                "--format=csv,noheader,nounits",
+            ],
+            capture_output = True,
+            text = True,
+            timeout = 5,
+            check = True,
+        )
+        options["disable_cuda_graph"] = any(float(cap) < 8.9 for cap in result.stdout.splitlines())
+    # Multimodal architectures keep their language-model dimensions here.
+    metadata = metadata.get("text_config") or metadata
     size = len(gpu_ids or [0])
-    if size > 1:
+    if size > 1 and parallelism == "tensor":
         for field in ("num_attention_heads", "hidden_size", "intermediate_size"):
             value = metadata.get(field)
             if isinstance(value, int) and value > 0 and value % size:
@@ -84,6 +132,8 @@ def validate_model(
                     "Select a GPU count that divides the KV heads or is a multiple of them."
                 )
 
+    return options
+
 
 class ManagedEngine:
     def __init__(self, engine: str):
@@ -97,9 +147,11 @@ class ManagedEngine:
         self._lock = threading.RLock()
         self._lease = None
         self._reader = None
-        self._tail = deque(maxlen = 30)
+        self._tail = deque(maxlen = 200)
         self.base_url = ""
-        self.key = secrets.token_urlsafe(32)
+        # A URL-safe token can start with '-', which native CLI parsers read as
+        # another option instead of the API key.
+        self.key = "studio-" + secrets.token_urlsafe(32)
 
     def alive(self) -> bool:
         return self.process is not None and self.process.poll() is None
@@ -111,6 +163,8 @@ class ManagedEngine:
         gpu_ids,
         env: dict,
         cancel_event = None,
+        options = None,
+        trust_remote_code = False,
     ):
         from utils.process_lifetime import (
             adopt_pid,
@@ -161,13 +215,22 @@ class ManagedEngine:
                 child_env["PYTHONNOUSERSITE"] = "1"
                 from .engine_install import engine_root
 
-                child_env["VLLM_CACHE_ROOT"] = str(engine_root() / self.engine / "cache")
-                child_env["TORCHINDUCTOR_CACHE_DIR"] = str(
-                    engine_root() / self.engine / "cache" / "inductor"
-                )
-                child_env["TRITON_CACHE_DIR"] = str(
-                    engine_root() / self.engine / "cache" / "triton"
-                )
+                # Pinned compilers can reuse incompatible artifacts across dtype
+                # and GPU changes. Reuse only within the same launch configuration.
+                policy = Path(__file__).with_name("engine_adapters.py").read_bytes()
+                if self.engine == "sglang":
+                    policy += Path(__file__).with_name("sglang_server.py").read_bytes()
+                cache_key = hashlib.sha256(
+                    policy
+                    + json.dumps(
+                        [info.get("profile_digest"), model, self.context, gpu_ids, options],
+                        sort_keys = True,
+                    ).encode()
+                ).hexdigest()[:16]
+                cache = engine_root() / self.engine / "cache" / cache_key
+                child_env["VLLM_CACHE_ROOT"] = str(cache)
+                child_env["TORCHINDUCTOR_CACHE_DIR"] = str(cache / "inductor")
+                child_env["TRITON_CACHE_DIR"] = str(cache / "triton")
                 memory_fraction = gpu_memory_fraction(gpu_ids or [0])
                 child_env.update(self.adapter.environment(len(gpu_ids or [0])))
                 self.process = spawn_on_lifetime_thread(
@@ -180,6 +243,11 @@ class ManagedEngine:
                             self.context,
                             memory_fraction,
                             len(gpu_ids or [0]),
+                            **(
+                                {"options": options, "trust_remote_code": trust_remote_code}
+                                if options
+                                else {}
+                            ),
                         ),
                         env = child_env,
                         stdout = subprocess.PIPE,
@@ -303,8 +371,59 @@ class ManagedEngine:
             raise ValueError(
                 "Tools and adapter comparisons are not supported by this optional engine profile."
             )
-        if params.get("image") or params.get("images") or params.get("video"):
-            raise ValueError("This optional engine profile supports text input only.")
+        if params.get("video"):
+            raise ValueError(
+                "Video input is not yet supported by the Studio managed engine transport."
+            )
+        from .orchestrator import _request_images, InferenceOrchestrator
+
+        request_images = _request_images(params.get("image"), params.get("images"))
+        if request_images:
+            messages = [dict(message) for message in messages]
+            pending = iter(request_images)
+            used_placeholders = False
+            for message in messages:
+                content = message.get("content", "")
+                if not isinstance(content, list):
+                    continue
+                parts = []
+                for part in content:
+                    if part.get("type") == "image":
+                        used_placeholders = True
+                        image = next(pending)
+                        parts.append(
+                            {
+                                "type": "image_url",
+                                "image_url": {
+                                    "url": "data:image/png;base64,"
+                                    + InferenceOrchestrator._pil_to_base64(image)
+                                },
+                            }
+                        )
+                    else:
+                        parts.append(part)
+                message["content"] = parts
+            if not used_placeholders:
+                for message in reversed(messages):
+                    if message.get("role") == "user":
+                        content = message.get("content", "")
+                        parts = (
+                            [{"type": "text", "text": content}]
+                            if isinstance(content, str)
+                            else list(content)
+                        )
+                        parts.extend(
+                            {
+                                "type": "image_url",
+                                "image_url": {
+                                    "url": "data:image/png;base64,"
+                                    + InferenceOrchestrator._pil_to_base64(image)
+                                },
+                            }
+                            for image in request_images
+                        )
+                        message["content"] = parts
+                        break
         if (
             params.get("continue_final_message")
             or params.get("enable_thinking")

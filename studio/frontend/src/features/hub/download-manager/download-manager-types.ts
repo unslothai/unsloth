@@ -41,6 +41,8 @@ export interface ManagedDownload {
   /** A Xet run that fell back to HTTP keeps its original cancel marker, so it, not `transport`, decides the stop control. */
   cancelTransport?: ResolvedTransport;
   external?: boolean;
+  activity?: string;
+  details?: string[];
 }
 
 export interface DownloadRequest {

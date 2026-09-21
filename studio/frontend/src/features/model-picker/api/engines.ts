@@ -14,7 +14,13 @@ export interface EngineStatus {
   current: boolean;
   can_rollback: boolean;
   unsupported_reason: string | null;
-  job: { state: string; phase: string | null; message: string };
+  job: {
+    state: string;
+    phase: string | null;
+    message: string;
+    activity?: string;
+    log?: string[];
+  };
 }
 
 export async function listEngines(): Promise<EngineStatus[]> {

@@ -6999,6 +6999,21 @@ def test_model_override_load_kwargs_gates_gpu_placement_on_gguf():
     LoadRequest(model_path = "unsloth/B-GGUF", **gguf)
 
 
+@pytest.mark.parametrize("engine", ["vllm", "sglang"])
+@pytest.mark.parametrize("mode", ["tensor", "pipeline", "data"])
+def test_optional_engine_override_preserves_precision_and_gpu_order(engine, mode):
+    kwargs = settings.model_override_load_kwargs(
+        {"engine": engine, "engine_precision": "int4", "engine_parallelism": mode, "gpu_ids": [1, 0]},
+        is_gguf = False,
+    )
+    request = LoadRequest(model_path = "unsloth/Qwen2.5-0.5B-Instruct", **kwargs)
+    assert request.engine == engine
+    assert request.engine_precision == "int4"
+    assert request.engine_parallelism == mode
+    assert request.gpu_ids == [1, 0]
+    assert request.load_in_4bit is False
+
+
 def test_a_carried_ctx_flag_cannot_outrank_a_freshly_saved_context(monkeypatch):
     # The settings page has no control for pass-through flags, so a save carries over the
     # ones already stored while writing the field the user just edited, leaving one entry

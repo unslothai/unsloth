@@ -799,6 +799,8 @@ class ModelOverridePayload(BaseModel):
     """
 
     model_id: str = Field(..., min_length = 1, max_length = MAX_MODEL_OVERRIDE_KEY_LEN)
+    engine_parallelism: Optional[Literal["tensor", "pipeline", "data"]] = None
+    engine_precision: Optional[Literal["auto", "bf16", "fp16", "int4", "int8", "fp8"]] = None
     engine: Optional[Literal["auto", "vllm", "sglang"]] = None
     # None leaves the stored value alone (the UI has no control for flags); [] clears them.
     llama_extra_args: Optional[list[str]] = None
@@ -1915,6 +1917,12 @@ def update_openai_auto_switch_override(
                 target_id,
                 llama_extra_args = extra_args,
                 keep_empty_extra_args = keep_empty,
+                engine_parallelism = payload.engine_parallelism
+                if payload.engine_parallelism is not None
+                else get_model_override(target_id).get("engine_parallelism"),
+                engine_precision = payload.engine_precision
+                if payload.engine_precision is not None
+                else get_model_override(target_id).get("engine_precision"),
                 engine = payload.engine
                 if payload.engine is not None
                 else get_model_override(target_id).get("engine"),

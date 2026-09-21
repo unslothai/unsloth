@@ -156,8 +156,8 @@ export function applyActiveModelStatusToStore(
   useChatRuntimeStore.setState({ residentCheckpoint: checkpointId, loadedEngine: status.engine ?? "auto" });
 
   const store = useChatRuntimeStore.getState();
-  if ((store.params.engine ?? "auto") !== (status.engine ?? "auto")) {
-    store.setParams({ ...store.params, engine: status.engine ?? "auto" });
+  if ((store.params.engine ?? "auto") !== (status.engine ?? "auto") || (store.params.enginePrecision ?? "auto") !== (status.engine_precision ?? "auto") || (store.params.engineParallelism ?? "tensor") !== (status.engine_parallelism ?? "tensor")) {
+    store.setParams({ ...store.params, engine: status.engine ?? "auto", enginePrecision: status.engine_precision ?? "auto", engineParallelism: status.engine_parallelism ?? "tensor" });
   }
   const previousCheckpoint =
     options.previousCheckpoint ?? store.params.checkpoint;
@@ -165,7 +165,7 @@ export function applyActiveModelStatusToStore(
   if (status.inference) {
     store.setParams(
       mergeBackendRecommendedInference({
-        current: { ...store.params, engine: status.engine ?? "auto" },
+        current: { ...store.params, engine: status.engine ?? "auto", enginePrecision: status.engine_precision ?? "auto", engineParallelism: status.engine_parallelism ?? "tensor" },
         response: status,
         modelId: checkpointId,
         presetSource: store.activePresetSource,

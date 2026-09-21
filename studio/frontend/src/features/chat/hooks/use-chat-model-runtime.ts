@@ -1791,6 +1791,8 @@ export function useChatModelRuntime() {
             }
             const loadResponse = await loadModel({
               model_path: loadPath,
+              engine_precision: stateBeforeUnload.params.enginePrecision ?? "auto",
+              engine_parallelism: stateBeforeUnload.params.engineParallelism ?? "tensor",
               engine: isGguf ? "auto" : (stateBeforeUnload.params.engine ?? "auto"),
               nativePathLease: loadNativePathLease,
               hf_token: hfToken,

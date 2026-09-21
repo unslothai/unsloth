@@ -14922,11 +14922,18 @@ def _non_gguf_runtime_settings_match(backend, request) -> bool:
     max_seq_length 0 means "model default", so a `--context-length 0` reset is honoured
     on GGUF but not here.
     """
+    if getattr(request, "engine", "auto") != "auto" and (
+        backend.models.get(backend.active_model_name) or {}
+    ).get("engine_precision", "auto") != getattr(request, "engine_precision", "auto"):
+        return False
+
     if getattr(request, "force_reload", False):
         return False
     fields_set = getattr(request, "model_fields_set", set()) or set()
     entry = backend.models.get(backend.active_model_name, {}) or {}
     if entry.get("engine") in ("vllm", "sglang"):
+        if entry.get("engine_parallelism", "tensor") != getattr(request, "engine_parallelism", "tensor"):
+            return False
         if list(request.gpu_ids or [0]) != list(entry.get("gpu_ids_requested") or [0]):
             return False
     if "max_seq_length" in fields_set and int(request.max_seq_length or 0) > 0:
@@ -15304,14 +15311,27 @@ async def _load_model_impl(
     anonymous_hf_access: bool = False,
     speech_codec_path: Optional[str] = None,
 ):
+    engine_options = None
     if request.engine != "auto":
         from core.inference.managed_engine import validate_load
+
         try:
             await asyncio.to_thread(validate_load, request.engine, request)
         except ValueError as exc:
             raise HTTPException(status_code = 400, detail = str(exc)) from exc
+        precision = request.engine_precision
+        if (
+            "engine_precision" not in request.model_fields_set
+            and "load_in_4bit" in request.model_fields_set
+            and request.load_in_4bit
+        ):
+            precision = "int4"
         request = request.model_copy(
-            update = {"load_in_4bit": False, "gpu_ids": request.gpu_ids or [0]}
+            update = {
+                "load_in_4bit": False,
+                "gpu_ids": request.gpu_ids or [0],
+                "engine_precision": precision,
+            }
         )
     native_access_deferred = _defers_access_to_native_grant(request)
     if account_access.managed_account() and not native_access_deferred:
@@ -15576,6 +15596,8 @@ async def _load_model_impl(
                 account_access.join_resident("chat")
                 return LoadResponse(
                     engine = request.engine,
+                    engine_parallelism = request.engine_parallelism,
+                    engine_precision = request.engine_precision,
                     gpu_ids = _model_info.get("gpu_ids"),
                     requested_gpu_ids = _model_info.get("gpu_ids_requested"),
                     tensor_parallel = bool(_model_info.get("tensor_parallel", False)),
@@ -15711,12 +15733,23 @@ async def _load_model_impl(
                     raise HTTPException(status_code = 400, detail = str(exc)) from exc
         gguf_intent: Optional[GgufLoadIntent] = None
         _tensor_intent_overall = False
-        if request.engine != "auto" and (
-            config.is_gguf or config.is_lora or config.is_vision or config.is_audio
-        ):
+        if request.engine != "auto" and (config.is_gguf or config.is_lora or config.is_audio):
+            detected_kind = (
+                "GGUF"
+                if config.is_gguf
+                else "a LoRA adapter"
+                if config.is_lora
+                else "a vision model"
+                if config.is_vision
+                else "an audio model"
+            )
             raise HTTPException(
                 status_code = 400,
-                detail = "Optional engines currently support full text checkpoints only.",
+                detail = (
+                    f"This model was detected as {detected_kind}. "
+                    f"The Studio {request.engine} integration currently supports text and vision checkpoints. "
+                    "Choose Default for this model, or select a supported text checkpoint."
+                ),
             )
         if config.is_gguf:
             gguf_intent = _resolve_gguf_load_intent(
@@ -15761,11 +15794,14 @@ async def _load_model_impl(
         if request.engine != "auto":
             from core.inference.managed_engine import validate_model
             try:
-                await asyncio.to_thread(
+                engine_options = await asyncio.to_thread(
                     validate_model,
                     config,
                     False if anonymous_hf_access else request.hf_token,
                     request.gpu_ids,
+                    request.engine,
+                    request.engine_precision,
+                    request.engine_parallelism,
                 )
             except (ValueError, OSError) as exc:
                 raise HTTPException(status_code = 400, detail = str(exc)) from exc
@@ -16265,7 +16301,11 @@ async def _load_model_impl(
         try:
             success = await asyncio.to_thread(
                 backend.load_model,
-                **({"engine": request.engine} if request.engine != "auto" else {}),
+                **(
+                    {"engine": request.engine, "engine_options": engine_options}
+                    if request.engine != "auto"
+                    else {}
+                ),
                 config = config,
                 max_seq_length = request.max_seq_length,
                 load_in_4bit = load_in_4bit,
@@ -16402,6 +16442,8 @@ async def _load_model_impl(
 
         return LoadResponse(
             engine = request.engine,
+            engine_parallelism = request.engine_parallelism,
+            engine_precision = request.engine_precision,
             gpu_ids = _model_info.get("gpu_ids"),
             requested_gpu_ids = _model_info.get("gpu_ids_requested"),
             tensor_parallel = bool(_model_info.get("tensor_parallel", False)),
@@ -18681,6 +18723,8 @@ async def get_status(current_subject: str = Depends(get_current_subject)):
 
         return InferenceStatusResponse(
             engine = model_info.get("engine", "auto"),
+            engine_parallelism = model_info.get("engine_parallelism", "tensor"),
+            engine_precision = model_info.get("engine_precision", "auto"),
             gpu_ids = model_info.get("gpu_ids"),
             tensor_parallel = bool(model_info.get("tensor_parallel", False)),
             active_model = backend.active_model_name,
@@ -26258,7 +26302,11 @@ async def produce_openai_chat_completions(
     # Re-derived, not reused from the pre-switch parse: an auto-switch may have changed models.
     served_images: list[str] = []
     images: list = []
-    if _serves_several_images(backend):
+    _managed_images = backend.models.get(backend.active_model_name, {}).get("engine") in (
+        "vllm",
+        "sglang",
+    )
+    if _serves_several_images(backend) and not _managed_images:
         _, _msgs, _payloads = _extract_content_parts(payload.messages, structured = True)
         _legacy_distinct = _legacy_image_is_distinct(payload)
         # A legacy image the messages do not carry joins the newest user turn, as GGUF splices it.
@@ -26281,7 +26329,24 @@ async def produce_openai_chat_completions(
     # undecodable image is left alone, since it is not a multi-image call.
     images_on_turn = _images_in_last_user_message(payload.messages)
 
-    if image_b64 or images_on_turn > 1:
+    if _managed_images:
+        # Native servers accept OpenAI image parts. Preserve every turn and URL,
+        # including remote images, without flattening or resizing them in Studio.
+        chat_messages = [
+            message
+            for message in _openai_messages_for_passthrough(payload, normalize_images = False)
+            if message.get("role") not in ("system", "developer")
+        ]
+        if any(
+            isinstance(message.get("content"), list)
+            and any(part.get("type") == "image_url" for part in message["content"])
+            for message in chat_messages
+        ) and not backend.models.get(backend.active_model_name, {}).get("is_vision"):
+            raise _reject(
+                400, "Image provided but current model is text-only. Load a vision model."
+            )
+
+    if not _managed_images and (image_b64 or images_on_turn > 1):
         try:
             model_info = backend.models.get(backend.active_model_name, {})
             if not model_info.get("is_vision"):
@@ -26350,7 +26415,7 @@ async def produce_openai_chat_completions(
         ):
             raise _reject(
                 400,
-                "This experimental engine supports plain text chat without tools, adapters, structured output, continuation or reasoning controls.",
+                "This engine integration supports text and image chat without tools, adapters, structured output, continuation or reasoning controls.",
             )
     _sf_tpl = (_sf_model_info.get("chat_template_info") or {}).get("template")
     # Resolve the tool policy BEFORE the protocol is classified: the template

@@ -267,3 +267,30 @@ def test_the_image_budget_refusal_goes_through_the_callers_reject(monkeypatch):
     with pytest.raises(HTTPException):
         asyncio.run(inference_route._decode_request_images(None, ["a", "b"], None, reject = reject))
     assert len(seen) == 1 and seen[0][0] == 400
+
+
+@pytest.mark.parametrize("engine", ["vllm", "sglang"])
+@pytest.mark.parametrize("remote", [False, True])
+def test_managed_engine_preserves_native_image_parts(monkeypatch, engine, remote):
+    backend = passthrough._ScriptedBackend(passthrough._fixed("an answer"))
+    backend.models["sf-model"].update(engine = engine, is_vision = True)
+    image = (
+        {"type": "image_url", "image_url": {"url": "https://example.com/image.png"}}
+        if remote
+        else _sized(4)
+    )
+    messages = [
+        ChatMessage(role = "system", content = "Be brief."),
+        ChatMessage(role = "user", content = [image, _text("First?")]),
+        ChatMessage(role = "assistant", content = "Blue."),
+        ChatMessage(role = "user", content = [_text("Compare."), _sized(8)]),
+    ]
+    passthrough._call(passthrough._request(messages = messages, stream = False), monkeypatch, backend)
+    call = backend.calls[0]
+    assert call["messages"][0]["content"][0]["image_url"]["url"] == image["image_url"]["url"]
+    assert (
+        call["messages"][2]["content"][1]["image_url"]["url"]
+        == messages[3].content[1].image_url.url
+    )
+    assert call["system_prompt"].endswith("Be brief.")
+    assert call.get("image") is None and not call.get("images")

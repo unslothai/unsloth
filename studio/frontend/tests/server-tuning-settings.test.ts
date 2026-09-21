@@ -219,3 +219,30 @@ test("a config whose only change is one of the four is not read as default", () 
     true,
   );
 });
+
+
+test("a remembered precision choice survives switching back to Default", () => {
+  const config = normalizePerModelConfig({
+    ...DEFAULT_PER_MODEL_CONFIG,
+    engine: "auto",
+    enginePrecision: "int4",
+  });
+  assert.equal(config.enginePrecision, "int4");
+  assert.equal(isDefaultConfig(config), false);
+});
+
+test("precision changes reseed the model settings editor", () => {
+  assert.notEqual(
+    loadedConfigSignature(normalizePerModelConfig({ engine: "vllm", enginePrecision: "int4" })),
+    loadedConfigSignature(normalizePerModelConfig({ engine: "vllm", enginePrecision: "int8" })),
+  );
+});
+
+for (const mode of ["pipeline", "data"] as const) {
+  test(`${mode} mode survives stored config and editor identity`, () => {
+    const config = normalizePerModelConfig({ engine: "vllm", engineParallelism: mode, selectedGpuIds: [1, 0] });
+    assert.equal(config.engineParallelism, mode);
+    assert.notEqual(loadedConfigSignature(config), loadedConfigSignature({ ...config, engineParallelism: "tensor" }));
+    assert.equal(isDefaultConfig(normalizePerModelConfig({ engineParallelism: mode })), false);
+  });
+}

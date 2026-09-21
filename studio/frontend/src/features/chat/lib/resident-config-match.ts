@@ -16,6 +16,8 @@ import type { InferenceStatusResponse } from "../types/api";
 type ResidentRuntime = Pick<
   InferenceStatusResponse,
   | "engine"
+  | "engine_parallelism"
+  | "engine_precision"
   | "context_length"
   | "requested_context_length"
   | "cache_type_kv"
@@ -587,6 +589,11 @@ export function residentRuntimeMatchesConfig(
   }
   if ((status.engine ?? "auto") !== (config.engine ?? "auto")) return false;
   if (status.engine === "vllm" || status.engine === "sglang") {
+    if (
+      (status.engine_precision ?? "auto") !== (config.enginePrecision ?? "auto") ||
+      (status.engine_parallelism ?? "tensor") !== (config.engineParallelism ?? "tensor")
+    )
+      return false;
     if (
       config.maxSeqLength != null &&
       config.maxSeqLength > 0 &&

@@ -57,7 +57,7 @@ export function SidebarModelConfig({
       ggufVariant: settingsGgufVariant,
       isGguf,
       // A materialized Ollama link sits in a dir the resolver skips, so do not mirror it.
-      apiLoadable: isGguf && !isOllamaLinkPath(modelId),
+      apiLoadable: !isOllamaLinkPath(modelId),
       meta: {
         source: "local",
         isLora: false,
