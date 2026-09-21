@@ -146,12 +146,20 @@ def _portable_mode() -> bool:
 
 
 def _toolchain_path_unparseable(value: str) -> bool:
-    """storage_roots' test, imported per call like _default_root's, with a whitespace-only
-    fallback for the CLI paths that reach this module without studio/backend on sys.path."""
+    """storage_roots' test, imported per call like _default_root's.
+
+    The fallback repeats the rule rather than narrowing to whitespace, or the same path would be
+    refused or accepted depending only on whether studio/backend happened to be on sys.path when
+    a CLI entry point reached this module. test_the_import_fallback_matches_the_resolver sweeps
+    both against every printable character, so the copy cannot drift.
+    """
     try:
         from utils.paths.storage_roots import toolchain_path_unparseable
     except ImportError:
-        return any(ch.isspace() for ch in value)
+        return (any(ch.isspace() for ch in value)
+                or "'" in value
+                or '"' in value
+                or (os.name != "nt" and "\\" in value))
     return toolchain_path_unparseable(value)
 
 

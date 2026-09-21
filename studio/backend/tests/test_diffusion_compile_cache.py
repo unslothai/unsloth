@@ -343,6 +343,35 @@ def test_restore_inductor_dir(monkeypatch, tmp_path, fake_megacache):
     assert os.environ["TORCHINDUCTOR_CACHE_DIR"] == "/tmp/prior-inductor"  # restored
 
 
+def test_the_import_fallback_matches_the_resolver(monkeypatch):
+    """The fallback runs when a CLI entry point reaches this module without studio/backend on
+    sys.path. Narrowed to whitespace it made the same path refused or accepted depending only on
+    sys.path, which is routing that depends on import order. Swept so the copy cannot drift."""
+    import builtins
+    import string
+
+    from utils.paths.storage_roots import toolchain_path_unparseable
+
+    real_import = builtins.__import__
+
+    def no_storage_roots(name, *args, **kwargs):
+        if name == "utils.paths.storage_roots":
+            raise ImportError("simulated: studio/backend is not on sys.path")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", no_storage_roots)
+
+    disagreed = []
+    for char in list(string.printable) + [" ", "é"]:
+        path = f"/srv/unsloth{char}root/cache/diffusion_compile_cache/key/inductor"
+        if cc._toolchain_path_unparseable(path) != toolchain_path_unparseable(path):
+            disagreed.append(char)
+
+    assert disagreed == [], (
+        "the fallback and the resolver disagree on: "
+        + ", ".join(repr(c) for c in disagreed))
+
+
 @pytest.mark.parametrize("name", [
     pytest.param("my studio", id = "a space"),
     pytest.param("o'brien", id = "an apostrophe"),

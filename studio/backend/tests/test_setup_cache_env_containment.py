@@ -12,6 +12,7 @@ import platform
 import re
 import shlex
 import shutil
+import string
 import subprocess
 import sys
 from pathlib import Path
@@ -215,6 +216,39 @@ def test_the_guard_agrees_with_what_shlex_actually_does_to_the_command(name, tmp
     assert sr.toolchain_path_unparseable(path) is not survives, (
         f"{name!r}: predicate says {sr.toolchain_path_unparseable(path)}, "
         f"shlex.split round trip says {survives}")
+
+
+def test_no_character_at_all_lets_a_mangled_path_through(tmp_path):
+    """The invariant that actually protects a user, swept over every printable ASCII character
+    plus the whitespace Python recognises and shlex does not.
+
+    The test above pins six characters both ways. This one allows the predicate to be too
+    careful and forbids it being not careful enough, which is the only direction that breaks a
+    build. It is deliberately one-sided: str.isspace() is true for a no-break space and the
+    other Unicode spaces, while shlex splits on ASCII whitespace only, so the predicate refuses
+    seven paths a compiler would in fact have accepted. That costs containment for those roots
+    and nothing else, it predates this file, and closing it would mean re-deriving shlex's own
+    whitespace set here."""
+    sr = _load_storage_roots()
+    specials = list(string.printable) + [" ", " ", " ", "　", " ", "é"]
+    if os.name == "nt":
+        specials.remove("\\")  # the separator, rewritten to "/" before the command is built
+
+    leaked = []
+    for char in specials:
+        path = f"{tmp_path}/unsloth{char}root/cache/torchinductor"
+        command = f"g++ {path}/main.cpp -o {path}/main.so"
+        try:
+            survives = shlex.split(command) == [
+                "g++", f"{path}/main.cpp", "-o", f"{path}/main.so"]
+        except ValueError:
+            survives = False
+        if not survives and not sr.toolchain_path_unparseable(path):
+            leaked.append(char)
+
+    assert leaked == [], (
+        "these characters would be pinned into a compiler command line that mangles them: "
+        + ", ".join(repr(c) for c in leaked))
 
 
 def test_an_explicit_spaced_compiler_cache_is_left_alone(monkeypatch, tmp_path):
