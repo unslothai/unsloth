@@ -287,7 +287,10 @@ export function GuidedTour({
                   exit={{ opacity: 0, scale: 0.99, y: 10 }}
                   transition={{ duration: 0.22, ease: [0.165, 0.84, 0.44, 1] }}
                   className={cn(
-                    "relative overflow-hidden rounded-[28px] corner-squircle",
+                    // Plain rounded, no corner-squircle: at this radius superellipse(2)
+                    // hugs the corner about twice as tightly as the arc, which reads as a
+                    // boxed-in card rather than a rounded one.
+                    "relative overflow-hidden rounded-[28px]",
                     "bg-white/95 text-foreground ring-1 ring-black/10 dark:bg-zinc-900/96 dark:text-zinc-100 dark:ring-white/12",
                     "shadow-[0_30px_120px_rgba(0,0,0,0.35)]",
                   )}
@@ -309,7 +312,9 @@ export function GuidedTour({
                     )}
                     aria-hidden={true}
                   />
-                  <div className="absolute inset-x-0 top-0 h-20 bg-gradient-to-b from-control-accent/18 via-control-accent/6 to-transparent dark:from-control-accent/24 dark:via-control-accent/12" />
+                  {/* Rounded to match the card. A square-cornered rectangle here reads as a
+                      second, boxier outline whenever it is not clipped to the card's radius. */}
+                  <div className="absolute inset-x-0 top-0 h-20 rounded-t-[28px] bg-gradient-to-b from-control-accent/18 via-control-accent/6 to-transparent dark:from-control-accent/24 dark:via-control-accent/12" />
                   <div className="absolute -left-14 -top-16 size-44 rounded-full bg-control-accent/20 blur-2xl dark:bg-control-accent/26" />
                   <div className="absolute -right-14 -bottom-16 size-44 rounded-full bg-cyan-300/18 blur-2xl dark:bg-cyan-300/24" />
 

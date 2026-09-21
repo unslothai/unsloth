@@ -13,7 +13,7 @@ export const TestTubeOutlineIcon = TestTube01Icon.slice(
 
 // HugeIcons' own message-circle, which this icon set does not ship: BubbleChatIcon is that same
 // round bubble with a second path drawing the three dots inside it, so the first path alone is it.
-// A chat row is one row of a list and reads better without the speckle. Original export untouched.
+// This is the glyph for a chat anywhere in the app. Original export untouched.
 export const MessageCircleIcon = BubbleChatIcon.slice(
   0,
   1,

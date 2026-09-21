@@ -1527,9 +1527,9 @@ export const es = {
           "Omite las solicitudes de aprobación. Úsalo solo en entornos de confianza.",
       },
       remote: {
-        title: "Conectar con un Unsloth Studio remoto",
+        title: "Conectar con un Unsloth remoto",
         description:
-          "Apunta unsloth start a un Unsloth Studio que se ejecuta en otro lugar definiendo estas variables antes de iniciar el agente (o pasa --api-key directamente):",
+          "Apunta unsloth start a un Unsloth que se ejecuta en otro lugar definiendo estas variables antes de iniciar el agente (o pasa --api-key directamente):",
       },
       passthrough: {
         title: "Pasar argumentos al agente",
@@ -1557,16 +1557,16 @@ export const es = {
       rememberParamsPerModelHint:
         "Al desactivarlo, todos los modelos usan los mismos ajustes.",
       autoCompactHint:
-        "Usa la longitud de contexto configurada, no la VRAM disponible.",
+        "Solo chats GGUF locales. Los turnos expulsados se indexan para que el modelo pueda recuperarlos, y un reinicio cita palabra por palabra las instrucciones permanentes que quepan, dando prioridad a las más antiguas y a las más recientes frente a las intermedias. Archivar requiere un chat guardado y el índice vectorial; sin ellos, los turnos antiguos se descartan. Usa la longitud de contexto configurada, no la VRAM disponible.",
       pastedTextShortDescription:
         "El texto pegado de {count} caracteres o más se convierte en un adjunto .txt. El texto más corto queda en el cuadro de mensaje.",
       pastedTextOffDescription:
         "Todo el texto pegado queda en el cuadro de mensaje, sin importar su longitud.",
       compactionDescriptionInherit: "Sigue la política de contexto del servidor.",
       compactionDescriptionCheckpoint:
-        "Conserva el último intercambio y las instrucciones permanentes.",
+        "Conserva el último intercambio y las instrucciones permanentes que quepan, y archiva el resto para poder consultarlo.",
       compactionDescriptionRolling:
-        "Elimina los turnos más antiguos para conservar el historial reciente y el espacio adicional seleccionado.",
+        "Archiva los turnos más antiguos para conservar el historial reciente y el espacio adicional seleccionado.",
       projectsSection: "Mostrar la sección Proyectos",
       projectsSectionDescription:
         "Agrupa los chats de proyecto bajo un encabezado Proyectos. Desactívalo para listarlos en Recientes.",
@@ -1613,22 +1613,22 @@ export const es = {
         "Restaura el último prompt, la temperatura y los demás ajustes usados con cada modelo.",
       autoCompact: "Compactar automáticamente chats largos",
       autoCompactDescription:
-        "Elimina los turnos antiguos cuando un chat GGUF local alcance su límite de contexto.",
+        "Los turnos antiguos pasan a un archivo consultable al llenarse el contexto de un chat.",
       compactionStyle: "Cuando se llena el contexto",
       compactionStyleDescription:
-        "Usar el valor del servidor conserva UNSLOTH_CONTEXT_POLICY. Restablecer la conversación mantiene el último turno y las instrucciones permanentes. Una ventana deslizante descarta los turnos más antiguos y puede conservar más historial reciente.",
+        "Usar el valor del servidor conserva UNSLOTH_CONTEXT_POLICY. Restablecer la conversación mantiene el último turno y las instrucciones permanentes que quepan. Una ventana deslizante descarta los turnos más antiguos y puede conservar más historial reciente.",
       compactionStyleInherit: "Usar valor del servidor",
       compactionStyleCheckpoint: "Restablecer conversación",
       compactionStyleRollingDefault:
-        "Descartar turnos antiguos (~25% de espacio extra)",
+        "Archivar turnos antiguos (~25% de espacio extra)",
       compactionStyleRolling10:
-        "Descartar turnos antiguos (~10% de espacio extra)",
+        "Archivar turnos antiguos (~10% de espacio extra)",
       compactionStyleRolling5:
-        "Descartar turnos antiguos (~5% de espacio extra)",
+        "Archivar turnos antiguos (~5% de espacio extra)",
       compactionStyleRollingNone:
-        "Descartar turnos antiguos (sin recorte adicional)",
+        "Archivar turnos antiguos (sin recorte adicional)",
       autoCompactKeywords:
-        "compactación compactar automáticamente contexto ventana truncar deslizante checkpoint margen compaction rolling headroom",
+        "compactación compactar automáticamente contexto ventana truncar deslizante checkpoint margen archivo recuperación búsqueda compaction rolling headroom archive retrieval rag",
       thinking: {
         collapseByDefault: "Contraer el razonamiento de forma predeterminada",
         collapseByDefaultDescription:

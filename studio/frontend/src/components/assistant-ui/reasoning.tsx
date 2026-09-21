@@ -68,6 +68,7 @@ import { ChevronDownIcon } from "lucide-react";
 import { Tick02Icon } from "@/lib/tick-icon";
 import { Copy01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
+import { IconActionButton } from "./icon-action-button";
 import {
   type CSSProperties,
   type ComponentProps,
@@ -517,19 +518,16 @@ function ReasoningCopyButton({
   }, [reasoningText]);
 
   return (
-    <button
-      type="button"
+    <IconActionButton
+      label={copied ? "Copied" : "Copy reasoning"}
       onClick={handleCopy}
-      className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-xs text-muted-foreground transition-colors hover:text-foreground hover:bg-muted"
-      aria-label="Copy reasoning"
     >
       {copied ? (
         <HugeiconsIcon icon={Tick02Icon} strokeWidth={2} className="size-3" />
       ) : (
         <HugeiconsIcon icon={Copy01Icon} className="size-3" />
       )}
-      {copied ? "Copied" : "Copy"}
-    </button>
+    </IconActionButton>
   );
 }
 

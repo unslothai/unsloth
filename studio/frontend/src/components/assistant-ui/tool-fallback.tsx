@@ -199,7 +199,9 @@ function ToolFallbackTrigger({
     <CollapsibleTrigger
       data-slot="tool-fallback-trigger"
       className={cn(
-        "aui-tool-fallback-trigger group/trigger flex w-full cursor-pointer items-center gap-2 text-sm transition-colors",
+        // Brightens on hover like the Thinking trigger. The icon inherits this; the label
+        // sets its own colour and picks it up through the group below.
+        "aui-tool-fallback-trigger group/trigger flex w-full cursor-pointer items-center gap-2 text-sm transition-colors hover:text-foreground",
         className,
       )}
       {...props}
@@ -226,8 +228,11 @@ function ToolFallbackTrigger({
       <span
         data-slot="tool-fallback-trigger-label"
         className={cn(
-          "aui-tool-fallback-trigger-label-wrapper relative min-w-0 text-left leading-none text-muted-foreground",
-          isCancelled && "text-muted-foreground line-through",
+          "aui-tool-fallback-trigger-label-wrapper relative min-w-0 text-left leading-none text-muted-foreground transition-colors",
+          // A cancelled row stays muted: the strikethrough is the point, not the name.
+          isCancelled
+            ? "text-muted-foreground line-through"
+            : "group-hover/trigger:text-foreground",
         )}
       >
         <span
