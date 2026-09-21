@@ -39,10 +39,32 @@ def hf_env_offline() -> bool:
     return False
 
 
-def anonymous_and_offline(hf_token) -> bool:
-    """The one condition under which a Hub-reaching request can only be answered by disk. ``token=False`` denies authentication, not the cache: offline, huggingface_hub and datasets both resolve a previously downloaded private repo without ever authorizing, and a caller holding the anonymous sentinel has no network to establish access over, so every downstream read is a disk read it never earned. Guarding this at the route entry rather than at each call site is deliberate: the per-site version was fixed six times (the snapshot walk, the config probes, the embedding marker, the GGUF listing, the preview slices, AutoConfig) and each fix only moved the boundary to the next reader, so this states the rule once, before any of them run."""
-    from hub.utils.hf_tokens import is_anonymous
-    return is_anonymous(hf_token) and hf_env_offline()
+def anonymous_and_offline(hf_token, *, repo_id: Optional[str] = None) -> bool:
+    """The one condition under which a Hub-reaching request can only be answered by disk.
+
+    ``token=False`` denies authentication, not the cache: offline, huggingface_hub and datasets
+    both resolve a previously downloaded private repo without ever authorizing. Guarded at the
+    route entry, since each per-call-site fix only moved the boundary to the next reader. Given
+    a repo id the shared cached-read rule applies rather than a blanket refusal: a PUBLIC repo
+    was always readable, and one not on the disk has nothing to leak.
+    """
+    from hub.utils.hf_tokens import cached_read_refused, is_anonymous
+
+    if not is_anonymous(hf_token):
+        return False
+    if not hf_env_offline():
+        # The per-reader gates answer the online question; this guard is the offline one.
+        return False
+    if repo_id is None:
+        return True
+    # is_cached is True because these routes read whatever the cache holds; only authorization
+    # is left, and offline that resolves against the disk.
+    return cached_read_refused(
+        hf_token,
+        repo_id = repo_id,
+        is_cached = lambda: True,
+        offline = True,
+    )
 
 
 def canonical_model_repo_id(model_name: str) -> str:

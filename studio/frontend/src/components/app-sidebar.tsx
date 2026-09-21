@@ -29,7 +29,6 @@ import {
 } from "@/components/ui/context-menu";
 import {
   DropdownMenu,
-  DropdownMenuCheckboxItem,
   DropdownMenuContent,
   DropdownMenuGroup,
   DropdownMenuItem,
@@ -86,7 +85,6 @@ import {
   Delete02Icon,
   Download01Icon,
   DragDropVerticalIcon,
-  DownloadSquare01Icon,
   Edit03Icon,
   FolderAddIcon,
   FolderAttachmentIcon,
@@ -99,7 +97,6 @@ import {
   HelpCircleIcon,
   Image03Icon,
   Logout05Icon,
-  Message01Icon,
   MoreHorizontalIcon,
   MoreVerticalIcon,
   PaintBrush02Icon,
@@ -281,7 +278,7 @@ const SETTINGS_TAB_MENU_ITEMS: Record<
   profile: { icon: UserCircleIcon, labelKey: "settings.tabs.profile" },
   appearance: { icon: PaintBrush02Icon, labelKey: "settings.tabs.appearance" },
   resources: { icon: CpuIcon, labelKey: "settings.tabs.resources" },
-  chat: { icon: Message01Icon, labelKey: "settings.tabs.chat" },
+  chat: { icon: MessageCircleIcon, labelKey: "settings.tabs.chat" },
   connections: { icon: CloudIcon, labelKey: "settings.tabs.connections" },
 };
 
@@ -318,9 +315,6 @@ const PROJECT_CHAT_LIMIT = 4;
 const SIDEBAR_PROJECT_LIMIT = 5;
 
 // The shared radio item ticks on the right; these read as settings, so tick first.
-// Check on the left, like the radio dot, so both kinds of item line up.
-const menuCheckItemClass =
-  "pl-9 pr-3 [&>[data-slot=dropdown-menu-checkbox-item-indicator]]:right-auto [&>[data-slot=dropdown-menu-checkbox-item-indicator]]:left-3";
 const menuRadioItemClass =
   "pl-9 pr-3 [&>[data-slot=dropdown-menu-radio-item-indicator]]:right-auto [&>[data-slot=dropdown-menu-radio-item-indicator]]:left-3";
 
@@ -1896,19 +1890,7 @@ export function AppSidebar() {
   }
 
   // Drag-and-drop. lib/sidebar-drag.ts plans each drop; the hook paints the plan and hands it
-  // back on drop. Each preference is a way the gesture can get in the way.
-  const dragHints = useSidebarOrganizationStore((s) => s.dragHints);
-  const reorderSwitchesSort = useSidebarOrganizationStore(
-    (s) => s.reorderSwitchesSort,
-  );
-  const dragOpensFolders = useSidebarOrganizationStore((s) => s.dragOpensFolders);
-  const setDragHints = useSidebarOrganizationStore((s) => s.setDragHints);
-  const setReorderSwitchesSort = useSidebarOrganizationStore(
-    (s) => s.setReorderSwitchesSort,
-  );
-  const setDragOpensFolders = useSidebarOrganizationStore(
-    (s) => s.setDragOpensFolders,
-  );
+  // back on drop.
   // Read at event time, so a plan sees the lists as drawn.
   const dropContext = useCallback(
     (): SidebarDropContext => ({
@@ -1923,7 +1905,6 @@ export function AppSidebar() {
         recents: recentRowIds,
         projectChats: (projectId) => projectChatRowIds.get(projectId) ?? [],
       },
-      reorderSwitchesSort,
     }),
     [
       organizeBy,
@@ -1935,7 +1916,6 @@ export function AppSidebar() {
       projectRowIds,
       recentRowIds,
       projectChatRowIds,
-      reorderSwitchesSort,
     ],
   );
   const dropHintRef = useRef<HTMLDivElement | null>(null);
@@ -1949,7 +1929,6 @@ export function AppSidebar() {
   const coarsePointer = useIsCoarsePointer();
   const dnd = useSidebarDrag({
     context: dropContext,
-    springOpen: dragOpensFolders,
     hintRef: dropHintRef,
     // A closed folder or section the pointer rests on opens.
     onSpringOpen: (zone) => {
@@ -2041,7 +2020,6 @@ export function AppSidebar() {
     const next = moveIdBy(orderedIds, item.id, delta);
     if (next === orderedIds) return;
     const resorts = sort !== undefined && sort.value !== "manual";
-    if (resorts && !reorderSwitchesSort) return;
     setManualOrder(item.scope, next);
     if (resorts) {
       sort.set("manual");
@@ -2115,7 +2093,7 @@ export function AppSidebar() {
       case "move": {
         const projectId = plan.action.projectId;
         if (projectId === null) {
-          return { icon: Message01Icon, text: t("shell.drag.moveToRecents") };
+          return { icon: MessageCircleIcon, text: t("shell.drag.moveToRecents") };
         }
         const name = projects.find((project) => project.id === projectId)?.name ?? "";
         return { icon: Folder01Icon, text: t("shell.drag.moveTo", { name }) };
@@ -2127,7 +2105,7 @@ export function AppSidebar() {
    *  between answers rather than unmounted. No inline style: a re-render would write it back
    *  over the transform the pointer set. */
   const dropHintPortal =
-    draggingRow && dragHints && typeof document !== "undefined"
+    draggingRow && typeof document !== "undefined"
       ? createPortal(
           <div
             ref={dropHintRef}
@@ -2398,7 +2376,7 @@ export function AppSidebar() {
       },
     },
     export: {
-      icon: DownloadSquare01Icon,
+      icon: Download01Icon,
       label: t("shell.navigation.export"),
       active: pathname === "/export" || pathname.startsWith("/export/"),
       spinner: exportInProgress,
@@ -3187,25 +3165,6 @@ export function AppSidebar() {
 
   // The "..." every list header carries. Only chat lists regroup, so that half
   // is opt-in; Pinned takes the sort half alone.
-  // The drag-and-drop preferences, as the Organize menus list them.
-  const DRAG_OPTIONS: Array<{
-    key: TranslationKey;
-    get: () => boolean;
-    set: (value: boolean) => void;
-  }> = [
-    { key: "shell.organize.dragHints", get: () => dragHints, set: setDragHints },
-    {
-      key: "shell.organize.reorderSwitchesSort",
-      get: () => reorderSwitchesSort,
-      set: setReorderSwitchesSort,
-    },
-    {
-      key: "shell.organize.dragOpensFolders",
-      get: () => dragOpensFolders,
-      set: setDragOpensFolders,
-    },
-  ];
-
   function renderSidebarHeaderMenu(options: {
     ariaLabel: string;
     sortLabel: string;
@@ -3218,8 +3177,7 @@ export function AppSidebar() {
         side="bottom"
         align="end"
         sideOffset={2}
-        // Wide enough for the drag-and-drop items to fit on one line.
-        className="unsloth-plus-menu w-64"
+        className="unsloth-plus-menu w-56"
         trigger={(triggerRef) => (
           <button
             ref={triggerRef}
@@ -3276,22 +3234,6 @@ export function AppSidebar() {
             </DropdownMenuRadioItem>
           ))}
         </DropdownMenuRadioGroup>
-        {options.includeOrganize && (
-          <>
-            <DropdownMenuSeparator />
-            <DropdownMenuLabel>{t("shell.organize.dragDrop")}</DropdownMenuLabel>
-            {DRAG_OPTIONS.map((option) => (
-              <DropdownMenuCheckboxItem
-                key={option.key}
-                checked={option.get()}
-                onCheckedChange={(checked) => option.set(checked === true)}
-                className={menuCheckItemClass}
-              >
-                {t(option.key)}
-              </DropdownMenuCheckboxItem>
-            ))}
-          </>
-        )}
       </NonModalDropdownMenu>
     );
   }
@@ -3437,6 +3379,9 @@ export function AppSidebar() {
       // A spinner glyph cannot truncate, and the pin and the kebab overlay that same edge, so a
       // working row holds their room open whether or not it is hovered.
       showWorkSpinner ? "pr-16" : hasUnreadActivity ? "pr-7" : undefined,
+      // Coarse pointers reveal the actions permanently, so the spinner drops back beside
+      // them (right-16, ending 78px in) and the title has to clear that, not just pr-16.
+      showWorkSpinner && "[@media(pointer:coarse)]:pr-[78px]",
       variant === "project"
         ? showWorkSpinner
           ? undefined
@@ -3543,7 +3488,23 @@ export function AppSidebar() {
               <span className="truncate">
                 {pendingRename?.id === item.id ? pendingRename.title : item.title}
               </span>
-              {showWorkSpinner && (
+            </SidebarMenuButton>
+            {showWorkSpinner ? (
+              // Anchored to the row, not laid out in it. As ml-auto the spinner rested on
+              // the button's padding-right, and a working row swaps pr-4 for pr-16 to hold
+              // room for the pin and kebab, pushing it 64px in. right-4 is the 16px trailing
+              // column the nav spinner keeps. Fades on hover like the unread dot below.
+              <span
+                className={cn(
+                  "pointer-events-none absolute right-4 top-1/2 z-10 -translate-y-1/2 transition-opacity",
+                  // Touch reveals the pin and kebab for good, so there is nothing to fade
+                  // behind: sit left of them instead, where this used to be.
+                  "[@media(pointer:coarse)]:right-16",
+                  variant === "project"
+                    ? "group-hover/project-chat-item:opacity-0 group-has-[.sidebar-row-action[data-state=open]]/project-chat-item:opacity-0 group-has-[.sidebar-row-action:focus-visible]/project-chat-item:opacity-0"
+                    : "group-hover/recent-item:opacity-0 group-has-[.sidebar-row-action[data-state=open]]/recent-item:opacity-0 group-has-[.sidebar-row-action:focus-visible]/recent-item:opacity-0",
+                )}
+              >
                 <Spinner
                   data-testid="chat-row-spinner"
                   // role="status" + label: announced, not motion-only.
@@ -3552,10 +3513,10 @@ export function AppSidebar() {
                       ? translate("shell.navigation.chatGenerating")
                       : "Queued"
                   }
-                  className="ml-auto size-3.5 shrink-0 text-muted-foreground"
+                  className="size-3.5 shrink-0 text-muted-foreground"
                 />
-              )}
-            </SidebarMenuButton>
+              </span>
+            ) : null}
             {hasUnreadActivity ? (
               <span
                 className={cn(

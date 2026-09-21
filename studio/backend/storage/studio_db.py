@@ -4485,6 +4485,9 @@ def upsert_app_setting_map_entry(
     *,
     fill_absent_fields: bool = False,
     coupled_fields: tuple[tuple[str, ...], ...] = (),
+    keep_first_writer: bool = False,
+    ambiguous_field: str | None = None,
+    delete_if_entry_equals: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Set (or delete, when entry_value is falsy) one sub-entry of a dict-valued app setting,
     atomically under BEGIN IMMEDIATE so concurrent writers to other sub-entries cannot drop each
@@ -4498,7 +4501,18 @@ def upsert_app_setting_map_entry(
     filling would take a qualifier from this browser and leave the value it qualifies as the server
     wrote it: a stored ``gpu_ids`` in one index space, relabelled with the other space's
     ``gpu_index_kind``, points at a different GPU while looking stored. A group any part of which is
-    held is skipped whole."""
+    held is skipped whole.
+
+    ``keep_first_writer`` leaves an entry that already exists as it is, and with
+    ``ambiguous_field`` also collapses that one field to None when the stored value differs from
+    the incoming one. The comparison happens inside this transaction on purpose: a caller that
+    read the map first and decided outside it loses the race it is there to detect, since two
+    writers can both read "absent" and then each write its own value, and the last one wins with
+    an attribution that is no longer true.
+
+    ``delete_if_entry_equals`` removes the entry only when it is still exactly the one the
+    caller wrote, which is how a writer takes back a record for a call that then failed without
+    taking back a later writer's."""
     conn = get_connection()
     try:
         conn.execute("BEGIN IMMEDIATE")
@@ -4524,9 +4538,23 @@ def upsert_app_setting_map_entry(
                 current[entry_key] = merged
             else:
                 current[entry_key] = entry_value
+        elif keep_first_writer and entry_value and entry_key in current:
+            stored = current[entry_key]
+            if not isinstance(stored, dict) or ambiguous_field is None:
+                conn.rollback()
+                return current
+            if stored.get(ambiguous_field) in (None, entry_value.get(ambiguous_field)):
+                conn.rollback()
+                return current
+            current[entry_key] = {**stored, ambiguous_field: None}
         elif entry_value:
             current[entry_key] = entry_value
         else:
+            if delete_if_entry_equals is not None and (
+                current.get(entry_key) != delete_if_entry_equals
+            ):
+                conn.rollback()
+                return current
             current.pop(entry_key, None)
         now = datetime.now(timezone.utc).isoformat()
         conn.execute(

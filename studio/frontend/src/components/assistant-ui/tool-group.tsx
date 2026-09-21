@@ -162,7 +162,9 @@ function ToolGroupTrigger({
     <CollapsibleTrigger
       data-slot="tool-group-trigger"
       className={cn(
-        "aui-tool-group-trigger group/trigger flex w-full cursor-pointer items-center gap-2 text-sm transition-colors",
+        // Muted like the tool rows it summarises, so only the answer is at full foreground,
+        // and it brightens on hover like the Thinking trigger above it.
+        "aui-tool-group-trigger group/trigger flex w-full cursor-pointer items-center gap-2 text-muted-foreground text-sm transition-colors hover:text-foreground",
         "group-data-[variant=outline]/tool-group-root:px-4",
         "group-data-[variant=muted]/tool-group-root:px-4",
         "group-data-[variant=ghost]/tool-group-root:px-0",
@@ -176,7 +178,7 @@ function ToolGroupTrigger({
         <HugeiconsIcon
           icon={Wrench01Icon}
           data-slot="tool-group-trigger-wrench"
-          className="size-4 shrink-0 text-muted-foreground"
+          className="size-4 shrink-0 text-muted-foreground transition-colors group-hover/trigger:text-foreground"
           strokeWidth={2}
         />
       )}
@@ -362,7 +364,7 @@ const ToolGroupImpl: FC<
         <div
           data-slot="reasoning-end-rule"
           aria-hidden={true}
-          className={cn("mt-4 border-border/60 border-t", !roundOpen && "hidden")}
+          className={cn("mt-4 border-border border-t", !roundOpen && "hidden")}
         />
       )}
     </div>

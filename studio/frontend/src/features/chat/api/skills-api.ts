@@ -77,7 +77,7 @@ export function listSkills(force = false): Promise<readonly SkillRecord[]> {
     .then((response) => parseResponse<SkillRecord[]>(response))
     .then((skills) => {
       if (!Array.isArray(skills)) {
-        throw new Error("Could not load Agent Skills.");
+        throw new Error("Could not load skills.");
       }
       return skills;
     })
@@ -98,7 +98,7 @@ export function listSkills(force = false): Promise<readonly SkillRecord[]> {
           error:
             error instanceof Error
               ? error.message
-              : "Could not load Agent Skills.",
+              : "Could not load skills.",
         });
       }
       throw error;

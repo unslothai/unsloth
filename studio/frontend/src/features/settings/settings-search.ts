@@ -110,7 +110,6 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "settings.chat.projectAttachments",
     "settings.chat.rememberParamsPerModel",
     "settings.chat.autoCompact",
-    "settings.chat.compactionStyle",
     "settings.profile.greetingSloth",
     "settings.chat.thinking.collapseByDefault",
     "settings.chat.tools.collapseByDefault",
@@ -315,5 +314,4 @@ export const SETTINGS_SEARCH_KEYWORDS: Partial<
   "settings.resources.modelMemory.noRamReserve":
     "settings.resources.modelMemory.modelMemoryKeywords",
   "settings.chat.autoCompact": "settings.chat.autoCompactKeywords",
-  "settings.chat.compactionStyle": "settings.chat.autoCompactKeywords",
 };

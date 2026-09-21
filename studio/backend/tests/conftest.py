@@ -1116,6 +1116,26 @@ def _process_shutdown_latch_is_clear():
 
 
 @pytest.fixture(autouse = True)
+def _no_leaked_inventory_handles():
+    """Start every test with an empty per-request handle table.
+
+    The ContextVar a REQUEST owns is never reset between tests, so one test that resolves a
+    handle leaves the table populated for every test after it in the same worker, and a route
+    that answers a response MODEL then answers a restored dict instead.
+    """
+    try:
+        from hub.utils import host_paths
+    except Exception:  # optional deps absent on some CI legs
+        yield
+        return
+    token = host_paths._request_handles.set(None)
+    try:
+        yield
+    finally:
+        host_paths._request_handles.reset(token)
+
+
+@pytest.fixture(autouse = True)
 def _drop_the_settings_memo_between_tests():
     """Stop one test's app settings answering another test's read.
 

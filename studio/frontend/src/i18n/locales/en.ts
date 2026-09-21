@@ -225,10 +225,6 @@ export const en = {
       organizeChats: "Organize chats",
       organizeProjects: "Organize projects",
       sortPinnedChats: "Sort pinned chats",
-      dragDrop: "Drag and drop",
-      dragHints: "Show a hint while dragging",
-      reorderSwitchesSort: "Reordering sets Manual order",
-      dragOpensFolders: "Open folders while hovering",
       moveUp: "Move up",
       moveDown: "Move down",
     },
@@ -1498,9 +1494,9 @@ export const en = {
         yolo: "Skip approval prompts. Use only in trusted environments.",
       },
       remote: {
-        title: "Connect to a remote Unsloth Studio",
+        title: "Connect to a remote Unsloth",
         description:
-          "Point unsloth start at an Unsloth Studio running elsewhere by setting these before launching (or pass --api-key directly):",
+          "Point unsloth start at an Unsloth instance running elsewhere by setting these before launching (or pass --api-key directly):",
       },
       passthrough: {
         title: "Passing agent arguments",
@@ -1527,15 +1523,10 @@ export const en = {
         "Override this setting from each chat's attachment menu.",
       rememberParamsPerModelHint:
         "When off, use the same settings for every model.",
-      autoCompactHint: "Uses the context length you set, not available VRAM.",
+      autoCompactHint: "Local GGUF chats only. Evicted turns are indexed so the model can search them back in, and a reset quotes back the standing instructions that fit, word for word, keeping the oldest and newest over the middle. Archiving needs a saved chat and the vector index; without them older turns are dropped. Uses the context length you set, not available VRAM.",
       pastedTextShortDescription:
         "Pastes of {count} characters or more become .txt attachments.",
       pastedTextOffDescription: "Pasted text always stays in the message box.",
-      compactionDescriptionInherit: "Follow the server's context policy.",
-      compactionDescriptionCheckpoint:
-        "Keep the latest turn and standing instructions.",
-      compactionDescriptionRolling:
-        "Drop the oldest turns to keep recent history and the selected amount of extra room.",
       projectsSection: "Show projects section",
       projectsSectionDescription:
         "Group project chats under Projects. When off, show them in Recents.",
@@ -1557,9 +1548,9 @@ export const en = {
         title: "Chat menu",
         description:
           "Pin items to chat's + side menu. Others move into “More”.",
-        chatWithFiles: "Chat with Files (RAG)",
+        chatWithFiles: "Chat with files (RAG)",
         mcp: "MCP",
-        skills: "Agent Skills",
+        skills: "Skills",
         savedPrompts: "Saved prompts",
         compareChat: "Compare chat",
         exportChat: "Export chat",
@@ -1581,18 +1572,9 @@ export const en = {
         "Restore each model's last-used prompt, temperature, and other settings.",
       autoCompact: "Auto-compact long chats",
       autoCompactDescription:
-        "Remove older turns when a local GGUF chat reaches its context limit.",
-      compactionStyle: "When context fills",
-      compactionStyleDescription:
-        "Use server default keeps UNSLOTH_CONTEXT_POLICY. Reset conversation keeps the latest turn and standing instructions. A sliding window drops oldest turns and can keep more recent history.",
-      compactionStyleInherit: "Use server default",
-      compactionStyleCheckpoint: "Reset conversation",
-      compactionStyleRollingDefault: "Drop oldest turns (~25% extra room)",
-      compactionStyleRolling10: "Drop oldest turns (~10% extra room)",
-      compactionStyleRolling5: "Drop oldest turns (~5% extra room)",
-      compactionStyleRollingNone: "Drop oldest turns (no extra trim)",
+        "Older turns move to a searchable archive when a chat fills its context.",
       autoCompactKeywords:
-        "compaction compact auto-compact context window truncate rolling checkpoint headroom",
+        "compaction compact auto-compact context window truncate rolling checkpoint headroom archive retrieval recall rag search",
       thinking: {
         collapseByDefault: "Collapse Thinking by default",
         collapseByDefaultDescription:
@@ -2705,11 +2687,11 @@ export const en = {
     tooLarge: "Larger than VRAM, will offload to CPU. A smaller quantization runs faster",
   },
   skills: {
-    title: "Agent Skills",
+    title: "Skills",
     description: "Skills are discovered from your standard agent folders. Enable them here, then type @ in chat to mention one.",
     precedence: "~/.agents/skills takes precedence over ~/.claude/skills.",
     refresh: "Refresh",
-    empty: "No Agent Skills found. Add a SKILL.md folder under ~/.agents/skills or ~/.claude/skills, then refresh.",
+    empty: "No skills found. Add a SKILL.md folder under ~/.agents/skills or ~/.claude/skills, then refresh.",
     sourceAgents: "Agents",
     sourceClaude: "Claude",
     sourceBundled: "Bundled",
@@ -2719,7 +2701,7 @@ export const en = {
     shadowedBy: "Another {source} skill with this name takes precedence.",
     enable: "Enable {name}",
     disable: "Disable {name}",
-    updateError: "Could not update Agent Skill",
-    mentions: "Agent Skills",
+    updateError: "Could not update skill",
+    mentions: "Skills",
   },
 } as const;
