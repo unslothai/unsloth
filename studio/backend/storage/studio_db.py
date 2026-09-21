@@ -3853,12 +3853,9 @@ def _delete_chat_project(id: str, delete_files: bool = False) -> Optional[dict]:
                 False,
                 root_path,
                 session_id,
-                # The row's identity, not a fresh stat. Statting here records
-                # whatever is at the pathname NOW, so a folder swapped before the
-                # delete is written down as the one that was chosen, and a folder
-                # that has gone records no identity at all and lets any later
-                # directory at that name be served. Only external workspaces carry
-                # one; a managed sandbox keeps the stat it always had.
+                # The row's identity, never a stat taken now: that records whatever sits
+                # at the pathname at delete time, so a swapped folder is written down as
+                # the chosen one. External workspaces only.
                 identity = (
                     _project_workspace_identity(project)
                     if project.get("workspaceKind") == "external"

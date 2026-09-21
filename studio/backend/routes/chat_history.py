@@ -1380,10 +1380,9 @@ async def delete_project(
             False,
             None,
             shared,
-            # The identity the row already verified, rather than a stat taken now:
-            # the folder may have been replaced or unplugged since it was chosen,
-            # and recording either of those is how the old session ends up serving
-            # a directory the user never selected.
+            # The identity the row verified, not a stat taken now: the folder may have
+            # been replaced or unplugged since, and recording that is how the old session
+            # ends up serving a directory the user never chose.
             _project_workspace_identity(project),
         )
         ownership = await run_in_threadpool(
@@ -1413,10 +1412,9 @@ async def delete_project(
                 record_orphaned_project_if_unowned,
                 project_id,
                 managed_sandbox_path,
-                # Pending records what the user ASKED for. The reference only delays
-                # it: `collect_orphaned_project_workspaces` skips a referenced session
-                # on its own, so recording this as kept would leave the directory on
-                # disk for ever once the fork that held it is gone.
+                # Pending records what the user ASKED for; the reference only delays it.
+                # `collect_orphaned_project_workspaces` skips referenced sessions itself,
+                # so recording this as kept would strand the directory for ever.
                 delete_files,
                 managed_root_path,
                 cleanup_session,

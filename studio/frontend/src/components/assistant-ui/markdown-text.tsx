@@ -862,11 +862,10 @@ function MarkdownTextRenderer({
   const activeThreadId = useChatRuntimeStore((state) => state.activeThreadId);
   const projectId = useChatProjectScope();
   const threadId = remoteId ?? activeThreadId ?? undefined;
-  // Changing a project's folder rotates its workspace session. This rewrite runs
-  // BEFORE MarkdownImage, so without the rotated id a bare `plot.png` is rewritten
-  // to the `project-<id>` fallback, which the component then reads as a session the
-  // src chose for itself and leaves alone: every bare image 410s after the first
-  // change. It is part of the scope, so it is part of the key and the deps too.
+  // This rewrite runs BEFORE MarkdownImage: without the rotated session a bare
+  // `plot.png` becomes the `project-<id>` fallback, which the component then reads as
+  // the src's own choice and leaves alone, so every bare image 410s after a folder
+  // change. Part of the scope, so part of the key and the deps.
   const { project: scopedProject } = useScopedChatProject(projectId);
   const workspaceSessionId = scopedProject?.workspaceSessionId ?? undefined;
   // Streamdown's memo comparator ignores rehypePlugins.

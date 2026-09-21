@@ -6845,11 +6845,9 @@ def test_external_adoption_waits_for_a_deleted_projects_active_session(tmp_path,
     )
     assert adopted["workspacePath"] == str(Path(old_project["rootPath"]).resolve())
     assert tools.list_orphaned_projects() == []
-    # The invariant is that the old session never serves the folder the new project
-    # now owns. It no longer resolves elsewhere either: handing a project session to
-    # standalone resolution answered file requests out of an unrelated sandbox and
-    # let the next tool call create and write there, so a project incarnation whose
-    # workspace cannot be found refuses instead.
+    # The invariant is that the old session never serves the folder the new project now
+    # owns. It no longer resolves elsewhere either: a project incarnation whose workspace
+    # cannot be found refuses, rather than landing in an unrelated sandbox.
     with pytest.raises(tools.ProjectWorkspaceSessionUnavailableError):
         tools.resolve_sandbox_workdir(old_project["workspaceSessionId"])
 

@@ -9800,10 +9800,9 @@ def adopt_orphaned_workspace_when_idle(workspace: str, update):
             for _, record in matches
         ]
         keys = {_session_key(session) for session in sessions}
-        # A kept record is kept BECAUSE something still points at it. Dropping it to
-        # adopt the folder into another project leaves a surviving fork's file cards
-        # answering 410 while the files sit on disk, so being referenced counts as
-        # busy here exactly as it does in the stale-record collector.
+        # A kept record is kept BECAUSE something points at it: dropping it to adopt the
+        # folder leaves a fork's cards at 410 with the files still there. Referenced counts
+        # as busy, as it already does in the stale-record collector below.
         from storage.studio_db import sandbox_is_referenced_elsewhere
 
         try:
@@ -10251,12 +10250,9 @@ def _get_project_workdir_info(session_id: str) -> "tuple[str, bool] | None":
             return orphaned, False
         if session_id.startswith("project-workspace-"):
             raise ProjectWorkspaceSessionUnavailableError("Project workspace changed")
-        # A first incarnation is still called `project-<id>`, so the rotated spelling is
-        # not the only one that has to refuse: falling through hands a project session to
-        # standalone resolution, where file requests answer out of a different sandbox and
-        # the next tool call creates and writes in it. Only for an id this install really
-        # used as a project, though. A chat is free to call itself `project-anything`, and
-        # that one must still resolve and still be cleaned up.
+        # A first incarnation is `project-<id>` too, and falling through resolves it as a
+        # standalone session: a different sandbox to read from and to write in. Keyed on the
+        # incarnation table, so a chat calling itself `project-anything` still resolves.
         from storage.studio_db import project_workspace_incarnation_exists
 
         if project_workspace_incarnation_exists(project_id):
@@ -11484,11 +11480,9 @@ def update_project_workspace_when_idle(project_id: str, update):
         ):
             return False, None
         _removing_sessions.update(locked_keys)
-    # Asked again now the fence is held. The check above is a read of state another
-    # tab can change a moment later, and a generation that registered in that gap
-    # captured the session this is about to rotate. Registration does not take this
-    # fence, so one starting DURING `update()` is still not covered; closing that
-    # needs generation registration to participate in the project fence itself.
+    # Re-asked under the fence, since the check above is a read another tab can
+    # invalidate. One registering DURING `update()` is still uncovered: that needs
+    # registration to take this fence.
     if _project_generation_in_flight(project_id):
         with _sessions_free:
             _removing_sessions.difference_update(locked_keys)
