@@ -1531,16 +1531,24 @@ from utils.host_policy import cors_origins_for_mode  # noqa: E402
 
 
 class RemoteAccessCORSMiddleware(CORSMiddleware):
-    """Allow remote browser origins only while a Cloudflare URL is published."""
+    """Admit the published Cloudflare origin, on top of the startup allowlist."""
 
     def __init__(self, cors_app, *, remote_access_state, **kwargs):
         self.remote_access_state = remote_access_state
         super().__init__(cors_app, **kwargs)
 
     def is_allowed_origin(self, origin: str) -> bool:
-        return bool(
-            getattr(self.remote_access_state, "cloudflare_url", None)
-        ) or super().is_allowed_origin(origin)
+        # The tunnel is the source of the ONE origin that needs admitting, not a switch that admits
+        # every origin: plain api-only is locked to the Tauri app (run.py), and turning on Settings >
+        # Remote access must not hand that lock to any page the user has open. The UI served over the
+        # tunnel calls the API on relative URLs, so it is same-origin and needs no widening at all;
+        # this covers a browser that does reach it cross-origin from the tunnel's own document.
+        published = getattr(self.remote_access_state, "cloudflare_url", None)
+        if published:
+            tunnel_origin = _origin_of(published)
+            if tunnel_origin is not None and tunnel_origin == _origin_of(origin):
+                return True
+        return super().is_allowed_origin(origin)
 
 
 _cors_origins = cors_origins_for_mode(
@@ -2527,6 +2535,17 @@ def _canonical_origin(scheme: str, netloc: str) -> Optional[tuple[str, str, int]
     else:
         port = _DEFAULT_PORTS.get(scheme, 0)
     return (scheme, host, port)
+
+
+def _origin_of(url: Optional[str]) -> Optional[tuple[str, str, int]]:
+    """Canonical origin of a URL or of an Origin header value, or ``None`` when it is neither."""
+    if not url:
+        return None
+    try:
+        parsed = urlparse(url)
+    except ValueError:
+        return None
+    return _canonical_origin(parsed.scheme, parsed.netloc)
 
 
 def _is_loopback_ip(host: Optional[str]) -> bool:
