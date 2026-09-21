@@ -901,9 +901,36 @@ def _resolve_classes(source: str, expression: str, variant: str) -> str | None:
     return None
 
 
+def _className_from_spread(tag: str) -> bool:
+    """True when a top-level JSX spread could be supplying or replacing `className`.
+
+    A spread's contents are not resolvable here, and both ways it can matter are silent. With
+    no explicit `className`, a spread may be the only thing supplying one, and this reader
+    returned "" for that tag so `_labelled_actions` skipped the action entirely: a pin handed
+    `{...{ className: "sidebar-row-action sidebar-touch-reveal right-40" }}` left the reach
+    calculation altogether while the shared options button kept every later assertion
+    satisfied. With an explicit `className`, only a spread written AFTER it can override, since
+    JSX applies attributes left to right and the last write wins.
+    """
+    spreads, depth = [], 0
+    for index, char in enumerate(tag):
+        if char == "{":
+            if depth == 0 and re.match(r"\{\s*\.\.\.", tag[index:]):
+                spreads.append(index)
+            depth += 1
+        elif char == "}":
+            depth -= 1
+    if not spreads:
+        return False
+    explicit = re.search(r"(?:^|[\s{])className=", tag)
+    return explicit is None or max(spreads) > explicit.start()
+
+
 def _button_classes(source: str, tag: str, variant: str) -> str | None:
     """The classes a `<button>` tag ends up with for `variant`, or None if unreadable."""
-    match = re.search(r"className=(\{.*?\}|\"[^\"]*\")", tag, re.S)
+    if _className_from_spread(tag):
+        return None
+    match = re.search(r"(?:^|[\s{])className=(\{.*?\}|\"[^\"]*\")", tag, re.S)
     if not match:
         return ""
     value = match.group(1).strip()
@@ -966,6 +993,30 @@ def _row_action_paddings(live_css: str) -> dict[str, float | None]:
     return paddings
 
 
+def _base_row_action_offset(live_css: str) -> float | None:
+    """The right edge `.sidebar-row-action` itself sets, in units, or None if unreadable.
+
+    A modifier that states no `right` leaves the base rule's in force, and this reader used to
+    call that zero without ever looking. It is `right-0` today, so the answer was right by
+    luck: change the base to `right-8` and every action slides eight units into the title while
+    the floors, all measured from an assumed zero, do not move at all and the contract stays
+    green. Read it, and refuse a spelling this cannot.
+    """
+    rule = re.search(r"\.sidebar-row-action\s*\{([^}]*)\}", live_css)
+    if not rule:
+        return None
+    body = rule.group(1)
+    applied = re.search(r"@apply[^;]*(?<![\w-])right-(\d+(?:\.\d+)?)(?![\w.-])", body)
+    if applied:
+        return float(applied.group(1))
+    stated = re.search(r"\bright:\s*([\d.]+)rem\s*;", body)
+    if stated:
+        return float(stated.group(1)) / _SPACING_REM
+    if re.search(r"(?<![\w-])right-0(?![\w.-])", body) or re.search(r"\bright:\s*0", body):
+        return 0.0
+    return None
+
+
 def _row_action_offsets(live_css: str) -> dict[str, float | None]:
     """Each `.sidebar-row-action.is-*` modifier the stylesheet defines, and the right edge it
     sets, in Tailwind spacing units.
@@ -996,6 +1047,7 @@ def _labelled_actions(
     offsets: dict[str, float | None],
     paddings: dict[str, float | None],
     base_padding: float,
+    base_offset: float,
 ) -> dict[int, tuple[str, float]]:
     """The row actions one variant renders: label -> whether it is the offset one.
 
@@ -1104,7 +1156,9 @@ def _labelled_actions(
             f"this guard does not adjudicate it: state the padding on one modifier"
         )
         padding = paddings[stated[0]] if stated else base_padding
-        shift = max((offsets[token] or 0.0 for token in modifiers), default = 0.0)
+        # A modifier that states no edge leaves the base rule's in force, so that is the
+        # fallback, not zero.
+        shift = max((offsets[token] or 0.0 for token in modifiers), default = base_offset)
         found[at] = (name, shift + padding)
     # Both rows carry an action that no `variant === "..."` gate guards, and every assertion
     # below is written about a row that has one. Without this the per-variant pins alone keep
@@ -1554,10 +1608,22 @@ def test_chat_sidebar_row_actions_visible_on_coarse_pointers():
     # product question - widen both gutters, or shrink the pad - not one to settle by moving a
     # contract test's floor, which would fail the shipped recents row over a defect #7276 never
     # claimed. Raise the floor here once the rows are changed, not before.
+    base_offset = _base_row_action_offset(live_css)
+    assert base_offset is not None, (
+        "index.css no longer states a right edge for .sidebar-row-action in a spelling this "
+        "guard can read. Every action's position is measured from it, so reading it as flush "
+        "would understate every reach below by however far the base rule moves them"
+    )
     offsets = _row_action_offsets(live_css)
     actions = {
         name: _labelled_actions(
-            sidebar_source, applied, name, offsets, _row_action_paddings(live_css), inner_padding
+            sidebar_source,
+            applied,
+            name,
+            offsets,
+            _row_action_paddings(live_css),
+            inner_padding,
+            base_offset,
         )
         for name in ("project", "recent")
     }

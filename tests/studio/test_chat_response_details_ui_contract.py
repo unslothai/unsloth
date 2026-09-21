@@ -512,7 +512,11 @@ def test_reasoning_keeps_streaming_height_cap_through_automatic_collapse():
     holders = [
         tag
         for tag in _opening_tags(src, "<ReasoningBody")
-        if "isStreaming={isReasoningStreaming}" in tag
+        # On an attribute boundary, like the retained flag below. Both props are optional, so
+        # `data-isStreaming={isReasoningStreaming}` satisfies a substring test while
+        # ReasoningBody receives no isStreaming at all: the tag is still selected as a holder,
+        # every assertion below still passes, and the live stream is no longer capped.
+        if re.search(r"(?:^|[\s{])isStreaming=\{isReasoningStreaming\}", tag)
     ]
     assert holders, (
         "no ReasoningBody receives isReasoningStreaming any more, so this guard cannot tell "
