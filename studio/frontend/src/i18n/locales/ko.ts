@@ -220,10 +220,6 @@ export const ko = {
       organizeChats: "채팅 정리",
       organizeProjects: "프로젝트 정리",
       sortPinnedChats: "고정된 채팅 정렬",
-      dragDrop: "드래그 앤 드롭",
-      dragHints: "드래그 중 힌트 표시",
-      reorderSwitchesSort: "순서 변경 시 수동 정렬로 전환",
-      dragOpensFolders: "포인터 아래 폴더 열기",
       moveUp: "위로 이동",
       moveDown: "아래로 이동",
     },
@@ -1530,11 +1526,6 @@ export const ko = {
         "붙여넣은 텍스트가 {count}자 이상이면 .txt 첨부 파일이 됩니다. 더 짧은 텍스트는 입력창에 남습니다.",
       pastedTextOffDescription:
         "길이와 관계없이 붙여넣은 모든 텍스트가 입력창에 남습니다.",
-      compactionDescriptionInherit: "서버의 컨텍스트 정책을 따릅니다.",
-      compactionDescriptionCheckpoint:
-        "최신 대화 턴과 들어갈 수 있는 만큼의 계속 적용되는 지침을 유지하고, 나머지는 검색할 수 있도록 보관합니다.",
-      compactionDescriptionRolling:
-        "가장 오래된 턴을 보관소로 옮겨 최근 기록을 유지하고 선택한 만큼의 여유 공간을 확보합니다.",
       projectsSection: "프로젝트 섹션 표시",
       projectsSectionDescription:
         "프로젝트 채팅을 프로젝트 제목 아래에 모읍니다. 끄면 최근 항목에 표시됩니다.",
@@ -1582,15 +1573,6 @@ export const ko = {
       autoCompact: "긴 채팅 자동 압축",
       autoCompactDescription:
         "채팅이 컨텍스트를 모두 채우면 오래된 턴은 검색 가능한 보관소로 옮겨집니다.",
-      compactionStyle: "컨텍스트가 가득 찼을 때",
-      compactionStyleDescription:
-        "서버 기본값을 사용하면 UNSLOTH_CONTEXT_POLICY가 유지됩니다. 대화 재설정은 최신 턴과 들어갈 수 있는 만큼의 지속 지침을 남깁니다. 슬라이딩 윈도우는 가장 오래된 턴을 삭제하고 최근 기록을 더 많이 유지할 수 있습니다.",
-      compactionStyleInherit: "서버 기본값 사용",
-      compactionStyleCheckpoint: "대화 재설정",
-      compactionStyleRollingDefault: "오래된 턴 보관(약 25% 추가 여유)",
-      compactionStyleRolling10: "오래된 턴 보관(약 10% 추가 여유)",
-      compactionStyleRolling5: "오래된 턴 보관(약 5% 추가 여유)",
-      compactionStyleRollingNone: "오래된 턴 보관(추가 잘라내기 없음)",
       autoCompactKeywords:
         "압축 자동 컨텍스트 윈도우 자르기 슬라이딩 체크포인트 여유 보관 검색 회수 compaction rolling checkpoint headroom archive retrieval rag",
       thinking: {
