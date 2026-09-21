@@ -7444,6 +7444,25 @@ def _drafter_for_path(
     return detected
 
 
+def _path_load_companion_roots(model_identifier: str, native_grant_backed: bool) -> tuple[str, ...]:
+    """Companion roots for a request that named a local snapshot path, else ``()``.
+
+    The chat picker loads by path, so _maybe_auto_switch_model's repo-level widening
+    never ran for it and a head or projector published into a later revision of the
+    same repo dir stays invisible. Recomputed here so the path route sees what the
+    repo-id route already sees.
+
+    A native grant covers ONE directory, so a load backed by one is never widened: a
+    projector or drafter must only ever come from the directory the user granted, and
+    refusing the candidate after discovery has read its header is already too late.
+    """
+    if native_grant_backed or not model_identifier:
+        return ()
+    from core.inference.local_model_resolver import local_path_gguf_companion_roots
+
+    return local_path_gguf_companion_roots(model_identifier)
+
+
 def _native_mmproj_accept(candidate: str, gguf_path: str) -> bool:
     """Apply native projector authorization before discovery reads its header."""
     try:
@@ -15806,6 +15825,13 @@ async def _load_model_impl(
 
         # Keep the inventory ref public while loading the materialized artifact.
         public_model_identifier = _public_model_identifier(request.model_path, model_identifier)
+        # Only when the caller left them empty: the auto-switch route sets these from the
+        # repo it resolved, and the idle stash restores what the last load actually used,
+        # so neither may be recomputed from the path. Off-loop: this walks snapshots/.
+        if not request._gguf_companion_roots:
+            request._gguf_companion_roots = await asyncio.to_thread(
+                _path_load_companion_roots, model_identifier, native_grant_backed
+            )
         ollama_advertised_id = (
             await asyncio.to_thread(ollama_model_ref_public_id, request.model_path)
             if resolved_ollama_path is not None
@@ -17036,6 +17062,13 @@ async def validate_model(
         if native_access_deferred:
             await asyncio.to_thread(account_access.require_model_access, model_identifier)
 
+        # Same roots /load will use, or the answer describes a different set of files
+        # than the load: a projector in a sibling revision would make this report the
+        # model as text-only and the load then serve it with vision.
+        _validate_companion_roots = await asyncio.to_thread(
+            _path_load_companion_roots, model_identifier, native_grant_backed
+        )
+
         # The frontend validates before it loads, so this needs the same guard as
         # /load; otherwise the stall just moves here and /load is never reached.
         # Off-loop twice over: the guard is a network round trip, and the first
@@ -17051,6 +17084,7 @@ async def validate_model(
                     # to travel with it rather than being applied afterwards.
                     drafter_accept = _native_drafter_accept if native_grant_backed else None,
                     mmproj_accept = _native_mmproj_accept if native_grant_backed else None,
+                    gguf_companion_roots = _validate_companion_roots or None,
                 )
 
         config = await asyncio.to_thread(_resolve_config)
@@ -17923,6 +17957,10 @@ def _cached_estimate_config(
         return _ESTIMATE_NOT_ON_DISK
     from core.inference.llama_cpp import _hf_offline_if_unreachable_for
 
+    # Same roots /load will use: an MTP head or projector in a sibling revision is
+    # weight the load will map, so an estimate blind to it prices the wrong model.
+    _estimate_companion_roots = _path_load_companion_roots(model_identifier, native_grant_backed)
+
     def _resolve():
         return ModelConfig.from_identifier(
             model_id = model_identifier,
@@ -17930,6 +17968,7 @@ def _cached_estimate_config(
             gguf_variant = gguf_variant,
             drafter_accept = _native_drafter_accept if native_grant_backed else None,
             mmproj_accept = _native_mmproj_accept if native_grant_backed else None,
+            gguf_companion_roots = _estimate_companion_roots or None,
         )
 
     # Offline FIRST, not only when the Hub is unreachable. The gate above established

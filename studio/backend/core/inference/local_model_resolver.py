@@ -192,6 +192,53 @@ def local_gguf_companion_roots(load_path: str, *, repo_level: bool = False) -> t
     return (str(selected), *(str(path) for path in siblings))
 
 
+def local_path_gguf_companion_roots(load_path: str) -> tuple[str, ...]:
+    """Companion roots for a load that names a snapshot DIRECTORY rather than a repo id.
+
+    A model chosen in the chat picker reaches /load as a concrete path, so the
+    auto-switch route's repo-level widening never runs for it: that route only widens
+    when the request named the repo. A companion published after the weights (an MTP
+    head, an mmproj) lands in a different ``snapshots/<revision>/`` folder of the same
+    repo dir, and searching only the weights' snapshot never finds it, so the model is
+    served without its head or projector until the whole repo is deleted and refetched.
+
+    Widened only when this exact directory is the one a repo-level selection would
+    itself hand out for that repo dir, which is what the picker offers. A caller naming
+    any other revision pinned it and keeps the single root it asked for, so this never
+    reaches a directory the repo-level path would not already have reached. Sibling
+    revisions of one ``models--`` dir only: never another repo, never outside the cache.
+    """
+    from pathlib import Path
+    from hub.utils.gguf import select_gguf_cache_snapshot_for_repo_dir
+    from hub.utils.hf_cache_state import same_existing_path
+
+    try:
+        selected = Path(load_path)
+    except (TypeError, ValueError):
+        return ()
+    snapshots = selected.parent
+    repo = snapshots.parent
+    # Same predicate as local_gguf_companion_roots, so the two cannot disagree about
+    # what counts as an HF cache snapshot.
+    if snapshots.name != "snapshots" or not repo.name.startswith("models--"):
+        return ()
+    try:
+        if not selected.is_dir():
+            return ()
+    except OSError:
+        return ()
+    try:
+        chosen = select_gguf_cache_snapshot_for_repo_dir(repo)
+    except OSError as exc:
+        logger.debug("Stopping at unreadable repo dir %s: %s", repo, exc)
+        return ()
+    # samefile, not string equality: the caller's spelling may differ from the
+    # selector's by symlink or, on Windows, by case.
+    if chosen is None or not same_existing_path(chosen[3], selected):
+        return ()
+    return local_gguf_companion_roots(load_path, repo_level = True)
+
+
 def local_gguf_companion_state(roots: tuple[str, ...]) -> tuple:
     from pathlib import Path
 

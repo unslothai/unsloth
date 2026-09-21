@@ -2463,6 +2463,48 @@ def test_snapshot_selector_skips_only_the_unreadable_child(tmp_path, monkeypatch
     assert selected[3] == readable
 
 
+def test_path_companion_roots_widen_only_the_snapshot_the_repo_would_hand_out(tmp_path):
+    """#10599: loading by path widens to the sibling revisions of the SAME repo dir,
+    and only when the path is the one a repo-level selection resolves to."""
+    repo, old, newer = _vision_gguf_cache_repo(tmp_path)
+    (newer / "mmproj-vision-model-F16.gguf").write_bytes(b"GGUF companion")
+    os.utime(old, (1_000, 1_000))
+    os.utime(newer, (2_000, 2_000))
+
+    assert tuple(map(Path, resolver.local_path_gguf_companion_roots(str(old)))) == (old, newer)
+    # A revision the selector would not hand out is pinned, so it keeps its own root only.
+    assert resolver.local_path_gguf_companion_roots(str(newer)) == ()
+
+    pinned = repo / "snapshots" / "newer-weights-revision"
+    pinned.mkdir(parents = True)
+    (pinned / "vision-model-Q4_K_M.gguf").write_bytes(b"GGUF weights")
+    os.utime(pinned, (3_000, 3_000))
+    assert resolver.local_path_gguf_companion_roots(str(old)) == ()
+    assert tuple(map(Path, resolver.local_path_gguf_companion_roots(str(pinned)))) == (
+        pinned,
+        newer,
+        old,
+    )
+
+
+@pytest.mark.parametrize("kind", ["plain_dir", "repo_dir", "missing", "file", "repo_id"])
+def test_path_companion_roots_refuse_anything_outside_an_hf_cache_snapshot(tmp_path, kind):
+    """The widening reaches sibling revisions of one ``models--`` dir and nothing else."""
+    repo, old, _newer = _vision_gguf_cache_repo(tmp_path)
+    candidates = {
+        "plain_dir": tmp_path / "loose-model-dir",
+        "repo_dir": repo,
+        "missing": old.parent / "absent-revision",
+        "file": old / "vision-model-Q4_K_M.gguf",
+        "repo_id": Path("org/Vision-GGUF"),
+    }
+    target = candidates[kind]
+    if kind == "plain_dir":
+        target.mkdir()
+        (target / "vision-model-Q4_K_M.gguf").write_bytes(b"GGUF weights")
+    assert resolver.local_path_gguf_companion_roots(str(target)) == ()
+
+
 def test_disjoint_companion_roots_preserve_selected_snapshot_ancestor_walk(tmp_path):
     """A selected snapshot still walks intermediate parents before sibling revisions."""
     from utils.models.model_config import detect_mmproj_file

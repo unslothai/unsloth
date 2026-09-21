@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import importlib.util
 import logging
+import os
 import sys
 import threading
 import types as _types
@@ -1432,4 +1433,155 @@ class TestLoadHubDownloadExclusion:
         )
         assert (
             self._capture_hub_guard_require_mmproj(["--no-mmproj"], request_extra_args = []) is True
+        )
+
+
+class _CompanionMetadataReached(BaseException):
+    """Raised from a stubbed from_identifier so the load stops with its kwargs captured."""
+
+
+def _companion_cache_repo(tmp_path, *, weights: str = "weights-revision"):
+    """An HF cache repo whose weights snapshot predates the one holding the companions.
+
+    The shape #10599 reports: the MTP head and the mmproj were published after the
+    quant, so ``refs/main`` names a revision that holds no weights at all and the
+    companions sit beside it, in a snapshot the weights' own directory does not reach.
+    """
+    repo = tmp_path / "models--org--Vision-GGUF"
+    selected = repo / "snapshots" / weights
+    companions = repo / "snapshots" / "companion-revision"
+    selected.mkdir(parents = True)
+    companions.mkdir(parents = True)
+    (repo / "blobs").mkdir(exist_ok = True)
+    (repo / "refs").mkdir(exist_ok = True)
+    (repo / "refs" / "main").write_text("companion-revision")
+    (selected / "vision-model-Q4_K_M.gguf").write_bytes(b"GGUF weights")
+    (companions / "mtp-vision-model-Q4_0.gguf").write_bytes(b"GGUF drafter")
+    (companions / "mmproj-vision-model-F16.gguf").write_bytes(b"GGUF companion")
+    os.utime(selected, (1_000, 1_000))
+    os.utime(companions, (2_000, 2_000))
+    return repo, selected, companions
+
+
+@contextmanager
+def _capture_load_config(route, seen, *, native_grant_backed = False, model_identifier = None):
+    backend = SimpleNamespace(
+        is_loaded = False,
+        model_identifier = None,
+        holds_no_vram = False,
+        active_model_name = None,
+        _audio_probed = True,
+        adopt_load_intent_if_matched = lambda _intent: False,
+    )
+
+    def _from_identifier(**kwargs):
+        seen.update(kwargs)
+        raise _CompanionMetadataReached()
+
+    with (
+        patch.object(
+            route,
+            "_resolve_model_identifier_for_request",
+            return_value = (model_identifier, model_identifier, native_grant_backed),
+        ),
+        patch.object(route, "resolve_effective_chat_template_override", return_value = None),
+        patch.object(route, "get_llama_cpp_backend", return_value = backend),
+        patch.object(route, "get_inference_backend", return_value = backend),
+        patch.object(
+            route, "ModelConfig", SimpleNamespace(from_identifier = _from_identifier)
+        ),
+    ):
+        yield
+
+
+class TestPathLoadCompanionRoots:
+    """#10599: a model picked in chat loads by PATH, so the auto-switch route's
+    repo-level widening never ran for it and an MTP head or mmproj published into a
+    later revision of the same repo dir stayed invisible until the user deleted and
+    refetched the whole repo."""
+
+    def _roots_for(self, tmp_path, name, **kwargs):
+        from models.inference import LoadRequest
+
+        route = _load_route_module(name, "routes/inference.py")
+        load_path = kwargs.pop("load_path")
+        preset = kwargs.pop("preset_roots", None)
+        request = LoadRequest(model_path = load_path, gguf_variant = "Q4_K_M")
+        if preset is not None:
+            request._gguf_companion_roots = preset
+        seen = {}
+        with _capture_load_config(route, seen, model_identifier = load_path, **kwargs):
+            with pytest.raises(_CompanionMetadataReached):
+                _run_route_load(route, request)
+        return seen.get("gguf_companion_roots")
+
+    def test_path_load_widens_to_the_sibling_snapshot_holding_the_companions(self, tmp_path):
+        _repo, selected, companions = _companion_cache_repo(tmp_path)
+        roots = self._roots_for(
+            tmp_path,
+            "inference_route_module_for_path_load_widening",
+            load_path = str(selected),
+        )
+        assert tuple(map(Path, roots or ())) == (selected, companions)
+
+    def test_path_load_resolves_both_the_mtp_head_and_the_mmproj(self, tmp_path):
+        """The user-visible symptom, through the real ModelConfig: both companions."""
+        from utils.models.model_config import ModelConfig
+        from core.inference.local_model_resolver import local_path_gguf_companion_roots
+
+        _repo, selected, companions = _companion_cache_repo(tmp_path)
+        assert (
+            ModelConfig.from_identifier(str(selected), gguf_variant = "Q4_K_M").gguf_mtp_file
+            is None
+        )
+        config = ModelConfig.from_identifier(
+            str(selected),
+            gguf_variant = "Q4_K_M",
+            gguf_companion_roots = local_path_gguf_companion_roots(str(selected)),
+        )
+        assert config.gguf_mtp_file == str((companions / "mtp-vision-model-Q4_0.gguf").resolve())
+        assert config.gguf_mmproj_file == str(
+            (companions / "mmproj-vision-model-F16.gguf").resolve()
+        )
+
+    def test_a_pinned_non_selected_revision_is_not_widened(self, tmp_path):
+        """Naming a revision the repo-level selection would not hand out pins it."""
+        repo, pinned, _companions = _companion_cache_repo(tmp_path)
+        newer_weights = repo / "snapshots" / "newer-weights-revision"
+        newer_weights.mkdir(parents = True)
+        (newer_weights / "vision-model-Q4_K_M.gguf").write_bytes(b"GGUF weights")
+        os.utime(newer_weights, (3_000, 3_000))
+        assert not self._roots_for(
+            tmp_path,
+            "inference_route_module_for_pinned_revision",
+            load_path = str(pinned),
+        )
+
+    def test_a_native_grant_backed_load_is_not_widened(self, tmp_path):
+        """A native grant covers one directory; a sibling revision is outside it."""
+        _repo, selected, _companions = _companion_cache_repo(tmp_path)
+        assert not self._roots_for(
+            tmp_path,
+            "inference_route_module_for_native_grant_widening",
+            load_path = str(selected),
+            native_grant_backed = True,
+        )
+
+    def test_roots_the_caller_already_set_are_left_alone(self, tmp_path):
+        """Auto-switch resolved these from the repo, and the idle stash restores what
+        the last load actually used: neither may be recomputed from the path."""
+        _repo, selected, _companions = _companion_cache_repo(tmp_path)
+        roots = self._roots_for(
+            tmp_path,
+            "inference_route_module_for_preset_roots",
+            load_path = str(selected),
+            preset_roots = (str(selected),),
+        )
+        assert tuple(map(Path, roots or ())) == (selected,)
+
+    def test_a_bare_repo_id_is_not_widened(self, tmp_path):
+        assert not self._roots_for(
+            tmp_path,
+            "inference_route_module_for_repo_id_load",
+            load_path = REPO,
         )
