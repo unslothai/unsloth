@@ -16579,6 +16579,22 @@ def _check_signal_escape_patterns(code: str):
                             out.add("*")
                     elif f"{module}.{alias.name}" not in _REQUEST_SAFE_BINDINGS:
                         out.add(alias.asname or alias.name)
+            elif isinstance(node, ast.Attribute) and node.attr == "Request":
+                # `urllib.request.Request = lambda _: "https://evil.example/x"` replaces the
+                # constructor without binding any NAME, so the name-level proof said nothing while
+                # the call returned the attacker's URL. A store to an attribute called `Request`
+                # anywhere refuses every unwrap.
+                if isinstance(node.ctx, (ast.Store, ast.Del)):
+                    out.add("*")
+            elif isinstance(node, ast.Call):
+                # `setattr(urllib.request, "Request", ...)` is the same mutation spelled as a call,
+                # and a computed attribute name could be `"Request"` too.
+                func = node.func
+                name = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", "")
+                if name == "setattr" and len(node.args) >= 2:
+                    attr = node.args[1]
+                    if not isinstance(attr, ast.Constant) or attr.value == "Request":
+                        out.add("*")
             else:
                 out.update(_binding_names(node))
         return out

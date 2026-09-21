@@ -668,6 +668,33 @@ class TestRequestWrapperMustProveItsCallee:
                 'urlopen(Request("https://huggingface.co/x"))',
                 id = "a_star_import_could_have_supplied_Request",
             ),
+            # Replacing the constructor binds no NAME at all, so a name-level proof said nothing
+            # while the call returned the attacker's URL.
+            pytest.param(
+                "import urllib.request\n"
+                'urllib.request.Request = lambda _: "https://evil.example/x"\n'
+                'urllib.request.urlopen(urllib.request.Request("https://huggingface.co/x"))',
+                id = "constructor_replaced_by_an_attribute_store",
+            ),
+            pytest.param(
+                "import urllib.request\n"
+                'setattr(urllib.request, "Request", lambda _: "https://evil.example/x")\n'
+                'urllib.request.urlopen(urllib.request.Request("https://huggingface.co/x"))',
+                id = "constructor_replaced_by_setattr",
+            ),
+            pytest.param(
+                "import urllib.request\n"
+                "import os\n"
+                'setattr(urllib.request, os.environ["N"], print)\n'
+                'urllib.request.urlopen(urllib.request.Request("https://huggingface.co/x"))',
+                id = "setattr_with_a_computed_name",
+            ),
+            pytest.param(
+                "import urllib.request\n"
+                "del urllib.request.Request\n"
+                'urllib.request.urlopen(urllib.request.Request("https://huggingface.co/x"))',
+                id = "constructor_deleted",
+            ),
         ],
     )
     def test_an_unproven_wrapper_is_not_unwrapped(self, code):
@@ -689,6 +716,26 @@ class TestRequestWrapperMustProveItsCallee:
             pytest.param(
                 'import urllib.request as u\nu.urlopen(u.Request("https://huggingface.co/x"))',
                 id = "through_a_module_alias",
+            ),
+            # Only a store to an attribute NAMED `Request`, or a `setattr` that could write one,
+            # refuses the unwrap; ordinary attribute work does not.
+            pytest.param(
+                "import urllib.request\n"
+                "class C:\n"
+                "    pass\n"
+                "c = C()\n"
+                "c.headers = {}\n"
+                'urllib.request.urlopen(urllib.request.Request("https://huggingface.co/x"))',
+                id = "an_unrelated_attribute_store",
+            ),
+            pytest.param(
+                "import urllib.request\n"
+                "class C:\n"
+                "    pass\n"
+                "c = C()\n"
+                'setattr(c, "x", 1)\n'
+                'urllib.request.urlopen(urllib.request.Request("https://huggingface.co/x"))',
+                id = "an_unrelated_setattr",
             ),
         ],
     )
