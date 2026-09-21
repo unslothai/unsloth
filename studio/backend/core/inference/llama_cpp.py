@@ -29144,9 +29144,6 @@ class LlamaCppBackend:
                                             _mem_policy_argv,
                                             _retry_policy_argv,
                                         )
-                                        # Kept in step, so a later narrowing site still finds
-                                        # the block it is meant to resync.
-                                        _mem_policy_argv = _retry_policy_argv
                                         _mem_host_resident = False
                                         # The managed flag was the policy's only mark on
                                         # this child unless it also scrubbed or stripped,
