@@ -103,16 +103,27 @@ const SIDEBAR = readFileSync(
   fileURLToPath(new URL("../src/components/app-sidebar.tsx", import.meta.url)),
   "utf-8",
 );
+// The probe below is shared by every chat row menu, so it lives beside the rest of them.
+const ROW_MENU = readFileSync(
+  fileURLToPath(
+    new URL("../src/features/chat/components/chat-row-menu.ts", import.meta.url),
+  ),
+  "utf-8",
+);
+const PROJECTS_PAGE = readFileSync(
+  fileURLToPath(new URL("../src/features/chat/projects-page.tsx", import.meta.url)),
+  "utf-8",
+);
 
 test("a failed history read is reported, not mistaken for a chat that ran no tools", () => {
   // No React renderer here, so this asserts on source, like ~50 sibling tests.
   // A per-pane catch makes a failed read look like "never ran a tool", and the
   // fallback is project membership, the answer the recorded id overrides.
   // Both "Open chat folder" and "Copy session id" read through this helper.
-  const start = SIDEBAR.indexOf("async function recordedSandboxSessionIds");
-  const end = SIDEBAR.indexOf("\n  }", start);
+  const start = ROW_MENU.indexOf("async function recordedSandboxSessionIds");
+  const end = ROW_MENU.indexOf("\n}", start);
   assert.ok(start !== -1 && end > start, "the read block moved");
-  const block = SIDEBAR.slice(start, end);
+  const block = ROW_MENU.slice(start, end);
   assert.ok(
     block.includes("allRecordedSandboxSessionIds"),
     "the read block moved",
@@ -127,15 +138,16 @@ test("one thread that outlived a move counts as two folders, not one", () => {
   // A chat can name two sandboxes on its own: ran a tool, moved between
   // projects, ran another. Taking one id per thread would leave the refusal
   // blind to that and hand out the newer id as though it were the only one.
-  const start = SIDEBAR.indexOf("async function recordedSandboxSessionIds");
-  const end = SIDEBAR.indexOf("\n  }", start);
-  const block = SIDEBAR.slice(start, end);
+  const start = ROW_MENU.indexOf("async function recordedSandboxSessionIds");
+  const end = ROW_MENU.indexOf("\n}", start);
+  const block = ROW_MENU.slice(start, end);
   assert.match(
     block,
     /recorded\.push\(\n\s*\.\.\.allRecordedSandboxSessionIds\(await listStoredChatMessages\(threadId\)\),\n\s*\);/,
   );
-  // Both actions refuse on more than one, rather than picking a folder.
+  // Every action refuses on more than one, rather than picking a folder.
   assert.equal(SIDEBAR.split("distinct.length > 1").length - 1, 2);
+  assert.equal(PROJECTS_PAGE.split("distinct.length > 1").length - 1, 1);
 });
 
 test("a sandbox holding files is told apart from one that was never written", async () => {
@@ -180,9 +192,9 @@ test("the legacy probe runs whichever project the chat sits in now", () => {
   // there reported one folder while its older files stayed hidden. The thread
   // folder is probed whichever project the chat sits in now; the project
   // workspace is not, since every chat in the project writes to it.
-  const start = SIDEBAR.indexOf("async function sandboxSessionIdsHolding");
+  const start = ROW_MENU.indexOf("async function sandboxSessionIdsHolding");
   assert.notEqual(start, -1, "the legacy probe moved");
-  const block = SIDEBAR.slice(start, SIDEBAR.indexOf("\n  }", start));
+  const block = ROW_MENU.slice(start, ROW_MENU.indexOf("\n}", start));
   assert.ok(!block.includes("if (!item.projectId) return recorded;"));
   assert.ok(block.includes("sandboxHasFiles(candidate)"));
   // Not the project workspace: it is shared by every chat in the project, so
@@ -195,8 +207,8 @@ test("a recorded session does not hide a legacy folder beside it", () => {
   // moved into a project, another tool ran and recorded one. Treating the
   // recorded id as proof that nothing else holds files answers for one folder
   // while the older keeps the rest.
-  const start = SIDEBAR.indexOf("async function sandboxSessionIdsHolding");
-  const block = SIDEBAR.slice(start, SIDEBAR.indexOf("\n  }", start));
+  const start = ROW_MENU.indexOf("async function sandboxSessionIdsHolding");
+  const block = ROW_MENU.slice(start, ROW_MENU.indexOf("\n}", start));
   // A union, so a recorded id cannot short-circuit the probe.
   assert.match(block, /return \[\.\.\.new Set\(\[\.\.\.recorded, \.\.\.held\]\)\];/);
   assert.ok(
@@ -217,6 +229,12 @@ test("both the folder and the session id are answered from the same probe", () =
     const at = SIDEBAR.indexOf(action);
     assert.notEqual(at, -1, `${action} moved`);
   }
+  // The Projects page draws the same action, and reads it from the same probe.
+  assert.equal(
+    (PROJECTS_PAGE.match(/await sandboxSessionIdsHolding\(/g) ?? []).length,
+    1,
+  );
+  assert.notEqual(PROJECTS_PAGE.indexOf("Open chat folder"), -1);
   // Neither may reach past it to the recorded ids alone.
   const copyAt = SIDEBAR.indexOf("async function copyChatSessionId");
   const copy = SIDEBAR.slice(copyAt, SIDEBAR.indexOf("\n  }\n", copyAt));

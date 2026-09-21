@@ -162,7 +162,7 @@ def test_the_console_warnings_name_the_absolute_command(monkeypatch, tmp_path):
     `unsloth` on PATH is left with a hint they cannot run. These two warnings go to the host's own
     console, so naming the install there costs nothing and is the point.
     """
-    run_py = (Path(__file__).resolve().parents[1] / "run.py").read_text()
+    run_py = (Path(__file__).resolve().parents[1] / "run.py").read_text(encoding = "utf-8")
 
     tree = ast.parse(run_py)
     calls = sum(

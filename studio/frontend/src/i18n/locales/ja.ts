@@ -215,9 +215,6 @@ export const ja = {
       priority: "優先度",
       lastUpdated: "最終更新",
       manualOrder: "手動で並べ替え",
-      priorityHint: "実行中・未読が先頭",
-      lastUpdatedHint: "新しい順",
-      manualOrderHint: "行をドラッグして並べ替えます",
       switchedToManual: "手動の並び順に切り替えました。行をドラッグして並べ替えます",
       organizeChats: "チャットを整理",
       organizeProjects: "プロジェクトを整理",
@@ -1564,10 +1561,17 @@ export const ja = {
         "チャットの文脈が満杯になると、古いターンは検索可能なアーカイブに移ります。",
       autoCompactKeywords:
         "圧縮 自動圧縮 コンテキスト ウィンドウ 切り詰め スライディング チェックポイント 余裕 アーカイブ 検索 取得 compaction rolling headroom archive retrieval rag",
+      visibility: {
+        collapsed: "折りたたむ",
+        auto: "実行中は展開",
+        expanded: "常に展開",
+      },
+      visibilityKeywords:
+        "折りたたむ 展開 開く 閉じる 思考 推論 ツール呼び出し ツールの動作 グループ ストリーミング",
       thinking: {
-        collapseByDefault: "思考をデフォルトで折りたたむ",
-        collapseByDefaultDescription:
-          "モデルの思考中も自動で展開せず、折りたたんだままにします。読みたいときはブロックを展開してください。",
+        visibility: "思考",
+        visibilityDescription:
+          "思考の開き方。個々のブロックは手動で展開・折りたたみできます。",
       },
       currentDate: {
         label: "今日の日付をモデルに伝える",
@@ -1577,12 +1581,14 @@ export const ja = {
         saveError: "現在の日付の設定を更新できませんでした",
       },
       tools: {
-        collapseByDefault: "ツールの動作をデフォルトで折りたたむ",
-        collapseByDefaultDescription:
-          "ツールの実行中は入力と出力を折りたたんだままにします。確認するにはツール行を展開してください。",
-        foldIntoThinking: "ツール呼び出しを思考に折りたたむ",
+        visibility: "ツール呼び出し",
+        visibilityDescription:
+          "ツールの動作の開き方。個々の呼び出しは手動で展開・折りたたみできます。",
+        foldIntoThinking: "ツール呼び出しを思考にまとめる",
         foldIntoThinkingDescription:
-          "思考ブロックを開くまで、そのターンのツール呼び出しを隠します。",
+          "そのターンのツール呼び出しを独立した行ではなく思考ブロック内に表示します。",
+        foldIntoThinkingBlocked:
+          "ツール呼び出しが「常に展開」の間は使えません。その設定では独立した行に表示されます。",
       },
       webSearch: {
         title: "ウェブ検索",

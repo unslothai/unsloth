@@ -486,15 +486,28 @@ def is_benign_console_error(msg: str) -> bool:
     return any(p in msg for p in BENIGN_CONSOLE_ERROR_PATTERNS)
 
 
-def echo_browser_errors(page: Any, info: Callable[[str], None]) -> None:
+def echo_browser_errors(page: Any, info: Callable[[str], None]) -> list[str]:
     """Print what the browser knows, live, as it happens.
 
     A harness that only asserts on the DOM cannot tell an entry module that threw
     from one that is merely slow: both end as an `expect(...)` timeout on a locator
     that was never created, under an empty CI log. The smokes each own a throwaway
     page, so printing straight through beats collecting for a caller to forward.
+
+    The uncaught errors are also RETURNED, because printing alone still leaves the
+    failure itself unreadable. A React root that throws renders nothing, so every
+    locator misses and the smoke fails 15 seconds later as "element(s) not found"
+    with the real cause sitting further up an otherwise green-looking log. A caller
+    that checks this list can say what actually happened instead. Returning is
+    additive: callers that ignore it behave exactly as before.
     """
-    page.on("pageerror", lambda e: info(f"pageerror: {e}"))
+    thrown: list[str] = []
+
+    def record(error: Any) -> None:
+        thrown.append(str(error))
+        info(f"pageerror: {error}")
+
+    page.on("pageerror", record)
     page.on(
         "console",
         lambda m: info(f"console.{m.type}: {m.text}") if m.type == "error" else None,
@@ -506,6 +519,7 @@ def echo_browser_errors(page: Any, info: Callable[[str], None]) -> None:
         "framenavigated",
         lambda f: info(f"navigated: {f.url}") if f is page.main_frame else None,
     )
+    return thrown
 
 
 # ─────────────────────────────────────────────────────────────────────
