@@ -19,11 +19,33 @@ def test_materialized_text_dataset_rejects_an_empty_split():
         validate_text_sft_dataset([], split_name = "train")
 
 
-def test_materialized_text_dataset_is_validated_completely():
+@pytest.mark.parametrize("split_name", ["train", "eval"])
+def test_materialized_text_dataset_leaves_later_blanks_alone(split_name):
     dataset = Dataset.from_dict({"text": ["hello", "world", "   "]})
+    assert validate_text_sft_dataset(dataset, split_name = split_name) is dataset
 
-    with pytest.raises(ValueError, match = r"train row 2 has an empty `text` field"):
-        validate_text_sft_dataset(dataset, split_name = "train")
+
+def test_materialized_validation_reads_only_first_row():
+    class FirstRowOnly:
+        def __len__(self):
+            return 1_000_000
+
+        def __getitem__(self, index):
+            assert index == 0
+            return {"text": "hello"}
+
+        def __iter__(self):
+            raise AssertionError("Validation must not scan the dataset")
+
+    dataset = FirstRowOnly()
+    assert validate_text_sft_dataset(dataset) is dataset
+
+
+@pytest.mark.parametrize("split_name", ["train", "eval"])
+@pytest.mark.parametrize("text", ["", "   ", "\n\t"])
+def test_materialized_text_dataset_rejects_blank_first_row(split_name, text):
+    with pytest.raises(ValueError, match = rf"{split_name} row 0 has an empty"):
+        validate_text_sft_dataset([{"text": text}], split_name = split_name)
 
 
 @pytest.mark.parametrize(
@@ -38,24 +60,13 @@ def test_materialized_text_dataset_reports_invalid_field(row, message):
         validate_text_sft_dataset([row], split_name = "eval")
 
 
-def test_streaming_text_validation_is_lazy_and_rejects_a_later_blank():
-    visited: list[int] = []
-
+def test_streaming_text_validation_preserves_dataset_without_iteration():
     def rows():
-        for index, text in enumerate(["first", "second", ""]):
-            visited.append(index)
-            yield {"text": text}
+        raise AssertionError("Validation must not consume streaming data")
+        yield
 
     dataset = IterableDataset.from_generator(rows)
-    validated = validate_text_sft_dataset(dataset, split_name = "train")
-
-    assert visited == []
-    iterator = iter(validated)
-    assert next(iterator)["text"] == "first"
-    assert next(iterator)["text"] == "second"
-    with pytest.raises(ValueError, match = r"train row 2 has an empty `text` field"):
-        next(iterator)
-    assert visited == [0, 1, 2]
+    assert validate_text_sft_dataset(dataset, split_name = "train") is dataset
 
 
 def test_streaming_validation_does_not_scan_an_unbounded_invalid_prefix():
@@ -107,31 +118,34 @@ def test_streaming_raw_text_drops_invalid_prefix_lazily_then_appends_eos():
     assert visited == [0, 0, 1, 2]
 
 
-def test_raw_blank_is_rejected_before_eos_append():
-    dataset = Dataset.from_dict({"text": ["   "]})
-
-    with pytest.raises(ValueError, match = r"train row 0 has an empty `text` field"):
-        prepare_raw_text_dataset(
-            dataset,
-            mode_label = "CPT",
-            split_name = "train",
-            eos_token = "<eos>",
-            append_eos = True,
-        )
-
-
-def test_streaming_raw_blank_is_rejected_before_eos_append():
-    dataset = IterableDataset.from_generator(lambda: iter([{"text": " "}]))
+@pytest.mark.parametrize("streaming", [False, True])
+@pytest.mark.parametrize("split_name", ["train", "eval"])
+def test_raw_blanks_are_dropped_before_eos_append(streaming, split_name):
+    texts = ["", "   ", None, "hello", "\n", "world"]
+    dataset = (
+        IterableDataset.from_generator(lambda: ({"text": text} for text in texts))
+        if streaming
+        else Dataset.from_dict({"text": texts})
+    )
     result = prepare_raw_text_dataset(
         dataset,
         mode_label = "CPT",
-        split_name = "train",
+        split_name = split_name,
         eos_token = "<eos>",
         append_eos = True,
     )
+    assert [row["text"] for row in result.dataset] == ["hello<eos>", "world<eos>"]
+    assert any("blank" in notice.message for notice in result.notices)
 
-    with pytest.raises(ValueError, match = r"train row 0 has an empty `text` field"):
-        next(iter(result.dataset))
+
+def test_raw_empty_split_has_clear_error():
+    with pytest.raises(ValueError, match = "the eval split is empty"):
+        prepare_raw_text_dataset(Dataset.from_dict({"text": []}), split_name = "eval")
+
+
+def test_raw_all_blank_split_has_clear_error():
+    with pytest.raises(ValueError, match = "at least one non-empty string"):
+        prepare_raw_text_dataset(Dataset.from_dict({"text": ["", "   "]}))
 
 
 def test_vlm_dataset_bypasses_text_validation_without_iteration():

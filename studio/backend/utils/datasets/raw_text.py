@@ -8,7 +8,6 @@ from typing import Literal
 
 from datasets import Dataset
 
-from .iterable import is_streaming_dataset
 from .text_validation import validate_text_sft_dataset
 
 
@@ -69,9 +68,11 @@ def _split_scope(split_name: str | None) -> str:
 def _drop_invalid_text_rows(
     dataset: Dataset, *, mode_title: str, split_scope: str
 ) -> tuple[Dataset, list[RawTextNotice]]:
-    # Lazy filter — drops rows whose 'text' is null/non-string before they reach
+    # Lazy filter — drops null, non-string, and blank text before rows reach
     # the tokenizer. Works on both Dataset and streaming IterableDataset.
-    filtered_dataset = dataset.filter(lambda ex: isinstance(ex["text"], str))
+    filtered_dataset = dataset.filter(
+        lambda ex: isinstance(ex["text"], str) and bool(ex["text"].strip())
+    )
 
     # Streaming datasets (IterableDataset) have no __len__, so we can't count the
     # dropped rows or verify the result is non-empty without consuming the whole
@@ -81,7 +82,7 @@ def _drop_invalid_text_rows(
             RawTextNotice(
                 message = (
                     f"{mode_title}: streaming dataset — rows with null or "
-                    f"non-string 'text' in {split_scope} are dropped on the fly."
+                    f"non-string 'text', or blank text in {split_scope} are dropped on the fly."
                 ),
                 level = "info",
             )
@@ -93,15 +94,15 @@ def _drop_invalid_text_rows(
 
     if len(filtered_dataset) == 0:
         raise ValueError(
-            f"{mode_title} training requires at least one string 'text' value "
-            f"in {split_scope}; all {dropped_rows} rows were null or non-string."
+            f"{mode_title} training requires at least one non-empty string 'text' value "
+            f"in {split_scope}; all {dropped_rows} rows were null, non-string, or blank."
         )
 
     return filtered_dataset, [
         RawTextNotice(
             message = (
                 f"{mode_title}: dropped {dropped_rows:,} row(s) with null or "
-                f"non-string 'text' values from {split_scope}"
+                f"non-string 'text' values, or blank text from {split_scope}"
             ),
             level = "warning",
             update_status = True,
@@ -155,16 +156,6 @@ def prepare_raw_text_dataset(
         )
         dataset = dataset.rename_column(renamed_col, "text")
 
-    streaming = is_streaming_dataset(dataset) or not hasattr(dataset, "__len__")
-    if streaming:
-        # Validate raw strings lazily before the existing filter/EOS maps.
-        # Null/non-string rows remain eligible for the established lazy drop.
-        dataset = validate_text_sft_dataset(
-            dataset,
-            split_name = validation_split_name,
-            allow_non_string = True,
-        )
-
     dataset, invalid_row_notices = _drop_invalid_text_rows(
         dataset,
         mode_title = mode_title,
@@ -172,13 +163,10 @@ def prepare_raw_text_dataset(
     )
     notices.extend(invalid_row_notices)
 
-    if not streaming:
-        # Materialized raw datasets can be checked completely before EOS
-        # mutation. Null/non-string rows have already been dropped above.
-        dataset = validate_text_sft_dataset(
-            dataset,
-            split_name = validation_split_name,
-        )
+    dataset = validate_text_sft_dataset(
+        dataset,
+        split_name = validation_split_name,
+    )
 
     if append_eos:
         if not eos_token:
