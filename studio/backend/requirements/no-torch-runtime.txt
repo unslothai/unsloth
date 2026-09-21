@@ -48,7 +48,14 @@ accelerate>=0.34.1
 peft>=0.18.0,!=0.11.0
 huggingface_hub>=1.23.0,<2.0; python_version >= "3.10"
 huggingface_hub==0.36.2; python_version < "3.10"
-hf-xet>=1.5.1,<2.0; python_version >= "3.10"
+# Large / Xet-backed Hub blobs (>50GB single files) are refused by huggingface_hub's HTTP
+# downloader, so hf-xet has to be declared: no-torch-runtime.txt installs --no-deps and never
+# picks it up transitively. Arch list mirrors huggingface-hub's own Requires-Dist, because the
+# only other candidate is the sdist, which builds through maturin and needs a Rust toolchain --
+# the same reason hf_transfer and sqlite-vec carry markers here. ARM64 is added on top of
+# upstream's five: hf-xet does publish a win_arm64 wheel. 1.5.2 is the floor huggingface-hub
+# 1.32 requires, and nothing reconciles the two under --no-deps.
+hf-xet>=1.5.2,<2.0; python_version >= "3.10" and (platform_machine == "x86_64" or platform_machine == "amd64" or platform_machine == "AMD64" or platform_machine == "arm64" or platform_machine == "aarch64" or platform_machine == "ARM64")
 # No win_arm64 wheel and this file installs --no-deps, so pip would need cargo plus MSVC.
 hf_transfer==0.1.9; sys_platform != "win32" or platform_machine != "ARM64"
 # diffusers: see diffusers-pin.txt, installed by its own step (this file is
