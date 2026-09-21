@@ -80,12 +80,21 @@ def test_fix_restores_every_name_the_remote_code_reads(siglip2_module):
 
     # The exact set the checkpoint's modeling file reads off the module.
     names = [
-        "BatchFeature", "ChannelDimension", "PILImageResampling",
-        "convert_image_to_patches", "convert_to_rgb",
-        "filter_out_non_signature_kwargs", "get_image_size_for_max_num_patches",
-        "infer_channel_dimension_format", "make_flat_list_of_images",
-        "pad_along_first_dim", "resize", "to_channel_dimension_format",
-        "to_numpy_array", "valid_images", "validate_preprocess_arguments",
+        "BatchFeature",
+        "ChannelDimension",
+        "PILImageResampling",
+        "convert_image_to_patches",
+        "convert_to_rgb",
+        "filter_out_non_signature_kwargs",
+        "get_image_size_for_max_num_patches",
+        "infer_channel_dimension_format",
+        "make_flat_list_of_images",
+        "pad_along_first_dim",
+        "resize",
+        "to_channel_dimension_format",
+        "to_numpy_array",
+        "valid_images",
+        "validate_preprocess_arguments",
     ]
     before = [n for n in names if not hasattr(siglip2_module, n)]
     assert before, "nothing was missing, so this test would prove nothing"
@@ -101,6 +110,7 @@ def test_resolved_symbol_is_the_real_one(siglip2_module):
         pytest.skip("this transformers still re-exports the image helpers")
     _install_legacy_image_reexports(SIGLIP2)
     from transformers.utils import filter_out_non_signature_kwargs as real
+
     assert siglip2_module.filter_out_non_signature_kwargs is real
 
 
@@ -151,6 +161,6 @@ def test_import_unsloth_does_not_pull_in_the_image_stack():
         "import sys; import unsloth; "
         "print('transformers.models.siglip2.image_processing_siglip2' in sys.modules)"
     )
-    out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
+    out = subprocess.run([sys.executable, "-c", code], capture_output = True, text = True)
     assert out.returncode == 0, out.stderr[-2000:]
     assert out.stdout.strip().splitlines()[-1] == "False", out.stdout[-2000:]
