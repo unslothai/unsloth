@@ -917,6 +917,30 @@ def test_a_credential_held_only_under_a_legacy_alias_still_counts(monkeypatch, a
     assert _REAL_AMBIENT_HF_TOKEN() == (True, HOST_CREDENTIAL)
 
 
+def test_a_store_that_answered_absence_once_is_not_asked_again(monkeypatch):
+    """One read decides, so a failure that only a SECOND read would have met cannot refuse.
+
+    The reader this replaced asked the store again whenever the first answer was empty, and a
+    transient failure on that second ask turned a host with nothing saved into "cannot say",
+    which refuses the offline fallback this gate exists to allow. It also closed a window: two
+    reads could straddle a save and report absence and presence for one call.
+    """
+    from storage import credential_secrets
+
+    opened = []
+    real_connection = credential_secrets.get_connection
+
+    def flaky(*args, **kwargs):
+        opened.append(1)
+        if len(opened) >= 2:
+            raise RuntimeError("database is locked")
+        return real_connection(*args, **kwargs)
+
+    monkeypatch.setattr(credential_secrets, "get_connection", flaky)
+    assert _REAL_SAVED_STUDIO_HF_TOKEN() == (True, None)
+    assert len(opened) == 1, "a second read is a second answer, and a chance to disagree"
+
+
 def test_an_unreadable_saved_credential_is_unknown_rather_than_absent(monkeypatch):
     """`get_secret` answers None for an absent row AND an undecryptable one; the row EXISTING
     separates them, readable without decrypting anything."""
