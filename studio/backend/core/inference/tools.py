@@ -1435,13 +1435,31 @@ def _join_escaped_newlines(text: str) -> str:
     group_depths: list[int] = []
     # Whether the character just emitted closed a `$(`, which keeps the word open.
     closed_substitution = False
+    # How many `case ... esac` are open, per substitution. A case PATTERN closes with an unbalanced
+    # `)`, so inside a `case` no `)` may end the substitution: `"$(case x in x) echo hi;; esac;
+    # echo ok # comment \<newline>rm -f victim<newline>)"` really runs `rm`, and reading the
+    # pattern's `)` as the substitution's close put the rest back in double quotes, where the `#`
+    # opened no comment and the pair was joined away. Staying inside is the conservative direction.
+    case_depth = 0
+    case_depths: list[int] = []
+    word = ""
     while i < n:
         ch = text[i]
         was_substitution_close, closed_substitution = closed_substitution, False
+        if not in_single and not in_double and not in_comment:
+            if ch.isalpha() or ch == "_":
+                word += ch
+            else:
+                if word == "case":
+                    case_depth += 1
+                elif word == "esac" and case_depth:
+                    case_depth -= 1
+                word = ""
         if not in_single and not in_comment and ch == "$" and text[i + 1 : i + 2] == "(":
             substitutions.append((in_single, in_double, in_comment))
             group_depths.append(group_depth)
-            group_depth = 0
+            case_depths.append(case_depth)
+            group_depth = case_depth = 0
             in_single = in_double = in_comment = False
             out.append("$(")
             i += 2
@@ -1454,9 +1472,12 @@ def _join_escaped_newlines(text: str) -> str:
         if ch == ")" and not in_single and not in_double and not in_comment:
             if group_depth:
                 group_depth -= 1
+            elif case_depth:
+                pass  # a case PATTERN closes here, not the substitution
             elif substitutions:
                 in_single, in_double, in_comment = substitutions.pop()
                 group_depth = group_depths.pop()
+                case_depth = case_depths.pop()
                 # A substitution's close stays INSIDE the surrounding word, unlike a subshell's or
                 # a control operator's, so a `#` right after it is ordinary text. Checked against
                 # bash 5.2.21: `echo $(printf x)#note \<newline>rm -rf victim` is one `echo` and
@@ -16695,6 +16716,18 @@ def _check_signal_escape_patterns(code: str):
     # module path leading to it.
     _REQUEST_SAFE_BINDINGS = frozenset({"urllib", "urllib.request", "urllib.request.Request"})
 
+    def _scope_bodies(tree):
+        """`(scope id, statement list)` for the module and for every function, lambda and class body.
+
+        A shadow belongs to the scope whose body it sits directly in, so this is what says which
+        statements can shadow a name for which calls. The module is scope 0. A lambda has an
+        expression rather than a body, so it contributes no statements, only its parameters.
+        """
+        yield 0, getattr(tree, "body", [])
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                yield id(node), node.body
+
     def _names_bound_to_something_else(tree) -> "set[str]":
         """Every name bound ANYWHERE in the tree, in ANY scope, to something that is not part of
         `urllib.request.Request`, plus `"*"` when a star import could have supplied it.
@@ -16829,11 +16862,16 @@ def _check_signal_escape_patterns(code: str):
             # The module-level statements that really run, by identity: only those may shadow an
             # imported name. See `_UNCONDITIONAL_SHADOW_TYPES`. This also subsumes the old depth
             # check, since nothing inside a function, lambda or class body is one of these.
-            self.unconditional_shadows = {
-                id(stmt)
-                for stmt in getattr(tree, "body", [])
-                if type(stmt) in _UNCONDITIONAL_SHADOW_TYPES
-            }
+            # Statement id -> the id of the scope whose body it sits directly in (0 for the
+            # module). A shadow belongs to ONE scope: a local `def fetch` shadows the calls after it
+            # inside its own body, and says nothing about a call at module level.
+            self.unconditional_shadows: "dict[int, int]" = {}
+            for scope, body in _scope_bodies(tree):
+                for stmt in body:
+                    if type(stmt) in _UNCONDITIONAL_SHADOW_TYPES:
+                        self.unconditional_shadows[id(stmt)] = scope
+            # The scope being visited, innermost last, plus each one's parameter bindings.
+            self.scope_stack: list[int] = [0]
             # Network modules star-imported, and the names rebound since. `from requests import *`
             # binds `get` under no name this file can enumerate, so the callee is resolved against
             # the star modules instead; without it one character (`*` for `get`) turned the screen
@@ -16843,17 +16881,16 @@ def _check_signal_escape_patterns(code: str):
             # was star-imported. A shadow only takes effect for calls that CANNOT run before it:
             # dropping the alias for the whole tree let `fetch(url)` written ABOVE `fetch = print`
             # go unrecognised, when that call really is `requests.get`.
-            self.shadow_lines: "dict[str, list[tuple[int, int]]]" = {}
+            self.shadow_lines: "dict[str, list[tuple[tuple[int, int], int]]]" = {}
             self.star_lines: "list[tuple[int, int]]" = []
             # Name -> the positions where a network alias was registered for it. A shadow only
             # counts while no alias registration follows it: `r = object()` then `r = requests`
             # really leaves `r` as the module, and a permanent shadow suppressed the candidate the
             # second assignment had just added.
             self.alias_lines: "dict[str, list[tuple[int, int]]]" = {}
-            # How many function, lambda or class bodies deep the walk is. A body can be invoked at
-            # any point, including before a later shadow, so a call inside one is never treated as
-            # shadowed.
-            self.depth = 0
+            # A module-level shadow says nothing about a call inside a body, which can be invoked
+            # at any point, including before the rebinding; a shadow in the body's OWN scope does
+            # apply to the calls after it. Both follow from matching the shadow's scope.
             # Aliases are gathered in a first pass over the whole tree and only then are calls
             # checked, because a function body runs AFTER the module finishes reading:
             # `def send(): fetch(...)` written ABOVE `from requests import get as fetch` still
@@ -16882,6 +16919,7 @@ def _check_signal_escape_patterns(code: str):
             # requests` runs the real `requests.get`, and a kept entry rewrote the call to
             # `socket.get`, which matches no network prefix and so went unscreened.
             if self.collecting and id(node) in self.unconditional_shadows:
+                scope = self.unconditional_shadows[id(node)]
                 # Position, not just the line: `from requests import get as fetch; fetch = print;
                 # fetch(url)` puts all three on line 1, and comparing lines alone made the
                 # rebinding invisible, so a harmless local call was refused as `requests.get`.
@@ -16896,7 +16934,7 @@ def _check_signal_escape_patterns(code: str):
                     # The module set is deliberately NOT dropped: see __init__. A bare function
                     # alias is shadowed, so a local `def get(...)` still shadows
                     # `from requests import get` for the calls that follow it.
-                    self.shadow_lines.setdefault(name, []).append(where)
+                    self.shadow_lines.setdefault(name, []).append((where, scope))
 
         def generic_visit(self, node):
             """`ast.NodeVisitor.generic_visit`, inlined, plus the rebinding hook.
@@ -16943,11 +16981,13 @@ def _check_signal_escape_patterns(code: str):
             call supersedes every shadow older than it. For a star-imported name the star import is
             that registration, since it rebinds every exported name.
             """
-            if self.depth:
-                return False
             registrations = self.star_lines if after_star else self.alias_lines.get(name, ())
             floor = max((where for where in registrations if where < at), default = (0, -1))
-            return any(floor < shadow < at for shadow in self.shadow_lines.get(name, ()))
+            here = self.scope_stack[-1]
+            return any(
+                scope == here and floor < where < at
+                for where, scope in self.shadow_lines.get(name, ())
+            )
 
         def _star_imported_fq(self, name: str, at) -> "str | None":
             if self._is_shadowed(name, at, after_star = True):
@@ -16960,7 +17000,14 @@ def _check_signal_escape_patterns(code: str):
 
         def _visit_scope(self, node):
             self._rebind(node)
-            self.depth += 1
+            if self.collecting:
+                # A parameter is bound for the whole body, so it shadows every call in it. The
+                # def's own position is used, which is after the import in the ordinary spelling.
+                where = (getattr(node, "lineno", 0), getattr(node, "col_offset", 0))
+                for name in _binding_names(node):
+                    if name != getattr(node, "name", None):
+                        self.shadow_lines.setdefault(name, []).append((where, id(node)))
+            self.scope_stack.append(id(node))
             try:
                 for _field, value in ast.iter_fields(node):
                     if isinstance(value, list):
@@ -16970,7 +17017,7 @@ def _check_signal_escape_patterns(code: str):
                     elif isinstance(value, ast.AST):
                         self.visit(value)
             finally:
-                self.depth -= 1
+                self.scope_stack.pop()
 
         visit_FunctionDef = _visit_scope
         visit_AsyncFunctionDef = _visit_scope

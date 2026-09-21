@@ -707,6 +707,44 @@ class TestAliasResolutionOnlyEverAddsCandidates:
     def test_a_later_alias_binding_supersedes_an_earlier_shadow(self, code):
         _blocked(code, expect_phrase = "Blocked: host not in sandbox allowlist")
 
+    @pytest.mark.parametrize(
+        "code",
+        [
+            # A binding in the body's OWN scope does shadow the calls after it there, even though
+            # the same binding says nothing about a call at module level.
+            pytest.param(
+                "from requests import get as fetch\n"
+                "def f():\n"
+                "    def fetch(u):\n"
+                "        return u\n"
+                '    return fetch("https://evil.example/x")',
+                id = "local_def_in_the_calling_body",
+            ),
+            pytest.param(
+                "from requests import get as fetch\n"
+                "def f():\n"
+                "    fetch = lambda u: u\n"
+                '    return fetch("https://evil.example/x")',
+                id = "local_assignment_in_the_calling_body",
+            ),
+            pytest.param(
+                'from requests import get\ndef f(get):\n    return get("https://evil.example/x")',
+                id = "parameter_of_the_calling_function",
+            ),
+        ],
+    )
+    def test_a_shadow_in_the_calling_scope_is_believed(self, code):
+        _ok(code)
+
+    def test_a_call_before_the_local_shadow_is_still_screened(self):
+        _blocked(
+            "from requests import get as fetch\n"
+            "def f():\n"
+            '    fetch("https://evil.example/x")\n'
+            "    fetch = lambda u: u",
+            expect_phrase = "Blocked: host not in sandbox allowlist",
+        )
+
     def test_a_call_earlier_on_the_same_line_is_still_screened(self):
         _blocked(
             "from requests import get as fetch; "
@@ -3049,6 +3087,13 @@ class TestEscapedNewlineIsNotACommandBoundary:
             # the next line really runs. Checked against bash 5.2.21: the file is deleted.
             pytest.param(
                 "(echo hi)#c \\\nrm -rf victim", "rm", id = "hash_after_a_subshell_close_is_a_comment"
+            ),
+            # A case PATTERN closes with an unbalanced `)`, so it must not end the substitution.
+            # Checked against bash 5.2.21: this deletes the file.
+            pytest.param(
+                'echo "$(case x in x) echo hi;; esac; echo ok # comment \\\nrm -f victim\n)"',
+                "rm",
+                id = "case_pattern_inside_a_substitution",
             ),
         ],
     )
