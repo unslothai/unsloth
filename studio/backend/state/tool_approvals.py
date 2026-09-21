@@ -88,6 +88,7 @@ def decision_reason(slot) -> Optional[str]:
         return None
     return slot.get("reason")
 
+
 _lock = threading.Lock()
 # approval_id -> {"event": threading.Event, "decision": str|None, "session": str}
 _pending: dict[str, dict] = {}
