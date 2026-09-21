@@ -42,7 +42,11 @@ import {
   useAuiState,
   useMessagePartText,
 } from "@assistant-ui/react";
-import { Copy01Icon, Download01Icon } from "@hugeicons/core-free-icons";
+import {
+  Copy01Icon,
+  Download01Icon,
+  ExpandIcon,
+} from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { createMathPlugin } from "@streamdown/math";
 import { mermaid } from "@streamdown/mermaid";
@@ -123,17 +127,23 @@ const STREAMDOWN_SHIKI_THEME = [
   unslothLightTheme,
   unslothDarkTheme,
 ] satisfies NonNullable<StreamdownProps["shikiTheme"]>;
-// Streamdown ships its own copy glyph for the table controls; swap in copy-01 like everywhere else.
+// Streamdown ships its own glyphs for the table controls; swap in ours so copy,
+// download and expand match the icons used everywhere else.
 // `strokeWidth` is dropped, not forwarded: SVG types it `string | number`, HugeiconsIcon wants a number.
-function StreamdownCopyIcon({
-  size,
-  strokeWidth: _strokeWidth,
-  ...props
-}: ComponentProps<"svg"> & { size?: number }) {
-  return <HugeiconsIcon icon={Copy01Icon} size={size} {...props} />;
+function streamdownIcon(icon: typeof Copy01Icon) {
+  return function StreamdownIcon({
+    size,
+    strokeWidth: _strokeWidth,
+    ...props
+  }: ComponentProps<"svg"> & { size?: number }) {
+    return <HugeiconsIcon icon={icon} size={size} {...props} />;
+  };
 }
 const STREAMDOWN_ICONS = {
-  CopyIcon: StreamdownCopyIcon,
+  CopyIcon: streamdownIcon(Copy01Icon),
+  DownloadIcon: streamdownIcon(Download01Icon),
+  // Streamdown's key for the table's enlarge control.
+  Maximize2Icon: streamdownIcon(ExpandIcon),
 } satisfies NonNullable<StreamdownProps["icons"]>;
 const { withSmoothContextProvider } = INTERNAL;
 
