@@ -1712,11 +1712,10 @@ def _llm_compressor_imports_cleanly():
 def _path_entry_provides_llm_compressor(entry):
     """Would a fresh interpreter find an ``llmcompressor`` to import under *entry*?
 
-    Asked of the import machinery rather than of the filesystem, because a path entry is not
-    always a directory: a .zip or .egg on PYTHONPATH is searched by the zipimporter, and a
-    shape check missed it entirely. A NAMESPACE match does not count -- llm-compressor is a
-    regular package, and treating any same-named empty folder as a provider would let one on
-    PYTHONPATH veto a perfectly good wheel.
+    Asked of the import machinery, not the filesystem: a path entry is not always a
+    directory, and a .zip or .egg is searched by the zipimporter, which a shape check missed.
+    A NAMESPACE match does not count -- llm-compressor is a regular package, and counting any
+    same-named empty folder would let one on PYTHONPATH veto a good wheel.
     """
     try:
         from importlib.machinery import PathFinder
@@ -1854,11 +1853,10 @@ def install_llm_compressor():
         from llmcompressor.modifiers.quantization import QuantizationModifier
 
         # Metadata answers for a DISTRIBUTION; the export imports a MODULE. An in-range
-        # checkout shadowing an out-of-range installed wheel is usable, and gating the
-        # import on metadata alone sent it to the destructive re-resolve this guard exists
-        # to avoid, or failed outright under the autoinstall opt-out. Overriding metadata
-        # takes POSITIVE evidence: a version the module declares, inside the pin. Unknown
-        # is enough only where metadata already agrees.
+        # checkout shadowing an out-of-range wheel is usable, and gating on metadata alone
+        # sent it to the destructive re-resolve this guard avoids, or failed outright under
+        # the opt-out. Overriding metadata takes POSITIVE evidence: a version the module
+        # declares, inside the pin. Unknown is enough only where metadata agrees.
         if _llm_compressor_module_is_usable(llmcompressor) and (
             metadata_supported or _llm_compressor_module_version_is_in_range(llmcompressor)
         ):
@@ -1875,9 +1873,8 @@ def install_llm_compressor():
         from importlib.metadata import version as _iv, PackageNotFoundError as _PNF
         try:
             _iv("llmcompressor")
-            # The same override, for a checkout the in-process import cannot perform: the
-            # probe reports the version it actually RESOLVED, and that version, checked here
-            # rather than trusted from imports_cleanly, is the evidence.
+            # The same override for a checkout the in-process import cannot perform: the
+            # probe reports the version it RESOLVED, checked here rather than trusted.
             probe_ok = _llm_compressor_imports_cleanly()
             probe_named_a_version = _LLM_COMPRESSOR_PROBE_RESULT.get(
                 "imported"
