@@ -1358,12 +1358,35 @@ def _join_escaped_newlines(text: str) -> str:
     later lex then discarded whole. `#` opens a comment only at the start of a word, so
     `ab#cd` is an ordinary word and `"a # b"` is quoted text; both were checked against the
     same bash.
+
+    A `$(...)` substitution is parsed in a FRESH quoting context even inside double quotes, so
+    the state is pushed at `$(` and popped at the matching `)`. Checked against bash 5.2.21:
+    `echo "$(echo hi # c \\<newline>rm -f victim<newline>)"` really runs `rm`, because the `#`
+    opens a comment in there and the backslash is comment text; carrying the outer `in_double`
+    in made the pair look like a continuation and the `rm` vanished. The same probe confirms the
+    other half: single quotes work in there (`"$(echo 'a \\<newline>rm -f victim')"` strips
+    nothing and `rm` does NOT run), and a `)` inside them does not end the substitution.
+    Backticks are left alone, since the same probe shows `#` does not open a comment inside
+    `"`...`"`.
     """
     out: list[str] = []
     i, n = 0, len(text)
     in_single = in_double = in_comment = False
+    # (in_single, in_double, in_comment) for each enclosing `$(`, innermost last.
+    substitutions: "list[tuple[bool, bool, bool]]" = []
     while i < n:
         ch = text[i]
+        if not in_single and not in_comment and ch == "$" and text[i + 1 : i + 2] == "(":
+            substitutions.append((in_single, in_double, in_comment))
+            in_single = in_double = in_comment = False
+            out.append("$(")
+            i += 2
+            continue
+        if ch == ")" and substitutions and not in_single and not in_double and not in_comment:
+            in_single, in_double, in_comment = substitutions.pop()
+            out.append(ch)
+            i += 1
+            continue
         if in_comment:
             if ch == "\n":
                 in_comment = False

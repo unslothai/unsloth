@@ -2586,6 +2586,29 @@ class TestEscapedNewlineIsNotACommandBoundary:
             # shell closes it up. Checked against bash 5.2.21: `to\<newline>uch f` runs `touch`.
             pytest.param("r\\\nm -rf ./build", "rm", id = "continuation_inside_the_command_word"),
             pytest.param("echo hi\nr\\\nm -rf x", "rm", id = "word_split_on_a_later_line"),
+            # A `$(...)` substitution is parsed in a fresh quoting context, so `#` opens a comment
+            # in there even inside double quotes and the backslash after it is comment text.
+            # Checked against bash 5.2.21: every one of these really deletes the file.
+            pytest.param(
+                'echo "$(echo hi # comment \\\nrm -f victim\n)"',
+                "rm",
+                id = "comment_inside_a_substitution_in_double_quotes",
+            ),
+            pytest.param(
+                "echo $(echo hi # comment \\\nrm -f victim\n)",
+                "rm",
+                id = "comment_inside_a_bare_substitution",
+            ),
+            pytest.param(
+                "echo \"$(echo ')' ; echo hi # c \\\nrm -f victim\n)\"",
+                "rm",
+                id = "close_paren_in_single_quotes_does_not_end_the_substitution",
+            ),
+            pytest.param(
+                'echo "$(echo $(echo hi) # c \\\nrm -f victim\n)"',
+                "rm",
+                id = "nested_substitution",
+            ),
         ],
     )
     def test_real_command_position_still_blocked(self, command, blocked_cmd):
