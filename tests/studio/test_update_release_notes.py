@@ -1928,8 +1928,14 @@ def test_the_rail_gutters_come_out_of_the_cap_and_not_the_cards():
         "paddingTop": "STACK_SHADOW_GUTTER_TOP",
         "paddingBottom": "STACK_SHADOW_GUTTER_BOTTOM",
         "paddingLeft": "STACK_SHADOW_GUTTER_LEFT",
-        "paddingRight": "STACK_CARD_INSET_RIGHT",
+        "paddingRight": "STACK_CARD_INSET_RIGHT_PAST_PANEL",
     }
+    # The right padding is the card inset plus the open Run settings panel's width, so the cards
+    # land in the chat area. Still px, and still built from the inset constant read above.
+    assert re.search(
+        r"const STACK_CARD_INSET_RIGHT_PAST_PANEL =\s*`calc\(\$\{STACK_CARD_INSET_RIGHT\}px \+ var\(",
+        provider,
+    ), "the rail's right padding is no longer the px card inset plus the panel width"
     openings = _rail_openings(provider)
     assert len(openings) == 2, f"expected the browser and desktop rails, found {len(openings)}"
     for tag in openings:
