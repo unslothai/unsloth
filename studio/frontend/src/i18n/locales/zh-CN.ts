@@ -1183,7 +1183,6 @@ export const zhCN = {
         },
         contrast: {
           label: "对比度",
-          description: "按钮、面板和线条与背景的区分程度。",
         },
         reduceMotion: {
           label: "减少动态效果",

@@ -1200,7 +1200,6 @@ export const en = {
         },
         contrast: {
           label: "Contrast",
-          description: "How far buttons, boxes and lines stand out from the background.",
         },
         reduceMotion: {
           label: "Reduce motion",

@@ -1191,7 +1191,6 @@ export const it = {
         },
         contrast: {
           label: "Contrasto",
-          description: "Quanto pulsanti, riquadri e linee risaltano sullo sfondo.",
         },
         reduceMotion: {
           label: "Riduci le animazioni",

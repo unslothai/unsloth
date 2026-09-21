@@ -12,7 +12,8 @@ import {
   ChatWidthSelect,
   CodeFontRow,
   CodeFontSizeRow,
-  ContrastSliderRow,
+  ContrastSlider,
+  ContrastValueInput,
   FontSmoothingSwitch,
   HeadingFontRow,
   InterfaceScaleRow,
@@ -184,9 +185,9 @@ export function AppearanceTab() {
         <SettingsGroupDivider />
         <SettingsRow
           label={t("settings.appearance.custom.contrast.label")}
-          description={t("settings.appearance.custom.contrast.description")}
+          below={<ContrastSlider />}
         >
-          <ContrastSliderRow />
+          <ContrastValueInput />
         </SettingsRow>
       </SettingsSection>
 

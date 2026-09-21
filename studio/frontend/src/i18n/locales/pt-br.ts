@@ -1210,7 +1210,6 @@ export const ptBR = {
         },
         contrast: {
           label: "Contraste",
-          description: "O quanto botões, caixas e linhas se destacam do fundo.",
         },
         reduceMotion: {
           label: "Reduzir movimento",

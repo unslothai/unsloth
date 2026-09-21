@@ -1181,7 +1181,6 @@ export const ja = {
         },
         contrast: {
           label: "コントラスト",
-          description: "ボタン・ボックス・罫線を背景からどれだけ際立たせるか。",
         },
         reduceMotion: {
           label: "モーションを減らす",

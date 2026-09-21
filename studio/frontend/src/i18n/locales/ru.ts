@@ -1205,7 +1205,6 @@ export const ru = {
         },
         contrast: {
           label: "Контраст",
-          description: "Насколько кнопки, блоки и линии выделяются на фоне.",
         },
         reduceMotion: {
           label: "Уменьшить анимацию",

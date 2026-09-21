@@ -1220,7 +1220,6 @@ export const es = {
         },
         contrast: {
           label: "Contraste",
-          description: "Cuánto destacan los botones, los paneles y las líneas sobre el fondo.",
         },
         reduceMotion: {
           label: "Reducir el movimiento",

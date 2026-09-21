@@ -1204,7 +1204,6 @@ export const hi = {
         },
         contrast: {
           label: "कंट्रास्ट",
-          description: "बटन, बॉक्स और लाइनें बैकग्राउंड से कितनी अलग दिखें।",
         },
         reduceMotion: {
           label: "एनिमेशन कम करें",
