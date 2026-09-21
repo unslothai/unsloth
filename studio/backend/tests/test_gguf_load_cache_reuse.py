@@ -1609,6 +1609,78 @@ class TestPathLoadCompanionRoots:
         )
 
 
+def _mtp_cache_repo(tmp_path):
+    """Weights in the older snapshot, the MTP head alone in the newer one (#10599)."""
+    repo = tmp_path / "models--org--Draft-GGUF"
+    weights = repo / "snapshots" / "weights-revision"
+    companions = repo / "snapshots" / "companion-revision"
+    weights.mkdir(parents = True)
+    companions.mkdir(parents = True)
+    (weights / "draft-model-Q4_K_M.gguf").write_bytes(b"GGUF weights")
+    (companions / "mtp-draft-model.gguf").write_bytes(b"GGUF drafter")
+    os.utime(weights, (1_000, 1_000))
+    os.utime(companions, (2_000, 2_000))
+    return repo, weights, companions
+
+
+def test_the_apply_dedup_sees_the_drafter_the_launch_opened(tmp_path):
+    """A widened load must not read as drafterless, or every Apply reloads it.
+
+    _active_gguf_intent recomputes the drafter to compare against the running
+    server. Searching only the weights' snapshot answers None while the server
+    holds the sibling revision's head, so matches_load_source reports a model
+    change and a settings Apply restarts a healthy llama-server.
+    """
+    from core.inference.local_model_resolver import local_path_gguf_companion_roots
+    from models.inference import LoadRequest
+    from utils.models.model_config import ModelConfig
+
+    route = _load_route_module("inference_route_module_for_apply_dedup", "routes/inference.py")
+    _repo, weights, companions = _mtp_cache_repo(tmp_path)
+    main = weights / "draft-model-Q4_K_M.gguf"
+    head = companions / "mtp-draft-model.gguf"
+
+    roots = local_path_gguf_companion_roots(str(weights))
+    assert tuple(map(Path, roots)) == (weights, companions)
+    # The drafter the launch actually opens, through the real ModelConfig.
+    launched = ModelConfig.from_identifier(
+        str(weights), gguf_variant = "Q4_K_M", gguf_companion_roots = roots
+    ).gguf_mtp_file
+    assert launched == str(head.resolve())
+
+    backend = SimpleNamespace(
+        extra_args = (),
+        last_load_intent = None,
+        hf_repo = None,
+        hf_variant = None,
+        gguf_path = str(main),
+        layer_preserves_tensor_intent = False,
+        _openai_gguf_companion_roots = tuple(roots),
+    )
+    intent = route._active_gguf_intent(
+        LoadRequest(model_path = str(weights), gguf_variant = "Q4_K_M"),
+        backend,
+        model_identifier = str(weights),
+        chat_template_override = None,
+        n_parallel = 1,
+        native_grant_backed = False,
+    )
+    assert intent.mtp_draft_path == launched
+
+    # A load that recorded no widening keeps the single-snapshot answer, so a
+    # deliberately pinned revision is still compared against its own root only.
+    backend._openai_gguf_companion_roots = ()
+    pinned = route._active_gguf_intent(
+        LoadRequest(model_path = str(weights), gguf_variant = "Q4_K_M"),
+        backend,
+        model_identifier = str(weights),
+        chat_template_override = None,
+        n_parallel = 1,
+        native_grant_backed = False,
+    )
+    assert pinned.mtp_draft_path is None
+
+
 def test_a_symlinked_sibling_snapshot_is_not_a_trusted_root(tmp_path):
     """`is_dir()` follows symlinks, and `follow_symlinks=False` is 3.13+.
 

@@ -7407,12 +7407,18 @@ def _drafter_for_path(
     *,
     kind: str = "mtp",
     log_native_fallback: bool = False,
+    companion_roots: tuple[str, ...] = (),
 ) -> Optional[str]:
     """The drafter of ``kind`` that pairs with a local GGUF, or None.
 
     A native-grant-backed load filters candidates through the native rules in
     preference order, so a root drafter it must reject still falls through to
     the in-bounds subdirectory copy instead of reading as no drafter at all.
+
+    *companion_roots* are the roots the launch searched, tried in the same order
+    ModelConfig.from_identifier tries them. The Apply dedup compares this answer
+    against the drafter the server actually opened, so a narrower search here
+    reports a widened load as drafterless and reloads it on every Apply.
     """
     if not gguf_path:
         return None
@@ -7434,7 +7440,14 @@ def _drafter_for_path(
             rejected |= not usable
             return usable
 
-    detected = detect(gguf_path, search_root = root, accept = accept)
+    detected = next(
+        (
+            found
+            for search_root in (companion_roots or (root,))
+            if (found := detect(gguf_path, search_root = search_root, accept = accept))
+        ),
+        None,
+    )
     if log_native_fallback and rejected and detected:
         logger.info(
             "Using %s subdirectory drafter for native load: %s",
@@ -7492,9 +7505,13 @@ def _mtp_draft_for_path(
     native_grant_backed: bool,
     *,
     log_native_fallback: bool = False,
+    companion_roots: tuple[str, ...] = (),
 ) -> Optional[str]:
     return _drafter_for_path(
-        gguf_path, native_grant_backed, log_native_fallback = log_native_fallback
+        gguf_path,
+        native_grant_backed,
+        log_native_fallback = log_native_fallback,
+        companion_roots = companion_roots,
     )
 
 
@@ -7503,12 +7520,14 @@ def _dspark_draft_for_path(
     native_grant_backed: bool,
     *,
     log_native_fallback: bool = False,
+    companion_roots: tuple[str, ...] = (),
 ) -> Optional[str]:
     return _drafter_for_path(
         gguf_path,
         native_grant_backed,
         kind = "dspark",
         log_native_fallback = log_native_fallback,
+        companion_roots = companion_roots,
     )
 
 
@@ -7517,12 +7536,14 @@ def _dflash_draft_for_path(
     native_grant_backed: bool,
     *,
     log_native_fallback: bool = False,
+    companion_roots: tuple[str, ...] = (),
 ) -> Optional[str]:
     return _drafter_for_path(
         gguf_path,
         native_grant_backed,
         kind = "dflash",
         log_native_fallback = log_native_fallback,
+        companion_roots = companion_roots,
     )
 
 
@@ -7575,6 +7596,9 @@ def _active_gguf_intent(
         hf_repo = llama_backend.hf_repo,
         hf_variant = llama_backend.hf_variant,
     )
+    # What the launch searched, not what one snapshot holds. Recorded at load, so a
+    # request that deliberately pinned one revision is still compared against one root.
+    _loaded_roots = tuple(getattr(llama_backend, "_openai_gguf_companion_roots", ()) or ())
     return _gguf_request_intent(
         source,
         request,
@@ -7596,9 +7620,15 @@ def _active_gguf_intent(
         preserve_multi_gpu_on_layer = (
             llama_backend.layer_preserves_tensor_intent and not _is_explicit_tensor_drop(request)
         ),
-        mtp_draft_path = _mtp_draft_for_path(llama_backend.gguf_path, native_grant_backed),
-        dspark_draft_path = _dspark_draft_for_path(llama_backend.gguf_path, native_grant_backed),
-        dflash_draft_path = _dflash_draft_for_path(llama_backend.gguf_path, native_grant_backed),
+        mtp_draft_path = _mtp_draft_for_path(
+            llama_backend.gguf_path, native_grant_backed, companion_roots = _loaded_roots
+        ),
+        dspark_draft_path = _dspark_draft_for_path(
+            llama_backend.gguf_path, native_grant_backed, companion_roots = _loaded_roots
+        ),
+        dflash_draft_path = _dflash_draft_for_path(
+            llama_backend.gguf_path, native_grant_backed, companion_roots = _loaded_roots
+        ),
         compare_mtp_draft = True,
         extra_args_inherited = inherits_extras and not batch_overrides_inherit,
     )
@@ -16111,12 +16141,21 @@ async def _load_model_impl(
             if speech_codec_path is not None:
                 gguf_intent = replace(gguf_intent, audio_codec_path = speech_codec_path)
             same_loaded_model = llama_backend.matches_load_source(gguf_intent)
+            _loaded_companion_roots = tuple(
+                getattr(llama_backend, "_openai_gguf_companion_roots", ()) or ()
+            )
             if same_loaded_model and config.gguf_hf_repo and llama_backend.gguf_path:
                 gguf_intent = replace(
                     gguf_intent,
-                    mtp_draft_path = _mtp_draft_for_path(llama_backend.gguf_path, False),
-                    dspark_draft_path = _dspark_draft_for_path(llama_backend.gguf_path, False),
-                    dflash_draft_path = _dflash_draft_for_path(llama_backend.gguf_path, False),
+                    mtp_draft_path = _mtp_draft_for_path(
+                        llama_backend.gguf_path, False, companion_roots = _loaded_companion_roots
+                    ),
+                    dspark_draft_path = _dspark_draft_for_path(
+                        llama_backend.gguf_path, False, companion_roots = _loaded_companion_roots
+                    ),
+                    dflash_draft_path = _dflash_draft_for_path(
+                        llama_backend.gguf_path, False, companion_roots = _loaded_companion_roots
+                    ),
                     compare_mtp_draft = True,
                 )
             _effective_tensor = _effective_tensor_parallel(
