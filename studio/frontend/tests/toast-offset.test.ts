@@ -4,7 +4,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { getToastOffsets } from "../src/lib/toast-offset.ts";
+import {
+  getToastOffsets,
+  insetPastChatSettings,
+} from "../src/lib/toast-offset.ts";
 
 test("web chat toasts clear the header and stay against the right edge", () => {
   assert.deepEqual(getToastOffsets("/chat", false, false), {
@@ -101,5 +104,12 @@ test("offsets are pure, so a caller cannot poison the next lookup", () => {
   assert.deepEqual(getToastOffsets("/chat", false, false), {
     default: { top: 52, right: 12 },
     mobile: { top: 52, right: 16 },
+  });
+});
+
+test("desktop toasts shift left by the open Run settings panel", () => {
+  assert.deepEqual(insetPastChatSettings({ top: 52, right: 12 }), {
+    top: 52,
+    right: "calc(12px + var(--studio-chat-settings-inset, 0px))",
   });
 });

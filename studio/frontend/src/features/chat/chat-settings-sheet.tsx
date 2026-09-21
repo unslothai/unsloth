@@ -60,6 +60,10 @@ import { useIsMobile } from "@/hooks/use-mobile";
 import { useT } from "@/i18n";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { toast } from "@/lib/toast";
+import {
+  CHAT_SETTINGS_INSET_MIN_COLUMN,
+  CHAT_SETTINGS_INSET_VAR,
+} from "@/lib/toast-offset";
 import { cn } from "@/lib/utils";
 import { Edit03Icon, LayoutAlignRightIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -511,6 +515,30 @@ export function ChatSettingsPanel({
   const activeNativePathToken = useChatRuntimeStore(
     (s) => s.activeNativePathToken,
   );
+  // Toasts and the corner rail read this to stay off the open panel.
+  useEffect(() => {
+    if (!open || isMobile) return;
+    const root = document.documentElement;
+    const row = asideRef.current?.parentElement ?? null;
+    let applied: string | null = null;
+    const apply = () => {
+      const fits =
+        !row ||
+        row.clientWidth - settingsWidth >= CHAT_SETTINGS_INSET_MIN_COLUMN;
+      const next = fits ? `${settingsWidth}px` : null;
+      if (next === applied) return;
+      applied = next;
+      if (next) root.style.setProperty(CHAT_SETTINGS_INSET_VAR, next);
+      else root.style.removeProperty(CHAT_SETTINGS_INSET_VAR);
+    };
+    apply();
+    const observer = row ? new ResizeObserver(apply) : null;
+    if (row) observer?.observe(row);
+    return () => {
+      observer?.disconnect();
+      root.style.removeProperty(CHAT_SETTINGS_INSET_VAR);
+    };
+  }, [open, isMobile, settingsWidth]);
   const currentCheckpoint = params.checkpoint;
   const activeModelIsLocal = useChatRuntimeStore(
     (s) => s.activeModelIsLocal,
