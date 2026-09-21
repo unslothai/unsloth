@@ -234,7 +234,7 @@ const PastedTextAttachmentUI: FC<{
       }
       onClick={isComposer ? showInTextField : undefined}
     >
-      <span className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-foreground/10">
+      <span className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-[color-mix(in_oklab,var(--foreground)_calc(10%*var(--contrast-wash-gain,1)),transparent)]">
         <HugeiconsIcon
           icon={TextAlignLeft01Icon}
           strokeWidth={2}

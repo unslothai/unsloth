@@ -172,9 +172,17 @@ test("a resting wash and its hover twin share the gain", () => {
 test("a light wash follows the slider as its dark twin does", () => {
   // bg-foreground/[x] is a fixed alpha, so a row that dimmed on hover in dark
   // mode stayed put in light mode. The mix carries the gain instead, and
-  // resolves to the same colour at the default.
-  const hits = SOURCES.filter((file) =>
-    readSrc(file).includes("bg-foreground/["),
+  // resolves to the same colour at the default. Both spellings count, the
+  // arbitrary one and Tailwind's shorthand.
+  const FIXED_WASH = /bg-foreground\/(\[[\d.]+\]|\d+)/;
+  // Two fills are not chrome: the dark button's own surface, and the snippet
+  // highlight that sits beside amber and red siblings on no curve at all.
+  const NOT_CHROME = new Set([
+    "components/ui/button.tsx",
+    "features/security/components/remote-code-consent-dialog.tsx",
+  ]);
+  const hits = SOURCES.filter(
+    (file) => !NOT_CHROME.has(file) && FIXED_WASH.test(readSrc(file)),
   );
   assert.deepEqual(hits, [], "these washes ignore the contrast setting");
 });
