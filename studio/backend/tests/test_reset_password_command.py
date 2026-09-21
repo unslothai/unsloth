@@ -176,9 +176,9 @@ def test_the_console_warnings_name_the_absolute_command(monkeypatch, tmp_path):
         "without a production caller the helper is dead and the 401's PATH form is the only hint "
         "a user ever sees"
     )
-    assert "`unsloth studio reset-password`. Unsloth shuts down" not in run_py, (
-        "the public-bind warning is back to the bare PATH form"
-    )
+    assert (
+        "`unsloth studio reset-password`. Unsloth shuts down" not in run_py
+    ), "the public-bind warning is back to the bare PATH form"
 
 
 def test_the_unauthenticated_401_body_names_no_host_path(auth, monkeypatch, tmp_path):

@@ -1365,7 +1365,9 @@ def test_a_password_spray_does_not_lock_the_desktop_shell_out():
     assert admitted.status_code == 200, "a password spray locked the shell out of its own backend"
     assert admitted.json()["access_token"]
     # /login is still throttled by its own aggregate, which is the point of that aggregate.
-    blocked = client.post("/api/auth/login", json = {"username": "sprayed0", "password": "wrong-pw-1"})
+    blocked = client.post(
+        "/api/auth/login", json = {"username": "sprayed0", "password": "wrong-pw-1"}
+    )
     assert blocked.status_code == 429
 
 
