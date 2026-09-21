@@ -33,11 +33,12 @@ test("MLX base substitution tracks every downloaded repository", () => {
   );
   assert.match(VALIDATION, /\[validation\.mlx_loads_base_model\]/);
   assert.match(VALIDATION, /downloadComplete = false;/);
+  assert.match(VALIDATION, /mlxLoadProgress = true;/);
   assert.match(
     DOWNLOAD_POLL,
     /progressModelIdsAtRequest\.map\(\(progressModelId\) =>/,
   );
-  assert.match(DOWNLOAD_POLL, /getDownloadProgress\(progressModelId, hfToken\)/);
+  assert.match(DOWNLOAD_POLL, /getDownloadProgress\(progressModelId, hfToken, mlxLoadProgress\)/);
 });
 
 test("validated LoRA status controls download tracking", () => {

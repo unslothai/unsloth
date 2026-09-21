@@ -4,6 +4,7 @@
 """Mirror Zoo’s MLX BNB repository substitution without importing the ML stack."""
 
 import os
+from fnmatch import fnmatchcase
 from typing import Iterable, Optional
 
 _BNB_SUFFIXES = ("-unsloth-bnb-4bit", "-bnb-4bit")
@@ -40,3 +41,28 @@ def mlx_bnb_substitutions(repos: Iterable[str]) -> list[tuple[str, str]]:
         if base:
             swaps.append((repo, base))
     return swaps
+
+
+# mlx-lm's download filter, plus the weights of an exported adapter.
+_MLX_LOAD_PATTERNS = (
+    "*.json",
+    "model*.safetensors",
+    "*.py",
+    "tokenizer.model",
+    "*.tiktoken",
+    "tiktoken.model",
+    "*.txt",
+    "*.jsonl",
+    "*.jinja",
+    "adapters.safetensors",
+    "adapter_model.safetensors",
+    "adapter_model.bin",
+)
+
+
+def mlx_load_siblings(siblings):
+    return [
+        sibling
+        for sibling in siblings
+        if any(fnmatchcase(sibling.rfilename, pattern) for pattern in _MLX_LOAD_PATTERNS)
+    ]

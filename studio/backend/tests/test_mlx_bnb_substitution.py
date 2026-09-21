@@ -262,3 +262,58 @@ def test_the_mirror_still_matches_the_loader_it_mirrors():
         )
         expected = remapped if swapped_from is not None else None
         assert mlx_bnb_base_repo(name) == expected, name
+
+
+@pytest.mark.parametrize(
+    "weight_names",
+    [
+        ("model-00001-of-00002.safetensors", "model-00002-of-00002.safetensors"),
+        ("adapter_model.safetensors",),
+        ("adapters.safetensors",),
+    ],
+)
+def test_mlx_progress_verifies_loader_files_without_a_manifest(monkeypatch, tmp_path, weight_names):
+    import asyncio
+    from collections import OrderedDict
+    from types import SimpleNamespace
+    from huggingface_hub import HfApi
+    from hub.services import snapshot_progress
+    from hub.services.models import cache_inventory, downloads
+
+    repo = "unsloth/progress-model"
+    entry = tmp_path / "models--unsloth--progress-model"
+    snap = entry / "snapshots" / ("a" * 40)
+    snap.mkdir(parents = True)
+    blobs = entry / "blobs"
+    blobs.mkdir()
+    names = ("config.json", *weight_names, "README.md")
+    siblings = [
+        SimpleNamespace(rfilename = name, size = 4, blob_id = f"blob{i}", lfs = None)
+        for i, name in enumerate(names)
+    ]
+    monkeypatch.setattr(HfApi, "model_info", lambda *_a, **_k: SimpleNamespace(siblings = siblings))
+    monkeypatch.setattr(cache_inventory, "_mlx_plan_cache", OrderedDict())
+    monkeypatch.setattr(snapshot_progress, "preferred_repo_cache_dirs", lambda *_a, **_k: [entry])
+    monkeypatch.setattr(
+        downloads, "_registry", SimpleNamespace(get_job = lambda _key: SimpleNamespace(state = "idle"))
+    )
+
+    def progress():
+        return asyncio.run(downloads.get_download_progress_response(repo, mlx_load = True))
+
+    for i, name in enumerate(names[:-1]):
+        (blobs / f"blob{i}").write_bytes(b"data")
+        (snap / name).symlink_to(blobs / f"blob{i}")
+        reading = progress()
+        assert reading["expected_bytes"] == 4 * (len(names) - 1)
+        assert reading["complete_on_disk"] is (i == len(names) - 2)
+    assert reading["progress"] == 1
+    generic = asyncio.run(downloads.get_download_progress_response(repo))
+    assert generic["complete_on_disk"] is False
+    assert generic["progress"] < 1
+    for name in weight_names:
+        (snap / name).unlink()
+        assert progress()["complete_on_disk"] is False
+        i = names.index(name)
+        (snap / name).symlink_to(blobs / f"blob{i}")
+        assert progress()["progress"] == 1

@@ -1240,6 +1240,7 @@ export function useChatModelRuntime() {
       let hfToken = useChatRuntimeStore.getState().hfToken || null;
       const postLoadRefresh = { needed: false };
       let progressModelIds = [modelId];
+      let mlxLoadProgress = false;
       let downloadComplete = isDownloaded || isCachedLora;
       let cpuFallbackReason: CpuFallbackReason | null = null;
       let mmprojFallbackReason: MmprojFallbackReason | null = null;
@@ -1604,6 +1605,7 @@ export function useChatModelRuntime() {
             });
             isLora = validation.is_lora ?? isLora;
             if (validation.mlx_loads_base_model) {
+              mlxLoadProgress = true;
               const mlxBaseDescription = isLora
                 ? `Loading the adapter with ${validation.mlx_loads_base_model} in place of its bitsandbytes base, downloading it first if needed.`
                 : `Loading ${validation.mlx_loads_base_model} instead, downloading it first if needed.`;
@@ -2474,7 +2476,7 @@ export function useChatModelRuntime() {
                   ]
                 : await Promise.all(
                     progressModelIdsAtRequest.map((progressModelId) =>
-                      getDownloadProgress(progressModelId, hfToken),
+                      getDownloadProgress(progressModelId, hfToken, mlxLoadProgress),
                     ),
                   );
             if (!loadingModelRef.current) return;

@@ -136,6 +136,43 @@ def get_repo_snapshot_metadata_cached(
     return total, blob_hashes
 
 
+_mlx_plan_cache: OrderedDict = OrderedDict()
+
+
+def get_mlx_load_plan_cached(repo_id: str, hf_token: Optional[str] = None):
+    from core.inference.mlx_bnb import mlx_load_siblings
+    from hub.utils.snapshot_filters import blob_hashes_for_siblings
+    from huggingface_hub import HfApi
+
+    key = (repo_id, hf_cache_scan.token_fingerprint(hf_token))
+    with _repo_size_cache_lock:
+        cached = _mlx_plan_cache.get(key)
+        if cached is not None and time.monotonic() - cached[1] < _REPO_SIZE_POS_TTL:
+            _mlx_plan_cache.move_to_end(key)
+            return cached[0]
+    info = HfApi(token = hf_token).model_info(
+        repo_id,
+        files_metadata = True,
+        timeout = _MODEL_METADATA_TIMEOUT_SECONDS,
+    )
+    siblings = mlx_load_siblings(info.siblings)
+    files = tuple(
+        download_manifest.ExpectedFile(
+            path = item.rfilename,
+            size = int(item.size or 0),
+            sha256 = getattr(getattr(item, "lfs", None), "sha256", None),
+        )
+        for item in siblings
+    )
+    plan = (sum(file.size for file in files), blob_hashes_for_siblings(siblings), files)
+    with _repo_size_cache_lock:
+        _mlx_plan_cache[key] = (plan, time.monotonic())
+        _mlx_plan_cache.move_to_end(key)
+        while len(_mlx_plan_cache) > _REPO_SIZE_CACHE_MAX:
+            _mlx_plan_cache.popitem(last = False)
+    return plan
+
+
 def all_hf_cache_scans():
     return hf_cache_scan.all_hf_cache_scans()
 
