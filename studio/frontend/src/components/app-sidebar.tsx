@@ -3387,7 +3387,7 @@ export function AppSidebar() {
           ? undefined
           : // Room for the pin quick-action plus the kebab, and the same room with the menu open:
             // a narrower gutter there let the title run under them.
-            "group-hover/project-chat-item:pr-16 group-has-[.sidebar-row-action[data-state=open]]/project-chat-item:pr-16 [@media(pointer:coarse)]:pr-16"
+            "group-hover/project-chat-item:pr-14 group-has-[.sidebar-row-action[data-state=open]]/project-chat-item:pr-14 [@media(pointer:coarse)]:pr-14"
         : showWorkSpinner
           ? undefined
           : // A chat row carries a pin and a kebab, so reserve the room for both on hover and
@@ -3395,7 +3395,7 @@ export function AppSidebar() {
             "group-hover/recent-item:pr-16 group-has-[.sidebar-row-action[data-state=open]]/recent-item:pr-16 [@media(pointer:coarse)]:pr-16",
       // Keyboard focus reveals the action without hover.
       variant === "project"
-        ? "group-has-[.sidebar-row-action:focus-visible]/project-chat-item:pr-16"
+        ? "group-has-[.sidebar-row-action:focus-visible]/project-chat-item:pr-14"
         : "group-has-[.sidebar-row-action:focus-visible]/recent-item:pr-16",
     );
 

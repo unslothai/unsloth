@@ -936,6 +936,36 @@ def _as_spacing_units(cls: str) -> str:
     return f"{prefix}-{units:g}"
 
 
+def _row_action_paddings(live_css: str) -> dict[str, float | None]:
+    """Each `.sidebar-row-action.is-*` modifier, and the right padding it sets, in units.
+
+    A modifier that states none is absent here, and the caller falls back to the base rule.
+    None means it states one this cannot read, which is not the same as stating none: reading
+    it as the base value would credit the action with padding it does not have.
+
+    This exists because the base `pr-1.5` is not what every action gets. The container is
+    justify-end, so its right padding is what decides where the glyph sits, and
+    `.sidebar-row-action.is-unpin-action` deliberately overrides it to `0.125rem` to close the
+    gap to the options button. Applying the base to every action put the pin's reach at 15
+    when it is 14, and that false floor rejected the project row's perfectly sufficient
+    `pr-14`.
+    """
+    paddings: dict[str, float | None] = {}
+    for match in re.finditer(r"\.sidebar-row-action\.(is-[\w-]+)\s*\{([^}]*)\}", live_css):
+        body = match.group(2)
+        readable = re.search(r"\bpadding-right:\s*([\d.]+)rem\s*;", body)
+        if readable:
+            paddings[match.group(1)] = float(readable.group(1)) / _SPACING_REM
+            continue
+        applied = re.search(r"@apply[^;]*(?<![\w-])pr-(\d+(?:\.\d+)?)(?![\w.-])", body)
+        if applied:
+            paddings[match.group(1)] = float(applied.group(1))
+            continue
+        if re.search(r"\bpadding-right:", body) or re.search(r"@apply[^;]*(?<![\w-])pr-", body):
+            paddings[match.group(1)] = None
+    return paddings
+
+
 def _row_action_offsets(live_css: str) -> dict[str, float | None]:
     """Each `.sidebar-row-action.is-*` modifier the stylesheet defines, and the right edge it
     sets, in Tailwind spacing units.
@@ -960,7 +990,12 @@ def _row_action_offsets(live_css: str) -> dict[str, float | None]:
 
 
 def _labelled_actions(
-    source: str, block: str, variant: str, offsets: dict[str, float | None]
+    source: str,
+    block: str,
+    variant: str,
+    offsets: dict[str, float | None],
+    paddings: dict[str, float | None],
+    base_padding: float,
 ) -> dict[int, tuple[str, float]]:
     """The row actions one variant renders: label -> whether it is the offset one.
 
@@ -1038,7 +1073,26 @@ def _labelled_actions(
         )
         if not owners:
             shared.append(name)
-        found[at] = (name, max((offsets[token] or 0.0 for token in modifiers), default = 0.0))
+        # The padding this action actually gets, not the base rule's. A modifier may override
+        # it, and `is-unpin-action` does, so crediting every action with `pr-1.5` overstated
+        # the pin's reach by a whole spacing unit.
+        stated = [token for token in modifiers if token in paddings]
+        unreadable_padding = [token for token in stated if paddings[token] is None]
+        assert not unreadable_padding, (
+            f"the {name} action carries {unreadable_padding}, whose right padding index.css "
+            f"states in a spelling this guard cannot read. It reads a bare rem value or an "
+            f"@apply pr-N, so state it that way or teach this guard the other one"
+        )
+        # Last modifier wins is not assumed: more than one stating a padding is an order
+        # question this does not adjudicate, so it is refused rather than guessed.
+        assert len(stated) <= 1, (
+            f"the {name} action carries {stated}, more than one of which sets a right "
+            f"padding. Which one applies is a question of source order in index.css, and "
+            f"this guard does not adjudicate it: state the padding on one modifier"
+        )
+        padding = paddings[stated[0]] if stated else base_padding
+        shift = max((offsets[token] or 0.0 for token in modifiers), default = 0.0)
+        found[at] = (name, shift + padding)
     # Both rows carry an action that no `variant === "..."` gate guards, and every assertion
     # below is written about a row that has one. Without this the per-variant pins alone keep
     # both maps non-empty, so deleting the shared options button, or letting it lose
@@ -1489,7 +1543,9 @@ def test_chat_sidebar_row_actions_visible_on_coarse_pointers():
     # claimed. Raise the floor here once the rows are changed, not before.
     offsets = _row_action_offsets(live_css)
     actions = {
-        name: _labelled_actions(sidebar_source, applied, name, offsets)
+        name: _labelled_actions(
+            sidebar_source, applied, name, offsets, _row_action_paddings(live_css), inner_padding
+        )
         for name in ("project", "recent")
     }
     assert all(actions.values()), (
@@ -1498,7 +1554,7 @@ def test_chat_sidebar_row_actions_visible_on_coarse_pointers():
         f"{ {name: len(found) for name, found in actions.items()} }"
     )
     reach = {
-        name: max(shift + inner_padding + glyph_size for _, shift in found.values())
+        name: max(edge + glyph_size for _, edge in found.values())
         for name, found in actions.items()
     }
     floors = {"project-chat-item": reach["project"], "recent-item": reach["recent"]}
