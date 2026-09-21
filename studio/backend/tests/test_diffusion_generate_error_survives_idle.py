@@ -99,7 +99,7 @@ def test_the_progress_route_puts_the_classified_reason_on_the_response():
     value, not the engine's."""
     src = _src("routes/inference.py")
     at = src.index("async def diffusion_generate_progress")
-    body = src[at : at + 3000]
+    body = src[at : at + 4500]
     assert '"error": _generate_failure_detail(raw_error) if raw_error else None' in body, (
         "the progress route no longer classifies the retained reason"
     )
@@ -147,7 +147,7 @@ def test_the_route_forwards_the_attempt_id_and_sends_it_only_beside_a_reason():
         "the generate route no longer forwards the attempt id to the engine"
     )
     at = src.index("async def diffusion_generate_progress")
-    body = src[at : at + 3500]
+    body = src[at : at + 4500]
     assert 'if not progress.get("error"):' in body
     assert 'progress.pop("generation_attempt", None)' in body
 
@@ -223,7 +223,7 @@ def test_the_progress_route_answers_about_the_attempt_it_was_asked_about():
     """Named, the answer is that attempt's; unnamed, the retained slot answers as before."""
     src = _src("routes/inference.py")
     at = src.index("async def diffusion_generate_progress")
-    body = src[at : at + 3500]
+    body = src[at : at + 4500]
     assert "attempt_id: Optional[str] = Query(" in body, (
         "the progress route cannot be asked about a particular attempt"
     )
@@ -339,3 +339,121 @@ def test_an_attempt_specific_progress_answer_is_only_about_that_attempt():
     # an older client read.
     unnamed = answer(running_for_someone_else, None)
     assert unnamed.active is True and unnamed.step == 7
+
+
+def test_a_retained_outcome_is_the_callers_own_account(monkeypatch):
+    """Keyed by account as well as attempt, and answered before the guards that hide
+    another account's generation.
+
+    With managed accounts, a second account can start a generation between this caller's
+    failure and its next poll. The foreign-generation guard answers idle and hidden, which a
+    client that had already seen its own run active reads as success. Answering the named
+    lookup first is only safe because the key is account-qualified, so this test pins both
+    halves: the caller reads its own reason, and another account cannot read it.
+    """
+    from types import SimpleNamespace
+
+    from core.inference.generate_outcomes import (
+        _retain_generate_failure,
+        generate_failure_for_attempt,
+    )
+    from utils.account_context import AccountContext, run_as
+
+    engine = SimpleNamespace()
+    ada = AccountContext("acct-a", "ada")
+    bo = AccountContext("acct-b", "bo")
+
+    run_as(ada, _retain_generate_failure, engine, "attempt-1", "CUDA out of memory")
+    assert run_as(ada, generate_failure_for_attempt, engine, "attempt-1") == (
+        "CUDA out of memory"
+    )
+    assert run_as(bo, generate_failure_for_attempt, engine, "attempt-1") is None, (
+        "another account read an attempt's retained failure"
+    )
+    # And the owner is a third scope again.
+    assert generate_failure_for_attempt(engine, "attempt-1") is None
+
+    # The route answers that lookup ahead of the hiding guards, or the caller never reaches
+    # it while someone else is generating.
+    src = _src("routes/inference.py")
+    at = src.index("async def diffusion_generate_progress")
+    body = src[at : at + 4500]
+    lookup = body.index("generate_failure_for_attempt(get_active_diffusion_engine()")
+    guard = body.index('account_access.generation_is_foreign("diffusion")')
+    assert lookup < guard, (
+        "the named lookup runs after the guard that hides another account's generation"
+    )
+
+
+def test_a_persisting_generation_counts_as_active_only_for_its_own_attempt():
+    """The persist window is global; a poll naming an attempt is not.
+
+    Records being written for any other Studio or OpenAI image request held the override on,
+    so a settling caller saw active and took the end of that window for its own success,
+    skipping the gallery proof.
+    """
+    import asyncio
+
+    import routes.inference as route
+    from core.inference.generate_outcomes import attempt_scope_key
+
+    class _Idle:
+        def generate_progress(self):
+            return {
+                "active": False,
+                "step": 0,
+                "total_steps": 0,
+                "fraction": 0.0,
+                "eta_seconds": None,
+                "error": None,
+                "generation_attempt": None,
+            }
+
+        def status(self):
+            return {"loaded": True, "repo_id": "someone/model"}
+
+    def answer(attempt_id):
+        original = route.account_access
+        try:
+            route.account_access = types.SimpleNamespace(
+                managed_account = lambda: False,
+                generation_is_foreign = lambda *_a, **_k: False,
+                generation_is_mine = lambda *_a, **_k: True,
+                resident_hidden = lambda *_a, **_k: False,
+                hidden_generate_progress_response = lambda cls: cls(),
+            )
+            import core.inference.diffusion_engine_router as router
+
+            original_get = router.get_active_diffusion_engine
+            router.get_active_diffusion_engine = lambda: _Idle()
+            try:
+                return asyncio.run(
+                    route.diffusion_generate_progress(
+                        attempt_id = attempt_id, current_subject = "owner"
+                    )
+                )
+            finally:
+                router.get_active_diffusion_engine = original_get
+        finally:
+            route.account_access = original
+
+    original_count = route._diffusion_persist_active
+    original_attempts = dict(route._diffusion_persist_attempts)
+    try:
+        # Somebody else's records are being written.
+        route._diffusion_persist_active = 1
+        route._diffusion_persist_attempts.clear()
+        route._note_persisting_attempt(attempt_scope_key("attempt-theirs"), 1)
+
+        assert answer("attempt-mine").active is False, (
+            "another attempt's persist window was reported as this caller's activity"
+        )
+        assert answer("attempt-theirs").active is True, (
+            "the attempt whose records ARE being written must still be told so"
+        )
+        # An unnamed poll keeps the global answer: that is what the reload mount probe reads.
+        assert answer(None).active is True
+    finally:
+        route._diffusion_persist_active = original_count
+        route._diffusion_persist_attempts.clear()
+        route._diffusion_persist_attempts.update(original_attempts)

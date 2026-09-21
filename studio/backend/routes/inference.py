@@ -38908,6 +38908,20 @@ async def load_diffusion_model_gated(
 
 # Count of finished generations still writing their PNG/gallery records; generate-progress reports active while above 0. Mutated only on the event loop, so no lock.
 _diffusion_persist_active = 0
+# Which ATTEMPTS are inside that window, so a poll naming one is told about its own records
+# rather than about anyone else's. Same account-qualified key as the retained outcomes.
+_diffusion_persist_attempts: dict[str, int] = {}
+
+
+def _note_persisting_attempt(attempt_id, delta: int) -> None:
+    key = attempt_id if delta < 0 else attempt_id
+    if not key:
+        return
+    held = _diffusion_persist_attempts.get(key, 0) + delta
+    if held > 0:
+        _diffusion_persist_attempts[key] = held
+    else:
+        _diffusion_persist_attempts.pop(key, None)
 
 
 def generation_in_flight() -> bool:
@@ -39115,7 +39129,11 @@ async def generate_diffusion_image(
 
     # Hold generate-progress "active" across the persist so a reload mount probe cannot refresh the gallery before these records exist.
     global _diffusion_persist_active
+    from core.inference.generate_outcomes import attempt_scope_key
+
+    persisting_attempt = attempt_scope_key(request.attempt_id)
     _diffusion_persist_active += 1
+    _note_persisting_attempt(persisting_attempt, 1)
     try:
         with account_access.media_generation("diffusion"):
             records = await asyncio.to_thread(_persist)
@@ -39124,6 +39142,7 @@ async def generate_diffusion_image(
         raise HTTPException(status_code = 500, detail = "Failed to save the generated image.")
     finally:
         _diffusion_persist_active -= 1
+        _note_persisting_attempt(persisting_attempt, -1)
 
     return DiffusionGenerateResponse(images = [GalleryImage(**r) for r in records])
 
@@ -39534,12 +39553,32 @@ async def diffusion_generate_progress(
     ),
     current_subject: str = Depends(get_current_subject),
 ):
+    from core.inference.diffusion_engine_router import get_active_diffusion_engine
+
+    # A caller asking about ITS OWN attempt is answered first, because the guards below hide
+    # whatever is running NOW: with managed accounts another account can start a generation
+    # between this caller's failure and its next poll, and the hidden idle response then
+    # reads as success to a client that had already seen its own run active. The key is
+    # account-qualified, so this can only ever answer about the caller's own attempt.
+    if attempt_id is not None:
+        from core.inference.generate_outcomes import generate_failure_for_attempt
+
+        retained = generate_failure_for_attempt(get_active_diffusion_engine(), attempt_id)
+        if retained:
+            return DiffusionGenerateProgressResponse(
+                active = False,
+                step = 0,
+                total_steps = 0,
+                fraction = 0.0,
+                eta_seconds = None,
+                error = _generate_failure_detail(retained),
+                generation_attempt = attempt_id,
+            )
     if account_access.managed_account() and account_access.generation_is_foreign("diffusion"):
         return account_access.hidden_generate_progress_response(DiffusionGenerateProgressResponse)
     mine = account_access.generation_is_mine("diffusion")
     if not mine and account_access.resident_hidden("diffusion"):
         return account_access.hidden_generate_progress_response(DiffusionGenerateProgressResponse)
-    from core.inference.diffusion_engine_router import get_active_diffusion_engine
 
     if (
         not mine
@@ -39590,8 +39629,17 @@ async def diffusion_generate_progress(
         progress.pop("generation_attempt", None)
     log_media_generation_progress("image", progress)
     # A finished generation still persisting its gallery record counts as active, so a reload probe keeps polling.
+    # Scoped for a named poll: someone else's records being written is not this attempt's
+    # activity, and counting it let a settling caller take the end of that window for its
+    # own success.
     if _diffusion_persist_active > 0 and not progress["active"]:
-        progress = {**progress, "active": True}
+        if attempt_id is None:
+            progress = {**progress, "active": True}
+        else:
+            from core.inference.generate_outcomes import attempt_scope_key
+
+            if _diffusion_persist_attempts.get(attempt_scope_key(attempt_id) or ""):
+                progress = {**progress, "active": True}
     return DiffusionGenerateProgressResponse(**progress)
 
 

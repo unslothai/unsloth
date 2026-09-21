@@ -22,8 +22,23 @@ from typing import Optional
 _RETAINED_GENERATE_FAILURES = 16
 
 
+def attempt_scope_key(attempt_id) -> Optional[str]:
+    """*attempt_id* qualified by the acting account, or None when there is no id.
+
+    The engines are shared across accounts, so an attempt is only identified by the pair.
+    It also makes a named lookup safe to answer before the guards that hide ANOTHER
+    account's generation: a caller can only ever match its own account's attempt.
+    """
+    if not attempt_id:
+        return None
+    from utils.account_context import current_account_id
+
+    return f"{current_account_id()}\x00{attempt_id}"
+
+
 def _retain_generate_failure(engine, attempt_id, reason: str) -> None:
     """Record *reason* against *attempt_id* on *engine*, oldest entries first out."""
+    attempt_id = attempt_scope_key(attempt_id)
     if not attempt_id:
         return
     outcomes = getattr(engine, "_generate_outcomes", None)
@@ -43,6 +58,7 @@ def generate_failure_for_attempt(engine, attempt_id) -> Optional[str]:
     however many have run since. None for an attempt that succeeded, never ran, or has
     aged out.
     """
+    attempt_id = attempt_scope_key(attempt_id)
     if not attempt_id:
         return None
     return (getattr(engine, "_generate_outcomes", None) or {}).get(attempt_id)
