@@ -704,6 +704,20 @@ def _ui_stdio_scope(thread_id: Optional[str], session_id: Optional[str]) -> Opti
     )
 
 
+UI_TOOL_APPROVAL_REQUIRED = "approval_required"
+
+
+def _ui_call_needs_approval(mode: Optional[str], server_id: str, tool_name: str, args: dict) -> bool:
+    """The chat loop's confirm gate, for a call a widget makes instead of the model."""
+    if mode in ("off", "full"):
+        return False
+    if mode == "auto":
+        from core.inference.tools import MCP_TOOL_PREFIX, is_potentially_unsafe_tool_call
+
+        return is_potentially_unsafe_tool_call(f"{MCP_TOOL_PREFIX}{server_id}__{tool_name}", args)
+    return True
+
+
 @router.get("/{server_id}/ui-resource", response_model = McpUiResourceResponse)
 async def read_mcp_ui_resource(
     server_id: str,
@@ -763,7 +777,8 @@ async def call_mcp_ui_tool(
 
     The widget is untrusted HTML, so: ``server_id`` comes from the frame the host
     drew, never the widget's message; the tool must be one this server
-    discovered; and it must declare "app" in its visibility.
+    discovered; it must declare "app" in its visibility; and it passes the same
+    confirm gate a model's call does.
     """
     from state.tool_policy import get_tool_policy
 
@@ -787,6 +802,11 @@ async def call_mcp_ui_tool(
             status_code = 403,
             detail = f"Tool '{tool_name}' is not callable by an MCP app",
         )
+    arguments = payload.arguments or {}
+    if not payload.approved and _ui_call_needs_approval(
+        payload.permission_mode, server_id, tool_name, arguments
+    ):
+        raise HTTPException(status_code = 409, detail = UI_TOOL_APPROVAL_REQUIRED)
 
     headers = parse_server_headers(server)
     try:
@@ -795,7 +815,7 @@ async def call_mcp_ui_tool(
             url = server["url"],
             headers = headers,
             name = tool_name,
-            args = payload.arguments or {},
+            args = arguments,
             timeout = _UI_TOOL_CALL_TIMEOUT,
             use_oauth = bool(server.get("use_oauth")),
             scope = _ui_stdio_scope(payload.thread_id, payload.session_id),

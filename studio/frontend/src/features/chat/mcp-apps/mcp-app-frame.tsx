@@ -3,6 +3,7 @@
 
 "use client";
 
+import { Button } from "@/components/ui/button";
 import { useTheme } from "@/features/settings/stores/theme-store";
 import { apiUrl, isTauri } from "@/lib/api-base";
 import { openLink } from "@/lib/open-link";
@@ -16,11 +17,31 @@ import {
   useState,
 } from "react";
 import {
+  McpUiApprovalRequired,
   callMcpUiTool,
   readMcpUiResource,
   type McpUiResource,
+  type McpUiToolCallResult,
 } from "../api/mcp-servers-api";
 import type { McpUiEnvelope } from "../api/chat-adapter";
+import { useChatRuntimeStore } from "../stores/chat-runtime-store";
+import {
+  MCP_APP_TOOL_DECLINED,
+  mcpAppApprovalScope,
+  mcpAppArgsPreview,
+  mcpAppToolKey,
+} from "./tool-approval";
+
+// A widget cannot stack prompts faster than they can be read.
+const MAX_PENDING_TOOL_CALLS = 8;
+
+// A widget's tool call parked until the user answers it.
+interface PendingToolCall {
+  key: number;
+  name: string;
+  args: Record<string, unknown>;
+  decide: (allow: boolean) => void;
+}
 
 // Reported in the ui/initialize result so a view can adapt rather than guess.
 const UI_PROTOCOL_VERSION = "2026-01-26";
@@ -180,6 +201,12 @@ export function McpAppFrame({
   const [resource, setResource] = useState<McpUiResource | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [height, setHeight] = useState(DEFAULT_HEIGHT);
+  const [pendingCalls, setPendingCalls] = useState<PendingToolCall[]>([]);
+  const pendingKeyRef = useRef(0);
+  const pendingCallsRef = useRef(pendingCalls);
+  pendingCallsRef.current = pendingCalls;
+  const allowToolAlways = useChatRuntimeStore((s) => s.allowToolAlways);
+  const approvalScope = mcpAppApprovalScope(sessionId, threadId);
 
   const { resourceUri } = ui;
 
@@ -291,7 +318,7 @@ export function McpAppFrame({
     // envelope leaves those to the image sentinel rather than carrying a second
     // copy, so an image block arrives with its mimeType and no data. Anything
     // the flattened body would have shown instead is host prose -- an
-    // "[1 image attached...]" note, or a Python repr of structuredContent --
+    // "[1 image returned]" note, or a Python repr of structuredContent --
     // and no part of what the server returned.
     const images = [...(resultImages ?? [])];
     const content: Record<string, unknown>[] = [];
@@ -423,32 +450,72 @@ export function McpAppFrame({
           }
           const args = (params as { arguments?: unknown } | undefined)
             ?.arguments;
+          const callArgs =
+            typeof args === "object" && args !== null
+              ? (args as Record<string, unknown>)
+              : {};
           // serverId is the host's, from the tool part that drew the frame.
-          callMcpUiTool(serverId, {
-            toolName: name,
-            arguments:
-              typeof args === "object" && args !== null
-                ? (args as Record<string, unknown>)
-                : {},
-            threadId,
-            sessionId,
-          })
-            .then((res) => {
-              respond(id, {
-                content: res.content ?? [],
-                ...(res.structured_content !== null
-                  ? { structuredContent: res.structured_content }
-                  : {}),
-                isError: res.is_error,
-                ...(res.meta ? { _meta: res.meta } : {}),
-              });
-            })
+          const send = (approved: boolean) =>
+            callMcpUiTool(serverId, {
+              toolName: name,
+              arguments: callArgs,
+              threadId,
+              sessionId,
+              permissionMode: useChatRuntimeStore.getState().permissionMode,
+              approved,
+            });
+          const deliver = (res: McpUiToolCallResult) =>
+            respond(id, {
+              content: res.content ?? [],
+              ...(res.structured_content !== null
+                ? { structuredContent: res.structured_content }
+                : {}),
+              isError: res.is_error,
+              ...(res.meta ? { _meta: res.meta } : {}),
+            });
+          const refuse = (err: unknown) =>
+            fail(
+              id,
+              INTERNAL_ERROR,
+              err instanceof Error ? err.message : String(err),
+            );
+          const alwaysAllowed =
+            useChatRuntimeStore
+              .getState()
+              .alwaysAllowToolsBySession.get(approvalScope)
+              ?.has(mcpAppToolKey(serverId, name)) ?? false;
+          send(alwaysAllowed)
+            .then(deliver)
             .catch((err: unknown) => {
-              fail(
-                id,
-                INTERNAL_ERROR,
-                err instanceof Error ? err.message : String(err),
-              );
+              if (!(err instanceof McpUiApprovalRequired)) {
+                refuse(err);
+                return;
+              }
+              if (pendingCallsRef.current.length >= MAX_PENDING_TOOL_CALLS) {
+                fail(id, INTERNAL_ERROR, "Too many tool requests are waiting");
+                return;
+              }
+              // The widget is untrusted HTML: it waits for the same answer the
+              // model's call would.
+              pendingKeyRef.current += 1;
+              setPendingCalls((queue) => [
+                ...queue,
+                {
+                  key: pendingKeyRef.current,
+                  name,
+                  args: callArgs,
+                  decide: (allow) => {
+                    if (allow) {
+                      send(true).then(deliver).catch(refuse);
+                      return;
+                    }
+                    respond(id, {
+                      content: [{ type: "text", text: MCP_APP_TOOL_DECLINED }],
+                      isError: true,
+                    });
+                  },
+                },
+              ]);
             });
           return;
         }
@@ -554,6 +621,8 @@ export function McpAppFrame({
       if (!port) return;
       viewPortRef.current?.close();
       viewPortRef.current = port;
+      // Asked by a document that is gone.
+      setPendingCalls([]);
       port.onmessage = handler;
     };
 
@@ -571,6 +640,7 @@ export function McpAppFrame({
     serverId,
     threadId,
     sessionId,
+    approvalScope,
     theme,
     toolName,
   ]);
@@ -598,21 +668,71 @@ export function McpAppFrame({
     );
   }
 
+  const asking = pendingCalls[0];
+  const answer = (allow: boolean, always = false) => {
+    if (!asking) return;
+    if (always) allowToolAlways(approvalScope, mcpAppToolKey(serverId, asking.name));
+    setPendingCalls((queue) => queue.filter((call) => call.key !== asking.key));
+    asking.decide(allow);
+  };
+  const askingArgs = asking ? mcpAppArgsPreview(asking.args) : "";
+
   return (
-    <iframe
-      ref={iframeRef}
-      src={src}
-      // No allow-same-origin, so the widget reaches neither this app's storage
-      // nor its cookies. No allow-downloads, as with the HTML canvas.
-      sandbox="allow-scripts"
-      referrerPolicy="no-referrer"
-      onLoad={onLoad}
-      style={{ height }}
-      title={`${toolName} app`}
-      className={cn(
-        "mt-2 block w-full rounded border border-border bg-background",
-        className,
-      )}
-    />
+    <>
+      <iframe
+        ref={iframeRef}
+        src={src}
+        // No allow-same-origin, so the widget reaches neither this app's storage
+        // nor its cookies. No allow-downloads, as with the HTML canvas.
+        sandbox="allow-scripts"
+        referrerPolicy="no-referrer"
+        onLoad={onLoad}
+        style={{ height }}
+        title={`${toolName} app`}
+        className={cn(
+          "mt-2 block w-full rounded border border-border bg-background",
+          className,
+        )}
+      />
+      {asking ? (
+        <div
+          role="group"
+          aria-label="Tool request from this app"
+          className="mt-1 rounded border border-border bg-muted/30 px-3 py-2 text-ui-12p5"
+        >
+          <div>
+            This app wants to run{" "}
+            <span className="font-mono">{asking.name}</span>
+            {pendingCalls.length > 1
+              ? ` (+${pendingCalls.length - 1} more waiting)`
+              : ""}
+          </div>
+          {askingArgs ? (
+            <pre className="mt-1 max-h-32 overflow-auto whitespace-pre-wrap break-all text-muted-foreground">
+              {askingArgs}
+            </pre>
+          ) : null}
+          <div className="flex flex-wrap items-center gap-2 pt-1">
+            <Button size="xs" onClick={() => answer(true)}>
+              Allow
+            </Button>
+            <Button
+              size="xs"
+              variant="outline"
+              onClick={() => answer(true, true)}
+            >
+              Always allow
+            </Button>
+            <Button
+              size="xs"
+              variant="destructive"
+              onClick={() => answer(false)}
+            >
+              Deny
+            </Button>
+          </div>
+        </div>
+      ) : null}
+    </>
   );
 }

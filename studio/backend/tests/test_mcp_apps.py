@@ -86,7 +86,7 @@ def test_the_envelope_leaves_the_host_image_note_to_the_model():
     blocks = _envelope(flat)["content"]
     assert blocks[0] == {"type": "text", "text": "cpu 12%"}
     # The model still sees the note, so the transcript is unchanged.
-    assert "1 image attached; displayed to the user" in flat
+    assert "1 image returned" in flat
 
 
 def test_every_content_block_reaches_the_view_in_order():
@@ -235,7 +235,7 @@ def test_the_envelope_precedes_the_images_so_both_survive():
     assert _envelope(flat)["structuredContent"] == {"a": 1}
     payload = flat[img_at + len("\n" + MCP_IMAGES_SENTINEL) :]
     assert json.loads(payload) == [{"data": "AAAA", "mimeType": "image/png"}]
-    assert strip_result_for_model(flat) == "shot\n[1 image attached; displayed to the user]"
+    assert strip_result_for_model(flat) == "shot\n[1 image returned]"
 
 
 def test_a_failed_call_renders_no_widget():
@@ -464,7 +464,9 @@ def test_declared_domains_widen_only_their_own_directive():
         "*",  # a blanket opening
         "'unsafe-inline'",
         "javascript:alert(1)",
-        "data:",
+        "https:",  # every host, which is "*" by another name
+        "filesystem:",
+        "data:text/html,<script>1</script>",
         "foo bar",
         "",
     ],
@@ -472,6 +474,20 @@ def test_declared_domains_widen_only_their_own_directive():
 def test_a_domain_that_is_not_a_host_is_dropped(value):
     parse, _ = _csp_helpers()
     assert parse(value) == []
+
+
+def test_local_schemes_are_sources_but_never_a_base_uri():
+    parse, build = _csp_helpers()
+    assert parse("blob:, DATA:") == ["blob:", "data:"]
+    assert parse("blob:", local_schemes = False) == []
+    csp = build([], [], parse("blob:"), [])
+    assert "frame-src blob:;" in csp and "worker-src 'none';" in csp
+
+
+def test_a_blob_worker_is_allowed_only_when_blob_resources_are_declared():
+    parse, build = _csp_helpers()
+    assert "worker-src blob:;" in build([], parse("blob:"), [], [])
+    assert "worker-src 'none';" in build(parse("blob:"), parse("data:"), [], [])
 
 
 def test_the_declared_domain_list_is_bounded():
@@ -486,7 +502,7 @@ from storage import mcp_servers_db  # noqa: E402
 
 def _reset_db(tmp_path, monkeypatch):
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
-    monkeypatch.setattr(mcp_servers_db, "_schema_ready", False)
+    monkeypatch.setattr(mcp_servers_db, "_schema_ready", set())
 
 
 def _server_with_tools(
@@ -723,7 +739,7 @@ def test_a_widget_may_call_an_app_visible_tool(tmp_path, monkeypatch):
     res = asyncio.run(
         routes_mcp.call_mcp_ui_tool(
             "s1",
-            McpUiToolCallRequest(tool_name = "refresh"),
+            McpUiToolCallRequest(tool_name = "refresh", permission_mode = "off"),
             current_subject = "u",
         )
     )
@@ -759,6 +775,86 @@ def test_a_widget_cannot_call_what_it_is_not_allowed_to(tmp_path, monkeypatch, t
     assert exc.value.status_code == status
 
 
+_READ_TOOL = {"name": "get_stats", "meta": {"ui": {"visibility": ["app"]}}}
+_WRITE_TOOL = {"name": "delete_item", "meta": {"ui": {"visibility": ["app"]}}}
+
+
+@pytest.mark.parametrize(
+    "mode, tool_name, arguments, asks",
+    [
+        ("ask", "get_stats", {}, True),
+        ("auto", "get_stats", {}, False),
+        ("auto", "delete_item", {}, True),
+        ("auto", "get_stats", {"path": "/etc/passwd"}, True),  # a read of a credential path
+        ("off", "delete_item", {}, False),
+        ("full", "delete_item", {}, False),
+        (None, "get_stats", {}, True),  # an unstated level fails closed
+        ("nonsense", "get_stats", {}, True),
+    ],
+)
+def test_a_widget_call_waits_for_the_same_answer_the_model_s_would(
+    tmp_path, monkeypatch, mode, tool_name, arguments, asks
+):
+    """The widget is untrusted HTML holding the user's stored credentials for this
+    server, so it cannot be the way around a confirmation the model has to get."""
+    from fastapi import HTTPException
+    from models.mcp_servers import McpUiToolCallRequest
+
+    routes_mcp = _server_with_tools(tmp_path, monkeypatch, [_READ_TOOL, _WRITE_TOOL])
+    calls = []
+    monkeypatch.setattr(
+        routes_mcp,
+        "call_tool_structured_sync",
+        lambda **kw: (calls.append(kw["name"]), {"content": [], "isError": False})[1],
+    )
+
+    def call(approved):
+        return asyncio.run(
+            routes_mcp.call_mcp_ui_tool(
+                "s1",
+                McpUiToolCallRequest(
+                    tool_name = tool_name,
+                    arguments = arguments,
+                    permission_mode = mode,
+                    approved = approved,
+                ),
+                current_subject = "u",
+            )
+        )
+
+    if asks:
+        with pytest.raises(HTTPException) as exc:
+            call(False)
+        assert exc.value.status_code == 409
+        assert exc.value.detail == routes_mcp.UI_TOOL_APPROVAL_REQUIRED
+        assert calls == [], "dispatched before the user answered"
+    else:
+        call(False)
+        assert calls == [tool_name]
+    calls.clear()
+    call(True)
+    assert calls == [tool_name]
+
+
+def test_an_approval_does_not_open_a_tool_the_widget_may_not_call(tmp_path, monkeypatch):
+    from fastapi import HTTPException
+    from models.mcp_servers import McpUiToolCallRequest
+
+    routes_mcp = _server_with_tools(tmp_path, monkeypatch, [_MODEL_ONLY_TOOL])
+    monkeypatch.setattr(
+        routes_mcp, "call_tool_structured_sync", lambda **kw: pytest.fail("dispatched")
+    )
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(
+            routes_mcp.call_mcp_ui_tool(
+                "s1",
+                McpUiToolCallRequest(tool_name = "danger", permission_mode = "off", approved = True),
+                current_subject = "u",
+            )
+        )
+    assert exc.value.status_code == 403
+
+
 def test_a_widget_call_respects_the_tools_off_switch(tmp_path, monkeypatch):
     from fastapi import HTTPException
     from models.mcp_servers import McpUiToolCallRequest
@@ -792,7 +888,12 @@ def test_a_widget_call_rides_the_conversation_stdio_session(tmp_path, monkeypatc
     asyncio.run(
         routes_mcp.call_mcp_ui_tool(
             "s1",
-            McpUiToolCallRequest(tool_name = "refresh", thread_id = "t-1", session_id = "project-p"),
+            McpUiToolCallRequest(
+                tool_name = "refresh",
+                thread_id = "t-1",
+                session_id = "project-p",
+                permission_mode = "off",
+            ),
             current_subject = "u",
         )
     )

@@ -296,6 +296,11 @@ export function readMcpUiResource(
   return mcpRequest(`/${serverId}/ui-resource?${query.toString()}`);
 }
 
+/** The call has to be allowed by the user first; retry it with `approved`. */
+export class McpUiApprovalRequired extends Error {}
+
+const UI_TOOL_APPROVAL_REQUIRED = "approval_required";
+
 /**
  * Relay a tool call a widget asked for. `serverId` comes from the tool part that
  * drew the frame, never from the widget's own message.
@@ -307,15 +312,24 @@ export function callMcpUiTool(
     arguments?: Record<string, unknown>;
     threadId?: string;
     sessionId?: string;
+    permissionMode: string;
+    approved: boolean;
   },
 ): Promise<McpUiToolCallResult> {
-  return mcpRequest(`/${serverId}/ui-tool-call`, {
+  return mcpRequest<McpUiToolCallResult>(`/${serverId}/ui-tool-call`, {
     method: "POST",
     body: {
       tool_name: payload.toolName,
       arguments: payload.arguments ?? {},
       thread_id: payload.threadId ?? null,
       session_id: payload.sessionId ?? null,
+      permission_mode: payload.permissionMode,
+      approved: payload.approved,
     },
+  }).catch((err: unknown) => {
+    if (err instanceof Error && err.message === UI_TOOL_APPROVAL_REQUIRED) {
+      throw new McpUiApprovalRequired(err.message);
+    }
+    throw err;
   });
 }

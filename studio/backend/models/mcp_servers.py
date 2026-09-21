@@ -117,6 +117,9 @@ class McpUiToolCallRequest(BaseModel):
     # Scopes the stdio session to the conversation that produced the widget.
     thread_id: Optional[str] = None
     session_id: Optional[str] = None
+    # The chat's permission level, and whether the user allowed this call.
+    permission_mode: Optional[str] = None
+    approved: bool = False
 
 
 class McpUiToolCallResult(BaseModel):
