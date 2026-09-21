@@ -162,12 +162,27 @@ def test_response_model_badge_is_user_configurable_and_rendered_once_per_message
         "neither ReasoningTrigger's base classes nor its call site carries a class list this "
         "can read, so this guard cannot see the trigger's layout at all"
     )
-    widths = [token for token in ordered if token.startswith("min-w-")]
-    assert widths and widths[-1] == "min-w-0", (
-        f"the reasoning trigger can no longer shrink below its content at every width, so a "
-        f"long summary widens the row past the thread. min-w utilities in cn order: "
-        f"{widths}. Base classes: {base.group(1) if base else None!r}. Call site: "
+    # Grouped by variant, because tailwind-merge resolves each variant separately: `min-w-0
+    # md:min-w-max` keeps both, and above the md breakpoint the trigger stops shrinking while
+    # an unqualified-only scan still reads min-w-0 and calls it fine. So the last min-w in
+    # EVERY variant has to be min-w-0, and there has to be an unqualified one, or the base
+    # case is unstated.
+    widths: dict[str, str] = {}
+    for token in ordered:
+        variant, _, utility = token.rpartition(":")
+        if utility.startswith("min-w-"):
+            widths[variant] = utility
+    offenders = {variant: utility for variant, utility in widths.items() if utility != "min-w-0"}
+    assert not offenders, (
+        f"the reasoning trigger stops shrinking below its content at some width, so a long "
+        f"summary widens the row past the thread there: {offenders} as variant -> effective "
+        f"min-width. Base classes: {base.group(1) if base else None!r}. Call site: "
         f"{call_site!r}"
+    )
+    assert "" in widths, (
+        f"the reasoning trigger states no unqualified min-width, so whether it shrinks at the "
+        f"smallest widths is left to whatever the element defaults to. Base classes: "
+        f"{base.group(1) if base else None!r}. Call site: {call_site!r}"
     )
     header = _class_list(reasoning_src, 'data-slot="reasoning-header"')
     assert header is not None, "the reasoning header row no longer carries a className"
