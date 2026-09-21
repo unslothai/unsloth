@@ -1134,20 +1134,32 @@ def test_desktop_login_validates_off_the_event_loop():
     assert not asyncio.iscoroutinefunction(auth_route.desktop_login)
 
 
+# The two secrets the shipped desktop shell posts to this route on purpose, to learn from the 401
+# that the backend is one it can manage. studio/src-tauri/src/preflight/backend.rs and
+# studio/src-tauri/src/desktop_backend_owner.rs; neither binary can be changed from here.
+_SHIPPED_PROBE_SECRETS = ("desktop-preflight-invalid-secret", "desktop-owner-adoption-invalid-secret")
+
+
+def well_formed_wrong_secret(body = "A"):
+    """A candidate shaped exactly like a real secret, and not one. What a KDF flood would send."""
+    return storage.DESKTOP_SECRET_PREFIX + body * 64
+
+
 def test_desktop_login_throttles_unauthenticated_attempts():
     """The route takes no credential and pays the KDF before it can reject the secret."""
     seed_user(must_change_password = False)
     auth_route = auth_route_module()
     client = auth_client(auth_route)
 
+    secret = well_formed_wrong_secret()
     codes = [
-        client.post("/api/auth/desktop-login", json = {"secret": "desktop-invalid"}).status_code
+        client.post("/api/auth/desktop-login", json = {"secret": secret}).status_code
         for _ in range(auth_route._LOGIN_MAX_FAILS + 3)
     ]
 
     assert codes[0] == 401
     assert 429 in codes
-    blocked = client.post("/api/auth/desktop-login", json = {"secret": "desktop-invalid"})
+    blocked = client.post("/api/auth/desktop-login", json = {"secret": secret})
     assert blocked.status_code == 429
     assert blocked.headers["Retry-After"]
 
@@ -1158,12 +1170,167 @@ def test_desktop_login_still_admits_the_real_shell_after_a_miss():
     auth_route = auth_route_module()
     client = auth_client(auth_route)
 
-    assert (
-        client.post("/api/auth/desktop-login", json = {"secret": "desktop-stale"}).status_code == 401
-    )
-    raw = storage.create_desktop_secret()
+    stale = storage.create_desktop_secret()
+    raw = storage.create_desktop_secret()  # rotation makes the first one a real, well formed miss
+    assert client.post("/api/auth/desktop-login", json = {"secret": stale}).status_code == 401
     admitted = client.post("/api/auth/desktop-login", json = {"secret": raw})
     assert admitted.status_code == 200
     assert admitted.json()["access_token"]
     # The success clears the bucket, so the shell is not throttled by its own earlier miss.
     assert client.post("/api/auth/desktop-login", json = {"secret": raw}).status_code == 200
+
+
+@pytest.mark.parametrize("probe", _SHIPPED_PROBE_SECRETS)
+def test_the_shipped_desktop_probes_never_consume_the_login_budget(probe):
+    """The desktop app's own compatibility probes must not be read as attempts on the credential.
+
+    The shell posts one of these on every preflight, on every 15s watchdog tick, once per candidate
+    port it finds alive, and around every install mutation. Thirty in a minute is ordinary. Counting
+    them means the next probe, and the valid secret exchange that follows it, both get a 429, which
+    the shell reads as its own healthy backend being unmanageable.
+    """
+    seed_user(must_change_password = False)
+    auth_route = auth_route_module()
+    client = auth_client(auth_route)
+
+    codes = [
+        client.post("/api/auth/desktop-login", json = {"secret": probe}).status_code
+        for _ in range(auth_route._LOGIN_MAX_FAILS * 3)
+    ]
+
+    assert codes == [401] * len(codes)
+    assert not auth_route._LOGIN_BUCKETS
+    assert not auth_route._LOGIN_IP_BUCKETS
+    raw = storage.create_desktop_secret()
+    assert client.post("/api/auth/desktop-login", json = {"secret": raw}).status_code == 200
+
+
+def test_the_shipped_desktop_probe_is_answered_during_a_real_lockout():
+    """A lockout earned by real guesses must still not turn a probe's 401 into a 429.
+
+    The shell cannot tell a throttled backend from an incompatible one: anything but 401 is
+    ``desktop_login_not_found`` or ``desktop_login_probe_failed``. So the shape check has to come
+    before the bucket is read, not just before it is written.
+    """
+    seed_user(must_change_password = False)
+    auth_route = auth_route_module()
+    client = auth_client(auth_route)
+    guess = well_formed_wrong_secret()
+
+    for _ in range(auth_route._LOGIN_MAX_FAILS):
+        client.post("/api/auth/desktop-login", json = {"secret": guess})
+    assert client.post("/api/auth/desktop-login", json = {"secret": guess}).status_code == 429
+
+    for probe in _SHIPPED_PROBE_SECRETS:
+        assert client.post("/api/auth/desktop-login", json = {"secret": probe}).status_code == 401
+    # And the probes did not clear the lockout they were answered through.
+    assert client.post("/api/auth/desktop-login", json = {"secret": guess}).status_code == 429
+
+
+def test_a_malformed_desktop_secret_never_reaches_the_kdf(monkeypatch):
+    """A candidate that cannot be the stored secret is rejected on shape, before the 100k PBKDF2.
+
+    This is what makes the probes free rather than merely uncounted: the route is unauthenticated,
+    so anything it spends before it can reject an attacker-chosen string, an attacker can spend.
+    """
+    seed_user(must_change_password = False)
+    auth_route = auth_route_module()
+    client = auth_client(auth_route)
+
+    def no_kdf(raw_secret):
+        raise AssertionError(f"PBKDF2 ran for a malformed candidate: {raw_secret!r}")
+
+    monkeypatch.setattr(storage, "_pbkdf2_desktop_secret", no_kdf)
+
+    malformed = [
+        *_SHIPPED_PROBE_SECRETS,
+        "",
+        "desktop-",
+        "not-a-desktop-secret",
+        storage.DESKTOP_SECRET_PREFIX + "A" * 63,
+        storage.DESKTOP_SECRET_PREFIX + "A" * 65,
+        storage.DESKTOP_SECRET_PREFIX + "A" * 63 + "\n",
+        storage.DESKTOP_SECRET_PREFIX + "A" * 63 + "=",
+        storage.DESKTOP_SECRET_PREFIX + "é" * 64,
+    ]
+    for secret in malformed:
+        response = client.post("/api/auth/desktop-login", json = {"secret": secret})
+        assert response.status_code == 401, secret
+        assert response.json()["detail"] == "Desktop authentication failed", secret
+
+
+def test_a_well_formed_guess_still_pays_the_kdf_and_still_throttles(monkeypatch):
+    """The DoS fix is preserved: a shaped guess costs a KDF, and stops costing one once blocked."""
+    seed_user(must_change_password = False)
+    storage.create_desktop_secret()
+    auth_route = auth_route_module()
+    client = auth_client(auth_route)
+
+    real_kdf = storage._pbkdf2_desktop_secret
+    calls = []
+
+    def counting_kdf(raw_secret):
+        calls.append(raw_secret)
+        return real_kdf(raw_secret)
+
+    monkeypatch.setattr(storage, "_pbkdf2_desktop_secret", counting_kdf)
+
+    guess = well_formed_wrong_secret()
+    codes = [
+        client.post("/api/auth/desktop-login", json = {"secret": guess}).status_code
+        for _ in range(auth_route._LOGIN_MAX_FAILS + 3)
+    ]
+
+    assert codes[: auth_route._LOGIN_MAX_FAILS] == [401] * auth_route._LOGIN_MAX_FAILS
+    assert codes[auth_route._LOGIN_MAX_FAILS :] == [429, 429, 429]
+    # The KDF stopped being spent the moment the bucket filled.
+    assert len(calls) == auth_route._LOGIN_MAX_FAILS
+
+
+def test_a_minute_of_watchdog_ticks_does_not_lock_the_shell_out():
+    """The shell's real order over one window, and the order that has no success to rescue it.
+
+    The health watchdog runs every 15s (commands.rs) and probes with ``require_desktop_secret =
+    false``, so a live app emits four uncounterbalanced probes a minute and nothing clears the
+    bucket. The preflight that follows is the one that sends the real secret, and it is the one
+    that has to still work.
+    """
+    seed_user(must_change_password = False)
+    raw = storage.create_desktop_secret()
+    auth_route = auth_route_module()
+    client = auth_client(auth_route)
+
+    for _ in range(8):  # two windows' worth of watchdog ticks, no success in between
+        probe = _SHIPPED_PROBE_SECRETS[1]
+        assert client.post("/api/auth/desktop-login", json = {"secret": probe}).status_code == 401
+
+    admitted = client.post("/api/auth/desktop-login", json = {"secret": raw})
+    assert admitted.status_code == 200, "the shell's own valid secret was throttled out"
+    assert admitted.json()["access_token"]
+
+
+def test_storage_rejects_a_malformed_desktop_secret_before_the_kdf(monkeypatch):
+    """The shape gate lives in storage, so every caller of the validator gets it.
+
+    main.py's shell health probe validates the same secret on a separate path.
+    """
+    seed_user(must_change_password = False)
+    storage.create_desktop_secret()
+
+    def no_kdf(raw_secret):
+        raise AssertionError(f"PBKDF2 ran for a malformed candidate: {raw_secret!r}")
+
+    monkeypatch.setattr(storage, "_pbkdf2_desktop_secret", no_kdf)
+
+    for probe in _SHIPPED_PROBE_SECRETS:
+        assert storage.validate_desktop_secret_with_credential(probe) is None
+        assert storage.validate_desktop_secret(probe) is None
+
+
+def test_every_minted_desktop_secret_is_well_formed():
+    """The gate is keyed to the one shape the minters produce, so it has to track them."""
+    seed_user(must_change_password = False)
+    for _ in range(16):
+        assert storage.desktop_secret_is_well_formed(storage.create_desktop_secret())
+    for probe in _SHIPPED_PROBE_SECRETS:
+        assert not storage.desktop_secret_is_well_formed(probe)

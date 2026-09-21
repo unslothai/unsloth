@@ -544,6 +544,18 @@ def desktop_login(payload: DesktopLoginRequest, request: Request) -> Token | Res
     the KDF runs before an attacker-chosen secret can be rejected, so without it one unauthenticated
     request buys unbounded work.
     """
+    # Before the bucket is read, not just before it is written. The shipped desktop shell posts a
+    # deliberately invalid secret here on every preflight, every 15s watchdog tick and once per live
+    # candidate port, and reads anything but a 401 as a backend it cannot manage
+    # (src-tauri/src/preflight/backend.rs, src-tauri/src/desktop_backend_owner.rs). A candidate that
+    # cannot be the stored secret spends no KDF, so it neither fills the bucket nor is withheld by
+    # one, and the valid exchange that follows it still goes through.
+    if not storage.desktop_secret_is_well_formed(payload.secret):
+        raise HTTPException(
+            status_code = status.HTTP_401_UNAUTHORIZED,
+            detail = "Desktop authentication failed",
+        )
+
     key = _unknown_user_key(request)
     blocked_for = _login_blocked(key)
     if blocked_for > 0:
