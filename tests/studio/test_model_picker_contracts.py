@@ -2359,9 +2359,16 @@ def test_remembered_slots_are_read_through_the_cached_repo_alias():
     # standalone file drops the reported quant first: its settings are saved with no
     # variant, so reading one would key the direct lookup where nothing is written.
     assert (
-        "const direct = resolveInitialConfig( modelId, "
-        "isStandaloneGgufPath(modelId) ? null : ggufVariant, ); "
+        "const direct = resolveInitialConfig(modelId, standalone ? null : ggufVariant); "
         "if (direct.remembered) {" in config
+    )
+    # Then the label, which is the order the backend reads its own override candidates in
+    # (see the ladder asserted in test_a_standalone_gguf_has_one_settings_identity_in_the_picker):
+    # a picker before #7473 keyed the label, and those records are still on disk.
+    assert (
+        "if (standalone && ggufVariant) { const labelled = "
+        "resolveInitialConfig(modelId, ggufVariant); if (labelled.remembered) { "
+        "return labelled; } }" in config
     )
     assert "const alias = publicModelId(modelId);" in config
     # Only a namespaced collapse, the rule residentModelIdMatches applies: every other

@@ -101,6 +101,29 @@ for (const modelId of [
 }
 
 for (const modelId of [
+  "/home/u/.lmstudio/models/unsloth/Qwen3-0.6B-GGUF/Qwen3-0.6B-Q4_K_M.gguf",
+  "Qwen3-0.6B-Q4_K_M.gguf",
+]) {
+  test(`a record the picker keyed by the quant label before #7473 is still read: ${modelId}`, () => {
+    store.clear();
+    savePerModelConfig(modelId, "Q4_K_M", config(5));
+
+    // The bare path first, then the label: the order the backend reads its own override
+    // candidates in. Only the label is on disk here, so it is what answers.
+    const resolved = resolveResidentInitialConfig(modelId, "Q4_K_M");
+    assert.equal(resolved.remembered, true);
+    assert.equal(resolved.config.nParallel, 5);
+
+    // A record under the path still wins over the older labelled one.
+    savePerModelConfig(modelId, null, config(6));
+    assert.equal(
+      resolveResidentInitialConfig(modelId, "Q4_K_M").config.nParallel,
+      6,
+    );
+  });
+}
+
+for (const modelId of [
   "/home/u/.lmstudio/models/unsloth/Qwen3-0.6B-GGUF",
   "org/model.gguf",
 ]) {

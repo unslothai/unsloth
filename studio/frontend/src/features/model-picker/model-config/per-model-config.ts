@@ -1475,12 +1475,19 @@ export function resolveResidentInitialConfig(
   ggufVariant?: string | null,
 ): ResolvedPerModelConfig {
   // a standalone file's reported quant is a label; its settings are saved without a variant.
-  const direct = resolveInitialConfig(
-    modelId,
-    isStandaloneGgufPath(modelId) ? null : ggufVariant,
-  );
+  const standalone = isStandaloneGgufPath(modelId);
+  const direct = resolveInitialConfig(modelId, standalone ? null : ggufVariant);
   if (direct.remembered) {
     return direct;
+  }
+  // The bare path first, then the label, is the order the backend reads its own override
+  // candidates in. A picker before #7473 keyed the label, so those records are still out
+  // there; dropping them would blank a control the model is running with.
+  if (standalone && ggufVariant) {
+    const labelled = resolveInitialConfig(modelId, ggufVariant);
+    if (labelled.remembered) {
+      return labelled;
+    }
   }
   const alias = publicModelId(modelId);
   if (alias === modelId || !alias.includes("/")) {
