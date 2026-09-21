@@ -2421,45 +2421,85 @@ def get_disk_space(current_subject: str = Depends(get_current_subject)):
     Measured at the models root rather than the filesystem root: those are different volumes
     whenever HF_HUB_CACHE, or the Studio root, sits on another disk, and the free space that
     matters is the one the bytes are going to.
+
+    Both roots that receive bytes are measured, not just the hub one. HF_XET_CACHE is resolved
+    independently of HF_HUB_CACHE and holds the Xet chunks every download now streams through,
+    so the two can sit on different volumes and the wrong one has ample room. The TIGHTEST
+    reading wins, because the volume that runs out first is the one that stops the download.
+    Deduplicated by device, so the ordinary install where both live on one disk still costs a
+    single syscall.
     """
     from utils.paths.storage_roots import hf_default_cache_dir, studio_root
 
-    # The ACTIVE hub cache, not the default one. hf_default_cache_dir() is documented to ignore
+    # The ACTIVE caches, not the default ones. hf_default_cache_dir() is documented to ignore
     # HF_HUB_CACHE and the Models Folder setting, so on a machine that moved its downloads to
     # another volume it would answer about ~/.cache/huggingface, which has nothing to do with
     # where the next model lands. One SQLite setting read, no walk.
-    probes = []
+    roots = []
     try:
         from utils.hf_cache_settings import get_hf_cache_paths
-        probes.append(get_hf_cache_paths().hub_cache)
+        paths = get_hf_cache_paths()
+        roots.extend((paths.hub_cache, paths.xet_cache))
     except Exception as exc:  # noqa: BLE001 - a settings read must not cost the reading
-        logger.debug(f"Could not resolve the active hub cache for the disk reading: {exc}")
-    probes.extend((hf_default_cache_dir(), studio_root()))
+        logger.debug(f"Could not resolve the active caches for the disk reading: {exc}")
 
-    # First existing ancestor: the cache directory itself may not have been created yet, and
-    # disk_usage on a missing path raises rather than reporting the volume it would live on.
-    candidates = []
-    for probe in probes:
+    def _read(probe):
+        """The volume *probe* lives on, found at its first existing ancestor.
+
+        disk_usage raises on a path that does not exist, and the cache directory legitimately
+        does not exist yet on a fresh install.
+        """
         try:
-            candidates.extend([probe, *probe.parents])
+            chain = [probe, *probe.parents]
         except (OSError, ValueError, RuntimeError):
-            continue
-    candidates.append(Path(os.path.abspath(os.sep)))
+            return None
+        for candidate in chain:
+            try:
+                usage = shutil.disk_usage(candidate)
+            except (OSError, ValueError):
+                continue
+            try:
+                device = os.stat(candidate).st_dev
+            except OSError:
+                device = None
+            return {
+                "device": device,
+                "path": str(candidate),
+                # Decimal GB, matching /api/system, so the two agree on screen.
+                "total_gb": round(usage.total / 1e9, 2),
+                "free_gb": round(usage.free / 1e9, 2),
+                "percent_used": (
+                    round((usage.total - usage.free) / usage.total * 100, 1) if usage.total else 0
+                ),
+            }
+        return None
 
-    for candidate in candidates:
-        try:
-            usage = shutil.disk_usage(candidate)
-        except (OSError, ValueError):
+    readings = []
+    seen = set()
+    for root in roots:
+        reading = _read(root)
+        if reading is None:
             continue
-        return {
-            "path": str(candidate),
-            # Decimal GB, matching /api/system, so the two agree on screen.
-            "total_gb": round(usage.total / 1e9, 2),
-            "free_gb": round(usage.free / 1e9, 2),
-            "percent_used": (
-                round((usage.total - usage.free) / usage.total * 100, 1) if usage.total else 0
-            ),
-        }
+        # One syscall per VOLUME. A device of None means the stat failed, which is not proof of
+        # a distinct volume, so those are kept rather than collapsed onto each other.
+        key = reading["device"]
+        if key is not None and key in seen:
+            continue
+        if key is not None:
+            seen.add(key)
+        readings.append(reading)
+
+    if not readings:
+        # Nothing resolved: fall back to the same places the old reading used.
+        for probe in (hf_default_cache_dir(), studio_root(), Path(os.path.abspath(os.sep))):
+            reading = _read(probe)
+            if reading is not None:
+                readings.append(reading)
+                break
+
+    if readings:
+        tightest = min(readings, key = lambda r: r["free_gb"])
+        return {key: value for key, value in tightest.items() if key != "device"}
     # Every probe failed. Nulls, not zeros: diskPressure() reads a zero total as psutil having
     # failed and a zero free as a full disk, and this is neither.
     return {"path": None, "total_gb": None, "free_gb": None, "percent_used": None}

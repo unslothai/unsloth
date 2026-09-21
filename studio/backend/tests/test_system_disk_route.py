@@ -75,7 +75,14 @@ def test_the_route_walks_nothing():
     ), "the route reports the default cache, not the configured one"
 
 
-def _load_route(monkeypatch, *, hub_cache, default_cache, studio):
+def _load_route(
+    monkeypatch,
+    *,
+    hub_cache,
+    default_cache,
+    studio,
+    xet_cache = None,
+):
     """Run the real route body against stub resolvers, without importing main.py.
 
     main.py pulls in the whole backend, which no unit test can afford, so the function is
@@ -95,7 +102,9 @@ def _load_route(monkeypatch, *, hub_cache, default_cache, studio):
     storage.hf_default_cache_dir = lambda: default_cache
     storage.studio_root = lambda: studio
     settings = types.ModuleType("utils.hf_cache_settings")
-    settings.get_hf_cache_paths = lambda: types.SimpleNamespace(hub_cache = hub_cache)
+    settings.get_hf_cache_paths = lambda: types.SimpleNamespace(
+        hub_cache = hub_cache, xet_cache = hub_cache if xet_cache is None else xet_cache
+    )
     monkeypatch.setitem(sys.modules, "utils.paths.storage_roots", storage)
     monkeypatch.setitem(sys.modules, "utils.hf_cache_settings", settings)
     exec(compile(_route_source(), "<route>", "exec"), namespace)
@@ -193,3 +202,74 @@ def test_an_unreadable_host_reports_null_not_zero():
     source = _route_source()
     assert '"total_gb": None' in source
     assert '"free_gb": None' in source
+
+
+def test_the_route_reports_the_tighter_of_the_hub_and_xet_volumes(monkeypatch, tmp_path):
+    """HF_XET_CACHE is resolved independently of HF_HUB_CACHE, and every download now streams
+    its chunks through the Xet cache, so the two can sit on different volumes.
+
+    Reading only the hub volume lets an Xet download exhaust its own disk while the route keeps
+    reporting ample space, which is the one answer this endpoint exists to get right. The
+    tighter reading wins: the volume that runs out first is the one that stops the download.
+    """
+    hub = tmp_path / "roomy" / "hub"
+    hub.mkdir(parents = True)
+    xet = tmp_path / "cramped" / "xet"
+    xet.mkdir(parents = True)
+
+    roomy = shutil._ntuple_diskusage(1_000_000_000_000, 100_000_000_000, 900_000_000_000)
+    cramped = shutil._ntuple_diskusage(1_000_000_000_000, 998_000_000_000, 2_000_000_000)
+
+    def fake_usage(path):
+        return cramped if str(xet).startswith(str(path)) or path == xet else roomy
+
+    monkeypatch.setattr(shutil, "disk_usage", fake_usage)
+    # Distinct devices, so the two readings are not deduplicated onto one volume.
+    real_stat = os.stat
+    monkeypatch.setattr(
+        os,
+        "stat",
+        lambda p, *a, **k: types.SimpleNamespace(
+            st_dev = 2 if str(p).startswith(str(tmp_path / "cramped")) else 1
+        )
+        if str(p).startswith(str(tmp_path))
+        else real_stat(p, *a, **k),
+    )
+
+    route = _load_route(
+        monkeypatch,
+        hub_cache = hub,
+        xet_cache = xet,
+        default_cache = tmp_path / "default",
+        studio = tmp_path / "s",
+    )
+    reading = route(current_subject = "alice")
+
+    assert reading["free_gb"] == 2.0, "the roomy hub volume masked the full Xet volume"
+    assert reading["path"] == str(xet)
+
+
+def test_one_volume_is_read_once(monkeypatch, tmp_path):
+    """The negative control for the test above, and the cost claim in the docstring.
+
+    Hub and Xet share a volume on an ordinary install. If that were read twice the route would
+    pay two syscalls for one answer on every machine to save one on the rare split install.
+    """
+    both = tmp_path / "cache"
+    (both / "hub").mkdir(parents = True)
+    (both / "xet").mkdir(parents = True)
+
+    calls = []
+    real_usage = shutil.disk_usage
+    monkeypatch.setattr(shutil, "disk_usage", lambda p: (calls.append(str(p)), real_usage(p))[1])
+
+    route = _load_route(
+        monkeypatch,
+        hub_cache = both / "hub",
+        xet_cache = both / "xet",
+        default_cache = tmp_path / "default",
+        studio = tmp_path / "s",
+    )
+    route(current_subject = "alice")
+
+    assert len(calls) == 2, f"expected one reading per root before dedup, got {calls}"
