@@ -890,6 +890,10 @@ class _PinnedNonMetadataTransport(_PinnedPublicTransport):
 # a gateway session crossing accounts. Keyed by account, and bounded by the accounts that exist.
 _managed_clients: dict[tuple[str, bool], httpx.AsyncClient] = {}
 _managed_clients_lock = threading.Lock()
+# Accounts whose clients were retired. Bounded: it only has to outlive the requests that were
+# already in flight when the account went away.
+_retired_accounts: set[str] = set()
+_RETIRED_ACCOUNTS_MAX = 1024
 
 
 def retire_account_clients(account_id: str) -> int:
@@ -903,6 +907,12 @@ def retire_account_clients(account_id: str) -> int:
     with _managed_clients_lock:
         retired = [_managed_clients.pop(key) for key in list(_managed_clients)
                    if key[0] == account_id]
+        # Tombstoned, because a request that authenticated before the account was deactivated can
+        # reach `_client()` after this sweep and would otherwise re-insert an entry nothing sweeps
+        # again. Such a request still gets a working client, it is just not kept.
+        _retired_accounts.add(account_id)
+        while len(_retired_accounts) > _RETIRED_ACCOUNTS_MAX:
+            _retired_accounts.pop()
     for client in retired:
         try:
             asyncio.get_running_loop().create_task(client.aclose())
@@ -921,14 +931,17 @@ def _client() -> httpx.AsyncClient:
         return _http_client
     # Read per call, so a flip takes effect without a restart.
     allowed = get_managed_private_provider_urls_allowed()
-    key = (current_account_id(), allowed)
+    account_id = current_account_id()
+    key = (account_id, allowed)
     with _managed_clients_lock:
         client = _managed_clients.get(key)
-        if client is None:
-            transport = (
-                _PinnedNonMetadataTransport() if allowed else _PinnedPublicTransport()
-            )
-            client = httpx.AsyncClient(transport = transport, trust_env = False)
+        if client is not None:
+            return client
+        transport = _PinnedNonMetadataTransport() if allowed else _PinnedPublicTransport()
+        client = httpx.AsyncClient(transport = transport, trust_env = False)
+        # A retired account's request is served but not cached: retirement has already swept,
+        # and nothing would sweep an entry made after it.
+        if account_id not in _retired_accounts:
             _managed_clients[key] = client
         return client
 

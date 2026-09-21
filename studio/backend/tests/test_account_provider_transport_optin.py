@@ -27,8 +27,10 @@ BOB = AccountContext("b" * 32, "bob")
 @pytest.fixture(autouse = True)
 def fresh_singleton(monkeypatch):
     monkeypatch.setattr(external_provider, "_managed_clients", {}, raising = False)
+    monkeypatch.setattr(external_provider, "_retired_accounts", set(), raising = False)
     yield
     external_provider._managed_clients = {}
+    external_provider._retired_accounts = set()
 
 
 @pytest.fixture
@@ -189,3 +191,16 @@ def test_account_retirement_calls_it(switch):
 
     source = inspect.getsource(accounts_routes.retire_account_roots)
     assert "retire_account_clients" in source
+
+
+def test_a_request_after_retirement_is_served_but_not_cached(switch):
+    """A request that authenticated before deletion can reach _client() after the sweep; it
+    gets a working client, and nothing is left behind for an account nothing sweeps again."""
+    client_as(ALICE)
+    external_provider.retire_account_clients(ALICE.account_id)
+
+    late = client_as(ALICE)
+    assert late is not None
+    assert not [key for key in external_provider._managed_clients if key[0] == ALICE.account_id]
+    # And it is a fresh object each time rather than a cached one.
+    assert client_as(ALICE) is not late

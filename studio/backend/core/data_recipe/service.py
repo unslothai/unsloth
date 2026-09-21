@@ -157,6 +157,10 @@ def _require_public_provider_endpoint(endpoint: str) -> None:
     url = str(endpoint or "")
     if get_managed_private_provider_urls_allowed():
         try:
+            # The switch lifts HTTPS-only and public-only, not http(s)-only: everywhere else a
+            # provider URL is one of those two schemes, and this gate has no validator behind it.
+            if urlsplit(url).scheme not in ("http", "https"):
+                raise ValueError("Provider endpoints must use http or https.")
             provider_address_excluding_metadata(url)
         except ValueError as exc:
             raise HTTPException(

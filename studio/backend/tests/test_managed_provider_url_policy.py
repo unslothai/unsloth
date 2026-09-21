@@ -251,3 +251,16 @@ def test_the_refusal_stops_naming_the_switch_when_the_environment_holds_it(
     with pytest.raises(ValueError) as refusal:
         providers.validate_provider_base_url(url)
     assert "Settings > General" in str(refusal.value)
+
+
+@pytest.mark.parametrize("url", ["ftp://192.168.1.50/model", "file:///etc/passwd"])
+def test_the_recipe_endpoint_check_still_requires_http_with_the_setting_on(
+    monkeypatch, as_alice, url
+):
+    """The switch lifts HTTPS-only and public-only, not http(s)-only."""
+    from core.data_recipe import service
+
+    _allow(monkeypatch, True)
+    with pytest.raises(Exception) as refusal:
+        service._require_public_provider_endpoint(url)
+    assert "http" in str(getattr(refusal.value, "detail", refusal.value)).lower()
