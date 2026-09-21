@@ -710,16 +710,54 @@ def test_a_refused_root_with_no_usable_temp_root_still_publishes_nothing(monkeyp
         assert key not in os.environ, key
 
 
-def test_an_explicit_spaced_compiler_cache_is_left_alone(monkeypatch, tmp_path):
-    """Only a default we invented is ours to withhold. A caller who set the variable chose it,
-    and silently dropping it would send their cache somewhere they did not ask for."""
-    chosen = tmp_path / "their choice"
+def test_an_explicit_compiler_cache_is_left_alone_when_the_builders_can_read_it(
+    monkeypatch, tmp_path
+):
+    """A caller who set the variable chose it, and a path the builders can read is carried out."""
+    chosen = tmp_path / "their-choice"
     monkeypatch.setenv("TORCHINDUCTOR_CACHE_DIR", str(chosen))
     sr = _load_storage_roots()
 
     sr._setup_cache_env()
 
     assert os.environ["TORCHINDUCTOR_CACHE_DIR"] == str(chosen)
+
+
+def test_an_inherited_unreadable_compiler_cache_is_refused(monkeypatch, tmp_path):
+    """The one thing an explicit value cannot buy: a path the builders cannot paste in.
+
+    Honouring it is not carrying out a preference, it is guaranteeing a failed compile, since
+    the command is built by pasting the path in unquoted. And it arrives by routes nobody chose.
+    Windows persists this variable to the account, so an upgrade inherits what the OLD setup
+    wrote, through any shell already open and through Tauri's relaunch, which spawns the
+    replacement from the running desktop process. Clearing the stored copy cannot reach a
+    process that already read it, so the refusal has to be where the path is about to be used.
+
+    Nothing is destroyed by refusing: the pin is process-local and the cache is regenerable,
+    which is why setup.ps1 still establishes provenance before it deletes a stored value.
+    """
+    monkeypatch.setenv("TORCHINDUCTOR_CACHE_DIR", str(tmp_path / "their choice"))
+    sr = _load_storage_roots()
+    (tmp_path / "tmp").mkdir()
+    monkeypatch.setattr(sr.tempfile, "gettempdir", lambda: str(tmp_path / "tmp"))
+
+    sr._setup_cache_env()
+
+    landed = os.environ.get("TORCHINDUCTOR_CACHE_DIR")
+    assert landed != str(tmp_path / "their choice")
+    assert landed is not None, "a usable temporary root was available, so it should be used"
+    assert not sr.toolchain_path_unparseable(landed)
+
+
+def test_the_refusal_only_applies_to_the_toolchain_keys(monkeypatch, tmp_path):
+    """A spaced HuggingFace cache is nobody's compiler argument and stays exactly as given."""
+    chosen = tmp_path / "their choice"
+    monkeypatch.setenv("HF_HUB_CACHE", str(chosen))
+    sr = _load_storage_roots()
+
+    sr._setup_cache_env()
+
+    assert os.environ["HF_HUB_CACHE"] == str(chosen)
 
 
 def test_default_install_leaves_the_shared_hf_cache_alone(monkeypatch, tmp_path):

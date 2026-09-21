@@ -1281,9 +1281,35 @@ def _setup_cache_env() -> None:
     for key, value in defaults.items():
         # Blank counts as unset: an inherited KEY= would otherwise pin the cache to "", which puts an empty entry on
         # sys.path and sends the compiler to the system temp directory instead.
-        if not (os.environ.get(key) or "").strip():
-            # An explicit value is still honoured above: the caller chose it, and only a default
-            # we invented is ours to withhold.
+        inherited = (os.environ.get(key) or "").strip()
+        # An explicit value is the caller's and is honoured, with one exception. A toolchain path
+        # the C++ builders cannot read is not a preference that can be carried out: the command
+        # is built by pasting it in unquoted, so the compile fails whatever anyone intended. It
+        # also arrives here by routes nobody chose. Windows persists the value to the account, so
+        # an upgrade inherits the path the OLD setup wrote through any shell that was already
+        # open and through Tauri's relaunch, which spawns the replacement from the running
+        # desktop process. Clearing the registry cannot reach a process that has already read it,
+        # so the refusal belongs where the path is about to be used instead of at every door it
+        # comes in by. Process-local and losing nothing: the cache is regenerable and no stored
+        # configuration is touched, which is why setup.ps1 still asks about provenance before it
+        # deletes anything.
+        if inherited and _toolchain_unsafe(key, inherited):
+            # Seeded from the default, not from the stale value, so the healed process and a
+            # clean install share one directory instead of accumulating one per stale path.
+            fallback = parseable_cache_fallback(key, value)
+            logger.debug(
+                "refusing inherited %s=%s: the C++ builders cannot paste it into a command line "
+                "unquoted; using %s",
+                key,
+                inherited,
+                fallback if fallback is not None else "no pin at all",
+            )
+            if fallback is not None:
+                os.environ[key] = fallback
+            else:
+                os.environ.pop(key, None)
+            continue
+        if not inherited:
             if _toolchain_unsafe(key, value):
                 # Unset is not automatically safe. torch's own default is
                 # <gettempdir>/torchinductor_<user>, and it sanitises only [\\/:*?"<>|], so a
