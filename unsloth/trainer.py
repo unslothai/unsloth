@@ -455,9 +455,20 @@ def _create_unsloth_optimizer(
     optimizer_kwargs,
     embedding_lr = 5e-5,
     require_embedding_match = False,
+    weight_decay = 0.0,
+    decay_parameter_names = None,
 ):
     lr = optimizer_kwargs["lr"]
-    weight_decay = optimizer_kwargs.get("weight_decay", 0.0)
+    # transformers keeps the decay on the param groups and only puts it in optimizer_kwargs for
+    # schedule-free and stable_adamw, so reading it from there meant the 0.0 default always won
+    # and embedding_learning_rate silently trained the whole model with no weight decay.
+    # `_create_q_galore_optimizer` below already reads `self.args.weight_decay`.
+    weight_decay = optimizer_kwargs.get("weight_decay", weight_decay)
+    # Biases and norm weights are excluded from decay on the path this replaces
+    # (Trainer.get_decay_parameter_names), so keep them out of it here too.
+    if decay_parameter_names is None:
+        decay_parameter_names = [name for name, _ in model.named_parameters()]
+    decay_parameter_names = set(decay_parameter_names)
 
     param_groups = {
         "non_embeddings": {},
@@ -492,15 +503,15 @@ def _create_unsloth_optimizer(
 
     optimizer_grouped_parameters = [
         {
-            "params": list(param_groups["non_embeddings"].values()),
-            "weight_decay": weight_decay,
-            "lr": lr,
-        },
-        {
-            "params": list(param_groups["embeddings"].values()),
-            "weight_decay": weight_decay,
-            "lr": embedding_lr,
-        },
+            "params": [
+                param for name, param in param_groups[group].items()
+                if (name in decay_parameter_names) is decays
+            ],
+            "weight_decay": weight_decay if decays else 0.0,
+            "lr": group_lr,
+        }
+        for group, group_lr in (("non_embeddings", lr), ("embeddings", embedding_lr))
+        for decays in (True, False)
     ]
     optimizer = optimizer_cls(optimizer_grouped_parameters, **optimizer_kwargs)
     return optimizer
@@ -549,6 +560,8 @@ class UnslothTrainer(SFTTrainer):
                 optimizer_kwargs,
                 embedding_learning_rate,
                 require_embedding_match = model is not None,
+                weight_decay = self.args.weight_decay,
+                decay_parameter_names = self.get_decay_parameter_names(target_model),
             )
         return self.optimizer
 
