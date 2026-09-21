@@ -95,7 +95,6 @@ def _env(home: Path, **overrides: str) -> dict[str, str]:
     return env
 
 
-@NEEDS_POSIX_BASH
 def _master_root_answer(tmp_path: Path, environment: str) -> str:
     """What uninstall.ps1's own _MasterRoot answers, with *environment* run before it.
 
@@ -124,6 +123,7 @@ foreach ($n in @("_ExpandTilde", "_MasterRoot")) {{
     return out
 
 
+@NEEDS_POSIX_BASH
 def test_a_master_root_puts_the_runtimes_beside_studio(tmp_path):
     root = tmp_path / "portable"
     (root / "studio").mkdir(parents = True)
