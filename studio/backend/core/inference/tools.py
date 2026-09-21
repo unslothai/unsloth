@@ -16554,15 +16554,6 @@ def _check_signal_escape_patterns(code: str):
             return out or [("", False)]
         return [("", False)]
 
-    def _unwrapped_url_arg(node: ast.AST) -> ast.AST:
-        """`urlopen(Request(url))` carries the destination one call further in, so read it there."""
-        if isinstance(node, ast.Call) and node.args:
-            f = node.func
-            name = f.attr if isinstance(f, ast.Attribute) else getattr(f, "id", "")
-            if name == "Request":
-                return node.args[0]
-        return node
-
     class NetworkAndIoVisitor(ast.NodeVisitor):
         def __init__(self):
             # Alias -> the module it binds, and bare name -> the network function it binds. The shell-exec half of
@@ -16574,7 +16565,11 @@ def _check_signal_escape_patterns(code: str):
             # only unrecognised candidates. Accumulating keeps resolution monotone, so a binding
             # anywhere can add a way to recognise a call and never take one away.
             self.module_aliases: dict[str, set[str]] = {}
-            self.func_aliases: dict[str, str] = {}
+            # Name -> every network function ever bound to it, accumulated for the same reason:
+            # `from requests import get as fetch` followed by a nested, never-called
+            # `from socket import inet_aton as fetch` still calls `requests.get` at module level,
+            # and overwriting the entry resolved the call to the unrecognised socket function.
+            self.func_aliases: dict[str, set[str]] = {}
             # Name -> every string literal it can hold, None when unreadable. `url =
             # "https://huggingface.co/x"; requests.get(url)` is still a host this screen can read.
             self.literal_names = _collect_literal_names(tree)
@@ -16686,43 +16681,78 @@ def _check_signal_escape_patterns(code: str):
                     # from urllib import request
                     self.module_aliases.setdefault(bound, set()).add(fq)
                 elif module in _NETWORK_MODULES:
-                    self.func_aliases[bound] = fq  # from urllib.request import urlopen
+                    # from urllib.request import urlopen
+                    self.func_aliases.setdefault(bound, set()).add(fq)
             self.generic_visit(node)
 
-        def _module_named_by(self, value) -> "str | None":
-            """The network module a value names, following aliases, so `r = requests` keeps
-            `r.get(...)` screened instead of letting the assignment shed the module."""
+        def _modules_named_by(self, value) -> "set[str]":
+            """Every network module a value can name, following aliases, so `r = requests` keeps
+            `r.get(...)` screened instead of letting the assignment shed the module.
+
+            EVERY candidate is carried, not the first: `import requests as r` with a nested,
+            never-executed `import aiohttp as r` leaves `r` as `requests` at runtime, and
+            collapsing the set to one candidate resolved the later `s = r; s.get(...)` to the
+            unrecognised `aiohttp.get` and let a hostile host through.
+            """
             parts: list[str] = []
             cur = value
             while isinstance(cur, ast.Attribute):
                 parts.insert(0, cur.attr)
                 cur = cur.value
             if not isinstance(cur, ast.Name):
-                return None
+                return set()
             parts.insert(0, cur.id)
-            if parts[0] in self.module_aliases:
-                # Any one of them naming a network module is enough for the caller's question.
-                parts = sorted(self.module_aliases[parts[0]])[0].split(".") + parts[1:]
-            fq = ".".join(parts)
-            return fq if fq in _NETWORK_MODULES else None
+            heads = self.module_aliases.get(parts[0]) or {parts[0]}
+            found = {".".join(head.split(".") + parts[1:]) for head in heads}
+            return {fq for fq in found if fq in _NETWORK_MODULES}
 
         def visit_Assign(self, node):
             self._rebind(node)
-            carried = self._module_named_by(node.value)
+            carried = self._modules_named_by(node.value)
             if carried:
                 for target in node.targets:
                     if isinstance(target, ast.Name):
-                        self.module_aliases.setdefault(target.id, set()).add(carried)
+                        self.module_aliases.setdefault(target.id, set()).update(carried)
             self.generic_visit(node)
 
-        def visit_Call(self, node):
+        def _fq_candidates(self, func) -> "list[str]":
+            """Every fully qualified name a callee could be, written spelling first."""
             parts: list[str] = []
-            cur = node.func
+            cur = func
             while isinstance(cur, ast.Attribute):
                 parts.insert(0, cur.attr)
                 cur = cur.value
             if isinstance(cur, ast.Name):
                 parts.insert(0, cur.id)
+            written = ".".join(parts) if parts else ""
+            candidates = [written] if written else []
+            if len(parts) > 1 and parts[0] in self.module_aliases:
+                for module in sorted(self.module_aliases[parts[0]]):
+                    candidates.append(".".join(module.split(".") + parts[1:]))
+            elif len(parts) == 1 and parts[0] in self.func_aliases:
+                candidates.extend(sorted(self.func_aliases[parts[0]]))
+            elif len(parts) == 1 and self.star_modules:
+                starred = self._star_imported_fq(parts[0])
+                if starred:
+                    candidates.append(starred)
+            return candidates
+
+        def _unwrapped_url_arg(self, node: ast.AST) -> ast.AST:
+            """`urlopen(Request(url))` carries the destination one call further in, so read it
+            there, but only once the callee is PROVEN to be `urllib.request.Request`.
+
+            Trusting any callee spelled `Request` reads the wrong value: a local
+            `def Request(_): return "https://evil.example/x"` made the screen check the
+            allowlisted argument while the runtime call sent the request somewhere else. An
+            unproven callee is left wrapped, so it reads as a call rather than a literal and the
+            fail-closed rule refuses it.
+            """
+            if isinstance(node, ast.Call) and node.args:
+                if "urllib.request.Request" in self._fq_candidates(node.func):
+                    return node.args[0]
+            return node
+
+        def visit_Call(self, node):
             # Resolving an alias may only ADD a way to recognise this call, never take one away.
             # The alias map is not scope aware on purpose, so an `import socket as requests` inside
             # a function body or an untaken branch would otherwise rewrite a module-level
@@ -16730,17 +16760,7 @@ def _check_signal_escape_patterns(code: str):
             # hardcoded host past a screen that refuses it on `main`. Both spellings are checked and
             # the recognised one decides; the cost of checking a name the code does not really call
             # is a refusal of a call that would not have run anyway.
-            written = ".".join(parts) if parts else ""
-            fq_candidates = [written] if written else []
-            if len(parts) > 1 and parts[0] in self.module_aliases:
-                for module in sorted(self.module_aliases[parts[0]]):
-                    fq_candidates.append(".".join(module.split(".") + parts[1:]))
-            elif len(parts) == 1 and parts[0] in self.func_aliases:
-                fq_candidates.append(self.func_aliases[parts[0]])
-            elif len(parts) == 1 and self.star_modules:
-                starred = self._star_imported_fq(parts[0])
-                if starred:
-                    fq_candidates.append(starred)
+            fq_candidates = self._fq_candidates(node.func)
             recognised = [
                 c for c in fq_candidates if any(c.startswith(p) for p in _NETWORK_FQ_PREFIXES)
             ]
@@ -16834,7 +16854,7 @@ def _check_signal_escape_patterns(code: str):
                     # for a literal host only and never made to fail closed.
                     destination = node.args[0]
                 if destination is not None:
-                    a0 = _unwrapped_url_arg(destination)
+                    a0 = self._unwrapped_url_arg(destination)
                     is_tuple = isinstance(a0, ast.Tuple)
                     read = None if is_tuple and not a0.elts else (a0.elts[0] if is_tuple else a0)
                     candidates = (

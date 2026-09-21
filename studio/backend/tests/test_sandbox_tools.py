@@ -471,6 +471,103 @@ class TestDestinationWhereverTheCallCarriesIt:
         _ok(code)
 
 
+class TestAliasResolutionOnlyEverAddsCandidates:
+    """A binding the code does not really execute must not be able to REPLACE what the screen
+    knows a name can be. Each case below runs the allowlisted-looking spelling at module level
+    while a nested, never-called binding of the same name used to overwrite the entry and resolve
+    the call to something the screen does not recognise."""
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            pytest.param(
+                "from requests import get as fetch\n"
+                "def unused():\n"
+                "    from socket import inet_aton as fetch\n"
+                'fetch("https://evil.example/x")',
+                id = "nested_import_does_not_replace_a_function_alias",
+            ),
+            pytest.param(
+                "import requests as r\n"
+                "def unused():\n"
+                "    import aiohttp as r\n"
+                "s = r\n"
+                's.get("https://evil.example/x")',
+                id = "assignment_carries_every_module_candidate",
+            ),
+            pytest.param(
+                'import requests as r\ns = r\ns.get("https://evil.example/x")',
+                id = "assignment_carries_the_one_candidate",
+            ),
+        ],
+    )
+    def test_the_hostile_host_is_still_seen(self, code):
+        _blocked(code, expect_phrase = "Blocked: host not in sandbox allowlist")
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            pytest.param(
+                'import requests as r\ns = r\ns.get("https://huggingface.co/x")',
+                id = "allowlisted_host_through_an_assigned_alias",
+            ),
+            pytest.param(
+                'from requests import get as fetch\nfetch("https://huggingface.co/x")',
+                id = "allowlisted_host_through_a_function_alias",
+            ),
+        ],
+    )
+    def test_legitimate_work_through_the_same_aliases_still_runs(self, code):
+        _ok(code)
+
+
+class TestRequestWrapperMustProveItsCallee:
+    """`urlopen(Request(url))` is read one call further in, which is only sound once the callee is
+    known to be `urllib.request.Request`. Any callee merely SPELLED `Request` can return a
+    different URL than the one the screen reads."""
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            pytest.param(
+                "import requests\n"
+                "def Request(_):\n"
+                '    return "https://evil.example/x"\n'
+                'requests.get(Request("https://huggingface.co/x"))',
+                id = "locally_defined_Request",
+            ),
+            pytest.param(
+                'import requests\nimport shim\nrequests.get(shim.Request("https://huggingface.co/x"))',
+                id = "Request_off_an_unknown_module",
+            ),
+        ],
+    )
+    def test_an_unproven_wrapper_is_not_unwrapped(self, code):
+        _blocked(code, expect_phrase = "Blocked: network destination is not a literal")
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            pytest.param(
+                "import urllib.request\n"
+                'urllib.request.urlopen(urllib.request.Request("https://huggingface.co/x"))',
+                id = "written_out_in_full",
+            ),
+            pytest.param(
+                "from urllib.request import Request, urlopen\n"
+                'urlopen(Request("https://huggingface.co/x"))',
+                id = "imported_by_name",
+            ),
+            pytest.param(
+                'import urllib.request as u\nu.urlopen(u.Request("https://huggingface.co/x"))',
+                id = "through_a_module_alias",
+            ),
+        ],
+    )
+    def test_the_real_wrapper_still_reads_through_to_the_host(self, code):
+        _ok(code)
+
+
 class TestStarImportedNetworkFunctions:
     """A star import binds the same bare callee an explicit `from X import f` does, under no name
     the screen can enumerate, so the callee is resolved against the star-imported modules. Without
