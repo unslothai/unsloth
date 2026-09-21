@@ -31,12 +31,17 @@ export type FailureLogFamily = "llama-server" | "diffusion-server" | "server";
  * load has none, and its failure is recorded by the backend logger in the CURRENT server
  * log, so answering `llama-server` there opens whatever older runner attempt happens to be
  * on the host -- an unrelated log, which is worse than none.
+ *
+ * `runnerAttempted` is the same question in time rather than in kind: a GGUF load that
+ * fails in PREFLIGHT, before the load request is issued, started no runner either, so it
+ * has no file of its own however it was going to be served.
  */
 export function loadFailureLogFamily(
   isGguf: boolean | undefined,
   isDiffusion: boolean | undefined,
+  runnerAttempted: boolean,
 ): FailureLogFamily {
-  if (!isGguf) return "server";
+  if (!runnerAttempted || !isGguf) return "server";
   return isDiffusion === true ? "diffusion-server" : "llama-server";
 }
 

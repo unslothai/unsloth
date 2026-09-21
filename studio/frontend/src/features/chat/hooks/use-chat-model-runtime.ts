@@ -877,6 +877,10 @@ export function useChatModelRuntime() {
         typeof selection === "string" ? undefined : selection.isGguf;
       let isDiffusion =
         typeof selection === "string" ? undefined : selection.isDiffusion;
+      // Whether the load request actually went out. Preflight failures -- a rejected
+      // staged-metadata read, a cancelled token prompt -- reach the same catch before any
+      // runner was started, so there is no runner log for their reason to be in.
+      let loadRequestIssued = false;
       const restorePreviousConfig = () => {
         if (typeof selection !== "string" && selection.previousConfig) {
           applyPerModelConfigToRuntime(selection.previousConfig, {
@@ -1807,6 +1811,10 @@ export function useChatModelRuntime() {
             if (lifecycleLease !== null) {
               chatModelLifecycleGate.markLoading(lifecycleLease);
             }
+            // The request is about to go out, so from here on a runner may have written
+            // its own log. Everything before this point is preflight, and its failures
+            // reach the same catch with no runner log to open.
+            loadRequestIssued = true;
             const loadResponse = await loadModel({
               model_path: loadPath,
               nativePathLease: loadNativePathLease,
@@ -2675,7 +2683,7 @@ export function useChatModelRuntime() {
             // backend's current server log instead. The path, when the diagnostic carries
             // one, pins the exact attempt regardless of a rollback load landing after it.
             const logsAction = viewLogsAction(
-              loadFailureLogFamily(isGguf, isDiffusion),
+              loadFailureLogFamily(isGguf, isDiffusion, loadRequestIssued),
               failureLogPath(message),
             );
             if (loadToastDismissedRef.current) {
