@@ -933,3 +933,44 @@ test("a run of `[` before a reference does not walk the widened label budget", (
   assert.ok(median < 150,
     `500k of \`[\` cost ${median.toFixed(1)}ms; the reference probe is walking every start position`);
 });
+
+test("a reply whose every `]` is escaped does not rescan the tail per seam", () => {
+  // `\][` gives a seam whose closer is escaped, so no unescaped `]` follows the first one and the
+  // lookahead comes back empty. A cached -1 is always behind the next seam, so re-asking walks the
+  // whole tail again while advancing nothing -- quadratic, not merely slow: 26ms at 6k, 1.7s at
+  // 48k, 196s at 500k, against 162ms there for the narrow probe this replaced. The answer is
+  // already known once the lookahead is exhausted, and it does not change for a later seam.
+  const escaped = "\\][".repeat(166_666);
+  for (let i = 0; i < 3; i += 1) markdownRenderScope(escaped + " ");
+  const runs: number[] = [];
+  for (let i = 0; i < 5; i += 1) {
+    const t0 = performance.now();
+    markdownRenderScope(escaped + " ".repeat(i));
+    runs.push(performance.now() - t0);
+  }
+  const median = runs.sort((a, b) => a - b)[2]!;
+  assert.ok(median < 150,
+    `500k of \`\\][\` cost ${median.toFixed(1)}ms; an exhausted lookahead is being re-asked per seam`);
+});
+
+test("a seam whose reference label is past the cap is rejected once, not per `[`", () => {
+  // The window bounds the slice, not the number of start positions inside it. A window packed
+  // with `[` whose reference label is past the cap fails from every one of them, which is the
+  // whole widened budget paid per `[` -- 1932ms at 500k against 207ms for the narrow probe, so
+  // the window would have given back nothing on this shape. The reference label a match could
+  // use is the one candidate between the seam and the first unescaped `]`, so test it once.
+  const packed = `${"[".repeat(3000)}][${"y".repeat(3000)}]`.repeat(83);
+  for (let i = 0; i < 3; i += 1) markdownRenderScope(packed + " ");
+  const runs: number[] = [];
+  for (let i = 0; i < 5; i += 1) {
+    const t0 = performance.now();
+    markdownRenderScope(packed + " ".repeat(i));
+    runs.push(performance.now() - t0);
+  }
+  const median = runs.sort((a, b) => a - b)[2]!;
+  assert.ok(median < 150,
+    `500k of packed \`[\` cost ${median.toFixed(1)}ms; the window is re-tested from every \`[\``);
+  // The rejection is a cost bound, not a change of answer: a label inside the cap still resolves.
+  const label = "L".repeat(400);
+  assert.equal(markdownRenderScope(`See [guide][${label}].\n\n[${label}]: /u\n`), "document");
+});

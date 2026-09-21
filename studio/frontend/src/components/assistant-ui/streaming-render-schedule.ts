@@ -151,6 +151,14 @@ const LINK_REFERENCE_RE =
   /!?\[(?:\\[\s\S]|[^\]\\]){1,999}\]\[(?:\\[\s\S]|[^\]\\]){0,999}\]/u;
 // Label side as above, plus `[` and the optional `!`; the reference side needs no `!`.
 const LINK_REFERENCE_WINDOW = 999 * 3 + 3;
+// The reference label on its own, anchored at both ends. The `[` before it means its escape
+// parity starts fresh at the seam, so the label a match could use is exactly the text between
+// the seam and the first unescaped `]` -- one candidate, testable once per seam. Without it the
+// window is re-tested from every `[` it holds, and a window packed with `[` whose reference
+// label is past the cap pays the full widened budget at each: 500k of that shape cost 1821ms
+// against 210ms for the narrow probe this replaced, which is the regression the window exists
+// to prevent, not one it was allowed to reintroduce.
+const LINK_REFERENCE_LABEL_RE = /^(?:\\[\s\S]|[^\]\\]){0,999}$/u;
 
 // First `]` at or after `from` that closes rather than being escaped, or -1.
 function unescapedClose(text: string, from: number): number {
@@ -168,10 +176,19 @@ function unescapedClose(text: string, from: number): number {
 // the first one after it. Both cursors only advance, so the escape walks stay linear overall.
 // A seam whose closing `]` sits past the cap cannot match at all and is skipped without a test.
 function hasLinkReference(text: string): boolean {
+  let bracket = text.indexOf("[");
+  let nextBracket = bracket < 0 ? -1 : text.indexOf("[", bracket + 1);
   let close = -1;
   let nextClose = text.indexOf("]");
   let after = -1;
   for (let mid = text.indexOf("]["); mid >= 0; mid = text.indexOf("][", mid + 1)) {
+    // The label ends at `mid` and admits no empty match, so its `[` is at `mid - 2` or earlier;
+    // the `[` at `mid + 1` is the seam's own. Tracked forward for the reason `hasLinkDefinition`
+    // gives: `lastIndexOf` is unbounded backwards, which is the cost this is avoiding.
+    while (nextBracket >= 0 && nextBracket <= mid - 2) {
+      bracket = nextBracket;
+      nextBracket = text.indexOf("[", bracket + 1);
+    }
     while (nextClose >= 0 && nextClose < mid) {
       if (!isEscaped(text, nextClose)) {
         close = nextClose;
@@ -180,15 +197,32 @@ function hasLinkReference(text: string): boolean {
     }
     if (after < mid + 2) {
       after = unescapedClose(text, mid + 2);
+      if (after < 0) {
+        // Nothing at or after `mid + 2` closes, and every later seam starts later still, so none
+        // of them can close either. Returning is the same answer as skipping them, reached
+        // without re-asking: a cached -1 is always behind the next seam, so the lookahead would
+        // rescan the whole tail per seam while advancing nothing -- the cost `hasLinkDefinition`
+        // caches to avoid, and quadratic rather than merely slow (`\][` repeated: 26ms at 6k,
+        // 6.4s at 96k, against 29ms for the narrow probe this replaced).
+        return false;
+      }
     }
-    if (after < 0 || after - mid - 2 > LINK_REFERENCE_WINDOW) {
+    if (after - mid - 2 > LINK_REFERENCE_WINDOW) {
       continue;
     }
     let start = mid < LINK_REFERENCE_WINDOW ? 0 : mid - LINK_REFERENCE_WINDOW;
     if (close > start) {
       start = close + 1;
     }
-    // `start`, not the last `[`: the class admits `[` inside a label, so an earlier one can
+    if (bracket < start || bracket > mid - 2) {
+      continue;
+    }
+    // One candidate for the reference label, so test it once rather than rediscovering it from
+    // every `[` the window holds. After the opener test, so a seam with no opener pays neither.
+    if (!LINK_REFERENCE_LABEL_RE.test(text.slice(mid + 2, after))) {
+      continue;
+    }
+    // `start`, not `bracket`: the class admits `[` inside a label, so an earlier one can
     // match where the last one fails. Skip test only, as in `hasLinkDefinition`.
     if (LINK_REFERENCE_RE.test(text.slice(start, after + 1))) {
       return true;
