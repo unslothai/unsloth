@@ -45,6 +45,8 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
+import pytest
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 TESTS = REPO_ROOT / "tests"
 
@@ -59,6 +61,9 @@ def _is_os_geteuid(node: ast.AST) -> bool:
         and node.attr == "geteuid"
         and isinstance(node.value, ast.Name)
         and node.value.id == "os"
+        # `os.geteuid = lambda: 0` CREATES the attribute on Windows rather than reading
+        # it, and tests/test_allow_cpu_import_driverless.py does exactly that
+        and not isinstance(node.ctx, ast.Store)
     ):
         return True
     call = _getattr_geteuid(node)
@@ -316,6 +321,7 @@ def _definition_expressions(node: ast.AST, eager_annotations: bool):
 # ast.match_case is not an ast.stmt, so a `match` would otherwise read as a plain
 # statement; 3.9 has no Match at all, and then nothing can be one.
 MATCH_CASE = getattr(ast, "match_case", ())
+TYPE_ALIAS = getattr(ast, "TypeAlias", None)  # PEP 695, 3.12+
 
 
 def _normalise_os_aliases(tree: ast.Module) -> ast.Module:
@@ -395,6 +401,10 @@ def _import_time_expressions(tree: ast.Module):
                 yield from block(statement.body)
             if reached is not True:
                 yield from block(statement.orelse)
+            return
+        if TYPE_ALIAS is not None and isinstance(statement, TYPE_ALIAS):
+            # `type UID = os.geteuid()` (3.12+) is lazy: the value is not evaluated until
+            # something reads UID.__value__, which importing the module does not
             return
         if isinstance(statement, ast.AnnAssign) and not eager_annotations:
             # `x: os.geteuid() = 1` under `from __future__ import annotations` stores the
@@ -750,3 +760,18 @@ def test_starred_unpacking_exhausts_the_generator_here():
     assert _flagged("import os\nROOT = [*(os.geteuid() for _ in range(1))]\n")
     assert _flagged("import os\nROOT = f(*(os.geteuid() for _ in range(1)))\n")
     assert not _flagged("import os\nGEN = (os.geteuid() for _ in range(1))\n")
+
+
+def test_a_store_creates_the_attribute_rather_than_reading_it():
+    """`os.geteuid = lambda: 0` works on Windows: it creates the attribute that is not
+    there. tests/test_allow_cpu_import_driverless.py does exactly this."""
+    assert not _flagged("import os\nos.geteuid = lambda: 0\n")
+    assert _flagged("import os\nROOT = os.geteuid() == 0\n")
+
+
+def test_a_lazy_type_alias_evaluates_nothing():
+    """`type UID = os.geteuid()` on 3.12+ is lazy: the value waits for UID.__value__,
+    which importing the module never reads."""
+    if TYPE_ALIAS is None:
+        pytest.skip("PEP 695 type aliases need Python 3.12")
+    assert not _flagged("import os\ntype UID = os.geteuid()\n")
