@@ -58,7 +58,7 @@ import {
   Upload01Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { ChevronDownIcon, MoreHorizontalIcon } from "lucide-react";
+import { ArrowDownIcon, ChevronDownIcon, MoreHorizontalIcon } from "lucide-react";
 import { MessageCircleIcon } from "@/lib/hugeicons-derived";
 import { useNavigate } from "@tanstack/react-router";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -697,7 +697,8 @@ export function ProjectsPage() {
               className="flex w-40 shrink-0 cursor-pointer items-center gap-1 text-left transition-colors hover:text-foreground"
             >
               Updated
-              <ChevronDownIcon
+              {/* Down for newest first, up for oldest, as a sorted column reads. */}
+              <ArrowDownIcon
                 strokeWidth={1.75}
                 className={cn(
                   "size-3.5 transition-transform",
@@ -756,7 +757,7 @@ export function ProjectsPage() {
               </span>
               {/* The disclosure belongs to the name, so it sits beside it rather than out by
                   the Updated column, where it read as another row action. */}
-              <span className="flex min-w-0 flex-1 items-center gap-0.5">
+              <span className="flex min-w-0 flex-1 items-center gap-2">
                 <span className="min-w-0 truncate text-ui-15 font-semibold text-foreground">
                   {project.name}
                 </span>
@@ -794,11 +795,8 @@ export function ProjectsPage() {
                   e.stopPropagation();
                   togglePinProject(project.id);
                 }}
-                className={cn(
-                  // Shown outright on a touch screen, which has no hover to reveal it with.
-                  "flex size-7 shrink-0 items-center justify-center rounded-full text-muted-foreground transition hover:bg-black/5 hover:text-foreground focus-visible:opacity-100 group-hover/project-row:opacity-100 pointer-coarse:opacity-100 dark:hover:bg-white/10",
-                  pinned ? "opacity-100" : "opacity-0",
-                )}
+                // On show for every row, hover or not, so pinning is never hidden.
+                className="flex size-7 shrink-0 items-center justify-center rounded-full text-muted-foreground transition hover:bg-black/5 hover:text-foreground dark:hover:bg-white/10"
               >
                 <HugeiconsIcon
                   icon={pinned ? PinOffIcon : PinIcon}
@@ -807,15 +805,14 @@ export function ProjectsPage() {
                 />
               </button>
               <div className="relative flex w-8 shrink-0 items-center justify-end">
-                {/* Revealed on hover, focus or an open menu, and outright on a touch screen.
-                    Opacity rather than mounting keeps the button keyboard-focusable. */}
+                {/* On show beside the pin, so the row's actions read the same at rest. */}
                 <DropdownMenu>
                   <DropdownMenuTrigger asChild>
                     <button
                       type="button"
                       onClick={(e) => e.stopPropagation()}
                       aria-label="Project options"
-                      className="absolute right-0 flex size-7 shrink-0 items-center justify-center rounded-full text-muted-foreground opacity-0 transition hover:bg-black/5 hover:text-foreground focus-visible:opacity-100 group-hover/project-row:opacity-100 pointer-coarse:opacity-100 data-[state=open]:bg-black/5 data-[state=open]:opacity-100 dark:hover:bg-white/10 dark:data-[state=open]:bg-white/10"
+                      className="absolute right-0 flex size-7 shrink-0 items-center justify-center rounded-full text-muted-foreground transition hover:bg-black/5 hover:text-foreground data-[state=open]:bg-black/5 dark:hover:bg-white/10 dark:data-[state=open]:bg-white/10"
                     >
                       <MoreHorizontalIcon strokeWidth={1.75} className="size-icon" />
                     </button>

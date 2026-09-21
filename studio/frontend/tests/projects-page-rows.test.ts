@@ -59,11 +59,11 @@ test("the disclosure sits with the name it opens", () => {
   // rather than the column's.
   assert.match(
     PAGE,
-    /<span className="flex min-w-0 flex-1 items-center gap-0\.5">\n\s*<span className="min-w-0 truncate text-ui-15 font-semibold text-foreground">\n\s*\{project\.name\}/,
+    /<span className="flex min-w-0 flex-1 items-center gap-2">\n\s*<span className="min-w-0 truncate text-ui-15 font-semibold text-foreground">\n\s*\{project\.name\}/,
   );
   assert.ok(
     PAGE.indexOf('className="w-40 shrink-0 text-sm text-muted-foreground"') > chevron,
-    "the arrow is still drawn after the Modified column",
+    "the arrow is still drawn after the Updated column",
   );
 });
 
@@ -83,8 +83,6 @@ test("the row menu edits a project rather than only renaming it", () => {
 test("pinning a project takes one click, and says which way it goes", () => {
   assert.match(PAGE, /aria-label=\{pinned \? "Unpin project" : "Pin project"\}/);
   assert.match(PAGE, /togglePinProject\(project\.id\);/);
-  // A pinned row keeps its pin showing; the rest reveal on hover.
-  assert.match(PAGE, /pinned \? "opacity-100" : "opacity-0",/);
   // And the menu does not repeat the button beside it.
   assert.ok(
     !PAGE.includes('{pinned ? "Unpin" : "Pin"}'),
@@ -97,28 +95,37 @@ test("pinning a project takes one click, and says which way it goes", () => {
   );
 });
 
-// A touch screen has no hover to reveal a row's actions with, and the menu behind the kebab was
-// no way in either, since the kebab is revealed the same way.
-test("a row's actions are on show where there is no hover", () => {
+// Hover-revealed actions are invisible on a touch screen, and a row whose pin and menu only
+// appear under the cursor hides what it can do.
+test("the pin and the menu are on show, the disclosure follows the cursor", () => {
   const start = PAGE.indexOf("{visibleProjects.map((project) => {");
   assert.notEqual(start, -1, "the row list moved");
   // Down to the row menu's contents, so only the row's own controls are counted.
   const row = PAGE.slice(start, PAGE.indexOf("<DropdownMenuContent", start));
   assert.ok(row.length > 0, "the row moved");
+  // Neither the pin nor the menu is faded out any more.
+  assert.ok(!row.includes("opacity-0 transition"), "the menu is still hover-revealed");
+  assert.ok(
+    !row.includes('pinned ? "opacity-100" : "opacity-0"'),
+    "the pin is still hover-revealed",
+  );
+  // The disclosure still follows the cursor, and shows outright without one.
   assert.equal(
     (row.match(/pointer-coarse:opacity-100/g) ?? []).length,
-    3,
-    "the disclosure, the pin and the menu are not all revealed on a touch screen",
+    1,
+    "the disclosure is not the only control left gated on hover",
   );
-  // Still hover-revealed with a mouse, so a quiet row stays quiet.
   assert.match(row, /group-hover\/project-row:opacity-100 pointer-coarse:opacity-100/);
+  assert.match(row, /chatsOpen \? "opacity-100" : "opacity-0",/);
 });
 
 // "Modified" named something the row does not track, and the header sat past its own values,
 // over the pin and the menu.
 test("the Updated column names the list's order and turns it around", () => {
   assert.ok(!PAGE.includes(">Modified<"), "the old column name is still rendered");
-  assert.match(PAGE, /\n\s*Updated\n\s*<ChevronDownIcon/);
+  // An arrow, not a chevron: it points the way the column is sorted.
+  assert.match(PAGE, /\n\s*Updated\n(?:\s*\{\/\*[^\n]*\*\/\}\n)?\s*<ArrowDownIcon/);
+  assert.match(PAGE, /import \{ ArrowDownIcon, ChevronDownIcon, MoreHorizontalIcon \} from "lucide-react";/);
   // One click puts the list back on this column, the next turns it around.
   assert.match(
     PAGE,
