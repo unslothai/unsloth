@@ -156,10 +156,10 @@ def test_a_missing_stop_set_is_left_alone(ns, harmony_tokenizer):
 @pytest.mark.parametrize(
     "shape",
     [
-        ["<|return|>"],          # str entries, int() would raise ValueError
-        [200002, None],          # None entry, int() would raise TypeError
-        [[200002], 199999],      # nested list, int() would raise TypeError
-        True,                    # bool is an int subclass
+        ["<|return|>"],  # str entries, int() would raise ValueError
+        [200002, None],  # None entry, int() would raise TypeError
+        [[200002], 199999],  # nested list, int() would raise TypeError
+        True,  # bool is an int subclass
         [True, 199999],
     ],
 )
