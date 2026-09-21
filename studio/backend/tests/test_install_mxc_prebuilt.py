@@ -128,7 +128,7 @@ def test_unsafe_archive_shapes_are_rejected(tmp_path, monkeypatch, official_rele
 
 
 def test_windows_setup_always_checks_mxc_without_optional_os_environment_variable():
-    setup = (_STUDIO / "setup.ps1").read_text(encoding="utf-8")
+    setup = (_STUDIO / "setup.ps1").read_text(encoding = "utf-8")
     start = setup.index("# Windows MXC Preview is an optional, pinned prebuilt")
     end = setup.index("# ── Pre-install transformers", start)
     mxc_setup = setup[start:end]
