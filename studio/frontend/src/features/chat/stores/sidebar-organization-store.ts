@@ -9,15 +9,20 @@ export type SidebarOrganizeBy = "project" | "list";
 /** How chat rows are ordered inside whichever list they land in. */
 export type SidebarChatSort = "priority" | "updated" | "manual";
 
-// Exported so the preference reset clears the same key this store writes.
-export const SIDEBAR_ORGANIZATION_STORAGE_KEY = "unsloth_sidebar_organization";
+// Defined in a leaf module and re-exported here so existing importers are unchanged: this
+// store is in an import cycle, so a binding defined here would be readable too late. See
+// sidebar-organization-keys.ts.
+export { SIDEBAR_ORGANIZATION_STORAGE_KEY } from "./sidebar-organization-keys.ts";
+import { SIDEBAR_ORGANIZATION_STORAGE_KEY } from "./sidebar-organization-keys.ts";
 
-// Manual order is per list: dragging a chat in one project must not move it in
-// another list showing the same chat. Each list gets its own key.
+// Manual order is per list: dragging a chat in one project must not move it in another list
+// showing the same chat. Each list gets its own key.
 export const RECENTS_ORDER_SCOPE = "recents";
 export const PINNED_ORDER_SCOPE = "pinned";
 // The project folders themselves, which drag regardless of the chat sort.
 export const PROJECT_ORDER_SCOPE = "projects";
+// Pinned folders reorder among themselves: one list's drag must not renumber the other's.
+export const PINNED_PROJECT_ORDER_SCOPE = "pinned-projects";
 
 export function projectOrderScope(projectId: string): string {
   return `project:${projectId}`;
@@ -26,41 +31,58 @@ export function projectOrderScope(projectId: string): string {
 export interface SidebarOrganizationState {
   organizeBy: SidebarOrganizeBy;
   chatSort: SidebarChatSort;
-  // Pinned sorts on its own. Pin order already is a manual order, so it
-  // defaults to "manual" and stays put while the lists below re-sort.
+  // Pinned sorts on its own. Pin order already is a manual order, so it defaults to "manual" and
+  // stays put while the lists below re-sort.
   pinnedSort: SidebarChatSort;
   /** Scope key -> row ids, in the order the user dragged them into. */
   manualOrder: Record<string, string[]>;
+  /** Drag-and-drop preferences: the hint beside the cursor, whether a reorder switches a
+   *  sorted list to Manual, and whether folders open under a resting pointer. */
+  dragHints: boolean;
+  reorderSwitchesSort: boolean;
+  dragOpensFolders: boolean;
   setOrganizeBy: (value: SidebarOrganizeBy) => void;
   setChatSort: (value: SidebarChatSort) => void;
   setPinnedSort: (value: SidebarChatSort) => void;
   setManualOrder: (scope: string, ids: string[]) => void;
+  setDragHints: (value: boolean) => void;
+  setReorderSwitchesSort: (value: boolean) => void;
+  setDragOpensFolders: (value: boolean) => void;
 }
 
-/**
- * Moves `draggedId` into `targetId`'s slot, keeping the rest in order. Returns
- * `ids` itself when either row is missing, so a stale drop is a no-op.
- */
-export function reorderIds(
+/** Drops `draggedId` against the `edge` side of `targetId`, keeping the rest in order. The edge
+ *  comes from which half of the target row the pointer is over, so the row lands exactly where
+ *  the insertion line was drawn. Returns `ids` itself when a row is missing or the drop changes
+ *  nothing, so a stale or pointless drop is a no-op the caller can skip persisting. */
+export function insertIdAt(
   ids: string[],
   draggedId: string,
   targetId: string,
+  edge: "top" | "bottom",
 ): string[] {
   if (draggedId === targetId) return ids;
-  const from = ids.indexOf(draggedId);
-  const to = ids.indexOf(targetId);
-  if (from === -1 || to === -1) return ids;
-  const next = [...ids];
-  next.splice(from, 1);
-  next.splice(to, 0, draggedId);
+  if (!ids.includes(draggedId) || !ids.includes(targetId)) return ids;
+  const next = placeIdAt(ids, draggedId, targetId, edge);
+  return next.every((id, index) => id === ids[index]) ? ids : next;
+}
+
+/** The same landing for a row the list does not hold yet, which is what a chat dropped into
+ *  Pinned is. An unknown target puts it last, since there is no slot to aim at. */
+export function placeIdAt(
+  ids: string[],
+  id: string,
+  targetId: string | null,
+  edge: "top" | "bottom",
+): string[] {
+  const next = ids.filter((existing) => existing !== id);
+  const at = targetId === null ? -1 : next.indexOf(targetId);
+  if (at === -1) return [...next, id];
+  next.splice(at + (edge === "bottom" ? 1 : 0), 0, id);
   return next;
 }
 
-/**
- * Whether a chat belongs in Recents. With the Projects section on, a project
- * chat lives in its folder and listing it twice is noise; with it off there are
- * no folders, so Recents is the only place it can appear.
- */
+/** Whether a chat belongs in Recents. With the Projects section on, a project chat lives in its
+ *  folder and listing it twice is noise; with it off there are no folders. */
 export function showsInRecents(
   projectId: string | null | undefined,
   organizeBy: SidebarOrganizeBy,
@@ -68,25 +90,47 @@ export function showsInRecents(
   return organizeBy === "list" || !projectId;
 }
 
-/**
- * Which edge of the target row the drop indicator belongs on, matching where
- * `reorderIds` actually lands the row: after the target when dragging down,
- * before it when dragging up.
- */
-export function dropEdgeFor(
-  ids: string[],
-  draggedId: string,
-  targetId: string,
-): "top" | "bottom" {
-  const from = ids.indexOf(draggedId);
-  const to = ids.indexOf(targetId);
-  return from !== -1 && to !== -1 && from < to ? "bottom" : "top";
+/** Where a folder dragged over another folder's chats lands. A folder's rows are the folder row
+ *  and the chats under it, and in Pinned those chats separate one folder from the next: without
+ *  this the only target is the folder row itself, with a whole block of rows between two of them
+ *  that answer nothing. The block is read as one strip: how far down it the pointer is decides
+ *  which end of the folder the drop lands on, so the line flips once, in the middle, rather than
+ *  at every row. Returns null when the row belongs to the dragged folder or the drop would move
+ *  nothing. */
+export function folderDropTarget(params: {
+  /** The folder being dragged. */
+  draggedId: string;
+  /** The folder order it drags within: Projects' or Pinned's. */
+  folderIds: string[];
+  /** The folder whose block the pointer is over. */
+  folderId: string;
+  /** The hovered chat's place among that folder's chats, and which half of it the pointer is
+   *  over: a folder holding one chat has to answer both ends from that row alone. */
+  rowIndex: number;
+  rowCount: number;
+  pointerEdge: "top" | "bottom";
+}): { edge: "top" | "bottom"; next: string[] } | null {
+  const { draggedId, folderIds, folderId, rowIndex, rowCount } = params;
+  if (draggedId === folderId || rowIndex < 0) return null;
+  // How many row-halves down the block the pointer is, against its length.
+  const at = rowIndex + (params.pointerEdge === "bottom" ? 1 : 0);
+  const edge = at * 2 >= rowCount ? "bottom" : ("top" as const);
+  const next = insertIdAt(folderIds, draggedId, folderId, edge);
+  return next === folderIds ? null : { edge, next };
 }
 
-/**
- * Moves a row one slot up or down. The menu path to the same reorder that
- * dragging does, for touch and keyboard, which never see a `dragstart`.
- */
+/** Which half of a row the pointer is over, which is the edge the row being dragged will land
+ *  on. Read off the row's own box, so the insertion line follows the cursor rather than the
+ *  two rows' index order. */
+export function dropEdgeAt(
+  rect: { top: number; height: number },
+  pointerY: number,
+): "top" | "bottom" {
+  return pointerY >= rect.top + rect.height / 2 ? "bottom" : "top";
+}
+
+/** Moves a row one slot up or down. The keyboard path to the same reorder that dragging does:
+ *  a keyboard never sees a `dragstart`, so alt + arrow drives this instead. */
 export function moveIdBy(
   ids: string[],
   id: string,
@@ -102,11 +146,9 @@ export function moveIdBy(
   return next;
 }
 
-/**
- * Applies a saved order to `items`, leaving rows it does not mention in their
- * incoming order and on top. A row the user never dragged is new to the list,
- * so it stays where the list's own rule put it rather than sinking.
- */
+/** Applies a saved order to `items`, leaving rows it does not mention in their incoming order
+ *  and on top. A row the user never dragged is new to the list, so it stays where the list's
+ *  own rule put it rather than sinking. */
 export function applyManualOrder<T>(
   items: T[],
   order: string[] | undefined,
@@ -127,6 +169,9 @@ export const useSidebarOrganizationStore = create<SidebarOrganizationState>()(
       chatSort: "priority",
       pinnedSort: "manual",
       manualOrder: {},
+      dragHints: true,
+      reorderSwitchesSort: true,
+      dragOpensFolders: true,
       setOrganizeBy: (value) => set({ organizeBy: value }),
       setChatSort: (value) => set({ chatSort: value }),
       setPinnedSort: (value) => set({ pinnedSort: value }),
@@ -134,6 +179,9 @@ export const useSidebarOrganizationStore = create<SidebarOrganizationState>()(
         set((state) => ({
           manualOrder: { ...state.manualOrder, [scope]: ids },
         })),
+      setDragHints: (value) => set({ dragHints: value }),
+      setReorderSwitchesSort: (value) => set({ reorderSwitchesSort: value }),
+      setDragOpensFolders: (value) => set({ dragOpensFolders: value }),
     }),
     {
       name: SIDEBAR_ORGANIZATION_STORAGE_KEY,
@@ -163,7 +211,18 @@ export const useSidebarOrganizationStore = create<SidebarOrganizationState>()(
             }
           }
         }
-        return { ...current, organizeBy, chatSort, pinnedSort, manualOrder };
+        const readFlag = (value: unknown, fallback: boolean): boolean =>
+          typeof value === "boolean" ? value : fallback;
+        return {
+          ...current,
+          organizeBy,
+          chatSort,
+          pinnedSort,
+          manualOrder,
+          dragHints: readFlag(saved?.dragHints, true),
+          reorderSwitchesSort: readFlag(saved?.reorderSwitchesSort, true),
+          dragOpensFolders: readFlag(saved?.dragOpensFolders, true),
+        };
       },
     },
   ),

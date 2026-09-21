@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { AppPortalGate } from "@/components/app-readiness";
 import { Dialog as SheetPrimitive } from "radix-ui";
 import type * as React from "react";
 import { useState } from "react";
@@ -51,7 +52,11 @@ function SheetCloseButton({ className }: { className?: string }) {
 function SheetPortal({
   ...props
 }: React.ComponentProps<typeof SheetPrimitive.Portal>) {
-  return <SheetPrimitive.Portal data-slot="sheet-portal" {...props} />;
+  return (
+    <AppPortalGate>
+      <SheetPrimitive.Portal data-slot="sheet-portal" {...props} />
+    </AppPortalGate>
+  );
 }
 
 function SheetOverlay({

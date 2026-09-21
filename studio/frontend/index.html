@@ -11,6 +11,9 @@
     <!-- Classic boot scripts satisfy script-src 'self' and run before modules. -->
     <script src="/crypto-boot.js"></script>
     <script src="/theme-boot.js"></script>
+    <!-- Restores the last rendered shell before the replacement document's
+         first paint, then removes it when React commits the new shell. -->
+    <script src="/reload-snapshot.js"></script>
   </head>
   <body>
     <div id="root"></div>

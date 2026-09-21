@@ -91,7 +91,6 @@ test("a local model boundary invalidates only pending local factories", () => {
     shouldAbortPendingQueueForModelBoundary({
       capturedGeneration,
       usesLocalModel: true,
-      modelLoading: false,
     }),
     true,
   );
@@ -99,20 +98,18 @@ test("a local model boundary invalidates only pending local factories", () => {
     shouldAbortPendingQueueForModelBoundary({
       capturedGeneration,
       usesLocalModel: false,
-      modelLoading: false,
     }),
     false,
   );
 });
 
-test("a pending local factory cannot materialize during a model load", () => {
+test("a new local factory is accepted within the current model boundary", () => {
   assert.equal(
     shouldAbortPendingQueueForModelBoundary({
       capturedGeneration: localPromptQueueModelBoundary.capture(),
       usesLocalModel: true,
-      modelLoading: true,
     }),
-    true,
+    false,
   );
 });
 

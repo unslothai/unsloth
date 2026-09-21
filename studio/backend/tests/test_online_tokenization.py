@@ -133,7 +133,7 @@ def test_online_config_args_are_the_four_keys_the_mechanism_needs():
 
 @pytest.mark.parametrize("platform", ["win32", "darwin"])
 def test_spawn_platforms_keep_the_eager_path(monkeypatch, platform):
-    """Studio already forces `dataloader_num_workers = 0` there, because a
+    """Unsloth already forces `dataloader_num_workers = 0` there, because a
     modified `sys.path` does not survive the spawn. Never a crash: just off."""
     monkeypatch.setattr(sys, "platform", platform)
     decision = decide_online_tokenization(**_base_kwargs())
@@ -267,7 +267,7 @@ def test_the_text_column_check_reads_metadata_and_never_a_row():
 
 def test_a_spawn_start_method_keeps_the_eager_path_on_linux(monkeypatch):
     """The gate is named for Windows and macOS, but the hazard it describes is
-    `spawn` re-importing the entry point against a `sys.path` Studio modified in
+    `spawn` re-importing the entry point against a `sys.path` Unsloth modified in
     process. A Linux host set to spawn is the same hazard."""
     import multiprocessing
 

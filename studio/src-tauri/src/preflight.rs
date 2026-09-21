@@ -17,7 +17,8 @@ pub use types::{DesktopPreflightDisposition, DesktopPreflightResult, ExternalBac
 #[cfg(test)]
 pub(crate) use version::DESKTOP_MANAGEABILITY_VERSION;
 pub(crate) use version::{
-    backend_version_stale_reason, DESKTOP_BACKEND_MANAGEABILITY_VERSION, DESKTOP_PROTOCOL_VERSION,
+    backend_version_stale_reason, expected_backend_version, DESKTOP_BACKEND_MANAGEABILITY_VERSION,
+    DESKTOP_PROTOCOL_VERSION,
 };
 
 #[cfg(test)]
@@ -26,7 +27,7 @@ use backend::{backend_desktop_auth_status, backend_health};
 use managed::probe_managed_bin;
 #[cfg(test)]
 use version::{
-    backend_version_compatible, backend_version_outdated_reason, expected_backend_version,
+    backend_version_compatible, backend_version_outdated_reason,
     managed_backend_version_stale_reason, MIN_DESKTOP_BACKEND_VERSION,
 };
 
@@ -34,13 +35,12 @@ fn release_auto_repair() -> bool {
     !cfg!(debug_assertions)
 }
 
-/// Whether the managed install sits on a profile the app cannot reach:
-/// `Unavailable` if the binary was never looked up, `Stale` if it has nowhere to run.
+/// Whether the managed install is somewhere repair cannot reach: a profile or
+/// path setting it needs, or an environment another install already holds.
 fn managed_profile_unreachable(managed: &ManagedProbe) -> bool {
     match managed {
         ManagedProbe::Unavailable { reason } | ManagedProbe::Stale { reason, .. } => {
-            // Either context failure: repair needs the same profile or path setting.
-            managed::is_context_reason(reason)
+            managed::blocks_auto_repair(reason)
         }
         ManagedProbe::Ready { .. } | ManagedProbe::Missing => false,
     }
@@ -65,6 +65,27 @@ fn stale_reason(managed: &ManagedProbe, reason: &str) -> String {
         };
     }
     reason.to_string()
+}
+
+/// While this app's own install, update or repair runs, the probe reads a half-written
+/// environment: acting on it as missing, ready or broken would install, start or
+/// repair over the running mutation.
+pub fn busy_managed_environment(result: DesktopPreflightResult) -> DesktopPreflightResult {
+    let disposition = match result.disposition {
+        DesktopPreflightDisposition::AttachedReady
+        | DesktopPreflightDisposition::OwnedReady
+        | DesktopPreflightDisposition::ExternalConflict => return result,
+        DesktopPreflightDisposition::OwnedStale => DesktopPreflightDisposition::OwnedStale,
+        DesktopPreflightDisposition::NotInstalled
+        | DesktopPreflightDisposition::ManagedReady
+        | DesktopPreflightDisposition::ManagedStale => DesktopPreflightDisposition::ManagedStale,
+    };
+    DesktopPreflightResult {
+        disposition,
+        reason: Some(managed::MANAGED_ENVIRONMENT_UPDATING.to_string()),
+        can_auto_repair: false,
+        ..result
+    }
 }
 
 fn managed_bin_for_result(managed: &ManagedProbe) -> Option<PathBuf> {
@@ -100,8 +121,8 @@ fn choose_preflight(managed: ManagedProbe, backend: BackendProbe) -> DesktopPref
             },
             ManagedProbe::Stale { bin, reason } => DesktopPreflightResult {
                 disposition: DesktopPreflightDisposition::ManagedStale,
-                // The repair needs the same home directory, so do not offer it.
-                can_auto_repair: release_auto_repair() && !managed::is_context_reason(&reason),
+                // A busy gate or unreachable context would refuse the repair too.
+                can_auto_repair: release_auto_repair() && !managed::blocks_auto_repair(&reason),
                 reason: Some(reason),
                 port: None,
                 managed_bin: Some(bin),
@@ -216,7 +237,7 @@ fn mutation_blocker_from_probe(
         }
         // An id-less backend may be this install serving from a terminal, in
         // which case rewriting the venv underneath it would break it. It may
-        // equally be a remote Studio behind a port forward, and refusing on
+        // equally be a remote Unsloth behind a port forward, and refusing on
         // that leaves a stale install with no way to repair itself, since
         // repair is what the app runs automatically. The local per-port record
         // is what tells the two apart, so it, not the port, decides.
@@ -318,6 +339,19 @@ pub async fn desktop_preflight_result_with_state(
                         snapshot.port,
                         "state owner probe no longer verifies",
                     );
+                    return Ok((choose_preflight(managed, backend), None));
+                }
+                // The spawned arm self-heals too, but only for a child that has actually
+                // exited: a handle with no validated port is usually a cold start still
+                // importing torch, and clearing that would abandon a healthy launch. A
+                // child that died without its stdout reaching EOF is invisible to the
+                // crash detector, and the handle it leaves behind makes every later
+                // launch answer "Backend is already running." (#9756).
+                if crate::process::clear_spawned_backend_if_exited(
+                    state,
+                    snapshot.generation,
+                    "state owner probe no longer verifies",
+                ) {
                     return Ok((choose_preflight(managed, backend), None));
                 }
                 return Ok((
@@ -473,6 +507,86 @@ mod tests {
             assert_eq!(result.reason.as_deref(), reason);
             assert_eq!(result.can_auto_repair, can_auto_repair);
             assert_eq!(result.managed_bin, managed_bin);
+        }
+    }
+
+    #[test]
+    fn a_busy_environment_never_offers_a_repair_to_a_stale_backend() {
+        let bin = PathBuf::from("/managed/unsloth");
+        let busy = ManagedProbe::Stale {
+            bin: bin.clone(),
+            reason: managed::MANAGED_ENVIRONMENT_BUSY.to_string(),
+        };
+
+        assert!(managed_profile_unreachable(&busy));
+        assert!(!stale_auto_repair(&busy));
+
+        let owned = choose_owned_preflight(
+            &busy,
+            &VerifiedOwnedBackend {
+                owner: crate::desktop_backend_owner::test_owner_state("root", "token", 8000),
+                port: 8000,
+                backend_pid: 2,
+                generation: 3,
+                readiness: OwnedBackendReadiness::Stale {
+                    reason: "backend_outdated".to_string(),
+                },
+            },
+        );
+        let ownerless = choose_ownerless_spawned_preflight(
+            &busy,
+            &BackendProbe::Old {
+                port: 8000,
+                reason: "backend_outdated".to_string(),
+            },
+            Some(8000),
+        );
+
+        for result in [
+            owned,
+            ownerless,
+            choose_preflight(busy, BackendProbe::Missing),
+        ] {
+            assert!(!result.can_auto_repair, "{result:?}");
+            assert_eq!(
+                result.reason.as_deref(),
+                Some(managed::MANAGED_ENVIRONMENT_BUSY),
+                "{result:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn our_own_install_makes_every_managed_probe_wait() {
+        let probed = |disposition| DesktopPreflightResult {
+            disposition,
+            reason: Some("cli_unusable".to_string()),
+            port: None,
+            can_auto_repair: true,
+            managed_bin: Some(PathBuf::from("/managed/unsloth")),
+        };
+
+        use DesktopPreflightDisposition as D;
+        for (probe, waits_as) in [
+            (D::NotInstalled, D::ManagedStale),
+            (D::ManagedReady, D::ManagedStale),
+            (D::ManagedStale, D::ManagedStale),
+            (D::OwnedStale, D::OwnedStale),
+        ] {
+            let busy = busy_managed_environment(probed(probe));
+            assert_eq!(busy.disposition, waits_as);
+            assert_eq!(
+                busy.reason.as_deref(),
+                Some(managed::MANAGED_ENVIRONMENT_UPDATING)
+            );
+            assert!(!busy.can_auto_repair);
+            assert_eq!(busy.managed_bin, Some(PathBuf::from("/managed/unsloth")));
+        }
+
+        // A backend that answers is not waiting on anything.
+        for disposition in [D::AttachedReady, D::OwnedReady, D::ExternalConflict] {
+            let untouched = probed(disposition);
+            assert_eq!(busy_managed_environment(untouched.clone()), untouched);
         }
     }
 
@@ -705,6 +819,16 @@ mod tests {
     struct ManagedCapabilityCacheHome {
         path: PathBuf,
         previous: Option<std::ffi::OsString>,
+        /// Held for as long as the override is installed.
+        ///
+        /// The tokio mutex above only keeps these two tests off each other. `set_var` is
+        /// process-wide, and other test modules read the environment through `dirs` under
+        /// `PROCESS_ENV_LOCK` -- `main.rs`'s `with_xdg_data_home` above all. Writing the
+        /// environment outside that lock lets glibc free the old entry under a concurrent
+        /// reader, so `webview_profile_root` resolves the real `~/.local/share` instead of
+        /// the tempdir the caller set, and the three webview-profile tests then collide on
+        /// one lock file. Declared last so it outlives the restore in `Drop` below.
+        _env: std::sync::MutexGuard<'static, ()>,
     }
 
     #[cfg(unix)]
@@ -712,6 +836,9 @@ mod tests {
         fn new(test_name: &str) -> Self {
             use std::time::{SystemTime, UNIX_EPOCH};
 
+            let _env = crate::native_path_policy::PROCESS_ENV_LOCK
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
             let nanos = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .unwrap()
@@ -723,7 +850,11 @@ mod tests {
             std::fs::create_dir_all(&path).unwrap();
             let previous = std::env::var_os("UNSLOTH_TEST_DESKTOP_CAPABILITY_CACHE_HOME");
             std::env::set_var("UNSLOTH_TEST_DESKTOP_CAPABILITY_CACHE_HOME", &path);
-            Self { path, previous }
+            Self {
+                path,
+                previous,
+                _env,
+            }
         }
     }
 
@@ -1180,7 +1311,7 @@ exit 1
         ));
     }
 
-    /// The report this came from: an id-less Studio answered on a candidate
+    /// The report this came from: an id-less Unsloth answered on a candidate
     /// port, and a perfectly healthy install refused to launch at all.
     #[test]
     fn an_unrelated_backend_does_not_block_a_launch() {

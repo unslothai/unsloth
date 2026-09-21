@@ -1,5 +1,4 @@
-# tests/saving scripts run their whole body at import, so plain pytest
-# collection would download checkpoints and train. Skip unless opted in.
+# tests/saving scripts run their whole body at import, so plain pytest collection would download checkpoints and train.
 import sys as _sys
 from pathlib import Path as _Path
 
@@ -40,7 +39,6 @@ print(f"   📈 Training samples: {len(train_dataset)}")
 print(f"   📊 Evaluation samples: {len(eval_dataset)}")
 
 
-# Convert dataset to OAI messages.
 def format_data(sample):
     return {
         "messages": [
@@ -86,7 +84,7 @@ print("🤖 Loading base vision model...")
 try:
     model, tokenizer = FastVisionModel.from_pretrained(
         model_name = "unsloth/Qwen2-VL-7B-Instruct",
-        max_seq_length = 2048,  # Choose any for long context!
+        max_seq_length = 2048,
         load_in_4bit = True,  # 4 bit quantization to reduce memory
         load_in_8bit = False,  # [NEW!] A bit more accurate, uses 2x memory
         full_finetuning = False,  # [NEW!] We have full finetuning now!
@@ -136,15 +134,12 @@ try:
         data_collator = UnslothVisionDataCollator(model, tokenizer),
         train_dataset = train_dataset,
         args = SFTConfig(
-            # per_device_train_batch_size = 4,
-            # gradient_accumulation_steps = 8,
             per_device_train_batch_size = 2,
             gradient_accumulation_steps = 4,
             gradient_checkpointing = True,
             gradient_checkpointing_kwargs = {"use_reentrant": False},
             max_grad_norm = 0.3,  # max gradient norm based on QLoRA paper
             warmup_ratio = 0.03,
-            # num_train_epochs = 2, # Set this instead of max_steps for full training runs
             max_steps = 10,
             learning_rate = 2e-4,
             fp16 = not is_bf16_supported(),
@@ -157,7 +152,6 @@ try:
             seed = 3407,
             output_dir = "checkpoints",
             report_to = "none",  # For Weights and Biases
-            # You MUST put the below items for vision finetuning:
             remove_unused_columns = False,
             dataset_text_field = "",
             dataset_kwargs = {"skip_prepare_dataset": True},
@@ -215,7 +209,6 @@ success = {
     "safetensors_check": False,
     "download": False,
 }
-# Stage 1: upload model to Hub
 try:
     print("\n" + "=" * 80)
     print("=== UPLOADING MODEL TO HUB ===".center(80))
@@ -228,7 +221,6 @@ except Exception as e:
     print(f"❌ Failed to upload model: {e}")
     raise Exception("Model upload failed.")
 
-# Stage 2: verify safetensors.index.json exists
 try:
     print("\n" + "=" * 80)
     print("=== VERIFYING REPO CONTENTS ===".center(80))
@@ -247,7 +239,6 @@ except Exception as e:
     print(f"❌ Verification failed: {e}")
     raise Exception("Repo verification failed.")
 
-# Stage 3: test download even if cached
 safe_remove_directory(f"./{hf_username}")
 
 try:

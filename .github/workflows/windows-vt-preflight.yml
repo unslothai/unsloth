@@ -1,0 +1,187 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
+
+# Measurement only. Changes nothing, gates nothing, and is the prerequisite for replacing the
+# installers' native console thunk with $Host.UI.SupportsVirtualTerminal.
+#
+# Why it exists: GetStdHandle / GetConsoleMode / SetConsoleMode are three of the native imports left
+# in install.ps1 and, in studio/setup.ps1, the only reason that file carries reflection-emit helpers,
+# a child-process capability probe and a Device Guard CIM query at all -- roughly 300 lines whose
+# entire purpose is colouring a banner. "Defines a dynamic assembly, P/Invokes kernel32, spawns a
+# hidden child interpreter" is the densest malicious-looking region in either script, so removing it
+# is the largest single reduction available. It is only safe if the property answers what the native
+# code answers, and a wrong guess prints raw escape sequences at a user.
+#
+# Why a plain step cannot answer it: Actions captures stdout, so [Console]::IsOutputRedirected is
+# true in every step and BOTH answers come back as the redirected ones -- which is the case the
+# installers decide early and never reach the native path for. So the console case is measured under
+# conhost.exe, which allocates a real console, and the result travels through a file because that
+# console's output goes nowhere a runner can read.
+
+name: "Windows: virtual terminal preflight"
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - '.github/scripts/Probe-VirtualTerminal.ps1'
+      - '.github/workflows/windows-vt-preflight.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  measure:
+    name: "property vs native call (${{ matrix.os }})"
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    strategy:
+      # Every supported host, not one of them. The property and the startup VT behaviour are
+      # supplied by the OS: ConsoleHost and the in-box Windows PowerShell ship with Windows, so
+      # agreement on one image says nothing about another. windows-latest is Server 2025, which is
+      # not what a user runs at all; windows-11-arm is the only CLIENT SKU available to a hosted
+      # runner and therefore the closest thing here to the machine in #10805; windows-2022 is an
+      # older ConsoleHost. windows-2019 is not an option, GitHub retired it.
+      #
+      # fail-fast is off because a single UNSAFE answer is the most valuable result this lane can
+      # produce and cancelling its siblings would throw away the comparison that explains it.
+      fail-fast: false
+      matrix:
+        os: [windows-latest, windows-2022, windows-11-arm]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Measure with stdout redirected, and with a real console
+        shell: pwsh
+        env:
+          MATRIX_OS: ${{ matrix.os }}
+        run: |
+          $probe = (Resolve-Path '.github/scripts/Probe-VirtualTerminal.ps1').Path
+          $outDir = Join-Path $env:RUNNER_TEMP 'vt-preflight'
+          New-Item -ItemType Directory -Path $outDir -Force | Out-Null
+          $redirected = Join-Path $outDir 'redirected.json'
+          $console    = Join-Path $outDir 'console.json'
+
+          # Windows PowerShell 5.1 specifically. That is the interpreter install.rs spawns
+          # (install.rs:433-440) and the one a clean Windows box ships, and it is a different host
+          # implementation from pwsh 7, so pwsh's answer does not transfer.
+          $ps51 = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+          if (-not (Test-Path -LiteralPath $ps51)) {
+            Write-Host "::error::Windows PowerShell 5.1 is not at $ps51; this runner cannot answer the question that matters"
+            exit 1
+          }
+
+          # RemoteSigned, not a relaxed policy: the script comes out of a checkout so it carries no
+          # mark of the web. Using Bypass in the lane that exists to remove Bypass would be absurd.
+          & $ps51 -NoProfile -NonInteractive -ExecutionPolicy RemoteSigned -File $probe -OutFile $redirected
+          if (-not (Test-Path -LiteralPath $redirected)) {
+            Write-Host '::error::the redirected probe wrote no result file'
+            exit 1
+          }
+
+          # conhost.exe allocates a real console for the child, so its stdout handle is a console
+          # handle and GetConsoleMode can answer. -Wait because the result is read below.
+          $conhost = Join-Path $env:SystemRoot 'System32\conhost.exe'
+          if (-not (Test-Path -LiteralPath $conhost)) {
+            Write-Host '::error::conhost.exe is absent; the console case cannot be measured on this runner'
+            exit 1
+          }
+          Start-Process -FilePath $conhost -Wait -ArgumentList @(
+            $ps51, '-NoProfile', '-NonInteractive',
+            '-ExecutionPolicy', 'RemoteSigned',
+            '-File', $probe, '-OutFile', $console, '-Attached'
+          )
+
+          if (-not (Test-Path -LiteralPath $console)) {
+            Write-Host '::error::the console-attached probe wrote no result file. Not reporting a verdict: an unmeasured console is not a safe one.'
+            exit 1
+          }
+
+          $r = Get-Content -Raw $redirected | ConvertFrom-Json
+          $c = Get-Content -Raw $console    | ConvertFrom-Json
+
+          foreach ($row in @($r, $c)) {
+            Write-Host ''
+            Write-Host "--- $($row.label)"
+            Write-Host "  host               : $($row.hostName) / $($row.psVersion) / $($row.psEdition)"
+            Write-Host "  os                 : $($row.osCaption) build $($row.osBuild) / $($row.architecture)"
+            Write-Host "  isOutputRedirected : $($row.isOutputRedirected)"
+            Write-Host "  SupportsVirtualTerminal : $($row.supportsVt)$(if ($row.supportsVtError) { " [$($row.supportsVtError)]" })"
+            Write-Host "  native GetConsoleMode/Set : $($row.nativeVt)$(if ($row.nativeVtError) { " [$($row.nativeVtError)]" })"
+            Write-Host "  console mode       : $($row.nativeConsoleMode)"
+          }
+
+          # The control: the console run must actually have had a console. Without this check a
+          # conhost that silently failed to attach would make both runs redirected, the two answers
+          # would trivially agree, and the lane would report SAFE having measured nothing.
+          if ($c.isOutputRedirected -ne $false) {
+            Write-Host ''
+            Write-Host "::error::the console-attached run still reports isOutputRedirected=$($c.isOutputRedirected), so no real console was measured."
+            Write-Host '::error::Refusing to report a verdict. Two redirected runs agree with each other for reasons that say nothing about a user at a console.'
+            exit 1
+          }
+          Write-Host ''
+          Write-Host 'control: the console-attached run really had a console (isOutputRedirected=False)'
+
+          # Named, and scoped to the image that produced it. One runner's agreement is evidence about
+          # that runner: the claim the replacement rests on is that EVERY measured host agrees, and
+          # that claim belongs to the summary job below, not to any single matrix leg.
+          $where = "$env:MATRIX_OS ($($c.osCaption ?? 'unknown build'))"
+          Write-Host ''
+          if ($null -ne $c.supportsVt -and $c.supportsVt -eq $c.nativeVt) {
+            Write-Host "VERDICT for ${where}: SAFE. At a real console the property and the native call both answer $($c.supportsVt)."
+            Write-Host '         This leg speaks for this image only. See the summary job for whether every'
+            Write-Host '         measured host agreed, which is what the replacement actually rests on.'
+            exit 0
+          }
+
+          Write-Host "::error::VERDICT for ${where}: UNSAFE. At a real console the property answers '$($c.supportsVt)' but the native call answers '$($c.nativeVt)'."
+          Write-Host '::error::Do NOT swap the implementation. Users on this host would lose banner colour, or worse get raw escape sequences.'
+          Write-Host '::error::This is the measurement saying no, which is the outcome this lane exists to be able to produce.'
+          exit 1
+
+      - name: Upload the measurements
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          # Per leg. upload-artifact v4 and later refuse a duplicate name outright, so one shared
+          # name would leave the matrix with a single surviving leg's measurements.
+          name: vt-preflight-${{ matrix.os }}
+          path: ${{ runner.temp }}/vt-preflight/*.json
+          if-no-files-found: warn
+          retention-days: 30
+
+  agree:
+    name: did every measured host agree
+    needs: measure
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Combine the legs
+        env:
+          RESULT: ${{ needs.measure.result }}
+        run: |
+          set -euo pipefail
+          echo "measure matrix result: $RESULT"
+          if [ "$RESULT" = "success" ]; then
+            echo "VERDICT: SAFE on every measured host."
+            echo "Windows Server 2025, Windows Server 2022 and Windows 11 on Arm64 all reported the"
+            echo "property and the native call agreeing at a real console. That is the claim"
+            echo "Enable-StudioVirtualTerminal's replacement rests on."
+            echo
+            echo "Still not measured here, and not claimed: Windows 10, and x64 Windows 11 client."
+            echo "No hosted runner offers either. The four self-hosted Windows 11 Pro boxes are where"
+            echo "an x64 client answer would come from if one is wanted before the swap ships."
+            exit 0
+          fi
+          echo "::error::At least one host did not agree, or could not be measured (result: $RESULT)."
+          echo "::error::Read the per-host legs. A single UNSAFE answer is enough to cancel the replacement:"
+          echo "::error::the cost of being wrong is raw escape sequences printed at a user."
+          exit 1

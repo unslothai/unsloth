@@ -1,16 +1,14 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Tests for the llama-server mmproj text-only fallback.
+"""Tests for llama-server multimodal-projector startup recovery.
 
-A GGUF vision model is launched with ``--mmproj <projector>``. When the
-installed llama.cpp prebuilt is older than the model's projector format,
-llama-server aborts at startup with ``clip.cpp:NNNN: Unknown projector
-type`` (exit -6). load_model now retries once WITHOUT ``--mmproj`` so the
-base model still loads text-only, warns the user to update llama.cpp, and
-marks the session non-vision. These tests pin the two decision helpers:
-``_is_projector_incompatibility`` (when to retry) and ``_strip_mmproj_args``
-(how the retry argv is built). Unrelated failures must NOT trigger a retry.
+A GGUF vision model launches with ``--mmproj <projector>``. When GPU memory
+cannot hold the projector, Unsloth first retries with ``--no-mmproj-offload``
+so image input remains available. Incompatible projectors, or startup crashes
+that also fail that CPU-projector retry, keep the existing text-only fallback.
+These tests pin the diagnostics, argv rewrites, fallback ordering, and runtime
+state exposed to the UI. Unrelated failures must not trigger a projector retry.
 """
 
 from __future__ import annotations
@@ -36,13 +34,16 @@ sys.modules.setdefault("structlog", _structlog_stub)
 if not hasattr(sys.modules["structlog"], "get_logger"):
     sys.modules["structlog"].get_logger = _structlog_stub.get_logger
 
-from core.inference.llama_cpp import LlamaCppBackend  # noqa: E402
+from core.inference.llama_cpp import GgufLoadIntent, LlamaCppBackend  # noqa: E402
 
 _detect = LlamaCppBackend._is_projector_incompatibility
 _strip = LlamaCppBackend._strip_mmproj_args
 _signal_crash = LlamaCppBackend._is_signal_crash
 _flash_off = LlamaCppBackend._with_flash_attn_off
 _nonproj = LlamaCppBackend._output_has_nonprojector_diagnostic
+
+_mmproj_cpu = LlamaCppBackend._with_mmproj_offload_disabled
+_gpu_memory_failure = LlamaCppBackend._is_gpu_memory_start_failure
 
 # Real abort captured loading gemma-4 on a 3-day-old prebuilt (build b9496).
 _GEMMA4_OLD_LLAMACPP_OUT = (
@@ -144,6 +145,98 @@ _VISION_CMD = [
     "--mmproj",
     "/cache/mmproj-F16.gguf",
 ]
+
+
+class TestMmprojCpuOffload:
+    """The low-VRAM recovery keeps the projector but pins it to CPU."""
+
+    def test_appends_cpu_pin_last_and_keeps_vision(self):
+        retry = _mmproj_cpu(_VISION_CMD, {})
+        assert retry is not None
+        assert retry[-1] == "--no-mmproj-offload"
+        assert "--mmproj" in retry
+        assert "/cache/mmproj-F16.gguf" in retry
+        assert retry[:-1] == _VISION_CMD
+
+    def test_noop_without_a_projector(self):
+        assert _mmproj_cpu(["llama-server", "-m", "/cache/model.gguf"], {}) is None
+
+    def test_noop_when_projector_is_already_on_cpu(self):
+        cmd = _VISION_CMD + ["--no-mmproj-offload"]
+        assert _mmproj_cpu(cmd, {}) is None
+
+    def test_last_flag_wins_when_gpu_was_reenabled(self):
+        cmd = _VISION_CMD + ["--no-mmproj-offload", "--mmproj-offload"]
+        retry = _mmproj_cpu(cmd, {})
+        assert retry is not None
+        assert retry[-1] == "--no-mmproj-offload"
+
+    @pytest.mark.parametrize("value", ["0", "false", "off", "no"])
+    def test_noop_when_environment_already_pins_cpu(self, value):
+        assert _mmproj_cpu(_VISION_CMD, {"LLAMA_ARG_MMPROJ_OFFLOAD": value}) is None
+
+    @pytest.mark.parametrize("value", ["1", "true", "on", "yes"])
+    def test_command_pin_overrides_gpu_environment(self, value):
+        retry = _mmproj_cpu(_VISION_CMD, {"LLAMA_ARG_MMPROJ_OFFLOAD": value})
+        assert retry is not None
+        assert retry[-1] == "--no-mmproj-offload"
+
+
+class TestGpuMemoryStartFailure:
+    @pytest.mark.parametrize(
+        "out",
+        [
+            _OOM_OUT,
+            "ggml_backend_cuda_buffer_type_alloc: failed to allocate buffer",
+            "CUDA error: out of memory",
+        ],
+    )
+    def test_gpu_allocation_errors_match(self, out):
+        assert _gpu_memory_failure(out) is True
+
+    @pytest.mark.parametrize(
+        "out",
+        [
+            "ggml_alloc: failed to allocate 512.00 MiB",
+            "std::bad_alloc: out of memory",
+        ],
+    )
+    def test_host_allocation_errors_do_not_match(self, out):
+        assert _gpu_memory_failure(out) is False
+
+    def test_unrelated_gpu_banner_does_not_reclassify_host_oom(self):
+        out = "ggml_cuda_init: found 1 CUDA device\nstd::bad_alloc: out of memory"
+        assert _gpu_memory_failure(out) is False
+
+    @pytest.mark.parametrize("out", [_BAD_ARCH_OUT, _PORT_OUT, _MISSING_OUT, ""])
+    def test_unrelated_startup_errors_do_not_match(self, out):
+        assert _gpu_memory_failure(out) is False
+
+
+class TestMmprojExplicitReload:
+    @staticmethod
+    def _backend() -> LlamaCppBackend:
+        backend = LlamaCppBackend()
+        backend._requested_n_ctx = 8192
+        backend._requested_spec_mode = "auto"
+        return backend
+
+    @staticmethod
+    def _intent(*, force_reload: bool = False) -> GgufLoadIntent:
+        return GgufLoadIntent(
+            model_identifier = "owner/vision-model",
+            n_ctx = 8192,
+            speculative_type = "auto",
+            force_reload = force_reload,
+        )
+
+    def test_normal_duplicate_still_matches(self):
+        backend = self._backend()
+        assert backend._runtime_matches_intent(self._intent(), None) is True
+
+    def test_explicit_reload_bypasses_runtime_deduplication(self):
+        backend = self._backend()
+        assert backend._runtime_matches_intent(self._intent(force_reload = True), None) is False
 
 
 class TestStripMmprojArgs:
@@ -270,7 +363,7 @@ _drop_env_v = LlamaCppBackend._drop_env_quantized_v_cache
 class TestFlashAttnOffQuantizedKvCache:
     """Only the V cache requires flash attention in llama.cpp (init aborts with
     "V cache quantization requires flash_attn"); a quantized K cache runs fine
-    without FA. Studio launches FA on, so a quantized --cache-type-v is legal at
+    without FA. Unsloth launches FA on, so a quantized --cache-type-v is legal at
     launch but would make the FA-off crash-recovery retry crash on init. The
     fallback must reset a quantized V cache (main and draft) to f16 while leaving
     the K cache and non-quantized (f16/bf16/f32) types unchanged -- resetting K
@@ -418,7 +511,7 @@ class TestFlashAttnOffQuantizedKvCache:
 
 class TestDropEnvQuantizedVCache:
     """The argv rewrite can't reach a cache type set purely through the
-    environment (Studio deliberately lets an env-only type reach the child), so
+    environment (Unsloth deliberately lets an env-only type reach the child), so
     the FA-off retry separately drops a quantized V-cache env var. Only V is
     dropped: a quantized K cache is FA-independent and must survive."""
 
@@ -504,10 +597,15 @@ class TestRetryContract:
         assert "--mmproj" not in retry_cmd
         assert "-m" in retry_cmd and "--jinja" in retry_cmd
 
-    def test_oom_does_not_retry_text_only(self):
-        # An OOM with --mmproj present must NOT be treated as a projector
-        # problem: load_model errors out instead of dropping vision.
+    def test_oom_retries_with_the_projector_on_cpu_before_text_only(self):
+        # A concrete GPU allocation failure is not projector incompatibility,
+        # but it is exactly when --no-mmproj-offload can preserve image input.
         assert _detect(_OOM_OUT) is False
+        assert _gpu_memory_failure(_OOM_OUT) is True
+        retry_cmd = _mmproj_cpu(_VISION_CMD, {})
+        assert retry_cmd is not None
+        assert retry_cmd[-1] == "--no-mmproj-offload"
+        assert "--mmproj" in retry_cmd
 
     def test_bare_segfault_with_mmproj_yields_text_only_retry(self):
         # Field report: a -11 SIGSEGV on --mmproj has no projector line; the
@@ -519,12 +617,14 @@ class TestRetryContract:
         retry_cmd = _strip(_VISION_CMD)
         assert "--mmproj" not in retry_cmd and "-m" in retry_cmd
 
-    def test_signal_crash_with_oom_output_keeps_the_real_error(self):
-        # A hard fault that already printed an OOM must surface it, not silently
-        # drop --mmproj and tell the user to update llama.cpp.
+    def test_signal_crash_with_oom_output_uses_the_cpu_projector_rung(self):
+        # OOM remains excluded from the ambiguous signal-only diagnosis, but
+        # has its own recovery: keep --mmproj and move that projector to CPU.
         assert _signal_crash(-6) is True
-        should_retry = _detect(_OOM_OUT) or (_signal_crash(-6) and not _nonproj(_OOM_OUT))
-        assert should_retry is False
+        signal_only = _detect(_OOM_OUT) or (_signal_crash(-6) and not _nonproj(_OOM_OUT))
+        assert signal_only is False
+        assert _gpu_memory_failure(_OOM_OUT) is True
+        assert "--mmproj" in _mmproj_cpu(_VISION_CMD, {})
 
     def test_signal_crash_with_bad_arch_does_not_drop_vision(self):
         should_retry = _detect(_BAD_ARCH_OUT) or (_signal_crash(-6) and not _nonproj(_BAD_ARCH_OUT))
@@ -534,20 +634,32 @@ class TestRetryContract:
         # Clean non-zero exit (bad path, port bind) is not a hard crash; stay message-based.
         assert (_detect(_MISSING_OUT) or _signal_crash(1)) is False
 
-    def test_signal_crash_tries_flash_attn_off_before_dropping_vision(self):
-        # Ladder order: a hard fault retries FA-off FIRST (keeps vision + MTP);
-        # only if THAT is None/fails do we fall back to stripping --mmproj.
+    def test_signal_crash_tries_non_destructive_rungs_before_dropping_vision(self):
+        # Ladder order: FA-off first, then projector-on-CPU. Only if both fail
+        # does Unsloth remove --mmproj and become text-only.
         assert _signal_crash(-11) is True
         fa_retry = _flash_off(_VISION_CMD)
         assert fa_retry is not None
-        assert "--mmproj" in fa_retry  # vision preserved at this rung
-        # Last resort still available and strictly more destructive.
-        text_only = _strip(fa_retry)
+        assert "--mmproj" in fa_retry
+        cpu_projector = _mmproj_cpu(fa_retry, {})
+        assert cpu_projector is not None
+        assert "--mmproj" in cpu_projector
+        assert cpu_projector[-1] == "--no-mmproj-offload"
+        text_only = _strip(cpu_projector)
         assert "--mmproj" not in text_only
 
     def test_external_kill_skips_flash_attn_retry(self):
         # SIGKILL (-9, OOM killer) is not a program fault: no FA-off retry.
         assert _signal_crash(-9) is False
+
+
+class TestMmprojFallbackLifecycle:
+    def test_unload_clears_the_runtime_outcome(self):
+        backend = LlamaCppBackend()
+        backend._mmproj_fallback_reason = "cpu_offload"
+
+        assert backend.unload_model() is True
+        assert backend.mmproj_fallback_reason is None
 
 
 class TestMmprojRetryFailureMessage:

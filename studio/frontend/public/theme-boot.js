@@ -1,10 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Apply the stored theme and palette before the bundle loads so the first
-// paint is never the wrong mode. Loaded as an external classic script (it
-// blocks parsing, like an inline script) because the backend CSP only
-// allows script-src 'self'.
+// Apply the stored theme and palette before the bundle loads so the first paint is never the wrong
+// mode. Loaded as an external classic script (it blocks parsing, like an inline script) because the
+// backend CSP only allows script-src 'self'.
 try {
   // Storage reads get their own guards so a blocked localStorage (private
   // browsing) still resolves a mode from the OS preference.
