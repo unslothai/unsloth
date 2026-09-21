@@ -1588,3 +1588,50 @@ class TestPathLoadCompanionRoots:
             "inference_route_module_for_repo_id_load",
             load_path = REPO,
         )
+
+
+def test_a_symlinked_sibling_snapshot_is_not_a_trusted_root(tmp_path):
+    """`is_dir()` follows symlinks, and `follow_symlinks=False` is 3.13+.
+
+    Access is validated for the snapshot the caller named. A directory symlink placed
+    under `snapshots/` would otherwise be handed back as a trusted disjoint search root,
+    so `ModelConfig.from_identifier` would read GGUF companions from wherever it points.
+    """
+    from core.inference.local_model_resolver import local_gguf_companion_roots
+
+    repo = tmp_path / "cache" / "models--a--b"
+    snapshots = repo / "snapshots"
+    selected = snapshots / "rev1"
+    selected.mkdir(parents = True)
+    (selected / "model.gguf").touch()
+    real_sibling = snapshots / "rev2"
+    real_sibling.mkdir()
+    (real_sibling / "mmproj.gguf").touch()
+    outside = tmp_path / "other_tenant"
+    outside.mkdir()
+    (outside / "leaked.gguf").touch()
+    (snapshots / "rev3").symlink_to(outside, target_is_directory = True)
+
+    roots = local_gguf_companion_roots(str(selected), repo_level = True)
+    names = [os.path.basename(root) for root in roots]
+    assert "rev1" in names and "rev2" in names
+    assert "rev3" not in names, f"escaped symlink returned as a trusted root: {roots}"
+    assert all(str(outside) not in root for root in roots)
+
+
+def test_a_repo_with_no_sibling_snapshot_widens_nothing(tmp_path):
+    """One root is the caller's own snapshot, so there is nothing to widen to.
+
+    Callers read a non-None roots tuple as `allow_disjoint_search_root`, which makes the
+    mmproj scan recursive, so returning a bare single root silently relaxes a guard
+    instead of being inert.
+    """
+    from core.inference.local_model_resolver import local_path_gguf_companion_roots
+
+    repo = tmp_path / "cache" / "models--a--b"
+    snapshots = repo / "snapshots"
+    selected = snapshots / "only"
+    selected.mkdir(parents = True)
+    (selected / "model.gguf").touch()
+
+    assert local_path_gguf_companion_roots(str(selected)) == ()

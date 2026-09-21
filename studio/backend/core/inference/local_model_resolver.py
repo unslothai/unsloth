@@ -176,14 +176,28 @@ def local_gguf_companion_roots(load_path: str, *, repo_level: bool = False) -> t
             return ()
     except OSError:
         return ()
+    # A sibling has to resolve back inside this repo dir. `is_dir()` follows symlinks and
+    # `follow_symlinks=False` is 3.13+, so a sibling that is a directory symlink would
+    # otherwise be returned as a trusted root: access was validated for the snapshot the
+    # caller named, not for wherever a link under `snapshots/` happens to point. Resolving
+    # the repo too keeps a cache reached through a symlinked path working.
+    try:
+        repo_resolved = repo.resolve()
+    except OSError as exc:
+        logger.debug("Stopping at unresolvable repo dir %s: %s", repo, exc)
+        return ()
     siblings = []
     try:
         for path in snapshots.iterdir():
             if path == selected:
                 continue
             try:
-                if path.is_dir():
-                    siblings.append(path)
+                if not path.is_dir():
+                    continue
+                if repo_resolved not in path.resolve().parents:
+                    logger.debug("Skipping companion snapshot outside %s: %s", repo_resolved, path)
+                    continue
+                siblings.append(path)
             except OSError as exc:
                 logger.debug("Skipping unreadable companion snapshot %s: %s", path, exc)
     except OSError as exc:
@@ -236,7 +250,14 @@ def local_path_gguf_companion_roots(load_path: str) -> tuple[str, ...]:
     # selector's by symlink or, on Windows, by case.
     if chosen is None or not same_existing_path(chosen[3], selected):
         return ()
-    return local_gguf_companion_roots(load_path, repo_level = True)
+    roots = local_gguf_companion_roots(load_path, repo_level = True)
+    # One root is the snapshot the caller already named, so there is nothing to widen to.
+    # Returning it anyway is not inert: callers read `roots is not None` as
+    # `allow_disjoint_search_root`, which makes detect_mmproj_file's scan recursive and
+    # defeats the single-directory guard at model_config.py:2062. Measured on a repo whose
+    # weights are in UD-IQ1_S/ and whose projector is only in BF16/: a one-root return
+    # turns `"mmproj": null` into `"mmproj": "mmproj-model-BF16.gguf"`.
+    return roots if len(roots) > 1 else ()
 
 
 def local_gguf_companion_state(roots: tuple[str, ...]) -> tuple:
