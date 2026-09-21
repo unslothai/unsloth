@@ -12894,12 +12894,12 @@ def test_the_completeness_verdict_travels_with_the_snapshot_that_earned_it(monke
 
     # The route reads it from there rather than asking the resolver again.
     src = inspect.getsource(inference_route._maybe_auto_switch_model)
-    assert "alias_probe_state[2]" in src, (
-        "the route no longer reads completeness from the state that answered it"
-    )
-    assert "index_last_scan_was_complete()" not in src, (
-        "the route reads the completeness verdict separately again"
-    )
+    assert (
+        "alias_probe_state[2]" in src
+    ), "the route no longer reads completeness from the state that answered it"
+    assert (
+        "index_last_scan_was_complete()" not in src
+    ), "the route reads the completeness verdict separately again"
 
 
 def test_an_unreadable_ollama_path_is_reported_but_an_absent_one_is_not():
@@ -12920,9 +12920,9 @@ def test_an_unreadable_ollama_path_is_reported_but_an_absent_one_is_not():
 
     with collecting_scan_incidents() as incidents:
         assert ollama_service._safe_is_file(_Unreadable("/models/manifests/library/x")) is False
-    assert any("unreadable" in note for note in incidents), (
-        f"a manifest that could not be stat'ed read as one that is not there: {incidents}"
-    )
+    assert any(
+        "unreadable" in note for note in incidents
+    ), f"a manifest that could not be stat'ed read as one that is not there: {incidents}"
 
     # An absent path IS an answer, so it stays silent.
     with collecting_scan_incidents() as incidents:
