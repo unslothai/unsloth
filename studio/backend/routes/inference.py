@@ -15774,7 +15774,15 @@ async def _load_model_impl(
             _gpu_layers_override = parse_gpu_layers_override(extra_llama_args)
             if _gpu_layers_override is not None:
                 _manual_updates["gpu_layers"] = _gpu_layers_override
-            _tensor_split_override = parse_tensor_split_override(extra_llama_args)
+            # reserialized: manual mode writes the ratio back out itself, so the six-digit
+            # text the child parses is what has to be in range, not the double read here.
+            # A 400 rather than the 500 an unhandled raise here would be.
+            try:
+                _tensor_split_override = parse_tensor_split_override(
+                    extra_llama_args, reserialized = True
+                )
+            except ValueError as exc:
+                raise HTTPException(status_code = 400, detail = redact_native_paths(str(exc))) from exc
             if _tensor_split_override is not None:
                 _manual_updates["tensor_split"] = _tensor_split_override
             if _manual_updates:
@@ -17121,7 +17129,13 @@ async def validate_model(
             _validate_ngl_override = parse_gpu_layers_override(effective_extra_args)
             if _validate_ngl_override is not None:
                 _validate_manual_updates["gpu_layers"] = _validate_ngl_override
-            _validate_ts_override = parse_tensor_split_override(effective_extra_args)
+            # Same reserialized judgement, and the same 400, as the load path above.
+            try:
+                _validate_ts_override = parse_tensor_split_override(
+                    effective_extra_args, reserialized = True
+                )
+            except ValueError as exc:
+                raise HTTPException(status_code = 400, detail = str(exc)) from exc
             if _validate_ts_override is not None:
                 _validate_manual_updates["tensor_split"] = _validate_ts_override
             if _validate_manual_updates:

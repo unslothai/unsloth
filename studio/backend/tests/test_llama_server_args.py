@@ -682,14 +682,35 @@ def test_parse_tensor_split_override_keeps_what_stof_accepts(value):
     assert parse_tensor_split_override(["-ts", value]) is not None
 
 
+def test_parse_tensor_split_override_only_rounds_what_gets_reserialized():
+    # Under pass-through llama-server reads the user's OWN text, and std::stof takes
+    # "1.1754943508222874e-38" (measured). Judging the six-digit rendering there would refuse a
+    # split that runs exactly as typed, so the rounding is scoped to the manual promotion that
+    # actually rewrites the ratio.
+    assert parse_tensor_split_override(["-ts", "1.1754943508222874e-38,1"]) is not None
+    with pytest.raises(ValueError, match = "at least"):
+        parse_tensor_split_override(["-ts", "1.1754943508222874e-38,1"], reserialized = True)
+
+
+def test_parse_tensor_split_override_rounds_each_share_before_adding():
+    # llama.cpp does `sum += std::stof(token)`, so each share is a float BEFORE it joins the
+    # total. Compiled and run here, "3.17817e38,1.54601e37,7.00525e36" reaches inf that way while
+    # accumulating the doubles and rounding afterwards lands on FLT_MAX and looked fine.
+    for reserialized in (False, True):
+        with pytest.raises(ValueError, match = "adds up past"):
+            parse_tensor_split_override(
+                ["-ts", "3.17817e38,1.54601e37,7.00525e36"], reserialized = reserialized
+            )
+
+
 def test_parse_tensor_split_override_judges_the_share_it_will_emit():
     # The manual launcher writes f"{x:g}", six significant digits. 1.1754943508222874e-38 rounds
     # UP to FLT_MIN as a float and so passed a full-precision check, but it is emitted as
     # "1.17549e-38" and std::stof refuses THAT as subnormal (measured on this host), so /validate
     # approved a command the server then died on.
     with pytest.raises(ValueError, match = "at least"):
-        parse_tensor_split_override(["-ts", "1.1754943508222874e-38,1"])
-    assert parse_tensor_split_override(["-ts", "1.2e-38,1"]) == [1.2e-38, 1.0]
+        parse_tensor_split_override(["-ts", "1.1754943508222874e-38,1"], reserialized = True)
+    assert parse_tensor_split_override(["-ts", "1.2e-38,1"], reserialized = True) == [1.2e-38, 1.0]
 
 
 def test_parse_tensor_split_override_totals_the_emitted_shares():
@@ -698,7 +719,8 @@ def test_parse_tensor_split_override_totals_the_emitted_shares():
     # the emitted text ("2.08296e+38,7.17058e+37,6.02804e+37") reaches 3.40282e+38 and fits.
     assert (
         parse_tensor_split_override(
-            ["-ts", "2.0829609943909916e38,7.170581961838338e37,6.028042758104631e37"]
+            ["-ts", "2.0829609943909916e38,7.170581961838338e37,6.028042758104631e37"],
+            reserialized = True,
         )
         is not None
     )

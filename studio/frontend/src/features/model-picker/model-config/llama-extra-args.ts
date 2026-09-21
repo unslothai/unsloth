@@ -248,7 +248,10 @@ function dropUnusableValues(tokens: readonly string[]): string[] {
     const minimum = INTEGER_VALUE_MINIMUM[flag];
     const unusable =
       missing ||
-      (RATIO_VALUE_FLAGS.has(flag) && ratioValueProblem(flag, value) !== null) ||
+      // false: repairing a STORED list, where the mode is not known. Only what no mode can
+      // run is dropped, so a value that is fine as pass-through survives the repair.
+      (RATIO_VALUE_FLAGS.has(flag) &&
+        ratioValueProblem(flag, value, false) !== null) ||
       (INTEGER_VALUE_FLAGS.has(flag) &&
         (!INTEGER.test(value.trim()) ||
           (minimum !== undefined && Number(value.trim()) < minimum)));
@@ -691,7 +694,11 @@ const toFloat32 = (value: number): number => Math.fround(value);
 const asEmitted = (value: number): number => Number(value.toPrecision(6));
 
 /** The three ways parse_tensor_split_override refuses a ratio, or null when it would take it. */
-function ratioValueProblem(flag: string, value: string): string | null {
+function ratioValueProblem(
+  flag: string,
+  value: string,
+  reserialized: boolean,
+): string | null {
   const parts = value
     .split(RATIO_DELIMITER)
     .filter((part) => part.trim() !== "");
@@ -712,13 +719,18 @@ function ratioValueProblem(flag: string, value: string): string | null {
   if (numbers.reduce((total, entry) => total + entry, 0) <= 0) {
     return `${flag} must have a positive total.`;
   }
-  const shares = numbers.map(asEmitted);
-  if (shares.some((share) => !Number.isFinite(toFloat32(share)))) {
+  // Which text llama-server will parse: the user's own under pass-through, the launcher's
+  // six-digit rendering once manual mode promotes and rewrites the ratio. Rounding a
+  // pass-through value here would refuse input that runs exactly as typed.
+  const shares = numbers.map((entry) =>
+    toFloat32(reserialized ? asEmitted(entry) : entry),
+  );
+  if (shares.some((share) => !Number.isFinite(share))) {
     return `${flag} entries must fit in a 32-bit float (at most ${FLOAT32_MAX.toExponential(4)}).`;
   }
   if (
     shares.some(
-      (share, at) => numbers[at] !== 0 && toFloat32(share) < FLOAT32_MIN_NORMAL,
+      (share, at) => numbers[at] !== 0 && share < FLOAT32_MIN_NORMAL,
     )
   ) {
     return `${flag} entries must be 0 or at least ${FLOAT32_MIN_NORMAL.toExponential(4)}.`;
@@ -964,7 +976,7 @@ export function diagnoseExtraArgs(
           ? `${flag} needs a number after it.`
           : `${flag} needs a value after it.`;
       } else if (RATIO_VALUE_FLAGS.has(flag)) {
-        message = ratioValueProblem(flag, value);
+        message = ratioValueProblem(flag, value, manualGpuMemory);
       } else if (!numeric) {
         message = null;
       } else if (!INTEGER.test(value.trim())) {

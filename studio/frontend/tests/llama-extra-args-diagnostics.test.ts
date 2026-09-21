@@ -1487,14 +1487,34 @@ test("the mirror judges the share the launcher will write, and totals it in floa
   // Both halves of the round-3 review: six-significant-digit emission can move a value out of
   // range after validation, and a single float64 reduction disagrees with llama.cpp's stepwise
   // float32 prefix sum near the top of the range.
-  assert.match(_tsError("-ts 1.1754943508222874e-38,1") ?? "", /0 or at least/);
-  assert.equal(_tsError("-ts 1.2e-38,1"), null);
+  const manual = (input: string) =>
+    diagnoseExtraArgs(input, CATALOG, { manualGpuMemory: true }).find(
+      (d) => d.level === "error",
+    )?.message ?? null;
+  assert.match(manual("-ts 1.1754943508222874e-38,1") ?? "", /0 or at least/);
+  assert.equal(manual("-ts 1.2e-38,1"), null);
   // Real libstdc++ sums the emitted text to 3.40282e+38, which fits, so this must NOT be refused.
   assert.equal(
-    _tsError(
-      "-ts 2.0829609943909916e38,7.170581961838338e37,6.028042758104631e37",
-    ),
+    manual("-ts 2.0829609943909916e38,7.170581961838338e37,6.028042758104631e37"),
     null,
   );
-  assert.match(_tsError("-ts 3e38,3e38") ?? "", /adds up past/);
+  assert.match(manual("-ts 3e38,3e38") ?? "", /adds up past/);
+});
+
+test("the ratio rounding follows the mode, and each share rounds before it is added", () => {
+  const err = (input: string, manualGpuMemory: boolean) =>
+    diagnoseExtraArgs(input, CATALOG, { manualGpuMemory }).find(
+      (d) => d.level === "error",
+    )?.message ?? null;
+  // Pass-through hands llama-server the user's own text, which std::stof accepts; only the
+  // manual promotion rewrites it at six significant digits.
+  assert.equal(err("-ts 1.1754943508222874e-38,1", false), null);
+  assert.match(err("-ts 1.1754943508222874e-38,1", true) ?? "", /0 or at least/);
+  // Each share is a float before it joins the total, as `sum += std::stof(token)` does.
+  for (const manual of [false, true]) {
+    assert.match(
+      err("-ts 3.17817e38,1.54601e37,7.00525e36", manual) ?? "",
+      /adds up past/,
+    );
+  }
 });

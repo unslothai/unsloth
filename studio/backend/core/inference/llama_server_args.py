@@ -948,7 +948,9 @@ _FLOAT32_MAX = struct.unpack("=f", struct.pack("=f", 3.4028234663852886e38))[0]
 _FLOAT32_MIN_NORMAL = struct.unpack("=f", struct.pack("=f", 1.1754943508222875e-38))[0]
 
 
-def parse_tensor_split_override(args: Optional[Iterable[str]]) -> Optional[list[float]]:
+def parse_tensor_split_override(
+    args: Optional[Iterable[str]], *, reserialized: bool = False
+) -> Optional[list[float]]:
     """Return the last user-supplied ``-ts`` / ``--tensor-split`` ratios from extras.
 
     Manual GPU memory with ``gpu_layers >= 0`` strips ``--tensor-split`` because the first-class
@@ -961,10 +963,16 @@ def parse_tensor_split_override(args: Optional[Iterable[str]]) -> Optional[list[
     silently.
 
     Bounds are llama.cpp's, not Python's: ``std::stof`` (common/arg.cpp) throws
-    ``std::out_of_range`` above FLT_MAX, and the shares are prefix-summed into a float array
-    (llama-model.cpp), so a value this parser would take as a finite double can still abort the
-    server at startup. Both the per-entry and the running total are checked in float32, the same
-    round-trip ``_extra_args_tensor_split`` uses.
+    ``std::out_of_range`` above FLT_MAX and on any subnormal, and the shares are prefix-summed
+    into a float array (llama-model.cpp), so a value this parser would take as a finite double
+    can still abort the server at startup. Every share is rounded to float32 BEFORE it joins the
+    total, because that is the order llama.cpp adds them in.
+
+    ``reserialized`` is which text the child will parse. Manual mode promotes the ratio into the
+    first-class field and the launcher writes it back out with ``f"{x:g}"``, six significant
+    digits, so there the emitted string is judged. Everywhere else ``-ts`` is pass-through and
+    llama-server reads the user's own text, so judging a rounded version would refuse input that
+    runs: ``-ts 1.1754943508222874e-38,1`` is fine as typed and subnormal once re-serialized.
     """
     raw_value = _last_flag_value(args, _TENSOR_SPLIT_FLAGS)
     if raw_value is None:
@@ -983,20 +991,17 @@ def parse_tensor_split_override(args: Optional[Iterable[str]]) -> Optional[list[
         raise ValueError("llama-server --tensor-split entries must be finite and non-negative")
     if sum(parts) <= 0:
         raise ValueError("llama-server --tensor-split must have a positive total")
-    # Judge the share the CHILD will be handed, not the double parsed here. The manual launcher
-    # writes each one with ``f"{x:g}"``, six significant digits, and a value validated at full
-    # precision can lose its range in that round trip: 1.1754943508222874e-38 rounds up to FLT_MIN
-    # and passes, is emitted as "1.17549e-38", and std::stof refuses THAT as subnormal (measured).
-    # Validating the emitted text keeps "what we approved" and "what we run" the same string.
     running = 0.0
     for part in parts:
-        share = _as_emitted(part)
-        if not math.isfinite(_as_float32(share)):
+        # The share as the CHILD will hold it: its own text under pass-through, the launcher's
+        # six-digit rendering once manual mode re-serializes it.
+        share = _as_float32(_as_emitted(part) if reserialized else part)
+        if not math.isfinite(share):
             raise ValueError(
                 "llama-server --tensor-split entries must fit in a 32-bit float "
                 f"(at most {_FLOAT32_MAX:g})"
             )
-        if part != 0 and _as_float32(share) < _FLOAT32_MIN_NORMAL:
+        if part != 0 and share < _FLOAT32_MIN_NORMAL:
             raise ValueError(
                 "llama-server --tensor-split entries must be 0 or at least "
                 f"{_FLOAT32_MIN_NORMAL:g}: a smaller share is a subnormal float and "
