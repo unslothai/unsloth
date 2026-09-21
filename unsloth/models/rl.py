@@ -1039,30 +1039,30 @@ def _widen_sft_config_instance_check(patched_config):
     shim = _WidenedInstanceCheck(
         installed.__name__,
         (installed,),
-        {_UNSLOTH_SFT_CONFIG_SHIM_FLAG: True},
+        # Carry the patched-config marker in the shim's OWN __dict__, not only by
+        # inheritance. Callers that walk back to TRL's pristine class do it with
+        # `while "_unsloth_patched_rl_config" in cls.__dict__`, which is the right
+        # test because the generated subclass is renamed onto TRL's own name; a
+        # shim without the marker stops that walk on itself and answers with
+        # Unsloth's field set (tests/version_compat/test_trl_padding_free_max_length.py).
+        {
+            _UNSLOTH_SFT_CONFIG_SHIM_FLAG: True,
+            _UNSLOTH_PATCHED_CONFIG_FLAG: True,
+        },
     )
-    # Answer to the same module and name as the class it stands in for, so every repr is unchanged.
-    shim.__qualname__ = installed.__qualname__
-    shim.__module__ = installed.__module__
+    # Answer to the module the shim is actually installed at, NOT to the module
+    # the class it stands in for calls home. Pickle stores a class as __module__
+    # plus __qualname__ and refuses unless the object living there IS the class,
+    # so a shim claiming `trl.trainer.sft_config` while the patched class still
+    # sits there is unpicklable, and `torch.save(trainer.args, ...)` from
+    # Trainer._save raises PicklingError. That is the failure
+    # _patch_config_pickle_identity exists to prevent, so point the shim at its
+    # own home and leave the patched class's home alone: both then pickle, and
+    # every other binding of the name keeps resolving exactly as it did before.
+    shim.__qualname__ = installed.__name__
     shim.__name__ = installed.__name__
-    # Take over EVERY attribute that holds the class being widened, not just the guard's own module. Two reasons, and the first is not cosmetic: pickle stores a class as __module__ + __qualname__ and refuses unless the object living there IS the class, so a shim advertising the patched class's home while the patched class still sits there makes `torch.save(trainer.args, ...)` raise PicklingError from Trainer._save_checkpoint, which is the exact failure _patch_config_pickle_identity exists to prevent. Second, leaving trl.SFTConfig and trl.trainer.sft_trainer.SFTConfig as different objects means the two spellings disagree on isinstance.
-    for _module in list(sys.modules.values()):
-        if _module is None:
-            continue
-        try:
-            if getattr(_module, installed.__name__, None) is installed:
-                setattr(_module, installed.__name__, shim)
-        except Exception:
-            continue
-    setattr(sft_trainer_module, installed.__name__, shim)
-    # Anything still holding the displaced class (or the pristine one, whose target was the displaced class) now pickles through the shim instead.
-    _register_config_pickle_fallback(installed, shim)
-    for _displaced in (pristine, installed):
-        if getattr(_displaced, _UNSLOTH_CONFIG_PICKLE_TARGET, None) is installed:
-            try:
-                setattr(_displaced, _UNSLOTH_CONFIG_PICKLE_TARGET, shim)
-            except Exception:
-                pass
+    shim.__module__ = getattr(sft_trainer_module, "__name__", installed.__module__)
+    sft_trainer_module.SFTConfig = shim
     return True
 
 

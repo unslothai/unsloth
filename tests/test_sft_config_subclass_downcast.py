@@ -201,12 +201,15 @@ def test_noop_when_the_module_still_holds_the_pristine_class(trl_like):
     assert module.SFTConfig is pristine
 
 
-def test_shim_keeps_the_module_and_name_it_stands_in_for(trl_like):
+def test_shim_keeps_the_name_and_answers_to_where_it_lives(trl_like):
+    """Same name, but its OWN module: see the comment at the rebinding."""
     TrainingArguments, pristine, GKDConfig, patched, module, trl_pkg = trl_like
     NS["_widen_sft_config_instance_check"](patched)
-    assert module.SFTConfig.__name__ == patched.__name__
-    assert module.SFTConfig.__qualname__ == patched.__qualname__
-    assert module.SFTConfig.__module__ == patched.__module__
+    shim = module.SFTConfig
+    assert shim.__name__ == patched.__name__
+    assert shim.__qualname__ == patched.__qualname__
+    assert shim.__module__ == "trl.trainer.sft_trainer"
+    assert patched.__module__ == "trl.trainer.sft_config", "the displaced class must not move"
 
 
 def test_the_shim_is_reachable_by_pickle_under_its_own_module_and_name(trl_like):
@@ -227,26 +230,48 @@ def test_the_shim_is_reachable_by_pickle_under_its_own_module_and_name(trl_like)
     assert getattr(home, shim.__qualname__) is shim
 
 
-def test_every_binding_of_the_displaced_class_moves_to_the_shim(trl_like):
-    """``trl.SFTConfig`` and ``trl.trainer.sft_trainer.SFTConfig`` must agree.
+def test_only_the_guards_own_module_is_rebound(trl_like):
+    """Widening takes over one attribute, not every binding of the name.
 
-    Leaving the top level name on the displaced class makes the two spellings
-    answer ``isinstance`` differently for the same object.
+    Rebinding `trl.SFTConfig` and the class's home module as well was tried and
+    is worse: the generated class stops being what `trl.SFTConfig` resolves to,
+    which is an invariant other patching passes and their tests rely on
+    (tests/python/test_rl_config_pickling.py, and the pristine-class walk in
+    tests/version_compat/). Only the module holding TRL's guard needs widening.
     """
     TrainingArguments, pristine, GKDConfig, patched, module, trl_pkg = trl_like
     NS["_widen_sft_config_instance_check"](patched)
-    assert trl_pkg.SFTConfig is module.SFTConfig
-    gkd = GKDConfig()
-    assert isinstance(gkd, trl_pkg.SFTConfig) == isinstance(gkd, module.SFTConfig)
+    assert module.SFTConfig is not patched, "the guard's module was not widened"
+    assert trl_pkg.SFTConfig is patched, "the top level binding must not move"
+    assert (
+        sys.modules["trl.trainer.sft_config"].SFTConfig is patched
+    ), "the class's home module must keep holding it, or it stops pickling"
 
 
-def test_instances_of_the_displaced_class_still_pickle(trl_like):
-    """Anything holding the class the shim displaced reduces through the shim."""
+def test_the_displaced_class_keeps_its_own_home_and_pickles(trl_like):
+    """Both classes stay reachable by pickle under their own module and name."""
     TrainingArguments, pristine, GKDConfig, patched, module, trl_pkg = trl_like
     NS["_widen_sft_config_instance_check"](patched)
-    assert copyreg.dispatch_table.get(patched) is NS["_reduce_pristine_rl_config"]
-    reconstructor, args, _state = NS["_reduce_pristine_rl_config"](patched())
-    assert args[0] is module.SFTConfig
+    home = sys.modules[patched.__module__]
+    assert getattr(home, patched.__qualname__) is patched
+
+
+def test_the_shim_carries_the_patched_config_marker(trl_like):
+    """A walk back to TRL's pristine class must not stop on the shim.
+
+    Callers find the pristine class with
+    ``while "_unsloth_patched_rl_config" in cls.__dict__``, which is the right
+    test because the generated subclass is renamed onto TRL's own name. The
+    marker has to be in the shim's own __dict__, not inherited, or that walk
+    stops on the shim and reads back Unsloth's field set as if it were TRL's.
+    """
+    TrainingArguments, pristine, GKDConfig, patched, module, trl_pkg = trl_like
+    NS["_widen_sft_config_instance_check"](patched)
+    cls = module.SFTConfig
+    assert NS["_UNSLOTH_PATCHED_CONFIG_FLAG"] in cls.__dict__
+    while NS["_UNSLOTH_PATCHED_CONFIG_FLAG"] in cls.__dict__ or cls.__name__.startswith("Unsloth"):
+        cls = cls.__bases__[0]
+    assert cls is pristine
 
 
 def test_subclasscheck_is_widened_too(trl_like):
