@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { InfoHint } from "@/components/ui/info-hint";
 import {
   Select,
   SelectContent,
@@ -12,41 +13,18 @@ import { Slider } from "@/components/ui/slider";
 import { Switch } from "@/components/ui/switch";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import {
-  Tooltip,
-  TooltipContent,
-  TooltipTrigger,
-} from "@/components/ui/tooltip";
-import {
   type RagAutoInject,
   type RagMode,
   useChatRuntimeStore,
 } from "@/features/chat/stores/chat-runtime-store";
+import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { cn } from "@/lib/utils";
-import { InfoIcon } from "lucide-react";
-import type { ReactNode } from "react";
 
 const MODE_LABEL: Record<RagMode, string> = {
   hybrid: "Hybrid",
   dense: "Semantic only",
   lexical: "BM25 only",
 };
-
-function InfoHint({ children }: { children: ReactNode }) {
-  return (
-    <Tooltip>
-      <TooltipTrigger asChild={true}>
-        <button
-          type="button"
-          aria-label="More info"
-          className="text-muted-foreground/50 hover:text-muted-foreground"
-        >
-          <InfoIcon className="size-3.5" />
-        </button>
-      </TooltipTrigger>
-      <TooltipContent className="max-w-xs">{children}</TooltipContent>
-    </Tooltip>
-  );
-}
 
 function SliderRow({
   label,
@@ -74,11 +52,11 @@ function SliderRow({
         disabled && "pointer-events-none opacity-50",
       )}
     >
-      <div className="flex items-center justify-between">
-        <span className="text-[13px] font-medium leading-[1.25] tracking-nav text-nav-fg">
+      <div className="flex min-h-8 items-center justify-between">
+        <span className="text-ui-13 font-medium leading-[1.25] tracking-nav text-nav-fg">
           {label}
         </span>
-        <span className="text-[13px] tabular-nums text-muted-foreground">
+        <span className="text-ui-13 tabular-nums text-muted-foreground">
           {format(value)}
         </span>
       </div>
@@ -118,9 +96,9 @@ export function RetrievalSettingsSection() {
   );
 
   return (
-    <div className="flex flex-col gap-5 pt-1">
+    <div className="flex flex-col gap-5">
       <div className="flex flex-col gap-2">
-        <span className="text-[13px] font-medium leading-[1.25] tracking-nav text-nav-fg">
+        <span className="text-ui-13 font-medium leading-[1.25] tracking-nav text-nav-fg">
           Search mode
         </span>
         <Select
@@ -128,7 +106,9 @@ export function RetrievalSettingsSection() {
           onValueChange={(value) => setRagMode(value as RagMode)}
         >
           <SelectTrigger
-            className="panel-select-trigger h-8 w-full"
+            icon={ChevronDownStandardIcon}
+            iconClassName="size-3.5"
+            className="panel-select-trigger w-full"
             aria-label="Search mode"
           >
             <SelectValue />
@@ -142,11 +122,11 @@ export function RetrievalSettingsSection() {
       </div>
 
       <div className="flex flex-col gap-2">
-        <div className="flex items-center justify-between">
-          <span className="text-[13px] font-medium leading-[1.25] tracking-nav text-nav-fg">
+        <div className="flex min-h-8 items-center justify-between">
+          <span className="text-ui-13 font-medium leading-[1.25] tracking-nav text-nav-fg">
             Passages (top K)
           </span>
-          <span className="text-[13px] tabular-nums text-muted-foreground">
+          <span className="text-ui-13 tabular-nums text-muted-foreground">
             {ragTopK}
           </span>
         </div>
@@ -161,9 +141,9 @@ export function RetrievalSettingsSection() {
         />
       </div>
 
-      <div className="flex flex-col gap-3">
+      <div className="flex flex-col gap-2">
         <div className="flex flex-col">
-          <span className="flex items-center gap-1.5 text-[13px] font-medium leading-[1.25] tracking-nav text-nav-fg">
+          <span className="flex items-center gap-1.5 text-ui-13 font-medium leading-[1.25] tracking-nav text-nav-fg">
             Auto-retrieve documents
             <InfoHint>
               Auto turns retrieval on for smaller models (9B and below), which
@@ -171,7 +151,7 @@ export function RetrievalSettingsSection() {
               larger ones. On and Off force it either way.
             </InfoHint>
           </span>
-          <span className="text-[12px] leading-[1.3] text-muted-foreground">
+          <span className="text-ui-12 leading-[1.3] text-muted-foreground">
             Search attached documents before answering.
           </span>
         </div>
@@ -212,16 +192,16 @@ export function RetrievalSettingsSection() {
 
       <div className="flex items-start justify-between gap-3">
         <div className="flex flex-col">
-          <span className="flex items-center gap-1.5 text-[13px] font-medium leading-[1.25] tracking-nav text-nav-fg">
+          <span className="flex items-center gap-1.5 text-ui-13 font-medium leading-[1.25] tracking-nav text-nav-fg">
             OCR scanned pages
             <InfoHint>
-              Read text off scanned or image-only PDF pages with the loaded
-              model's vision, at upload time, so picture-only documents become
-              searchable. Needs a vision model; pages with a text layer are
-              unaffected.
+              Read scanned or image-only PDF pages at upload time using the
+              loaded vision model or local Tesseract OCR. Local OCR requires
+              installed language data. Selectable headers alone may not cover a
+              scanned page's body.
             </InfoHint>
           </span>
-          <span className="text-[12px] leading-[1.3] text-muted-foreground">
+          <span className="text-ui-12 leading-[1.3] text-muted-foreground">
             Transcribe image-only PDF pages when attaching.
           </span>
         </div>
@@ -229,29 +209,29 @@ export function RetrievalSettingsSection() {
           checked={ragOcrScanned}
           onCheckedChange={setRagOcrScanned}
           aria-label="OCR scanned pages"
-          className="mt-0.5"
+          className="panel-switch mt-0.5"
         />
       </div>
 
       <div className="flex items-start justify-between gap-3">
         <div className="flex flex-col">
-          <span className="flex items-center gap-1.5 text-[13px] font-medium leading-[1.25] tracking-nav text-nav-fg">
+          <span className="flex items-center gap-1.5 text-ui-13 font-medium leading-[1.25] tracking-nav text-nav-fg">
             Describe figures &amp; charts
             <InfoHint>
-              Caption PDF figures, charts, tables and diagrams at upload with the
-              loaded model's vision, so their content becomes searchable. Needs a
-              vision model; adds vision calls for detected figures.
+              Caption PDF figures, charts, tables and diagrams at upload with
+              the loaded model's vision, so their content becomes searchable.
+              Needs a vision model; adds vision calls for detected figures.
             </InfoHint>
           </span>
-          <span className="text-[12px] leading-[1.3] text-muted-foreground">
-            Read charts and diagrams when attaching.
+          <span className="text-ui-12 leading-[1.3] text-muted-foreground">
+            Optional vision pass; can take several minutes.
           </span>
         </div>
         <Switch
           checked={ragCaptionFigures}
           onCheckedChange={setRagCaptionFigures}
           aria-label="Describe figures and charts"
-          className="mt-0.5"
+          className="panel-switch mt-0.5"
         />
       </div>
     </div>

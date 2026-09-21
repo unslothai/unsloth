@@ -19,7 +19,7 @@ _MODEL_DEFAULTS = _CONFIGS / "model_defaults"
 def test_no_model_default_yaml_sets_trust_remote_code():
     offenders = []
     for f in _MODEL_DEFAULTS.rglob("*.yaml"):
-        doc = yaml.safe_load(f.read_text()) or {}
+        doc = yaml.safe_load(f.read_text(encoding = "utf-8")) or {}
         if not isinstance(doc, dict):
             continue
         for section, body in doc.items():
@@ -37,7 +37,7 @@ def test_no_model_default_yaml_has_empty_or_none_section():
     # A bare `inference:` header (no keys) parses to None and crashes the .get() loaders.
     offenders = []
     for f in _MODEL_DEFAULTS.rglob("*.yaml"):
-        doc = yaml.safe_load(f.read_text())
+        doc = yaml.safe_load(f.read_text(encoding = "utf-8"))
         if not isinstance(doc, dict):
             offenders.append(f"{f.relative_to(_CONFIGS)} (not a mapping)")
             continue
@@ -96,7 +96,7 @@ def test_all_model_yamls_load_for_training_and_inference():
 
 def test_base_templates_have_no_trust_remote_code():
     for name in ("full_finetune.yaml", "lora_text.yaml", "vision_lora.yaml"):
-        doc = yaml.safe_load((_CONFIGS / name).read_text()) or {}
+        doc = yaml.safe_load((_CONFIGS / name).read_text(encoding = "utf-8")) or {}
         flat = yaml.safe_dump(doc)
         assert "trust_remote_code" not in flat, f"{name} should not set trust_remote_code"
 

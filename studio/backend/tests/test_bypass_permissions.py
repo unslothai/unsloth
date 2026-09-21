@@ -13,6 +13,7 @@ never gating under bypass.
 Run with: ``PYTHONPATH=studio/backend python -m pytest studio/backend/tests/test_bypass_permissions.py -q``
 """
 
+import io
 import os
 import sys
 
@@ -20,6 +21,7 @@ import pytest
 
 import core.inference.tools as tools
 from core.inference.tools import (
+    _SANDBOX_TEMP_DIRNAME,
     _bash_exec,
     _build_bypass_env,
     _build_safe_env,
@@ -79,7 +81,7 @@ def test_bypass_env_keeps_benign_strips_secret_repoints_home(monkeypatch, tmp_pa
     assert env.get("HOSTVAR") == "benign-123"  # full host env inherited
     assert "HF_TOKEN" not in env  # ...minus secrets
     assert env["HOME"] == str(tmp_path)  # $HOME-based cred lookups defused
-    assert env["TMPDIR"] == str(tmp_path)
+    assert env["TMPDIR"] == str(tmp_path / _SANDBOX_TEMP_DIRNAME)
 
 
 def test_safe_env_excludes_host_and_secret(monkeypatch, tmp_path):
@@ -94,10 +96,23 @@ def test_safe_env_excludes_host_and_secret(monkeypatch, tmp_path):
 
 
 class _FakeProc:
-    returncode = 0
+    """A subprocess.Popen double for the drain path (``tools._drain_process_output``):
+    a readable ``stdout`` pipe yielding the fake output then EOF, plus
+    ``wait()`` / ``poll()`` / ``pid``. The pid is non-existent so
+    ``_capture_process_group``'s ``os.getpgid`` returns None; ``wait`` returns
+    immediately so the drain never kills.
+    """
 
-    def communicate(self, timeout = None):
-        return ("FAKEOUT", None)
+    returncode = 0
+    # Unlikely-to-exist pid: os.getpgid raises ProcessLookupError (caught) -> None.
+    pid = 2**22
+
+    def __init__(self):
+        # Readable stdout: iter(readline, "") yields "FAKEOUT" then hits EOF.
+        self.stdout = io.StringIO("FAKEOUT")
+
+    def wait(self, timeout = None):
+        return 0
 
     def poll(self):
         return 0
@@ -148,7 +163,10 @@ def test_bash_blocklist_enforced_when_sandboxed(captured_popen):
 def test_bash_blocklist_skipped_when_bypassed(captured_popen):
     out = _bash_exec("rm -rf /", None, 5, "t", disable_sandbox = True)
     assert out == "FAKEOUT"  # blocklist skipped -> reached (faked) execution
-    assert captured_popen["cmd"][0] in ("bash", "cmd")
+    # Windows resolves bash to an absolute path (Git for Windows), so compare the
+    # program name rather than the spelling of argv[0].
+    shell = os.path.basename(captured_popen["cmd"][0]).lower()
+    assert shell in ("bash", "bash.exe", "cmd", "cmd.exe")
 
 
 @_POSIX_ONLY
@@ -257,6 +275,7 @@ def test_loop_forwards_disable_sandbox_and_does_not_gate():
         cancel_event = None,
         timeout = None,
         session_id = None,
+        thread_id = None,
         rag_scope = None,
         disable_sandbox = False,
     ):
@@ -290,6 +309,7 @@ def test_loop_bypass_overrides_confirm_for_direct_callers():
         cancel_event = None,
         timeout = None,
         session_id = None,
+        thread_id = None,
         rag_scope = None,
         disable_sandbox = False,
     ):
@@ -480,9 +500,10 @@ def test_bypass_env_repoints_all_temp_vars(monkeypatch, tmp_path):
     monkeypatch.setenv("TEMP", "/host/tmp")
     monkeypatch.setenv("TMP", "/host/tmp")
     env = _build_bypass_env(str(tmp_path))
-    assert env["TMPDIR"] == str(tmp_path)
-    assert env["TEMP"] == str(tmp_path)
-    assert env["TMP"] == str(tmp_path)
+    expected = str(tmp_path / _SANDBOX_TEMP_DIRNAME)
+    assert env["TMPDIR"] == expected
+    assert env["TEMP"] == expected
+    assert env["TMP"] == expected
 
 
 # ── credential-location redirect vars are dropped (regression) ──────────
@@ -647,9 +668,9 @@ def test_bypass_env_does_not_add_unset_windows_profile_vars(monkeypatch, tmp_pat
 
 @_POSIX_ONLY
 def test_bypass_exec_hardens_parent_proc_env(monkeypatch, captured_popen):
-    # Stripping the child env is not enough: a same-UID child can read the
-    # parent's /proc environ. The exec paths must invoke the parent hardening
-    # when (and only when) the sandbox is disabled.
+    # Stripping the child env is not enough: a same-UID child can read the parent's
+    # /proc environ. Both exec paths harden the parent in bypass mode (fail closed)
+    # and in sandboxed mode too (best-effort backstop for a classifier miss).
     calls = {"n": 0}
 
     def fake_harden():
@@ -664,7 +685,7 @@ def test_bypass_exec_hardens_parent_proc_env(monkeypatch, captured_popen):
     calls["n"] = 0
     _python_exec("print(1)", None, 5, "t", disable_sandbox = False)
     _bash_exec("echo hi", None, 5, "t", disable_sandbox = False)
-    assert calls["n"] == 0  # never hardened on the sandboxed path
+    assert calls["n"] == 2  # sandboxed path now hardens too (best-effort)
 
 
 def test_bypass_exec_fails_closed_when_hardening_fails(monkeypatch, captured_popen):

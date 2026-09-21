@@ -17,13 +17,13 @@ def _find_geteuid_guard(tree: ast.AST):
 
 
 def test_gpu_init_has_geteuid_guard():
-    tree = ast.parse(GPU_INIT.read_text())
+    tree = ast.parse(GPU_INIT.read_text(encoding = "utf-8"))
     guard = _find_geteuid_guard(tree)
     assert guard is not None, "_gpu_init.py must guard ldconfig recovery on os.geteuid()"
 
 
 def test_ldconfig_calls_only_inside_geteuid_guard():
-    src = GPU_INIT.read_text()
+    src = GPU_INIT.read_text(encoding = "utf-8")
     tree = ast.parse(src)
     guard = _find_geteuid_guard(tree)
     assert guard is not None
@@ -39,6 +39,6 @@ def test_ldconfig_calls_only_inside_geteuid_guard():
 
 
 def test_non_root_branch_warns_when_bnb_present():
-    src = GPU_INIT.read_text()
+    src = GPU_INIT.read_text(encoding = "utf-8")
     assert "elif bnb is not None" in src
     assert "sudo ldconfig" in src

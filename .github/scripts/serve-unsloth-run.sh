@@ -1,20 +1,16 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
-#
 # Boot `unsloth run --disable-tools` in the background, wait for it to be
 # healthy, parse the minted API key from the banner, and resolve the
 # /v1/models id. Exports everything downstream steps need into $GITHUB_ENV
 # (or prints it when run outside Actions). Factored out of the workflow so
 # the failure-isolation logic lives in one shellcheck-clean place.
-#
 # Usage:
 #   serve-unsloth-run.sh --model REPO --gguf-variant VAR --port PORT \
 #       [--gguf-file PATH] [--extra "--seed 3407 --temp 0"] \
 #       [--log-dir logs] [--health-timeout 300]
-#
 # Why a helper and not inline YAML
-# --------------------------------
 #  * Every `unsloth run` invocation here is the *Unsloth server* under test.
 #    A failure to come up healthy is class (a) "server/API regression" and
 #    must be reported with a distinct `::error::` BEFORE any agent runs.
@@ -24,10 +20,9 @@
 #    silent change to that line is also caught.
 #  * `unsloth run` re-execs into the studio venv ($STUDIO_HOME/unsloth_studio),
 #    so in CI after `install.sh --local` it runs the PR's repo code.
-#
 # Outputs written to $GITHUB_ENV (and echoed):
 #   UNSLOTH_API_KEY        the sk-unsloth-* key minted on the banner
-#   UNSLOTH_STUDIO_URL     http://127.0.0.1:<PORT>  (so `unsloth connect`
+#   UNSLOTH_STUDIO_URL     http://127.0.0.1:<PORT>  (so `unsloth start`
 #                          finds THIS server, not the hardcoded :8888)
 #   UNSLOTH_BASE_URL       same as UNSLOTH_STUDIO_URL (alias for clarity)
 #   UNSLOTH_MODEL_ID       the canonical id reported by /v1/models

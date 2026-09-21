@@ -19,6 +19,13 @@ $fn = $ast.FindAll({ param($n)
 if ($fn.Count -ne 1) { throw "expected exactly one Get-NodeDecision in setup.ps1, found $($fn.Count)" }
 Invoke-Expression $fn[0].Extent.Text
 
+
+$packagedFn = $ast.FindAll({ param($n)
+    $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq "Test-PackagedFrontend"
+}, $true)
+if ($packagedFn.Count -ne 1) { throw "expected exactly one Test-PackagedFrontend in setup.ps1, found $($packagedFn.Count)" }
+Invoke-Expression $packagedFn[0].Extent.Text
+
 $failures = 0
 function Check($name, $cond) {
     if ($cond) { Write-Host "  PASS  $name" }
@@ -26,6 +33,32 @@ function Check($name, $cond) {
 }
 
 function D($node, $npm, $skip) { Get-NodeDecision -NodeVersion $node -NpmVersion $npm -SkipInstall $skip }
+
+
+$packagedRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("unsloth-packaged-frontend-" + [guid]::NewGuid())
+$packagedIndex = Join-Path $packagedRoot "frontend\dist\index.html"
+# The pyproject.toml beside studio/ that only a source checkout has. Absent
+# below unless a case is specifically about the editable-overlay tree.
+$packagedProject = Join-Path $packagedRoot "pyproject.toml"
+New-Item -ItemType Directory -Force -Path (Split-Path -Parent $packagedIndex) | Out-Null
+Set-Content -Path $packagedIndex -Value "<!doctype html>" -Encoding Ascii
+try {
+    Check "PyPI install uses packaged frontend" (Test-PackagedFrontend -LocalInstall "0" -IndexPath $packagedIndex -ProjectFilePath $packagedProject)
+    Check "local install rebuilds frontend" (-not (Test-PackagedFrontend -LocalInstall "1" -IndexPath $packagedIndex -ProjectFilePath $packagedProject))
+    Check "unset install mode rebuilds frontend" (-not (Test-PackagedFrontend -LocalInstall "" -IndexPath $packagedIndex -ProjectFilePath $packagedProject))
+
+    # Editable overlay: PyPI mode over a checkout, whose dist is a stale build
+    # artifact rather than a release one.
+    Set-Content -Path $packagedProject -Value "[project]" -Encoding Ascii
+    Check "source checkout in PyPI mode rebuilds frontend" (-not (Test-PackagedFrontend -LocalInstall "0" -IndexPath $packagedIndex -ProjectFilePath $packagedProject))
+    Remove-Item -LiteralPath $packagedProject -Force
+    Check "packaged layout skips once no source marker remains" (Test-PackagedFrontend -LocalInstall "0" -IndexPath $packagedIndex -ProjectFilePath $packagedProject)
+
+    Remove-Item -LiteralPath $packagedIndex -Force
+    Check "missing packaged index rebuilds frontend" (-not (Test-PackagedFrontend -LocalInstall "0" -IndexPath $packagedIndex -ProjectFilePath $packagedProject))
+} finally {
+    Remove-Item -LiteralPath $packagedRoot -Recurse -Force -ErrorAction SilentlyContinue
+}
 
 Write-Host "Get-NodeDecision"
 # system
@@ -60,7 +93,7 @@ $globalBunOffset = $source.IndexOf('npm install -g bun')
 Check "NodeSource initialized before SKIP_STUDIO_FRONTEND branch" (
     $nodeSourceOffset -ge 0 -and $skipFrontendBranchOffset -ge 0 -and $nodeSourceOffset -lt $skipFrontendBranchOffset
 )
-Check "custom Studio home validated before Node parent creation" (
+Check "custom Unsloth home validated before Node parent creation" (
     $customHomeErrorOffset -ge 0 -and $nodeParentMkdirOffset -ge 0 -and $customHomeErrorOffset -lt $nodeParentMkdirOffset
 )
 Check "bundled Node pins npm prefix and clears NODE_PATH" (

@@ -3,6 +3,7 @@
 
 import { authFetch } from "@/features/auth";
 import { readFastApiError } from "@/lib/format-fastapi-error";
+import { openStreamResponse } from "@/lib/open-stream-response";
 
 const readError = (r: Response): Promise<string> => readFastApiError(r);
 
@@ -127,6 +128,8 @@ export async function loadCheckpoint(params: {
 export async function exportMerged(params: {
   save_directory: string;
   format_type?: string;
+  /** Compressed-tensors scheme alias (e.g. "fp8", "w4a16", "mxfp4"); overrides format_type. */
+  compressed_method?: string | null;
   push_to_hub?: boolean;
   repo_id?: string | null;
   hf_token?: string | null;
@@ -158,12 +161,14 @@ export async function exportBase(params: {
 
 export async function exportGGUF(params: {
   save_directory: string;
-  quantization_method: string;
+  /** A single GGUF quant method or a list (list produces multiple GGUFs from one model load). */
+  quantization_method: string | string[];
   push_to_hub?: boolean;
   repo_id?: string | null;
   hf_token?: string | null;
   imatrix?: boolean;
   imatrix_path?: string | null;
+  private?: boolean;
 }): Promise<ExportOperationResponse> {
   const response = await authFetch("/api/export/export/gguf", {
     method: "POST",
@@ -179,6 +184,10 @@ export async function exportLoRA(params: {
   repo_id?: string | null;
   hf_token?: string | null;
   private?: boolean;
+  /** Also convert the adapter to a GGUF LoRA file (llama.cpp `--lora`). */
+  gguf?: boolean;
+  /** GGUF LoRA output float type (f32/f16/bf16/q8_0/auto); only used when gguf=true. */
+  gguf_outtype?: string;
 }): Promise<ExportOperationResponse> {
   const response = await authFetch("/api/export/export/lora", {
     method: "POST",
@@ -230,9 +239,8 @@ export async function getExportStatus(): Promise<ExportStatus> {
   return parseJson<ExportStatus>(response);
 }
 
-// ─────────────────────────────────────────────────────────────────────
-// Live export log stream (Server-Sent Events)
-// ─────────────────────────────────────────────────────────────────────
+// ───────────────────────────────────────────────────────────────────── Live export log stream
+// (Server-Sent Events) ─────────────────────────────────────────────────────────────────────
 
 export type ExportLogStream = "stdout" | "stderr" | "status";
 
@@ -256,11 +264,9 @@ export interface ExportLogsResponse {
 }
 
 /**
- * Tunnel-safe JSON fallback for {@link streamExportLogs}. Cloudflare quick
- * tunnels (`--secure` mode) buffer `text/event-stream`, so the SSE stream
- * delivers nothing until it closes; this plain-JSON poll is never buffered and
- * carries the same ring-buffer lines. Poll it while a run is active and merge
- * the entries into the store (de-duped by seq), so logs appear over the tunnel.
+ * Short-response fallback for {@link streamExportLogs}, carrying the same
+ * ring-buffer lines when a proxy drops or stalls the stream. Poll it while a run
+ * is active and merge entries into the store, de-duped by seq.
  */
 export async function fetchExportLogs(
   since: number | null,
@@ -338,8 +344,7 @@ export async function streamExportLogs(options: {
       ? `/api/export/logs/stream?since=${options.since}`
       : "/api/export/logs/stream";
 
-  const response = await authFetch(url, {
-    method: "GET",
+  const response = await openStreamResponse(authFetch, url, {
     headers,
     signal: options.signal,
   });

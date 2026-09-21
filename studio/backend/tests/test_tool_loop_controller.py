@@ -5,7 +5,19 @@ from __future__ import annotations
 
 import json
 import sys
+import time
 from pathlib import Path
+
+import pytest
+
+
+def _shared_setup_1(controller):
+    assert not controller.force_final_answer
+    assert [tool["function"]["name"] for tool in controller.active_tools()] == [
+        "web_search",
+        "python",
+    ]
+
 
 _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
@@ -13,12 +25,34 @@ if _BACKEND_DIR not in sys.path:
 
 from core.inference.tool_loop_controller import (
     ToolLoopController,
+    append_deferred_nudges,
     canonical_tool_call_key,
+    coerce_arguments_by_schema,
     coerce_tool_arguments,
+    is_tool_error,
     status_for_tool,
     strip_result_for_model,
+    tool_call_limit_nudge,
     tool_event_provenance,
 )
+from core.inference.tool_call_parser import TOOL_ERROR_NUDGE, parse_tool_calls_from_text
+from core.inference.tools import ALL_TOOLS, _mcp_specs_for_server
+
+
+def test_append_deferred_nudges_merges_deduped_into_one_message():
+    conversation = [{"role": "assistant", "tool_calls": [1]}, {"role": "tool", "content": "r"}]
+    nudges = [
+        {"role": "user", "content": "duplicate"},
+        {"role": "user", "content": "duplicate"},  # dropped: same content
+        {"role": "user", "content": "disabled foo"},
+    ]
+    append_deferred_nudges(conversation, nudges)
+    # One user message, after the results, with distinct contents joined.
+    assert conversation[2:] == [{"role": "user", "content": "duplicate\n\ndisabled foo"}]
+    # Empty is a no-op.
+    before = list(conversation)
+    append_deferred_nudges(conversation, [])
+    assert conversation == before
 
 
 def _tool(name: str) -> dict:
@@ -76,6 +110,29 @@ def test_status_and_provenance_match_local_event_conventions():
     }
 
 
+@pytest.mark.parametrize(
+    "url, expected",
+    [
+        # bare hosts are fetched, so the badge must name them
+        ("google.com", "Reading: google.com"),
+        ("www.google.com/x", "Reading: google.com"),
+        ("//google.com", "Reading: google.com"),
+        ("example.com:8443/path", "Reading: example.com"),
+        ("github.com/unslothai/unsloth", "Reading: github.com"),
+        # still generic for what the fetch layer refuses
+        ("/login", "Reading page..."),
+        ("javascript:alert(1)", "Reading page..."),
+        # urlparse raises on these, outside the fetch's handler: degrade, not raise
+        ("https://[::1", "Reading page..."),
+        ("https://::1]", "Reading page..."),
+        ("//exam／ple.com", "Reading page..."),
+        ("//example.com＠", "Reading page..."),
+    ],
+)
+def test_status_names_the_host_for_schemeless_urls(url, expected):
+    assert status_for_tool("web_search", {"url": url}) == expected
+
+
 def test_prepare_execute_builds_visible_events_and_model_tool_message():
     controller = ToolLoopController(tools = [_tool("web_search")])
     decision = controller.prepare_call(_call("web_search", {"query": "gpu prices"}))
@@ -87,9 +144,10 @@ def test_prepare_execute_builds_visible_events_and_model_tool_message():
     assert decision.tool_start_event()["type"] == "tool_start"
     assert decision.as_assistant_tool_call()["function"]["arguments"] == '{"query":"gpu prices"}'
 
-    completion = controller.record_result(decision, "Search result\n__IMAGES__:{...}")
+    envelope = 'Search result\n__WEB_IMAGES__:[{"id": "a1b2c3d4e5f6", "title": "A chart", "domain": "example.com", "source": "https://example.com/a.png"}]'
+    completion = controller.record_result(decision, envelope)
 
-    assert completion.tool_end_payload()["result"] == "Search result\n__IMAGES__:{...}"
+    assert completion.tool_end_payload()["result"] == envelope
     assert completion.tool_end_event()["type"] == "tool_end"
     assert completion.tool_message() == {
         "role": "tool",
@@ -111,14 +169,14 @@ def test_successful_duplicate_is_internal_noop_and_keeps_remaining_tools():
     assert not duplicate.should_execute
     assert not duplicate.emit_visible_events
     duplicate_nudge = completion.model_message()["content"]
+    assert duplicate_nudge.startswith(
+        "One earlier request to call tool 'web_search' in this batch was not executed"
+    )
+    assert "previous tool request" not in duplicate_nudge.lower()
     assert "already completed successfully" in duplicate_nudge
     assert "different enabled tool" in duplicate_nudge
     assert completion.model_message()["role"] == "user"
-    assert not controller.force_final_answer
-    assert [tool["function"]["name"] for tool in controller.active_tools()] == [
-        "web_search",
-        "python",
-    ]
+    _shared_setup_1(controller)
 
 
 def test_repeated_successful_duplicate_becomes_terminal_after_one_recovery_nudge():
@@ -131,11 +189,7 @@ def test_repeated_successful_duplicate_becomes_terminal_after_one_recovery_nudge
 
     assert duplicate_one.action == "duplicate"
     assert "already completed successfully" in completion_one.model_message()["content"]
-    assert not controller.force_final_answer
-    assert [tool["function"]["name"] for tool in controller.active_tools()] == [
-        "web_search",
-        "python",
-    ]
+    _shared_setup_1(controller)
 
     duplicate_two = controller.prepare_call(_call("web_search", {"query": "gpu prices"}, "call_c"))
     completion_two = controller.record_noop(duplicate_two)
@@ -144,6 +198,69 @@ def test_repeated_successful_duplicate_becomes_terminal_after_one_recovery_nudge
     assert "already completed successfully" in completion_two.model_message()["content"]
     assert controller.force_final_answer
     assert controller.active_tools() == []
+
+
+def test_command_can_run_again_after_a_file_edit():
+    controller = ToolLoopController(
+        tools = [_tool("terminal"), _tool("edit_file"), _tool("web_search")]
+    )
+    run = _call("terminal", {"command": "python calc.py"})
+    edit = _call(
+        "edit_file", {"path": "calc.py", "edits": [{"old_string": "a", "new_string": "b"}]}
+    )
+    search = _call("web_search", {"query": "gpu prices"})
+
+    controller.record_result(controller.prepare_call(search), "ok")
+    controller.record_result(controller.prepare_call(run), "3")
+    assert controller.prepare_call(run).action == "duplicate"
+    controller.record_noop(controller.prepare_call(run))
+
+    controller.record_result(controller.prepare_call(edit), "Edited calc.py")
+    rerun = controller.prepare_call(run)
+    assert rerun.action == "execute"
+    controller.record_result(rerun, "-1")
+
+    controller.record_noop(controller.prepare_call(run))
+    assert not controller.force_final_answer
+    # The edit does NOT come back. Nothing new has run since it did -- only `run`, which was
+    # already spent -- so re-applying the identical edit is a repeating block replaying
+    # itself, and a non-idempotent one (an appending python/terminal call) would land twice.
+    assert controller.prepare_call(edit).action == "duplicate"
+    assert controller.prepare_call(search).action == "duplicate"
+
+
+def test_each_independent_edit_buys_back_its_own_verification():
+    """A rerun is worth one piece of new work, not one per call, so B's check is not lost."""
+    controller = ToolLoopController(tools = [_tool("terminal"), _tool("edit_file")])
+    test = _call("terminal", {"command": "pytest -q"})
+    edit_a = _call("edit_file", {"path": "a.py", "edits": [{"old_string": "a", "new_string": "b"}]})
+    edit_b = _call("edit_file", {"path": "b.py", "edits": [{"old_string": "c", "new_string": "d"}]})
+
+    controller.record_result(controller.prepare_call(test), "1 failed")
+    controller.record_result(controller.prepare_call(edit_a), "Edited a.py")
+    after_a = controller.prepare_call(test)
+    assert after_a.action == "execute"
+    controller.record_result(after_a, "1 failed")
+
+    controller.record_result(controller.prepare_call(edit_b), "Edited b.py")
+    after_b = controller.prepare_call(test)
+    assert after_b.action == "execute"
+
+
+def test_a_repeating_workspace_block_stops_replaying_itself():
+    """read, edit, read, edit: the second edit is the block repeating, not new work."""
+    controller = ToolLoopController(tools = [_tool("terminal"), _tool("edit_file")])
+    read = _call("terminal", {"command": "cat notes.txt"})
+    edit = _call(
+        "edit_file", {"path": "notes.txt", "edits": [{"old_string": "a", "new_string": "b"}]}
+    )
+
+    controller.record_result(controller.prepare_call(read), "version one")
+    controller.record_result(controller.prepare_call(edit), "Edited notes.txt")
+    reread = controller.prepare_call(read)
+    assert reread.action == "execute"
+    controller.record_result(reread, "version two")
+    assert controller.prepare_call(edit).action == "duplicate"
 
 
 def test_failed_call_does_not_block_retry():
@@ -165,7 +282,12 @@ def test_empty_enabled_tool_list_blocks_all_tool_calls():
     assert decision.action == "disabled"
     assert not decision.emit_visible_events
     assert completion.model_message()["role"] == "user"
-    assert "not enabled" in completion.model_message()["content"]
+    disabled_nudge = completion.model_message()["content"]
+    assert disabled_nudge.startswith(
+        "One earlier request to call tool 'web_search' in this batch was not executed"
+    )
+    assert "previous tool request" not in disabled_nudge.lower()
+    assert "not enabled" in disabled_nudge
     assert controller.force_final_answer
     assert controller.active_tools() == []
 
@@ -181,6 +303,19 @@ def test_disabled_tool_is_internal_noop_not_visible_tool_error():
     assert "not enabled" in completion.model_message()["content"]
     assert controller.force_final_answer
     assert controller.active_tools() == []
+
+
+def test_forced_mismatch_keeps_the_required_tool_active():
+    controller = ToolLoopController(tools = [_tool("web_search"), _tool("python")])
+    decision = controller.prepare_call(
+        _call("python", {"code": "print(1)"}),
+        allowed_tool_names = {"web_search"},
+    )
+    completion = controller.record_noop(decision)
+
+    assert decision.action == "forced_mismatch"
+    assert "required tool choice" in completion.model_message()["content"]
+    _shared_setup_1(controller)
 
 
 def test_render_html_success_filters_active_tools_and_repeat_is_internal():
@@ -207,6 +342,389 @@ def test_render_html_success_filters_active_tools_and_repeat_is_internal():
 
 
 def test_strip_result_for_model_removes_frontend_image_sentinel():
-    assert strip_result_for_model('text\n__IMAGES__:{"paths":[]}') == "text"
-    assert strip_result_for_model("text __IMAGES__:payload") == "text"
+    assert strip_result_for_model('text\n__IMAGES__:["a.png"]') == "text"
     assert strip_result_for_model("plain text") == "plain text"
+
+
+def test_a_result_that_only_quotes_the_image_or_source_marker_is_kept_whole():
+    """Only a structurally valid trailing envelope is stripped, the way
+    `_strip_files_sentinel` and `_strip_mcp_image_suffix` beside it already are."""
+    quoted = 'tools.py:16134:        out += f"\\n__IMAGES__:{_json.dumps(images)}"\nsecond hit\nthird hit'
+    for name in (None, "terminal", "mcp__fs__read"):
+        assert strip_result_for_model(quoted, name) == quoted
+
+    # What `_defuse_sentinels` leaves behind when a program prints the marker itself.
+    defused = "line one\n __IMAGES__:printed by the program\nline three"
+    assert strip_result_for_model(defused, "python") == defused
+
+    sources = 'line one\nRAG_SOURCES_SENTINEL = "\\n__RAG_SOURCES__:"\nline three'
+    assert strip_result_for_model(sources, "search_knowledge_base") == sources
+
+    assert (
+        strip_result_for_model('text\n__IMAGES__:{"paths":[]}') == 'text\n__IMAGES__:{"paths":[]}'
+    )
+    assert strip_result_for_model('output\n__IMAGES__:["a.png"]', "python") == "output"
+    assert (
+        strip_result_for_model(
+            'answer\n__RAG_SOURCES__:[{"filename": "a.pdf"}]', "search_knowledge_base"
+        )
+        == "answer"
+    )
+
+
+def test_two_plots_in_one_code_execution_turn_replay_no_base64():
+    """A Gemini `code_execution` turn that draws two figures stacks one envelope per
+    `inlineData` part (external_provider re-appends to the result it just emitted), so
+    peeling once would hand the model the earlier plot's whole data URI."""
+    first = "data:image/png;base64," + "A" * 64
+    second = "data:image/png;base64," + "B" * 64
+    stacked = (
+        "Figures saved."
+        + f"\n__IMAGES__:{json.dumps([first])}"
+        + f"\n__IMAGES__:{json.dumps([second])}"
+    )
+
+    assert strip_result_for_model(stacked, "code_execution") == "Figures saved."
+
+
+def test_a_flood_of_stacked_image_markers_stays_linear():
+    """A hosted result's length is the provider's to choose and this runs on the request
+    thread, so the cost has to follow it. Re-partitioning the shortened string once per
+    marker copies it again every time: quadruple the markers and the work grows about
+    sixteenfold instead of fourfold.
+
+    Measured as CPU time, and as the best of several runs. A shared runner can deschedule
+    the process mid-call, which adds wall clock but no CPU, and taking the minimum drops
+    the samples where it happened -- interference can only ever make a run look slower.
+    """
+
+    def cost(markers: int) -> float:
+        flood = '\n__IMAGES__:["x"]' * markers
+        best = float("inf")
+        for _ in range(5):
+            started = time.process_time()
+            assert strip_result_for_model(flood, "code_execution") == ""
+            best = min(best, time.process_time() - started)
+        return max(best, 1e-4)
+
+    small = cost(20_000)
+    large = cost(80_000)
+
+    assert large / small < 10.0, f"4x the markers cost {large / small:.1f}x the work"
+
+
+def test_a_large_source_map_is_still_taken_off_the_result():
+    """No length bound here either. Every source record repeats its whole chunk and
+    `search_knowledge_base` honours the model's `top_k` without a ceiling, so a real map
+    can be megabytes; one refused for being big would be left for `_fit_result_to_room`
+    to cut into malformed JSON in front of the model."""
+    import json as _json
+
+    chunk = "retrieved text. " * 400
+    sources = [
+        {
+            "citationId": i,
+            "chunkId": f"c{i}",
+            "filename": "handbook.pdf",
+            "page": i,
+            "text": chunk,
+            "score": 0.5,
+        }
+        for i in range(200)
+    ]
+    result = "answer\n__RAG_SOURCES__:" + _json.dumps(sources, ensure_ascii = False)
+    assert len(result) > 1 << 20
+
+    assert strip_result_for_model(result, "search_knowledge_base") == "answer"
+
+
+def test_a_large_plot_is_still_taken_off_the_result():
+    """The image payload has no length bound on purpose: a figure Gemini renders at high
+    DPI is a data URI of whatever size it chose, and leaving it in for being large is the
+    base64 leak this stripper exists to prevent."""
+    big = 'output\n__IMAGES__:["data:image/png;base64,' + "A" * (12 << 20) + '"]'
+    assert len(big) > 8 << 20
+    assert strip_result_for_model(big, "code_execution") == "output"
+
+
+def test_only_the_tools_that_emit_an_envelope_have_one_taken_off():
+    """`_strip_files_sentinel` is already scoped this way. A document an MCP tool read,
+    or a page that was fetched, can end in a well-formed line of either kind, and it is
+    content: the card keeps it, so cutting it leaves the model with less than the user
+    is looking at."""
+    manifest = 'icons/\n__IMAGES__:["icon.png"]'
+    citation = 'notes\n__RAG_SOURCES__:[{"filename": "a.pdf"}]'
+
+    for reader in ("mcp__fs__read_file", "web_search", "fetch_url"):
+        assert strip_result_for_model(manifest, reader) == manifest
+        assert strip_result_for_model(citation, reader) == citation
+
+    # The tools that do emit them are unaffected.
+    for emitter in ("python", "terminal", "code_execution"):
+        assert strip_result_for_model(manifest, emitter) == "icons/"
+    for emitter in ("search_knowledge_base", "search_conversation"):
+        assert strip_result_for_model(citation, emitter) == "notes"
+
+    # An unnamed caller still gets everything stripped, as it did before.
+    assert strip_result_for_model(manifest) == "icons/"
+    assert strip_result_for_model(citation) == "notes"
+
+
+def test_the_card_text_keeps_digits_the_browser_would_round():
+    """`JSON.parse` reads 9007199254740993 back as ...992, so a card that re-encodes the
+    parsed arguments in the browser would show a record the tool is not being run with."""
+    exact = 9007199254740993
+    controller = ToolLoopController(tools = [_tool("del_rec")])
+    decision = controller.prepare_call(_call("del_rec", {"id": exact}))
+    payload = decision.tool_start_payload()
+
+    assert payload["arguments"]["id"] == exact
+    assert payload["arguments_text"] == '{"id":9007199254740993}'
+    assert payload["arguments_text"] == decision.as_assistant_tool_call()["function"]["arguments"]
+
+
+def test_an_unreadable_fragment_is_carried_as_the_text_the_card_shows():
+    """The replay substitutes a summary for the fragment, so the two texts are meant to differ."""
+    truncated = '{"path": "a.py", "edits"'
+    controller = ToolLoopController(tools = [_tool("edit_file")])
+    decision = controller.prepare_call(_call("edit_file", truncated))
+    payload = decision.tool_start_payload()
+
+    assert payload["arguments"] == {"raw": truncated}
+    assert json.loads(payload["arguments_text"]) == {"raw": truncated}
+    assert payload["arguments_text"] != decision.as_assistant_tool_call()["function"]["arguments"]
+
+
+# --- schema-aware argument typing -------------------------------------------------------
+
+_MCP_SERVER = {"id": "notes", "display_name": "Notes"}
+_MCP_TOOL = {
+    "name": "search",
+    "inputSchema": {
+        "type": "object",
+        "properties": {
+            "query": {"type": "string"},
+            "limit": {"type": "integer"},
+            "fuzzy": {"type": "boolean"},
+            "tags": {"type": "array", "items": {"type": "string"}},
+            "depth": {"type": ["integer", "null"]},
+        },
+    },
+}
+_MCP_PROPS = _MCP_TOOL["inputSchema"]["properties"]
+_UNCHANGED = object()
+
+
+def _mcp_tool_schemas():
+    return _mcp_specs_for_server(_MCP_SERVER, [_MCP_TOOL])
+
+
+def _coerce_one(key, value, props):
+    return coerce_arguments_by_schema({key: value}, props)[key]
+
+
+@pytest.mark.parametrize(
+    "key, text, expected",
+    [
+        ("fuzzy", " False ", False),
+        ("limit", "25", 25),
+        ("limit", "9007199254740993", 9007199254740993),  # float() would round this
+        ("tags", "('a', 'b')", ["a", "b"]),
+        ("depth", "null", None),
+        ("fuzzy", "null", _UNCHANGED),  # null is not a boolean; None would mean False
+    ],
+)
+def test_a_value_reads_as_the_type_its_schema_declares(key, text, expected):
+    got = _coerce_one(key, text, _MCP_PROPS)
+    want = text if expected is _UNCHANGED else expected
+    # Types too: `False == 0` and `25 == 25.0`, so equality alone would miss a swap.
+    assert got == want and type(got) is type(want)
+    seam = coerce_tool_arguments(
+        json.dumps({key: text}),
+        heal = False,
+        tool_name = "mcp__notes__search",
+        tool_schemas = _mcp_tool_schemas(),
+    )
+    assert seam.arguments[key] == want and seam.healed is False
+
+
+@pytest.mark.parametrize(
+    "spec",
+    [
+        # The walk stops on any keyword it does not follow, whichever one it is.
+        {"type": "boolean", "$ref": "#/$defs/Flag"},
+        # Collapsing a union discards the rest, so it is read only where it is all there is.
+        {"anyOf": [{"type": "boolean"}], "properties": {"x": {"type": "boolean"}}},
+    ],
+)
+def test_a_schema_this_walk_cannot_read_is_left_alone(spec):
+    assert _coerce_one("f", "false", {"f": spec}) == "false"
+    assert _coerce_one("f", "null", {"f": {"anyOf": [spec, {"type": "null"}]}}) == "null"
+    # Falsified so the refusal cannot swallow real schemas: `nullable` spells a type union.
+    annotated = {"type": "boolean", "title": "F", "enum": [False]}
+    assert _coerce_one("f", "false", {"f": annotated}) is False
+    assert _coerce_one("f", "null", {"f": {"type": "boolean", "nullable": True}}) is None
+
+
+@pytest.mark.parametrize(
+    "text, repaired",
+    [
+        ('["a","b"}', ["a", "b"]),  # a closer not matching the innermost opener
+        ('["a","b\\"', ["a", 'b"']),  # an open string ending on an ESCAPED quote
+    ],
+)
+def test_a_malformed_container_is_repaired_only_when_healing(text, repaired):
+    """Rewriting brackets invents structure, which is what the auto-heal opt-out is for."""
+
+    def at_seam(heal):
+        return coerce_tool_arguments(
+            json.dumps({"tags": text}),
+            heal = heal,
+            tool_name = "mcp__notes__search",
+            tool_schemas = _mcp_tool_schemas(),
+        ).arguments["tags"]
+
+    assert at_seam(True) == repaired
+    assert at_seam(False) == text
+
+
+def test_an_mcp_tool_call_parsed_from_xml_arrives_typed():
+    content = (
+        "<function=mcp__notes__search>"
+        "<parameter=query>ship dates</parameter>"
+        "<parameter=limit>25</parameter>"
+        "<parameter=fuzzy>false</parameter>"
+        '<parameter=tags>["a","b"]</parameter>'
+        "<parameter=depth>null</parameter>"
+        "</function>"
+    )
+    calls = parse_tool_calls_from_text(content)
+    decision = ToolLoopController(tools = _mcp_tool_schemas()).prepare_call(calls[0])
+    assert decision.arguments == {
+        "query": "ship dates",
+        "limit": 25,
+        "fuzzy": False,
+        "tags": ["a", "b"],
+        "depth": None,
+    }
+    # The turn replayed to the model carries the typed values too, not the strings.
+    assert decision.as_assistant_tool_call()["function"]["arguments"] == (
+        '{"query":"ship dates","limit":25,"fuzzy":false,"tags":["a","b"],"depth":null}'
+    )
+
+
+def test_replayed_arguments_keep_the_order_the_model_generated():
+    """The replay is the text the model is told it wrote, so its key order must survive (#10791)."""
+    edit_file = next(t for t in ALL_TOOLS if t["function"]["name"] == "edit_file")
+    arguments = {
+        "path": "calc.py",
+        "edits": [{"new_string": "def subtract", "old_string": "def add"}],
+    }
+    controller = ToolLoopController(tools = [edit_file])
+    decision = controller.prepare_call(
+        {"function": {"name": "edit_file", "arguments": json.dumps(arguments)}}
+    )
+
+    replayed = decision.as_assistant_tool_call()["function"]["arguments"]
+    assert (
+        replayed
+        == '{"path":"calc.py","edits":[{"new_string":"def subtract","old_string":"def add"}]}'
+    )
+    assert decision.tool_start_payload()["arguments_text"] == replayed
+    flipped = {
+        "path": "calc.py",
+        "edits": [{"old_string": "def add", "new_string": "def subtract"}],
+    }
+    assert canonical_tool_call_key("edit_file", decision.arguments) == (
+        canonical_tool_call_key("edit_file", flipped)
+    )
+
+
+def test_two_xml_calls_written_in_different_orders_replay_in_their_own():
+    """Each call's own order, not one fixed order that happens to look unsorted.
+
+    No fixed order satisfies both, so on the sorted encoder both replay as the same string.
+    """
+
+    def replay(*parameters):
+        content = (
+            "<function=mcp__notes__search>"
+            + "".join(f"<parameter={key}>{value}</parameter>" for key, value in parameters)
+            + "</function>"
+        )
+        calls = parse_tool_calls_from_text(content)
+        decision = ToolLoopController(tools = _mcp_tool_schemas()).prepare_call(calls[0])
+        return decision.as_assistant_tool_call()["function"]["arguments"]
+
+    assert replay(("query", "ship dates"), ("limit", 25), ("fuzzy", "false")) == (
+        '{"query":"ship dates","limit":25,"fuzzy":false}'
+    )
+    assert replay(("fuzzy", "false"), ("query", "ship dates"), ("limit", 25)) == (
+        '{"fuzzy":false,"query":"ship dates","limit":25}'
+    )
+
+
+def test_a_declared_type_nested_in_a_container_is_read_too():
+    """`edit_file` declares replace_all inside `edits.items`, so the top level is not enough
+    and text that spells a boolean must survive as text."""
+    edits = (
+        '[{"old_string":"a","new_string":"b","replace_all":"false"},'
+        '{"old_string":"false","new_string":"null","replace_all":"true"}]'
+    )
+    edit_file = next(t for t in ALL_TOOLS if t["function"]["name"] == "edit_file")
+    props = edit_file["function"]["parameters"]["properties"]
+    typed = [
+        {"old_string": "a", "new_string": "b", "replace_all": False},
+        {"old_string": "false", "new_string": "null", "replace_all": True},
+    ]
+    call = {"path": "app.py", "edits": edits}
+    assert coerce_arguments_by_schema(call, props) == {"path": "app.py", "edits": typed}
+    # An already-typed container is descended into too: its elements can still be text.
+    call = {"path": "app.py", "edits": json.loads(edits)}
+    assert coerce_arguments_by_schema(call, props) == {"path": "app.py", "edits": typed}
+
+
+@pytest.mark.parametrize(
+    "result, failed",
+    [
+        ("Error: boom", True),
+        ("  Error: boom", True),
+        ("Error executing tool remote_thing: disk full", True),
+        ("Error running command `git push`: permission denied", True),
+        ("Errors: 0", False),
+        ("Errors: none found", False),
+        ("Errored, then recovered", False),
+        ("Error-free run", False),
+    ],
+)
+def test_only_a_delimited_error_marks_a_result_failed(result, failed):
+    assert is_tool_error(result) is failed
+
+
+def test_a_success_that_opens_with_error_is_not_nudged_as_a_failure():
+    controller = ToolLoopController(tools = [_tool("web_search")])
+    decision = controller.prepare_call(_call("web_search", {"url": "https://example.com/log"}))
+
+    completion = controller.record_result(decision, "Errors: 0 across 128 files")
+
+    assert not completion.is_error
+    assert TOOL_ERROR_NUDGE not in completion.model_message()["content"]
+
+
+@pytest.mark.parametrize("tool_name", ["python", "terminal", "edit_file"])
+def test_failed_workspace_execution_invalidates_previous_reads(tool_name):
+    controller = ToolLoopController(tools = [_tool("terminal"), _tool(tool_name)])
+    read = _call("terminal", {"command": "cat notes.txt"})
+    controller.record_result(controller.prepare_call(read), "before")
+    write = _call(tool_name, {"code": "write_then_fail", "command": "write_then_fail"})
+    controller.record_result(controller.prepare_call(write), "Error: failed after writing")
+    assert controller.prepare_call(read).action == "execute"
+    assert controller.prepare_call(write).action == "execute"
+
+
+def test_tool_call_limit_nudge_keeps_long_arguments_whole():
+    code = "print(1)\n" * 60
+    notice = tool_call_limit_nudge(
+        [{"function": {"name": "python", "arguments": json.dumps({"code": code})}}], 8
+    )
+    assert json.dumps({"code": code}) in notice["content"]

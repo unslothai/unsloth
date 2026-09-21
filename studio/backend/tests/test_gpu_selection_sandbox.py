@@ -294,13 +294,13 @@ class TestAutoSelectGpuIds(unittest.TestCase):
             # 35GB (first) + 30*0.85 (second) = 60.5GB > 50GB
             self.assertEqual(len(selected), 2)
 
-    def test_non_cuda_returns_none(self):
+    def test_non_accelerator_returns_none(self):
         from utils.hardware.hardware import auto_select_gpu_ids
         import utils.hardware.hardware as hw
         with patch.object(hw, "get_device", return_value = hw.DeviceType.CPU):
             selected, meta = auto_select_gpu_ids("test/model")
             self.assertIsNone(selected)
-            self.assertEqual(meta["selection_mode"], "non_cuda")
+            self.assertEqual(meta["selection_mode"], "non_accelerator")
 
 
 class TestGetDeviceMap(unittest.TestCase):
@@ -325,12 +325,12 @@ class TestGetDeviceMap(unittest.TestCase):
             dm = get_device_map(gpu_ids = [0])
             self.assertEqual(dm, "sequential")
 
-    def test_multi_gpu_returns_balanced(self):
+    def test_multi_gpu_returns_the_unsloth_planner(self):
         from utils.hardware.hardware import get_device_map
         import utils.hardware.hardware as hw
         with patch.object(hw, "get_device", return_value = hw.DeviceType.CUDA):
             dm = get_device_map(gpu_ids = [0, 1])
-            self.assertEqual(dm, "balanced")
+            self.assertEqual(dm, "unsloth_balanced")
 
     def test_cpu_returns_sequential(self):
         from utils.hardware.hardware import get_device_map
