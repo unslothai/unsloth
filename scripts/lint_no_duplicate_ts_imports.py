@@ -42,52 +42,27 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_SCAN_DIR = REPO_ROOT / "studio" / "frontend"
 SKIP_PARTS = frozenset({"node_modules", "dist", "build", ".venv", "venv", "__pycache__"})
 
-# One import statement, up to its module specifier. `re.DOTALL` so a clause
-# prettier wrapped across lines, as the #8470 duplicate was, is still one match.
-_IMPORT = re.compile(
-    r"^[ \t]*import[ \t]+(?P<clause>[^;'\"]*?)[ \t]*from[ \t]*['\"][^'\"]+['\"]",
-    re.MULTILINE | re.DOTALL,
+# One import declaration, anchored at the cursor. `re.DOTALL` so a clause prettier wrapped
+# across lines, as the #8470 duplicate was, is still one match.
+_IMPORT_AT = re.compile(
+    r"\Aimport\b[ \t]*(?P<clause>[^;'\"]*?)[ \t]*from[ \t]*(['\"])[^'\"]*\2[ \t]*;?",
+    re.DOTALL,
 )
-# A bare `import "./styles.css"` binds nothing; the `from` requirement skips it.
+# A bare `import "./styles.css"` binds nothing, but it is part of the prologue and has to be
+# stepped over rather than ending it.
+_BARE_IMPORT_AT = re.compile(r"\Aimport\b[ \t]*(['\"])[^'\"]*\1[ \t]*;?")
+# Whitespace, comments, and the directive prologue that may precede the imports. Five files
+# here open with `"use client";`, and without this their imports would not be read at all.
+_TRIVIA_AT = re.compile(
+    r"\A(?:[ \t\r\n]+|//[^\n]*|/\*.*?\*/|(['\"])use [a-z ]+\1[ \t]*;?)+",
+    re.DOTALL,
+)
 
 # The `type` modifier, clause-level or per specifier. `\s+`, not a literal space:
 # any whitespace is legal after it, and a literal-space test on `type\n  Foo`
 # leaves the modifier in place and records `type` itself as the binding -- so two
 # such specifiers read as a duplicate and fail CI on a file tsc accepts.
 _TYPE_MODIFIER = re.compile(r"^type\s+")
-
-# Words that end in identifier characters but are not values, so a `/` after one of them
-# opens a regex rather than dividing.
-_OPERATOR_KEYWORDS = frozenset(
-    {
-        "await",
-        "case",
-        "delete",
-        "do",
-        "else",
-        "in",
-        "instanceof",
-        "new",
-        "of",
-        "return",
-        "throw",
-        "typeof",
-        "void",
-        "yield",
-    }
-)
-
-
-# Statements whose parentheses produce no value, so a `/` after the closing one opens a
-# regex rather than dividing.
-_CONTROL_KEYWORDS = frozenset({"catch", "for", "if", "switch", "while", "with"})
-
-# What the character before an `import` may be once trivia is skipped: nothing at all, the
-# end of a previous statement, or the closing quote of a module specifier, which is how the
-# previous import ends in a file that omits semicolons. Anything else means the text is not
-# starting a statement. `>` is the one that matters: it closes a JSX tag, and JSX text is
-# where import-shaped lines are not imports.
-_STATEMENT_END = frozenset(";}\"'`")
 
 
 def _bindings(clause: str) -> list[str]:
@@ -128,186 +103,56 @@ def _bindings(clause: str) -> list[str]:
     return names
 
 
-def _without_embedded_source(source: str) -> str:
-    """`source` with comment and string bodies blanked, character count and lines preserved.
+def _prologue_clauses(source: str) -> list[tuple[int, str]]:
+    """(offset, clause) for each import declaration in the module's import prologue.
 
-    A test fixture holds TypeScript as data, and a template literal is how it holds it:
+    Only the prologue, which is the run of imports, comments and directives at the top of the
+    file, ending at the first statement that is not one. That bound is what makes this
+    readable without a TypeScript lexer, and it is the whole design: the prologue cannot
+    contain a template literal, a regex, or JSX, so none of the things that merely LOOK like
+    imports can appear in it.
 
-        const RENDER_SOURCE = String.raw`
-        import { createServer } from "vite";
-        ...
+    Scanning the whole file instead was tried and produced a false positive every time it was
+    patched: TypeScript quoted inside a test fixture, a backtick inside a regex pairing with a
+    later template, a code sample rendered as JSX text, a module-level JSX initializer with no
+    wrapping parentheses, a nested template, JSX text after an expression container. Every one
+    of those is valid TypeScript that the gate would have failed, and this gate runs
+    unconditionally on Source lint, so a false positive stops work on code that is correct.
 
-    Those lines begin with optional indentation and `import`, so a scan of the raw text reads
-    them as real imports of the enclosing file. Two fixtures quoting the same module then look
-    like a duplicate, and the gate fails CI on a file tsc accepts. Both frontend test files
-    that do this were reported before this masking existed.
-
-    A block comment is the same problem: commented-out imports are not imports. A `//` line
-    is already safe, since the pattern anchors `import` to the start of the line, but it is
-    handled here too rather than left to that coincidence.
-
-    Blanked, not deleted, so offsets and line numbers still point at the real source. Module
-    specifiers survive as whitespace inside their quotes, which the pattern still matches, so
-    masking cannot hide a genuine import.
-
-    Regex literals are recognised, because leaving them out did NOT fail open as an earlier
-    version of this comment claimed. `const BACKTICK = /`/g;` is real code in
-    studio/frontend/src/lib/release-notes-preview.ts, and an unrecognised backtick inside it
-    pairs with the opener of the next real template, so the masking lands on the gap between
-    them and leaves the fixture exposed. That invents a duplicate rather than missing one.
-
-    Telling a regex from a division needs the previous token, since `/` is both. The test is
-    the usual one: after a value, so an identifier, a literal, or a closing bracket, `/`
-    divides; anywhere else it opens a regex. `return`, `typeof` and the other operator
-    keywords end in identifier characters but are not values, so they are listed.
+    The cost is stated rather than hidden: an import written after other top-level code is not
+    read, so a duplicate involving one is missed. Across this frontend that is 611 of 9801
+    import declarations, in 19 files. That is a false NEGATIVE, which leaves the build exactly
+    where it was before this check existed, and tsc still catches it. Given the choice between
+    missing those and failing CI on valid code, this misses those.
     """
-    out = list(source)
-    length = len(source)
-
-    def blank(start: int, stop: int) -> None:
-        for index in range(max(start, 0), min(stop, length)):
-            if out[index] != "\n":
-                out[index] = " "
-
-    def opens_a_regex(before: int) -> bool:
-        """True when a `/` at `before` starts a regex rather than dividing."""
-        cursor = before - 1
-        while cursor >= 0 and source[cursor] in " \t\r\n":
-            cursor -= 1
-        if cursor < 0:
-            return True
-        previous = source[cursor]
-        if previous == ")":
-            # `(a + b) / 2` divides, but `if (ok) /re/.test(s)` does not: the parentheses of
-            # a control statement produce no value, so what follows them starts a statement.
-            # Walk back to the matching `(` and read the word in front of it.
-            depth, scan = 0, cursor
-            while scan >= 0:
-                if source[scan] == ")":
-                    depth += 1
-                elif source[scan] == "(":
-                    depth -= 1
-                    if depth == 0:
-                        break
-                scan -= 1
-            head = re.search(r"([A-Za-z_$][\w$]*)\s*$", source[:scan]) if scan >= 0 else None
-            return bool(head) and head.group(1) in _CONTROL_KEYWORDS
-        if previous == "]":
-            return False
-        if previous.isalnum() or previous in "_$":
-            word = re.search(r"[A-Za-z_$][\w$]*$", source[: cursor + 1])
-            return bool(word) and word.group(0) in _OPERATOR_KEYWORDS
-        return True
-
-    index = 0
-    while index < length:
-        char = source[index]
-        pair = source[index : index + 2]
-        if char == "/" and pair not in ("//", "/*") and opens_a_regex(index):
-            cursor = index + 1
-            in_class = False
-            while cursor < length:
-                here = source[cursor]
-                if here == "\\":
-                    cursor += 2
-                    continue
-                if here == "\n":
-                    # Unterminated: a regex cannot span a line, so this was a division after
-                    # all. Leave the slash alone rather than masking to the end of the file.
-                    cursor = index
-                    break
-                if here == "[":
-                    in_class = True
-                elif here == "]":
-                    in_class = False
-                elif here == "/" and not in_class:
-                    break
-                cursor += 1
-            if cursor > index:
-                blank(index + 1, min(cursor, length))
-                index = min(cursor, length) + 1
-                continue
-            index += 1
-        elif pair == "//":
-            stop = source.find("\n", index)
-            stop = length if stop == -1 else stop
-            blank(index, stop)
-            index = stop
-        elif pair == "/*":
-            stop = source.find("*/", index + 2)
-            stop = length if stop == -1 else stop + 2
-            blank(index, stop)
-            index = stop
-        elif char in "'\"`":
-            cursor = index + 1
-            while cursor < length and source[cursor] != char:
-                # A single- or double-quoted string cannot span a line; treating one that
-                # reaches a newline as unterminated stops a stray apostrophe in prose from
-                # swallowing the rest of the file.
-                if char != "`" and source[cursor] == "\n":
-                    break
-                cursor += 2 if source[cursor] == "\\" else 1
-            blank(index + 1, cursor)
-            index = cursor + 1
-        else:
-            index += 1
-    return "".join(out)
-
-
-def _top_level(source: str) -> list[bool]:
-    """Per character, whether it sits outside every bracket.
-
-    An `import` declaration is only legal at the top level of a module, so anything that
-    looks like one inside a bracket is something else wearing the shape. The case that
-    matters is a component rendering a code sample as element text:
-
-        export function Sample() {
-          return (
-            <pre>
-        import Widget from "a";
-            </pre>
-          );
-        }
-
-    TypeScript reads those lines as JSX text and accepts the file. They are unindented,
-    because indentation would show up in what the page renders, so anchoring to the start of
-    the line does not separate them; what does is that they are inside the function body and
-    the parenthesised return. Recognising JSX properly would need a real lexer, and this does
-    not pretend to be one: it just declines to read a declaration anywhere the language would
-    not allow one.
-
-    Read after masking, so brackets inside strings, comments and regexes are already gone.
-    """
-    depths, depth = [], 0
-    for char in source:
-        if char in ")]}":
-            depth -= 1
-        depths.append(depth <= 0)
-        if char in "([{":
-            depth += 1
-    return depths
+    found: list[tuple[int, str]] = []
+    position = 0
+    while position < len(source):
+        rest = source[position:]
+        trivia = _TRIVIA_AT.match(rest)
+        if trivia:
+            position += trivia.end()
+            continue
+        declaration = _IMPORT_AT.match(rest)
+        if declaration:
+            found.append((position, declaration.group("clause")))
+            position += declaration.end()
+            continue
+        bare = _BARE_IMPORT_AT.match(rest)
+        if bare:
+            position += bare.end()
+            continue
+        break
+    return found
 
 
 def duplicates_in(source: str) -> list[tuple[int, str]]:
     """(line number, name) for every binding this file introduces twice."""
     seen: dict[str, int] = {}
     found: list[tuple[int, str]] = []
-    source = _without_embedded_source(source)
-    outside = _top_level(source)
-    for match in _IMPORT.finditer(source):
-        if not outside[match.start()]:
-            continue
-        # And it has to be starting a statement. Bracket depth alone does not separate a
-        # module-level JSX initializer written without wrapping parentheses, because JSX tags
-        # are not brackets: `const sample = <pre>` followed by import-shaped text leaves the
-        # depth at zero. What precedes that text is `>`, which ends no statement.
-        cursor = match.start() - 1
-        while cursor >= 0 and source[cursor] in " \t\r\n":
-            cursor -= 1
-        if cursor >= 0 and source[cursor] not in _STATEMENT_END:
-            continue
-        line = source.count("\n", 0, match.start()) + 1
-        for name in _bindings(match.group("clause")):
+    for offset, clause in _prologue_clauses(source):
+        line = source.count("\n", 0, offset) + 1
+        for name in _bindings(clause):
             if name in seen:
                 found.append((line, name))
             else:
@@ -348,136 +193,6 @@ def _self_test() -> int:
             ["HubModelPicker", "hasDownloadedModels"],
         ),
         (
-            "a module-level JSX initializer without wrapping parentheses",
-            'import { Fragment } from "react";\n'
-            "const sample = <pre>\n"
-            'import Widget from "a";\n'
-            'import Widget from "b";\n'
-            "</pre>;\n",
-            [],
-        ),
-        (
-            "a regex after an unbraced control head is still a regex",
-            "if (ok) /`/.test(text);\n"
-            "const FIXTURE = `\n"
-            'import { A } from "m";\n'
-            'import { A } from "n";\n'
-            "`;\n",
-            [],
-        ),
-        (
-            "a division after a call still divides",
-            'const half = total() / 2;\nimport { A } from "m";\nimport { A } from "n";\n',
-            ["A"],
-        ),
-        (
-            "a file that omits semicolons still reports its duplicates",
-            'import { A } from "m"\nimport { A } from "n"\n',
-            ["A"],
-        ),
-        (
-            "an import after a function declaration is still an import",
-            'import { A } from "m";\nfunction f() {}\nimport { A } from "n";\n',
-            ["A"],
-        ),
-        (
-            "a code sample rendered as JSX text is not a declaration",
-            'import { Fragment } from "react";\n'
-            "\n"
-            "export function Sample() {\n"
-            "  return (\n"
-            "    <pre>\n"
-            'import Widget from "a";\n'
-            'import Widget from "b";\n'
-            "    </pre>\n"
-            "  );\n"
-            "}\n",
-            [],
-        ),
-        (
-            "a real duplicate after such a component is still caught",
-            'import { A } from "m";\n'
-            'function C() { return (<pre>\nimport X from "z";\n</pre>); }\n'
-            'import { A } from "n";\n',
-            ["A"],
-        ),
-        (
-            "a backtick inside a regex does not open a template",
-            # `const BACKTICK = /`/g;` is real code in release-notes-preview.ts. Unrecognised,
-            # its backtick pairs with the opener of the next real template and exposes the
-            # fixture between them.
-            "const BACKTICK = /`/g;\n"
-            "const FIXTURE = `\n"
-            'import { A } from "m";\n'
-            'import { A } from "n";\n'
-            "`;\n",
-            [],
-        ),
-        (
-            "a quote inside a regex does not open a string",
-            "const QUOTE = /'/g;\n"
-            "const FIXTURE = `\n"
-            'import { A } from "m";\n'
-            'import { A } from "n";\n'
-            "`;\n",
-            [],
-        ),
-        (
-            "a division is not a regex",
-            'const half = total / 2;\nimport { A } from "m";\nimport { A } from "n";\n',
-            ["A"],
-        ),
-        (
-            "a division after a closing paren is not a regex",
-            'const x = (a + b) / 2;\nimport { A } from "m";\nimport { A } from "n";\n',
-            ["A"],
-        ),
-        (
-            "a regex after an operator keyword is still a regex",
-            'function f() { return /`/.test(s); }\nimport { A } from "m";\nimport { A } from "n";\n',
-            ["A"],
-        ),
-        (
-            "a slash inside a character class does not end the regex",
-            'const re = /[/`]/g;\nimport { A } from "m";\nimport { A } from "n";\n',
-            ["A"],
-        ),
-        (
-            "TypeScript quoted as a fixture in a template literal is data, not imports",
-            'import { createServer } from "vite";\n'
-            "const FIXTURE = String.raw`\n"
-            'import { createServer } from "vite";\n'
-            'import { renderToStaticMarkup } from "react-dom/server";\n'
-            "`;\n"
-            "const OTHER = `\n"
-            'import { createServer } from "vite";\n'
-            "`;\n",
-            [],
-        ),
-        (
-            "a real duplicate after a fixture is still caught",
-            'import { createServer } from "vite";\n'
-            'const FIXTURE = `\nimport { unrelated } from "m";\n`;\n'
-            'import { createServer } from "vite";\n',
-            ["createServer"],
-        ),
-        (
-            "imports commented out in a block are not imports",
-            'import { a } from "m";\n/*\nimport { a } from "m";\nimport { a } from "n";\n*/\n',
-            [],
-        ),
-        (
-            "a backtick inside a string does not open a template",
-            'const tick = "`";\nimport { a } from "m";\nimport { a } from "n";\n',
-            ["a"],
-        ),
-        (
-            "an escaped backtick does not close a template",
-            'const FIXTURE = `\\`\nimport { a } from "m";\n`;\n'
-            'import { b } from "m";\nimport { b } from "n";\n',
-            ["b"],
-        ),
-        (
             "two imports of one module under different names are legal",
             'import { a } from "m";\nimport { b } from "m";\n',
             [],
@@ -508,50 +223,98 @@ def _self_test() -> int:
             ["D"],
         ),
         (
-            "a side-effect import binds nothing",
-            'import "./a.css";\nimport "./a.css";\n',
-            [],
+            "a side-effect import binds nothing and does not end the prologue",
+            'import { a } from "m";\nimport "./styles.css";\nimport { a } from "n";\n',
+            ["a"],
         ),
         (
-            "a multi-line clause is one statement",
-            'import {\n  alpha,\n  beta,\n} from "m";\nimport { beta } from "n";\n',
+            "comments between and inside clauses do not end the prologue",
+            'import { a } from "m";\n// why\n/* and why */\nimport {\n  // keep\n  a,\n} from "n";\n',
+            ["a"],
+        ),
+        (
+            "a directive prologue comes before the imports",
+            '"use client";\n\nimport { a } from "m";\nimport { a } from "n";\n',
+            ["a"],
+        ),
+        (
+            "a file that omits semicolons still reports its duplicates",
+            'import { A } from "m"\nimport { A } from "n"\n',
+            ["A"],
+        ),
+        (
+            "a wrapped specifier list aliased around the line break",
+            'import {\n  alpha as\n    beta,\n} from "m";\nimport { beta } from "n";\n',
             ["beta"],
         ),
+        # What the prologue bound buys. Each of these is valid TypeScript that a whole-file
+        # scan reported as a duplicate, and each was found only after the previous one was
+        # patched. They are kept as cases because the bound is what makes them impossible,
+        # and a later change that widens the scan has to fail here rather than in CI.
         (
-            "an alias split across lines still binds the alias",
-            'import {\n  Foo\n  as\n  Bar,\n} from "m";\nimport { Foo } from "n";\n',
+            "TypeScript quoted as a fixture in a template literal",
+            'import { createServer } from "vite";\n'
+            "const FIXTURE = String.raw`\n"
+            'import { createServer } from "vite";\n'
+            'import { renderToStaticMarkup } from "react-dom/server";\n'
+            "`;\n",
             [],
         ),
         (
-            "a comment inside the import list is not a binding",
-            'import {\n  // the primary widget\n  alpha,\n} from "m";\n'
-            'import {\n  /* helpers */\n  beta,\n} from "n";\n',
+            "a nested template literal holding the same shape",
+            'import { a } from "m";\n'
+            "const OUTER = `${`\n"
+            'import { a } from "m";\n'
+            'import { a } from "m";\n'
+            "`}`;\n",
             [],
         ),
         (
-            "a commented import list still reports its real duplicate",
-            'import {\n  // the primary widget\n  alpha,\n} from "m";\n'
-            'import {\n  // again\n  alpha,\n} from "n";\n',
-            ["alpha"],
-        ),
-        (
-            "an inline type modifier may be followed by any whitespace",
-            'import {\n  type\n  Foo,\n  type\tBar,\n} from "m";\n',
+            "a backtick inside a regex",
+            'import { a } from "m";\n'
+            "const BACKTICK = /`/g;\n"
+            "const FIXTURE = `\n"
+            'import { a } from "m";\n'
+            "`;\n",
             [],
         ),
         (
-            "a clause-level type modifier may be followed by any whitespace",
-            'import type\n{ Foo } from "m";\nimport type\n{ Bar } from "n";\n',
+            "a code sample rendered as JSX text",
+            'import { Fragment } from "react";\n'
+            "export function Sample() {\n"
+            "  return (\n"
+            "    <pre>\n"
+            'import Widget from "a";\n'
+            'import Widget from "b";\n'
+            "    </pre>\n"
+            "  );\n"
+            "}\n",
             [],
         ),
         (
-            "a wrapped type modifier still reports its real duplicate",
-            'import {\n  type\n  Foo,\n} from "m";\nimport { Foo } from "n";\n',
-            ["Foo"],
+            "a module-level JSX initializer without wrapping parentheses",
+            'import { Fragment } from "react";\n'
+            "const sample = <pre>\n"
+            'import Widget from "a";\n'
+            'import Widget from "b";\n'
+            "</pre>;\n",
+            [],
         ),
         (
-            "the word import inside a string is not an import",
-            'const s = "import { a } from \'m\'";\nimport { a } from "m";\n',
+            "JSX text following an expression container",
+            'import { Fragment } from "react";\n'
+            "const sample = <pre>\n"
+            "{/* heading */}\n"
+            'import Widget from "a";\n'
+            'import Widget from "b";\n'
+            "</pre>;\n",
+            [],
+        ),
+        # The stated cost, pinned so it is a decision rather than a surprise. An import after
+        # other top-level code is outside the prologue and is not read.
+        (
+            "an import after other top-level code is deliberately not read",
+            'import { A } from "m";\nregisterResolver();\nimport { A } from "n";\n',
             [],
         ),
     ]
