@@ -1120,6 +1120,27 @@ def _private_dir(path: str) -> bool:
     return not info.st_mode & (stat_module.S_IWGRP | stat_module.S_IWOTH)
 
 
+def _windows_temp_root_is_private(parent: Path) -> bool:
+    """Whether *parent* is the per-account temporary root Windows gives by default.
+
+    os.stat has no ownership to report on Windows and the 0o700 handed to os.mkdir buys nothing
+    there, so a redirected %TEMP% pointing at a shared directory cannot be told apart from a
+    private one without reading ACLs, which would mean a dependency this backend does not carry.
+    The default root under %LOCALAPPDATA%\\Temp already is per-account and ACL'd by Windows, so
+    that is the one case accepted; a redirected root gets no fallback rather than an unverified
+    one. Losing the fallback costs containment for that install, and the alternative is
+    publishing a directory another local account may have pre-created.
+    """
+    local = os.environ.get("LOCALAPPDATA")
+    if not local:
+        return False
+    try:
+        return os.path.normcase(str(parent.resolve())) == os.path.normcase(
+            str((Path(local) / "Temp").resolve()))
+    except (OSError, ValueError):
+        return False
+
+
 def _holding_dir_is_safe(parent: Path) -> bool:
     """Whether another account could swap the directory we just validated for one of its own.
 
@@ -1131,7 +1152,7 @@ def _holding_dir_is_safe(parent: Path) -> bool:
     ordinary shared directory is not, which is why this is asked rather than assumed.
     """
     if os.name == "nt":
-        return True
+        return _windows_temp_root_is_private(parent)
     try:
         info = os.stat(parent)
     except (OSError, ValueError):
@@ -1175,6 +1196,23 @@ def _parseable_toolchain_fallback(key: str, intended: str) -> str | None:
     candidate = str(Path(base) / f"unsloth-{key.lower().replace('_', '-')}-{digest}")
     # The join can still reintroduce one: gettempdir() is parseable but Path may normalise.
     return None if toolchain_path_unparseable(candidate) else candidate
+
+
+def parseable_cache_fallback(key: str, intended: str) -> str | None:
+    """A directory ready to publish for *key*, or None when no safe one can be had.
+
+    Name, holding directory, ownership and a real write probe, in that order. One entry point
+    because the diffusion cache needs exactly the same answer: it used to leave the process-wide
+    pin in place when its own per-key path was unparseable, and once startup began publishing a
+    single shared fallback that meant save_cache_artifacts serialised one shared cache into
+    every fingerprinted bundle.
+    """
+    candidate = _parseable_toolchain_fallback(key, intended)
+    if candidate is None:
+        return None
+    if not _private_dir(candidate) or not _usable_dir(candidate):
+        return None
+    return candidate
 
 
 def _setup_cache_env() -> None:
@@ -1228,13 +1266,8 @@ def _setup_cache_env() -> None:
                 # So publish a path the builders can read instead of hoping for one. Named from
                 # a digest, which is hex and therefore always parseable, and only when the
                 # temporary directory itself is.
-                fallback = _parseable_toolchain_fallback(key, value)
-                # Created private, then probed, BEFORE it is published. Both halves are needed
-                # and neither implies the other: _private_dir settles who may write there, which
-                # matters because this name is predictable in a shared temporary root, and
-                # _usable_dir settles whether WE can, which the ordinary path below also asks
-                # because torch treats the value as authoritative and never reconsiders.
-                if fallback is not None and _private_dir(fallback) and _usable_dir(fallback):
+                fallback = parseable_cache_fallback(key, value)
+                if fallback is not None:
                     logger.debug(
                         "%s holds a character the C++ builders cannot paste into a command "
                         "line unquoted; pinning %s to %s instead",

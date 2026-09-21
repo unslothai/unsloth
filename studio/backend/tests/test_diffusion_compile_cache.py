@@ -379,12 +379,16 @@ def test_the_import_fallback_matches_the_resolver(monkeypatch):
         pytest.param("o'brien", id = "an apostrophe"),
     ],
 )
-def test_an_unparseable_cache_root_leaves_the_inductor_pin_alone(
+def test_an_unparseable_cache_root_never_pins_the_unparseable_path(
     name, monkeypatch, tmp_path, fake_megacache
 ):
     """Startup declines to pin TORCHINDUCTOR_CACHE_DIR into a root the C++ builders cannot
     parse, and this assignment used to overwrite that decision on the first compiled diffusion
-    run. Checking the environment just after launch would not have caught it."""
+    run. Checking the environment just after launch would not have caught it.
+
+    What replaces it has to stay PER KEY. Simply keeping whatever startup left would keep the
+    one process-wide fallback, and save_cache_artifacts then serialises that shared cache into
+    every fingerprinted bundle, so each model accumulates the others'."""
     import os
 
     root = tmp_path / name
@@ -394,10 +398,34 @@ def test_an_unparseable_cache_root_leaves_the_inductor_pin_alone(
 
     ctx = cc.begin(transformer = _transformer(), **_BEGIN_KW)
 
-    assert "TORCHINDUCTOR_CACHE_DIR" not in os.environ
-    assert ctx.prev_inductor_dir_set is False  # so restore() has nothing to put back
-    # The bundle is unaffected: only the Inductor pin is withheld.
+    published = os.environ.get("TORCHINDUCTOR_CACHE_DIR")
+    assert published != str(ctx.dir / "inductor")
+    if published is not None:
+        assert not cc._toolchain_path_unparseable(published)
+        assert not published.startswith(str(root))
+    # The bundle is unaffected either way: only the Inductor pin moves.
     assert ctx.dir.is_dir() and ctx.dir.is_relative_to(root)
+
+
+def test_two_models_under_an_unparseable_root_do_not_share_one_inductor_cache(
+    monkeypatch, tmp_path, fake_megacache
+):
+    """The isolation the per-key directory exists for has to survive the substitution."""
+    import os
+
+    root = tmp_path / "o'brien"
+    monkeypatch.setenv(cc._ENV_MODE, "auto")
+    monkeypatch.setenv(cc._ENV_DIR, str(root))
+    monkeypatch.delenv("TORCHINDUCTOR_CACHE_DIR", raising = False)
+
+    first = cc.begin(transformer = _transformer(), **_BEGIN_KW)
+    one = os.environ.get("TORCHINDUCTOR_CACHE_DIR")
+    other = dict(_BEGIN_KW, shape_bucket = "512x512")
+    second = cc.begin(transformer = _transformer(), **other)
+    two = os.environ.get("TORCHINDUCTOR_CACHE_DIR")
+
+    assert first.key != second.key
+    assert one and two and one != two
 
 
 # -------------------------------------------------------------------------- legacy root

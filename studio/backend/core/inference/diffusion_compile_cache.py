@@ -165,6 +165,16 @@ def _toolchain_path_unparseable(value: str) -> bool:
     return toolchain_path_unparseable(value)
 
 
+def _parseable_cache_fallback(key: str, intended: str) -> str | None:
+    """storage_roots' ready-to-publish fallback, or None when this module is reached without
+    studio/backend on sys.path, where there is no safe directory to offer."""
+    try:
+        from utils.paths.storage_roots import parseable_cache_fallback
+    except ImportError:
+        return None
+    return parseable_cache_fallback(key, intended)
+
+
 def _default_root() -> Path:
     """Resolved per call, not a module constant: this module is imported before startup sets
     UNSLOTH_STUDIO_HOME, which storage_roots reads."""
@@ -395,11 +405,24 @@ def begin(
         # the Inductor pin is withheld, which returns it to the temporary directory it picks on
         # its own.
         if _toolchain_path_unparseable(inductor_dir):
-            _warn(
-                logger,
-                f"compile-cache: leaving TORCHINDUCTOR_CACHE_DIR as it is: {inductor_dir} holds "
-                "a character the C++ builders cannot paste into a command line unquoted",
-            )
+            # Leaving the pin alone is not neutral any more. Startup publishes ONE parseable
+            # fallback for the whole process, so keeping it here means save_cache_artifacts
+            # serialises that shared cache into every fingerprinted bundle and each model
+            # accumulates the others'. Ask for a fallback keyed on THIS cdir instead, which is
+            # per-key, so the isolation the per-key directory was for survives. If none can be
+            # had safely the pin stays as it was, which is the old behaviour.
+            isolated = _parseable_cache_fallback("TORCHINDUCTOR_CACHE_DIR", inductor_dir)
+            if isolated is None:
+                _warn(
+                    logger,
+                    f"compile-cache: leaving TORCHINDUCTOR_CACHE_DIR as it is: {inductor_dir} "
+                    "holds a character the C++ builders cannot paste into a command line "
+                    "unquoted, and no safe replacement is available",
+                )
+            else:
+                ctx.prev_inductor_dir = os.environ.get("TORCHINDUCTOR_CACHE_DIR")
+                ctx.prev_inductor_dir_set = True
+                os.environ["TORCHINDUCTOR_CACHE_DIR"] = isolated
         else:
             ctx.prev_inductor_dir = os.environ.get("TORCHINDUCTOR_CACHE_DIR")
             ctx.prev_inductor_dir_set = True

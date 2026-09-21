@@ -528,6 +528,39 @@ def test_a_sticky_parent_owned_by_somebody_else_is_still_refused(monkeypatch, tm
     assert sr._holding_dir_is_safe(shared) is True
 
 
+def test_the_windows_holding_rule_accepts_only_the_per_account_temp_root(monkeypatch, tmp_path):
+    """os.stat reports no ownership on Windows and the 0o700 handed to os.mkdir buys nothing
+    there, so a redirected %TEMP% on a shared directory cannot be told from a private one
+    without reading ACLs. The default root under %LOCALAPPDATA%\\Temp already is per-account,
+    so that is the one accepted and a redirected root gets no fallback rather than an unverified
+    one. The predicate itself is platform independent, so it is exercised here rather than only
+    on a Windows runner."""
+    local = tmp_path / "AppData" / "Local"
+    default_temp = local / "Temp"
+    default_temp.mkdir(parents = True)
+    shared = tmp_path / "shared-temp"
+    shared.mkdir()
+    monkeypatch.setenv("LOCALAPPDATA", str(local))
+    sr = _load_storage_roots()
+
+    assert sr._windows_temp_root_is_private(default_temp) is True
+    assert sr._windows_temp_root_is_private(shared) is False
+
+    monkeypatch.delenv("LOCALAPPDATA", raising = False)
+    assert sr._windows_temp_root_is_private(default_temp) is False
+
+    # And it is actually WIRED IN. Exercising the predicate alone left the call site untested:
+    # reverting the Windows branch to an unconditional True kept every assertion above green.
+    # Asserted on the source rather than by behaviour, because forcing os.name to "nt" makes
+    # pathlib instantiate a WindowsPath and raise before the branch is ever reached. A source
+    # check is weaker than a run, and it does fail when the call is removed, which is the one
+    # thing this is guarding.
+    import inspect
+
+    windows_branch = inspect.getsource(sr._holding_dir_is_safe).split('if os.name == "nt":')[1]
+    assert "_windows_temp_root_is_private(parent)" in windows_branch.strip().splitlines()[0]
+
+
 @pytest.mark.skipif(os.name == "nt", reason = "the identity is the euid on POSIX")
 def test_two_accounts_under_one_temp_root_do_not_collide(monkeypatch, tmp_path):
     """Keyed on the intended path alone, two OS accounts sharing one install derived the same
