@@ -175,7 +175,9 @@ def test_local_prequant_path_ready(tmp_path, monkeypatch):
 def restricted_load_available(monkeypatch):
     """Whether this install could open a checkpoint depends on the host's torchao. The resolution
     tests below are not about that, so pin it on."""
-    monkeypatch.setattr(pq, "restricted_prequant_load_supported", lambda scheme = None, filename = None: True)
+    monkeypatch.setattr(
+        pq, "restricted_prequant_load_supported", lambda scheme = None, filename = None: True
+    )
 
 
 def test_usable_source_missing_path_is_none(tmp_path, monkeypatch, restricted_load_available):
@@ -926,9 +928,13 @@ def test_an_install_that_cannot_restrict_the_load_offers_no_prequant_source(monk
     import os
 
     fam = _fam(prequant_repos = (("int8", "org/hosted-int8"),))
-    monkeypatch.setattr(pq, "restricted_prequant_load_supported", lambda scheme = None, filename = None: True)
+    monkeypatch.setattr(
+        pq, "restricted_prequant_load_supported", lambda scheme = None, filename = None: True
+    )
     assert pq.usable_prequant_source(fam, "int8") is not None
-    monkeypatch.setattr(pq, "restricted_prequant_load_supported", lambda scheme = None, filename = None: False)
+    monkeypatch.setattr(
+        pq, "restricted_prequant_load_supported", lambda scheme = None, filename = None: False
+    )
     # Hosted and local alike: the loader refuses both, so neither is usable.
     assert pq.usable_prequant_source(fam, "int8") is None
     ckpt = tmp_path / "model.pt"

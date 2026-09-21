@@ -106,7 +106,7 @@ def main(argv = None) -> int:
         "--out",
         required = True,
         help = "output path; a .safetensors extension writes the safetensors container, anything "
-               "else writes the torch.save one",
+        "else writes the torch.save one",
     )
     p.add_argument("--min-features", type = int, default = 512)
     p.add_argument("--dtype", default = "bfloat16", choices = ["bfloat16"])
@@ -169,7 +169,6 @@ def main(argv = None) -> int:
     is_safetensors_out = str(args.out).lower().endswith(".safetensors")
     if is_safetensors_out:
         from core.inference.prequant_safetensors import safetensors_prequant_supported
-
         if not safetensors_prequant_supported():
             print(
                 "error: --out names a .safetensors checkpoint but this install cannot write one "
@@ -277,7 +276,6 @@ def main(argv = None) -> int:
     out.parent.mkdir(parents = True, exist_ok = True)
     if is_safetensors_out:
         from core.inference.prequant_safetensors import save_prequant_safetensors
-
         save_prequant_safetensors(
             str(out),
             fmt = ckpt["format"],

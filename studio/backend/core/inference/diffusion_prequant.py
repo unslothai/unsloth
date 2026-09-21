@@ -239,8 +239,7 @@ def _register_prequant_safe_globals() -> bool:
 
 
 def restricted_prequant_load_supported(
-    scheme: Optional[str] = None,
-    filename: Optional[str] = None,
+    scheme: Optional[str] = None, filename: Optional[str] = None
 ) -> bool:
     """Whether this install can read a pre-quant checkpoint, for ``scheme`` when one is named.
 
@@ -535,7 +534,11 @@ def usable_prequant_source(
     candidates = (
         [src.location]
         if getattr(src, "kind", None) == "path"
-        else [n for n in (getattr(src, "filename", None), getattr(src, "fallback_filename", None)) if n]
+        else [
+            n
+            for n in (getattr(src, "filename", None), getattr(src, "fallback_filename", None))
+            if n
+        ]
     ) or [None]
     if not any(restricted_prequant_load_supported(scheme, name) for name in candidates):
         return None

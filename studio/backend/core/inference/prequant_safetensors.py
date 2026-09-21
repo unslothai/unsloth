@@ -88,7 +88,6 @@ def _torchao_helpers() -> Optional[tuple]:
 def _torchao_version() -> Optional[str]:
     try:
         import torchao
-
         return getattr(torchao, "__version__", None)
     except Exception:  # noqa: BLE001
         return None
@@ -133,13 +132,7 @@ def unsupported_state_dict_keys(state_dict: Any) -> list:
     return [k for k in keys if "." not in str(k)]
 
 
-def save_prequant_safetensors(
-    path: str,
-    *,
-    fmt: str,
-    state_dict: Any,
-    metadata: Any,
-) -> None:
+def save_prequant_safetensors(path: str, *, fmt: str, state_dict: Any, metadata: Any) -> None:
     """Write ``state_dict`` (quantized, tensor subclasses and plain tensors alike) to ``path``.
 
     ``fmt`` and ``metadata`` land in the header beside torchao's own description of every tensor.
@@ -204,7 +197,6 @@ def read_prequant_header(path: str) -> Optional[dict]:
     """
     try:
         from safetensors import safe_open
-
         with safe_open(path, framework = "pt") as handle:
             raw = handle.metadata() or {}
     except Exception:  # noqa: BLE001 - unreadable or not safetensors at all
