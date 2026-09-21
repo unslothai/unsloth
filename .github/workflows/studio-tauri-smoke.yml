@@ -25,15 +25,44 @@ on:
       # `unsloth studio` -- include unsloth_cli in the trigger set.
       - 'unsloth_cli/**'
       - '.github/workflows/studio-tauri-smoke.yml'
+      - '.github/scripts/retry-with-apt-lock.sh'
+      # The Linux job installs and runs the Tauri CLI out of the studio/ package
+      # root (`npm install --prefix studio`, `npx --prefix studio`), so these
+      # manifests decide what it builds with.
+      - 'studio/package.json'
+      - 'studio/package-lock.json'
+      # Run as a step of the Linux job.
+      - 'scripts/lockfile_supply_chain_audit.py'
   push:
     branches: [main]
+    # Same list as the PR filter. Without it this workflow ran on EVERY commit to
+    # main: a README-only commit fired all four unfiltered macOS workflows, seven
+    # macOS legs, against an account-wide cap of five concurrent macOS jobs. The
+    # post-merge backstop is unchanged, because a commit that cannot touch what
+    # this workflow tests has nothing here to back up.
+    # clean-machine-install-ci.yml and mlx-ci.yml already do exactly this.
+    paths:
+      - 'studio/frontend/**'
+      - 'studio/src-tauri/**'
+      # CLI rename / signature change can break Tauri's spawned
+      # `unsloth studio` -- include unsloth_cli in the trigger set.
+      - 'unsloth_cli/**'
+      - '.github/workflows/studio-tauri-smoke.yml'
+      - '.github/scripts/retry-with-apt-lock.sh'
+      # The Linux job installs and runs the Tauri CLI out of the studio/ package
+      # root (`npm install --prefix studio`, `npx --prefix studio`), so these
+      # manifests decide what it builds with.
+      - 'studio/package.json'
+      - 'studio/package-lock.json'
+      # Run as a step of the Linux job.
+      - 'scripts/lockfile_supply_chain_audit.py'
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  # Latest-only on branches, never on main. Pushes to main land in bursts, so
-  # cancelling superseded runs there throws away the run that would have
-  # reported a regression, and the run that writes the shared caches. Same
-  # reasoning, and the same incident, as studio-ui-smoke.yml.
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.ref == 'refs/heads/main' && github.sha || '' }}
+  # Latest-only on a PR branch. On main this does less than it reads like: it stops
+  # a RUNNING main job being killed, but GitHub cancels any PENDING run in the group
+  # the moment a newer one is queued, so a merge burst still leaves only the tip.
+  # See studio-backend-ci.yml, which is grouped per commit on main for that reason.
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 permissions:
@@ -50,11 +79,22 @@ jobs:
           persist-credentials: false
 
       - name: Linux native deps for Tauri / WebKit2GTK
+        # Bounded and retried through the shared helper: an unbounded apt step does
+        # not fail, it spends the job's whole budget and is reported as "cancelled"
+        # with no reason and every later step skipped. update and install go as one
+        # unit, since retrying the install after a stalled update re-reads the same
+        # broken package list.
+        # Two long attempts, not three short ones. 150s killed apt mid-`update`
+        # against a mirror that was degraded rather than dead, and every attempt
+        # then hit the same wall -- three kills and no result. The bound exists to
+        # stop an infinite hang, not to race a slow mirror.
+        timeout-minutes: 15
+        env:
+          RETRY_ATTEMPTS: '2'
+          RETRY_ATTEMPT_TIMEOUT: '360'
         run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            libwebkit2gtk-4.1-dev libappindicator3-dev \
-            librsvg2-dev libxdo-dev libssl-dev patchelf xvfb
+          bash .github/scripts/retry-with-apt-lock.sh sudo sh -c \
+            'apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev libxdo-dev libssl-dev patchelf xvfb || { apt-get update && apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev libxdo-dev libssl-dev patchelf xvfb; }'
 
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
         with:
@@ -62,22 +102,29 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8  # stable @ 2026-03-27
 
-      - uses: swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4  # v2.9.1
+      - uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
         with:
           # Save only on main. This action defaults to saving on every ref, and
           # a PR-scoped rust cache (550-840MB here) can only be restored by
-          # re-runs of that same PR while still counting against the 10GB
+          # re-runs of that same PR while still counting against the 50 GiB
           # per-repo budget, evicting main's copy that every PR can restore.
           save-if: ${{ github.ref == 'refs/heads/main' }}
           workspaces: studio/src-tauri -> target
 
+      - name: Lockfile supply-chain audit (pre-install scan)
+        # Must run BEFORE any `npm install` (including the Tauri CLI
+        # install below). Lifecycle scripts in a compromised lockfile
+        # would otherwise execute inside this runner before the audit
+        # gets a chance to refuse the lockfile.
+        run: python3 scripts/lockfile_supply_chain_audit.py
+
       - name: Install pinned Tauri CLI (matches release-desktop.yml)
         # Lifecycle scripts (esbuild native-binary postinstall, etc.) are
         # required for `vite build`. The pre-install lockfile structural
-        # audit (lockfile_supply_chain_audit.py) is the practical defence
-        # against the npm postinstall-dropper class -- it fires BEFORE any
-        # tarball runs, on the injection pattern itself rather than an
-        # advisory-DB lookup.
+        # audit (lockfile_supply_chain_audit.py) above is the practical
+        # defence against the npm postinstall-dropper class -- it fires
+        # BEFORE any tarball runs, on the injection pattern itself
+        # rather than an advisory-DB lookup.
         run: npm install --save-dev --prefix studio @tauri-apps/cli@2.10.1 --no-fund --no-audit
 
       - name: Verify pinned Tauri CLI version
@@ -85,9 +132,6 @@ jobs:
           out="$(npx --prefix studio tauri --version)"
           echo "$out"
           [ "$out" = "tauri-cli 2.10.1" ] || { echo "::error::expected tauri-cli 2.10.1, got $out"; exit 1; }
-
-      - name: Lockfile supply-chain audit (pre-install scan)
-        run: python3 scripts/lockfile_supply_chain_audit.py
 
       - name: Frontend build (npm ci, vite)
         working-directory: studio/frontend
@@ -289,11 +333,11 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8  # stable @ 2026-03-27
 
-      - uses: swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4  # v2.9.1
+      - uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
         with:
           # Save only on main. This action defaults to saving on every ref, and
           # a PR-scoped rust cache (550-840MB here) can only be restored by
-          # re-runs of that same PR while still counting against the 10GB
+          # re-runs of that same PR while still counting against the 50 GiB
           # per-repo budget, evicting main's copy that every PR can restore.
           save-if: ${{ github.ref == 'refs/heads/main' }}
           workspaces: studio/src-tauri -> target
@@ -328,10 +372,34 @@ jobs:
 
   macos-unit-tests:
     name: Rust unit tests (macos)
-    # Not macos-14: it browns out from 2026-10-05 and is removed 2026-11-02,
-    # which the other macOS workflows here have already moved off. Both are
-    # Apple Silicon, so this job keeps testing the arm64 paths.
-    runs-on: macos-15
+    # macos-26, not macos-15, on a measurement rather than a preference. Both are
+    # free Apple Silicon standard runners, so this is the same class of machine.
+    #
+    # studio-mac-install-matrix runs both images from ONE matrix, so their queues
+    # can be compared on identical commits and identical triggers. Over 163 jobs
+    # per leg:
+    #
+    #                   exec med   exec p90   queue p90
+    #     macos-15          160s       713s      20667s
+    #     macos-26          176s       597s       3866s
+    #
+    # The medians say the two are the same machine. The queue p90 says they are
+    # not the same pool: macos-15 is 5.3x worse in the tail, five and a half hours
+    # against one. That tail is what sets this repo's wall clock -- the census
+    # behind it found every commit's last finisher to be this job, minutes of work
+    # behind hours of waiting -- and the median hides it completely, because the
+    # median wait on both images is zero.
+    #
+    # The likely cause is the macos-14 retirement (brownouts 2026-10-05, removal
+    # 2026-11-02): everything migrated onto macos-15, including this job, and
+    # macos-26 was left comparatively empty. That also means this is a fact about
+    # today's pool and not a property of the image, so it is worth re-measuring
+    # rather than assuming. The comparison above is one query against the install
+    # matrix and can be re-run whenever the queue looks wrong again.
+    #
+    # Not macos-14 for the retirement above; all three are Apple Silicon, so the
+    # arm64 paths are still what gets tested.
+    runs-on: macos-26
     # A cold cache compiles both the debug and the release dependency tree.
     timeout-minutes: 45
     steps:
@@ -345,11 +413,11 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8  # stable @ 2026-03-27
 
-      - uses: swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4  # v2.9.1
+      - uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
         with:
           # Save only on main. This action defaults to saving on every ref, and
           # a PR-scoped rust cache (550-840MB here) can only be restored by
-          # re-runs of that same PR while still counting against the 10GB
+          # re-runs of that same PR while still counting against the 50 GiB
           # per-repo budget, evicting main's copy that every PR can restore.
           save-if: ${{ github.ref == 'refs/heads/main' }}
           workspaces: studio/src-tauri -> target

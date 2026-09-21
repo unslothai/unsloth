@@ -6,13 +6,15 @@
 
 import { getApiMonitor } from "@/features/chat/api/chat-api";
 import type { ApiMonitorEntry } from "@/features/chat/types/api";
+import { FIND_PORTAL_ATTRIBUTE } from "@/features/find-in-page/lib/find-attributes";
+import { useShortcut } from "@/features/settings";
 import {
   useFloatingPanelOrderStore,
   useFloatingPanelZIndex,
 } from "@/lib/floating-panel-order";
 import { cn } from "@/lib/utils";
 import {
-  ArrowExpand01Icon,
+  ExpandIcon,
   DragDropVerticalIcon,
   Globe02Icon,
 } from "@hugeicons/core-free-icons";
@@ -127,6 +129,18 @@ export function ApiMonitorOverlay(): ReactElement | null {
     ReturnType<typeof getApiMonitor>
   > | null>(null);
 
+  // The chord lives with the panel: reaching this store from the shell would
+  // pull the whole feature index into the root chunk. The full page has
+  // nothing to toggle, being the panel's contents already.
+  useShortcut(
+    "toggleApiMonitor",
+    () => {
+      if (isOpen) close();
+      else open();
+    },
+    { enabled: !onFullPage },
+  );
+
   // What this session has already shown, and when it started watching.
   const watchRef = useRef<ApiMonitorWatch>(createWatch(0));
   const lastNewEntryAtRef = useRef(0);
@@ -231,19 +245,17 @@ export function ApiMonitorOverlay(): ReactElement | null {
   // that it stays where it was put, even if that is on top of the monitor.
   const [panelElement, setPanelElement] = useState<HTMLDivElement | null>(null);
   const [placedByUser, setPlacedByUser] = useState(false);
-  // Bumped when the panel has moved without its anchor changing: the entry
-  // animation is a transform, and the box the stack keeps clear of has to be
-  // the one on screen.
+  // Bumped when the panel has moved without its anchor changing: the entry animation is a
+  // transform, and the box the stack keeps clear of has to be the one on screen.
   const [settledAt, setSettledAt] = useState(0);
   const { anchor, covered, place } = usePanelAnchor(
     panelElement,
     placedByUser,
     settledAt,
   );
-  // The drag offset, owned here rather than left to motion, so it can be folded
-  // back into the anchor on release. Left as a transform it would be applied on
-  // top of every later clamp, and the published box would stay at the corner
-  // the panel was dragged away from.
+  // The drag offset, owned here rather than left to motion, so it can be folded back into the
+  // anchor on release. Left as a transform it would be applied on top of every later clamp, and the
+  // published box would stay at the corner the panel was dragged away from.
   const dragX = useMotionValue(0);
   const dragY = useMotionValue(0);
 
@@ -278,10 +290,9 @@ export function ApiMonitorOverlay(): ReactElement | null {
   const visible = isOpen && !onFullPage;
   const serverStatus = data?.status ?? "idle";
 
-  // A panel that has just opened is the one the user is being shown, so it
-  // comes to the front. Touching either panel afterwards brings that one
-  // forward instead, which is the only way out of a resource monitor resized
-  // over the whole viewport.
+  // A panel that has just opened is the one the user is being shown, so it comes to the front.
+  // Touching either panel afterwards brings that one forward instead, which is the only way out of
+  // a resource monitor resized over the whole viewport.
   useEffect(() => {
     if (visible) {
       raisePanel("api-monitor");
@@ -297,6 +308,7 @@ export function ApiMonitorOverlay(): ReactElement | null {
           style={{ zIndex }}
         >
           <motion.div
+            {...{ [FIND_PORTAL_ATTRIBUTE]: "" }}
             ref={setPanelElement}
             onPointerDownCapture={() => raisePanel("api-monitor")}
             drag={true}
@@ -447,7 +459,7 @@ export function ApiMonitorOverlay(): ReactElement | null {
               className="mt-1 flex h-[33px] w-full items-center justify-center gap-[8.5px] rounded-full bg-muted/60 text-ui-13p5 font-medium tracking-nav text-nav-fg transition-colors hover:bg-nav-surface-hover focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring dark:bg-background/50"
             >
               <HugeiconsIcon
-                icon={ArrowExpand01Icon}
+                icon={ExpandIcon}
                 strokeWidth={1.75}
                 className="size-icon shrink-0"
               />

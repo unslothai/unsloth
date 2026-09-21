@@ -56,6 +56,9 @@ export interface DownloadStartResult {
   state: DownloadStartState;
   accepted: boolean;
   generation?: number;
+  // True when the start attached to a job another client had already begun,
+  // rather than starting one. Accepted either way.
+  attached?: boolean;
   // Present only when the start adopted a job another client had already
   // begun: the transport it is really running on.
   transport?: TransportMode | null;
@@ -164,7 +167,6 @@ import type { DownloadTransportCapabilities } from "./transport-capabilities";
 const DOWNLOAD_TRANSPORT_CAPABILITIES_TTL_MS = 30_000;
 let downloadTransportCapabilitiesCache: {
   expiresAt: number;
-  probed: boolean;
   capabilities: DownloadTransportCapabilities;
 } | null = null;
 let downloadTransportCapabilitiesInFlight: Promise<DownloadTransportCapabilities> | null =
@@ -177,11 +179,15 @@ export async function getDownloadTransportCapabilities(options: {
   probe?: boolean;
 } = {}): Promise<DownloadTransportCapabilities> {
   const cached = downloadTransportCapabilitiesCache;
-  // A cheap cached answer cannot satisfy a probe request, but a probed one satisfies everybody.
+  // No cached answer satisfies a probe, not even an earlier probe's. This request IS the Auto
+  // admission decision for one download, and the backend's verdict subtracts the RAM already
+  // promised to Xet workers that started since (free_ram_pressure_reason -> the reservation
+  // ledger). Replaying the previous answer admits every download started inside the TTL on the
+  // same pre-reservation verdict, and each one is then submitted as an explicit
+  // transport_mode="xet" that the start path honours without re-reading free RAM. A probed answer
+  // still satisfies the render polls below; only the probe itself has to be live.
   const cacheUsable =
-    cached !== null &&
-    cached.expiresAt > Date.now() &&
-    (!options.probe || cached.probed);
+    cached !== null && cached.expiresAt > Date.now() && !options.probe;
   if (!options.force && cacheUsable) {
     return cached.capabilities;
   }
@@ -196,7 +202,6 @@ export async function getDownloadTransportCapabilities(options: {
     .then((capabilities) => {
       downloadTransportCapabilitiesCache = {
         expiresAt: Date.now() + DOWNLOAD_TRANSPORT_CAPABILITIES_TTL_MS,
-        probed: options.probe === true,
         capabilities,
       };
       return capabilities;

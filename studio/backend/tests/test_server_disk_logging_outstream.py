@@ -200,7 +200,7 @@ class TestTeeStreamClose:
 class TestColabStartupRegression:
     """End-to-end: the exact trigger -- an absl-style handler closing the
     orphaned OutStream during the ``logging.shutdown`` that uvicorn's
-    ``uvicorn.Config`` -> ``dictConfig`` runs -- must not crash Studio, and the
+    ``uvicorn.Config`` -> ``dictConfig`` runs -- must not crash Unsloth, and the
     tee must keep logging afterwards.
 
     ``logging.shutdown`` is driven over a LOCAL weakref list (identical code path

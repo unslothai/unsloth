@@ -3,6 +3,7 @@
 
 import { authFetch } from "@/features/auth";
 import { readFastApiError } from "@/lib/format-fastapi-error";
+import { openStreamResponse } from "@/lib/open-stream-response";
 import { createScopedSingleFlightRequest } from "@/lib/single-flight-request";
 import {
   type ParsedTrainingProgressEvent,
@@ -363,13 +364,10 @@ export async function streamTrainingProgress(options: {
   }
 
   const expectedJobId = encodeURIComponent(options.expectedJobId);
-  const response = await authFetch(
+  const response = await openStreamResponse(
+    authFetch,
     `/api/train/progress?expected_job_id=${expectedJobId}`,
-    {
-      method: "GET",
-      headers,
-      signal: options.signal,
-    },
+    { headers, signal: options.signal },
     { retryNetworkErrors: false },
   );
 

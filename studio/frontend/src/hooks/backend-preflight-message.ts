@@ -11,6 +11,12 @@ export const WORKING_DIRECTORY_UNAVAILABLE = "working_directory_unavailable";
 /// Mirrors PATH_SETTING_UNRESOLVABLE in studio/src-tauri/src/preflight/managed.rs.
 export const PATH_SETTING_UNRESOLVABLE = "path_setting_unresolvable";
 
+/// Mirrors MANAGED_ENVIRONMENT_BUSY in studio/src-tauri/src/preflight/managed.rs.
+export const MANAGED_ENVIRONMENT_BUSY = "managed_environment_busy";
+
+/// Mirrors MANAGED_ENVIRONMENT_UPDATING in studio/src-tauri/src/preflight/managed.rs.
+export const MANAGED_ENVIRONMENT_UPDATING = "managed_environment_updating";
+
 export function preflightStaleMessage(
   disposition: string,
   reason: string | null,
@@ -18,10 +24,9 @@ export function preflightStaleMessage(
   // The backend appends the setting it could not preserve, as `reason:NAME`, so
   // the discriminator is the part before the colon and the name is the rest.
   const [kind, setting] = (reason ?? "").split(":", 2);
-  // Not an install problem: the home folder itself is unreachable, and updating
-  // needs the same folder. The roaming-profile cause is a Windows one, but this
-  // reason reaches every platform (`home_dir_available()` is probed ungated), so
-  // it is offered rather than asserted.
+  // Not an install problem: the home folder itself is unreachable, and updating needs the same
+  // folder. The roaming-profile cause is a Windows one, but this reason reaches every platform
+  // (`home_dir_available()` is probed ungated), so it is offered rather than asserted.
   if (kind === WORKING_DIRECTORY_UNAVAILABLE) {
     const cause =
       typeof navigator !== "undefined" && /Win/i.test(navigator.platform ?? "")

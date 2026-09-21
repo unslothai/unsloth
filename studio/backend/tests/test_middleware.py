@@ -39,6 +39,7 @@ def _make_protected_app(
     upload_passthrough_prefixes: tuple = (),
     upload_passthrough_max_bytes_getter = None,
     upload_passthrough_exact_paths: tuple = (),
+    chunked_upload_exact_paths: tuple = (),
 ):
     app = FastAPI()
     app.add_middleware(
@@ -54,6 +55,7 @@ def _make_protected_app(
         upload_passthrough_prefixes = upload_passthrough_prefixes,
         upload_passthrough_max_bytes_getter = upload_passthrough_max_bytes_getter,
         upload_passthrough_exact_paths = upload_passthrough_exact_paths,
+        chunked_upload_exact_paths = chunked_upload_exact_paths,
     )
 
     @app.post("/v1/chat/completions")
@@ -159,6 +161,26 @@ class TestMaxBodyMiddleware:
             assert main_module._get_upload_passthrough_request_max_bytes(path + "/") == (
                 upload_request_limit_bytes(STT_AUDIO_RAW_MAX_BYTES)
             ), path
+        from utils.upload_limits import (
+            VIDEO_INPUT_REFERENCE_JSON_MAX_BYTES,
+            VIDEO_INPUT_REFERENCE_MAX_BYTES,
+        )
+
+        for path in ("/v1/videos", "/api/inference/videos"):
+            expected = max(
+                upload_request_limit_bytes(VIDEO_INPUT_REFERENCE_MAX_BYTES),
+                VIDEO_INPUT_REFERENCE_JSON_MAX_BYTES,
+            )
+            assert main_module._get_request_body_max_bytes(path) == expected, path
+            assert path in main_module._BODY_UPLOAD_PASSTHROUGH_EXACT_PATHS, path
+            assert main_module._get_upload_passthrough_request_max_bytes(path) == expected, path
+            assert VIDEO_INPUT_REFERENCE_JSON_MAX_BYTES > (
+                4 * ((VIDEO_INPUT_REFERENCE_MAX_BYTES + 2) // 3)
+            )
+        assert "/v1/videos/video_abc" not in main_module._BODY_UPLOAD_PASSTHROUGH_EXACT_PATHS
+        assert main_module._get_request_body_max_bytes("/v1/videos/video_abc") == (
+            main_module.default_request_body_limit_bytes()
+        )
 
     def test_settings_put_body_over_cap_rejected(self, main_module):
         app = _make_protected_app(1024, main_module)
@@ -310,7 +332,7 @@ class TestMaxBodyMiddleware:
 
     def test_v1_surface_is_body_protected(self, main_module):
         # /images/generations is mounted at both /api/inference and /v1, and every /v1 POST must be body-capped via the blanket
-        # prefix or an unbounded prompt buffers outside the Studio request limit. Also confirms /v1 chat/completions stays protected.
+        # prefix or an unbounded prompt buffers outside the Unsloth request limit. Also confirms /v1 chat/completions stays protected.
         for path in (
             "/v1/images/generations",
             "/v1/audio/generate",
@@ -359,6 +381,64 @@ class TestMaxBodyMiddleware:
         )
         assert r.status_code == 411
         assert "Content-Length" in r.json()["detail"]
+
+    def test_exact_path_passthrough_without_content_length_is_capped_not_refused(self, main_module):
+        app = _make_protected_app(
+            128,
+            main_module,
+            upload_passthrough_exact_paths = ("/api/train/upload",),
+            chunked_upload_exact_paths = ("/api/train/upload",),
+            upload_passthrough_max_bytes_getter = lambda path: 1024,
+        )
+        c = TestClient(app)
+
+        def small():
+            yield b"x" * 256
+            yield b"y" * 256
+
+        r = c.post(
+            "/api/train/upload",
+            content = small(),
+            headers = {"content-type": "application/octet-stream"},
+        )
+        assert r.status_code == 200
+
+        def large():
+            yield b"x" * 1024
+            yield b"y" * 1024
+
+        r = c.post(
+            "/api/train/upload",
+            content = large(),
+            headers = {"content-type": "application/octet-stream"},
+        )
+        assert r.status_code == 413
+
+    def test_a_passthrough_outside_the_chunked_set_still_demands_a_length(self, main_module):
+        """Counting a body means holding it, and this runs before authentication.
+
+        Only paths explicitly opted in may omit Content-Length; the big ones (the
+        dataset cap reaches 8 GB) keep their 411 so an unauthenticated chunked POST
+        cannot make the server retain the whole allowance.
+        """
+        app = _make_protected_app(
+            128,
+            main_module,
+            upload_passthrough_exact_paths = ("/api/train/upload",),
+            chunked_upload_exact_paths = (),
+            upload_passthrough_max_bytes_getter = lambda path: 1024,
+        )
+        c = TestClient(app)
+
+        def body():
+            yield b"x" * 256
+
+        r = c.post(
+            "/api/train/upload",
+            content = body(),
+            headers = {"content-type": "application/octet-stream"},
+        )
+        assert r.status_code == 411
 
     def test_exact_path_passthrough_does_not_cover_subroutes(self, main_module):
         # The exact-path passthrough lifts the cap for the upload path itself, but a sibling sub-path under the same prefix stays capped.
@@ -450,6 +530,33 @@ class TestSecurityHeadersMiddleware:
         assert "microphone=(self)" in permissions_policy
         assert "geolocation=()" in permissions_policy
         assert r.headers["server"] == "unsloth-studio"
+
+    def test_mirror_endpoints_in_connect_src(self, main_module, monkeypatch):
+        # A mirror must reach connect-src or the browser blocks the Hub calls.
+        monkeypatch.setenv("HF_ENDPOINT", "https://hf-mirror.com")
+        monkeypatch.setenv("HF_DATASETS_SERVER", "https://ds.example.com")
+        app = _make_csp_app(main_module)
+        r = TestClient(app).get("/plain")
+        csp = r.headers["content-security-policy"]
+        directives = {
+            chunk.strip().split(" ", 1)[0]: chunk.strip()
+            for chunk in csp.split(";")
+            if chunk.strip()
+        }
+        assert "https://hf-mirror.com" in directives["connect-src"]
+        assert "https://ds.example.com" in directives["connect-src"]
+
+    def test_connect_src_unchanged_without_mirror(self, main_module, monkeypatch):
+        monkeypatch.delenv("HF_ENDPOINT", raising = False)
+        monkeypatch.delenv("HF_DATASETS_SERVER", raising = False)
+        app = _make_csp_app(main_module)
+        r = TestClient(app).get("/plain")
+        csp = r.headers["content-security-policy"]
+        assert "hf-mirror.com" not in csp
+        assert (
+            "connect-src 'self' https://huggingface.co "
+            "https://datasets-server.huggingface.co;" in csp
+        )
 
     def test_internal_nonce_header_is_spliced_into_csp_and_stripped(self, main_module):
         nonce = "test-nonce-abc"
@@ -569,7 +676,7 @@ class TestSecurityHeadersMiddleware:
         assert 'spec-url="/studio/openapi.json"' in redoc
         assert "/studio/docs-assets/redoc.standalone.js" in redoc
 
-        # Unprefixed deployments, which is every default Studio, stay unprefixed.
+        # Unprefixed deployments, which is every default Unsloth, stay unprefixed.
         plain = TestClient(main_module.app).get("/docs").text
         assert "/studio/" not in plain
         assert "'/openapi.json'" in plain
@@ -808,7 +915,7 @@ class TestResearchPortMiddleware:
         seen = {}
 
         class Supervisor:
-            def note_server_port(self, server):
+            def note_server_address(self, server):
                 seen["server"] = server
 
         async def inner_app(scope, receive, send):
@@ -841,6 +948,18 @@ class TestResearchPortMiddleware:
 
 
 class TestFrontendAssets:
+    def test_setup_frontend_records_whether_a_catch_all_exists(self, tmp_path, main_module):
+        """The lifespan reads this to decide whether the engine paths still need their own
+        GET denial: without a catch-all they match on method alone and answer 405."""
+        app = FastAPI()
+        assert not main_module.setup_frontend(app, tmp_path / "missing")
+        assert not getattr(app.state, "frontend_mounted", False)
+
+        (tmp_path / "index.html").write_text("<!doctype html><title>x</title>")
+        mounted = FastAPI()
+        assert main_module.setup_frontend(mounted, tmp_path)
+        assert mounted.state.frontend_mounted is True
+
     def test_desktop_frontend_is_available_only_through_live_tunnel(self, tmp_path, main_module):
         (tmp_path / "index.html").write_text("<!doctype html><title>remote</title>")
         assets = tmp_path / "assets"
@@ -1020,3 +1139,232 @@ class TestHealthAuthGate:
         assert body["status"] == "healthy"
         for field in self.LAUNCHER_BITS + self.FINGERPRINT_FIELDS:
             assert field in body, f"missing: {field}"
+
+
+# Captured from origin/main (pre-PR), both vars unset, nonce fixed. The feature must
+# be invisible to a default deployment, which a substring assertion cannot show.
+_MAIN_CSP_DEFAULT = (
+    "default-src 'self'; img-src 'self' data: blob: https:; "
+    "media-src 'self' data: blob: https:; "
+    "connect-src 'self' https://huggingface.co https://datasets-server.huggingface.co; "
+    "style-src 'self' 'unsafe-inline'; script-src 'self' 'nonce-NONCE'; "
+    "worker-src 'self'; font-src 'self' data:; frame-src 'self'; "
+    "frame-ancestors 'none'; form-action 'self'; base-uri 'self'"
+)
+_MAIN_CSP_DOCS = (
+    "default-src 'self'; img-src 'self' data: blob: https:; "
+    "media-src 'self' data: blob: https:; "
+    "connect-src 'self' https://huggingface.co https://datasets-server.huggingface.co; "
+    "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
+    "script-src 'self' 'nonce-NONCE'; worker-src 'self' blob:; "
+    "font-src 'self' data: https://fonts.gstatic.com; frame-src 'self'; "
+    "frame-ancestors 'none'; form-action 'self'; base-uri 'self'"
+)
+_MAIN_CSP_COLAB = (
+    "default-src 'self'; img-src 'self' data: blob: https:; "
+    "media-src 'self' data: blob: https:; "
+    "connect-src 'self' blob: data: https://huggingface.co "
+    "https://datasets-server.huggingface.co https://*.prod.colab.dev "
+    "wss://*.prod.colab.dev https://*.googleusercontent.com "
+    "wss://*.googleusercontent.com; style-src 'self' 'unsafe-inline'; "
+    "script-src 'self' 'nonce-NONCE' https://*.prod.colab.dev "
+    "https://*.googleusercontent.com; worker-src 'self'; font-src 'self' data:; "
+    "frame-src 'self'; frame-ancestors *; form-action 'self'; base-uri 'self'"
+)
+
+
+def _connect_src(policy: str) -> list[str]:
+    """Exact source tokens of connect-src. Substring checks pass on a prefix."""
+    for chunk in policy.split(";"):
+        tokens = chunk.strip().split()
+        if tokens and tokens[0] == "connect-src":
+            return tokens[1:]
+    raise AssertionError(f"no connect-src in {policy!r}")
+
+
+class TestCspHfEndpoints:
+    @pytest.fixture(autouse = True)
+    def _clean_env(self, monkeypatch):
+        monkeypatch.delenv("HF_ENDPOINT", raising = False)
+        monkeypatch.delenv("HF_DATASETS_SERVER", raising = False)
+        import utils.hf_endpoint as _mod
+
+        monkeypatch.setattr(_mod, "_ds_mirror_warned", False)
+        monkeypatch.setattr(_mod, "_rejected_warned", set())
+        yield
+
+    @pytest.mark.parametrize(
+        "kwargs, expected",
+        [
+            ({}, _MAIN_CSP_DEFAULT),
+            ({"docs": True}, _MAIN_CSP_DOCS),
+        ],
+    )
+    def test_unmirrored_policy_is_byte_identical_to_pre_pr(self, main_module, kwargs, expected):
+        assert main_module._build_csp("NONCE", **kwargs) == expected
+
+    def test_unmirrored_colab_policy_is_byte_identical_to_pre_pr(self, main_module, monkeypatch):
+        monkeypatch.setattr(main_module, "_IS_COLAB", True)
+        assert main_module._build_csp("NONCE") == _MAIN_CSP_COLAB
+
+    @pytest.mark.parametrize("blank", ["", "   ", "\t"])
+    def test_blank_env_vars_leave_the_policy_identical(self, main_module, monkeypatch, blank):
+        monkeypatch.setenv("HF_ENDPOINT", blank)
+        monkeypatch.setenv("HF_DATASETS_SERVER", blank)
+        assert main_module._build_csp("NONCE") == _MAIN_CSP_DEFAULT
+
+    def test_endpoints_set_to_the_official_hosts_do_not_duplicate_sources(
+        self, main_module, monkeypatch
+    ):
+        monkeypatch.setenv("HF_ENDPOINT", "https://huggingface.co")
+        monkeypatch.setenv("HF_DATASETS_SERVER", "https://datasets-server.huggingface.co")
+        assert main_module._build_csp("NONCE") == _MAIN_CSP_DEFAULT
+
+    def test_a_mirror_adds_exactly_its_two_origins(self, main_module, monkeypatch):
+        monkeypatch.setenv("HF_ENDPOINT", "https://hf-mirror.com")
+        monkeypatch.setenv("HF_DATASETS_SERVER", "https://ds.example.com")
+        policy = main_module._build_csp("NONCE")
+        assert _connect_src(policy) == [
+            "'self'",
+            "https://huggingface.co",
+            "https://datasets-server.huggingface.co",
+            "https://hf-mirror.com",
+            "https://ds.example.com",
+        ]
+        baseline = dict(
+            chunk.strip().split(" ", 1)
+            for chunk in _MAIN_CSP_DEFAULT.split(";")
+            if chunk.strip() and " " in chunk.strip()
+        )
+        actual = dict(
+            chunk.strip().split(" ", 1)
+            for chunk in policy.split(";")
+            if chunk.strip() and " " in chunk.strip()
+        )
+        for directive, value in baseline.items():
+            if directive == "connect-src":
+                continue
+            assert actual[directive] == value, directive
+
+    def test_a_mirrored_colab_policy_keeps_every_colab_source(self, main_module, monkeypatch):
+        monkeypatch.setattr(main_module, "_IS_COLAB", True)
+        monkeypatch.setenv("HF_ENDPOINT", "https://hf-mirror.com")
+        sources = _connect_src(main_module._build_csp("NONCE"))
+        for required in _connect_src(_MAIN_CSP_COLAB):
+            assert required in sources, required
+        assert "https://hf-mirror.com" in sources
+
+    def test_a_mirror_is_listed_once_even_if_both_vars_name_it(self, main_module, monkeypatch):
+        monkeypatch.setenv("HF_ENDPOINT", "https://hf-mirror.com")
+        monkeypatch.setenv("HF_DATASETS_SERVER", "https://hf-mirror.com")
+        sources = _connect_src(main_module._build_csp("NONCE"))
+        assert sources.count("https://hf-mirror.com") == 1
+
+    @pytest.mark.parametrize(
+        "hostile",
+        [
+            "https://hf-mirror.com; script-src *",
+            "https://hf-mirror.com *",
+            "https://hf-mirror.com\nscript-src *",
+            "https://hf-mirror.com,https://evil.com",
+            "javascript:alert(1)",
+            "https://user:pass@hf-mirror.com",
+        ],
+    )
+    def test_an_endpoint_cannot_forge_a_directive(self, main_module, monkeypatch, hostile):
+        """A bad env var must not widen the policy -- it falls back to the default."""
+        monkeypatch.setenv("HF_ENDPOINT", hostile)
+        policy = main_module._build_csp("NONCE")
+        assert policy == _MAIN_CSP_DEFAULT
+        assert policy.count(";") == _MAIN_CSP_DEFAULT.count(";")
+
+    def test_the_header_on_a_real_response_carries_the_mirror(self, main_module, monkeypatch):
+        monkeypatch.setenv("HF_ENDPOINT", "https://hf-mirror.com")
+        monkeypatch.setenv("HF_DATASETS_SERVER", "https://ds.example.com")
+        app = _make_csp_app(main_module)
+        r = TestClient(app).get("/plain")
+        sources = _connect_src(r.headers["content-security-policy"])
+        assert "https://hf-mirror.com" in sources
+        assert "https://ds.example.com" in sources
+
+    @pytest.mark.parametrize(
+        "endpoint, expected_source",
+        [
+            ("https://hub.internal/hf", "https://hub.internal"),
+            ("https://hub.internal:8443/hf/v2", "https://hub.internal:8443"),
+            ("https://hf-mirror.com", "https://hf-mirror.com"),
+            ("http://localhost:8080", "http://localhost:8080"),
+        ],
+    )
+    def test_a_path_prefixed_mirror_is_listed_as_an_origin(
+        self, main_module, monkeypatch, endpoint, expected_source
+    ):
+        """CSP3 6.7.2.7: a host-source with a path that does not end in "/" matches
+        that path EXACTLY. Listing "https://hub.internal/hf" would therefore allow
+        exactly that one URL and block every /hf/api/... request under it, in
+        Chrome, Edge, Firefox and Safari alike. The path belongs in the request
+        URL; the policy gets the origin.
+        """
+        monkeypatch.setenv("HF_ENDPOINT", endpoint)
+        sources = _connect_src(main_module._build_csp("NONCE"))
+        assert expected_source in sources
+        assert not any(
+            s.count("/") > 2 for s in sources if s.startswith(("http://", "https://"))
+        ), sources
+
+    @pytest.mark.parametrize(
+        "endpoint, loopback_sees, remote_sees",
+        [
+            ("http://127.0.0.1:9700", "http://127.0.0.1:9700", "https://huggingface.co"),
+            ("http://localhost:8080", "http://localhost:8080", "https://huggingface.co"),
+            ("https://hf-mirror.com", "https://hf-mirror.com", "https://hf-mirror.com"),
+        ],
+    )
+    def test_a_loopback_endpoint_is_only_reported_to_a_loopback_client(
+        self, main_module, monkeypatch, endpoint, loopback_sees, remote_sees
+    ):
+        """A loopback endpoint means the BROWSER's localhost anywhere else: dead,
+        or an unrelated service that would be handed the user's Hub token."""
+        monkeypatch.setenv("HF_ENDPOINT", endpoint)
+        local = TestClient(main_module.app, client = ("127.0.0.1", 40000))
+        assert local.get("/api/health").json()["hf_endpoint"] == loopback_sees
+        remote = TestClient(main_module.app, client = ("192.168.1.50", 40000))
+        assert remote.get("/api/health").json()["hf_endpoint"] == remote_sees
+
+    def test_a_tunneled_client_is_not_mistaken_for_a_local_one(self, main_module, monkeypatch):
+        """Through the managed tunnel the socket peer IS loopback: it is the local
+        cloudflared process, not the visitor."""
+        monkeypatch.setenv("HF_ENDPOINT", "http://127.0.0.1:9700")
+        c = TestClient(main_module.app, client = ("127.0.0.1", 40000))
+        tunneled = c.get("/api/health", headers = {"CF-Connecting-IP": "8.8.8.8"})
+        assert tunneled.json()["hf_endpoint"] == "https://huggingface.co"
+        assert c.get("/api/health").json()["hf_endpoint"] == "http://127.0.0.1:9700"
+        # A forged header from a non-loopback peer is ignored (client_ip's rule).
+        remote = TestClient(main_module.app, client = ("192.168.1.50", 40000))
+        forged = remote.get("/api/health", headers = {"CF-Connecting-IP": "127.0.0.1"})
+        assert forged.json()["hf_endpoint"] == "https://huggingface.co"
+
+    @pytest.mark.parametrize(
+        "endpoint, remote_sees",
+        [
+            ("http://127.0.0.1:9700", "https://huggingface.co"),
+            ("https://10.0.0.5:8443", "https://huggingface.co"),
+            ("https://192.168.1.9", "https://huggingface.co"),
+            ("https://[fd00::1]", "https://huggingface.co"),
+            ("https://hf-mirror.com", "https://hf-mirror.com"),
+        ],
+    )
+    def test_a_private_network_endpoint_is_not_reported_to_a_remote_browser(
+        self, main_module, monkeypatch, endpoint, remote_sees
+    ):
+        """10.0.0.5 means the VISITOR's 10.0.0.5, one step out from localhost. A
+        LAN client is on the backend's network and still gets the real value."""
+        monkeypatch.setenv("HF_ENDPOINT", endpoint)
+        tunneled = TestClient(main_module.app, client = ("127.0.0.1", 40000))
+        seen = tunneled.get("/api/health", headers = {"CF-Connecting-IP": "8.8.8.8"}).json()[
+            "hf_endpoint"
+        ]
+        assert seen == remote_sees
+        lan = TestClient(main_module.app, client = ("192.168.1.50", 40000))
+        lan_expected = "https://huggingface.co" if "127.0.0.1" in endpoint else endpoint
+        assert lan.get("/api/health").json()["hf_endpoint"] == lan_expected

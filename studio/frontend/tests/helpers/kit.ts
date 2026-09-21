@@ -1,10 +1,29 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { readFileSync } from "node:fs";
+import { readFile } from "node:fs/promises";
 import { register } from "node:module";
 
 import type { ResidentAdoptionState } from "../../src/features/hub/lib/adopt-inference-status.ts";
 import type { ResidentStatusRefreshTargets } from "../../src/features/hub/lib/resident-status-refresh.ts";
+
+/**
+ * A module under `src` read as text, path relative to `src` so it survives a test
+ * file moving. Shape assertions need the shipped file, not a copy of it.
+ */
+export function readSrc(relative: string): string {
+  return readFileSync(new URL(`../../src/${relative}`, import.meta.url), "utf8");
+}
+
+/** A repository file read as text, relative to `studio/frontend/tests` like the `new URL` it replaces. Prefer `readSrc` under `src`. */
+export function readText(relative: string): string {
+  return readFileSync(new URL(`../${relative}`, import.meta.url), "utf8");
+}
+
+export function readSrcAsync(relative: string): Promise<string> {
+  return readFile(new URL(`../../src/${relative}`, import.meta.url), "utf8");
+}
 
 /**
  * Teach the loader the two resolution rules vite and tsconfig's "bundler" mode give the
@@ -34,11 +53,13 @@ export type StorageFake = {
  */
 export function installLocalStorageFake(): {
   store: Map<string, string>;
-  storage: StorageFake;
+  storage: StorageFake & Pick<Storage, "length" | "key">;
   fireWindowEvent: (type: string, event: unknown) => number;
 } {
   const store = new Map<string, string>();
-  const storage: StorageFake = {
+  const storage: StorageFake & Pick<Storage, "length" | "key"> = {
+    get length() { return store.size; },
+    key: (index) => [...store.keys()][index] ?? null,
     getItem: (key: string) => store.get(key) ?? null,
     setItem: (key: string, value: string) => {
       store.set(key, value);
@@ -62,6 +83,13 @@ export function installLocalStorageFake(): {
       removeEventListener: (type: string, fn: (event: unknown) => void) => {
         listeners.get(type)?.delete(fn);
       },
+    },
+    // A window implies a document: code guarded on `typeof window` reaches for
+    // one, and a fake without it is a browser no browser ever is.
+    document: {
+      visibilityState: "visible",
+      addEventListener: () => undefined,
+      removeEventListener: () => undefined,
     },
     localStorage: storage,
   });

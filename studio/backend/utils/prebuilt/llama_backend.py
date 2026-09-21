@@ -13,6 +13,8 @@ INSTALL_KIND_BACKENDS: dict[str, str] = {
     "linux-cuda": "cuda",
     "linux-arm64-cuda": "cuda",
     "windows-cuda": "cuda",
+    # Distinct from windows-cuda: the arm64 bundle ships its own ARM64 cudart/cublas.
+    "windows-arm64-cuda": "cuda",
     "linux-rocm": "rocm",
     "windows-hip": "rocm",
     "windows-rocm": "rocm",
@@ -26,8 +28,8 @@ INSTALL_KIND_BACKENDS: dict[str, str] = {
     "macos-x64": "metal",
 }
 
-# Backends a user may ask for. "metal" is absent on purpose: it is the only macOS
-# build, so there is nothing to choose.
+# Backends a user may ask for. "metal" is absent on purpose: it is the only macOS build, so
+# there is nothing to choose.
 REQUESTABLE_BACKENDS = ("auto", "cpu", "cuda", "rocm", "vulkan")
 
 # Longest-token-first, so "cuda13-older" cannot read as something else.
@@ -126,7 +128,7 @@ def marker_backend_request(marker: Optional[Mapping[str, Any]]) -> str:
 
     Always a name, never None, so "detect" and "chosen" can never be confused.
     A value this build does not recognize is returned verbatim: it was written by
-    a newer Studio, and every reader here treats it as a choice to leave alone
+    a newer Unsloth, and every reader here treats it as a choice to leave alone
     rather than as an absent one to overwrite.
     """
     if not marker:

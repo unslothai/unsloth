@@ -5,6 +5,9 @@
 
 from __future__ import annotations
 
+from hub.services.models import account_access
+from utils.paths.storage_roots import workspace_root
+
 import os
 from pathlib import Path
 from typing import Optional
@@ -39,6 +42,8 @@ def _build_browse_allowlist(
     *media_roots* / *drive_roots* let the caller pass already-probed
     removable-media and Windows drive roots so they aren't scanned again (a
     disconnected mapped drive can make each probe slow); probed here when ``None``."""
+    if account_access.managed_account():
+        return [workspace_root().resolve()]
     from hub.storage.scan_folders import list_scan_folders
 
     candidates: list[Path] = []
@@ -83,7 +88,7 @@ def _build_browse_allowlist(
         _add(outputs_root())
         _add(exports_root())
     except Exception as exc:  # noqa: BLE001 -- best-effort
-        logger.debug("browse-folders: studio roots unavailable: %s", exc)
+        logger.debug("browse-folders: Unsloth roots unavailable: %s", exc)
     try:
         for folder in list_scan_folders():
             p = folder.get("path")
@@ -130,13 +135,12 @@ def _is_path_inside_allowlist(target: Path, allowed_roots: list[Path]) -> bool:
             return True
         drive, tail = os.path.splitdrive(root_real)
         if os.path.dirname(root_real) == root_real and not drive:
-            # Bare POSIX filesystem root ("/"): equality above is the only
-            # match; do not let it authorize arbitrary descendants.
+            # Bare POSIX filesystem root: the equality above is the only match, so it must not authorize
+            # arbitrary descendants.
             continue
         if drive.startswith(("\\\\", "//")) and not tail:
-            # Bare UNC share root (\\server\share): os.path.commonpath raises
-            # "can't mix absolute and relative" on it, so authorize its
-            # descendants with a boundary-safe prefix test (normcase applied).
+            # os.path.commonpath raises "can't mix absolute and relative" on a bare UNC share root, so authorize
+            # its descendants with a boundary-safe prefix test.
             if target_real.startswith(root_real.rstrip("\\/") + os.sep):
                 return True
             continue

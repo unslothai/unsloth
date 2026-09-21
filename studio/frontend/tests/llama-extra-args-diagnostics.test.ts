@@ -2,9 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { fileURLToPath } from "node:url";
 import type { LlamaFlagCatalog } from "../src/features/model-picker/api/llama-flags.ts";
 import {
   diagnoseExtraArgs,
@@ -13,6 +11,8 @@ import {
   parseExtraArgs,
   sanitizeStoredExtraArgs,
 } from "../src/features/model-picker/model-config/llama-extra-args.ts";
+
+import { readSrc } from "./helpers/kit.ts";
 
 // The row is the backend's judgement shown early. Where these disagree, the panel
 // accepts an argument the load then refuses, or warns about one that works.
@@ -44,6 +44,7 @@ const CATALOG: LlamaFlagCatalog = {
   maxBytes: 32 * 1024,
   windowsCommandBudget: 0,
   defaultParallelSlots: 0,
+  parallelSlotsClamped: false,
   probeOk: true,
 };
 
@@ -60,20 +61,32 @@ test("a well-formed argument the binary knows says nothing", () => {
   assert.deepEqual(diagnoseExtraArgs("", CATALOG), []);
 });
 
-test("a managed flag is an error that names the control that owns it", () => {
-  const text = messages("--parallel 8");
-  assert.match(text, /--parallel/);
-  assert.equal(levels("--parallel 8")[0], "error");
-  assert.equal(
-    extraArgsAreLoadable(diagnoseExtraArgs("--parallel 8", CATALOG)),
-    false,
-  );
+test("parallel aliases point at the supported control", () => {
+  for (const catalog of [CATALOG, null]) {
+    for (const input of [
+      "--parallel 8",
+      "--parallel=8",
+      "--n-parallel 8",
+      "--n_parallel 8",
+      "-np 8",
+      "-np8",
+    ]) {
+      const diagnostics = diagnoseExtraArgs(input, catalog);
+      assert.equal(diagnostics.length, 1);
+      assert.match(
+        diagnostics[0]?.message ?? "",
+        /is set by Parallel Slots above and cannot be passed here\.$/,
+      );
+      assert.equal(diagnostics[0]?.level, "error");
+      assert.equal(extraArgsAreLoadable(diagnostics), false);
+    }
+  }
 });
 
 test("a managed flag with no control says who owns it instead", () => {
   // --api-key is not a row in this panel, so pointing at one would be a lie.
   const text = messages("--api-key secret");
-  assert.match(text, /managed by Unsloth Studio/);
+  assert.match(text, /managed by Unsloth/);
   assert.doesNotMatch(text, /above/);
 });
 
@@ -87,13 +100,15 @@ test("an attached or equals form is caught the same way", () => {
 test("a flag a control also sets is a note, not a refusal", () => {
   // Deliberate: the backend appends extras last and reconciles the ones that move
   // its own sizing, and the CLI has always allowed this. Say who wins, do not block.
-  const diagnostics = diagnoseExtraArgs("--batch-size 512", CATALOG);
-  assert.deepEqual(
-    diagnostics.map((d) => d.level),
-    ["note"],
-  );
-  assert.match(diagnostics[0].message, /Batch Size/);
-  assert.equal(extraArgsAreLoadable(diagnostics), true);
+  for (const catalog of [CATALOG, null]) {
+    const diagnostics = diagnoseExtraArgs("--batch-size 512", catalog);
+    assert.deepEqual(
+      diagnostics.map((d) => d.level),
+      ["note"],
+    );
+    assert.match(diagnostics[0].message, /Batch Size/);
+    assert.equal(extraArgsAreLoadable(diagnostics), true);
+  }
 });
 
 test("a flag missing from this build warns but still loads", () => {
@@ -118,6 +133,7 @@ test("nothing is called unknown when the probe failed", () => {
     maxBytes: 32 * 1024,
     windowsCommandBudget: 0,
     defaultParallelSlots: 0,
+    parallelSlotsClamped: false,
     probeOk: false,
   };
   assert.deepEqual(
@@ -565,15 +581,7 @@ test("what the quoting makes of an argument counts on Windows", () => {
 // The harness has no DOM renderer, so the row's contract is pinned the way the
 // sibling model-config tests do it.
 
-const pageSource = readFileSync(
-  fileURLToPath(
-    new URL(
-      "../src/features/model-picker/components/model-config-page.tsx",
-      import.meta.url,
-    ),
-  ),
-  "utf8",
-);
+const pageSource = readSrc("features/model-picker/components/model-config-page.tsx");
 
 test("the row stores argv tokens, not the typed string", () => {
   const row = pageSource.slice(pageSource.indexOf("function ExtraArgsRow("));
@@ -598,7 +606,10 @@ test("the box is filled from the stored flags, not left looking empty", () => {
   // set is to ask. An empty box would read as "no flags" and the first edit would
   // submit a list that dropped them.
   // Resolved by the backend, whose folding rules are the ones the load applies.
-  assert.match(body, /fetchLoadExtraArgs\(loadId, configId, target\.ggufVariant, keys\)/);
+  assert.match(
+    body,
+    /fetchLoadModelOverride\(loadId, configId, target\.ggufVariant, keys\)/,
+  );
   // Through the resolver, not a literal lookup: the backend folds identities and
   // falls back from repo:QUANT to the bare repo before it reads a row.
   // The candidate keys still travel, as the fallback for a backend that predates
@@ -614,8 +625,9 @@ test("the box is filled from the stored flags, not left looking empty", () => {
   // flags the launch did not use.
   assert.match(body, /llamaExtraArgs: stored/);
   // And the key is marked only once a response is in hand, or StrictMode's replayed
-  // effect cancels the first fetch and skips the second.
-  const marked = body.indexOf("extraArgsHydrated.current = identity");
+  // effect cancels the first fetch and skips the second. The mark is on the shared draft, so
+  // the second host reads it rather than fetching again.
+  const marked = body.indexOf("markExtraArgsHydratedForDraft(draftKey)");
   assert.ok(
     marked > body.indexOf("if (cancelled) { return; }"),
     "mark after the response",
@@ -656,15 +668,7 @@ test("the row does not withdraw its objection when it unmounts", () => {
 });
 
 test("a config that never read the stored value is not sent as a clear", () => {
-  const overrides = readFileSync(
-    fileURLToPath(
-      new URL(
-        "../src/features/model-picker/api/model-overrides.ts",
-        import.meta.url,
-      ),
-    ),
-    "utf8",
-  ).replace(/\s+/g, " ");
+  const overrides = readSrc("features/model-picker/api/model-overrides.ts").replace(/\s+/g, " ");
   // The route preserves llama_extra_args when omitted, which is what kept CLI-set
   // flags alive while this panel had no control. Sending [] for a config that never
   // loaded them would wipe them on the first save.
@@ -675,12 +679,7 @@ test("a config that never read the stored value is not sent as a clear", () => {
 });
 
 test("the load sends the flags only once they are known", () => {
-  const composer = readFileSync(
-    fileURLToPath(
-      new URL("../src/features/chat/shared-composer.tsx", import.meta.url),
-    ),
-    "utf8",
-  ).replace(/\s+/g, " ");
+  const composer = readSrc("features/chat/shared-composer.tsx").replace(/\s+/g, " ");
   assert.match(
     composer,
     /ownConfig\.llamaExtraArgs !== undefined \? .* \{ llama_extra_args: ownConfig\.llamaExtraArgs \?\? \[\] \} : \{\}/,
@@ -691,15 +690,7 @@ test("the panel's own Load goes through the runtime, which sends them too", () =
   // Found by loading a model from the panel and reading the emitted command: the
   // flags were in the config and absent from the argv, because this hook is the
   // path the Load button takes and it built the payload field by field.
-  const runtime = readFileSync(
-    fileURLToPath(
-      new URL(
-        "../src/features/chat/hooks/use-chat-model-runtime.ts",
-        import.meta.url,
-      ),
-    ),
-    "utf8",
-  ).replace(/\s+/g, " ");
+  const runtime = readSrc("features/chat/hooks/use-chat-model-runtime.ts").replace(/\s+/g, " ");
   assert.match(
     runtime,
     /const loadLlamaExtraArgs = pendingLoadConfig\?\.llamaExtraArgs/,
@@ -716,8 +707,21 @@ test("the box follows a config change it did not make", () => {
   // Reset and the parent's hydration both replace llamaExtraArgs while this row is
   // mounted. Without this the textarea keeps its old text and disagrees with what
   // Load sends; with a plain re-seed on every change it re-quotes a half-typed line.
-  assert.match(body, /if \(external === selfWritten\.current\) \{ return; \}/);
-  assert.match(body, /selfWritten\.current = formatExtraArgs\(/);
+  assert.match(
+    body,
+    /const text = edit && edit\.source === external \? edit\.text : external;/,
+  );
+  assert.match(body, /source: formatExtraArgs\(tokens\.length > 0 \? tokens : null\),/);
+});
+
+test("the two editors type into one box", () => {
+  const row = pageSource.slice(pageSource.indexOf("function ExtraArgsRow("));
+  const body = row.slice(0, row.indexOf("\n}\n")).replace(/\s+/g, " ");
+  // commit publishes tokens on every keystroke. Held per row, an unclosed quote left the
+  // OTHER editor showing a balanced re-quote of them and judging it loadable.
+  assert.match(body, /readExtraArgsEditForDraft\(draftKey\)/);
+  assert.match(body, /setExtraArgsEditForDraft\(draftKey, \{/);
+  assert.doesNotMatch(body, /useState\(\(\) => formatExtraArgs/);
 });
 
 test("load waits for the stored arguments to be read", () => {
@@ -784,15 +788,7 @@ test("hydration asks under the keys the load path uses", () => {
 });
 
 test("a rollback restores the previous model with its arguments", () => {
-  const runtime = readFileSync(
-    fileURLToPath(
-      new URL(
-        "../src/features/chat/hooks/use-chat-model-runtime.ts",
-        import.meta.url,
-      ),
-    ),
-    "utf8",
-  ).replace(/\s+/g, " ");
+  const runtime = readSrc("features/chat/hooks/use-chat-model-runtime.ts").replace(/\s+/g, " ");
   // By the time this runs the TARGET is resident, so an omitted field inherits
   // across models, which the route refuses, and the previous model would come back
   // without the arguments it had been running.
@@ -819,7 +815,20 @@ test("a hydrated list is judged even when the row cannot be", () => {
   // With Advanced collapsed the row never mounts, so nothing objects to a stored
   // list this build refuses (the overrides route only validates its shape), and
   // Load would be live for a request that comes back 400.
-  assert.match(body, /const hydratedIsLoadable = extraArgsAreLoadable\( diagnoseExtraArgs\(formatExtraArgs\(stored\)/);
+  //
+  // Judged on the list hydration ADOPTS, not on the row's: a row carrying no
+  // arguments leaves the local ones standing, and reading the verdict off the empty
+  // server list called them loadable. That one lands even with Advanced expanded,
+  // where the row has already refused the list and republishes only on a change of
+  // its own verdict, so nothing puts the objection back.
+  assert.match(
+    body,
+    /const hydratedArgs = serverConfig\?\.llamaExtraArgs \?\? stored;/,
+  );
+  assert.match(
+    body,
+    /const hydratedIsLoadable = hydratedArgs\.length === 0 \? true : extraArgsAreLoadable\( diagnoseExtraArgs\( formatExtraArgs\(hydratedArgs\)/,
+  );
   // But not over an edit made while the request was out: the row is judging that
   // text, and replacing its verdict re-enabled Load for invalid input.
   assert.match(
@@ -829,15 +838,7 @@ test("a hydrated list is judged even when the row cannot be", () => {
 });
 
 test("the runtime preflight is sized with the arguments the load sends", () => {
-  const runtime = readFileSync(
-    fileURLToPath(
-      new URL(
-        "../src/features/chat/hooks/use-chat-model-runtime.ts",
-        import.meta.url,
-      ),
-    ),
-    "utf8",
-  ).replace(/\s+/g, " ");
+  const runtime = readSrc("features/chat/hooks/use-chat-model-runtime.ts").replace(/\s+/g, " ");
   // A --ctx-size or cache override changes the memory /validate estimates. During
   // training an approval it did not size for means unloading the resident model and
   // having /load refuse the target, which is a rollback the user never asked for.
@@ -852,15 +853,7 @@ test("the runtime preflight is sized with the arguments the load sends", () => {
 });
 
 test("a catalogue read from the previous binary is discarded", () => {
-  const flagsApi = readFileSync(
-    fileURLToPath(
-      new URL(
-        "../src/features/model-picker/api/llama-flags.ts",
-        import.meta.url,
-      ),
-    ),
-    "utf8",
-  ).replace(/\s+/g, " ");
+  const flagsApi = readSrc("features/model-picker/api/llama-flags.ts").replace(/\s+/g, " ");
   // A switch that completes mid-request must not have the old build's flags written
   // back, and the next caller must not be handed that same promise.
   assert.match(flagsApi, /catalogGeneration \+= 1;/);
@@ -897,7 +890,7 @@ test("a catalogued flag left without its value is refused", () => {
 });
 
 test("an unverified flag keeps the benefit of the doubt at the end", () => {
-  // A build this Studio could not probe, or a flag newer than the help it read:
+  // A build this Unsloth could not probe, or a flag newer than the help it read:
   // calling either a missing value would disable Load over a launch that works.
   const unverified: LlamaFlagCatalog = {
     flags: {},
@@ -906,6 +899,7 @@ test("an unverified flag keeps the benefit of the doubt at the end", () => {
     maxBytes: 0,
     windowsCommandBudget: 0,
     defaultParallelSlots: 0,
+    parallelSlotsClamped: false,
     probeOk: false,
   };
   assert.deepEqual(diagnoseExtraArgs("--rope-scaling", unverified), []);
@@ -926,6 +920,7 @@ test("a two-value flag left short is refused whatever the catalogue says", () =>
     maxBytes: 0,
     windowsCommandBudget: 0,
     defaultParallelSlots: 0,
+    parallelSlotsClamped: false,
     probeOk: false,
   };
   assert.equal(levels("--control-vector-layer-range 1", unverified)[0], "error");
@@ -1271,15 +1266,7 @@ test("the attached spelling is refused wherever it is judged", () => {
 });
 
 test("the managed answer is invalidated with the catalogue", () => {
-  const flagsApi = readFileSync(
-    fileURLToPath(
-      new URL(
-        "../src/features/model-picker/api/llama-flags.ts",
-        import.meta.url,
-      ),
-    ),
-    "utf8",
-  ).replace(/\s+/g, " ");
+  const flagsApi = readSrc("features/model-picker/api/llama-flags.ts").replace(/\s+/g, " ");
   // Its denylist is Unsloth's own, but it carries defaultParallelSlots beside it and
   // that is the EFFECTIVE count: a build without --kv-unified serves one slot however
   // many are configured. Updating llama.cpp from the banner left a tab that had
@@ -1288,6 +1275,9 @@ test("the managed answer is invalidated with the catalogue", () => {
   assert.match(flagsApi, /cachedManaged = null; inFlightManaged = null;/);
   // The dynamic limits are what make it stale, so they have to be in that answer.
   assert.match(flagsApi, /defaultParallelSlots: number;/);
+  // parallelSlotsClamped goes stale the same way and for the same reason: it is
+  // read off the same probe, so a cached answer can outlive the build it describes.
+  assert.match(flagsApi, /parallelSlotsClamped: boolean;/);
 });
 
 test("a flag quoted with stray spaces is refused, not silently sent", () => {
@@ -1367,15 +1357,7 @@ test("a quoted value that begins with a hyphen is a value, not a flag", () => {
 });
 
 test("a managed answer from the previous binary is never published", () => {
-  const flagsApi = readFileSync(
-    fileURLToPath(
-      new URL(
-        "../src/features/model-picker/api/llama-flags.ts",
-        import.meta.url,
-      ),
-    ),
-    "utf8",
-  ).replace(/\s+/g, " ");
+  const flagsApi = readSrc("features/model-picker/api/llama-flags.ts").replace(/\s+/g, " ");
   // Clearing the cache is not enough on its own: a managed request already on the
   // wire when llama.cpp is replaced would resolve afterwards and put the old
   // build's defaultParallelSlots back, where it would stay for the session. The

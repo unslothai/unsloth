@@ -10,6 +10,7 @@ nvidia-smi involved.
 
 from __future__ import annotations
 
+import importlib.util as _importlib_util
 import sys
 import time
 import types as _types
@@ -26,15 +27,49 @@ if _BACKEND_DIR not in sys.path:
 
 _loggers_stub = _types.ModuleType("loggers")
 _loggers_stub.get_logger = lambda name: __import__("logging").getLogger(name)
-sys.modules.setdefault("loggers", _loggers_stub)
+# Same reasoning as httpx below: only when the real one is absent. With _BACKEND_DIR on
+# sys.path the in-repo loggers package resolves, and stubbing over it trips the shadowing
+# guard in test_backend_ci_parallel_isolation.py.
+#
+# Probed with find_spec, not `import loggers`: an import bound purely to test
+# resolvability leaves an unused name that scripts/verify_import_hoist.py reads as a
+# botched hoist, and loggers/handlers.py imports structlog at module scope, whose stub is
+# not installed until below, so in the very environment this block exists for the import
+# would fail on that transitive dep and the except branch would stub over the real
+# package. find_spec answers "is it resolvable" without executing the module.
+#
+# Same except clause as _is_installed() in test_backend_ci_parallel_isolation.py:
+# find_spec raises for a missing parent, and ValueError when a prior test left a bare
+# ModuleType (__spec__ is None) in sys.modules, where the stub is already there anyway.
+try:
+    _real_loggers = _importlib_util.find_spec("loggers") is not None
+except (ImportError, ValueError):
+    _real_loggers = False
+if not _real_loggers:
+    sys.modules.setdefault("loggers", _loggers_stub)
 
 _structlog_stub = _types.ModuleType("structlog")
 _structlog_stub.get_logger = lambda *a, **k: __import__("logging").getLogger("stub")
-sys.modules.setdefault("structlog", _structlog_stub)
+# Same reasoning as httpx below: only when the real one is absent. The real structlog
+# has get_logger, which is all this module wants from it.
+try:
+    import structlog  # noqa: F401
+except ImportError:
+    sys.modules.setdefault("structlog", _structlog_stub)
 # Set get_logger even if a prior test inserted a bare ``structlog`` stub.
 if not hasattr(sys.modules["structlog"], "get_logger"):
     sys.modules["structlog"].get_logger = _structlog_stub.get_logger
 
+# Only when the real library is absent, the way test_llama_cpp_placement.py already does
+# it. setdefault reads as if it defers to the real httpx, but sys.modules holds what has
+# been IMPORTED, not what is installed, so in a process where nothing has touched httpx
+# yet the stub wins and shadows the real library for the whole session. This stub has no
+# Response, and starlette.testclient reads httpx.Response at import, so every module
+# collected afterwards that reaches fastapi.testclient or routes.inference dies on it.
+#
+# In the full parallel run something always imports httpx before this file is collected,
+# which is why it went unnoticed. Splitting the timing tests into a ten-file serial step
+# removed that accident and the 3.10 leg failed collection on two of them.
 _httpx_stub = _types.ModuleType("httpx")
 for _exc in (
     "ConnectError",
@@ -56,10 +91,15 @@ _httpx_stub.Client = type(
         "__exit__": lambda s, *a: None,
     },
 )
-sys.modules.setdefault("httpx", _httpx_stub)
+try:
+    import httpx  # noqa: F401
+except ImportError:
+    sys.modules.setdefault("httpx", _httpx_stub)
 
 from core.inference import llama_cpp as llama_cpp_module  # noqa: E402
 from core.inference.llama_cpp import LlamaCppBackend  # noqa: E402
+import os
+import subprocess
 
 
 # ---------------------------------------------------------------------------
@@ -108,16 +148,78 @@ def _kw(**extra):
     return base
 
 
+# Captured before the patch, so a deliberately slow probe still sleeps for real.
+_real_sleep = time.sleep
+
+
+class _Sleeps:
+    """The naps ``_wait_for_vram_settle`` asks for, in order.
+
+    Every claim in this file is about the helper's sleeping: did it skip the wait, did
+    it nap once per poll, did it clip the last nap to the deadline. Measuring that as
+    wall clock made each one a budget -- ``elapsed < 0.05`` around a short-circuit, which
+    a GC pause on a shared runner exceeds while the helper did exactly the right thing.
+    The durations it requests are the same facts without the runner in them, so ask for
+    those and keep one generous ceiling for the case where it never returns at all.
+    """
+
+    def __init__(self, clock = None):
+        self.durations: list[float] = []
+        # With a clock, the nap is charged to it instead of taken: the helper's deadline
+        # then advances exactly as far as it asked to wait, with no runner in between.
+        self._clock = clock
+
+    def __enter__(self):
+        self._patch = patch.object(time, "sleep", self._record)
+        self._patch.start()
+        return self
+
+    def __exit__(self, *exc):
+        self._patch.stop()
+        return False
+
+    def _record(self, seconds):
+        self.durations.append(seconds)
+        if self._clock is not None:
+            return self._clock.advance(seconds)
+        return _real_sleep(seconds)
+
+    @property
+    def total(self) -> float:
+        return sum(self.durations)
+
+
+class _Clock:
+    """``time.monotonic`` as a number the test moves, for the one claim real time cannot
+    answer: that a nap was cut to what was left of the budget. Only what is charged to it
+    advances it, so there is no scheduler to eat the window being measured."""
+
+    def __init__(self):
+        # Not 0.0: the helper reads `since_kill <= 0.0` as cold start, and `_kw()` takes
+        # that stamp off this clock, so an origin of zero short-circuits the whole wait.
+        self.now = 1000.0
+
+    def __enter__(self):
+        self._patch = patch.object(time, "monotonic", lambda: self.now)
+        self._patch.start()
+        return self
+
+    def __exit__(self, *exc):
+        self._patch.stop()
+        return False
+
+    def advance(self, seconds):
+        self.now += seconds
+
+
 def test_cold_start_returns_immediately_without_probing():
     """Default ``since_kill=0.0`` is cold-start: no kill recorded, so the
     helper short-circuits without invoking the probe."""
     ctx, state = _patch_probe([[(0, 10000)], [(0, 10000)]])
-    with ctx:
-        start = time.monotonic()
+    with ctx, _Sleeps() as sleeps:
         LlamaCppBackend._wait_for_vram_settle(max_wait = 2.0, interval = 0.25)
-        elapsed = time.monotonic() - start
     assert state["calls"] == 0, "cold start must skip the probe entirely"
-    assert elapsed < 0.05
+    assert sleeps.durations == [], f"cold start slept anyway: {sleeps.durations}"
 
 
 def test_stale_kill_skips_wait():
@@ -134,12 +236,12 @@ def test_stale_kill_skips_wait():
 def test_empty_first_sample_returns_immediately():
     """CPU-only host: probe returns [] → no wait, no further polls."""
     ctx, state = _patch_probe([[]])
-    with ctx:
-        start = time.monotonic()
+    with ctx, _Sleeps() as sleeps:
         LlamaCppBackend._wait_for_vram_settle(**_kw(max_wait = 2.0, interval = 0.25))
-        elapsed = time.monotonic() - start
     assert state["calls"] == 1
-    assert elapsed < 0.5, "CPU-only short-circuit must not sleep through the interval"
+    assert (
+        sleeps.durations == []
+    ), f"CPU-only short-circuit slept through the interval: {sleeps.durations}"
 
 
 def test_first_probe_raises_returns_without_polling():
@@ -160,13 +262,10 @@ def test_two_consecutive_samples_within_tolerance_settles():
             [(0, 11550)],
         ]
     )
-    with ctx:
-        start = time.monotonic()
+    with ctx, _Sleeps() as sleeps:
         LlamaCppBackend._wait_for_vram_settle(**_kw(max_wait = 2.0, interval = 0.05))
-        elapsed = time.monotonic() - start
     assert state["calls"] == 3
-    # interval * 2 sleeps = 0.10; allow slack for scheduler jitter.
-    assert elapsed < 1.0
+    assert sleeps.durations == [0.05, 0.05], sleeps.durations
 
 
 def test_probe_raises_mid_loop_returns():
@@ -191,32 +290,48 @@ def test_max_wait_respected_when_never_settles():
         drift["v"] += 500
         return [(0, drift["v"])]
 
+    # On the fake clock, for the same reason the slow-probe test is: the lower bound below
+    # says "did not stop early", and real time spent outside sleep() -- a GC pause, a
+    # deschedule -- retires the deadline without appearing in the naps, so a correct helper
+    # returns having napped less than the window and reads as an early exit.
     ctx, _state = _patch_probe([_drifty])
-    with ctx:
-        start = time.monotonic()
+    with ctx, _Clock() as clock, _Sleeps(clock) as sleeps:
         LlamaCppBackend._wait_for_vram_settle(**_kw(max_wait = 0.5, interval = 0.1))
-        elapsed = time.monotonic() - start
-    # Must stop near max_wait, not run forever. Generous upper bound for CI.
-    assert 0.3 <= elapsed < 2.0, f"helper ignored max_wait: elapsed={elapsed:.3f}s"
+    # Both ends, because only the pair says "polled for the whole window and no longer".
+    # A loop accidentally capped at two iterations records [0.1, 0.1] and returns after
+    # 0.2s while the VRAM is still moving, which is how the next model gets launched
+    # early; a ceiling alone calls that a pass.
+    assert sleeps.total <= 0.5 + 1e-9, f"helper napped past max_wait: {sleeps.durations}"
+    assert sleeps.total >= 0.5 - 1e-9, f"helper gave up inside max_wait: {sleeps.durations}"
 
 
 def test_max_wait_respected_when_probe_is_slow():
-    """Slow probe: clipped sleep keeps the wall-clock bound honest."""
+    """Slow probe: clipped sleep keeps the wall-clock bound honest.
+
+    On a fake clock, because this one cannot be asked in real time. The claim is that
+    the nap AFTER the slow probe is cut to what is left of the budget, so the test needs
+    a nap to have been requested at all -- and if a real scheduler pause eats the 0.1s
+    that remained, a correct helper returns at the deadline check without napping and
+    the assertion fails on a run that did nothing wrong. Nothing here is about how fast
+    the box is, so the box is taken out: the probe charges its cost to the clock instead
+    of sleeping, and every sample is exact.
+    """
 
     def _slow_probe():
-        time.sleep(0.30)
+        clock.advance(0.30)  # the probe's own cost, not one of the helper's naps
         return [(0, 10000)]
 
     ctx, _state = _patch_probe([_slow_probe])
-    with ctx:
-        start = time.monotonic()
+    with ctx, _Clock() as clock, _Sleeps(clock) as sleeps:
         LlamaCppBackend._wait_for_vram_settle(
             **_kw(max_wait = 0.4, interval = 0.25),
         )
-        elapsed = time.monotonic() - start
-    # First probe (0.30 s) + at most one clipped sleep + bail.
-    # Hard cap well below the old 0.30 + 0.25 + 0.30 = 0.85.
-    assert elapsed < 0.85, f"helper exceeded the deadline due to slow probes: {elapsed:.3f}s"
+    # The probe burned 0.30 of a 0.4s budget, so the nap after it must be clipped.
+    assert sleeps.durations, "helper never napped, so nothing was clipped"
+    assert (
+        sleeps.durations[-1] < 0.25
+    ), f"helper slept the full interval past the deadline: {sleeps.durations}"
+    assert sleeps.total <= 0.4 + 1e-9, f"helper napped past max_wait: {sleeps.durations}"
 
 
 def test_gpu_index_set_change_returns():
@@ -353,8 +468,6 @@ _NO_PROCFS = "/unsloth-test-no-such-proc-root"
 def test_kill_orphaned_servers_returns_count():
     """The reaper reports how many owned orphans it killed, so __init__ can
     arm the settle wait. Only Unsloth-owned llama-server procs count."""
-    import os
-
     mypid = os.getpid()
     fake_path = "/tmp/unsloth-test-llama/llama-server"
     killed: list[int] = []
@@ -403,8 +516,6 @@ def test_kill_orphaned_servers_spares_live_parent():
     """An Unsloth-owned llama-server whose parent is still running is not an
     orphan (a live Unsloth or the user's shell owns it) and must never be
     killed; only the true orphan (parent gone) is reaped."""
-    import os
-
     mypid = os.getpid()
     fake_path = "/tmp/unsloth-test-llama/llama-server"
     killed: list[int] = []
@@ -503,8 +614,6 @@ def test_kill_process_clears_pidfile(tmp_path):
 def test_reap_recorded_pid_kills_recorded_server(tmp_path):
     """An orphaned recorded PID (parent gone) is killed and the pidfile cleared
     when it is still a llama-server."""
-    import subprocess
-
     proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
     pidfile = tmp_path / "llama-server.pid"
     pidfile.write_text(str(proc.pid))
@@ -532,8 +641,6 @@ def test_reap_recorded_pid_kills_recorded_server(tmp_path):
 def test_record_then_reap_round_trip_identity_matches(tmp_path):
     """Full round trip: _record_server_pid writes pid:starttime, and an orphaned
     reap whose recorded identity still matches DOES kill it."""
-    import subprocess
-
     proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
     pidfile = tmp_path / "llama-server.pid"
     try:
@@ -561,8 +668,6 @@ def test_reap_recorded_pid_spares_live_server(tmp_path):
     reaped, and its pidfile is kept. This is the finding-3 guard: a helper backend
     constructed in-process must not kill the active chat server. Uses the REAL
     _pid_parent_is_alive (the child's parent is this live test process)."""
-    import subprocess
-
     proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
     pidfile = tmp_path / "llama-server.pid"
     pidfile.write_text(str(proc.pid))
@@ -584,8 +689,6 @@ def test_reap_recorded_pid_spares_live_server(tmp_path):
 def test_reap_recorded_pid_skips_pid_reuse(tmp_path):
     """A recorded PID recycled to a non-llama-server must NOT be killed (only the
     stale pidfile is cleaned), so the user's vllm/games are never touched."""
-    import subprocess
-
     proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
     pidfile = tmp_path / "llama-server.pid"
     pidfile.write_text(str(proc.pid))
@@ -607,8 +710,6 @@ def test_reap_recorded_pid_skips_pid_reuse(tmp_path):
 def test_reap_recorded_pid_skips_identity_mismatch(tmp_path):
     """An orphaned PID whose recorded start-time identity no longer matches has been
     recycled; it must NOT be killed even if it now looks like a llama-server."""
-    import subprocess
-
     proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
     pidfile = tmp_path / "llama-server.pid"
     pidfile.write_text(f"{proc.pid}:0.0")  # stale identity that cannot match
@@ -690,8 +791,6 @@ def _write_fake_procfs(tmp_path, entries):
 def test_kill_orphaned_servers_procfs_matches_psutil_selection(tmp_path):
     """The Linux /proc sweep must select exactly what the psutil sweep selects:
     the Unsloth-owned orphan, never a foreign llama-server or another program."""
-    import os
-
     mypid = os.getpid()
     owned_dir = tmp_path / "unsloth-test-llama"
     owned_dir.mkdir()
@@ -731,8 +830,6 @@ def test_kill_orphaned_servers_procfs_matches_psutil_selection(tmp_path):
 @pytest.mark.skipif(sys.platform != "linux", reason = "the procfs scan only runs on Linux")
 def test_kill_orphaned_servers_procfs_spares_live_parent(tmp_path):
     """Same live-parent rule as the psutil sweep: only the true orphan is reaped."""
-    import os
-
     mypid = os.getpid()
     owned_dir = tmp_path / "unsloth-test-llama"
     owned_dir.mkdir()
@@ -771,8 +868,6 @@ def test_kill_orphaned_servers_procfs_handles_a_deleted_binary(tmp_path):
     """An orphan left behind by an upgrade has " (deleted)" appended to its exe
     link. psutil strips that marker, so the procfs sweep must too, or the
     orphan stops being recognised as ours."""
-    import os
-
     mypid = os.getpid()
     owned_dir = tmp_path / "unsloth-test-llama"
     owned_dir.mkdir()
@@ -802,8 +897,6 @@ def test_kill_orphaned_servers_procfs_refuses_a_reused_pid(tmp_path):
     """psutil.Process.kill() refuses to signal a PID that has been reused. The
     procfs sweep must do the same, or an orphan that exits between the scan and
     the signal takes an unrelated replacement process with it."""
-    import os
-
     mypid = os.getpid()
     owned_dir = tmp_path / "unsloth-test-llama"
     owned_dir.mkdir()
@@ -842,8 +935,6 @@ def test_kill_orphaned_servers_procfs_refuses_a_reused_pid(tmp_path):
 def test_kill_orphaned_servers_procfs_still_kills_the_same_process(tmp_path):
     """Control for the test above: an unchanged starttime is still reaped, so
     the identity check is not simply refusing everything."""
-    import os
-
     mypid = os.getpid()
     owned_dir = tmp_path / "unsloth-test-llama"
     owned_dir.mkdir()
