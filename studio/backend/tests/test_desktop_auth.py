@@ -1159,8 +1159,7 @@ def test_desktop_login_still_admits_the_real_shell_after_a_miss():
     client = auth_client(auth_route)
 
     assert (
-        client.post("/api/auth/desktop-login", json = {"secret": "desktop-stale"}).status_code
-        == 401
+        client.post("/api/auth/desktop-login", json = {"secret": "desktop-stale"}).status_code == 401
     )
     raw = storage.create_desktop_secret()
     admitted = client.post("/api/auth/desktop-login", json = {"secret": raw})

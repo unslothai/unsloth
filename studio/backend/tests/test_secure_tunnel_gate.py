@@ -312,6 +312,7 @@ def test_api_only_cors_tracks_published_public_url():
         allow_methods = ["*"],
         allow_headers = ["*"],
     )
+
     def _preflight(origin):
         return middleware.preflight_response(
             Headers(
