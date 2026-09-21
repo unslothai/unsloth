@@ -669,6 +669,15 @@ const RATIO_DELIMITER = /[,/]+/;
 /** The spellings Python's float() accepts and math.isfinite() then rejects. */
 const NON_FINITE = /^[+-]?(nan|inf(inity)?)$/i;
 
+/** Python's `floatvalue` production (docs: functions#float), which is NOT what Number() takes:
+ *  Number() reads 0x/0b/0o literals the backend refuses, and refuses the `1_0` digit grouping
+ *  PEP 515 made valid, so a Number()-based mirror disagrees with /validate in both directions. */
+const PY_FLOAT =
+  /^[+-]?(?:(?:\d(?:_?\d)*)?\.\d(?:_?\d)*|\d(?:_?\d)*\.?)(?:[eE][+-]?\d(?:_?\d)*)?$/;
+
+/** Largest per-GPU share llama.cpp's float array holds; std::stof throws out_of_range above it. */
+const FLOAT32_MAX = 3.4028234663852886e38;
+
 /** The three ways parse_tensor_split_override refuses a ratio, or null when it would take it. */
 function ratioValueProblem(flag: string, value: string): string | null {
   const parts = value
@@ -677,17 +686,25 @@ function ratioValueProblem(flag: string, value: string): string | null {
   if (parts.length === 0) {
     return `${flag} takes a comma- or slash-separated list of numbers.`;
   }
-  const numbers = parts.map((part) => Number(part.trim()));
-  // Number("nan") is NaN but Python's float() reads it, so "nan"/"inf" are the non-finite case
-  // below, not the unreadable one here, or the user is shown a message the load would not give.
-  if (numbers.some((entry, at) => Number.isNaN(entry) && !NON_FINITE.test(parts[at].trim()))) {
+  const trimmed = parts.map((part) => part.trim());
+  // Readability is decided by Python's grammar, never by Number(): "nan"/"inf" are readable and
+  // fail the finite test below, while 0x10 is unreadable to float() even though Number() takes it.
+  if (trimmed.some((part) => !PY_FLOAT.test(part) && !NON_FINITE.test(part))) {
     return `${flag} takes a comma- or slash-separated list of numbers, and "${value}" is not one.`;
   }
+  // Underscores are grouping to float() and NaN to Number(), so strip them before converting.
+  const numbers = trimmed.map((part) => Number(part.replace(/_/g, "")));
   if (numbers.some((entry) => !Number.isFinite(entry) || entry < 0)) {
     return `${flag} entries must be finite and non-negative.`;
   }
+  if (numbers.some((entry) => entry > FLOAT32_MAX)) {
+    return `${flag} entries must fit in a 32-bit float (at most ${FLOAT32_MAX.toExponential(4)}).`;
+  }
   if (numbers.reduce((total, entry) => total + entry, 0) <= 0) {
     return `${flag} must have a positive total.`;
+  }
+  if (numbers.reduce((total, entry) => total + entry, 0) > FLOAT32_MAX) {
+    return `${flag} adds up past the 32-bit float range.`;
   }
   return null;
 }

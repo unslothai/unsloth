@@ -13,6 +13,7 @@ import logging
 import math
 import os
 import re
+import struct
 import sys
 from typing import Any, Callable, Iterable, Mapping, Optional
 
@@ -919,6 +920,22 @@ def parse_gpu_layers_override(args: Optional[Iterable[str]]) -> Optional[int]:
     return value
 
 
+def _as_float32(value: float) -> float:
+    """``value`` as llama.cpp would hold it: overflow becomes inf rather than raising.
+
+    ``struct.pack`` raises OverflowError where the C cast it stands in for saturates, so the
+    caller would have to guard every call site instead of just testing isfinite once.
+    """
+    try:
+        return struct.unpack("=f", struct.pack("=f", value))[0]
+    except OverflowError:
+        return math.copysign(math.inf, value)
+
+
+# Largest share llama.cpp's float array can hold; anything above is out_of_range to std::stof.
+_FLOAT32_MAX = struct.unpack("=f", struct.pack("=f", 3.4028234663852886e38))[0]
+
+
 def parse_tensor_split_override(args: Optional[Iterable[str]]) -> Optional[list[float]]:
     """Return the last user-supplied ``-ts`` / ``--tensor-split`` ratios from extras.
 
@@ -930,6 +947,12 @@ def parse_tensor_split_override(args: Optional[Iterable[str]]) -> Optional[list[
     Delimiters match llama.cpp's ``[,/]+`` (``-ts 3/1`` is the same as ``-ts 3,1``). Degenerate
     values raise so ``validate_extra_args`` can refuse them as a 400 rather than stripping them
     silently.
+
+    Bounds are llama.cpp's, not Python's: ``std::stof`` (common/arg.cpp) throws
+    ``std::out_of_range`` above FLT_MAX, and the shares are prefix-summed into a float array
+    (llama-model.cpp), so a value this parser would take as a finite double can still abort the
+    server at startup. Both the per-entry and the running total are checked in float32, the same
+    round-trip ``_extra_args_tensor_split`` uses.
     """
     raw_value = _last_flag_value(args, _TENSOR_SPLIT_FLAGS)
     if raw_value is None:
@@ -948,6 +971,16 @@ def parse_tensor_split_override(args: Optional[Iterable[str]]) -> Optional[list[
         raise ValueError("llama-server --tensor-split entries must be finite and non-negative")
     if sum(parts) <= 0:
         raise ValueError("llama-server --tensor-split must have a positive total")
+    running = 0.0
+    for part in parts:
+        if not math.isfinite(_as_float32(part)):
+            raise ValueError(
+                "llama-server --tensor-split entries must fit in a 32-bit float "
+                f"(at most {_FLOAT32_MAX:g})"
+            )
+        running = _as_float32(running + part)
+        if not math.isfinite(running):
+            raise ValueError("llama-server --tensor-split adds up past the 32-bit float range")
     return parts
 
 

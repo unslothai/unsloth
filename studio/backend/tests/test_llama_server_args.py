@@ -631,6 +631,45 @@ def test_parse_tensor_split_override_rejects_malformed_values(args):
         parse_tensor_split_override(args)
 
 
+@pytest.mark.parametrize(
+    "value,expected",
+    [
+        # PEP 515 grouping is float()'s, so the editor mirror must not refuse it either.
+        ("1_0,1", [10.0, 1.0]),
+        ("1_000.5,1", [1000.5, 1.0]),
+        ("1e1_0,1", [1e10, 1.0]),
+        ("1.,1", [1.0, 1.0]),
+        (".5,1", [0.5, 1.0]),
+        ("+1.5,1", [1.5, 1.0]),
+    ],
+)
+def test_parse_tensor_split_override_reads_python_float_syntax(value, expected):
+    assert parse_tensor_split_override(["-ts", value]) == expected
+
+
+@pytest.mark.parametrize("value", ["0x10,1", "0b10,1", "0o17,1", "1__0,1", "_1,1", "1_,1", "1e,1"])
+def test_parse_tensor_split_override_rejects_non_float_syntax(value):
+    # JavaScript's Number() reads the 0x/0b/0o forms, so a mirror built on it would call these
+    # loadable and the load would answer 400.
+    with pytest.raises(ValueError, match = "tensor-split"):
+        parse_tensor_split_override(["-ts", value])
+
+
+def test_parse_tensor_split_override_rejects_a_share_float32_cannot_hold():
+    # std::stof throws std::out_of_range above FLT_MAX (measured: stof("1e+39") raises), and the
+    # manual emitter would have written --tensor-split 1e+39,1, so llama-server died at startup
+    # where base had simply discarded the flag.
+    with pytest.raises(ValueError, match = "32-bit float"):
+        parse_tensor_split_override(["-ts", "1e39,1"])
+    assert parse_tensor_split_override(["-ts", "3.4e38,1"]) == [3.4e38, 1.0]
+
+
+def test_parse_tensor_split_override_rejects_a_total_float32_cannot_hold():
+    # llama.cpp prefix-sums the shares into the same float array (llama-model.cpp).
+    with pytest.raises(ValueError, match = "adds up past"):
+        parse_tensor_split_override(["-ts", "3e38,3e38"])
+
+
 def test_validate_extra_args_rejects_malformed_tensor_split_override():
     with pytest.raises(ValueError, match = "tensor-split"):
         validate_extra_args(["-ts", "abc"])

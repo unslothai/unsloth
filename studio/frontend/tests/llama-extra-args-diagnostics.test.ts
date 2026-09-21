@@ -1449,3 +1449,23 @@ test("a stored tensor split the backend now refuses is repaired, not shed", () =
     ["-ts", "2.2,1", "--top-k", "20"],
   );
 });
+
+test("the ratio mirror reads exactly what Python's float() reads", () => {
+  // Number() takes 0x/0b/0o literals float() refuses, and refuses the digit grouping PEP 515
+  // made valid, so a Number()-based check disagreed with /validate in BOTH directions.
+  for (const bad of ["0x10,1", "0b10,1", "0o17,1", "1__0,1", "_1,1", "1_,1", "1e,1"]) {
+    assert.match(_tsError(`-ts ${bad}`) ?? "", /list of numbers/, bad);
+  }
+  for (const good of ["1_0,1", "1_000.5,1", "1.,1", ".5,1", "1e1_0,1", "+1.5,1"]) {
+    assert.equal(_tsError(`-ts ${good}`), null, good);
+  }
+});
+
+test("a share llama.cpp's float array cannot hold is refused", () => {
+  // std::stof throws std::out_of_range above FLT_MAX (verified: stof("1e+39") -> out_of_range),
+  // so without this the load reaches llama-server and the server dies during startup.
+  assert.match(_tsError("-ts 1e39,1") ?? "", /32-bit float/);
+  assert.equal(_tsError("-ts 3.4e38,1"), null);
+  // The shares are prefix-summed into that same float array.
+  assert.match(_tsError("-ts 3e38,3e38") ?? "", /adds up past/);
+});
