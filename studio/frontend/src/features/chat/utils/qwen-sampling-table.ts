@@ -22,6 +22,15 @@ export type QwenThinkingParams = {
 // ends the family, since a path can separate it with a space as readily as "-".
 const PRESENCE_BUMP_QWEN = /(?:^|[^a-z0-9])qwen3\.(5|6|8)(?:$|[^a-z0-9])/;
 
+// Which of those families the row belongs to, when an id names more than one.
+// A draft pairing ("Qwen3.5-Draft/Qwen3.8-27B") or a per-family directory
+// ("/models/qwen3.6/qwen3.8-27b.gguf") names two, and String.match answers with
+// the LEFTMOST, which is the other one. The backend does not: it strips the org
+// prefix and scans _FAMILY_PATTERNS longest-first, so "qwen3.8" wins wherever it
+// appears. Matching that here is what keeps the two tables answering alike;
+// before the rows differed by family this was invisible.
+const QWEN38_FAMILY = /(?:^|[^a-z0-9])qwen3\.8(?:$|[^a-z0-9])/;
+
 const OLLAMA_MANIFEST_REF_PREFIX = "ollama-manifest:";
 
 /**
@@ -67,8 +76,8 @@ export function resolveQwenThinkingParams(
     return null;
   }
 
-  const presenceBumpFamily = normalized.match(PRESENCE_BUMP_QWEN);
-  const qwen38Thinking = thinkingOn && presenceBumpFamily?.[1] === "8";
+  const presenceBumpFamily = PRESENCE_BUMP_QWEN.test(normalized);
+  const qwen38Thinking = thinkingOn && QWEN38_FAMILY.test(normalized);
   const base = thinkingOn
     ? {
         temperature: qwen38Thinking ? 1.0 : 0.6,

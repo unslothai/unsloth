@@ -11,15 +11,12 @@ import { installLocalStorageFake, readSrc } from "./helpers/kit.ts";
 installLocalStorageFake();
 register("./store-settings-resolver.mjs", import.meta.url);
 
-const { applyQwenThinkingParams } = await import(
-  "../src/features/chat/utils/qwen-params.ts"
-);
-const { resolveQwenThinkingParams } = await import(
-  "../src/features/chat/utils/qwen-sampling-table.ts"
-);
-const { useChatRuntimeStore } = await import(
-  "../src/features/chat/stores/chat-runtime-store.ts"
-);
+const { applyQwenThinkingParams } =
+  await import("../src/features/chat/utils/qwen-params.ts");
+const { resolveQwenThinkingParams } =
+  await import("../src/features/chat/utils/qwen-sampling-table.ts");
+const { useChatRuntimeStore } =
+  await import("../src/features/chat/stores/chat-runtime-store.ts");
 
 test("the Qwen3.8 frontend table matches the backend recommendations", () => {
   const defaults = JSON.parse(
@@ -99,4 +96,62 @@ test("Qwen3.8 does not change the generic Qwen3 presence penalty", () => {
     resolveQwenThinkingParams("unsloth/Qwen3-8B-GGUF", true)?.presencePenalty,
     undefined,
   );
+});
+
+test("an id naming two Qwen families resolves to Qwen3.8, as the backend does", () => {
+  // The backend strips the org prefix and scans its family patterns longest-first,
+  // so "qwen3.8" wins wherever it appears in the id. String.match answers with the
+  // leftmost match instead, which for a draft pairing or a per-family directory is
+  // the other family. Both tables have to name the same row.
+  for (const id of [
+    "Qwen3.5-Draft/Qwen3.8-27B-Q4_K_M.gguf",
+    "/models/qwen3.6/qwen3.8-27b.gguf",
+    "unsloth/Qwen3.8-27B-Draft-Qwen3.5-0.8B",
+    "qwen3.6-router/QWEN3.8-27B",
+  ]) {
+    assert.deepEqual(
+      resolveQwenThinkingParams(id, true),
+      {
+        temperature: 1.0,
+        topP: 0.95,
+        topK: 20,
+        minP: 0.0,
+        presencePenalty: 0.0,
+      },
+      id,
+    );
+  }
+
+  // The families that do not name Qwen3.8 keep their own row, whichever order
+  // they appear in.
+  for (const id of [
+    "unsloth/Qwen3.6-27B-GGUF",
+    "Qwen3.6-Draft/Qwen3.5-9B-GGUF",
+  ]) {
+    assert.deepEqual(
+      resolveQwenThinkingParams(id, true),
+      {
+        temperature: 0.6,
+        topP: 0.95,
+        topK: 20,
+        minP: 0.0,
+        presencePenalty: 1.5,
+      },
+      id,
+    );
+  }
+
+  // Still boundary-anchored: a future family and a parameter count are not Qwen3.8.
+  assert.deepEqual(resolveQwenThinkingParams("Qwen3.80-27B", true), {
+    temperature: 0.6,
+    topP: 0.95,
+    topK: 20,
+    minP: 0.0,
+  });
+  assert.deepEqual(resolveQwenThinkingParams("Qwen3.8B", true), {
+    temperature: 0.6,
+    topP: 0.95,
+    topK: 20,
+    minP: 0.0,
+  });
 });

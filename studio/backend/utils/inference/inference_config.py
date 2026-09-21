@@ -205,7 +205,7 @@ def _operator_sampling_override(field: str):
 
 @lru_cache(maxsize = 128)
 def _recommended_sampling(model_id: str, thinking_mode: Optional[bool] = None) -> Dict[str, Any]:
-    """Per-model recommended sampling, resolved through the SAME path the Unsloth Chat UI uses. The UI seeds its sampling from the ``.inference`` block of the load/status responses, which is exactly :func:`load_inference_config` (model-specific YAML, then family defaults from inference_defaults.json, then default.yaml), so sourcing recommendations here keeps the values the server applies identical to what the UI shows. Only the fields the UI actually adopts (:data:`_UI_RECOMMENDED_FIELDS`) are recommended; each value is validated (finite and in range) before use. Cached by model id and resolved reasoning mode."""
+    """Per-model recommended sampling, resolved through the SAME path the Unsloth Chat UI seeds from: :func:`load_inference_config` (model-specific YAML, then family defaults from inference_defaults.json, then default.yaml), which is what the ``.inference`` block of the load/status responses carries. Only the fields the UI actually adopts (:data:`_UI_RECOMMENDED_FIELDS`) are recommended; each value is validated (finite and in range) before use. Cached by model id and resolved reasoning mode. With ``thinking_mode`` set the result can differ from that ``.inference`` block, which is always resolved with no mode: for a family carrying ``sampling_modes`` the server then applies the mode's row while load/status still advertises the flat one, and the Chat UI reaches the same row through resolveQwenThinkingParams rather than through the block."""
     if not model_id:
         return {}
     try:

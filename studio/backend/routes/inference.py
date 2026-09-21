@@ -23866,6 +23866,33 @@ def _chat_template_reasoning_kwargs(payload) -> dict:
     return controls
 
 
+_CHAT_TEMPLATE_REASONING_KEYS = ("enable_thinking", "reasoning_effort", "preserve_thinking")
+
+
+def _consume_chat_template_reasoning_kwargs(payload) -> None:
+    """Drop the reasoning keys a lift has just taken onto the typed fields.
+
+    Nothing downstream forwards the client's nested dict: every render rebuilds it from
+    the typed fields through ``_reasoning_template_kwargs``. Removing the keys here is
+    what makes the lift a fixed point; any other key in the dict is left alone.
+
+    Rebinds a filtered copy rather than popping in place: the dict comes from the parsed
+    request body, and mutating it would reach through to anything that still holds the
+    same object.
+    """
+    extra = getattr(payload, "model_extra", None)
+    template_kwargs = extra.get("chat_template_kwargs") if isinstance(extra, dict) else None
+    if not isinstance(template_kwargs, dict):
+        return
+    if not any(key in template_kwargs for key in _CHAT_TEMPLATE_REASONING_KEYS):
+        return
+    extra["chat_template_kwargs"] = {
+        key: value
+        for key, value in template_kwargs.items()
+        if key not in _CHAT_TEMPLATE_REASONING_KEYS
+    }
+
+
 def _resolve_reasoning_controls(
     enable_thinking: Optional[bool], reasoning_effort: Optional[str]
 ) -> tuple[Optional[bool], Optional[str]]:
@@ -23881,8 +23908,19 @@ def _resolve_reasoning_controls(
 
 
 def _normalize_chat_reasoning_controls(payload) -> None:
-    """Merge typed and nested controls, then remove contradictory state."""
+    """Merge typed and nested controls, then remove contradictory state.
+
+    Consumes what it lifts, so a second call on the same payload is a no-op. Without
+    that, a dropped contradictory effort came back: the first pass writes the resolved
+    values onto the typed fields, so the second pass reads a typed effort of None where
+    the first read the client's, takes the nested-effort rescue the first deliberately
+    skipped, and hands generation a level the request had already lost the right to.
+    /v1/responses normalizes the request it builds and then normalizes it again inside
+    the chat route, so the second call is not hypothetical; it is inert only because
+    _build_chat_request rebuilds the request without the nested dict.
+    """
     nested = _chat_template_reasoning_kwargs(payload)
+    _consume_chat_template_reasoning_kwargs(payload)
     fields_set = getattr(payload, "model_fields_set", set())
     typed_enable = payload.enable_thinking if "enable_thinking" in fields_set else None
     typed_effort = (

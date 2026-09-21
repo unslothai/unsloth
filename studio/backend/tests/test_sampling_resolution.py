@@ -974,3 +974,149 @@ def test_the_status_inference_block_is_not_the_mode_aware_one():
     assert (status_block["temperature"], status_block["presence_penalty"]) == (0.7, 1.5)
     mode_aware = load_inference_config(model_id, thinking_mode = True)
     assert (mode_aware["temperature"], mode_aware["presence_penalty"]) == (1.0, 0.0)
+
+
+@pytest.mark.parametrize(
+    "reasoning_style, request_kwargs, expected_kwargs",
+    [
+        # An effort dial cannot be turned off, so an explicit enable_thinking=False
+        # lands on the lowest level the dial has rather than on "none". Before the
+        # controls were resolved, the client's contradictory "high" rode along and
+        # the reply reasoned at high effort while the boolean said off.
+        ("reasoning_effort", {"enable_thinking": False, "reasoning_effort": "high"},
+         {"reasoning_effort": "low"}),
+        # The mirror case: the typed boolean wins and the contradictory level goes,
+        # so the template's own default effort applies instead of "none".
+        ("reasoning_effort", {"enable_thinking": True, "reasoning_effort": "none"},
+         {"reasoning_effort": "high"}),
+        # A boolean-only template never saw the effort either way.
+        ("enable_thinking", {"enable_thinking": False, "reasoning_effort": "high"},
+         {"enable_thinking": False}),
+        ("enable_thinking", {"enable_thinking": True, "reasoning_effort": "none"},
+         {"enable_thinking": True}),
+        # Agreeing controls are not touched.
+        ("reasoning_effort", {"enable_thinking": True, "reasoning_effort": "high"},
+         {"reasoning_effort": "high"}),
+    ],
+)
+def test_contradictory_controls_are_resolved_for_every_family(
+    reasoning_style, request_kwargs, expected_kwargs
+):
+    """The conflict rule is not Qwen3.8's; it changes generation for every model.
+
+    `_resolve_reasoning_controls` runs before the model-specific translation, so an
+    effort-dial family (gpt-oss and friends) is affected too, and no sampling_modes
+    block is involved. Pinned here because it is the part of this branch that reaches
+    clients that never load a Qwen.
+    """
+    from types import SimpleNamespace
+
+    from core.inference.llama_cpp import LlamaCppBackend
+    from models.inference import ChatCompletionRequest
+    from routes import inference as inference_route
+
+    backend = SimpleNamespace(
+        _supports_reasoning = True,
+        _reasoning_always_on = False,
+        _reasoning_style = reasoning_style,
+        _reasoning_effort_levels = ("none", "low", "medium", "high"),
+        _supports_preserve_thinking = False,
+        _architecture = "gpt-oss",
+    )
+    payload = ChatCompletionRequest(
+        model = "unsloth/gpt-oss-20b-GGUF",
+        messages = [{"role": "user", "content": "hi"}],
+        **request_kwargs,
+    )
+    inference_route._normalize_chat_reasoning_controls(payload)
+
+    assert LlamaCppBackend._request_reasoning_kwargs(
+        backend, payload.enable_thinking, payload.reasoning_effort, None
+    ) == expected_kwargs
+
+
+@pytest.mark.parametrize(
+    "typed, nested",
+    [
+        ({"enable_thinking": True, "reasoning_effort": "none"}, {"reasoning_effort": "high"}),
+        ({"enable_thinking": False, "reasoning_effort": "high"}, {"reasoning_effort": "none"}),
+        ({"reasoning_effort": "none"}, {"enable_thinking": True, "reasoning_effort": "xhigh"}),
+        ({}, {"enable_thinking": False}),
+        ({}, {"reasoning_effort": "medium"}),
+        ({"enable_thinking": True}, {"reasoning_effort": "medium"}),
+    ],
+)
+def test_normalizing_twice_cannot_change_the_answer(typed, nested):
+    """/v1/responses normalizes the request it builds, then the chat route normalizes it again.
+
+    The first pass writes its result onto the typed fields, so a second pass reads a typed
+    effort of None where the first read the client's, and without consuming what it lifted
+    it took the nested-effort rescue the first deliberately skipped -- handing generation a
+    level the request had already lost the right to.
+    """
+    from models.inference import ChatCompletionRequest
+    from routes import inference as inference_route
+
+    payload = ChatCompletionRequest.model_validate(
+        {
+            "model": "unsloth/Qwen3.8-27B-GGUF",
+            "messages": [{"role": "user", "content": "hi"}],
+            **typed,
+            "chat_template_kwargs": dict(nested),
+        }
+    )
+    inference_route._normalize_chat_reasoning_controls(payload)
+    once = (payload.enable_thinking, payload.reasoning_effort, payload.preserve_thinking)
+    inference_route._normalize_chat_reasoning_controls(payload)
+    twice = (payload.enable_thinking, payload.reasoning_effort, payload.preserve_thinking)
+    inference_route._normalize_chat_reasoning_controls(payload)
+    thrice = (payload.enable_thinking, payload.reasoning_effort, payload.preserve_thinking)
+
+    assert once == twice == thrice
+
+
+def test_normalizing_does_not_mutate_the_clients_nested_dict():
+    """The lift consumes the reasoning keys without reaching through to the parsed body."""
+    from models.inference import ChatCompletionRequest
+    from routes import inference as inference_route
+
+    client_dict = {"enable_thinking": False, "reasoning_effort": "none", "keep_me": 1}
+    payload = ChatCompletionRequest.model_validate(
+        {
+            "model": "unsloth/Qwen3.8-27B-GGUF",
+            "messages": [{"role": "user", "content": "hi"}],
+            "chat_template_kwargs": client_dict,
+        }
+    )
+    inference_route._normalize_chat_reasoning_controls(payload)
+
+    assert client_dict == {"enable_thinking": False, "reasoning_effort": "none", "keep_me": 1}
+    # Unrelated keys survive on the payload; the consumed ones do not.
+    assert payload.model_extra["chat_template_kwargs"] == {"keep_me": 1}
+
+
+def test_an_anthropic_derived_boolean_stays_out_of_the_explicit_field_set():
+    """resolve_thinking_onto_enable_thinking's discard has to actually remove the name.
+
+    It relies on model_fields_set returning the live __pydantic_fields_set__. If a future
+    pydantic returns a copy, the discard becomes a no-op and the derived boolean would
+    outrank the nested controls it is meant to sit below, silently.
+    """
+    from models.inference import ChatCompletionRequest
+
+    payload = ChatCompletionRequest.model_validate(
+        {
+            "model": "unsloth/Qwen3.8-27B-GGUF",
+            "messages": [{"role": "user", "content": "hi"}],
+            "thinking": {"type": "enabled"},
+            "chat_template_kwargs": {"enable_thinking": False},
+        }
+    )
+    assert payload.enable_thinking is True
+    assert "enable_thinking" not in payload.model_fields_set
+
+    from routes import inference as inference_route
+
+    inference_route._normalize_chat_reasoning_controls(payload)
+    # The nested control is the higher-priority source, so it wins over the derived one.
+    assert payload.enable_thinking is False
