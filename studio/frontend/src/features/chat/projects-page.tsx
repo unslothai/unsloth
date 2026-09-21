@@ -36,17 +36,28 @@ import { cn } from "@/lib/utils";
 import { isDownloadCancelled, pickNativeChatImport } from "@/lib/native-files";
 import { toast } from "@/lib/toast";
 import {
+  chatExportOptions,
+  OpenChatFolderUnavailableItem,
   archiveChatItem,
   deleteChatItem,
   deleteChatProject,
+  exportConversationByFormat,
+  getSidebarItemThreadIds,
   notifyChatHistoryUpdated,
   renameChatItem,
+  sandboxSessionIdsHolding,
+  useChatNavigationStore,
+  useChatPreferencesStore,
   useChatProjects,
   useChatRuntimeStore,
   usePinnedChatsStore,
   usePinnedProjectsStore,
+  type ConversationExportFormat,
   type ProjectRecord,
 } from "@/features/chat";
+import { useSettingsDialogStore } from "@/features/settings";
+import { sandboxSessionIdFor } from "@/components/assistant-ui/sandbox-files";
+import { revealSandbox } from "@/components/assistant-ui/sandbox-reveal";
 import { GuidedTour, useGuidedTourController } from "@/features/tour";
 import { buildProjectsTourSteps } from "./tour";
 import { EditProjectDialog } from "./components/edit-project-dialog";
@@ -58,10 +69,13 @@ import {
   Edit03Icon,
   Folder02Icon,
   FolderAddIcon,
+  FolderOpenIcon,
   PinIcon,
   PinOffIcon,
   Search01Icon,
   Upload01Icon,
+  ViewIcon,
+  ViewOffSlashIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { ArrowDownIcon, ChevronDownIcon, MoreHorizontalIcon } from "lucide-react";
@@ -143,6 +157,13 @@ export function ProjectsPage() {
   const pinnedProjectIdSet = useMemo(
     () => new Set(pinnedProjectIds),
     [pinnedProjectIds],
+  );
+  const unreadThreadIds = useChatNavigationStore((s) => s.unreadThreadIds);
+  const markThreadsUnread = useChatNavigationStore((s) => s.markThreadsUnread);
+  const clearThreadsUnread = useChatNavigationStore((s) => s.clearThreadsUnread);
+  const confirmDeleteChats = useChatPreferencesStore((s) => s.confirmDeleteChats);
+  const alwaysDeleteChatFiles = useChatPreferencesStore(
+    (s) => s.alwaysDeleteChatFiles,
   );
   const pinnedChatIds = usePinnedChatsStore((s) => s.pinnedIds);
   const togglePinChat = usePinnedChatsStore((s) => s.togglePin);
@@ -536,12 +557,11 @@ export function ProjectsPage() {
     }
   }
 
-  async function commitChatDelete() {
-    const target = deletingChat;
-    if (!target) return;
-    setDeletingChat(null);
+  async function deleteChat(chat: SidebarItem) {
     try {
-      await deleteChatItem(target, activeThreadId(), () => {});
+      await deleteChatItem(chat, activeThreadId(), () => {}, {
+        deleteFiles: alwaysDeleteChatFiles,
+      });
     } catch (err) {
       toast.error("Failed to delete chat", {
         description: err instanceof Error ? err.message : undefined,
@@ -549,11 +569,41 @@ export function ProjectsPage() {
     }
   }
 
-  async function handleChatExport(chat: SidebarItem, fmt: ConvExportFormat) {
+  async function commitChatDelete() {
+    const target = deletingChat;
+    if (!target) return;
+    setDeletingChat(null);
+    await deleteChat(target);
+  }
+
+  /** The folder this chat's tool calls wrote to, or a refusal when it wrote to two. */
+  async function openChatFolder(chat: SidebarItem, fallback: string) {
     try {
-      const ids = chat.threadIds?.length ? chat.threadIds : [chat.id];
-      const safe = chat.title.replace(/[^a-z0-9_-]/gi, "_").slice(0, 40);
-      await exportBulkConversationsMerged(ids, fmt, `chat-${safe}`);
+      const ids = getSidebarItemThreadIds(chat);
+      const distinct = await sandboxSessionIdsHolding(ids);
+      if (distinct.length > 1) {
+        toast.error("This chat wrote to more than one folder.", {
+          description:
+            "It ran tools on both sides of a move, so open the folder from a tool card instead.",
+        });
+        return;
+      }
+      await revealSandbox(distinct[0] ?? fallback);
+    } catch (error) {
+      toast.error("Could not open the chat folder.", {
+        description: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  async function handleChatExport(
+    chat: SidebarItem,
+    format: ConversationExportFormat,
+  ) {
+    try {
+      for (const id of getSidebarItemThreadIds(chat)) {
+        await exportConversationByFormat(id, format);
+      }
     } catch (error) {
       if (!isDownloadCancelled(error)) {
         toast.error("Export failed.");
@@ -933,6 +983,15 @@ export function ProjectsPage() {
                   <>
                     {chats.map((chat) => {
                       const chatPinned = pinnedChatIdSet.has(chat.id);
+                      const chatThreadIds = getSidebarItemThreadIds(chat);
+                      const chatUnread = chatThreadIds.some((id) =>
+                        unreadThreadIds.has(id),
+                      );
+                      // Every chat here sits in a project, so the folder is the project's.
+                      const chatSandboxId = sandboxSessionIdFor(
+                        chatThreadIds[0] ?? chat.id,
+                        project.id,
+                      );
                       return (
                       <div
                         key={chat.id}
@@ -997,7 +1056,7 @@ export function ProjectsPage() {
                               sideOffset={0}
                               onClick={(e) => e.stopPropagation()}
                               onKeyDown={(e) => e.stopPropagation()}
-                              className="app-user-menu menu-soft-surface menu-flat-destructive ring-0 w-44 py-2 font-heading rounded-[14px] border-0"
+                              className="app-user-menu menu-soft-surface menu-flat-destructive ring-0 w-52 py-2 font-heading rounded-[14px] border-0"
                             >
                               <DropdownMenuItem
                                 onSelect={() => {
@@ -1008,38 +1067,79 @@ export function ProjectsPage() {
                                 <HugeiconsIcon icon={Edit03Icon} strokeWidth={1.75} className="size-icon" />
                                 <span>Rename</span>
                               </DropdownMenuItem>
-                              <DropdownMenuItem onSelect={() => void archiveChat(chat)}>
-                                <HugeiconsIcon icon={Archive03Icon} strokeWidth={1.75} className="size-icon" />
-                                <span>Archive</span>
+                              {/* The dot a finished reply leaves, put back or taken off by hand. */}
+                              <DropdownMenuItem
+                                onSelect={() =>
+                                  chatUnread
+                                    ? clearThreadsUnread(chatThreadIds)
+                                    : markThreadsUnread(
+                                        chatThreadIds,
+                                        Object.fromEntries(
+                                          chatThreadIds.map((id) => [id, chat.id]),
+                                        ),
+                                      )
+                                }
+                              >
+                                <HugeiconsIcon icon={chatUnread ? ViewIcon : ViewOffSlashIcon} strokeWidth={1.75} className="size-icon" />
+                                <span>{chatUnread ? "Mark as read" : "Mark as unread"}</span>
                               </DropdownMenuItem>
+                              {chatSandboxId ? (
+                                isTauri ? (
+                                  <DropdownMenuItem
+                                    title="Open the folder this chat's tool calls read and write"
+                                    onSelect={() =>
+                                      void openChatFolder(chat, chatSandboxId)
+                                    }
+                                  >
+                                    <HugeiconsIcon icon={FolderOpenIcon} strokeWidth={1.75} className="size-icon" />
+                                    <span>Open chat folder</span>
+                                  </DropdownMenuItem>
+                                ) : (
+                                  <OpenChatFolderUnavailableItem />
+                                )
+                              ) : null}
                               <DropdownMenuSub>
                                 <DropdownMenuSubTrigger>
                                   <HugeiconsIcon icon={Download01Icon} strokeWidth={1.75} className="size-icon mr-1" />
                                   <span>Export</span>
                                 </DropdownMenuSubTrigger>
                                 <DropdownMenuSubContent className="w-52">
-                                  {/* A comparison is two threads, so it can only take the
-                                      formats that merge. */}
-                                  {((chat.threadIds?.length ?? 1) > 1
-                                    ? COMBINED_EXPORT_FORMATS_LIST
-                                    : EXPORT_FORMATS_LIST
-                                  ).map(({ fmt, label }) => (
+                                  {chatExportOptions().map(({ label, format }) => (
                                     <DropdownMenuItem
-                                      key={`${chat.id}-${fmt}`}
+                                      key={`${chat.id}-${label}`}
                                       onSelect={(e) => {
                                         e.stopPropagation();
-                                        void handleChatExport(chat, fmt);
+                                        void handleChatExport(chat, format);
                                       }}
                                     >
                                       {label}
                                     </DropdownMenuItem>
                                   ))}
+                                  <DropdownMenuSeparator />
+                                  {/* Bulk export and import live in Settings -> Data. */}
+                                  <DropdownMenuItem
+                                    onSelect={() =>
+                                      useSettingsDialogStore
+                                        .getState()
+                                        .openDialog("data")
+                                    }
+                                  >
+                                    Export all chats…
+                                  </DropdownMenuItem>
                                 </DropdownMenuSubContent>
                               </DropdownMenuSub>
                               <DropdownMenuSeparator />
+                              <DropdownMenuItem onSelect={() => void archiveChat(chat)}>
+                                <HugeiconsIcon icon={Archive03Icon} strokeWidth={1.75} className="size-icon" />
+                                <span>Archive</span>
+                              </DropdownMenuItem>
                               <DropdownMenuItem
                                 variant="destructive"
-                                onSelect={() => setDeletingChat(chat)}
+                                onSelect={() =>
+                                  confirmDeleteChats
+                                    ? setDeletingChat(chat)
+                                    : void deleteChat(chat)
+                                }
                               >
                                 <HugeiconsIcon icon={Delete02Icon} strokeWidth={1.75} className="size-icon" />
                                 <span>Delete</span>

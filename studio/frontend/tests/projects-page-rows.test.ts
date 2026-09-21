@@ -197,15 +197,46 @@ test("a chat row carries its own actions, revealed by hovering it", async () => 
 test("the chat menu writes through the shared chat helpers", () => {
   assert.match(PAGE, /await renameChatItem\(target, name\);\n\s*notifyChatHistoryUpdated\(\);/);
   assert.match(PAGE, /await archiveChatItem\(chat, activeThreadId\(\), \(\) => \{\}\);/);
-  assert.match(PAGE, /await deleteChatItem\(target, activeThreadId\(\), \(\) => \{\}\);/);
-  // Deleting asks first, like deleting a project.
-  assert.match(PAGE, /onSelect=\{\(\) => setDeletingChat\(chat\)\}/);
-  assert.match(PAGE, /<DialogTitle>Delete chat<\/DialogTitle>/);
-  assert.match(PAGE, /<DialogTitle>Rename chat<\/DialogTitle>/);
-  // A comparison is two threads, so it only offers the formats that merge.
   assert.match(
     PAGE,
-    /\(chat\.threadIds\?\.length \?\? 1\) > 1\n\s*\? COMBINED_EXPORT_FORMATS_LIST\n\s*: EXPORT_FORMATS_LIST/,
+    /await deleteChatItem\(chat, activeThreadId\(\), \(\) => \{\}, \{\n\s*deleteFiles: alwaysDeleteChatFiles,\n\s*\}\);/,
   );
-  assert.match(PAGE, /await exportBulkConversationsMerged\(ids, fmt, `chat-\$\{safe\}`\);/);
+  // Deleting asks first only when the setting says so, as in the sidebar.
+  assert.match(
+    PAGE,
+    /confirmDeleteChats\n\s*\? setDeletingChat\(chat\)\n\s*: void deleteChat\(chat\)/,
+  );
+  assert.match(PAGE, /<DialogTitle>Delete chat<\/DialogTitle>/);
+  assert.match(PAGE, /<DialogTitle>Rename chat<\/DialogTitle>/);
+  // The sidebar's export list, so the same chat offers the same formats either way.
+  assert.match(PAGE, /chatExportOptions\(\)\.map\(\(\{ label, format \}\) => \(/);
+  assert.match(PAGE, /void handleChatExport\(chat, format\);/);
+  assert.match(PAGE, /Export all chats…/);
+});
+
+// Everything the sidebar's chat menu offers, minus what a project's own list already answers:
+// no "Project" submenu, since these chats are in the project being looked at.
+test("the chat menu carries the sidebar's items, without the move", () => {
+  const start = PAGE.indexOf("{chats.map((chat) => {");
+  const menu = PAGE.slice(
+    PAGE.indexOf("<DropdownMenuContent", start),
+    PAGE.indexOf("</DropdownMenuContent>", start),
+  );
+  for (const label of [
+    "<span>Rename</span>",
+    "<span>Archive</span>",
+    "<span>Delete</span>",
+    "<span>Export</span>",
+    "Export all chats…",
+  ]) {
+    assert.ok(menu.includes(label), `${label} is missing from the chat menu`);
+  }
+  assert.match(menu, /chatUnread \? "Mark as read" : "Mark as unread"/);
+  assert.match(menu, /<span>Open chat folder<\/span>/);
+  // Desktop opens the folder; the browser says why it cannot.
+  assert.match(menu, /isTauri \? \(/);
+  assert.match(menu, /<OpenChatFolderUnavailableItem \/>/);
+  // The chats listed here are already in this project.
+  assert.ok(!menu.includes("<span>Project</span>"));
+  assert.ok(!menu.includes("moveChatToProject"));
 });
