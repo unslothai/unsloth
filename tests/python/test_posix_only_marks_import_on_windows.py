@@ -103,7 +103,9 @@ def _lambda_accepts(lam: ast.Lambda, call: ast.Call) -> bool:
         for arg, default in zip(lam.args.kwonlyargs, lam.args.kw_defaults)
         if default is None and arg.arg not in by_name
     ]
-    return not (missing_keywords and lam.args.kwarg is None)
+    # **kwargs does not satisfy a required keyword-only parameter; Python still wants it
+    # by name, so the call fails whatever the lambda collects
+    return not missing_keywords
 
 
 def _fallback_takes(fallback: ast.AST, call: ast.Call) -> bool:
@@ -125,6 +127,8 @@ def _fallback_takes(fallback: ast.AST, call: ast.Call) -> bool:
             ast.ListComp,
             ast.DictComp,
             ast.SetComp,
+            # -1 is a UnaryOp around a Constant, not a Constant
+            ast.UnaryOp,
         ),
     )
 
@@ -705,3 +709,23 @@ def test_an_annotation_is_a_string_under_the_future_import():
     assert _flagged("import os\nx: os.geteuid() = 1\n")
     assert not _flagged("from __future__ import annotations\nimport os\nx: os.geteuid() = 1\n")
     assert _flagged("from __future__ import annotations\nimport os\nx: int = os.geteuid()\n")
+
+
+def test_a_lambda_fallback_short_of_a_keyword_only_argument():
+    """**kwargs does not satisfy a required keyword-only parameter: Python still wants it
+    by name, so the fallback fails on Windows whatever it collects."""
+    assert _flagged(
+        'import os\nROOT = getattr(os, "geteuid", lambda *, required, **kw: 1)() == 0\n'
+    )
+    assert not _flagged(
+        'import os\nROOT = getattr(os, "geteuid", lambda *, required = 1, **kw: 1)() == 0\n'
+    )
+    assert not _flagged(
+        'import os\nROOT = getattr(os, "geteuid", lambda *, required: 1)(required = 1) == 0\n'
+    )
+
+
+def test_a_negative_number_is_still_a_literal():
+    """-1 is a UnaryOp around a Constant, so the literal check missed it."""
+    assert _flagged('import os\nROOT = getattr(os, "geteuid", -1)() == 0\n')
+    assert _flagged('import os\nROOT = getattr(os, "geteuid", not True)() == 0\n')
