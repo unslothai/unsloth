@@ -367,17 +367,21 @@ def test_the_import_fallback_matches_the_resolver(monkeypatch):
         if cc._toolchain_path_unparseable(path) != toolchain_path_unparseable(path):
             disagreed.append(char)
 
-    assert disagreed == [], (
-        "the fallback and the resolver disagree on: "
-        + ", ".join(repr(c) for c in disagreed))
+    assert disagreed == [], "the fallback and the resolver disagree on: " + ", ".join(
+        repr(c) for c in disagreed
+    )
 
 
-@pytest.mark.parametrize("name", [
-    pytest.param("my studio", id = "a space"),
-    pytest.param("o'brien", id = "an apostrophe"),
-])
+@pytest.mark.parametrize(
+    "name",
+    [
+        pytest.param("my studio", id = "a space"),
+        pytest.param("o'brien", id = "an apostrophe"),
+    ],
+)
 def test_an_unparseable_cache_root_leaves_the_inductor_pin_alone(
-        name, monkeypatch, tmp_path, fake_megacache):
+    name, monkeypatch, tmp_path, fake_megacache
+):
     """Startup declines to pin TORCHINDUCTOR_CACHE_DIR into a root the C++ builders cannot
     parse, and this assignment used to overwrite that decision on the first compiled diffusion
     run. Checking the environment just after launch would not have caught it."""

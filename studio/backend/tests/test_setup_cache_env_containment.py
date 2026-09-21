@@ -154,12 +154,16 @@ def test_a_root_without_spaces_still_pins_the_compiler_caches(monkeypatch, tmp_p
         assert os.environ.get(key, "").startswith(str(plain)), key
 
 
-@pytest.mark.parametrize("name", [
-    pytest.param("o'brien", id = "an apostrophe, which shlex reads as an opening quote"),
-    pytest.param('say"hi', id = "a double quote"),
-])
+@pytest.mark.parametrize(
+    "name",
+    [
+        pytest.param("o'brien", id = "an apostrophe, which shlex reads as an opening quote"),
+        pytest.param('say"hi', id = "a double quote"),
+    ],
+)
 def test_a_quoted_root_leaves_the_compiler_caches_to_their_own_defaults(
-        name, monkeypatch, tmp_path):
+    name, monkeypatch, tmp_path
+):
     """Whitespace was the only character the guard knew, and a quote is worse than a space: in
     POSIX mode shlex swallows the rest of the command into one argument and deletes the quote,
     so the build fails somewhere less obvious than a split path. "/home/o'brien" is an ordinary
@@ -194,11 +198,23 @@ def test_a_backslash_in_a_posix_root_leaves_the_compiler_caches_alone(monkeypatc
         assert key not in os.environ, key
 
 
-@pytest.mark.parametrize("name", [
-    "plain", "my dir", "o'brien", 'say"hi', "a\tb",
-    pytest.param("a\\b", marks = pytest.mark.skipif(
-        os.name == "nt", reason = "cpp_builder rewrites the separator before building the command")),
-])
+@pytest.mark.parametrize(
+    "name",
+    [
+        "plain",
+        "my dir",
+        "o'brien",
+        'say"hi',
+        "a\tb",
+        pytest.param(
+            "a\\b",
+            marks = pytest.mark.skipif(
+                os.name == "nt",
+                reason = "cpp_builder rewrites the separator before building the command",
+            ),
+        ),
+    ],
+)
 def test_the_guard_agrees_with_what_shlex_actually_does_to_the_command(name, tmp_path):
     """The test that keeps the character list honest. Rather than restating the predicate, this
     builds the command shape cpp_builder builds and asks shlex.split whether the path comes back
@@ -215,7 +231,8 @@ def test_the_guard_agrees_with_what_shlex_actually_does_to_the_command(name, tmp
 
     assert sr.toolchain_path_unparseable(path) is not survives, (
         f"{name!r}: predicate says {sr.toolchain_path_unparseable(path)}, "
-        f"shlex.split round trip says {survives}")
+        f"shlex.split round trip says {survives}"
+    )
 
 
 def test_no_character_at_all_lets_a_mangled_path_through(tmp_path):
@@ -239,8 +256,7 @@ def test_no_character_at_all_lets_a_mangled_path_through(tmp_path):
         path = f"{tmp_path}/unsloth{char}root/cache/torchinductor"
         command = f"g++ {path}/main.cpp -o {path}/main.so"
         try:
-            survives = shlex.split(command) == [
-                "g++", f"{path}/main.cpp", "-o", f"{path}/main.so"]
+            survives = shlex.split(command) == ["g++", f"{path}/main.cpp", "-o", f"{path}/main.so"]
         except ValueError:
             survives = False
         if not survives and not sr.toolchain_path_unparseable(path):
@@ -248,7 +264,8 @@ def test_no_character_at_all_lets_a_mangled_path_through(tmp_path):
 
     assert leaked == [], (
         "these characters would be pinned into a compiler command line that mangles them: "
-        + ", ".join(repr(c) for c in leaked))
+        + ", ".join(repr(c) for c in leaked)
+    )
 
 
 def test_an_explicit_spaced_compiler_cache_is_left_alone(monkeypatch, tmp_path):

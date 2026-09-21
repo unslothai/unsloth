@@ -156,10 +156,12 @@ def _toolchain_path_unparseable(value: str) -> bool:
     try:
         from utils.paths.storage_roots import toolchain_path_unparseable
     except ImportError:
-        return (any(ch.isspace() for ch in value)
-                or "'" in value
-                or '"' in value
-                or (os.name != "nt" and "\\" in value))
+        return (
+            any(ch.isspace() for ch in value)
+            or "'" in value
+            or '"' in value
+            or (os.name != "nt" and "\\" in value)
+        )
     return toolchain_path_unparseable(value)
 
 
