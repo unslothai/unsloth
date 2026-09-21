@@ -12971,3 +12971,43 @@ def test_a_hermes_per_file_stat_failure_that_is_a_gap_is_reported(monkeypatch):
         with collecting_scan_incidents() as incidents:
             assert hermes_service.staged_gguf_files(directory) == []
         assert incidents == [], f"a file deleted mid-scan was reported as a gap: {incidents}"
+
+
+def test_an_unreadable_hf_cache_repo_is_not_a_complete_scan(monkeypatch):
+    """``_resolve_gguf_load_snapshot`` answers None for a repo dir it could not stat.
+
+    From the caller that is indistinguishable from a cache holding nothing for that repo,
+    so the pass would publish as complete over a repo it never got to look inside, and a
+    miss read from it would be memoized as a confirmed absence.
+    """
+    import pathlib
+
+    from core.inference.scan_incidents import collecting_scan_incidents
+
+    with tempfile.TemporaryDirectory() as root:
+        repo = pathlib.Path(root) / "models--unsloth--B-GGUF"
+        (repo / "snapshots").mkdir(parents = True)
+        real_is_dir = pathlib.Path.is_dir
+
+        def is_dir_fails(self, *args, **kwargs):
+            if self.name == "snapshots":
+                raise PermissionError(13, "Permission denied")
+            return real_is_dir(self, *args, **kwargs)
+
+        monkeypatch.setattr(pathlib.Path, "is_dir", is_dir_fails)
+        with collecting_scan_incidents() as incidents:
+            assert resolver._resolve_gguf_load_snapshot(repo) is None
+        assert any(
+            "unreadable" in note for note in incidents
+        ), f"a cache repo the scan could not read was dropped silently: {incidents}"
+
+    # A repo with no snapshots directory at all is an ANSWER: the repo dir itself is the
+    # load path, and nothing was hidden from the pass. The stat patch goes first, or this
+    # half measures the patch rather than the code.
+    monkeypatch.undo()
+    with tempfile.TemporaryDirectory() as root:
+        flat = pathlib.Path(root) / "models--unsloth--C-GGUF"
+        flat.mkdir()
+        with collecting_scan_incidents() as incidents:
+            assert resolver._resolve_gguf_load_snapshot(flat) == flat
+        assert incidents == [], f"a flat cache repo was reported as a gap: {incidents}"

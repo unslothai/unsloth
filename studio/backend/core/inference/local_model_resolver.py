@@ -151,6 +151,12 @@ def _resolve_gguf_load_snapshot(p):
         if not snapshots.is_dir():
             return p
     except OSError:
+        # None here drops the repo from the index, and from outside that reads exactly like
+        # a cache holding nothing for it, so the pass would publish as complete over a repo
+        # it could not look inside. An incident rather than the skipped-source counter: this
+        # helper is also reached off a scan, where note_scan_incident is a no-op and the
+        # counter would charge the next pass for it.
+        note_scan_incident(f"hf cache repo unreadable: {p}")
         return None
 
     # Scoped to this exact repo dir so case-colliding repos cannot cross-load.
