@@ -871,9 +871,7 @@ def _button_classes(block: str, tag: str, variant: str) -> str | None:
     identifier = re.fullmatch(r"[A-Za-z_$][\w$]*", inner)
     if identifier:
         # A local constant: read its own definition out of the same function.
-        definition = re.search(
-            rf"const {re.escape(inner)} =(.*?);\n", block, re.S
-        )
+        definition = re.search(rf"const {re.escape(inner)} =(.*?);\n", block, re.S)
         if not definition:
             return None
         inner = definition.group(1)
@@ -1396,9 +1394,7 @@ def test_chat_sidebar_row_actions_visible_on_coarse_pointers():
     # edge sits that far inside the container's, and its left edge is offset + pr + size.
     # Leaving the pr out under-measured every row by 1.5, which is how the project row's
     # pr-14 passed while its pin reached 15.
-    inner = re.search(
-        r"\.sidebar-row-action\s*\{[^}]*?\bpr-(\d+(?:\.\d+)?)", live_css
-    )
+    inner = re.search(r"\.sidebar-row-action\s*\{[^}]*?\bpr-(\d+(?:\.\d+)?)", live_css)
     assert inner, (
         "index.css no longer gives .sidebar-row-action a pr-N, so this guard cannot tell "
         "where inside its container the glyph sits"
