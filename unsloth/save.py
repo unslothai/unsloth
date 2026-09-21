@@ -1617,35 +1617,64 @@ def _llm_compressor_version_is_supported():
 
 
 def _llm_compressor_imports_cleanly():
-    """Does llm-compressor import in the conditions the compressed export actually runs in?
+    """Is llm-compressor usable in the conditions the compressed export actually runs in?
 
-    An in-process failure has two causes metadata cannot tell apart: Unsloth's transformers
-    patches, which are harmless because the export quantizes in an unpatched subprocess, or
-    an incomplete distribution (compressed-tensors missing, a truncated install), which pip
-    is what fixes. Skipping the install on the second defers a fixable failure past the whole
-    model merge to _compressed_quantize.py's own import.
+    Two questions, and metadata answers neither. An in-process import failure has two causes
+    it cannot tell apart: Unsloth's transformers patches, harmless because the export
+    quantizes in an unpatched subprocess, or an incomplete distribution (compressed-tensors
+    missing, a truncated install), which pip is what fixes. And the version metadata reports
+    is the version of a DISTRIBUTION, which need not be the code that gets imported: a
+    source checkout earlier on sys.path shadows an installed wheel, so a stale in-range
+    wheel would bless an out-of-range checkout that both imports actually resolve.
 
-    So ask the subprocess. The runner is launched as `sys.executable <runner>` and imports
-    exactly these two symbols, and `-c` never imports unsloth, so this reproduces its import
-    conditions. Unknown answers (timeout, a python that will not spawn) count as importable,
-    since falling through triggers the re-resolve this guard avoids.
+    So ask the subprocess, and ask it what it imported. The runner is launched as
+    `sys.executable <runner>`, which puts the RUNNER'S directory on sys.path[0] and does not
+    put the current directory there at all, so the probe is written to a file and run the
+    same way with sys.path[0] pointed at the runner's directory. `-c` instead adds the cwd,
+    which made the probe strictly more permissive than the export: a checkout visible only
+    through the cwd passed here and then failed in the runner after the whole merge.
+
+    Unknown answers (timeout, a python that will not spawn, no version to read) count as
+    usable, since falling through triggers the destructive re-resolve this guard avoids.
     """
+    runner_dir = os.path.dirname(os.path.abspath(__file__))
     probe = (
+        "import sys\n"
+        f"sys.path[0] = {runner_dir!r}\n"
         "from llmcompressor import oneshot\n"
         "from llmcompressor.modifiers.quantization import QuantizationModifier\n"
+        "import llmcompressor\n"
+        "print(getattr(llmcompressor, '__version__', '') or '', end = '')\n"
     )
+    import tempfile
+
     try:
-        completed = subprocess.run(
-            [sys.executable, "-c", probe],
-            stdout = subprocess.DEVNULL,
-            stderr = subprocess.DEVNULL,
-            # The import pulls in torch and transformers on a cold cache. Paid once, on a
-            # path where the in-process import already failed and a long merge is next.
-            timeout = 600,
-        )
+        with tempfile.TemporaryDirectory() as probe_dir:
+            probe_path = os.path.join(probe_dir, "unsloth_llm_compressor_probe.py")
+            with open(probe_path, "w", encoding = "utf-8") as handle:
+                handle.write(probe)
+            completed = subprocess.run(
+                [sys.executable, probe_path],
+                stdout = subprocess.PIPE,
+                stderr = subprocess.DEVNULL,
+                # The import pulls in torch and transformers on a cold cache. Paid once, on
+                # a path where the in-process import already failed and a long merge is next.
+                timeout = 600,
+            )
     except Exception:
         return True
-    return completed.returncode == 0
+    if completed.returncode != 0:
+        return False
+    # The version of the code the import RESOLVED, not of a same-named distribution
+    # elsewhere on the path. Unreadable or unparseable is unknown, which stays usable.
+    reported = (completed.stdout or b"").decode("utf8", "replace").strip()
+    if not reported:
+        return True
+    try:
+        from packaging.requirements import Requirement
+        return Requirement(_LLM_COMPRESSOR_SPEC).specifier.contains(reported, prereleases = True)
+    except Exception:
+        return True
 
 
 def install_llm_compressor():

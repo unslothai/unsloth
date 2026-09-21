@@ -35,6 +35,7 @@ def _pip_invoked_when(
     reported: str | None,
     *,
     subprocess_import: object = 0,
+    probe_version: str = "",
     probes_out: list | None = None,
 ) -> bool:
     """Run the guard with llmcompressor reported as *reported*, answering "did it pip?".
@@ -51,7 +52,9 @@ def _pip_invoked_when(
         probes.append(list(cmd))
         if isinstance(subprocess_import, BaseException):
             raise subprocess_import
-        return subprocess.CompletedProcess(cmd, subprocess_import)
+        # The probe prints the version of the module it actually IMPORTED, which is not
+        # necessarily the version metadata reports for the same-named distribution.
+        return subprocess.CompletedProcess(cmd, subprocess_import, stdout = probe_version.encode())
 
     monkeypatch.setattr(subprocess, "run", fake_run)
 
@@ -101,7 +104,12 @@ def test_a_metadata_free_checkout_the_export_can_import_is_not_reinstalled(monke
     probes: list[list[str]] = []
     assert _pip_invoked_when(monkeypatch, None, probes_out = probes) is False
     assert len(probes) == 1, f"expected one clean-subprocess probe, got {probes}"
-    assert probes[0][:2] == [sys.executable, "-c"], probes[0]
+    # By FILE, the way the export runner is launched, not `-c`: `-c` puts the cwd on
+    # sys.path and the runner does not, so a checkout visible only through the cwd passed
+    # the probe and then failed in the runner after the whole merge.
+    assert probes[0][0] == sys.executable, probes[0]
+    assert probes[0][1].endswith(".py"), probes[0]
+    assert "-c" not in probes[0], probes[0]
 
 
 def test_a_supported_version_is_not_reinstalled(monkeypatch):
@@ -112,7 +120,12 @@ def test_a_supported_version_is_not_reinstalled(monkeypatch):
     # And it was decided by asking, not assumed: one probe, this interpreter, -c so unsloth
     # is never imported into it.
     assert len(probes) == 1, f"expected one clean-subprocess probe, got {probes}"
-    assert probes[0][:2] == [sys.executable, "-c"], probes[0]
+    # By FILE, the way the export runner is launched, not `-c`: `-c` puts the cwd on
+    # sys.path and the runner does not, so a checkout visible only through the cwd passed
+    # the probe and then failed in the runner after the whole merge.
+    assert probes[0][0] == sys.executable, probes[0]
+    assert probes[0][1].endswith(".py"), probes[0]
+    assert "-c" not in probes[0], probes[0]
 
 
 def test_an_installed_version_that_cannot_import_anywhere_is_repaired(monkeypatch):
@@ -297,3 +310,53 @@ def test_an_out_of_range_version_is_not_accepted_just_because_it_imports(monkeyp
         pass
     assert calls, f"{version} imported and was accepted without being corrected"
     assert any(_LLM_COMPRESSOR_SPEC in " ".join(cmd) for cmd in calls), calls
+
+
+def test_an_out_of_range_module_is_repaired_even_when_metadata_looks_fine(monkeypatch):
+    """The version that matters is the one the import RESOLVES.
+
+    importlib.metadata answers for a distribution, and a source checkout earlier on
+    sys.path shadows an installed wheel. A stale in-range wheel therefore blessed an
+    out-of-range checkout that both the probe and the export subprocess actually import,
+    so the pin was decorative exactly where it is load bearing.
+    """
+    from packaging.requirements import Requirement
+
+    assert not Requirement(_LLM_COMPRESSOR_SPEC).specifier.contains(
+        "0.13.0", prereleases = True
+    ), "0.13.0 must be outside the pin for this case to mean anything"
+
+    # Metadata says the wheel is fine; the import resolves a newer checkout.
+    assert (
+        _pip_invoked_when(monkeypatch, "0.12.0", probe_version = "0.13.0") is True
+    ), "an out-of-range module was accepted because a same-named wheel was in range"
+    # And the in-range case is still skipped, so this is not just "always reinstall".
+    assert _pip_invoked_when(monkeypatch, "0.12.0", probe_version = "0.12.0") is False
+    # A module with no __version__ to read is unknown, and unknown stays usable: the
+    # alternative is the destructive re-resolve this guard exists to avoid.
+    assert _pip_invoked_when(monkeypatch, "0.12.0", probe_version = "") is False
+
+
+def test_the_probe_runs_the_way_the_export_runner_is_launched():
+    """`sys.executable <file>`, with sys.path[0] the runner's directory.
+
+    `-c` puts the CURRENT DIRECTORY on sys.path, which the file-based runner never does, so
+    a checkout visible only through the cwd passed the probe and then failed inside the
+    runner after the whole model merge. The probe must not be more permissive than the
+    thing it is evidence about.
+    """
+    import inspect
+
+    from unsloth.save import _llm_compressor_imports_cleanly
+
+    src = inspect.getsource(_llm_compressor_imports_cleanly)
+    assert '"-c"' not in src, "the probe still runs with -c, which adds the cwd to sys.path"
+    assert (
+        "sys.path[0] = " in src
+    ), "the probe does not pin sys.path[0], so it does not reproduce the runner's search path"
+    assert (
+        "os.path.dirname(os.path.abspath(__file__))" in src
+    ), "the pinned path is not the runner's own directory"
+    assert (
+        "probe_path" in src and "subprocess.run" in src
+    ), "the probe is no longer executed as a file"
