@@ -62,8 +62,7 @@ def _is_os_geteuid(node: ast.AST) -> bool:
         and node.attr == "geteuid"
         and isinstance(node.value, ast.Name)
         and node.value.id == "os"
-        # `os.geteuid = lambda: 0` CREATES the attribute on Windows rather than reading
-        # it, and tests/test_allow_cpu_import_driverless.py does exactly that. An
+        # `os.geteuid = lambda: 0` CREATES the attribute rather than reading it. An
         # augmented target is a Store in the AST but reads before it writes, so it is
         # admitted by _geteuid_sites instead.
         and not isinstance(node.ctx, ast.Store)
@@ -396,44 +395,11 @@ def _has_future_annotations(tree: ast.Module) -> bool:
     )
 
 
-def _assigns_os_geteuid(expr: ast.AST) -> bool:
-    """`os.geteuid = lambda: 0` puts the attribute there, so every later read finds it.
-    Not `os.geteuid += 1`, whose target is a Store in the AST but reads first and so has
-    already raised."""
-    if isinstance(expr, ast.AugAssign):
-        return False
-    return any(
-        isinstance(node, ast.Attribute)
-        and node.attr == "geteuid"
-        and isinstance(node.value, ast.Name)
-        and node.value.id == "os"
-        and isinstance(node.ctx, ast.Store)
-        for node in ast.walk(expr)
-    )
-
-
 def _offending_sites(tree: ast.Module):
-    """Every unguarded import-time lookup, in source order, stopping at the point the
-    module gives os.geteuid a definition of its own."""
-    # Only a definition in the module body counts. One inside an `if` the scan cannot
-    # decide is not guaranteed on Windows, and treating it as one would silence every
-    # lookup after it. Aliases are normalised first, or `_os.geteuid = ...` is not seen
-    # to be the same attribute as the reads it settles.
-    _normalise_os_aliases(tree)
-    definers = {
-        statement
-        for statement in tree.body
-        if isinstance(statement, ast.Assign)
-        or (isinstance(statement, ast.AnnAssign) and statement.value is not None)
-        if _assigns_os_geteuid(statement)
-    }
+    """Every unguarded import-time lookup, in source order."""
     for expr in _import_time_expressions(tree):
         if not _is_guarded(expr):
-            # the definer's own right-hand side is scanned before it settles anything:
-            # `os.geteuid = wrap(os.geteuid)` reads the attribute to wrap it
             yield from _geteuid_sites(expr)
-        if expr in definers:
-            return  # from here on the attribute exists, even on Windows
 
 
 def _import_time_expressions(tree: ast.Module):
@@ -458,11 +424,15 @@ def _import_time_expressions(tree: ast.Module):
     three levels inside a module-level `while` is a cost worth paying for a check that
     never cries wolf. It would not have missed the six sites that started this.
 
-    One expression stays inside a function for the same reason: a module-level helper,
+    Two things it does not do, for the same reason. A module-level helper,
     `def is_root(): return os.geteuid() == 0` called as `ROOT = is_root()`, does fail on
-    Windows and is not reported. Finding it means following a call into a definition,
-    which is a different kind of analysis than reading one expression, and it would have
-    to be right about rebinding, shadowing and imports to be worth trusting."""
+    Windows and is not reported: finding it means following a call into a definition,
+    which is a different kind of analysis than reading one expression. And a module that
+    writes `os.geteuid = lambda: 0` and then reads it back is reported although it would
+    work, because tracking that means knowing which branch ran, whether the alias was
+    rebound and whether the annotation was deferred. Both are stated rather than
+    approximated; the second fails loudly and is one line to fix in the module that
+    provokes it, and nothing in this tree does."""
     _normalise_os_aliases(tree)
     # PEP 649 makes annotations lazy by default from 3.14, and this project's
     # requires-python is >=3.9,<3.15, so both halves of that range are live
@@ -502,11 +472,6 @@ def _import_time_expressions(tree: ast.Module):
                 yield statement.value
             if not isinstance(statement.target, ast.Name):
                 yield statement.target
-            if _assigns_os_geteuid(statement):
-                # _offending_sites matches the definer by identity, and it would never
-                # see this one otherwise: `os.geteuid: object = lambda: 0` under a
-                # deferred annotation settles the attribute like any other assignment
-                yield statement
             return
         if any(
             isinstance(child, (ast.stmt, ast.ExceptHandler, MATCH_CASE))
@@ -888,13 +853,6 @@ def test_an_augmented_assignment_reads_before_it_writes():
     assert not _flagged("import os\nos.geteuid = lambda: 0\n")
 
 
-def test_a_module_that_defines_geteuid_itself_is_left_alone():
-    """`os.geteuid = lambda: 0` puts the attribute there, so every read after it finds it
-    even on Windows. Reads BEFORE it still fail."""
-    assert not _flagged("import os\nos.geteuid = lambda: 0\nROOT = os.geteuid() == 0\n")
-    assert _flagged("import os\nROOT = os.geteuid() == 0\nos.geteuid = lambda: 0\n")
-
-
 def test_a_destructured_generator_is_advanced_here():
     """`ROOT, = (os.geteuid() for _ in xs)` has to advance the generator to unpack it."""
     assert _flagged("import os\nROOT, = (os.geteuid() for _ in range(1))\n")
@@ -905,34 +863,6 @@ def test_literal_arithmetic_is_still_a_literal():
     """`1 + 2` is a BinOp and still a number nobody can call; `a + b` could be anything."""
     assert _flagged('import os\nROOT = getattr(os, "geteuid", 1 + 2)() == 0\n')
     assert not _flagged('import os\nROOT = getattr(os, "geteuid", a + b)() == 0\n')
-
-
-def test_a_conditional_definition_does_not_count():
-    """`if is_ci(): os.geteuid = lambda: 0` is not guaranteed on Windows, so a later read
-    can still fail. Only a definition in the module body settles it."""
-    assert _flagged(
-        "import os\nif is_ci():\n    os.geteuid = lambda: 0\nROOT = os.geteuid() == 0\n"
-    )
-    assert not _flagged("import os\nos.geteuid = lambda: 0\nROOT = os.geteuid() == 0\n")
-
-
-def test_an_annotation_without_a_value_defines_nothing():
-    """`os.geteuid: int` states a type and binds nothing, so a later read still fails."""
-    assert _flagged("import os\nos.geteuid: int\nROOT = os.geteuid() == 0\n")
-    assert not _flagged("import os\nos.geteuid: object = lambda: 0\nROOT = os.geteuid() == 0\n")
-
-
-def test_the_defining_assignment_reads_before_it_settles_anything():
-    """`os.geteuid = wrap(os.geteuid)` looks the attribute up to wrap it, and that lookup
-    is the one that fails on Windows."""
-    assert _flagged("import os\nos.geteuid = wrap(os.geteuid)\nROOT = os.geteuid() == 0\n")
-    assert not _flagged("import os\nos.geteuid = lambda: 0\nROOT = os.geteuid() == 0\n")
-
-
-def test_the_definition_is_found_through_an_alias():
-    """`import os as _os` then `_os.geteuid = lambda: 0` settles the same attribute."""
-    assert not _flagged("import os as _os\n_os.geteuid = lambda: 0\nROOT = _os.geteuid() == 0\n")
-    assert _flagged("import os as _os\nROOT = _os.geteuid() == 0\n")
 
 
 def test_a_relative_import_is_not_the_stdlib_os():
@@ -951,9 +881,13 @@ def test_an_eager_comprehension_advances_the_generator_it_iterates():
     assert not _flagged("import os\nGEN = (x for x in (os.geteuid() for _ in range(1)))\n")
 
 
-def test_a_deferred_annotated_assignment_still_settles_the_attribute():
-    """`os.geteuid: object = lambda: 0` is a definition whatever the annotation does, and
-    the deferred branch has to say so or nothing after it is spared."""
-    source = "import os\nos.geteuid: object = lambda: 0\nROOT = os.geteuid() == 0\n"
-    assert not _flagged(source)
-    assert not _flagged("from __future__ import annotations\n" + source)
+def test_a_later_read_of_a_module_written_attribute_is_still_reported():
+    """The scan does not track what a module does to os.geteuid itself: after
+    `os.geteuid = lambda: 0` a read really would work on Windows, and it is still
+    reported. Deliberate, and the loudest failure mode available, since the fix is one
+    line in the module that provoked it. Nothing in this tree does it: the only
+    occurrence, in tests/test_allow_cpu_import_driverless.py, is inside a source string
+    that ast.parse never reaches as code."""
+    assert _flagged("import os\nos.geteuid = lambda: 0\nROOT = os.geteuid() == 0\n")
+    # the assignment itself is not a lookup, whatever follows it
+    assert not _flagged("import os\nos.geteuid = lambda: 0\n")
