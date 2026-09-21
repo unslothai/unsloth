@@ -9026,11 +9026,17 @@ def installed_runtime_health(
 def _damaged_entrypoint(install_dir: Path, host: HostInfo) -> Path | None:
     """The first runtime entrypoint the loader would not start, or None.
 
-    build/bin, and the install root's own copy when one is there:
-    ``_find_llama_server_binary`` reaches the root first, and a wrapper
-    ``create_exec_entrypoint`` had to write instead of a symlink rots on its own. An
-    absent root copy is not a pin and the finder falls through, which is also what a
-    link whose target went looks like to ``exists()``.
+    build/bin, and the install root's own copy only when discovery would actually
+    start it. ``create_exec_entrypoint`` writes a real wrapper at the root when it
+    cannot make a symlink, and that wrapper can rot on its own, but
+    ``resolve_llama_server_binary`` returns the first *usable* candidate, not the
+    first that exists: ``_usable_binary`` is ``is_file()`` plus ``os.access(X_OK)``
+    off Windows. So a root wrapper whose execute bit is gone is skipped and build/bin
+    runs, and calling that tree damaged sends a working runtime through a repair
+    (``test_runtime_skips_non_executable_root_entrypoint_for_valid_build_layout``).
+    What still counts is a root copy discovery WOULD select and then fail on, which
+    off Windows means an executable empty file and on Windows any empty file, since
+    ``_usable_binary`` does not consult the execute bit there.
 
     One owner for the question, so the launch verdict and both keep decisions cannot
     answer it differently: a tree one rejects and another keeps is repaired by
@@ -9043,9 +9049,27 @@ def _damaged_entrypoint(install_dir: Path, host: HostInfo) -> Path | None:
         if not _entrypoint_is_runnable(binary, host):
             return binary
         root_binary = install_dir / f"{name}{ext}"
-        if root_binary.exists() and not _entrypoint_is_runnable(root_binary, host):
+        if _discovery_would_select(root_binary, host) and not _entrypoint_is_runnable(
+            root_binary, host
+        ):
             return root_binary
     return None
+
+
+def _discovery_would_select(binary: Path, host: HostInfo) -> bool:
+    """Whether the backend's resolver would stop at this candidate.
+
+    Mirrors ``_usable_binary`` in studio/backend/utils/llama_cpp_path_settings.py,
+    which is what decides the question at runtime. Kept in step with it deliberately:
+    a candidate the resolver walks past cannot break a launch, so grading it would
+    repair a runtime that works.
+    """
+    try:
+        if not binary.is_file():
+            return False
+    except OSError:
+        return False
+    return host.is_windows or os.access(binary, os.X_OK)
 
 
 def _entrypoint_is_runnable(binary: Path, host: HostInfo) -> bool:

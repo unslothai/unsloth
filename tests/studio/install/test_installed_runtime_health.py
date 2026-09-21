@@ -680,23 +680,88 @@ def test_a_directory_where_a_runtime_entrypoint_belongs_is_broken(tmp_path, name
 
 @pytest.mark.skipif(os.name == "nt", reason = "the root wrapper is written on POSIX only")
 @pytest.mark.parametrize("name", ["server", "quantize"])
-def test_a_rotten_root_entrypoint_is_not_saved_by_a_healthy_build_bin(tmp_path, name):
+def test_an_empty_root_entrypoint_is_not_saved_by_a_healthy_build_bin(tmp_path, name):
     """``create_exec_entrypoint`` writes a real wrapper at the install root when it cannot
-    make a symlink, and ``_find_llama_server_binary`` reaches that root copy before
-    build/bin, so it can rot on its own. ``_existing_install_runs`` probes the root copies
-    first for exactly this reason; grading only build/bin here left the tree Ready while the
-    backend launched the wrapper the loader refuses."""
+    make a symlink, and the resolver reaches that root copy before build/bin, so it can rot
+    on its own. Empty is the rot that still gets selected: ``_usable_binary`` asks is_file()
+    and the execute bit, both of which a truncated wrapper keeps, and the exec then dies on
+    ENOEXEC."""
     root = _macos_tree(tmp_path)
     wrapper = root / f"llama-{name}"
     wrapper.write_text("#!/bin/sh\n", encoding = "utf-8")
     os.chmod(wrapper, 0o755)
     assert ILP.installed_runtime_health(root, host = _macos_host()) == (True, "")
 
-    os.chmod(wrapper, 0o644)
+    wrapper.write_text("", encoding = "utf-8")
+    os.chmod(wrapper, 0o755)
     assert ILP.installed_runtime_health(root, host = _macos_host()) == (
         False,
         "llama_runtime_binaries_missing",
     )
+
+
+@pytest.mark.skipif(os.name == "nt", reason = "the execute bit is a POSIX test")
+@pytest.mark.parametrize("name", ["server", "quantize"])
+def test_a_root_entrypoint_the_resolver_walks_past_is_not_damage(tmp_path, name):
+    """A root wrapper without its execute bit is skipped, not selected, so the tree works.
+
+    ``resolve_llama_server_binary`` returns the first candidate ``_usable_binary`` accepts,
+    and that asks ``os.access(X_OK)`` off Windows, so a 0644 wrapper is walked past and
+    build/bin runs (``test_runtime_skips_non_executable_root_entrypoint_for_valid_build_layout``
+    in studio/backend/tests/test_llama_cpp_path_settings.py pins the same thing from the other
+    side). Grading it broken sent a working runtime through a repair, and where repair is
+    unavailable it blocked the launch outright.
+    """
+    root = _macos_tree(tmp_path)
+    wrapper = root / f"llama-{name}"
+    wrapper.write_text("#!/bin/sh\n", encoding = "utf-8")
+    os.chmod(wrapper, 0o644)
+    assert ILP.installed_runtime_health(root, host = _macos_host()) == (True, "")
+    # A directory of that name is the same shape to the resolver: is_file() is false.
+    wrapper.unlink()
+    wrapper.mkdir()
+    assert ILP.installed_runtime_health(root, host = _macos_host()) == (True, "")
+
+
+def test_an_empty_windows_root_entrypoint_is_still_damage(tmp_path):
+    """Windows has no execute bit, so ``_usable_binary`` there is is_file() alone and an
+    empty root .exe IS what discovery selects. The non-executable escape above must not
+    reach it."""
+    root = _windows_tree(
+        tmp_path, _PUBLISHED_WINDOWS_PAYLOAD, marker = '{"release_tag": "b10840", "source": "published"}'
+    )
+    (root / "llama-server.exe").write_bytes(b"")
+    assert ILP.installed_runtime_health(root, host = _windows_host()) == (
+        False,
+        "llama_runtime_binaries_missing",
+    )
+
+
+def test_the_selection_rule_matches_the_resolver_the_backend_uses(tmp_path):
+    """The two are one question asked twice, so they are checked against each other.
+
+    ``_discovery_would_select`` mirrors ``_usable_binary``; a drift here is a runtime that
+    launches a binary we called fine, or a repair of one we called broken.
+    """
+    backend_dir = str(Path(__file__).resolve().parents[3] / "studio" / "backend")
+    if backend_dir not in sys.path:
+        sys.path.insert(0, backend_dir)
+    from utils.llama_cpp_path_settings import _usable_binary
+
+    candidate = tmp_path / "llama-server"
+    candidate.write_text("#!/bin/sh\n", encoding = "utf-8")
+    for mode, platform, host in (
+        (0o755, "linux", _macos_host()),
+        (0o644, "linux", _macos_host()),
+    ):
+        os.chmod(candidate, mode)
+        assert ILP._discovery_would_select(candidate, host) == _usable_binary(
+            candidate, platform = platform
+        ), mode
+    # Absent on both sides, whatever the platform.
+    candidate.unlink()
+    assert ILP._discovery_would_select(candidate, _macos_host()) is False
+    assert _usable_binary(candidate, platform = "linux") is False
 
 
 @pytest.mark.skipif(os.name == "nt", reason = "the root wrapper is written on POSIX only")
