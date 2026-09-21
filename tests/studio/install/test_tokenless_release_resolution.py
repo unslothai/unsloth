@@ -609,3 +609,47 @@ class TestPinnedPublishedRelease:
         monkeypatch.setattr(MOD, "github_release", lambda repo, tag: rest)
         monkeypatch.setattr(MOD, "web_release_payload", _boom)
         assert list(MOD.iter_release_payloads_by_time(UPSTREAM, "b9415", "latest")) == [rest]
+
+
+class TestPinnedTagHttpFailures:
+    """HTTPError subclasses URLError, so the HTTPError clause must route the fallback."""
+
+    def _http(self, code):
+        def call(*args, **kwargs):
+            raise urllib.error.HTTPError(
+                "https://api.github.com/x", code, "boom", None, None
+            )
+
+        return call
+
+    @pytest.mark.parametrize("code", [500, 502, 503, 504])
+    def test_a_retryable_http_failure_reaches_the_release_page(self, monkeypatch, code):
+        monkeypatch.setattr(MOD, "github_release", self._http(code))
+        _install_web(
+            monkeypatch,
+            {
+                "expanded_assets/b9415": _expanded_assets(
+                    UPSTREAM, "b9415", {"llama-b9415-bin-macos-arm64.tar.gz": DIGEST_A}
+                )
+            },
+        )
+        got = list(MOD.iter_release_payloads_by_time(UPSTREAM, "", "b9415"))
+        assert [release["tag_name"] for release in got] == ["b9415"]
+
+    def test_a_404_still_scans_rather_than_reading_the_page(self, monkeypatch):
+        # The tag does not exist, so its release page cannot answer either.
+        monkeypatch.setattr(MOD, "github_release", self._http(404))
+        monkeypatch.setattr(MOD, "github_releases", lambda repo, **kw: [])
+        monkeypatch.setattr(MOD, "web_release_payload", _boom)
+        monkeypatch.setattr(MOD, "web_release_tags", _boom)
+        assert list(MOD.iter_release_payloads_by_time(UPSTREAM, "", "b9415")) == []
+
+    def test_the_fork_still_re_raises_a_retryable_http_failure(self, monkeypatch):
+        monkeypatch.setattr(MOD, "github_release", self._http(503))
+        monkeypatch.setattr(MOD, "web_release_payload", _boom)
+        with pytest.raises(urllib.error.HTTPError):
+            list(
+                MOD.iter_release_payloads_by_time(
+                    MOD.DEFAULT_PUBLISHED_REPO, "", "b9415"
+                )
+            )

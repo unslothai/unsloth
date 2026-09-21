@@ -1181,8 +1181,14 @@ def iter_release_payloads_by_time(
             yield github_release(repo, requested_tag)
             return
         except urllib.error.HTTPError as exc:
+            # HTTPError subclasses URLError, so this clause shadows the one below and
+            # has to route the fallback itself; a 404 means the tag does not exist,
+            # which is a reason to scan rather than to read its page.
             if exc.code == 404:
                 log(f"release tag {requested_tag} not found in {repo}; scanning recent releases")
+            elif _web_fallback_eligible(repo):
+                yield _web_release_or_raise(repo, requested_tag, exc)
+                return
             else:
                 raise
         except (urllib.error.URLError, RuntimeError) as exc:
