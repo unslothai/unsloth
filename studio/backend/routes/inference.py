@@ -9065,6 +9065,13 @@ def _alias_probe_taken(identifier: str) -> bool:
         return True
 
 
+def _alias_probe_release() -> None:
+    """Give a claim back unanswered, so the next request probes rather than shortcutting."""
+    with _alias_probe_lock:
+        _alias_probe_forget_stale_locked()
+        _alias_probe_inflight.clear()
+
+
 def _alias_probe_settle() -> None:
     """Called once a resolver pass returns: the index is fresh and any alias is recorded.
 
@@ -9776,7 +9783,13 @@ async def _maybe_auto_switch_model(
             await _reject_unservable_model(requested_model, fastapi_request)
             return
 
+    # Whether a resolver pass actually began. A cancelled generation raises out of
+    # _resolve_and_switch before either resolver is called, and settling on that would mark
+    # the path answered without anything having looked.
+    alias_probe_pass_ran = False
+
     async def _resolve_and_switch() -> None:
+        nonlocal alias_probe_pass_ran
         from core.inference.openai_auto_download import looks_like_quant, split_model_ref
 
         _raise_if_generation_cancelled()
@@ -9792,6 +9805,7 @@ async def _maybe_auto_switch_model(
             # safe to use immediately. An expired/config-invalidated hit, a cold
             # cache, and every miss must refresh before an unrelated resident model
             # can answer or an entry from a removed scan root can trigger a switch.
+            alias_probe_pass_ran = True
             resolved = resolve_trusted_cached_local_gguf(
                 requested_model,
                 include_companion_scope = True,
@@ -10298,10 +10312,15 @@ async def _maybe_auto_switch_model(
         try:
             await _resolve_and_switch()
         finally:
-            # The pass is over either way, so an in-flight probe is answered. In the finally
-            # so a refusal or a failed switch does not leave the path claimed forever, which
-            # would rebuild the index for every later message.
-            _alias_probe_settle()
+            # A pass that ran answered the probe, however the switch itself ended: in the
+            # finally so a refusal or a failed load does not leave the path claimed forever,
+            # which would rebuild the index for every later message. One that never started
+            # (a cancelled generation raises above both resolvers) releases the claim instead,
+            # so the next request probes again rather than shortcutting to the filename.
+            if alias_probe_pass_ran:
+                _alias_probe_settle()
+            else:
+                _alias_probe_release()
     except HTTPException as exc:
         path = getattr(getattr(fastapi_request, "url", None), "path", None)
         if (

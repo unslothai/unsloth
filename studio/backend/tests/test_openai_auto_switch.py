@@ -3095,6 +3095,49 @@ def test_a_scan_root_change_reopens_the_alias_probe(monkeypatch):
     assert rec.calls == []
 
 
+def test_a_cancelled_generation_gives_the_probe_back(monkeypatch):
+    # _resolve_and_switch raises out of its first _raise_if_generation_cancelled(), before
+    # either resolver is called. Settling there would mark the path answered though nothing
+    # looked, and every later request would shortcut to the filename for the rest of the
+    # load. An unanswered claim goes back instead.
+    path = "/elsewhere/unscanned-model.gguf"
+    backend = _FakeBackend(path)
+    rec = _LoadRecorder(backend)
+    monkeypatch.setattr(settings, "get_openai_auto_switch_enabled", lambda: True)
+    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: backend)
+    monkeypatch.setattr(inference_route, "_load_model_impl", rec)
+    monkeypatch.setattr(inference_route, "_auto_switch_waiters", {})
+    monkeypatch.setattr(inference_route, "_alias_probed_load_paths", set())
+    monkeypatch.setattr(inference_route, "_alias_probe_inflight", set())
+    monkeypatch.setattr(inference_route, "_alias_probe_generation", -1)
+    scans = []
+    monkeypatch.setattr(resolver, "_build_index", lambda: scans.append(1) or {})
+    monkeypatch.setattr(resolver, "warm_index_soon", lambda *a, **k: None)
+    monkeypatch.setattr(resolver, "_CACHE_TTL_S", 0)
+
+    # Cancelled the way a stopped generation cancels: the event on request.state, which is
+    # the only thing _raise_if_generation_cancelled reads. The claim is taken before that
+    # check (_loaded_identity_satisfies runs first), so the real finally has to give it back.
+    cancelled = threading.Event()
+    cancelled.set()
+    request = SimpleNamespace(
+        state = SimpleNamespace(generation_cancel_event = cancelled),
+    )
+    with pytest.raises(HTTPException) as excinfo:
+        asyncio.run(inference_route._maybe_auto_switch_model(path, request, "tester"))
+    assert excinfo.value.status_code == 409
+    assert scans == [], "cancelled above both resolvers, so nothing looked for an alias"
+    assert inference_route._alias_probed_load_paths == set(), (
+        "a pass that never started was recorded as answered"
+    )
+    assert inference_route._alias_probe_inflight == set(), "the claim was not given back"
+
+    # And so the next request still reaches the resolver, rather than shortcutting to the
+    # filename for the rest of the load.
+    _run_hook(path)
+    assert len(scans) == 1, f"resolved {len(scans)} times, expected the probe to reopen"
+
+
 def test_a_concurrent_request_waits_for_a_probe_still_in_flight(monkeypatch):
     # The first request CLAIMS the probe and then runs the slow scan. A second naming the
     # same path while that is in flight must also reach the resolver: taking the shortcut
