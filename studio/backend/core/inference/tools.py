@@ -1319,21 +1319,32 @@ def _is_start_title(token: str) -> bool:
 # `_BLOCKED_COMMANDS` is a never-mutated frozenset, so this alternation is a constant. Rebuilding it
 # per call cost an `re.escape` per blocked name: over a 2637 command corpus that was 567k calls and
 # 0.60s of 3.9s. None only if the set is empty.
-_BLOCKED_WORD_RE = (
-    re.compile(
+def _blocked_word_re(assignment_prefixes: bool):
+    """The command-position backstop, with and without the assignment-prefix step.
+
+    The backstop has no quoting model, so anything it steps over it steps over inside quotes too.
+    Skipping assignment prefixes is only needed when the lex raised and the token walk never
+    happened; running it when the walk succeeded refused `echo '; A=1 rm -rf x'`, which bash runs
+    as one `echo` (checked: the file survives). A quoted value may hold the rest of the line
+    (`p='1e rm -f victim'`), which is a binding the sed screen resolves, so those are deliberately
+    not stepped over either way.
+    """
+    if not _BLOCKED_COMMANDS:
+        return None
+    return re.compile(
         r"(?:^|[;&|`\n(]\s*|[$]\(\s*|<\(\s*)"
-        # Assignment prefixes sit between the separator and the command word bash runs, and this
-        # backstop is all that is left when the lex raises and the token walk never happens. A
-        # quoted value may hold the rest of the line (`p='1e rm -f victim'`), which is a binding
-        # the sed screen resolves, so those are deliberately not stepped over here.
-        r"(?:[A-Za-z_]\w*=[^\s'\"]*\s+)*"
-        r"(?:[\w./\\-]*/|[a-zA-Z]:[/\\][\w./\\-]*)?"
-        r"(" + "|".join(re.escape(w) for w in sorted(_BLOCKED_COMMANDS)) + r")"
-        r"(?:\.(?:exe|com|bat|cmd))?\b"
+        + (r"(?:[A-Za-z_]\w*=[^\s'\"]*\s+)*" if assignment_prefixes else r"")
+        + r"(?:[\w./\\-]*/|[a-zA-Z]:[/\\][\w./\\-]*)?"
+        + r"("
+        + "|".join(re.escape(w) for w in sorted(_BLOCKED_COMMANDS))
+        + r")"
+        + r"(?:\.(?:exe|com|bat|cmd))?\b"
     )
-    if _BLOCKED_COMMANDS
-    else None
-)
+
+
+# `_BLOCKED_COMMANDS` is a never-mutated frozenset, so both alternations are constants.
+_BLOCKED_WORD_RE = _blocked_word_re(False)
+_BLOCKED_WORD_RE_WITH_ASSIGNMENTS = _blocked_word_re(True)
 
 
 def _join_escaped_newlines(text: str) -> str:
@@ -1476,6 +1487,9 @@ def _find_blocked_commands(command: str) -> set[str]:
     except ValueError:
         tokens = command.split()
         lexed_posix = False
+        lex_raised = True
+    else:
+        lex_raised = False
     # Which separator tokens the shell only produced because the quoting was stripped. The non-posix (cmd) lexer KEEPS
     # the quote marks and the split() fallback has no quoting model, so both report nothing and reach the same
     # verdict.
@@ -1686,8 +1700,9 @@ def _find_blocked_commands(command: str) -> set[str]:
     # Regex catches blocked words at command boundaries shlex misses: inside $(rm -rf), <(rm), backtick chains, or
     # "foo;rm". Anchored to command-position delimiters, so it doesn't match in argument position.
     lowered = command.lower()
-    if _BLOCKED_WORD_RE is not None:
-        blocked.update(_BLOCKED_WORD_RE.findall(lowered))
+    backstop = _BLOCKED_WORD_RE_WITH_ASSIGNMENTS if lex_raised else _BLOCKED_WORD_RE
+    if backstop is not None:
+        blocked.update(backstop.findall(lowered))
 
     # A substitution at command position synthesizes the executed word, so `$(ls /usr/bin | grep
     # "^reb")` never reaches the scan above; screen the body instead. A variable launders the same
@@ -16699,11 +16714,14 @@ def _check_signal_escape_patterns(code: str):
             # off, since a bare `get(...)` matched no network prefix.
             self.star_modules: set[str] = set()
             self.shadowed: set[str] = set()
-            # How many function, lambda or class bodies deep the walk is. A binding inside one
-            # does not rebind the module-level name: `def f(get): pass` leaves the outer
-            # `from requests import get` in place, and popping the alias there let the call
-            # after it go unrecognised.
-            self.depth = 0
+            # Aliases are gathered in a first pass over the whole tree and only then are calls
+            # checked, because a function body runs AFTER the module finishes reading:
+            # `def send(): fetch(...)` written ABOVE `from requests import get as fetch` still
+            # calls `requests.get`, and resolving as the walk went meant `send` was analysed before
+            # the import existed and the call was not recognised at all. The registering handlers
+            # do nothing on the second pass, so the maps and `shadowed` keep their final,
+            # order-independent state while every call is checked against them.
+            self.collecting = True
 
         def _shadowing_names(self, node) -> "list[str]":
             """The names a node binds IN THE ENCLOSING scope, which is the only scope that can
@@ -16719,7 +16737,7 @@ def _check_signal_escape_patterns(code: str):
             # Rebinding a name drops the alias it carried. `import socket as requests; import
             # requests` runs the real `requests.get`, and a kept entry rewrote the call to
             # `socket.get`, which matches no network prefix and so went unscreened.
-            if id(node) in self.unconditional_shadows:
+            if self.collecting and id(node) in self.unconditional_shadows:
                 for name in self._shadowing_names(node):
                     # The module set is deliberately NOT dropped: see __init__. A bare function
                     # alias is, so a local `def get(...)` still shadows `from requests import get`.
@@ -16756,17 +16774,13 @@ def _check_signal_escape_patterns(code: str):
 
         def _visit_scope(self, node):
             self._rebind(node)
-            self.depth += 1
-            try:
-                for _field, value in ast.iter_fields(node):
-                    if isinstance(value, list):
-                        for item in value:
-                            if isinstance(item, ast.AST):
-                                self.visit(item)
-                    elif isinstance(value, ast.AST):
-                        self.visit(value)
-            finally:
-                self.depth -= 1
+            for _field, value in ast.iter_fields(node):
+                if isinstance(value, list):
+                    for item in value:
+                        if isinstance(item, ast.AST):
+                            self.visit(item)
+                elif isinstance(value, ast.AST):
+                    self.visit(value)
 
         visit_FunctionDef = _visit_scope
         visit_AsyncFunctionDef = _visit_scope
@@ -16774,6 +16788,9 @@ def _check_signal_escape_patterns(code: str):
         visit_Lambda = _visit_scope
 
         def visit_Import(self, node):
+            if not self.collecting:
+                self.generic_visit(node)
+                return
             self._rebind(node)
             for alias in node.names:
                 if alias.asname and alias.name in _NETWORK_MODULES:
@@ -16781,6 +16798,9 @@ def _check_signal_escape_patterns(code: str):
             self.generic_visit(node)
 
         def visit_ImportFrom(self, node):
+            if not self.collecting:
+                self.generic_visit(node)
+                return
             self._rebind(node)
             module = node.module or ""
             for alias in node.names:
@@ -16827,6 +16847,9 @@ def _check_signal_escape_patterns(code: str):
             return {fq for fq in found if fq in _NETWORK_MODULES}
 
         def visit_Assign(self, node):
+            if not self.collecting:
+                self.generic_visit(node)
+                return
             self._rebind(node)
             carried = self._modules_named_by(node.value)
             if carried:
@@ -16880,6 +16903,9 @@ def _check_signal_escape_patterns(code: str):
             return node
 
         def visit_Call(self, node):
+            if self.collecting:
+                self.generic_visit(node)
+                return
             # Resolving an alias may only ADD a way to recognise this call, never take one away.
             # The alias map is not scope aware on purpose, so an `import socket as requests` inside
             # a function body or an untaken branch would otherwise rewrite a module-level
@@ -17078,7 +17104,10 @@ def _check_signal_escape_patterns(code: str):
                         )
             self.generic_visit(node)
 
-    NetworkAndIoVisitor().visit(tree)
+    _network_visitor = NetworkAndIoVisitor()
+    _network_visitor.visit(tree)  # pass 1: gather aliases, star imports and shadows
+    _network_visitor.collecting = False
+    _network_visitor.visit(tree)  # pass 2: check every call against the final maps
 
     is_safe = (
         len(signal_tampering) == 0

