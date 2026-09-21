@@ -554,16 +554,35 @@ async function settleLostGeneration(
   throw new Error("Timed out waiting for the image generation to finish.");
 }
 
+/** The attempt whose failure this page session has already put in front of the user.
+ *
+ * The backend keeps a reason until another run starts, so the idle probe answers with the
+ * same one on EVERY later mount: without this, coming back to Images replayed a failure the
+ * user had already seen, once per navigation. Module scope so it survives a remount, and
+ * deliberately lost on RELOAD, which is the case the retained reason exists for. One slot,
+ * because the progress snapshot attributes at most one run at a time.
+ */
+let surfacedGenerateAttempt: string | null = null;
+
+function markGenerateFailureSurfaced(attemptId: string | null): void {
+  if (attemptId) surfacedGenerateAttempt = attemptId;
+}
+
 /** Toast a failure the backend RETAINED, for a run this page did not post itself.
  *
  * A reload during a generation leaves no POST to reject and no settling loop, so the
  * retained reason is the only channel left; an idle answer carrying one is a failure, not a
  * finished run. The action is offered only where the server logged it, as everywhere else.
+ * Once per attempt: the run that posted it reports its own failure, and a remount must not
+ * repeat either that or an earlier replay.
  */
 function reportResumedGenerateFailure(progress: DiffusionGenerateProgress): void {
   const reason = progress.error;
   if (!reason) return;
   if (!shouldReportGenerateError({ message: reason, stopRequested: false })) return;
+  const attempt = progress.generation_attempt ?? null;
+  if (attempt && attempt === surfacedGenerateAttempt) return;
+  markGenerateFailureSurfaced(attempt);
   toast.error(reason, {
     action: retainedFailureWasLogged(progress)
       ? viewLogsAction("server")
@@ -3516,6 +3535,10 @@ export function ImagesPage({
     // Every gallery id this page has seen, captured BEFORE the first POST and grown as records
     // arrive: settleLostGeneration proves a lost POST landed by finding a record outside it.
     const knownIds = new Set(galleryCache.images.map((image) => image.id));
+    // The attempt the catch below is reporting about, since the id is minted per run inside
+    // the loop: marking it surfaced is what stops the idle probe replaying the same failure
+    // on the next mount.
+    let postedAttemptId: string | null = null;
     try {
       for (let i = 0; i < runs; i++) {
         // Stop issuing more GPU generations once the page unmounted or Stop was pressed: the backend
@@ -3538,6 +3561,7 @@ export function ImagesPage({
         // Minted here so it describes exactly one post: a retained reason carries the id
         // of the run it came from, and a post that never arrived started nothing.
         const attemptId = newGenerationAttemptId();
+        postedAttemptId = attemptId;
         let res: DiffusionGenerateResponse;
         try {
           res = await generateDiffusionImage({
@@ -3621,7 +3645,10 @@ export function ImagesPage({
           message: msg,
           stopRequested: cancelRequested.current && cancelAcked.current,
         })
-      )
+      ) {
+        // This run's failure is now in front of the user, so the reason the backend retains
+        // for it must not be toasted again by the next mount's idle probe.
+        markGenerateFailureSurfaced(postedAttemptId);
         toast.error(msg, {
           // Only when the server logged it. A settled failure says so explicitly (the
           // retained reason is already classified, so its text cannot); anything else is
@@ -3634,6 +3661,7 @@ export function ImagesPage({
             ? viewLogsAction("server")
             : undefined,
         });
+      }
     } finally {
       if (genPollTimer.current) clearInterval(genPollTimer.current);
       genPollTimer.current = null;

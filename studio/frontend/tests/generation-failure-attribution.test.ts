@@ -279,6 +279,40 @@ test("a run that failed across a reload is reported, not taken for finished", ()
   assert.match(page, /shouldReportGenerateError\(\{ message: reason, stopRequested: false \}\)/);
 });
 
+test("a failure the user has already seen is not replayed on the next mount", () => {
+  const page = readFileSync(
+    new URL("../src/features/images/images-page.tsx", import.meta.url),
+    "utf8",
+  );
+  // One MODULE-level slot: a ref or state would reset on the very remount this guards, and
+  // it is deliberately lost on reload, which is the case the retained reason exists for.
+  assert.match(
+    page,
+    /^let surfacedGenerateAttempt: string \| null = null;$/m,
+    "the already-surfaced attempt is not remembered across a remount",
+  );
+  // The backend keeps the reason until another run starts, so the idle probe answers with
+  // it on every later mount.
+  assert.match(
+    page,
+    /if \(attempt && attempt === surfacedGenerateAttempt\) return;/,
+    "a retained failure is replayed once per navigation back to Images",
+  );
+  // And the run that posted it marks its own attempt, so the first mount after a failure
+  // the user already saw in handleGenerate is silent too.
+  assert.match(
+    page,
+    /markGenerateFailureSurfaced\(postedAttemptId\);/,
+    "the run that reported its own failure lets the next mount report it again",
+  );
+  const marks = page.match(/markGenerateFailureSurfaced\(/g);
+  assert.equal(
+    marks?.length,
+    3,
+    "the surfaced-attempt slot is written from somewhere unaccounted for",
+  );
+});
+
 test("a synchronous video refusal the backend logged offers its log", () => {
   const page = readFileSync(
     new URL("../src/features/video/video-page.tsx", import.meta.url),
