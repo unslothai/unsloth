@@ -1577,7 +1577,7 @@ export const ptBR = {
           "Fixe itens no menu lateral do botão + do chat. Os demais ficam em “Mais”.",
         chatWithFiles: "Chat com arquivos (RAG)",
         mcp: "MCP",
-        skills: "Habilidades de agentes",
+        skills: "Habilidades",
         savedPrompts: "Prompts salvos",
         compareChat: "Comparar chats",
         exportChat: "Exportar chat",
@@ -2753,7 +2753,7 @@ export const ptBR = {
     tooLarge: "Maior que a VRAM, será descarregado para a CPU. Uma quantização menor roda mais rápido",
   },
   skills: {
-    title: "Habilidades de agentes",
+    title: "Habilidades",
     description: "As habilidades são descobertas nas suas pastas padrão de agentes. Ative-as aqui e digite @ no chat para mencionar uma.",
     precedence: "~/.agents/skills tem precedência sobre ~/.claude/skills.",
     refresh: "Atualizar",
@@ -2768,6 +2768,6 @@ export const ptBR = {
     enable: "Ativar {name}",
     disable: "Desativar {name}",
     updateError: "Não foi possível atualizar a habilidade",
-    mentions: "Habilidades de agentes",
+    mentions: "Habilidades",
   },
 } satisfies DeepPartialMessageTree<typeof en>;
