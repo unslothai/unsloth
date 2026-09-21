@@ -360,9 +360,7 @@ def test_a_retained_outcome_is_the_callers_own_account(monkeypatch):
     bo = AccountContext("acct-b", "bo")
 
     run_as(ada, _retain_generate_failure, "attempt-scoped", "CUDA out of memory")
-    assert run_as(ada, generate_failure_for_attempt, "attempt-scoped") == (
-        "CUDA out of memory"
-    )
+    assert run_as(ada, generate_failure_for_attempt, "attempt-scoped") == ("CUDA out of memory")
     assert (
         run_as(bo, generate_failure_for_attempt, "attempt-scoped") is None
     ), "another account read an attempt's retained failure"
@@ -473,14 +471,13 @@ def test_a_retained_outcome_survives_an_engine_switch():
     # Whatever the active engine is now, the lookup takes no engine at all.
     assert generate_failure_for_attempt("attempt-across-engines") == "CUDA out of memory"
     assert not any(
-        hasattr(engine, "_generate_outcomes")
-        for engine in (outcomes, object())
+        hasattr(engine, "_generate_outcomes") for engine in (outcomes, object())
     ), "the outcomes are stored on an engine instance again"
 
     src = _src("core/inference/generate_outcomes.py")
-    assert "_OUTCOMES" in src and "getattr(engine" not in src, (
-        "the store reads from an engine instance again"
-    )
+    assert (
+        "_OUTCOMES" in src and "getattr(engine" not in src
+    ), "the store reads from an engine instance again"
     # And the two engines record into it without passing themselves.
     for engine_src in ENGINES:
         assert "_retain_generate_failure(attempt_id," in _src(engine_src)
