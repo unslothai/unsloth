@@ -108,6 +108,42 @@ test("lowering flattens further than raising lifts", () => {
   }
 });
 
+test("panel sliders move with the slider too", () => {
+  // .panel-slider repaints the track, fill and thumb with !important, so the
+  // component's own gain-aware colours never reach them.
+  assert.match(
+    CSS,
+    /\.panel-slider \[data-slot="slider-track"\] \{[^}]*rgb\(0 0 0 \/ calc\(0\.025 \* var\(--contrast-wash-gain, 1\)\)\)/,
+  );
+  assert.match(
+    CSS,
+    /\.dark \.panel-slider \[data-slot="slider-track"\] \{[^}]*rgb\(255 255 255 \/ calc\(0\.025 \* var\(--contrast-wash-gain, 1\)\)\)/,
+  );
+  assert.ok(CSS.includes("--panel-slider-fg: var(--panel-slider-fg-base);"));
+  assert.match(
+    CSS,
+    /--panel-slider-fg: color-mix\(\s*in oklab,\s*var\(--panel-slider-fg-base\),\s*var\(--contrast-target\) var\(--contrast-text-mix\)/,
+  );
+});
+
+test("a resting wash and its hover twin share the gain", () => {
+  // One scaled and one fixed alpha invert at the top of the range: the hover
+  // ends up fainter than the resting fill.
+  for (const file of [
+    "features/profile/components/profile-personalization-panel.tsx",
+    "components/assistant-ui/chat-dictation-bar.tsx",
+  ]) {
+    const source = readSrc(file);
+    const scaled = source.match(/dark:(hover:)?bg-\[rgb\(255_255_255/g) ?? [];
+    assert.equal(scaled.length, 2, `${file} scales only one of the pair`);
+    assert.doesNotMatch(
+      source,
+      /dark:hover:bg-white\//,
+      `${file} still has a fixed hover wash`,
+    );
+  }
+});
+
 test("the hand-written washes follow the slider, the scrims do not", () => {
   const app = readSrc("features/settings/settings-dialog.tsx");
   // Settings controls wash the page instead of taking a token, so they carry

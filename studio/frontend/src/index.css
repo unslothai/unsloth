@@ -281,7 +281,7 @@
 	   from muted text. Light mode: lighter than the muted-text gray for
 	   a softer feel. Dark mode (further down) keeps parity with the
 	   muted-text token. */
-	--panel-slider-fg: #9a9a9c;
+	--panel-slider-fg-base: #9a9a9c;
 	/* Chat-message action icons (assistant action bar, branch picker
 	   chevrons + numbers, message-timing token counter, code-block
 	   copy/download, user action bar, delete button). One token drives
@@ -437,7 +437,7 @@
 	--panel-surface-fg-muted: #ababab;
 	/* Dark-mode slider tone matches muted text — user wants the dark
 	   theme slider unchanged from the previous behavior. */
-	--panel-slider-fg: #ababab;
+	--panel-slider-fg-base: #ababab;
 	/* Chat-message action icons. A touch lighter than the previous
 	   #b8b8b8 so the icons read clearly without going near pure white;
 	   hover restores full --foreground for affordance. */
@@ -514,7 +514,7 @@
 	--panel-input-surface-base: #f4f4f4;
 	--panel-input-surface-hover-base: #ededed;
 	--panel-surface-fg-muted: #7a7c7e;
-	--panel-slider-fg: #9b9d9f;
+	--panel-slider-fg-base: #9b9d9f;
 	--chat-icon-fg: #5d5f61;
 	--chat-icon-bg-hover: #ececec;
 }
@@ -583,7 +583,7 @@
 	--panel-input-surface-base: #f4f4f4;
 	--panel-input-surface-hover-base: #ededed;
 	--panel-surface-fg-muted: #757575;
-	--panel-slider-fg: #9b9b9b;
+	--panel-slider-fg-base: #9b9b9b;
 	--chat-icon-fg: #555555;
 	--chat-icon-bg-hover: #ececec;
 }
@@ -636,6 +636,8 @@
 	--border: var(--border-base);
 	--input: var(--input-base);
 	--sidebar-border: var(--sidebar-border-base);
+	/* Slider fill and thumb, the one panel control that takes neither. */
+	--panel-slider-fg: var(--panel-slider-fg-base);
 }
 
 /* Off the default, each token is mixed toward --contrast-target (foreground
@@ -663,6 +665,13 @@ html[data-contrast-adjust] {
 	--muted-foreground: color-mix(
 		in oklab,
 		var(--panel-surface-fg-muted),
+		var(--contrast-target) var(--contrast-text-mix)
+	);
+	/* Slider fill and thumb read as marks on the panel, so they take the
+	   text curve rather than the surface one. */
+	--panel-slider-fg: color-mix(
+		in oklab,
+		var(--panel-slider-fg-base),
 		var(--contrast-target) var(--contrast-text-mix)
 	);
 }
@@ -1338,10 +1347,10 @@ html[data-chat-font] .aui-root {
 	   themes; the black/white base flips automatically per theme. */
 	.panel-slider [data-slot="slider-track"] {
 		height: 0.25rem !important;
-		background-color: rgb(0 0 0 / 0.025) !important;
+		background-color: rgb(0 0 0 / calc(0.025 * var(--contrast-wash-gain, 1))) !important;
 	}
 	.dark .panel-slider [data-slot="slider-track"] {
-		background-color: rgb(255 255 255 / 0.025) !important;
+		background-color: rgb(255 255 255 / calc(0.025 * var(--contrast-wash-gain, 1))) !important;
 	}
 	/* Sliders in the right-side parameters panel.
 	 *
