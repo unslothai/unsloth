@@ -232,6 +232,7 @@ def test_both_resolver_arms_agree(model_type, fields, monkeypatch):
     The fallback arm is only reached when the installed unsloth_zoo predates
     detect_logit_transforms, which is exactly when nobody would notice it disagreeing.
     """
+
     def build():
         config = MistralConfig(
             hidden_size = HIDDEN_SIZE,

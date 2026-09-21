@@ -1344,10 +1344,8 @@ LlamaModel_fast_forward_inference = _LlamaModel_fast_forward_inference()
 # unsloth_zoo predates detect_logit_transforms; kept here so that arm does not silently
 # drop a family the planner knows about.
 _FALLBACK_TRANSFORM_FIELDS = (
-    ("logit_softcapping",
-     ("final_logit_softcapping", "logits_soft_cap", "output_logit_soft_cap")),
-    ("logit_scale_multiply",
-     ("logit_scale", "lm_head_multiplier", "output_multiplier")),
+    ("logit_softcapping", ("final_logit_softcapping", "logits_soft_cap", "output_logit_soft_cap")),
+    ("logit_scale_multiply", ("logit_scale", "lm_head_multiplier", "output_multiplier")),
     ("logit_scale_divide", ("logits_scaling",)),
 )
 _FALLBACK_TRANSFORM_BUCKETS = tuple(bucket for bucket, _ in _FALLBACK_TRANSFORM_FIELDS)
