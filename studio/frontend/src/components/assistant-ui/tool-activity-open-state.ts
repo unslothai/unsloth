@@ -83,10 +83,14 @@ export function syncToolActivityPreference(
   if (current.visibility === visibility && current.active === active) {
     return current;
   }
+  // A setting change or a new round hands the card back to the setting, matching the controlled
+  // cards: a regenerated run reuses this card, so the old round's hand-set state must not carry.
+  const kept =
+    current.visibility === visibility && !startsNewToolRound(active, current.active);
   return {
     visibility,
     active,
-    override: current.visibility === visibility ? current.override : null,
+    override: kept ? current.override : null,
   };
 }
 

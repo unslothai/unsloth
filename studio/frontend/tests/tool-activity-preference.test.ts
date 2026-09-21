@@ -411,6 +411,43 @@ test("a new round hands a controlled card back to the setting", () => {
 });
 
 
+test("an uncontrolled card starts fresh when its call runs again", () => {
+  // The same regenerate reuse the controlled cards take from the hook, reached here through
+  // `active`: generic, MCP, Terminal and Python cards keep their own state through this function.
+  const closedInOldRound = {
+    visibility: "auto" as const,
+    active: false,
+    override: false,
+  };
+  assert.equal(
+    toolActivityOpen(syncToolActivityPreference(closedInOldRound, "auto", true)),
+    true,
+    "a card closed in the old round stayed shut for the regenerated run",
+  );
+  const openedInOldRound = {
+    visibility: "collapsed" as const,
+    active: false,
+    override: true,
+  };
+  assert.equal(
+    toolActivityOpen(
+      syncToolActivityPreference(openedInOldRound, "collapsed", true),
+    ),
+    false,
+    "a card opened in the old round stayed pinned open for the regenerated run",
+  );
+  // Activity moving on its own, without the call restarting, still keeps a manual open.
+  assert.equal(
+    syncToolActivityPreference(
+      { visibility: "auto" as const, active: true, override: true },
+      "auto",
+      false,
+    ).override,
+    true,
+  );
+});
+
+
 test("fallback cards react to live preference changes", () => {
   const manuallyOpen = {
     visibility: "auto" as const,
