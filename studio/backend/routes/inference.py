@@ -9025,10 +9025,57 @@ def _loaded_satisfies(requested: str) -> bool:
     )
 
 
-# Load paths already sent through the resolver so it could record their advertised
-# alias. Scoped to the current load: a fresh one clears the advertised id, so the
-# recording has to happen again.
+# Load paths whose resolver pass has COMPLETED without recording an alias, so asking
+# again would rebuild the index for an answer we already have. Scoped to the current
+# load: a fresh one clears the advertised id, so the recording has to happen again.
 _alias_probed_load_paths: set[str] = set()
+# Paths handed to the resolver whose pass has not finished yet. Held apart from the set
+# above because a concurrent request must still reach the resolver rather than take the
+# shortcut and report the filename while the first pass is mid-scan.
+_alias_probe_inflight: set[str] = set()
+# The resolver index generation the two sets describe.
+_alias_probe_generation = -1
+_alias_probe_lock = threading.Lock()
+
+
+def _alias_probe_forget_stale_locked() -> None:
+    """Drop probes recorded against a resolver index that no longer exists.
+
+    ``invalidate_index`` bumps the generation on every scan-root change, and a path that
+    had no alias under the old roots can have one under the new ones, so a negative probe
+    must not outlive the configuration it was taken under.
+    """
+    global _alias_probe_generation
+    from core.inference.local_model_resolver import index_generation
+
+    generation = index_generation()
+    if generation != _alias_probe_generation:
+        _alias_probed_load_paths.clear()
+        _alias_probe_inflight.clear()
+        _alias_probe_generation = generation
+
+
+def _alias_probe_taken(identifier: str) -> bool:
+    """Whether *identifier* still needs a resolver pass, claiming it if so."""
+    with _alias_probe_lock:
+        _alias_probe_forget_stale_locked()
+        if identifier in _alias_probed_load_paths:
+            return False
+        _alias_probe_inflight.add(identifier)
+        return True
+
+
+def _alias_probe_settle() -> None:
+    """Called once a resolver pass returns: the index is fresh and any alias is recorded.
+
+    Promotes on ANY completed pass rather than tracking which request owned which path.
+    The probe exists to get the index rebuilt once, and every pass rebuilds it, so a
+    completed one answers whatever was in flight.
+    """
+    with _alias_probe_lock:
+        _alias_probe_forget_stale_locked()
+        _alias_probed_load_paths.update(_alias_probe_inflight)
+        _alias_probe_inflight.clear()
 
 
 def _clear_advertised_alias(llama_backend) -> None:
@@ -9040,7 +9087,9 @@ def _clear_advertised_alias(llama_backend) -> None:
     again and the model would be reported by its filename.
     """
     llama_backend._openai_advertised_id = None
-    _alias_probed_load_paths.clear()
+    with _alias_probe_lock:
+        _alias_probed_load_paths.clear()
+        _alias_probe_inflight.clear()
 
 
 def _loaded_identity_satisfies(requested: str) -> bool:
@@ -9066,14 +9115,15 @@ def _loaded_identity_satisfies(requested: str) -> bool:
         # Only a request naming the path can be answered from here, and only it resolves
         # to the resident model, so only it spends the probe. One naming anything else
         # already falls through to the resolver, and records no alias for this model.
+        # _alias_probe_taken CLAIMS the probe, so it stays last: a request failing any
+        # condition above must not spend it.
         if (
             advertised is None
             and identifier
-            and identifier not in _alias_probed_load_paths
             and _looks_like_local_path(identifier)
             and _matches_any(base, (identifier,))
+            and _alias_probe_taken(identifier)
         ):
-            _alias_probed_load_paths.add(identifier)
             return False
         companion_roots = tuple(getattr(llama_backend, "_openai_gguf_companion_roots", ()) or ())
         if companion_roots:
@@ -10245,7 +10295,13 @@ async def _maybe_auto_switch_model(
                 _note_switch_waiter(key, -1)
 
     try:
-        await _resolve_and_switch()
+        try:
+            await _resolve_and_switch()
+        finally:
+            # The pass is over either way, so an in-flight probe is answered. In the finally
+            # so a refusal or a failed switch does not leave the path claimed forever, which
+            # would rebuild the index for every later message.
+            _alias_probe_settle()
     except HTTPException as exc:
         path = getattr(getattr(fastapi_request, "url", None), "path", None)
         if (

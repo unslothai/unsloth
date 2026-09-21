@@ -3045,13 +3045,80 @@ def test_a_load_path_no_scan_root_indexes_is_only_resolved_once(monkeypatch):
     monkeypatch.setattr(inference_route, "_load_model_impl", rec)
     monkeypatch.setattr(inference_route, "_auto_switch_waiters", {})
     monkeypatch.setattr(inference_route, "_alias_probed_load_paths", set())
+    monkeypatch.setattr(inference_route, "_alias_probe_inflight", set())
     scans = []
     monkeypatch.setattr(resolver, "_build_index", lambda: scans.append(1) or {})
+    # The warmer's daemon thread also calls _build_index, so counting it here would read a
+    # background rebuild as a second request-path probe.
+    monkeypatch.setattr(resolver, "warm_index_soon", lambda *a, **k: None)
+    # A lapsed TTL, which is how it actually lapses: _snapshot_is_trusted compares the
+    # snapshot age against _CACHE_TTL_S. NOT invalidate_index(), which additionally means
+    # the scan roots may have changed and so deliberately re-opens the probe.
+    monkeypatch.setattr(resolver, "_CACHE_TTL_S", 0)
     for _ in range(4):
-        resolver.invalidate_index()  # the TTL lapses between chat messages
         _run_hook(path)
     assert rec.calls == []
     assert len(scans) == 1, f"resolved {len(scans)} times, expected one probe"
+
+
+def test_a_scan_root_change_reopens_the_alias_probe(monkeypatch):
+    # The probe is a NEGATIVE answer -- this path has no alias -- and it is only true of
+    # the scan roots it was taken under. Add the model's parent as a scan folder and the
+    # alias exists, so a probe that outlived the change would keep the shortcut answering
+    # and /v1/models would report the filename for the rest of the load.
+    path = "/elsewhere/unscanned-model.gguf"
+    backend = _FakeBackend(path)
+    rec = _LoadRecorder(backend)
+    monkeypatch.setattr(settings, "get_openai_auto_switch_enabled", lambda: True)
+    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: backend)
+    monkeypatch.setattr(inference_route, "_load_model_impl", rec)
+    monkeypatch.setattr(inference_route, "_auto_switch_waiters", {})
+    monkeypatch.setattr(inference_route, "_alias_probed_load_paths", set())
+    monkeypatch.setattr(inference_route, "_alias_probe_inflight", set())
+    monkeypatch.setattr(inference_route, "_alias_probe_generation", -1)
+    scans = []
+    monkeypatch.setattr(resolver, "_build_index", lambda: scans.append(1) or {})
+    monkeypatch.setattr(resolver, "warm_index_soon", lambda *a, **k: None)
+    monkeypatch.setattr(resolver, "_CACHE_TTL_S", 0)
+
+    _run_hook(path)
+    _run_hook(path)
+    assert len(scans) == 1, "the second message must reuse the probe, not re-scan"
+
+    # What add_scan_folder_endpoint / remove_scan_folder_endpoint call on every change.
+    resolver.invalidate_index()
+    _run_hook(path)
+    assert len(scans) == 2, (
+        f"resolved {len(scans)} times: a scan-root change must re-open the probe so the "
+        "alias can be recorded"
+    )
+    assert rec.calls == []
+
+
+def test_a_concurrent_request_waits_for_a_probe_still_in_flight(monkeypatch):
+    # The first request CLAIMS the probe and then runs the slow scan. A second naming the
+    # same path while that is in flight must also reach the resolver: taking the shortcut
+    # there answers with _openai_advertised_id still None, so the response reports the
+    # filename even though the first request is about to record the alias.
+    path = "/elsewhere/unscanned-model.gguf"
+    backend = _FakeBackend(path)
+    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: backend)
+    monkeypatch.setattr(inference_route, "_alias_probed_load_paths", set())
+    monkeypatch.setattr(inference_route, "_alias_probe_inflight", set())
+    monkeypatch.setattr(inference_route, "_alias_probe_generation", -1)
+
+    first = inference_route._loaded_identity_satisfies(path)
+    second = inference_route._loaded_identity_satisfies(path)
+    assert first is False, "the first request must reach the resolver"
+    assert second is False, (
+        "the second request shortcut while the probe was still in flight, so its response "
+        "would carry the filename rather than the alias"
+    )
+    assert backend._openai_advertised_id is None
+
+    # Once a pass completes the answer is settled and the shortcut is correct.
+    inference_route._alias_probe_settle()
+    assert inference_route._loaded_identity_satisfies(path) is True
 
 
 def test_a_request_for_another_model_does_not_spend_the_probe(monkeypatch):
