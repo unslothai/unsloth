@@ -194,7 +194,11 @@ test("a pinned folder is a row of Pinned, not of Projects", () => {
   // The header owns "New project", so its test counts every project, pinned or not.
   assert.match(
     APP_SIDEBAR,
-    /const projectsSectionRendered =\n[\s\S]{0,200}?organizeBy === "project" &&\n\s*projects\.length > 0;/,
+    /const projectsSectionConfigured =\n\s*organizeBy === "project" && projects\.length > 0;/,
+  );
+  assert.match(
+    APP_SIDEBAR,
+    /const projectsSectionRendered =\n[\s\S]{0,200}?projectsSectionConfigured;/,
   );
   assert.match(APP_SIDEBAR, /\{projectsSectionRendered && \(/);
 });

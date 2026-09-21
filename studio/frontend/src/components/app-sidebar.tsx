@@ -1108,15 +1108,17 @@ export function AppSidebar() {
     return map;
   }, [allChatItems]);
   const organizeBy = useSidebarOrganizationStore((s) => s.organizeBy);
+  // Whether the sidebar is set up to list folders at all, which is what the nav row answers to.
+  const projectsSectionConfigured =
+    organizeBy === "project" && projects.length > 0;
   const projectsSectionRendered =
-    !isStudioRoute &&
-    !showTrainingRecents &&
-    organizeBy === "project" &&
-    projects.length > 0;
-  // The icon rail hides the section in CSS without unmounting it, so the nav row only stands
-  // down while the section is really on screen.
+    !isStudioRoute && !showTrainingRecents && projectsSectionConfigured;
+  // Deliberately not the rendered flag: Train and Recipes swap the section for their runs, and a
+  // row reappearing there reads as a setting turning itself back on. The icon rail is the one
+  // exception, since it hides the section in CSS without unmounting it and the row is then the
+  // only way to reach projects.
   const projectsSectionShowing =
-    projectsSectionRendered && (isMobile || sidebarState !== "collapsed");
+    projectsSectionConfigured && (isMobile || sidebarState !== "collapsed");
   const chatSort = useSidebarOrganizationStore((s) => s.chatSort);
   const pinnedSort = useSidebarOrganizationStore((s) => s.pinnedSort);
   const manualOrder = useSidebarOrganizationStore((s) => s.manualOrder);
