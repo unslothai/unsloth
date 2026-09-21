@@ -15,7 +15,8 @@ const APP_SIDEBAR = readSrc("components/app-sidebar.tsx");
 test("every chat list hands its rows a selection list", async () => {
   const source = APP_SIDEBAR;
   for (const list of [
-    /scope: PINNED_ORDER_SCOPE,\s*ids: pinnedRowIds,/,
+    // Pinned chat rows select among chats and reorder within the whole Pinned list.
+    /scope: PINNED_ORDER_SCOPE,\s*ids: pinnedChatRowIds,\s*orderIds: pinnedRowIds,/,
     /scope: RECENTS_ORDER_SCOPE,\s*ids: recentRowIds,/,
     /scope: projectOrderScope\(project\.id\),\s*ids: projectChatIds,/,
   ]) {
@@ -25,10 +26,11 @@ test("every chat list hands its rows a selection list", async () => {
 
 test("folder rows select too, and open their own bulk menu", async () => {
   const source = APP_SIDEBAR;
-  // The row hands in its own list: Pinned holds folders too, with ids of its own.
+  // The row hands in its own list. Pinned is folders and chats in one order, so it
+  // ranges over its folder ids alone.
   assert.match(
     source,
-    /handleProjectSelectionClick\(event, project\.id, order\.orderedIds\)/,
+    /handleProjectSelectionClick\(\n\s*event,\n\s*project\.id,\n\s*order\.selectionIds \?\? order\.orderedIds,\n\s*\)/,
   );
   assert.match(source, /selectProjectForContextMenu\(project\.id\)/);
   assert.match(source, /\{renderProjectContextMenu\(\)\}/);

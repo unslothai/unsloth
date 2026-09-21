@@ -14,13 +14,13 @@ import {
   planSidebarDrop,
   rowKey,
   sectionRingKey,
+  STAY,
   type SidebarDragItem,
   type SidebarDropContext,
   type SidebarDropZone,
 } from "../src/features/chat/lib/sidebar-drag.ts";
 import {
   PINNED_ORDER_SCOPE,
-  PINNED_PROJECT_ORDER_SCOPE,
   PROJECT_ORDER_SCOPE,
   projectOrderScope,
   RECENTS_ORDER_SCOPE,
@@ -33,7 +33,7 @@ const HOOK = await readSrcAsync("features/chat/hooks/use-sidebar-drag.ts");
 const EN = await readSrcAsync("i18n/locales/en.ts");
 
 // Two folders, "work" pinned and "home" not; chats c1 and c2 in work, c3 in home, r1 and r2 in
-// Recents, and p1 pinned from Recents.
+// Recents, and p1 pinned from Recents. Pinned is one list: the folder, then the chat.
 function context(
   overrides: Partial<SidebarDropContext> = {},
 ): SidebarDropContext {
@@ -44,8 +44,7 @@ function context(
     pinnedChatIds: new Set(["p1"]),
     pinnedProjectIds: new Set(["work"]),
     orders: {
-      pinnedChats: ["p1"],
-      pinnedProjects: ["work"],
+      pinned: ["work", "p1"],
       projects: ["home", "misc"],
       recents: ["r1", "r2"],
       projectChats: (projectId) =>
@@ -129,7 +128,7 @@ test("a reorder in a sorted list switches it to Manual order, or is refused", ()
     context({
       pinnedSort: "updated",
       pinnedChatIds: new Set(["p1", "p2"]),
-      orders: { ...context().orders, pinnedChats: ["p1", "p2"] },
+      orders: { ...context().orders, pinned: ["work", "p1", "p2"] },
     }),
   );
   assert.equal(pinnedSwitch?.effects.switchSort, "pinned");
@@ -149,8 +148,9 @@ test("a reorder in a sorted list switches it to Manual order, or is refused", ()
   );
 });
 
-// An edge the row is already on is not a move, and a line there would promise one.
-test("an edge that moves nothing is no drop", () => {
+// An edge the row is already on is not a move, and a line there would promise one. The spot
+// still answers, with STAY, so the section around it does not offer its last slot instead.
+test("an edge that moves nothing stays, and still claims the drag", () => {
   const ctx = context({ chatSort: "manual" });
   assert.equal(
     planSidebarDrop(
@@ -159,7 +159,7 @@ test("an edge that moves nothing is no drop", () => {
       "top",
       ctx,
     ),
-    null,
+    STAY,
   );
   assert.equal(
     planSidebarDrop(
@@ -168,7 +168,26 @@ test("an edge that moves nothing is no drop", () => {
       "bottom",
       ctx,
     ),
-    null,
+    STAY,
+  );
+  // A pinned row over its own row, or a folder over its own block, is where it already is.
+  assert.equal(
+    planSidebarDrop(
+      chat("p1", "pinned", PINNED_ORDER_SCOPE, null),
+      chatRow("pinned", PINNED_ORDER_SCOPE, "p1"),
+      "top",
+      ctx,
+    ),
+    STAY,
+  );
+  assert.equal(
+    planSidebarDrop(
+      folder("work", "pinned", PINNED_ORDER_SCOPE),
+      folderRow("pinned", PINNED_ORDER_SCOPE, "work"),
+      "bottom",
+      ctx,
+    ),
+    STAY,
   );
 });
 
@@ -181,10 +200,11 @@ test("a chat dropped on a folder, its chats or its empty line is filed there", (
       count: 1,
     }),
     { section: "projects", folderId: "misc" } as SidebarDropZone,
-    // A pinned folder files it just the same.
-    folderRow("pinned", PINNED_PROJECT_ORDER_SCOPE, "work"),
-  ]) {
-    const plan = planSidebarDrop(drag, zone, "top", context());
+    // A pinned folder files it from its chats, or from the lower half of its row.
+    chatRow("pinned", projectOrderScope("work"), "c1", "work", { index: 0, count: 2 }),
+    { ...folderRow("pinned", PINNED_ORDER_SCOPE, "work"), edge: "bottom" },
+  ] as Array<SidebarDropZone & { edge?: "top" | "bottom" }>) {
+    const plan = planSidebarDrop(drag, zone, zone.edge ?? "top", context());
     assert.ok(plan, `no plan for ${JSON.stringify(zone)}`);
     assert.deepEqual(plan.action, { kind: "move", projectId: zone.folderId });
     assert.deepEqual(plan.cue, { ring: folderRingKey(zone.folderId!) });
@@ -202,7 +222,7 @@ test("a chat dropped on a folder, its chats or its empty line is filed there", (
       "top",
       context(),
     ),
-    null,
+    STAY,
   );
 });
 
@@ -280,34 +300,42 @@ test("a chat dropped into Pinned is pinned where it lands", () => {
   assert.ok(onRow);
   assert.deepEqual(onRow.action, { kind: "pin" });
   assert.equal(onRow.effects.pinChat, "r1");
-  assert.deepEqual(onRow.effects.orders, [
-    { scope: PINNED_ORDER_SCOPE, ids: ["r1", "p1"] },
-  ]);
   assert.deepEqual(onRow.cue, {
     line: { rowKey: rowKey(PINNED_ORDER_SCOPE, "p1"), edge: "top" },
   });
-  // The section itself, and its header when the first row is not a chat, pin it last.
+  assert.deepEqual(onRow.effects.orders, [
+    { scope: PINNED_ORDER_SCOPE, ids: ["work", "r1", "p1"] },
+  ]);
+  // Pinned is one list, so the very top is above its first row whatever kind that is: the
+  // header, or the upper half of a folder row, both draw the line there.
   for (const zone of [
-    { section: "pinned" } as SidebarDropZone,
-    {
-      section: "pinned",
-      header: true,
-      row: { id: "work", kind: "project", scope: PINNED_PROJECT_ORDER_SCOPE },
-    } as SidebarDropZone,
-  ]) {
-    const plan = planSidebarDrop(drag, zone, "bottom", context());
-    assert.deepEqual(plan?.cue, { ring: sectionRingKey("pinned") });
+    { section: "pinned", header: true, row: { id: "work", kind: "project", scope: PINNED_ORDER_SCOPE } },
+    folderRow("pinned", PINNED_ORDER_SCOPE, "work"),
+  ] as SidebarDropZone[]) {
+    const plan = planSidebarDrop(drag, zone, "top", context());
+    assert.deepEqual(plan?.action, { kind: "pin" });
+    assert.deepEqual(plan?.cue, {
+      line: { rowKey: rowKey(PINNED_ORDER_SCOPE, "work"), edge: "top" },
+    });
     assert.deepEqual(plan?.effects.orders, [
-      { scope: PINNED_ORDER_SCOPE, ids: ["p1", "r1"] },
+      { scope: PINNED_ORDER_SCOPE, ids: ["r1", "work", "p1"] },
     ]);
   }
+  // The space under the rows lands it last, with a line under the last row, never a ring.
+  const under = planSidebarDrop(drag, { section: "pinned" }, "bottom", context());
+  assert.deepEqual(under?.cue, {
+    line: { rowKey: rowKey(PINNED_ORDER_SCOPE, "p1"), edge: "bottom" },
+  });
+  assert.deepEqual(under?.effects.orders, [
+    { scope: PINNED_ORDER_SCOPE, ids: ["work", "p1", "r1"] },
+  ]);
   // Pinned sorted by a rule would move the row again, so the drop takes it to Manual.
   assert.equal(
     planSidebarDrop(drag, { section: "pinned" }, "bottom", context({ pinnedSort: "updated" }))
       ?.effects.switchSort,
     "pinned",
   );
-  // A chat already pinned is not pinned again: it reorders.
+  // A chat already pinned is not pinned again: it reorders, and the last row stays last.
   assert.equal(
     planSidebarDrop(
       chat("p1", "pinned", PINNED_ORDER_SCOPE, null),
@@ -315,7 +343,7 @@ test("a chat dropped into Pinned is pinned where it lands", () => {
       "bottom",
       context(),
     ),
-    null,
+    STAY,
   );
 });
 
@@ -324,7 +352,7 @@ test("a chat dropped into Pinned is pinned where it lands", () => {
 test("a pinned chat dragged onto a folder is unpinned, and filed when the folder is new", () => {
   const ctx = context({
     pinnedChatIds: new Set(["p1", "c3"]),
-    orders: { ...context().orders, pinnedChats: ["p1", "c3"] },
+    orders: { ...context().orders, pinned: ["work", "p1", "c3"] },
   });
   const ownFolder = planSidebarDrop(
     chat("c3", "pinned", PINNED_ORDER_SCOPE, "home"),
@@ -343,10 +371,11 @@ test("a pinned chat dragged onto a folder is unpinned, and filed when the folder
   );
   assert.deepEqual(otherFolder?.action, { kind: "move", projectId: "misc" });
   assert.equal(otherFolder?.effects.unpinChat, "c3");
+  // In Pinned the folder row's upper half is a slot, so the file lands on its lower half.
   const pinnedFolder = planSidebarDrop(
     chat("c3", "pinned", PINNED_ORDER_SCOPE, "home"),
-    folderRow("pinned", PINNED_PROJECT_ORDER_SCOPE, "work"),
-    "top",
+    folderRow("pinned", PINNED_ORDER_SCOPE, "work"),
+    "bottom",
     ctx,
   );
   assert.deepEqual(pinnedFolder?.action, { kind: "move", projectId: "work" });
@@ -356,50 +385,84 @@ test("a pinned chat dragged onto a folder is unpinned, and filed when the folder
 test("a folder reorders among its own list, and the block under it aims at it", () => {
   const ctx = context({
     pinnedProjectIds: new Set(["work", "play"]),
-    orders: { ...context().orders, pinnedProjects: ["work", "play"] },
+    orders: { ...context().orders, pinned: ["work", "p1", "play"] },
   });
   // Over the other folder's row.
   const onRow = planSidebarDrop(
-    folder("play", "pinned", PINNED_PROJECT_ORDER_SCOPE),
-    folderRow("pinned", PINNED_PROJECT_ORDER_SCOPE, "work"),
+    folder("play", "pinned", PINNED_ORDER_SCOPE),
+    folderRow("pinned", PINNED_ORDER_SCOPE, "work"),
     "top",
     ctx,
   );
   assert.deepEqual(onRow?.effects.orders, [
-    { scope: PINNED_PROJECT_ORDER_SCOPE, ids: ["play", "work"] },
+    { scope: PINNED_ORDER_SCOPE, ids: ["play", "work", "p1"] },
   ]);
   // Over the chats under it: the top half of the block aims above the folder, the bottom half
-  // below it, so the line flips once, in the middle.
+  // below it, so the line flips once, in the middle. Below draws under the block's last row.
   const upper = planSidebarDrop(
-    folder("play", "pinned", PINNED_PROJECT_ORDER_SCOPE),
+    folder("play", "pinned", PINNED_ORDER_SCOPE),
     chatRow("pinned", projectOrderScope("work"), "c1", "work", { index: 0, count: 2 }),
     "top",
     ctx,
   );
   assert.deepEqual(upper?.cue, {
-    line: { rowKey: rowKey(PINNED_PROJECT_ORDER_SCOPE, "work"), edge: "top" },
+    line: { rowKey: rowKey(PINNED_ORDER_SCOPE, "work"), edge: "top" },
   });
   const lower = planSidebarDrop(
-    folder("play", "pinned", PINNED_PROJECT_ORDER_SCOPE),
-    chatRow("pinned", projectOrderScope("work"), "c2", "work", { index: 1, count: 2 }),
+    folder("play", "pinned", PINNED_ORDER_SCOPE),
+    {
+      ...chatRow("pinned", projectOrderScope("work"), "c2", "work", { index: 1, count: 2 }),
+      blockEnd: { scope: projectOrderScope("work"), id: "c2" },
+    },
     "bottom",
     ctx,
   );
-  // Already below "work": that edge moves nothing.
-  assert.equal(lower, null);
-  // Its own block is never a target, and neither is Recents or a chat list's row.
+  assert.deepEqual(lower?.cue, {
+    line: { rowKey: rowKey(projectOrderScope("work"), "c2"), edge: "bottom" },
+  });
+  assert.deepEqual(lower?.effects.orders, [
+    { scope: PINNED_ORDER_SCOPE, ids: ["work", "play", "p1"] },
+  ]);
+  // Over a block's own rows, Show more or an empty folder, it lands below that folder.
+  const tail = planSidebarDrop(
+    folder("play", "pinned", PINNED_ORDER_SCOPE),
+    {
+      section: "pinned",
+      folderId: "work",
+      blockEnd: { scope: projectOrderScope("work"), id: "c2" },
+    },
+    "top",
+    ctx,
+  );
+  assert.deepEqual(tail?.cue, {
+    line: { rowKey: rowKey(projectOrderScope("work"), "c2"), edge: "bottom" },
+  });
+  assert.deepEqual(tail?.effects.orders, [
+    { scope: PINNED_ORDER_SCOPE, ids: ["work", "play", "p1"] },
+  ]);
+  // A folder lands between pinned chats too: Pinned is one list.
+  const belowChat = planSidebarDrop(
+    folder("work", "pinned", PINNED_ORDER_SCOPE),
+    chatRow("pinned", PINNED_ORDER_SCOPE, "p1"),
+    "bottom",
+    ctx,
+  );
+  assert.deepEqual(belowChat?.effects.orders, [
+    { scope: PINNED_ORDER_SCOPE, ids: ["p1", "work", "play"] },
+  ]);
+  // Its own block keeps it where it is, and Recents is no target at all.
   assert.equal(
     planSidebarDrop(
-      folder("work", "pinned", PINNED_PROJECT_ORDER_SCOPE),
+      folder("work", "pinned", PINNED_ORDER_SCOPE),
       chatRow("pinned", projectOrderScope("work"), "c1", "work", { index: 0, count: 2 }),
       "top",
       ctx,
     ),
-    null,
+    STAY,
   );
   assert.equal(
     planSidebarDrop(
-      folder("work", "pinned", PINNED_PROJECT_ORDER_SCOPE),
+      folder("work", "pinned", PINNED_ORDER_SCOPE),
       chatRow("recents", RECENTS_ORDER_SCOPE, "r1"),
       "top",
       ctx,
@@ -411,28 +474,40 @@ test("a folder reorders among its own list, and the block under it aims at it", 
 test("a folder dragged into Pinned is pinned where it lands, and back out is unpinned", () => {
   const pin = planSidebarDrop(
     folder("home", "projects", PROJECT_ORDER_SCOPE),
-    folderRow("pinned", PINNED_PROJECT_ORDER_SCOPE, "work"),
+    folderRow("pinned", PINNED_ORDER_SCOPE, "work"),
     "top",
     context(),
   );
   assert.deepEqual(pin?.action, { kind: "pin" });
   assert.equal(pin?.effects.pinProject, "home");
   assert.deepEqual(pin?.effects.orders, [
-    { scope: PINNED_PROJECT_ORDER_SCOPE, ids: ["home", "work"] },
+    { scope: PINNED_ORDER_SCOPE, ids: ["home", "work", "p1"] },
   ]);
-  // Over Pinned's chats or the section: last among the pinned folders.
+  // Over a pinned chat: the slot the line shows, since Pinned is one list.
   const onChat = planSidebarDrop(
     folder("home", "projects", PROJECT_ORDER_SCOPE),
     chatRow("pinned", PINNED_ORDER_SCOPE, "p1"),
     "top",
     context(),
   );
-  assert.deepEqual(onChat?.cue, { ring: sectionRingKey("pinned") });
+  assert.deepEqual(onChat?.cue, {
+    line: { rowKey: rowKey(PINNED_ORDER_SCOPE, "p1"), edge: "top" },
+  });
   assert.deepEqual(onChat?.effects.orders, [
-    { scope: PINNED_PROJECT_ORDER_SCOPE, ids: ["work", "home"] },
+    { scope: PINNED_ORDER_SCOPE, ids: ["work", "home", "p1"] },
   ]);
+  // Pinned sorted by a rule would move the row again, so the drop takes it to Manual.
+  assert.equal(
+    planSidebarDrop(
+      folder("home", "projects", PROJECT_ORDER_SCOPE),
+      chatRow("pinned", PINNED_ORDER_SCOPE, "p1"),
+      "top",
+      context({ pinnedSort: "updated" }),
+    )?.effects.switchSort,
+    "pinned",
+  );
   const unpin = planSidebarDrop(
-    folder("work", "pinned", PINNED_PROJECT_ORDER_SCOPE),
+    folder("work", "pinned", PINNED_ORDER_SCOPE),
     folderRow("projects", PROJECT_ORDER_SCOPE, "misc"),
     "bottom",
     context(),
@@ -443,7 +518,7 @@ test("a folder dragged into Pinned is pinned where it lands, and back out is unp
     { scope: PROJECT_ORDER_SCOPE, ids: ["home", "misc", "work"] },
   ]);
   const unpinOnHeader = planSidebarDrop(
-    folder("work", "pinned", PINNED_PROJECT_ORDER_SCOPE),
+    folder("work", "pinned", PINNED_ORDER_SCOPE),
     { section: "projects", header: true },
     "top",
     context(),
@@ -522,18 +597,18 @@ test("every row and section is wired to the planner", () => {
   // Folder rows are a zone of their folder, and open under a resting pointer while closed.
   assert.match(
     APP_SIDEBAR,
-    /row: \{ id: project\.id, kind: "project", scope: order\.scope \},\n\s*folderId: project\.id,\n\s*\},\n\s*\{ closed: !expanded \},/,
+    /row: \{ id: project\.id, kind: "project", scope: order\.scope \},\n\s*folderId: project\.id,\n\s*blockEnd,\n\s*\},\n\s*\{ closed: !expanded \},/,
   );
   // An empty folder's line and its "Show more" row are the folder's block too.
   assert.equal(
     (
       APP_SIDEBAR.match(
-        /\{\.\.\.dnd\.dropZoneProps\(\{ section: order\.section, folderId: project\.id \}\)\}/g,
+        /\{\.\.\.dnd\.dropZoneProps\(\{ section: order\.section, folderId: project\.id, blockEnd \}\)\}/g,
       ) ?? []
     ).length,
     2,
   );
-  // Each section's body and its header, which stands in while the section is closed.
+  // Each section's body and its header, which stands for the top of its first row.
   for (const section of ["pinned", "projects", "recents"]) {
     assert.ok(
       APP_SIDEBAR.includes(`{...dnd.dropZoneProps({ section: "${section}" })}`),
@@ -547,9 +622,10 @@ test("every row and section is wired to the planner", () => {
   }
   // Each list hands its rows the section they are drawn in.
   for (const wiring of [
-    'scope: PINNED_ORDER_SCOPE,\n                        ids: pinnedRowIds,\n                        section: "pinned",',
+    // Pinned is one list: its folders and chats share the order a drag rewrites.
+    'scope: PINNED_ORDER_SCOPE,\n                            orderedIds: pinnedRowIds,\n                            selectionIds: pinnedProjectRowIds,\n                            section: "pinned",',
+    'scope: PINNED_ORDER_SCOPE,\n                            ids: pinnedChatRowIds,\n                            orderIds: pinnedRowIds,\n                            section: "pinned",',
     'scope: RECENTS_ORDER_SCOPE,\n                        ids: recentRowIds,\n                        section: "recents",',
-    'orderedIds: pinnedProjectRowIds,\n                          section: "pinned",',
     'orderedIds: projectRowIds,\n                          section: "projects",',
   ]) {
     assert.ok(APP_SIDEBAR.includes(wiring), `missing ${wiring}`);
@@ -576,6 +652,30 @@ test("a cue over nothing is cleared without trusting dragleave", () => {
   assert.match(HOOK, /if \(!next\) return;\n\s*event\.preventDefault\(\);\n\s*lastHandledEvent = event\.nativeEvent;/);
   assert.ok(!HOOK.includes("event.stopPropagation();\n          lastHandledEvent"));
   assert.match(HOOK, /if \(!dragged \|\| lastHandledEvent === event\.nativeEvent\) return;/);
+});
+
+// Over its own row a lifted row is already home. The row claims the drag and paints nothing,
+// so the section body never gets to offer its last slot for it.
+test("a row over itself claims the drag and paints nothing", () => {
+  assert.match(
+    HOOK,
+    /if \(next === STAY\) \{\n\s*\/\/[^\n]*\n\s*cancelSpring\(\);\n\s*showPlan\(null\);\n\s*return;\n\s*\}/,
+  );
+  assert.match(HOOK, /if \(next !== STAY\) optionsRef\.current\.onDrop\(next, dragged\);/);
+});
+
+// The menu keeps a 1px gap between rows. A pointer on it would hit the section, whose answer
+// is its last slot, so every draggable row's box reaches over the gap below it.
+test("rows cover the gap between them, so the section never answers for it", () => {
+  assert.match(APP_SIDEBAR, /const DROP_ROW_HIT = "pb-px -mb-px";/);
+  assert.match(
+    APP_SIDEBAR,
+    /: "group\/recent-item relative",\n\s*DROP_ROW_HIT,\n\s*\);/,
+  );
+  assert.match(
+    APP_SIDEBAR,
+    /"group\/recent-item relative",\n\s*DROP_ROW_HIT,\n\s*draggingRow\?\.id === project\.id/,
+  );
 });
 
 // A section's collapsible clips its overflow, so cues stay inside the row.

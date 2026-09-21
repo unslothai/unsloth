@@ -339,6 +339,9 @@ const DROP_CUE_BOTTOM = `${DROP_CUE_BASE} before:bottom-0`;
 // Kept inside the box for the same clipping reason.
 const DROP_INTO_CUE =
   "before:pointer-events-none before:absolute before:inset-x-1 before:inset-y-0 before:rounded-2xl before:bg-primary/8 before:ring-1 before:ring-inset before:ring-primary/70 before:content-['']";
+// The menu keeps a 1px gap between rows. A pointer resting on that gap would hit the section
+// instead, which answers with its last slot, so each row's box reaches over the gap below it.
+const DROP_ROW_HIT = "pb-px -mb-px";
 // A closed section has no body to light, so its header takes the tint.
 const DROP_INTO_HEADER_CUE =
   "rounded-full bg-primary/8 ring-1 ring-inset ring-primary/70";
@@ -349,6 +352,10 @@ type RowSort = {
   value: SidebarChatSort;
   set: (next: SidebarChatSort) => void;
 };
+// One row of the Pinned list, which holds folders and chats together.
+type PinnedRow =
+  | { kind: "project"; id: string; project: ProjectRecord }
+  | { kind: "chat"; id: string; item: SidebarItem };
 
 // The kebab shows itself while its menu is open; the quick-action beside it was hover-only, so
 // it slid in over the title. The row reserves room for both, so reveal both.
@@ -1101,15 +1108,17 @@ export function AppSidebar() {
     return map;
   }, [allChatItems]);
   const organizeBy = useSidebarOrganizationStore((s) => s.organizeBy);
+  // Whether the sidebar is set up to list folders at all, which is what the nav row answers to.
+  const projectsSectionConfigured =
+    organizeBy === "project" && projects.length > 0;
   const projectsSectionRendered =
-    !isStudioRoute &&
-    !showTrainingRecents &&
-    organizeBy === "project" &&
-    projects.length > 0;
-  // The icon rail hides the section in CSS without unmounting it, so the nav row only stands
-  // down while the section is really on screen.
+    !isStudioRoute && !showTrainingRecents && projectsSectionConfigured;
+  // Deliberately not the rendered flag: Train and Recipes swap the section for their runs, and a
+  // row reappearing there reads as a setting turning itself back on. The icon rail is the one
+  // exception, since it hides the section in CSS without unmounting it and the row is then the
+  // only way to reach projects.
   const projectsSectionShowing =
-    projectsSectionRendered && (isMobile || sidebarState !== "collapsed");
+    projectsSectionConfigured && (isMobile || sidebarState !== "collapsed");
   const chatSort = useSidebarOrganizationStore((s) => s.chatSort);
   const pinnedSort = useSidebarOrganizationStore((s) => s.pinnedSort);
   const manualOrder = useSidebarOrganizationStore((s) => s.manualOrder);
@@ -1159,8 +1168,9 @@ export function AppSidebar() {
       list.sort((a, b) => b.updatedAt - a.updatedAt);
     return map;
   }, [allChatItems]);
-  // Pinned folders, in pin order then manual order. They render in Pinned, so they carry its scope.
-  const pinnedProjectRecords = useMemo(() => {
+  // Pinned folders in pin order, then the order they were dragged into while Pinned kept
+  // folders apart from its chats. Pinned is one list now; this only seeds it.
+  const pinnedProjectBase = useMemo(() => {
     const byId = new Map(projects.map((p) => [p.id, p]));
     const pinned = pinnedProjectIds
       .map((id) => byId.get(id))
@@ -1372,9 +1382,31 @@ export function AppSidebar() {
     () => sortedRecentChatItems.map((item) => item.id),
     [sortedRecentChatItems],
   );
-  const pinnedRowIds = useMemo(
+  // Chats only, for shift-click ranges among them.
+  const pinnedChatRowIds = useMemo(
     () => sortedPinnedChatItems.map((item) => item.id),
     [sortedPinnedChatItems],
+  );
+  // Pinned is one list of folders and chats, in the order they were dropped into. Folders lead
+  // until a drop says otherwise; a chat sort other than Manual keeps the chats after them.
+  const pinnedRows = useMemo(() => {
+    const rows: PinnedRow[] = [];
+    if (organizeBy === "project") {
+      for (const project of pinnedProjectBase) {
+        rows.push({ kind: "project", id: project.id, project });
+      }
+    }
+    for (const item of sortedPinnedChatItems) {
+      rows.push({ kind: "chat", id: item.id, item });
+    }
+    return pinnedSort === "manual"
+      ? applyManualOrder(rows, manualOrder[PINNED_ORDER_SCOPE], (row) => row.id)
+      : rows;
+  }, [organizeBy, pinnedProjectBase, sortedPinnedChatItems, pinnedSort, manualOrder]);
+  const pinnedRowIds = useMemo(() => pinnedRows.map((row) => row.id), [pinnedRows]);
+  const pinnedProjectRecords = useMemo(
+    () => pinnedRows.flatMap((row) => (row.kind === "project" ? [row.project] : [])),
+    [pinnedRows],
   );
   // Whole lists, not the visible slices, so a drop cannot lose what a collapsed "Show more" is
   // hiding, plus the project chats actually on screen: grouping by project keeps them out of Recents,
@@ -1872,8 +1904,7 @@ export function AppSidebar() {
       pinnedChatIds: pinnedIdSet,
       pinnedProjectIds: pinnedProjectIdSet,
       orders: {
-        pinnedChats: pinnedRowIds,
-        pinnedProjects: pinnedProjectRowIds,
+        pinned: pinnedRowIds,
         projects: projectRowIds,
         recents: recentRowIds,
         projectChats: (projectId) => projectChatRowIds.get(projectId) ?? [],
@@ -1887,7 +1918,6 @@ export function AppSidebar() {
       pinnedIdSet,
       pinnedProjectIdSet,
       pinnedRowIds,
-      pinnedProjectRowIds,
       projectRowIds,
       recentRowIds,
       projectChatRowIds,
@@ -3314,6 +3344,10 @@ export function AppSidebar() {
       /** The section the row is drawn in, and its folder when it is a folder's chat. */
       section: SidebarSection;
       folderId?: string;
+      /** The last row drawn in the folder's block, for a line landing below it. */
+      blockEnd?: { scope: string; id: string };
+      /** The list a drag reorders, when it is wider than `ids`: Pinned mixes in folders. */
+      orderIds?: string[];
       sort?: RowSort;
     },
   ) {
@@ -3343,10 +3377,12 @@ export function AppSidebar() {
     );
     const hasUnreadActivity =
       !isGenerating && !hasQueuedActivity && alreadyUnread;
-    const itemClass =
+    const itemClass = cn(
       variant === "project"
         ? "group/project-chat-item relative"
-        : "group/recent-item relative";
+        : "group/recent-item relative",
+      DROP_ROW_HIT,
+    );
     const actionClass =
       variant === "project"
         ? "sidebar-row-action sidebar-touch-reveal group-hover/project-chat-item:opacity-100 group-hover/project-chat-item:pointer-events-auto focus-visible:opacity-100 focus-visible:pointer-events-auto"
@@ -3425,13 +3461,14 @@ export function AppSidebar() {
                 scope: list.scope,
                 projectId: item.projectId ?? null,
               },
-              orderedIds: list.ids,
+              orderedIds: list.orderIds ?? list.ids,
               sort: list.sort,
             })}
             {...dnd.dropZoneProps({
               section: list.section,
               row: { id: item.id, kind: "chat", scope: list.scope },
               folderId: list.folderId,
+              blockEnd: list.blockEnd,
               // A folder's chats are its block; a folder dragged over them lands against it.
               block: list.folderId
                 ? { index: list.ids.indexOf(item.id), count: list.ids.length }
@@ -3567,7 +3604,7 @@ export function AppSidebar() {
                   scope: list.scope,
                   projectId: item.projectId ?? null,
                 },
-                list.ids,
+                list.orderIds ?? list.ids,
                 list.sort,
               )}
               {/* The dot a finished reply leaves, put back or taken off by hand. */}
@@ -3757,7 +3794,13 @@ export function AppSidebar() {
    *  unpinned folder, Pinned for a pinned one, so neither renumbers the other. */
   function renderProjectFolderRow(
     project: ProjectRecord,
-    order: { scope: string; orderedIds: string[]; section: SidebarSection },
+    order: {
+      scope: string;
+      orderedIds: string[];
+      section: SidebarSection;
+      /** The folders alone, for shift-click ranges, where the list holds chats too. */
+      selectionIds?: string[];
+    },
   ) {
     const projectChats =
       sortedChatsByProjectId.get(project.id) ?? [];
@@ -3772,6 +3815,14 @@ export function AppSidebar() {
     const isProjectPinned = pinnedProjectIdSet.has(
       project.id,
     );
+    // Where a line landing below this folder's block is drawn: its last row on screen.
+    const blockEnd =
+      expanded && visibleChats.length > 0
+        ? {
+            scope: projectOrderScope(project.id),
+            id: visibleChats[visibleChats.length - 1].id,
+          }
+        : { scope: order.scope, id: project.id };
     return (
     <Fragment key={project.id}>
     {/* Folders drag to reorder whatever the chat sort is, and take a chat dragged onto them. */}
@@ -3780,6 +3831,7 @@ export function AppSidebar() {
         <SidebarMenuItem
           className={cn(
             "group/recent-item relative",
+            DROP_ROW_HIT,
             draggingRow?.id === project.id && "opacity-50",
             dropCueClass(order.scope, project.id),
             // Lit while a chat is over the folder row or any of the chats inside it.
@@ -3803,6 +3855,7 @@ export function AppSidebar() {
               section: order.section,
               row: { id: project.id, kind: "project", scope: order.scope },
               folderId: project.id,
+              blockEnd,
             },
             { closed: !expanded },
           )}
@@ -3817,7 +3870,11 @@ export function AppSidebar() {
           }
           onClick={(event) => {
             if (
-              handleProjectSelectionClick(event, project.id, order.orderedIds)
+              handleProjectSelectionClick(
+                event,
+                project.id,
+                order.selectionIds ?? order.orderedIds,
+              )
             )
               return;
             clearSelection();
@@ -3918,6 +3975,7 @@ export function AppSidebar() {
           ids: projectChatIds,
           section: order.section,
           folderId: project.id,
+          blockEnd,
           sort: { value: chatSort, set: setChatSort },
         }),
       )}
@@ -3925,7 +3983,7 @@ export function AppSidebar() {
         folder is exactly where a chat is dragged, and it has no row of its own to land on. */}
     {expanded && projectChats.length === 0 && (
       <SidebarMenuItem
-        {...dnd.dropZoneProps({ section: order.section, folderId: project.id })}
+        {...dnd.dropZoneProps({ section: order.section, folderId: project.id, blockEnd })}
       >
         <p className="flex h-[30px] items-center pl-9 pr-4 text-ui-13 leading-ui-18 tracking-nav text-nav-fg-muted">
           {t("shell.navigation.noChats")}
@@ -3936,7 +3994,7 @@ export function AppSidebar() {
       projectChats.length > PROJECT_CHAT_LIMIT && (
         <SidebarMenuItem
           // Still the folder's block.
-          {...dnd.dropZoneProps({ section: order.section, folderId: project.id })}
+          {...dnd.dropZoneProps({ section: order.section, folderId: project.id, blockEnd })}
         >
           <SidebarMenuButton
             onClick={() => toggleProjectShowAll(project.id)}
@@ -4373,11 +4431,8 @@ export function AppSidebar() {
           </SidebarGroupContent>
         </SidebarGroup>
 
-        {/* Pinned: the folders pinned to it, then the pinned chats */}
-        {!isStudioRoute &&
-          !showTrainingRecents &&
-          (pinnedChatItems.length > 0 ||
-            (organizeBy === "project" && pinnedProjectRecords.length > 0)) && (
+        {/* Pinned: folders and chats in one list, in the order they were dropped into. */}
+        {!isStudioRoute && !showTrainingRecents && pinnedRows.length > 0 && (
           <Collapsible open={pinnedOpen} onOpenChange={setPinnedOpen} asChild>
             <SidebarGroup className="group/sb-section group-data-[collapsible=icon]:hidden px-0 py-0">
               {/* The header takes drops too: above the first row, or into a closed section. */}
@@ -4386,28 +4441,16 @@ export function AppSidebar() {
                   "sidebar-sticky-label sidebar-sticky-label-following group/sidebar-header gap-1",
                   headerRightPadding,
                   scrolled && "is-scrolled",
-                  !pinnedOpen &&
-                    dnd.ringLit(sectionRingKey("pinned")) &&
-                    DROP_INTO_HEADER_CUE,
                 )}
                 {...dnd.dropZoneProps(
                   {
                     section: "pinned",
                     header: true,
-                    row:
-                      organizeBy === "project" && pinnedProjectRecords[0]
-                        ? {
-                            id: pinnedProjectRecords[0].id,
-                            kind: "project",
-                            scope: PINNED_PROJECT_ORDER_SCOPE,
-                          }
-                        : sortedPinnedChatItems[0]
-                          ? {
-                              id: sortedPinnedChatItems[0].id,
-                              kind: "chat",
-                              scope: PINNED_ORDER_SCOPE,
-                            }
-                          : undefined,
+                    row: {
+                      id: pinnedRows[0].id,
+                      kind: pinnedRows[0].kind,
+                      scope: PINNED_ORDER_SCOPE,
+                    },
                   },
                   { closed: !pinnedOpen },
                 )}
@@ -4425,33 +4468,27 @@ export function AppSidebar() {
                 })}
               </SidebarGroupLabel>
               <CollapsibleContent>
+                {/* The space under the rows lands a drop last. */}
                 <SidebarGroupContent
-                  className={cn(
-                    unrailedRowPadding,
-                    "relative",
-                    dnd.ringLit(sectionRingKey("pinned")) && DROP_INTO_CUE,
-                  )}
+                  className={cn(unrailedRowPadding, "relative")}
                   {...dnd.dropZoneProps({ section: "pinned" })}
                 >
                   <SidebarMenu>
-                    {/* Folders first: a folder carries its own chats. */}
-                    {organizeBy === "project" &&
-                      pinnedProjectRecords.map((project) =>
-                        renderProjectFolderRow(project, {
-                          scope: PINNED_PROJECT_ORDER_SCOPE,
-                          orderedIds: pinnedProjectRowIds,
-                          section: "pinned",
-                        }),
-                      )}
-                    {/* A chat dropped on one of these is pinned into that slot; the rows that are
-                        already pinned reorder among themselves. */}
-                    {sortedPinnedChatItems.map((item) =>
-                      renderChatSidebarItem(item, "recent", {
-                        scope: PINNED_ORDER_SCOPE,
-                        ids: pinnedRowIds,
-                        section: "pinned",
-                        sort: { value: pinnedSort, set: setPinnedSort },
-                      }),
+                    {pinnedRows.map((row) =>
+                      row.kind === "project"
+                        ? renderProjectFolderRow(row.project, {
+                            scope: PINNED_ORDER_SCOPE,
+                            orderedIds: pinnedRowIds,
+                            selectionIds: pinnedProjectRowIds,
+                            section: "pinned",
+                          })
+                        : renderChatSidebarItem(row.item, "recent", {
+                            scope: PINNED_ORDER_SCOPE,
+                            ids: pinnedChatRowIds,
+                            orderIds: pinnedRowIds,
+                            section: "pinned",
+                            sort: { value: pinnedSort, set: setPinnedSort },
+                          }),
                     )}
                   </SidebarMenu>
                 </SidebarGroupContent>
