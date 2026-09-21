@@ -93,9 +93,9 @@ const PROJECTS_INITIAL_FALLBACK = 8;
 // Approx list row height in px, used to estimate how many rows fit the page.
 const PROJECTS_ROW_HEIGHT = 68;
 
-// Modified column, matching a file-list feel: Today / Yesterday / N days ago, then a short date
+// Updated column, matching a file-list feel: Today / Yesterday / N days ago, then a short date
 // once it is over a week old.
-function formatModified(ts: number): string {
+function formatUpdated(ts: number): string {
   if (!Number.isFinite(ts)) return "";
   const now = new Date();
   const then = new Date(ts);
@@ -127,6 +127,8 @@ export function ProjectsPage() {
 
   const [query, setQuery] = useState("");
   const [sortMode, setSortMode] = useState<SortMode>("activity");
+  // Newest first, the way a file list opens.
+  const [sortDir, setSortDir] = useState<"desc" | "asc">("desc");
   // Rows that fit the page height (measured), plus any revealed via Show more.
   const [baseFit, setBaseFit] = useState(PROJECTS_INITIAL_FALLBACK);
   const [extraCount, setExtraCount] = useState(0);
@@ -345,13 +347,13 @@ export function ProjectsPage() {
     const filtered = trimmed
       ? projects.filter((p) => p.name.toLowerCase().includes(trimmed))
       : projects.slice();
-    filtered.sort((a, b) =>
-      sortMode === "name"
-        ? a.name.localeCompare(b.name)
-        : b.updatedAt - a.updatedAt,
-    );
+    filtered.sort((a, b) => {
+      if (sortMode === "name") return a.name.localeCompare(b.name);
+      // Direction belongs to the Updated column, which is the only one that carries an arrow.
+      return sortDir === "asc" ? a.updatedAt - b.updatedAt : b.updatedAt - a.updatedAt;
+    });
     return filtered;
-  }, [projects, query, sortMode]);
+  }, [projects, query, sortMode, sortDir]);
   // Default view shows as many rows as fit the page, then loads more as the user scrolls near the
   // bottom. Search always spans every project.
   const isSearching = query.trim() !== "";
@@ -639,9 +641,11 @@ export function ProjectsPage() {
 
       {!hasLoaded ? (
         <div className="mt-16">
+          {/* The loaded header without its sort control, which has nothing to sort yet. */}
           <div className="mb-1 flex items-center gap-3 px-5 pb-1 text-ui-13 font-medium text-muted-foreground">
             <span className="flex-1">Name</span>
-            <span className="w-40 shrink-0">Modified</span>
+            <span className="w-40 shrink-0">Updated</span>
+            <span className="size-7 shrink-0" />
             <span className="w-8 shrink-0" />
           </div>
           {Array.from({ length: 6 }).map((_, index) => (
@@ -678,11 +682,32 @@ export function ProjectsPage() {
       ) : (
         <>
         <div className="mt-16">
-          {/* Column header. Name starts at the folder icon's left edge; the
-              right-anchored columns keep Modified over its values. */}
+          {/* Column header. Name starts at the folder icon's left edge, and the trailing
+              spacers stand in for the row's pin and menu so Updated sits over its values. */}
           <div className="mb-1 flex items-center gap-3 px-5 pb-1 text-ui-13 font-medium text-muted-foreground">
             <span className="flex-1">Name</span>
-            <span className="w-40 shrink-0">Modified</span>
+            {/* The column sorts the list, and the arrow says which way. */}
+            <button
+              type="button"
+              onClick={() => {
+                if (sortMode !== "activity") setSortMode("activity");
+                else setSortDir((dir) => (dir === "desc" ? "asc" : "desc"));
+              }}
+              title={sortDir === "desc" ? "Newest first" : "Oldest first"}
+              className="flex w-40 shrink-0 cursor-pointer items-center gap-1 text-left transition-colors hover:text-foreground"
+            >
+              Updated
+              <ChevronDownIcon
+                strokeWidth={1.75}
+                className={cn(
+                  "size-3.5 transition-transform",
+                  sortDir === "asc" && "rotate-180",
+                  // The list is by name, so this column is not what orders it.
+                  sortMode !== "activity" && "invisible",
+                )}
+              />
+            </button>
+            <span className="size-7 shrink-0" />
             <span className="w-8 shrink-0" />
           </div>
           <div ref={listRef} data-tour="projects-list">
@@ -730,7 +755,7 @@ export function ProjectsPage() {
                 />
               </span>
               {/* The disclosure belongs to the name, so it sits beside it rather than out by
-                  the Modified column, where it read as another row action. */}
+                  the Updated column, where it read as another row action. */}
               <span className="flex min-w-0 flex-1 items-center gap-0.5">
                 <span className="min-w-0 truncate text-ui-15 font-semibold text-foreground">
                   {project.name}
@@ -759,7 +784,7 @@ export function ProjectsPage() {
                 </button>
               </span>
               <span className="w-40 shrink-0 text-sm text-muted-foreground">
-                {formatModified(project.updatedAt)}
+                {formatUpdated(project.updatedAt)}
               </span>
               {/* Pinning is one click here, as it is on a sidebar row. */}
               <button
@@ -803,17 +828,8 @@ export function ProjectsPage() {
                     onKeyDown={(e) => e.stopPropagation()}
                     className="app-user-menu menu-soft-surface menu-flat-destructive ring-0 w-44 py-2 font-heading rounded-[14px] border-0"
                   >
-                    <DropdownMenuItem
-                      onSelect={() => togglePinProject(project.id)}
-                    >
-                      <HugeiconsIcon
-                        icon={pinned ? PinOffIcon : PinIcon}
-                        strokeWidth={1.75}
-                        className="size-icon"
-                      />
-                      <span>{pinned ? "Unpin" : "Pin"}</span>
-                    </DropdownMenuItem>
-                    {/* The sidebar's dialog: name, instructions and source folders in one place. */}
+                    {/* No pin item: the row's own button does it. Edit opens the sidebar's
+                        dialog, which owns the name, instructions and source folders. */}
                     <DropdownMenuItem onSelect={() => setEditing(project)}>
                       <HugeiconsIcon icon={Edit03Icon} strokeWidth={1.75} className="size-icon" />
                       <span>Edit</span>

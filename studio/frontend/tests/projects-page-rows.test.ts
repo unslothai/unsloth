@@ -85,8 +85,43 @@ test("pinning a project takes one click, and says which way it goes", () => {
   assert.match(PAGE, /togglePinProject\(project\.id\);/);
   // A pinned row keeps its pin showing; the rest reveal on hover.
   assert.match(PAGE, /pinned \? "opacity-100" : "opacity-0",/);
-  // And the menu no longer repeats the noun the row already is.
-  assert.match(PAGE, /<span>\{pinned \? "Unpin" : "Pin"\}<\/span>/);
+  // And the menu does not repeat the button beside it.
+  assert.ok(
+    !PAGE.includes('{pinned ? "Unpin" : "Pin"}'),
+    "the row menu still carries a pin item",
+  );
+  assert.equal(
+    (PAGE.match(/togglePinProject\(project\.id\)/g) ?? []).length,
+    1,
+    "pinning has more than one control on a row",
+  );
+});
+
+// "Modified" named something the row does not track, and the header sat past its own values,
+// over the pin and the menu.
+test("the Updated column names the list's order and turns it around", () => {
+  assert.ok(!PAGE.includes(">Modified<"), "the old column name is still rendered");
+  assert.match(PAGE, /\n\s*Updated\n\s*<ChevronDownIcon/);
+  // One click puts the list back on this column, the next turns it around.
+  assert.match(
+    PAGE,
+    /if \(sortMode !== "activity"\) setSortMode\("activity"\);\n\s*else setSortDir\(\(dir\) => \(dir === "desc" \? "asc" : "desc"\)\);/,
+  );
+  assert.match(PAGE, /sortDir === "asc" && "rotate-180",/);
+  // The arrow stands for this column alone, so sorting by name hides it rather than lying.
+  assert.match(PAGE, /sortMode !== "activity" && "invisible",/);
+  assert.match(
+    PAGE,
+    /return sortDir === "asc" \? a\.updatedAt - b\.updatedAt : b\.updatedAt - a\.updatedAt;/,
+  );
+  // Newest first to begin with, as a file list opens.
+  assert.match(PAGE, /useState<"desc" \| "asc">\("desc"\)/);
+  // The header's trailing spacers match the row's pin and menu, so the label sits over its
+  // values instead of over them.
+  assert.match(
+    PAGE,
+    /<span className="size-7 shrink-0" \/>\n\s*<span className="w-8 shrink-0" \/>\n\s*<\/div>/,
+  );
 });
 
 // "Thought for 216 seconds" is neither what the model did nor a readable duration.
