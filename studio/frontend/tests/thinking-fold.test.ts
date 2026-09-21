@@ -13,7 +13,9 @@ import {
   foldEnd,
   foldedToolSummary,
   foldedTurnDuration,
+  foldRun,
   governingReasoningEnd,
+  isBlankTextPart,
   isFoldedReasoningGroup,
   leadReasoningEnd,
   reasoningRoundKey,
@@ -41,20 +43,89 @@ const twoRounds = parts([
   "tool-call",
 ]);
 
-test("the first thinking block heads the turn", () => {
-  assert.equal(leadReasoningEnd(twoRounds), 0);
+test("the first thinking block of a span heads it", () => {
+  assert.equal(leadReasoningEnd(twoRounds, 0), 0);
+  assert.equal(leadReasoningEnd(twoRounds, 5), 0);
   // Two reasoning parts in a row are one block.
-  assert.equal(leadReasoningEnd(parts(["reasoning", "reasoning", "text"])), 1);
+  assert.equal(
+    leadReasoningEnd(parts(["reasoning", "reasoning", "text"]), 1),
+    1,
+  );
   // A call before any thinking does not stop the first block from leading.
-  assert.equal(leadReasoningEnd(parts(["tool-call", "reasoning", "text"])), 1);
-  // An answer before any thinking, or no thinking at all, and nothing leads.
-  assert.equal(leadReasoningEnd(parts(["text", "reasoning"])), null);
-  assert.equal(leadReasoningEnd(parts(["tool-call", "text"])), null);
+  assert.equal(
+    leadReasoningEnd(parts(["tool-call", "reasoning", "text"]), 0),
+    1,
+  );
+  // Answer text is not in any span, and a run with no thinking has no lead.
+  assert.equal(leadReasoningEnd(parts(["text", "reasoning"]), 0), null);
+  assert.equal(leadReasoningEnd(parts(["tool-call", "text"]), 0), null);
+  // The call after the answer sits in a span of its own with nothing to lead it.
+  assert.equal(leadReasoningEnd(twoRounds, 7), null);
 });
 
-test("the fold runs from the lead to the answer", () => {
+test("a span runs from its lead to the answer", () => {
+  assert.deepEqual(foldRun(twoRounds, 0), { start: 0, end: 6 });
+  assert.deepEqual(foldRun(twoRounds, 7), { start: 7, end: 8 });
+  assert.equal(foldRun(twoRounds, 6), null);
   assert.equal(foldEnd(twoRounds, 0), 6);
   assert.equal(foldEnd(parts(["reasoning", "tool-call"]), 0), 2);
+});
+
+test("blank text between thinking and a call does not end the span", () => {
+  // A provider can leave a newline between a closed think block and its native tool event.
+  const blank = [
+    { type: "reasoning" },
+    { type: "text", text: "\n" },
+    { type: "tool-call" },
+    { type: "reasoning" },
+    { type: "text", text: "The answer." },
+  ];
+  assert.equal(isBlankTextPart(blank[1]), true);
+  assert.equal(isBlankTextPart(blank[4]), false);
+  assert.equal(isBlankTextPart({ type: "reasoning" }), false);
+  assert.deepEqual(foldRun(blank, 0), { start: 0, end: 4 });
+  assert.equal(governingReasoningEnd(blank, 2), 0);
+  assert.equal(isFoldedReasoningGroup(blank, 3), true);
+  assert.equal(countFoldedToolParts(blank, 0), 1);
+  // The rule closes the last thing shown, not a trailing blank.
+  const trailing = [
+    { type: "reasoning" },
+    { type: "tool-call" },
+    { type: "text", text: " " },
+    { type: "text", text: "The answer." },
+  ];
+  assert.equal(endsFoldedSpan(trailing, 1), true);
+  assert.equal(endsFoldedSpan(trailing, 2), false);
+});
+
+test("a continuation's seeded reply sits before the new round, not in it", () => {
+  // Continue seeds the new message with the previous reply as its first text part.
+  const continued = [
+    { type: "text", text: "What I had so far." },
+    { type: "reasoning" },
+    { type: "tool-call" },
+    { type: "tool-call" },
+    { type: "reasoning" },
+    { type: "text", text: "And the rest." },
+  ];
+  assert.equal(leadReasoningEnd(continued, 1), 1);
+  assert.equal(governingReasoningEnd(continued, 2), 1);
+  assert.equal(isFoldedReasoningGroup(continued, 4), true);
+  assert.equal(countFoldedToolParts(continued, 1), 2);
+  assert.equal(endsFoldedSpan(continued, 4), true);
+  // Two answers, two spans, each with its own lead.
+  const twoSpans = [
+    { type: "reasoning" },
+    { type: "tool-call" },
+    { type: "text", text: "First." },
+    { type: "reasoning" },
+    { type: "tool-call" },
+    { type: "text", text: "Second." },
+  ];
+  assert.equal(leadReasoningEnd(twoSpans, 1), 0);
+  assert.equal(leadReasoningEnd(twoSpans, 4), 3);
+  assert.equal(governingReasoningEnd(twoSpans, 4), 3);
+  assert.equal(countFoldedToolParts(twoSpans, 3), 1);
 });
 
 test("every group before the answer folds under the lead", () => {
@@ -82,22 +153,21 @@ test("calls with no thinking before them, or after the answer, stay put", () => 
 });
 
 test("the lead counts every call it holds and none after the answer", () => {
-  assert.equal(countFoldedToolParts(twoRounds), 3);
-  assert.equal(countFoldedToolParts(parts(["reasoning", "text"])), 0);
-  assert.equal(countFoldedToolParts(parts(["text", "tool-call"])), 0);
+  assert.equal(countFoldedToolParts(twoRounds, 0), 3);
+  assert.equal(countFoldedToolParts(parts(["reasoning", "text"]), 0), 0);
 });
 
 test("a run the thread keeps visible is not counted as held", () => {
   // The first run (parts 1..2) is exempt, say a call awaiting approval; the second is not.
   const exempt = (start: number) => start === 1;
-  assert.equal(countFoldedToolParts(twoRounds, exempt), 1);
+  assert.equal(countFoldedToolParts(twoRounds, 0, exempt), 1);
   assert.equal(
-    countFoldedToolParts(twoRounds, () => true),
+    countFoldedToolParts(twoRounds, 0, () => true),
     0,
   );
   // Runs are passed whole, as the tool group sees them.
   const seen: [number, number][] = [];
-  countFoldedToolParts(twoRounds, (start, end) => {
+  countFoldedToolParts(twoRounds, 0, (start, end) => {
     seen.push([start, end]);
     return false;
   });
@@ -173,7 +243,7 @@ test("the tool group and the header share one exemption rule", () => {
   const reasoning = readSrc("components/assistant-ui/reasoning.tsx");
   assert.match(
     reasoning,
-    /countFoldedToolParts\(message\.parts, \(start, end\) =>\n\s*toolRunIsExempt\(message\.parts, start, end, toolConfirmations\),/,
+    /countFoldedToolParts\(message\.parts, endIndex, \(start, end\) =>\n\s*toolRunIsExempt\(message\.parts, start, end, toolConfirmations\),/,
   );
 });
 
@@ -244,18 +314,20 @@ test("the lead reports the turn's thinking time added up", () => {
   const byStart: Record<number, number | undefined> = { 0: 4, 3: 6 };
   const resolve = (_parts: readonly { type: string }[], start: number) =>
     byStart[start];
-  assert.equal(foldedTurnDuration(twoRounds, resolve), 10);
+  assert.equal(foldedTurnDuration(twoRounds, 0, resolve), 10);
   // A reply saved with only the legacy last-round duration still reports it.
   assert.equal(
-    foldedTurnDuration(twoRounds, (_p, start) => (start === 3 ? 6 : undefined)),
+    foldedTurnDuration(twoRounds, 0, (_p, start) =>
+      start === 3 ? 6 : undefined,
+    ),
     6,
   );
   // Nothing known and the caller keeps its own clock.
   assert.equal(
-    foldedTurnDuration(twoRounds, () => undefined),
+    foldedTurnDuration(twoRounds, 0, () => undefined),
     undefined,
   );
-  assert.equal(foldedTurnDuration(parts(["text"]), resolve), undefined);
+  assert.equal(foldedTurnDuration(parts(["text"]), 0, resolve), undefined);
 });
 
 test("the header says how many calls it is holding", () => {
@@ -328,7 +400,7 @@ test("later thinking rounds render inside the lead, with no header of their own"
   // The lead keeps working through those rounds, so its clock covers the whole turn.
   assert.match(
     reasoning,
-    /if \(type !== "tool-call" && !\(foldLead && type === "reasoning"\)\)/,
+    /if \(foldLead && \(part\?\.type === "reasoning" \|\| isBlankTextPart\(part\)\)\)/,
   );
 });
 

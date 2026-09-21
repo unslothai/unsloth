@@ -46,6 +46,7 @@ import {
   foldEnd,
   foldedToolSummary,
   foldedTurnDuration,
+  isBlankTextPart,
   isFoldedReasoningGroup,
   leadReasoningEnd,
   reasoningRoundKey,
@@ -776,7 +777,7 @@ const FoldedReasoningRound: ReasoningGroupComponent = ({
 }) => {
   const messageId = useAuiState(({ message }) => message.id);
   const roundKey = useAuiState(({ message }) => {
-    const lead = leadReasoningEnd(message.parts);
+    const lead = leadReasoningEnd(message.parts, startIndex);
     return lead === null ? null : reasoningRoundKey(message.id, lead);
   });
   const open = useReasoningRoundStore(
@@ -839,9 +840,10 @@ const ReasoningGroupBlock = ({
   endIndex,
   foldTurn,
 }: ComponentProps<ReasoningGroupComponent> & { foldTurn: boolean }) => {
-  // The lead of a folded turn: the first Thinking block, before any answer text.
+  // The lead of a folded span: its first Thinking block.
   const foldLead = useAuiState(
-    ({ message }) => foldTurn && leadReasoningEnd(message.parts) === endIndex,
+    ({ message }) =>
+      foldTurn && leadReasoningEnd(message.parts, endIndex) === endIndex,
   );
   const isReasoningStreaming = useAuiState(({ message }) => {
     if (message.status?.type !== "running") {
@@ -863,12 +865,15 @@ const ReasoningGroupBlock = ({
     if (!groupHasReasoning) {
       return false;
     }
-    // The lead of a folded turn keeps working through later thinking too, until the answer.
+    // The lead of a folded span keeps working through later thinking and blank text too,
+    // until the answer.
     for (let i = endIndex + 1; i < len; i += 1) {
-      const type = parts[i]?.type;
-      if (type !== "tool-call" && !(foldLead && type === "reasoning")) {
-        return false;
+      const part = parts[i];
+      if (part?.type === "tool-call") continue;
+      if (foldLead && (part?.type === "reasoning" || isBlankTextPart(part))) {
+        continue;
       }
+      return false;
     }
     return true;
   });
@@ -901,7 +906,7 @@ const ReasoningGroupBlock = ({
       | Record<string, unknown>
       | undefined;
     if (foldLead) {
-      return foldedTurnDuration(message.parts, (parts, start) =>
+      return foldedTurnDuration(message.parts, endIndex, (parts, start) =>
         resolveReasoningGroupDuration(parts, start, custom),
       );
     }
@@ -975,7 +980,7 @@ const ReasoningGroupBlock = ({
   const toolConfirmations = useChatRuntimeStore((s) => s.toolConfirmations);
   const foldedToolCount = useAuiState(({ message }) =>
     foldLead
-      ? countFoldedToolParts(message.parts, (start, end) =>
+      ? countFoldedToolParts(message.parts, endIndex, (start, end) =>
           toolRunIsExempt(message.parts, start, end, toolConfirmations),
         )
       : 0,
