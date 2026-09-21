@@ -520,6 +520,39 @@ class TestAliasResolutionOnlyEverAddsCandidates:
     def test_legitimate_work_through_the_same_aliases_still_runs(self, code):
         _ok(code)
 
+    @pytest.mark.parametrize(
+        "code",
+        [
+            # `requests.request` carries the URL in argument 1 and `requests.get` in argument 0, so
+            # reading only one candidate's signature looked at `"GET"`, a complete non-URL, and
+            # never saw the hostile argument.
+            pytest.param(
+                "from requests import request as fetch\n"
+                "def unused():\n"
+                "    from requests import get as fetch\n"
+                'fetch("GET", "http://evil.example/x")',
+                id = "url_in_argument_one",
+            ),
+            pytest.param(
+                "from requests import get as fetch\n"
+                "def unused():\n"
+                "    from requests import request as fetch\n"
+                'fetch("http://evil.example/x")',
+                id = "url_in_argument_zero",
+            ),
+        ],
+    )
+    def test_each_candidate_is_read_with_its_own_signature(self, code):
+        _blocked(code, expect_phrase = "Blocked: host not in sandbox allowlist")
+
+    def test_candidates_disagreeing_on_the_signature_do_not_overblock(self):
+        _ok(
+            "from requests import request as fetch\n"
+            "def unused():\n"
+            "    from requests import get as fetch\n"
+            'fetch("GET", "https://huggingface.co/x")'
+        )
+
 
 class TestRequestWrapperMustProveItsCallee:
     """`urlopen(Request(url))` is read one call further in, which is only sound once the callee is
@@ -2608,6 +2641,18 @@ class TestEscapedNewlineIsNotACommandBoundary:
                 'echo "$(echo $(echo hi) # c \\\nrm -f victim\n)"',
                 "rm",
                 id = "nested_substitution",
+            ),
+            # An inner subshell's `)` does not end the substitution, so the rest of it keeps its
+            # own quoting context. Checked against bash 5.2.21: this deletes the file.
+            pytest.param(
+                'echo "$( (echo hi); echo ok # comment \\\nrm -f victim\n)"',
+                "rm",
+                id = "subshell_inside_a_substitution",
+            ),
+            pytest.param(
+                'echo "$( (a) ; (b) ; echo ok # c \\\nrm -f victim\n)"',
+                "rm",
+                id = "two_subshells_inside_a_substitution",
             ),
         ],
     )

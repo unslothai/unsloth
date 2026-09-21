@@ -1372,18 +1372,35 @@ def _join_escaped_newlines(text: str) -> str:
     out: list[str] = []
     i, n = 0, len(text)
     in_single = in_double = in_comment = False
-    # (in_single, in_double, in_comment) for each enclosing `$(`, innermost last.
+    # (in_single, in_double, in_comment) for each enclosing `$(`, innermost last, and how many
+    # ordinary `(` groupings are open inside the innermost one. A subshell's `)` must not restore
+    # the outer state: `"$( (echo hi); echo ok # comment \<newline>rm -f victim<newline>)"` runs
+    # `rm` under the same bash, and closing early put the rest of the substitution back in double
+    # quotes, where the `#` opened no comment and the pair was joined away.
     substitutions: "list[tuple[bool, bool, bool]]" = []
+    group_depth = 0
+    group_depths: list[int] = []
     while i < n:
         ch = text[i]
         if not in_single and not in_comment and ch == "$" and text[i + 1 : i + 2] == "(":
             substitutions.append((in_single, in_double, in_comment))
+            group_depths.append(group_depth)
+            group_depth = 0
             in_single = in_double = in_comment = False
             out.append("$(")
             i += 2
             continue
-        if ch == ")" and substitutions and not in_single and not in_double and not in_comment:
-            in_single, in_double, in_comment = substitutions.pop()
+        if ch == "(" and not in_single and not in_double and not in_comment:
+            group_depth += 1
+            out.append(ch)
+            i += 1
+            continue
+        if ch == ")" and not in_single and not in_double and not in_comment:
+            if group_depth:
+                group_depth -= 1
+            elif substitutions:
+                in_single, in_double, in_comment = substitutions.pop()
+                group_depth = group_depths.pop()
             out.append(ch)
             i += 1
             continue
@@ -16849,23 +16866,28 @@ def _check_signal_escape_patterns(code: str):
                 # the other.
                 hosts: list[str] = []
                 unreadable = False
-                spec = next(
-                    (
-                        _NETWORK_DESTINATION_ARG[c]
-                        for c in recognised
-                        if c in _NETWORK_DESTINATION_ARG
-                    ),
-                    None,
-                )
-                destination = None
-                if spec is not None:
-                    index, keywords = spec
+                # EVERY recognised candidate is read with its OWN signature, because one bare name
+                # can accumulate candidates that carry the destination in different places.
+                # `from requests import request as fetch` with an uncalled
+                # `from requests import get as fetch` really calls `requests.request`, so the URL
+                # is argument 1; reading only the sorted-first `requests.get` signature looked at
+                # argument 0, found the complete non-URL `"GET"`, and never saw the hostile
+                # argument. Checking each in turn keeps resolution monotone here too: a candidate
+                # may add a host or a fail-closed reason, never remove one.
+                specs = [
+                    _NETWORK_DESTINATION_ARG[c] for c in recognised if c in _NETWORK_DESTINATION_ARG
+                ]
+                destinations: "list[tuple[ast.AST, bool]]" = []
+                for index, keywords in specs:
                     if len(node.args) > index:
-                        destination = node.args[index]
+                        found = node.args[index]
                     else:
-                        destination = next(
+                        found = next(
                             (kw.value for kw in node.keywords or [] if kw.arg in keywords), None
                         )
+                    if found is not None:
+                        destinations.append((found, True))
+                if specs:
                     # A splat can carry the destination past both spellings, and its contents are
                     # not here to read: `requests.get(**{"url": "http://evil.example/"})`.
                     if any(isinstance(a, ast.Starred) for a in node.args or []) or any(
@@ -16875,8 +16897,8 @@ def _check_signal_escape_patterns(code: str):
                 elif node.args:
                     # Not a call whose destination this screen knows how to locate, so arg0 is read
                     # for a literal host only and never made to fail closed.
-                    destination = node.args[0]
-                if destination is not None:
+                    destinations.append((node.args[0], False))
+                for destination, fails_closed in destinations:
                     a0 = self._unwrapped_url_arg(destination)
                     is_tuple = isinstance(a0, ast.Tuple)
                     read = None if is_tuple and not a0.elts else (a0.elts[0] if is_tuple else a0)
@@ -16898,14 +16920,14 @@ def _check_signal_escape_patterns(code: str):
                             if m and (whole or head[m.end(1) :]):
                                 host = m.group(1)
                         if host is None:
-                            unreadable = unreadable or not whole
+                            unreadable = unreadable or (fails_closed and not whole)
                         else:
                             hosts.append(host)
 
                 # 3) A recognised egress call whose host cannot be read is untrusted, not absent.
                 # `urlopen("http://" + h)` reaches the attacker's host exactly as the spelled-out literal
                 # does, and no later screen sees python-tool code.
-                if unreadable and spec is not None and (node.args or node.keywords):
+                if unreadable and specs and (node.args or node.keywords):
                     network_calls.append(
                         {
                             "type": "unreadable_host_blocked",
