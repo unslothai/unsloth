@@ -877,7 +877,7 @@ export function ProjectsPage() {
               </div>
             </div>
             {chatsOpen && (
-              <div className="mb-2 flex flex-col gap-0.5 pl-[76px] pr-5">
+              <div className="mb-2 flex flex-col gap-0.5 pl-[calc(76px*var(--ui-space-scale,1))] pr-5">
                 {chats === undefined || chats === "loading" ? (
                   <Skeleton className="h-6 w-48 rounded-[8px]" />
                 ) : chats === "error" ? (

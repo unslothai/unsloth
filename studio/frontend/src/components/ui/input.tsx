@@ -62,7 +62,7 @@ function StepperArrow({ direction }: { direction: 1 | -1 }) {
     <svg
       viewBox="0 0 10 6"
       aria-hidden="true"
-      className={cn("h-[5px] w-2", direction === -1 && "rotate-180")}
+      className={cn("h-[calc(5px*var(--ui-space-scale,1))] w-2", direction === -1 && "rotate-180")}
     >
       <path d="M5 0.5 9 5.5H1Z" fill="currentColor" />
     </svg>
@@ -132,7 +132,7 @@ function Input({ className, type, ...props }: React.ComponentProps<"input">) {
       {field}
       <span
         aria-hidden="true"
-        className="absolute top-1/2 right-2.5 flex h-[21px] w-4 -translate-y-1/2 flex-col overflow-hidden rounded-[5px] bg-black/[0.07] opacity-0 transition-opacity group-hover/number:opacity-100 group-focus-within/number:opacity-100 group-has-[input:disabled]/number:pointer-events-none group-has-[input:disabled]/number:opacity-0 dark:bg-white/[0.12]"
+        className="absolute top-1/2 right-2.5 flex h-[calc(21px*var(--ui-space-scale,1))] w-4 -translate-y-1/2 flex-col overflow-hidden rounded-[5px] bg-black/[0.07] opacity-0 transition-opacity group-hover/number:opacity-100 group-focus-within/number:opacity-100 group-has-[input:disabled]/number:pointer-events-none group-has-[input:disabled]/number:opacity-0 dark:bg-white/[0.12]"
       >
         <StepperButton direction={1} />
         <StepperButton direction={-1} />

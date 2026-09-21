@@ -530,10 +530,12 @@ const MAC_NATIVE_CHROME_STYLE = {
   "--studio-content-top-inset": "0px",
   "--studio-non-chat-content-top-inset": NATIVE_MAC_TITLEBAR_HEIGHT_VAR,
   "--studio-hidden-route-top-inset": NATIVE_MAC_TITLEBAR_HEIGHT_VAR,
-  "--studio-chat-header-height": "44px",
-  "--studio-chat-header-padding-top": "9px",
-  "--studio-media-header-left-inset": "0.5rem",
-  "--studio-chat-control-height": "33px",
+  // Chat chrome holds text, so it follows the UI font size. The window
+  // geometry above does not: it is the OS window's, not ours.
+  "--studio-chat-header-height": "calc(44px * var(--ui-space-scale, 1))",
+  "--studio-chat-header-padding-top": "calc(9px * var(--ui-space-scale, 1))",
+  "--studio-media-header-left-inset": "calc(0.5rem * var(--ui-space-scale, 1))",
+  "--studio-chat-control-height": "calc(33px * var(--ui-space-scale, 1))",
   "--studio-chat-header-right-inset": "0px",
 } as CSSProperties;
 
@@ -547,10 +549,11 @@ const CUSTOM_CHROME_STYLE = {
   "--studio-startup-top-inset": "42px",
   "--studio-content-top-inset": "34px",
   "--studio-hidden-route-top-inset": "34px",
-  "--studio-chat-header-height": "48px",
-  "--studio-chat-header-padding-top": "9px",
-  "--studio-media-header-left-inset": "0.5rem",
-  "--studio-chat-control-height": "33px",
+  // Same split as the native-mac block: chat chrome scales, window chrome does not.
+  "--studio-chat-header-height": "calc(48px * var(--ui-space-scale, 1))",
+  "--studio-chat-header-padding-top": "calc(9px * var(--ui-space-scale, 1))",
+  "--studio-media-header-left-inset": "calc(0.5rem * var(--ui-space-scale, 1))",
+  "--studio-chat-control-height": "calc(33px * var(--ui-space-scale, 1))",
   "--studio-chat-header-right-inset": "0px",
   "--studio-window-control-inset": "112px",
 } as CSSProperties;

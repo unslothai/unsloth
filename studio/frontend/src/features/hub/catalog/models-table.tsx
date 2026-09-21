@@ -73,11 +73,11 @@ const LIST_COLS = {
   model: "flex min-w-0 flex-[2.4] items-center gap-3",
   caps: "hidden min-w-0 flex-[1.7] items-center gap-1.5 md:flex",
   capsModel: "hidden w-[132px] shrink-0 items-center gap-1.5 md:flex",
-  size: "hidden w-[60px] shrink-0 lg:block",
+  size: "hidden w-[calc(60px*var(--ui-space-scale,1))] shrink-0 lg:block",
   updated: "hidden w-[82px] shrink-0 xl:block",
   downloads: "hidden w-[104px] shrink-0 items-center gap-1.5 sm:flex",
   likes: "hidden w-[76px] shrink-0 items-center gap-1.5 sm:flex",
-  actions: "flex w-[64px] shrink-0 items-center justify-end gap-0.5",
+  actions: "flex w-[calc(64px*var(--ui-space-scale,1))] shrink-0 items-center justify-end gap-0.5",
 } as const;
 
 function ViewToggleButton({
@@ -645,7 +645,7 @@ export const ResultCard = memo(function ResultCard({
       <OwnerAvatar
         owner={row.owner}
         repoName={row.repo}
-        className="size-[52px] shrink-0 rounded-[16px] text-ui-16 ring-1 ring-black/5 dark:ring-white/10"
+        className="size-[calc(52px*var(--ui-space-scale,1))] shrink-0 rounded-[16px] text-ui-16 ring-1 ring-black/5 dark:ring-white/10"
         remote={false}
       />
       <div className="flex min-w-0 flex-1 flex-col">

@@ -295,8 +295,8 @@ function SkeletonRow() {
     <div className="flex items-center gap-3 px-3 py-2.5">
       <div className="size-8 shrink-0 animate-pulse rounded-[9px] bg-muted" />
       <div className="min-w-0 flex-1 space-y-1.5">
-        <div className="h-[13px] w-1/2 animate-pulse rounded-full bg-muted" />
-        <div className="h-[11px] w-3/4 animate-pulse rounded-full bg-muted/70" />
+        <div className="h-[calc(13px*var(--ui-space-scale,1))] w-1/2 animate-pulse rounded-full bg-muted" />
+        <div className="h-[calc(11px*var(--ui-space-scale,1))] w-3/4 animate-pulse rounded-full bg-muted/70" />
       </div>
     </div>
   );

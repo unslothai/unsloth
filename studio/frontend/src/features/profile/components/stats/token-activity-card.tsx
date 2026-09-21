@@ -191,7 +191,7 @@ function DayColumn({
   const locale = useLocale();
 
   return (
-    <div className="flex flex-col gap-[3px]">
+    <div className="flex flex-col gap-[calc(3px*var(--ui-space-scale,1))]">
       {column.map((cell) => {
         if (!cell.day) {
           return <Block key={cell.key} title="" tone={-1} />;
@@ -240,7 +240,7 @@ function BarColumn({
     : "";
 
   return (
-    <div className="flex flex-col gap-[3px]">
+    <div className="flex flex-col gap-[calc(3px*var(--ui-space-scale,1))]">
       {Array.from({ length: DAYS_PER_WEEK }, (_, row) => (
         <Block
           key={column[row]?.key ?? `slot-${row}`}
@@ -341,7 +341,7 @@ export function TokenActivityCard({ daily }: { daily: ProfileStatsDay[] }) {
     >
       {/* Measured, never scrolled: the grid is trimmed to fit instead. */}
       <div ref={ref} className="w-full overflow-hidden">
-        <div className="flex gap-[3px]">
+        <div className="flex gap-[calc(3px*var(--ui-space-scale,1))]">
           {grid.map((column) =>
             shaded ? (
               <DayColumn

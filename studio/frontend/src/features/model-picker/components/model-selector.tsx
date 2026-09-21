@@ -232,7 +232,7 @@ function ModelSelectorTrigger({
               <HugeiconsIcon
                 icon={CloudIcon}
                 strokeWidth={1.75}
-                className="relative top-[0.15625rem] ml-1.5 mr-[0.36rem] size-3.5 shrink-0 text-muted-foreground"
+                className="relative top-[0.15625rem] ml-1.5 mr-[calc(0.36rem*var(--ui-space-scale,1))] size-3.5 shrink-0 text-muted-foreground"
               />
             ) : null}
           </span>
@@ -629,7 +629,7 @@ function ModelSelectorContent({
                 <PillTabs
                   // Wider tabs than the shared default. The panel reserves
                   // --picker-tab-pad a pill, so keep the two in step.
-                  className="[&_[role=tab]]:px-[calc(0.75rem_+_var(--picker-tab-pad)/2)]"
+                  className="[&_[role=tab]]:px-[calc(0.75rem*var(--ui-space-scale,1)_+_var(--picker-tab-pad)/2)]"
                   ariaLabel={t("picker.hubSectionAriaLabel")}
                   tabs={hubSectionTabs}
                   value={effectiveHubSection}

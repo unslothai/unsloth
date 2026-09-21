@@ -471,8 +471,8 @@ export const DiscoverModelRow = memo(function DiscoverModelRow({
           className="size-8 rounded-[11px]"
           remote={false}
         />
-        <div className="flex min-w-0 flex-1 flex-col gap-[3px]">
-          <div className="flex h-[18px] min-w-0 items-center justify-between gap-2">
+        <div className="flex min-w-0 flex-1 flex-col gap-[calc(3px*var(--ui-space-scale,1))]">
+          <div className="flex h-[calc(18px*var(--ui-space-scale,1))] min-w-0 items-center justify-between gap-2">
             <div className="flex min-w-0 items-center gap-2 pr-2">
               <p className="truncate text-ui-12 font-medium leading-ui-18 tracking-[-0.005em] text-foreground">
                 {row.repo}
@@ -510,7 +510,7 @@ export const DiscoverModelRow = memo(function DiscoverModelRow({
               />
             </div>
           </div>
-          <div className="flex h-[16px] min-w-0 items-center justify-between gap-2 text-ui-11p5 leading-ui-16 text-muted-foreground/85">
+          <div className="flex h-[calc(16px*var(--ui-space-scale,1))] min-w-0 items-center justify-between gap-2 text-ui-11p5 leading-ui-16 text-muted-foreground/85">
             <span className="flex min-w-0 items-center gap-1">
               <span className="truncate">{row.owner}</span>
               {row.owner.toLowerCase() === "unsloth" && (

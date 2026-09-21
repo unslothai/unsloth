@@ -235,7 +235,9 @@
 	--shadow-offset-x: 0px;
 	--shadow-offset-y: 0px;
 	--letter-spacing: 0em;
-	--spacing: 0.25rem;
+	/* Tailwind's spacing step, scaled so every p-*, m-*, gap-* and size-*
+	   utility follows the UI font size. See --ui-space-scale below. */
+	--spacing: calc(0.25rem * var(--ui-space-scale, 1));
 	/*--shadow-2xs: 0px 0px 0px 0px hsl(0 0% 0% / 0);*/
 	/*--shadow-xs: 0px 0px 0px 0px hsl(0 0% 0% / 0);*/
 	/*--shadow-sm:*/
@@ -309,6 +311,21 @@
 	   is 15px. An explicit user preference overrides this inline. */
 	--ui-font-scale: 0.9375;
 
+	/* Every padding, gap and margin multiplies by this, so spacing stays the
+	   same fraction of the text at any UI font size (12px -> 0.8, 20px ->
+	   1.333). Normalised at the 15px default, so the shipped look is
+	   unchanged. Values pinned outside the UI (traffic lights, title bar,
+	   hairlines) skip it. */
+	--ui-space-scale: calc(var(--ui-font-scale, 1) / 0.9375);
+
+	/* Chat chrome that holds text. Declared here because the web shell sets no
+	   chrome vars; the desktop shells override these in app/provider.tsx.
+	   Window geometry stays pinned there: it is the OS window's, not ours. */
+	--studio-chat-header-height: calc(48px * var(--ui-space-scale, 1));
+	--studio-chat-control-height: calc(33px * var(--ui-space-scale, 1));
+	--studio-chat-header-padding-top: calc(11px * var(--ui-space-scale, 1));
+	--studio-media-header-left-inset: calc(1.5rem * var(--ui-space-scale, 1));
+
 	/* Standard interactive-icon size for nav, menus, action bars, and
 	   in-message code-block actions. Sized one step above body text so
 	   icons read as minimally larger than adjacent labels (~14px text).
@@ -322,31 +339,30 @@
 	/* Mirrors the size-3.5 rule applied inside popovers (see the icon block
 	   below), so widths that reserve room for those icons track them. */
 	--ui-icon-size-sm: min(calc(0.875rem * var(--ui-font-scale, 1)), calc(0.4375rem + 0.4375rem * var(--ui-font-scale, 1)));
-	/* Model picker header controls. Padding and gaps come from the pinned
-	   --spacing, the icons and label both scale, so reserve each separately.
-	   The trigger is 2.25rem of padding and gaps, two icons, then the label,
-	   plus --picker-control-pad. Height matches the h-9 it replaces at the
-	   16px default. */
-	--picker-control-h: calc(1.125rem + 1.125rem * var(--ui-font-scale, 1));
-	/* Padding added to Search Hub and the two dropdowns, 0.375rem a side. Pinned
-	   like the rest: it pads, and it stops the "Trending" label clipping. */
-	--picker-control-pad: 0.75rem;
+	/* Model picker header controls. Padding and gaps follow --ui-space-scale,
+	   icons and label follow --ui-font-scale, so reserve each separately. The
+	   trigger is 2.25rem of padding and gaps, two icons, then the label, plus
+	   --picker-control-pad. Height matches the h-9 it replaces at 16px. */
+	--picker-control-h: calc(1.125rem * var(--ui-space-scale, 1) + 1.125rem * var(--ui-font-scale, 1));
+	/* Padding added to Search Hub and the two dropdowns, 0.375rem a side. It
+	   also stops the "Trending" label clipping, so it tracks the scale. */
+	--picker-control-pad: calc(0.75rem * var(--ui-space-scale, 1));
 	/* Same per section pill (Recommended / On Device / Connected), 0.25rem a
 	   side, i.e. px-3 to px-4 on the tabs. */
-	--picker-tab-pad: 0.5rem;
-	--picker-control-w: calc(2.25rem + var(--picker-control-pad) + 2 * var(--ui-icon-size-sm) + 2.875rem * var(--ui-font-scale, 1));
+	--picker-tab-pad: calc(0.5rem * var(--ui-space-scale, 1));
+	--picker-control-w: calc(2.25rem * var(--ui-space-scale, 1) + var(--picker-control-pad) + 2 * var(--ui-icon-size-sm) + 2.875rem * var(--ui-font-scale, 1));
 	/* Panel: pl-4, two gaps and pr-2, the pills' padding, their two icons and
 	   label, then the two dropdowns. The control row fills this exactly, which
 	   keeps the last dropdown flush with Search Hub above it. Widening a
 	   control takes the difference from the search field, not the panel. */
-	--picker-panel-w: calc(6.25rem + 2 * var(--picker-tab-pad) + 2 * var(--ui-icon-size-sm) + 9.875rem * var(--ui-font-scale, 1) + 2 * var(--picker-control-w));
+	--picker-panel-w: calc(6.25rem * var(--ui-space-scale, 1) + 2 * var(--picker-tab-pad) + 2 * var(--ui-icon-size-sm) + 9.875rem * var(--ui-font-scale, 1) + 2 * var(--picker-control-w));
 	/* Provider row adds one more control and the Connected pill; split like the rest. */
-	--picker-panel-w-external: calc(var(--picker-panel-w) + var(--picker-tab-pad) + 4rem + 2.75rem * var(--ui-font-scale, 1));
-	/* Inset of a centered .size-icon glyph within a 2rem (size-8) action
-	   button — i.e. (32px − icon-size) / 2. Use as a negative margin on a
-	   chat-message action bar so the leftmost icon's visual edge aligns
-	   with the message text edge. Auto-tracks --icon-size. */
-	--icon-btn-inset: calc((2rem - var(--icon-size)) / 2);
+	--picker-panel-w-external: calc(var(--picker-panel-w) + var(--picker-tab-pad) + 4rem * var(--ui-space-scale, 1) + 2.75rem * var(--ui-font-scale, 1));
+	/* Inset of a centered .size-icon glyph in a size-8 action button, i.e.
+	   (button - icon-size) / 2. Use as a negative margin on a chat-message
+	   action bar so the leftmost icon lines up with the message text edge.
+	   The button is 8 spacing steps, the glyph tracks --icon-size. */
+	--icon-btn-inset: calc((2rem * var(--ui-space-scale, 1) - var(--icon-size)) / 2);
 }
 
 .dark {
@@ -405,7 +421,8 @@
 	--shadow-offset-x: 0px;
 	--shadow-offset-y: 0px;
 	--letter-spacing: 0em;
-	--spacing: 0.25rem;
+	/* Same scaled step as light; see the :root definition. */
+	--spacing: calc(0.25rem * var(--ui-space-scale, 1));
 	--shadow-2xs: 0px 0px 0px 0px hsl(0 0% 0% / 0);
 	--shadow-xs: 0px 0px 0px 0px hsl(0 0% 0% / 0);
 	--shadow-sm: 0px 0px 0px 0px hsl(0 0% 0% / 0), 0px 1px 2px 0px hsl(0 0% 0% / 0);
@@ -1191,8 +1208,8 @@ html[data-chat-font] .aui-root {
 	   own padding-right is the whole gap: the glyph boxes meet at 30px, so 2px
 	   here is 2px between them and 10px between the drawn icons. */
 	.sidebar-row-action.is-unpin-action {
-		right: 1.875rem;
-		padding-right: 0.125rem;
+		right: calc(1.875rem * var(--ui-space-scale, 1));
+		padding-right: calc(0.125rem * var(--ui-space-scale, 1));
 	}
 	.sidebar-row-action.is-unpin-action + .sidebar-row-action {
 		padding-left: 0;
@@ -1220,7 +1237,7 @@ html[data-chat-font] .aui-root {
 	   + pr-1.5 inside a pill the list inset by px-1.5 = 12px). The desktop
 	   titlebar insets by 5px, so those headers override this in app-sidebar.tsx. */
 	.sidebar-sticky-label {
-		@apply rounded-none bg-sidebar pt-0 pb-[8px] pl-[16px] pr-3 text-ui-14! leading-ui-17 font-medium normal-case focus-visible:ring-0! focus-visible:outline-none transition-shadow duration-150;
+		@apply rounded-none bg-sidebar pt-0 pb-[calc(8px*var(--ui-space-scale,1))] pl-[calc(16px*var(--ui-space-scale,1))] pr-3 text-ui-14! leading-ui-17 font-medium normal-case focus-visible:ring-0! focus-visible:outline-none transition-shadow duration-150;
 		/* Muted section-header gray, matching Gemini's "Notebooks"/"Recents".
 		   Lightened from #5f6368 so the label reads as a header, clearly
 		   lighter than the near-black nav items. */
@@ -1229,15 +1246,15 @@ html[data-chat-font] .aui-root {
 	}
 	/* These compound selectors must beat the base label's pr-3 declaration.
 	   Tailwind emits utility classes before this components block, so putting
-	   pr-[11px]/pr-[13px] on the element would lose the cascade. */
+	   pr-[calc(11px*var(--ui-space-scale,1))]/pr-[calc(13px*var(--ui-space-scale,1))] on the element would lose the cascade. */
 	.sidebar-sticky-label.sidebar-sticky-label-desktop {
-		padding-right: 11px;
+		padding-right: calc(11px * var(--ui-space-scale, 1));
 	}
 	.sidebar-sticky-label.sidebar-sticky-label-desktop-recents {
-		padding-right: 13px;
+		padding-right: calc(13px * var(--ui-space-scale, 1));
 	}
 	.sidebar-sticky-label-following {
-		@apply pt-[21px];
+		@apply pt-[calc(21px*var(--ui-space-scale,1))];
 	}
 	.dark .sidebar-sticky-label {
 		/* Muted gray, clearly dimmer than the near-white nav items (#ececee) so
@@ -1505,9 +1522,9 @@ html[data-chat-font] .aui-root {
 	/* Important like .panel-input-group: these all override a base
 	   SelectTrigger class of the same weight. 14px each side optically:
 	   the chevron's stroke fills 14 of its 24 viewBox units, so its box
-	   carries ~3px of slack and pr-[11px] pays that back. */
+	   carries ~3px of slack and pr-[calc(11px*var(--ui-space-scale,1))] pays that back. */
 	.panel-select-trigger {
-		@apply rounded-full! border-transparent! bg-[var(--panel-input-surface)]! py-0! pl-3.5! pr-[11px]! text-ui-13! font-medium! text-nav-fg shadow-none! hover:bg-[var(--panel-input-surface-hover)]! focus-visible:ring-0!;
+		@apply rounded-full! border-transparent! bg-[var(--panel-input-surface)]! py-0! pl-3.5! pr-[calc(11px*var(--ui-space-scale,1))]! text-ui-13! font-medium! text-nav-fg shadow-none! hover:bg-[var(--panel-input-surface-hover)]! focus-visible:ring-0!;
 	}
 
 	/* These controls suppress the ring, so keyboard focus would otherwise
@@ -1574,8 +1591,8 @@ html[data-chat-font] .aui-root {
 	.app-user-menu [data-slot="dropdown-menu-item"],
 	.app-user-menu [data-slot="dropdown-menu-sub-trigger"] {
 		height: 36px;
-		padding: 0 0.75rem !important;
-		gap: 9.5px !important;
+		padding: 0 calc(0.75rem * var(--ui-space-scale, 1)) !important;
+		gap: calc(9.5px * var(--ui-space-scale, 1)) !important;
 		border-radius: 12px;
 		font-weight: 500;
 		font-size: calc(0.9375rem * var(--ui-font-scale, 1));
@@ -1930,7 +1947,7 @@ html[data-chat-font] .aui-root {
 	/* On hover the icon swaps for an X inside a soft circle (ChatGPT-style),
 	   filling the icon slot so every pill's X is identical and centered. */
 	.composer-pill-x {
-		@apply pointer-events-none absolute inset-0 m-auto size-[var(--ui-icon-size)] rounded-full bg-primary/15 p-[3px] opacity-0 transition-opacity dark:bg-white/[0.14];
+		@apply pointer-events-none absolute inset-0 m-auto size-[var(--ui-icon-size)] rounded-full bg-primary/15 p-[calc(3px*var(--ui-space-scale,1))] opacity-0 transition-opacity dark:bg-white/[0.14];
 	}
 
 	/* Hovering an active pill swaps the icon for an X (click to turn off). */
@@ -2020,7 +2037,7 @@ html[data-chat-font] .aui-root {
 		order: 1;
 		/* Pull the plus button closer to the composer edge. Logical, so RTL
 		   pulls it outward instead of into the action group. */
-		margin-inline-start: -0.25rem;
+		margin-inline-start: calc(-0.25rem * var(--ui-space-scale, 1));
 	}
 
 	.unsloth-composer-line .unsloth-composer-input {
@@ -2031,7 +2048,7 @@ html[data-chat-font] .aui-root {
 		order: 3;
 		margin-inline-start: auto;
 		/* Cancel the line padding to preserve the surface's 10px edge gap. */
-		margin-inline-end: -0.25rem;
+		margin-inline-end: calc(-0.25rem * var(--ui-space-scale, 1));
 	}
 
 	.unsloth-composer-line[data-expanded="true"] .unsloth-composer-input {
@@ -2039,13 +2056,13 @@ html[data-chat-font] .aui-root {
 		flex-basis: 100%;
 		width: 100%;
 		/* Sits close to the left edge, near the plus. */
-		padding-left: calc(0.375rem + 1px);
-		padding-top: 0.5rem;
-		padding-bottom: 0.5rem;
+		padding-left: calc(0.375rem * var(--ui-space-scale, 1) + 1px);
+		padding-top: calc(0.5rem * var(--ui-space-scale, 1));
+		padding-bottom: calc(0.5rem * var(--ui-space-scale, 1));
 	}
 
 	.unsloth-composer-line[data-expanded="true"] {
-		row-gap: 0.375rem;
+		row-gap: calc(0.375rem * var(--ui-space-scale, 1));
 	}
 
 	.unsloth-composer-line[data-expanded="true"] .unsloth-composer-left {
@@ -2061,7 +2078,7 @@ html[data-chat-font] .aui-root {
 	}
 
 	.unsloth-composer-input {
-		@apply min-h-[40px] min-w-0 flex-1 resize-none overflow-y-auto bg-transparent pl-0.5 pr-2 py-2 text-ui-15 font-[450] leading-6 outline-none placeholder:text-muted-foreground focus-visible:ring-0;
+		@apply min-h-[calc(40px*var(--ui-space-scale,1))] min-w-0 flex-1 resize-none overflow-y-auto bg-transparent pl-0.5 pr-2 py-2 text-ui-15 font-[450] leading-6 outline-none placeholder:text-muted-foreground focus-visible:ring-0;
 	}
 
 	/* Animate the frame so the textarea stays mounted and keeps selection/undo. */
@@ -2079,7 +2096,7 @@ html[data-chat-font] .aui-root {
 		min-height: 100%;
 		max-height: 100% !important;
 		/* Reserved before typing, or the toggle appearing would reflow the text. */
-		padding-right: 2.25rem;
+		padding-right: calc(2.25rem * var(--ui-space-scale, 1));
 	}
 
 	/* max(): at 480px tall the clamp is 192px, under the twelve-row compact
@@ -2097,7 +2114,7 @@ html[data-chat-font] .aui-root {
 	}
 
 	.aui-thread-welcome-center:has([data-writing-expanded="true"]) {
-		padding-top: 1rem;
+		padding-top: calc(1rem * var(--ui-space-scale, 1));
 	}
 
 	.unsloth-composer-plus {
@@ -2137,7 +2154,7 @@ html[data-chat-font] .aui-root {
 			padding-left: 0;
 			padding-right: 0;
 			/* One gap for every control, so the row spaces evenly. */
-			--composer-tight-gap: 0.125rem;
+			--composer-tight-gap: calc(0.125rem * var(--ui-space-scale, 1));
 		}
 
 		.unsloth-composer-left,
@@ -2147,11 +2164,11 @@ html[data-chat-font] .aui-root {
 
 		/* Plus and send hug their edges by the same amount. */
 		.unsloth-composer-left {
-			margin-inline-start: -0.125rem;
+			margin-inline-start: calc(-0.125rem * var(--ui-space-scale, 1));
 		}
 
 		.unsloth-composer-line .aui-composer-action-wrapper {
-			margin-inline-end: -0.125rem;
+			margin-inline-end: calc(-0.125rem * var(--ui-space-scale, 1));
 		}
 
 		/* Send's own inset stacks on the gap above; drop it. The running state
@@ -2164,7 +2181,7 @@ html[data-chat-font] .aui-root {
 
 		/* Keeps the text starting just right of the plus glyph below it. */
 		.unsloth-composer-line[data-expanded="true"] .unsloth-composer-input {
-			padding-left: calc(0.5rem + 1px);
+			padding-left: calc(0.5rem * var(--ui-space-scale, 1) + 1px);
 		}
 
 		/* Recording swaps the input for the dictation bar, whose timer and
@@ -2172,12 +2189,12 @@ html[data-chat-font] .aui-root {
 		   min-width 0, so past that floor it overflows the surface instead of
 		   shrinking. Trim the same paddings the rest of the row gives up. */
 		.unsloth-dictation-wave {
-			padding-left: 0.5rem;
-			padding-right: 0.25rem;
+			padding-left: calc(0.5rem * var(--ui-space-scale, 1));
+			padding-right: calc(0.25rem * var(--ui-space-scale, 1));
 		}
 
 		.unsloth-dictation-timer {
-			margin-inline-end: 0.5rem;
+			margin-inline-end: calc(0.5rem * var(--ui-space-scale, 1));
 		}
 
 		/* Past its floor the bar has to stop taking width it cannot use. Left
@@ -2241,14 +2258,14 @@ html[data-chat-font] .aui-root {
 		.unsloth-composer-line
 			.aui-composer-action-wrapper
 			> .aui-composer-run-controls {
-			margin-left: 0.25rem;
+			margin-left: calc(0.25rem * var(--ui-space-scale, 1));
 		}
 
 		/* Same 28px as the row above, and both of the bar's buttons together:
 		   stop carries none of our classes, so they have to be sized as a
 		   pair or the recording controls come out mismatched. */
 		.unsloth-dictation-actions {
-			gap: 0.375rem;
+			gap: calc(0.375rem * var(--ui-space-scale, 1));
 		}
 
 		.unsloth-dictation-actions > button {
@@ -2266,7 +2283,7 @@ html[data-chat-font] .aui-root {
 		}
 
 		.unsloth-dictation-timer {
-			margin-inline-end: 0.25rem;
+			margin-inline-end: calc(0.25rem * var(--ui-space-scale, 1));
 		}
 	}
 
@@ -2329,8 +2346,8 @@ html[data-chat-font] .aui-root {
 	   breakpoint would keep the full 20px there. */
 	@container (max-width: 31.5rem) {
 		.unsloth-composer-dock-inner {
-			padding-left: 0.75rem;
-			padding-right: 0.75rem;
+			padding-left: calc(0.75rem * var(--ui-space-scale, 1));
+			padding-right: calc(0.75rem * var(--ui-space-scale, 1));
 		}
 
 		/* The welcome screen is inside the viewport's own 20px gutter, so pull
@@ -2339,8 +2356,8 @@ html[data-chat-font] .aui-root {
 		.aui-thread-welcome-message {
 			padding-left: 0;
 			padding-right: 0;
-			margin-left: -0.5rem;
-			margin-right: -0.5rem;
+			margin-left: calc(-0.5rem * var(--ui-space-scale, 1));
+			margin-right: calc(-0.5rem * var(--ui-space-scale, 1));
 			/* w-full would pin the width and the margins would only shift the
 			   box left. An explicit width widens it into the gutter instead;
 			   auto would shrink-wrap, since the parent centres its children. */
@@ -2357,7 +2374,7 @@ html[data-chat-font] .aui-root {
 		}
 
 		.unsloth-welcome-greeting {
-			gap: 0.625rem;
+			gap: calc(0.625rem * var(--ui-space-scale, 1));
 		}
 	}
 
@@ -2374,7 +2391,7 @@ html[data-chat-font] .aui-root {
 		}
 
 		.unsloth-welcome-greeting {
-			gap: 0.5rem;
+			gap: calc(0.5rem * var(--ui-space-scale, 1));
 		}
 	}
 
@@ -2432,12 +2449,12 @@ html[data-chat-font] .aui-root {
 		   item radius (12px) + side gutter (9px), so the curves run parallel.
 		   !important beats the global 14px dropdown radius. */
 		border-radius: 21px !important;
-		padding-top: 0.5rem;
-		padding-bottom: 0.5rem;
+		padding-top: calc(0.5rem * var(--ui-space-scale, 1));
+		padding-bottom: calc(0.5rem * var(--ui-space-scale, 1));
 		/* Side gutter ~matches the 0.5rem top/bottom padding so the hover box
 		   sits evenly inset on all four sides. */
-		padding-left: 9px;
-		padding-right: 9px;
+		padding-left: calc(9px * var(--ui-space-scale, 1));
+		padding-right: calc(9px * var(--ui-space-scale, 1));
 		box-shadow: 0 2px 8px -2px rgba(0, 0, 0, 0.16);
 	}
 
@@ -2703,15 +2720,15 @@ html[data-chat-font] .aui-root {
 	[data-streamdown="unordered-list"] {
 		list-style-type: disc;
 		list-style-position: outside;
-		padding-left: 1.25rem;
-		margin-block: 0.5rem;
+		padding-left: calc(1.25rem * var(--ui-space-scale, 1));
+		margin-block: calc(0.5rem * var(--ui-space-scale, 1));
 	}
 
 	[data-streamdown="ordered-list"] {
 		list-style-type: decimal;
 		list-style-position: outside;
-		padding-left: 1.25rem;
-		margin-block: 0.5rem;
+		padding-left: calc(1.25rem * var(--ui-space-scale, 1));
+		margin-block: calc(0.5rem * var(--ui-space-scale, 1));
 	}
 
 	[data-streamdown="list-item"] {
@@ -2728,12 +2745,12 @@ html[data-chat-font] .aui-root {
 
 	.aui-thread-root [data-streamdown="code-block-body"] {
 		/* Keep overlay scrollbars below one-line code. */
-		padding-bottom: 0.625rem !important;
+		padding-bottom: calc(0.625rem * var(--ui-space-scale, 1)) !important;
 	}
 
 	[data-streamdown="code-block"] {
-		gap: 0.25rem;
-		padding: 0.75rem 1rem;
+		gap: calc(0.25rem * var(--ui-space-scale, 1));
+		padding: calc(0.75rem * var(--ui-space-scale, 1)) calc(1rem * var(--ui-space-scale, 1));
 		border-radius: 1.5rem;
 		/* Wide lines must scroll inside the thread column, not widen past the composer (flex min-width:auto). */
 		max-width: 100%;
@@ -2806,7 +2823,7 @@ html[data-chat-font] .aui-root {
 	   paragraph. `:where()` keeps this at zero specificity so a part that does set its own
 	   `mt-*` still wins. The first real child follows a zero-height badge anchor and gets none. */
 	:where(.aui-assistant-message-content > * + *) {
-		margin-top: 1rem;
+		margin-top: calc(1rem * var(--ui-space-scale, 1));
 	}
 	:where(.aui-assistant-message-content > .h-0 + *) {
 		margin-top: 0;
@@ -2844,7 +2861,7 @@ html[data-chat-font] .aui-root {
 	/* Align fenced code blocks with the main chat column even when nested in lists. */
 	.aui-thread-root [data-streamdown="list-item"] > [data-streamdown="code-block"],
 	.aui-thread-root [data-streamdown="list-item"] [data-streamdown="code-block"] {
-		margin-left: -1.25rem;
+		margin-left: calc(-1.25rem * var(--ui-space-scale, 1));
 		width: calc(100% + 1.25rem);
 		max-width: calc(100% + 1.25rem);
 	}
@@ -3042,14 +3059,14 @@ html[data-chat-font] .aui-root {
 /* No border line; same drop shadow as the composer (.unsloth-composer-surface).
    !important because Sonner injects its base rules at runtime. */
 [data-sonner-toast][data-styled='true'] {
-	padding: 12px 18px !important;
+	padding: calc(12px * var(--ui-space-scale, 1)) calc(18px * var(--ui-space-scale, 1)) !important;
 	align-items: start !important;
-	gap: 10px !important;
+	gap: calc(10px * var(--ui-space-scale, 1)) !important;
 	box-shadow: 0 2px 8px -2px rgba(0, 0, 0, 0.16) !important;
 }
 
 [data-sonner-toast][data-styled='true'] [data-icon] {
-	margin: 2px 0 0 !important;
+	margin: calc(2px * var(--ui-space-scale, 1)) 0 0 !important;
 }
 
 [data-sonner-toast][data-styled='true'] [data-content] {
@@ -3060,8 +3077,8 @@ html[data-chat-font] .aui-root {
 	display: grid !important;
 	grid-template-columns: minmax(0, 1fr);
 	align-items: start !important;
-	column-gap: 10px !important;
-	row-gap: 10px !important;
+	column-gap: calc(10px * var(--ui-space-scale, 1)) !important;
+	row-gap: calc(10px * var(--ui-space-scale, 1)) !important;
 }
 
 [data-sonner-toast][data-styled='true']:has([data-button]):has([data-icon]) {
@@ -3092,7 +3109,7 @@ html[data-chat-font] .aui-root {
 }
 
 [data-sonner-toast][data-styled='true']:has([data-close-button]) {
-	padding-right: 48px !important;
+	padding-right: calc(48px * var(--ui-space-scale, 1)) !important;
 }
 
 /* Toast buttons are pills, matching the dialog actions they stand in for. */
@@ -3104,9 +3121,9 @@ html[data-chat-font] .aui-root {
 [data-sonner-toast][data-styled='true'].chat-model-load-toast {
 	display: flex !important;
 	align-items: center !important;
-	gap: 12px !important;
-	padding-top: 14px !important;
-	padding-bottom: 14px !important;
+	gap: calc(12px * var(--ui-space-scale, 1)) !important;
+	padding-top: calc(14px * var(--ui-space-scale, 1)) !important;
+	padding-bottom: calc(14px * var(--ui-space-scale, 1)) !important;
 }
 
 [data-sonner-toast][data-styled='true'].chat-model-load-toast [data-content] {
@@ -3121,7 +3138,7 @@ html[data-chat-font] .aui-root {
 
 /* Progress bar is the last row; give it room below. */
 [data-sonner-toast][data-styled='true'].chat-model-load-toast:has([role='progressbar']) {
-	padding-bottom: 18px !important;
+	padding-bottom: calc(18px * var(--ui-space-scale, 1)) !important;
 }
 
 /* Dark toasts share the chatbox surface color (.chat-composer-surface
@@ -3427,7 +3444,7 @@ html[data-chat-font] .aui-root {
 
 /* Keep Sonner close button inside the toast and pin to theme tokens (--gray2 hover ignores data-sonner-theme). */
 [data-sonner-toast][data-styled="true"] [data-close-button] {
-	top: 8px !important;
+	top: calc(8px * var(--ui-space-scale, 1)) !important;
 	transform: none !important;
 	background: var(--popover) !important;
 	color: var(--popover-foreground) !important;
@@ -3458,9 +3475,9 @@ html[data-chat-font] .aui-root {
 	position: relative;
 	display: grid;
 	grid-template-columns: repeat(8, minmax(0, 1fr));
-	gap: 14px;
+	gap: calc(14px * var(--ui-space-scale, 1));
 	width: min(66%, 18rem);
-	padding: 1.5rem;
+	padding: calc(1.5rem * var(--ui-space-scale, 1));
 	border-radius: 1.5rem;
 }
 
@@ -3846,6 +3863,6 @@ html[data-chat-font] .aui-root {
 @layer components {
 	/* Align the arrow with page content while retaining its hit area. */
 	.settings-back-button {
-		margin-inline-start: -0.75rem;
+		margin-inline-start: calc(-0.75rem * var(--ui-space-scale, 1));
 	}
 }

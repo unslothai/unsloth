@@ -2026,7 +2026,7 @@ export const Thread: FC<{
                 : // + the chat-model notice, which is an opaque absolute bar
                   // directly under the header. 0px whenever it is not showing,
                   // so every other surface keeps the padding it had.
-                  "pt-[calc(var(--studio-content-top-inset,0px)+48px+var(--studio-chat-notice-height,0px))]",
+                  "pt-[calc(var(--studio-content-top-inset,0px)+var(--studio-chat-header-height,48px)+var(--studio-chat-notice-height,0px))]",
             )}
           >
             {!hideWelcome && (
@@ -2397,14 +2397,14 @@ const ThreadWelcome: FC<{
     <div className="aui-thread-welcome-root mx-auto my-auto flex w-full max-w-(--thread-max-width) grow flex-col">
       <div className="aui-thread-welcome-center flex w-full grow flex-col items-center justify-start pt-[27.5dvh]">
         {/* Matches the docked composer's gutter; index.css trims both. */}
-        <div className="aui-thread-welcome-message flex w-full flex-col justify-center gap-9 px-[var(--custom-chat-welcome-padding,1rem)]">
+        <div className="aui-thread-welcome-message flex w-full flex-col justify-center gap-9 px-[var(--custom-chat-welcome-padding,calc(1rem*var(--ui-space-scale,1)))]">
           {/* Center the greeting (sloth + title) over the composer. */}
-          <div className="unsloth-welcome-greeting flex flex-row items-center justify-center gap-[15px]">
+          <div className="unsloth-welcome-greeting flex flex-row items-center justify-center gap-[calc(15px*var(--ui-space-scale,1))]">
             {/* Temporary chat keeps the title on its own, no mascot. */}
             {showGreetingSloth && !incognito && (
               <MascotImg
                 src={currentEmojiSrc}
-                className="unsloth-welcome-sloth size-[44px] -translate-y-[2px]"
+                className="unsloth-welcome-sloth size-[calc(44px*var(--ui-space-scale,1))] -translate-y-[2px]"
               />
             )}
             <h1 className="aui-thread-welcome-message-inner unsloth-welcome-title fade-in slide-in-from-bottom-1 animate-in text-3xl tracking-[-0.02em] duration-200">
@@ -8302,7 +8302,7 @@ const AssistantActionBar: FC = () => {
             side="bottom"
             align="start"
             onCloseAutoFocus={(e) => e.preventDefault()}
-            className="aui-action-bar-more-content z-50 min-w-32 overflow-hidden rounded-[21px] bg-popover px-[9px] py-2 text-popover-foreground shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] dark:shadow-none"
+            className="aui-action-bar-more-content z-50 min-w-32 overflow-hidden rounded-[21px] bg-popover px-[calc(9px*var(--ui-space-scale,1))] py-2 text-popover-foreground shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] dark:shadow-none"
           >
             {/* Prevent an outside dismissal from triggering Delete. */}
             <MenuDismissGuard triggerRef={moreMenuTriggerRef} />
@@ -8554,7 +8554,7 @@ const BranchPicker: FC<BranchPickerPrimitive.Root.Props> = ({
           aria-label="Previous"
           className="aui-branch-chevron-btn"
         >
-          <ChevronLeftIcon strokeWidth={1.25} className="size-[36px]" />
+          <ChevronLeftIcon strokeWidth={1.25} className="size-[calc(36px*var(--ui-space-scale,1))]" />
         </button>
       </BranchPickerPrimitive.Previous>
       <span className="aui-branch-picker-state font-mono text-ui-13 tabular-nums">
@@ -8566,7 +8566,7 @@ const BranchPicker: FC<BranchPickerPrimitive.Root.Props> = ({
           aria-label="Next"
           className="aui-branch-chevron-btn"
         >
-          <ChevronRightIcon strokeWidth={1.25} className="size-[36px]" />
+          <ChevronRightIcon strokeWidth={1.25} className="size-[calc(36px*var(--ui-space-scale,1))]" />
         </button>
       </BranchPickerPrimitive.Next>
     </BranchPickerPrimitive.Root>

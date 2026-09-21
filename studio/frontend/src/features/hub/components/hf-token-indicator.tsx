@@ -111,7 +111,7 @@ export function HfTokenIndicator({
           aria-label={ariaLabel}
           className={cn(
             // Solid circle reads optically larger than the flat HTTP/Xet box, so keep it 22px.
-            "inline-flex h-[22px] w-[22px] items-center justify-center rounded-full text-ui-11p5 transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
+            "inline-flex h-[calc(22px*var(--ui-space-scale,1))] w-[calc(22px*var(--ui-space-scale,1))] items-center justify-center rounded-full text-ui-11p5 transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
             hasToken
               ? "hub-tag-soft text-muted-foreground hover:text-foreground/80"
               : "bg-destructive text-destructive-foreground hover:bg-destructive/90",

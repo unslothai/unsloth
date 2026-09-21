@@ -561,7 +561,7 @@ function VisionBadge() {
       <TooltipTrigger asChild={true}>
         <span
           aria-label="Vision"
-          className="flex h-[18px] shrink-0 items-center justify-center rounded-md border border-border/60 px-1.5 text-indigo-700 dark:text-indigo-300"
+          className="flex h-[calc(18px*var(--ui-space-scale,1))] shrink-0 items-center justify-center rounded-md border border-border/60 px-1.5 text-indigo-700 dark:text-indigo-300"
         >
           <HugeiconsIcon icon={ViewIcon} className="size-3" strokeWidth={1.8} />
         </span>
@@ -575,10 +575,10 @@ function VisionBadge() {
 
 function ParamChip({ label }: { label: string }) {
   return (
-    // h-[18px], the height every other chip in the row band pins (quant, vision, the disk mark, the
+    // h-[calc(18px*var(--ui-space-scale,1))], the height every other chip in the row band pins (quant, vision, the disk mark, the
     // Loaded tag). py-px sized this one by its line box instead, the one height here that scales with
     // --ui-font-scale, so the row only looked level at the scale where the two happened to cross.
-    <span className="inline-flex h-[18px] shrink-0 items-center whitespace-nowrap rounded-md border border-border/60 px-1.5 text-ui-10 font-medium text-muted-foreground tabular-nums">
+    <span className="inline-flex h-[calc(18px*var(--ui-space-scale,1))] shrink-0 items-center whitespace-nowrap rounded-md border border-border/60 px-1.5 text-ui-10 font-medium text-muted-foreground tabular-nums">
       {label}
     </span>
   );
@@ -624,7 +624,7 @@ function DownloadedBadge() {
       <TooltipTrigger asChild={true}>
         <span
           aria-label="On device"
-          className="flex h-[18px] w-[14px] shrink-0 items-center justify-center"
+          className="flex h-[calc(18px*var(--ui-space-scale,1))] w-[calc(14px*var(--ui-space-scale,1))] shrink-0 items-center justify-center"
         >
           <span
             aria-hidden="true"
@@ -649,7 +649,7 @@ function PartialBadge({ resumable }: { resumable?: boolean }) {
       <TooltipTrigger asChild={true}>
         <span
           aria-label="Partial download"
-          className="flex h-[18px] w-[14px] shrink-0 items-center justify-center"
+          className="flex h-[calc(18px*var(--ui-space-scale,1))] w-[calc(14px*var(--ui-space-scale,1))] shrink-0 items-center justify-center"
         >
           <span
             aria-hidden="true"
@@ -813,11 +813,11 @@ function SizeText({ value }: { value: string }) {
       {whole}
       {fraction === undefined ? null : (
         <>
-          <span className="mx-[-0.1em]">.</span>
+          <span className="mx-[calc(-0.1em*var(--ui-space-scale,1))]">.</span>
           {fraction}
         </>
       )}
-      <span className="ml-[0.14em]">{unit}</span>
+      <span className="ml-[calc(0.14em*var(--ui-space-scale,1))]">{unit}</span>
     </>
   );
 }
@@ -877,7 +877,7 @@ export function GgufDownloadFootprintExplanation({
 
 function QuantChip({ label }: { label: string }) {
   return (
-    <span className="inline-flex h-[18px] max-w-full items-center overflow-hidden rounded-md bg-black/[0.06] px-1 font-mono text-ui-9 text-muted-foreground dark:bg-white/[0.1]">
+    <span className="inline-flex h-[calc(18px*var(--ui-space-scale,1))] max-w-full items-center overflow-hidden rounded-md bg-black/[0.06] px-1 font-mono text-ui-9 text-muted-foreground dark:bg-white/[0.1]">
       {label}
     </span>
   );
@@ -922,17 +922,17 @@ const META_COLUMN = {
   // Each width below is the widest set its scope can draw: anything wider makes min-w-min expand the
   // slot and shift every column after it. This slot holds capability glyphs (18px), the vision badge
   // (24px) and the "on disk" mark (14px), gap-1 between them; scope draws no glyph.
-  badge: "min-w-min min-[560px]:w-[24px]",
+  badge: "min-w-min min-[560px]:w-[calc(24px*var(--ui-space-scale,1))]",
   // One glyph plus the disk mark (18 + 4 + 14).
-  badgeMid: "min-w-min min-[560px]:w-[36px]",
+  badgeMid: "min-w-min min-[560px]:w-[calc(36px*var(--ui-space-scale,1))]",
   // On Device draws the vision badge (26px) and, since partials are listed, the partial mark
   // (14px) beside it. 44px is that pair with its gap: reserving only the badge let a row drawing
   // both grow past the slot and carry its quant chip 18px left of every other row.
-  badgeDevice: "min-w-min min-[560px]:w-[44px]",
+  badgeDevice: "min-w-min min-[560px]:w-[calc(44px*var(--ui-space-scale,1))]",
   // Hub draws the disk mark and no vision badge (18+4+14). A second glyph grows it via min-w-min.
-  badgeWide: "min-w-min min-[560px]:w-[36px]",
+  badgeWide: "min-w-min min-[560px]:w-[calc(36px*var(--ui-space-scale,1))]",
   // The fit mark (Hub rows), one 18px glyph.
-  vram: "min-w-min min-[560px]:w-[18px]",
+  vram: "min-w-min min-[560px]:w-[calc(18px*var(--ui-space-scale,1))]",
   // Device rows reserve the slot rather than hug the chip. This is the last variable column, so
   // hugging it let each row's meta cluster set its own width and left the quant column ragged. 4.4em
   // is the widest these lists draw at text-ui-10 ("235B" 38.4px, "0.35B" 40.9px), so nothing routine
@@ -942,13 +942,13 @@ const META_COLUMN = {
   // formatBytes writes no space ("536MB"), so the widest this holds is 29.5px, not the ~40px a spaced "536 MB" needs.
   size: "min-w-min min-[560px]:w-[3.2em]",
   // The format dot that leads the row; the name lives in its tooltip.
-  format: "min-[560px]:w-[14px]",
+  format: "min-[560px]:w-[calc(14px*var(--ui-space-scale,1))]",
 } as const;
 
 // One gutter for every row, gear or no gear, so the columns never shift by a button; the
 // buttons show on hover or while their menu is open.
 const ROW_ACTIONS_CLASS =
-  "mr-0.5 flex w-[38px] shrink-0 items-center justify-end -space-x-0.5 opacity-0 transition-opacity focus-within:opacity-100 group-hover:opacity-100 group-focus-within:opacity-100 has-[[data-state=open]]:opacity-100 [@media(hover:none)]:opacity-100";
+  "mr-0.5 flex w-[calc(38px*var(--ui-space-scale,1))] shrink-0 items-center justify-end -space-x-0.5 opacity-0 transition-opacity focus-within:opacity-100 group-hover:opacity-100 group-focus-within:opacity-100 has-[[data-state=open]]:opacity-100 [@media(hover:none)]:opacity-100";
 
 // Partial rows keep their buttons on screen. Everywhere else the gutter hides until hover because
 // the row itself is the action, but a partial cannot be loaded at all: the menu IS its only
@@ -1167,9 +1167,9 @@ function ModelRow({
       }}
       onClick={onClick}
       className={cn(
-        // pl-[5.5px]: the dot is centred in a 14px hover target, so 5.5 + (14 - 5) / 2 lands it on
+        // pl-[calc(5.5px*var(--ui-space-scale,1))]: the dot is centred in a 14px hover target, so 5.5 + (14 - 5) / 2 lands it on
         // 10px, level with the section labels at px-2.5.
-        "group/row flex w-full flex-col items-stretch py-1.5 pl-[5.5px] pr-2 text-left text-sm transition-colors hover:bg-[#ececec] focus-visible:bg-[#ececec] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring dark:hover:bg-[var(--sidebar-accent)] dark:focus-visible:bg-[var(--sidebar-accent)]",
+        "group/row flex w-full flex-col items-stretch py-1.5 pl-[calc(5.5px*var(--ui-space-scale,1))] pr-2 text-left text-sm transition-colors hover:bg-[#ececec] focus-visible:bg-[#ececec] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring dark:hover:bg-[var(--sidebar-accent)] dark:focus-visible:bg-[var(--sidebar-accent)]",
         showMemoryBar ? "rounded-2xl" : "rounded-full",
         selected && "bg-[#ececec] dark:bg-[var(--sidebar-accent)]",
         className,
@@ -1212,7 +1212,7 @@ function ModelRow({
             <DotTag
               tone="success"
               label="Loaded"
-              className="ml-2 h-[18px] shrink-0 gap-1 rounded-md px-1.5"
+              className="ml-2 h-[calc(18px*var(--ui-space-scale,1))] shrink-0 gap-1 rounded-md px-1.5"
               dotClassName="size-[5px]"
             />
           )}
@@ -1276,7 +1276,7 @@ function ModelRow({
                 <DotTag
                   tone="success"
                   label="Loaded"
-                  className="h-[18px] gap-1 rounded-md px-1.5"
+                  className="h-[calc(18px*var(--ui-space-scale,1))] gap-1 rounded-md px-1.5"
                   dotClassName="size-[5px]"
                 />
               )}
@@ -6118,7 +6118,7 @@ export function HubModelPicker({
                   type="button"
                   onClick={onBrowseHub}
                   aria-label="Search more models on the Hub"
-                  className="hub-tab-toggle-pill flex h-(--picker-control-h) w-(--picker-control-w) shrink-0 items-center justify-center gap-[5px] rounded-full border-0 text-xs text-foreground transition-colors"
+                  className="hub-tab-toggle-pill flex h-(--picker-control-h) w-(--picker-control-w) shrink-0 items-center justify-center gap-[calc(5px*var(--ui-space-scale,1))] rounded-full border-0 text-xs text-foreground transition-colors"
                 >
                   <HugeiconsIcon
                     icon={DashboardCircleIcon}
@@ -6201,8 +6201,8 @@ export function HubModelPicker({
               "overlay-scrollbar-gutter",
               // On Device pulls the heading block tight to the controls; Recommended keeps more top room
               // above its first row.
-              showDownloaded ? "pt-0" : "pt-[4px]",
-              onEject ? "pb-[60px]" : "pb-4",
+              showDownloaded ? "pt-0" : "pt-[calc(4px*var(--ui-space-scale,1))]",
+              onEject ? "pb-[calc(60px*var(--ui-space-scale,1))]" : "pb-4",
             )}
           >
             {showConnected ? (
@@ -7493,7 +7493,7 @@ export function HubModelPicker({
           </div>
         </div>
         {onEject ? (
-          <div className="pointer-events-none absolute inset-x-0 bottom-0 flex justify-end pr-3.5 pb-[19px]">
+          <div className="pointer-events-none absolute inset-x-0 bottom-0 flex justify-end pr-3.5 pb-[calc(19px*var(--ui-space-scale,1))]">
             <button
               type="button"
               onClick={onEject}
