@@ -38967,6 +38967,8 @@ def generation_in_flight() -> bool:
 
 _GENERATE_FAILURE_FALLBACK = "Image generation failed."
 # Failure classes worth naming in the UI, as FIXED text: the engine's own message can embed local paths and argv, so only the class is reported.
+# Matched as whole tokens, not substrings: "oom" inside "boom" or "bathroom" told the user the
+# device had run out of memory, and this classifier now sees every exception class.
 _GENERATE_FAILURE_CLASSES: tuple[tuple[tuple[str, ...], str], ...] = (
     (
         ("out of memory", "outofmemory", "oom"),
@@ -38984,6 +38986,16 @@ _GENERATE_FAILURE_CLASSES: tuple[tuple[tuple[str, ...], str], ...] = (
 # were generated, so the disk error is in the log and the text is the same on the response
 # and on the poll. The frontend recognises it by value to offer that log.
 _PERSIST_FAILURE_MSG = "Failed to save the generated image."
+
+
+@functools.lru_cache(maxsize = 1)
+def _generate_failure_patterns():
+    """The needles above as word-bounded patterns, compiled once."""
+    import re
+    return tuple(
+        (tuple(re.compile(rf"\b{re.escape(needle)}\b") for needle in needles), detail)
+        for needles, detail in _GENERATE_FAILURE_CLASSES
+    )
 
 
 def _generate_failure_detail(message: str) -> str:
@@ -39007,8 +39019,8 @@ def _generate_failure_detail(message: str) -> str:
     if str(message or "") == _PERSIST_FAILURE_MSG:
         return _PERSIST_FAILURE_MSG
     text = str(message or "").lower()
-    for needles, detail in _GENERATE_FAILURE_CLASSES:
-        if any(n in text for n in needles):
+    for patterns, detail in _generate_failure_patterns():
+        if any(pattern.search(text) for pattern in patterns):
             return f"{_GENERATE_FAILURE_FALLBACK} {detail}"
     return _GENERATE_FAILURE_FALLBACK
 
@@ -39048,9 +39060,16 @@ async def generate_diffusion_image(
         # slot, which the engine cannot name. Released in the finally below; the persist
         # marker takes over with no await in between, so no poll is served in the gap.
         from core.inference.generate_outcomes import attempt_scope_key as _attempt_key
+        from core.inference.generate_outcomes import clear_generate_failure
 
         queued_attempt = _attempt_key(request.attempt_id)
         _note_queued_attempt(queued_attempt, 1)
+        # This execution owns the id from here. The Tauri client retries a POST whose
+        # connection dropped with the same body, so the same attempt id, and a previous
+        # execution's retained failure outranked a retry that is queued, running or already
+        # successful: the settling client called the attempt failed and ignored the images
+        # the retry produced.
+        clear_generate_failure(request.attempt_id)
         try:
             with account_access.media_generation("diffusion"):
                 result = await asyncio.to_thread(

@@ -803,3 +803,63 @@ def test_an_unscoped_poll_reads_the_log_flag_of_the_attempt_it_is_told_about():
     _retain_generate_failure("attempt-logged", "boom")
     logged = _answer_progress({**idle, "generation_attempt": "attempt-logged"}, None)
     assert logged.error_logged is True
+
+
+def test_a_failure_class_is_matched_as_a_whole_word():
+    """Every exception class reaches this classifier now, so its needles have to be tokens.
+
+    "oom" as a substring made any message containing "boom", "bathroom" or "zoom" report
+    that the device had run out of memory, and told the user to shrink an image that was
+    never too big.
+    """
+    from routes.inference import _GENERATE_FAILURE_FALLBACK, _generate_failure_detail
+
+    for innocent in (
+        "the sandbox blew up with a boom",
+        "no space left in the bathroom volume",
+        "zoom factor must be positive",
+    ):
+        assert (
+            _generate_failure_detail(innocent) == _GENERATE_FAILURE_FALLBACK
+        ), f"{innocent!r} was reported as an out-of-memory failure"
+
+    # And the real thing, in each of the spellings the engines actually produce.
+    for real in (
+        "CUDA out of memory. Tried to allocate 20.00 GiB",
+        "torch.OutOfMemoryError: OOM",
+        "MPS backend out of memory",
+    ):
+        assert "ran out of memory" in _generate_failure_detail(
+            real
+        ), f"a real out-of-memory failure stopped being named: {real!r}"
+
+
+def test_a_new_execution_supersedes_the_outcome_retained_under_its_id():
+    """The Tauri client retries a dropped POST with the same body, so the same attempt id.
+
+    A first execution's retained failure then outranked the retry, which can be queued,
+    running or already successful, and the settling client declared the attempt failed and
+    ignored the images the retry had produced.
+    """
+    from core.inference.generate_outcomes import (
+        _retain_generate_failure,
+        clear_generate_failure,
+        generate_failure_for_attempt,
+    )
+
+    _retain_generate_failure("attempt-retried", "CUDA out of memory")
+    assert generate_failure_for_attempt("attempt-retried") == "CUDA out of memory"
+    clear_generate_failure("attempt-retried")
+    assert (
+        generate_failure_for_attempt("attempt-retried") is None
+    ), "a retry of the same attempt still reads the previous execution's failure"
+    # An id that was never retained, and no id at all, are both no-ops rather than errors.
+    clear_generate_failure("attempt-never-seen")
+    clear_generate_failure(None)
+
+    # Wired where the execution takes the id, beside the marker that makes it pending.
+    src = _src("routes/inference.py")
+    at = src.index("_note_queued_attempt(queued_attempt, 1)")
+    assert (
+        "clear_generate_failure(request.attempt_id)" in src[at : at + 700]
+    ), "a new execution does not supersede the outcome retained under its id"

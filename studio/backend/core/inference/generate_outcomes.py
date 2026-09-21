@@ -80,6 +80,19 @@ def mark_generate_failure_unlogged(attempt_id) -> None:
             _OUTCOMES[attempt_id] = (record[0], False)
 
 
+def clear_generate_failure(attempt_id) -> None:
+    """Forget any retained outcome for *attempt_id*: a new execution owns that id now.
+
+    The Tauri client retries a POST whose connection dropped, with the same serialized body
+    and so the same attempt id. A first execution's retained failure then outranked the
+    retry, which can be queued, running or already successful, so a settling client declared
+    the attempt failed and ignored the images the retry had produced.
+    """
+    key = attempt_scope_key(attempt_id)
+    if key:
+        _OUTCOMES.pop(key, None)
+
+
 def generate_failure_was_logged(attempt_id) -> Optional[bool]:
     """Whether this attempt's retained reason reached a log, or None if nothing is held."""
     attempt_id = attempt_scope_key(attempt_id)
