@@ -253,6 +253,7 @@ def test_a_server_that_cannot_be_named_is_asked_once_per_turn(named, monkeypatch
     id unmarked, so a long argument stream re-ran that query for every fragment of the
     turn. Declared already means the name is whole, so one answer settles it.
     """
+
     def _count_for(fragment_count: int) -> int:
         asked: list[str] = []
 
