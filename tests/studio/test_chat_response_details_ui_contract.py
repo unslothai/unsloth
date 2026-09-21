@@ -168,7 +168,10 @@ def _assert_only_shrinks(tokens: list[str], what: str, evidence: str) -> None:
     pinned = [
         token
         for token in tokens
-        if re.fullmatch(r"(?:\S*:)?!?(?:shrink-0|flex-none|grow-0)!?", token)
+        # Only the ones that actually disable shrinking. `grow-0` sets flex-grow and leaves
+        # flex-shrink alone, so an element with min-w-0 still shrinks normally; refusing it
+        # would fail a correct flex-growth change for a defect it does not have.
+        if re.fullmatch(r"(?:\S*:)?!?(?:shrink-0|flex-none)!?", token)
     ]
     assert not pinned, (
         f"{what} carries {sorted(set(pinned))}, which stops it shrinking however low its "

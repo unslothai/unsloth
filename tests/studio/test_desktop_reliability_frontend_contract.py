@@ -1241,7 +1241,10 @@ def _labelled_actions(
         utility = [
             token
             for token in worn
-            if re.fullmatch(rf"(?:\S*:)?right-\S+|{_MOVES_HORIZONTALLY}", token)
+            # The importance marker around `right-*` too. `!right-40` and `md:!right-40`
+            # render further in than the stylesheet offset this guard substitutes, and the
+            # bare form was the only one matched, so they went through untouched.
+            if re.fullmatch(rf"(?:\S*:)?!?right-\S+?!?|{_MOVES_HORIZONTALLY}", token)
             or re.fullmatch(r"(?:\S*:)?!?(?:p|px|pe|pr)-\S+", token)
         ]
         assert not utility, (
@@ -1899,6 +1902,23 @@ def test_chat_sidebar_row_actions_visible_on_coarse_pointers():
         f"the glyph's rule sets its width through {other_width.group(0)!r} as well as the "
         f"size this guard reads, so the box that renders is wider than the one it measures"
     )
+    # And at each glyph that renders, not only in the shared rule. The floor is one number
+    # taken from `.sidebar-row-action-glyph`, so an instance carrying `min-w-20`, or an inline
+    # width, is wider than every action is credited with while this goes on reporting size-6.
+    for tag in _opening_jsx_tags(applied, "<span"):
+        if not re.search(r"(?<![\w-])sidebar-row-action-glyph(?![\w-])", tag):
+            continue
+        escape = _escapes_the_model(tag)
+        assert escape is None, (
+            f"a row action's glyph {escape}, so the box that renders is not the one the floor "
+            f"below is measured from: {tag!r}"
+        )
+        widened = re.findall(r"(?<![\w-])!?(?:w|min-w|max-w|basis|size)-\S+", tag)
+        assert not widened, (
+            f"a row action's glyph sets its own width with {widened}, overriding the shared "
+            f"rule this guard measures, so that action reaches further than the floor says"
+        )
+
     sizes = _stated_units(glyph_rule, "size", "width", spacing)
     assert len(sizes) == 1 and sizes[0] is not None, (
         f"the glyph's size is not one value this guard can read: {sizes}. A second one later "
