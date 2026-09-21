@@ -30,6 +30,7 @@ __all__ = [
     "USE_MODELSCOPE",
     "platform_system",
     "patch_tokenizer",
+    "patch_harmony_tool_call_eos",
     "get_statistics",
     "Unsloth_Offloaded_Gradient_Checkpointer",
     "offload_to_disk",
@@ -3431,10 +3432,96 @@ def apply_accepts_loss_kwargs_fix(model):
     return f"{value} ({reason})"
 
 
+# Harmony (gpt-oss) ends a TOOL CALL with `<|call|>`, a third terminal token beside
+# `<|return|>` and `<|endoftext|>`. The `unsloth/gpt-oss-*` mirrors were snapshotted four
+# days before `openai/gpt-oss-*` added it to `generation_config.json`, so their stop set is
+# `[200002, 199999]` where upstream ships `[200002, 199999, 200012]`, and a checkpoint
+# fine-tuned from one of those mirrors inherits the gap through `save_pretrained`.
+#
+# With `<|call|>` missing from the stop set, generation does not halt when the model
+# finishes a tool call. Everything past that point is out of distribution -- gpt-oss training
+# sequences always terminate at `<|call|>` and the harness injects the tool result -- so the
+# model writes the next harmony role or channel as PLAIN BPE TEXT ("commentary",
+# "assistant") where a special token was required. That is unslothai/unsloth#5162, reported
+# downstream as `openai_harmony.HarmonyError 200006` ("Unexpected token ... while expecting
+# start token 200006") and as vLLM tool calls that fail while ordinary chat works.
+#
+# Only `generation_config` is touched. `config.eos_token_id` is the scalar `200002` upstream
+# too, and widening it there would change what `model.config` reports about the turn end.
+_HARMONY_TOOL_CALL_TOKEN = "<|call|>"
+# Every one of these must resolve for the model to be harmony. `<|call|>` alone is not
+# enough of a fingerprint: a tokenizer that maps unknown text to a single id would answer
+# for it, and `<|channel|>` / `<|return|>` are what make the vocabulary o200k_harmony.
+_HARMONY_FINGERPRINT_TOKENS = ("<|call|>", "<|channel|>", "<|return|>")
+
+
+def _harmony_tool_call_token_id(tokenizer):
+    """The id of ``<|call|>`` when ``tokenizer`` really is a harmony tokenizer, else None."""
+    if tokenizer is None:
+        return None
+    convert = getattr(tokenizer, "convert_tokens_to_ids", None)
+    if not callable(convert):
+        return None
+    unknown = getattr(tokenizer, "unk_token_id", None)
+    seen = {}
+    for token in _HARMONY_FINGERPRINT_TOKENS:
+        try:
+            token_id = convert(token)
+        except Exception:
+            return None
+        if not isinstance(token_id, int) or token_id < 0 or token_id == unknown:
+            return None
+        seen[token] = token_id
+    # Distinct ids: a tokenizer that folds every unrecognised string onto one id would
+    # otherwise pass the loop above.
+    if len(set(seen.values())) != len(_HARMONY_FINGERPRINT_TOKENS):
+        return None
+    return seen[_HARMONY_TOOL_CALL_TOKEN]
+
+
+def patch_harmony_tool_call_eos(model, tokenizer):
+    """Add `<|call|>` to a harmony model's generation stop set when it is missing.
+
+    Additive and idempotent: an existing list keeps its order and its other entries, and a
+    model that already stops on `<|call|>` (upstream `openai/gpt-oss-*`, or a Hub repo once
+    it is corrected) is left untouched.
+    """
+    if model is None:
+        return model
+    generation_config = getattr(model, "generation_config", None)
+    if generation_config is None:
+        return model
+    call_id = _harmony_tool_call_token_id(tokenizer)
+    if call_id is None:
+        return model
+
+    current = getattr(generation_config, "eos_token_id", None)
+    if current is None:
+        eos_ids = []
+    elif isinstance(current, int):
+        eos_ids = [current]
+    elif isinstance(current, (list, tuple)):
+        eos_ids = [int(token_id) for token_id in current]
+    else:
+        # An unrecognised shape is left exactly as it is rather than guessed at.
+        return model
+    if call_id in eos_ids:
+        return model
+
+    generation_config.eos_token_id = eos_ids + [call_id]
+    logger.warning(
+        f"Unsloth: Added `{_HARMONY_TOOL_CALL_TOKEN}` (id {call_id}) to the generation stop "
+        "tokens. Harmony ends a tool call with it, and without it generation runs past a "
+        "finished tool call into plain-text harmony markup."
+    )
+    return model
+
+
 def patch_tokenizer(model, tokenizer):
     model, tokenizer = _patch_tokenizer(model, tokenizer)
     if model is not None:
         model.config.update({"unsloth_version": __version__})
+    model = patch_harmony_tool_call_eos(model, tokenizer)
     return model, tokenizer
 
 
