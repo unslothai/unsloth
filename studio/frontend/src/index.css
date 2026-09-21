@@ -2361,7 +2361,7 @@ html[data-chat-font] .aui-root {
 			/* w-full would pin the width and the margins would only shift the
 			   box left. An explicit width widens it into the gutter instead;
 			   auto would shrink-wrap, since the parent centres its children. */
-			width: calc(100% + 1rem);
+			width: calc(100% + 1rem * var(--ui-space-scale, 1));
 		}
 
 		.unsloth-welcome-title {
@@ -2862,8 +2862,8 @@ html[data-chat-font] .aui-root {
 	.aui-thread-root [data-streamdown="list-item"] > [data-streamdown="code-block"],
 	.aui-thread-root [data-streamdown="list-item"] [data-streamdown="code-block"] {
 		margin-left: calc(-1.25rem * var(--ui-space-scale, 1));
-		width: calc(100% + 1.25rem);
-		max-width: calc(100% + 1.25rem);
+		width: calc(100% + 1.25rem * var(--ui-space-scale, 1));
+		max-width: calc(100% + 1.25rem * var(--ui-space-scale, 1));
 	}
 
 	.dark .aui-thread-root [data-streamdown="code-block"] {

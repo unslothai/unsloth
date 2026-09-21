@@ -61,7 +61,15 @@ export function Navbar() {
               : "items-start pt-[calc(11px*var(--ui-space-scale,1))] pl-2",
         )}
       >
-        <SidebarTrigger className="pointer-events-auto !size-[calc(34px*var(--ui-space-scale,1))]" />
+        {/* Scales with the header, except in the fixed titlebar band. */}
+        <SidebarTrigger
+          className={cn(
+            "pointer-events-auto",
+            usesCustomTitlebar
+              ? "!size-[34px]"
+              : "!size-[calc(34px*var(--ui-space-scale,1))]",
+          )}
+        />
       </div>
     </header>
   );

@@ -520,7 +520,7 @@ export function LocalOnDeviceCard({
                               setVariantOpen(false);
                             }}
                             className={cn(
-                              "mx-2 flex w-[calc(100%-1rem)] min-w-0 cursor-pointer items-center gap-2 rounded-[10px] px-2.5 py-2 text-left transition-colors",
+                              "mx-2 flex w-[calc(100%-1rem*var(--ui-space-scale,1))] min-w-0 cursor-pointer items-center gap-2 rounded-[10px] px-2.5 py-2 text-left transition-colors",
                               isSelected
                                 ? "bg-foreground/[0.07] dark:bg-foreground/[0.12]"
                                 : "hover:bg-foreground/[0.05] dark:hover:bg-foreground/[0.06]",
