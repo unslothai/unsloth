@@ -390,15 +390,10 @@ def _login_blocked(key: tuple[str, str]) -> int:
         return max(_blocked_for(_LOGIN_BUCKETS.get(key), now, _LOGIN_MAX_FAILS), ip_blocked)
 
 
-def _clear_login_bucket(key: tuple[str, str], *, ip_aggregate: bool = True) -> None:
+def _clear_login_bucket(key: tuple[str, str]) -> None:
     ip, _username = key
     with _LOGIN_BUCKETS_LOCK:
         _LOGIN_BUCKETS.pop(key, None)
-        if not ip_aggregate:
-            # /desktop-login proves the shell owns the backend, not that anyone signed in (multi-user returns
-            # login_required and no session), so resetting the aggregate would hand every account behind the
-            # same NAT a fresh password-guessing budget.
-            return
         _LOGIN_IP_BUCKETS.pop(ip, None)
         # A successful login resets the IP's throttle, including any overflow it accumulated during saturation (drop
         # only this IP's entry, so a shard-mate's throttle is untouched).
@@ -588,8 +583,9 @@ def desktop_login(payload: DesktopLoginRequest, request: Request) -> Token | Res
             detail = "Desktop authentication failed",
         )
     username, jwt_secret = verified
-    # Only this route's own bucket: see _clear_login_bucket for why the per-IP aggregate is /login's.
-    _clear_login_bucket(key, ip_aggregate = False)
+    # Safe to clear the aggregate as well now that the address is suffixed: it is this route's own entry,
+    # not /login's, so a desktop success cannot hand anyone a fresh password-guessing budget.
+    _clear_login_bucket(key)
 
     from auth.policy import installation_is_multi_user
 

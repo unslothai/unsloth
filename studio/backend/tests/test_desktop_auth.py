@@ -1393,8 +1393,31 @@ def test_a_desktop_exchange_does_not_reset_the_shared_password_throttle():
     assert (
         len(auth_route._LOGIN_IP_BUCKETS.get(ip, [])) == sprayed
     ), "a desktop exchange cleared /login's per-IP aggregate"
-    # Its own bucket is still cleared: the shell must not be locked out by its own earlier miss.
+    # Its own buckets are cleared, both of them: the shell must not be locked out by its own earlier
+    # miss, and what isolates the two routes is the suffixed address, not a flag on the clear.
     assert auth_route._desktop_login_key(None)[1] not in {k[1] for k in auth_route._LOGIN_BUCKETS}
+    assert auth_route._desktop_login_key(None)[0] != ip
+    assert auth_route._desktop_login_key(None)[0] not in auth_route._LOGIN_IP_BUCKETS
+
+
+def test_a_desktop_success_clears_its_own_ip_aggregate():
+    """Misses interleaved with successes must not accumulate into a lockout.
+
+    The desktop aggregate is this route's own entry, so clearing it cannot reset /login's
+    password-spray budget, and leaving it would let repeated rotate-then-reconnect cycles reach
+    _LOGIN_IP_MAX_FAILS and 429 a valid secret.
+    """
+    seed_user(must_change_password = False)
+    auth_route = auth_route_module()
+    client = auth_client(auth_route)
+
+    for _ in range(auth_route._LOGIN_IP_MAX_FAILS):
+        stale = storage.create_desktop_secret()
+        raw = storage.create_desktop_secret()  # rotation makes `stale` a real well formed miss
+        assert client.post("/api/auth/desktop-login", json = {"secret": stale}).status_code == 401
+        assert client.post("/api/auth/desktop-login", json = {"secret": raw}).status_code == 200
+
+    assert auth_route._desktop_login_key(None)[0] not in auth_route._LOGIN_IP_BUCKETS
 
 
 def test_multi_user_desktop_exchange_grants_no_session_and_clears_no_aggregate(monkeypatch):
