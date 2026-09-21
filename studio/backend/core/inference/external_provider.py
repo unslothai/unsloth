@@ -892,6 +892,26 @@ _managed_clients: dict[tuple[str, bool], httpx.AsyncClient] = {}
 _managed_clients_lock = threading.Lock()
 
 
+def retire_account_clients(account_id: str) -> int:
+    """Drop and close a retired account's provider clients. Returns how many were held.
+
+    Without this the cache is bounded by accounts ever CREATED rather than accounts that
+    exist, and a deleted account's cookie jar and idle sockets outlive it for the life of the
+    process. Closing is best effort and scheduled on the running loop when there is one, since
+    retirement runs from a synchronous route.
+    """
+    with _managed_clients_lock:
+        retired = [_managed_clients.pop(key) for key in list(_managed_clients)
+                   if key[0] == account_id]
+    for client in retired:
+        try:
+            asyncio.get_running_loop().create_task(client.aclose())
+        except RuntimeError:
+            # No loop in this thread: dropping the last reference is what closes it.
+            pass
+    return len(retired)
+
+
 def _client() -> httpx.AsyncClient:
     """The shared client for the owner; a screening client of its own for each managed account."""
     from utils.account_context import current_account_id, is_owner_context

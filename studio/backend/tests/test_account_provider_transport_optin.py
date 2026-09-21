@@ -162,3 +162,30 @@ def test_the_allowed_client_still_screens_every_connection(switch):
         with pytest.raises(ValueError) as refusal:
             provider_address_excluding_metadata(metadata)
         assert "metadata" in str(refusal.value).lower()
+
+
+def test_a_retired_account_stops_being_held(switch):
+    """Deleting an account has to drop its clients, or the cache is bounded by accounts ever
+    created rather than accounts that exist, and a deleted one's cookie jar outlives it."""
+    for allowed in (False, True):
+        switch["allowed"] = allowed
+        client_as(ALICE)
+    client_as(BOB)
+    assert sum(1 for key in external_provider._managed_clients if key[0] == ALICE.account_id) == 2
+
+    assert external_provider.retire_account_clients(ALICE.account_id) == 2
+    assert not [key for key in external_provider._managed_clients if key[0] == ALICE.account_id]
+    # Another account's client is untouched.
+    assert [key for key in external_provider._managed_clients if key[0] == BOB.account_id]
+    # A second retirement is a no-op rather than an error.
+    assert external_provider.retire_account_clients(ALICE.account_id) == 0
+
+
+def test_account_retirement_calls_it(switch):
+    """The route is where it has to happen; a helper nobody calls fixes nothing."""
+    import inspect
+
+    import routes.accounts as accounts_routes
+
+    source = inspect.getsource(accounts_routes.retire_account_roots)
+    assert "retire_account_clients" in source
