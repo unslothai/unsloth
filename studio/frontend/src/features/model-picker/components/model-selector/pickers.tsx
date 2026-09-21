@@ -26,7 +26,11 @@ import {
 import {
   chatModelLoaded,
   isExternalModelId,
+  modelCatalogVersion,
+  parseExternalModelId,
+  subscribeModelCatalog,
   useChatRuntimeStore,
+  useExternalProvidersStore,
 } from "@/features/chat";
 import type {
   CachedGgufRepo,
@@ -67,6 +71,7 @@ import {
 import type { HfTaskFilter } from "@/features/hub/hooks/use-hub-model-search";
 import {
   useDebouncedValue,
+  useDenseQuantSchemes,
   useGpuInfo,
   useHostClass,
   useInferenceGpuInfo,
@@ -76,6 +81,7 @@ import {
   useModelMemory,
 } from "@/hooks/use-model-memory";
 import { useVramBudgetFraction } from "@/hooks/use-vram-budget-fraction";
+import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { diffusionRouteSearch } from "@/lib/diffusion-route-search";
 import { type GgufFitClass, requiredGgufMemoryGb } from "@/lib/gguf-fit";
 import { extractParamLabel } from "@/lib/model-size";
@@ -88,6 +94,7 @@ import {
   ArrowUpDownIcon,
   AudioWave01Icon,
   Cancel01Icon,
+  Copy01Icon,
   DashboardCircleIcon,
   Flag01Icon,
   FlimSlateIcon,
@@ -98,6 +105,7 @@ import {
   PinIcon,
   RemoveCircleIcon,
   Search01Icon,
+  Settings02Icon,
   ViewIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -116,6 +124,7 @@ import {
   useMemo,
   useRef,
   useState,
+  useSyncExternalStore,
 } from "react";
 import { useChatPickerInventory } from "../../inventory/use-chat-picker-inventory";
 import {
@@ -136,6 +145,11 @@ import {
   taskForMediaPick,
   taskPickerRowMatches,
 } from "./audio-picker-policy";
+import { ConnectedModelInfoDialog } from "./connected-model-info-dialog";
+import {
+  connectedModelMarks,
+} from "./connected-model-meta";
+import { ConnectedModelSettingsDialog } from "./connected-model-settings-dialog";
 import { FolderBrowser } from "./folder-browser";
 import {
   type ModelCapabilities,
@@ -165,6 +179,7 @@ import {
   loadedAt,
   useModelLoadTimes,
 } from "./model-usage";
+import { usePinnedConnectedModelsStore } from "./pinned-connected-models";
 import {
   makePinRank,
   pinKey,
@@ -891,8 +906,14 @@ function isRuntimeLoadedModel(
 function artifactBudget(gpu: {
   memoryTotalGb: number;
   systemRamAvailableGb: number;
+  denseQuantSchemes?: readonly string[];
 }): DeviceBudget {
-  return { gpuGb: gpu.memoryTotalGb, systemRamGb: gpu.systemRamAvailableGb };
+  return {
+    gpuGb: gpu.memoryTotalGb,
+    systemRamGb: gpu.systemRamAvailableGb,
+    // Judges a pre-quantised row by that checkpoint's size, not the bf16 shards it replaces.
+    denseQuantSchemes: gpu.denseQuantSchemes,
+  };
 }
 
 const META_COLUMN = {
@@ -933,6 +954,85 @@ const ROW_ACTIONS_CLASS =
 // the row itself is the action, but a partial cannot be loaded at all: the menu IS its only
 // affordance, and hiding it reads as the stalled download having no controls.
 const ROW_ACTIONS_PINNED_CLASS = cn(ROW_ACTIONS_CLASS, "opacity-100");
+
+// Same box and glyph size as ModelLoadSettingsAction, so a heading's buttons sit in the same
+// column and hover the same size as the ones on the rows under it.
+const HEADING_ACTION_CLASS =
+  "flex size-5 shrink-0 items-center justify-center rounded-md text-muted-foreground/60 transition hover:bg-black/5 hover:text-foreground dark:hover:bg-white/10";
+
+/** A Connected group label. Wider than the On Device section labels, since nothing divides these
+ *  groups but the gap, and foldable the same way. */
+function ConnectedGroupHeading({
+  icon,
+  label,
+  collapsed,
+  onToggle,
+  onConfigure,
+  configureLabel,
+}: {
+  icon: ReactNode;
+  label: string;
+  collapsed: boolean;
+  onToggle: () => void;
+  /** Open this group's connection. A connection belongs to the whole group, not to one row. */
+  onConfigure?: () => void;
+  configureLabel?: string;
+}) {
+  return (
+    // pt-3 and gap-1.5, the values ListLabel uses for the On Device sections, so the first
+    // heading sits at the same height on both tabs and its label at the same offset from its
+    // icon. pt-5 started this list 8px lower than that one.
+    <div className="group/heading flex items-center justify-between gap-1 px-2.5 pb-1 pt-3">
+      <span className="flex min-w-0 items-center gap-1.5 text-ui-10 font-semibold uppercase tracking-wider text-muted-foreground">
+        {icon}
+        <span className="min-w-0 truncate">{label}</span>
+      </span>
+      {/* -mr-2 takes the heading's own px-2.5 down to the rows' mr-0.5, and the buttons carry the
+          row gutter's box and overlap, so the chevron lands in the column each row's dots menu
+          does rather than 8px inside it. */}
+      <div className="-mr-2 flex shrink-0 items-center -space-x-0.5">
+        {onConfigure ? (
+          <Tooltip delayDuration={0}>
+            <TooltipTrigger asChild={true}>
+              <button
+                type="button"
+                onClick={onConfigure}
+                aria-label={configureLabel ?? "Connection settings"}
+                // Hidden until the heading is hovered, like a row's own gear. The chevron beside
+                // it stays: folding is what the heading is for.
+                className={cn(
+                  HEADING_ACTION_CLASS,
+                  "opacity-0 group-hover/heading:opacity-100 focus-visible:opacity-100 [@media(hover:none)]:opacity-100",
+                )}
+              >
+                <HugeiconsIcon
+                  icon={Settings02Icon}
+                  strokeWidth={1.75}
+                  className="size-3"
+                />
+              </button>
+            </TooltipTrigger>
+            <TooltipContent side="bottom" className="tooltip-compact">
+              {configureLabel ?? "Connection settings"}
+            </TooltipContent>
+          </Tooltip>
+        ) : null}
+        <button
+          type="button"
+          onClick={onToggle}
+          aria-label={collapsed ? "Expand section" : "Collapse section"}
+          className={HEADING_ACTION_CLASS}
+        >
+          {collapsed ? (
+            <ChevronRightIcon className="size-3" />
+          ) : (
+            <ChevronDownIcon className="size-3" />
+          )}
+        </button>
+      </div>
+    </div>
+  );
+}
 
 function ModelRow({
   label,
@@ -1048,6 +1148,7 @@ function ModelRow({
         label: parsed.formats.map((f) => f.label).join(" · "),
       }
     : null;
+  const leading = formatDot ? <FormatTag {...formatDot} /> : null;
 
   // Only the selected row charts itself: a meter under every row turns a list you scan into a wall of charts.
   const memorySegments = useModelMemory(selected ? memory : undefined, gpuGb);
@@ -1087,18 +1188,16 @@ function ModelRow({
       >
         <span className="flex min-w-0 flex-1 items-baseline">
           {/* Fixed slot, so names start on one line with or without a dot. */}
-          {aligned ? (
+          {/* Aligned lists hold the slot open either way, so names start on one line; an
+              unaligned row only takes the space when it has something for it. */}
+          {aligned || leading ? (
             <span
               className={cn(
                 "mr-1 flex shrink-0 items-center self-center",
                 META_COLUMN.format,
               )}
             >
-              {formatDot ? <FormatTag {...formatDot} /> : null}
-            </span>
-          ) : formatDot ? (
-            <span className="mr-1 flex shrink-0 items-center self-center">
-              <FormatTag {...formatDot} />
+              {leading}
             </span>
           ) : null}
           {showOwner ? (
@@ -1287,9 +1386,13 @@ function ModelRow({
     return (
       <Tooltip delayDuration={700}>
         <TooltipTrigger asChild={true}>{content}</TooltipTrigger>
+        {/* Right, not left: this panel is docked to the model button at the window's left edge,
+            so a row's own left edge is ~30px in and a tooltip opening that way ran off screen.
+            Narrower with it, and breaking on words rather than anywhere: max-w-xs let a long
+            connection name stretch the box to 320px, most of it slack beside the model id. */}
         <TooltipContent
-          side="left"
-          className="tooltip-compact max-w-xs break-all"
+          side="right"
+          className="tooltip-compact max-w-[15rem] break-words"
         >
           {tooltipBody}
         </TooltipContent>
@@ -1311,9 +1414,6 @@ function isValidGgufVariant(variant: unknown): variant is GgufVariantDetail {
     typeof candidate.size_bytes === "number" &&
     Number.isFinite(candidate.size_bytes) &&
     candidate.size_bytes >= 0 &&
-    (candidate.shard_count === undefined ||
-      (Number.isSafeInteger(candidate.shard_count) &&
-        candidate.shard_count >= 0)) &&
     (candidate.downloaded === undefined ||
       typeof candidate.downloaded === "boolean") &&
     (candidate.pending_drafter_filename === undefined ||
@@ -2057,11 +2157,6 @@ function GgufVariantExpander({
                   hideH3PrunedBuild,
                 })}
               </span>
-              {(v.shard_count ?? 0) > 1 ? (
-                <span className="ml-1.5 text-ui-9 font-sans font-medium text-sky-700 dark:text-sky-300">
-                  Sharded · {v.shard_count} parts
-                </span>
-              ) : null}
               {unusableLocal ? (
                 <span className="ml-1.5 text-ui-9 font-sans font-medium text-amber-700 dark:text-amber-300">
                   incomplete
@@ -2460,6 +2555,32 @@ const FORMAT_FILTER_OPTIONS: HubOption<FormatFilter>[] = (
   };
 });
 
+// Connected has no size, download date or load history, so it sorts by what a hosted catalogue
+// does offer: the connection, or the name.
+type ConnectedSortKey = "provider" | "name";
+
+const CONNECTED_SORT_OPTIONS: HubOption<ConnectedSortKey>[] = [
+  { value: "provider", label: "Connection" },
+  { value: "name", label: "Name" },
+];
+
+// Modality filter for Connected, mirroring the On Device format filter. The keys are the marks a
+// connected row can draw, so a filter cannot ask for a badge the list has no way to show.
+// No Audio: connectedModelMarks never marks a connected model as taking audio, since the
+// attachment adapter refuses it under an external selection, so the option could only ever
+// return an empty list.
+type ConnectedModalityFilter = "all" | "vision" | "imageGen";
+
+const CONNECTED_MODALITY_LABELS: Record<ConnectedModalityFilter, string> = {
+  all: "All",
+  vision: "Vision",
+  imageGen: "Image gen",
+};
+
+const CONNECTED_MODALITY_OPTIONS: HubOption<ConnectedModalityFilter>[] = (
+  Object.keys(CONNECTED_MODALITY_LABELS) as ConnectedModalityFilter[]
+).map((value) => ({ value, label: CONNECTED_MODALITY_LABELS[value] }));
+
 /** Sort cached repos: by last-loaded, download date, size desc, or name. */
 function sortCachedRepos<
   T extends { repo_id: string; size_bytes: number; last_modified?: number },
@@ -2585,6 +2706,7 @@ export function HubModelPicker({
   resolveDownloadFootprint,
   onFoldersChange,
   onBrowseHub,
+  onConfigureConnection,
   onModelsChange,
   onConfigure,
   deleteDisabled = false,
@@ -2609,6 +2731,9 @@ export function HubModelPicker({
   resolveDownloadFootprint?: ModelDownloadFootprintResolver;
   onFoldersChange?: () => void;
   onBrowseHub?: () => void;
+  /** Open one connection's own settings, for the gear on a Connected row: a model reached over
+   *  the wire has no local run settings, so what is configurable lives on its connection. */
+  onConfigureConnection?: (providerId: string) => void;
   onModelsChange?: (deletedModel?: DeletedModelRef) => void;
   onConfigure?: (id: string, meta: ModelSelectorChangeMeta) => void;
   deleteDisabled?: boolean;
@@ -3138,6 +3263,7 @@ export function HubModelPicker({
   const deviceType = usePlatformStore((s) => s.deviceType);
   const isMac = deviceType === "mac";
   const hostClass = useHostClass();
+  const denseQuantSchemes = useDenseQuantSchemes();
 
   // Drop models Unsloth cannot run for chat. A task-scoped picker wants exactly the tasks the
   // chat classifier calls unsupported, so it gates on the task.
@@ -3270,11 +3396,11 @@ export function HubModelPicker({
   // A curated row's name and its chips; ids outside the catalog have neither and show the raw repo id.
   const curatedRow = useCallback(
     (id: string) =>
-      (catalog && curatedRowLabelFor(id, catalog, hostClass)) ?? {
+      (catalog && curatedRowLabelFor(id, catalog, hostClass, denseQuantSchemes)) ?? {
         name: id,
         tags: [] as string[],
       },
-    [catalog, hostClass],
+    [catalog, hostClass, denseQuantSchemes],
   );
 
   /** Whether this host can run a curated id at all, as opposed to whether it has room for it. Browse rows only. */
@@ -4221,6 +4347,111 @@ export function HubModelPicker({
   const unpinRepo = usePinnedModelsStore((s) => s.unpinRepo);
   const pinnedSet = useMemo(() => new Set(pinnedIds), [pinnedIds]);
 
+  // Connected pins keep their own list: an `external::` id carries the "::" the On Device store
+  // reads as its repo/quant separator, so a pin filed there returns as a phantom quant row.
+  const pinnedConnectedIds = usePinnedConnectedModelsStore((s) => s.pinned);
+  const togglePinnedConnected = usePinnedConnectedModelsStore(
+    (s) => s.togglePinnedConnected,
+  );
+  const movePinnedConnected = usePinnedConnectedModelsStore(
+    (s) => s.movePinnedConnected,
+  );
+  const beginPinnedConnectedDrag = usePinnedConnectedModelsStore(
+    (s) => s.beginPinnedConnectedDrag,
+  );
+  const endPinnedConnectedDrag = usePinnedConnectedModelsStore(
+    (s) => s.endPinnedConnectedDrag,
+  );
+  // The id under the cursor mid-drag. A ref, not state: dragenter fires on every row crossed.
+  const draggingPinnedConnectedRef = useRef<string | null>(null);
+  const [draggingPinnedConnectedId, setDraggingPinnedConnectedId] = useState<
+    string | null
+  >(null);
+  const pinnedConnectedSet = useMemo(
+    () => new Set(pinnedConnectedIds),
+    [pinnedConnectedIds],
+  );
+  // Connections behind those models, read for the base URL a capability check needs: a Gemini
+  // connection pointed at an OpenAI-compatible proxy returns no inline images.
+  const externalProviders = useExternalProvidersStore((s) => s.providers);
+  const externalBaseUrlById = useMemo(
+    () =>
+      new Map(
+        externalProviders.map((provider) => [provider.id, provider.baseUrl]),
+      ),
+    [externalProviders],
+  );
+  // A connection's own output cap, which lowers the model's documented one. The bounds the
+  // per-model editor offers have to be the ones every request is clamped to.
+  const externalMaxOutputById = useMemo(
+    () =>
+      new Map(
+        externalProviders.map((provider) => [
+          provider.id,
+          provider.maxOutputTokens ?? null,
+        ]),
+      ),
+    [externalProviders],
+  );
+  // A self-hosted OpenAI-compatible endpoint publishes no reasoning signal, so a vLLM connection
+  // carries the answer itself. It is the only place that answer lives.
+  const externalReasoningFlagById = useMemo(
+    () =>
+      new Map(
+        externalProviders.map((provider) => [
+          provider.id,
+          provider.isReasoningModel === true,
+        ]),
+      ),
+    [externalProviders],
+  );
+  // A provider catalogue arrives after first paint and decides most of the marks, so re-read it.
+  const catalogVersion = useSyncExternalStore(
+    subscribeModelCatalog,
+    modelCatalogVersion,
+  );
+  const [connectedSort, setConnectedSort] =
+    useState<ConnectedSortKey>("provider");
+  const [connectedModality, setConnectedModality] =
+    useState<ConnectedModalityFilter>("all");
+  // Provider ids the user folded away, and whether the Pinned group is folded.
+  const [collapsedConnectedGroups, setCollapsedConnectedGroups] = useState<
+    ReadonlySet<string>
+  >(() => new Set());
+  const [pinnedConnectedCollapsed, setPinnedConnectedCollapsed] =
+    useState(false);
+  const toggleConnectedGroup = useCallback((providerId: string) => {
+    setCollapsedConnectedGroups((prev) => {
+      const next = new Set(prev);
+      if (!next.delete(providerId)) next.add(providerId);
+      return next;
+    });
+  }, []);
+  // The row whose Model info is open.
+  const [infoModel, setInfoModel] = useState<{
+    model: ExternalModelOption;
+    providerModelId: string;
+    baseUrl: string | null;
+    isReasoningProvider: boolean;
+  } | null>(null);
+  const [settingsModel, setSettingsModel] = useState<{
+    model: ExternalModelOption;
+    providerModelId: string;
+    baseUrl: string | null;
+    isReasoningProvider: boolean;
+    connectionMaxOutputTokens: number | null;
+  } | null>(null);
+
+  // The shared helper, not navigator.clipboard: that is undefined in the desktop shell and over
+  // plain HTTP on a LAN address, where reading .writeText off it throws before any catch runs.
+  const copyConnectedModelId = useCallback(async (providerModelId: string) => {
+    if (await copyToClipboard(providerModelId)) {
+      toast.success(`Copied ${providerModelId}`);
+    } else {
+      toast.error("Could not copy the model ID");
+    }
+  }, []);
+
   // Candidate pins whose repo still exists in the cache; per-quant validation below is needed
   // because deleting one variant can leave a sibling cached.
   const pinnedQuantCandidates = useMemo(() => {
@@ -4537,8 +4768,115 @@ export function HubModelPicker({
     [hfIds, communitySearchIds],
   );
 
+  // Query- and modality-matching connected models, pinned ones kept separate. A pin moves a row
+  // into the Pinned group rather than copying it, as the On Device sections do.
+  const connectedMatches = useMemo(() => {
+    const needle = normalizeForSearch(debouncedQuery.trim());
+    return externalModels.filter((model) => {
+      if (
+        needle &&
+        !normalizeForSearch(
+          `${model.name} ${model.providerName} ${model.id}`,
+        ).includes(needle)
+      ) {
+        return false;
+      }
+      if (connectedModality === "all") return true;
+      const marks = connectedModelMarks({
+        providerType: model.providerType,
+        modelId: parseExternalModelId(model.id)?.modelId ?? model.name,
+        baseUrl: externalBaseUrlById.get(model.providerId) ?? null,
+      });
+      return connectedModality === "vision"
+        ? marks.vision
+        : marks.capabilities[connectedModality];
+    });
+    // The marks read module state a provider sync writes after first paint, so the version is
+    // the only dep that can report the memo stale. exhaustive-deps cannot see through
+    // connectedModelMarks to that read, so it calls the dep unnecessary.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    externalModels,
+    debouncedQuery,
+    connectedModality,
+    externalBaseUrlById,
+    catalogVersion,
+  ]);
+
+  // Pin order, always: the sort below orders the catalogue, and a hand-arranged list is not it.
+  const pinnedConnectedRows = useMemo(() => {
+    const rank = makePinRank(pinnedConnectedIds);
+    return connectedMatches
+      .filter((model) => pinnedConnectedSet.has(model.id))
+      .sort((a, b) => rank(a.id) - rank(b.id));
+  }, [connectedMatches, pinnedConnectedIds, pinnedConnectedSet]);
+
+  const connectedGroups = useMemo(() => {
+    const byProvider = new Map<
+      string,
+      {
+        providerId: string;
+        providerName: string;
+        providerType: string;
+        models: ExternalModelOption[];
+      }
+    >();
+    for (const model of connectedMatches) {
+      if (pinnedConnectedSet.has(model.id)) continue;
+      const prev = byProvider.get(model.providerId);
+      if (prev) {
+        prev.models.push(model);
+      } else {
+        byProvider.set(model.providerId, {
+          providerId: model.providerId,
+          providerName: model.providerName,
+          providerType: model.providerType,
+          models: [model],
+        });
+      }
+    }
+    const groups = [...byProvider.values()]
+      .map((group) => ({
+        ...group,
+        models: group.models.sort((a, b) => a.name.localeCompare(b.name)),
+      }))
+      .sort((a, b) => a.providerName.localeCompare(b.providerName));
+    if (connectedSort !== "name") return groups;
+    // Sorting by name across connections is a different list, not a reordered one: the headings
+    // would each hold a row or two and stop meaning anything. So one unlabelled group.
+    return [
+      {
+        providerId: "__all__",
+        providerName: "",
+        providerType: "",
+        models: groups
+          .flatMap((group) => group.models)
+          .sort((a, b) => a.name.localeCompare(b.name)),
+      },
+    ];
+  }, [connectedMatches, pinnedConnectedSet, connectedSort]);
   const hubOptionKeys = useMemo(() => {
     const keys: string[] = [];
+
+    // The tab lists nothing else, so these are the whole roving order, in drawn order.
+    if (section === "connected") {
+      if (!pinnedConnectedCollapsed) {
+        keys.push(
+          ...pinnedConnectedRows.map((model) =>
+            makeModelOptionKey("connected", model.id),
+          ),
+        );
+      }
+      for (const group of connectedGroups) {
+        if (collapsedConnectedGroups.has(group.providerId)) continue;
+        keys.push(
+          ...group.models.map((model) =>
+            makeModelOptionKey("connected", model.id),
+          ),
+        );
+      }
+      return keys;
+    }
 
     // Pinned rows sit above the Unsloth heading on the On Device tab.
     if (
@@ -4663,6 +5001,10 @@ export function HubModelPicker({
     chatOnly,
     sortedCustomFolderModels,
     customFoldersCollapsed,
+    connectedGroups,
+    pinnedConnectedRows,
+    pinnedConnectedCollapsed,
+    collapsedConnectedGroups,
     pinnedRows,
     pinnedCollapsed,
     downloadedCollapsed,
@@ -5000,41 +5342,6 @@ export function HubModelPicker({
       />
     );
 
-  const connectedGroups = useMemo(() => {
-    const needle = normalizeForSearch(debouncedQuery.trim());
-    const byProvider = new Map<
-      string,
-      {
-        providerId: string;
-        providerName: string;
-        providerType: string;
-        models: ExternalModelOption[];
-      }
-    >();
-    for (const model of externalModels) {
-      const text = normalizeForSearch(
-        `${model.name} ${model.providerName} ${model.id}`,
-      );
-      if (needle && !text.includes(needle)) continue;
-      const prev = byProvider.get(model.providerId);
-      if (prev) {
-        prev.models.push(model);
-      } else {
-        byProvider.set(model.providerId, {
-          providerId: model.providerId,
-          providerName: model.providerName,
-          providerType: model.providerType,
-          models: [model],
-        });
-      }
-    }
-    return [...byProvider.values()]
-      .map((group) => ({
-        ...group,
-        models: group.models.sort((a, b) => a.name.localeCompare(b.name)),
-      }))
-      .sort((a, b) => a.providerName.localeCompare(b.providerName));
-  }, [externalModels, debouncedQuery]);
   const showConnected = section === "connected";
   // The Connected layout uses a wider box, so it drops the search inset to keep Search Hub on the last dropdown's edge.
   const hasConnected = externalModels.length > 0;
@@ -5058,6 +5365,187 @@ export function HubModelPicker({
       hasMemoryBar ? "rounded-2xl" : "rounded-full",
       selected && "bg-[#ececec] dark:bg-[var(--sidebar-accent)]",
     );
+
+  // One connected model, through ModelRow like every On Device row, so the badges and the hover
+  // gutter are the same components rather than a second set that drifts.
+  const renderConnectedModelRow = (
+    model: ExternalModelOption,
+    // Only pinned rows drag: the groups below are sorted, so a drop there could not be honoured.
+    draggable = false,
+    // No heading above this row to name its connection: the pinned group, and the flat list the
+    // name sort produces. Two connections can serve one model id, so the row has to say.
+    headless = false,
+  ) => {
+    const optionKey = makeModelOptionKey("connected", model.id);
+    const isSelected = value === model.id;
+    const isPinned = pinnedConnectedSet.has(model.id);
+    // What the provider calls the model: `model.name` is a display label OpenRouter rewrites and
+    // `model.id` is the picker's `external::` address, and no capability lookup keys on either.
+    const providerModelId =
+      parseExternalModelId(model.id)?.modelId ?? model.name;
+    const baseUrl = externalBaseUrlById.get(model.providerId) ?? null;
+    const marks = connectedModelMarks({
+      providerType: model.providerType,
+      modelId: providerModelId,
+      baseUrl,
+    });
+    return (
+      <div
+        key={model.id}
+        // ml-4 plus the pl-3.5 below is 30px, where a heading's label starts: px-2.5 + a
+        // size-3.5 icon + gap-1.5. The split between them is the pill's own inset, so widening
+        // it takes the pill's left edge leftward rather than moving the name off that label.
+        // The reserved leading slot used to put 23.5px of empty pill in front of every name.
+        className={cn(downloadedRowShellClassName(isSelected), "ml-4")}
+        style={
+          draggingPinnedConnectedId === model.id ? { opacity: 0.4 } : undefined
+        }
+        draggable={draggable}
+        onDragStart={
+          draggable
+            ? (event) => {
+                event.dataTransfer.effectAllowed = "move";
+                // Firefox will not start a drag without data.
+                event.dataTransfer.setData("text/plain", model.id);
+                draggingPinnedConnectedRef.current = model.id;
+                setDraggingPinnedConnectedId(model.id);
+                // Reordering is live on dragenter; this is what a cancelled drag rolls back to.
+                beginPinnedConnectedDrag();
+              }
+            : undefined
+        }
+        onDragEnd={
+          draggable
+            ? () => {
+                draggingPinnedConnectedRef.current = null;
+                setDraggingPinnedConnectedId(null);
+                // Escape, or a release off-row, reaches dragend without a drop. After a drop the
+                // session is already committed and cleared, so this is a no-op.
+                endPinnedConnectedDrag(false);
+              }
+            : undefined
+        }
+        onDragOver={
+          draggable
+            ? (event) => {
+                if (draggingPinnedConnectedRef.current) event.preventDefault();
+              }
+            : undefined
+        }
+        onDragEnter={
+          draggable
+            ? () => {
+                const dragId = draggingPinnedConnectedRef.current;
+                if (dragId && dragId !== model.id) {
+                  movePinnedConnected(dragId, model.id);
+                }
+              }
+            : undefined
+        }
+        onDrop={
+          draggable
+            ? (event) => {
+                event.preventDefault();
+                draggingPinnedConnectedRef.current = null;
+                setDraggingPinnedConnectedId(null);
+                endPinnedConnectedDrag(true);
+              }
+            : undefined
+        }
+      >
+        <div className="min-w-0 flex-1">
+          <ModelRow
+            label={model.name}
+            // The provider's own id, the way a local row hovers its path: a label can be
+            // rewritten, and one connection can offer two models that shorten to the same words.
+            // With no heading above, the connection's name goes here too.
+            tooltipText={
+              headless ? (
+                <>
+                  {providerModelId}
+                  <span className="block text-ui-10 mt-1">
+                    {model.providerName}
+                  </span>
+                </>
+              ) : (
+                providerModelId
+              )
+            }
+            capabilities={marks.capabilities}
+            showVision={marks.vision}
+            selected={isSelected}
+            optionProps={hubModelList.getOptionProps(optionKey, isSelected)}
+            onClick={() =>
+              onSelect(model.id, { source: "external", isLora: false })
+            }
+            vramStatus={null}
+            // The name's own inset, since nothing precedes it in the row now: the leading slot a
+            // local row gives its format dot is gone with the logo that briefly filled it.
+            className={cn(downloadedRowButtonClassName, "pl-3.5")}
+          />
+        </div>
+        <span className={ROW_ACTIONS_CLASS}>
+          <ModelLoadSettingsAction
+            ariaLabel={`Settings for ${model.name}`}
+            tooltip="Model settings"
+            onConfigure={() =>
+              setSettingsModel({
+                model,
+                providerModelId,
+                baseUrl,
+                isReasoningProvider:
+                  externalReasoningFlagById.get(model.providerId) === true,
+                connectionMaxOutputTokens:
+                  externalMaxOutputById.get(model.providerId) ?? null,
+              })
+            }
+          />
+          <ModelRowMenu
+            ariaLabel={`More options for ${model.name}`}
+            pin={{
+              pinned: isPinned,
+              pinLabel: "Pin to top",
+              unpinLabel: "Unpin",
+              onToggle: () => togglePinnedConnected(model.id),
+            }}
+            items={[
+              {
+                key: "info",
+                label: "Model info",
+                icon: (
+                  <HugeiconsIcon
+                    icon={InformationCircleIcon}
+                    strokeWidth={1.75}
+                    className="size-icon"
+                  />
+                ),
+                onSelect: () =>
+                  setInfoModel({
+                    model,
+                    providerModelId,
+                    baseUrl,
+                    isReasoningProvider:
+                      externalReasoningFlagById.get(model.providerId) === true,
+                  }),
+              },
+              {
+                key: "copy",
+                label: "Copy model ID",
+                icon: (
+                  <HugeiconsIcon
+                    icon={Copy01Icon}
+                    strokeWidth={1.75}
+                    className="size-icon"
+                  />
+                ),
+                onSelect: () => void copyConnectedModelId(providerModelId),
+              },
+            ]}
+          />
+        </span>
+      </div>
+    );
+  };
 
   // A pinned quant: repo name with the quant as a grey chip, loaded in one click.
   const renderPinnedQuantRow = (entry: { repoId: string; quant: string }) => {
@@ -5653,7 +6141,33 @@ export function HubModelPicker({
           )}
         >
           {sectionToggle}
-          {showConnected ? null : (
+          {showConnected ? (
+            <div className="flex max-w-full min-w-0 flex-wrap items-center gap-2">
+              <HubOptionMenu
+                value={connectedModality}
+                options={CONNECTED_MODALITY_OPTIONS}
+                onValueChange={setConnectedModality}
+                ariaLabel="Filter by modality"
+                align="end"
+                className={sortTriggerClassName}
+                contentClassName={sortMenuContentClassName}
+              />
+              <HubOptionMenu
+                value={connectedSort}
+                options={CONNECTED_SORT_OPTIONS}
+                onValueChange={setConnectedSort}
+                ariaLabel="Sort connected models"
+                align="end"
+                className={sortTriggerClassName}
+                contentClassName={sortMenuContentClassName}
+                triggerContent={sortTriggerContent(
+                  CONNECTED_SORT_OPTIONS.find(
+                    (option) => option.value === connectedSort,
+                  )?.label ?? connectedSort,
+                )}
+              />
+            </div>
+          ) : (
             <div className="flex max-w-full min-w-0 flex-wrap items-center gap-2">
               <HubOptionMenu
                 value={formatFilter}
@@ -5692,47 +6206,73 @@ export function HubModelPicker({
             )}
           >
             {showConnected ? (
-              connectedGroups.length === 0 ? (
+              connectedMatches.length === 0 ? (
                 <div className="px-2.5 py-2 text-xs leading-relaxed text-muted-foreground">
                   {externalModels.length === 0
                     ? "No models from your connections. Set up in Settings then Connections."
                     : "No models match your search."}
                 </div>
               ) : (
-                connectedGroups.map((group) => (
-                  <div key={group.providerId}>
-                    {/* Wider than the On Device section labels: nothing divides these groups but the gap. */}
-                    <div className="flex items-center gap-2 px-2.5 pb-1 pt-5 text-ui-10 font-semibold uppercase tracking-wider text-muted-foreground">
-                      <ApiProviderLogo
-                        providerType={group.providerType}
-                        className="size-3.5"
-                        title={group.providerName}
-                      />
-                      <span className="min-w-0 truncate">
-                        {group.providerName}
-                      </span>
-                    </div>
-                    {group.models.map((model) => (
-                      <button
-                        key={model.id}
-                        type="button"
-                        onClick={() =>
-                          onSelect(model.id, {
-                            source: "external",
-                            isLora: false,
-                          })
+                <>
+                  {/* Above the first provider, on the same heading with a pin for the logo. */}
+                  {pinnedConnectedRows.length > 0 ? (
+                    <div>
+                      <ConnectedGroupHeading
+                        icon={
+                          <HugeiconsIcon icon={PinIcon} className="size-3.5" />
                         }
-                        className={cn(
-                          "flex w-full items-center rounded-md px-2.5 py-1.5 text-left text-sm transition-colors hover:bg-[#ececec] dark:hover:bg-[var(--sidebar-accent)]",
-                          value === model.id &&
-                            "bg-[#ececec] dark:bg-[var(--sidebar-accent)]",
-                        )}
-                      >
-                        <span className="min-w-0 truncate">{model.name}</span>
-                      </button>
-                    ))}
-                  </div>
-                ))
+                        label="Pinned"
+                        collapsed={pinnedConnectedCollapsed}
+                        onToggle={() =>
+                          setPinnedConnectedCollapsed((value) => !value)
+                        }
+                      />
+                      {pinnedConnectedCollapsed
+                        ? null
+                        : pinnedConnectedRows.map((model) =>
+                            renderConnectedModelRow(model, true, true),
+                          )}
+                    </div>
+                  ) : null}
+                  {connectedGroups.map((group) => {
+                    // The name sort collapses every connection into one unlabelled group, which
+                    // has no heading to fold.
+                    const headed = group.providerName.length > 0;
+                    const collapsed =
+                      headed && collapsedConnectedGroups.has(group.providerId);
+                    return (
+                      <div key={group.providerId}>
+                        {headed ? (
+                          <ConnectedGroupHeading
+                            icon={
+                              <ApiProviderLogo
+                                providerType={group.providerType}
+                                className="size-3.5"
+                                title={group.providerName}
+                              />
+                            }
+                            label={group.providerName}
+                            collapsed={collapsed}
+                            onToggle={() =>
+                              toggleConnectedGroup(group.providerId)
+                            }
+                            onConfigure={
+                              onConfigureConnection
+                                ? () => onConfigureConnection(group.providerId)
+                                : undefined
+                            }
+                            configureLabel={`${group.providerName} connection settings`}
+                          />
+                        ) : null}
+                        {collapsed
+                          ? null
+                          : group.models.map((model) =>
+                              renderConnectedModelRow(model, false, !headed),
+                            )}
+                      </div>
+                    );
+                  })}
+                </>
               )
             ) : (
               <>
@@ -6972,6 +7512,35 @@ export function HubModelPicker({
         onKeepTransport={resumeUpdateConflict}
         onSwitchTransport={restartUpdateConflict}
       />
+      {settingsModel ? (
+        <ConnectedModelSettingsDialog
+          open={true}
+          onOpenChange={(next) => {
+            if (!next) setSettingsModel(null);
+          }}
+          checkpointId={settingsModel.model.id}
+          displayName={settingsModel.model.name}
+          modelId={settingsModel.providerModelId}
+          providerType={settingsModel.model.providerType}
+          baseUrl={settingsModel.baseUrl}
+          isReasoningProvider={settingsModel.isReasoningProvider}
+          connectionMaxOutputTokens={settingsModel.connectionMaxOutputTokens}
+        />
+      ) : null}
+      {infoModel ? (
+        <ConnectedModelInfoDialog
+          open={true}
+          onOpenChange={(next) => {
+            if (!next) setInfoModel(null);
+          }}
+          modelId={infoModel.providerModelId}
+          displayName={infoModel.model.name}
+          providerName={infoModel.model.providerName}
+          providerType={infoModel.model.providerType}
+          baseUrl={infoModel.baseUrl}
+          isReasoningProvider={infoModel.isReasoningProvider}
+        />
+      ) : null}
     </CapabilityScope.Provider>
   );
 }

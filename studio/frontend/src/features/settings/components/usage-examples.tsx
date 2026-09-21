@@ -888,9 +888,11 @@ export function UsageExamples({
                       className="flex items-center rounded text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                       aria-label={t("settings.apiKeys.secureHttpsHint")}
                     >
+                      {/* Follows the UI font size, like the SettingsRow hint
+                          this matches. */}
                       <HugeiconsIcon
                         icon={InformationCircleIcon}
-                        className="size-3.5"
+                        className="size-[var(--ui-icon-size-sm)]"
                       />
                     </button>
                   </TooltipTrigger>

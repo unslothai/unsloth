@@ -272,6 +272,55 @@ const SNAPSHOT_WEIGHT_FILE_RE =
 const SNAPSHOT_NON_BIN_WEIGHT_FILE_RE =
   /\.(safetensors|pt|pth|ckpt|h5|msgpack|npz)$/i;
 const SNAPSHOT_BIN_WEIGHT_PREFIX_RE = /^(model|pytorch_model|adapter_model).*\.bin$/i;
+// [0-9] rather than \d, to stay identical to the backend's SHARDED_SAFETENSORS_RE in
+// studio/backend/hub/utils/snapshot_filters.py, where \d would also match non-ASCII digits.
+const SHARDED_SAFETENSORS_RE = /^model[-_][0-9]+-of-[0-9]+\.safetensors$/;
+const SAFETENSORS_INDEX = "model.safetensors.index.json";
+const DUPLICATE_WEIGHT_FORMAT_RE =
+  /^(?:(?:original|metal|coreml)\/|(?:tf_model.*\.h5|flax_model.*\.msgpack)$|(?:tf_model\.h5|flax_model\.msgpack)\.index\.json$|rust_model\.ot$)/s;
+// Mirrors redundant_torch_bin_files in snapshot_filters.py. A dtype variant is redundant only
+// when the SAME variant ships as safetensors: model.safetensors does not satisfy a
+// variant="fp16" load, and a glob also kept whisper-large-v3's pytorch_model.bin.index.fp32.json
+// while dropping the shards it indexes.
+// Both shard layouts, because transformers writes the counter-first one and this codebase
+// already recognises both in unsloth/models/_utils.py.
+const BIN_WEIGHT_RES = [
+  /^pytorch_model(?:\.([A-Za-z0-9_]+))?(?:[-_][0-9]+-of-[0-9]+)?\.bin$/,
+  /^pytorch_model[-_][0-9]+-of-[0-9]+\.([A-Za-z0-9_]+)\.bin$/,
+];
+const BIN_INDEX_RE =
+  /^pytorch_model(?:\.([A-Za-z0-9_]+))?\.bin\.index(?:\.([A-Za-z0-9_]+))?\.json$/;
+
+// A sharded variant needs its index for the same reason the canonical checkpoint does.
+function variantShipsAsSafetensors(names: string[], variant: string | undefined): boolean {
+  if (!variant) return true;
+  if (names.includes(`model.${variant}.safetensors`)) return true;
+  // transformers' _add_variant puts the variant second-to-last, so this is the only index
+  // spelling a variant load can find.
+  if (!names.includes(`model.safetensors.index.${variant}.json`)) return false;
+  const v = variant.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const sharded = new RegExp(
+    `^(?:model\\.${v}[-_][0-9]+-of-[0-9]+\\.safetensors|model[-_][0-9]+-of-[0-9]+\\.${v}\\.safetensors)$`,
+  );
+  return names.some((n) => sharded.test(n));
+}
+
+function redundantTorchBinFiles(names: string[]): Set<string> {
+  const out = new Set<string>();
+  for (const name of names) {
+    let variant: string | undefined;
+    const weight = BIN_WEIGHT_RES.map((re) => re.exec(name)).find((m) => m);
+    if (weight) {
+      variant = weight[1];
+    } else {
+      const index = BIN_INDEX_RE.exec(name);
+      if (!index) continue;
+      variant = index[1] ?? index[2];
+    }
+    if (variantShipsAsSafetensors(names, variant)) out.add(name);
+  }
+  return out;
+}
 
 function basename(path: string): string {
   return path.split("/").pop() ?? path;
@@ -288,9 +337,23 @@ function shipsTransformersWeights(siblings: ModelSibling[]): boolean {
   });
 }
 
+// Numbered shards are not loadable on their own: transformers resolves them through
+// model.safetensors.index.json, so one shard is not evidence a checkpoint is there.
+// Mirrors repo_ships_root_safetensors in snapshot_filters.py.
+function shipsRootSafetensors(siblings: ModelSibling[]): boolean {
+  const names = siblings.map((s) => s.rfilename ?? "");
+  if (names.some((n) => n === "model.safetensors")) return true;
+  return (
+    names.includes(SAFETENSORS_INDEX) &&
+    names.some((n) => SHARDED_SAFETENSORS_RE.test(n))
+  );
+}
+
 function isSnapshotIgnored(
   filename: string,
   skipConsolidated: boolean,
+  skipDuplicateFormats: boolean,
+  redundantBins: Set<string>,
 ): boolean {
   const lower = filename.toLowerCase();
   return (
@@ -300,7 +363,9 @@ function isSnapshotIgnored(
     lower.startsWith("openvino/") ||
     lower.startsWith("mlx/") ||
     lower.endsWith(".bin.index.json.bak") ||
-    (skipConsolidated && lower.startsWith("consolidated"))
+    (skipConsolidated && lower.startsWith("consolidated")) ||
+    (skipDuplicateFormats &&
+      (DUPLICATE_WEIGHT_FORMAT_RE.test(filename) || redundantBins.has(filename)))
   );
 }
 
@@ -334,12 +399,26 @@ export function fetchModelSize(
       const data = (await res.json()) as ModelInfoApiResponse;
       const siblings = data.siblings ?? [];
       const skipConsolidated = shipsTransformersWeights(siblings);
+      const skipDuplicateFormats = shipsRootSafetensors(siblings);
+      const redundantBins = redundantTorchBinFiles(
+        siblings.map((s) => s.rfilename ?? ""),
+      );
       let total = 0;
       let weights = 0;
       for (const s of siblings) {
         if (typeof s.size !== "number") continue;
         const filename = s.rfilename ?? "";
-        if (filename && isSnapshotIgnored(filename, skipConsolidated)) continue;
+        if (
+          filename &&
+          isSnapshotIgnored(
+            filename,
+            skipConsolidated,
+            skipDuplicateFormats,
+            redundantBins,
+          )
+        ) {
+          continue;
+        }
         total += s.size;
         if (filename && SNAPSHOT_WEIGHT_FILE_RE.test(filename)) {
           weights += s.size;
