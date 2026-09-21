@@ -1510,9 +1510,12 @@ class TestPathLoadCompanionRoots:
         route = _load_route_module(name, "routes/inference.py")
         load_path = kwargs.pop("load_path")
         preset = kwargs.pop("preset_roots", None)
+        preset_set = kwargs.pop("preset_set", False)
         request = LoadRequest(model_path = load_path, gguf_variant = "Q4_K_M")
         if preset is not None:
             request._gguf_companion_roots = preset
+        if preset_set:
+            request._gguf_companion_roots_set = True
         seen = {}
         with _capture_load_config(route, seen, model_identifier = load_path, **kwargs):
             with pytest.raises(_CompanionMetadataReached):
@@ -1581,6 +1584,22 @@ class TestPathLoadCompanionRoots:
             preset_roots = (str(selected),),
         )
         assert tuple(map(Path, roots or ())) == (selected,)
+
+    def test_an_explicitly_empty_scope_is_left_alone(self, tmp_path):
+        """`()` from a caller that resolved an exact revision means do not widen.
+
+        The default is `()` too, so only the marker separates them. Without it the
+        route recomputes the scope from the path and the pinned request picks up a
+        projector or drafter from a revision it excluded.
+        """
+        _repo, selected, _companions = _companion_cache_repo(tmp_path)
+        assert not self._roots_for(
+            tmp_path,
+            "inference_route_module_for_empty_preset_roots",
+            load_path = str(selected),
+            preset_roots = (),
+            preset_set = True,
+        )
 
     def test_a_bare_repo_id_is_not_widened(self, tmp_path):
         assert not self._roots_for(
@@ -1654,6 +1673,8 @@ def test_an_explicitly_empty_companion_scope_is_not_recomputed():
     pinned = LoadRequest(model_path = "/models/x")
     pinned._gguf_companion_roots = ()
     pinned._gguf_companion_roots_set = True
-    # The path route's own guard, spelled exactly as it is at routes/inference.py.
-    assert not (not pinned._gguf_companion_roots and not pinned._gguf_companion_roots_set)
-    assert not unset._gguf_companion_roots and not unset._gguf_companion_roots_set
+    assert pinned._gguf_companion_roots == ()
+    # Private, so the marker cannot be set through the wire model either.
+    assert "_gguf_companion_roots_set" not in pinned.model_dump()
+    injected = LoadRequest(model_path = "/models/x", _gguf_companion_roots_set = True)
+    assert injected._gguf_companion_roots_set is False
