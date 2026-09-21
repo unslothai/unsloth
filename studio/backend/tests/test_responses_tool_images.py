@@ -1,18 +1,21 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 
+import asyncio
 import base64
 import json
 from io import BytesIO
 
 import httpx
 import pytest
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 from PIL import Image
 
+from core.inference import local_model_resolver as resolver
 from core.inference.anthropic_compat import TOOL_RESULT_IMAGE_OMITTED
 from routes import inference as inf
 from studio.backend.tests.test_anthropic_messages import _mock_backend
+from studio.backend.tests.test_openai_auto_switch import _FakeBackend, _wired
 
 
 def image_url():
@@ -150,3 +153,34 @@ def test_text_only_model_still_refuses_a_user_image(monkeypatch, stream):
     assert "wire" not in seen
     if stream:
         assert [p["require_vision"] for p in seen["preflight"]] == [True]
+
+
+@pytest.mark.parametrize("user_image", [False, True])
+def test_non_streaming_preflight_marks_tool_only_images(monkeypatch, user_image):
+    monkeypatch.setattr(inf, "_should_validate_before_switch", lambda: True)
+    response, seen = post(monkeypatch, payload(False, user_image = user_image), vision = True)
+
+    assert response.status_code == 200, response.text
+    [preflight] = seen["preflight"]
+    assert preflight["require_vision"] is True
+    assert preflight["tool_images_only"] is (not user_image)
+
+
+@pytest.mark.parametrize("target_is_gguf", [True, False])
+def test_tool_only_images_need_vision_only_from_a_non_gguf_target(monkeypatch, target_is_gguf):
+    _backend, rec = _wired(monkeypatch, _FakeBackend("org/A-GGUF"), ("/local/B", "Q8_0", "org/B"))
+    monkeypatch.setattr(resolver, "local_target_is_gguf", lambda *_a, **_k: target_is_gguf)
+    monkeypatch.setattr(inf, "_target_is_vision", lambda *_a: False)
+    monkeypatch.setattr(inf, "_target_accepts_request_input", lambda *_a: False)
+    switch = inf._maybe_auto_switch_model(
+        "org/B", object(), "t", require_vision = True, tool_images_only = True
+    )
+
+    if target_is_gguf:
+        asyncio.run(switch)
+        assert len(rec.calls) == 1
+    else:
+        with pytest.raises(HTTPException) as exc:
+            asyncio.run(switch)
+        assert exc.value.status_code == 400
+        assert rec.calls == []
