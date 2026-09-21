@@ -24,7 +24,8 @@ $subjectNames = @(
     "Remove-StaleStudioVenvRollbacks",
     "Restore-StudioVenvRollback",
     "Complete-StudioVenvRollback",
-    "Restore-StudioUvCacheMarker"
+    "Restore-StudioUvCacheMarker",
+    "Test-StudioPathsShareVolume"
 )
 
 $definitions = @{}
@@ -113,6 +114,8 @@ function Reset-RollbackState($target) {
     # As Install-UnslothStudio does at entry: the commit flag is per install, and the
     # restore consults it, so a previous section's commit would suppress this one.
     $script:StudioInstallCommitted = $false
+    $script:StudioNoRollback = $false
+    $script:StudioNoRollbackDiscarded = $false
 }
 
 $StudioHome = Join-Path ([System.IO.Path]::GetTempPath()) "unsloth-rollback-$([guid]::NewGuid().ToString('N'))"
@@ -166,6 +169,28 @@ try {
     )
     Check "failure restoration consumes the rollback" (-not @(Get-ChildItem -LiteralPath $StudioHome -Directory |
         Where-Object { $_.Name -like "unsloth_studio.rollback.*" }))
+
+    Write-Host "No-rollback opt-out"
+    [System.IO.File]::WriteAllText((Join-Path $VenvDir "generation"), "old")
+    Reset-RollbackState $VenvDir
+    $script:StudioNoRollback = $true
+    Start-StudioVenvRollback -ExistingDir $VenvDir
+    Check "no-rollback leaves no copy" (-not @(Get-ChildItem -LiteralPath $StudioHome -Directory |
+        Where-Object { $_.Name -like "unsloth_studio.rollback.*" }))
+    Check "no-rollback removes the previous environment" (-not (Test-Path -LiteralPath $VenvDir))
+    Check "no-rollback keeps no restore state" (-not $script:StudioVenvRollbackActive)
+    [System.IO.Directory]::CreateDirectory($VenvDir) | Out-Null
+    [System.IO.File]::WriteAllText((Join-Path $VenvDir "generation"), "partial")
+    Restore-StudioVenvRollback
+    Check "no-rollback restore puts nothing back" (
+        (Get-Content -LiteralPath (Join-Path $VenvDir "generation") -Raw) -eq "partial"
+    )
+    Reset-RollbackState $VenvDir
+
+    Write-Host "Cache volume"
+    Check "same drive letter shares a volume" (Test-StudioPathsShareVolume -PathA 'C:\Users\a\AppData\Local\uv\cache' -PathB 'c:\Users\b\.unsloth\studio')
+    Check "different drive letters do not" (-not (Test-StudioPathsShareVolume -PathA 'C:\Users\a\AppData\Local\uv\cache' -PathB 'D:\unsloth\studio'))
+    Check "a UNC root is not a drive letter" (-not (Test-StudioPathsShareVolume -PathA '\\server\share\cache' -PathB 'C:\Users\b\.unsloth\studio'))
 
     Write-Host "Locked-file retry"
     $retryDir = Join-Path $StudioHome "retry"

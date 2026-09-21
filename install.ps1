@@ -7,8 +7,9 @@
 #
 # The web entry point cannot forward arguments, so it takes options as environment variables set
 # beforehand (UNSLOTH_NO_TORCH, UNSLOTH_SKIP_AUTOSTART, UNSLOTH_ISOLATE_UV_CACHE,
-# UNSLOTH_PYTHON, UNSLOTH_STUDIO_HOME); a local run takes the equivalent flags
-# (--no-torch, --skip-autostart, --isolated-uv-cache, --python, --local).
+# UNSLOTH_INSTALL_NO_ROLLBACK, UNSLOTH_PYTHON, UNSLOTH_STUDIO_HOME); a local run takes the
+# equivalent flags (--no-torch, --skip-autostart, --isolated-uv-cache, --no-rollback,
+# --python, --local).
 #
 # Install dir priority: UNSLOTH_STUDIO_HOME > STUDIO_HOME (alias) > $USERPROFILE\.unsloth\studio
 #
@@ -1948,6 +1949,7 @@ function Install-UnslothStudio {
     $SkipTorch = $false
     $SkipAutostart = $false
     $IsolateUvCache = $false
+    $NoRollback = $false
     $ShortcutsOnly = $false
     $WithLlamaCppDir = ""
     $argList = $args
@@ -1957,6 +1959,7 @@ function Install-UnslothStudio {
             "--tauri"    { $TauriMode = $true }
             "--no-torch" { $SkipTorch = $true }
             "--isolated-uv-cache" { $IsolateUvCache = $true }
+            "--no-rollback" { $NoRollback = $true }
             "--verbose"  { $script:UnslothVerbose = $true }
             "-v"         { $script:UnslothVerbose = $true }
             "--shortcuts-only" { $ShortcutsOnly = $true }
@@ -1983,6 +1986,10 @@ function Install-UnslothStudio {
     if ($env:UNSLOTH_NO_TORCH -in @('1', 'true', 'yes', 'on')) { $SkipTorch = $true }
     if ($env:UNSLOTH_SKIP_AUTOSTART -in @('1', 'true', 'yes', 'on')) { $SkipAutostart = $true }
     if ($env:UNSLOTH_ISOLATE_UV_CACHE -in @('1', 'true', 'yes', 'on')) { $IsolateUvCache = $true }
+    if ($env:UNSLOTH_INSTALL_NO_ROLLBACK -in @('1', 'true', 'yes', 'on')) { $NoRollback = $true }
+    # Read by the rollback helpers, which the lifecycle test extracts on their own.
+    $script:StudioNoRollback = $NoRollback
+    $script:StudioNoRollbackDiscarded = $false
 
     if ($script:UnslothVerbose) {
         $env:UNSLOTH_VERBOSE = '1'
@@ -3192,6 +3199,23 @@ exit 1
         return (Test-StudioUvCacheWritable -Cache $Cache)
     }
 
+    # Same drive letter or UNC root, which is what decides whether uv hardlinks or copies.
+    # Lexical on purpose: a junction onto another drive reads as its own letter, and the
+    # reinstall disk note catches that case. Unknown roots answer yes, since a wrong no
+    # would abandon a warm cache.
+    function Test-StudioPathsShareVolume {
+        param(
+            [Parameter(Mandatory = $true)][string]$PathA,
+            [Parameter(Mandatory = $true)][string]$PathB
+        )
+        try {
+            $rootA = [System.IO.Path]::GetPathRoot([System.IO.Path]::GetFullPath($PathA))
+            $rootB = [System.IO.Path]::GetPathRoot([System.IO.Path]::GetFullPath($PathB))
+        } catch { return $true }
+        if (-not $rootA -or -not $rootB) { return $true }
+        return ($rootA.TrimEnd('\', '/').ToUpperInvariant() -eq $rootB.TrimEnd('\', '/').ToUpperInvariant())
+    }
+
     # The cache THIS install last recorded, absolute, or "" when there is none. Read before the
     # selector writes its own. BOM and all: PowerShell 5.1 writes -Encoding utf8 WITH a BOM and
     # the update writes the same file BOM-less.
@@ -3321,6 +3345,20 @@ exit 1
             $scanBlocked = $true
         }
 
+        # uv hardlinks into a cache on the venv's volume and copies from one anywhere else, so
+        # a warm cache on another drive costs the whole environment twice, and three times over
+        # while a reinstall's rollback copy stands. install.sh keeps its cache under STUDIO_HOME
+        # for that reason; here the shared cache won on content alone, so a Studio root off the
+        # profile drive always paid the copy (#11313). A cold cache on the right drive downloads
+        # once and links from then on.
+        $crossVolumeCache = ""
+        if ($chosenCache -and $chosenCache -ne $studioCache -and
+            -not (Test-StudioPathsShareVolume -PathA $chosenCache -PathB $StudioRoot) -and
+            (Test-StudioUvCacheUsable -Cache $studioCache)) {
+            $crossVolumeCache = $chosenCache
+            $chosenCache = ""
+        }
+
         if ($chosenCache) {
             $selectedCache = $chosenCache
             # studio, not shared, when the choice IS the Studio cache: the launch repoint below
@@ -3361,7 +3399,9 @@ exit 1
                 step "uv cache" "reusing existing shared cache ($selectedCache) to avoid duplicate Torch/CUDA downloads; use --isolated-uv-cache to isolate"
             }
             "studio" {
-                if ($chosenCache) {
+                if ($crossVolumeCache) {
+                    step "uv cache" "using Unsloth Studio-owned cache ($selectedCache); $crossVolumeCache is on another drive, and uv would copy every package from it instead of linking" "Yellow"
+                } elseif ($chosenCache) {
                     step "uv cache" "reusing this install's Unsloth Studio cache ($selectedCache)"
                 # Never about the directory we are falling back TO: the Studio cache is itself
                 # a candidate now, so it can be the one refused, and naming it claims a fallback
@@ -6998,6 +7038,31 @@ exit 0
         return ($null -ne (Get-Item -LiteralPath $Path -Force -ErrorAction SilentlyContinue))
     }
 
+    # One line before the move: the previous environment stays on disk until the new one
+    # works, so a reinstall can need room for two. Sizes are what Explorer reports, hardlinks
+    # counted every time, so this overstates a venv that shares wheels with uv's cache on the
+    # same volume and is exact for one that does not. Warn only; the install still runs.
+    function Write-StudioReinstallDiskNote {
+        param(
+            [Parameter(Mandatory = $true)][string]$VenvDir,
+            [Parameter(Mandatory = $true)][string]$StudioRoot
+        )
+        try {
+            $bytes = [long]0
+            foreach ($f in [System.IO.Directory]::EnumerateFiles($VenvDir, '*', [System.IO.SearchOption]::AllDirectories)) {
+                try { $bytes += ([System.IO.FileInfo]::new($f)).Length } catch {}
+            }
+            $root = [System.IO.Path]::GetPathRoot([System.IO.Path]::GetFullPath($StudioRoot))
+            if (-not $root) { return }
+            $free = ([System.IO.DriveInfo]::new($root)).AvailableFreeSpace
+        } catch { return }
+        if ($free -ge $bytes) { return }
+        $venvGb = [math]::Round($bytes / 1GB, 1)
+        $freeGb = [math]::Round($free / 1GB, 1)
+        Write-StudioLine "[WARN] The existing environment ($venvGb GB) is kept until the new one works, and $root has $freeGb GB free." -ForegroundColor Yellow
+        Write-StudioLine "       If uv cannot hardlink into its cache the reinstall needs the full size; set UNSLOTH_INSTALL_NO_ROLLBACK=1 to delete the old environment first." -ForegroundColor Yellow
+    }
+
     function Start-StudioVenvRollback {
         param([Parameter(Mandatory = $true)][string]$ExistingDir)
         $stamp = Get-Date -Format "yyyyMMddHHmmss"
@@ -7043,6 +7108,18 @@ exit 0
                 Write-StudioLine "       Close Unsloth Studio and re-run the installer to reverse the move." -ForegroundColor Yellow
             }
             throw
+        }
+        if ($script:StudioNoRollback) {
+            # Opted out. The rename still took the whole tree or nothing, which a recursive
+            # delete on a live tree cannot promise; only the copy is not kept. State first, so
+            # an interruption cannot restore a half-deleted tree.
+            $script:StudioVenvRollbackActive = $false
+            $script:StudioVenvRollbackDir = $null
+            $script:StudioNoRollbackDiscarded = $true
+            if (Remove-StudioVenvTreeWithRetry -Path $candidate -Label "previous environment") {
+                substep "previous environment removed (--no-rollback)"
+            }
+            return
         }
         substep "previous environment preserved for rollback"
     }
@@ -7157,7 +7234,13 @@ exit 0
         # The same flag the marker restore consults, so an interruption mid-commit cannot
         # put one half of a committed install back and keep the other.
         if ($script:StudioInstallCommitted) { return }
-        if (-not $script:StudioVenvRollbackActive) { return }
+        if (-not $script:StudioVenvRollbackActive) {
+            if ($script:StudioNoRollbackDiscarded) {
+                $script:StudioNoRollbackDiscarded = $false
+                Write-StudioLine "[WARN] No previous environment was kept (--no-rollback); re-run the installer to rebuild it." -ForegroundColor Yellow
+            }
+            return
+        }
         # A restore puts the tree back at $VenvDir, so there is nothing left to preserve and
         # the flag must not survive into any later rollback in the same run.
         $script:StudioVenvRollbackPreserve = $false
@@ -7321,6 +7404,7 @@ exit 0
             $script:PrevVenvPlatformTag = Get-PythonPlatformTag $VenvPython
         }
         # New layout already exists -- replace only after preserving rollback copy.
+        Write-StudioReinstallDiskNote -VenvDir $VenvDir -StudioRoot $StudioHome
         substep "preserving existing environment for rollback..."
         try {
             Start-StudioVenvRollback -ExistingDir $VenvDir

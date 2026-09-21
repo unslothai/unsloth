@@ -1,5 +1,5 @@
 #!/bin/sh
-# Unsloth Studio Installer. Usage, supported options and the web one-liner live in the README under "Unsloth Studio (web UI)" and are deliberately not repeated here: this file ships inside the Linux desktop bundle, where a header rehearsing download-and-run command lines is the first thing a generic script classifier reads. A piped install takes options as environment variables after the pipe (UNSLOTH_NO_TORCH, UNSLOTH_SKIP_AUTOSTART, UNSLOTH_ISOLATE_UV_CACHE, UNSLOTH_PYTHON, UNSLOTH_STUDIO_HOME), because a bare `--no-torch` after the pipe would be read as an option to sh itself; a local run takes the equivalent flags (--no-torch, --isolated-uv-cache, --python, --local). Install dir priority: UNSLOTH_STUDIO_HOME > STUDIO_HOME > $HOME/.unsloth/studio
+# Unsloth Studio Installer. Usage, supported options and the web one-liner live in the README under "Unsloth Studio (web UI)" and are deliberately not repeated here: this file ships inside the Linux desktop bundle, where a header rehearsing download-and-run command lines is the first thing a generic script classifier reads. A piped install takes options as environment variables after the pipe (UNSLOTH_NO_TORCH, UNSLOTH_SKIP_AUTOSTART, UNSLOTH_ISOLATE_UV_CACHE, UNSLOTH_INSTALL_NO_ROLLBACK, UNSLOTH_PYTHON, UNSLOTH_STUDIO_HOME), because a bare `--no-torch` after the pipe would be read as an option to sh itself; a local run takes the equivalent flags (--no-torch, --isolated-uv-cache, --no-rollback, --python, --local). Install dir priority: UNSLOTH_STUDIO_HOME > STUDIO_HOME > $HOME/.unsloth/studio
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 set -e
@@ -39,6 +39,7 @@ _USER_PYTHON=""
 _NO_TORCH_FLAG=false
 _SKIP_AUTOSTART=false
 _ISOLATE_UV_CACHE=false
+_NO_ROLLBACK=false
 _VERBOSE=false
 _SHORTCUTS_ONLY=false
 _next_is_package=false
@@ -68,6 +69,7 @@ for arg in "$@"; do
         --python) _next_is_python=true ;;
         --no-torch) _NO_TORCH_FLAG=true ;;
         --isolated-uv-cache) _ISOLATE_UV_CACHE=true ;;
+        --no-rollback) _NO_ROLLBACK=true ;;
         --verbose|-v) _VERBOSE=true ;;
         --shortcuts-only) _SHORTCUTS_ONLY=true ;;
         --with-llama-cpp-dir) _next_is_llama_cpp_dir=true ;;
@@ -78,6 +80,7 @@ done
 case "${UNSLOTH_NO_TORCH:-}" in 1|true|TRUE|yes|YES|on|ON) _NO_TORCH_FLAG=true ;; esac
 case "${UNSLOTH_SKIP_AUTOSTART:-}" in 1|true|TRUE|yes|YES|on|ON) _SKIP_AUTOSTART=true ;; esac
 case "${UNSLOTH_ISOLATE_UV_CACHE:-}" in 1|true|TRUE|yes|YES|on|ON) _ISOLATE_UV_CACHE=true ;; esac
+case "${UNSLOTH_INSTALL_NO_ROLLBACK:-}" in 1|true|TRUE|yes|YES|on|ON) _NO_ROLLBACK=true ;; esac
 [ -z "$_USER_PYTHON" ] && [ -n "${UNSLOTH_PYTHON:-}" ] && _USER_PYTHON="$UNSLOTH_PYTHON"
 
 if [ "$_VERBOSE" = true ]; then
@@ -1060,12 +1063,25 @@ fi
 _VENV_ROLLBACK_DIR=""
 _VENV_ROLLBACK_TARGET="$VENV_DIR"
 _VENV_ROLLBACK_ACTIVE=false
+# Set when --no-rollback deleted the old environment, so a failure can say nothing is coming back.
+_NO_ROLLBACK_DISCARDED=false
 # The marker travels with the environment. See _record_uv_cache_choice.
 _UV_MARKER_SAVED=false
 _UV_MARKER_EXISTED=false
 _UV_MARKER_PREVIOUS=""
 # One flag for both rollbacks: two leave a window either way round, where a signal restores half a committed install.
 _STUDIO_INSTALL_COMMITTED=false
+
+# One line before the move: the previous environment stays on disk until the new one works, so a reinstall can need room for two. Sizes as du reports them, hardlinks counted every time, so this overstates a venv that shares wheels with uv's cache on this filesystem and is exact for one that does not. Warn only.
+_reinstall_disk_note() {  # venv dir
+    _venv_kb=$(du -sk "$1" 2>/dev/null | cut -f1)
+    _free_kb=$(df -Pk "$STUDIO_HOME" 2>/dev/null | awk 'NR == 2 { print $4 }')
+    case "$_venv_kb" in ''|*[!0-9]*) return 0 ;; esac
+    case "$_free_kb" in ''|*[!0-9]*) return 0 ;; esac
+    [ "$_free_kb" -lt "$_venv_kb" ] || return 0
+    echo "⚠️  The existing environment ($((_venv_kb / 1024)) MB) is kept until the new one works, and $STUDIO_HOME has $((_free_kb / 1024)) MB free." >&2
+    echo "   If uv cannot hardlink into its cache the reinstall needs the full size; set UNSLOTH_INSTALL_NO_ROLLBACK=1 to delete the old environment first." >&2
+}
 
 _start_studio_venv_replacement() {
     _existing_dir="$1"
@@ -1084,6 +1100,18 @@ _start_studio_venv_replacement() {
         _VENV_ROLLBACK_ACTIVE=false
         _VENV_ROLLBACK_DIR=""
         return 1
+    fi
+    if [ "${_NO_ROLLBACK:-false}" = true ]; then
+        # Opted out. The rename still took the whole tree or nothing; only the copy is not kept. State first, so a signal cannot restore a half-deleted tree.
+        _VENV_ROLLBACK_ACTIVE=false
+        _VENV_ROLLBACK_DIR=""
+        _NO_ROLLBACK_DISCARDED=true
+        if rm -rf "$_candidate"; then
+            substep "previous environment removed (--no-rollback)"
+        else
+            echo "⚠️  Could not remove the previous environment at $_candidate" >&2
+        fi
+        return 0
     fi
     substep "previous environment preserved for rollback"
 }
@@ -1124,7 +1152,13 @@ _discard_venv_for_recreate() {  # venv dir
 _restore_studio_venv_replacement() {
     # The flag the marker restore consults too, so a signal mid-commit cannot split them.
     [ "${_STUDIO_INSTALL_COMMITTED:-false}" = true ] && return 0
-    [ "$_VENV_ROLLBACK_ACTIVE" = true ] || return 0
+    if [ "$_VENV_ROLLBACK_ACTIVE" != true ]; then
+        if [ "${_NO_ROLLBACK_DISCARDED:-false}" = true ]; then
+            _NO_ROLLBACK_DISCARDED=false
+            echo "⚠️  No previous environment was kept (--no-rollback); re-run the installer to rebuild it." >&2
+        fi
+        return 0
+    fi
     # -e/-L, not -d: a rollback holds whatever _dir_has_entries called occupied, and -d would drop a file or a dangling link and strand the original.
     [ -n "$_VENV_ROLLBACK_DIR" ] \
         && { [ -e "$_VENV_ROLLBACK_DIR" ] || [ -L "$_VENV_ROLLBACK_DIR" ]; } || {
@@ -3496,6 +3530,7 @@ if [ -x "$VENV_DIR/bin/python" ] || _dir_has_entries "$VENV_DIR"; then
     [ -n "$_PREV_TORCH_VER" ] || _PREV_TORCH_VER=$(_run_bounded "$VENV_DIR/bin/python" -c \
         "import torch; print(torch.__version__)" 2>/dev/null | tail -n 1 || true)
     # New layout already exists — replace only after preserving rollback copy.
+    _reinstall_disk_note "$VENV_DIR"
     substep "preserving existing environment for rollback..."
     # A bare call still aborts under `set -e`, but shows only mv's own stderr. install.ps1 reports this step; say the same here and name the directory.
     if ! _start_studio_venv_replacement "$VENV_DIR"; then

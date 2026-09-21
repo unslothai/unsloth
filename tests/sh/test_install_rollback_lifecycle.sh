@@ -192,6 +192,50 @@ else
     bad "stale cleanup mutated a rollback symlink target"
 fi
 
+echo "=== install.sh --no-rollback ==="
+NR_DIR="$WORK/no-rollback"
+mkdir -p "$NR_DIR/unsloth_studio"
+printf 'old\n' > "$NR_DIR/unsloth_studio/generation"
+{
+    printf '%s\n' 'set -e'
+    printf '%s\n' 'substep() { :; }'
+    printf '%s\n' 'rollback_substep() { substep "$@"; }'
+    printf '%s\n' 'C_WARN=""'
+    printf '%s\n' '_NO_ROLLBACK=true'
+    printf "STUDIO_HOME='%s'\n" "$NR_DIR"
+    printf "VENV_DIR='%s/unsloth_studio'\n" "$NR_DIR"
+    printf '%s\n' "$ROLLBACK_BLOCK"
+    printf '%s\n' '_start_studio_venv_replacement "$VENV_DIR"'
+    printf '%s\n' '[ ! -e "$VENV_DIR" ] || exit 97'
+    printf '%s\n' 'mkdir -p "$VENV_DIR"'
+    printf '%s\n' 'printf "partial\n" > "$VENV_DIR/generation"'
+    printf '%s\n' 'exit 1'
+} > "$NR_DIR/harness.sh"
+set +e
+dash "$NR_DIR/harness.sh" >/dev/null 2>"$NR_DIR/stderr"
+_nr_status=$?
+set -e
+if [ "$_nr_status" = 1 ]; then
+    ok "--no-rollback removes the previous environment before the build"
+else
+    bad "--no-rollback did not remove the previous environment (exit $_nr_status)"
+fi
+if ! find "$NR_DIR" -maxdepth 1 -name 'unsloth_studio.rollback.*' -print -quit | grep -q .; then
+    ok "--no-rollback leaves no rollback copy"
+else
+    bad "--no-rollback left a rollback copy"
+fi
+if [ "$(cat "$NR_DIR/unsloth_studio/generation" 2>/dev/null)" = "partial" ]; then
+    ok "--no-rollback failure restores nothing"
+else
+    bad "--no-rollback failure restored something"
+fi
+if grep -q 'No previous environment was kept' "$NR_DIR/stderr"; then
+    ok "--no-rollback failure says nothing is coming back"
+else
+    bad "--no-rollback failure did not say nothing is coming back"
+fi
+
 echo "=== install.sh commits before the post-setup tail ==="
 # The environment is final once studio setup returns, so nothing in the wiring below it may
 # reach the exit trap that restores the previous environment.
