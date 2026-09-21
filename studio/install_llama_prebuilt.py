@@ -9147,7 +9147,10 @@ def installed_runtime_health(
 
 
 def _damaged_entrypoint(
-    install_dir: Path, host: HostInfo, *, selected_root_only: bool = False
+    install_dir: Path,
+    host: HostInfo,
+    *,
+    selected_root_only: bool = False,
 ) -> Path | None:
     """The first runtime entrypoint the loader would not start, or None.
 

@@ -735,7 +735,9 @@ def test_an_empty_windows_root_entrypoint_is_still_damage(tmp_path):
     empty root .exe IS what discovery selects. The non-executable escape above must not
     reach it."""
     root = _windows_tree(
-        tmp_path, _PUBLISHED_WINDOWS_PAYLOAD, marker = '{"release_tag": "b10840", "source": "published"}'
+        tmp_path,
+        _PUBLISHED_WINDOWS_PAYLOAD,
+        marker = '{"release_tag": "b10840", "source": "published"}',
     )
     (root / "llama-server.exe").write_bytes(b"")
     assert ILP.installed_runtime_health(root, host = _windows_host()) == (

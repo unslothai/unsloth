@@ -702,9 +702,7 @@ def test_the_cli_s_own_inferred_override_is_not_mistaken_for_a_user_pin(tmp_path
     assert active() is True
 
 
-def test_a_master_root_grades_the_runtime_beside_studio_not_the_one_under_it(
-    tmp_path, monkeypatch
-):
+def test_a_master_root_grades_the_runtime_beside_studio_not_the_one_under_it(tmp_path, monkeypatch):
     """Codex 4063404685, P1. `UNSLOTH_HOME=<master>` puts llama.cpp BESIDE studio/, and
     _ensure_studio_env_exported writes <master>/llama.cpp into UNSLOTH_LLAMA_CPP_PATH while
     UNSLOTH_STUDIO_HOME stays <master>/studio. default_managed_llama_dir reads only the
@@ -723,9 +721,9 @@ def test_a_master_root_grades_the_runtime_beside_studio_not_the_one_under_it(
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(master / "studio"))
     monkeypatch.setenv("UNSLOTH_LLAMA_CPP_PATH", str(managed))
     _stub_stored_selection(monkeypatch, None)
-    assert active() is True, (
-        "the exported <master>/llama.cpp is the tree this install owns, so it is graded"
-    )
+    assert (
+        active() is True
+    ), "the exported <master>/llama.cpp is the tree this install owns, so it is graded"
 
     # And the distinction survives: a pin somewhere else under the same master root is
     # still somebody's own, not ours to repair.
