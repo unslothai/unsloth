@@ -6283,6 +6283,9 @@ if ((Test-Path -LiteralPath $VenvDir -PathType Container) -and -not $NoTorchMode
     # Declared before the branch that assigns it: the failure message below reads its .Error, and
     # a venv with no python.exe never runs the probe at all.
     $_verProbe = $null
+    # Same, and for the same reason: the notice below reads it on a path the probe may
+    # never have run on.
+    $_probeBlockReason = $null
     # Whether a rescue arm has something to say. Said after the pin and family comparison
     # below, never inside the arm: that comparison can set PinChangedForceReinstall and
     # replace the wheels, so a notice printed in the arm told the user the environment was
@@ -6552,7 +6555,7 @@ if ((Test-Path -LiteralPath $VenvDir -PathType Container) -and -not $NoTorchMode
     $reason = $null
     # Declared here because the notice it feeds is emitted after the guards below, which are
     # what decide whether this rebuild is still a rebuild.
-    $_rebuildBlockReason = $null
+    $_noticePending = $false
     if ($shouldRebuild) {
         $reason = if ($installedTorchTag) { "torch $installedTorchTag != required $expectedTorchTag" } else { "torch could not be imported" }
         # "torch could not be imported" covers a dead GPU driver, a half-written wheel and no torch
@@ -6565,7 +6568,10 @@ if ((Test-Path -LiteralPath $VenvDir -PathType Container) -and -not $NoTorchMode
             $_probeErrLine = $_verProbe.Error -split "`r?`n" |
                 Where-Object { $_.Trim() } | Select-Object -Last 1
             if ($_probeErrLine) { substep "PyTorch reported: $($_probeErrLine.Trim())" "DarkGray" }
-            $_rebuildBlockReason = Get-CodeIntegrityBlockReason -Text (Get-ProbeFailureText -Probe $_verProbe)
+            # Not reclassified: it is the same probe the rescue arms read, and two
+            # classifications of one failure meant two notices on a rescued family the
+            # host comparison then called stale.
+            $_noticePending = [bool]$_probeBlockReason
         }
     }
 
@@ -6629,22 +6635,20 @@ if ((Test-Path -LiteralPath $VenvDir -PathType Container) -and -not $NoTorchMode
     # clear $shouldRebuild here both set $PinChangedForceReinstall, so "reinstall" is the only
     # other outcome (the nvidia-smi keep needs an $installedTorchTag, which a torch that did not
     # import never produced).
-    # Both notices are chosen here, where the repair path is finally known.
-    if ($_rescueNoticePending) {
-        # A pin or family change replaces the wheels with whatever this host resolves to,
-        # which is not "the same wheels in place", so it gets its own wording.
-        $_rescueAction = "kept"
-        if ($script:TorchImportDefinitivelyFailed) { $_rescueAction = "reinstall" }
-        if ($script:PinChangedForceReinstall) { $_rescueAction = "replace" }
-        Write-CodeIntegrityTorchNotice -Reason $_probeBlockReason -Action $_rescueAction
-    }
-
-    if ($_rebuildBlockReason) {
-        $_rebuildAction = "reinstall"
-        if ($shouldRebuild) { $_rebuildAction = "rebuild" }
-        # No family answered on this path (the three disk predicates all declined), so the
-        # wheel here may well be CPU-only.
-        Write-CodeIntegrityTorchNotice -Reason $_rebuildBlockReason -Action $_rebuildAction -GpuBuild $false
+    # ONE notice, chosen here, where the repair path is finally known. A rescued family the
+    # host comparison then calls stale reaches both paths, and two notices there contradicted
+    # each other ("kept as it is", then "reinstall the same wheels").
+    if ($_rescueNoticePending -or $_noticePending) {
+        # Last writer wins, in the order setup settles them: a rebuild outranks a pin change,
+        # which replaces the wheels with whatever this host resolves to rather than reinstalling
+        # the same ones, which outranks the in-place repair of a failed import.
+        $_noticeAction = "kept"
+        if ($script:TorchImportDefinitivelyFailed) { $_noticeAction = "reinstall" }
+        if ($script:PinChangedForceReinstall) { $_noticeAction = "replace" }
+        if ($shouldRebuild) { $_noticeAction = "rebuild" }
+        # Only the three rescue arms establish a family; the generic path is reached with a
+        # CPU-only wheel or none at all.
+        Write-CodeIntegrityTorchNotice -Reason $_probeBlockReason -Action $_noticeAction -GpuBuild $_rescueNoticePending
     }
 
     # Outside the rebuild branch: an install that moved a venv aside, failed to delete the copy and

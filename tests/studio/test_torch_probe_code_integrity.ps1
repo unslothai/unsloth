@@ -200,10 +200,10 @@ Check "an unknown action is refused rather than guessed" {
     try { Write-CodeIntegrityTorchNotice -Reason "x" -Action "wipe" } catch { $refused = $true }
     $refused
 }
-Check "the rescue notice is chosen after the pin and family comparison" {
+Check "the notice is chosen after the pin and family comparison" {
     # That comparison can set PinChangedForceReinstall and replace the wheels, so an
     # action decided in the arm said "kept" immediately before setup changed them.
-    $notice = $setupText.IndexOf('Write-CodeIntegrityTorchNotice -Reason $_probeBlockReason -Action $_rescueAction')
+    $notice = $setupText.IndexOf('Write-CodeIntegrityTorchNotice -Reason $_probeBlockReason -Action $_noticeAction')
     $lastPinSet = $setupText.LastIndexOf('$script:PinChangedForceReinstall = $true')
     ($notice -gt 0) -and ($lastPinSet -gt 0) -and ($notice -gt $lastPinSet)
 }
@@ -215,19 +215,19 @@ Check "a replaced environment is not described as kept or as the same wheels" {
     (-not $joined.Contains("kept as it is")) -and (-not $joined.Contains("the same wheels in place"))
 }
 Check "the pin change outranks the import repair when both fired" {
-    $setupText.Contains('if ($script:TorchImportDefinitivelyFailed) { $_rescueAction = "reinstall" }') -and
-    $setupText.Contains('if ($script:PinChangedForceReinstall) { $_rescueAction = "replace" }')
+    $setupText.IndexOf('if ($script:PinChangedForceReinstall) { $_noticeAction = "replace" }') -gt
+    $setupText.IndexOf('if ($script:TorchImportDefinitivelyFailed) { $_noticeAction = "reinstall" }')
 }
-Check "the rebuild notice is chosen after the guards that cancel the rebuild" {
-    # Those guards turn the rebuild into an in-place reinstall on every installer-managed run
-    # and every direct update, so a notice above them describes a path setup does not take.
-    $notice = $setupText.IndexOf('Write-CodeIntegrityTorchNotice -Reason $_rebuildBlockReason -Action $_rebuildAction')
-    $lastGuard = $setupText.LastIndexOf('$script:PinChangedForceReinstall = $true')
-    ($notice -gt 0) -and ($lastGuard -gt 0) -and ($notice -gt $lastGuard)
+Check "there is exactly one notice call site on the stale-venv path" {
+    # A family rescued off version.py that the host comparison then calls stale reaches
+    # both the rescue path and the rebuild path, and two notices contradicted each other.
+    ([regex]::Matches($setupText, [regex]::Escape('Write-CodeIntegrityTorchNotice -Reason $_probeBlockReason'))).Count -eq 1
 }
-Check "the rebuild notice says reinstall when the rebuild was cancelled" {
-    $setupText.Contains('$_rebuildAction = "reinstall"') -and
-    $setupText.Contains('if ($shouldRebuild) { $_rebuildAction = "rebuild" }')
+Check "the notice says rebuild only when the rebuild survived every guard" {
+    $setupText.Contains('if ($shouldRebuild) { $_noticeAction = "rebuild" }') -and
+    # Last writer wins, so the rebuild line has to come after the other two.
+    ($setupText.IndexOf('if ($shouldRebuild) { $_noticeAction = "rebuild" }') -gt
+     $setupText.IndexOf('if ($script:PinChangedForceReinstall) { $_noticeAction = "replace" }'))
 }
 
 # An exit code is the only thing a fail-fast leaves behind, so the classifier has to be fed it.
@@ -263,8 +263,10 @@ Check "the probe helper keeps the exit code instead of only reducing it to Ok" {
     $helper = Get-FunctionText -Path $setup -Name "Invoke-BoundedPythonProbe"
     $helper.Contains('ExitCode = $null') -and $helper.Contains('$result.ExitCode = $proc.ExitCode')
 }
-Check "both probe call sites classify the exit code, not stderr alone" {
-    ([regex]::Matches($setupText, [regex]::Escape('Get-CodeIntegrityBlockReason -Text (Get-ProbeFailureText -Probe $_verProbe)'))).Count -eq 2
+Check "the probe is classified once, from its exit code as well as stderr" {
+    # One classification for one failure: the rebuild path used to redo it, which is how
+    # a rescued family that later went stale ended up with two notices.
+    ([regex]::Matches($setupText, [regex]::Escape('Get-CodeIntegrityBlockReason -Text (Get-ProbeFailureText -Probe $_verProbe)'))).Count -eq 1
 }
 
 # The XPU and ROCm arms: ambiguous means a reinstall may clear it, and the notice says so, so
@@ -312,8 +314,10 @@ Check "a known GPU family still gets the GPU wording" {
     Write-CodeIntegrityTorchNotice -Reason "code integrity blocked the image" -Action "kept"
     ($script:said -join " ").Contains("holds a GPU build")
 }
-Check "the rebuild call site says the family is unknown" {
-    $setupText.Contains('-Action $_rebuildAction -GpuBuild $false')
+Check "only a rescued family gets the GPU wording" {
+    # The three rescue arms are the only place a family is established; the generic path
+    # is reached with a CPU-only wheel or none at all, and the flag carries exactly that.
+    $setupText.Contains('-Action $_noticeAction -GpuBuild $_rescueNoticePending')
 }
 
 # Which policy to send the user to, told apart the way the backend tells them apart.
