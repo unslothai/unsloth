@@ -453,3 +453,115 @@ def test_card_download_failure_does_not_overwrite_remote_card(saving, error):
         env["unsloth_generic_push_to_hub_merged"](FullModel(), "owner/model", create_pr = True)
     assert records["uploads"] == []
     assert not any(directory.exists() for directory in records["directories"])
+
+
+class Transformers5Model(FullModel):
+    def __init__(self):
+        self.saved = []
+
+    def save_pretrained(self, directory, **kwargs):
+        self.saved.append(kwargs)
+        super().save_pretrained(directory)
+
+    def push_to_hub(
+        self,
+        repo_id,
+        *,
+        commit_message = None,
+        commit_description = None,
+        private = None,
+        token = None,
+        revision = None,
+        create_pr = False,
+        max_shard_size = "50GB",
+        tags = None,
+    ):
+        raise AssertionError("Model files must join the single staged commit")
+
+
+class Tokenizer:
+    padding_side = "right"
+
+    def save_pretrained(self, directory):
+        assert self.padding_side == "left"
+        (Path(directory) / "tokenizer.json").write_text("{}")
+
+    def push_to_hub(self, *args, **kwargs):
+        raise AssertionError("Tokenizer files must join the single staged commit")
+
+
+def test_default_full_finetune_push_stages_one_commit(saving):
+    env, records, _ = saving
+    model, tokenizer = Transformers5Model(), Tokenizer()
+    env["unsloth_generic_push_to_hub_merged"](
+        model, "owner/model", tokenizer, token = "fixture", datasets = ["owner/data"]
+    )
+    assert len(records["uploads"]) == 1
+    upload = records["uploads"][0]
+    assert upload["repo_id"] == "owner/model"
+    assert upload["revision"] is None and upload["create_pr"] is False
+    assert set(upload["files"]) == {
+        "config.json",
+        "model.safetensors",
+        "tokenizer.json",
+        "README.md",
+    }
+    assert ModelCard(upload["files"]["README.md"]).data.datasets == ["owner/data"]
+    assert "state_dict" in model.saved[0] and model.saved[0]["safe_serialization"] is True
+    assert tokenizer.padding_side == "right"
+    assert records["merges"] == []
+
+
+def test_default_full_finetune_push_uploads_16bit_safetensors(monkeypatch):
+    pytest.importorskip("unsloth", reason = "unsloth is not importable on this runner")
+    try:
+        import unsloth.save as save
+    except ImportError as error:
+        pytest.skip(f"unsloth.save is not importable on this runner: {error}")
+    import torch
+    import transformers
+    from safetensors.torch import load_file
+
+    commits = []
+
+    class Api:
+        def __init__(self, token):
+            self.token = token
+
+        def create_repo(self, **kwargs):
+            pass
+
+        def create_commit(self, **kwargs):
+            commits.append(
+                {
+                    operation.path_in_repo: (
+                        load_file(operation.path_or_fileobj)
+                        if operation.path_in_repo.endswith(".safetensors")
+                        else None
+                    )
+                    for operation in kwargs["operations"]
+                }
+            )
+
+    def download(*args, **kwargs):
+        raise EntryNotFoundError("No README at destination")
+
+    monkeypatch.setattr(save, "HfApi", Api)
+    monkeypatch.setattr("huggingface_hub.hf_hub_download", download)
+    config = transformers.LlamaConfig(
+        vocab_size = 32,
+        hidden_size = 16,
+        intermediate_size = 32,
+        num_hidden_layers = 1,
+        num_attention_heads = 2,
+        num_key_value_heads = 2,
+    )
+    model = transformers.LlamaForCausalLM(config).float()
+    save.unsloth_generic_push_to_hub_merged(
+        model, "owner/model", token = "fixture", tags = ["fine-tuned"]
+    )
+    assert len(commits) == 1
+    assert {"config.json", "model.safetensors", "README.md"} <= set(commits[0])
+    target = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
+    assert {tensor.dtype for tensor in commits[0]["model.safetensors"].values()} == {target}
+    assert next(model.parameters()).dtype == torch.float32

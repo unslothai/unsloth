@@ -711,17 +711,6 @@ def _preserve_tokenizer_eos_token(
         )
 
 
-def _config_mtp_holders(config, key):
-    """Every config declaring the MTP layer count: `text_config` on Qwen3.5 multimodal, top level on text-only."""
-    holders = []
-    for candidate in (config, getattr(config, "text_config", None)):
-        if candidate is None:
-            continue
-        if key in getattr(candidate, "__dict__", {}):
-            holders.append(candidate)
-    return holders
-
-
 def _strip_absent_mtp_declaration(config_dict, tensor_names):
     """Drop `mtp_num_hidden_layers` from a config dict when the tensors carry no MTP weights. Never raises. "Has a head" comes from the zoo's `mtp_head_is_present`, so this and `reconcile_mtp_config` cannot disagree."""
     # Unknown is not empty: editing a declaration blind is never justified.
@@ -761,57 +750,6 @@ def _strip_absent_mtp_declaration(config_dict, tensor_names):
             f"Unsloth: Could not reconcile the multi-token prediction config: {error}"
         )
         return False
-
-
-@contextmanager
-def _mtp_config_matching_tensors(model, tensor_names):
-    """Drop `mtp_num_hidden_layers` for the duration of a save when the tensors carry no `mtp.*` weights, then put it back. Never raises: a metadata repair must not fail a save."""
-    # Recorded before anything is removed, so a partial failure still restores.
-    restore = []
-    try:
-        if tensor_names is not None:
-            try:
-                from unsloth_zoo.saving_utils import MTP_CONFIG_KEY, mtp_head_is_present
-            except ImportError:
-                MTP_CONFIG_KEY = None
-            if MTP_CONFIG_KEY is None:
-                tensor_names = None
-        if tensor_names is not None:
-            config = getattr(model, "config", None)
-            holders = _config_mtp_holders(config, MTP_CONFIG_KEY)
-            # Materialised once: the rule runs per holder, and this may be a generator.
-            tensor_names = list(tensor_names)
-            # Against the LIVE config, so the extra-`layers.N` spelling is seen.
-            if holders and not any(
-                mtp_head_is_present(tensor_names, config, holder) for holder in holders
-            ):
-                for holder in holders:
-                    restore.append((holder, MTP_CONFIG_KEY, getattr(holder, MTP_CONFIG_KEY)))
-                    delattr(holder, MTP_CONFIG_KEY)
-                if restore:
-                    logger.warning_once(
-                        f"Unsloth: This checkpoint declares `{MTP_CONFIG_KEY}` but "
-                        f"the weights being exported carry no `mtp.*` tensors, so "
-                        f"the declaration is omitted from the exported config. "
-                        f"transformers does not load the multi-token prediction "
-                        f"head, so a merge or re-save cannot preserve it. The "
-                        f"export is otherwise complete and serves normally "
-                        f"without speculative decoding."
-                    )
-    except Exception as error:
-        logger.warning_once(
-            f"Unsloth: Could not reconcile the multi-token prediction config "
-            f"before saving: {error}"
-        )
-    try:
-        yield
-    finally:
-        # No import here: an exception from a finally block would mask the save's own.
-        for holder, key, value in restore:
-            try:
-                setattr(holder, key, value)
-            except Exception:
-                pass
 
 
 def _is_qwen3_5_vlm(model):
@@ -5472,7 +5410,7 @@ def unsloth_generic_save(
     # this function's own keywords.
     safe_serialization = _normalize_safe_serialization(safe_serialization)
 
-    if push_to_hub and (create_pr or revision is not None):
+    if push_to_hub and (create_pr or revision is not None or not isinstance(model, PeftModel)):
         return _push_merged_to_hub_revision(dict(locals()))
 
     if isinstance(tokenizer, (PreTrainedTokenizerBase, ProcessorMixin)):
@@ -5509,64 +5447,20 @@ def unsloth_generic_save(
         if state_dict is not None:
             _save_kwargs["state_dict"] = state_dict
 
-        if push_to_hub:
-            # A push has no local folder to repair afterwards, unlike a save, so the config
-            # has to match the tensors BEFORE they leave. Inside this branch, because that is
-            # the only consumer: a local save reconciles the written folder below, and reading
-            # the resident state dict for it was a second full collection on top of
-            # save_pretrained's own -- which on an offloaded or sharded model materialises
-            # every weight, and on a distributed one is a collective the other ranks are not
-            # making.
-            if state_dict is not None:
-                _mtp_tensor_names = list(state_dict.keys())
-            else:
-                # push_to_hub serialises the resident state dict, so None disarms the guard.
-                try:
-                    _mtp_tensor_names = list(model.state_dict().keys())
-                except Exception:
-                    # Cannot report its tensors: leave the config exactly as the caller had it.
-                    _mtp_tensor_names = None
-            print(f"Unsloth: Pushing full fine-tuned model to '{save_directory}' ...")
-            with _mtp_config_matching_tensors(model, _mtp_tensor_names):
-                model.push_to_hub(
-                    repo_id = save_directory,
-                    token = token,
-                    private = private,
-                    commit_message = commit_message,
-                    create_pr = create_pr,
-                    revision = revision,
-                    commit_description = commit_description,
-                    tags = tags,
-                    **_save_kwargs,
-                )
-            if tokenizer is not None:
-                _tokenizer = tokenizer.tokenizer if hasattr(tokenizer, "tokenizer") else tokenizer
-                old_padding_side = _tokenizer.padding_side
-                _tokenizer.padding_side = "left"
-                tokenizer.push_to_hub(
-                    save_directory,
-                    token = token,
-                    private = private,
-                    commit_message = commit_message,
-                    create_pr = create_pr,
-                    revision = revision,
-                )
-                _tokenizer.padding_side = old_padding_side
-        else:
-            print(f"Unsloth: Saving full fine-tuned model to '{save_directory}' ...")
-            model.save_pretrained(save_directory, **_save_kwargs)
-            # Guarded: an older zoo must not raise once the weights are already on disk.
-            try:
-                from unsloth_zoo.saving_utils import reconcile_mtp_config
-                reconcile_mtp_config(save_directory)
-            except ImportError:
-                pass
-            if tokenizer is not None:
-                _tokenizer = tokenizer.tokenizer if hasattr(tokenizer, "tokenizer") else tokenizer
-                old_padding_side = _tokenizer.padding_side
-                _tokenizer.padding_side = "left"
-                tokenizer.save_pretrained(save_directory)
-                _tokenizer.padding_side = old_padding_side
+        print(f"Unsloth: Saving full fine-tuned model to '{save_directory}' ...")
+        model.save_pretrained(save_directory, **_save_kwargs)
+        # Guarded: an older zoo must not raise once the weights are already on disk.
+        try:
+            from unsloth_zoo.saving_utils import reconcile_mtp_config
+            reconcile_mtp_config(save_directory)
+        except ImportError:
+            pass
+        if tokenizer is not None:
+            _tokenizer = tokenizer.tokenizer if hasattr(tokenizer, "tokenizer") else tokenizer
+            old_padding_side = _tokenizer.padding_side
+            _tokenizer.padding_side = "left"
+            tokenizer.save_pretrained(save_directory)
+            _tokenizer.padding_side = old_padding_side
 
         print(f"Unsloth: Model saved successfully to '{save_directory}'")
     elif _is_adapter_save_method(save_method):
