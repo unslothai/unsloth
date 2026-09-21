@@ -852,6 +852,31 @@ def test_chat_sidebar_rows_are_compact_without_vertical_padding():
     assert 'variant === "project" ? "pl-[39px]" : "pl-3"' in block
 
 
+def _cn_arguments(body: str) -> list[str]:
+    """`body` split on top-level commas, ignoring those inside brackets or strings."""
+    parts, depth, quoted, current = [], 0, False, []
+    for char in body:
+        if quoted:
+            current.append(char)
+            if char == '"':
+                quoted = False
+            continue
+        if char == '"':
+            quoted = True
+        elif char in "([{":
+            depth += 1
+        elif char in ")]}":
+            depth -= 1
+        elif char == "," and depth == 0:
+            parts.append("".join(current))
+            current = []
+            continue
+        current.append(char)
+    if current:
+        parts.append("".join(current))
+    return [part for part in parts if part.strip()]
+
+
 def test_chat_sidebar_row_actions_visible_on_coarse_pointers():
     """unslothai/unsloth#7276: Recents chat kebab must be tappable on iPad."""
     sidebar_source = APP_SIDEBAR.read_text(encoding = "utf-8")
@@ -915,11 +940,26 @@ def test_chat_sidebar_row_actions_visible_on_coarse_pointers():
                     closes = index
                     break
         assert closes is not None, f"unbalanced cn() around the {variant} row classes"
-        applicable = [
-            cls
-            for cls in re.findall(r'"[^"]*"', block[opens:closes])
-            if variant in cls or not any(other in cls for other in others)
-        ]
+        # Conditional arguments do not count for anything but themselves. The row's own class
+        # string sits inside a ternary branch, so refusing conditionals outright would refuse
+        # the real thing; but a DIFFERENT conditional argument, `showWorkSpinner && "..."`,
+        # applies only when its condition holds and is absent precisely in the branch that
+        # carries the hover gutter. Only a bare string literal argument is unconditional, and
+        # only those may vouch for a row other than the one they are written in.
+        arguments = _cn_arguments(block[opens + len("cn(") : closes])
+        applicable = []
+        for argument in arguments:
+            literal = re.fullmatch(r'\s*("[^"]*")\s*', argument)
+            if literal is None:
+                # Conditional or computed: usable only as the row's own class string.
+                for quoted in re.findall(r'"[^"]*"', argument):
+                    if quoted == hovered[-1]:
+                        applicable.append(quoted)
+                continue
+            cls = literal.group(1)
+            if variant in cls or not any(other in cls for other in others):
+                applicable.append(cls)
+        applicable.extend(cls for cls in hovered if cls not in applicable)
         trailing = [
             int(value)
             for cls in applicable

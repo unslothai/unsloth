@@ -74,15 +74,57 @@ def _class_list(source: str, marker: str) -> str | None:
     expression = re.search(r"className=\{", opening)
     if not expression:
         return None
-    body = opening[expression.end() :]
-    # A conditional picks ONE branch, and concatenating both then resolving last-wins reads
-    # the wrong one: `wide ? "min-w-max" : "min-w-0"` flattens to a list ending in min-w-0
-    # and looks fine, while the `wide` branch renders min-w-max. Reading each branch
-    # separately is a real expression evaluator; saying so is not.
-    if "?" in re.sub(r'"[^"]*"', "", body):
+    # Only the className expression, closed by its own brace. Reading to the end of the tag
+    # swept up quoted strings belonging to later attributes and called them classes.
+    depth, body = 1, None
+    for index in range(expression.end(), len(opening)):
+        if opening[index] == "{":
+            depth += 1
+        elif opening[index] == "}":
+            depth -= 1
+            if depth == 0:
+                body = opening[expression.end() : index]
+                break
+    if body is None:
         return _UNREADABLE
-    pieces = re.findall(r'"([^"]*)"', body)
-    return " ".join(pieces) if pieces else _UNREADABLE
+    # Strip a single cn(...) wrapper, then require every argument to be a plain string
+    # literal. Anything else is a value this reader cannot evaluate: a conditional picks one
+    # branch and flattening both reads the wrong one, and a bare identifier could be
+    # anything at all. Either way the honest answer is that the class list is unknown, not
+    # that it is whatever literals happen to be lying around.
+    body = body.strip()
+    wrapper = re.fullmatch(r"cn\((.*)\)", body, re.S)
+    if wrapper:
+        body = wrapper.group(1)
+    arguments = [part.strip() for part in _split_arguments(body)]
+    if not arguments or any(not re.fullmatch(r'"[^"]*"', part) for part in arguments):
+        return _UNREADABLE
+    return " ".join(part[1:-1] for part in arguments)
+
+
+def _split_arguments(body: str) -> list[str]:
+    """`body` split on top-level commas, ignoring those inside brackets or strings."""
+    parts, depth, quoted, current = [], 0, False, []
+    for char in body:
+        if quoted:
+            current.append(char)
+            if char == '"':
+                quoted = False
+            continue
+        if char == '"':
+            quoted = True
+        elif char in "([{":
+            depth += 1
+        elif char in ")]}":
+            depth -= 1
+        elif char == "," and depth == 0:
+            parts.append("".join(current))
+            current = []
+            continue
+        current.append(char)
+    if current:
+        parts.append("".join(current))
+    return [part for part in parts if part.strip()]
 
 
 def _effective_widths(tokens: list[str]) -> dict[str, str]:
@@ -285,7 +327,12 @@ def test_reasoning_keeps_streaming_height_cap_through_automatic_collapse():
     # the height cap; the same OR on a sibling reads identically here and caps nothing.
     text_element = re.search(r"<ReasoningText\b[^>]*>", src, re.S)
     assert text_element, "ReasoningText is no longer rendered, so nothing here caps the height"
-    assert re.search(r"streaming=\{\w+ \|\| retainStreamingHeight\}", text_element.group(0)), (
+    # The left operand has to be the component's own streaming input. `\w+` accepted any
+    # identifier, so `streaming={somethingElse || retainStreamingHeight}` passed while an
+    # actively streaming block went uncapped whenever the retained flag was false.
+    assert re.search(
+        r"streaming=\{isStreaming \|\| retainStreamingHeight\}", text_element.group(0)
+    ), (
         f"ReasoningText's streaming prop no longer ORs in retainStreamingHeight, so the block "
         f"collapses to its idle height the moment streaming stops, which is the jump this "
         f"test exists for: {text_element.group(0)!r}"
