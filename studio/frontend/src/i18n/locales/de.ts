@@ -1567,11 +1567,6 @@ export const de = {
         "Eingefügter Text ab {count} Zeichen wird als .txt-Datei angehängt. Kürzerer Text bleibt im Nachrichtenfeld.",
       pastedTextOffDescription:
         "Eingefügter Text bleibt unabhängig von seiner Länge im Nachrichtenfeld.",
-      compactionDescriptionInherit: "Folgt der Kontextrichtlinie des Servers.",
-      compactionDescriptionCheckpoint:
-        "Behält den letzten Austausch und so viele der dauerhaft geltenden Anweisungen bei, wie hineinpassen, und archiviert den Rest zum Nachschlagen.",
-      compactionDescriptionRolling:
-        "Archiviert die ältesten Gesprächsrunden und behält neuere Inhalte mit dem gewählten zusätzlichen Freiraum.",
       projectsSection: "Projektbereich anzeigen",
       projectsSectionDescription:
         "Gruppiert Projekt-Chats unter einer Überschrift für Projekte. Deaktiviere dies, um sie stattdessen unter den zuletzt verwendeten Chats aufzulisten.",
@@ -1619,19 +1614,6 @@ export const de = {
       autoCompact: "Lange Chats automatisch komprimieren",
       autoCompactDescription:
         "Ältere Runden wandern in ein durchsuchbares Archiv, wenn ein Chat voll läuft.",
-      compactionStyle: "Wenn der Kontext voll ist",
-      compactionStyleDescription:
-        "Die Servervorgabe behält UNSLOTH_CONTEXT_POLICY bei. Gespräch zurücksetzen behält die letzte Runde und so viele dauerhafte Anweisungen, wie hineinpassen. Ein gleitendes Fenster verwirft die ältesten Runden und kann mehr aktuellen Verlauf behalten.",
-      compactionStyleInherit: "Servervorgabe verwenden",
-      compactionStyleCheckpoint: "Gespräch zurücksetzen",
-      compactionStyleRollingDefault:
-        "Älteste Runden archivieren (~25 % zusätzlicher Platz)",
-      compactionStyleRolling10:
-        "Älteste Runden archivieren (~10 % zusätzlicher Platz)",
-      compactionStyleRolling5:
-        "Älteste Runden archivieren (~5 % zusätzlicher Platz)",
-      compactionStyleRollingNone:
-        "Älteste Runden archivieren (keine zusätzliche Kürzung)",
       autoCompactKeywords:
         "Komprimierung automatisch Kontext Fenster kürzen gleitend Prüfpunkt Reserve Archiv Abruf Suche compaction rolling checkpoint headroom archive retrieval rag",
       thinking: {
