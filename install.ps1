@@ -4136,20 +4136,40 @@ exit 1
         return $Text -replace '(https?://[^\s`#]+)#[^\s`]+', '$1#<redacted>'
     }
 
+    # True when the operator asked for their pip/uv policy to be left in force. Mirrors
+    # _respect_pm_policy() in studio/install_python_stack.py and install.sh, including its
+    # set, so the same variable means the same thing at every entry point. A hand-maintained
+    # duplicate of studio/setup.ps1's copy, like the UNSLOTH_ENABLE_AMD_SMI pair: this sits
+    # OUTSIDE the shared block above, so it is not under the sync script's contract.
+    function Test-RespectPmPolicy {
+        $value = [string][Environment]::GetEnvironmentVariable('UNSLOTH_RESPECT_PM_POLICY')
+        return (@('1', 'true', 'yes', 'on') -contains $value.Trim().ToLowerInvariant())
+    }
+
     function Invoke-InstallCommand {
         param(
             [Parameter(Mandatory = $true)][ScriptBlock]$Command,
             [string]$Label = "install command"
         )
         # A pinned index must beat an inherited uv mirror (#6898); UV_NO_CONFIG=1 blocks uv.toml.
+        # This runs before install_python_stack.py, so the Python side's opt-out cannot cover
+        # it: under the opt-out keep UV_CONFIG_FILE, UV_NO_CONFIG and UV_FIND_LINKS so the
+        # operator's uv.toml binds the pinned install too. The ADDITIVE ones still go.
+        $respectPolicy = Test-RespectPmPolicy
         $savedUvIndex = $null
         if ($Command.ToString() -match '--default-index') {
             $savedUvIndex = @{}
-            foreach ($n in 'UV_DEFAULT_INDEX', 'UV_INDEX_URL', 'UV_INDEX', 'UV_EXTRA_INDEX_URL', 'UV_TORCH_BACKEND', 'UV_FIND_LINKS', 'UV_CONFIG_FILE', 'UV_NO_CONFIG') {
+            $scrub = @('UV_DEFAULT_INDEX', 'UV_INDEX_URL', 'UV_INDEX', 'UV_EXTRA_INDEX_URL', 'UV_TORCH_BACKEND', 'UV_FIND_LINKS', 'UV_CONFIG_FILE', 'UV_NO_CONFIG')
+            if ($respectPolicy) {
+                $scrub = @($scrub | Where-Object {
+                    @('UV_CONFIG_FILE', 'UV_NO_CONFIG', 'UV_FIND_LINKS') -notcontains $_
+                })
+            }
+            foreach ($n in $scrub) {
                 $savedUvIndex[$n] = [Environment]::GetEnvironmentVariable($n)
                 Remove-Item "Env:$n" -ErrorAction SilentlyContinue
             }
-            $env:UV_NO_CONFIG = '1'
+            if (-not $respectPolicy) { $env:UV_NO_CONFIG = '1' }
         }
         $prevEap = $ErrorActionPreference
         $ErrorActionPreference = "Continue"
@@ -4191,7 +4211,10 @@ exit 1
         } finally {
             $ErrorActionPreference = $prevEap
             if ($savedUvIndex) {
-                Remove-Item "Env:UV_NO_CONFIG" -ErrorAction SilentlyContinue
+                # Only clear what this function SET: under the opt-out UV_NO_CONFIG was
+                # neither saved nor overwritten, so removing it would destroy the
+                # operator's own value for the rest of the run.
+                if (-not $respectPolicy) { Remove-Item "Env:UV_NO_CONFIG" -ErrorAction SilentlyContinue }
                 foreach ($n in $savedUvIndex.Keys) { if ($null -ne $savedUvIndex[$n]) { Set-Item "Env:$n" $savedUvIndex[$n] } }
             }
         }

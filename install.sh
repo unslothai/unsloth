@@ -206,12 +206,53 @@ _uv_download_markers() {
     '
 }
 
+# True when the operator asked for their pip/uv policy to be left in force. Mirrors
+# _respect_pm_policy() in studio/install_python_stack.py, including its set AND its
+# .strip(), so the same variable means the same thing at every entry point. A variable that
+# means one thing to the shell and another to Python is worse than no gate: the shell half
+# would relax the policy while the Python half withheld, and the operator would get neither
+# the opt-out nor a clean default. `export UNSLOTH_RESPECT_PM_POLICY=" 1 "` pads it exactly,
+# and a CRLF .env or a YAML CI cell yields "1\r" routinely.
+#
+# TRIM, not "delete every space": `tr -d` collapses INTERNAL whitespace too, so "t rue"
+# would read as the true spelling here while Python's .strip() leaves it as any other
+# unrecognised value. An allowlist, so an unrecognised value reads as off on both.
+#
+# The first tr maps every other whitespace character to a space rather than deleting it,
+# because sed works a LINE at a time and cannot trim across a newline: "\n1" survived
+# `s/^[[:space:]]*//` intact and read as off while Python's .strip() made it "1", on.
+# Mapping cannot create a false positive -- no allowlist entry contains a space, so
+# "o\nn" becomes "o n" and stays off on both sides, as it must.
+_respect_pm_policy() {
+    # Unset or empty is the answer for everyone who has not opted in, so decide it here
+    # rather than paying subprocesses per pinned install to reach the same conclusion.
+    # The default path then does exactly the work it did before.
+    case "${UNSLOTH_RESPECT_PM_POLICY:-}" in
+        "") return 1 ;;
+    esac
+    case "$(printf '%s' "$UNSLOTH_RESPECT_PM_POLICY" | tr '\n\r\t\013\014' '     ' | tr '[:upper:]' '[:lower:]' | sed 's/^ *//; s/ *$//')" in
+        1|true|yes|on) return 0 ;;
+    esac
+    return 1
+}
+
 run_install_cmd() {
     _label="$1"
     shift
     # For --default-index, clear inherited uv index vars so a uv.toml cannot outrank the CLI pin.
+    # This runs before install_python_stack.py, so the Python side's opt-out cannot cover it:
+    # keep UV_CONFIG_FILE and uv's config discovery when the operator asked for their uv.toml
+    # to bind this install too, and UV_FIND_LINKS with them, since a uv.toml `no-index` makes
+    # the wheelhouse the only source uv is allowed. The ADDITIVE index variables still go --
+    # the pin is itself a provenance control (#6898).
     case " $* " in
-        *" --default-index "*) set -- env -u UV_DEFAULT_INDEX -u UV_INDEX_URL -u UV_INDEX -u UV_EXTRA_INDEX_URL -u UV_TORCH_BACKEND -u UV_FIND_LINKS -u UV_CONFIG_FILE UV_NO_CONFIG=1 "$@" ;;
+        *" --default-index "*)
+            if _respect_pm_policy; then
+                set -- env -u UV_DEFAULT_INDEX -u UV_INDEX_URL -u UV_INDEX -u UV_EXTRA_INDEX_URL -u UV_TORCH_BACKEND "$@"
+            else
+                set -- env -u UV_DEFAULT_INDEX -u UV_INDEX_URL -u UV_INDEX -u UV_EXTRA_INDEX_URL -u UV_TORCH_BACKEND -u UV_FIND_LINKS -u UV_CONFIG_FILE UV_NO_CONFIG=1 "$@"
+            fi
+            ;;
     esac
     if _is_verbose; then
         # Stream through the redactor; the rc file carries the exit code (no pipefail in sh).

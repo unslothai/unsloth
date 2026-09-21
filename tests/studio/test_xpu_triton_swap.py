@@ -26,6 +26,7 @@ import subprocess
 import sys
 import types
 from pathlib import Path
+from unittest import mock
 
 import pytest
 
@@ -66,6 +67,11 @@ def _load_real_index_env_scrub():
     }
     for anchor, end, keep in (
         ("_UV_INDEX_ENV_VARS = (", "\n)\n", 2),
+        # The opt-out, which _install_env_for_cmd now asks before it scrubs. Both halves:
+        # the predicate reads the constant, so extracting the function alone is a
+        # NameError at call time rather than at exec time.
+        ("_POLICY_OPT_OUT_ENV = ", "\n", 1),
+        ("def _respect_pm_policy(", "\n\ndef ", 0),
         # Resolved from this namespace at CALL time, so an omission is a NameError later.
         ("_PM_HASH_ENV_VARS = (", "\n)\n", 2),
         ("_PM_FORCE_SOURCE_ENV_VARS = (", "\n)\n", 2),
@@ -96,10 +102,18 @@ def _load_real_index_env_scrub():
     # Execute it once: a missing dependency here is otherwise an inert scrub that passes.
     parsed = ns["_parse_pinned_pip_config"](b"global.cert='/etc/corp/ca.pem'\n")
     assert parsed == {"PIP_CERT": "/etc/corp/ca.pem"}, f"extraction is inert: {parsed}"
-    return ns["_install_env_for_cmd"]
+    # Exercise the opt-out too, for the same reason: a predicate that always answers False
+    # would let every decline test pass by never being asked.
+    with mock.patch.dict(os.environ, {ns["_POLICY_OPT_OUT_ENV"]: "1"}):
+        assert ns["_respect_pm_policy"](), "the opt-out predicate is inert"
+    return ns["_install_env_for_cmd"], ns["_respect_pm_policy"], ns["_POLICY_OPT_OUT_ENV"]
 
 
-_real_install_env_for_cmd = _load_real_index_env_scrub()
+(
+    _real_install_env_for_cmd,
+    _real_respect_pm_policy,
+    _POLICY_OPT_OUT_ENV,
+) = _load_real_index_env_scrub()
 
 
 def _load(
@@ -227,6 +241,10 @@ def _load(
         "IS_WINDOWS": False,
         "_PYTORCH_WHL_BASE": "https://download.pytorch.org/whl",
         "_install_env_for_cmd": _real_install_env_for_cmd,
+        # The real predicate, not a stub: a decline test is only worth anything if the
+        # thing deciding is the code that ships.
+        "_respect_pm_policy": _real_respect_pm_policy,
+        "_POLICY_OPT_OUT_ENV": _POLICY_OPT_OUT_ENV,
         "_explicit_xpu_torch_index_url": (
             (lambda: "https://download.pytorch.org/whl/xpu") if pinned else (lambda: None)
         ),
@@ -244,8 +262,15 @@ def _load(
         ),
         # _safe_print, not print: the slice calls it by name, so stubbing "print" would leave _safe_print undefined at
         # exec time.
+        # The policy decline is recorded by NAME rather than by the phrase: it spells the outcome "leaving it in place",
+        # so "left in place" alone read it as no warning at all, while widening that literal to "in place" would also
+        # start recording the failed-uninstall warning, whose log the order assertions read exactly.
         "_safe_print": (
-            lambda *a, **k: log.append("WARN") if a and "left in place" in str(a[0]) else None
+            lambda *a, **k: (
+                log.append("WARN")
+                if a and ("left in place" in str(a[0]) or _POLICY_OPT_OUT_ENV in str(a[0]))
+                else None
+            )
         ),
     }
     exec(compile(body, str(STACK), "exec"), ns)
@@ -480,6 +505,89 @@ class TestTheFetchIgnoresTheUsersIndexEnvironment:
         mod.__dict__["_ensure_xpu_triton"]()
         env = mod.__dict__["_test_download_envs"][0]
         assert env["HTTPS_PROXY"] == "http://proxy.internal:8080"
+
+
+class TestThePolicyOptOutDeclinesTheSwap:
+    """UNSLOTH_RESPECT_PM_POLICY=1 skips the swap whole, before anything is touched.
+
+    The swap uninstalls generic triton and installs a wheel fetched from the pinned index,
+    and there is no expected hash to check that wheel against: hashing the artifact we just
+    fetched and handing the digest back approves it with itself. So on a host whose operator
+    has declined the installer's policy overrides, the swap is skipped rather than half
+    done. Skipped WHOLE, not "fetch and then stop": generic triton stays, which costs an
+    Intel host torch.compile on the XPU, where a venv with no triton at all is a state no
+    rerun could repair.
+
+    The guard's placement is the load-bearing part, and placement is only assertable by
+    execution. It sits ABOVE _ensure_venv_pip(), which runs ensurepip and can pip install
+    pip into a seedless venv: two steps a hash policy would refuse, and two mutations. A
+    decline that has already changed the venv is not a decline. It is above the "replacing
+    triton" line too, so the operator is not told the swap is happening and then told it is
+    not.
+    """
+
+    SWAP = {"spec": "pytorch-triton-xpu==3.5.0", "generic": "3.7.1"}
+
+    def test_the_swap_declines_and_touches_nothing(self, monkeypatch, tmp_path):
+        monkeypatch.setenv(_POLICY_OPT_OUT_ENV, "1")
+        mod, log = _load(monkeypatch, tmp_path, **self.SWAP)
+        mod.__dict__["_ensure_xpu_triton"]()
+        assert log == ["WARN"], "the decline must warn and do nothing else"
+        for action in ("DOWNLOAD", "UNINSTALL", "INSTALL"):
+            assert action not in log
+        # Nothing moved, so the pass's final pip check has nothing to report either.
+        assert mod.__dict__["_test_counted"] == []
+        assert mod.__dict__["_test_download_envs"] == []
+
+    @pytest.mark.parametrize("ensurepip_works", [True, False])
+    def test_the_pip_bootstrap_is_never_reached(self, monkeypatch, tmp_path, ensurepip_works):
+        """The reason the guard sits above _ensure_venv_pip() rather than below it.
+
+        `uv venv` is created without --seed, so this is the ordinary fresh-venv state, not
+        a corner: has_pip=False means the bootstrap WOULD run. Both ensurepip outcomes,
+        because the fallback `pip install pip` is the second mutation and a guard placed
+        between the two would still pass a test that only watched ensurepip.
+        """
+        monkeypatch.setenv(_POLICY_OPT_OUT_ENV, "1")
+        log = _run(
+            monkeypatch,
+            tmp_path,
+            has_pip = False,
+            ensurepip_works = ensurepip_works,
+            **self.SWAP,
+        )
+        assert "ENSUREPIP" not in log, "ensurepip ran: the decline mutated a seedless venv"
+        assert "BOOTSTRAP" not in log, "pip was installed before the swap declined"
+        assert log == ["WARN"]
+
+    def test_without_the_opt_out_the_same_scenario_still_swaps(self, monkeypatch, tmp_path):
+        """The negative control. Every assertion above is satisfied for free by a swap that
+        never triggers, so the identical call without the variable has to do the work."""
+        monkeypatch.delenv(_POLICY_OPT_OUT_ENV, raising = False)
+        assert _run(monkeypatch, tmp_path, **self.SWAP) == ["DOWNLOAD", "UNINSTALL", "INSTALL"]
+
+    def test_without_the_opt_out_the_seedless_venv_is_still_bootstrapped(
+        self, monkeypatch, tmp_path
+    ):
+        """The other half of the control: the very steps test_the_pip_bootstrap_is_never
+        _reached asserts are absent do happen on the same scenario with the variable unset,
+        so that test is watching a bootstrap that would otherwise have run."""
+        monkeypatch.delenv(_POLICY_OPT_OUT_ENV, raising = False)
+        log = _run(monkeypatch, tmp_path, has_pip = False, **self.SWAP)
+        assert log[0] == "ENSUREPIP"
+        assert log[-3:] == ["DOWNLOAD", "UNINSTALL", "INSTALL"]
+
+    @pytest.mark.parametrize(
+        "value, declines",
+        [("1", True), ("on", True), ("TRUE", True), ("0", False), ("garbage", False)],
+    )
+    def test_the_boolish_set_is_the_modules_own(self, monkeypatch, tmp_path, value, declines):
+        """One variable, one answer, across install.sh, install.ps1, setup.ps1 and here.
+        An unrecognised value reads as OFF deliberately, so a typo takes the swap rather
+        than silently leaving an Intel host with torch.compile off the XPU."""
+        monkeypatch.setenv(_POLICY_OPT_OUT_ENV, value)
+        log = _run(monkeypatch, tmp_path, **self.SWAP)
+        assert (log == ["WARN"]) is declines, log
 
 
 class TestADeadDriverIsNotAFlavourMismatch:
