@@ -1066,6 +1066,29 @@ def test_the_windows_setup_records_the_master_root_for_the_uninstaller():
     assert "[System.IO.File]::Move(" not in block
 
 
+def test_the_refused_windows_cache_path_is_taken_away_on_upgrade():
+    """Declining to write a value is not enough: the old one is already persisted.
+
+    Every setup before the refusal existed sent an apostrophe-named account's contained path
+    straight to $TorchCacheDir and wrote it to the USER environment, so on an upgrade the value is
+    sitting there and this process inherited it. _setup_cache_env honours any inherited value as
+    the caller's own choice and never applies its per-account rule, which would leave the one
+    account this branch exists for as the one account the backend never gets to help. So the
+    refusal has to clear both copies, and only when the value is one the builders cannot read: a
+    parseable path is somebody's decision. The process half is exercised under pwsh in
+    tests/studio/; the USER half is Windows-only and is held to its shape here.
+    """
+    ps = SETUP_PS1.read_text(encoding = "utf-8")
+    block = _slice(ps, "if (-not $TorchCacheDir) {", "if ($TorchCacheDir) {")
+    code = "\n".join(line for line in block.splitlines() if not line.lstrip().startswith("#"))
+    assert "GetEnvironmentVariable('TORCHINDUCTOR_CACHE_DIR', 'User')" in code, code
+    assert "[NullString]::Value, 'User'" in code, code
+    assert "Remove-Item -LiteralPath Env:TORCHINDUCTOR_CACHE_DIR" in code, code
+    # Guarded on the same characters the refusal itself uses, both times. An unguarded clear
+    # would throw away a directory the user chose on purpose.
+    assert code.count("-match '[\\s'']'") == 2, code
+
+
 def test_the_windows_uninstaller_clears_the_inductor_path_it_persisted():
     """setup.ps1 writes TORCHINDUCTOR_CACHE_DIR to the USER environment, so it outlives the
     install. Every later PyTorch process on the account inherits it, including ones unrelated to
