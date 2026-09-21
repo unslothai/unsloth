@@ -9154,7 +9154,9 @@ def _alias_probe_settle(identifier: str, answered_state = None) -> None:
         if key not in _alias_probe_inflight:
             return
         state = _alias_probe_index_state()
-        if answered_state is not None and answered_state != state:
+        # Sliced: the state carries the pass's completeness verdict too, which the caller
+        # reads for ITSELF and which is not part of a marker's identity.
+        if answered_state is not None and tuple(answered_state[:2]) != state:
             _alias_probe_release_locked(key)
             return
         # The whole entry: the answer is established now, so a request still mid-pass on
@@ -9774,7 +9776,6 @@ async def _maybe_auto_switch_model(
     )
     from core.inference.local_model_resolver import (
         index_answer_is_trustworthy,
-        index_last_scan_was_complete,
         index_scan_stamp,
         local_gguf_companion_roots,
         local_gguf_companion_state,
@@ -9958,7 +9959,10 @@ async def _maybe_auto_switch_model(
             scan_stamp_after = alias_probe_state[1] if alias_probe_state else 0.0
             alias_probe_answered = (
                 resolved is None
-                and index_last_scan_was_complete()
+                # From the same state as the stamp: read separately, a warmer replacing
+                # an incomplete snapshot with a complete one lets this pass's miss be
+                # paired with the next pass's verdict.
+                and bool(alias_probe_state and alias_probe_state[2])
                 and (
                     (scan_stamp_after > 0.0 and scan_stamp_after != scan_stamp_before)
                     or index_answer_is_trustworthy()

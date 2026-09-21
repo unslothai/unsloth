@@ -1052,13 +1052,15 @@ def _index() -> dict[str, _LocalGgufEntry]:
     return _index_with_state()[0]
 
 
-def _index_with_state() -> tuple[dict[str, _LocalGgufEntry], tuple[int, float]]:
-    """The index, and the ``(generation, stamp)`` identifying where it came from.
+def _index_with_state() -> tuple[dict[str, _LocalGgufEntry], tuple[int, float, bool]]:
+    """The index, and the ``(generation, stamp, complete)`` describing where it came from.
 
-    Both inside the one critical section, so the pair describes the mapping being returned
-    rather than whatever has been published by the time a caller reads it. A caller that
-    memoizes a MISS needs that; one that merely resolves a name does not, and calls
-    ``_index``.
+    All three inside the one critical section, so they describe the mapping being returned
+    rather than whatever has been published by the time a caller reads them. Completeness in
+    particular: read separately, a warmer replacing an incomplete snapshot with a complete
+    one lets a caller pair this pass's miss with the NEXT pass's verdict and memoize it. A
+    caller that memoizes a MISS needs all three; one that merely resolves a name does not,
+    and calls ``_index``.
     """
     # Build under the lock so concurrent callers with an expired cache don't all run the (multi-dir) scan at once; the
     # rest wait and reuse the fresh result.
@@ -1068,7 +1070,7 @@ def _index_with_state() -> tuple[dict[str, _LocalGgufEntry], tuple[int, float]]:
         # `ts > 0`: monotonic() counts from boot, so under a TTL of uptime an invalidated stamp reads as recent and
         # would serve what was just revoked
         if ts > 0.0 and now - ts < _CACHE_TTL_S:
-            return cached, (_generation, ts)
+            return cached, (_generation, ts, index_last_scan_was_complete())
         global _scan_sources_skipped
         from core.inference.scan_incidents import collecting_scan_incidents
 
@@ -1084,7 +1086,8 @@ def _index_with_state() -> tuple[dict[str, _LocalGgufEntry], tuple[int, float]]:
         # Only after it returned, and published beside the snapshot it describes. A build
         # that raised publishes nothing and must not leave a verdict standing over the
         # snapshot that is still there.
-        _publish_scan_completeness(_scan_sources_skipped == 0 and not incidents)
+        complete = _scan_sources_skipped == 0 and not incidents
+        _publish_scan_completeness(complete)
         # Stamp AFTER the scan, not with the pre-scan ``now``: a multi-root scan on an install with many local models
         # can itself exceed the TTL, which would store the cache already expired and make every request rebuild the
         # index.
@@ -1093,7 +1096,7 @@ def _index_with_state() -> tuple[dict[str, _LocalGgufEntry], tuple[int, float]]:
         _just_downloaded.clear()
         # Still under the lock, of the snapshot just published: this is the index being
         # returned, so it cannot be labelled with a later snapshot's identity.
-        return fresh, (_generation, _snapshot()[0])
+        return fresh, (_generation, _snapshot()[0], complete)
 
 
 def index_scan_stamp() -> float:
@@ -1227,9 +1230,9 @@ def resolve_local_gguf(
     the last ``:VARIANT`` is split off and resolves only when that quant is on disk, unless it names
     no quant at all (an Ollama-style ":latest"), which means the repo.
 
-    ``index_state``, when given a list, receives one ``(generation, stamp)`` pair naming the
-    index this answer came from. For a caller that memoizes a miss: the pair and the answer
-    describe the same snapshot, which a separate read afterwards cannot promise.
+    ``index_state``, when given a list, receives one ``(generation, stamp, complete)``
+    describing the index this answer came from. For a caller that memoizes a miss: it and
+    the answer describe the same snapshot, which separate reads afterwards cannot promise.
 
     ``allow_scan=False`` answers from the last built index and never rebuilds. It is a raw snapshot
     read for callers that separately decide whether the snapshot is trustworthy; use
@@ -1253,7 +1256,8 @@ def resolve_local_gguf(
             # The published tuple is immutable and carries its own stamp, so one read is
             # enough; a generation that moves alongside only makes a marker read stale.
             snapshot = _snapshot()
-            index, state = snapshot[1], (_generation, snapshot[0])
+            index = snapshot[1]
+            state = (_generation, snapshot[0], index_last_scan_was_complete())
         if index_state is not None:
             index_state.append(state)
         return _resolve_from_index(

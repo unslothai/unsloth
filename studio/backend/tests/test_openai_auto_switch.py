@@ -12725,7 +12725,7 @@ def test_the_answer_and_the_index_that_gave_it_describe_one_snapshot(monkeypatch
     state: list = []
     assert resolver.resolve_local_gguf("unsloth/B-GGUF", index_state = state) is not None
     assert state == [
-        (resolver.index_generation(), resolver.index_scan_stamp())
+        (resolver.index_generation(), resolver.index_scan_stamp(), True)
     ], "the identity reported is not the one the answer came from"
 
     # A rebuild that REPLACES the index between two resolutions is reported as a different
@@ -12741,7 +12741,11 @@ def test_the_answer_and_the_index_that_gave_it_describe_one_snapshot(monkeypatch
     # index that answered, not the one that landed while it was answering.
     monkeypatch.setattr(resolver, "_build_index", lambda: {"unsloth/b-gguf": entry})
     resolver._index()
-    answered_by = (resolver.index_generation(), resolver.index_scan_stamp())
+    answered_by = (
+        resolver.index_generation(),
+        resolver.index_scan_stamp(),
+        resolver.index_last_scan_was_complete(),
+    )
     real_resolve_from_index = resolver._resolve_from_index
 
     def _publish_midway(requested, index, **kwargs):
@@ -12850,3 +12854,77 @@ def test_a_scanning_resolution_answers_from_the_index_it_built(monkeypatch):
     assert (
         resolver.resolve_local_gguf("unsloth/B-GGUF", index_state = state) is None
     ), "resolved a model from a snapshot the build did not produce"
+
+
+def test_the_completeness_verdict_travels_with_the_snapshot_that_earned_it(monkeypatch):
+    """Published as part of the state, not read back separately afterwards.
+
+    A caller decides whether a MISS is a confirmed ABSENCE from two things: the snapshot it
+    resolved against, and whether the pass that built it got to see every source. Read
+    separately, a warmer replacing an incomplete snapshot with a complete one between those
+    two reads lets this pass's miss be paired with the NEXT pass's verdict, and the absence
+    is memoized over a source this pass never looked at.
+    """
+    from core.inference.scan_incidents import note_scan_incident
+
+    monkeypatch.setattr(resolver, "_CACHE_TTL_S", 0)
+    entry = resolver._LocalGgufEntry("unsloth/B-GGUF", "/models/unsloth/B-GGUF", ("Q4_K_M",))
+
+    def incomplete():
+        note_scan_incident("a root this pass could not read")
+        return {"unsloth/b-gguf": entry}
+
+    monkeypatch.setattr(resolver, "_build_index", incomplete)
+    _, state = resolver._index_with_state()
+    assert state[2] is False, "an incomplete pass came back blessed as complete"
+
+    # The warmer, landing after this pass answered and before the caller would have read
+    # the verdict back.
+    monkeypatch.setattr(resolver, "_build_index", lambda: {"unsloth/b-gguf": entry})
+    resolver._index()
+    assert resolver.index_last_scan_was_complete() is True, "the harness published nothing new"
+    assert state[2] is False, (
+        "the verdict moved under the state that was already handed out, so a separate read "
+        "would have blessed the earlier pass's miss"
+    )
+
+    # And a pass that saw everything says so, in the same place.
+    _, state = resolver._index_with_state()
+    assert state[2] is True
+
+    # The route reads it from there rather than asking the resolver again.
+    src = inspect.getsource(inference_route._maybe_auto_switch_model)
+    assert "alias_probe_state[2]" in src, (
+        "the route no longer reads completeness from the state that answered it"
+    )
+    assert "index_last_scan_was_complete()" not in src, (
+        "the route reads the completeness verdict separately again"
+    )
+
+
+def test_an_unreadable_ollama_path_is_reported_but_an_absent_one_is_not():
+    """``_safe_is_file`` answers False for both, and only one of them is an answer.
+
+    A manifest or blob that cannot be stat'ed is dropped and reads exactly like one that is
+    not there, so a pass that swallows it would publish as complete over a row it never got
+    to see.
+    """
+    import pathlib
+
+    from core.inference.scan_incidents import collecting_scan_incidents
+    from hub.services.models import ollama as ollama_service
+
+    class _Unreadable(type(pathlib.Path("/"))):
+        def is_file(self):
+            raise PermissionError(13, "Permission denied")
+
+    with collecting_scan_incidents() as incidents:
+        assert ollama_service._safe_is_file(_Unreadable("/models/manifests/library/x")) is False
+    assert any("unreadable" in note for note in incidents), (
+        f"a manifest that could not be stat'ed read as one that is not there: {incidents}"
+    )
+
+    # An absent path IS an answer, so it stays silent.
+    with collecting_scan_incidents() as incidents:
+        assert ollama_service._safe_is_file(pathlib.Path("/no/such/ollama/manifest")) is False
+    assert incidents == [], f"an absent path was reported as a gap: {incidents}"

@@ -129,6 +129,9 @@ def _safe_is_file(path: Path) -> bool:
     try:
         return path.is_file()
     except OSError:
+        # False drops the manifest or the blob, which reads exactly like one that is not
+        # there, so the pass would publish as complete over a row it never got to see.
+        note_scan_incident(f"ollama path unreadable: {path}")
         return False
 
 
