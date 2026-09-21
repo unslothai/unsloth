@@ -367,6 +367,7 @@ import {
 import { extractTaggedText, updateThreadMessage } from "@/features/chat/utils/update-thread-message";
 import { useComposerPillFit } from "@/hooks/use-composer-pill-fit";
 import { useIsMobile } from "@/hooks/use-mobile";
+import { useUiSpaceScale } from "@/hooks/use-ui-space-scale";
 
 // True while a file is dragged anywhere over the chat page, so the composer
 // can show its "Drop files here" affordance.
@@ -2771,6 +2772,9 @@ const Composer: FC<{
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const editorRef = useRef<HTMLDivElement>(null);
   const inputId = useId();
+  // One empty row, at whatever the UI font size makes a row.
+  const uiSpaceScale = useUiSpaceScale();
+  const oneRowHeight = Math.round(40 * uiSpaceScale);
   const [editorHeight, setEditorHeight] = useState(40);
   const [isWritingExpanded, setIsWritingExpanded] = useState(false);
   const toggleWritingExpanded = () => {
@@ -5154,7 +5158,7 @@ const Composer: FC<{
               className="unsloth-composer-editor"
               style={
                 {
-                  "--composer-editor-height": `${composerText.length === 0 ? 40 : Math.max(40, editorHeight)}px`,
+                  "--composer-editor-height": `${composerText.length === 0 ? oneRowHeight : Math.max(oneRowHeight, editorHeight)}px`,
                 } as CSSProperties
               }
             >

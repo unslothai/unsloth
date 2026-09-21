@@ -118,3 +118,13 @@ test("the titlebar reserves room for its scaled controls", () => {
   assert.match(titlebar, /calc\(7rem \* var\(--ui-space-scale, 1\)\)/);
   assert.match(PROVIDER, /calc\(112px \* var\(--ui-space-scale, 1\)\)/);
 });
+
+test("the composer's one-row clamp is one row at any size", () => {
+  // The editor box wins over the input's own min-height, so all three clamps
+  // and the JS floor have to move together or an empty composer clips.
+  const clamps = CSS.match(/calc\(40px \* var\(--ui-space-scale, 1\)\)/g) ?? [];
+  assert.equal(clamps.length, 3, "a 40px composer clamp is still fixed");
+  const thread = readSrc("components/assistant-ui/thread.tsx");
+  assert.match(thread, /const oneRowHeight = Math\.round\(40 \* uiSpaceScale\);/);
+  assert.doesNotMatch(thread, /Math\.max\(40, editorHeight\)/);
+});

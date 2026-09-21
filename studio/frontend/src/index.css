@@ -2080,7 +2080,7 @@ html[data-chat-font] .aui-root {
 	   autosize textarea's inline !important height, so a cleared message leaves
 	   no stale tall box or stray scrollbar. */
 	.unsloth-composer-input:placeholder-shown {
-		max-height: 40px !important;
+		max-height: calc(40px * var(--ui-space-scale, 1)) !important;
 		overflow-y: hidden !important;
 	}
 
@@ -2094,7 +2094,10 @@ html[data-chat-font] .aui-root {
 		order: 1;
 		flex-basis: 100%;
 		width: 100%;
-		height: var(--composer-editor-height, 40px);
+		height: var(
+			--composer-editor-height,
+			calc(40px * var(--ui-space-scale, 1))
+		);
 		transition: height 280ms cubic-bezier(0.22, 1, 0.36, 1);
 	}
 
@@ -2110,7 +2113,7 @@ html[data-chat-font] .aui-root {
 	   height, so expanding would clip. svh, since dvh tracks Safari's bar. */
 	.aui-composer-root[data-writing-expanded="true"] .unsloth-composer-editor {
 		height: max(
-			var(--composer-editor-height, 40px),
+			var(--composer-editor-height, calc(40px * var(--ui-space-scale, 1))),
 			clamp(8rem, calc(80svh - 12rem), 42rem)
 		);
 	}
