@@ -12,6 +12,7 @@
  * call sites raise their toast from a callback outside a component body.
  */
 
+import { isAccountOwner } from "@/features/auth/account-session";
 import { translate } from "@/i18n";
 import { useSettingsDialogStore } from "../stores/settings-dialog-store";
 
@@ -56,13 +57,23 @@ export function failureLogPath(message: string): string | null {
   return path || null;
 }
 
+/** The action, or undefined for an account that has nowhere to be sent.
+ *
+ * Settings > Logs is owner-only (OWNER_ONLY_SETTINGS_TABS), and resolveSettingsTab sends a
+ * managed account asking for it to General, so on a managed installation the button opened
+ * Settings on an unrelated tab and looked broken. The /debug/logs/sources route is
+ * owner-guarded too, so there is no log to offer, and no button is better than a dead one.
+ * Callers pass the result straight through as `action`, where undefined renders nothing. */
 export function viewLogsAction(
   family: FailureLogFamily,
   sourcePath?: string | null,
-): {
-  label: string;
-  onClick: () => void;
-} {
+):
+  | {
+      label: string;
+      onClick: () => void;
+    }
+  | undefined {
+  if (!isAccountOwner()) return undefined;
   return {
     label: translate("settings.debugging.viewLogs"),
     onClick: () =>
