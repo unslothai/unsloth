@@ -29,7 +29,6 @@ import {
 } from "@/components/ui/context-menu";
 import {
   DropdownMenu,
-  DropdownMenuCheckboxItem,
   DropdownMenuContent,
   DropdownMenuGroup,
   DropdownMenuItem,
@@ -316,9 +315,6 @@ const PROJECT_CHAT_LIMIT = 4;
 const SIDEBAR_PROJECT_LIMIT = 5;
 
 // The shared radio item ticks on the right; these read as settings, so tick first.
-// Check on the left, like the radio dot, so both kinds of item line up.
-const menuCheckItemClass =
-  "pl-9 pr-3 [&>[data-slot=dropdown-menu-checkbox-item-indicator]]:right-auto [&>[data-slot=dropdown-menu-checkbox-item-indicator]]:left-3";
 const menuRadioItemClass =
   "pl-9 pr-3 [&>[data-slot=dropdown-menu-radio-item-indicator]]:right-auto [&>[data-slot=dropdown-menu-radio-item-indicator]]:left-3";
 
@@ -1894,19 +1890,7 @@ export function AppSidebar() {
   }
 
   // Drag-and-drop. lib/sidebar-drag.ts plans each drop; the hook paints the plan and hands it
-  // back on drop. Each preference is a way the gesture can get in the way.
-  const dragHints = useSidebarOrganizationStore((s) => s.dragHints);
-  const reorderSwitchesSort = useSidebarOrganizationStore(
-    (s) => s.reorderSwitchesSort,
-  );
-  const dragOpensFolders = useSidebarOrganizationStore((s) => s.dragOpensFolders);
-  const setDragHints = useSidebarOrganizationStore((s) => s.setDragHints);
-  const setReorderSwitchesSort = useSidebarOrganizationStore(
-    (s) => s.setReorderSwitchesSort,
-  );
-  const setDragOpensFolders = useSidebarOrganizationStore(
-    (s) => s.setDragOpensFolders,
-  );
+  // back on drop.
   // Read at event time, so a plan sees the lists as drawn.
   const dropContext = useCallback(
     (): SidebarDropContext => ({
@@ -1921,7 +1905,6 @@ export function AppSidebar() {
         recents: recentRowIds,
         projectChats: (projectId) => projectChatRowIds.get(projectId) ?? [],
       },
-      reorderSwitchesSort,
     }),
     [
       organizeBy,
@@ -1933,7 +1916,6 @@ export function AppSidebar() {
       projectRowIds,
       recentRowIds,
       projectChatRowIds,
-      reorderSwitchesSort,
     ],
   );
   const dropHintRef = useRef<HTMLDivElement | null>(null);
@@ -1947,7 +1929,6 @@ export function AppSidebar() {
   const coarsePointer = useIsCoarsePointer();
   const dnd = useSidebarDrag({
     context: dropContext,
-    springOpen: dragOpensFolders,
     hintRef: dropHintRef,
     // A closed folder or section the pointer rests on opens.
     onSpringOpen: (zone) => {
@@ -2039,7 +2020,6 @@ export function AppSidebar() {
     const next = moveIdBy(orderedIds, item.id, delta);
     if (next === orderedIds) return;
     const resorts = sort !== undefined && sort.value !== "manual";
-    if (resorts && !reorderSwitchesSort) return;
     setManualOrder(item.scope, next);
     if (resorts) {
       sort.set("manual");
@@ -2125,7 +2105,7 @@ export function AppSidebar() {
    *  between answers rather than unmounted. No inline style: a re-render would write it back
    *  over the transform the pointer set. */
   const dropHintPortal =
-    draggingRow && dragHints && typeof document !== "undefined"
+    draggingRow && typeof document !== "undefined"
       ? createPortal(
           <div
             ref={dropHintRef}
@@ -3185,25 +3165,6 @@ export function AppSidebar() {
 
   // The "..." every list header carries. Only chat lists regroup, so that half
   // is opt-in; Pinned takes the sort half alone.
-  // The drag-and-drop preferences, as the Organize menus list them.
-  const DRAG_OPTIONS: Array<{
-    key: TranslationKey;
-    get: () => boolean;
-    set: (value: boolean) => void;
-  }> = [
-    { key: "shell.organize.dragHints", get: () => dragHints, set: setDragHints },
-    {
-      key: "shell.organize.reorderSwitchesSort",
-      get: () => reorderSwitchesSort,
-      set: setReorderSwitchesSort,
-    },
-    {
-      key: "shell.organize.dragOpensFolders",
-      get: () => dragOpensFolders,
-      set: setDragOpensFolders,
-    },
-  ];
-
   function renderSidebarHeaderMenu(options: {
     ariaLabel: string;
     sortLabel: string;
@@ -3216,8 +3177,7 @@ export function AppSidebar() {
         side="bottom"
         align="end"
         sideOffset={2}
-        // Wide enough for the drag-and-drop items to fit on one line.
-        className="unsloth-plus-menu w-64"
+        className="unsloth-plus-menu w-56"
         trigger={(triggerRef) => (
           <button
             ref={triggerRef}
@@ -3274,22 +3234,6 @@ export function AppSidebar() {
             </DropdownMenuRadioItem>
           ))}
         </DropdownMenuRadioGroup>
-        {options.includeOrganize && (
-          <>
-            <DropdownMenuSeparator />
-            <DropdownMenuLabel>{t("shell.organize.dragDrop")}</DropdownMenuLabel>
-            {DRAG_OPTIONS.map((option) => (
-              <DropdownMenuCheckboxItem
-                key={option.key}
-                checked={option.get()}
-                onCheckedChange={(checked) => option.set(checked === true)}
-                className={menuCheckItemClass}
-              >
-                {t(option.key)}
-              </DropdownMenuCheckboxItem>
-            ))}
-          </>
-        )}
       </NonModalDropdownMenu>
     );
   }
