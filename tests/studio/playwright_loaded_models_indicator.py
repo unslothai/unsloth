@@ -267,13 +267,12 @@ def why_no_card(
         except Exception:
             return "<unreadable>"
 
-    def nodes(selector: str) -> int:
+    def nodes(selector: str):
         # Attached, not visible: a card that rendered off screen is a position bug, not a missing card, and the two
-        # have to read differently here.
-        try:
-            return page.locator(selector).count()
-        except Exception:
-            return -1
+        # have to read differently here. A page that cannot be asked reports so rather than a number, since every
+        # number here is a claim about the DOM and "unreadable" is not one.
+        count = counted(page, selector)
+        return "<unreadable>" if count is None else count
 
     pathname = probe("location.pathname")
     mounted = probe("document.getElementById('root')?.childElementCount ?? -1")
@@ -306,6 +305,24 @@ def await_selector(page, selector: str, timeout: int) -> str:
         first_line = str(exc).splitlines()[0] if str(exc) else ""
         return f"{type(exc).__name__}: {first_line[:120]}"
     return ""
+
+
+def counted(page, selector: str) -> int | None:
+    """Attached nodes matching `selector`, or None when the page cannot be asked.
+
+    The point of naming what ended a wait is lost if the next line re-raises it. A closed
+    target or a navigation error fails `await_selector` and then fails `locator.count()` the
+    same way, so the caller never reached its own `check()` and the diagnostic it had just
+    collected went unprinted, replaced by the traceback this file exists to avoid.
+
+    None is not zero and must not be read as it: zero is a page that answered and had no
+    card, None is a page that could not answer, and only the first is a verdict about the
+    card.
+    """
+    try:
+        return page.locator(selector).count()
+    except Exception:
+        return None
 
 
 def boot(
@@ -461,7 +478,10 @@ def run(page, state: Runtime) -> None:
         # the card genuinely does not survive the navigation -- this only stops
         # a slow render from being read as a missing card.
         waited = await_selector(page, CARD, SETTLE_MS)
-        present = page.locator(CARD).count() > 0
+        # Asked so that a page which cannot answer still reaches the check below with the
+        # name of what went wrong, rather than raising the same error a second time.
+        nodes = counted(page, CARD)
+        present = bool(nodes)
         # `count` is attached nodes and the wait above is visible ones, so this pair can disagree. It is not a
         # failure -- the card is there -- but a card that is present and never became visible is a position or
         # stacking bug wearing a pass, and it would otherwise leave no trace at all.
@@ -670,7 +690,7 @@ def run(page, state: Runtime) -> None:
     # for: a reload has to re-parse the bundle and re-read the stored preference before the pill can exist, so wait
     # for the pill rather than for 6000ms of clock. Still fails if the collapse genuinely did not survive.
     waited = await_selector(page, PILL, SETTLE_MS)
-    restored = page.locator(PILL).count() > 0
+    restored = bool(counted(page, PILL))
     check(
         "the collapsed state survives a reload",
         restored,
