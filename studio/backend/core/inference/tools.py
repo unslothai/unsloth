@@ -407,11 +407,29 @@ _QUOTED_REDIRECT_MARK = "\x02"
 _EXPANSION_CHARS = frozenset("$`")
 _QUOTED_EXPANSION_MARK = "\x04"
 # The characters punctuation_chars glues into one token. A run like `|&` matches no _SHELL_SEPARATORS entry, so the
-# sed screen read past the end of the command. `{`/`}` are absent so find's `{}` stays an ordinary word.
-_OPERATOR_TOKEN_CHARS = frozenset(";&|()`")
+# sed screen read past the end of the command. `{`/`}` are absent so find's `{}` stays an ordinary word. A newline
+# only reaches a token stream that asked for it (_COMMAND_POSITION_PUNCTUATION), where `;\n` arrives glued.
+_OPERATOR_TOKEN_CHARS = frozenset(";&|()`\n")
+# The operators the blocklist walk needs split off into tokens of their own. The newline is there because bash starts
+# a new command at a line break, where shlex sees only whitespace.
+_COMMAND_POSITION_PUNCTUATION = ";&|()`\n"
 # One shell redirection as the lexer hands it over. The target may be glued on (`2>/dev/null`) or be the next token;
 # `&` splits off under punctuation_chars, so `2>&1` arrives as three.
 _REDIRECTION_RE = re.compile(r"^(?:\d+|&)?(?:<<<|<<-|<<|<>|>>|>\||<&|>&|<|>)")
+
+
+def _punctuation_lexer(text: str, punctuation: str) -> "shlex.shlex":
+    """A word lexer that hands back every one of ``punctuation`` as its own token.
+
+    shlex counts a newline as whitespace, so asking for it in punctuation_chars alone yields
+    nothing: it has to leave the whitespace set as well, or the separator bash sees at a line break
+    never appears in the token stream.
+    """
+    lexer = shlex.shlex(text, posix = True, punctuation_chars = punctuation)
+    lexer.whitespace_split = True
+    if "\n" in punctuation:
+        lexer.whitespace = lexer.whitespace.replace("\n", "")
+    return lexer
 
 
 def _looks_like_separator(token: str) -> bool:
@@ -998,9 +1016,7 @@ def _quoted_separator_indexes(text: str, tokens: "list[str]", punctuation: str) 
     if _QUOTED_SEPARATOR_MARK not in masked:
         return frozenset()  # every separator character was bare
     try:
-        lexer = shlex.shlex(masked, posix = True, punctuation_chars = punctuation)
-        lexer.whitespace_split = True
-        marked = list(lexer)
+        marked = list(_punctuation_lexer(masked, punctuation))
     except ValueError:
         return frozenset()
     if len(marked) != len(tokens):
@@ -1026,9 +1042,7 @@ def _masked_tokens(
         mark if char in chars and states[index] else char for index, char in enumerate(text)
     )
     try:
-        lexer = shlex.shlex(masked, posix = True, punctuation_chars = punctuation)
-        lexer.whitespace_split = True
-        marked = list(lexer)
+        marked = list(_punctuation_lexer(masked, punctuation))
     except ValueError:
         return None
     return marked if len(marked) == len(tokens) else None
@@ -1069,9 +1083,7 @@ def _unquoted_expansion_indexes(
         for index, char in enumerate(text)
     )
     try:
-        lexer = shlex.shlex(masked, posix = True, punctuation_chars = punctuation)
-        lexer.whitespace_split = True
-        marked = list(lexer)
+        marked = list(_punctuation_lexer(masked, punctuation))
     except ValueError:
         return frozenset()
     if len(marked) != len(tokens):
@@ -1097,9 +1109,7 @@ def _unquoted_glob_indexes(text: str, tokens: "list[str]", punctuation: str) -> 
         for index, char in enumerate(text)
     )
     try:
-        lexer = shlex.shlex(masked, posix = True, punctuation_chars = punctuation)
-        lexer.whitespace_split = True
-        marked = list(lexer)
+        marked = list(_punctuation_lexer(masked, punctuation))
     except ValueError:
         return frozenset()
     if len(marked) != len(tokens):
@@ -1312,6 +1322,11 @@ def _is_start_title(token: str) -> bool:
 _BLOCKED_WORD_RE = (
     re.compile(
         r"(?:^|[;&|`\n(]\s*|[$]\(\s*|<\(\s*)"
+        # Assignment prefixes sit between the separator and the command word bash runs, and this
+        # backstop is all that is left when the lex raises and the token walk never happens. A
+        # quoted value may hold the rest of the line (`p='1e rm -f victim'`), which is a binding
+        # the sed screen resolves, so those are deliberately not stepped over here.
+        r"(?:[A-Za-z_]\w*=[^\s'\"]*\s+)*"
         r"(?:[\w./\\-]*/|[a-zA-Z]:[/\\][\w./\\-]*)?"
         r"(" + "|".join(re.escape(w) for w in sorted(_BLOCKED_COMMANDS)) + r")"
         r"(?:\.(?:exe|com|bat|cmd))?\b"
@@ -1336,16 +1351,15 @@ def _find_blocked_commands(command: str) -> set[str]:
     command = _decode_ansi_c(command, keep_one_word = True)
 
     # punctuation_chars splits separators into their own tokens, so command position is detected even in `echo done;
-    # rm -rf x`. Keyed to the shell that will actually run this, not to the OS: on a Windows host with bash the
-    # non-posix lexer never split on `;`, so `if true; then rm -rf x; fi` came back with nothing blocked.
+    # rm -rf x` and at a line break. Keyed to the shell that will actually run this, not to the OS: on a Windows host
+    # with bash the non-posix lexer never split on `;`, so `if true; then rm -rf x; fi` came back with nothing
+    # blocked.
     lexed_posix = _shell_is_posix()
     try:
         if not lexed_posix:
             tokens = shlex.split(command, posix = False)
         else:
-            lexer = shlex.shlex(command, posix = True, punctuation_chars = ";&|()`")
-            lexer.whitespace_split = True
-            tokens = list(lexer)
+            tokens = list(_punctuation_lexer(command, _COMMAND_POSITION_PUNCTUATION))
     except ValueError:
         tokens = command.split()
         lexed_posix = False
@@ -1353,10 +1367,14 @@ def _find_blocked_commands(command: str) -> set[str]:
     # the quote marks and the split() fallback has no quoting model, so both report nothing and reach the same
     # verdict.
     quoted_separators = (
-        _quoted_separator_indexes(command, tokens, ";&|()`") if lexed_posix else frozenset()
+        _quoted_separator_indexes(command, tokens, _COMMAND_POSITION_PUNCTUATION)
+        if lexed_posix
+        else frozenset()
     )
     quoted_redirects = (
-        _quoted_redirection_indexes(command, tokens, ";&|()`") if lexed_posix else frozenset()
+        _quoted_redirection_indexes(command, tokens, _COMMAND_POSITION_PUNCTUATION)
+        if lexed_posix
+        else frozenset()
     )
     exec_flag_indexes, invocation_stops, redirect_indexes = _exec_scan_layout(
         tokens, quoted_separators, quoted_redirects
@@ -1745,7 +1763,9 @@ def _find_blocked_commands(command: str) -> set[str]:
         # never blocked.
         if glob_indexes is None:
             glob_indexes = (
-                _unquoted_glob_indexes(command, tokens, ";&|()`") if lexed_posix else frozenset()
+                _unquoted_glob_indexes(command, tokens, _COMMAND_POSITION_PUNCTUATION)
+                if lexed_posix
+                else frozenset()
             )
         alternatives, scan_overflowed, _live = _sed_invocation(
             tokens, i, sed_limit, invocation_stops, redirect_indexes, glob_indexes
