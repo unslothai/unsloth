@@ -2006,7 +2006,15 @@ def install_llm_compressor():
         # Same two causes as before the install, told apart the same way. A good install can
         # still fail to import HERE, since the patches are in this process and not in the
         # subprocess that quantizes, and raising would kill an export about to work.
-        if _llm_compressor_imports_cleanly():
+        #
+        # A CONCLUSIVE yes, like the metadata-free path above: the probe answers True for its
+        # OWN failures (a timeout, a python that will not spawn), and taking that for a
+        # working install sent the export into the whole merge before the same subprocess
+        # failed or hung again. Unanswerable keeps the import error we already have.
+        if (
+            _llm_compressor_imports_cleanly()
+            and _LLM_COMPRESSOR_PROBE_RESULT.get("imported") is True
+        ):
             return None, None
         raise RuntimeError(
             "Unsloth: llm-compressor was installed but could not be imported. "

@@ -885,3 +885,47 @@ def test_an_in_range_checkout_is_not_reinstalled_over_out_of_range_metadata(monk
     except Exception:
         pass
     assert calls, "an unknown module version overrode out-of-range metadata"
+
+
+@pytest.mark.parametrize(
+    "unanswerable",
+    [subprocess.TimeoutExpired(cmd = ["python"], timeout = 600), OSError("no such interpreter")],
+)
+def test_an_unanswerable_probe_after_the_install_keeps_the_import_error(monkeypatch, unanswerable):
+    """The probe answers True for its OWN failures, which is not evidence of a good install.
+
+    After the install, with the in-process import still failing, taking that for success sent
+    the export through the whole model merge before the same subprocess failed or hung again.
+    The metadata-free path before the install already requires a conclusive yes.
+    """
+    import unsloth.save as save
+
+    real_version = md.version
+
+    def fake_version(dist: str) -> str:
+        if dist == "llmcompressor":
+            raise md.PackageNotFoundError(dist)
+        return real_version(dist)
+
+    monkeypatch.setattr(md, "version", fake_version)
+    monkeypatch.setattr(subprocess, "check_call", lambda cmd, *a, **k: None)
+
+    def run_fails(cmd, *a, **k):
+        raise unanswerable
+
+    monkeypatch.setattr(subprocess, "run", run_fails)
+    try:
+        import llmcompressor  # noqa: F401
+    except Exception:
+        pass
+    else:
+        pytest.skip("llmcompressor imports in this interpreter, so the guard is unreachable")
+
+    with pytest.raises(RuntimeError) as raised:
+        save.install_llm_compressor()
+    assert "could not be imported" in str(
+        raised.value
+    ), f"an unanswerable probe reported a working install: {raised.value}"
+    assert (
+        save._LLM_COMPRESSOR_PROBE_RESULT.get("imported") is None
+    ), "the probe recorded an answer it never got"
