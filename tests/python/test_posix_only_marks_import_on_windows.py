@@ -63,12 +63,23 @@ def _is_os_geteuid(node: ast.AST) -> bool:
         and isinstance(node.value, ast.Name)
         and node.value.id == "os"
         # `os.geteuid = lambda: 0` CREATES the attribute on Windows rather than reading
-        # it, and tests/test_allow_cpu_import_driverless.py does exactly that
+        # it, and tests/test_allow_cpu_import_driverless.py does exactly that. An
+        # augmented target is a Store in the AST but reads before it writes, so it is
+        # admitted by _geteuid_sites instead.
         and not isinstance(node.ctx, ast.Store)
     ):
         return True
     call = _getattr_geteuid(node)
     return call is not None and len(call.args) == 2
+
+
+def _is_augmented_geteuid(node: ast.AST) -> bool:
+    return (
+        isinstance(node, ast.Attribute)
+        and node.attr == "geteuid"
+        and isinstance(node.value, ast.Name)
+        and node.value.id == "os"
+    )
 
 
 def _getattr_geteuid(node: ast.AST) -> ast.Call | None:
@@ -169,6 +180,9 @@ def _geteuid_sites(expr: ast.AST):
         node = stack.pop()
         if _is_os_geteuid(node):
             yield node
+        elif isinstance(node, ast.AugAssign) and _is_augmented_geteuid(node.target):
+            # `os.geteuid += 1` reads before it writes, and the AST marks the target Store
+            yield node.target
         elif (
             isinstance(node, ast.ImportFrom)
             and node.module == "os"
@@ -801,3 +815,10 @@ def test_a_deferred_annotation_does_not_defer_its_target():
         "from __future__ import annotations\nimport os\nslots = {}\nslots[os.geteuid()]: int\n"
     )
     assert not _flagged("from __future__ import annotations\nimport os\nx: os.geteuid()\n")
+
+
+def test_an_augmented_assignment_reads_before_it_writes():
+    """`os.geteuid += 1` is a Store in the AST but fetches the attribute first, unlike a
+    plain assignment, which creates it."""
+    assert _flagged("import os\nos.geteuid += 1\n")
+    assert not _flagged("import os\nos.geteuid = lambda: 0\n")
