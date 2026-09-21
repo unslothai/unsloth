@@ -885,14 +885,12 @@ class _PinnedNonMetadataTransport(_PinnedPublicTransport):
         return await self._pool(origin).handle_async_request(pinned)
 
 
-# (account_id, private allowed) -> that account's client. An httpx.AsyncClient persists cookies
-# across requests (python-httpx.org/advanced/clients), so one client shared by two managed accounts
-# sends whatever Set-Cookie the first collected on the second's requests to the same host, which is
-# a gateway session crossing accounts. Keyed by account, and bounded by the accounts that exist.
+# (account_id, private allowed) -> client. Keyed by account because an AsyncClient persists cookies
+# across requests (python-httpx.org/advanced/clients): one shared client crosses a gateway session
+# from the account that collected it to the next account calling the same host.
 _managed_clients: dict[tuple[str, bool], httpx.AsyncClient] = {}
 _managed_clients_lock = threading.Lock()
-# Accounts whose clients were retired. Bounded: it only has to outlive the requests that were
-# already in flight when the account went away.
+# Retired accounts. Bounded: it only outlives requests in flight when the account went away.
 _retired_accounts: set[str] = set()
 _RETIRED_ACCOUNTS_MAX = 1024
 # client -> the loop it was created on. Weak, so it never keeps a client alive by itself.
@@ -902,19 +900,16 @@ _client_loops: "weakref.WeakKeyDictionary[httpx.AsyncClient, asyncio.AbstractEve
 
 
 def retire_account_clients(account_id: str) -> int:
-    """Drop and close a retired account's provider clients. Returns how many were held.
+    """Drop and close a retired account's provider clients, returning how many were held.
 
-    Without this the cache is bounded by accounts ever CREATED rather than accounts that
-    exist, and a deleted account's cookie jar and idle sockets outlive it for the life of the
-    process. Closing is best effort and scheduled on the running loop when there is one, since
-    retirement runs from a synchronous route.
+    Without it the cache is bounded by accounts ever CREATED, and a deleted account's cookie jar
+    and idle sockets outlive it for the life of the process.
     """
     with _managed_clients_lock:
         retired = [_managed_clients.pop(key) for key in list(_managed_clients)
                    if key[0] == account_id]
-        # Tombstoned, because a request that authenticated before the account was deactivated can
-        # reach `_client()` after this sweep and would otherwise re-insert an entry nothing sweeps
-        # again. Such a request still gets a working client, it is just not kept.
+        # Tombstoned: a request that authenticated before deactivation can reach `_client()` after
+        # this sweep, and would otherwise re-insert an entry nothing sweeps again.
         _retired_accounts.add(account_id)
         while len(_retired_accounts) > _RETIRED_ACCOUNTS_MAX:
             _retired_accounts.pop()
@@ -927,17 +922,15 @@ def retire_account_clients(account_id: str) -> int:
         if running is not None and (loop is None or loop is running):
             running.create_task(client.aclose())
         elif loop is not None and not loop.is_closed():
-            # Deletion is a synchronous route, so it runs in a worker thread with no loop. Hand
-            # the close to the loop that owns the connections rather than dropping the reference,
-            # which does not close a pool.
+            # Deletion is a sync route with no loop of its own, and dropping the reference does
+            # not close a pool.
             asyncio.run_coroutine_threadsafe(client.aclose(), loop)
     return len(retired)
 
 
 def restore_account_clients(account_id: str) -> None:
-    """Lift the retirement tombstone. A delete that failed leaves the account disabled and
-    reactivatable, and a reactivated account whose tombstone stayed would never be cached
-    again: a fresh client per request, no pooling, no cookie continuity."""
+    """Lift the retirement tombstone: a failed delete leaves the account reactivatable, and one
+    reactivated under a tombstone would never be cached again, so no pooling and no cookies."""
     with _managed_clients_lock:
         _retired_accounts.discard(account_id)
 
@@ -959,15 +952,13 @@ def _client() -> httpx.AsyncClient:
             return client
         transport = _PinnedNonMetadataTransport() if allowed else _PinnedPublicTransport()
         client = httpx.AsyncClient(transport = transport, trust_env = False)
-        # The loop this client's connections belong to. Closing an httpx client from a DIFFERENT
-        # loop is not equivalent: its pool holds streams bound to the one that opened them, and
-        # deletion runs in a worker thread with no loop of its own.
+        # Its pool holds streams bound to this loop, so closing from a different one is not
+        # equivalent.
         try:
             _client_loops[client] = asyncio.get_running_loop()
         except RuntimeError:
             pass
-        # A retired account's request is served but not cached: retirement has already swept,
-        # and nothing would sweep an entry made after it.
+        # Served but not cached for a retired account: nothing sweeps an entry made after the sweep.
         if account_id not in _retired_accounts:
             _managed_clients[key] = client
         return client

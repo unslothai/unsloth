@@ -13,19 +13,17 @@ from typing import Any
 MANAGED_PRIVATE_PROVIDER_URLS_SETTING_KEY = "managed_private_provider_urls_allowed"
 DEFAULT_MANAGED_PRIVATE_PROVIDER_URLS_ALLOWED = False
 
-# Refuses private addresses for EVERY account, the owner included, so it outranks the stored
-# preference: an operator who set it in the environment does not get it undone from a settings page.
+# Refuses private addresses for EVERY account, owner included, and outranks the stored preference:
+# what an operator set in the environment is not undone from a settings page.
 BLOCK_PRIVATE_ENV = "UNSLOTH_STUDIO_BLOCK_PRIVATE_PROVIDER_URLS"
 
-# Every outbound provider request from a managed account asks this, and an uncached answer costs a
-# fresh SQLite connection (~600us, nearly all of it connection setup) on the shared event loop. A
-# write drops the entry, so the TTL only bounds how long ANOTHER process may still answer stale.
+# Asked by every managed outbound request; uncached it costs a fresh SQLite connection (~600us) on
+# the shared loop. A write drops the entry, so the TTL only bounds staleness in ANOTHER process.
 _CACHE_TTL_SECONDS = 1.0
 _cache_lock = threading.Lock()
 _cached: tuple[float, bool] | None = None
-# Bumped by every write. A read that started before a write must not publish what it saw after
-# it: the store has moved on, and the stale value would be served for the whole TTL, which on a
-# disable means private egress continuing after the owner switched it off.
+# Bumped by every write: a read that started earlier must not publish what it saw, or a disable
+# keeps allowing private egress for the rest of the TTL.
 _generation = 0
 
 
@@ -76,8 +74,7 @@ def get_managed_private_provider_urls_allowed() -> bool:
     keeps the refusal that shipped, and a read failure fails closed: an unreadable settings DB must
     not quietly widen what a managed account can dial.
     """
-    # Both before the cache: the strict answer is never the one being held, and a failed read is
-    # never remembered.
+    # Before the cache: the strict answer is never the held one.
     if private_urls_locked_by_environment():
         return False
     held = _remembered()
