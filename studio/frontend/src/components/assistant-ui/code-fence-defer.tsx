@@ -630,8 +630,21 @@ type FenceToken = TokenLine[number];
 /* Streamdown's own class lists, copied verbatim. The `bg-[var(--sdm-bg,inherit]` spellings are
  * unbalanced in streamdown 2.5's build and therefore generate no rule at all; they are reproduced
  * as they are because the goal is the same DOM, not a tidier one. */
+/*
+ * ONE DELIBERATE DIFFERENCE FROM STREAMDOWN'S OWN LINE CLASS, and it is the only one.
+ * Streamdown writes a raw 13 pixel text utility here.
+ * `tests/studio/test_ui_font_scale_contract.py` forbids that spelling anywhere in frontend source,
+ * comments included, because a fixed pixel size ignores the UI font size preference, and copying
+ * streamdown's version into the tree is what put this file on that test's offender list (base 12
+ * passed, head 1 failed, which is how it was found). `text-ui-13`
+ * is `calc(0.8125rem * var(--ui-font-scale, 1))`, so it renders at 13px at the default scale and
+ * follows the preference above and below it.
+ * It changes nothing in the thread either way: `index.css` gives
+ * `.aui-thread-root [data-streamdown="code-block"] code > span::before` `content: none` and
+ * `display: none`, so no pseudo-element box is generated there at all and its font size is dead.
+ */
 const LINE_CLASS =
-  "block before:content-[counter(line)] before:inline-block before:[counter-increment:line] before:w-6 before:mr-4 before:text-[13px] before:text-right before:text-muted-foreground/50 before:font-mono before:select-none";
+  "block before:content-[counter(line)] before:inline-block before:[counter-increment:line] before:w-6 before:mr-4 before:text-ui-13 before:text-right before:text-muted-foreground/50 before:font-mono before:select-none";
 const CODE_CLASS = "[counter-increment:line_0] [counter-reset:line]";
 const PRE_CLASS =
   "bg-[var(--sdm-bg,inherit] dark:bg-[var(--shiki-dark-bg,var(--sdm-bg,inherit)]";
