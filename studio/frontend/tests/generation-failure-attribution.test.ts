@@ -14,6 +14,7 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import {
+  GENERATE_FAILURE_LOGGED_MESSAGES,
   generationFailureForAttempt,
   generationFailureWasLogged,
   retainedFailureWasLogged,
@@ -243,8 +244,10 @@ test("a load that never reached the server offers no logs action", () => {
   );
   // The flag is set immediately before the request goes out, on both the main load and
   // the rollback, and nowhere else.
+  // Once: on the TARGET load. The rollback is a different request, and marking this on its
+  // behalf let the target's error borrow a log of a load that succeeded.
   const sets = runtime.match(/loadRequestIssued = true;/g);
-  assert.equal(sets?.length, 2, "the request-issued flag is not set where the load is sent");
+  assert.equal(sets?.length, 1, "the request-issued flag is not set where the load is sent");
   assert.match(runtime, /let loadRequestIssued = false;/);
   assert.match(
     runtime,
@@ -303,9 +306,51 @@ test("the load-issued flag is set at the send boundary, not before it", () => {
   const viaCallback = runtime.match(
     /onRequestStart: \(\) => \{\s*loadRequestIssued = true;\s*\},/g,
   );
-  assert.equal(viaCallback?.length, 2, "the flag no longer rides the send boundary");
+  assert.equal(viaCallback?.length, 1, "the flag no longer rides the send boundary");
   assert.ok(
     !/loadRequestIssued = true;\n\s*const (loadResponse|rollbackResponse)/.test(runtime),
     "the flag is still set before the call rather than at the send",
+  );
+});
+
+test("a logged persistence failure also gets its log", () => {
+  // The route logs diffusion.persist_failed and answers with fixed text that carries no
+  // classification prefix, and the underlying disk error is only in that log.
+  assert.equal(
+    generationFailureWasLogged("Failed to save the generated image."),
+    true,
+    "a logged persistence failure has no way back to the log that explains it",
+  );
+  assert.ok(
+    GENERATE_FAILURE_LOGGED_MESSAGES.includes("Failed to save the generated image."),
+  );
+  // Still not a blanket yes for anything unclassified.
+  assert.equal(generationFailureWasLogged("prompt must not be empty"), false);
+  assert.equal(
+    generationFailureWasLogged("The image generation request did not reach the server."),
+    false,
+  );
+});
+
+test("a rollback request does not mark the failed load as sent", () => {
+  const runtime = readFileSync(
+    new URL("../src/features/chat/hooks/use-chat-model-runtime.ts", import.meta.url),
+    "utf8",
+  );
+  // One setter, on the TARGET load only. The rollback that follows a failed switch is a
+  // different request, and its log is of a load that SUCCEEDED.
+  const setters = runtime.match(
+    /onRequestStart: \(\) => \{\s*loadRequestIssued = true;\s*\},/g,
+  );
+  assert.equal(
+    setters?.length,
+    1,
+    "the rollback still marks the target request as having been sent",
+  );
+  const rollbackAt = runtime.indexOf("const rollbackResponse = await loadModel({");
+  assert.ok(rollbackAt > 0, "the rollback load moved");
+  assert.ok(
+    !runtime.slice(rollbackAt, rollbackAt + 4000).includes("loadRequestIssued"),
+    "the rollback call still touches the flag",
   );
 });

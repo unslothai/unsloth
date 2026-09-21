@@ -1263,10 +1263,14 @@ export function useChatModelRuntime() {
           hfToken = preparedToken.token;
         }
 
-        // Whether /api/inference/load was actually SENT. A load can fail before that -- a
-        // token prompt the user declines, an abort, a guard in the preflight above -- and the
-        // backend then has nothing about it in any log, so offering "View logs" there opens
-        // an unrelated current log and points at a false diagnosis.
+        // Whether THIS load's /api/inference/load was actually SENT. A load can fail before
+        // that -- a token prompt the user declines, an abort, a guard in the preflight above
+        // -- and the backend then has nothing about it in any log, so offering "View logs"
+        // there opens an unrelated current log and points at a false diagnosis.
+        //
+        // The TARGET request only. The rollback load that follows a failed switch is a
+        // different request, and marking this on its behalf let the target's error borrow
+        // the rollback's log, which is a log of a load that SUCCEEDED.
         let loadRequestIssued = false;
 
         async function performLoad(): Promise<void> {
@@ -2248,10 +2252,6 @@ export function useChatModelRuntime() {
                   gpu_ids: stateBeforeUnload.loadedGpuIds ?? undefined,
                   // The failed swap already unloaded the server those runs used.
                   force_cancel_active: true,
-                }, {
-                  onRequestStart: () => {
-                    loadRequestIssued = true;
-                  },
                 });
                 const rollbackSpeculativeType = normalizeSpeculativeType(
                   rollbackResponse.speculative_type,

@@ -48,6 +48,14 @@ export function newGenerationAttemptId(): string {
 /** The prefix every reason the backend CLASSIFIED and LOGGED carries. */
 export const GENERATE_FAILURE_LOGGED_PREFIX = "Image generation failed.";
 
+/** Logged failures that are NOT classified generation failures, so they carry no prefix.
+ *
+ * Persistence is the one that exists today: the route logs diffusion.persist_failed and
+ * answers with fixed text, and the underlying disk error is only in that log. */
+export const GENERATE_FAILURE_LOGGED_MESSAGES = [
+  "Failed to save the generated image.",
+];
+
 /** Whether Settings > Logs can actually hold this failure.
  *
  * Only the 500 paths log: they call logger.error and answer with a classified reason, which
@@ -56,6 +64,7 @@ export const GENERATE_FAILURE_LOGGED_PREFIX = "Image generation failed.";
  * action there opens an unrelated current log and points at a false diagnosis.
  */
 export function generationFailureWasLogged(message: string): boolean {
+  if (GENERATE_FAILURE_LOGGED_MESSAGES.includes(message)) return true;
   return message.startsWith(GENERATE_FAILURE_LOGGED_PREFIX);
 }
 
