@@ -98,7 +98,6 @@ import {
   HelpCircleIcon,
   Image03Icon,
   Logout05Icon,
-  Message01Icon,
   MoreHorizontalIcon,
   MoreVerticalIcon,
   PaintBrush02Icon,
@@ -280,7 +279,7 @@ const SETTINGS_TAB_MENU_ITEMS: Record<
   profile: { icon: UserCircleIcon, labelKey: "settings.tabs.profile" },
   appearance: { icon: PaintBrush02Icon, labelKey: "settings.tabs.appearance" },
   resources: { icon: CpuIcon, labelKey: "settings.tabs.resources" },
-  chat: { icon: Message01Icon, labelKey: "settings.tabs.chat" },
+  chat: { icon: MessageCircleIcon, labelKey: "settings.tabs.chat" },
   connections: { icon: CloudIcon, labelKey: "settings.tabs.connections" },
 };
 
@@ -2114,7 +2113,7 @@ export function AppSidebar() {
       case "move": {
         const projectId = plan.action.projectId;
         if (projectId === null) {
-          return { icon: Message01Icon, text: t("shell.drag.moveToRecents") };
+          return { icon: MessageCircleIcon, text: t("shell.drag.moveToRecents") };
         }
         const name = projects.find((project) => project.id === projectId)?.name ?? "";
         return { icon: Folder01Icon, text: t("shell.drag.moveTo", { name }) };
