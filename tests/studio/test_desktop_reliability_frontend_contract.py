@@ -1235,10 +1235,14 @@ def _labelled_actions(
         # sets the same edge by another route, belongs here for the same reason: the reach is
         # derived from `right` and `padding-right` alone, and a utility outside that model
         # renders something this arithmetic does not describe.
+        # Padding utilities too. The reach below substitutes the padding read from index.css
+        # for every action, so `!pr-20` on the element replaces the number being used while
+        # the calculation goes on with the stylesheet's, and the glyph clears the gutter.
         utility = [
             token
             for token in worn
             if re.fullmatch(rf"(?:\S*:)?right-\S+|{_MOVES_HORIZONTALLY}", token)
+            or re.fullmatch(r"(?:\S*:)?!?(?:p|px|pe|pr)-\S+", token)
         ]
         assert not utility, (
             f"the {name} action is positioned with {utility}, which this guard does not model: "
@@ -1507,6 +1511,14 @@ def _touch_spinner_reach(block: str, spacing: float) -> tuple[str, float] | None
             r"\[@media\(pointer:coarse\)\]:right-(\d+(?:\.\d+)?)(?![\w.-])", rendered
         )
     ]
+    # The spinner's own width, by the one route this reads. Another width utility on the same
+    # element renders wider than `size-3.5` while the regex below goes on reporting 3.5, so
+    # any of them makes the measurement unreadable rather than merely different.
+    for tag in _opening_jsx_tags(rendered, "<Spinner"):
+        if re.search(r"(?<![\w-])!?(?:w|min-w|max-w|basis)-\S", tag):
+            return None
+        if len(re.findall(r"(?<![\w-])size-\d", tag)) > 1:
+            return None
     widths = [
         float(match.group(1))
         for match in re.finditer(
@@ -1874,6 +1886,18 @@ def test_chat_sidebar_row_actions_visible_on_coarse_pointers():
     assert glyph_rule is not None, (
         "index.css no longer has a .sidebar-row-action-glyph rule, so this guard cannot tell "
         "how much room one action needs"
+    )
+    # Any other route to the glyph's width is refused. `size-*` and `width` are the two this
+    # reads; a `min-width`, `max-width`, `inline-size` or an `@apply w-*` in the same rule
+    # widens the box while this goes on reporting the original size.
+    other_width = re.search(
+        r"(?<![\w-])(?:min-width|max-width|inline-size|block-size):"
+        r"|@apply[^;]*(?<![\w-])(?:w|min-w|max-w|basis)-",
+        glyph_rule,
+    )
+    assert not other_width, (
+        f"the glyph's rule sets its width through {other_width.group(0)!r} as well as the "
+        f"size this guard reads, so the box that renders is wider than the one it measures"
     )
     sizes = _stated_units(glyph_rule, "size", "width", spacing)
     assert len(sizes) == 1 and sizes[0] is not None, (

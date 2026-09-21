@@ -161,6 +161,19 @@ def _assert_only_shrinks(tokens: list[str], what: str, evidence: str) -> None:
     cannot quietly approve a layout nobody checked. Between a guard that is occasionally
     inconvenient and one that is occasionally wrong, this picks the first.
     """
+    # min-width is necessary but not sufficient. The trigger shrinks because it is a flex
+    # item that is allowed to: `shrink-0` or `flex-none` alongside `min-w-0` stops it
+    # shrinking inside the header and lets a long summary widen the thread, with every
+    # min-width check here still green. Refused rather than weighed, like the rest of this.
+    pinned = [
+        token
+        for token in tokens
+        if re.fullmatch(r"(?:\S*:)?!?(?:shrink-0|flex-none|grow-0)!?", token)
+    ]
+    assert not pinned, (
+        f"{what} carries {sorted(set(pinned))}, which stops it shrinking however low its "
+        f"min-width goes, so the summary widens its row instead. {evidence}"
+    )
     widths = [token for token in tokens if _is_min_width(token)]
     assert widths, (
         f"{what} states no min-width at all, so whether it shrinks below its content is left "
