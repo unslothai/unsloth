@@ -11,14 +11,19 @@ surfaces on a Windows runner as a file that suddenly has no tests at all. Found 
 that way: tests/python/test_docker_rocm.py errored on a windows-latest staging run while
 Linux and macOS both reported 70 passed.
 
-Three guards are accepted, all three already used in the tree:
+Two guards are accepted, both already used in the tree:
 
     os.name != "posix" or os.geteuid() == 0        short-circuits on Windows
     os.geteuid() == 0 if hasattr(os, "geteuid")    the conditional form
-    getattr(os, "geteuid", lambda: 1)() == 0       the getattr form
+
+A third form in the tree, `getattr(os, "geteuid", lambda: 1)()`, needs no case: it names
+the function with a string, so it never reaches this scan at all. And nothing else counts
+as a guard merely for sitting to the left of the call, since `is_ci() or os.geteuid() == 0`
+still raises on Windows every time is_ci() is false.
 
 Runtime uses inside a function body are not covered here: they only run on a platform
 the test already reached, and a POSIX-only test that gets that far has a skip of its own.
+A default argument is not a runtime use, because it is evaluated where the `def` is.
 """
 
 from __future__ import annotations
@@ -73,26 +78,20 @@ def _guards(expr: ast.AST) -> list[ast.AST]:
                 out.append(value)
         elif isinstance(node, ast.IfExp):
             out.append(node.test)
-        elif isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "getattr":
-            # getattr(os, "geteuid", <default>) never raises
-            if (
-                len(node.args) == 3
-                and isinstance(node.args[0], ast.Name)
-                and node.args[0].id == "os"
-                and isinstance(node.args[1], ast.Constant)
-                and node.args[1].value == "geteuid"
-            ):
-                out.append(node)
     return out
 
 
 def _is_guarded(expr: ast.AST) -> bool:
-    for guard in _guards(expr):
-        if _mentions_os_name(guard) or _is_hasattr_geteuid(guard):
-            return True
-        if isinstance(guard, ast.Call):  # the getattr form
-            return True
-    return False
+    """Only `os.name` and `hasattr(os, "geteuid")` count. Anything else that merely sits
+    to the left of the call is not a guard: `is_ci() or os.geteuid() == 0` still raises
+    on Windows every time is_ci() is false, so accepting any call there would wave through
+    the exact regression this scan exists to catch.
+
+    `getattr(os, "geteuid", lambda: 1)()` needs no case: it names the function with a
+    string, so it has no `os.geteuid` attribute node and never reaches the scan at all."""
+    return any(
+        _mentions_os_name(guard) or _is_hasattr_geteuid(guard) for guard in _guards(expr)
+    )
 
 
 def _import_time_expressions(tree: ast.AST):
@@ -104,6 +103,12 @@ def _import_time_expressions(tree: ast.AST):
             if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
                 for decorator in child.decorator_list:
                     yield decorator
+                if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    # a default is evaluated where the `def` is, not where the call is,
+                    # so `def helper(uid = os.geteuid()): ...` breaks collection too
+                    args = child.args
+                    for default in (*args.defaults, *(d for d in args.kw_defaults if d)):
+                        yield default
                 yield from walk(child, isinstance(child, ast.ClassDef) and import_time)
             else:
                 if import_time:
@@ -173,6 +178,35 @@ def test_the_scan_still_recognises_an_unguarded_call():
     for expr in _import_time_expressions(good):
         if any(_is_os_geteuid(n) for n in ast.walk(expr)):
             assert _is_guarded(expr), ast.dump(expr)
+
+
+def test_an_unrelated_call_to_the_left_is_not_a_guard():
+    """`is_ci() or os.geteuid() == 0` short-circuits only when is_ci() is true, so on
+    Windows it still raises the rest of the time. Treating any call as protective would
+    wave through exactly what this scan exists to catch."""
+    tree = ast.parse(
+        'import os, pytest\n'
+        '@pytest.mark.skipif(is_ci() or os.geteuid() == 0, reason = "x")\n'
+        'def test_a(): pass\n'
+    )
+    flagged = [
+        expr
+        for expr in _import_time_expressions(tree)
+        if any(_is_os_geteuid(n) for n in ast.walk(expr)) and not _is_guarded(expr)
+    ]
+    assert flagged, "an unrelated call is being accepted as a Windows guard"
+
+
+def test_a_default_argument_is_import_time():
+    """A default is evaluated where the `def` is, so it breaks collection like a
+    decorator does, even though it reads like it belongs to the call."""
+    tree = ast.parse("import os\ndef helper(uid = os.geteuid()):\n    return uid\n")
+    flagged = [
+        expr
+        for expr in _import_time_expressions(tree)
+        if any(_is_os_geteuid(n) for n in ast.walk(expr)) and not _is_guarded(expr)
+    ]
+    assert flagged, "a default argument is evaluated at import and must be scanned"
 
 
 def test_a_runtime_call_inside_a_function_is_not_flagged():
