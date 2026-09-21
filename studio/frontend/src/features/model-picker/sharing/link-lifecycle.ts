@@ -3,17 +3,20 @@
 
 import { clearNewChatDraft, useChatRuntimeStore } from "@/features/chat";
 import { toast } from "@/lib/toast";
-// The model-picker barrel imports this feature; use its draft and handoff modules.
-import { modelConfigDraftKey } from "../model-picker/model-config/model-config-draft";
+import { modelConfigDraftKey } from "../model-config/model-config-draft";
 import {
   clearModelConfigHandoff,
   requestModelConfigHandoff,
-} from "../model-picker/model-config/model-config-handoff";
+} from "../model-config/model-config-handoff";
 import { resolveCachedRunConfigTarget } from "./cached-target";
 import { type RunConfigRequest, runConfigInbox } from "./inbox";
 import { resolveRunConfigTarget } from "./target";
 
-export type RunConfigNavigation = { id: string; from: string };
+export type RunConfigNavigation = {
+  id: string;
+  from: string;
+  started: boolean;
+};
 type LinkContext = {
   pending: RunConfigRequest | null;
   canOpen: boolean;
@@ -57,14 +60,18 @@ export function navigateRunConfig({
     } else if (location.href !== navigation.current.from) {
       runConfigInbox.clear(pending.id);
     }
+    if (navigation.current.started || !pending.target) {
+      return;
+    }
+  }
+  navigation.current = {
+    id: pending.id,
+    from: location.href,
+    started: Boolean(pending.target),
+  };
+  if (!pending.target || runConfigInbox.getSnapshot() !== pending) {
     return;
   }
-  navigation.current = { id: pending.id, from: location.href };
-  clearNewChatDraft();
-  const runtime = useChatRuntimeStore.getState();
-  runtime.setActiveThreadId(null);
-  runtime.setActiveProjectId(null);
-  runtime.setIncognito(false);
   navigate({
     to: "/chat",
     search: { new: pending.id },
@@ -98,12 +105,29 @@ export function openRunConfigTarget({
     pending.draftKey ||
     !canOpen ||
     !settingsHydrated ||
-    !routeReady ||
     !(pending.selectedModel ?? pending.value.model ?? currentModel) ||
-    location.pathname !== "/chat" ||
-    new URLSearchParams(location.searchStr).get("new") !== pending.id ||
     runConfigInbox.getSnapshot() !== pending
   ) {
+    return;
+  }
+  if (pending.target) {
+    if (
+      !routeReady ||
+      location.pathname !== "/chat" ||
+      new URLSearchParams(location.searchStr).get("new") !== pending.id
+    ) {
+      return;
+    }
+    clearNewChatDraft();
+    const runtime = useChatRuntimeStore.getState();
+    runtime.setActiveThreadId(null);
+    runtime.setActiveProjectId(null);
+    runtime.setIncognito(false);
+    runConfigInbox.bind(
+      pending.id,
+      modelConfigDraftKey(pending.target.id, pending.target.meta.ggufVariant),
+    );
+    requestModelConfigHandoff({ requestId: pending.id, ...pending.target });
     return;
   }
   const target = resolveRunConfigTarget(
@@ -127,11 +151,7 @@ export function openRunConfigTarget({
       ) {
         return;
       }
-      runConfigInbox.bind(
-        pending.id,
-        modelConfigDraftKey(resolved.id, resolved.meta.ggufVariant),
-      );
-      requestModelConfigHandoff({ requestId: pending.id, ...resolved });
+      runConfigInbox.submit({ ...pending, target: resolved });
     })
     .catch(() => {
       if (

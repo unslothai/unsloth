@@ -2,8 +2,12 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { authFetch } from "@/features/auth";
+import { ggufVariantsQuery, runBoundedVariantsRequest } from "@/features/chat";
 import {
   type GgufVariantsResponse,
+  INVENTORY_FRESHNESS_WINDOW_MS,
+  isInventoryStampFresh,
+  withAbort,
   buildLocalInventoryRows,
   fetchInventorySource,
   ggufVariantsMatch,
@@ -11,16 +15,6 @@ import {
   residentModelIdMatches,
   useDeviceInventoryStore,
 } from "@/features/hub";
-// These request/cache helpers are internal leaf APIs.
-import {
-  ggufVariantsQuery,
-  runBoundedVariantsRequest,
-} from "../chat/api/gguf-variants-request";
-import {
-  INVENTORY_FRESHNESS_WINDOW_MS,
-  isInventoryStampFresh,
-} from "../hub/inventory/inventory-freshness";
-import { withAbort } from "../hub/lib/abort-signals";
 import type { resolveRunConfigTarget } from "./target";
 
 type RunConfigTarget = NonNullable<ReturnType<typeof resolveRunConfigTarget>>;

@@ -12,15 +12,15 @@ registerBundlerResolver();
 installLocalStorageFake();
 
 const { createRunConfigLink, parseRunConfigLink, MAX_RUN_CONFIG_URL_LENGTH } =
-  await import("../src/features/share-run-configs/links.ts");
+  await import("../src/features/model-picker/sharing/links.ts");
 const { SHARED_CONFIG_KEYS } = await import(
-  "../src/features/share-run-configs/fields.ts"
+  "../src/features/model-picker/sharing/fields.ts"
 );
 const { createRunConfigInbox, mergeSharedRunConfig } = await import(
-  "../src/features/share-run-configs/inbox.ts"
+  "../src/features/model-picker/sharing/inbox.ts"
 );
 const { resolveRunConfigTarget } = await import(
-  "../src/features/share-run-configs/target.ts"
+  "./helpers/sharing-target.ts"
 );
 const { DEFAULT_PER_MODEL_CONFIG } = await import(
   "../src/features/model-picker/model-config/per-model-config.ts"
@@ -400,7 +400,7 @@ test("omitted model identity inherits the selected model and native capability l
 
 test("an explicit native format cannot inherit a GGUF variant or native file token", () => {
   const target = resolveRunConfigTarget(
-    { isGguf: false, config: {} },
+    { model: selection.params.checkpoint, isGguf: false, config: {} },
     selection,
   );
   assert.equal(target?.meta.isGguf, false);
@@ -482,5 +482,26 @@ for (const id of [
       assert.equal(target?.meta.nativePathToken, "local-token");
       assert.equal(target?.meta.loadId, id);
     }
+  });
+}
+
+for (const isGguf of [false, true]) {
+  test(`settings-only links preserve the recipient's known format: GGUF=${isGguf}`, () => {
+    const target = resolveRunConfigTarget(
+      {
+        isGguf: !isGguf,
+        ggufVariant: isGguf ? undefined : "Q8_0",
+        config: { nParallel: 3 },
+      },
+      {
+        ...selection,
+        loadedIsGguf: isGguf,
+        activeGgufVariant: isGguf ? "Q4_K_M" : null,
+      },
+    );
+    assert.equal(target?.meta.isGguf, isGguf);
+    assert.equal(target?.meta.ggufVariant, isGguf ? "Q4_K_M" : undefined);
+    assert.equal(target?.meta.isDownloaded, true);
+    assert.equal(target?.meta.loadId, selection.activeLoadId);
   });
 }

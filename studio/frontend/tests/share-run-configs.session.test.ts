@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { createDeepLinkIntentGate } from "../src/features/deep-links/deep-link-intent.ts";
 import { parseUnslothDeepLink } from "../src/features/deep-links/parse-deep-link.ts";
-import type * as Receiver from "../src/features/share-run-configs/receive-link.ts";
+import type * as Receiver from "../src/features/model-picker/sharing/receive-link.ts";
 import {
   installLocalStorageFake,
   registerBundlerResolver,
@@ -14,15 +14,16 @@ import { loadWithStubs } from "./helpers/module-stubs.ts";
 
 registerBundlerResolver();
 installLocalStorageFake();
-const links = await import("../src/features/share-run-configs/links.ts");
+const links = await import("../src/features/model-picker/sharing/links.ts");
 const { createRunConfigInbox } = await import(
-  "../src/features/share-run-configs/inbox.ts"
+  "../src/features/model-picker/sharing/inbox.ts"
 );
 const events = await import("../src/features/auth/session-events.ts");
 const sessionMark = "unsloth_auth_session_mark";
 const run = "unsloth://run?model=owner/model&nParallel=3";
 const browserRun = "http://localhost/chat#run?model=owner/model&nParallel=3";
-const otherBrowserRun = "http://localhost/chat#run?model=owner/other&nParallel=4";
+const otherBrowserRun =
+  "http://localhost/chat#run?model=owner/other&nParallel=4";
 
 function harness({ url = "http://localhost/chat", desktop = false } = {}) {
   const browser = installLocalStorageFake();
@@ -42,7 +43,7 @@ function harness({ url = "http://localhost/chat", desktop = false } = {}) {
     const inbox = createRunConfigInbox();
     const receiver = loadWithStubs<typeof Receiver>(
       new URL(
-        "../src/features/share-run-configs/receive-link.ts",
+        "../src/features/model-picker/sharing/receive-link.ts",
         import.meta.url,
       ),
       {
@@ -55,12 +56,14 @@ function harness({ url = "http://localhost/chat", desktop = false } = {}) {
           AUTH_SESSION_MARK_KEY: sessionMark,
           hasAuthToken: () => signedIn,
         },
-        "../deep-links/deep-link-intent": { createDeepLinkIntentGate },
-        "../deep-links/parse-deep-link": { parseUnslothDeepLink },
-        "../model-picker/model-config/model-config-draft": {
+        "@/features/deep-links": {
+          createDeepLinkIntentGate,
+          parseUnslothDeepLink,
+        },
+        "../model-config/model-config-draft": {
           markModelConfigDraftEdited: () => undefined,
         },
-        "../model-picker/model-config/model-config-handoff": {
+        "../model-config/model-config-handoff": {
           clearModelConfigHandoff: (id: string) => cleared.push(id),
           createModelConfigHandoffRequestId: () => `request-${++nextId}`,
         },
@@ -245,3 +248,21 @@ for (const newer of [
     doc.dispose();
   });
 }
+
+test("a login remount preserves recovery until binding or rejection", () => {
+  const app = harness({ url: browserRun });
+  const doc = app.loadDocument();
+  doc.receiver.receiveStartupRunConfigUrl();
+  app.signIn();
+  const pending = doc.inbox.getSnapshot();
+  doc.dispose();
+  doc.receiver.receiveStartupRunConfigUrl();
+  assert.equal(doc.inbox.getSnapshot(), pending);
+  assert.equal(app.recovery.size, 1);
+  window.location.href = "http://localhost/chat";
+  const reloaded = app.loadDocument();
+  reloaded.receiver.receiveStartupRunConfigUrl();
+  assert.equal(reloaded.inbox.getSnapshot()?.value.config.nParallel, 3);
+  assert.equal(app.recovery.size, 0);
+  reloaded.dispose();
+});

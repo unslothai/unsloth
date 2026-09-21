@@ -1,20 +1,19 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Leaf imports avoid a cycle through the model-picker barrel.
 import {
   EXTRA_ARGS_MAX_BYTES,
   EXTRA_ARGS_MAX_TOKENS,
   diagnoseExtraArgs,
   extraArgFlagName,
   formatExtraArgs,
-} from "../model-picker/model-config/llama-extra-args";
+} from "../model-config/llama-extra-args";
 import {
   CONTEXT_LENGTH_MIN,
   KV_CACHE_DTYPES,
   N_BATCH_MAX,
   N_BATCH_MIN,
-} from "../model-picker/model-config/per-model-config";
+} from "../model-config/per-model-config";
 
 type ValueRule = (value: string) => boolean;
 const decimal = /^-?(?:0|[1-9]\d*)(?:\.\d+)?$/;

@@ -1,15 +1,14 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import type { PerModelConfig } from "@/features/model-picker";
 import { toast } from "@/lib/toast";
-// The model-picker barrel imports this feature; use its draft module directly.
 import {
   clearExtraArgsEditForDraft,
   markModelConfigDraftEdited,
   patchModelConfigDraft,
   readModelConfigDraft,
-} from "../model-picker/model-config/model-config-draft";
+} from "../model-config/model-config-draft";
+import type { PerModelConfig } from "../model-config/per-model-config";
 import { SHARED_CONFIG_KEYS } from "./fields";
 import {
   type RunConfigRequest,

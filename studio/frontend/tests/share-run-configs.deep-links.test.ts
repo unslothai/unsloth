@@ -14,10 +14,10 @@ import { loadWithStubs } from "./helpers/module-stubs.ts";
 registerBundlerResolver();
 installLocalStorageFake();
 const { createRunConfigInbox } = await import(
-  "../src/features/share-run-configs/inbox.ts"
+  "../src/features/model-picker/sharing/inbox.ts"
 );
 const { parseRunConfigLink, createRunConfigLink } = await import(
-  "../src/features/share-run-configs/links.ts"
+  "../src/features/model-picker/sharing/links.ts"
 );
 
 const hub = "unsloth://open_from_hf?model=owner/model";
@@ -47,7 +47,7 @@ function harness(sharedLinks = true) {
     receiveSharedRunConfigUrls: (urls: string[]) => boolean;
   }>(
     new URL(
-      "../src/features/share-run-configs/receive-link.ts",
+      "../src/features/model-picker/sharing/receive-link.ts",
       import.meta.url,
     ),
     {
@@ -55,17 +55,19 @@ function harness(sharedLinks = true) {
       "@/lib/toast": {
         toast: { error: (message: string) => errors.push(message) },
       },
-      "../deep-links/parse-deep-link": { parseUnslothDeepLink },
-      "../model-picker/model-config/model-config-draft": {
+      "@/features/deep-links": {
+        parseUnslothDeepLink,
+        createDeepLinkIntentGate,
+      },
+      "../model-config/model-config-draft": {
         markModelConfigDraftEdited: () => undefined,
       },
-      "../model-picker/model-config/model-config-handoff": {
+      "../model-config/model-config-handoff": {
         clearModelConfigHandoff: () => undefined,
         createModelConfigHandoffRequestId: () => `request-${++nextId}`,
       },
       "./inbox": { runConfigInbox: inbox },
       "./links": { parseRunConfigLink, createRunConfigLink },
-      "../deep-links/deep-link-intent": { createDeepLinkIntentGate },
       "@/features/auth": { hasAuthToken: () => true },
     },
   );

@@ -9,7 +9,7 @@ import type {
   GgufVariantDetail,
   LocalModelInfo,
 } from "../src/features/hub/inventory/api.ts";
-import type { resolveCachedRunConfigTarget as Resolver } from "../src/features/share-run-configs/cached-target.ts";
+import type { resolveCachedRunConfigTarget as Resolver } from "../src/features/model-picker/sharing/cached-target.ts";
 import {
   installLocalStorageFake,
   registerBundlerResolver,
@@ -35,7 +35,7 @@ const { ggufVariantsMatch, residentModelIdMatches } = await import(
   "../src/features/hub/lib/model-identity.ts"
 );
 const { resolveRunConfigTarget } = await import(
-  "../src/features/share-run-configs/target.ts"
+  "./helpers/sharing-target.ts"
 );
 const { modelConfigTarget } = await import(
   "../src/features/model-picker/model-config/model-config-handoff.ts"
@@ -98,7 +98,7 @@ function harness({
     resolveCachedRunConfigTarget: typeof Resolver;
   }>(
     new URL(
-      "../src/features/share-run-configs/cached-target.ts",
+      "../src/features/model-picker/sharing/cached-target.ts",
       import.meta.url,
     ),
     {
@@ -123,6 +123,8 @@ function harness({
         },
       },
       "@/features/hub": {
+        ...inventoryFreshness,
+        ...abortSignals,
         buildLocalInventoryRows,
         ggufVariantsMatch,
         hubTokenHeader,
@@ -149,9 +151,7 @@ function harness({
           return { cachedGguf, cachedModels, localModels }[source];
         },
       },
-      "../chat/api/gguf-variants-request": variantsRequest,
-      "../hub/inventory/inventory-freshness": inventoryFreshness,
-      "../hub/lib/abort-signals": abortSignals,
+      "@/features/chat": variantsRequest,
     },
   );
   return {

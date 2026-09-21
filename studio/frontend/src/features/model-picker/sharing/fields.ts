@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import type { PerModelConfig } from "@/features/model-picker";
-// Leaf imports avoid a cycle through the model-picker barrel.
 import {
   CACHE_RAM_MAX,
   CACHE_RAM_MIN,
@@ -11,7 +9,6 @@ import {
   CTX_CHECKPOINTS_MIN,
   KV_CACHE_DTYPES,
   LOAD_MODES,
-  MAX_REASONING_BUDGET_MESSAGE_BYTES,
   MAX_SEQ_LENGTH_MAX,
   MAX_SEQ_LENGTH_MIN,
   MLX_KV_BITS,
@@ -19,8 +16,10 @@ import {
   N_BATCH_MIN,
   N_PARALLEL_MAX,
   N_PARALLEL_MIN,
+  type PerModelConfig,
   SPECULATIVE_TYPES,
-} from "../model-picker/model-config/per-model-config";
+  isReasoningBudgetMessageValid,
+} from "../model-config/per-model-config";
 import { validSharedExtraArgs } from "./extra-args";
 
 export type SharedConfigKey = keyof PerModelConfig;
@@ -31,7 +30,6 @@ type Field = {
   text?: boolean;
   error?: string;
 };
-const encoder = new TextEncoder();
 
 const integer = (value: unknown, min: number, max: number): boolean =>
   typeof value === "number" &&
@@ -46,31 +44,26 @@ const choice = (value: unknown, values: readonly unknown[]): boolean =>
   values.includes(value);
 const boolean: Validator = (value) => typeof value === "boolean";
 
-function invisibleControl(code: number): boolean {
-  return (
-    (code >= 0x7f && code <= 0x9f) ||
-    (code >= 0x202a && code <= 0x202e) ||
-    (code >= 0x2066 && code <= 0x2069)
-  );
-}
-
-function validText(value: unknown, limit: number): value is string {
-  if (typeof value !== "string" || value.length > limit) {
+function validSharedReasoningMessage(value: unknown): value is string {
+  if (typeof value !== "string" || !isReasoningBudgetMessageValid(value)) {
     return false;
   }
   for (const character of value) {
     const code = character.codePointAt(0) ?? 0;
-    if (code < 32 && code !== 9 && code !== 10 && code !== 13) {
-      return false;
-    }
-    if (code >= 0xd800 && code <= 0xdfff) {
-      return false;
-    }
-    if (invisibleControl(code)) {
+    if (
+      (code < 32 && code !== 9 && code !== 10 && code !== 13) ||
+      (code >= 0x7f && code <= 0x9f) ||
+      (code >= 0xd800 && code <= 0xdfff) ||
+      code === 0x200b ||
+      (code >= 0x202a && code <= 0x202e) ||
+      (code >= 0x2060 && code <= 0x2064) ||
+      (code >= 0x2066 && code <= 0x2069) ||
+      code === 0xfeff
+    ) {
       return false;
     }
   }
-  return encoder.encode(value).byteLength <= limit;
+  return true;
 }
 
 const gpuId: Validator = (value) => integer(value, 0, 255);
@@ -115,7 +108,7 @@ export const SHARED_CONFIG_FIELDS: Record<SharedConfigKey, Field> = {
   },
   reasoningBudgetMessage: {
     label: "Reasoning budget message",
-    valid: (value) => validText(value, MAX_REASONING_BUDGET_MESSAGE_BYTES),
+    valid: validSharedReasoningMessage,
     text: true,
   },
   nBatch: {

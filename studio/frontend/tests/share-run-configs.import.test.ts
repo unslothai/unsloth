@@ -3,7 +3,7 @@
 
 import assert from "node:assert/strict";
 import test, { type TestContext } from "node:test";
-import type * as ImportConfig from "../src/features/share-run-configs/import-config.ts";
+import type * as ImportConfig from "../src/features/model-picker/sharing/import-config.ts";
 import {
   installLocalStorageFake,
   registerBundlerResolver,
@@ -18,8 +18,10 @@ const drafts = await import(
 const { DEFAULT_PER_MODEL_CONFIG } = await import(
   "../src/features/model-picker/model-config/per-model-config.ts"
 );
-const fields = await import("../src/features/share-run-configs/fields.ts");
-const inboxModule = await import("../src/features/share-run-configs/inbox.ts");
+const fields = await import("../src/features/model-picker/sharing/fields.ts");
+const inboxModule = await import(
+  "../src/features/model-picker/sharing/inbox.ts"
+);
 type Config = typeof DEFAULT_PER_MODEL_CONFIG;
 let sequence = 0;
 
@@ -45,7 +47,7 @@ function harness(t: TestContext, patch: Partial<Config> = { nParallel: 3 }) {
   inbox.submit({ id: "import", draftKey: key, value: { config: patch } });
   const { scheduleRunConfigImport } = loadWithStubs<typeof ImportConfig>(
     new URL(
-      "../src/features/share-run-configs/import-config.ts",
+      "../src/features/model-picker/sharing/import-config.ts",
       import.meta.url,
     ),
     {
@@ -55,7 +57,7 @@ function harness(t: TestContext, patch: Partial<Config> = { nParallel: 3 }) {
           success: (message: string) => successes.push(message),
         },
       },
-      "../model-picker/model-config/model-config-draft": drafts,
+      "../model-config/model-config-draft": drafts,
       "./fields": fields,
       "./inbox": { ...inboxModule, runConfigInbox: inbox },
     },

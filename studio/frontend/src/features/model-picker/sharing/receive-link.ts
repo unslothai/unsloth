@@ -9,14 +9,15 @@ import {
 } from "@/features/auth";
 import { isTauri } from "@/lib/api-base";
 import { toast } from "@/lib/toast";
-// Leaf modules keep startup intake independent of the routing and model-picker barrels.
-import { createDeepLinkIntentGate } from "../deep-links/deep-link-intent";
-import { parseUnslothDeepLink } from "../deep-links/parse-deep-link";
-import { markModelConfigDraftEdited } from "../model-picker/model-config/model-config-draft";
+import {
+  createDeepLinkIntentGate,
+  parseUnslothDeepLink,
+} from "@/features/deep-links";
+import { markModelConfigDraftEdited } from "../model-config/model-config-draft";
 import {
   clearModelConfigHandoff,
   createModelConfigHandoffRequestId,
-} from "../model-picker/model-config/model-config-handoff";
+} from "../model-config/model-config-handoff";
 import { runConfigInbox } from "./inbox";
 import {
   type RunConfigLinkResult,
@@ -131,6 +132,26 @@ function receiveParsedLink(
 }
 
 export function receiveStartupRunConfigUrl(): void {
+  const initial = startupUrl;
+  startupUrl = "";
+  if (!initial) {
+    return;
+  }
+  if (!isTauri) {
+    const parsed = parseRunConfigLink(initial);
+    if (parsed.kind !== "unrelated") {
+      const url = new URL(initial);
+      if (
+        url.searchParams.get("run") === "1" &&
+        window.location.href === initial
+      ) {
+        url.searchParams.delete("run");
+        window.history.replaceState(window.history.state, "", url.href);
+      }
+      receiveParsedLink(parsed, true);
+      return;
+    }
+  }
   let recovery: {
     url?: unknown;
     replaceHistory?: boolean;
@@ -143,14 +164,6 @@ export function receiveStartupRunConfigUrl(): void {
     recovery = null;
   }
   clearRecovery();
-  const initial = startupUrl;
-  startupUrl = "";
-  if (
-    !initial ||
-    (!isTauri && receiveParsedLink(parseRunConfigLink(initial), true))
-  ) {
-    return;
-  }
   if (
     typeof recovery?.url === "string" &&
     typeof recovery.expiresAt === "number" &&

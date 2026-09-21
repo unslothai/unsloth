@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import type { PerModelConfig } from "@/features/model-picker";
+import type { ModelConfigHandoffRequest } from "../model-config/model-config-handoff";
+import type { PerModelConfig } from "../model-config/per-model-config";
 import { SHARED_CONFIG_KEYS } from "./fields";
 import type { SharedRunConfig } from "./links";
 
@@ -9,6 +10,7 @@ export type RunConfigRequest = {
   id: string;
   value: SharedRunConfig;
   selectedModel?: string;
+  target?: Pick<ModelConfigHandoffRequest, "id" | "meta">;
   draftKey?: string;
   replaceHistory?: boolean;
 };

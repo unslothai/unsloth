@@ -12,15 +12,15 @@ registerBundlerResolver();
 installLocalStorageFake();
 
 const { createRunConfigLink, parseRunConfigLink } = await import(
-  "../src/features/share-run-configs/links.ts"
+  "../src/features/model-picker/sharing/links.ts"
 );
 const { sharedExtraArgsError, validSharedExtraArgs } = await import(
-  "../src/features/share-run-configs/extra-args.ts"
+  "../src/features/model-picker/sharing/extra-args.ts"
 );
 const { diagnoseExtraArgs, extraArgsAreLoadable, formatExtraArgs } =
   await import("../src/features/model-picker/model-config/llama-extra-args.ts");
 const { mergeSharedRunConfig } = await import(
-  "../src/features/share-run-configs/inbox.ts"
+  "../src/features/model-picker/sharing/inbox.ts"
 );
 const { DEFAULT_PER_MODEL_CONFIG } = await import(
   "../src/features/model-picker/model-config/per-model-config.ts"
@@ -592,6 +592,26 @@ test("arbitrary templates cannot enter through a field or an argument", () => {
   }
 });
 
+test("shared reasoning messages reject invisible separators and format controls", () => {
+  for (const character of [
+    "\u200b",
+    "\u2060",
+    "\u2061",
+    "\u2062",
+    "\u2063",
+    "\u2064",
+    "\ufeff",
+  ]) {
+    const message = `Review${character}this`;
+    rejects(`reasoningBudgetMessage=${encodeURIComponent(message)}`);
+    for (const base of [undefined, "http://localhost:8888/chat"]) {
+      assert.throws(() =>
+        createRunConfigLink({ config: { reasoningBudgetMessage: message } }, base),
+      );
+    }
+  }
+});
+
 test("text stays literal through a single decode, including encoded delimiters and HTML", () => {
   for (const message of [
     '<img src=x onerror="globalThis.injected=true">',
@@ -600,6 +620,9 @@ test("text stays literal through a single decode, including encoded delimiters a
     "%253Cscript%253E",
     'hello &llamaExtraArgs=["--agent"]#run?command=x + 100%',
     "回答 🦥\nline two",
+    "می\u200cخواهم",
+    "क्\u200dष",
+    "👩\u200d💻",
   ]) {
     const value = { config: { reasoningBudgetMessage: message } };
     for (const base of [undefined, "http://localhost:8888/chat"]) {

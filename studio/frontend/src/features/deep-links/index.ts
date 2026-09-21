@@ -2,3 +2,6 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 export { DeepLinkHandler } from "./deep-link-handler";
+
+export { createDeepLinkIntentGate } from "./deep-link-intent";
+export { parseUnslothDeepLink } from "./parse-deep-link";

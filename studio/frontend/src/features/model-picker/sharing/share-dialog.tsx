@@ -18,17 +18,16 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
-import type { ModelPickTarget } from "@/features/model-picker";
 import { isTauri } from "@/lib/api-base";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { toast } from "@/lib/toast";
 import { useId, useMemo, useState } from "react";
-// Leaf imports avoid a cycle through the model-picker barrel.
-import { formatExtraArgs } from "../model-picker/model-config/llama-extra-args";
+import type { ModelPickTarget } from "../components/model-selector/types";
+import { formatExtraArgs } from "../model-config/llama-extra-args";
 import {
   DEFAULT_PER_MODEL_CONFIG,
   type PerModelConfig,
-} from "../model-picker/model-config/per-model-config";
+} from "../model-config/per-model-config";
 import { sharedExtraArgsError } from "./extra-args";
 import {
   SHARED_CONFIG_FIELDS,
@@ -36,6 +35,7 @@ import {
   type SharedConfigKey,
 } from "./fields";
 import {
+  DESKTOP_RUN_CONFIG_URL_WARNING_LENGTH,
   type SharedRunConfig,
   createRunConfigLink,
   isShareableModelId,
@@ -115,7 +115,7 @@ export function ShareRunConfigDialog({
   const [includeVariant, setIncludeVariant] = useState(
     Boolean(target.ggufVariant),
   );
-  const [includeFormat, setIncludeFormat] = useState(true);
+  const [includeFormat, setIncludeFormat] = useState(shareableModel);
   const [destination, setDestination] = useState(
     isTauri ? "desktop" : "browser",
   );
@@ -241,25 +241,24 @@ export function ShareRunConfigDialog({
             setIncludeFormat,
             target.isGguf ? "GGUF" : "Native weights",
           )}
-          {fields.map(
-            ({ key, valid, detail }) =>
-              choice(
-                key,
-                SHARED_CONFIG_FIELDS[key].label,
-                selected.has(key),
-                (checked) =>
-                  setSelected((current) => {
-                    const next = new Set(current);
-                    if (checked) {
-                      next.add(key);
-                    } else {
-                      next.delete(key);
-                    }
-                    return next;
-                  }),
-                detail,
-                !valid,
-              ),
+          {fields.map(({ key, valid, detail }) =>
+            choice(
+              key,
+              SHARED_CONFIG_FIELDS[key].label,
+              selected.has(key),
+              (checked) =>
+                setSelected((current) => {
+                  const next = new Set(current);
+                  if (checked) {
+                    next.add(key);
+                  } else {
+                    next.delete(key);
+                  }
+                  return next;
+                }),
+              detail,
+              !valid,
+            ),
           )}
         </div>
         <div className="space-y-2">
@@ -299,6 +298,13 @@ export function ShareRunConfigDialog({
               {error}
             </p>
           )}
+          {destination === "desktop" &&
+            link.length > DESKTOP_RUN_CONFIG_URL_WARNING_LENGTH && (
+              <p role="status" className="text-sm text-muted-foreground">
+                Long desktop links may not open on Windows. Include fewer
+                settings{!isTauri && " or use a browser link"}.
+              </p>
+            )}
           <p className="text-xs text-muted-foreground">
             Anyone with the link can read the included settings. Check extra
             arguments and text for private values before sharing. Custom

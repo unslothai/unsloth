@@ -24,12 +24,6 @@ import {
 } from "@/features/chat";
 import { prepareHfTokenForUse } from "@/features/hf-auth";
 import {
-  SharedRunConfigControls,
-  SharedRunConfigReview,
-  cancelRunConfigImportForEdit,
-  isRunConfigEditorChange,
-} from "@/features/share-run-configs";
-import {
   type VramBudgetSettings,
   dropVramBudgetRetry,
   flushVramBudgetSave,
@@ -175,6 +169,12 @@ import {
   vramFractionToPercent,
   vramPercentToFraction,
 } from "../model-config/per-model-config";
+import {
+  SharedRunConfigControls,
+  SharedRunConfigReview,
+  cancelRunConfigImportForEdit,
+  isRunConfigEditorChange,
+} from "../sharing";
 import { ChatTemplateEditorDialog } from "./chat-template-editor-dialog";
 import { MemoryEstimateRow } from "./memory-estimate-row";
 import type { ModelPickTarget } from "./model-selector/types";

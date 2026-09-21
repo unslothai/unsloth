@@ -14,7 +14,6 @@ import { ApiProviderLogo } from "@/features/chat/api-provider-logo";
 import type { HfTaskFilter } from "@/features/hub/hooks/use-hub-model-search";
 // eslint-disable-next-line no-restricted-imports -- The settings barrel imports this feature back.
 import { useSettingsDialogStore } from "@/features/settings/stores/settings-dialog-store";
-import { keepSharedRunConfigOpen } from "@/features/share-run-configs";
 import { useT } from "@/i18n";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { cn } from "@/lib/utils";
@@ -50,6 +49,7 @@ import {
   type PerModelConfig,
   resolveInitialConfig,
 } from "../model-config/per-model-config";
+import { keepSharedRunConfigOpen } from "../sharing";
 import { ModelConfigPage } from "./model-config-page";
 import {
   type ExternalConnectionRef,

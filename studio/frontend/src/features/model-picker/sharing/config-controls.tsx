@@ -2,20 +2,26 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { Button } from "@/components/ui/button";
-import type { ModelPickTarget, PerModelConfig } from "@/features/model-picker";
 import {
+  Suspense,
+  lazy,
   useEffect,
   useLayoutEffect,
   useState,
   useSyncExternalStore,
 } from "react";
-// The model-picker barrel imports this feature; use its draft module directly.
-import { modelConfigDraftKey } from "../model-picker/model-config/model-config-draft";
+import type { ModelPickTarget } from "../components/model-selector/types";
+import { modelConfigDraftKey } from "../model-config/model-config-draft";
+import type { PerModelConfig } from "../model-config/per-model-config";
 import { SHARED_RUN_CONFIG_FOCUS_ATTRIBUTE } from "./editor-events";
 import { scheduleRunConfigImport } from "./import-config";
 import { runConfigInbox } from "./inbox";
 
-import { ShareRunConfigDialog } from "./share-dialog";
+const ShareRunConfigDialog = lazy(() =>
+  import("./share-dialog").then((module) => ({
+    default: module.ShareRunConfigDialog,
+  })),
+);
 
 export function SharedRunConfigControls({
   target,
@@ -76,11 +82,13 @@ export function SharedRunConfigControls({
         Share
       </Button>
       {sharing && (
-        <ShareRunConfigDialog
-          target={target}
-          config={config}
-          onClose={() => setSharing(false)}
-        />
+        <Suspense fallback={null}>
+          <ShareRunConfigDialog
+            target={target}
+            config={config}
+            onClose={() => setSharing(false)}
+          />
+        </Suspense>
       )}
     </>
   );

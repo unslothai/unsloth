@@ -3,7 +3,7 @@
 
 import assert from "node:assert/strict";
 import test from "node:test";
-import type * as Lifecycle from "../src/features/share-run-configs/link-lifecycle.ts";
+import type * as Lifecycle from "../src/features/model-picker/sharing/link-lifecycle.ts";
 import {
   installLocalStorageFake,
   registerBundlerResolver,
@@ -13,13 +13,13 @@ import { loadWithStubs } from "./helpers/module-stubs.ts";
 registerBundlerResolver();
 installLocalStorageFake();
 const { createRunConfigInbox } = await import(
-  "../src/features/share-run-configs/inbox.ts"
+  "../src/features/model-picker/sharing/inbox.ts"
 );
 const { modelConfigDraftKey } = await import(
   "../src/features/model-picker/model-config/model-config-draft.ts"
 );
 const { resolveRunConfigTarget } = await import(
-  "../src/features/share-run-configs/target.ts"
+  "./helpers/sharing-target.ts"
 );
 
 type Target = NonNullable<ReturnType<typeof resolveRunConfigTarget>>;
@@ -67,7 +67,7 @@ function harness() {
   };
   const lifecycle = loadWithStubs<typeof Lifecycle>(
     new URL(
-      "../src/features/share-run-configs/link-lifecycle.ts",
+      "../src/features/model-picker/sharing/link-lifecycle.ts",
       import.meta.url,
     ),
     {
@@ -78,10 +78,10 @@ function harness() {
       "@/lib/toast": {
         toast: { error: (message: string) => errors.push(message) },
       },
-      "../model-picker/model-config/model-config-draft": {
+      "../model-config/model-config-draft": {
         modelConfigDraftKey,
       },
-      "../model-picker/model-config/model-config-handoff": {
+      "../model-config/model-config-handoff": {
         clearModelConfigHandoff: (id: string) =>
           calls.push(["clear handoff", id]),
         requestModelConfigHandoff: (target: Target & { requestId: string }) => {
@@ -143,7 +143,16 @@ function harness() {
       isDownloaded: true,
     },
   };
+  const prepare = async () => {
+    lifecycle.openRunConfigTarget({ ...open, location: context.location });
+    lookups.at(-1)!.result.resolve(target);
+    await settle();
+    const prepared = inbox.getSnapshot();
+    assert.ok(prepared?.target);
+    nav.pending = open.pending = prepared;
+  };
   return {
+    prepare,
     ...lifecycle,
     inbox,
     calls,
@@ -159,22 +168,21 @@ function harness() {
 }
 
 for (const replaceHistory of [false, true]) {
-  test(`navigation clears chat context once and respects history replacement: ${replaceHistory}`, () => {
+  test(`navigation waits for availability and respects history replacement: ${replaceHistory}`, async () => {
     const app = harness();
     app.nav.pending.replaceHistory = replaceHistory;
     app.navigateRunConfig(app.nav);
+    assert.deepEqual(app.calls, []);
+    await app.prepare();
+    app.navigateRunConfig(app.nav);
     app.navigateRunConfig(app.nav);
     assert.deepEqual(app.calls, [
-      "clear draft",
-      ["thread", null],
-      ["project", null],
-      ["incognito", false],
       [
         "navigate",
         { to: "/chat", search: { new: "first" }, replace: replaceHistory },
       ],
     ]);
-    assert.equal(app.lookups.length, 0);
+    assert.equal(app.lookups.length, 1);
     app.navigateRunConfig({ ...app.nav, location: app.destination });
     assert.equal(app.navigation.current?.from, app.destination.href);
     app.navigateRunConfig(app.nav);
@@ -209,14 +217,15 @@ for (const reason of [
   "another page",
   "another chat",
 ] as const) {
-  test(`availability waits at ${reason}`, () => {
+  test(`handoff waits at ${reason}`, async () => {
     const app = harness();
+    await app.prepare();
     if (reason === "route loading") app.open.routeReady = false;
     if (reason === "another page") app.open.location = app.nav.location;
     if (reason === "another chat")
       app.open.location = { ...app.destination, searchStr: "?new=other" };
     assert.equal(app.openRunConfigTarget(app.open), undefined);
-    assert.deepEqual(app.lookups, []);
+    assert.deepEqual(app.calls, []);
   });
 }
 
@@ -227,7 +236,13 @@ test("availability binds the canonical draft before handing off the editor", asy
   assert.deepEqual(app.calls, []);
   app.lookups[0].result.resolve(app.target);
   await settle();
+  assert.deepEqual(app.calls, []);
+  app.openRunConfigTarget({ ...app.open, pending: app.inbox.getSnapshot() });
   assert.deepEqual(app.calls, [
+    "clear draft",
+    ["thread", null],
+    ["project", null],
+    ["incognito", false],
     ["handoff", { requestId: "first", ...app.target }],
   ]);
   assert.equal(
@@ -245,9 +260,7 @@ test("a recipient's local model choice carries a settings-only import through na
   };
   app.inbox.submit(pending);
   app.navigateRunConfig({ ...app.nav, pending });
-  assert.ok(
-    app.calls.some((call) => Array.isArray(call) && call[0] === "navigate"),
-  );
+  assert.deepEqual(app.calls, []);
   app.openRunConfigTarget({ ...app.open, pending });
   assert.equal(app.lookups.length, 1);
   const target = app.lookups[0].target;
@@ -256,6 +269,9 @@ test("a recipient's local model choice carries a settings-only import through na
   assert.equal(target.meta.isGguf, true);
   app.lookups[0].result.resolve(target);
   await settle();
+  const prepared = app.inbox.getSnapshot();
+  app.navigateRunConfig({ ...app.nav, pending: prepared });
+  app.openRunConfigTarget({ ...app.open, pending: prepared });
   const key = modelConfigDraftKey(pending.selectedModel, undefined);
   assert.equal(app.inbox.getSnapshot()?.draftKey, key);
   assert.deepEqual(app.calls.at(-1), [
@@ -280,7 +296,8 @@ for (const failure of [false, true]) {
     assert.deepEqual(app.errors, []);
     app.lookups[1].result.resolve(app.target);
     await settle();
-    assert.equal(app.calls.length, 1);
+    assert.equal(app.calls.length, 0);
+    assert.equal(app.inbox.getSnapshot()?.target, app.target);
   });
 
   test(`newer links survive stale availability ${failure ? "failures" : "successes"}`, async () => {
@@ -301,7 +318,8 @@ for (const failure of [false, true]) {
 
 test("availability failures cancel with feedback and never hand off an uncached fallback", async () => {
   const app = harness();
-  app.openRunConfigTarget(app.open);
+  app.navigateRunConfig(app.nav);
+  app.openRunConfigTarget({ ...app.open, location: app.nav.location });
   app.lookups[0].result.reject(new Error("offline local backend"));
   await settle();
   assert.equal(app.inbox.getSnapshot(), null);
@@ -312,6 +330,7 @@ test("availability failures cancel with feedback and never hand off an uncached 
 for (const superseded of [false, true]) {
   test(`navigation failure only clears its own import: superseded=${superseded}`, async () => {
     const app = harness();
+    await app.prepare();
     app.navigateRunConfig(app.nav);
     if (superseded) app.inbox.submit({ id: "second", value: { config: {} } });
     app.navigationResult.reject(new Error("navigation failed"));
@@ -327,5 +346,23 @@ for (const superseded of [false, true]) {
       ),
       !superseded,
     );
+  });
+}
+
+for (const failure of [false, true]) {
+  test(`leaving during preflight preserves chat state and ignores the late ${failure ? "failure" : "result"}`, async () => {
+    const app = harness();
+    app.navigateRunConfig(app.nav);
+    app.openRunConfigTarget({ ...app.open, location: app.nav.location });
+    app.navigateRunConfig({
+      ...app.nav,
+      location: { href: "/settings", pathname: "/settings", searchStr: "" },
+    });
+    if (failure) app.lookups[0].result.reject(new Error("offline"));
+    else app.lookups[0].result.resolve(app.target);
+    await settle();
+    assert.equal(app.inbox.getSnapshot(), null);
+    assert.deepEqual(app.calls, []);
+    assert.deepEqual(app.errors, []);
   });
 }

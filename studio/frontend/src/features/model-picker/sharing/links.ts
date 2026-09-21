@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import type { PerModelConfig } from "@/features/model-picker";
+import type { PerModelConfig } from "../model-config/per-model-config";
 import {
   SHARED_CONFIG_FIELDS,
   SHARED_CONFIG_KEYS,
@@ -10,6 +10,7 @@ import {
 } from "./fields";
 
 export const MAX_RUN_CONFIG_URL_LENGTH = 16_384;
+export const DESKTOP_RUN_CONFIG_URL_WARNING_LENGTH = 2_083;
 export type SharedRunConfig = {
   model?: string;
   ggufVariant?: string;
@@ -295,7 +296,7 @@ function browserLink(params: URLSearchParams, address: string): string {
     throw new Error("Use an HTTP or HTTPS Studio address.");
   }
   url.pathname = "/chat";
-  url.search = "";
+  url.search = "?run=1";
   url.hash = `run?${params}`;
   return url.href;
 }

@@ -1,17 +1,19 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import type { ModelConfigHandoffRequest } from "@/features/model-picker";
+import {
+  type ChatLoraSummary,
+  type ChatModelSummary,
+  isExternalModelId,
+} from "@/features/chat";
 import { looksLikeLocalPath } from "@/lib/local-path";
-// Leaf imports keep target resolution out of the chat/model-picker barrel cycle.
-import { isExternalModelId } from "../chat/external-providers";
-import type { ChatLoraSummary, ChatModelSummary } from "../chat/types/runtime";
+import type { ModelConfigHandoffRequest } from "../model-config/model-config-handoff";
 import {
   ggufVariantsMatch,
   isOllamaModelId,
   isStandaloneGgufPath,
   residentModelIdMatches,
-} from "../model-picker/model-config/model-identity";
+} from "../model-config/model-identity";
 import { type SharedRunConfig, isShareableModelId } from "./links";
 
 const ggufName = /(?:-gguf|\.gguf)$/i;
@@ -46,15 +48,15 @@ function resolveFormat(
   knownFormat: boolean | null | undefined,
   selectedVariant: string | null,
 ) {
+  const format = value.model ? value.isGguf : (knownFormat ?? value.isGguf);
   const ggufVariant =
-    value.isGguf === false || isStandaloneGgufPath(id)
+    format === false || isStandaloneGgufPath(id)
       ? undefined
       : (value.ggufVariant ?? selectedVariant ?? undefined);
   return {
     ggufVariant,
     isGguf:
-      value.isGguf ??
-      Boolean(ggufVariant || (knownFormat ?? ggufName.test(id))),
+      format ?? Boolean(ggufVariant || (knownFormat ?? ggufName.test(id))),
   };
 }
 

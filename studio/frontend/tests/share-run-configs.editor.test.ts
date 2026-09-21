@@ -3,10 +3,10 @@
 
 import assert from "node:assert/strict";
 import test from "node:test";
-import type { SharedRunConfigControls as Controls } from "../src/features/share-run-configs/config-controls.tsx";
-import type { SharedRunConfigReview as Review } from "../src/features/share-run-configs/config-review.tsx";
-import type { SharedRunConfigLinkEditor as LinkEditor } from "../src/features/share-run-configs/link-editor.tsx";
-import * as events from "../src/features/share-run-configs/editor-events.ts";
+import type { SharedRunConfigControls as Controls } from "../src/features/model-picker/sharing/config-controls.tsx";
+import type { SharedRunConfigReview as Review } from "../src/features/model-picker/sharing/config-review.tsx";
+import type { SharedRunConfigLinkEditor as LinkEditor } from "../src/features/model-picker/sharing/link-editor.tsx";
+import * as events from "../src/features/model-picker/sharing/editor-events.ts";
 import {
   installLocalStorageFake,
   registerBundlerResolver,
@@ -19,7 +19,7 @@ import {
 
 registerBundlerResolver();
 installLocalStorageFake();
-const fields = await import("../src/features/share-run-configs/fields.ts");
+const fields = await import("../src/features/model-picker/sharing/fields.ts");
 const { DEFAULT_PER_MODEL_CONFIG } = await import(
   "../src/features/model-picker/model-config/per-model-config.ts"
 );
@@ -27,9 +27,11 @@ const { modelConfigDraftKey } = await import(
   "../src/features/model-picker/model-config/model-config-draft.ts"
 );
 const { createRunConfigInbox } = await import(
-  "../src/features/share-run-configs/inbox.ts"
+  "../src/features/model-picker/sharing/inbox.ts"
 );
-const targetModule = await import("../src/features/share-run-configs/target.ts");
+const targetModule = await import(
+  "./helpers/sharing-target.ts"
+);
 const { reconcileGpuSelection } = await import("../src/hooks/gpu-selection.ts");
 
 function elements(node: unknown): StubElement[] {
@@ -71,12 +73,14 @@ test("only an open Share dialog protects the popover; pending imports allow focu
     SharedRunConfigControls: typeof Controls;
   }>(
     new URL(
-      "../src/features/share-run-configs/config-controls.tsx",
+      "../src/features/model-picker/sharing/config-controls.tsx",
       import.meta.url,
     ),
     {
       "react/jsx-runtime": stubJsxRuntime(),
       react: {
+        lazy: () => dialog,
+        Suspense: Symbol("suspense"),
         useState: () => [
           sharing,
           (value: boolean) => {
@@ -89,13 +93,12 @@ test("only an open Share dialog protects the popover; pending imports allow focu
         useLayoutEffect: () => undefined,
       },
       "@/components/ui/button": { Button: button },
-      "../model-picker/model-config/model-config-draft": {
+      "../model-config/model-config-draft": {
         modelConfigDraftKey,
       },
       "./inbox": { runConfigInbox: inbox },
       "./editor-events": events,
       "./import-config": { scheduleRunConfigImport: () => undefined },
-      "./share-dialog": { ShareRunConfigDialog: dialog },
     },
   );
   const props = {
@@ -182,7 +185,7 @@ test("review renders field labels and full prompt/argument values as text withou
     SharedRunConfigReview: typeof Review;
   }>(
     new URL(
-      "../src/features/share-run-configs/config-review.tsx",
+      "../src/features/model-picker/sharing/config-review.tsx",
       import.meta.url,
     ),
     { "react/jsx-runtime": stubJsxRuntime(), "./fields": fields },
@@ -259,7 +262,7 @@ test("GPU reconciliation keeps imported settings visible and explains removed or
     SharedRunConfigReview: typeof Review;
   }>(
     new URL(
-      "../src/features/share-run-configs/config-review.tsx",
+      "../src/features/model-picker/sharing/config-review.tsx",
       import.meta.url,
     ),
     { "react/jsx-runtime": stubJsxRuntime(), "./fields": fields },
@@ -318,7 +321,7 @@ test("settings-only chooser keeps the import while accepting recipient-local mod
     SharedRunConfigLinkEditor: typeof LinkEditor;
   }>(
     new URL(
-      "../src/features/share-run-configs/link-editor.tsx",
+      "../src/features/model-picker/sharing/link-editor.tsx",
       import.meta.url,
     ),
     {
@@ -443,7 +446,7 @@ test("startup intake remains mounted while navigation UI loads only for a pendin
     SharedRunConfigLinkHandler: () => unknown;
   }>(
     new URL(
-      "../src/features/share-run-configs/link-handler.tsx",
+      "../src/features/model-picker/sharing/link-handler.tsx",
       import.meta.url,
     ),
     {

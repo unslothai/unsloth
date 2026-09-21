@@ -20,7 +20,7 @@ import { WebUpdateBanner } from "@/components/web/update-banner";
 import { fetchDeviceType } from "@/config/env";
 import { getTauriAuthFailure, tauriAutoAuth } from "@/features/auth";
 import { DeepLinkHandler } from "@/features/deep-links";
-import { receiveSharedRunConfigUrls } from "@/features/share-run-configs";
+import { receiveSharedRunConfigUrls } from "@/features/model-picker";
 import {
   DownloadManagerPanel,
   dismissStartToasts,
