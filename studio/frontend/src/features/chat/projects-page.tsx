@@ -37,6 +37,7 @@ import { isDownloadCancelled, pickNativeChatImport } from "@/lib/native-files";
 import { toast } from "@/lib/toast";
 import {
   chatExportOptions,
+  DeleteChatFilesSwitch,
   OpenChatFolderUnavailableItem,
   archiveChatItem,
   deleteChatItem,
@@ -175,6 +176,8 @@ export function ProjectsPage() {
   const [renamingChat, setRenamingChat] = useState<SidebarItem | null>(null);
   const [chatNameDraft, setChatNameDraft] = useState("");
   const [deletingChat, setDeletingChat] = useState<SidebarItem | null>(null);
+  // Whether the open confirmation takes the files too. Seeded per delete, never left standing.
+  const [deleteFilesOnDelete, setDeleteFilesOnDelete] = useState(false);
 
   const globalImportRef = useRef<HTMLInputElement>(null);
   const projectImportRefs = useRef<Map<string, HTMLInputElement>>(new Map());
@@ -557,11 +560,9 @@ export function ProjectsPage() {
     }
   }
 
-  async function deleteChat(chat: SidebarItem) {
+  async function deleteChat(chat: SidebarItem, deleteFiles: boolean) {
     try {
-      await deleteChatItem(chat, activeThreadId(), () => {}, {
-        deleteFiles: alwaysDeleteChatFiles,
-      });
+      await deleteChatItem(chat, activeThreadId(), () => {}, { deleteFiles });
     } catch (err) {
       toast.error("Failed to delete chat", {
         description: err instanceof Error ? err.message : undefined,
@@ -569,11 +570,26 @@ export function ProjectsPage() {
     }
   }
 
+  /** Always through here, as the sidebar does it: a switch left over from the last delete would
+   *  take files this one was never asked to. A chat follows the preference, so the dialog shows
+   *  what is about to happen; a project workspace is bigger, so it asks from scratch. */
+  function openChatDelete(chat: SidebarItem) {
+    setDeleteFilesOnDelete(alwaysDeleteChatFiles);
+    setDeletingChat(chat);
+  }
+
+  function openProjectDelete(project: ProjectRecord) {
+    setDeleteFilesOnDelete(false);
+    setDeleting(project);
+  }
+
   async function commitChatDelete() {
     const target = deletingChat;
     if (!target) return;
+    const deleteFiles = deleteFilesOnDelete;
     setDeletingChat(null);
-    await deleteChat(target);
+    setDeleteFilesOnDelete(false);
+    await deleteChat(target, deleteFiles);
   }
 
   /** The folder this chat's tool calls wrote to, or a refusal when it wrote to two. */
@@ -614,9 +630,11 @@ export function ProjectsPage() {
   async function commitDelete() {
     const target = deleting;
     if (!target) return;
+    const deleteFiles = deleteFilesOnDelete;
     setDeleting(null);
+    setDeleteFilesOnDelete(false);
     try {
-      await deleteChatProject(target.id);
+      await deleteChatProject(target.id, { deleteFiles });
     } catch (err) {
       toast.error("Failed to delete project", {
         description: err instanceof Error ? err.message : undefined,
@@ -743,7 +761,7 @@ export function ProjectsPage() {
           {/* The loaded header without its sort control, which has nothing to sort yet. */}
           <div className="mb-1 flex items-center gap-3 px-5 pb-1 text-ui-13 font-medium text-muted-foreground">
             <span className="flex-1">Name</span>
-            <span className="w-40 shrink-0">Updated</span>
+            <span className="hidden w-40 shrink-0 sm:block">Updated</span>
             <span className="size-7 shrink-0" />
             <span className="w-8 shrink-0" />
           </div>
@@ -782,7 +800,9 @@ export function ProjectsPage() {
         <>
         <div className="mt-16">
           {/* Column header. Name starts at the folder icon's left edge, and the trailing
-              spacers stand in for the row's pin and menu so Updated sits over its values. */}
+              spacers stand in for the row's pin and menu so Updated sits over its values.
+              Updated leaves below sm with its values: 160px of date left a nested chat row
+              no width for its title and pushed its actions off a phone screen. */}
           <div className="mb-1 flex items-center gap-3 px-5 pb-1 text-ui-13 font-medium text-muted-foreground">
             <span className="flex-1">Name</span>
             {/* The column sorts the list, and the arrow says which way. */}
@@ -790,7 +810,7 @@ export function ProjectsPage() {
               type="button"
               onClick={() => setSortDir((dir) => (dir === "desc" ? "asc" : "desc"))}
               title={sortDir === "desc" ? "Newest first" : "Oldest first"}
-              className="flex w-40 shrink-0 cursor-pointer items-center gap-1 text-left transition-colors hover:text-foreground"
+              className="hidden w-40 shrink-0 cursor-pointer items-center gap-1 text-left transition-colors hover:text-foreground sm:flex"
             >
               Updated
               {/* Down for newest first, up for oldest, as a sorted column reads. */}
@@ -878,7 +898,7 @@ export function ProjectsPage() {
                   />
                 </button>
               </span>
-              <span className="w-40 shrink-0 text-sm text-muted-foreground">
+              <span className="hidden w-40 shrink-0 text-sm text-muted-foreground sm:block">
                 {formatUpdated(project.updatedAt)}
               </span>
               {/* Pinning is one click here, as it is on a sidebar row. */}
@@ -956,7 +976,7 @@ export function ProjectsPage() {
                     <DropdownMenuSeparator />
                     <DropdownMenuItem
                       variant="destructive"
-                      onSelect={() => setDeleting(project)}
+                      onSelect={() => openProjectDelete(project)}
                     >
                       <HugeiconsIcon icon={Delete02Icon} strokeWidth={1.75} className="size-icon" />
                       <span>Delete</span>
@@ -1014,8 +1034,9 @@ export function ProjectsPage() {
                           className="size-4 shrink-0"
                         />
                         <span className="min-w-0 flex-1 truncate">{chat.title}</span>
-                        {/* Same widths as a project row, so the columns line up under it. */}
-                        <span className="w-40 shrink-0">
+                        {/* Same widths as a project row, so the columns line up under it, and
+                            gone with it below sm, where a nested row has no room for both. */}
+                        <span className="hidden w-40 shrink-0 sm:block">
                           {formatUpdated(chat.updatedAt)}
                         </span>
                         {/* A chat's actions belong to the row the cursor is on, so they stay
@@ -1137,8 +1158,8 @@ export function ProjectsPage() {
                                 variant="destructive"
                                 onSelect={() =>
                                   confirmDeleteChats
-                                    ? setDeletingChat(chat)
-                                    : void deleteChat(chat)
+                                    ? openChatDelete(chat)
+                                    : void deleteChat(chat, alwaysDeleteChatFiles)
                                 }
                               >
                                 <HugeiconsIcon icon={Delete02Icon} strokeWidth={1.75} className="size-icon" />
@@ -1183,7 +1204,7 @@ export function ProjectsPage() {
           if (!open) setEditing(null);
         }}
         // Delete keeps this page's own confirmation.
-        onDelete={(project) => setDeleting(project)}
+        onDelete={(project) => openProjectDelete(project)}
       />
 
       {/* Rename chat */}
@@ -1245,6 +1266,12 @@ export function ProjectsPage() {
             Are you sure you want to delete <em>{deletingChat?.title}</em>? Its messages
             will be permanently deleted.
           </p>
+          {/* The files are a second thing to lose, so the delete says so and can be told not to. */}
+          <DeleteChatFilesSwitch
+            id="projects-delete-chat-files"
+            checked={deleteFilesOnDelete}
+            onCheckedChange={setDeleteFilesOnDelete}
+          />
           <DialogFooter className="flex-wrap gap-2 sm:justify-end">
             <Button type="button" variant="ghost" onClick={() => setDeletingChat(null)}>
               Cancel
@@ -1254,7 +1281,7 @@ export function ProjectsPage() {
               variant="destructive"
               onClick={() => void commitChatDelete()}
             >
-              Delete
+              {deleteFilesOnDelete ? "Delete all" : "Delete"}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -1314,12 +1341,22 @@ export function ProjectsPage() {
             Are you sure you want to delete <em>{deleting?.name}</em>? Its chats will
             be permanently deleted.
           </p>
+          {/* Same offer the sidebar makes, naming the folder when the record carries one. */}
+          <DeleteChatFilesSwitch
+            id="projects-delete-project-files"
+            checked={deleteFilesOnDelete}
+            onCheckedChange={setDeleteFilesOnDelete}
+            description={
+              deleting?.rootPath ??
+              "The project workspace folder will be removed from disk."
+            }
+          />
           <DialogFooter className="flex-wrap gap-2 sm:justify-end">
             <Button type="button" variant="ghost" onClick={() => setDeleting(null)}>
               Cancel
             </Button>
             <Button type="button" variant="destructive" onClick={() => void commitDelete()}>
-              Delete
+              {deleteFilesOnDelete ? "Delete all" : "Delete"}
             </Button>
           </DialogFooter>
         </DialogContent>

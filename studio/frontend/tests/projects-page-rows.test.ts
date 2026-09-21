@@ -62,7 +62,9 @@ test("the disclosure sits with the name it opens", () => {
     /<span className="flex min-w-0 flex-1 items-center gap-2">\n\s*<span className="min-w-0 truncate text-ui-15 font-semibold text-foreground">\n\s*\{project\.name\}/,
   );
   assert.ok(
-    PAGE.indexOf('className="w-40 shrink-0 text-sm text-muted-foreground"') > chevron,
+    PAGE.indexOf(
+      'className="hidden w-40 shrink-0 text-sm text-muted-foreground sm:block"',
+    ) > chevron,
     "the arrow is still drawn after the Updated column",
   );
 });
@@ -74,7 +76,7 @@ test("the row menu edits a project rather than only renaming it", () => {
   assert.match(PAGE, /<span>Edit<\/span>/);
   assert.match(PAGE, /<EditProjectDialog\n\s*project=\{editing\}/);
   // Delete still routes to this page's own confirmation.
-  assert.match(PAGE, /onDelete=\{\(project\) => setDeleting\(project\)\}/);
+  assert.match(PAGE, /onDelete=\{\(project\) => openProjectDelete\(project\)\}/);
   // And the rename-only dialog it replaces is gone, with the call it wrote through.
   assert.ok(!PAGE.includes("Rename project"));
   assert.ok(!PAGE.includes("renameChatProject"));
@@ -189,7 +191,19 @@ test("a chat row carries its own actions, revealed by hovering it", async () => 
   assert.match(row, /role="button"\n\s*tabIndex=\{0\}/);
   assert.match(row, /if \(e\.target !== e\.currentTarget\) return;/);
   // The same columns as a project row, so the two line up.
-  assert.match(row, /<span className="w-40 shrink-0">\n\s*\{formatUpdated\(chat\.updatedAt\)\}/);
+  // Same column as the project row above it, and gone with it on a phone, where 160px of date
+  // left the title no width and pushed the actions past the screen.
+  assert.match(
+    row,
+    /<span className="hidden w-40 shrink-0 sm:block">\n\s*\{formatUpdated\(chat\.updatedAt\)\}/,
+  );
+  for (const hidden of [
+    '<span className="hidden w-40 shrink-0 sm:block">Updated</span>',
+    'className="hidden w-40 shrink-0 cursor-pointer items-center gap-1 text-left transition-colors hover:text-foreground sm:flex"',
+    'className="hidden w-40 shrink-0 text-sm text-muted-foreground sm:block"',
+  ]) {
+    assert.ok(PAGE.includes(hidden), `the Updated column is still drawn below sm: ${hidden}`);
+  }
   assert.match(row, /<div className="relative flex w-8 shrink-0 items-center justify-end">/);
 });
 
@@ -199,12 +213,13 @@ test("the chat menu writes through the shared chat helpers", () => {
   assert.match(PAGE, /await archiveChatItem\(chat, activeThreadId\(\), \(\) => \{\}\);/);
   assert.match(
     PAGE,
-    /await deleteChatItem\(chat, activeThreadId\(\), \(\) => \{\}, \{\n\s*deleteFiles: alwaysDeleteChatFiles,\n\s*\}\);/,
+    /await deleteChatItem\(chat, activeThreadId\(\), \(\) => \{\}, \{ deleteFiles \}\);/,
   );
-  // Deleting asks first only when the setting says so, as in the sidebar.
+  // Deleting asks first only when the setting says so, as in the sidebar, and an unconfirmed
+  // delete is the one that follows the preference on its own.
   assert.match(
     PAGE,
-    /confirmDeleteChats\n\s*\? setDeletingChat\(chat\)\n\s*: void deleteChat\(chat\)/,
+    /confirmDeleteChats\n\s*\? openChatDelete\(chat\)\n\s*: void deleteChat\(chat, alwaysDeleteChatFiles\)/,
   );
   assert.match(PAGE, /<DialogTitle>Delete chat<\/DialogTitle>/);
   assert.match(PAGE, /<DialogTitle>Rename chat<\/DialogTitle>/);
@@ -239,4 +254,42 @@ test("the chat menu carries the sidebar's items, without the move", () => {
   // The chats listed here are already in this project.
   assert.ok(!menu.includes("<span>Project</span>"));
   assert.ok(!menu.includes("moveChatToProject"));
+});
+
+// "Always delete files" makes a delete destructive past the chat itself, and a project workspace
+// is a folder on disk. Both confirmations have to say so and let this one delete be told not to.
+test("both confirmations offer the files, and neither carries the last one's answer", () => {
+  // One switch state, seeded per delete rather than left standing.
+  assert.match(PAGE, /const \[deleteFilesOnDelete, setDeleteFilesOnDelete\] = useState\(false\);/);
+  assert.match(
+    PAGE,
+    /function openChatDelete\(chat: SidebarItem\) \{\n\s*setDeleteFilesOnDelete\(alwaysDeleteChatFiles\);\n\s*setDeletingChat\(chat\);/,
+  );
+  // A project workspace is bigger than a chat's sandbox, so it asks from scratch, as the sidebar does.
+  assert.match(
+    PAGE,
+    /function openProjectDelete\(project: ProjectRecord\) \{\n\s*setDeleteFilesOnDelete\(false\);\n\s*setDeleting\(project\);/,
+  );
+  // Nothing else opens either dialog: every other call closes it.
+  for (const setter of ["setDeletingChat", "setDeleting"]) {
+    const opens = (PAGE.match(new RegExp(`${setter}\\((?!null\\))`, "g")) ?? []).length;
+    assert.equal(opens, 1, `${setter} is called outside its opener`);
+  }
+  // Each commit reads the switch, then clears it.
+  assert.match(
+    PAGE,
+    /const deleteFiles = deleteFilesOnDelete;\n\s*setDeletingChat\(null\);\n\s*setDeleteFilesOnDelete\(false\);/,
+  );
+  assert.match(
+    PAGE,
+    /const deleteFiles = deleteFilesOnDelete;\n\s*setDeleting\(null\);\n\s*setDeleteFilesOnDelete\(false\);/,
+  );
+  assert.match(PAGE, /await deleteChatProject\(target\.id, \{ deleteFiles \}\);/);
+  // And both dialogs render the switch, the project one naming the folder it would remove.
+  assert.match(PAGE, /id="projects-delete-chat-files"/);
+  assert.match(
+    PAGE,
+    /id="projects-delete-project-files"[\s\S]{0,200}?deleting\?\.rootPath \?\?\n\s*"The project workspace folder will be removed from disk\."/,
+  );
+  assert.equal((PAGE.match(/deleteFilesOnDelete \? "Delete all" : "Delete"/g) ?? []).length, 2);
 });
