@@ -920,6 +920,12 @@ def parse_gpu_layers_override(args: Optional[Iterable[str]]) -> Optional[int]:
     return value
 
 
+def _as_emitted(value: float) -> float:
+    """``value`` as the manual launcher will write it, which is ``f"{x:g}"``: six significant
+    digits, so the text the child parses is not always the number validated here."""
+    return float(f"{value:g}")
+
+
 def _as_float32(value: float) -> float:
     """``value`` as llama.cpp would hold it: overflow becomes inf rather than raising.
 
@@ -977,20 +983,28 @@ def parse_tensor_split_override(args: Optional[Iterable[str]]) -> Optional[list[
         raise ValueError("llama-server --tensor-split entries must be finite and non-negative")
     if sum(parts) <= 0:
         raise ValueError("llama-server --tensor-split must have a positive total")
+    # Judge the share the CHILD will be handed, not the double parsed here. The manual launcher
+    # writes each one with ``f"{x:g}"``, six significant digits, and a value validated at full
+    # precision can lose its range in that round trip: 1.1754943508222874e-38 rounds up to FLT_MIN
+    # and passes, is emitted as "1.17549e-38", and std::stof refuses THAT as subnormal (measured).
+    # Validating the emitted text keeps "what we approved" and "what we run" the same string.
     running = 0.0
     for part in parts:
-        if not math.isfinite(_as_float32(part)):
+        share = _as_emitted(part)
+        if not math.isfinite(_as_float32(share)):
             raise ValueError(
                 "llama-server --tensor-split entries must fit in a 32-bit float "
                 f"(at most {_FLOAT32_MAX:g})"
             )
-        if part != 0 and _as_float32(part) < _FLOAT32_MIN_NORMAL:
+        if part != 0 and _as_float32(share) < _FLOAT32_MIN_NORMAL:
             raise ValueError(
                 "llama-server --tensor-split entries must be 0 or at least "
                 f"{_FLOAT32_MIN_NORMAL:g}: a smaller share is a subnormal float and "
                 "std::stof refuses it"
             )
-        running = _as_float32(running + part)
+        # llama.cpp prefix-sums the shares it parsed, in float32, so the total is accumulated
+        # the same way rather than in double and compared once.
+        running = _as_float32(running + share)
         if not math.isfinite(running):
             raise ValueError("llama-server --tensor-split adds up past the 32-bit float range")
     return parts

@@ -1476,7 +1476,25 @@ test("a share that underflows std::stof is refused too", () => {
   for (const bad of ["1e-50,1", "1e-45,1", "1e-40,1", "1e-38,1"]) {
     assert.match(_tsError(`-ts ${bad}`) ?? "", /0 or at least/, bad);
   }
-  for (const good of ["0,1", "1.1754943508222874e-38,1", "1.2e-38,1", "1e-30,1"]) {
+  // 1.1754943508222874e-38 is NOT here: it rounds up to FLT_MIN as a float but is emitted at
+  // six significant digits as a subnormal, which the next test pins.
+  for (const good of ["0,1", "1.2e-38,1", "1e-30,1"]) {
     assert.equal(_tsError(`-ts ${good}`), null, good);
   }
+});
+
+test("the mirror judges the share the launcher will write, and totals it in float32", () => {
+  // Both halves of the round-3 review: six-significant-digit emission can move a value out of
+  // range after validation, and a single float64 reduction disagrees with llama.cpp's stepwise
+  // float32 prefix sum near the top of the range.
+  assert.match(_tsError("-ts 1.1754943508222874e-38,1") ?? "", /0 or at least/);
+  assert.equal(_tsError("-ts 1.2e-38,1"), null);
+  // Real libstdc++ sums the emitted text to 3.40282e+38, which fits, so this must NOT be refused.
+  assert.equal(
+    _tsError(
+      "-ts 2.0829609943909916e38,7.170581961838338e37,6.028042758104631e37",
+    ),
+    null,
+  );
+  assert.match(_tsError("-ts 3e38,3e38") ?? "", /adds up past/);
 });

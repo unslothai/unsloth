@@ -685,6 +685,11 @@ const FLOAT32_MIN_NORMAL = 1.1754943508222875e-38;
 /** `value` rounded to float32, so the check follows the rounding std::stof does, not the literal. */
 const toFloat32 = (value: number): number => Math.fround(value);
 
+/** `value` as the manual launcher will WRITE it: Python's `f"{x:g}"`, six significant digits.
+ *  A share validated at full precision can lose its range in that round trip, so both sides judge
+ *  the text the child actually parses. */
+const asEmitted = (value: number): number => Number(value.toPrecision(6));
+
 /** The three ways parse_tensor_split_override refuses a ratio, or null when it would take it. */
 function ratioValueProblem(flag: string, value: string): string | null {
   const parts = value
@@ -704,21 +709,28 @@ function ratioValueProblem(flag: string, value: string): string | null {
   if (numbers.some((entry) => !Number.isFinite(entry) || entry < 0)) {
     return `${flag} entries must be finite and non-negative.`;
   }
-  if (numbers.some((entry) => entry > FLOAT32_MAX)) {
+  if (numbers.reduce((total, entry) => total + entry, 0) <= 0) {
+    return `${flag} must have a positive total.`;
+  }
+  const shares = numbers.map(asEmitted);
+  if (shares.some((share) => !Number.isFinite(toFloat32(share)))) {
     return `${flag} entries must fit in a 32-bit float (at most ${FLOAT32_MAX.toExponential(4)}).`;
   }
   if (
-    numbers.some(
-      (entry) => entry !== 0 && toFloat32(entry) < FLOAT32_MIN_NORMAL,
+    shares.some(
+      (share, at) => numbers[at] !== 0 && toFloat32(share) < FLOAT32_MIN_NORMAL,
     )
   ) {
     return `${flag} entries must be 0 or at least ${FLOAT32_MIN_NORMAL.toExponential(4)}.`;
   }
-  if (numbers.reduce((total, entry) => total + entry, 0) <= 0) {
-    return `${flag} must have a positive total.`;
-  }
-  if (numbers.reduce((total, entry) => total + entry, 0) > FLOAT32_MAX) {
-    return `${flag} adds up past the 32-bit float range.`;
+  // Accumulated the way llama.cpp prefix-sums the shares it parsed, in float32 and step by step.
+  // A single float64 reduction disagrees with that near the top of the range.
+  let running = 0;
+  for (const share of shares) {
+    running = toFloat32(running + share);
+    if (!Number.isFinite(running)) {
+      return `${flag} adds up past the 32-bit float range.`;
+    }
   }
   return null;
 }

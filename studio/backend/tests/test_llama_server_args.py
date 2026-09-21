@@ -673,11 +673,37 @@ def test_parse_tensor_split_override_rejects_a_share_that_underflows_stof(value)
         parse_tensor_split_override(["-ts", value])
 
 
-@pytest.mark.parametrize("value", ["0,1", "1.1754943508222874e-38,1", "1.2e-38,1", "1e-30,1"])
+@pytest.mark.parametrize("value", ["0,1", "1.2e-38,1", "1e-30,1"])
 def test_parse_tensor_split_override_keeps_what_stof_accepts(value):
-    # Rounding decides, not the literal: 1.1754943508222874e-38 rounds UP to FLT_MIN and stof
-    # takes it. An exact zero share is a device the user is deliberately emptying.
+    # An exact zero share is a device the user is deliberately emptying, and everything from
+    # FLT_MIN up survives the emit round trip. 1.1754943508222874e-38 does NOT, even though it
+    # rounds up to FLT_MIN as a float: the six-significant-digit emission loses it, which
+    # test_parse_tensor_split_override_judges_the_share_it_will_emit pins.
     assert parse_tensor_split_override(["-ts", value]) is not None
+
+
+def test_parse_tensor_split_override_judges_the_share_it_will_emit():
+    # The manual launcher writes f"{x:g}", six significant digits. 1.1754943508222874e-38 rounds
+    # UP to FLT_MIN as a float and so passed a full-precision check, but it is emitted as
+    # "1.17549e-38" and std::stof refuses THAT as subnormal (measured on this host), so /validate
+    # approved a command the server then died on.
+    with pytest.raises(ValueError, match = "at least"):
+        parse_tensor_split_override(["-ts", "1.1754943508222874e-38,1"])
+    assert parse_tensor_split_override(["-ts", "1.2e-38,1"]) == [1.2e-38, 1.0]
+
+
+def test_parse_tensor_split_override_totals_the_emitted_shares():
+    # llama.cpp prefix-sums what it PARSED, so the total is accumulated over the emitted values.
+    # Summing the raw doubles instead refused this split, while a real float32 accumulation of
+    # the emitted text ("2.08296e+38,7.17058e+37,6.02804e+37") reaches 3.40282e+38 and fits.
+    assert (
+        parse_tensor_split_override(
+            ["-ts", "2.0829609943909916e38,7.170581961838338e37,6.028042758104631e37"]
+        )
+        is not None
+    )
+    with pytest.raises(ValueError, match = "adds up past"):
+        parse_tensor_split_override(["-ts", "3e38,3e38"])
 
 
 def test_parse_tensor_split_override_rejects_a_total_float32_cannot_hold():
