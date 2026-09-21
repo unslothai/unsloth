@@ -375,6 +375,15 @@ def test_response_model_badge_is_user_configurable_and_rendered_once_per_message
         "ReasoningTrigger composes its className from something this guard cannot resolve, "
         "so it cannot tell what the trigger ends up with. Widen the reader before trusting it"
     )
+    # That it is rendered at all, before reading what it is given. `_class_list` answers None
+    # both for a call site that passes no className and for one that is not there, and the
+    # component's own function can stay behind unused, so without this the header could stop
+    # rendering the trigger entirely and the checks below would go on describing base classes
+    # that reach nothing.
+    assert "<ReasoningTrigger" in reasoning_src, (
+        "ReasoningTrigger is no longer rendered, so the shrinking this test is about belongs "
+        "to an element that is not on the page"
+    )
     call_site = _class_list(reasoning_src, "<ReasoningTrigger")
     assert call_site != _UNREADABLE, (
         "the ReasoningTrigger call site passes a className this guard cannot resolve, so it "

@@ -1196,16 +1196,28 @@ def test_chat_sidebar_row_actions_visible_on_coarse_pointers():
             )
 
     # A floor under both sides, because the comparison below is relative and reducing the two
-    # together satisfies it while reserving nothing usable: pr-0.5 against pr-0.5 passes. An
-    # action is one `.sidebar-row-action-glyph`, sized in index.css, and the gutter has to
-    # hold at least one of them. This is a floor and not the whole requirement; the row's own
-    # stated gutter is still what the coarse padding is measured against.
+    # together satisfies it while reserving nothing usable: pr-0.5 against pr-0.5 passes. The
+    # floor is what the row's actions occupy, so it has to count them rather than assume one.
+    # A row carries a pin and an options button, and reserving a single glyph for the two of
+    # them puts the pin back over the title, which is the regression this exists to stop.
     glyph = re.search(r"\.sidebar-row-action-glyph\s*\{[^}]*?\bsize-(\d+(?:\.\d+)?)", css_source)
     assert glyph, (
         "index.css no longer sizes .sidebar-row-action-glyph with a size-N utility, so this "
         "guard cannot tell how much room one action needs"
     )
-    floor = float(glyph.group(1))
+    # Counted by the label each one carries, so the two branches of a per-variant class do not
+    # read as two actions while the one button they dress reads as none.
+    labelled = {
+        label
+        for tag in _opening_jsx_tags(applied, "<button")
+        if "sidebar-row-action" in tag or "actionClass" in tag
+        for label in re.findall(r"aria-label=\{?([^\n]{0,60})", tag)
+    }
+    assert labelled, (
+        "no labelled row action left in renderChatSidebarItem, so this guard cannot tell how "
+        "much room the row has to reserve"
+    )
+    floor = float(glyph.group(1)) * len(labelled)
 
     for variant in variants:
         # Any qualified gutter for this variant, not the hover one alone: hover, an open menu
