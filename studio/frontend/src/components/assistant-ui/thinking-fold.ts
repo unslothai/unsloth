@@ -117,6 +117,20 @@ export function foldedTurnDuration(
   return total;
 }
 
+/** Whether the part at `endIndex` is the last thing shown under the lead and the answer comes
+ *  right after it: where the rule that closes the trace goes. */
+export function endsFoldedSpan(
+  parts: readonly PartLike[],
+  endIndex: number,
+): boolean {
+  const lead = leadReasoningEnd(parts);
+  if (lead === null) return false;
+  return (
+    foldEnd(parts, lead) === endIndex + 1 &&
+    parts[endIndex + 1]?.type === "text"
+  );
+}
+
 /** What the header says it is holding while closed. Same wording as the tool group trigger, so
  *  the count reads the same once the block is open. */
 export function foldedToolSummary(count: number): string | null {

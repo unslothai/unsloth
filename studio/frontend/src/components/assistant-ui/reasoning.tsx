@@ -42,6 +42,7 @@ import {
 } from "@/features/chat";
 import {
   countFoldedToolParts,
+  endsFoldedSpan,
   foldEnd,
   foldedToolSummary,
   foldedTurnDuration,
@@ -257,7 +258,7 @@ function ReasoningContent({
   ...props
 }: ComponentProps<typeof CollapsibleContent> & { streaming?: boolean }) {
   const shared = cn(
-    "aui-reasoning-content relative overflow-hidden text-[#0d0d0d] dark:text-foreground outline-none",
+    "aui-reasoning-content relative overflow-hidden text-foreground/75 outline-none",
     "group/collapsible-content ease-out",
     "data-[state=closed]:pointer-events-none",
   );
@@ -755,6 +756,18 @@ const ReasoningGroupImpl: ReasoningGroupComponent = (props) => {
   return <ReasoningGroupBlock {...props} foldTurn={foldToolActivity} />;
 };
 
+// A thin line closing the trace when the answer comes right after it, so the two do not read
+// as one text. Rendered inside whatever is last under the header, so it hides with it.
+function ReasoningEndRule() {
+  return (
+    <div
+      data-slot="reasoning-end-rule"
+      aria-hidden={true}
+      className="mt-4 border-border/60 border-t"
+    />
+  );
+}
+
 const FoldedReasoningRound: ReasoningGroupComponent = ({
   children,
   startIndex,
@@ -795,12 +808,15 @@ const FoldedReasoningRound: ReasoningGroupComponent = ({
     isStreaming,
     reasoningContentRef,
   });
+  const closesTrace = useAuiState(({ message }) =>
+    endsFoldedSpan(message.parts, endIndex),
+  );
   // Hidden, not unmounted, so the text keeps streaming in while the lead is closed.
   return (
     <div
       ref={reasoningContentRef}
       data-slot="reasoning-folded-round"
-      className={cn(!open && "hidden")}
+      className={cn("text-foreground/75", !open && "hidden")}
     >
       <ReasoningBody
         pages={pages}
@@ -811,6 +827,7 @@ const FoldedReasoningRound: ReasoningGroupComponent = ({
       >
         {children}
       </ReasoningBody>
+      {closesTrace && <ReasoningEndRule />}
     </div>
   );
 };
@@ -966,6 +983,12 @@ const ReasoningGroupBlock = ({
   const copyEndIndex = useAuiState(({ message }) =>
     foldLead ? foldEnd(message.parts, endIndex) - 1 : endIndex,
   );
+  // The answer follows this block directly, with nothing folded in between.
+  const closesTrace = useAuiState(({ message }) =>
+    foldLead
+      ? endsFoldedSpan(message.parts, endIndex)
+      : message.parts[endIndex + 1]?.type === "text",
+  );
   useLayoutEffect(() => {
     if (!foldLead) return;
     setReasoningRoundOpen(roundKey, isOpen);
@@ -1004,7 +1027,7 @@ const ReasoningGroupBlock = ({
           foldedToolCount={isOpen ? 0 : foldedToolCount}
         />
         {isOpen && !isReasoningStreaming && (
-          <span className="ml-auto">
+          <span className="ml-auto flex items-center leading-none">
             <ReasoningCopyButton
               startIndex={startIndex}
               endIndex={copyEndIndex}
@@ -1026,6 +1049,7 @@ const ReasoningGroupBlock = ({
         >
           {children}
         </ReasoningBody>
+        {closesTrace && <ReasoningEndRule />}
       </ReasoningContent>
     </ReasoningRoot>
   );

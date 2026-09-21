@@ -14,6 +14,7 @@ import { useChatPreferencesStore } from "@/features/chat/stores/chat-preferences
 // eslint-disable-next-line no-restricted-imports -- this file is in the startup cycle; the chat barrel closes it.
 import { useReasoningRoundStore } from "@/features/chat/stores/reasoning-round-store";
 import {
+  endsFoldedSpan,
   governingReasoningEnd,
   reasoningRoundKey,
 } from "./thinking-fold";
@@ -311,6 +312,10 @@ const ToolGroupImpl: FC<
   );
   const underThinking = foldToolActivity && roundKey !== null;
   const exempt = containsUngroupedTool || hasPendingConfirmation;
+  // Last thing under the block, with the answer right after: close the trace with a rule.
+  const closesTrace = useAuiState(({ message }) =>
+    endsFoldedSpan(message.parts, endIndex),
+  );
 
   // Render single calls, canvases, Python scripts, and calls that created files
   // directly so their persistent content never hides in a collapsed group.
@@ -338,6 +343,13 @@ const ToolGroupImpl: FC<
       className={cn(!(roundOpen || exempt) && "hidden")}
     >
       {group}
+      {closesTrace && (
+        <div
+          data-slot="reasoning-end-rule"
+          aria-hidden={true}
+          className={cn("mt-4 border-border/60 border-t", !roundOpen && "hidden")}
+        />
+      )}
     </div>
   );
 };

@@ -9,6 +9,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   countFoldedToolParts,
+  endsFoldedSpan,
   foldEnd,
   foldedToolSummary,
   foldedTurnDuration,
@@ -173,6 +174,43 @@ test("the tool group and the header share one exemption rule", () => {
   assert.match(
     reasoning,
     /countFoldedToolParts\(message\.parts, \(start, end\) =>\n\s*toolRunIsExempt\(message\.parts, start, end, toolConfirmations\),/,
+  );
+});
+
+test("the rule that closes the trace goes on the last thing before the answer", () => {
+  // Part 5 is the last call before the answer at 6.
+  assert.equal(endsFoldedSpan(twoRounds, 5), true);
+  assert.equal(endsFoldedSpan(twoRounds, 3), false);
+  assert.equal(endsFoldedSpan(twoRounds, 4), false);
+  assert.equal(endsFoldedSpan(twoRounds, 7), false);
+  // A lone block with the answer right after it closes itself.
+  assert.equal(endsFoldedSpan(parts(["reasoning", "text"]), 0), true);
+  // Nothing follows, nothing to separate from.
+  assert.equal(endsFoldedSpan(parts(["reasoning", "tool-call"]), 1), false);
+  const reasoning = readSrc("components/assistant-ui/reasoning.tsx");
+  const toolGroup = readSrc("components/assistant-ui/tool-group.tsx");
+  // Every candidate for last place renders the rule: the lead, a folded round, a tool run.
+  assert.equal(
+    reasoning.match(/closesTrace && <ReasoningEndRule \/>/g)?.length,
+    2,
+  );
+  assert.match(
+    toolGroup,
+    /closesTrace && \(\n\s*<div\n\s*data-slot="reasoning-end-rule"/,
+  );
+  // Without the fold, the lead asks whether the answer is next.
+  assert.match(
+    reasoning,
+    /: message\.parts\[endIndex \+ 1\]\?\.type === "text",/,
+  );
+});
+
+test("the header row keeps its height when Copy appears", () => {
+  const reasoning = readSrc("components/assistant-ui/reasoning.tsx");
+  // A bare span would take the paragraph line-height and push the label down when opened.
+  assert.match(
+    reasoning,
+    /<span className="ml-auto flex items-center leading-none">\n\s*<ReasoningCopyButton/,
   );
 });
 
