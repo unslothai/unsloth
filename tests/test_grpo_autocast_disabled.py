@@ -161,7 +161,7 @@ def test_the_injected_snippet_only_autocasts_when_asked(precision, has_bf16, exp
 def test_the_generated_trainer_imports_the_device_type_it_autocasts_with():
     """getsource inlines these bodies but not this file's imports, so the name has
     to come from the template rl.py splices in, or the generated cache raises."""
-    preamble = 'from unsloth_zoo.device_type import DEVICE_TYPE, DEVICE_TYPE_TORCH'
+    preamble = "from unsloth_zoo.device_type import DEVICE_TYPE, DEVICE_TYPE_TORCH"
     assert preamble in RL_PY.read_text(encoding = "utf-8"), "rl.py's trainer template must import it"
 
 
