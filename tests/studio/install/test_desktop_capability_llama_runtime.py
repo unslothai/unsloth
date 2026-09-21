@@ -33,6 +33,7 @@ import re
 import subprocess
 import sys
 import time
+import typing
 from pathlib import Path
 
 import pytest
@@ -499,9 +500,15 @@ def _helper_namespace(studio_home = None):
     ).read_text(encoding = "utf-8")
     start = text.index("def _managed_llama_runtime_is_the_active_one")
     end = text.index('@studio_app.command("desktop-capabilities"', start)
+    # _master_root_llama_dir lives beside the export that writes the same value, so it
+    # is outside the block above and has to come along; taken from the source for the
+    # same reason as the rest, so a change there is what these run.
+    master_start = text.index("def _master_root_llama_dir")
+    master_end = text.index("def _ensure_studio_env_exported", master_start)
     namespace = {
         "os": __import__("os"),
         "sys": __import__("sys"),
+        "Optional": typing.Optional,
         "Path": pathlib.Path,
         "_PACKAGE_ROOT": pathlib.Path(__file__).resolve().parents[3],
         "STUDIO_HOME": pathlib.Path(studio_home)
@@ -509,6 +516,7 @@ def _helper_namespace(studio_home = None):
         else pathlib.Path.home() / ".unsloth" / "studio",
         "_STUDIO_HOME_IS_CUSTOM": studio_home is not None,
     }
+    exec(compile(text[master_start:master_end], "<helper>", "exec"), namespace)
     exec(compile(text[start:end], "<helper>", "exec"), namespace)
     return namespace
 
@@ -692,6 +700,57 @@ def test_the_cli_s_own_inferred_override_is_not_mistaken_for_a_user_pin(tmp_path
     assert active() is False
     monkeypatch.setenv("UNSLOTH_LLAMA_CPP_PATH", str(managed))
     assert active() is True
+
+
+def test_a_master_root_grades_the_runtime_beside_studio_not_the_one_under_it(
+    tmp_path, monkeypatch
+):
+    """Codex 4063404685, P1. `UNSLOTH_HOME=<master>` puts llama.cpp BESIDE studio/, and
+    _ensure_studio_env_exported writes <master>/llama.cpp into UNSLOTH_LLAMA_CPP_PATH while
+    UNSLOTH_STUDIO_HOME stays <master>/studio. default_managed_llama_dir reads only the
+    studio home, so with the override out of the way it answered <master>/studio/llama.cpp:
+    the two did not match, the installer's own export graded as a user pin, and every
+    master-root install fell out of the health check this PR adds."""
+    active = _active_helper()
+    master = tmp_path / "portable"
+    managed = master / "llama.cpp"
+    server = managed / "build" / "bin" / ("llama-server.exe" if os.name == "nt" else "llama-server")
+    server.parent.mkdir(parents = True)
+    server.write_text("", encoding = "utf-8")
+    monkeypatch.delenv("LLAMA_SERVER_PATH", raising = False)
+    monkeypatch.delenv("UNSLOTH_STUDIO_MANAGED_LLAMA_CPP_PATH", raising = False)
+    monkeypatch.setenv("UNSLOTH_HOME", str(master))
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(master / "studio"))
+    monkeypatch.setenv("UNSLOTH_LLAMA_CPP_PATH", str(managed))
+    _stub_stored_selection(monkeypatch, None)
+    assert active() is True, (
+        "the exported <master>/llama.cpp is the tree this install owns, so it is graded"
+    )
+
+    # And the distinction survives: a pin somewhere else under the same master root is
+    # still somebody's own, not ours to repair.
+    elsewhere = tmp_path / "hand-built" / "llama.cpp"
+    pinned = (
+        elsewhere / "build" / "bin" / ("llama-server.exe" if os.name == "nt" else "llama-server")
+    )
+    pinned.parent.mkdir(parents = True)
+    pinned.write_text("x", encoding = "utf-8")
+    monkeypatch.setenv("UNSLOTH_LLAMA_CPP_PATH", str(elsewhere))
+    assert active() is False
+
+
+def test_the_master_root_rule_is_the_one_the_export_writes(tmp_path, monkeypatch):
+    """One rule, not two that can drift: the value graded has to be the value exported."""
+    namespace = _helper_namespace()
+    master_dir = namespace["_master_root_llama_dir"]
+    monkeypatch.delenv("UNSLOTH_HOME", raising = False)
+    assert master_dir() is None, "no master root means the studio home decides, as before"
+    master = tmp_path / "portable"
+    monkeypatch.setenv("UNSLOTH_HOME", str(master))
+    assert master_dir() == master.resolve() / "llama.cpp"
+    # Blank is not a root, the way every other read of this variable treats it.
+    monkeypatch.setenv("UNSLOTH_HOME", "   ")
+    assert master_dir() is None
 
 
 def test_an_override_that_holds_no_server_does_not_outrank_the_stored_folder(tmp_path, monkeypatch):

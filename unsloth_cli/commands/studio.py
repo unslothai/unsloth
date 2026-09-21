@@ -159,6 +159,26 @@ def _recorded_master_root() -> Optional[Path]:
     return None
 
 
+def _master_root_llama_dir() -> Optional[Path]:
+    """``<master>/llama.cpp`` when this install has a master root, else None.
+
+    Under UNSLOTH_HOME the runtimes are siblings of studio/, so the answer cannot be
+    derived from the studio home: <studio home>/llama.cpp is one level too deep. Both
+    the export below and the grading in _managed_llama_dir_ignoring_the_override read
+    this, so the rule exists once rather than twice.
+
+    Environment only, because the command callback recovers a recorded master root
+    into UNSLOTH_HOME before anything here runs.
+    """
+    master = (os.environ.get("UNSLOTH_HOME") or "").strip()
+    if not master:
+        return None
+    try:
+        return Path(master).expanduser().resolve() / "llama.cpp"
+    except (OSError, ValueError):
+        return Path(master).expanduser() / "llama.cpp"
+
+
 def _ensure_studio_env_exported() -> None:
     """Re-export UNSLOTH_STUDIO_HOME / UNSLOTH_LLAMA_CPP_PATH for custom roots, and for a master
     root the resolver above declined, per subcommand rather than at import, so unrelated
@@ -187,16 +207,11 @@ def _ensure_studio_env_exported() -> None:
         _is_legacy = STUDIO_HOME == (Path.home() / ".unsloth" / "studio")
     # The runtimes are siblings of studio/, at the master root, so STUDIO_HOME/llama.cpp is one
     # level too deep. run.py keeps a non-blank value, so a wrong export here wins everywhere.
-    _master = (os.environ.get("UNSLOTH_HOME") or "").strip()
-    if _master:
-        try:
-            _llama_dir = Path(_master).expanduser().resolve() / "llama.cpp"
-        except (OSError, ValueError):
-            _llama_dir = Path(_master).expanduser() / "llama.cpp"
-    elif _is_legacy:
-        _llama_dir = Path.home() / ".unsloth" / "llama.cpp"
-    else:
-        _llama_dir = STUDIO_HOME / "llama.cpp"
+    _llama_dir = _master_root_llama_dir()
+    if _llama_dir is None:
+        _llama_dir = (
+            Path.home() / ".unsloth" / "llama.cpp" if _is_legacy else STUDIO_HOME / "llama.cpp"
+        )
     if not (os.environ.get("UNSLOTH_LLAMA_CPP_PATH") or "").strip():
         os.environ["UNSLOTH_LLAMA_CPP_PATH"] = str(_llama_dir)
 
@@ -4709,6 +4724,15 @@ def _managed_llama_dir_ignoring_the_override() -> Path:
     this value and there should be one rule for it, not two that can drift.
     """
     from studio.install_llama_prebuilt import default_managed_llama_dir
+
+    # A master root first, for the same reason the export computes it that way: the
+    # runtimes sit beside studio/, and default_managed_llama_dir reads only the studio
+    # home, so it would answer <master>/studio/llama.cpp and grade the tree the
+    # installer exported -- the one actually in use -- as somebody's own pin, which
+    # left these installs out of the health check entirely.
+    master_dir = _master_root_llama_dir()
+    if master_dir is not None:
+        return master_dir
 
     saved = os.environ.pop("UNSLOTH_LLAMA_CPP_PATH", None)
     had_home = "UNSLOTH_STUDIO_HOME" in os.environ
