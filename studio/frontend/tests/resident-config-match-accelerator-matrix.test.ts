@@ -138,6 +138,12 @@ const MANUAL_MODE = {
 
 const FIELDS: FieldCase[] = [
   {
+    key: "engine",
+    statusKey: "engine",
+    same: "vllm",
+    different: "sglang",
+  },
+  {
     key: "customContextLength",
     statusKey: "requested_context_length",
     same: 32768,
@@ -296,7 +302,11 @@ for (const [accelerator, base] of Object.entries(ACCELERATORS)) {
     test(`[${accelerator}] ${field.key} the resident load does not run is a reload`, () => {
       assert.equal(
         residentRuntimeMatchesConfig(
-          { ...base, ...field.live?.status, [field.statusKey]: field.different },
+          {
+            ...base,
+            ...field.live?.status,
+            [field.statusKey]: field.different,
+          },
           { ...BLANK, ...field.live?.config, [field.key]: field.same },
         ),
         false,
@@ -456,7 +466,9 @@ test("an empty pinned pool is Automatic, not a demand for no GPUs", () => {
 
 test("every PerModelConfig field is either compared or deliberately excluded", () => {
   // A new setting not classified here is one an adopted pick would drop silently.
-  const source = readSrc("features/model-picker/model-config/per-model-config.ts");
+  const source = readSrc(
+    "features/model-picker/model-config/per-model-config.ts",
+  );
   const body = source.slice(
     source.indexOf("export interface PerModelConfig {"),
     source.indexOf("export const DEFAULT_PER_MODEL_CONFIG"),
@@ -484,3 +496,62 @@ test("every PerModelConfig field is either compared or deliberately excluded", (
   );
   assert.deepEqual(stale, []);
 });
+
+for (const engine of ["vllm", "sglang"] as const) {
+  test(`${engine}: GPU and context changes require reloading the resident engine`, () => {
+    const status = {
+      engine,
+      is_gguf: false,
+      requested_gpu_ids: [1],
+      gpu_ids: [1],
+      requested_context_length: 4096,
+    };
+    const config = {
+      ...BLANK,
+      engine,
+      selectedGpuIds: [1],
+      selectedGpuIndexKind: "physical" as const,
+      maxSeqLength: 4096,
+    };
+    assert.equal(residentRuntimeMatchesConfig(status, config), true);
+    assert.equal(
+      residentRuntimeMatchesConfig(status, { ...config, selectedGpuIds: [0] }),
+      false,
+    );
+    assert.equal(
+      residentRuntimeMatchesConfig(status, { ...config, maxSeqLength: 8192 }),
+      false,
+    );
+    assert.equal(
+      residentRuntimeMatchesConfig(status, { ...config, engine: "auto" }),
+      false,
+    );
+  });
+}
+
+for (const engine of ["vllm", "sglang"] as const) {
+  test(`${engine}: changing a tensor-parallel GPU group requires a reload`, () => {
+    const status = {
+      engine,
+      is_gguf: false,
+      gpu_ids: [1, 0],
+      requested_gpu_ids: [1, 0],
+      tensor_parallel: true,
+      requested_context_length: 4096,
+    };
+    const config = {
+      ...BLANK,
+      engine,
+      selectedGpuIds: [1, 0],
+      selectedGpuIndexKind: "physical" as const,
+      maxSeqLength: 4096,
+    };
+    assert.equal(residentRuntimeMatchesConfig(status, config), true);
+    for (const ids of [[1], [0], [0, 1]]) {
+      assert.equal(
+        residentRuntimeMatchesConfig(status, { ...config, selectedGpuIds: ids }),
+        false,
+      );
+    }
+  });
+}

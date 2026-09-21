@@ -799,6 +799,7 @@ class ModelOverridePayload(BaseModel):
     """
 
     model_id: str = Field(..., min_length = 1, max_length = MAX_MODEL_OVERRIDE_KEY_LEN)
+    engine: Optional[Literal["auto", "vllm", "sglang"]] = None
     # None leaves the stored value alone (the UI has no control for flags); [] clears them.
     llama_extra_args: Optional[list[str]] = None
     # ge=1: the setter drops a falsy value, so reject 0 here instead of discarding it silently.
@@ -1914,6 +1915,9 @@ def update_openai_auto_switch_override(
                 target_id,
                 llama_extra_args = extra_args,
                 keep_empty_extra_args = keep_empty,
+                engine = payload.engine
+                if payload.engine is not None
+                else get_model_override(target_id).get("engine"),
                 max_seq_length = payload.max_seq_length,
                 custom_context_length = payload.custom_context_length,
                 kv_cache_dtype = payload.kv_cache_dtype,

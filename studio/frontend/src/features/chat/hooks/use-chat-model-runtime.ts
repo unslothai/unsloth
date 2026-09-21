@@ -952,6 +952,7 @@ export function useChatModelRuntime() {
         // swap the resident model, which this one is never told about.
         const adoptable = (status: InferenceStatusResponse) =>
           (status.loading?.length ?? 0) === 0 &&
+          (status.engine ?? "auto") === (comparedConfig.engine ?? "auto") &&
           residentModelMatchesPick(status, {
             id: modelId,
             loadPath,
@@ -1547,7 +1548,7 @@ export function useChatModelRuntime() {
               nativePathLease: validateNativePathLease,
               hf_token: hfToken,
               max_seq_length: validateMaxSeqLength,
-              load_in_4bit: true,
+              load_in_4bit: (stateBeforeUnload.params.engine ?? "auto") === "auto",
               is_lora: isLora,
               gguf_variant: ggufVariant ?? null,
               cache_type_kv: loadKvCacheDtype,
@@ -1790,10 +1791,11 @@ export function useChatModelRuntime() {
             }
             const loadResponse = await loadModel({
               model_path: loadPath,
+              engine: isGguf ? "auto" : (stateBeforeUnload.params.engine ?? "auto"),
               nativePathLease: loadNativePathLease,
               hf_token: hfToken,
               max_seq_length: loadMaxSeqLength,
-              load_in_4bit: true,
+              load_in_4bit: (stateBeforeUnload.params.engine ?? "auto") === "auto",
               is_lora: isLora,
               gguf_variant: ggufVariant ?? null,
               trust_remote_code: trustRemoteCode,
@@ -2110,6 +2112,7 @@ export function useChatModelRuntime() {
               (loadResponse.is_gguf || isGguf || ggufVariant) &&
                 !isExternalModelId(modelId),
             );
+            useChatRuntimeStore.setState({ loadedEngine: loadResponse.engine ?? "auto" });
             // Remembered so auto-load re-picks what the user ran, not the smallest. Native file-picker paths
             // need a signed, expiring lease, so they stay out.
             const indexedLocalPick =
@@ -2151,6 +2154,7 @@ export function useChatModelRuntime() {
                 const rollbackResponse = await loadModel({
                   // The pin it loaded from: without it this retries the ref that needed pinning.
                   model_path: previousActiveLoadId || previousCheckpoint,
+                  engine: stateBeforeUnload.loadedEngine ?? "auto",
                   nativePathLease: rollbackNativePathLease,
                   hf_token: hfToken,
                   max_seq_length: rollbackMaxSeqLength,
@@ -2379,7 +2383,8 @@ export function useChatModelRuntime() {
             : `${base} • ${rateStr}`;
         }
 
-        let downloadComplete = isDownloaded || isCachedLora;
+        const managedLoad = (useChatRuntimeStore.getState().params.engine ?? "auto") !== "auto";
+        let downloadComplete = isDownloaded || isCachedLora || managedLoad;
 
         const pollDownload = async () => {
           if (abortCtrl.signal.aborted || !loadingModelRef.current) {
@@ -2489,6 +2494,19 @@ export function useChatModelRuntime() {
             if (prog.phase === "ready") {
               // Loaded. The chat flow will flip loadingModelRef shortly; just stop polling.
               if (progressInterval) clearInterval(progressInterval);
+              return;
+            }
+            if (managedLoad && prog.bytes_total <= 0) {
+              const label = prog.phase === "warming_up"
+                ? "Warming up inference kernels. The first load can take several minutes."
+                : prog.phase === "loading_weights"
+                  ? "Loading model weights into GPU memory."
+                  : "Starting the inference engine and preparing model files.";
+              if (loadToastDismissedRef.current) {
+                setLoadProgress({ percent: 0, label, phase: "starting" });
+              } else {
+                toast(null, { id: toastId, ...modelLoadToastOptions(renderLoadDescription("Starting model...", label)) });
+              }
               return;
             }
             if (prog.bytes_total <= 0) return; // nothing useful to render

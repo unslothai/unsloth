@@ -1,0 +1,521 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
+
+"""Opt-in serving environments. No engine packages are imported into Studio.
+
+Installation is serialized across Studio processes. Environments are built at
+their final paths (venv scripts contain absolute paths); only the active marker
+is replaced. Runtime leases prevent removing an environment another Studio uses.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+import platform
+import shutil
+import subprocess
+import tempfile
+import threading
+import time
+import uuid
+from collections import deque
+from contextlib import contextmanager, nullcontext
+from pathlib import Path
+
+PROFILES = {
+    "vllm": {"version": "0.20.0", "module": "vllm", "cuda": "cu130", "driver": 580},
+    "sglang": {"version": "0.5.12", "module": "sglang", "cuda": "cu130", "driver": 580},
+}
+_REQUIREMENTS = Path(__file__).resolve().parents[2] / "requirements" / "engines"
+_jobs: dict[str, dict] = {}
+_cancels: dict[str, threading.Event] = {}
+_lock = threading.RLock()
+
+
+def engine_root() -> Path:
+    from utils.paths.storage_roots import studio_root
+    return studio_root() / "engines"
+
+
+def profile(engine: str) -> dict:
+    if engine not in PROFILES:
+        raise ValueError("Unknown inference engine")
+    return PROFILES[engine]
+
+
+def requirements(engine: str) -> Path:
+    profile(engine)
+    return _REQUIREMENTS / f"{engine}-linux-{profile(engine)['cuda']}.txt"
+
+
+def profile_digest(engine: str) -> str:
+    return hashlib.sha256(requirements(engine).read_bytes()).hexdigest()
+
+
+def support_reason(engine: str = "vllm", gpu_id: int | None = None) -> str | None:
+    if platform.system() != "Linux" or platform.machine() != "x86_64":
+        return "Managed engines currently require Linux x86_64."
+    if tuple(int(x) for x in (platform.libc_ver()[1] or "0.0").split(".")[:2]) < (2, 34):
+        return "Managed engines require glibc 2.34 or newer."
+    try:
+        result = subprocess.run(
+            [
+                "nvidia-smi",
+                "--query-gpu=driver_version,compute_cap",
+                "--format=csv,noheader",
+                *(["--id", str(gpu_id)] if gpu_id is not None else []),
+            ],
+            capture_output = True,
+            text = True,
+            timeout = 5,
+        )
+        rows = [line.split(",") for line in result.stdout.strip().splitlines()]
+        if result.returncode == 0 and any(
+            int(row[0].strip().split(".")[0]) >= profile(engine)["driver"] and float(row[1]) >= 8.0
+            for row in rows
+            if len(row) == 2
+        ):
+            return None
+    except (OSError, ValueError, subprocess.TimeoutExpired):
+        pass
+    return f"Requires an NVIDIA GPU with compute capability 8.0 or newer and driver {profile(engine)['driver']} or newer."
+
+
+def _atomic_json(path: Path, data: dict) -> None:
+    tmp = path.with_name(path.name + "." + uuid.uuid4().hex + ".tmp")
+    try:
+        tmp.write_text(json.dumps(data), encoding = "utf-8")
+        os.replace(tmp, path)
+    finally:
+        tmp.unlink(missing_ok = True)
+
+
+@contextmanager
+def engine_lease(engine: str, *, exclusive: bool = False):
+    profile(engine)
+    import fcntl
+
+    root = engine_root()
+    root.mkdir(parents = True, exist_ok = True)
+    with (root / f"{engine}.lock").open("a") as handle:
+        try:
+            fcntl.flock(handle, (fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH) | fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise RuntimeError(
+                "This engine is running or being changed in another Studio instance."
+            ) from None
+        try:
+            yield
+        finally:
+            fcntl.flock(handle, fcntl.LOCK_UN)
+
+
+def installed(engine: str) -> dict | None:
+    profile(engine)
+    root = engine_root() / engine
+    if root.is_symlink():
+        return None
+    try:
+        info = json.loads((root / "active.json").read_text(encoding = "utf-8"))
+        directory = info["directory"]
+        if (
+            not isinstance(directory, str)
+            or not directory.startswith("env-")
+            or Path(directory).name != directory
+        ):
+            return None
+        path = root / directory
+        if path.is_symlink() or not (path / "bin" / "python").is_file():
+            return None
+        return {**info, "path": str(path)}
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+
+
+def status(engine: str) -> dict:
+    info = installed(engine)
+    try:
+        job = json.loads((engine_root() / f"{engine}.job.json").read_text(encoding = "utf-8"))
+    except (OSError, ValueError):
+        job = {"state": "idle", "phase": None, "message": ""}
+    if job.get("state") == "running":
+        try:
+            with engine_lease(engine):
+                job = {
+                    "state": "error",
+                    "phase": None,
+                    "message": "Installation was interrupted. Retry to repair it.",
+                }
+        except (RuntimeError, ImportError):
+            pass
+    in_use = False
+    if info and job.get("state") != "running":
+        try:
+            with engine_lease(engine, exclusive = True):
+                pass
+        except RuntimeError:
+            in_use = True
+        except ImportError:
+            pass
+    return {
+        "engine": engine,
+        "version": profile(engine)["version"],
+        "installed_version": info.get("version") if info else None,
+        "installed": info is not None,
+        "in_use": in_use,
+        "current": bool(info and info.get("profile_digest") == profile_digest(engine)),
+        "can_rollback": bool(info and info.get("previous")),
+        "unsupported_reason": support_reason(engine),
+        "download_bytes": None,
+        "additional_disk_bytes": None,
+        "job": job,
+    }
+
+
+def _update(engine: str, **values) -> None:
+    with _lock:
+        _jobs.setdefault(engine, {}).update(values)
+        root = engine_root()
+        root.mkdir(parents = True, exist_ok = True)
+        _atomic_json(root / f"{engine}.job.json", _jobs[engine])
+
+
+def install_environment() -> dict[str, str]:
+    # Do not inherit Studio's resolver overrides, Python overlays or credentials.
+    env = {
+        key: value
+        for key, value in os.environ.items()
+        if key
+        in {
+            "HOME",
+            "PATH",
+            "LANG",
+            "LC_ALL",
+            "TMPDIR",
+            "SSL_CERT_FILE",
+            "SSL_CERT_DIR",
+            "HTTPS_PROXY",
+            "HTTP_PROXY",
+            "NO_PROXY",
+            "https_proxy",
+            "http_proxy",
+            "no_proxy",
+        }
+    }
+    from utils.paths.storage_roots import cache_root
+
+    recorded_cache = None
+    try:
+        raw = (cache_root() / "uv-cache-dir").read_bytes().decode("utf-8-sig")
+        raw = raw.removesuffix("\n").removesuffix("\r")
+        if Path(raw).is_absolute() and Path(raw).is_dir() and os.access(raw, os.W_OK):
+            recorded_cache = raw
+    except (OSError, UnicodeError, ValueError):
+        pass
+    env["UV_CACHE_DIR"] = (
+        os.environ.get("UV_CACHE_DIR") or recorded_cache or str(cache_root() / "uv")
+    )
+    env["PYTHONNOUSERSITE"] = "1"
+    env["UV_NO_CONFIG"] = "1"
+    env["UV_CONCURRENT_DOWNLOADS"] = "4"
+    env["UV_HTTP_RETRIES"] = "5"
+    # uv's clone fallback can hardlink. Only opt into clones after probing the
+    # actual cache and environment filesystems; otherwise keep writes isolated.
+    env["UV_LINK_MODE"] = "copy"
+    return env
+
+
+def package_link_mode(destination: Path) -> str:
+    """Probe Linux reflinks across the actual install paths, without keeping files."""
+    import fcntl
+
+    cache = Path(install_environment()["UV_CACHE_DIR"])
+    try:
+        cache.mkdir(parents = True, exist_ok = True)
+        with (
+            tempfile.TemporaryFile(dir = cache) as source,
+            tempfile.TemporaryFile(dir = destination) as target,
+        ):
+            source.write(b"Studio package clone probe")
+            source.flush()
+            # FICLONE: a distinct inode sharing copy-on-write extents.
+            fcntl.ioctl(target.fileno(), 0x40049409, source.fileno())
+        return "clone"
+    except OSError:
+        return "copy"
+
+
+def _run(engine: str, argv: list[str], cancel: threading.Event) -> None:
+    from utils.process_lifetime import (
+        adopt_pid,
+        child_popen_kwargs,
+        terminate_pid,
+        forget_pid,
+        spawn_on_lifetime_thread,
+        is_process_shutting_down,
+    )
+
+    tail: deque[str] = deque(maxlen = 20)
+    if cancel.is_set() or is_process_shutting_down():
+        raise RuntimeError("Installation cancelled or Studio is shutting down.")
+    proc = spawn_on_lifetime_thread(
+        lambda: subprocess.Popen(
+            argv,
+            env = install_environment(),
+            stdout = subprocess.PIPE,
+            stderr = subprocess.STDOUT,
+            text = True,
+            encoding = "utf-8",
+            errors = "replace",
+            start_new_session = True,
+            **child_popen_kwargs(),
+        )
+    )
+    adopt_pid(proc.pid)
+
+    def drain():
+        from utils.log_redaction import redact_log_text
+        for line in proc.stdout:
+            tail.append(redact_log_text(line.rstrip())[-1000:])
+
+    reader = threading.Thread(target = drain, daemon = True)
+    deadline = time.monotonic() + 3600
+    try:
+        # A shutdown sweep may have finished between spawning and adoption.
+        # Recheck even when the child has already exited successfully.
+        if is_process_shutting_down() or cancel.is_set():
+            raise RuntimeError("Installation cancelled or Studio is shutting down.")
+        reader.start()
+        while proc.poll() is None:
+            if (engine_root() / f"{engine}.cancel").exists():
+                cancel.set()
+            if is_process_shutting_down():
+                cancel.set()
+            if cancel.wait(0.2):
+                raise RuntimeError("Installation cancelled.")
+            if time.monotonic() > deadline:
+                raise RuntimeError(
+                    "Installation timed out. Retry when the connection is available."
+                )
+        reader.join(timeout = 2)
+        if proc.returncode:
+            raise RuntimeError("Engine installation failed. " + "\n".join(tail))
+    finally:
+        if proc.poll() is None:
+            terminate_pid(proc.pid, timeout = 5, owner_verified = True)
+        proc.wait(timeout = 10)
+        forget_pid(proc.pid)
+        if reader.ident is not None:
+            reader.join(timeout = 2)
+        proc.stdout.close()
+
+
+def _install(
+    engine: str,
+    cancel: threading.Event,
+    lease = None,
+) -> None:
+    destination = None
+    try:
+        with nullcontext() if lease is not None else engine_lease(engine, exclusive = True):
+            _update(engine, state = "running", phase = "creating", message = "Preparing installation")
+            reason = support_reason(engine)
+            if reason:
+                raise RuntimeError(reason)
+            uv = shutil.which("uv")
+            if uv is None:
+                raise RuntimeError("uv is unavailable. Repair the Studio installation and retry.")
+            root = engine_root() / engine
+            if root.is_symlink():
+                raise RuntimeError("Engine directory must not be a symbolic link.")
+            root.mkdir(parents = True, exist_ok = True)
+            digest = profile_digest(engine)
+            destination = root / ("env-" + uuid.uuid4().hex)
+            _update(engine, phase = "creating", message = "Preparing an isolated Python environment")
+            _run(engine, [uv, "venv", "--python", "3.12", str(destination)], cancel)
+            python = str(destination / "bin" / "python")
+            _update(
+                engine, phase = "installing", message = "Downloading and installing engine packages"
+            )
+            _run(
+                engine,
+                [
+                    uv,
+                    "pip",
+                    "sync",
+                    "--python",
+                    python,
+                    "--link-mode",
+                    package_link_mode(destination),
+                    "--require-hashes",
+                    "--only-binary",
+                    ":all:",
+                    "--index-url",
+                    "https://pypi.org/simple",
+                    str(requirements(engine)),
+                ],
+                cancel,
+            )
+            _update(engine, phase = "checking", message = "Checking the installed engine")
+            _run(engine, [uv, "pip", "check", "--python", python], cancel)
+            _run(
+                engine,
+                [
+                    python,
+                    "-I",
+                    "-c",
+                    f"import {profile(engine)['module']}; import torch; assert torch.__version__.split('+')[0] == '2.11.0'; assert torch.version.cuda == '13.0'",
+                ],
+                cancel,
+            )
+            from .engine_adapters import ADAPTERS
+
+            module = ADAPTERS[engine].module
+            _run(engine, [python, "-I", "-m", module, "--help"], cancel)
+            if (engine_root() / f"{engine}.cancel").exists():
+                cancel.set()
+            if cancel.is_set():
+                raise RuntimeError("Installation cancelled.")
+            prior = installed(engine)
+            if profile_digest(engine) != digest:
+                raise RuntimeError(
+                    "Studio's engine profile changed during installation. Retry to use the updated profile."
+                )
+            _atomic_json(
+                root / "active.json",
+                {
+                    "directory": destination.name,
+                    "version": profile(engine)["version"],
+                    "profile_digest": digest,
+                    "previous_directory": prior["directory"] if prior else None,
+                    "previous": {
+                        k: v
+                        for k, v in prior.items()
+                        if k not in ("path", "previous", "previous_directory")
+                    }
+                    if prior
+                    else None,
+                },
+            )
+            # Keep only the active environment and one previous version. All
+            # runtime leases are excluded here, including other Studio instances.
+            keep = {destination.name, prior["directory"] if prior else None}
+            for old in root.glob("env-*"):
+                if old.name not in keep and old.is_dir() and not old.is_symlink():
+                    shutil.rmtree(old, ignore_errors = True)
+            destination = None
+            _record_manifest(engine)
+            _update(engine, state = "success", phase = "ready", message = "Engine installed")
+    except Exception as exc:
+        _update(
+            engine, state = "cancelled" if cancel.is_set() else "error", phase = None, message = str(exc)
+        )
+    finally:
+        if destination is not None:
+            shutil.rmtree(destination, ignore_errors = True)
+        if lease is not None:
+            lease.__exit__(None, None, None)
+
+
+def start_install(engine: str) -> dict:
+    profile(engine)
+    with _lock:
+        if _jobs.get(engine, {}).get("state") == "running":
+            return status(engine)
+        lease = engine_lease(engine, exclusive = True)
+        lease.__enter__()
+        cancel = threading.Event()
+        _cancels[engine] = cancel
+        try:
+            (engine_root() / f"{engine}.cancel").unlink(missing_ok = True)
+            _update(engine, state = "running", phase = "queued", message = "Preparing installation")
+            threading.Thread(target = _install, args = (engine, cancel, lease), daemon = True).start()
+        except Exception:
+            lease.__exit__(None, None, None)
+            raise
+    return status(engine)
+
+
+def cancel_install(engine: str) -> dict:
+    profile(engine)
+    with _lock:
+        event = _cancels.get(engine)
+        if event:
+            event.set()
+        if status(engine)["job"].get("state") == "running":
+            (engine_root() / f"{engine}.cancel").touch()
+    return status(engine)
+
+
+def remove(engine: str) -> dict:
+    with engine_lease(engine, exclusive = True):
+        root = engine_root() / engine
+        if root.is_symlink():
+            raise RuntimeError("Engine directory must not be a symbolic link.")
+        shutil.rmtree(root, ignore_errors = False) if root.exists() else None
+        with _lock:
+            _jobs.pop(engine, None)
+        (engine_root() / f"{engine}.job.json").unlink(missing_ok = True)
+        (engine_root() / f"{engine}.cancel").unlink(missing_ok = True)
+    _record_manifest(engine)
+    return status(engine)
+
+
+def rollback(engine: str) -> dict:
+    with engine_lease(engine, exclusive = True):
+        info = installed(engine)
+        previous = info.get("previous") if info else None
+        directory = previous.get("directory") if isinstance(previous, dict) else None
+        if (
+            not isinstance(directory, str)
+            or not directory.startswith("env-")
+            or Path(directory).name != directory
+        ):
+            raise RuntimeError("No previous engine installation is available.")
+        root = engine_root() / engine
+        path = root / directory
+        if path.is_symlink() or not (path / "bin" / "python").is_file():
+            raise RuntimeError(
+                "The previous engine installation is unavailable. Repair the engine instead."
+            )
+        _atomic_json(
+            root / "active.json",
+            {
+                **previous,
+                "previous_directory": info["directory"],
+                "previous": {
+                    k: v
+                    for k, v in info.items()
+                    if k not in ("path", "previous", "previous_directory")
+                },
+            },
+        )
+        _update(
+            engine, state = "success", phase = "ready", message = "Previous engine installation restored"
+        )
+    _record_manifest(engine)
+    return status(engine)
+
+
+def _record_manifest(engine: str) -> None:
+    # Additive evidence only. These are never prerequisites for Studio startup.
+    try:
+        from studio.install_manifest import update_manifest
+
+        info = installed(engine)
+        from utils.paths.storage_roots import studio_root
+
+        update_manifest(
+            root = studio_root(),
+            **{
+                f"optional_engine_{engine}": {
+                    "installed": info is not None,
+                    "version": info.get("version") if info else None,
+                    "profile_digest": info.get("profile_digest") if info else None,
+                }
+            },
+        )
+    except ImportError:
+        pass

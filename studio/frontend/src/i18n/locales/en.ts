@@ -2,6 +2,32 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 export const en = {
+  managedEngines: {
+    gpu: "GPUs",
+    gpuHelp: "Select one GPU, or several to split the model across them. At least one must stay selected.",
+    tensorParallel: "Tensor parallelism across {count} GPUs. Each GPU must have enough free memory for its share of the model.",
+    inUse: "Unload the model before repairing, restoring or removing its engine.",
+    title: "Inference engines",
+    description: "Optional engines for supported local text models. Select an installed engine in the model's run settings. Experimental.",
+    picker: "Inference engine",
+    default: "Default",
+    installRequired: "install required",
+    ownerRequired: "Ask the Studio owner to install this engine.",
+    cancelInstall: "Cancel installation",
+    installed: "Installed {version}",
+    repair: "Repair",
+    install: "Install engine",
+    remove: "Remove engine",
+    rollback: "Restore previous installation",
+    installTitle: "Install {engine}",
+    installAndLoad: "Install and load",
+    confirm: "Install {engine} {version}? This optional download can use several gigabytes. Exact additional download and disk usage are unavailable. Compatible cached packages and model files are reused.",
+    background: "Installation runs in the background. Removing the engine keeps your downloaded models.",
+    failed: "Engine installation failed. Retry or use the default engine.",
+    details: "Technical details",
+    cancelled: "Installation cancelled. You can retry.",
+    scope: "For Llama, Mistral, Qwen2 and Qwen3 text checkpoints on NVIDIA GPUs. Experimental. Loads full precision weights within your VRAM budget. Tools, adapters and image input are unavailable. First load includes kernel warmup.",
+  },
   composerSettings: {
     title: "Composer",
     plainText: "Plain text composer",

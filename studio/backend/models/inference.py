@@ -37,6 +37,11 @@ from utils.reasoning_budget import validate_reasoning_budget_message
 class LoadRequest(BaseModel):
     """Request to load a model for inference"""
 
+    engine: Literal["auto", "vllm", "sglang"] = Field(
+        "auto",
+        description = "Inference engine to use. 'auto' selects Studio's default backend; "
+        "'vllm' and 'sglang' require an installed optional engine.",
+    )
     model_path: str = Field(..., description = "Model identifier or local path")
     _gguf_companion_roots: tuple[str, ...] = PrivateAttr(default = ())
     load_request_id: Optional[str] = Field(
@@ -1110,6 +1115,11 @@ class GenerateRequest(BaseModel):
 class _InferenceRuntimeFields(BaseModel):
     """Runtime fields shared by load and status responses."""
 
+    engine: Literal["auto", "vllm", "sglang"] = Field(
+        "auto",
+        description = "Active inference engine. 'auto' denotes Studio's default backend; "
+        "'vllm' and 'sglang' denote optional managed engines.",
+    )
     is_vision: bool = Field(False, description = "Whether model is a vision model")
     is_diffusion: bool = Field(
         False, description = "Whether model is a block-diffusion model (DiffusionGemma)"

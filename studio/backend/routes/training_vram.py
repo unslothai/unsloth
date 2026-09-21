@@ -39,10 +39,13 @@ def summarize_resident_chat() -> Dict[str, Any]:
     hf_name: Optional[str] = None
     gguf_name: Optional[str] = None
     loading: bool = False
+    managed: bool = False
 
     try:
         from core.inference import get_inference_backend
+
         inf = get_inference_backend()
+        managed = getattr(inf, "_managed_engine", None) is not None
         # active_model_name is set only on success; a mid-load model sits in
         # loading_models while already holding VRAM -> both count as resident.
         if inf.active_model_name or inf.loading_models:
@@ -70,7 +73,8 @@ def summarize_resident_chat() -> Dict[str, Any]:
         "hf": hf_name,
         "gguf": gguf_name,
         "loading": loading,
-        "any": bool(hf_name or gguf_name),
+        "any": bool(hf_name or gguf_name or managed),
+        **({"managed_engine": True} if managed else {}),
     }
 
 
@@ -404,6 +408,7 @@ def free_chat_models_for_training(reason: str) -> List[str]:
     """Unload every resident chat model (HF/MLX orchestrator + GGUF server) to free
     VRAM for training. Each backend isolated. Returns labels of what was freed."""
     freed: List[str] = []
+    managed_stop_failed = False
 
     try:
         from core.inference import get_inference_backend
@@ -411,20 +416,35 @@ def free_chat_models_for_training(reason: str) -> List[str]:
         # No CPU exemption here, unlike the GGUF branch and the STT sidecars: it would key off a marker the
         # orchestrator writes rather than the worker that masked, and a marker that disagreed is an OOM mid-training.
         # Freeing a model that held no VRAM only costs a reload.
-        if inf.active_model_name or inf.loading_models:
+        if (
+            inf.active_model_name
+            or inf.loading_models
+            or getattr(inf, "_managed_engine", None) is not None
+        ):
             name = inf.active_model_name or next(iter(inf.loading_models), None)
             logger.info(
                 "Unloading inference model '%s' to free GPU memory for training (%s)",
                 name,
                 reason,
             )
-            inf._shutdown_subprocess()
+            managed = getattr(inf, "_managed_engine", None) is not None
+            managed_stop_failed = managed
+            stopped = inf._shutdown_subprocess()
+            if managed and stopped is False:
+                managed_stop_failed = True
+                raise RuntimeError("The inference engine did not stop.")
+            managed_stop_failed = False
             inf.active_model_name = None
             inf.models.clear()
             inf.loading_models.clear()
             freed.append(f"hf:{name}")
     except Exception as e:
         logger.warning("Could not unload inference model: %s", e)
+
+    if managed_stop_failed:
+        raise RuntimeError(
+            "The inference engine could not be stopped. Retry before starting training."
+        )
 
     try:
         from routes.inference import get_llama_cpp_backend
@@ -564,9 +584,14 @@ def coordinate_models_for_training(
     if not resident_chat["any"] and not resident_stt["any"]:
         return []
 
-    if resident_chat.get("loading"):
-        freed = free_stt_model_for_training(reason = "chat model still loading")
-        freed += free_chat_models_for_training(reason = "chat model still loading")
+    if resident_chat.get("loading") or resident_chat.get("managed_engine"):
+        reason = (
+            "managed inference engine reserves GPU memory"
+            if resident_chat.get("managed_engine")
+            else "chat model still loading"
+        )
+        freed = free_stt_model_for_training(reason = reason)
+        freed += free_chat_models_for_training(reason = reason)
         return freed
 
     freed: List[str] = []

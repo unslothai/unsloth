@@ -28,6 +28,14 @@ const {
 
 const ARGS = ["--numa", "distribute"];
 
+test("engine choices round trip and returning to Default clears a stale local choice", () => {
+  const config = fromApiOverride({ engine: "sglang" });
+  assert.equal(config.engine, "sglang");
+  assert.equal(toApiOverride(config).engine, "sglang");
+  assert.equal(toApiOverride({ ...config, engine: "auto" }).engine, "auto");
+  assert.equal(fromApiOverride({}, config).engine, "auto");
+});
+
 test("an exact key wins", () => {
   assert.deepEqual(
     resolveStoredExtraArgs(

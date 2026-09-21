@@ -412,6 +412,8 @@ def normalize_model_override(
 ) -> dict[str, Any]:
     """Validate one per-model launch config, dropping anything unusable. Silently drops rather than raising: an override is a convenience mirror of the UI's config, so one stale field (a KV dtype this llama.cpp build lost, a GPU id from another host) must not block persisting the rest or fail the API load that reads it. ``validate_extra_args`` is the caller's job, since it lives in the llama_server_args allow-list module this one must not import. ``keep_empty_extra_args`` keeps an explicit empty list, the difference between "this model has no launch flags" and "nothing is stored for this model": the same thing everywhere except under a fallback, where a quant whose row is gone reads the bare repository row instead and a cleared box would come back holding whatever that legacy row carries."""
     entry: dict[str, Any] = {}
+    if payload.get("engine") in ("vllm", "sglang"):
+        entry["engine"] = payload["engine"]
 
     extra_args = payload.get("llama_extra_args")
     if isinstance(extra_args, (list, tuple)) and extra_args:
@@ -562,6 +564,9 @@ def model_override_load_kwargs(override: dict[str, Any], *, is_gguf: bool) -> di
     if not override:
         return {}
     kwargs: dict[str, Any] = {}
+    if not is_gguf and override.get("engine") in ("vllm", "sglang"):
+        kwargs["engine"] = override["engine"]
+        kwargs["load_in_4bit"] = False
 
     max_seq_length = resolve_fit_max_seq_length(override, is_gguf = is_gguf)
     if max_seq_length is not None:

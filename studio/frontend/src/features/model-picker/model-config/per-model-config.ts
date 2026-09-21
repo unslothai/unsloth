@@ -17,6 +17,7 @@ import {
 } from "@/lib/speculative-modes";
 
 export interface PerModelConfig {
+  engine?: "auto" | "vllm" | "sglang";
   customContextLength: number | null;
   maxSeqLength: number | null;
   kvCacheDtype: string | null;
@@ -58,6 +59,7 @@ export interface PerModelConfig {
 }
 
 export const DEFAULT_PER_MODEL_CONFIG: PerModelConfig = {
+  engine: "auto",
   customContextLength: null,
   maxSeqLength: null,
   kvCacheDtype: null,
@@ -931,6 +933,7 @@ function normalizeV1(partial: RawConfig): PerModelConfig {
       ? partial.specDraftCacheDtype
       : null;
   return {
+    engine: partial.engine === "vllm" || partial.engine === "sglang" ? partial.engine : "auto",
     customContextLength:
       typeof partial.customContextLength === "number" &&
       Number.isFinite(partial.customContextLength) &&
@@ -1193,6 +1196,7 @@ export function resolveOnlyRememberedGgufVariant(
 
 export function isDefaultConfig(config: PerModelConfig): boolean {
   return (
+    (config.engine ?? "auto") === "auto" &&
     config.customContextLength == null &&
     config.maxSeqLength == null &&
     (config.kvCacheDtype ?? null) === DEFAULT_PER_MODEL_CONFIG.kvCacheDtype &&

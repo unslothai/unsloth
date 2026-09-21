@@ -4,6 +4,7 @@
 export type MinPMode = "server-default" | "custom";
 
 export interface InferenceParams {
+  engine?: "auto" | "vllm" | "sglang";
   temperature: number;
   topP: number;
   topK: number;
@@ -56,7 +57,7 @@ export function modelReadsSamplingSeed(
 /** The params that survive a reload. `checkpoint` names the model rather than being one of its
  *  settings, so it is not one of them. */
 export type PersistedInferenceParams = Partial<
-  Omit<InferenceParams, "checkpoint">
+  Omit<InferenceParams, "checkpoint" | "engine">
 >;
 
 export const DEFAULT_INFERENCE_PARAMS: InferenceParams = {

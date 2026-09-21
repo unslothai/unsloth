@@ -363,12 +363,13 @@ class InferenceOrchestrator:
     subprocess."""
 
     def __init__(self):
+        self._managed_engine = None
         self._proc: Optional[mp.Process] = None
         # Retired when the next worker is spawned; read long after _proc has been cleared.
         self._stderr_capture: Any = None
         self._cmd_queue: Any = None
         self._resp_queue: Any = None
-        self._subprocess_shutdown_lock = threading.Lock()
+        self._subprocess_shutdown_lock = threading.RLock()
         self._cancel_event: Any = None  # mp.Event - set to cancel generation
         # Set for the whole unload; the worker never clears it (unlike _cancel_event), so a generate queued behind the
         # cancelled one is skipped, not run.
@@ -666,6 +667,9 @@ class InferenceOrchestrator:
     def is_worker_alive(self) -> bool:
         """True while the inference subprocess is running, even with no model active (a failed load
         can leave a live worker holding sidecar modules)."""
+        managed = getattr(self, "_managed_engine", None)
+        if managed is not None:
+            return managed.alive()
         proc = self._proc
         return proc is not None and proc.is_alive()
 
@@ -744,6 +748,13 @@ class InferenceOrchestrator:
 
     def _shutdown_subprocess(self, timeout: float = 10.0) -> bool:
         with self._subprocess_shutdown_lock:
+            managed = getattr(self, "_managed_engine", None)
+            if managed is not None:
+                if not managed.stop():
+                    return False
+                self._managed_engine = None
+                self.active_model_name = None
+                self.models.clear()
             return self._shutdown_subprocess_locked(timeout)
 
     def _shutdown_subprocess_locked(self, timeout: float) -> bool:
@@ -1762,9 +1773,24 @@ class InferenceOrchestrator:
         cache_environment: Optional[Mapping[str, str]] = None,
         anonymous_hf_access: bool = False,
         audio_codec_path: Optional[str] = None,
+        engine: str = "auto",
     ) -> bool:
         """Load a model for inference. Always spawns a fresh subprocess per load for a clean
         interpreter (no stale unsloth patches, torch.compile caches, or getsource failures)."""
+        if engine != "auto":
+            return self._load_managed_engine(
+                engine,
+                config,
+                max_seq_length,
+                gpu_ids,
+                hf_token,
+                load_cancel_event,
+                cache_environment,
+                anonymous_hf_access,
+            )
+        if getattr(self, "_managed_engine", None) is not None:
+            if not self._shutdown_subprocess():
+                raise RuntimeError("Previous inference engine has not stopped")
         from utils.transformers_version import needs_transformers_5
 
         from utils.hf_xet_fallback import DownloadStallError
@@ -2049,6 +2075,67 @@ class InferenceOrchestrator:
                 logger.warning("Could not shut the failed load's worker down: %s", teardown_exc)
             raise
 
+    def reap_dead_managed_engine(self):
+        with self._subprocess_shutdown_lock:
+            managed = getattr(self, "_managed_engine", None)
+            if managed is not None and self.active_model_name and not managed.alive():
+                self._shutdown_subprocess()
+
+    def _load_managed_engine(
+        self, engine, config, context, gpu_ids, hf_token, cancel, cache_environment, anonymous
+    ):
+        from core.inference.managed_engine import ManagedEngine
+        from utils.hf_cache_settings import get_hf_cache_paths
+        from hub.utils.hf_tokens import apply_token_to_child_env
+
+        if not self._shutdown_subprocess():
+            raise RuntimeError("Previous inference process has not stopped")
+        model = config.identifier
+        with self._subprocess_shutdown_lock:
+            self.active_model_name = None
+            self.models.clear()
+            self.loading_models.add(model)
+            managed = ManagedEngine(engine)
+            self._managed_engine = managed
+        try:
+            env = get_hf_cache_paths().child_env()
+            if cache_environment:
+                env.update(cache_environment)
+            apply_token_to_child_env(env, False if anonymous else hf_token)
+            managed.start(model, context, gpu_ids, env, cancel)
+            with self._subprocess_shutdown_lock:
+                if (
+                    self._managed_engine is not managed
+                    or model not in self.loading_models
+                    or (cancel is not None and cancel.is_set())
+                    or not managed.alive()
+                ):
+                    raise RuntimeError("Model load cancelled")
+                self.models[model] = {
+                    "engine": engine,
+                    "is_vision": False,
+                    "is_audio": False,
+                    "is_lora": False,
+                    "context_length": managed.context,
+                    "max_context_length": managed.context,
+                    "context_length_enforced": True,
+                    "requested_context_length": context,
+                    "max_seq_length_requested": context,
+                    "load_in_4bit_requested": False,
+                    "gpu_ids_requested": gpu_ids,
+                    "gpu_ids": list(gpu_ids or [0]),
+                    "tensor_parallel": len(gpu_ids or [0]) > 1,
+                    "supports_tools": False,
+                }
+                self.active_model_name = model
+                self.load_generation += 1
+                return True
+        except Exception:
+            self._shutdown_subprocess()
+            raise
+        finally:
+            self.loading_models.discard(model)
+
     def cancel_load(self, model_name: str) -> bool:
         """Abort an in-flight load by terminating its subprocess. Returns True if a load for
         ``model_name`` (matched case-insensitively) was cancelled, False if nothing was loading
@@ -2135,6 +2222,11 @@ class InferenceOrchestrator:
         if self.cancel_load(model_name):
             return True
 
+        managed = getattr(self, "_managed_engine", None)
+        if managed is not None:
+            if model_name != self.active_model_name:
+                return True
+            return self._shutdown_subprocess()
         if not self._ensure_subprocess_alive():
             self.models.pop(model_name, None)
             if self.active_model_name == model_name:
@@ -2244,6 +2336,9 @@ class InferenceOrchestrator:
         through an addressed mailbox, as generations do: compare mode bypasses the generation
         lock and leaves a dispatcher owning the response queue, which would route this reply
         nowhere."""
+        managed = getattr(self, "_managed_engine", None)
+        if managed is not None:
+            return managed.count_tokens(messages, system_prompt, tools = tools)
         if not self._gen_lock.acquire(blocking = False):
             raise RuntimeError("Cannot count tokens while a generation is in progress")
         request_id = str(uuid.uuid4())
@@ -2529,6 +2624,10 @@ class InferenceOrchestrator:
         (no _gen_lock) so compare-mode requests don't block each other; the subprocess serializes
         them via its sequential command loop. Backend failures raise instead of becoming
         assistant text."""
+        if getattr(self, "_managed_engine", None) is not None:
+            raise GenStreamErrorRaised(
+                "Adapter comparisons are unavailable for this engine.", public = True
+            )
         stream = self._generate_dispatched(
             use_adapter = use_adapter,
             cancel_event = cancel_event,
@@ -2579,6 +2678,19 @@ class InferenceOrchestrator:
         """Inner generation logic: sends the command to the subprocess and yields tokens. Serialized
         by _gen_lock (one generation at a time) so concurrent readers don't consume each other's
         tokens off the shared resp_queue."""
+        managed = getattr(self, "_managed_engine", None)
+        if managed is not None:
+            kwargs = dict(locals())
+            for key in ("self", "managed", "kwargs"):
+                kwargs.pop(key, None)
+            try:
+                cumulative = ""
+                for delta in managed.generate(**kwargs):
+                    cumulative += delta
+                    yield cumulative
+            except Exception as exc:
+                yield GenStreamError(str(exc), public = True)
+            return
         if not self._ensure_subprocess_alive():
             yield GenStreamError("Error: Inference subprocess is not running", public = True)
             return

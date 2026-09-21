@@ -1046,6 +1046,8 @@ class TestLoadHubDownloadExclusion:
         backend = LlamaCppBackend.__new__(LlamaCppBackend)
         backend.__init__()
         supplied = {
+            # GGUF always uses Studio's default backend selection.
+            "engine",
             "requires_trust_remote_code",
             "speculative_type",
             "requested_parallel_slots",
@@ -1071,6 +1073,7 @@ class TestLoadHubDownloadExclusion:
         assert unresolved == []
 
         fields = route._llama_runtime_fields(backend)
+        assert fields["engine"] == "auto"
         assert fields["is_mlx"] is False
         assert fields["mlx_kv_bits_requested"] is None
 

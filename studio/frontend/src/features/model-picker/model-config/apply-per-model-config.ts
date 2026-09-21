@@ -35,8 +35,9 @@ export function applyPerModelConfigToRuntime(
     normalizeMaxSeqLength(config.maxSeqLength) ??
     defaultInferenceParams.maxSeqLength;
   const store = useChatRuntimeStore.getState();
-  if (maxSeqLength !== store.params.maxSeqLength) {
-    store.setParams({ ...store.params, maxSeqLength });
+  const engine = config.engine ?? "auto";
+  if (maxSeqLength !== store.params.maxSeqLength || engine !== (store.params.engine ?? "auto")) {
+    store.setParams({ ...store.params, maxSeqLength, engine });
   }
   const gpuSelection =
     config.selectedGpuIds !== undefined
@@ -108,6 +109,7 @@ export function currentRuntimePerModelConfig(
 ): PerModelConfig {
   const s = useChatRuntimeStore.getState();
   return {
+    engine: s.params.engine ?? "auto",
     customContextLength: s.customContextLength ?? null,
     maxSeqLength: options.includeMaxSeqLength
       ? normalizeMaxSeqLength(s.params.maxSeqLength)
@@ -149,6 +151,7 @@ export function perModelConfigsEqual(
   b: PerModelConfig,
 ): boolean {
   return (
+    (a.engine ?? "auto") === (b.engine ?? "auto") &&
     (a.customContextLength ?? null) === (b.customContextLength ?? null) &&
     normalizeMaxSeqLength(a.maxSeqLength) ===
       normalizeMaxSeqLength(b.maxSeqLength) &&

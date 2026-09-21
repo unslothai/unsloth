@@ -1,0 +1,10 @@
+# Optional Linux x86_64, Python 3.12, CUDA 13.0 serving environment.
+sglang==0.5.12
+torch==2.11.0
+torchvision==0.26.0
+torchaudio==2.11.0
+transformers==5.6.0
+# Transformers 5.6 uses LayerRepository without the revision required in kernels 0.15+.
+kernels==0.14.1
+# SGLang requires this beta dependency; other packages use stable releases.
+flash-attn-4==4.0.0b15

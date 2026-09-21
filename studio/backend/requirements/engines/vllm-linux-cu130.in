@@ -1,0 +1,6 @@
+# Optional Linux x86_64, Python 3.12, CUDA 13.0 serving environment.
+vllm==0.20.0
+torch==2.11.0
+torchvision==0.26.0
+torchaudio==2.11.0
+transformers==5.6.0

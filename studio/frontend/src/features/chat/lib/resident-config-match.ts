@@ -15,6 +15,8 @@ import type { InferenceStatusResponse } from "../types/api";
 /** The resident load's own invocation, as `/api/inference/status` echoes it. */
 type ResidentRuntime = Pick<
   InferenceStatusResponse,
+  | "engine"
+  | "context_length"
   | "requested_context_length"
   | "cache_type_kv"
   | "mlx_kv_bits_requested"
@@ -353,7 +355,9 @@ const SETTING_CHECKS: SettingCheck[] = [
     pinned: () => true,
     agrees: (c, s) =>
       (c.reasoningBudgetMessage ?? "") ===
-      (s.requested_reasoning_budget_message ?? s.reasoning_budget_message ?? ""),
+      (s.requested_reasoning_budget_message ??
+        s.reasoning_budget_message ??
+        ""),
   },
   {
     // Not nullable, so it always has an opinion; a status omitting it ran without.
@@ -580,6 +584,29 @@ export function residentRuntimeMatchesConfig(
   // the live runtime, which was hydrated from the resident model.
   if (!config) {
     return true;
+  }
+  if ((status.engine ?? "auto") !== (config.engine ?? "auto")) return false;
+  if (status.engine === "vllm" || status.engine === "sglang") {
+    if (
+      config.maxSeqLength != null &&
+      config.maxSeqLength > 0 &&
+      config.maxSeqLength !==
+        (status.requested_context_length ?? status.context_length)
+    ) {
+      return false;
+    }
+    const requested = standing.reconcileGpuIds(
+      config.selectedGpuIds ?? null,
+      config.selectedGpuIndexKind,
+    ) ?? [0];
+    if (
+      !sameGpuPlacement(
+        requested,
+        status.requested_gpu_ids ?? status.gpu_ids ?? [0],
+      )
+    ) {
+      return false;
+    }
   }
   const placementPreserved =
     // A virtualised Metal device pins every GGUF request to the CPU before either comparator runs, so

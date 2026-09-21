@@ -47,6 +47,7 @@ export function loadedConfigSignature(
     return "none";
   }
   return [
+    config.engine ?? "auto",
     config.customContextLength ?? "",
     config.maxSeqLength ?? "",
     config.kvCacheDtype ?? "",

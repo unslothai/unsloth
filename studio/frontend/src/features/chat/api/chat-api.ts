@@ -563,7 +563,7 @@ export type ModelLoadPhase = "mmap" | "ready" | null;
 export interface LoadProgressResponse {
   /** Load phase: "mmap" while llama-server pages weight shards into RAM, "ready" once healthy, or
    *  null when no load is in flight. */
-  phase: ModelLoadPhase;
+  phase: ModelLoadPhase | "starting" | "loading_weights" | "warming_up";
   bytes_loaded: number;
   bytes_total: number;
   fraction: number;

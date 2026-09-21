@@ -2025,6 +2025,7 @@ export function requestedGpuIdsFromResponse(resp: {
 // Store fields derived from a load/status response's GPU-memory settings, shared by every
 // load path so the manual-knob round-trip cannot drift.
 export function loadedGpuMemoryFields(resp: {
+  engine?: "auto" | "vllm" | "sglang";
   is_gguf?: boolean;
   is_diffusion?: boolean;
   gpu_memory_mode?: "auto" | "manual";
@@ -2044,11 +2045,18 @@ export function loadedGpuMemoryFields(resp: {
     // Clear the GPU pick / offload baseline a prior GGUF load left, else a stale loadedGpuIds reads as
     // dirty. gpuIdsDirty is ungated, so Reset would restore it while the picker is hidden. gpuMemoryMode
     // is kept as the standing preference, but its loaded baseline clears to null.
+    // Optional engines also place on a physical GPU. Preserve that selection
+    // across load responses and page refreshes, without GGUF offload controls.
+    const managed = resp.engine === "vllm" || resp.engine === "sglang";
+    const gpuIds = managed
+      ? (requestedGpuIdsFromResponse(resp) ?? resp.gpu_ids ?? [0])
+      : null;
+    const indexKind = managed ? ("physical" as const) : null;
     return {
-      selectedGpuIds: null,
-      selectedGpuIndexKind: null,
-      loadedGpuIds: null,
-      loadedGpuIndexKind: null,
+      selectedGpuIds: gpuIds,
+      selectedGpuIndexKind: indexKind,
+      loadedGpuIds: gpuIds,
+      loadedGpuIndexKind: indexKind,
       loadedGpuMemoryMode: null,
       loadedCpuFallback: false,
       gpuLayers: GPU_LAYERS_AUTO,
@@ -2212,6 +2220,7 @@ type ChatRuntimeStore = {
   nativeContextLength: number | null;
   /** The backend's own is_gguf for the loaded model; null until one loads. Set wherever
    *  loadedContextLength is, so a context never arrives unattributed. */
+  loadedEngine: "auto" | "vllm" | "sglang";
   loadedIsGguf: boolean | null;
   /** The backend's own is_mlx for the loaded model; null until one loads. The platform
    *  cannot answer it: the worker serves native-audio checkpoints off the MLX path. */
@@ -3934,6 +3943,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   loadedContextLength: null,
   maxContextLength: null,
   nativeContextLength: null,
+  loadedEngine: "auto",
   loadedIsGguf: null,
   loadedIsMlx: null,
   loadedContextEnforced: null,

@@ -3658,6 +3658,15 @@ def _detect_safetensors_features(
     match across backends. gpt-oss is overridden: Harmony routes reasoning and
     tools through tokenizer channels, not template markup."""
     model_id = getattr(backend, "active_model_name", None)
+    if (getattr(backend, "models", {}).get(model_id) or {}).get("engine") in ("vllm", "sglang"):
+        return {
+            "supports_tools": False,
+            "supports_reasoning": False,
+            # Response schemas require a style even when reasoning is disabled.
+            "reasoning_style": "enable_thinking",
+            "reasoning_always_on": False,
+            "supports_preserve_thinking": False,
+        }
     feature_template = chat_template
     try:
         from core.inference.chat_template_helpers import _selected_template_strings_from_value
@@ -7099,6 +7108,8 @@ def _llama_runtime_fields(llama_backend: LlamaCppBackend) -> dict:
         if hasattr(llama_backend, name) or hasattr(llama_backend, f"_{name}")
     }
     fields.update(
+        # Managed engines belong to the orchestrator, never the GGUF backend.
+        engine = "auto",
         # Not MLX, so the MLX runtime fields report as absent.
         is_mlx = False,
         mlx_kv_bits = None,
@@ -14135,6 +14146,12 @@ def _guard_chat_load_against_training(
         logger.warning("Could not check training state for chat-load guard: %s", e)
         llm_active = False
 
+    if llm_active and getattr(request, "engine", "auto") != "auto":
+        raise HTTPException(
+            status_code = 409,
+            detail = "Wait for training to finish before loading an optional inference engine.",
+        )
+
     if not llm_active:
         # An SDXL LoRA trainer runs in its own subprocess and cannot be cheaply fit-checked, so refuse the chat load while one is active.
         if _diffusion_training_active():
@@ -14909,6 +14926,9 @@ def _non_gguf_runtime_settings_match(backend, request) -> bool:
         return False
     fields_set = getattr(request, "model_fields_set", set()) or set()
     entry = backend.models.get(backend.active_model_name, {}) or {}
+    if entry.get("engine") in ("vllm", "sglang"):
+        if list(request.gpu_ids or [0]) != list(entry.get("gpu_ids_requested") or [0]):
+            return False
     if "max_seq_length" in fields_set and int(request.max_seq_length or 0) > 0:
         resident = entry.get("max_seq_length_requested")
         if resident is not None and int(resident) != int(request.max_seq_length):
@@ -15284,6 +15304,15 @@ async def _load_model_impl(
     anonymous_hf_access: bool = False,
     speech_codec_path: Optional[str] = None,
 ):
+    if request.engine != "auto":
+        from core.inference.managed_engine import validate_load
+        try:
+            await asyncio.to_thread(validate_load, request.engine, request)
+        except ValueError as exc:
+            raise HTTPException(status_code = 400, detail = str(exc)) from exc
+        request = request.model_copy(
+            update = {"load_in_4bit": False, "gpu_ids": request.gpu_ids or [0]}
+        )
     native_access_deferred = _defers_access_to_native_grant(request)
     if account_access.managed_account() and not native_access_deferred:
         await asyncio.to_thread(account_access.require_model_access, request.model_path)
@@ -15511,6 +15540,8 @@ async def _load_model_impl(
         if not (request.gguf_variant or is_direct_gguf_request):
             if (
                 _same_loaded_identifier(backend.active_model_name, model_identifier)
+                and (backend.models.get(backend.active_model_name) or {}).get("engine", "auto")
+                == request.engine
                 and _mlx_runtime_settings_match(backend, request)
                 and _non_gguf_runtime_settings_match(backend, request)
                 and _resident_context_satisfies(
@@ -15544,6 +15575,10 @@ async def _load_model_impl(
                     await asyncio.to_thread(acquire_for_request, CHAT)
                 account_access.join_resident("chat")
                 return LoadResponse(
+                    engine = request.engine,
+                    gpu_ids = _model_info.get("gpu_ids"),
+                    requested_gpu_ids = _model_info.get("gpu_ids_requested"),
+                    tensor_parallel = bool(_model_info.get("tensor_parallel", False)),
                     status = "already_loaded",
                     model = model_log_label if native_grant_backed else backend.active_model_name,
                     display_name = model_log_label
@@ -15676,6 +15711,13 @@ async def _load_model_impl(
                     raise HTTPException(status_code = 400, detail = str(exc)) from exc
         gguf_intent: Optional[GgufLoadIntent] = None
         _tensor_intent_overall = False
+        if request.engine != "auto" and (
+            config.is_gguf or config.is_lora or config.is_vision or config.is_audio
+        ):
+            raise HTTPException(
+                status_code = 400,
+                detail = "Optional engines currently support full text checkpoints only.",
+            )
         if config.is_gguf:
             gguf_intent = _resolve_gguf_load_intent(
                 config,
@@ -15715,6 +15757,18 @@ async def _load_model_impl(
             )
             if reused is not None:
                 return reused
+
+        if request.engine != "auto":
+            from core.inference.managed_engine import validate_model
+            try:
+                await asyncio.to_thread(
+                    validate_model,
+                    config,
+                    False if anonymous_hf_access else request.hf_token,
+                    request.gpu_ids,
+                )
+            except (ValueError, OSError) as exc:
+                raise HTTPException(status_code = 400, detail = str(exc)) from exc
 
         # Config-resolved dedupe must run first: a duplicate must not refuse/cancel active chats.
         # Refusal is non-destructive; defer forced cancellation past every remaining rejection.
@@ -16211,6 +16265,7 @@ async def _load_model_impl(
         try:
             success = await asyncio.to_thread(
                 backend.load_model,
+                **({"engine": request.engine} if request.engine != "auto" else {}),
                 config = config,
                 max_seq_length = request.max_seq_length,
                 load_in_4bit = load_in_4bit,
@@ -16236,6 +16291,10 @@ async def _load_model_impl(
         except Exception:
             _restore_marker_if_prior_preview_still_resident()
             _restore_alias_if_failed_load_left_the_prior_model(backend, _prior_alias, _prior_active)
+            if request.engine != "auto":
+                # A managed startup raises when its workers are cancelled.
+                # Report the same 409 as the other scoped load cancellation paths.
+                _raise_if_scoped_load_cancelled()
             raise
 
         if not success:
@@ -16342,6 +16401,10 @@ async def _load_model_impl(
             pass
 
         return LoadResponse(
+            engine = request.engine,
+            gpu_ids = _model_info.get("gpu_ids"),
+            requested_gpu_ids = _model_info.get("gpu_ids_requested"),
+            tensor_parallel = bool(_model_info.get("tensor_parallel", False)),
             status = "loaded",
             model = model_log_label if native_grant_backed else config.identifier,
             display_name = model_log_label if native_grant_backed else config.display_name,
@@ -18505,6 +18568,8 @@ async def get_status(current_subject: str = Depends(get_current_subject)):
         _tracked_loading_id = _loading_public_id(_tracked_loading_id) or ""
         _loading = [_tracked_loading_id] if _tracked_loading_id else []
         backend = _peek_inference_backend()
+        if getattr(backend, "_managed_engine", None) is not None:
+            await asyncio.to_thread(backend.reap_dead_managed_engine)
 
         # If a GGUF model is loaded via llama-server, report that
         if llama_backend.is_loaded:
@@ -18615,6 +18680,9 @@ async def get_status(current_subject: str = Depends(get_current_subject)):
             _loading_models.append(_tracked_loading_id)
 
         return InferenceStatusResponse(
+            engine = model_info.get("engine", "auto"),
+            gpu_ids = model_info.get("gpu_ids"),
+            tensor_parallel = bool(model_info.get("tensor_parallel", False)),
             active_model = backend.active_model_name,
             model_identifier = backend.active_model_name,
             is_vision = is_vision,
@@ -18716,6 +18784,10 @@ async def get_load_progress(current_subject: str = Depends(get_current_subject))
     if account_access.resident_hidden("chat"):
         return account_access.hidden_resident_response()
     try:
+        backend = _peek_inference_backend()
+        managed = getattr(backend, "_managed_engine", None)
+        if managed is not None and backend.loading_models:
+            return LoadProgressResponse(phase = managed.phase)
         llama_backend = get_llama_cpp_backend()
         progress = llama_backend.load_progress()
         if progress is None:
@@ -26263,6 +26335,23 @@ async def produce_openai_chat_completions(
 
     # Classify capability flags from the loaded template.
     _sf_model_info = backend.models.get(backend.active_model_name, {})
+    if _sf_model_info.get("engine") in ("vllm", "sglang"):
+        if (
+            payload.tools
+            or payload.use_adapter is not None
+            or payload.enable_tools
+            or payload.mcp_enabled
+            or payload.response_format
+            or payload.continue_final_message
+            or payload.enable_thinking
+            or payload.preserve_thinking
+            or payload.reasoning_effort not in (None, "none")
+            or any(m.role == "tool" or m.tool_calls for m in payload.messages)
+        ):
+            raise _reject(
+                400,
+                "This experimental engine supports plain text chat without tools, adapters, structured output, continuation or reasoning controls.",
+            )
     _sf_tpl = (_sf_model_info.get("chat_template_info") or {}).get("template")
     # Resolve the tool policy BEFORE the protocol is classified: the template
     # branch chosen here must be the one generation renders. Reading the raw
@@ -32255,7 +32344,7 @@ def _resident_context_satisfies(model_info: dict, max_seq_length: Any) -> bool:
 
 
 async def _mlx_count_chat_tokens(payload, request = None) -> Optional[JSONResponse]:
-    """Count with the resident MLX model's tokenizer, or None if MLX is not serving one.
+    """Count with a resident MLX or managed engine tokenizer, otherwise return None.
 
     This has to answer the question the safetensors completion answers -- which of its two
     paths claims the request, and what each renders -- because a count that decides any of
@@ -32276,8 +32365,26 @@ async def _mlx_count_chat_tokens(payload, request = None) -> Optional[JSONRespon
     # Audio is routed off the chat path, so a text render prices nothing that is sent.
     # Vision is not: it serves text turns through the same render, and an image anywhere
     # in the request was declined above.
-    if not entry.get("is_mlx") or entry.get("is_audio"):
+    managed = entry.get("engine") in ("vllm", "sglang")
+    if not (entry.get("is_mlx") or managed) or entry.get("is_audio"):
         return None
+    if entry.get("engine") == "sglang":
+        raise HTTPException(
+            status_code = 503,
+            detail = "Exact prompt token counting is unavailable for SGLang.",
+        )
+    if managed and (
+        payload.tools
+        or any(m.role == "tool" or m.tool_calls for m in payload.messages)
+        or payload.enable_thinking
+        or _extra_body_enable_thinking(payload)
+        or payload.preserve_thinking
+        or payload.reasoning_effort
+    ):
+        raise HTTPException(
+            status_code = 503,
+            detail = "Tools and reasoning controls are unavailable for this engine profile.",
+        )
 
     # The completion's own helper: rebuilding it here is how a count prices a prompt
     # nobody sends.

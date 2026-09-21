@@ -2,9 +2,11 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import type { DeepPartialMessageTree } from "../types";
-import type { en } from "./en";
+import { en } from "./en.ts";
 
 export const es = {
+  // English fallback until this experimental feature is translated.
+  managedEngines: en.managedEngines,
   composerSettings: {
     title: "Redacción de mensajes",
     plainText: "Redactor de texto sin formato",
