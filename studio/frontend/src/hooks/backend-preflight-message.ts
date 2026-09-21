@@ -53,7 +53,16 @@ export function preflightStaleMessage(
   // to an update that reports they are up to date. Name the usual cause: a
   // reinstall into the same quarantine needs an exclusion, not a retry.
   if (LLAMA_RUNTIME_REASONS.includes(kind)) {
-    return "Unsloth's llama.cpp runtime is missing files, which usually means security software quarantined them. Run `unsloth studio update` to reinstall it, and allow the folder in your antivirus if it happens again.";
+    // Named, because "allow the folder" leaves the user to find out which folder,
+    // and an exclusion is the one step that stops this recurring. The default
+    // root, since UNSLOTH_LLAMA_CPP_PATH can move it and preflight does not send
+    // the path: hedged with "usually" rather than asserted. Windows spelling on
+    // Windows, the same platform test the roaming-profile hint above uses.
+    const folder =
+      typeof navigator !== "undefined" && /Win/i.test(navigator.platform ?? "")
+        ? "%USERPROFILE%\\.unsloth\\llama.cpp"
+        : "~/.unsloth/llama.cpp";
+    return `Unsloth's llama.cpp runtime is missing files, which usually means security software quarantined them. Run \`unsloth studio update\` to reinstall it, and allow the folder it installs into, usually ${folder}, in your antivirus if it happens again.`;
   }
   if (disposition === "owned_stale") {
     return "Desktop-owned Unsloth backend is too old for this desktop app. Run `unsloth studio update`, then restart Unsloth.";

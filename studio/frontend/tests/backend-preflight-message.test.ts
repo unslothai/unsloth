@@ -114,7 +114,58 @@ test("a quarantined llama.cpp runtime is not reported as an outdated install", (
       assert.match(message, UPDATE_ADVICE);
       // A reinstall into the same quarantine needs an exclusion, not a retry.
       assert.match(message, /quarantined/);
+      // And an exclusion needs a folder, so the advice has to name one.
+      assert.match(message, /\.unsloth[\\/]llama\.cpp/);
     }
+  }
+});
+
+test("the folder to exclude is spelled the way the platform spells it", () => {
+  // The user pastes this into an antivirus exclusion list, so a POSIX path on
+  // Windows is not advice. Same platform test as the roaming-profile hint.
+  const original = globalThis.navigator;
+  const withPlatform = (platform: string) => {
+    Object.defineProperty(globalThis, "navigator", {
+      value: { platform },
+      configurable: true,
+    });
+    return preflightStaleMessage("managed_stale", "llama_runtime_payload_incomplete");
+  };
+  try {
+    const windows = withPlatform("Win32");
+    assert.match(windows, /%USERPROFILE%\\\.unsloth\\llama\.cpp/);
+    assert.doesNotMatch(windows, /~\//);
+    for (const platform of ["Linux x86_64", "MacIntel"]) {
+      const message = withPlatform(platform);
+      assert.match(message, /~\/\.unsloth\/llama\.cpp/);
+      assert.doesNotMatch(message, /%USERPROFILE%/);
+    }
+  } finally {
+    Object.defineProperty(globalThis, "navigator", {
+      value: original,
+      configurable: true,
+    });
+  }
+});
+
+test("a missing navigator does not cost the folder advice", () => {
+  // The hook runs under node in these tests and in any non-browser context the
+  // desktop shell hands it; the POSIX spelling is the fallback, not no advice.
+  const original = globalThis.navigator;
+  try {
+    Object.defineProperty(globalThis, "navigator", {
+      value: undefined,
+      configurable: true,
+    });
+    assert.match(
+      preflightStaleMessage("managed_stale", "llama_runtime_binaries_missing"),
+      /~\/\.unsloth\/llama\.cpp/,
+    );
+  } finally {
+    Object.defineProperty(globalThis, "navigator", {
+      value: original,
+      configurable: true,
+    });
   }
 });
 
