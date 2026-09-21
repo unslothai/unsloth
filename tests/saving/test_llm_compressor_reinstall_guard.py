@@ -28,7 +28,11 @@ import sys
 
 import pytest
 
-from unsloth.save import _LLM_COMPRESSOR_SPEC, install_llm_compressor
+from unsloth.save import (
+    _LLM_COMPRESSOR_PROBE_SENTINEL,
+    _LLM_COMPRESSOR_SPEC,
+    install_llm_compressor,
+)
 
 
 def _pip_invoked_when(
@@ -37,6 +41,8 @@ def _pip_invoked_when(
     *,
     subprocess_import: object = 0,
     probe_version: str = "",
+    probe_location: str = "",
+    probe_noise: str = "",
     probes_out: list | None = None,
 ) -> bool:
     """Run the guard with llmcompressor reported as *reported*, answering "did it pip?".
@@ -53,9 +59,21 @@ def _pip_invoked_when(
         probes.append(list(cmd))
         if isinstance(subprocess_import, BaseException):
             raise subprocess_import
-        # The probe prints the version of the module it actually IMPORTED, which is not
-        # necessarily the version metadata reports for the same-named distribution.
-        return subprocess.CompletedProcess(cmd, subprocess_import, stdout = probe_version.encode())
+        # The probe writes ONE tagged record, and it writes it AFTER whatever a
+        # sitecustomize or an imported dependency has already put on stdout, which
+        # ``probe_noise`` stands in for. The version is the module it actually IMPORTED,
+        # which is not necessarily the version metadata reports for the same-named
+        # distribution.
+        import json
+
+        stdout = probe_noise + (
+            "\n"
+            + _LLM_COMPRESSOR_PROBE_SENTINEL
+            + " "
+            + json.dumps({"version": probe_version, "location": probe_location})
+            + "\n"
+        )
+        return subprocess.CompletedProcess(cmd, subprocess_import, stdout = stdout.encode())
 
     monkeypatch.setattr(subprocess, "run", fake_run)
 
@@ -457,7 +475,13 @@ def test_a_shadow_pip_cannot_replace_is_named_rather_than_reinstalled(monkeypatc
         subprocess,
         "run",
         lambda cmd, *a, **k: subprocess.CompletedProcess(
-            cmd, 0, stdout = b"0.13.0\n/srv/checkout/llmcompressor/__init__.py"
+            cmd,
+            0,
+            stdout = (
+                _LLM_COMPRESSOR_PROBE_SENTINEL
+                + ' {"version": "0.13.0",'
+                + ' "location": "/srv/checkout/llmcompressor/__init__.py"}'
+            ).encode(),
         ),
     )
     try:
@@ -540,3 +564,74 @@ def test_a_probe_that_could_not_answer_does_not_skip_the_install(monkeypatch):
         )
         is False
     )
+
+
+def test_a_banner_on_the_probes_stdout_does_not_become_the_version(monkeypatch):
+    """The probe's answer is not the only thing that can be on the child's stdout.
+
+    A sitecustomize, or any dependency the import pulls in, can print first. Read
+    positionally, that line became the "version" and the real version shifted into
+    "location", so an out-of-range shadow reported a version that will not parse, which
+    counts as unknown, which counts as usable: the repair was skipped for exactly the
+    module the pin excludes.
+    """
+    from unsloth.save import _LLM_COMPRESSOR_PROBE_RESULT
+
+    invoked = _pip_invoked_when(
+        monkeypatch,
+        "0.12.0",
+        probe_version = "0.13.0",
+        probe_location = "/opt/checkout/llmcompressor/__init__.py",
+        probe_noise = "Loading sitecustomize\nwarning: cuda graphs disabled",
+    )
+    assert invoked is True, (
+        "a banner ahead of the probe's answer hid an out-of-range module from the repair"
+    )
+    assert _LLM_COMPRESSOR_PROBE_RESULT["version"] == "0.13.0", (
+        f"the parsed version came from the noise: {_LLM_COMPRESSOR_PROBE_RESULT!r}"
+    )
+    assert (
+        _LLM_COMPRESSOR_PROBE_RESULT["location"] == "/opt/checkout/llmcompressor/__init__.py"
+    ), f"the parsed location came from the noise: {_LLM_COMPRESSOR_PROBE_RESULT!r}"
+
+
+def test_a_checkout_the_child_reaches_first_is_not_answered_for_by_the_cached_wheel(
+    tmp_path, monkeypatch
+):
+    """Reachable is not resolved, and the difference is a real configuration.
+
+    An in-range wheel in site-packages is what THIS process imported and cached; PYTHONPATH
+    is then pointed at a different checkout. A fresh child searches PYTHONPATH first, so it
+    imports the checkout while a membership test blessed the wheel and skipped both the
+    probe and the repair.
+    """
+    import sysconfig
+
+    from unsloth.save import _llm_compressor_module_is_usable
+
+    def _provide(root: str):
+        package = tmp_path / root / "llmcompressor"
+        package.mkdir(parents = True)
+        (package / "__init__.py").write_text("")
+        return package / "__init__.py"
+
+    wheel = _provide("site-packages")
+    _provide("checkout")
+    monkeypatch.setattr(sysconfig, "get_paths", lambda: {"purelib": str(tmp_path / "site-packages")})
+
+    monkeypatch.setenv("PYTHONPATH", str(tmp_path / "checkout"))
+    assert _llm_compressor_module_is_usable(_module_at(str(wheel), "0.12.0")) is False, (
+        "the cached wheel answered for a checkout the child reaches before it"
+    )
+
+    # With no competing entry, the same cached wheel IS what the child gets.
+    monkeypatch.delenv("PYTHONPATH", raising = False)
+    assert _llm_compressor_module_is_usable(_module_at(str(wheel), "0.12.0")) is True
+
+    # And an entry that provides no llmcompressor at all does not get to veto it: an empty
+    # directory on PYTHONPATH is a normal thing, and forcing a probe for it would pay the
+    # subprocess on every export.
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    monkeypatch.setenv("PYTHONPATH", str(empty))
+    assert _llm_compressor_module_is_usable(_module_at(str(wheel), "0.12.0")) is True

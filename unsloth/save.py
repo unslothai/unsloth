@@ -1621,6 +1621,13 @@ def _llm_compressor_version_is_supported():
 # module the subprocess resolved rather than report a failed install.
 _LLM_COMPRESSOR_PROBE_RESULT: dict = {"imported": None, "version": None, "location": None}
 
+# The probe's answer is not the only thing on the child's stdout: a sitecustomize, or any
+# dependency the import pulls in, can print first. Read positionally, that banner became the
+# "version" and the real version moved into "location", so an out-of-range shadow reported an
+# unparseable version, which counts as unknown, which counts as usable. One tagged record,
+# read as JSON, keeps the answer distinguishable from whatever else was written.
+_LLM_COMPRESSOR_PROBE_SENTINEL = "__UNSLOTH_LLM_COMPRESSOR_PROBE__"
+
 
 def _llm_compressor_imports_cleanly():
     """Is llm-compressor usable in the conditions the compressed export actually runs in?
@@ -1652,9 +1659,12 @@ def _llm_compressor_imports_cleanly():
         f"sys.path[0] = {runner_dir!r}\n"
         "from llmcompressor import oneshot\n"
         "from llmcompressor.modifiers.quantization import QuantizationModifier\n"
-        "import llmcompressor\n"
-        "print(getattr(llmcompressor, '__version__', '') or '')\n"
-        "print(getattr(llmcompressor, '__file__', '') or '', end = '')\n"
+        "import json, llmcompressor\n"
+        "record = {'version': getattr(llmcompressor, '__version__', '') or '',\n"
+        "          'location': getattr(llmcompressor, '__file__', '') or ''}\n"
+        "sys.stdout.write('\\n' + "
+        + repr(_LLM_COMPRESSOR_PROBE_SENTINEL)
+        + " + ' ' + json.dumps(record) + '\\n')\n"
     )
     import tempfile
 
@@ -1678,9 +1688,21 @@ def _llm_compressor_imports_cleanly():
         return False
     # The version of the code the import RESOLVED, not of a same-named distribution
     # elsewhere on the path. Unreadable or unparseable is unknown, which stays usable.
-    reported = (completed.stdout or b"").decode("utf8", "replace").strip()
-    version, _, location = reported.partition("\n")
-    version, location = version.strip(), location.strip()
+    reported = (completed.stdout or b"").decode("utf8", "replace")
+    version = location = ""
+    for line in reversed(reported.splitlines()):
+        line = line.strip()
+        if not line.startswith(_LLM_COMPRESSOR_PROBE_SENTINEL):
+            continue
+        try:
+            import json
+
+            record = json.loads(line[len(_LLM_COMPRESSOR_PROBE_SENTINEL) :].strip())
+            version = str(record.get("version") or "").strip()
+            location = str(record.get("location") or "").strip()
+        except Exception:
+            pass
+        break
     _LLM_COMPRESSOR_PROBE_RESULT["version"] = version or None
     _LLM_COMPRESSOR_PROBE_RESULT["location"] = location or None
     if not version:
@@ -1690,6 +1712,36 @@ def _llm_compressor_imports_cleanly():
         return Requirement(_LLM_COMPRESSOR_SPEC).specifier.contains(version, prereleases = True)
     except Exception:
         return True
+
+
+def _path_entry_provides_llm_compressor(entry):
+    """Would a fresh interpreter find an ``llmcompressor`` to import under *entry*?
+
+    Only the three shapes an import actually reaches as a top-level name: a package
+    directory, a single module file, and a compiled extension. A directory with no
+    ``__init__`` is left out on purpose -- llm-compressor is a regular package, and treating
+    any same-named directory as a provider would let an empty folder on PYTHONPATH veto a
+    perfectly good wheel.
+    """
+    candidates = (
+        os.path.join(entry, "llmcompressor", "__init__.py"),
+        os.path.join(entry, "llmcompressor", "__init__.pyc"),
+        os.path.join(entry, "llmcompressor.py"),
+    )
+    for candidate in candidates:
+        try:
+            if os.path.exists(candidate):
+                return True
+        except Exception:
+            continue
+    try:
+        import glob as _glob
+
+        return bool(_glob.glob(os.path.join(entry, "llmcompressor.*.so"))) or bool(
+            _glob.glob(os.path.join(entry, "llmcompressor.pyd"))
+        )
+    except Exception:
+        return False
 
 
 def _llm_compressor_module_is_usable(module):
@@ -1739,14 +1791,30 @@ def _llm_compressor_module_is_usable(module):
             parent = os.path.dirname(location)
             if os.path.basename(location).startswith("__init__."):
                 parent = os.path.dirname(parent)
-            entries = set()
+            # Reachable is not the same as resolved, and the difference is a real
+            # configuration: an in-range wheel in site-packages is what THIS process cached,
+            # then PYTHONPATH is pointed at a different checkout, and a fresh child searches
+            # PYTHONPATH first. Membership alone blessed the wheel while the export imported
+            # the checkout. So the roots stay in the child's search ORDER, and an entry the
+            # child would reach BEFORE this module's own disqualifies it.
+            entries = []
             for entry in roots:
                 try:
-                    entries.add(os.path.abspath(entry))
+                    entry = os.path.abspath(entry)
                 except Exception:
                     continue
+                if entry not in entries:
+                    entries.append(entry)
             if parent not in entries:
                 return False
+            for entry in entries:
+                if entry == parent:
+                    break
+                if _path_entry_provides_llm_compressor(entry):
+                    # An llmcompressor the child reaches FIRST, which is therefore not this
+                    # one. Not an answer either way, so fall through to the probe, which
+                    # asks the child itself instead of reasoning about its path.
+                    return False
         except Exception:
             return True
     reported = getattr(module, "__version__", None)
