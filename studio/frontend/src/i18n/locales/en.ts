@@ -1575,10 +1575,17 @@ export const en = {
         "Older turns move to a searchable archive when a chat fills its context.",
       autoCompactKeywords:
         "compaction compact auto-compact context window truncate rolling checkpoint headroom archive retrieval recall rag search",
+      visibility: {
+        collapsed: "Collapsed",
+        auto: "Expand while running",
+        expanded: "Always expanded",
+      },
+      visibilityKeywords:
+        "collapse collapsed expand expanded open closed reasoning thinking tool calls tool activity fold group streaming",
       thinking: {
-        collapseByDefault: "Collapse Thinking by default",
-        collapseByDefaultDescription:
-          "Keep reasoning collapsed. Expand a block to read it.",
+        visibility: "Thinking",
+        visibilityDescription:
+          "How reasoning opens. You can still expand or collapse any block yourself.",
       },
       currentDate: {
         label: "Tell the model today's date",
@@ -1588,12 +1595,14 @@ export const en = {
         saveError: "Failed to update current date settings",
       },
       tools: {
-        collapseByDefault: "Collapse tool activity by default",
-        collapseByDefaultDescription:
-          "Keep tool details collapsed. Expand a row to inspect it.",
-        foldIntoThinking: "Fold tool calls into Thinking",
+        visibility: "Tool calls",
+        visibilityDescription:
+          "How tool activity opens. You can still expand or collapse any call yourself.",
+        foldIntoThinking: "Group tool calls under Thinking",
         foldIntoThinkingDescription:
-          "Hide a turn's tool calls until its Thinking block is opened.",
+          "Show a turn's tool calls inside its Thinking block instead of on their own rows.",
+        foldIntoThinkingBlocked:
+          "Unavailable while tool calls are set to Always expanded, which keeps them on their own rows.",
       },
       webSearch: {
         title: "Web search",

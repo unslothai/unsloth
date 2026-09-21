@@ -1607,10 +1607,17 @@ export const es = {
         "Los turnos antiguos pasan a un archivo consultable al llenarse el contexto de un chat.",
       autoCompactKeywords:
         "compactación compactar automáticamente contexto ventana truncar deslizante checkpoint margen archivo recuperación búsqueda compaction rolling headroom archive retrieval rag",
+      visibility: {
+        collapsed: "Contraído",
+        auto: "Expandir mientras se ejecuta",
+        expanded: "Siempre expandido",
+      },
+      visibilityKeywords:
+        "contraer contraído expandir expandido abierto cerrado razonamiento pensamiento llamadas de herramientas actividad agrupar streaming",
       thinking: {
-        collapseByDefault: "Contraer el razonamiento de forma predeterminada",
-        collapseByDefaultDescription:
-          "Mantén el razonamiento contraído mientras el modelo piensa, en lugar de abrirlo automáticamente. Expande cualquier bloque para leerlo.",
+        visibility: "Razonamiento",
+        visibilityDescription:
+          "Cómo se abre el razonamiento. Puedes expandir o contraer cualquier bloque por tu cuenta.",
       },
       currentDate: {
         label: "Indicar al modelo la fecha de hoy",
@@ -1620,12 +1627,14 @@ export const es = {
         saveError: "No se pudieron actualizar los ajustes de fecha actual",
       },
       tools: {
-        collapseByDefault: "Contraer la actividad de herramientas por defecto",
-        collapseByDefaultDescription:
-          "Mantén contraídas las entradas y salidas de las herramientas mientras se ejecutan. Expande cualquier fila para inspeccionarla.",
-        foldIntoThinking: "Plegar las llamadas de herramientas en Pensamiento",
+        visibility: "Llamadas de herramientas",
+        visibilityDescription:
+          "Cómo se abre la actividad de herramientas. Puedes expandir o contraer cualquier llamada por tu cuenta.",
+        foldIntoThinking: "Agrupar las llamadas de herramientas en Razonamiento",
         foldIntoThinkingDescription:
-          "Oculta las llamadas de herramientas de un turno hasta abrir su bloque de Pensamiento.",
+          "Muestra las llamadas de herramientas de un turno dentro de su bloque de Razonamiento en lugar de en filas propias.",
+        foldIntoThinkingBlocked:
+          "No disponible mientras las llamadas de herramientas estén en «Siempre expandido», que las mantiene en filas propias.",
       },
       webSearch: {
         title: "Búsqueda web",
