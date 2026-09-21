@@ -141,9 +141,14 @@ test("the Updated column names the list's order and turns it around", () => {
   // The Sort by control it replaces is gone, with the mode it carried.
   assert.ok(!PAGE.includes("Sort by"), "the sort control is still in the header");
   assert.ok(!PAGE.includes("sortMode"), "the sort mode outlived its control");
-  // Search takes the room it leaves.
+  // Search takes the room it leaves, on a row of its own where there is not enough of it:
+  // beside the heading the two buttons left the field narrower than its own 56px of padding.
   assert.match(PAGE, /<div className="relative min-w-0 flex-1 sm:max-w-md">/);
   assert.match(PAGE, /className="h-9 w-full rounded-full border-none bg-muted pl-10/);
+  assert.match(
+    PAGE,
+    /<div className="flex w-full min-w-0 items-center justify-end gap-3 sm:w-auto sm:flex-1">/,
+  );
   // Newest first to begin with, as a file list opens.
   assert.match(PAGE, /useState<"desc" \| "asc">\("desc"\)/);
   // The header's trailing spacers match the row's pin and menu, so the label sits over its
@@ -197,12 +202,17 @@ test("a chat row carries its own actions, revealed by hovering it", async () => 
     row,
     /<span className="hidden w-40 shrink-0 sm:block">\n\s*\{formatUpdated\(chat\.updatedAt\)\}/,
   );
-  for (const hidden of [
-    '<span className="hidden w-40 shrink-0 sm:block">Updated</span>',
-    'className="hidden w-40 shrink-0 cursor-pointer items-center gap-1 text-left transition-colors hover:text-foreground sm:flex"',
-    'className="hidden w-40 shrink-0 text-sm text-muted-foreground sm:block"',
+  assert.ok(
+    PAGE.includes('className="hidden w-40 shrink-0 text-sm text-muted-foreground sm:block"'),
+    "a project row still draws its date below sm",
+  );
+  // The header keeps the control, shrunk to its label: it is the only way to turn the order
+  // around, and hiding it left a phone with no way to sort at all.
+  for (const kept of [
+    '<span className="shrink-0 sm:w-40">Updated</span>',
+    'className="flex shrink-0 cursor-pointer items-center gap-1 text-left transition-colors hover:text-foreground sm:w-40"',
   ]) {
-    assert.ok(PAGE.includes(hidden), `the Updated column is still drawn below sm: ${hidden}`);
+    assert.ok(PAGE.includes(kept), `the sort control does not survive below sm: ${kept}`);
   }
   assert.match(row, /<div className="relative flex w-8 shrink-0 items-center justify-end">/);
 });

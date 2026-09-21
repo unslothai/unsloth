@@ -667,8 +667,10 @@ export function ProjectsPage() {
         <h1 className="text-ui-30 font-semibold leading-[1.04] tracking-[-0.028em] text-foreground sm:text-ui-34">
           Projects
         </h1>
-        {/* The Updated column orders the list, so search takes the room a sort control had. */}
-        <div className="flex min-w-0 flex-1 items-center justify-end gap-3">
+        {/* The Updated column orders the list, so search takes the room a sort control had.
+            Below sm the group wraps to its own row: beside the heading the two buttons left the
+            field narrower than its own padding. */}
+        <div className="flex w-full min-w-0 items-center justify-end gap-3 sm:w-auto sm:flex-1">
           <div className="relative min-w-0 flex-1 sm:max-w-md">
             <span className="pointer-events-none absolute left-3.5 top-1/2 -translate-y-1/2 text-muted-foreground">
               <HugeiconsIcon icon={Search01Icon} strokeWidth={1.75} className="size-4" />
@@ -764,7 +766,7 @@ export function ProjectsPage() {
           {/* The loaded header without its sort control, which has nothing to sort yet. */}
           <div className="mb-1 flex items-center gap-3 px-5 pb-1 text-ui-13 font-medium text-muted-foreground">
             <span className="flex-1">Name</span>
-            <span className="hidden w-40 shrink-0 sm:block">Updated</span>
+            <span className="shrink-0 sm:w-40">Updated</span>
             <span className="size-7 shrink-0" />
             <span className="w-8 shrink-0" />
           </div>
@@ -804,8 +806,9 @@ export function ProjectsPage() {
         <div className="mt-16">
           {/* Column header. Name starts at the folder icon's left edge, and the trailing
               spacers stand in for the row's pin and menu so Updated sits over its values.
-              Updated leaves below sm with its values: 160px of date left a nested chat row
-              no width for its title and pushed its actions off a phone screen. */}
+              Below sm the values go, since 160px of date left a nested chat row no width for
+              its title and pushed its actions off a phone screen; the control stays, shrunk to
+              its label, as the only way to turn the order around. */}
           <div className="mb-1 flex items-center gap-3 px-5 pb-1 text-ui-13 font-medium text-muted-foreground">
             <span className="flex-1">Name</span>
             {/* The column sorts the list, and the arrow says which way. */}
@@ -813,7 +816,7 @@ export function ProjectsPage() {
               type="button"
               onClick={() => setSortDir((dir) => (dir === "desc" ? "asc" : "desc"))}
               title={sortDir === "desc" ? "Newest first" : "Oldest first"}
-              className="hidden w-40 shrink-0 cursor-pointer items-center gap-1 text-left transition-colors hover:text-foreground sm:flex"
+              className="flex shrink-0 cursor-pointer items-center gap-1 text-left transition-colors hover:text-foreground sm:w-40"
             >
               Updated
               {/* Down for newest first, up for oldest, as a sorted column reads. */}
