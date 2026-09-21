@@ -385,10 +385,16 @@ test("chat and the Hub answer the fit question with one formula", () => {
     "and that is every expander there is",
   );
   // The APU window comes out of the RAM tier where the figure is built, so every rule downstream
-  // sees one pool counted once.
+  // sees one pool counted once. The tier hands the RAW devices to gpuSharedHostMemoryGb, which
+  // folds the two flags itself: pre-folding here collapsed a multi-socket unified host to one
+  // socket's worth, so it subtracted 48 GiB of a 96 GiB pool (#11366).
   assert.ok(
-    GPU_INFO.includes("shared_memory: sharesHostMemory({"),
-    "the RAM tier folds unified in",
+    GPU_INFO.includes("gpuSharedHostMemoryGb(devices)"),
+    "the RAM tier folds unified in, on the raw devices",
+  );
+  assert.ok(
+    !GPU_INFO.includes("shared_memory: sharesHostMemory({"),
+    "and never pre-folds them on the way in",
   );
   assert.ok(HUB_CARD.includes("gpuCount?: number;"));
   assert.ok(RECOMMENDED.includes("budgetFraction: opts.budgetFraction,"));
