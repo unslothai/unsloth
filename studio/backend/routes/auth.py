@@ -459,16 +459,19 @@ def _login_failure_detail() -> str:
     PATH form only: this body is produced before any credential is verified and the browser-served
     default resolves CORS to ["*"], so an absolute path built from ``sys.executable`` would hand the
     local account name and the install layout to any page the user happens to have open. The 429
-    beside this one withholds the client IP for the same reason.
+    beside this one withholds the client IP for the same reason. A bare ``unsloth`` does not resolve
+    from every shell, so the hint says which environment to run it in; the exact absolute command is
+    printed on the host's own console by run.py, where naming the install is the point.
     """
     command = _reset_password_command_on_path()
+    where = "in the environment Unsloth is installed in"
     if policy.installation_is_multi_user():
         return (
             "Incorrect username, password or setup code. Ask the installation owner to reset "
-            f"the account, by running this on the Unsloth Studio host: {command} "
+            f"the account, by running this on the Unsloth Studio host {where}: {command} "
             "--username <name>"
         )
-    return f"Incorrect password. To reset it, run this in your terminal: {command}"
+    return f"Incorrect password. To reset it, run this in your terminal, {where}: {command}"
 
 
 @router.post("/login", response_model = Token)

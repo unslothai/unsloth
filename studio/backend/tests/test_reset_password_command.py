@@ -155,6 +155,32 @@ def test_posix_is_untouched(auth, monkeypatch, tmp_path):
     assert auth._reset_password_command() == f"{bin_dir / 'unsloth'} studio reset-password"
 
 
+def test_the_console_warnings_name_the_absolute_command(monkeypatch, tmp_path):
+    """The absolute form has to be printed somewhere, and stderr on the host is that somewhere.
+
+    Without a production caller `_reset_password_command()` is dead, and a user whose shell has no
+    `unsloth` on PATH is left with a hint they cannot run. These two warnings go to the host's own
+    console, so naming the install there costs nothing and is the point.
+    """
+    run_py = (Path(__file__).resolve().parents[1] / "run.py").read_text()
+
+    tree = ast.parse(run_py)
+    calls = sum(
+        isinstance(node, ast.ImportFrom)
+        and node.module == "routes.auth"
+        and any(a.name == "_reset_password_command" for a in node.names)
+        for node in ast.walk(tree)
+    )
+    assert calls >= 2, (
+        "run.py's public-bind and reachable-bind warnings must print the absolute reset command; "
+        "without a production caller the helper is dead and the 401's PATH form is the only hint "
+        "a user ever sees"
+    )
+    assert "`unsloth studio reset-password`. Unsloth shuts down" not in run_py, (
+        "the public-bind warning is back to the bare PATH form"
+    )
+
+
 def test_the_unauthenticated_401_body_names_no_host_path(auth, monkeypatch, tmp_path):
     """The console hint may name the install; the login failure body may not.
 
