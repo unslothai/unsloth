@@ -36,6 +36,7 @@ _C_SYMBOLS = (
     "cdequantize_blockwise_fp32",
     "cdequantize_blockwise_fp16_nf4",
     "cdequantize_blockwise_bf16_nf4",
+    "cdequantize_blockwise_fp32_nf4",
 )
 # 4bit inference is a gemv on xpu and a naive gemm elsewhere; probing the wrong pair would write off
 # a perfectly good wheel.
