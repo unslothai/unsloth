@@ -9,6 +9,7 @@ offers, and every refusal that stands between a key and an rmtree.
 """
 
 import os
+import sys
 from pathlib import Path
 
 import pytest
@@ -1604,6 +1605,47 @@ def test_an_unreachable_dictation_probe_does_not_block_a_hub_clear(monkeypatch):
     monkeypatch.setattr(stt_registry, "resident", _raise)
 
     assert any_model_load_blocks_cache_clear() is None
+
+
+def test_a_whole_hub_clear_waits_for_a_chat_load_that_has_not_spawned_yet(monkeypatch):
+    """chat_load_active's own docstring: is_active covers a live llama-server process, which an
+    HF-backed load does not have until its GGUF finished downloading. Those minutes are exactly
+    when the bytes are arriving, and they come through hf_hub_download_with_xet_fallback rather
+    than the download registry, so the purge's own reservation does not cover them either."""
+    from core.inference import llama_cpp
+    from hub.services.models.deletion import any_model_load_blocks_cache_clear
+
+    _idle_dictation(monkeypatch)
+    monkeypatch.setattr(llama_cpp, "chat_load_active", lambda: True)
+
+    assert any_model_load_blocks_cache_clear() == (
+        "A model load is using the cache; wait for it to finish"
+    )
+
+
+def test_a_whole_hub_clear_waits_for_a_draining_image_load(monkeypatch):
+    """A cancelled diffusers load leaves loading_repo_ids() immediately but keeps its repos in
+    draining_repo_ids() while the worker thread reads on inside _prefetch_files, holding no lock.
+    _diffusion_blocks_delete already refuses on that, and emptying the whole cache is every repo
+    at once, so it cannot ask less than the per-repository path does."""
+    import types
+
+    from hub.services.models.deletion import any_model_load_blocks_cache_clear
+
+    _idle_dictation(monkeypatch)
+    draining = types.SimpleNamespace(
+        status = lambda: {"loaded": False},
+        loaded_repo_ids = tuple,
+        loading_repo_ids = tuple,
+        draining_repo_ids = lambda: ("black-forest-labs/FLUX.2-klein-4B",),
+    )
+    router = types.ModuleType("core.inference.diffusion_engine_router")
+    router.get_active_diffusion_engine = lambda: draining
+    monkeypatch.setitem(sys.modules, "core.inference.diffusion_engine_router", router)
+
+    assert any_model_load_blocks_cache_clear() == (
+        "An Images model load is still unwinding; wait for it to finish"
+    )
 
 
 def test_an_unverifiable_load_state_refuses_rather_than_clears(monkeypatch, isolated_caches):
