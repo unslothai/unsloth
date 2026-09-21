@@ -41,9 +41,51 @@ def _class_list(source: str, marker: str) -> str | None:
     opens = source.rfind("<", 0, start + len(marker))
     if opens == -1:
         return None
-    opening = source[opens : source.find(">", start) + 1]
-    found = re.search(r'className="([^"]*)"', opening)
+    # The first `>` is not the end of the tag. An expression prop can contain one, and an
+    # arrow function is the ordinary case: `onClick={() => ...}` ends the tag early and the
+    # class list disappears. Only a `>` outside the JSX expression braces closes it.
+    depth, end = 0, None
+    for index in range(opens, len(source)):
+        char = source[index]
+        if char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+        elif char == ">" and depth == 0:
+            end = index
+            break
+    if end is None:
+        return None
+    found = re.search(r'className="([^"]*)"', source[opens : end + 1])
     return found.group(1) if found else None
+
+
+def _effective_widths(tokens: list[str]) -> dict[str, str]:
+    """Variant -> the min-width utility that survives for it, in `cn` order.
+
+    tailwind-merge resolves each variant separately and the last one wins, so `min-w-0
+    md:min-w-max` keeps both and the element stops shrinking above `md`. A scan that only
+    looks at unqualified utilities reads min-w-0 there and calls it fine.
+    """
+    widths: dict[str, str] = {}
+    for token in tokens:
+        variant, _, utility = token.rpartition(":")
+        if utility.startswith("min-w-"):
+            widths[variant] = utility
+    return widths
+
+
+def _assert_shrinks(widths: dict[str, str], what: str, evidence: str) -> None:
+    offenders = {variant: utility for variant, utility in widths.items() if utility != "min-w-0"}
+    assert not offenders, (
+        f"{what} stops shrinking below its content at some width, so a long summary widens "
+        f"the row past the thread there: {offenders} as variant -> effective min-width. "
+        f"{evidence}"
+    )
+    assert "" in widths, (
+        f"{what} states no unqualified min-width, so whether it shrinks at the smallest "
+        f"widths is left to whatever the element defaults to. {evidence}"
+    )
 
 
 def test_assistant_more_menu_exposes_response_details_action():
@@ -162,33 +204,23 @@ def test_response_model_badge_is_user_configurable_and_rendered_once_per_message
         "neither ReasoningTrigger's base classes nor its call site carries a class list this "
         "can read, so this guard cannot see the trigger's layout at all"
     )
-    # Grouped by variant, because tailwind-merge resolves each variant separately: `min-w-0
-    # md:min-w-max` keeps both, and above the md breakpoint the trigger stops shrinking while
-    # an unqualified-only scan still reads min-w-0 and calls it fine. So the last min-w in
-    # EVERY variant has to be min-w-0, and there has to be an unqualified one, or the base
-    # case is unstated.
-    widths: dict[str, str] = {}
-    for token in ordered:
-        variant, _, utility = token.rpartition(":")
-        if utility.startswith("min-w-"):
-            widths[variant] = utility
-    offenders = {variant: utility for variant, utility in widths.items() if utility != "min-w-0"}
-    assert not offenders, (
-        f"the reasoning trigger stops shrinking below its content at some width, so a long "
-        f"summary widens the row past the thread there: {offenders} as variant -> effective "
-        f"min-width. Base classes: {base.group(1) if base else None!r}. Call site: "
-        f"{call_site!r}"
-    )
-    assert "" in widths, (
-        f"the reasoning trigger states no unqualified min-width, so whether it shrinks at the "
-        f"smallest widths is left to whatever the element defaults to. Base classes: "
-        f"{base.group(1) if base else None!r}. Call site: {call_site!r}"
+    _assert_shrinks(
+        _effective_widths(ordered),
+        "the reasoning trigger",
+        f"Base classes: {base.group(1) if base else None!r}. Call site: {call_site!r}",
     )
     header = _class_list(reasoning_src, 'data-slot="reasoning-header"')
     assert header is not None, "the reasoning header row no longer carries a className"
-    assert {"flex", "min-w-0"} <= set(header.split()), (
-        f"the header row holding the trigger can no longer shrink either, which puts the "
-        f"overflow back one level up: {header!r}"
+    assert "flex" in header.split(), (
+        f"the header row holding the trigger is no longer a flex row, so the trigger's own "
+        f"shrinking is not what decides the layout any more: {header!r}"
+    )
+    # Resolved the same way as the trigger: a header that shrinks everywhere except above one
+    # breakpoint puts the overflow back one level up at exactly those widths.
+    _assert_shrinks(
+        _effective_widths(header.split()),
+        "the header row holding the trigger",
+        f"Classes: {header!r}",
     )
 
 

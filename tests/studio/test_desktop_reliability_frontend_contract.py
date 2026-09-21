@@ -889,12 +889,16 @@ def test_chat_sidebar_row_actions_visible_on_coarse_pointers():
         # anywhere let a second padded element vouch for the row that had lost its gutter.
         missing, short = [], []
         for cls in hovered:
-            gutter = int(re.search(rf"group-hover/{variant}:pr-(\d+)", cls).group(1))
-            coarse = re.search(r"\[@media\(pointer:coarse\)\]:pr-(\d+)", cls)
-            if coarse is None:
+            # LAST wins, per variant: cn runs tailwind-merge, so a later
+            # [@media(pointer:coarse)]:pr-0 in the same list replaces an earlier pr-16 and
+            # reading the first match reports a gutter that is not the one that renders.
+            gutters = re.findall(rf"group-hover/{variant}:pr-(\d+)", cls)
+            coarse = re.findall(r"\[@media\(pointer:coarse\)\]:pr-(\d+)", cls)
+            gutter = int(gutters[-1])
+            if not coarse:
                 missing.append((gutter, cls))
-            elif int(coarse.group(1)) < gutter:
-                short.append((gutter, int(coarse.group(1)), cls))
+            elif int(coarse[-1]) < gutter:
+                short.append((gutter, int(coarse[-1]), cls))
         assert not missing, (
             f"a {variant} element reserves room for its action on hover but not on a coarse "
             f"pointer, so the kebab overlaps the title on a touch device (#7276): "
