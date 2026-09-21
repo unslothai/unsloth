@@ -978,6 +978,20 @@ def _index() -> dict[str, _LocalGgufEntry]:
         return fresh
 
 
+def index_scan_stamp() -> float:
+    """The published snapshot's stamp, as an identity for "which scan answered".
+
+    A completed scan publishes ``time.monotonic()``, so a caller holding the value from
+    before its pass can tell a scan that ran from one that did not: ``_build_index`` raising
+    never reaches ``_publish``, so the stamp is unchanged and its ``None`` result is the
+    resolver's best effort rather than a confirmed absence. Zero is a never-built or revoked
+    index and negative an additions-only invalidation, so only a positive value is a scan.
+
+    Lock-free for the same reason as ``index_is_built``: ``_scan`` is rebound, never mutated.
+    """
+    return _snapshot()[0]
+
+
 def index_is_built() -> bool:
     """Whether a scan has ever completed, freshness aside.
 

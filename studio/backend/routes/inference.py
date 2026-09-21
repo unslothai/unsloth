@@ -9065,24 +9065,27 @@ def _alias_probe_taken(identifier: str) -> bool:
         return True
 
 
-def _alias_probe_release() -> None:
-    """Give a claim back unanswered, so the next request probes rather than shortcutting."""
+def _alias_probe_release(identifier: str) -> None:
+    """Give back the claim on *identifier*, so the next request probes rather than shortcut."""
     with _alias_probe_lock:
         _alias_probe_forget_stale_locked()
-        _alias_probe_inflight.clear()
+        _alias_probe_inflight.discard(identifier)
 
 
-def _alias_probe_settle() -> None:
-    """Called once a resolver pass returns: the index is fresh and any alias is recorded.
+def _alias_probe_settle(identifier: str) -> None:
+    """Record that the pass which claimed *identifier* completed and found no alias.
 
-    Promotes on ANY completed pass rather than tracking which request owned which path.
-    The probe exists to get the index rebuilt once, and every pass rebuilds it, so a
-    completed one answers whatever was in flight.
+    Only the claimer's own path, never everything in flight: any request at all runs a
+    resolver pass, so promoting the whole set let an unrelated model's request answer a
+    claim whose switch had not recorded its alias yet. A later request naming that path
+    would then take the shortcut with ``_openai_advertised_id`` still None and report the
+    filename for the rest of the load.
     """
     with _alias_probe_lock:
         _alias_probe_forget_stale_locked()
-        _alias_probed_load_paths.update(_alias_probe_inflight)
-        _alias_probe_inflight.clear()
+        if identifier in _alias_probe_inflight:
+            _alias_probe_inflight.discard(identifier)
+            _alias_probed_load_paths.add(identifier)
 
 
 def _clear_advertised_alias(llama_backend) -> None:
@@ -9099,7 +9102,7 @@ def _clear_advertised_alias(llama_backend) -> None:
         _alias_probe_inflight.clear()
 
 
-def _loaded_identity_satisfies(requested: str) -> bool:
+def _loaded_identity_satisfies(requested: str, claimed: Optional[list] = None) -> bool:
     """Whether an explicit resident identity answers to *requested*.
 
     Unlike :func:`_loaded_satisfies`, this excludes a public id derived from a
@@ -9107,6 +9110,10 @@ def _loaded_identity_satisfies(requested: str) -> bool:
     resolver and the serving backend records it for responses and ``/v1/models``.
     A request naming the load path itself is held back until that recording has
     happened, for the same reason.
+
+    When *claimed* is given and this call CLAIMS the alias probe, the claimed path is
+    appended to it. Only the claimer may settle or release that claim, so the caller has
+    to know whether it took one and on which path.
     """
     from core.inference.openai_auto_download import split_model_ref
 
@@ -9131,6 +9138,8 @@ def _loaded_identity_satisfies(requested: str) -> bool:
             and _matches_any(base, (identifier,))
             and _alias_probe_taken(identifier)
         ):
+            if claimed is not None:
+                claimed.append(identifier)
             return False
         companion_roots = tuple(getattr(llama_backend, "_openai_gguf_companion_roots", ()) or ())
         if companion_roots:
@@ -9673,6 +9682,7 @@ async def _maybe_auto_switch_model(
         model_override_load_kwargs,
     )
     from core.inference.local_model_resolver import (
+        index_scan_stamp,
         local_gguf_companion_roots,
         local_gguf_companion_state,
         local_target_is_gguf,
@@ -9767,7 +9777,10 @@ async def _maybe_auto_switch_model(
     # The common Unsloth path names the model that is already serving. Resolve that
     # from resident state before consulting the filesystem index: rebuilding a stale
     # multi-root index here used to hold the request for seconds before streaming.
-    if auto_switch_on and await asyncio.to_thread(_loaded_identity_satisfies, requested_model):
+    alias_probe_claimed: list[str] = []
+    if auto_switch_on and await asyncio.to_thread(
+        _loaded_identity_satisfies, requested_model, alias_probe_claimed
+    ):
         warm_index_soon()
         if claim_resident:
             _claim_slot_for_non_preview(fastapi_request)
@@ -9783,13 +9796,14 @@ async def _maybe_auto_switch_model(
             await _reject_unservable_model(requested_model, fastapi_request)
             return
 
-    # Whether a resolver pass actually began. A cancelled generation raises out of
-    # _resolve_and_switch before either resolver is called, and settling on that would mark
-    # the path answered without anything having looked.
-    alias_probe_pass_ran = False
+    # Whether a resolver pass both began and produced a CONFIRMED absence. A cancelled
+    # generation raises out of _resolve_and_switch before either resolver is called, and the
+    # scan itself can fail and return None as a best effort; settling on either would mark
+    # the path answered when nothing had actually looked for an alias.
+    alias_probe_answered = False
 
     async def _resolve_and_switch() -> None:
-        nonlocal alias_probe_pass_ran
+        nonlocal alias_probe_answered
         from core.inference.openai_auto_download import looks_like_quant, split_model_ref
 
         _raise_if_generation_cancelled()
@@ -9805,18 +9819,28 @@ async def _maybe_auto_switch_model(
             # safe to use immediately. An expired/config-invalidated hit, a cold
             # cache, and every miss must refresh before an unrelated resident model
             # can answer or an entry from a removed scan root can trigger a switch.
-            alias_probe_pass_ran = True
+            scan_stamp_before = index_scan_stamp()
             resolved = resolve_trusted_cached_local_gguf(
                 requested_model,
                 include_companion_scope = True,
             )
             if resolved is not None:
+                # A trusted hit is a definite answer from an index that did complete.
+                alias_probe_answered = True
                 warm_index_soon()
             else:
                 resolved = await asyncio.to_thread(
                     resolve_local_gguf,
                     requested_model,
                     include_companion_scope = True,
+                )
+                # resolve_local_gguf swallows a failed scan and returns None, which is
+                # indistinguishable from "no such model" at this level. A published stamp
+                # is the difference: _build_index raising never reaches _publish, so the
+                # absence is only confirmed once a scan has actually landed.
+                scan_stamp_after = index_scan_stamp()
+                alias_probe_answered = (
+                    scan_stamp_after > 0.0 and scan_stamp_after != scan_stamp_before
                 )
         if resolved is None:
             # Not on disk. Opt-in: fetch in the background and ask the caller to retry.
@@ -10312,15 +10336,17 @@ async def _maybe_auto_switch_model(
         try:
             await _resolve_and_switch()
         finally:
-            # A pass that ran answered the probe, however the switch itself ended: in the
-            # finally so a refusal or a failed load does not leave the path claimed forever,
-            # which would rebuild the index for every later message. One that never started
-            # (a cancelled generation raises above both resolvers) releases the claim instead,
-            # so the next request probes again rather than shortcutting to the filename.
-            if alias_probe_pass_ran:
-                _alias_probe_settle()
-            else:
-                _alias_probe_release()
+            # Only this request's own claim, and only if its pass confirmed the absence:
+            # in the finally so a refusal or a failed load does not leave the path claimed
+            # forever, which would rebuild the index for every later message. A pass that
+            # never started (a cancelled generation raises above both resolvers) or whose
+            # scan failed gives the claim back, so the next request probes again rather
+            # than shortcutting to the filename for the rest of the load.
+            for claimed_path in alias_probe_claimed:
+                if alias_probe_answered:
+                    _alias_probe_settle(claimed_path)
+                else:
+                    _alias_probe_release(claimed_path)
     except HTTPException as exc:
         path = getattr(getattr(fastapi_request, "url", None), "path", None)
         if (

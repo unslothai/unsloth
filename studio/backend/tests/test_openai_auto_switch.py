@@ -3160,7 +3160,7 @@ def test_a_concurrent_request_waits_for_a_probe_still_in_flight(monkeypatch):
     assert backend._openai_advertised_id is None
 
     # Once a pass completes the answer is settled and the shortcut is correct.
-    inference_route._alias_probe_settle()
+    inference_route._alias_probe_settle(path)
     assert inference_route._loaded_identity_satisfies(path) is True
 
 
@@ -9687,7 +9687,7 @@ def test_count_tokens_does_not_own_an_independent_load(monkeypatch):
     identity_checked = threading.Event()
     independent_load_done = threading.Event()
 
-    def loaded_identity_satisfies(_requested):
+    def loaded_identity_satisfies(_requested, _claimed = None):
         identity_checked.set()
         assert independent_load_done.wait(timeout = 2)
         return True
@@ -11691,3 +11691,82 @@ def test_preset_reasoning_budget_rejects_booleans():
     with pytest.raises(ValueError, match = "Expected a number, got a boolean"):
         ChatPresetLoadConfig(reasoningBudget = True)
     assert ChatPresetLoadConfig(reasoningBudget = 0).reasoningBudget == 0
+
+
+def test_an_unrelated_request_cannot_settle_someone_elses_claim(monkeypatch):
+    # Every request runs a resolver pass, but only the one NAMING the load path claims the
+    # probe. Settling the whole in-flight set let an unrelated model's request answer that
+    # claim before the switch it belongs to had recorded its alias, and the next request for
+    # the path then shortcut with _openai_advertised_id still None -- the filename, for the
+    # rest of the load.
+    path = "/elsewhere/unscanned-model.gguf"
+    backend = _FakeBackend(path)
+    rec = _LoadRecorder(backend)
+    monkeypatch.setattr(settings, "get_openai_auto_switch_enabled", lambda: True)
+    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: backend)
+    monkeypatch.setattr(inference_route, "_load_model_impl", rec)
+    monkeypatch.setattr(inference_route, "_auto_switch_waiters", {})
+    monkeypatch.setattr(inference_route, "_alias_probed_load_paths", set())
+    monkeypatch.setattr(inference_route, "_alias_probe_inflight", set())
+    monkeypatch.setattr(inference_route, "_alias_probe_generation", -1)
+    monkeypatch.setattr(resolver, "_build_index", lambda: {})
+    monkeypatch.setattr(resolver, "warm_index_soon", lambda *a, **k: None)
+    monkeypatch.setattr(resolver, "_CACHE_TTL_S", 0)
+
+    # The owner claims the path and is still mid-pass, so the claim is outstanding.
+    assert inference_route._loaded_identity_satisfies(path) is False
+    assert inference_route._alias_probe_inflight == {path}
+
+    # A request for a different model runs its own full pass, start to finish.
+    _run_hook("unsloth/something-else-GGUF")
+    assert inference_route._alias_probed_load_paths == set(), (
+        "an unrelated request settled a claim it never took"
+    )
+    assert inference_route._alias_probe_inflight == {path}, "and it must still be in flight"
+    # So the owner's path still reaches the resolver rather than answering from the shortcut.
+    assert inference_route._loaded_identity_satisfies(path) is False
+
+    # The owner's own completed pass is what settles it.
+    inference_route._alias_probe_settle(path)
+    assert inference_route._loaded_identity_satisfies(path) is True
+
+
+def test_a_failed_index_scan_does_not_count_as_a_confirmed_absence(monkeypatch):
+    # resolve_local_gguf swallows a scan failure and returns None, which at the route looks
+    # exactly like "no such model". Settling on it marked the path answered from a scan that
+    # never landed, so the shortcut stayed wrong for the whole load even after the scanner
+    # recovered. A published stamp is the difference: _build_index raising never reaches
+    # _publish.
+    path = "/elsewhere/unscanned-model.gguf"
+    backend = _FakeBackend(path)
+    rec = _LoadRecorder(backend)
+    monkeypatch.setattr(settings, "get_openai_auto_switch_enabled", lambda: True)
+    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: backend)
+    monkeypatch.setattr(inference_route, "_load_model_impl", rec)
+    monkeypatch.setattr(inference_route, "_auto_switch_waiters", {})
+    monkeypatch.setattr(inference_route, "_alias_probed_load_paths", set())
+    monkeypatch.setattr(inference_route, "_alias_probe_inflight", set())
+    monkeypatch.setattr(inference_route, "_alias_probe_generation", -1)
+    monkeypatch.setattr(resolver, "warm_index_soon", lambda *a, **k: None)
+    monkeypatch.setattr(resolver, "_CACHE_TTL_S", 0)
+
+    attempts = []
+
+    def failing_build():
+        attempts.append(1)
+        raise OSError("transient: scan root disappeared")
+
+    monkeypatch.setattr(resolver, "_build_index", failing_build)
+    _run_hook(path)
+    assert attempts, "the scan must have been attempted at all"
+    assert inference_route._alias_probed_load_paths == set(), (
+        "a scan that failed was recorded as a confirmed absence"
+    )
+    assert inference_route._alias_probe_inflight == set(), "and the claim was not given back"
+
+    # Once the scanner recovers, the next request probes again and THAT settles.
+    monkeypatch.setattr(resolver, "_build_index", lambda: {})
+    _run_hook(path)
+    assert inference_route._alias_probed_load_paths == {path}, (
+        "a recovered scan must settle the probe, or the index rebuilds forever"
+    )
