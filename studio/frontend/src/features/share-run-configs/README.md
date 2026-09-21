@@ -16,7 +16,7 @@ Browser:
 http://localhost:8888/chat#run?v=1&model=unsloth%2FExample-GGUF&nParallel=2
 ```
 
-The browser address is the Studio instance to open. A localhost link targets the recipient's own installation and port. Desktop links use the existing registered `unsloth` protocol. Browser payloads use the fragment, which is not included in HTTP requests.
+The browser address is the Studio instance to open. A localhost link targets the recipient's own installation and port. Desktop links use the existing registered `unsloth` protocol; desktop intake accepts only native `unsloth:` URLs. Browser payloads use the fragment, which is not included in HTTP requests.
 
 Every parameter is optional. `v` defaults to `1`; unsupported versions are rejected. `model` is a Hugging Face repository ID. If omitted, the current local inference model is used; if none is selected, Studio asks for a model ID. `ggufVariant` uses the existing quantization or relative GGUF file identity. `isGguf` is an optional format hint; otherwise Studio uses the selected model, inventory metadata or its name/variant. Explicit `isGguf=false` does not inherit the selected model's GGUF variant or file access token.
 
@@ -36,7 +36,7 @@ const parameters = new URLSearchParams({
 const link = `unsloth://run?${parameters}`;
 ```
 
-Opening a link navigates to the existing model configuration editor. It does not load a model, start a download, or save the imported settings. The existing Load/Reload and Remember controls own those actions. A pending import waits for saved settings to hydrate, then overlays only the supplied fields once. A model-only link does not mark the settings as edited. Closing the receiving editor cancels an unfinished import, even when the same model's sidebar remains open. The sidebar reflects the shared draft without consuming pending links. Links received during login remain in memory until authentication completes. At sign-in, a pending link is also saved in tab-local session storage so managed-account document replacement can recover it. Recovery is validated again, scoped to that auth session, expires after ten minutes, and is removed on consumption or cancellation. Sign-out clears pending imports and recovery data. Newer native run links, rejected run links and existing Hub intents supersede an older startup link, including during credential loading.
+Opening a link navigates to the existing model configuration editor. It does not load a model, start a download, or save the imported settings. The existing Load/Reload and Remember controls own those actions. A pending import waits for saved settings to hydrate, then overlays only the supplied fields once and confirms the import with a reminder to review before loading. A model-only link does not mark the settings as edited. Closing the receiving editor cancels an unfinished import, even when the same model's sidebar remains open. The sidebar reflects the shared draft without consuming pending links. Links received during login remain in memory until authentication completes. At sign-in, a pending link is also saved in tab-local session storage so managed-account document replacement can recover it. Recovery is validated again, scoped to that auth session, expires after ten minutes, and is removed on consumption or cancellation. Sign-out clears pending imports and recovery data. Newer native run links, rejected run links and existing Hub intents supersede an older startup link, including during credential loading.
 
 Standalone GGUF files use the existing editor’s file-only settings identity, including native file labels and Windows paths. Native links push a new chat history entry; browser fragment links replace their intake entry. Both clear temporary-chat and project context, matching the Hub handoff. Navigating away during availability lookup cancels that import.
 
@@ -55,60 +55,6 @@ Editing a setting, changing Remember, or pressing Reset while an import is waiti
 - Unknown fields or argument flags, duplicate parameters, invalid encodings and invalid values reject the whole link. Existing argument diagnostics still decide whether a configuration can load on the recipient's backend.
 - The receiving installation must include this feature. No hosted redirect service, account, backend route, new dependency, Rust change or global protocol registration change is needed.
 
-## Integration
-
-| File | Role |
-| --- | --- |
-| `fields.ts` | Field definitions and validation |
-| `extra-args.ts` | Explicit inference argument allowlist, arity and value bounds |
-| `links.ts` | Pure URL parsing and generation |
-| `inbox.ts` | In-memory request lifetime and sparse configuration merging |
-| `receive-link.ts` | Link intake and native intent ordering/deduplication |
-| `target.ts` | Model identity, format and local capability resolution |
-| `cached-target.ts` | Fresh local inventory and exact cached variant resolution |
-| `link-handler.tsx` | Browser events, login recovery and existing editor handoff |
-| `config-controls.tsx` | One-time draft application and Share entry point |
-| `focus-guard.ts` | Shared marker for temporary focus protection |
-| `share-dialog.tsx` | Field selection, preview and clipboard |
-
-The root layout mounts the receiver behind the existing credential bootstrap. The app provider supplies the existing Tauri handler with an optional URL callback. The config editor renders `SharedRunConfigControls`. Its popover protects pending imports and an open Share dialog from background focus changes; clicking outside or pressing Escape still dismisses it. Focus dismissal resumes when an import is applied or cancelled. Ordinary editors retain their existing focus dismissal. All sharing behavior lives in this folder; the existing editor, model loader and persistence logic stay authoritative.
-
-## Scope of existing-file changes
-
-| Existing file | Shared-links requirement |
-| --- | --- |
-| `app/provider.tsx` | Connect shared run URLs to the existing desktop listener |
-| `app/routes/__root.tsx` | Mount the shared-link receiver after credential bootstrap |
-| `features/deep-links/deep-link-handler.tsx` | Offer URLs to the shared-link callback before the existing Hub handler |
-| `features/deep-links/deep-link-intent.ts` | Clear the previous Hub duplicate marker after handling a shared link, while preserving the navigation sequence |
-| `features/model-picker/components/model-config-page.tsx` | Add Share controls, wait for the receiving editor's saved settings, and cancel pending imports on newer edits |
-| `features/model-picker/components/model-selector.tsx` | Protect shared-link editors and an open Share dialog from background focus changes |
-
-This branch contains no general editor fixes, backend changes, model-loader changes, persistence rewrites, dependency updates or unrelated cleanup. Import cancellation does nothing without a matching pending shared link. The resident sidebar uses the existing shared draft; it cannot consume a pending import. The tests include the boundary between normal editing and shared-link behavior. Desktop listener simulations also cover ordinary Hub routing with and without the shared-link callback, mixed Hub/run batches, repeat Hub links after a shared link, delayed startup intents, and listener disposal. These simulations execute the shipped handler and receiver with mocked Tauri APIs; they do not launch an OS protocol handler.
-
-## Local validation
-
-From `studio/frontend`:
-
-```sh
-node --experimental-strip-types --test tests/share-run-configs*.test.ts tests/model-config*.test.ts tests/llama-extra-args*.test.ts
-npm run typecheck
-./node_modules/.bin/eslint src/features/share-run-configs tests/share-run-configs*.test.ts
-./node_modules/.bin/biome check src/features/share-run-configs
-```
-
-The browser regression suite is **local-only**: `npm test` and CI do not invoke it. It imports source modules through Vite and needs an external Playwright installation. For this suite, start a fresh Vite server on loopback port 5198, then run `node tests/share-run-configs.browser.mjs` with Playwright available. Restart Vite after source edits so the test's direct module imports and the app use the same module instances rather than different hot-reload versions. `PLAYWRIGHT_MODULE` and `PLAYWRIGHT_CHROMIUM_PATH` can point to an existing local Playwright installation and Chromium executable. `SHARE_RUN_BASE_URL` selects another loopback development server. All backend requests are mocked and external requests are blocked. The test does not require a GPU, running backend, or model download.
-
-Set `PLAYWRIGHT_BROWSER` to `chromium` (the default), `firefox`, or `webkit` to run the same suite in each engine. Import-to-Load cases assert that cached and pinned snapshots use their exact local paths without download requests, including Windows paths. Chromium and Firefox check the system clipboard; headless WebKit uses a clipboard test double. Inventory failure and supersession tests cover the asynchronous handoff.
-
-Native OS protocol-launch behavior requires separate Windows, WSL2, macOS and Linux desktop testing. Browser tests exercise the native intent receiver, not the OS launcher.
-
-## Startup size
-
-A same-toolchain production build of `origin/main` at `0ec1e926e` measures 5,521.2 KiB of eager JavaScript and 1,639.2 KiB transferred. With this feature, the measurements are 5,543.5 KiB and 1,646.6 KiB, with the same 79 eager chunks. Both builds use the dependencies from that commit's lockfile. The feature fits upstream's unchanged raw and transfer budgets, with 52.2 KiB and 28.2 KiB remaining respectively.
-
-Run `npm run build` and `npm run bundle:check` to remeasure with the installed toolchain.
-
 ## Security boundary
 
 Treat every incoming link as untrusted. The URL length is checked before URL parsing. Raw control characters and malformed percent/UTF-8 encodings are rejected. The query is decoded once into values; encoded delimiters inside a value are never reparsed as parameters, paths or arguments. Duplicate keys are checked after decoding. JSON supplies primitive values and bounded flat arrays only. Prototype keys and unrelated application settings cannot enter the draft.
@@ -119,6 +65,4 @@ Argument validation uses a static allowlist rather than the installed binary's f
 
 Opening a valid link only imports into the existing editor for review. The editor can make its normal metadata and saved-setting reads, including POSTs to the read-only inference validation and memory estimation endpoints. Normal application startup can also migrate existing chat preferences independently of the link. Loading, downloading and saving the imported configuration still require the existing user actions. Omitted fields retain existing local defaults, including locally configured arguments and templates; links do not certify those defaults as safe. Prompt text can influence subsequent model output and must be reviewed before loading.
 
-Regression tests cover encoded and double-encoded attacks, duplicate and prototype keys, Windows/Unix path tricks, option/value smuggling, malformed Unicode, HTML injection, template expressions, size bounds, non-finite values before serialization, context-pin conflicts and merging, and 10,000 deterministic adversarial cases with explicit rejection expectations across arguments, numeric bounds, identities, duplicate keys, prototype keys, and context conflicts. The local-only browser tests check clipboard sharing, owner and managed-account login recovery, navigation cancellation, repeated links, standalone GGUF draft identity, history and chat-context resets, mixed browser/native intent ordering, browser hash changes, model identity, editor dismissal, saved-settings failures and timeouts, recovery, newer edits during hydration, context pins across backend fields, native-model imports under Strict Mode, inert text, unchanged drafts after rejection, cancelled pending imports, disabled unsupported sharing fields, and absence of load/download/save calls. The backend is mocked in these UI tests.
-
-These checks are not a guarantee of zero vulnerabilities. They do not sandbox the model runtime, audit model files, remove existing tool permissions, or prove OS protocol handlers safe. A user can still choose resource-intensive settings or explicitly load an untrusted model. Backend validation, runtime updates and platform testing remain necessary.
+Link validation does not sandbox the model runtime, audit model files, or remove existing tool permissions. Backend validation and runtime protections still apply.

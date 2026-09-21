@@ -188,6 +188,32 @@ for (const loadId of [
     assert.equal(app.requests[0].searchParams.get("local_path"), loadId);
     assert.equal(target.meta.isDownloaded, undefined);
   });
+
+  test(`status-discovered models retain their checkpoint path without a separate load ID: ${loadId}`, async () => {
+    for (const isGguf of [false, true]) {
+      for (const explicitModel of [undefined, model]) {
+        const active = resolveRunConfigTarget(
+          { model: explicitModel, config: { nParallel: 3 } },
+          {
+            ...selection,
+            params: { checkpoint: loadId },
+            loadedIsGguf: isGguf,
+            activeGgufVariant: isGguf ? "Q4_K_M" : null,
+          },
+        );
+        assert.ok(active);
+        const app = harness({ inventoryError: true });
+        const resolved = await app.resolve(active);
+        assert.equal(modelConfigTarget(resolved.id, resolved.meta).id, loadId);
+        assert.equal(
+          wantsDownloadManagerStaging({ id: resolved.id, ...resolved.meta }),
+          false,
+        );
+        assert.deepEqual(app.scans, []);
+        assert.deepEqual(app.requests, []);
+      }
+    }
+  });
 }
 
 test("a missing snapshot cannot borrow a downloaded variant from another copy", async () => {

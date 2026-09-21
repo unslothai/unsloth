@@ -23,6 +23,7 @@ import {
 } from "./links";
 
 const acceptNativeIntent = createDeepLinkIntentGate(2_000);
+const nativeScheme = /^unsloth:/i;
 let startupUrl = typeof window === "undefined" ? "" : window.location.href;
 const recoveryKey = "unsloth.run-config-login.v1";
 let awaitingLogin = false;
@@ -173,6 +174,9 @@ export function receiveStartupRunConfigUrl(currentUrl: string): void {
 export function receiveSharedRunConfigUrls(urls: string[]): boolean {
   for (let index = urls.length - 1; index >= 0; index -= 1) {
     const url = urls[index];
+    if (!nativeScheme.test(url)) {
+      continue;
+    }
     const parsed = parseRunConfigLink(url);
     if (parsed.kind === "unrelated" && parseUnslothDeepLink(url)) {
       startupUrl = "";

@@ -78,7 +78,10 @@ export function resolveRunConfigTarget(
       isGguf,
       ggufVariant,
       ...(sameArtifact
-        ? { loadId: selection.activeLoadId, isDownloaded: true }
+        ? {
+            loadId: selection.activeLoadId ?? selection.params.checkpoint,
+            isDownloaded: true,
+          }
         : {}),
       ...(sameArtifact && isGguf && selection.activeNativePathToken
         ? { nativePathToken: selection.activeNativePathToken }

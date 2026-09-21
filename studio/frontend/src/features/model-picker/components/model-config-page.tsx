@@ -2072,6 +2072,9 @@ export function ModelConfigPage({
   const [autoOpenAdvanced, setAutoOpenAdvanced] = useState(() =>
     hasNonDefaultAdvanced(configState),
   );
+  const handleSharedConfigImport = useCallback(() => {
+    setAutoOpenAdvanced(true);
+  }, []);
   // Frozen like the rest of the auto-open decision, so editing the width does not reopen the
   // section the user just closed.
   const [initialMlxKvBits] = useState(() => configState.mlxKvBits ?? null);
@@ -3388,7 +3391,7 @@ export function ModelConfigPage({
               sharedExtraArgsRefused ||
               (!extraArgsLoadable && !sharedExtraArgsCleared)
             }
-            onImport={() => setAutoOpenAdvanced(true)}
+            onImport={handleSharedConfigImport}
           />
         </div>
       </div>

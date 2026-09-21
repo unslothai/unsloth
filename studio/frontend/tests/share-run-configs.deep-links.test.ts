@@ -184,6 +184,29 @@ test("the newest recognized intent wins in mixed native batches", async () => {
   app.cleanup();
 });
 
+test("desktop intake ignores web fragments without replacing pending native intents", async () => {
+  const app = harness();
+  await settle();
+  app.releaseStartup(null);
+  await settle();
+  app.emit([run]);
+  const pending = app.inbox.getSnapshot();
+  assert.ok(pending);
+  for (const url of [
+    "https://example.invalid/chat#run?model=owner/other&nParallel=4",
+    "http://localhost/chat#run?model=owner/other&nParallel=4",
+    "https://example.invalid/chat#run?unknown=true",
+  ]) {
+    app.emit([url]);
+    assert.equal(app.inbox.getSnapshot(), pending);
+  }
+  app.emit([hub, "https://example.invalid/chat#run?nParallel=4"]);
+  assert.equal(app.inbox.getSnapshot(), null);
+  assert.equal(app.navigations.length, 1);
+  assert.deepEqual(app.errors, []);
+  app.cleanup();
+});
+
 test("live shared links supersede delayed desktop startup URLs and disposal ignores later events", async () => {
   const app = harness();
   await settle();

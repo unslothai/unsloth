@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { Button } from "@/components/ui/button";
+import { SHARED_RUN_CONFIG_FOCUS_ATTRIBUTE } from "@/lib/shared-run-config-focus";
 import { toast } from "@/lib/toast";
 import {
   useEffect,
@@ -18,7 +19,6 @@ import {
   readModelConfigDraft,
 } from "../model-picker/model-config/model-config-draft";
 import type { PerModelConfig } from "../model-picker/model-config/per-model-config";
-import { SHARED_RUN_CONFIG_FOCUS_ATTRIBUTE } from "./focus-guard";
 import { mergeSharedRunConfig, runConfigInbox } from "./inbox";
 import { ShareRunConfigDialog } from "./share-dialog";
 
@@ -85,6 +85,9 @@ export function SharedRunConfigControls({
         mergeSharedRunConfig(current, patch),
       );
       onImport();
+      toast.success("Settings imported from link", {
+        description: "Review before loading.",
+      });
     });
     return () => {
       cancelled = true;

@@ -10,13 +10,13 @@ import {
 } from "@/components/ui/popover";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { ApiProviderLogo } from "@/features/chat/api-provider-logo";
-import { SHARED_RUN_CONFIG_FOCUS_SELECTOR } from "@/features/share-run-configs/focus-guard";
 
 import type { HfTaskFilter } from "@/features/hub/hooks/use-hub-model-search";
 // eslint-disable-next-line no-restricted-imports -- The settings barrel imports this feature back.
 import { useSettingsDialogStore } from "@/features/settings/stores/settings-dialog-store";
 import { useT } from "@/i18n";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
+import { SHARED_RUN_CONFIG_FOCUS_SELECTOR } from "@/lib/shared-run-config-focus";
 import { cn } from "@/lib/utils";
 import {
   CheckmarkCircle02Icon,
