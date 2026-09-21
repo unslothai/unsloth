@@ -56,6 +56,11 @@ class LoadRequest(BaseModel):
 
     model_path: str = Field(..., description = "Model identifier or local path")
     _gguf_companion_roots: tuple[str, ...] = PrivateAttr(default = ())
+    # `()` is both the default and a deliberate "do not widen" from the auto-switch route
+    # and the idle stash, so emptiness alone cannot tell unset from explicitly empty. The
+    # path route fills the roots only when this is False, and a caller that resolved an
+    # exact revision sets it so its scope is not recomputed from the path.
+    _gguf_companion_roots_set: bool = PrivateAttr(default = False)
     load_request_id: Optional[str] = Field(
         None,
         min_length = 1,

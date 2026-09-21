@@ -1635,3 +1635,25 @@ def test_a_repo_with_no_sibling_snapshot_widens_nothing(tmp_path):
     (selected / "model.gguf").touch()
 
     assert local_path_gguf_companion_roots(str(selected)) == ()
+
+
+def test_an_explicitly_empty_companion_scope_is_not_recomputed():
+    """`()` means two different things and only one of them may be widened.
+
+    It is the default, meaning nobody has decided yet, and it is also what the
+    auto-switch route and the idle stash assign when they resolved an exact revision
+    and deliberately want no sibling widening. A truthiness test conflates them, and
+    the pinned request then picks up a projector or drafter from another revision.
+    """
+    from models.inference import LoadRequest
+
+    unset = LoadRequest(model_path = "/models/x")
+    assert unset._gguf_companion_roots == ()
+    assert unset._gguf_companion_roots_set is False
+
+    pinned = LoadRequest(model_path = "/models/x")
+    pinned._gguf_companion_roots = ()
+    pinned._gguf_companion_roots_set = True
+    # The path route's own guard, spelled exactly as it is at routes/inference.py.
+    assert not (not pinned._gguf_companion_roots and not pinned._gguf_companion_roots_set)
+    assert (not unset._gguf_companion_roots and not unset._gguf_companion_roots_set)

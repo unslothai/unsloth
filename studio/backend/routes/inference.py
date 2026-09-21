@@ -10182,6 +10182,7 @@ async def _maybe_auto_switch_model(
                             try:
                                 load_request = LoadRequest(**load_kwargs)
                                 load_request._gguf_companion_roots = gguf_companion_roots
+                                load_request._gguf_companion_roots_set = True
                                 await _load_model_impl(
                                     load_request,
                                     fastapi_request,
@@ -10207,6 +10208,7 @@ async def _maybe_auto_switch_model(
                                 load_kwargs.pop("gpu_ids", None)
                                 load_request = LoadRequest(**load_kwargs)
                                 load_request._gguf_companion_roots = gguf_companion_roots
+                                load_request._gguf_companion_roots_set = True
                                 await _load_model_impl(
                                     load_request,
                                     fastapi_request,
@@ -15828,10 +15830,11 @@ async def _load_model_impl(
         # Only when the caller left them empty: the auto-switch route sets these from the
         # repo it resolved, and the idle stash restores what the last load actually used,
         # so neither may be recomputed from the path. Off-loop: this walks snapshots/.
-        if not request._gguf_companion_roots:
+        if not request._gguf_companion_roots and not request._gguf_companion_roots_set:
             request._gguf_companion_roots = await asyncio.to_thread(
                 _path_load_companion_roots, model_identifier, native_grant_backed
             )
+            request._gguf_companion_roots_set = True
         ollama_advertised_id = (
             await asyncio.to_thread(ollama_model_ref_public_id, request.model_path)
             if resolved_ollama_path is not None
