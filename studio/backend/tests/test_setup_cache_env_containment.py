@@ -122,6 +122,17 @@ _TOOLCHAIN_PINNED = (
 )
 
 
+def _as_the_compiler_sees_it(path):
+    """The path as cpp_builder puts it on the command line.
+
+    normalize_path_separator rewrites os.sep to "/" on Windows before the command is built, so a
+    Windows tmp_path measured raw would report every character as mangled: the separators alone
+    are enough for shlex to eat. Measuring the raw path made the whole sweep fail on
+    windows-latest while passing on Linux, which is the harness being wrong, not the guard.
+    """
+    return str(path).replace(os.sep, "/") if os.name == "nt" else str(path)
+
+
 def _assert_no_unparseable_pin(sr, refused_root):
     """Whatever the resolver published for the toolchain keys, a compiler must be able to read
     it, and it must not sit inside the root we just refused.
@@ -177,7 +188,14 @@ def test_a_root_without_spaces_still_pins_the_compiler_caches(monkeypatch, tmp_p
     "name",
     [
         pytest.param("o'brien", id = "an apostrophe, which shlex reads as an opening quote"),
-        pytest.param('say"hi', id = "a double quote"),
+        pytest.param(
+            'say"hi',
+            id = "a double quote",
+            marks = pytest.mark.skipif(
+                os.name == "nt",
+                reason = "illegal in an NTFS name, so the fixture cannot be created",
+            ),
+        ),
     ],
 )
 def test_a_quoted_root_leaves_the_compiler_caches_to_their_own_defaults(
@@ -237,7 +255,7 @@ def test_the_guard_agrees_with_what_shlex_actually_does_to_the_command(name, tmp
     builds the command shape cpp_builder builds and asks shlex.split whether the path comes back
     whole, then requires the predicate to have said so. A character added to one and not the
     other fails here."""
-    path = str(tmp_path / name / "cache" / "torchinductor")
+    path = _as_the_compiler_sees_it(tmp_path / name / "cache" / "torchinductor")
     command = f"g++ {path}/main.cpp -o {path}/main.so"
     sr = _load_storage_roots()
 
@@ -270,7 +288,7 @@ def test_no_character_at_all_lets_a_mangled_path_through(tmp_path):
 
     leaked = []
     for char in specials:
-        path = f"{tmp_path}/unsloth{char}root/cache/torchinductor"
+        path = f"{_as_the_compiler_sees_it(tmp_path)}/unsloth{char}root/cache/torchinductor"
         command = f"g++ {path}/main.cpp -o {path}/main.so"
         try:
             survives = shlex.split(command) == ["g++", f"{path}/main.cpp", "-o", f"{path}/main.so"]
