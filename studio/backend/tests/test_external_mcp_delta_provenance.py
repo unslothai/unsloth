@@ -3,15 +3,13 @@
 
 """The MCP display name has to reach the card the provider's own delta paints.
 
-This loop relays that delta as it came, and it carries no provenance, so the
-client labelled the card with the internal server id until the real tool_start
-landed -- which is only after the whole turn finished streaming. A stamp riding
-on the same chunk relabels it immediately.
+The relayed delta carries no provenance, so the card showed the internal server id until
+tool_start landed after the turn finished streaming. A stamp on the same chunk relabels
+it at once.
 
-It rides on the chunk rather than arriving as a second card event because the
-client accumulates arguments by appending to what the card already holds: an
-event carrying its own (empty) arguments would reset that text mid-stream and
-every later fragment would extend a corrupted string.
+On the chunk rather than as a second card event because the client appends arguments to
+what the card holds: an event carrying its own empty arguments would reset that text
+mid-stream and every later fragment would extend a corrupted string.
 """
 
 from __future__ import annotations
@@ -102,8 +100,8 @@ def named(monkeypatch):
     def _parts(tool_name: str):
         return (DISPLAY, "create_issue") if tool_name == MCP_NAME else None
 
-    # Two references to patch: this loop imported its own, and
-    # provisional_tool_provenance reads the controller's module global.
+    # Two references: this loop imported its own, and provisional_tool_provenance reads
+    # the controller's module global.
     monkeypatch.setattr(loop_mod, "mcp_display_parts", _parts)
     monkeypatch.setattr(controller_mod, "mcp_display_parts", _parts)
     monkeypatch.setattr(loop_mod, "execute_tool", lambda name, arguments, **kw: "ok")
@@ -248,10 +246,9 @@ def test_an_undeclared_mcp_name_never_stamps(named):
 def test_a_server_that_cannot_be_named_is_asked_once_per_turn(named, monkeypatch):
     """mcp_display_parts is a SQLite lookup, so asking it per chunk is not free.
 
-    It answers falsy for a server with no display_name or no row at all, and the scan
-    runs on every chunk carrying a tool_calls delta. Stamping only on success left the
-    id unmarked, so a long argument stream re-ran that query for every fragment of the
-    turn. Declared already means the name is whole, so one answer settles it.
+    It answers falsy for a server with no display_name or no row, and the scan runs on
+    every chunk carrying a tool_calls delta, so stamping only on success re-ran the query
+    for every fragment. Declared means the name is whole, so one answer settles it.
     """
 
     def _count_for(fragment_count: int) -> int:
@@ -271,9 +268,8 @@ def test_a_server_that_cannot_be_named_is_asked_once_per_turn(named, monkeypatch
         assert _stamps(lines) == [], "an unnameable server must not be stamped"
         return len(asked)
 
-    # Asserted as a SCALING property rather than an exact count: tool_start names the call
-    # through the same helper, so a couple of lookups per turn are expected and are not the
-    # defect. The defect is the count growing with the argument stream.
+    # A SCALING property, not an exact count: tool_start names the call through the same
+    # helper, so a few lookups per turn are expected. The defect is growth with the stream.
     few, many = _count_for(4), _count_for(40)
     assert few == many, (
         f"{few} lookups for 4 argument fragments but {many} for 40: the scan is asking "
