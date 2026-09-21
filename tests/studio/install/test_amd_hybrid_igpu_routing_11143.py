@@ -140,7 +140,7 @@ def test_a_request_the_bundle_honours_is_not_flagged():
 
 @pytest.mark.parametrize("request_backend", [None, "auto"])
 def test_detection_is_never_flagged_unsatisfied(request_backend):
-    """"auto" asks for whatever the host resolves to, so nothing can contradict it."""
+    """ "auto" asks for whatever the host resolves to, so nothing can contradict it."""
     landed = _choice("linux-rocm")
     assert ILP.persisted_marker_backend_request(request_backend, landed) == "auto"
     assert ILP.marker_backend_request_was_satisfied(request_backend, landed) is True

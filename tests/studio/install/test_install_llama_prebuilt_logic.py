@@ -6443,9 +6443,7 @@ def test_an_unsatisfied_choice_named_by_this_run_is_re_asserted(tmp_path, monkey
     hand: take the full path, where the request is re-asserted and, if it still cannot be
     served, fails loudly instead of silently keeping the bundle it did not ask for."""
     install_dir = _current_install(tmp_path, monkeypatch, **_UNSATISFIED)
-    assert (
-        _check(install_dir, backend_request = "vulkan", backend_request_mandatory = True) is False
-    )
+    assert _check(install_dir, backend_request = "vulkan", backend_request_mandatory = True) is False
 
 
 def test_an_unsatisfied_choice_is_retried_when_the_release_moves(tmp_path, monkeypatch):
@@ -6461,9 +6459,7 @@ def test_an_unsatisfied_choice_is_retried_when_the_release_moves(tmp_path, monke
 def test_an_old_marker_is_read_as_a_satisfied_choice(tmp_path, monkeypatch):
     """No flag means satisfied, so every install made before the field behaves exactly as
     it did: a recorded choice that names the installed backend stays current."""
-    install_dir = _current_install(
-        tmp_path, monkeypatch, backend_request = "cpu", backend = "cpu"
-    )
+    install_dir = _current_install(tmp_path, monkeypatch, backend_request = "cpu", backend = "cpu")
     marker = json.loads((install_dir / "UNSLOTH_PREBUILT_INFO.json").read_text(encoding = "utf-8"))
     assert "backend_request_unsatisfied" not in marker
     assert _check(install_dir, backend_request = "cpu") is True
