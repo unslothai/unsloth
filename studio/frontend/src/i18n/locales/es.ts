@@ -1557,7 +1557,7 @@ export const es = {
       rememberParamsPerModelHint:
         "Al desactivarlo, todos los modelos usan los mismos ajustes.",
       autoCompactHint:
-        "Los turnos que salen del contexto se indexan para recuperarlos, no se borran. Tus instrucciones permanentes se conservan palabra por palabra y el modelo puede buscar el resto en el archivo. Usa la longitud de contexto configurada, no la VRAM disponible.",
+        "Los turnos expulsados se indexan para que el modelo pueda recuperarlos, y un reinicio conserva tus instrucciones permanentes palabra por palabra. Archivar requiere un chat guardado y el índice vectorial; sin ellos, los turnos antiguos se descartan. Usa la longitud de contexto configurada, no la VRAM disponible.",
       pastedTextShortDescription:
         "El texto pegado de {count} caracteres o más se convierte en un adjunto .txt. El texto más corto queda en el cuadro de mensaje.",
       pastedTextOffDescription:
@@ -1613,7 +1613,7 @@ export const es = {
         "Restaura el último prompt, la temperatura y los demás ajustes usados con cada modelo.",
       autoCompact: "Compactar automáticamente chats largos",
       autoCompactDescription:
-        "Los turnos antiguos pasan a un archivo consultable al llenarse un chat GGUF local.",
+        "Los turnos antiguos pasan a un archivo consultable al llenarse el contexto de un chat.",
       compactionStyle: "Cuando se llena el contexto",
       compactionStyleDescription:
         "Usar el valor del servidor conserva UNSLOTH_CONTEXT_POLICY. Restablecer la conversación mantiene el último turno y las instrucciones permanentes. Una ventana deslizante descarta los turnos más antiguos y puede conservar más historial reciente.",

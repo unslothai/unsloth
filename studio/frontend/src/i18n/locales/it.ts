@@ -1530,7 +1530,7 @@ export const it = {
       rememberParamsPerModelHint:
         "Quando è disattivata, tutti i modelli usano le stesse impostazioni.",
       autoCompactHint:
-        "I turni che escono dal contesto vengono indicizzati per il recupero, non eliminati. Le tue istruzioni permanenti restano parola per parola e il modello può cercare il resto nell’archivio. Usa la lunghezza del contesto impostata, non la VRAM disponibile.",
+        "I turni rimossi vengono indicizzati perché il modello possa recuperarli, e un ripristino conserva le tue istruzioni permanenti parola per parola. L’archiviazione richiede una chat salvata e l’indice vettoriale; senza di essi i turni più vecchi vengono eliminati. Usa la lunghezza del contesto impostata, non la VRAM disponibile.",
       pastedTextShortDescription:
         "Il testo incollato di almeno {count} caratteri diventa un allegato .txt. Il testo più breve resta nel campo del messaggio.",
       pastedTextOffDescription:
@@ -1587,7 +1587,7 @@ export const it = {
         "Ripristina l’ultimo prompt, la temperatura e le altre impostazioni usate con ogni modello.",
       autoCompact: "Compatta automaticamente le chat lunghe",
       autoCompactDescription:
-        "I turni più vecchi passano in un archivio consultabile quando una chat GGUF locale si riempie.",
+        "I turni più vecchi passano in un archivio consultabile quando una chat riempie il contesto.",
       compactionStyle: "Quando il contesto è pieno",
       compactionStyleDescription:
         "Il valore predefinito del server mantiene UNSLOTH_CONTEXT_POLICY. Reimpostare la conversazione conserva l'ultimo turno e le istruzioni permanenti. Una finestra scorrevole elimina i turni più vecchi e può conservare più cronologia recente.",

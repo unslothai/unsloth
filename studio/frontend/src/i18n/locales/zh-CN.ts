@@ -1496,7 +1496,7 @@ export const zhCN = {
       },
       projectAttachmentsHint: "可在各聊天的附件菜单中单独调整此设置。",
       rememberParamsPerModelHint: "关闭后，所有模型使用同一套设置。",
-      autoCompactHint: "离开上下文的轮次会被建立索引以便检索，而不是删除。你的长期指令会原文保留，其余内容模型可以在归档中检索。依据你设置的上下文长度，而不是可用显存。",
+      autoCompactHint: "被移出的轮次会建立索引，模型可以再检索回来；重置时你的长期指令会原文保留。归档需要已保存的聊天和向量索引，两者缺一时较早的轮次会被直接丢弃。依据你设置的上下文长度，而不是可用显存。",
       pastedTextShortDescription:
         "粘贴的文本达到 {count} 个字符时会转为 .txt 附件，较短的文本则保留在消息输入框中。",
       pastedTextOffDescription:
@@ -1550,7 +1550,7 @@ export const zhCN = {
         "恢复每个模型上次使用的提示词、温度等设置。",
       autoCompact: "自动压缩长聊天",
       autoCompactDescription:
-        "本地 GGUF 聊天填满上下文时，较早的轮次会转入可检索的归档。",
+        "聊天填满上下文时，较早的轮次会转入可检索的归档。",
       compactionStyle: "上下文已满时",
       compactionStyleDescription:
         "使用服务器默认值会保留 UNSLOTH_CONTEXT_POLICY。重置对话会保留最新轮次和持续指令。滑动窗口会丢弃最早的轮次，并可保留更多近期历史。",

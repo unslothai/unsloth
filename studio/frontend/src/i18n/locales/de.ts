@@ -1566,7 +1566,7 @@ export const de = {
       rememberParamsPerModelHint:
         "Wenn deaktiviert, verwenden alle Modelle dieselben Einstellungen.",
       autoCompactHint:
-        "Runden, die den Kontext verlassen, werden für den Abruf indexiert und nicht gelöscht. Ihre dauerhaft geltenden Anweisungen bleiben wortgetreu erhalten, den Rest kann das Modell im Archiv nachschlagen. Verwendet die eingestellte Kontextlänge, nicht den verfügbaren VRAM.",
+        "Verdrängte Runden werden indexiert, sodass das Modell sie zurückholen kann, und ein Reset übernimmt Ihre dauerhaft geltenden Anweisungen wortgetreu. Archivieren setzt einen gespeicherten Chat und den Vektorindex voraus; ohne sie werden ältere Runden verworfen. Verwendet die eingestellte Kontextlänge, nicht den verfügbaren VRAM.",
       pastedTextShortDescription:
         "Eingefügter Text ab {count} Zeichen wird als .txt-Datei angehängt. Kürzerer Text bleibt im Nachrichtenfeld.",
       pastedTextOffDescription:
@@ -1622,7 +1622,7 @@ export const de = {
         "Stellt den zuletzt verwendeten Prompt, die Temperatur und weitere Einstellungen pro Modell wieder her.",
       autoCompact: "Lange Chats automatisch komprimieren",
       autoCompactDescription:
-        "Ältere Runden wandern in ein durchsuchbares Archiv, wenn ein lokaler GGUF-Chat voll läuft.",
+        "Ältere Runden wandern in ein durchsuchbares Archiv, wenn ein Chat voll läuft.",
       compactionStyle: "Wenn der Kontext voll ist",
       compactionStyleDescription:
         "Die Servervorgabe behält UNSLOTH_CONTEXT_POLICY bei. Gespräch zurücksetzen behält die letzte Runde und dauerhafte Anweisungen. Ein gleitendes Fenster verwirft die ältesten Runden und kann mehr aktuellen Verlauf behalten.",

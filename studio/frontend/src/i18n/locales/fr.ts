@@ -1563,7 +1563,7 @@ export const fr = {
       rememberParamsPerModelHint:
         "Lorsque cette option est désactivée, tous les modèles utilisent les mêmes réglages.",
       autoCompactHint:
-        "Les échanges qui quittent le contexte sont indexés pour être retrouvés, pas supprimés. Vos instructions permanentes sont conservées mot pour mot et le modèle peut rechercher le reste dans l’archive. Utilise la longueur de contexte définie, pas la VRAM disponible.",
+        "Les échanges évincés sont indexés pour que le modèle puisse les retrouver, et une réinitialisation conserve vos instructions permanentes mot pour mot. L’archivage nécessite un chat enregistré et l’index vectoriel ; sans eux, les anciens échanges sont supprimés. Utilise la longueur de contexte définie, pas la VRAM disponible.",
       pastedTextShortDescription:
         "Le texte collé de {count} caractères ou plus devient une pièce jointe .txt. Le texte plus court reste dans le champ de message.",
       pastedTextOffDescription:
@@ -1619,7 +1619,7 @@ export const fr = {
         "Restaure le dernier prompt, la température et les autres réglages utilisés pour chaque modèle.",
       autoCompact: "Compacter automatiquement les longues discussions",
       autoCompactDescription:
-        "Les anciens échanges vont dans une archive consultable quand un chat GGUF local sature.",
+        "Les anciens échanges vont dans une archive consultable quand un chat sature son contexte.",
       compactionStyle: "Lorsque le contexte est plein",
       compactionStyleDescription:
         "La valeur par défaut du serveur conserve UNSLOTH_CONTEXT_POLICY. Réinitialiser la discussion garde le dernier tour et les instructions permanentes. Une fenêtre glissante supprime les tours les plus anciens et peut conserver davantage d’historique récent.",

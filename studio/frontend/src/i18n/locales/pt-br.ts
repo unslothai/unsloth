@@ -1544,7 +1544,7 @@ export const ptBR = {
         "Altere esta configuração para cada chat pelo menu de anexos.",
       rememberParamsPerModelHint:
         "Quando desativado, todos os modelos usam as mesmas configurações.",
-      autoCompactHint: "Os turnos que saem do contexto são indexados para consulta, não apagados. Suas instruções permanentes são mantidas palavra por palavra e o modelo pode buscar o restante no arquivo. Usa o tamanho de contexto definido, não a VRAM disponível.",
+      autoCompactHint: "Os turnos removidos são indexados para que o modelo possa buscá-los de volta, e uma reinicialização mantém suas instruções permanentes palavra por palavra. Arquivar exige um chat salvo e o índice vetorial; sem eles, os turnos antigos são descartados. Usa o tamanho de contexto definido, não a VRAM disponível.",
       pastedTextShortDescription:
         "Texto colado com {count} caracteres ou mais vira um anexo .txt. Textos menores ficam na caixa de mensagem.",
       pastedTextOffDescription:
@@ -1600,7 +1600,7 @@ export const ptBR = {
         "Restaura o último prompt, a temperatura e as outras configurações usadas com cada modelo.",
       autoCompact: "Compactar automaticamente chats longos",
       autoCompactDescription:
-        "Os turnos antigos vão para um arquivo pesquisável quando um chat GGUF local enche.",
+        "Os turnos antigos vão para um arquivo pesquisável quando um chat enche o contexto.",
       compactionStyle: "Quando o contexto estiver cheio",
       compactionStyleDescription:
         "Usar o padrão do servidor preserva UNSLOTH_CONTEXT_POLICY. Redefinir a conversa mantém o turno mais recente e as instruções permanentes. Uma janela deslizante descarta os turnos mais antigos e pode manter mais histórico recente.",

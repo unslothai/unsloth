@@ -1527,7 +1527,7 @@ export const en = {
         "Override this setting from each chat's attachment menu.",
       rememberParamsPerModelHint:
         "When off, use the same settings for every model.",
-      autoCompactHint: "Turns that leave the context are indexed for retrieval, not deleted. Your standing instructions carry forward word for word, and the model can search the archive for the rest. Uses the context length you set, not available VRAM.",
+      autoCompactHint: "Evicted turns are indexed so the model can search them back in, and a reset carries your standing instructions forward word for word. Archiving needs a saved chat and the vector index; without them older turns are dropped. Uses the context length you set, not available VRAM.",
       pastedTextShortDescription:
         "Pastes of {count} characters or more become .txt attachments.",
       pastedTextOffDescription: "Pasted text always stays in the message box.",
@@ -1581,7 +1581,7 @@ export const en = {
         "Restore each model's last-used prompt, temperature, and other settings.",
       autoCompact: "Auto-compact long chats",
       autoCompactDescription:
-        "Older turns move to a searchable archive when a local GGUF chat fills its context.",
+        "Older turns move to a searchable archive when a chat fills its context.",
       compactionStyle: "When context fills",
       compactionStyleDescription:
         "Use server default keeps UNSLOTH_CONTEXT_POLICY. Reset conversation keeps the latest turn and standing instructions. A sliding window drops oldest turns and can keep more recent history.",
