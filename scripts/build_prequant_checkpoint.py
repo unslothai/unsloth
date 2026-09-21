@@ -54,6 +54,7 @@ def upload_destination(
     rotated: bool,
     safetensors: bool = False,
     override: Optional[str] = None,
+    upload_repo: Optional[str] = None,
 ) -> str:
     """The repo-root filename this build should publish under.
 
@@ -95,6 +96,14 @@ def upload_destination(
     preferred = family_prequant_filename(fam, scheme)
     why = "a rotated checkpoint" if rotated else "a safetensors checkpoint"
     if not preferred:
+        # A PLAIN safetensors build now has a derived name, and only because
+        # ``derived_prequant_filenames`` asks for ``<Model>-<SCHEME>.safetensors`` FIRST. The
+        # reachability this refusal protects is exactly what that chain supplies, so refusing here
+        # would make every family without a declared entry pass an override it could compute
+        # itself. Rotation keeps needing a declared name: no derived spelling carries the marker.
+        if safetensors and not rotated and upload_repo:
+            from core.inference.diffusion_prequant import prequant_repo_filename
+            return prequant_repo_filename(upload_repo, scheme, ".safetensors")
         raise ValueError(
             f"family {getattr(fam, 'name', fam)!r} declares no prequant_filenames entry for "
             f"{scheme!r}, so {why} has no name the loader would ask for. Add the "
@@ -203,6 +212,7 @@ def main(argv = None) -> int:
                 rotated = bool(args.convrot_groupsize),
                 safetensors = is_safetensors_out,
                 override = args.upload_filename,
+                upload_repo = args.upload_repo,
             )
         except ValueError as exc:
             print(f"error: {exc}", flush = True)

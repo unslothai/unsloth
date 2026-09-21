@@ -145,3 +145,42 @@ def test_an_override_still_has_to_match_the_container_it_is_naming():
         )
         == "Z-Image-Turbo-FP8.safetensors"
     )
+
+
+def test_a_plain_safetensors_build_derives_the_name_the_loader_now_asks_for_first():
+    """The refusal above predates the derived chain leading with safetensors.
+
+    ``derived_prequant_filenames`` puts ``<Model>-<SCHEME>.safetensors`` ahead of both .pt
+    spellings, so the reachability that refusal protects is exactly what the chain supplies, and a
+    family with no declared entry should not have to pass an override it could compute itself.
+    """
+    build = _script()
+    zimage = detect_family("Tongyi-MAI/Z-Image-Turbo", override = "z-image")
+    assert zimage is not None
+
+    name = build.upload_destination(
+        zimage,
+        "fp8",
+        rotated = False,
+        safetensors = True,
+        upload_repo = "unsloth/Z-Image-Turbo-FP8",
+    )
+    assert name == "Z-Image-Turbo-FP8.safetensors", name
+    # And it is really the first name the loader asks that repo for, read from the resolver
+    # rather than restated here, so the two cannot drift apart.
+    from core.inference.diffusion_prequant import derived_prequant_filenames
+
+    assert derived_prequant_filenames("unsloth/Z-Image-Turbo-FP8", "fp8")[0] == name
+
+    # A ROTATED build still has no derived spelling that carries the marker, so it still refuses.
+    with pytest.raises(ValueError, match = "prequant_filenames"):
+        build.upload_destination(
+            zimage,
+            "fp8",
+            rotated = True,
+            safetensors = True,
+            upload_repo = "unsloth/Z-Image-Turbo-FP8",
+        )
+    # No upload repo means nothing to derive from, so it refuses rather than guessing.
+    with pytest.raises(ValueError, match = "prequant_filenames"):
+        build.upload_destination(zimage, "fp8", rotated = False, safetensors = True)
