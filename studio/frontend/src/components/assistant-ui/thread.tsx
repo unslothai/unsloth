@@ -302,7 +302,6 @@ import { flushResourcesSync } from "@assistant-ui/tap";
 import {
   AttachmentIcon,
   Bookmark02Icon,
-  BookOpen01Icon,
   CodeIcon,
   Copy01Icon,
   Delete02Icon,
@@ -316,6 +315,7 @@ import {
   Image03Icon,
   McpServerIcon,
   PencilRulerIcon,
+  Scroll01Icon,
   Telescope02Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -6399,7 +6399,7 @@ const ComposerToolsMenu: FC<{
     ),
     skills: (
       <DropdownMenuItem onSelect={() => setSkillsOpen(true)}>
-        <HugeiconsIcon icon={BookOpen01Icon} strokeWidth={2} />
+        <HugeiconsIcon icon={Scroll01Icon} strokeWidth={2} />
         Skills
       </DropdownMenuItem>
     ),

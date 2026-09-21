@@ -8,9 +8,10 @@ import { readSrc } from "./helpers/kit.ts";
 
 const APP_SIDEBAR = readSrc("components/app-sidebar.tsx");
 
-// Both spinners are ml-auto, so each one sits at its row's padding-right plus
-// its own margin-right. The two rows carry different padding, so the margins
-// have to make up the difference or the column visibly steps.
+// The nav spinner is ml-auto, so it sits at its row's padding-right plus its margin-right.
+// The chat spinner is anchored at right-N off the row's edge instead: in the flow a working
+// row swapped pr-4 for pr-16 and shoved it 64px in, which reading pr-4 off the base class
+// never saw. So measure the chat side from the edge it is anchored to.
 const TAILWIND_UNIT = 4;
 
 function inset(classes: string, prefix: string): number {
@@ -36,21 +37,15 @@ test("nav and Recents spinners land on one trailing column", async () => {
     /<Spinner className="(ml-auto[^"]*group-data-\[collapsible=icon\]:hidden)"/,
     "NavItem spinner",
   );
-  const chatRow = grab(
+  // The wrapper the chat spinner hangs off, anchored to the row rather than its text box.
+  const chatSpinnerAnchor = grab(
     APP_SIDEBAR,
-    // Row height is a density choice and moves independently of the trailing
-    // column, so match any h-[Npx]; cursor-pointer is what makes this the chat row.
-    /"(sidebar-nav-btn h-\[\d+px\] cursor-pointer rounded-full[^"]*)"/,
-    "Recents chat row",
-  );
-  const chatSpinner = grab(
-    APP_SIDEBAR,
-    /data-testid="chat-row-spinner"[\s\S]{0,400}?className="(ml-auto[^"]*)"/,
-    "Recents chat spinner",
+    /className=\{cn\(\s*"(pointer-events-none absolute right-[0-9.]+[^"]*)"[\s\S]{0,1200}?data-testid="chat-row-spinner"/,
+    "Recents chat spinner anchor",
   );
 
   const nav = inset(navRow, "pr") + inset(navSpinner, "mr");
-  const chat = inset(chatRow, "pr") + inset(chatSpinner, "mr");
+  const chat = inset(chatSpinnerAnchor, "right");
 
   assert.equal(
     nav,
@@ -58,6 +53,12 @@ test("nav and Recents spinners land on one trailing column", async () => {
     `nav spinner sits ${nav}px in, chat spinner ${chat}px`,
   );
   assert.equal(nav, 16);
+
+  // The row's padding must not hold the chat spinner out: that coupling is the bug.
+  assert.ok(
+    !/data-testid="chat-row-spinner"[\s\S]{0,400}?className="ml-auto/.test(APP_SIDEBAR),
+    "the chat spinner is back in the flow, where the row's padding-right moves it",
+  );
 });
 
 // The kebab overlays the row's right edge, so a spinner row must pad past it.
@@ -93,6 +94,51 @@ test("a working Recents row clears the kebab on hover", async () => {
   for (const pad of focusPads) {
     assert.ok(pad >= kebabInset, `${pad}px focus padding, needs ${kebabInset}px`);
   }
+});
+
+// The pin and the options button both float over that same right edge, so the padding around
+// one glyph can reach across the other. The options button is later in the DOM and would win
+// those clicks, taking the pin's own glyph with them.
+test("the pin and options buttons do not overlap", () => {
+  const css = readSrc("index.css");
+
+  const px = (value: string) =>
+    value.trim().endsWith("rem")
+      ? Number.parseFloat(value) * 16
+      : Number.parseFloat(value);
+  // Every metacharacter, backslash included: escaping only . and + leaves the rest to be
+  // read as syntax.
+  const quote = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const decl = (selector: string, prop: string) => {
+    const block = new RegExp(`${quote(selector)} \\{([^}]*)\\}`).exec(css);
+    assert.ok(block, `could not find ${selector} in index.css`);
+    const m = new RegExp(`(?:^|;|\\n)\\s*${quote(prop)}:\\s*([^;]+)`).exec(
+      block[1],
+    );
+    assert.ok(m, `${selector} does not set ${prop}`);
+    return px(m[1]);
+  };
+
+  const base = grab(css, /\.sidebar-row-action \{\s*@apply ([^;]*);/, "row action");
+  const glyph = inset(
+    grab(css, /\.sidebar-row-action-glyph \{\s*@apply ([^;]*);/, "action glyph"),
+    "size",
+  );
+
+  // The options button is one glyph plus the padding either side of it, and a row with a pin
+  // zeroes the left one, so the button ends where its glyph does.
+  const optionsWidth =
+    decl(".sidebar-row-action.is-unpin-action + .sidebar-row-action", "padding-left") +
+    glyph +
+    inset(base, "pr");
+  const pinRight = decl(".sidebar-row-action.is-unpin-action", "right");
+
+  assert.ok(
+    pinRight >= optionsWidth,
+    `the pin starts ${pinRight}px in, ${optionsWidth - pinRight}px under the options button`,
+  );
+  // And it stays snug against it rather than reopening the trough.
+  assert.ok(pinRight - optionsWidth <= 4, `${pinRight - optionsWidth}px of dead space between them`);
 });
 
 // That same column now carries a second meaning: a row whose capability has not been measured

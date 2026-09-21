@@ -9,12 +9,9 @@ import {
   CommandList,
 } from "@/components/ui/command";
 import { useShortcut } from "@/features/settings/hooks/use-shortcut";
+import { MessageCircleIcon } from "@/lib/hugeicons-derived";
 import { cn } from "@/lib/utils";
-import {
-  Cancel01Icon,
-  Message01Icon,
-  Search01Icon,
-} from "@hugeicons/core-free-icons";
+import { Cancel01Icon, Search01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useNavigate } from "@tanstack/react-router";
 import { Command as CommandPrimitive } from "cmdk";
@@ -206,7 +203,7 @@ export function ChatSearchDialog() {
                 className="relative flex cursor-pointer select-none items-center gap-3 rounded-full px-3 py-2.5 text-sm outline-hidden data-selected:bg-muted data-selected:text-foreground"
               >
                 <HugeiconsIcon
-                  icon={Message01Icon}
+                  icon={MessageCircleIcon}
                   strokeWidth={2}
                   className="size-4 shrink-0 text-muted-foreground"
                 />
