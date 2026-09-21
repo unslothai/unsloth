@@ -23502,6 +23502,10 @@ async def _proxy_to_external_provider(
             content = json.loads(body)
         except json.JSONDecodeError:
             logger.error("external_provider.non_stream_invalid_json")
+            api_monitor.fail(
+                monitor_id,
+                "External provider returned an invalid non-streaming response.",
+            )
             return JSONResponse(
                 status_code = 502,
                 content = openai_error_body(
@@ -23509,10 +23513,14 @@ async def _proxy_to_external_provider(
                     status = 502,
                 ),
             )
-        return JSONResponse(
-            status_code = 502 if isinstance(content, dict) and "error" in content else 200,
-            content = content,
-        )
+        error_message = _monitor_openai_error_message(content) if isinstance(content, dict) else None
+        if error_message:
+            api_monitor.fail(monitor_id, error_message)
+            status_code = 502
+        else:
+            api_monitor.finish(monitor_id)
+            status_code = 200
+        return JSONResponse(status_code = status_code, content = content)
 
     return StreamingResponse(
         _tracked_stream(),

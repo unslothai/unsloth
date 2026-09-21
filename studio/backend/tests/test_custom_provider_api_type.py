@@ -304,10 +304,13 @@ def test_responses_non_streaming_route_returns_json(monkeypatch):
         )
 
     async def run():
+        from core.inference.api_monitor import ApiMonitor
         from routes import inference
 
         async with httpx.AsyncClient(transport = httpx.MockTransport(handle)) as transport:
             monkeypatch.setattr(ep, "_http_client", transport)
+            monitor = ApiMonitor(max_entries = 3)
+            monkeypatch.setattr(inference, "api_monitor", monitor)
             payload = ChatCompletionRequest(
                 messages = [{"role": "user", "content": "Hi"}],
                 stream = False,
@@ -322,16 +325,22 @@ def test_responses_non_streaming_route_returns_json(monkeypatch):
 
             request = SimpleNamespace(
                 headers = {},
-                state = SimpleNamespace(skip_api_monitor = True),
+                state = SimpleNamespace(skip_api_monitor = False),
+                url = SimpleNamespace(path = "/v1/chat/completions"),
+                method = "POST",
                 is_disconnected = disconnected,
             )
-            return await inference._proxy_to_external_provider(payload, request)
+            response = await inference._proxy_to_external_provider(payload, request)
+            return response, monitor
 
-    response = asyncio.run(run())
+    response, monitor = asyncio.run(run())
     assert response.media_type == "application/json"
     completion = json.loads(response.body)
     assert completion["object"] == "chat.completion"
     assert completion["choices"][0]["message"]["content"] == "Hello"
+    assert monitor.active_count() == 0
+    [entry] = monitor.snapshot()
+    assert entry["status"] == "completed"
 
 
 def test_responses_non_streaming_failure_is_not_reported_as_completion(monkeypatch):

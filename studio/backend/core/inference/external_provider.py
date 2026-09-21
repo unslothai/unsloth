@@ -6966,26 +6966,25 @@ def _build_usage_chunk(
             usage_block["speed"] = speed
     else:
         prompt_tokens = last_usage.get("input_tokens") or 0
-        cached = 0
         details = last_usage.get("input_tokens_details")
-        if isinstance(details, dict):
-            cached = details.get("cached_tokens") or 0
+        prompt_details = dict(details) if isinstance(details, dict) else {}
+        cached = prompt_details.get("cached_tokens") or 0
+        prompt_details.setdefault("cached_tokens", cached)
         if not (prompt_tokens or completion_tokens or cached):
             return None
         usage_block = {
             "prompt_tokens": prompt_tokens,
             "completion_tokens": completion_tokens,
             "total_tokens": prompt_tokens + completion_tokens,
-            "prompt_tokens_details": {"cached_tokens": cached},
+            "prompt_tokens_details": prompt_details,
         }
         # Surface OpenAI Responses / Gemini reasoning-token detail. The caller pre-populates
         # last_usage["output_tokens_details"] with at least {"reasoning_tokens": ...}; mirror it into the OAI
         # `completion_tokens_details` shape so SDKs can render the hidden-thoughts slice.
         out_details = last_usage.get("output_tokens_details")
         if isinstance(out_details, dict) and out_details:
-            usage_block["completion_tokens_details"] = {
-                "reasoning_tokens": out_details.get("reasoning_tokens") or 0,
-            }
+            usage_block["completion_tokens_details"] = dict(out_details)
+            usage_block["completion_tokens_details"].setdefault("reasoning_tokens", 0)
             usage_block["output_tokens_details"] = out_details
 
     chunk = {
