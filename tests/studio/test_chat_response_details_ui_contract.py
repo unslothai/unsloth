@@ -24,6 +24,12 @@ CHAT_TAB_TSX = REPO / "studio/frontend/src/features/settings/tabs/chat-tab.tsx"
 EN_LOCALE_TS = REPO / "studio/frontend/src/i18n/locales/en.ts"
 
 
+# A className this reader cannot resolve. Distinct from None, which means the element carries
+# no className at all, because the two want opposite treatment: absent is a fact to assert on,
+# unreadable is a stale guard that must not quietly pass.
+_UNREADABLE = "\x00unreadable"
+
+
 def _class_list(source: str, marker: str) -> str | None:
     """The className of the JSX element whose opening tag contains `marker`.
 
@@ -56,8 +62,20 @@ def _class_list(source: str, marker: str) -> str | None:
             break
     if end is None:
         return None
-    found = re.search(r'className="([^"]*)"', source[opens : end + 1])
-    return found.group(1) if found else None
+    opening = source[opens : end + 1]
+    literal = re.search(r'className="([^"]*)"', opening)
+    if literal:
+        return literal.group(1)
+    # An expression-valued className, `className={cn(...)}` or `className={"min-w-max"}`.
+    # Its quoted pieces are what tailwind-merge sees, in this order; anything else in the
+    # expression is beyond a reader like this one. Returning None here would be worse than
+    # useless: the caller would fall back on the base classes and pass while the call site
+    # overrode them, so an expression with no readable piece has to say so instead.
+    expression = re.search(r"className=\{", opening)
+    if not expression:
+        return None
+    pieces = re.findall(r'"([^"]*)"', opening[expression.end() :])
+    return " ".join(pieces) if pieces else _UNREADABLE
 
 
 def _effective_widths(tokens: list[str]) -> dict[str, str]:
@@ -196,6 +214,11 @@ def test_response_model_badge_is_user_configurable_and_rendered_once_per_message
     # trigger unable to shrink at every width it was not qualified for.
     base = re.search(r'"(aui-reasoning-trigger[^"]*)"', reasoning_src)
     call_site = _class_list(reasoning_src, "<ReasoningTrigger")
+    assert call_site != _UNREADABLE, (
+        "the ReasoningTrigger call site passes a className this guard cannot resolve, so it "
+        "cannot tell whether the base min-w-0 survives tailwind-merge. Widen the reader "
+        "before trusting it"
+    )
     # In `cn(base, className)` order, and the LAST min-w-* wins: cn runs tailwind-merge, so a
     # call site passing min-w-full or min-w-max drops the base min-w-0 and the trigger stops
     # shrinking. A union of the two would still hold the base token and call that fine.
@@ -211,6 +234,10 @@ def test_response_model_badge_is_user_configurable_and_rendered_once_per_message
     )
     header = _class_list(reasoning_src, 'data-slot="reasoning-header"')
     assert header is not None, "the reasoning header row no longer carries a className"
+    assert header != _UNREADABLE, (
+        "the reasoning header row carries a className this guard cannot resolve, so it "
+        "cannot tell whether the row still shrinks. Widen the reader before trusting it"
+    )
     assert "flex" in header.split(), (
         f"the header row holding the trigger is no longer a flex row, so the trigger's own "
         f"shrinking is not what decides the layout any more: {header!r}"
