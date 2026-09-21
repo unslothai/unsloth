@@ -22,7 +22,6 @@ from urllib.parse import urlparse
 
 from core.inference.llama_tool_schema import unrelaxed
 from core.inference.mcp_images import (
-    cap_tool_text,
     sanitize_tool_text,
     split_images as split_mcp_images,
 )
@@ -330,9 +329,6 @@ class ToolCallCompletion:
             return {"role": "user", "content": self.result}
 
         content = strip_result_for_model(self.result, self.decision.tool_name)
-        # The strip must stay suffix-only (_split_frontend_suffix subtracts it to
-        # recover the envelope); the cap runs here, at the boundary.
-        content = cap_tool_text(content)
         if self.is_error:
             content = content + TOOL_ERROR_NUDGE
         message: dict[str, Any] = {

@@ -136,34 +136,14 @@ def mentions_images(result: str) -> bool:
 
 # An unparseable envelope used to replay whole as tool text; fail closed instead.
 MCP_IMAGE_PARSE_ERROR_TEXT = "[MCP image could not be parsed]"
-# Boundary-only: tools._split_frontend_suffix subtracts the strip to recover the
-# envelope, so the strip stays suffix-only. Mirrors MAX_TOOL_TEXT_CHARS in mcp-images.ts.
-MAX_TOOL_TEXT_CHARS = 256_000
-_TOOL_TEXT_TRUNCATION_NOTICE = (
-    "\n\n[Tool result text truncated for the model; the full output is shown in the tool card.]"
-)
-
-
-def cap_tool_text(text: str) -> str:
-    """Nothing past MAX_TOOL_TEXT_CHARS toward a model request. Cut at a line
-    break when one is near, so the notice starts fresh rather than mid-thought."""
-    if len(text) <= MAX_TOOL_TEXT_CHARS:
-        return text
-    room = MAX_TOOL_TEXT_CHARS - len(_TOOL_TEXT_TRUNCATION_NOTICE)
-    head = text[:room]
-    cut = head.rfind("\n")
-    if cut >= room // 2:
-        head = head[:cut]
-    return head + _TOOL_TEXT_TRUNCATION_NOTICE
 
 
 def sanitize_tool_text(result: str, tool_name: "str | None" = None) -> str:
     """A valid envelope's payload comes off (it is IMAGE input, decided in
     _promote); a result that mentions the sentinel but the parser rejects is
     replaced by a one-line notice. The whole result is discarded, head included:
-    gigabytes of base64 can sit before the sentinel, and keeping any of it would
-    negate the cap. Do not "fix" that by preserving the prefix. No cap here --
-    the strip must stay suffix-only."""
+    gigabytes of base64 can sit before the sentinel. Do not "fix" that by
+    preserving the prefix. The strip must stay suffix-only."""
     text, images = split_images(result)
     if images:
         return text
@@ -179,11 +159,6 @@ def sanitize_tool_text(result: str, tool_name: "str | None" = None) -> str:
         )
         return MCP_IMAGE_PARSE_ERROR_TEXT
     return result
-
-
-def tool_text_for_model(result: str, tool_name: "str | None" = None) -> str:
-    """A tool result bound for a model: sanitize, then hard-cap."""
-    return cap_tool_text(sanitize_tool_text(result, tool_name))
 
 
 def _decoded_urls(
@@ -1226,9 +1201,7 @@ def _promote(
                     )
                     text = MCP_IMAGE_PARSE_ERROR_TEXT
                 else:
-                    text = cap_tool_text(content)
-            else:
-                text = cap_tool_text(text)
+                    text = content
             # The suffix always comes off; provenance decides whether it is IMAGE input,
             # and a named non-MCP tool's envelope is not one an MCP server served.
             if isinstance(name, str) and name and not name.startswith(MCP_TOOL_PREFIX):

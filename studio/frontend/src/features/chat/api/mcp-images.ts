@@ -48,21 +48,9 @@ export function splitMcpImages(result: string): {
 // Mirrors MCP_IMAGE_PARSE_ERROR_TEXT in mcp_images.py.
 export const MCP_IMAGE_PARSE_ERROR_TEXT = "[MCP image could not be parsed]";
 
-export const MAX_TOOL_TEXT_CHARS = 256_000;
-const TOOL_TEXT_TRUNCATION_NOTICE =
-  "\n\n[Tool result text truncated for the model; the full output is shown in the tool card.]";
-
-export function capToolText(text: string): string {
-  if (text.length <= MAX_TOOL_TEXT_CHARS) return text;
-  const room = MAX_TOOL_TEXT_CHARS - TOOL_TEXT_TRUNCATION_NOTICE.length;
-  const head = text.slice(0, room);
-  const cut = head.lastIndexOf("\n");
-  return (cut >= room / 2 ? head.slice(0, cut) : head) + TOOL_TEXT_TRUNCATION_NOTICE;
-}
-
 /** Tool text for the model: valid envelope payloads come off as images, a result
  *  whose sentinel does not parse fails closed when provenance is missing/empty or
- *  an mcp__ tool (the backend's rule), and nothing passes the hard cap. */
+ *  an mcp__ tool (the backend's rule). */
 export function toolTextForModel(
   content: string,
   toolName: string | undefined,
@@ -77,7 +65,7 @@ export function toolTextForModel(
   ) {
     return MCP_IMAGE_PARSE_ERROR_TEXT;
   }
-  return capToolText(text);
+  return text;
 }
 
 // Re-attached on replay: the backend promotes it into an image turn for a vision
@@ -207,7 +195,7 @@ export function boundMcpImageEnvelopes<T extends EnvelopeCarrier>(
       message.name &&
       !message.name.startsWith(MCP_TOOL_PREFIX)
     ) {
-      out[i] = { ...message, content: capToolText(text) };
+      out[i] = { ...message, content: text };
       continue;
     }
     carriers.push({ index: i, text, images });
@@ -232,10 +220,12 @@ export function boundMcpImageEnvelopes<T extends EnvelopeCarrier>(
     batch.forEach((carrier, r) => {
       const kept = plan[b][r];
       if (kept.length === carrier.images.length) return;
-      const head = capToolText(carrier.text);
       out[carrier.index] = {
         ...out[carrier.index],
-        content: kept.length > 0 ? head + mcpImagesEnvelope(kept) : head,
+        content:
+          kept.length > 0
+            ? carrier.text + mcpImagesEnvelope(kept)
+            : carrier.text,
       };
     }),
   );
@@ -257,6 +247,6 @@ export function stripMcpImageEnvelopes<T extends EnvelopeCarrier>(
       const safe = toolTextForModel(message.content, message.name);
       return safe === message.content ? message : { ...message, content: safe };
     }
-    return { ...message, content: capToolText(text) };
+    return { ...message, content: text };
   });
 }

@@ -74,7 +74,6 @@ import {
 import { apiUrl } from "@/lib/api-base";
 import { isMcpToolName } from "../utils/mcp-tool-name";
 import {
-  capToolText,
   type McpImage,
   planMcpImageBound,
   mcpImagesEnvelope,
@@ -1074,8 +1073,8 @@ function serializeToolResultPart(
   let content: string;
   if (typeof result === "string") {
     // Backend ChatMessage rejects role="tool" with empty content; a sentinel JSON round-trips it.
-    // Strings are the fail-closed/cap path: an mcp__ envelope that does not parse
-    // becomes the notice, and nothing passes the character cap.
+    // Strings are the fail-closed path: an mcp__ envelope that does not parse
+    // becomes the notice.
     content =
       result.length > 0
         ? toolTextForModel(result, tc.toolName)
@@ -1099,7 +1098,7 @@ function serializeToolResultPart(
       : result.text;
     content =
       replayText.length > 0
-        ? capToolText(replayText)
+        ? replayText
         : JSON.stringify({ result: "" });
     // Gated on the mcp__ id the backend stamps, not on shape alone: a client tool
     // is free to answer {text, images:[{data, mimeType}]}, and appending the
@@ -1109,9 +1108,9 @@ function serializeToolResultPart(
     }
   } else {
     try {
-      content = capToolText(JSON.stringify(result));
+      content = JSON.stringify(result);
     } catch {
-      content = capToolText(String(result));
+      content = String(result);
     }
   }
 

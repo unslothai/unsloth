@@ -11,12 +11,10 @@ import {
   MAX_TOTAL_MCP_IMAGES,
   MAX_MCP_IMAGE_MIME_CHARS,
   MAX_TOTAL_MCP_IMAGE_CHARS,
-  MAX_TOOL_TEXT_CHARS,
   MCP_IMAGE_PARSE_ERROR_TEXT,
   planMcpImageBound,
   MCP_IMAGES_MARKER,
   boundMcpImageEnvelopes,
-  capToolText,
   mcpImagesEnvelope,
   splitMcpImages,
   stripMcpImageEnvelopes,
@@ -584,7 +582,7 @@ test("a result whose marker does not parse is fail-closed for missing/mcp__ prov
   assert.equal(toolTextForModel(bad, undefined), MCP_IMAGE_PARSE_ERROR_TEXT);
   assert.equal(toolTextForModel(bad, ""), MCP_IMAGE_PARSE_ERROR_TEXT);
   const nonMcp = toolTextForModel(bad, "read_file");
-  assert.ok(nonMcp.length <= MAX_TOOL_TEXT_CHARS);
+  assert.equal(nonMcp, bad);
   const small = "log" + MCP_IMAGES_MARKER + "{oops}";
   assert.equal(toolTextForModel(small, "read_file"), small);
   assert.equal(toolTextForModel(small, "web_search"), small);
@@ -597,20 +595,8 @@ test("a valid envelope's payload still comes off for the model", () => {
   assert.equal(toolTextForModel(text, "mcp__fs__read_media_file"), "[1 image returned]");
 });
 
-test("tool text is hard-capped regardless of the marker", () => {
-  const short = "x".repeat(MAX_TOOL_TEXT_CHARS - 1);
-  assert.equal(capToolText(short), short);
-  const huge = "a".repeat(MAX_TOOL_TEXT_CHARS + 100);
-  const capped = capToolText(huge);
-  assert.ok(capped.length <= MAX_TOOL_TEXT_CHARS);
-  assert.ok(capped.startsWith("a".repeat(100)));
-  assert.match(capped, /truncated/);
-});
-
-test("the serializer applies the fail-closed and the cap to string results", () => {
+test("the serializer applies the fail-closed notice to string results", () => {
   assert.match(adapter, /toolTextForModel\(result, tc\.toolName\)/);
-  assert.match(adapter, /capToolText\(replayText\)/);
-  assert.match(adapter, /content = capToolText\(JSON\.stringify\(result\)\)/);
 });
 
 test("a dead envelope uploads neither bytes nor base64 on a text-only target", () => {
@@ -625,18 +611,6 @@ test("a dead envelope uploads neither bytes nor base64 on a text-only target", (
   assert.equal(stripped[0].content, MCP_IMAGE_PARSE_ERROR_TEXT);
   const bounded = boundMcpImageEnvelopes(invalid);
   assert.equal(bounded[0].content, MCP_IMAGE_PARSE_ERROR_TEXT);
-});
-
-test("an oversized result with no envelope is capped on the wire shape too", () => {
-  const huge = "H".repeat(MAX_TOOL_TEXT_CHARS + 50);
-  const [bounded] = boundMcpImageEnvelopes([
-    { role: "tool", name: "read_file", content: huge },
-  ]);
-  assert.ok((bounded.content as string).length <= MAX_TOOL_TEXT_CHARS);
-  const [stripped] = stripMcpImageEnvelopes([
-    { role: "tool", name: "read_file", content: huge },
-  ]);
-  assert.ok((stripped.content as string).length <= MAX_TOOL_TEXT_CHARS);
 });
 
 test("a client tool's structured result is not unwrapped as the MCP wrapper", () => {
@@ -655,6 +629,5 @@ test("a client tool's structured result is not unwrapped as the MCP wrapper", ()
 
 test("the wire contract matches the backend envelope exactly", () => {
   assert.equal(MCP_IMAGES_MARKER, "\n__MCP_IMAGES__:");
-  assert.equal(MAX_TOOL_TEXT_CHARS, 256_000);
   assert.equal(MCP_IMAGE_PARSE_ERROR_TEXT, "[MCP image could not be parsed]");
 });

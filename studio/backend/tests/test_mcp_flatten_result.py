@@ -644,16 +644,6 @@ def test_valid_mcp_envelope_is_still_stripped_for_an_mcp_tool():
     )
 
 
-def test_cap_tool_text_bounds_any_tool_text_marker_or_not():
-    short = "x" * (mcp_images.MAX_TOOL_TEXT_CHARS - 1)
-    assert mcp_images.cap_tool_text(short) == short
-    huge = "a" * (mcp_images.MAX_TOOL_TEXT_CHARS + 100)
-    capped = mcp_images.cap_tool_text(huge)
-    assert len(capped) <= mcp_images.MAX_TOOL_TEXT_CHARS
-    assert capped.startswith("a" * 100)
-    assert "truncated" in capped
-
-
 def test_sanitize_stays_suffix_only_for_the_envelope_recovery_split():
     # tools._split_frontend_suffix subtracts the strip from the original to recover
     # the envelope, so sanitize must edit only a suffix.
@@ -713,29 +703,7 @@ def test_promote_history_fails_closed_on_an_unnamed_tool_result():
     assert huge not in tool["content"]
 
 
-def test_promote_history_caps_oversized_replay_text():
-    long_text = "L" * (mcp_images.MAX_TOOL_TEXT_CHARS + 50)
-    messages = [
-        {"role": "user", "content": "hi"},
-        {
-            "role": "assistant",
-            "content": None,
-            "tool_calls": [
-                {
-                    "id": "call_0",
-                    "type": "function",
-                    "function": {"name": "mcp__fs__read", "arguments": "{}"},
-                }
-            ],
-        },
-        {"role": "tool", "tool_call_id": "call_0", "name": "mcp__fs__read", "content": long_text},
-    ]
-    out = mcp_images.promote_history(messages, vision = False)
-    assert len(out[-1]["content"]) < len(long_text)
-    assert len(out[-1]["content"]) <= mcp_images.MAX_TOOL_TEXT_CHARS
-
-
-def test_promote_history_keeps_in_budget_text_byte_identical():
+def test_promote_history_passes_unmarked_tool_text_through():
     messages = [
         {"role": "user", "content": "hi"},
         {
@@ -815,7 +783,6 @@ def test_multi_turn_replay_re_attaches_both_envelopes():
             assert not any(first in str(part) or second in str(part) for part in (text or []))
 
 
-def test_frontend_backend_marker_and_cap_parity():
+def test_frontend_backend_marker_parity():
     assert "\n" + MCP_IMAGES_SENTINEL == "\n__MCP_IMAGES__:"
     assert mcp_images.SENTINEL == "__MCP_IMAGES__:"
-    assert mcp_images.MAX_TOOL_TEXT_CHARS == 256_000
