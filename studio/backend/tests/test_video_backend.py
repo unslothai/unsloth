@@ -3670,9 +3670,13 @@ def test_the_load_time_accelerator_probe_runs_under_the_reader_claim(monkeypatch
 
     # video.py imports this inside the load function, so the name must be replaced at its source
     # module; patching the video module misses it entirely and the test would pass vacuously.
-    monkeypatch.setattr(sd_cpp_backend, "sd_cpp_lists_accelerator_device", _watching_probe)
+    # The load reads the raw VERDICT now, so this is the name that has to be watched.
+    monkeypatch.setattr(sd_cpp_backend, "sd_cpp_accelerator_device_verdict", _watching_probe)
+    monkeypatch.setattr(sd_cpp_backend, "selected_card_identity", lambda _ordinal: "Card A@gfx1100")
 
     backend = _run_h3_native_load()
+    # The card the load resolved travels with the runtime, for the render-failure recorder.
+    assert backend._state.pipe.selected_card == "Card A@gfx1100"
 
     # First two entries are the load-time probe; the claimed recheck later in the load adds its
     # own pair, so assert on the opening ones rather than the whole list.
@@ -7110,6 +7114,48 @@ def test_h3_reference_image_source_policy_rejects_excessive_area_before_loading(
             max_pixels = H3_REF_IMAGE_SOURCE_MAX_PIXELS,
         )
     assert loaded is False
+
+
+def test_h3_render_failure_is_recorded_against_the_card_the_load_resolved(monkeypatch, tmp_path):
+    """Re-resolving the card when the render dies reads None whenever amd-smi or the inventory is
+    unavailable at that moment, and a card-less record diverts every card. The load's answer is used."""
+    from core.inference import sd_cpp_backend
+    from core.inference.video_minimax_h3 import MiniMaxH3NativeRuntime
+
+    backend = _h3_native_backend(monkeypatch, [])
+    binary = tmp_path / "sd-cli"
+    binary.write_bytes(b"")
+
+    class _Engine:
+        def __init__(self):
+            self.binary = str(binary)
+
+        def generate_video(self, files, params, **kwargs):
+            raise RuntimeError(
+                "sd-cli exited 1. Last output: ROCm error: CUBLAS_STATUS_INVALID_VALUE at hipblasSetStream"
+            )
+
+    object.__setattr__(
+        backend._state,
+        "pipe",
+        MiniMaxH3NativeRuntime(
+            engine = _Engine(),
+            files = object(),
+            offload_flags = (),
+            selected_card = "Card B@gfx1201",
+        ),
+    )
+    monkeypatch.setattr(sd_cpp_backend, "selected_card_identity", lambda _ordinal: None)
+    noted: list = []
+    monkeypatch.setattr(
+        sd_cpp_backend,
+        "note_accelerator_failure_from_output",
+        lambda binary, output, *, source = "diffusion", card = None: noted.append(card),
+    )
+
+    with pytest.raises(RuntimeError, match = "CUBLAS_STATUS_INVALID_VALUE"):
+        backend.generate(prompt = "a cat", width = 960, height = 544)
+    assert noted == ["Card B@gfx1201"]
 
 
 def test_h3_native_generate_stages_every_reference_kind(monkeypatch, tmp_path):

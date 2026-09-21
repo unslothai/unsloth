@@ -38,11 +38,15 @@ Download the native Unsloth Desktop app for your operating system:
     <td><a href='https://github.com/unslothai/unsloth/releases/latest/download/Unsloth-Desktop-MacOS.dmg'>Download</a></td>
   </tr>
   <tr>
-    <td><b>Linux / Ubuntu (deb)</b></td>
+    <td><b>Linux x64 / Ubuntu (deb)</b></td>
     <td><a href='https://github.com/unslothai/unsloth/releases/latest/download/Unsloth-Desktop-Ubuntu.deb'>Download</a></td>
   </tr>
   <tr>
-    <td><b>Linux (AppImage)</b></td>
+    <td><b>Linux ARM64 / Ubuntu 24.04+ (deb)</b></td>
+    <td><a href='https://github.com/unslothai/unsloth/releases/latest/download/Unsloth-Desktop-Ubuntu-ARM64.deb'>Download</a></td>
+  </tr>
+  <tr>
+    <td><b>Linux x64 (AppImage)</b></td>
     <td><a href='https://github.com/unslothai/unsloth/releases/latest/download/Unsloth-Desktop-Linux.AppImage'>Download</a></td>
   </tr>
 </table>
@@ -123,11 +127,15 @@ Unsloth can be used in three ways: **[Unsloth Desktop](https://unsloth.ai/downlo
     <td><a href='https://github.com/unslothai/unsloth/releases/latest/download/Unsloth-Desktop-MacOS.dmg'>Download</a></td>
   </tr>
   <tr>
-    <td><b>Linux / Ubuntu (deb)</b></td>
+    <td><b>Linux x64 / Ubuntu (deb)</b></td>
     <td><a href='https://github.com/unslothai/unsloth/releases/latest/download/Unsloth-Desktop-Ubuntu.deb'>Download</a></td>
   </tr>
   <tr>
-    <td><b>Linux (AppImage)</b></td>
+    <td><b>Linux ARM64 / Ubuntu 24.04+ (deb)</b></td>
+    <td><a href='https://github.com/unslothai/unsloth/releases/latest/download/Unsloth-Desktop-Ubuntu-ARM64.deb'>Download</a></td>
+  </tr>
+  <tr>
+    <td><b>Linux x64 (AppImage)</b></td>
     <td><a href='https://github.com/unslothai/unsloth/releases/latest/download/Unsloth-Desktop-Linux.AppImage'>Download</a></td>
   </tr>
   <tr>
@@ -173,7 +181,7 @@ docker run -d --name unsloth --gpus all --ipc=host \
 ```
 The log ends with your links and a generated JupyterLab password, plus a generated Unsloth Studio password on the first run against a new `unsloth-studio` volume; change that one on first sign-in or Unsloth Studio stops after an hour. A reused volume keeps the password already stored on it, and `docker exec unsloth unsloth studio reset-password --username unsloth` mints a new one and prints it. Ctrl-C stops following the log, not the container; `docker rm -f unsloth` deletes it. The Hugging Face cache keeps your models and the `unsloth-studio` volume keeps your accounts, chats and trained models, both across `docker rm`; a volume from an older image is migrated on first start, its old code kept under `.unsloth-studio-legacy/`. Those ports publish on every interface: on a cloud host add `-e UNSLOTH_STUDIO_SECURE=1`, drop `-p 8000:8000` and bind JupyterLab to `-p 127.0.0.1:8888:8888`, or bind both to `127.0.0.1` and use an SSH tunnel. Tags (`unsloth/unsloth:core` for notebooks only), GPU support and options: [Docker Hub](https://hub.docker.com/r/unsloth/unsloth).
 
-On AMD there is a separate image, [`unsloth/unsloth-rocm`](https://hub.docker.com/r/unsloth/unsloth-rocm), with the run command and the supported cards on its [Docker Hub page](https://hub.docker.com/r/unsloth/unsloth-rocm). It carries the training stack only, so there is no Unsloth Studio or JupyterLab in it, and it needs native Linux: WSL exposes `/dev/dxg` rather than the `/dev/kfd` that ROCm needs.
+On AMD there is a separate image, [`unsloth/unsloth-rocm`](https://hub.docker.com/r/unsloth/unsloth-rocm), with the run command and the supported cards on its [Docker Hub page](https://hub.docker.com/r/unsloth/unsloth-rocm). It carries the training stack only, so there is no Unsloth Studio or JupyterLab in it. On Linux it reaches the card through `/dev/kfd`; on Windows it goes over WSL2's `/dev/dxg` bridge instead, which needs ROCm for WSL on the host (`scripts/install_rocm_wsl_strixhalo.sh`), a docker engine running inside the WSL distribution rather than Docker Desktop's, and a per-architecture build (`ROCM_GFX=<your gfx> bash docker/build.sh --rocm`), since the generic image's torch aborts on the bridge. That build exists for the Strix APUs and RDNA4 (`gfx1150`, `gfx1151`, `gfx1152`, `gfx1200`, `gfx1201`); RDNA3 cards have no bridge path yet. `bash docker/run.sh --rocm` works out the flags on both; on WSL add `UNSLOTH_IMAGE=unsloth-rocm:latest` so it runs that build rather than the published image.
 
 #### Remote HTTPS & LAN Access
 Server-side tools are on by default - so **be careful**! Keep your password safe, or use `--disable-tools` when exposing Unsloth.
