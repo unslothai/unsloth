@@ -194,6 +194,7 @@ export const ar = {
       unpinChats: "إلغاء تثبيت المحادثات",
       archiveChats: "أرشفة المحادثات",
       markUnread: "وضع علامة كغير مقروءة",
+      markRead: "وضع علامة كمقروءة",
       deleteChats: "حذف المحادثات",
       deleteTitle: "حذف المحادثات",
       deleteDescription: "هل تريد حذف {count} محادثة؟ لا يمكن التراجع عن ذلك.",
@@ -212,11 +213,26 @@ export const ar = {
       priority: "الأولوية",
       lastUpdated: "آخر تحديث",
       manualOrder: "ترتيب يدوي",
-      moveUp: "تحريك لأعلى",
-      moveDown: "تحريك لأسفل",
+      priorityHint: "النشطة وغير المقروءة أولاً",
+      lastUpdatedHint: "الأحدث أولاً",
+      manualOrderHint: "اسحب الصفوف لإعادة ترتيبها",
+      switchedToManual: "الترتيب يدوي الآن: اسحب الصفوف لإعادة ترتيبها",
       organizeChats: "تنظيم المحادثات",
       organizeProjects: "تنظيم المشاريع",
       sortPinnedChats: "ترتيب المحادثات المثبتة",
+      dragDrop: "السحب والإفلات",
+      dragHints: "إظهار تلميح أثناء السحب",
+      reorderSwitchesSort: "إعادة الترتيب تبدّل إلى الترتيب اليدوي",
+      dragOpensFolders: "فتح المجلدات أسفل المؤشر",
+      moveUp: "تحريك لأعلى",
+      moveDown: "تحريك لأسفل",
+    },
+    drag: {
+      reorder: "إعادة ترتيب",
+      pin: "تثبيت",
+      unpin: "إلغاء التثبيت",
+      moveTo: "نقل إلى {name}",
+      moveToRecents: "نقل إلى الأخيرة",
     },
     dialog: {
       deleteChat: {
@@ -1598,6 +1614,9 @@ export const ar = {
         collapseByDefault: "طيّ نشاط الأدوات افتراضيًا",
         collapseByDefaultDescription:
           "إبقاء مدخلات الأدوات ومخرجاتها مطوية أثناء التشغيل. وسّع أي صف أداة لفحصه.",
+        foldIntoThinking: "طيّ استدعاءات الأدوات داخل التفكير",
+        foldIntoThinkingDescription:
+          "إخفاء استدعاءات الأدوات في الدور حتى فتح كتلة التفكير.",
       },
       webSearch: {
         title: "البحث على الويب",

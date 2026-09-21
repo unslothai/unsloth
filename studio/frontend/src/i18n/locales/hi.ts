@@ -197,6 +197,7 @@ export const hi = {
       unpinChats: "चैट अनपिन करें",
       archiveChats: "चैट संग्रहित करें",
       markUnread: "अपठित के रूप में चिह्नित करें",
+      markRead: "पढ़ा हुआ चिह्नित करें",
       deleteChats: "चैट हटाएँ",
       deleteTitle: "चैट हटाएँ",
       deleteDescription: "{count} चैट हटाएँ? इसे पूर्ववत नहीं किया जा सकता।",
@@ -215,11 +216,26 @@ export const hi = {
       priority: "प्राथमिकता",
       lastUpdated: "अंतिम अपडेट",
       manualOrder: "मैन्युअल क्रम",
-      moveUp: "ऊपर ले जाएँ",
-      moveDown: "नीचे ले जाएँ",
+      priorityHint: "सक्रिय और अपठित पहले",
+      lastUpdatedHint: "सबसे नए पहले",
+      manualOrderHint: "पंक्तियाँ खींचकर क्रम बदलें",
+      switchedToManual: "अब मैन्युअल क्रम: पंक्तियाँ खींचकर क्रम बदलें",
       organizeChats: "चैट व्यवस्थित करें",
       organizeProjects: "प्रोजेक्ट व्यवस्थित करें",
       sortPinnedChats: "पिन की गई चैट क्रमबद्ध करें",
+      dragDrop: "खींचें और छोड़ें",
+      dragHints: "खींचते समय संकेत दिखाएँ",
+      reorderSwitchesSort: "क्रम बदलने पर मैन्युअल क्रम पर स्विच करें",
+      dragOpensFolders: "पॉइंटर के नीचे फ़ोल्डर खोलें",
+      moveUp: "ऊपर ले जाएँ",
+      moveDown: "नीचे ले जाएँ",
+    },
+    drag: {
+      reorder: "क्रम बदलें",
+      pin: "पिन करें",
+      unpin: "अनपिन करें",
+      moveTo: "{name} में ले जाएँ",
+      moveToRecents: "हाल के में ले जाएँ",
     },
     dialog: {
       deleteChat: {
@@ -1605,6 +1621,9 @@ export const hi = {
         collapseByDefault: "टूल गतिविधि को डिफ़ॉल्ट रूप से संक्षिप्त रखें",
         collapseByDefaultDescription:
           "टूल चलते समय उनके इनपुट और आउटपुट संक्षिप्त रखें। जाँचने के लिए किसी भी टूल पंक्ति को विस्तृत करें।",
+        foldIntoThinking: "टूल कॉल को थिंकिंग में समेटें",
+        foldIntoThinkingDescription:
+          "किसी टर्न के टूल कॉल तब तक छिपाएँ जब तक उसका थिंकिंग ब्लॉक न खोला जाए।",
       },
       webSearch: {
         title: "वेब खोज",

@@ -30,14 +30,32 @@ import {
   UnmeasuredCollapsibleTrigger,
 } from "@/components/ui/unmeasured-collapsible";
 import {
+  clearReasoningRound,
   resolveReasoningGroupDuration,
   resolveReasoningOpen,
   resolveReasoningToggle,
+  setReasoningRoundOpen,
   startsNewReasoningRound,
   useChatPreferencesStore,
+  useChatRuntimeStore,
+  useReasoningRoundStore,
 } from "@/features/chat";
+import {
+  countFoldedToolParts,
+  endsFoldedSpan,
+  foldEnd,
+  foldedToolSummary,
+  foldedTurnDuration,
+  isBlankTextPart,
+  isFoldedReasoningGroup,
+  leadReasoningEnd,
+  reasoningRoundKey,
+} from "@/components/assistant-ui/thinking-fold";
+import { toolRunIsExempt } from "@/components/assistant-ui/tool-fold-exemptions";
 import { isRenderableRenderHtmlToolPart } from "@/features/chat/artifacts/html-fences";
+import { useDetachThreadFromBottom } from "@/components/assistant-ui/use-intent-aware-autoscroll";
 import { useCollapseScrollLock } from "@/hooks/use-collapse-scroll-lock";
+import { formatWorkedFor } from "@/lib/format-worked-for";
 import { cn } from "@/lib/utils";
 import {
   type ReasoningGroupComponent,
@@ -46,16 +64,19 @@ import {
 } from "@assistant-ui/react";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { type VariantProps, cva } from "class-variance-authority";
-import { ChevronDownIcon, CopyIcon } from "lucide-react";
-import { BulbIcon } from "@/lib/bulb-icon";
+import { ChevronDownIcon } from "lucide-react";
 import { Tick02Icon } from "@/lib/tick-icon";
+import { Copy01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
   type CSSProperties,
   type ComponentProps,
+  type ReactNode,
+  type RefObject,
   memo,
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -79,7 +100,9 @@ function selectionIntersectsElement(
   return false;
 }
 
-export const reasoningVariants = cva("aui-reasoning-root mt-3 mb-4 w-full", {
+// Plain text in the message column: a header line and, when open, the thoughts
+// under it. No box, no icon. Outer spacing comes from the message body's rhythm.
+export const reasoningVariants = cva("aui-reasoning-root w-full", {
   variants: {
     variant: {
       outline: "rounded-lg border px-3 py-2",
@@ -88,7 +111,7 @@ export const reasoningVariants = cva("aui-reasoning-root mt-3 mb-4 w-full", {
     },
   },
   defaultVariants: {
-    variant: "outline",
+    variant: "ghost",
   },
 });
 
@@ -166,12 +189,16 @@ function ReasoningRoot({
 function ReasoningTrigger({
   active,
   duration,
+  foldedToolCount = 0,
   className,
   ...props
 }: ComponentProps<typeof CollapsibleTrigger> & {
   active?: boolean;
   duration?: number;
+  /** Tool calls hidden under this block, named so a closed block is not silent about them. */
+  foldedToolCount?: number;
 }) {
+  const foldedSummary = foldedToolSummary(foldedToolCount);
   const Trigger = GRID_COLLAPSE_REASONING_ENABLED
     ? UnmeasuredCollapsibleTrigger
     : CollapsibleTrigger;
@@ -179,27 +206,45 @@ function ReasoningTrigger({
   return (
     <Trigger
       data-slot="reasoning-trigger"
+      data-active={active ? "" : undefined}
       className={cn(
-        "aui-reasoning-trigger group/trigger flex min-w-0 flex-1 cursor-pointer items-center gap-2 py-1 text-muted-foreground text-sm transition-colors hover:text-foreground",
+        "aui-reasoning-trigger group/trigger flex min-h-5 min-w-0 cursor-pointer items-center gap-2 text-muted-foreground text-sm transition-colors hover:text-foreground",
         className,
       )}
       {...props}
     >
-      <BulbIcon className="aui-reasoning-trigger-icon size-4 shrink-0" />
+      {/* No overflow clipping: with leading-none the line box is the font size, and hidden
+          overflow cuts the descenders off "Thinking" and "Worked". */}
       <span
         data-slot="reasoning-trigger-label"
-        className="aui-reasoning-trigger-label-wrapper relative inline-block leading-none"
+        className="aui-reasoning-trigger-label-wrapper relative inline-block whitespace-nowrap leading-none"
       >
         {active ? (
-          <span className="text-sm">Thinking...</span>
+          <span>Thinking</span>
         ) : (
-          <span>Thought for {duration ?? 0} {duration === 1 ? "second" : "seconds"}</span>
+          <span>Worked for {formatWorkedFor(duration ?? 0)}</span>
+        )}
+        {active && (
+          <span
+            aria-hidden={true}
+            data-slot="reasoning-trigger-shimmer"
+            className="aui-reasoning-trigger-shimmer shimmer pointer-events-none absolute inset-0 motion-reduce:animate-none"
+          >
+            Thinking
+          </span>
         )}
       </span>
+      {/* Outside the label so it reads while the block is still working and closed. */}
+      {foldedSummary ? (
+        <span className="whitespace-nowrap leading-none text-muted-foreground/70">
+          {"\u00b7 "}
+          {foldedSummary}
+        </span>
+      ) : null}
       <ChevronDownIcon
         data-slot="reasoning-trigger-chevron"
         className={cn(
-          "aui-reasoning-trigger-chevron mt-0.5 size-3.5 shrink-0",
+          "aui-reasoning-trigger-chevron size-3.5 shrink-0",
           "transition-transform duration-(--animation-duration) ease-out",
           "group-data-[state=closed]/trigger:-rotate-90",
           "group-data-[state=open]/trigger:rotate-0",
@@ -216,7 +261,7 @@ function ReasoningContent({
   ...props
 }: ComponentProps<typeof CollapsibleContent> & { streaming?: boolean }) {
   const shared = cn(
-    "aui-reasoning-content relative overflow-hidden text-foreground/85 text-ui-13p5 outline-none",
+    "aui-reasoning-content relative overflow-hidden text-[#0d0d0d] dark:text-foreground outline-none",
     "group/collapsible-content ease-out",
     "data-[state=closed]:pointer-events-none",
   );
@@ -341,9 +386,12 @@ function ReasoningText({
     <div
       ref={scrollRef}
       data-slot="reasoning-text"
+      data-streaming={streaming ? "" : undefined}
       className={cn(
-        "aui-reasoning-text relative z-0 overflow-y-auto pt-2 pb-0 pl-0 leading-relaxed",
-        streaming ? "max-h-64" : "",
+        // Reads like the answer: same size and colour, flush with the header, no cap and no
+        // fade. The thread's own follow-scroll tracks it while it streams.
+        "aui-reasoning-text relative z-0 pt-4 pb-0 leading-relaxed",
+        "[&_p]:my-0 [&_p+p]:mt-4 [&_ul]:my-4 [&_ol]:my-4 [&_pre]:my-4",
         "transform-gpu transition-[transform,opacity]",
         "group-data-[state=open]/collapsible-content:animate-in",
         "group-data-[state=closed]/collapsible-content:animate-out",
@@ -474,62 +522,26 @@ function ReasoningCopyButton({
       {copied ? (
         <HugeiconsIcon icon={Tick02Icon} strokeWidth={2} className="size-3" />
       ) : (
-        <CopyIcon className="size-3" />
+        <HugeiconsIcon icon={Copy01Icon} className="size-3" />
       )}
       {copied ? "Copied" : "Copy"}
     </button>
   );
 }
 
-const ReasoningGroupImpl: ReasoningGroupComponent = ({
-  children,
-  startIndex,
-  endIndex,
-}) => {
-  const isReasoningStreaming = useAuiState(({ message }) => {
-    if (message.status?.type !== "running") {
-      return false;
-    }
-    const parts = message.parts;
-    const len = parts.length;
-    if (len === 0) {
-      return false;
-    }
-
-    let groupHasReasoning = false;
-    for (let i = startIndex; i <= endIndex && i < len; i += 1) {
-      if (parts[i]?.type === "reasoning") {
-        groupHasReasoning = true;
-        break;
-      }
-    }
-    if (!groupHasReasoning) {
-      return false;
-    }
-    for (let i = endIndex + 1; i < len; i += 1) {
-      if (parts[i]?.type !== "tool-call") {
-        return false;
-      }
-    }
-    return true;
-  });
-
-  const messageId = useAuiState(({ message }) => message.id);
-
-  const messageHasRenderableRenderHtmlTool = useAuiState(({ message }) =>
-    message.parts.some(isRenderableRenderHtmlToolPart),
-  );
-
-  const reasoningContentRef = useRef<HTMLDivElement>(null);
-
-  const reasoningDocuments = useAuiState(
-    useShallow(({ message }) =>
-      message.parts
-        .slice(startIndex, endIndex + 1)
-        .filter((part) => part.type === "reasoning")
-        .map((part) => ("text" in part ? (part as { text: string }).text : "")),
-    ),
-  );
+// Paging for a long trace, shared by the lead block and the rounds folded inside it so a long
+// later round is protected the same way the first one is.
+function useReasoningPages({
+  messageId,
+  reasoningDocuments,
+  isStreaming,
+  reasoningContentRef,
+}: {
+  messageId: string;
+  reasoningDocuments: readonly string[];
+  isStreaming: boolean;
+  reasoningContentRef: RefObject<HTMLDivElement | null>;
+}) {
   const reasoningText = reasoningDocuments.join("");
   const wantsPagination = shouldPaginateReasoning(reasoningText);
   const [storedPaginationSession, setPaginationSession] = useState(() => ({
@@ -611,10 +623,10 @@ const ReasoningGroupImpl: ReasoningGroupComponent = ({
         end: paginationActive ? selectedEnd : reasoningText.length,
 
         streaming:
-          paginationActive && isReasoningStreaming && selectedEnd === null,
+          paginationActive && isStreaming && selectedEnd === null,
       }),
     [
-      isReasoningStreaming,
+      isStreaming,
       pageSelector,
       paginationActive,
       reasoningDocuments,
@@ -653,12 +665,253 @@ const ReasoningGroupImpl: ReasoningGroupComponent = ({
     );
   }, [messageId]);
 
+  return {
+    reasoningText,
+    paginationActive,
+    page,
+    viewingLatestPage,
+    showEarlierPage,
+    showNewerPage,
+    showLatestPage,
+  };
+}
+
+type ReasoningPages = ReturnType<typeof useReasoningPages>;
+
+function ReasoningBody({
+  pages,
+  messageId,
+  messageHasRenderableRenderHtmlTool,
+  isStreaming,
+  retainStreamingHeight = false,
+  textClassName,
+  children,
+}: {
+  pages: ReasoningPages;
+  messageId: string;
+  messageHasRenderableRenderHtmlTool: boolean;
+  isStreaming: boolean;
+  retainStreamingHeight?: boolean;
+  textClassName?: string;
+  children: ReactNode;
+}) {
+  const { page, paginationActive, reasoningText, viewingLatestPage } = pages;
+  return (
+    <>
+      {paginationActive && (
+        <ReasoningPageNavigation
+          hasEarlier={page.hasEarlier}
+          hasNewer={page.hasNewer}
+          onEarlier={pages.showEarlierPage}
+          onNewer={pages.showNewerPage}
+          onLatest={pages.showLatestPage}
+          start={page.start}
+          end={page.end}
+          total={reasoningText.length}
+        />
+      )}
+      <ReasoningText
+        autoScroll={viewingLatestPage}
+        className={textClassName}
+        pageKey={paginationActive ? `${page.start}:${page.end}` : undefined}
+        streaming={isStreaming || retainStreamingHeight}
+      >
+        {paginationActive ? (
+          <>
+            {page.oversizedCode ? (
+              <OversizedReasoningCode source={page.markdown} />
+            ) : (
+              <SearchImagesEnabledContext.Provider value={false}>
+                <MarkdownTextSource
+                  key={`${page.documentIndex}:${page.start}`}
+                  messageHasRenderableRenderHtmlTool={
+                    messageHasRenderableRenderHtmlTool
+                  }
+                  messageId={messageId}
+                  sourceText={page.markdown}
+                  streaming={isStreaming && viewingLatestPage}
+                />
+              </SearchImagesEnabledContext.Provider>
+            )}
+          </>
+        ) : (
+          children
+        )}
+      </ReasoningText>
+    </>
+  );
+}
+
+// With the fold preference on, the first Thinking block of a turn heads everything before the
+// answer. Later reasoning groups in that span render as plain rounds inside it, following its
+// open state, and the tool groups between them do the same (see tool-group.tsx).
+const ReasoningGroupImpl: ReasoningGroupComponent = (props) => {
+  const foldToolActivity = useChatPreferencesStore(
+    (state) => state.foldToolActivityIntoThinking,
+  );
+  const folded = useAuiState(
+    ({ message }) =>
+      foldToolActivity && isFoldedReasoningGroup(message.parts, props.startIndex),
+  );
+  if (folded) {
+    return <FoldedReasoningRound {...props} />;
+  }
+  return <ReasoningGroupBlock {...props} foldTurn={foldToolActivity} />;
+};
+
+// A thin line closing the trace when the answer comes right after it, so the two do not read
+// as one text. Rendered inside whatever is last under the header, so it hides with it.
+function ReasoningEndRule() {
+  return (
+    <div
+      data-slot="reasoning-end-rule"
+      aria-hidden={true}
+      className="mt-4 border-border/60 border-t"
+    />
+  );
+}
+
+const FoldedReasoningRound: ReasoningGroupComponent = ({
+  children,
+  startIndex,
+  endIndex,
+}) => {
+  const messageId = useAuiState(({ message }) => message.id);
+  const roundKey = useAuiState(({ message }) => {
+    const lead = leadReasoningEnd(message.parts, startIndex);
+    return lead === null ? null : reasoningRoundKey(message.id, lead);
+  });
+  const open = useReasoningRoundStore(
+    (state) => roundKey !== null && (state.open[roundKey] ?? false),
+  );
+  // Streaming while this round is the last thinking so far and only calls follow it.
+  const isStreaming = useAuiState(({ message }) => {
+    if (message.status?.type !== "running") return false;
+    const parts = message.parts;
+    for (let i = endIndex + 1; i < parts.length; i += 1) {
+      if (parts[i]?.type !== "tool-call") return false;
+    }
+    return true;
+  });
+  const messageHasRenderableRenderHtmlTool = useAuiState(({ message }) =>
+    message.parts.some(isRenderableRenderHtmlToolPart),
+  );
+  const reasoningContentRef = useRef<HTMLDivElement>(null);
+  const reasoningDocuments = useAuiState(
+    useShallow(({ message }) =>
+      message.parts
+        .slice(startIndex, endIndex + 1)
+        .filter((part) => part.type === "reasoning")
+        .map((part) => ("text" in part ? (part as { text: string }).text : "")),
+    ),
+  );
+  const pages = useReasoningPages({
+    messageId,
+    reasoningDocuments,
+    isStreaming,
+    reasoningContentRef,
+  });
+  const closesTrace = useAuiState(({ message }) =>
+    endsFoldedSpan(message.parts, endIndex),
+  );
+  // Hidden, not unmounted, so the text keeps streaming in while the lead is closed.
+  return (
+    <div
+      ref={reasoningContentRef}
+      data-slot="reasoning-folded-round"
+      className={cn(!open && "hidden")}
+    >
+      <ReasoningBody
+        pages={pages}
+        messageId={messageId}
+        messageHasRenderableRenderHtmlTool={messageHasRenderableRenderHtmlTool}
+        isStreaming={isStreaming}
+        textClassName="pt-0"
+      >
+        {children}
+      </ReasoningBody>
+      {closesTrace && <ReasoningEndRule />}
+    </div>
+  );
+};
+
+const ReasoningGroupBlock = ({
+  children,
+  startIndex,
+  endIndex,
+  foldTurn,
+}: ComponentProps<ReasoningGroupComponent> & { foldTurn: boolean }) => {
+  // The lead of a folded span: its first Thinking block.
+  const foldLead = useAuiState(
+    ({ message }) =>
+      foldTurn && leadReasoningEnd(message.parts, endIndex) === endIndex,
+  );
+  const isReasoningStreaming = useAuiState(({ message }) => {
+    if (message.status?.type !== "running") {
+      return false;
+    }
+    const parts = message.parts;
+    const len = parts.length;
+    if (len === 0) {
+      return false;
+    }
+
+    let groupHasReasoning = false;
+    for (let i = startIndex; i <= endIndex && i < len; i += 1) {
+      if (parts[i]?.type === "reasoning") {
+        groupHasReasoning = true;
+        break;
+      }
+    }
+    if (!groupHasReasoning) {
+      return false;
+    }
+    // The lead of a folded span keeps working through later thinking and blank text too,
+    // until the answer.
+    for (let i = endIndex + 1; i < len; i += 1) {
+      const part = parts[i];
+      if (part?.type === "tool-call") continue;
+      if (foldLead && (part?.type === "reasoning" || isBlankTextPart(part))) {
+        continue;
+      }
+      return false;
+    }
+    return true;
+  });
+
+  const messageId = useAuiState(({ message }) => message.id);
+
+  const messageHasRenderableRenderHtmlTool = useAuiState(({ message }) =>
+    message.parts.some(isRenderableRenderHtmlToolPart),
+  );
+
+  const reasoningContentRef = useRef<HTMLDivElement>(null);
+
+  const reasoningDocuments = useAuiState(
+    useShallow(({ message }) =>
+      message.parts
+        .slice(startIndex, endIndex + 1)
+        .filter((part) => part.type === "reasoning")
+        .map((part) => ("text" in part ? (part as { text: string }).text : "")),
+    ),
+  );
+  const pages = useReasoningPages({
+    messageId,
+    reasoningDocuments,
+    isStreaming: isReasoningStreaming,
+    reasoningContentRef,
+  });
+
   const persistedDuration = useAuiState(({ message }) => {
-    return resolveReasoningGroupDuration(
-      message.parts,
-      startIndex,
-      message.metadata?.custom as Record<string, unknown> | undefined,
-    );
+    const custom = message.metadata?.custom as
+      | Record<string, unknown>
+      | undefined;
+    if (foldLead) {
+      return foldedTurnDuration(message.parts, endIndex, (parts, start) =>
+        resolveReasoningGroupDuration(parts, start, custom),
+      );
+    }
+    return resolveReasoningGroupDuration(message.parts, startIndex, custom);
   });
 
   const collapseByDefault = useChatPreferencesStore(
@@ -722,11 +975,42 @@ const ReasoningGroupImpl: ReasoningGroupComponent = ({
     dismissedWhileStreaming,
     manualOpen,
   });
-  const variant = isOpen ? "outline" : "ghost";
+  // Publish the lead's open state for everything folded under it, and count the tool calls for
+  // its header. A layout effect, so the folded parts settle before the frame the user sees.
+  const roundKey = reasoningRoundKey(messageId, endIndex);
+  const toolConfirmations = useChatRuntimeStore((s) => s.toolConfirmations);
+  const foldedToolCount = useAuiState(({ message }) =>
+    foldLead
+      ? countFoldedToolParts(message.parts, endIndex, (start, end) =>
+          toolRunIsExempt(message.parts, start, end, toolConfirmations),
+        )
+      : 0,
+  );
+  // Copy reaches the rounds folded in here too: they have no Copy of their own.
+  const copyEndIndex = useAuiState(({ message }) =>
+    foldLead ? foldEnd(message.parts, endIndex) - 1 : endIndex,
+  );
+  // The answer follows this block directly, with nothing folded in between.
+  const closesTrace = useAuiState(({ message }) =>
+    foldLead
+      ? endsFoldedSpan(message.parts, endIndex)
+      : message.parts[endIndex + 1]?.type === "text",
+  );
+  useLayoutEffect(() => {
+    if (!foldLead) return;
+    setReasoningRoundOpen(roundKey, isOpen);
+  }, [foldLead, isOpen, roundKey]);
+  useLayoutEffect(() => () => clearReasoningRound(roundKey), [roundKey]);
 
-  // Allow closing during streaming (matches ChatGPT).
+  // Opening by hand grows the block downward and leaves the header where it is. The viewport
+  // would otherwise treat the growth as new content and pin the bottom, which shoves the header
+  // up. Streaming keeps following: the auto-open is not a click and the stream should track.
+  const detachFromBottom = useDetachThreadFromBottom();
   const handleOpenChange = useCallback(
     (open: boolean) => {
+      if (open && !isReasoningStreaming) {
+        detachFromBottom();
+      }
       const next = resolveReasoningToggle(open, {
         isStreaming: isReasoningStreaming,
         collapseByDefault,
@@ -739,72 +1023,46 @@ const ReasoningGroupImpl: ReasoningGroupComponent = ({
         setDismissedWhileStreaming(next.dismissedWhileStreaming);
       }
     },
-    [isReasoningStreaming, collapseByDefault],
+    [isReasoningStreaming, collapseByDefault, detachFromBottom],
   );
 
   return (
-    <ReasoningRoot
-      open={isOpen}
-      onOpenChange={handleOpenChange}
-      variant={variant}
-    >
-      <div className="flex min-w-0 items-center gap-2">
+    <ReasoningRoot open={isOpen} onOpenChange={handleOpenChange}>
+      <div
+        data-slot="reasoning-header"
+        className="flex min-w-0 items-center gap-2"
+      >
         <ReasoningTrigger
-          className="min-w-0 flex-1"
+          className="min-w-0"
           active={isReasoningStreaming}
           // Prefer server timing when available.
           duration={persistedDuration ?? duration}
+          foldedToolCount={isOpen ? 0 : foldedToolCount}
         />
-        <div className="flex w-16 shrink-0 justify-end">
-          {isOpen && !isReasoningStreaming && (
-            <ReasoningCopyButton startIndex={startIndex} endIndex={endIndex} />
-          )}
-        </div>
+        {isOpen && !isReasoningStreaming && (
+          <span className="ml-auto flex items-center leading-none">
+            <ReasoningCopyButton
+              startIndex={startIndex}
+              endIndex={copyEndIndex}
+            />
+          </span>
+        )}
       </div>
       <ReasoningContent
         aria-busy={isReasoningStreaming}
         streaming={isReasoningStreaming}
         ref={reasoningContentRef}
       >
-        {paginationActive && (
-          <ReasoningPageNavigation
-            hasEarlier={page.hasEarlier}
-            hasNewer={page.hasNewer}
-            onEarlier={showEarlierPage}
-            onNewer={showNewerPage}
-            onLatest={showLatestPage}
-            start={page.start}
-            end={page.end}
-            total={reasoningText.length}
-          />
-        )}
-        <ReasoningText
-          autoScroll={viewingLatestPage}
-          pageKey={paginationActive ? `${page.start}:${page.end}` : undefined}
-          streaming={isReasoningStreaming || retainStreamingHeight}
+        <ReasoningBody
+          pages={pages}
+          messageId={messageId}
+          messageHasRenderableRenderHtmlTool={messageHasRenderableRenderHtmlTool}
+          isStreaming={isReasoningStreaming}
+          retainStreamingHeight={retainStreamingHeight}
         >
-          {paginationActive ? (
-            <>
-              {page.oversizedCode ? (
-                <OversizedReasoningCode source={page.markdown} />
-              ) : (
-                <SearchImagesEnabledContext.Provider value={false}>
-                  <MarkdownTextSource
-                    key={`${page.documentIndex}:${page.start}`}
-                    messageHasRenderableRenderHtmlTool={
-                      messageHasRenderableRenderHtmlTool
-                    }
-                    messageId={messageId}
-                    sourceText={page.markdown}
-                    streaming={isReasoningStreaming && viewingLatestPage}
-                  />
-                </SearchImagesEnabledContext.Provider>
-              )}
-            </>
-          ) : (
-            children
-          )}
-        </ReasoningText>
+          {children}
+        </ReasoningBody>
+        {closesTrace && <ReasoningEndRule />}
       </ReasoningContent>
     </ReasoningRoot>
   );

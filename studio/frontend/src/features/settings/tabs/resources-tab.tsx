@@ -44,7 +44,9 @@ import { SettingsRow } from "../components/settings-row";
 import { SettingsSection } from "../components/settings-section";
 import { useMonitorOverlayStore } from "../stores/monitor-overlay-store";
 import { useSettingsPanelPrefsStore } from "../stores/settings-panel-prefs-store";
-import { CopyIcon, FolderOpenIcon, LayersIcon } from "lucide-react";
+import { Copy01Icon } from "@hugeicons/core-free-icons";
+import { HugeiconsIcon } from "@hugeicons/react";
+import { FolderOpenIcon, LayersIcon } from "lucide-react";
 
 const POLL_MS = 3000;
 
@@ -840,7 +842,7 @@ export function ResourcesTab() {
                 {isTauri ? (
                   <FolderOpenIcon className="size-3.5" />
                 ) : (
-                  <CopyIcon className="size-3.5" />
+                  <HugeiconsIcon icon={Copy01Icon} className="size-3.5" />
                 )}
               </button>
             </div>
