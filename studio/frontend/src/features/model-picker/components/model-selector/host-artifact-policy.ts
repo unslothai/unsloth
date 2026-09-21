@@ -26,8 +26,9 @@ export function classifyHost({
   denseQuantSupported?: boolean;
 }): HostClass {
   const backend = (deviceBackend ?? "").trim().toLowerCase();
-  // A resolved accelerated backend outranks the OS, because no Mac reports one: on macOS the
-  // backend resolves to mps, mlx or cpu. deviceType can still be the BROWSER's platform -- it
+  // A resolved accelerated backend outranks the OS, because no Mac reports one: DeviceType in
+  // hardware.py is {cuda, xpu, mlx, cpu}, and "rocm" only when IS_ROCM, so macOS resolves to
+  // mlx or to cpu when its MLX stack is absent. deviceType can still be the BROWSER's platform -- it
   // falls back to detectLocalPlatform() until an authenticated reply carries device_type
   // (config/env.ts) -- so a Mac browser driving a remote CUDA server would otherwise classify
   // that Linux host as gguf-only.
