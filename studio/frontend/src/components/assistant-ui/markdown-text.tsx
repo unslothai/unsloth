@@ -648,20 +648,11 @@ function StreamdownBlockContent(props: BlockProps) {
      * not hand a fence it failed to recognise back to the renderer that cannot afford it.
      */
   /*
-   * RECOGNISED FORMS STAY ON THE BOUNDED RENDERER AT COMPLETION TOO.
-   * Tildes, four or more backticks and up to three spaces of indent are forms `getCodeFence` does
-   * not match, so a completed one never reaches `FenceBlock` above. Left alone it would fall to the
-   * branch below and be handed to streamdown's whole-token `Block`, which remounts every span of a
-   * fence that was rendered per line all the way through the stream -- the final-frame freeze this
-   * PR exists to remove, and worse for a fence whose reply was stopped, where it never settles.
-   * Rendering it here keeps the per-line body and the line window, so the fence the reader watched
-   * arrive is the fence that stays.
-   *
-   * Deliberately NOT routed through `FenceBlock`: that branch owns the reach latch, the copy and
-   * download bar and the fence-mode switch, and those are wired to `getCodeFence`'s narrower form
-   * on purpose. Widening them would add controls and artifact paths to blocks that do not have them
-   * today, which is a rendering change and not this PR's to make. A body and nothing else is the
-   * whole of what is needed to stop the remount.
+   * RECOGNISED FORMS STAY ON THE BOUNDED RENDERER AT COMPLETION TOO. `getCodeFence` does not match
+   * tildes, four or more backticks or up to three spaces of indent, so a completed fence on those
+   * forms used to fall to streamdown's whole-token `Block` and remount every span -- and a stopped
+   * reply never settles. NOT routed through `FenceBlock`: that branch also owns the reach latch,
+   * the action bar and the mode switch, which are wired to the narrower form on purpose.
    */
   const settledFence = props.isIncomplete ? null : markdownBlockFallback(props.content);
   if (settledFence?.fenced) {

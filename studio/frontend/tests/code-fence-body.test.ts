@@ -115,10 +115,9 @@ test("a streaming open fence is highlighted rather than shown plain", () => {
 });
 
 test("a completed fence on a non-``` form keeps the bounded renderer", () => {
-  // The other half of the same route. `getCodeFence` accepts exactly three unindented backticks, so
-  // a tilde / four-backtick / indented fence that streamed through `StreamingFenceBlock` had no
-  // `codeFence` once it completed and fell to the branch below -- streamdown's whole-token `Block`,
-  // which remounts every span at the final frame. A stopped reply does the same and never settles.
+  // `getCodeFence` does not match tilde / four-backtick / indented fences, so a completed one used
+  // to fall to streamdown's whole-token `Block` and remount every span. A stopped reply never
+  // settles, which is the same route.
   assert.ok(
     /const settledFence = props\.isIncomplete \? null : markdownBlockFallback\(props\.content\);\s*if \(settledFence\?\.fenced\)/.test(
       MARKDOWN_TEXT,
@@ -133,8 +132,7 @@ test("a completed fence on a non-``` form keeps the bounded renderer", () => {
     ),
     "and it must render the per-line body rather than Block, or the spans remount",
   );
-  // Deliberately NOT `FenceBlock`: that branch owns the reach latch, the action bar and the
-  // fence-mode switch, which are wired to `getCodeFence`'s narrower form on purpose.
+  // Not `FenceBlock`: that branch also owns the reach latch, the action bar and the mode switch.
   assert.ok(
     !/<FenceBlock[\s\S]{0,200}settledFence/.test(MARKDOWN_TEXT),
     "widening FenceBlock would add controls and artifact paths to blocks that do not have them",

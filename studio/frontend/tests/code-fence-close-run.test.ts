@@ -9,33 +9,20 @@ import { getCodeFence } from "../src/features/chat/artifacts/html-fences.ts";
 /**
  * WHAT A CLOSING FENCE IS ALLOWED TO LOOK LIKE.
  *
- * CommonMark 0.31.2: "The closing code fence ... may be followed only by spaces or tabs" and its
- * run must be "at least as many" of the fence's character as the opening one. A model therefore
- * closes a fence whose body contains a three-backtick run with FOUR backticks -- the shape the
- * `getCodeFence` regex is the only remaining consumer of, since the streaming route reads the
- * grammar-complete scanner in `markdown-block-fallback.ts`.
+ * CommonMark 0.31.2: the close uses the same character and "at least as many" of it as the opener,
+ * so a model closing a fence whose body holds three backticks writes four. `{3}` matched that by
+ * its LAST three and handed the surplus to `source`; a bare lazy `+?` is the other half of the rule
+ * and accepts a one- or two-backtick run as a close, deleting real code. The opener is fixed at
+ * three, so the close is `{3,}`.
  *
- * The regex matched such a line by its LAST three backticks and handed the surplus delimiter to
- * `source`: a fence opened with three and closed with four became the code ``x = 1\n` ``, one line
- * longer and one character wider than what CommonMark says it holds. Only a COMPLETED block comes
- * through here, so a reader watching a reply stream saw the block they were reading grow a stray
- * backtick the moment its closing delimiter landed.
- *
- * The other direction matters just as much: a bare lazy run would accept ONE or TWO backticks as a
- * close, so a stream that had written only its first delimiter backtick would already parse as a
- * completed fence with that backtick deleted, and an aborted reply ending in a short backtick run
- * would be permanently misread. A run shorter than the opener is code, so the close is `{3,}` --
- * "at least as many" as the opener, which is three.
- *
- * These rows are RUN rather than described, and each one names the parser's answer so the
- * expectation is CommonMark's and not this file's.
+ * Each row names the answer `micromark` gives, so the expectation is CommonMark's and not this
+ * file's.
  */
 
 /** The code text `micromark` produces for a whole-block fence, with its trailing break removed. */
 const commonmarkSource = (markdown: string): string => {
-  // Hard-coded rather than imported: the frontend test runner has no HTML parser, and a second
-  // parser in the runner would be a second thing to disagree. Each value below was read out of
-  // `micromark(markdown)` directly.
+  // Read out of `micromark(markdown)` directly: the runner has no HTML parser, and a second parser
+  // would be a second thing to disagree.
   const expected: Record<string, string> = {
     "```python\nx = 1\n```\n": "x = 1",
     "```python\nx = 1\n````\n": "x = 1",
@@ -88,13 +75,10 @@ test("every closing run a model writes yields the body CommonMark gives it", () 
 });
 
 test("a body's OWN trailing backticks survive", () => {
-  // The close is lazy, so a run the body owns is not mistaken for the delimiter: three backticks
-  // inside a three-backtick fence are not a close, and the line above a four-backtick close may
-  // end in backticks of its own.
+  // A run the BODY owns is code, not a delimiter, at both fence lengths.
   assert.equal(getCodeFence("```\nfoo `\n```\n")?.source, "foo `");
   assert.equal(getCodeFence("```\nfoo ``\n```\n")?.source, "foo ``");
-  // A body ending in a run SHORTER than the close keeps all of it: the close is the last three and
-  // the two before them are the code's.
+  // Only the close's own run is eaten; anything shorter before it is the body's.
   assert.equal(
     getCodeFence("```\nfoo `````\n`````\n")?.source,
     "foo `````",
@@ -132,8 +116,7 @@ test("the close is at least three, not exactly three", () => {
 });
 
 test("a run shorter than three does not close the fence", () => {
-  // A one- or two-backtick run is CODE, so the block is still open and the collapse must decline
-  // it -- exactly what `micromark` says, and what the streaming route already did.
+  // A short run is code, so the block is still open and the collapse must decline it.
   for (const short of ["`", "``"]) {
     const markdown = `\`\`\`python\nx = 1\n${short}`;
     assert.equal(

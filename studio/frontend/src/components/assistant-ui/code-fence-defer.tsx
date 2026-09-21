@@ -787,11 +787,9 @@ export const fencePrinting = (): boolean => printing;
  * update lands after the next paint, and there is no next paint before the print snapshot.
  */
 const setPrinting = (value: boolean): void => {
-  // BEFORE the window check, not after it. A fence still showing its shell has no window to
-  // remeasure, but a print that starts then still has to be on the record: the tokens can arrive
-  // while the preview is open, and `useLineWindow` would then register and window the fence
-  // normally, leaving most printed pages uncoloured. The state is global, so it changes even when
-  // there is nothing to remeasure right now.
+  // BEFORE the window check: a print that starts while a fence still shows its shell has no window
+  // to remeasure, but the state must still be recorded or the tokens arrive mid-preview and window
+  // it. Only the flush is skipped when there is nothing to remeasure.
   if (printing === value) return;
   printing = value;
   if (windowFrame !== 0) {
