@@ -336,3 +336,28 @@ def test_exact_count_preserves_video_allowance(monkeypatch):
     monkeypatch.setattr(inference, "_openai_llama_admission_media_tokens", media)
     assert inference._count_gguf_admission_prompt(backend, payload, payload.messages) == 4116
     assert media.call_args.kwargs["message_video_clips"] == 2
+
+
+def test_prepared_message_parsing_runs_off_the_event_loop(monkeypatch):
+    import threading
+
+    loop_thread = threading.get_ident()
+    parse = inference._openai_llama_admission_messages_for_estimate
+    seen = []
+
+    def checked(*args, **kwargs):
+        seen.append(threading.get_ident())
+        assert threading.get_ident() != loop_thread
+        return parse(*args, **kwargs)
+
+    monkeypatch.setattr(inference, "_openai_llama_admission_messages_for_estimate", checked)
+
+    async def scenario():
+        payload = _payload()
+        reservation, _ = await inference._reserve_counted_gguf_chat(
+            request = None, llama_backend = _backend(20), payload = payload, messages = payload.messages
+        )
+        reservation.cancel()
+
+    asyncio.run(scenario())
+    assert seen and all(thread != loop_thread for thread in seen)

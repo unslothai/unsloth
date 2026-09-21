@@ -2446,6 +2446,14 @@ async def _reserve_counted_gguf_chat(
     tool_loop: bool = False,
 ):
     config = llama_admission_config_from_env()
+    if not (config.enabled and config.kv_budget):
+        return await _openai_llama_admission_reserve_async(
+            request = request,
+            llama_backend = llama_backend,
+            payload = payload,
+            tool_loop = tool_loop,
+            injected_tools = injected_tools,
+        )
     counted = None
     if config.enabled and config.kv_budget:
         identity = (
