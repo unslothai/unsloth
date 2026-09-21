@@ -197,3 +197,28 @@ def blob_hashes_for_siblings(siblings: Iterable) -> frozenset[str]:
 
 def snapshot_download_blob_hashes(siblings: Iterable) -> frozenset[str]:
     return blob_hashes_for_siblings(snapshot_download_siblings(siblings))
+
+
+# mlx-lm's download filter, plus the weights of an exported adapter.
+_MLX_LOAD_PATTERNS = (
+    "*.json",
+    "model*.safetensors",
+    "*.py",
+    "tokenizer.model",
+    "*.tiktoken",
+    "tiktoken.model",
+    "*.txt",
+    "*.jsonl",
+    "*.jinja",
+    "adapters.safetensors",
+    "adapter_model.safetensors",
+    "adapter_model.bin",
+)
+
+
+def mlx_load_siblings(siblings):
+    return [
+        sibling
+        for sibling in siblings
+        if any(fnmatchcase(sibling.rfilename, pattern) for pattern in _MLX_LOAD_PATTERNS)
+    ]

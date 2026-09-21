@@ -211,9 +211,6 @@ export const zhCN = {
       priority: "优先级",
       lastUpdated: "最近更新",
       manualOrder: "手动排序",
-      priorityHint: "进行中和未读优先",
-      lastUpdatedHint: "最新优先",
-      manualOrderHint: "拖动行即可重新排序",
       switchedToManual: "已改为手动排序，拖动行即可重新排序",
       organizeChats: "整理对话",
       organizeProjects: "整理项目",
@@ -871,6 +868,16 @@ export const zhCN = {
         revokeConfirmAction: "撤销所有链接",
         revoked: "所有预览链接已撤销",
         revokeError: "无法撤销预览链接",
+      },
+      managedProviderUrls: {
+        sectionTitle: "受管账户",
+        enableLabel: "本地和网络连接",
+        enableDescription:
+          "允许受管账户将连接指向本地或网络地址，例如本机或局域网中的 Ollama 或 llama.cpp 服务器。默认关闭，因为开启后这些账户可以访问在你的计算机和网络中运行的服务。",
+        lockedByEnvironment:
+          "由本服务器上的 UNSLOTH_STUDIO_BLOCK_PRIVATE_PROVIDER_URLS=1 决定，该设置会对所有账户拒绝私有地址。",
+        loadError: "无法加载受管账户的连接设置。",
+        saveError: "无法保存受管账户的连接设置。",
       },
       notifications: {
         sectionTitle: "通知",
@@ -1545,10 +1552,17 @@ export const zhCN = {
         "聊天填满上下文时，较早的轮次会转入可检索的归档。",
       autoCompactKeywords:
         "压缩 自动压缩 上下文 窗口 截断 滑动 检查点 余量 归档 检索 搜索 compaction rolling checkpoint headroom archive retrieval rag",
+      visibility: {
+        collapsed: "折叠",
+        auto: "运行时展开",
+        expanded: "始终展开",
+      },
+      visibilityKeywords:
+        "折叠 展开 打开 关闭 思考 推理 工具调用 工具活动 分组 流式",
       thinking: {
-        collapseByDefault: "默认折叠思考过程",
-        collapseByDefaultDescription:
-          "模型思考时保持折叠，而不是自动展开。需要阅读时展开对应区块。",
+        visibility: "思考过程",
+        visibilityDescription:
+          "思考过程如何展开。你仍可自行展开或折叠任意区块。",
       },
       currentDate: {
         label: "告诉模型今天的日期",
@@ -1558,12 +1572,14 @@ export const zhCN = {
         saveError: "无法更新当前日期设置",
       },
       tools: {
-        collapseByDefault: "默认折叠工具活动",
-        collapseByDefaultDescription:
-          "工具运行时保持输入和输出折叠。需要检查时展开对应工具行。",
-        foldIntoThinking: "将工具调用折叠进思考",
+        visibility: "工具调用",
+        visibilityDescription:
+          "工具活动如何展开。你仍可自行展开或折叠任意调用。",
+        foldIntoThinking: "将工具调用归入思考过程",
         foldIntoThinkingDescription:
-          "在展开思考块之前隐藏该轮的工具调用。",
+          "把该轮的工具调用显示在思考区块内，而不是各自独立成行。",
+        foldIntoThinkingBlocked:
+          "当工具调用设置为“始终展开”时不可用，该设置会让它们保持独立成行。",
       },
       webSearch: {
         title: "网页搜索",

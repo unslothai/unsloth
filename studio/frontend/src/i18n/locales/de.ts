@@ -216,9 +216,6 @@ export const de = {
       priority: "Priorität",
       lastUpdated: "Zuletzt aktualisiert",
       manualOrder: "Manuelle Reihenfolge",
-      priorityHint: "Aktive und ungelesene zuerst",
-      lastUpdatedHint: "Neueste zuerst",
-      manualOrderHint: "Zeilen zum Umordnen ziehen",
       switchedToManual: "Manuell sortiert: Zeilen zum Umordnen ziehen",
       organizeChats: "Chats organisieren",
       organizeProjects: "Projekte organisieren",
@@ -909,6 +906,18 @@ export const de = {
         revokeConfirmAction: "Alle Links widerrufen",
         revoked: "Alle Vorschaulinks widerrufen",
         revokeError: "Vorschaulinks konnten nicht widerrufen werden",
+      },
+      managedProviderUrls: {
+        sectionTitle: "Verwaltete Konten",
+        enableLabel: "Lokale und Netzwerkverbindungen",
+        enableDescription:
+          "Verwaltete Konten dürfen ihre Verbindungen auf lokale oder Netzwerkadressen richten, etwa einen Ollama- oder llama.cpp-Server auf diesem Computer oder in Ihrem LAN. Standardmäßig aus, denn damit erreichen diese Konten Dienste, die auf Ihrem Computer und in Ihrem Netzwerk laufen.",
+        lockedByEnvironment:
+          "Durch UNSLOTH_STUDIO_BLOCK_PRIVATE_PROVIDER_URLS=1 auf diesem Server festgelegt, das private Adressen für alle Konten ablehnt.",
+        loadError:
+          "Verbindungseinstellungen für verwaltete Konten konnten nicht geladen werden.",
+        saveError:
+          "Verbindungseinstellungen für verwaltete Konten konnten nicht gespeichert werden.",
       },
       notifications: {
         sectionTitle: "Benachrichtigungen",
@@ -1616,10 +1625,17 @@ export const de = {
         "Ältere Runden wandern in ein durchsuchbares Archiv, wenn ein Chat voll läuft.",
       autoCompactKeywords:
         "Komprimierung automatisch Kontext Fenster kürzen gleitend Prüfpunkt Reserve Archiv Abruf Suche compaction rolling checkpoint headroom archive retrieval rag",
+      visibility: {
+        collapsed: "Eingeklappt",
+        auto: "Während der Ausführung ausklappen",
+        expanded: "Immer ausgeklappt",
+      },
+      visibilityKeywords:
+        "einklappen eingeklappt ausklappen ausgeklappt offen geschlossen Denken Reasoning Tool-Aufrufe Tool-Aktivität gruppieren Streaming",
       thinking: {
-        collapseByDefault: "Denken standardmäßig einklappen",
-        collapseByDefaultDescription:
-          "Das Denken bleibt eingeklappt, während das Modell denkt, statt automatisch aufzuklappen. Zum Lesen einen Block ausklappen.",
+        visibility: "Denken",
+        visibilityDescription:
+          "Wie das Denken geöffnet wird. Einzelne Blöcke lassen sich weiterhin selbst aus- und einklappen.",
       },
       currentDate: {
         label: "Dem Modell das heutige Datum mitteilen",
@@ -1629,12 +1645,14 @@ export const de = {
         saveError: "Einstellungen zum aktuellen Datum konnten nicht aktualisiert werden",
       },
       tools: {
-        collapseByDefault: "Tool-Aktivität standardmäßig einklappen",
-        collapseByDefaultDescription:
-          "Tool-Eingaben und -Ausgaben bleiben während der Ausführung eingeklappt. Zum Prüfen eine Tool-Zeile ausklappen.",
-        foldIntoThinking: "Tool-Aufrufe ins Denken einklappen",
+        visibility: "Tool-Aufrufe",
+        visibilityDescription:
+          "Wie die Tool-Aktivität geöffnet wird. Einzelne Aufrufe lassen sich weiterhin selbst aus- und einklappen.",
+        foldIntoThinking: "Tool-Aufrufe unter Denken gruppieren",
         foldIntoThinkingDescription:
-          "Tool-Aufrufe eines Zuges ausblenden, bis der Denken-Block geöffnet wird.",
+          "Die Tool-Aufrufe eines Zuges im Denken-Block statt in eigenen Zeilen anzeigen.",
+        foldIntoThinkingBlocked:
+          "Nicht verfügbar, solange Tool-Aufrufe auf „Immer ausgeklappt“ stehen, dann bleiben sie in eigenen Zeilen.",
       },
       webSearch: {
         title: "Websuche",
