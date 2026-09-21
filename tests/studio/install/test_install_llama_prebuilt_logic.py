@@ -6419,11 +6419,9 @@ def test_a_marker_whose_request_and_backend_disagree_is_not_current(tmp_path, mo
     assert _check(install_dir, backend_request = "vulkan") is False
 
 
-# A request the install could not honour (#11143). It is PRESERVED now -- erasing it to
-# "auto" destroyed the user's Vulkan choice and made every later update re-detect, which on
-# an AMD host means ROCm -- so the fast path has to hold two lines at once: retry the choice
-# when something moved, and do not pay the full listing + re-validation on every update of a
-# host that simply cannot serve it.
+# A request the install could not honour is PRESERVED now (#11143), so the fast path holds two
+# lines at once: retry the choice when something moved, and do not pay the full listing plus
+# re-validation on every update of a host that simply cannot serve it.
 _UNSATISFIED = dict(backend_request = "vulkan", backend_request_unsatisfied = True)
 
 

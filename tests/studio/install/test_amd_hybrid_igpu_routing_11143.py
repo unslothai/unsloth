@@ -48,7 +48,6 @@ def unmasked(monkeypatch):
     return monkeypatch
 
 
-# ── (1) the arch that decides the bundle ──
 
 
 def test_a_leading_igpu_does_not_strand_the_discrete_card(unmasked):
@@ -110,7 +109,6 @@ def test_a_mask_this_resolver_cannot_read_is_still_an_explicit_choice(unmasked, 
     assert ILP._pick_rocm_gfx_target(_rocminfo("gfx1036", "gfx1200")) == "gfx1036"
 
 
-# ── (2) the choice the marker keeps ──
 
 
 def _choice(install_kind: str) -> "ILP.AssetChoice":
@@ -196,7 +194,6 @@ def test_only_a_flagged_marker_may_disagree_with_its_own_backend():
     assert ILP._marker_backend_fits_host(flagged, host) is True
 
 
-# ── What the discrete preference deliberately does NOT do ────────────────────
 
 
 def test_an_unserved_preferred_arch_source_builds_rather_than_using_the_igpus_bundle():

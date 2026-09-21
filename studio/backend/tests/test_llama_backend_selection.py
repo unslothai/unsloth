@@ -208,12 +208,11 @@ def test_an_unknown_environment_value_falls_through_to_the_install(monkeypatch, 
         ("cpu", "linux-cpu", "cpu"),
         ("auto", "linux-cuda", "auto"),
         (None, "linux-cuda", "auto"),
-        # A request the install could not honour is KEPT, not erased to "auto" (#11143), so a
-        # later update can retry it. The miss is recorded separately, see below.
+        # An unhonourable request is KEPT, not erased to "auto" (#11143), so a later update
+        # can retry it.
         ("vulkan", "linux-cpu", "vulkan"),
-        # Except where no later release could ever honour it: macOS ships one universal Metal
-        # bundle and the picker offers only "auto" there, so a preserved "cpu" would be a
-        # selection Settings can never apply. Detection, as before.
+        # Except where no release could ever honour it: macOS ships one universal Metal
+        # bundle and the picker offers only "auto", so a preserved "cpu" is unappliable.
         ("cpu", "macos-arm64", "auto"),
         ("vulkan", "macos-x64", "auto"),
     ],
@@ -595,9 +594,8 @@ def test_a_recorded_choice_this_host_cannot_serve_falls_back_to_detection(monkey
 
     assert seen == ["rocm", "auto"]
     marker = json.loads((tmp_path / "UNSLOTH_PREBUILT_INFO.json").read_text())
-    # The CHOICE survives the re-detect, flagged as not what landed (#11143). Erasing it to
-    # "auto" here is what made a configured Vulkan install keep coming back as ROCm: every
-    # later update then re-detected, and on an AMD host detection means ROCm.
+    # The CHOICE survives the re-detect, flagged as not what landed. Erasing it to "auto"
+    # here is what made a configured Vulkan install keep coming back as ROCm (#11143).
     assert marker["backend_request"] == "rocm"
     assert marker["backend_request_unsatisfied"] is True
 
