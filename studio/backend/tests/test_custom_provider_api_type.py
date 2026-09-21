@@ -276,9 +276,7 @@ def test_responses_content_filter_finish_reason(monkeypatch, stream):
     lines = asyncio.run(run())
     if stream:
         chunks = [
-            json.loads(line.removeprefix("data: "))
-            for line in lines
-            if line.startswith("data: {")
+            json.loads(line.removeprefix("data: ")) for line in lines if line.startswith("data: {")
         ]
         assert chunks[-1]["choices"][0]["finish_reason"] == "content_filter"
     else:
@@ -306,7 +304,6 @@ def test_responses_non_streaming_route_returns_json(monkeypatch):
     async def run():
         from core.inference.api_monitor import ApiMonitor
         from routes import inference
-
         async with httpx.AsyncClient(transport = httpx.MockTransport(handle)) as transport:
             monkeypatch.setattr(ep, "_http_client", transport)
             monitor = ApiMonitor(max_entries = 3)

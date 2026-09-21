@@ -23513,7 +23513,9 @@ async def _proxy_to_external_provider(
                     status = 502,
                 ),
             )
-        error_message = _monitor_openai_error_message(content) if isinstance(content, dict) else None
+        error_message = (
+            _monitor_openai_error_message(content) if isinstance(content, dict) else None
+        )
         if error_message:
             api_monitor.fail(monitor_id, error_message)
             status_code = 502
