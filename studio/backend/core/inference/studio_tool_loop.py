@@ -1106,9 +1106,15 @@ def _mcp_provenance_by_id(
         name = function.get("name") if isinstance(function, dict) else None
         if not isinstance(name, str) or name not in declared_names:
             continue
+        # Declared means the name is whole, so this call has now been judged either way.
+        # Mark it before asking whether it resolves: mcp_display_parts is a SQLite lookup
+        # (storage.mcp_servers_db.get_server_for_tool) and answers falsy for a server with
+        # no display_name or no row at all, so stamping only on success re-ran that query
+        # on every later chunk of the same turn. The real tool_start still carries the
+        # authoritative provenance, which is what an unnameable server relied on anyway.
+        stamped.add(call_id)
         if not mcp_display_parts(name):
             continue
-        stamped.add(call_id)
         stamps[call_id] = provisional_tool_provenance(name)
     return stamps
 

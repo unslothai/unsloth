@@ -245,6 +245,41 @@ def test_an_undeclared_mcp_name_never_stamps(named):
     assert _stamps(lines) == []
 
 
+def test_a_server_that_cannot_be_named_is_asked_once_per_turn(named, monkeypatch):
+    """mcp_display_parts is a SQLite lookup, so asking it per chunk is not free.
+
+    It answers falsy for a server with no display_name or no row at all, and the scan
+    runs on every chunk carrying a tool_calls delta. Stamping only on success left the
+    id unmarked, so a long argument stream re-ran that query for every fragment of the
+    turn. Declared already means the name is whole, so one answer settles it.
+    """
+    def _count_for(fragment_count: int) -> int:
+        asked: list[str] = []
+
+        def _never_resolves(tool_name: str):
+            asked.append(tool_name)
+            return None
+
+        monkeypatch.setattr(loop_mod, "mcp_display_parts", _never_resolves)
+        monkeypatch.setattr(controller_mod, "mcp_display_parts", _never_resolves)
+        fragments = [_delta(arguments = '{"a"') for _ in range(fragment_count)]
+        lines = _run(
+            FakeTransport([[_delta(MCP_NAME), *fragments, _finish()], [_DONE]]),
+            [_tool(MCP_NAME)],
+        )
+        assert _stamps(lines) == [], "an unnameable server must not be stamped"
+        return len(asked)
+
+    # Asserted as a SCALING property rather than an exact count: tool_start names the call
+    # through the same helper, so a couple of lookups per turn are expected and are not the
+    # defect. The defect is the count growing with the argument stream.
+    few, many = _count_for(4), _count_for(40)
+    assert few == many, (
+        f"{few} lookups for 4 argument fragments but {many} for 40: the scan is asking "
+        "per chunk. A declared name is whole, so one answer settles it for the turn."
+    )
+
+
 def test_a_reused_call_id_is_named_again_on_the_next_turn(named):
     """Providers restart ids every turn, and the client drops its id mapping at
     tool_end, so the second ``c1`` is a different card that also needs naming."""
