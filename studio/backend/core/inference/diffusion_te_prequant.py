@@ -25,6 +25,7 @@ None and the caller falls back to the dense download + cast. Inert with nothing 
 
 from __future__ import annotations
 
+import sys
 from dataclasses import dataclass
 from typing import Any, Iterable, Optional
 
@@ -566,6 +567,18 @@ def _resolve_checkpoint_path(
         from huggingface_hub import hf_hub_download
         from huggingface_hub.errors import EntryNotFoundError, LocalEntryNotFoundError
 
+        # Which exception means "this NAME is absent" depends on the mode, and the two are not
+        # interchangeable. huggingface_hub documents LocalEntryNotFoundError as "not on the disk
+        # when network is disabled OR UNAVAILABLE (connection issue). The entry may exist on the
+        # Hub", and it SUBCLASSES EntryNotFoundError, so catching the base online would swallow an
+        # unreachable Hub, spend a second full attempt on the next name, and report that one's
+        # error instead of the connection failure that actually happened. Online, only a real 404
+        # advances; offline, a cache miss is the only verdict there is.
+        miss = (
+            (EntryNotFoundError, LocalEntryNotFoundError)
+            if local_files_only
+            else (EntryNotFoundError,)
+        )
         names = [n for n in te_candidate_filenames(source) if te_candidate_is_readable(n)]
         last: Optional[Exception] = None
         for name in names:
@@ -577,10 +590,17 @@ def _resolve_checkpoint_path(
                     cache_dir = cache_dir,
                     local_files_only = local_files_only,
                 )
-            except (EntryNotFoundError, LocalEntryNotFoundError) as exc:
-                # This name is not in this repo (or not in the cache offline). Try the next
-                # extension rather than giving up: only "no candidate exists" is a real miss, and
-                # anything else (auth, network, a corrupt cache) must still surface as itself.
+            except LocalEntryNotFoundError:
+                # Online this is the Hub being unreachable, not a missing name: re-raise as itself
+                # rather than blaming the next candidate for it.
+                if not local_files_only:
+                    raise
+                last = sys.exc_info()[1]
+                continue
+            except miss as exc:
+                # This name is not in this repo. Try the next extension rather than giving up:
+                # only "no candidate exists" is a real miss, and anything else (auth, a corrupt
+                # cache) must still surface as itself.
                 last = exc
                 continue
         if last is not None:

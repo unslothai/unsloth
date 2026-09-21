@@ -952,3 +952,56 @@ def test_the_candidate_accessor_tolerates_a_planner_stand_in():
 
     assert tpq.te_candidate_filenames(types.SimpleNamespace(filename = "a.pt")) == ("a.pt",)
     assert tpq.te_candidate_filenames(types.SimpleNamespace()) == ()
+
+
+def test_an_unreachable_hub_is_not_a_missing_filename(monkeypatch):
+    """``LocalEntryNotFoundError`` means two different things and only one of them is a miss.
+
+    huggingface_hub documents it as "not on the disk when network is disabled OR UNAVAILABLE
+    (connection issue). The entry may exist on the Hub", and it SUBCLASSES
+    ``EntryNotFoundError``. Treating it as a candidate miss online spends a second full attempt on
+    the next name and reports that one's error instead of the connection failure that happened.
+    """
+    import huggingface_hub
+    from huggingface_hub.errors import EntryNotFoundError, LocalEntryNotFoundError
+
+    assert issubclass(
+        LocalEntryNotFoundError, EntryNotFoundError
+    ), "if this stops holding the ordering below is no longer load-bearing"
+    src = TePrequantSource(
+        kind = "repo",
+        location = "org/hosted-fp8",
+        filename = "hosted-text_encoder-FP8.safetensors",
+        fallback_filenames = ("hosted-text_encoder-FP8.pt",),
+    )
+    asked: list = []
+
+    def unreachable(**kw):
+        asked.append(kw["filename"])
+        raise LocalEntryNotFoundError("Hub unreachable")
+
+    monkeypatch.setattr(huggingface_hub, "hf_hub_download", unreachable)
+    # ONLINE: surfaces as itself, and the second candidate is never attempted.
+    with pytest.raises(LocalEntryNotFoundError):
+        tpq._resolve_checkpoint_path(src, None, cache_dir = "/tmp/x", local_files_only = False)
+    assert asked == ["hosted-text_encoder-FP8.safetensors"], asked
+
+    # OFFLINE: a cache miss is the only verdict there is, so the chain is walked.
+    asked.clear()
+    with pytest.raises(LocalEntryNotFoundError):
+        tpq._resolve_checkpoint_path(src, None, cache_dir = "/tmp/x", local_files_only = True)
+    assert asked == ["hosted-text_encoder-FP8.safetensors", "hosted-text_encoder-FP8.pt"], asked
+
+    # A real 404 still advances online, which is the whole point of the chain.
+    asked.clear()
+
+    def only_pt(**kw):
+        asked.append(kw["filename"])
+        if kw["filename"].endswith(".safetensors"):
+            raise EntryNotFoundError("404")
+        return "/cache/hosted-text_encoder-FP8.pt"
+
+    monkeypatch.setattr(huggingface_hub, "hf_hub_download", only_pt)
+    got = tpq._resolve_checkpoint_path(src, None, cache_dir = "/tmp/x", local_files_only = False)
+    assert got == "/cache/hosted-text_encoder-FP8.pt", got
+    assert len(asked) == 2, asked
