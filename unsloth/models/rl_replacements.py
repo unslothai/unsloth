@@ -1991,18 +1991,9 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                 logit_scale_divide = _transforms["logit_scale_divide"]
             else:
                 logit_softcapping = _unsloth_get_final_logit_softcapping(model)
-                logit_scale_multiply = getattr(model_config, "logit_scale", 0) or 0
-                logit_scale_divide = getattr(model_config, "logits_scaling", 0) or 0
-                # Which family is it, for the three that logits_scaling alone gets wrong.
-                model_type = getattr(model_config, "model_type", "") or ""
-                if model_type == "falcon_h1":
-                    logit_scale_multiply = getattr(model_config, "lm_head_multiplier", 0) or 0
-                elif model_type == "hyperclovax":
-                    # Same spelling as Granite, opposite operation.
-                    logit_scale_multiply, logit_scale_divide = logit_scale_divide, 0
-                elif model_type == "minicpm3":
-                    # Scales the hidden states before the head, so not a logit transform.
-                    logit_scale_divide = 0
+                logit_scale_multiply, logit_scale_divide = _unsloth_resolve_logit_scales(
+                    model_config
+                )
 
             zipped_inputs = zip(
                 input_ids_chunks,
@@ -2571,24 +2562,65 @@ def _unsloth_get_model_config(model):
     return config
 
 
+def _unsloth_text_configs(config):
+    """``config`` and its text sub-config, the two places a transform can live: Gemma-4-style configs keep it on ``config.text_config``, T5Gemma-style ones only reach it via ``config.get_text_config()``."""
+    if config is None:
+        return []
+    holders = [config]
+    text_cfg = getattr(config, "text_config", None)
+    if text_cfg is None:
+        get_text_config = getattr(config, "get_text_config", None)
+        if callable(get_text_config):
+            try:
+                text_cfg = get_text_config()
+            except (TypeError, ValueError):
+                text_cfg = None
+    if text_cfg is not None and text_cfg is not config:
+        holders.append(text_cfg)
+    return holders
+
+
 def _unsloth_get_final_logit_softcapping(model):
-    """final_logit_softcapping for a model config, falling back to the nested text sub-config for composite models: Gemma-4-style configs keep it on ``config.text_config``, T5Gemma-style ones only reach it via ``config.get_text_config()``. Returns 0 if unset."""
+    """The soft cap the loss applies, under any of its three spellings: ``final_logit_softcapping`` (Gemma), ``logits_soft_cap`` (RecurrentGemma), ``output_logit_soft_cap`` (xLSTM). Returns 0 if unset."""
     config = _unsloth_get_model_config(model)
     if config is None:
         return 0
-    softcap = getattr(config, "final_logit_softcapping", None)
-    if softcap is None:
-        text_cfg = getattr(config, "text_config", None)
-        if text_cfg is None:
-            get_text_config = getattr(config, "get_text_config", None)
-            if callable(get_text_config):
-                try:
-                    text_cfg = get_text_config()
-                except (TypeError, ValueError):
-                    text_cfg = None
-        if text_cfg is not None and text_cfg is not config:
-            softcap = getattr(text_cfg, "final_logit_softcapping", None)
-    return 0 if softcap is None else softcap
+    for holder in _unsloth_text_configs(config):
+        for name in ("final_logit_softcapping", "logits_soft_cap", "output_logit_soft_cap"):
+            softcap = getattr(holder, name, None)
+            if softcap:
+                return softcap
+    return 0
+
+
+def _unsloth_resolve_logit_scales(model_config):
+    """``(multiply, divide)`` for the logits, read with the same field table and per-family overrides ``detect_logit_transforms`` uses.
+
+    Only reached when the installed unsloth_zoo predates that helper. Must stay in step with ``resolve_logit_transforms`` in unsloth/models/llama.py: if the forward applies a transform GRPO does not, the policy log-probabilities come from different logits than the ones generated, which silently shifts every importance ratio.
+    """
+    # ``logits_scaling`` is not one knob: Granite divides by it, HyperCLOVA X multiplies
+    # (MuP), and MiniCPM3 scales the hidden states before the head, so it is not a logit
+    # transform at all.
+    overrides = {
+        ("logits_scaling", "hyperclovax"): "multiply",
+        ("logits_scaling", "minicpm3"): None,
+    }
+    found = {"multiply": 0, "divide": 0}
+    for holder in _unsloth_text_configs(model_config):
+        model_type = getattr(holder, "model_type", "") or ""
+        for bucket, names in (
+            ("multiply", ("logit_scale", "lm_head_multiplier", "output_multiplier")),
+            ("divide", ("logits_scaling",)),
+        ):
+            for name in names:
+                target = overrides.get((name, model_type), bucket)
+                if target is None or found[target]:
+                    continue
+                value = getattr(holder, name, 0) or 0
+                if value:
+                    found[target] = value
+                    break
+    return found["multiply"], found["divide"]
 
 
 def _unsloth_grpo_returns_hidden_states(model, tensor, lm_head):
@@ -2708,7 +2740,9 @@ grpo_update_SamplingParams = RL_REPLACEMENTS["grpo_update_SamplingParams"]
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_autocast))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_autocast_kwargs))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_get_model_config))
+RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_text_configs))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_get_final_logit_softcapping))
+RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_resolve_logit_scales))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_returns_hidden_states))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_hidden_states_signal))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_get_mm_token_id))
@@ -2862,18 +2896,7 @@ def grpo_trainer_compute_loss(function_name, function):
             logit_scale_divide = _transforms["logit_scale_divide"]
         else:
             logit_softcapping = _unsloth_get_final_logit_softcapping(model)  # Gemma
-            logit_scale_multiply = getattr(model_config, "logit_scale", 0) or 0  # Cohere
-            logit_scale_divide = getattr(model_config, "logits_scaling", 0) or 0  # Granite
-            # Which family is it, for the three that logits_scaling alone gets wrong.
-            model_type = getattr(model_config, "model_type", "") or ""
-            if model_type == "falcon_h1":
-                logit_scale_multiply = getattr(model_config, "lm_head_multiplier", 0) or 0
-            elif model_type == "hyperclovax":
-                # Same spelling as Granite, opposite operation.
-                logit_scale_multiply, logit_scale_divide = logit_scale_divide, 0
-            elif model_type == "minicpm3":
-                # Scales the hidden states before the head, so not a logit transform.
-                logit_scale_divide = 0
+            logit_scale_multiply, logit_scale_divide = _unsloth_resolve_logit_scales(model_config)
 
         max_left_pad = inputs.get("max_left_pad", 0)
         if per_token_logps is not None:

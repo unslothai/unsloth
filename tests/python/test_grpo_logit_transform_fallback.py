@@ -55,13 +55,19 @@ class _Cfg:
             setattr(self, key, value)
 
 
+class _Model:
+    def __init__(self, config):
+        self.config = config
+
+
 def _run(block, config):
     namespace = {
         "model_config": config,
-        "model": None,
-        # The soft-cap reader needs a model this harness does not build; the scales are
-        # what is under test.
-        "_unsloth_get_final_logit_softcapping": lambda _model: 0,
+        # The real readers, not stubs: a stub would pass while the shipped fallback drops
+        # a field. The soft-cap one takes a model, so hand it one carrying this config.
+        "model": _Model(config),
+        "_unsloth_get_final_logit_softcapping": rl._unsloth_get_final_logit_softcapping,
+        "_unsloth_resolve_logit_scales": rl._unsloth_resolve_logit_scales,
     }
     exec(compile(block, "<fallback>", "exec"), namespace)
     return (
@@ -107,6 +113,24 @@ _CASES = [
         _Cfg(model_type = "llama"),
         (0, 0, 0),
         "no transform, and no attribute to read either",
+    ),
+    (
+        "muse_glimmer",
+        _Cfg(model_type = "muse_glimmer", output_multiplier = 2.0, final_logit_softcapping = 30.0),
+        (30.0, 2.0, 0),
+        "output_multiplier multiplies, and this family soft caps as well",
+    ),
+    (
+        "recurrentgemma",
+        _Cfg(model_type = "recurrentgemma", logits_soft_cap = 30.0),
+        (30.0, 0, 0),
+        "the soft cap is spelled logits_soft_cap here",
+    ),
+    (
+        "xlstm",
+        _Cfg(model_type = "xlstm", output_logit_soft_cap = 30.0),
+        (30.0, 0, 0),
+        "the soft cap is spelled output_logit_soft_cap here",
     ),
     (
         "null fields",
