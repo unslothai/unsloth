@@ -1045,7 +1045,6 @@ class TestMlockActiveReflectsWhatWillActuallyBePassed:
                 "_memory_state": state,
                 "_memory_policy_active": False,
                 "_memory_mlock_applicable": mlock_applicable,
-                "_memory_launch_pending": False,
             },
         )()
 
@@ -1263,6 +1262,110 @@ class TestHostMemoryGate:
         )
 
 
+class TestTheIgpuSnapshotCannotWithdrawThePageLock:
+    """The launch hands the page-lock classifier the fit's own iGPU reading so it
+    does not spawn a second probe. That stand-in is only sound while it can answer
+    for ANY ordinal: the planner-narrowed set answers for the devices the planner
+    kept, and a pass-through --device can put the child on one it dropped, where a
+    missing iGPU reads as "discrete" and the lock is withdrawn from a user who
+    asked for it."""
+
+    @staticmethod
+    def _derivation():
+        """The real binding, pulled out of load_model and run in a tiny scope."""
+        import ast
+        import inspect
+        import textwrap
+
+        from core.inference.llama_cpp import LlamaCppBackend
+
+        tree = ast.parse(textwrap.dedent(inspect.getsource(LlamaCppBackend.load_model)))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Assign):
+                continue
+            if any(
+                isinstance(t, ast.Name) and t.id == "_mem_igpu_snapshot" for t in node.targets
+            ) and isinstance(node.value, ast.IfExp):
+                return compile(
+                    ast.Expression(body = node.value), "<snapshot>", "eval"
+                )
+        raise AssertionError("the lossless-snapshot binding is gone from load_model")
+
+    def _snapshot(self, known, detected):
+        shared = None if known is None else known.intersection(detected)
+        return eval(  # noqa: S307 - load_model's own expression
+            self._derivation(),
+            {},
+            {"_known_vulkan_igpus": known, "_shared_gpu_ids": shared},
+        )
+
+    def test_a_lossless_reading_is_reused(self):
+        """Every classified iGPU survived the planner, so the set can answer for
+        any ordinal the child is put on and the probe is not spawned again."""
+        assert self._snapshot({1}, {0, 1}) == {1}
+        assert self._snapshot(set(), {0, 1}) == set()
+
+    def test_a_planner_narrowed_reading_defers_to_the_probe(self):
+        """The iGPU the planner dropped is exactly the one a --device override can
+        still select, and absence there is not evidence of a discrete card."""
+        assert self._snapshot({1}, {0}) is None
+        assert self._snapshot({0, 1}, {0}) is None
+
+    def test_an_unreadable_inventory_defers_to_the_probe(self):
+        assert self._snapshot(None, {0, 1}) is None
+
+    def test_the_launch_passes_the_lossless_snapshot_and_not_the_narrowed_set(self):
+        """Source check, because the two names differ by one intersection and
+        nothing else would notice them being swapped back."""
+        import ast
+        import inspect
+        import textwrap
+
+        from core.inference.llama_cpp import LlamaCppBackend
+
+        tree = ast.parse(textwrap.dedent(inspect.getsource(LlamaCppBackend.load_model)))
+        passed = [
+            kw.value.id
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call)
+            for kw in node.keywords
+            if kw.arg == "known_vulkan_igpus" and isinstance(kw.value, ast.Name)
+        ]
+        assert passed, "the classifier is no longer handed a snapshot at all"
+        assert set(passed) == {"_mem_igpu_snapshot"}, passed
+
+    def test_a_narrowed_set_really_would_have_withdrawn_the_lock(self, monkeypatch):
+        """The negative control: hand the classifier the narrowed set directly and
+        it answers 'not host-resident' for a launch running on the iGPU."""
+        from core.inference.llama_cpp import LlamaCppBackend
+
+        rows = [{"index": 1, "is_igpu": True, "type_known": True}]
+        # Through monkeypatch: a bare assignment here outlives the test and every
+        # later probe test in the same worker reads these rows instead of its own.
+        monkeypatch.setattr(
+            LlamaCppBackend, "_run_vulkan_probe", staticmethod(lambda binary = None: rows)
+        )
+        backend = LlamaCppBackend.__new__(LlamaCppBackend)
+        common = dict(
+            fully_gpu_offloaded = True,
+            gpu_memory_mode = "auto",
+            gpu_layers = None,
+            extra_args = None,
+            gpu_indices = [1],
+            is_vulkan_backend = True,
+            binary = "bin",
+            env = {},
+            probe_vulkan = True,
+        )
+        assert LlamaCppBackend._weights_in_host_memory(backend, **common) is True
+        assert (
+            LlamaCppBackend._weights_in_host_memory(
+                backend, known_vulkan_igpus = set(), **common
+            )
+            is False
+        )
+
+
 class TestVulkanIgpuDetection:
     @staticmethod
     def _probe(monkeypatch, rows):
@@ -1474,7 +1577,6 @@ def _fake_backend(**attrs):
         "_memory_state": None,
         "_memory_policy_active": False,
         "_memory_mlock_applicable": True,
-        "_memory_launch_pending": False,
     }
     base.update(attrs)
     return type("_B", (), base)()

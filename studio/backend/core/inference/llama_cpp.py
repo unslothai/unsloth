@@ -23678,6 +23678,9 @@ class LlamaCppBackend:
                 _detected_gpus: list[tuple[int, int]] = []
                 _shared_gpu_ids: Optional[set[int]] = None
                 _known_vulkan_igpus: Optional[set[int]] = None
+                # The subset of the above the page-lock classifier may stand in for
+                # the probe with. None means "ask the probe"; see where it is bound.
+                _mem_igpu_snapshot: Optional[set[int]] = None
                 # Set when the arch gate emptied a non-empty GPU pool, so the env
                 # block below masks the child onto the CPU. Bound before the try for
                 # the same reason as _detected_gpus: the except path (--fit on) falls
@@ -23900,8 +23903,23 @@ class LlamaCppBackend:
                             if _known_vulkan_igpus is not None
                             else None
                         )
+                        # The narrowed set answers for the devices the PLANNER kept,
+                        # which is what the pricing below wants. The page-lock
+                        # classifier is asked about the ordinals the CHILD ends up on,
+                        # and a pass-through --device can put it on one the planner
+                        # dropped; an iGPU missing from a narrowed set reads there as
+                        # "discrete" and silently withdraws the page-lock a Keep
+                        # Resident user asked for. Only a LOSSLESS set can stand in for
+                        # the probe, since only that one can answer for any ordinal.
+                        _mem_igpu_snapshot = (
+                            _known_vulkan_igpus
+                            if _known_vulkan_igpus is not None
+                            and _shared_gpu_ids == _known_vulkan_igpus
+                            else None
+                        )
                     else:
                         _shared_gpu_ids = set()
+                        _mem_igpu_snapshot = None
                     # The --fit fallback is llama.cpp's own fitter, which knows nothing
                     # about this budget: it keeps its own margin and packs the rest on,
                     # so the slider never reached the path that runs when the fit is
@@ -27467,9 +27485,10 @@ class LlamaCppBackend:
                     # _mem_should_mlock is always False under no-reserve, so gating on it
                     # alone made the DirectIO branch unreachable on the Vulkan build.
                     probe_vulkan = _mem_should_mlock or _mem_probe_for_dio,
-                    # Already answered by the fit's own probe, so the classifier reuses it
-                    # instead of spawning a second one.
-                    known_vulkan_igpus = _shared_gpu_ids,
+                    # Already answered by the fit's own probe, so the classifier reuses
+                    # it instead of spawning a second one. The LOSSLESS snapshot, not
+                    # the planner-narrowed one: see where it is bound.
+                    known_vulkan_igpus = _mem_igpu_snapshot,
                     # Over the built cmd AND the extras, so Unsloth's own --fit
                     # counts and a later user --fit still wins by last-arg.
                     fit_active = fit_is_effectively_on([*cmd, *(_mem_extra_args or [])], _mem_env),
