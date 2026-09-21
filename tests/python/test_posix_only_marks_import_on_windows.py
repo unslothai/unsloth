@@ -139,6 +139,13 @@ def _geteuid_sites(expr: ast.AST):
     is as safe as the same line inside a def. Its defaults are evaluated here and stay."""
     # `(lambda: os.geteuid())()` runs its body right there, so only a lambda that is not
     # the callee of a call in this expression gets the deferral
+    # `[*(os.geteuid() for _ in xs)]` exhausts the generator right here. Unlike a call
+    # around one, a star says so outright, so this is the one consumption worth reading.
+    unpacked = {
+        node.value
+        for node in ast.walk(expr)
+        if isinstance(node, ast.Starred) and isinstance(node.value, ast.GeneratorExp)
+    }
     invoked = set()
     for node in ast.walk(expr):
         if not isinstance(node, ast.Call):
@@ -175,10 +182,10 @@ def _geteuid_sites(expr: ast.AST):
                 and not _fallback_takes(inner.args[2], node)
             ):
                 yield inner
-        if isinstance(node, ast.GeneratorExp):
+        if isinstance(node, ast.GeneratorExp) and node not in unpacked:
             # `GEN = (os.geteuid() for _ in xs)` only builds a generator; nothing but the
-            # first iterable is evaluated until something iterates it, and whether the
-            # call around it does cannot be read off the source: `iter(...)` does not.
+            # first iterable is evaluated until something iterates it, and whether a call
+            # around it does cannot be read off the source: `iter(...)` does not.
             stack.append(node.generators[0].iter)
             continue
         for child in ast.iter_child_nodes(node):
@@ -358,7 +365,13 @@ def _import_time_expressions(tree: ast.Module):
     a `match` Windows takes, whether a `while` runs at all: that is an interpreter, not a
     lint, and every approximation of it rejects somebody's correct code. A missed lookup
     three levels inside a module-level `while` is a cost worth paying for a check that
-    never cries wolf. It would not have missed the six sites that started this."""
+    never cries wolf. It would not have missed the six sites that started this.
+
+    One expression stays inside a function for the same reason: a module-level helper,
+    `def is_root(): return os.geteuid() == 0` called as `ROOT = is_root()`, does fail on
+    Windows and is not reported. Finding it means following a call into a definition,
+    which is a different kind of analysis than reading one expression, and it would have
+    to be right about rebinding, shadowing and imports to be worth trusting."""
     _normalise_os_aliases(tree)
     eager_annotations = not _has_future_annotations(tree)
 
@@ -729,3 +742,11 @@ def test_a_negative_number_is_still_a_literal():
     """-1 is a UnaryOp around a Constant, so the literal check missed it."""
     assert _flagged('import os\nROOT = getattr(os, "geteuid", -1)() == 0\n')
     assert _flagged('import os\nROOT = getattr(os, "geteuid", not True)() == 0\n')
+
+
+def test_starred_unpacking_exhausts_the_generator_here():
+    """A star says outright that the generator is consumed on the spot, which a call
+    around it does not."""
+    assert _flagged("import os\nROOT = [*(os.geteuid() for _ in range(1))]\n")
+    assert _flagged("import os\nROOT = f(*(os.geteuid() for _ in range(1)))\n")
+    assert not _flagged("import os\nGEN = (os.geteuid() for _ in range(1))\n")
