@@ -2,21 +2,11 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 /**
- * A failed shutdown has to leave the dialog on screen.
- *
- * `AlertDialogAction` is a pass-through to Radix's `AlertDialogPrimitive.Action`,
- * and Radix closes the dialog on click unless the handler calls
- * `event.preventDefault()`. The close is SYNCHRONOUS, so it happens while the
- * `await authFetch("/api/shutdown")` is still in flight: by the time the error
- * path runs `toastError(...)` and resets `stopping`, the dialog it re-enables is
- * already unmounted and the user has to walk back through the menu to retry.
- *
- * The harness below models exactly that contract -- click, then close unless the
- * click was defaulted -- rather than asserting that the string "preventDefault"
- * appears in the source, so it still fails if someone keeps the call and breaks
- * the behaviour some other way. The success row is here to pin the other half:
- * on a 200 the dialog must still go away, which is what `preventDefault` would
- * break if it were applied unconditionally.
+ * Radix closes an `AlertDialogPrimitive.Action` dialog on click unless the handler
+ * defaults the event, and SYNCHRONOUSLY, so the close races the in-flight
+ * `/api/shutdown`: the error path then re-enables a dialog already unmounted.
+ * The harness models that contract rather than grepping for `preventDefault`, so
+ * it still fails if the call survives and the behaviour breaks another way.
  */
 
 import assert from "node:assert/strict";
@@ -44,12 +34,7 @@ function findByType(node: unknown, type: string): StubElement | null {
   return findByType((element.props ?? {}).children, type);
 }
 
-/**
- * Drives the real component through one click.
- *
- * `useState` is backed by a cell array that survives across renders, so the
- * `setStopping(false)` on the error path is observable the way it is in the app.
- */
+/** `useState` is cell-backed across renders, so the error path's reset is observable. */
 async function clickStopServer(outcome: Outcome) {
   const toasts: string[] = [];
   const fetched: string[] = [];
@@ -116,7 +101,6 @@ async function clickStopServer(outcome: Outcome) {
     const action = findByType(render(), "AlertDialogAction");
     assert.ok(action, "no AlertDialogAction in shutdown-dialog.tsx");
 
-    // Radix's own event object, reduced to the part the handler can reach.
     let defaultPrevented = false;
     const event = {
       preventDefault: () => (defaultPrevented = true),
@@ -129,11 +113,9 @@ async function clickStopServer(outcome: Outcome) {
     assert.equal(typeof onClick, "function", "Stop server has no onClick");
     onClick(event);
 
-    // The Radix contract, applied the moment the handler returns and BEFORE the
-    // in-flight request settles. This is the line that main fails.
+    // Radix's close, applied before the request settles. Main fails here.
     if (!defaultPrevented) open = false;
 
-    // Let the awaited authFetch and the code after it run.
     await new Promise((resolve) => setImmediate(resolve));
 
     return {
