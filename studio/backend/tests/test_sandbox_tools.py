@@ -545,6 +545,43 @@ class TestAliasResolutionOnlyEverAddsCandidates:
     def test_each_candidate_is_read_with_its_own_signature(self, code):
         _blocked(code, expect_phrase = "Blocked: host not in sandbox allowlist")
 
+    @pytest.mark.parametrize(
+        "code",
+        [
+            # A shadow REMOVES a way to recognise the call, so it may only be believed when the
+            # binding cannot be skipped. None of these run, and the call really is `requests.get`.
+            pytest.param(
+                "from requests import get as fetch\n"
+                "if False:\n"
+                "    fetch = print\n"
+                'fetch("https://evil.example/x")',
+                id = "rebound_on_an_untaken_branch",
+            ),
+            pytest.param(
+                "from requests import get as fetch\n"
+                "try:\n"
+                "    fetch = print\n"
+                "except Exception:\n"
+                "    pass\n"
+                'fetch("https://evil.example/x")',
+                id = "rebound_inside_a_try",
+            ),
+            pytest.param(
+                "from requests import get as fetch\n"
+                "for fetch in []:\n"
+                "    pass\n"
+                'fetch("https://evil.example/x")',
+                id = "rebound_by_a_loop_that_never_runs",
+            ),
+            pytest.param(
+                'from requests import *\nif False:\n    get = print\nget("https://evil.example/x")',
+                id = "star_import_shadow_on_an_untaken_branch",
+            ),
+        ],
+    )
+    def test_only_an_unconditional_binding_shadows(self, code):
+        _blocked(code, expect_phrase = "Blocked: host not in sandbox allowlist")
+
     def test_the_upload_shape_is_checked_against_every_candidate(self):
         # `requests.post` with `files=` is an upload; the sorted-first `requests.get` is not, and
         # checking only that one let the file through to an allowlisted host.

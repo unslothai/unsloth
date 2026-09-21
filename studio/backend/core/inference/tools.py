@@ -16490,6 +16490,26 @@ def _check_signal_escape_patterns(code: str):
     # Their handlers rebind first and then register, so generic_visit must not sweep them again.
     _REBOUND_BY_HANDLER = (ast.Import, ast.ImportFrom, ast.Assign)
 
+    # Statement kinds that really run when the module runs. A shadow REMOVES a way to recognise a
+    # call, so unlike everything else here it may only be believed when it cannot be skipped:
+    # `from requests import get as fetch` + `if False: fetch = print` + `fetch(...)` still calls
+    # `requests.get`, and popping the alias on that untaken branch hid the call completely. A
+    # binding inside an `if`, `try`, `for`, `while` or `with` is not one of these, so it leaves the
+    # alias in place and the call stays screened.
+    _UNCONDITIONAL_SHADOW_TYPES = frozenset(
+        {
+            ast.Assign,
+            ast.AnnAssign,
+            ast.AugAssign,
+            ast.Delete,
+            ast.Import,
+            ast.ImportFrom,
+            ast.FunctionDef,
+            ast.AsyncFunctionDef,
+            ast.ClassDef,
+        }
+    )
+
     def _binding_names(node) -> "list[str]":
         """Every name a node binds, in whatever form: assignment, unpacking, walrus, import, def,
         class, parameter, for target, `as` clause, del. One definition of "this name now means
@@ -16649,6 +16669,14 @@ def _check_signal_escape_patterns(code: str):
             # Names bound anywhere, in any scope, to something other than `urllib.request.Request`
             # or the module path to it. Read only by `_unwrapped_url_arg`: see the note there.
             self.rebound_anywhere = _names_bound_to_something_else(tree)
+            # The module-level statements that really run, by identity: only those may shadow an
+            # imported name. See `_UNCONDITIONAL_SHADOW_TYPES`. This also subsumes the old depth
+            # check, since nothing inside a function, lambda or class body is one of these.
+            self.unconditional_shadows = {
+                id(stmt)
+                for stmt in getattr(tree, "body", [])
+                if type(stmt) in _UNCONDITIONAL_SHADOW_TYPES
+            }
             # Network modules star-imported, and the names rebound since. `from requests import *`
             # binds `get` under no name this file can enumerate, so the callee is resolved against
             # the star modules instead; without it one character (`*` for `get`) turned the screen
@@ -16675,7 +16703,7 @@ def _check_signal_escape_patterns(code: str):
             # Rebinding a name drops the alias it carried. `import socket as requests; import
             # requests` runs the real `requests.get`, and a kept entry rewrote the call to
             # `socket.get`, which matches no network prefix and so went unscreened.
-            if self.depth == 0 and type(node) in _BINDING_NODE_TYPES:
+            if id(node) in self.unconditional_shadows:
                 for name in self._shadowing_names(node):
                     # The module set is deliberately NOT dropped: see __init__. A bare function
                     # alias is, so a local `def get(...)` still shadows `from requests import get`.
