@@ -1040,6 +1040,17 @@ def _modifier_rules(live_css: str) -> dict[str, str]:
     return rules
 
 
+# What else in the same rule can set the edge this guard measures. A shorthand overrides the
+# longhand it contains, so `padding: 0 5rem` beats a parsed `pr-1.5` and `inset: 0 5rem` beats
+# a parsed `right`. Reading the longhand and ignoring these reported a reach that does not
+# render. Tailwind's own shorthands are listed beside the CSS ones because `@apply p-20` is the
+# same statement written another way.
+_SHORTHANDS = {
+    "pr": (("padding",), ("p", "px", "pe")),
+    "right": (("inset",), ("inset", "inset-x")),
+}
+
+
 def _sole_measure(body: str, utility: str, prop: str) -> float | None | str:
     """One rule's value for a measure: the number, None if unreadable, "" if it states none.
 
@@ -1048,6 +1059,20 @@ def _sole_measure(body: str, utility: str, prop: str) -> float | None | str:
     which one wins also depends on specificity and on where Tailwind emits the utility, and
     this guard models neither.
     """
+    properties, utilities = _SHORTHANDS[utility]
+    shorthand = [
+        name
+        for name in properties
+        if re.search(rf"(?<![\w-]){re.escape(name)}:", body)
+    ] + [
+        name
+        for name in utilities
+        if re.search(rf"(?<![\w-])@?{re.escape(name)}-\S", body)
+    ]
+    if shorthand:
+        # Unreadable rather than absent: the shorthand renders, and falling back to the base
+        # rule or reporting the longhand would both describe something that does not.
+        return None
     values = _stated_units(body, utility, prop)
     if not values:
         return ""
@@ -1200,6 +1225,16 @@ def _labelled_actions(
             f"the {name} action on the {variant} row no longer carries sidebar-touch-reveal, "
             f"so it is invisible and inert on a coarse pointer however much room the row "
             f"reserves for it (#7276). It carries {worn}"
+        )
+        # Nothing inline. Every number below comes from the class list and index.css, and an
+        # inline style outranks both: `style={{ right: "5rem" }}` or
+        # `style={{ paddingRight: "5rem" }}` on the action moves it into the title while the
+        # reach here is still computed from the rules it no longer obeys. The row carrier is
+        # already refused this for the same reason; the actions needed it too.
+        assert not re.search(r"(?:^|[\s{])style=", tag), (
+            f"the {name} action sets an inline style, which outranks the classes and the CSS "
+            f"rules this guard measures it by, so the reach it computes is not the reach that "
+            f"renders: {tag!r}"
         )
         # Where it sits, read from the stylesheet. A `right-*` utility or a modifier the CSS
         # does not define is positioning this guard has not modelled, and recording it as
@@ -1704,13 +1739,16 @@ def test_chat_sidebar_row_actions_visible_on_coarse_pointers():
         "index.css no longer has a .sidebar-row-action rule, so this guard cannot tell where "
         "inside its container the glyph sits"
     )
-    base_paddings = _stated_units(base_rule, "pr", "padding-right")
-    assert len(base_paddings) == 1 and base_paddings[0] is not None, (
-        f"the base action's right padding is not one value this guard can read: "
-        f"{base_paddings}. A later one in the same rule is what renders, and the shared "
-        f"action would reach further into the title while the floor stayed put"
+    # Through _sole_measure, so the shorthand refusal reaches this rule too. Reading the
+    # longhand directly here was how `padding: 0 5rem` in the base rule went unnoticed.
+    base_padding = _sole_measure(base_rule, "pr", "padding-right")
+    assert isinstance(base_padding, float), (
+        f"the base action's right padding is not one value this guard can read "
+        f"({base_padding!r}). A later declaration, or a shorthand that contains it, is what "
+        f"renders, and the shared action would reach further into the title while the floor "
+        f"stayed put"
     )
-    inner_padding = base_paddings[0]
+    inner_padding = base_padding
     # The container's `pl` is deliberately NOT added. `pr` is measured because justify-end makes
     # it decide where the glyph sits; `pl` decides nothing about the glyph, it only extends a
     # transparent box further left. #7276 is about the action sitting over the title, and what
