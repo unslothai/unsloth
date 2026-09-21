@@ -721,6 +721,13 @@ def test_a_root_entrypoint_the_resolver_walks_past_is_not_damage(tmp_path, name)
     wrapper.unlink()
     wrapper.mkdir()
     assert ILP.installed_runtime_health(root, host = _macos_host()) == (True, "")
+    wrapper.rmdir()
+    # The keep decision is deliberately not relaxed with it: replacing a rotten wrapper
+    # is the installer's business, and only the launch verdict must stay no stricter.
+    wrapper.write_text("#!/bin/sh\n", encoding = "utf-8")
+    os.chmod(wrapper, 0o644)
+    assert ILP._damaged_entrypoint(root, _macos_host()) == wrapper
+    assert ILP._damaged_entrypoint(root, _macos_host(), selected_root_only = True) is None
 
 
 def test_an_empty_windows_root_entrypoint_is_still_damage(tmp_path):

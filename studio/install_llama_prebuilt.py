@@ -9141,25 +9141,32 @@ def installed_runtime_health(
     # X_OK answers true for it and exists() does too, while _file_status in the
     # finder asks is_file() and rejects the tree. Failed extraction leaves exactly
     # that.
-    if _damaged_entrypoint(root, host) is not None:
+    if _damaged_entrypoint(root, host, selected_root_only = True) is not None:
         return False, "llama_runtime_binaries_missing"
     return True, ""
 
 
-def _damaged_entrypoint(install_dir: Path, host: HostInfo) -> Path | None:
+def _damaged_entrypoint(
+    install_dir: Path, host: HostInfo, *, selected_root_only: bool = False
+) -> Path | None:
     """The first runtime entrypoint the loader would not start, or None.
 
-    build/bin, and the install root's own copy only when discovery would actually
-    start it. ``create_exec_entrypoint`` writes a real wrapper at the root when it
-    cannot make a symlink, and that wrapper can rot on its own, but
-    ``resolve_llama_server_binary`` returns the first *usable* candidate, not the
-    first that exists: ``_usable_binary`` is ``is_file()`` plus ``os.access(X_OK)``
-    off Windows. So a root wrapper whose execute bit is gone is skipped and build/bin
-    runs, and calling that tree damaged sends a working runtime through a repair
-    (``test_runtime_skips_non_executable_root_entrypoint_for_valid_build_layout``).
-    What still counts is a root copy discovery WOULD select and then fail on, which
-    off Windows means an executable empty file and on Windows any empty file, since
-    ``_usable_binary`` does not consult the execute bit there.
+    build/bin, and the install root's own copy: ``create_exec_entrypoint`` writes a
+    real wrapper there when it cannot make a symlink, and it can rot on its own.
+
+    ``selected_root_only`` is the launch probe's rule, and the two questions differ.
+    The installer asks whether it can reuse this tree as it stands, and a rotten root
+    wrapper is worth replacing. The launch probe asks whether the runtime the backend
+    will actually start is broken, and ``resolve_llama_server_binary`` returns the
+    first USABLE candidate rather than the first that exists (``_usable_binary`` is
+    ``is_file()`` plus ``os.access(X_OK)`` off Windows), so it walks past a wrapper
+    whose execute bit is gone and runs build/bin. Grading that tree damaged marked a
+    working runtime stale and sent it through a repair, and where repair is
+    unavailable it blocked the launch outright. Pinned from the other side by
+    ``test_runtime_skips_non_executable_root_entrypoint_for_valid_build_layout``.
+
+    Never the reverse: the launch verdict stays no stricter than the keep decision,
+    which is what stops a tree being repaired by changing nothing and rejected again.
 
     One owner for the question, so the launch verdict and both keep decisions cannot
     answer it differently: a tree one rejects and another keeps is repaired by
@@ -9172,9 +9179,12 @@ def _damaged_entrypoint(install_dir: Path, host: HostInfo) -> Path | None:
         if not _entrypoint_is_runnable(binary, host):
             return binary
         root_binary = install_dir / f"{name}{ext}"
-        if _discovery_would_select(root_binary, host) and not _entrypoint_is_runnable(
-            root_binary, host
-        ):
+        present = (
+            _discovery_would_select(root_binary, host)
+            if selected_root_only
+            else root_binary.exists()
+        )
+        if present and not _entrypoint_is_runnable(root_binary, host):
             return root_binary
     return None
 

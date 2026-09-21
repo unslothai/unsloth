@@ -3375,12 +3375,16 @@ def test_install_prebuilt_skips_when_older_release_fallback_matches_existing_ins
 @pytest.mark.skipif(os.name == "nt", reason = "the root wrapper is written on POSIX only")
 @pytest.mark.parametrize("name", ["llama-server", "llama-quantize"])
 def test_a_damaged_root_entrypoint_stops_the_release_being_reused(tmp_path: Path, name: str):
-    """Codex 3973890098, P1. installed_runtime_health grades the install root's own copy,
-    because _find_llama_server_binary reaches it before build/bin and a wrapper
-    create_exec_entrypoint had to write instead of a symlink rots on its own. This keep
-    decision graded only build/bin, so an online repair took the shortcut, replaced
-    nothing, and every later launch offered the same repair again. Both read
-    _damaged_entrypoint now, which is the whole point of it being one function."""
+    """Codex 3973890098, P1. The keep decision graded only build/bin, so an online repair
+    took the shortcut, replaced nothing, and every later launch offered the same repair
+    again. Both read _damaged_entrypoint now.
+
+    Codex 4056336250, P2 narrowed what the LAUNCH side of it may reject: the resolver
+    returns the first usable candidate, so it walks past a root wrapper with no execute
+    bit and runs build/bin, and marking that tree stale repairs a runtime that works. The
+    keep decision is deliberately left strict, since replacing a rotten wrapper is exactly
+    what a reinstall is for, and that direction is safe: the launch verdict is never
+    stricter than the repair that answers it."""
     install_dir = tmp_path / "llama.cpp"
     install_dir.mkdir()
     write_linux_install_shape(install_dir)
@@ -3398,6 +3402,16 @@ def test_a_damaged_root_entrypoint_stops_the_release_being_reused(tmp_path: Path
     assert INSTALL_LLAMA_PREBUILT.installed_runtime_health(install_dir, host = host) == (True, "")
 
     (install_dir / name).chmod(0o644)
+    # Walked past by the resolver, so the runtime still starts and launch says so.
+    assert INSTALL_LLAMA_PREBUILT.installed_runtime_health(install_dir, host = host) == (True, "")
+    assert (
+        existing_install_matches_choice(install_dir, host, **kwargs) is False
+    ), "a reinstall is what replaces a rotten root wrapper"
+
+    # Empty is the damage the resolver does NOT walk past: is_file() and the execute bit
+    # both survive a truncation, so discovery selects it and the exec dies on ENOEXEC.
+    (install_dir / name).write_text("", encoding = "utf-8")
+    (install_dir / name).chmod(0o755)
     assert INSTALL_LLAMA_PREBUILT.installed_runtime_health(install_dir, host = host) == (
         False,
         "llama_runtime_binaries_missing",
