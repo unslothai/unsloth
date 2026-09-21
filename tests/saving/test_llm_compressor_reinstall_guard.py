@@ -76,9 +76,9 @@ def test_a_version_outside_the_pin_is_reinstalled(monkeypatch, version):
     release and leave the pin decorative."""
     from packaging.requirements import Requirement
 
-    assert not Requirement(_LLM_COMPRESSOR_SPEC).specifier.contains(version, prereleases = True), (
-        f"{version} must be outside {_LLM_COMPRESSOR_SPEC} for this case to mean anything"
-    )
+    assert not Requirement(_LLM_COMPRESSOR_SPEC).specifier.contains(
+        version, prereleases = True
+    ), f"{version} must be outside {_LLM_COMPRESSOR_SPEC} for this case to mean anything"
     assert _pip_invoked_when(monkeypatch, version) is True
 
 

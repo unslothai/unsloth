@@ -1399,7 +1399,6 @@ def install_llm_compressor():
             _supported = True
             try:
                 from packaging.requirements import Requirement
-
                 _supported = Requirement(_LLM_COMPRESSOR_SPEC).specifier.contains(
                     _installed, prereleases = True
                 )
