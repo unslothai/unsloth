@@ -21,8 +21,8 @@ EMBEDDING = "model.embed_tokens.modules_to_save.default.weight"
 
 def _model(torch, nn):
     model = nn.Module()
-    model.proj = nn.Linear(4, 4)                       # .weight decays, .bias does not
-    model.norm = nn.LayerNorm(4)                       # neither weight nor bias decays
+    model.proj = nn.Linear(4, 4)  # .weight decays, .bias does not
+    model.norm = nn.LayerNorm(4)  # neither weight nor bias decays
     embed = nn.Module()
     embed.modules_to_save = nn.ModuleDict({"default": nn.Linear(4, 4, bias = False)})
     inner = nn.Module()
@@ -71,9 +71,7 @@ def test_weight_decay_from_the_config_reaches_the_param_groups():
     groups = _groups(torch, nn, weight_decay = 0.1)
     decayed = {name for g in groups if g["weight_decay"] == 0.1 for name in g["names"]}
 
-    assert "proj.weight" in decayed, (
-        f"weight_decay=0.1 never reached the optimizer: {groups}"
-    )
+    assert "proj.weight" in decayed, f"weight_decay=0.1 never reached the optimizer: {groups}"
     assert EMBEDDING in decayed, "the embedding group must carry the decay too"
 
 

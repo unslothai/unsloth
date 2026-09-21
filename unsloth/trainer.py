@@ -504,7 +504,8 @@ def _create_unsloth_optimizer(
     optimizer_grouped_parameters = [
         {
             "params": [
-                param for name, param in param_groups[group].items()
+                param
+                for name, param in param_groups[group].items()
                 if (name in decay_parameter_names) is decays
             ],
             "weight_decay": weight_decay if decays else 0.0,
