@@ -16958,6 +16958,30 @@ def _split_frontend_suffix(text: str, name: "str | None") -> "tuple[str, str]":
     return body, text[len(body) :]
 
 
+MAX_TOOL_TEXT_CHARS = 256_000
+_TOOL_TEXT_TRUNCATION_NOTICE = (
+    "\n\n... (tool result truncated to 256,000 chars for the model; "
+    "the full output is not retained in model context.)"
+)
+
+
+def cap_tool_text(text: str) -> str:
+    """Cap tool-result text for the model at ``MAX_TOOL_TEXT_CHARS`` characters, unconditionally.
+
+    Truncates at a nearby line break when there is one inside the room, then appends
+    ``_TOOL_TEXT_TRUNCATION_NOTICE``. Idempotent: a result that already carries the notice is
+    left alone, so capping once in the live loop and again on a later replay is a no-op. The
+    suffix-only envelope reload (`_split_frontend_suffix`) and the card-facing result are never
+    run through here; the frontend mirrors this exact limit with its own ``capToolText``.
+    """
+    if len(text) <= MAX_TOOL_TEXT_CHARS:
+        return text
+    if text.endswith(_TOOL_TEXT_TRUNCATION_NOTICE):
+        return text
+    head, _on_boundary = _head_whole_lines(text, MAX_TOOL_TEXT_CHARS)
+    return head + _TOOL_TEXT_TRUNCATION_NOTICE
+
+
 def _head_whole_lines(text: str, limit: int) -> "tuple[str, bool]":
     """``text`` cut to at most ``limit`` characters, and whether it ended on a line break.
 
