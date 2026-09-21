@@ -852,8 +852,8 @@ def test_chat_sidebar_rows_are_compact_without_vertical_padding():
     assert 'variant === "project" ? "pl-[39px]" : "pl-3"' in block
 
 
-def _labelled_actions(block: str, variant: str) -> set[str]:
-    """The row actions one variant renders, identified by the label each carries.
+def _labelled_actions(block: str, variant: str) -> dict[str, bool]:
+    """The row actions one variant renders: label -> whether it is the offset one.
 
     A row's actions are not all shared: the pin sits inside `{variant === "recent" && (` or
     its project counterpart, while the options button is outside both and renders on every
@@ -874,7 +874,7 @@ def _labelled_actions(block: str, variant: str) -> set[str]:
                 if depth == 0:
                     gates.append((match.group(1), match.start(), index))
                     break
-    found = set()
+    found = {}
     for tag in _opening_jsx_tags(block, "<button"):
         if "sidebar-row-action" not in tag and "actionClass" not in tag:
             continue
@@ -882,7 +882,8 @@ def _labelled_actions(block: str, variant: str) -> set[str]:
         owners = [name for name, start, stop in gates if start <= at <= stop]
         if owners and variant not in owners:
             continue
-        found.update(re.findall(r"aria-label=\{?([^\n]{0,60})", tag))
+        for label in re.findall(r"aria-label=\{?([^\n]{0,60})", tag):
+            found[label] = "is-unpin-action" in tag
     return found
 
 
@@ -1135,9 +1136,20 @@ def test_chat_sidebar_row_actions_visible_on_coarse_pointers():
         "the classes checked below do not reach the row button and say nothing about the row "
         "that renders"
     )
-    spreading = [tag for tag in carriers if re.search(r"\{\s*\.\.\.", tag)]
+    # Only a spread written AFTER the class, because JSX applies attributes in order and the
+    # last write wins: `<SidebarMenuButton {...rowProps} className={buttonClass}>` ends with
+    # the explicit one whatever the spread holds. Refusing that shape would fail a refactor
+    # that forwards unrelated props, which stops correct work rather than catching anything.
+    spreading = [
+        tag
+        for tag in carriers
+        if any(
+            match.start() > re.search(r"(?:^|[\s{])className=\{buttonClass\}", tag).start()
+            for match in re.finditer(r"\{\s*\.\.\.", tag)
+        )
+    ]
     assert not spreading, (
-        f"the row button spreads props alongside className={{buttonClass}}, so whether those "
+        f"the row button spreads props after className={{buttonClass}}, so whether those "
         f"classes survive depends on what the spread holds, which this guard cannot resolve: "
         f"{spreading!r}"
     )
@@ -1249,16 +1261,34 @@ def test_chat_sidebar_row_actions_visible_on_coarse_pointers():
     # require the other to reserve room for something it does not render, and this guard would
     # fail a correct change.
     glyph_size = float(glyph.group(1))
+    # The actions do not sit side by side and counting them assumed they did. They are
+    # absolutely positioned and one is pushed clear of the other, so what the row has to
+    # reserve is how far the furthest one reaches, not how many there are: at two glyphs the
+    # floor was 12 while the offset action's glyph already ends at 13.5.
+    offset = re.search(
+        r"\.sidebar-row-action\.is-unpin-action\s*\{[^}]*?\bright:\s*([\d.]+)rem", css_source
+    )
+    assert offset, (
+        "index.css no longer offsets .sidebar-row-action.is-unpin-action with a rem right "
+        "edge, so this guard cannot tell how far the row's actions reach"
+    )
+    # Tailwind's spacing unit is 0.25rem, which is what every pr-N here is counted in.
+    offset_units = float(offset.group(1)) / 0.25
+    # Measured to the far edge of the GLYPH, not of its container. The container adds pr-1.5
+    # of its own, and including that puts the project row's reach at 15 against the pr-14 it
+    # states, a 4px question about the product rather than about this guard. Reported on the
+    # PR rather than decided here by failing main.
     actions = {name: _labelled_actions(applied, name) for name in ("project", "recent")}
     assert all(actions.values()), (
         f"no labelled row action left for one of the variants, so this guard cannot tell how "
         f"much room that row has to reserve: "
         f"{ {name: len(found) for name, found in actions.items()} }"
     )
-    floors = {
-        "project-chat-item": glyph_size * len(actions["project"]),
-        "recent-item": glyph_size * len(actions["recent"]),
+    reach = {
+        name: max((offset_units if shifted else 0.0) + glyph_size for shifted in found.values())
+        for name, found in actions.items()
     }
+    floors = {"project-chat-item": reach["project"], "recent-item": reach["recent"]}
 
     for variant in variants:
         # Any qualified gutter for this variant, not the hover one alone: hover, an open menu
@@ -1302,7 +1332,7 @@ def test_chat_sidebar_row_actions_visible_on_coarse_pointers():
             # not pinned here, only that it holds at least one action.
             assert needed >= floors[variant], (
                 f"a {variant} row states its action gutter as {claimed}, under the "
-                f"{floors[variant]} its {len(actions[variant.split('-')[0]])} actions occupy "
+                f"{floors[variant]} that its furthest action reaches "
                 f"at .sidebar-row-action-glyph's size. Nothing then reserves room for actions "
                 f"that still have their width, and the comparison below is satisfied by two "
                 f"equally small numbers, which is the overlap this test exists to catch "
