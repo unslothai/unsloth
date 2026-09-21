@@ -30,8 +30,10 @@ from hub.services.models.common import (
 
 logger = get_logger(__name__)
 
-# llama.cpp's split naming, e.g. Model-00001-of-00005.gguf.
-_SPLIT_PART = re.compile(r"-(\d{5})-of-(\d{5})\.gguf$")
+# llama.cpp's split naming, e.g. Model-00001-of-00005.gguf. Case-insensitive, like the suffix
+# filter below: an upper-case shard that matched the filter but not this bypassed grouping
+# altogether and every part, continuations and half-finished downloads included, became a row.
+_SPLIT_PART = re.compile(r"-(\d{5})-of-(\d{5})\.gguf$", re.IGNORECASE)
 
 
 def staged_model_id(path: Path) -> str:
@@ -64,7 +66,9 @@ def staged_gguf_files(hermes_dir: Path) -> List[Path]:
         note_scan_incident(f"hermes dir unreadable: {hermes_dir}")
         return []
 
-    names = {p.name for p in files}
+    # Folded, because the shard names are compared against it and the suffix filter above
+    # accepts any casing: on Windows the parts of one split can differ in case.
+    names = {p.name.lower() for p in files}
     staged: List[Path] = []
     for path in files:
         # mmproj/drafter companions belong under assets/, but a hand-dropped one
@@ -80,7 +84,8 @@ def staged_gguf_files(hermes_dir: Path) -> List[Path]:
         stem = path.name[: part.start()]
         total = int(part.group(2))
         if all(
-            f"{stem}-{index:05d}-of-{part.group(2)}.gguf" in names for index in range(2, total + 1)
+            f"{stem}-{index:05d}-of-{part.group(2)}.gguf".lower() in names
+            for index in range(2, total + 1)
         ):
             staged.append(path)
     return staged

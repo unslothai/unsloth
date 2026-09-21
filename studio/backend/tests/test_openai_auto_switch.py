@@ -13384,3 +13384,45 @@ def test_a_manifest_that_went_unreadable_between_two_reads_is_reported(monkeypat
     with collecting_scan_incidents() as incidents:
         assert resolver._local_servable_entry(ref, info) is None
     assert incidents == [], f"an unsupported Ollama tag was reported as a gap: {incidents}"
+
+
+def test_an_uppercase_hermes_split_is_still_grouped_as_one_model():
+    """The case-insensitive suffix filter must not outrun the split regex.
+
+    An upper-case shard passed the filter and missed the grouping, so every part became a row
+    of its own: continuation shards offered as models, and a download still in flight offered
+    as a loadable one. colocated_split_shards was already case-insensitive, so only these two
+    were out of step.
+    """
+    import pathlib
+
+    from hub.services.models import hermes as hermes_service
+
+    with tempfile.TemporaryDirectory() as root:
+        staged = pathlib.Path(root)
+        for index in (1, 2):
+            (staged / f"Model-{index:05d}-of-00002.GGUF").write_bytes(b"GGUF")
+        assert [p.name for p in hermes_service.staged_gguf_files(staged)] == [
+            "Model-00001-of-00002.GGUF"
+        ], "an upper-case split was advertised shard by shard"
+        assert (
+            hermes_service.staged_model_id(staged / "Model-00001-of-00002.GGUF") == "Model"
+        ), "the split suffix survived in the id"
+
+    # And an INCOMPLETE upper-case split is still not offered at all.
+    with tempfile.TemporaryDirectory() as root:
+        staged = pathlib.Path(root)
+        (staged / "Model-00001-of-00003.GGUF").write_bytes(b"GGUF")
+        assert (
+            hermes_service.staged_gguf_files(staged) == []
+        ), "a half-downloaded upper-case split was offered as loadable"
+
+    # A mixed-case set is one split too: the filter accepts either casing, so the membership
+    # check cannot be case-sensitive.
+    with tempfile.TemporaryDirectory() as root:
+        staged = pathlib.Path(root)
+        (staged / "Model-00001-of-00002.gguf").write_bytes(b"GGUF")
+        (staged / "Model-00002-of-00002.GGUF").write_bytes(b"GGUF")
+        assert [p.name for p in hermes_service.staged_gguf_files(staged)] == [
+            "Model-00001-of-00002.gguf"
+        ]
