@@ -82,6 +82,87 @@ _PYTORCH_MISSING_MESSAGE = (
 _LLAMA_CPP_SCRIPTS_WARNING_EMITTED = False
 
 
+@contextlib.contextmanager
+def _llama_cpp_scripts_pin():
+    """Pin convert_hf_to_gguf.py to setup.sh's llama.cpp ref for one conversion.
+
+    The pin stops the converter drifting past the pinned llama-quantize gguf API,
+    but it is Unsloth's own routing and not a judgement anyone made about those
+    bytes, so it is scoped to the conversion and marked as internal:
+
+    * UNSLOTH_LLAMA_CPP_SCRIPTS_DIR outranks UNSLOTH_LLAMA_CPP_CONVERTER_TAG, so
+      setting it unconditionally made the tag inert, and that tag is the escape
+      hatch the unsupported-architecture message tells people to set.
+    * unsloth_zoo reads trust off the variable, so a converter Studio had just
+      downloaded looked user-pinned and UNSLOTH_CONVERTER_SCAN_STRICT degraded to
+      warn-only for every export.
+
+    A pin the user set is left exactly as it is; that one carries their exemption.
+    """
+    global _LLAMA_CPP_SCRIPTS_WARNING_EMITTED
+    try:
+        from unsloth_zoo.llama_cpp import (
+            LLAMA_CPP_DEFAULT_DIR,
+            _resolve_local_convert_script,  # noqa: F401
+        )
+    except Exception:
+        # Not just ImportError: a half-built unsloth_zoo raises RuntimeError or AttributeError, and this pin
+        # is only an optimisation.
+        if not _LLAMA_CPP_SCRIPTS_WARNING_EMITTED:
+            logger.warning(
+                "Unsloth: installed unsloth_zoo does not honor "
+                "UNSLOTH_LLAMA_CPP_SCRIPTS_DIR; convert_hf_to_gguf.py will "
+                "still be downloaded from llama.cpp master and may drift "
+                "past the pinned llama-quantize binary. Upgrade unsloth_zoo "
+                "to activate the local script pin."
+            )
+            _LLAMA_CPP_SCRIPTS_WARNING_EMITTED = True
+        yield
+        return
+
+    if os.environ.get("UNSLOTH_LLAMA_CPP_CONVERTER_TAG", "").strip():
+        # The pin outranks the tag, so pinning here is what made setting a tag do nothing.
+        yield
+        return
+
+    try:
+        from unsloth_zoo.llama_cpp import _converter_dir_is_incomplete
+
+        incomplete = _converter_dir_is_incomplete(LLAMA_CPP_DEFAULT_DIR)
+    except Exception:
+        # An older unsloth_zoo has no such check, and it only ever skips the pin.
+        incomplete = False
+    if incomplete:
+        # Pinning an entrypoint whose conversion/ package is missing is what stops the
+        # staged resolver from fetching a co-versioned set that runs.
+        yield
+        return
+
+    try:
+        from unsloth_zoo.llama_cpp import internal_scripts_dir_pin
+    except ImportError:
+        internal_scripts_dir_pin = None
+
+    if internal_scripts_dir_pin is not None:
+        with internal_scripts_dir_pin(LLAMA_CPP_DEFAULT_DIR):
+            yield
+        return
+
+    # Older unsloth_zoo, which has no internal pin: scope the variable by hand so it at
+    # least cannot leak into the rest of the process (and into the MLX export path, whose
+    # own internal pin steps aside for a variable that is already set). Strict mode still
+    # takes the exemption on those builds; upgrading unsloth_zoo is the fix for that.
+    existing = os.environ.get("UNSLOTH_LLAMA_CPP_SCRIPTS_DIR")
+    if existing is not None:
+        yield
+        return
+    os.environ["UNSLOTH_LLAMA_CPP_SCRIPTS_DIR"] = LLAMA_CPP_DEFAULT_DIR
+    try:
+        yield
+    finally:
+        os.environ.pop("UNSLOTH_LLAMA_CPP_SCRIPTS_DIR", None)
+
+
 def _multi_gpu_device_map_kwargs() -> dict:
     """``device_map`` kwargs for sharding a checkpoint across every visible GPU.
 
@@ -1321,28 +1402,6 @@ class ExportBackend:
                 quant_methods = ["q4_k_m"]
             quant_method = quant_methods if len(quant_methods) > 1 else quant_methods[0]
 
-            # Pin convert_hf_to_gguf.py to setup.sh's llama.cpp ref so it cannot drift past the pinned llama-
-            # quantize gguf API.
-            global _LLAMA_CPP_SCRIPTS_WARNING_EMITTED
-            try:
-                from unsloth_zoo.llama_cpp import (
-                    LLAMA_CPP_DEFAULT_DIR,
-                    _resolve_local_convert_script,  # noqa: F401
-                )
-                os.environ.setdefault("UNSLOTH_LLAMA_CPP_SCRIPTS_DIR", LLAMA_CPP_DEFAULT_DIR)
-            except Exception:
-                # Not just ImportError: a half-built unsloth_zoo raises RuntimeError or AttributeError, and this pin
-                # is only an optimisation.
-                if not _LLAMA_CPP_SCRIPTS_WARNING_EMITTED:
-                    logger.warning(
-                        "Unsloth: installed unsloth_zoo does not honor "
-                        "UNSLOTH_LLAMA_CPP_SCRIPTS_DIR; convert_hf_to_gguf.py will "
-                        "still be downloaded from llama.cpp master and may drift "
-                        "past the pinned llama-quantize binary. Upgrade unsloth_zoo "
-                        "to activate the local script pin."
-                    )
-                    _LLAMA_CPP_SCRIPTS_WARNING_EMITTED = True
-
             if save_directory:
                 save_directory = str(resolve_export_write_dir(save_directory))
                 # Keep unsloth relative-path internals anchored to the repo cwd.
@@ -1361,14 +1420,17 @@ class ExportBackend:
                 # Resolve before anything can raise; the cleanup below needs it too.
                 imatrix_path = _materialized_imatrix_path(_model_tmp, imatrix_file)
                 try:
-                    result = self.current_model.save_pretrained_gguf(
-                        _model_tmp,
-                        self.current_tokenizer,
-                        quantization_method = quant_method,
-                        **imatrix_kw,
-                        **local_token_kw,
-                        **shard_kw,
-                    )
+                    # Pin convert_hf_to_gguf.py to setup.sh's llama.cpp ref so it cannot drift past the pinned llama-
+                    # quantize gguf API. Scoped to the conversion, never left in the environment.
+                    with _llama_cpp_scripts_pin():
+                        result = self.current_model.save_pretrained_gguf(
+                            _model_tmp,
+                            self.current_tokenizer,
+                            quantization_method = quant_method,
+                            **imatrix_kw,
+                            **local_token_kw,
+                            **shard_kw,
+                        )
 
                     # Scan only the owned root; exact reported paths cover external outputs.
                     reported = result if isinstance(result, dict) else {}
@@ -1545,15 +1607,17 @@ class ExportBackend:
                     except Exception as exception:
                         logger.warning(f"Could not publish the model card: {exception}")
                 else:
-                    self.current_model.push_to_hub_gguf(
-                        repo_id,
-                        self.current_tokenizer,
-                        quantization_method = quant_method,
-                        token = hf_token,
-                        private = private,
-                        **imatrix_kw,
-                        **shard_kw,
-                    )
+                    # Converts as well as pushes, so it needs the same scoped pin.
+                    with _llama_cpp_scripts_pin():
+                        self.current_model.push_to_hub_gguf(
+                            repo_id,
+                            self.current_tokenizer,
+                            quantization_method = quant_method,
+                            token = hf_token,
+                            private = private,
+                            **imatrix_kw,
+                            **shard_kw,
+                        )
                 logger.info(f"GGUF model pushed successfully to {repo_id}")
 
             return (
