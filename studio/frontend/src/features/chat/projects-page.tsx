@@ -770,7 +770,7 @@ export function ProjectsPage() {
                     toggleProjectChats(project.id);
                   }}
                   className={cn(
-                    "flex size-7 shrink-0 items-center justify-center rounded-full text-muted-foreground transition hover:bg-black/5 hover:text-foreground focus-visible:opacity-100 group-hover/project-row:opacity-100 dark:hover:bg-white/10",
+                    "flex size-7 shrink-0 items-center justify-center rounded-full text-muted-foreground transition hover:bg-black/5 hover:text-foreground focus-visible:opacity-100 group-hover/project-row:opacity-100 pointer-coarse:opacity-100 dark:hover:bg-white/10",
                     chatsOpen ? "opacity-100" : "opacity-0",
                   )}
                 >
@@ -795,7 +795,8 @@ export function ProjectsPage() {
                   togglePinProject(project.id);
                 }}
                 className={cn(
-                  "flex size-7 shrink-0 items-center justify-center rounded-full text-muted-foreground transition hover:bg-black/5 hover:text-foreground focus-visible:opacity-100 group-hover/project-row:opacity-100 dark:hover:bg-white/10",
+                  // Shown outright on a touch screen, which has no hover to reveal it with.
+                  "flex size-7 shrink-0 items-center justify-center rounded-full text-muted-foreground transition hover:bg-black/5 hover:text-foreground focus-visible:opacity-100 group-hover/project-row:opacity-100 pointer-coarse:opacity-100 dark:hover:bg-white/10",
                   pinned ? "opacity-100" : "opacity-0",
                 )}
               >
@@ -806,16 +807,15 @@ export function ProjectsPage() {
                 />
               </button>
               <div className="relative flex w-8 shrink-0 items-center justify-end">
-                {/* Pin fades out and the kebab fades in on hover, focus, or
-                    menu open. Absolute + opacity gating keeps them from
-                    overlapping while leaving the button keyboard-focusable. */}
+                {/* Revealed on hover, focus or an open menu, and outright on a touch screen.
+                    Opacity rather than mounting keeps the button keyboard-focusable. */}
                 <DropdownMenu>
                   <DropdownMenuTrigger asChild>
                     <button
                       type="button"
                       onClick={(e) => e.stopPropagation()}
                       aria-label="Project options"
-                      className="absolute right-0 flex size-7 shrink-0 items-center justify-center rounded-full text-muted-foreground opacity-0 transition hover:bg-black/5 hover:text-foreground focus-visible:opacity-100 group-hover/project-row:opacity-100 data-[state=open]:bg-black/5 data-[state=open]:opacity-100 dark:hover:bg-white/10 dark:data-[state=open]:bg-white/10"
+                      className="absolute right-0 flex size-7 shrink-0 items-center justify-center rounded-full text-muted-foreground opacity-0 transition hover:bg-black/5 hover:text-foreground focus-visible:opacity-100 group-hover/project-row:opacity-100 pointer-coarse:opacity-100 data-[state=open]:bg-black/5 data-[state=open]:opacity-100 dark:hover:bg-white/10 dark:data-[state=open]:bg-white/10"
                     >
                       <MoreHorizontalIcon strokeWidth={1.75} className="size-icon" />
                     </button>

@@ -97,6 +97,23 @@ test("pinning a project takes one click, and says which way it goes", () => {
   );
 });
 
+// A touch screen has no hover to reveal a row's actions with, and the menu behind the kebab was
+// no way in either, since the kebab is revealed the same way.
+test("a row's actions are on show where there is no hover", () => {
+  const start = PAGE.indexOf("{visibleProjects.map((project) => {");
+  assert.notEqual(start, -1, "the row list moved");
+  // Down to the row menu's contents, so only the row's own controls are counted.
+  const row = PAGE.slice(start, PAGE.indexOf("<DropdownMenuContent", start));
+  assert.ok(row.length > 0, "the row moved");
+  assert.equal(
+    (row.match(/pointer-coarse:opacity-100/g) ?? []).length,
+    3,
+    "the disclosure, the pin and the menu are not all revealed on a touch screen",
+  );
+  // Still hover-revealed with a mouse, so a quiet row stays quiet.
+  assert.match(row, /group-hover\/project-row:opacity-100 pointer-coarse:opacity-100/);
+});
+
 // "Modified" named something the row does not track, and the header sat past its own values,
 // over the pin and the menu.
 test("the Updated column names the list's order and turns it around", () => {
