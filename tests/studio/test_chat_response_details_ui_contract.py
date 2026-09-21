@@ -442,6 +442,31 @@ def test_response_model_badge_is_user_configurable_and_rendered_once_per_message
     # The WHOLE composition inside the component, not its first quoted literal. A second
     # literal appended after `className` would be effective and invisible to a first-match
     # read, and an argument this cannot resolve means the composition is unknown.
+    # Bound to the element's className, not merely present in the file. The composition below
+    # is found by its first literal, and a literal says nothing about where it is applied:
+    # `data-className={cn(...)}` is valid JSX that renders none of these classes, so neither
+    # the base composition nor the call site's min-w-0 would reach the DOM while every check
+    # below went on describing them.
+    live = _without_block_comments(reasoning_src)
+    base_tags = [
+        tag for tag in _opening_tags(live, "<Trigger") if 'data-slot="reasoning-trigger"' in tag
+    ]
+    assert base_tags, (
+        'reasoning.tsx no longer renders a Trigger with data-slot="reasoning-trigger", so the '
+        "base min-w-0 this guard reads belongs to no element on the page"
+    )
+    for tag in base_tags:
+        lookalike = re.search(r"[\w-]className=", tag)
+        assert not lookalike, (
+            f"the reasoning trigger carries {lookalike.group(0)!r} rather than a className, so "
+            f"the classes this guard reads render on nothing: {tag!r}"
+        )
+        applied_to = re.search(r"(?:^|[\s{])className=\{(.*)", tag, re.S)
+        assert applied_to and '"aui-reasoning-trigger' in applied_to.group(1), (
+            f"the reasoning trigger's className is not the composition this guard reads, so "
+            f"what it measures is not what renders: {tag!r}"
+        )
+
     base = _cn_literals(reasoning_src, '"aui-reasoning-trigger')
     assert base != _UNREADABLE, (
         "ReasoningTrigger composes its className from something this guard cannot resolve, "
@@ -459,7 +484,6 @@ def test_response_model_badge_is_user_configurable_and_rendered_once_per_message
     # An inline style beats every utility below it in the cascade, and none of them is read
     # here. `style={{ minWidth: "max-content" }}` on the trigger leaves both min-w-0 checks
     # green while long summaries widen the row again, which is the whole defect.
-    live = _without_block_comments(reasoning_src)
     header_tags = [
         tag for tag in _opening_tags(live, "<div") if 'data-slot="reasoning-header"' in tag
     ]
@@ -473,15 +497,6 @@ def test_response_model_badge_is_user_configurable_and_rendered_once_per_message
     # The <Trigger> that ReasoningTrigger renders is where the base min-w-0 actually lives, so
     # it belongs in this loop as much as the call site does: a style there overrides the very
     # class this test reads, and checking only the call site and the header left it out.
-    base_tags = [
-        tag
-        for tag in _opening_tags(live, "<Trigger")
-        if 'data-slot="reasoning-trigger"' in tag
-    ]
-    assert base_tags, (
-        'reasoning.tsx no longer renders a Trigger with data-slot="reasoning-trigger", so the '
-        "base min-w-0 this guard reads belongs to no element on the page"
-    )
     # Spreads are refused on the call site and the header, not on the base Trigger: that one
     # forwards `{...props}` by design, which is how a caller reaches it at all, and the values
     # arriving through it are exactly what the call-site check above adjudicates. Refusing it

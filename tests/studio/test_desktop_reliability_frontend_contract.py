@@ -1234,11 +1234,10 @@ def _labelled_actions(
         # sets the same edge by another route, belongs here for the same reason: the reach is
         # derived from `right` and `padding-right` alone, and a utility outside that model
         # renders something this arithmetic does not describe.
-        unmodelled = r"(?:-?translate-x|-?translate|inset-x|inset|left|-?mr|-?me)-\S+|transform"
         utility = [
             token
             for token in worn
-            if re.fullmatch(rf"(?:\S*:)?(?:right-\S+|{unmodelled})", token)
+            if re.fullmatch(rf"(?:\S*:)?right-\S+|{_MOVES_HORIZONTALLY}", token)
         ]
         assert not utility, (
             f"the {name} action is positioned with {utility}, which this guard does not model: "
@@ -1426,6 +1425,16 @@ def _tokens(value: str) -> list[str]:
     return value.strip('"').split() if re.fullmatch(r'"[^"]*"', value) else []
 
 
+# Utilities that move an element horizontally by a route this file does not model. The reach
+# arithmetic is `right` plus `padding-right` and nothing else, so any of these renders
+# something it does not describe. `translate-y` is deliberately absent: it moves the element
+# vertically and the production spinner uses it, so refusing it would fail a correct row.
+_MOVES_HORIZONTALLY = (
+    r"(?:\S*:)?(?:-?translate-x|-?translate-(?!y)|inset-x|inset|left|-?mr|-?me)-\S+"
+    r"|(?:\S*:)?transform"
+)
+
+
 def _touch_spinner_reach(block: str, spacing: float) -> float | None:
     """How far the working-row spinner reaches into the row on a coarse pointer, in units.
 
@@ -1452,6 +1461,17 @@ def _touch_spinner_reach(block: str, spacing: float) -> float | None:
     if end is None:
         return None
     rendered = block[gate.end() : end]
+    # Nothing inline or unmodelled on the element that positions it, for the same reason the
+    # actions and the carrier refuse both: `style={{ right: "8rem" }}` outranks the coarse
+    # `right-16` this reads, and a transform moves the spinner without touching `right` at
+    # all, so the reach reported here would not be the reach that renders.
+    for tag in _opening_jsx_tags(rendered, "<span"):
+        if "sidebar-row-action" in tag.split() or "absolute" not in tag:
+            continue
+        if re.search(r"(?:^|[\s{])style=", tag) or _className_from_spread(tag):
+            return None
+        if re.search(_MOVES_HORIZONTALLY, tag):
+            return None
     offsets = [
         float(match.group(1))
         for match in re.finditer(
