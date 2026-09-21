@@ -721,3 +721,47 @@ def test_a_user_site_checkout_outranks_the_system_site_wheel(tmp_path, monkeypat
     # With the user site DISABLED the child never sees it, so the wheel is the answer again.
     monkeypatch.setattr(site, "ENABLE_USER_SITE", False)
     assert _llm_compressor_module_is_usable(_module_at(str(wheel), "0.12.0")) is True
+
+
+def test_a_stale_module_is_evicted_before_the_reimport(monkeypatch):
+    """importlib.invalidate_caches() clears the finders, not sys.modules.
+
+    An out-of-range llmcompressor imported earlier in the same process was returned
+    untouched after the install, so the guard did the repair and then handed back exactly
+    the symbols the pin excludes.
+    """
+    import types
+
+    import unsloth.save as save
+
+    stale = types.ModuleType("llmcompressor")
+    stale.__version__ = "0.13.0"
+    stale.oneshot = object()
+    quant = types.ModuleType("llmcompressor.modifiers.quantization")
+    quant.QuantizationModifier = object()
+    monkeypatch.setitem(sys.modules, "llmcompressor", stale)
+    monkeypatch.setitem(sys.modules, "llmcompressor.modifiers", types.ModuleType("x"))
+    monkeypatch.setitem(sys.modules, "llmcompressor.modifiers.quantization", quant)
+
+    real_version = md.version
+
+    def fake_version(dist: str) -> str:
+        # Out of range, so the install runs rather than the fast path.
+        if dist == "llmcompressor":
+            return "0.13.0"
+        return real_version(dist)
+
+    monkeypatch.setattr(md, "version", fake_version)
+    monkeypatch.setattr(subprocess, "check_call", lambda cmd, *a, **k: None)
+    # The probe answers that the install worked, so the shadow error does not fire.
+    monkeypatch.setattr(save, "_llm_compressor_imports_cleanly", lambda: True)
+
+    try:
+        save.install_llm_compressor()
+    except Exception:
+        # The re-import after eviction fails in this interpreter, which is the point: it went
+        # to disk instead of returning the stale module.
+        pass
+    assert (
+        "llmcompressor" not in sys.modules or sys.modules["llmcompressor"] is not stale
+    ), "the repair returned the very module the pin excludes"

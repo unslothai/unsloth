@@ -1969,6 +1969,12 @@ def install_llm_compressor():
                 pass
 
     importlib.invalidate_caches()
+    # invalidate_caches only clears the FINDERS. A module already in sys.modules is returned
+    # untouched, so an out-of-range llmcompressor imported earlier in this process survived
+    # the install and the import below handed back exactly the symbols the pin excludes.
+    # Dropped here, after the install succeeded, so the re-import goes to disk.
+    for name in [n for n in sys.modules if n == "llmcompressor" or n.startswith("llmcompressor.")]:
+        sys.modules.pop(name, None)
     # pip leaves an already-satisfied requirement alone, and the requirement is satisfied by
     # the DISTRIBUTION's metadata, so an out-of-range checkout shadowing an in-range wheel
     # survives the install untouched and the export would resolve it again. Verified rather
