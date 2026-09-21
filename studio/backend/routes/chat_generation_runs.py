@@ -376,6 +376,11 @@ async def chat_generation_events(
         # run_in_executor does not copy ContextVars, unlike asyncio.to_thread.
         wait_for_events = partial(run_as, current_account(), db.wait_for_events)
 
+    # One token per stream, so a tab closing clears only its OWN attendance stamp. Two tabs on the
+    # same run, or a reconnect overlapping the stream it replaces, otherwise had either one's
+    # cleanup delete the other's heartbeat.
+    follower = run_subscribers.new_follower_token()
+
     async def stream():
         nonlocal cursor
         loop = asyncio.get_running_loop()
@@ -392,7 +397,7 @@ async def chat_generation_events(
             # who is still reading what the tool wants to do. Stamped before the wait, so a follower
             # that attaches while a call is already parked counts immediately rather than only after
             # its first keep-alive. See state/run_subscribers.py.
-            run_subscribers.mark_subscriber_seen(run_id)
+            run_subscribers.mark_subscriber_seen(run_id, follower)
             events = await loop.run_in_executor(
                 _EVENT_WAIT_EXECUTOR,
                 wait_for_events,
@@ -440,7 +445,7 @@ async def chat_generation_events(
             async for frame in stream():
                 yield frame
         finally:
-            run_subscribers.subscriber_departed(run_id)
+            run_subscribers.subscriber_departed(run_id, follower)
 
     return StreamingResponse(
         stream_while_attended(),

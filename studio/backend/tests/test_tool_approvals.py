@@ -451,7 +451,7 @@ def test_an_attended_park_does_not_expire_at_the_park_ceiling(monkeypatch):
 
     # A follower heartbeat, exactly as the SSE loop in routes/chat_generation_runs.py stamps it.
     for _ in range(6):
-        run_subscribers.mark_subscriber_seen("run-attended")
+        run_subscribers.mark_subscriber_seen("run-attended", "tab-1")
         time.sleep(0.1)
     assert _has_pending(aid), "an attended park must not expire at the park ceiling"
 
@@ -467,7 +467,7 @@ def test_a_park_expires_once_its_followers_go(monkeypatch):
     cancel.durable = True
     cancel.durable_run_id = "run-leaving"
     aid = new_approval_id()
-    run_subscribers.mark_subscriber_seen("run-leaving")
+    run_subscribers.mark_subscriber_seen("run-leaving", "tab-1")
     w = _Waiter("sess", aid, cancel_event = cancel).start()
     # Nobody stamps again: the entry ages out and the ceiling runs.
     assert w.join(timeout = 5.0) == "deny"
@@ -499,7 +499,7 @@ def test_attendance_cannot_hold_an_approval_past_the_absolute_ceiling(monkeypatc
 
     def _stamp():
         while not stop.is_set():
-            run_subscribers.mark_subscriber_seen("run-forever")
+            run_subscribers.mark_subscriber_seen("run-forever", "tab-1")
             time.sleep(0.02)
 
     stamper = threading.Thread(target = _stamp, daemon = True)
@@ -570,22 +570,80 @@ def test_the_waiter_keeps_its_name_signature_and_bare_verdict(monkeypatch):
 
 def test_presence_expires_by_age_so_a_leaked_stamp_cannot_park_forever(monkeypatch):
     monkeypatch.setattr(run_subscribers, "_ATTENDED_FOR_S", 0.1)
-    run_subscribers.mark_subscriber_seen("run-x")
+    run_subscribers.mark_subscriber_seen("run-x", "tab-1")
     assert run_subscribers.is_attended("run-x") is True
     time.sleep(0.2)
     assert run_subscribers.is_attended("run-x") is False
 
 
 def test_presence_is_per_run_and_an_empty_id_is_never_attended():
-    run_subscribers.mark_subscriber_seen("run-a")
+    run_subscribers.mark_subscriber_seen("run-a", "tab-1")
     assert run_subscribers.is_attended("run-a") is True
     assert run_subscribers.is_attended("run-b") is False
-    run_subscribers.mark_subscriber_seen("")
+    run_subscribers.mark_subscriber_seen("", "tab-1")
     assert run_subscribers.is_attended("") is False
 
 
 def test_a_departing_follower_drops_its_stamp_promptly():
-    run_subscribers.mark_subscriber_seen("run-c")
+    run_subscribers.mark_subscriber_seen("run-c", "tab-1")
     assert run_subscribers.is_attended("run-c") is True
-    run_subscribers.subscriber_departed("run-c")
+    run_subscribers.subscriber_departed("run-c", "tab-1")
     assert run_subscribers.is_attended("run-c") is False
+
+
+# ── One run, several followers: a tab closing must not clear another tab's stamp ──
+# Two tabs on the same thread, or a reconnect whose replacement stream attaches before the old
+# one finishes unwinding, both put two followers on one run. With a single stamp per run, either
+# one's cleanup deleted the other's heartbeat, and the survivor does not stamp again until its
+# event wait turns over (15s). Under a park ceiling shorter than that -- 0 is supported and
+# tested above -- a call a second tab was watching could be denied.
+
+
+def test_one_tab_closing_leaves_another_tabs_attendance_intact():
+    run_subscribers.mark_subscriber_seen("run-two-tabs", "tab-a")
+    run_subscribers.mark_subscriber_seen("run-two-tabs", "tab-b")
+    assert run_subscribers.attendance_for_tests("run-two-tabs") == 2
+
+    run_subscribers.subscriber_departed("run-two-tabs", "tab-a")
+    assert (
+        run_subscribers.is_attended("run-two-tabs") is True
+    ), "tab-b is still watching; its heartbeat must survive tab-a's cleanup"
+    assert run_subscribers.attendance_for_tests("run-two-tabs") == 1
+
+    run_subscribers.subscriber_departed("run-two-tabs", "tab-b")
+    assert run_subscribers.is_attended("run-two-tabs") is False
+    assert run_subscribers.attendance_for_tests("run-two-tabs") == 0
+
+
+def test_an_attended_park_survives_a_second_tab_closing(monkeypatch):
+    """The reachable consequence, end to end: a short ceiling plus two tabs.
+
+    At 0.2s the ceiling is well under the 15s a surviving follower may take to stamp again, which
+    is exactly the window the single-stamp version left open.
+    """
+    monkeypatch.setattr(tool_approvals, "_PARK_TIMEOUT_S", 0.2)
+    cancel = threading.Event()
+    cancel.durable = True
+    cancel.durable_run_id = "run-two-tabs-park"
+    aid = new_approval_id()
+
+    run_subscribers.mark_subscriber_seen("run-two-tabs-park", "tab-a")
+    run_subscribers.mark_subscriber_seen("run-two-tabs-park", "tab-b")
+    w = _Waiter("sess", aid, cancel_event = cancel).start()
+
+    # tab-a goes away; tab-b keeps watching but does not stamp again for a while.
+    run_subscribers.subscriber_departed("run-two-tabs-park", "tab-a")
+    time.sleep(0.8)
+    assert _has_pending(aid), "the park expired while a second tab was still attended"
+
+    assert resolve_tool_decision(aid, "allow", session_id = "sess") is True
+    assert w.join(timeout = 3.0) == "allow"
+
+
+def test_a_follower_only_clears_its_own_stamp_not_the_run():
+    run_subscribers.mark_subscriber_seen("run-solo", "tab-a")
+    # A departure naming a follower that was never stamped must not wipe the run.
+    run_subscribers.subscriber_departed("run-solo", "tab-ghost")
+    assert run_subscribers.is_attended("run-solo") is True
+    run_subscribers.subscriber_departed("run-solo", "tab-a")
+    assert run_subscribers.is_attended("run-solo") is False
