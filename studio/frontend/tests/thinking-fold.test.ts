@@ -205,6 +205,32 @@ test("the rule that closes the trace goes on the last thing before the answer", 
   );
 });
 
+test("opening by hand grows the block downward instead of pinning the bottom", () => {
+  // The viewport follows content growth while attached to the bottom. A click that opens a
+  // block, a tool group or a tool card first detaches, so the header stays put. A stream still
+  // follows: its auto-open is not a click.
+  const reasoning = readSrc("components/assistant-ui/reasoning.tsx");
+  assert.match(
+    reasoning,
+    /if \(open && !isReasoningStreaming\) \{\n\s*detachFromBottom\(\);\n\s*\}/,
+  );
+  for (const file of ["tool-group.tsx", "tool-fallback.tsx"]) {
+    const source = readSrc(`components/assistant-ui/${file}`);
+    assert.match(
+      source,
+      /if \(!open\) \{\n\s*lockScroll\(\);\n\s*\} else if \(!messageRunning\) \{\n\s*detachFromBottom\(\);\n\s*\}/,
+      file,
+    );
+  }
+  const hook = readSrc(
+    "components/assistant-ui/use-intent-aware-autoscroll.tsx",
+  );
+  assert.match(
+    hook,
+    /export function useDetachThreadFromBottom\(\): \(\) => void/,
+  );
+});
+
 test("the header row keeps its height when Copy appears", () => {
   const reasoning = readSrc("components/assistant-ui/reasoning.tsx");
   // A bare span would take the paragraph line-height and push the label down when opened.

@@ -11,6 +11,7 @@ import {
 import { Spinner } from "@/components/ui/spinner";
 // eslint-disable-next-line no-restricted-imports -- the feature barrel imports this component
 import { useChatPreferencesStore } from "@/features/chat/stores/chat-preferences-store";
+import { useDetachThreadFromBottom } from "@/components/assistant-ui/use-intent-aware-autoscroll";
 import { useCollapseScrollLock } from "@/hooks/use-collapse-scroll-lock";
 import {
   formatMcpToolName,
@@ -22,6 +23,7 @@ import { cn } from "@/lib/utils";
 import {
   type ToolCallMessagePartComponent,
   type ToolCallMessagePartStatus,
+  useAuiState,
 } from "@assistant-ui/react";
 import {
   AlertCircleIcon,
@@ -99,10 +101,17 @@ function ToolFallbackRoot({
     awaitingApproval ||
     (isControlled ? controlledOpen : syncedUncontrolledState.open);
 
+  // Opening by hand grows the card downward; see the same note in reasoning.tsx.
+  const detachFromBottom = useDetachThreadFromBottom();
+  const messageRunning = useAuiState(
+    ({ message }) => message.status?.type === "running",
+  );
   const handleOpenChange = useCallback(
     (open: boolean) => {
       if (!open) {
         lockScroll();
+      } else if (!messageRunning) {
+        detachFromBottom();
       }
       if (!isControlled) {
         setUncontrolledState({
@@ -112,7 +121,14 @@ function ToolFallbackRoot({
       }
       controlledOnOpenChange?.(open);
     },
-    [collapseByDefault, lockScroll, isControlled, controlledOnOpenChange],
+    [
+      collapseByDefault,
+      lockScroll,
+      isControlled,
+      controlledOnOpenChange,
+      detachFromBottom,
+      messageRunning,
+    ],
   );
 
   return (

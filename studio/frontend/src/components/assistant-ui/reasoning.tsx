@@ -52,6 +52,7 @@ import {
 } from "@/components/assistant-ui/thinking-fold";
 import { toolRunIsExempt } from "@/components/assistant-ui/tool-fold-exemptions";
 import { isRenderableRenderHtmlToolPart } from "@/features/chat/artifacts/html-fences";
+import { useDetachThreadFromBottom } from "@/components/assistant-ui/use-intent-aware-autoscroll";
 import { useCollapseScrollLock } from "@/hooks/use-collapse-scroll-lock";
 import { formatWorkedFor } from "@/lib/format-worked-for";
 import { cn } from "@/lib/utils";
@@ -995,9 +996,15 @@ const ReasoningGroupBlock = ({
   }, [foldLead, isOpen, roundKey]);
   useLayoutEffect(() => () => clearReasoningRound(roundKey), [roundKey]);
 
-  // Allow closing during streaming (matches ChatGPT).
+  // Opening by hand grows the block downward and leaves the header where it is. The viewport
+  // would otherwise treat the growth as new content and pin the bottom, which shoves the header
+  // up. Streaming keeps following: the auto-open is not a click and the stream should track.
+  const detachFromBottom = useDetachThreadFromBottom();
   const handleOpenChange = useCallback(
     (open: boolean) => {
+      if (open && !isReasoningStreaming) {
+        detachFromBottom();
+      }
       const next = resolveReasoningToggle(open, {
         isStreaming: isReasoningStreaming,
         collapseByDefault,
@@ -1010,7 +1017,7 @@ const ReasoningGroupBlock = ({
         setDismissedWhileStreaming(next.dismissedWhileStreaming);
       }
     },
-    [isReasoningStreaming, collapseByDefault],
+    [isReasoningStreaming, collapseByDefault, detachFromBottom],
   );
 
   return (

@@ -32,6 +32,7 @@ import {
   CollapsibleContent,
   CollapsibleTrigger,
 } from "@/components/ui/collapsible";
+import { useDetachThreadFromBottom } from "@/components/assistant-ui/use-intent-aware-autoscroll";
 import { useCollapseScrollLock } from "@/hooks/use-collapse-scroll-lock";
 import { cn } from "@/lib/utils";
 import { Spinner } from "@/components/ui/spinner";
@@ -95,17 +96,31 @@ function ToolGroupRoot({
   const isControlled = controlledOpen !== undefined;
   const isOpen = isControlled ? controlledOpen : syncedUncontrolledState.open;
 
+  // Opening by hand grows the group downward; see the same note in reasoning.tsx.
+  const detachFromBottom = useDetachThreadFromBottom();
+  const messageRunning = useAuiState(
+    ({ message }) => message.status?.type === "running",
+  );
   const handleOpenChange = useCallback(
     (open: boolean) => {
       if (!open) {
         lockScroll();
+      } else if (!messageRunning) {
+        detachFromBottom();
       }
       if (!isControlled) {
         setUncontrolledState({ collapseByDefault, open });
       }
       controlledOnOpenChange?.(open);
     },
-    [collapseByDefault, lockScroll, isControlled, controlledOnOpenChange],
+    [
+      collapseByDefault,
+      lockScroll,
+      isControlled,
+      controlledOnOpenChange,
+      detachFromBottom,
+      messageRunning,
+    ],
   );
 
   return (
