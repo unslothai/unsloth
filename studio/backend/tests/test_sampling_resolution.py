@@ -932,3 +932,45 @@ def test_count_tokens_rejects_an_effort_the_chat_endpoint_would_reject(effort):
         ChatCountTokensRequest.model_validate(
             {"messages": [{"role": "user", "content": "hi"}], "reasoning_effort": effort}
         )
+
+
+def test_raw_completions_are_never_priced_on_the_launch_mode(monkeypatch):
+    """/v1/completions keeps the flat row even when the load is thinking by default.
+
+    The raw endpoint renders no chat template, so the launch --chat-template-kwargs that
+    decide whether a chat request reasons never apply to it. Pricing a raw continuation on
+    the launch mode would re-price it on the strength of how the model happens to be loaded.
+    The two endpoints therefore disagree for one loaded model, deliberately.
+    """
+    from models.inference import ChatCompletionRequest
+    from routes import inference as inference_route
+
+    model_id = "unsloth/Qwen3.8-27B-GGUF"
+    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: _loaded_qwen38_backend())
+
+    body = {"model": model_id, "prompt": "hi"}
+    inference_route._fill_recommended_sampling_completions(body, model_id)
+
+    chat = ChatCompletionRequest(model = model_id, messages = [{"role": "user", "content": "hi"}])
+    inference_route._normalize_chat_reasoning_controls(chat)
+    inference_route._fill_recommended_sampling_openai(chat, model_id)
+
+    # The same loaded model, the same silent request shape, two different rows.
+    assert (body["temperature"], body["top_p"], body["presence_penalty"]) == (0.7, 0.8, 1.5)
+    assert (chat.temperature, chat.top_p, chat.presence_penalty) == (1.0, 0.95, 0.0)
+
+
+def test_the_status_inference_block_is_not_the_mode_aware_one():
+    """/inference/status still answers with the flat family row.
+
+    The Chat UI reaches the thinking row by layering resolveQwenThinkingParams over this
+    block, not because the block itself resolves a mode. Pinned so a later change to
+    load_inference_config's callers has to decide this on purpose.
+    """
+    from utils.inference.inference_config import load_inference_config
+
+    model_id = "unsloth/Qwen3.8-27B-GGUF"
+    status_block = load_inference_config(model_id)
+    assert (status_block["temperature"], status_block["presence_penalty"]) == (0.7, 1.5)
+    mode_aware = load_inference_config(model_id, thinking_mode = True)
+    assert (mode_aware["temperature"], mode_aware["presence_penalty"]) == (1.0, 0.0)

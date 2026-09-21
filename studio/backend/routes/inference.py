@@ -23959,10 +23959,17 @@ def _sampling_thinking_mode(payload, model_id) -> Optional[bool]:
     so sampling cannot disagree with generation: it honors always-on templates that
     ignore an off control, effort-dial families that map "off" onto a low-but-thinking
     effort, and -- when the request sends nothing -- the mode Studio launched the model
-    in. That last case is the common one: Qwen3.8 thinks by default, its card pairs that
-    with presence_penalty 0.0, and the Chat UI already seeds itself this way
-    (apply-inference-status-to-store.ts). Without a live backend only the request can
-    speak, so the historical flat preset stands.
+    in. That last case is the common one: Qwen3.8 thinks by default and its card pairs
+    that with presence_penalty 0.0, so a silent request is now priced the way it is
+    actually generated. Without a live backend only the request can speak, so the
+    historical flat preset stands.
+
+    The Chat UI arrives at the same row, but not through this function and not through
+    the ``.inference`` block of load/status: that block is ``load_inference_config``
+    with no mode and still answers with the flat family row. The UI matches because
+    apply-inference-status-to-store.ts layers resolveQwenThinkingParams over
+    mergeBackendRecommendedInference. Any other reader of /inference/status sees the
+    flat row, so do not treat that payload as the mode-aware one.
     """
     backend = _loaded_llama_backend_for(model_id)
     # "Cannot answer" is not the same as "answered no": a backend reporting
@@ -24015,6 +24022,15 @@ def _fill_recommended_sampling_completions(body: dict, model_id) -> None:
     (``fill_defaults = False``) so llama-server keeps its own default rather than being forced onto
     this schema's value. llama-server names the repetition knob ``repeat_penalty``, so read and
     write that alias for the client-sent value and any pin.
+
+    Deliberately NOT mode-aware, unlike :func:`_fill_recommended_sampling_openai`. This endpoint
+    renders no chat template, so the launch-time ``--chat-template-kwargs`` that decide whether a
+    chat request reasons never reach it: the prompt is proxied exactly as sent. A per-mode row
+    here would price a raw continuation as a reasoning turn on the strength of how the model
+    happens to be loaded, so the flat family row stays. The consequence is that /v1/completions
+    and /v1/chat/completions can answer with different sampling for one loaded model; that is the
+    two endpoints meaning different things, not a gap. Pinned by
+    test_raw_completions_are_never_priced_on_the_launch_mode.
     """
     from utils.inference.inference_config import resolve_effective_sampling, SAMPLING_FIELD_NAMES
 
