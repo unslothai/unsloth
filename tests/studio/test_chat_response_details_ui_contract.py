@@ -187,7 +187,13 @@ _ARBITRARY_MIN_WIDTH = re.compile(r"(?:^|:)!?\[min-width:[^\]]*\]!?$")
 def _is_min_width(token: str) -> bool:
     if _ARBITRARY_MIN_WIDTH.search(token.removeprefix("!")):
         return True
-    _, _, utility = token.rpartition(":")
+    # Variants are separated by `:`, but an arbitrary value can hold one of its own:
+    # `min-w-[length:max-content]` compiles to `min-width: max-content` and drops an earlier
+    # `min-w-0` through tailwind-merge, while splitting on the last `:` left `max-content]`
+    # and this reader saw no min-width at all. Bracketed spans are masked before the split.
+    masked = re.sub(r"\[[^\]]*\]", lambda found: "\x00" * len(found.group(0)), token)
+    _, _, tail = masked.rpartition(":")
+    utility = token[len(masked) - len(tail) :]
     return utility.removeprefix("!").removesuffix("!").startswith("min-w-")
 
 
@@ -463,6 +469,14 @@ def test_response_model_badge_is_user_configurable_and_rendered_once_per_message
     # the component matched nothing at all, so half of this check was vacuous and an inline
     # width on the real header went straight through.
     for tag in [*_opening_tags(live, "<ReasoningTrigger"), *header_tags]:
+        # A spread can carry `style` as easily as an attribute can, and its contents are not
+        # resolvable here: `{...{ style: { minWidth: "max-content" } }}` applies the same
+        # override, and writing it before `className` keeps the class list readable so every
+        # width check below stays green.
+        assert not _spread_overrides(tag, "style"), (
+            f"an element the min-w-0 chain depends on takes a spread that may carry a style, "
+            f"which would outrank the utilities this guard compares: {tag!r}"
+        )
         assert not re.search(r"(?:^|[\s{])style=", tag), (
             f"an element the min-w-0 chain depends on carries an inline style, which outranks "
             f"the utilities this guard compares, so the width it computes is not the width "

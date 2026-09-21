@@ -1235,7 +1235,19 @@ def _labelled_actions(
         # on exactly the path this test is about, and matching only the unqualified spelling
         # let it through: the reach would then be taken from the CSS modifier, or from zero,
         # while the action rendered far into the title on every touch device.
-        utility = [token for token in worn if re.fullmatch(r"(?:\S*:)?right-\S+", token)]
+        # `right-*` was the only positioning refused, and it is not the only one that moves
+        # the action. A transform is the clearest case: `-translate-x-20` slides the pin five
+        # rem toward the title with its `right` untouched, so the computed reach did not
+        # change and the contract passed. Anything else that shifts the box horizontally, or
+        # sets the same edge by another route, belongs here for the same reason: the reach is
+        # derived from `right` and `padding-right` alone, and a utility outside that model
+        # renders something this arithmetic does not describe.
+        unmodelled = r"(?:-?translate-x|-?translate|inset-x|inset|left|-?mr|-?me)-\S+|transform"
+        utility = [
+            token
+            for token in worn
+            if re.fullmatch(rf"(?:\S*:)?(?:right-\S+|{unmodelled})", token)
+        ]
         assert not utility, (
             f"the {name} action is positioned with {utility}, which this guard does not model: "
             f"it reads the row's action offsets from index.css, so state the offset there"
