@@ -1138,3 +1138,41 @@ def test_an_anthropic_derived_boolean_stays_out_of_the_explicit_field_set():
     inference_route._normalize_chat_reasoning_controls(payload)
     # The nested control is the higher-priority source, so it wins over the derived one.
     assert payload.enable_thinking is False
+
+
+def test_a_non_gguf_load_keeps_the_flat_preset_for_a_silent_request(monkeypatch):
+    """transformers and MLX loads are deliberately not priced on a launch mode.
+
+    Studio picks the llama.cpp mode itself at launch and records it as
+    reasoning_default, which is why that path can resolve a silent request. Nothing
+    records the equivalent for a locally served transformers or MLX model:
+    detect_reasoning_flags reports whether a template CAN reason, never what it does
+    when the kwarg is absent, and apply_chat_template_for_generation omits the kwarg
+    entirely in that case. Giving this path a mode means declaring a per-family
+    default or detecting the template's own, which changes every reasoning family.
+    Until then the historical flat row stands here, and this pins that it is a choice.
+    """
+    from models.inference import ChatCompletionRequest
+    from routes import inference as inference_route
+
+    model_id = "unsloth/Qwen3.8-27B"
+    # No llama.cpp backend is serving this id: the MLX / transformers shape.
+    monkeypatch.setattr(
+        inference_route, "get_llama_cpp_backend", lambda: _loaded_qwen38_backend(is_loaded = False)
+    )
+    payload = ChatCompletionRequest(model = model_id, messages = [{"role": "user", "content": "hi"}])
+    inference_route._normalize_chat_reasoning_controls(payload)
+
+    assert inference_route._sampling_thinking_mode(payload, model_id) is None
+    inference_route._fill_recommended_sampling_openai(payload, model_id)
+    assert (payload.temperature, payload.top_p, payload.presence_penalty) == (0.7, 0.8, 1.5)
+
+    # An explicit control still reaches the mode-specific row on the same load.
+    explicit = ChatCompletionRequest(
+        model = model_id,
+        messages = [{"role": "user", "content": "hi"}],
+        enable_thinking = True,
+    )
+    inference_route._normalize_chat_reasoning_controls(explicit)
+    inference_route._fill_recommended_sampling_openai(explicit, model_id)
+    assert (explicit.temperature, explicit.presence_penalty) == (1.0, 0.0)
