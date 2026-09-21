@@ -1712,29 +1712,20 @@ def _llm_compressor_imports_cleanly():
 def _path_entry_provides_llm_compressor(entry):
     """Would a fresh interpreter find an ``llmcompressor`` to import under *entry*?
 
-    Only the shapes an import reaches as a top-level name: a package directory, a module
-    file, a compiled extension. A directory with no ``__init__`` is left out deliberately --
-    llm-compressor is a regular package, and counting any same-named directory would let an
-    empty folder on PYTHONPATH veto a good wheel.
+    Asked of the import machinery rather than of the filesystem, because a path entry is not
+    always a directory: a .zip or .egg on PYTHONPATH is searched by the zipimporter, and a
+    shape check missed it entirely. A NAMESPACE match does not count -- llm-compressor is a
+    regular package, and treating any same-named empty folder as a provider would let one on
+    PYTHONPATH veto a perfectly good wheel.
     """
-    candidates = (
-        os.path.join(entry, "llmcompressor", "__init__.py"),
-        os.path.join(entry, "llmcompressor", "__init__.pyc"),
-        os.path.join(entry, "llmcompressor.py"),
-    )
-    for candidate in candidates:
-        try:
-            if os.path.exists(candidate):
-                return True
-        except Exception:
-            continue
     try:
-        import glob as _glob
-        return bool(_glob.glob(os.path.join(entry, "llmcompressor.*.so"))) or bool(
-            _glob.glob(os.path.join(entry, "llmcompressor.pyd"))
-        )
+        from importlib.machinery import PathFinder
+        spec = PathFinder.find_spec("llmcompressor", [entry])
     except Exception:
         return False
+    if spec is None:
+        return False
+    return spec.loader is not None and spec.origin not in (None, "namespace")
 
 
 def _llm_compressor_module_is_usable(module):

@@ -765,3 +765,60 @@ def test_a_stale_module_is_evicted_before_the_reimport(monkeypatch):
     assert (
         "llmcompressor" not in sys.modules or sys.modules["llmcompressor"] is not stale
     ), "the repair returned the very module the pin excludes"
+
+
+def test_a_zip_on_the_path_is_a_provider_too(tmp_path, monkeypatch):
+    """A path entry is not always a directory: the zipimporter searches .zip and .egg.
+
+    A shape check missed an archived llmcompressor entirely, so a checkout zipped onto
+    PYTHONPATH -- which the child imports first -- let the cached wheel satisfy the fast path
+    and skip both the probe and the repair.
+    """
+    import zipfile
+
+    from unsloth.save import _llm_compressor_module_is_usable, _path_entry_provides_llm_compressor
+
+    archive = tmp_path / "shadow.zip"
+    with zipfile.ZipFile(archive, "w") as zf:
+        zf.writestr("llmcompressor/__init__.py", "__version__ = '0.13.0'\n")
+    assert (
+        _path_entry_provides_llm_compressor(str(archive)) is True
+    ), "an archived llmcompressor on the path was not seen as a provider"
+
+    # The premise, measured: a child really does import it from there.
+    probe = tmp_path / "probe.py"
+    probe.write_text("import llmcompressor, sys\nprint(llmcompressor.__version__)\n")
+    seen = subprocess.run(
+        [sys.executable, str(probe)],
+        env = {**os.environ, "PYTHONPATH": str(archive)},
+        stdout = subprocess.PIPE,
+        stderr = subprocess.DEVNULL,
+        text = True,
+    )
+    assert (
+        seen.stdout.strip() == "0.13.0"
+    ), "the interpreter no longer imports a package out of a zip on PYTHONPATH"
+
+    # So the cached wheel does not answer for it.
+    import sysconfig
+
+    site_package = tmp_path / "site-packages" / "llmcompressor"
+    site_package.mkdir(parents = True)
+    (site_package / "__init__.py").write_text("")
+    monkeypatch.setattr(
+        sysconfig, "get_paths", lambda: {"purelib": str(tmp_path / "site-packages")}
+    )
+    monkeypatch.setenv("PYTHONPATH", str(archive))
+    assert (
+        _llm_compressor_module_is_usable(_module_at(str(site_package / "__init__.py"), "0.12.0"))
+        is False
+    ), "the cached wheel answered for an archived checkout the child reaches first"
+
+    # An empty directory still provides nothing, so it does not force a probe.
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    assert _path_entry_provides_llm_compressor(str(empty)) is False
+    # Nor does a same-named directory with no __init__, which is a namespace portion.
+    namespace = tmp_path / "ns" / "llmcompressor"
+    namespace.mkdir(parents = True)
+    assert _path_entry_provides_llm_compressor(str(tmp_path / "ns")) is False
