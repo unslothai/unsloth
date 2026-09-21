@@ -11,10 +11,14 @@ surfaces on a Windows runner as a file that suddenly has no tests at all. Found 
 that way: tests/python/test_docker_rocm.py errored on a windows-latest staging run while
 Linux and macOS both reported 70 passed.
 
-Two guards are accepted, both already used in the tree:
+Two guards are accepted, both already used in the tree, and their POLARITY is checked
+rather than their presence:
 
     os.name != "posix" or os.geteuid() == 0        short-circuits on Windows
     os.geteuid() == 0 if hasattr(os, "geteuid")    the conditional form
+
+`os.name == "posix" or os.geteuid() == 0` mentions the same attribute and spares nothing,
+so it is flagged.
 
 A third form in the tree, `getattr(os, "geteuid", lambda: 1)()`, needs no case: it names
 the function with a string, so it never reaches this scan at all. And nothing else counts
@@ -23,7 +27,10 @@ still raises on Windows every time is_ci() is false.
 
 Runtime uses inside a function body are not covered here: they only run on a platform
 the test already reached, and a POSIX-only test that gets that far has a skip of its own.
-A default argument is not a runtime use, because it is evaluated where the `def` is.
+A default argument is not a runtime use, because it is evaluated where the `def` is, and
+neither is an annotation in a module without `from __future__ import annotations`. A `def`
+nested inside another function is the other way round: nothing of it is evaluated until
+the outer one runs, so none of it can break collection.
 """
 
 from __future__ import annotations
@@ -44,11 +51,12 @@ def _is_os_geteuid(node: ast.AST) -> bool:
     )
 
 
-def _mentions_os_name(node: ast.AST) -> bool:
-    return any(
-        isinstance(n, ast.Attribute) and n.attr == "name" and isinstance(n.value, ast.Name)
-        and n.value.id == "os"
-        for n in ast.walk(node)
+def _is_os_name(node: ast.AST) -> bool:
+    return (
+        isinstance(node, ast.Attribute)
+        and node.attr == "name"
+        and isinstance(node.value, ast.Name)
+        and node.value.id == "os"
     )
 
 
@@ -65,50 +73,120 @@ def _is_hasattr_geteuid(node: ast.AST) -> bool:
     )
 
 
-def _guards(expr: ast.AST) -> list[ast.AST]:
-    """Every subexpression that would spare `os.geteuid` on a platform without it."""
-    out: list[ast.AST] = []
-    for node in ast.walk(expr):
-        if isinstance(node, ast.BoolOp):
-            # `A or geteuid()` and `A and geteuid()` both spare it when A settles the
-            # answer first, so only the values BEFORE the call count as its guard.
-            for value in node.values:
-                if any(_is_os_geteuid(n) for n in ast.walk(value)):
-                    break
-                out.append(value)
-        elif isinstance(node, ast.IfExp):
-            out.append(node.test)
-    return out
+def _windows_value(node: ast.AST) -> bool | None:
+    """What this expression is worth ON WINDOWS, or None when that is not decidable
+    from the source. Polarity is the whole point: `os.name != "posix"` spares the call
+    to its right and `os.name == "posix"` does not, and a scan that only looked for the
+    words `os.name` would accept both and pass the failure it exists to catch."""
+    if isinstance(node, ast.Constant) and isinstance(node.value, bool):
+        return node.value
+    if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.Not):
+        inner = _windows_value(node.operand)
+        return None if inner is None else not inner
+    if _is_hasattr_geteuid(node):
+        return False
+    if isinstance(node, ast.BoolOp):
+        values = [_windows_value(value) for value in node.values]
+        if isinstance(node.op, ast.Or):
+            if any(value is True for value in values):
+                return True
+            return False if all(value is False for value in values) else None
+        if any(value is False for value in values):
+            return False
+        return True if all(value is True for value in values) else None
+    if isinstance(node, ast.Compare) and len(node.ops) == 1:
+        left, op, right = node.left, node.ops[0], node.comparators[0]
+        if _is_os_name(right) and isinstance(left, ast.Constant):
+            left, right = right, left
+        if _is_os_name(left) and isinstance(right, ast.Constant) and isinstance(right.value, str):
+            equal = right.value == "nt"  # os.name on every Windows CPython
+            if isinstance(op, ast.Eq):
+                return equal
+            if isinstance(op, ast.NotEq):
+                return not equal
+    return None
+
+
+def _spared_on_windows(node: ast.AST, parents: dict[ast.AST, ast.AST]) -> bool:
+    """Walk out from the `os.geteuid` itself and ask each enclosing operator whether it
+    can be reached on a platform without the attribute."""
+    child = node
+    parent = parents.get(child)
+    while parent is not None:
+        if isinstance(parent, ast.BoolOp) and child in parent.values:
+            for earlier in parent.values[: parent.values.index(child)]:
+                value = _windows_value(earlier)
+                if isinstance(parent.op, ast.Or) and value is True:
+                    return True  # `os.name != "posix" or geteuid()` never gets there
+                if isinstance(parent.op, ast.And) and value is False:
+                    return True  # `hasattr(...) and geteuid()` never gets there
+        elif isinstance(parent, ast.IfExp):
+            test = _windows_value(parent.test)
+            if child is parent.body and test is False:
+                return True
+            if child is parent.orelse and test is True:
+                return True
+        child, parent = parent, parents.get(parent)
+    return False
 
 
 def _is_guarded(expr: ast.AST) -> bool:
-    """Only `os.name` and `hasattr(os, "geteuid")` count. Anything else that merely sits
-    to the left of the call is not a guard: `is_ci() or os.geteuid() == 0` still raises
-    on Windows every time is_ci() is false, so accepting any call there would wave through
-    the exact regression this scan exists to catch.
+    """Whether every `os.geteuid` in this expression is unreachable on Windows.
+
+    Only `os.name` comparisons and `hasattr(os, "geteuid")` decide anything. Nothing
+    else counts for merely sitting to the left of the call: `is_ci() or os.geteuid() == 0`
+    still raises every time is_ci() is false.
 
     `getattr(os, "geteuid", lambda: 1)()` needs no case: it names the function with a
     string, so it has no `os.geteuid` attribute node and never reaches the scan at all."""
+    parents: dict[ast.AST, ast.AST] = {}
+    for node in ast.walk(expr):
+        for child in ast.iter_child_nodes(node):
+            parents[child] = node
+    return all(_spared_on_windows(node, parents) for node in ast.walk(expr) if _is_os_geteuid(node))
+
+
+def _definition_expressions(node: ast.AST, eager_annotations: bool):
+    """The parts of a `def` or `class` evaluated where it is written, not where it runs."""
+    yield from node.decorator_list
+    if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+        return
+    args = node.args
+    yield from args.defaults
+    yield from (default for default in args.kw_defaults if default)
+    if eager_annotations:
+        # `from __future__ import annotations` turns these into strings; without it they
+        # are evaluated at the `def`, so `def helper(uid: os.geteuid()): ...` breaks
+        # collection exactly like a decorator does
+        if node.returns is not None:
+            yield node.returns
+        every = [*args.posonlyargs, *args.args, *args.kwonlyargs, args.vararg, args.kwarg]
+        yield from (arg.annotation for arg in every if arg is not None and arg.annotation)
+
+
+def _has_future_annotations(tree: ast.Module) -> bool:
     return any(
-        _mentions_os_name(guard) or _is_hasattr_geteuid(guard) for guard in _guards(expr)
+        isinstance(node, ast.ImportFrom)
+        and node.module == "__future__"
+        and any(alias.name == "annotations" for alias in node.names)
+        for node in tree.body
     )
 
 
-def _import_time_expressions(tree: ast.AST):
+def _import_time_expressions(tree: ast.Module):
     """Yield the expressions evaluated when the module is imported: the module body,
-    class bodies (which run on import too), and every decorator anywhere."""
+    class bodies (which run on import too), and the decorators, defaults and eager
+    annotations of every definition reached at import."""
+    eager_annotations = not _has_future_annotations(tree)
 
     def walk(node: ast.AST, import_time: bool):
         for child in ast.iter_child_nodes(node):
             if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-                for decorator in child.decorator_list:
-                    yield decorator
-                if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                    # a default is evaluated where the `def` is, not where the call is,
-                    # so `def helper(uid = os.geteuid()): ...` breaks collection too
-                    args = child.args
-                    for default in (*args.defaults, *(d for d in args.kw_defaults if d)):
-                        yield default
+                if import_time:
+                    # A `def` nested in another function is not evaluated until the outer
+                    # one runs, so its decorators and defaults cannot break collection and
+                    # are not flagged. Only a definition reached at import counts.
+                    yield from _definition_expressions(child, eager_annotations)
                 yield from walk(child, isinstance(child, ast.ClassDef) and import_time)
             else:
                 if import_time:
@@ -147,15 +225,15 @@ def test_the_scan_still_recognises_an_unguarded_call():
     """The scan is only worth anything if it would still fail. Both shapes, since the
     decorator on a method inside a class is how the live one was written."""
     bad_module = ast.parse(
-        'import os, pytest\n'
+        "import os, pytest\n"
         '@pytest.mark.skipif(os.geteuid() == 0, reason = "x")\n'
-        'def test_a(): pass\n'
+        "def test_a(): pass\n"
     )
     bad_method = ast.parse(
-        'import os, pytest\n'
-        'class TestB:\n'
+        "import os, pytest\n"
+        "class TestB:\n"
         '    @pytest.mark.skipif(os.geteuid() != 0, reason = "x")\n'
-        '    def test_b(self): pass\n'
+        "    def test_b(self): pass\n"
     )
     for tree in (bad_module, bad_method):
         found = [
@@ -166,13 +244,13 @@ def test_the_scan_still_recognises_an_unguarded_call():
         assert found, "an unguarded os.geteuid decorator no longer trips the scan"
 
     good = ast.parse(
-        'import os, pytest\n'
+        "import os, pytest\n"
         '@pytest.mark.skipif(os.name != "posix" or os.geteuid() == 0, reason = "x")\n'
-        'def test_c(): pass\n'
-        '@pytest.mark.skipif(\n'
+        "def test_c(): pass\n"
+        "@pytest.mark.skipif(\n"
         '    os.geteuid() == 0 if hasattr(os, "geteuid") else True, reason = "x"\n'
-        ')\n'
-        'def test_d(): pass\n'
+        ")\n"
+        "def test_d(): pass\n"
         '_ROOT = getattr(os, "geteuid", lambda: 1)() == 0\n'
     )
     for expr in _import_time_expressions(good):
@@ -185,9 +263,9 @@ def test_an_unrelated_call_to_the_left_is_not_a_guard():
     Windows it still raises the rest of the time. Treating any call as protective would
     wave through exactly what this scan exists to catch."""
     tree = ast.parse(
-        'import os, pytest\n'
+        "import os, pytest\n"
         '@pytest.mark.skipif(is_ci() or os.geteuid() == 0, reason = "x")\n'
-        'def test_a(): pass\n'
+        "def test_a(): pass\n"
     )
     flagged = [
         expr
@@ -214,5 +292,72 @@ def test_a_runtime_call_inside_a_function_is_not_flagged():
     own business and is left alone, or every POSIX helper in the tree would be noise."""
     tree = ast.parse("import os\ndef test_x():\n    if os.geteuid() == 0:\n        return\n")
     assert not [
-        expr for expr in _import_time_expressions(tree) if any(_is_os_geteuid(n) for n in ast.walk(expr))
+        expr
+        for expr in _import_time_expressions(tree)
+        if any(_is_os_geteuid(n) for n in ast.walk(expr))
     ]
+
+
+def _flagged(source: str) -> list[int]:
+    tree = ast.parse(source)
+    return [
+        node.lineno
+        for expr in _import_time_expressions(tree)
+        for node in ast.walk(expr)
+        if _is_os_geteuid(node) and not _is_guarded(expr)
+    ]
+
+
+def test_an_os_name_guard_is_read_for_polarity_not_presence():
+    """`os.name == "posix" or os.geteuid() == 0` names the same attribute as the real
+    guard and spares nothing: on Windows the left side is false, so the call is reached.
+    A scan that matched the words alone would pass exactly this."""
+    assert _flagged(
+        "import os, pytest\n"
+        '@pytest.mark.skipif(os.name == "posix" or os.geteuid() == 0, reason = "x")\n'
+        "def test_a(): pass\n"
+    )
+    assert _flagged(
+        "import os, pytest\n"
+        '@pytest.mark.skipif(os.name != "posix" and os.geteuid() == 0, reason = "x")\n'
+        "def test_b(): pass\n"
+    )
+    # the two that do spare it, and the mirrored and negated spellings of each
+    for guard in (
+        'os.name != "posix" or os.geteuid() == 0',
+        '"posix" != os.name or os.geteuid() == 0',
+        'os.name == "nt" or os.geteuid() == 0',
+        'not (os.name == "posix") or os.geteuid() == 0',
+        'os.name == "posix" and os.geteuid() == 0',
+        'hasattr(os, "geteuid") and os.geteuid() == 0',
+        'os.geteuid() == 0 if hasattr(os, "geteuid") else True',
+    ):
+        assert not _flagged(
+            f'import os, pytest\n@pytest.mark.skipif({guard}, reason = "x")\ndef test_c(): pass\n'
+        ), guard
+
+
+def test_an_annotation_is_import_time_only_without_the_future_import():
+    """Without `from __future__ import annotations` an annotation is evaluated at the
+    `def`; with it, it is a string and cannot raise."""
+    body = "import os\ndef helper(uid: os.geteuid() = 1) -> os.geteuid():\n    return uid\n"
+    assert _flagged(body)
+    assert not _flagged("from __future__ import annotations\n" + body)
+
+
+def test_a_nested_definition_is_not_import_time():
+    """A `def` inside a function is not evaluated until the outer one runs, so its
+    decorator cannot break collection and must not be reported."""
+    assert not _flagged(
+        "import os, pytest\n"
+        "def test_outer():\n"
+        '    @pytest.mark.skipif(os.geteuid() == 0, reason = "x")\n'
+        "    def inner(uid = os.geteuid()): pass\n"
+    )
+    # but a method of a class defined at module level still is
+    assert _flagged(
+        "import os, pytest\n"
+        "class TestA:\n"
+        '    @pytest.mark.skipif(os.geteuid() == 0, reason = "x")\n'
+        "    def test_b(self): pass\n"
+    )
