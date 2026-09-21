@@ -4978,27 +4978,23 @@ class TestUpstreamDigestKeepsTheFunctionalSmokeTest:
         }
 
     def test_upstream_attempts_are_marked_as_carrying_an_unmanifested_digest(self):
-        plan = direct_upstream_release_plan(
-            self._release(), self._host(), UPSTREAM_REPO, "latest"
-        )
+        plan = direct_upstream_release_plan(self._release(), self._host(), UPSTREAM_REPO, "latest")
         assert plan.attempts
         for attempt in plan.attempts:
             assert attempt.expected_sha256, attempt.name
-            assert attempt.unmanifested_digest, (
-                f"{attempt.name} would skip the smoke test on the strength of a release digest"
-            )
+            assert (
+                attempt.unmanifested_digest
+            ), f"{attempt.name} would skip the smoke test on the strength of a release digest"
 
     def test_the_smoke_test_still_runs_for_every_upstream_attempt(self, monkeypatch):
         monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "_RUN_STAGED_PREBUILT_VALIDATION", False)
         monkeypatch.delenv("UNSLOTH_LLAMA_STAGED_VALIDATION", raising = False)
         assert not INSTALL_LLAMA_PREBUILT.staged_validation_enabled()
-        plan = direct_upstream_release_plan(
-            self._release(), self._host(), UPSTREAM_REPO, "latest"
-        )
+        plan = direct_upstream_release_plan(self._release(), self._host(), UPSTREAM_REPO, "latest")
         for attempt in plan.attempts:
-            assert INSTALL_LLAMA_PREBUILT.prebuilt_needs_functional_validation(attempt), (
-                f"{attempt.name} lost the functional smoke test it ran while hashless"
-            )
+            assert INSTALL_LLAMA_PREBUILT.prebuilt_needs_functional_validation(
+                attempt
+            ), f"{attempt.name} lost the functional smoke test it ran while hashless"
 
     def test_a_manifest_approved_bundle_still_skips_it(self, monkeypatch):
         """The negative control: the expensive-path gate must still be reachable."""
@@ -5047,10 +5043,7 @@ class TestUpstreamDigestKeepsTheFunctionalSmokeTest:
         assert stale == ["if choice.expected_sha256 is None:"], stale
 
     def test_every_upstream_attempt_resolves_the_probe_up_front(self):
-        plan = direct_upstream_release_plan(
-            self._release(), self._host(), UPSTREAM_REPO, "latest"
-        )
+        plan = direct_upstream_release_plan(self._release(), self._host(), UPSTREAM_REPO, "latest")
         assert any(
-            INSTALL_LLAMA_PREBUILT.prebuilt_needs_functional_validation(a)
-            for a in plan.attempts
+            INSTALL_LLAMA_PREBUILT.prebuilt_needs_functional_validation(a) for a in plan.attempts
         ), "the probe would be resolved lazily inside the per-candidate handler"

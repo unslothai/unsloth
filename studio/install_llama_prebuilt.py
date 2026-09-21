@@ -10606,8 +10606,7 @@ def install_prebuilt(
                     )
                     # Outside the handler, so a transient failure cannot demote to an older release.
                     if not probe_resolved and any(
-                        prebuilt_needs_functional_validation(attempt)
-                        for attempt in plan.attempts
+                        prebuilt_needs_functional_validation(attempt) for attempt in plan.attempts
                     ):
                         probe = resolve_validation_model(probe)
                         probe_resolved = True
