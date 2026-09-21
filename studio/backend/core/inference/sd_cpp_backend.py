@@ -3317,7 +3317,13 @@ class SdCppDiffusionBackend:
                     ),
                 }
             except SdCppCancelled as exc:
+                # Recorded per attempt as well, like the branch below: a cancel by an
+                # unload or a superseding load produced no image, so a client settling a
+                # lost POST must not read the transition to idle as its own success. The
+                # diffusers engine reaches its generic handler for this and is covered
+                # there; this branch is separate and would otherwise be silent.
                 self._last_generate_error = DIFFUSION_CANCELLED_MSG
+                _retain_generate_failure(self, attempt_id, DIFFUSION_CANCELLED_MSG)
                 raise RuntimeError(DIFFUSION_CANCELLED_MSG) from exc
             except BaseException as exc:
                 # See the diffusers engine: idle progress is the only channel left once the

@@ -231,3 +231,22 @@ def test_the_progress_route_answers_about_the_attempt_it_was_asked_about():
     assert "if attempt_id is not None:" in body, (
         "an older client with no attempt id no longer gets the retained slot"
     )
+
+
+def test_the_native_cancel_branch_records_its_attempt_too():
+    """sd.cpp catches SdCppCancelled before the generic handler.
+
+    An unload or a superseding load cancels the run; no image was produced, so a client
+    settling a lost POST has to be told. The keyed lookup answers whenever the client names
+    its attempt, so a branch that only wrote the single slot left that client reading idle
+    as success. The diffusers engine raises RuntimeError for the same case and reaches its
+    generic handler, which already records.
+    """
+    src = _src("core/inference/sd_cpp_backend.py")
+    at = src.index("except SdCppCancelled as exc:")
+    branch = src[at : at + 700]
+    assert "_retain_generate_failure(self, attempt_id, DIFFUSION_CANCELLED_MSG)" in branch, (
+        "a cancelled native generation records nothing against its attempt"
+    )
+    # Before the re-raise, or it never runs.
+    assert branch.index("_retain_generate_failure") < branch.index("raise RuntimeError(")
