@@ -294,7 +294,11 @@ def _unknown_user_key(request: Request | None) -> tuple[str, str]:
 
 
 def _desktop_login_key(request: Request | None) -> tuple[str, str]:
-    return (_client_ip(request), _DESKTOP_LOGIN_USER)
+    # The address is suffixed as well as the username, so the per-IP aggregate and its overflow shard are
+    # this route's own too. Sharing those with /login couples them in the direction that matters most:
+    # cloudflared and the desktop shell both reach the backend over loopback, so they are ONE address, and
+    # thirty password guesses through the tunnel would 429 the shell's valid secret exchange.
+    return (_client_ip(request) + _DESKTOP_LOGIN_USER, _DESKTOP_LOGIN_USER)
 
 
 def _prune_bucket(bucket: deque, now: float) -> None:

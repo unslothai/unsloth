@@ -1341,6 +1341,34 @@ def test_desktop_login_failures_do_not_lock_everyone_out_of_login():
     assert auth_route._desktop_login_key(None)[1] != auth_route._unknown_user_key(None)[1]
 
 
+def test_a_password_spray_does_not_lock_the_desktop_shell_out():
+    """The other direction: /login's per-IP aggregate must not withhold the shell's own secret.
+
+    cloudflared and the desktop shell both reach the backend over loopback, and
+    UNSLOTH_STUDIO_TRUST_FORWARDED is off by default, so every tunnel visitor and the shell are
+    ONE address. Sharing the aggregate lets a remote visitor spray thirty password guesses a
+    minute and keep the shell's valid exchange at 429, which it reads as its own healthy backend
+    being unmanageable. On main this route consulted no bucket at all, so the coupling arrived
+    with the throttle.
+    """
+    seed_user(must_change_password = False)
+    raw = storage.create_desktop_secret()
+    auth_route = auth_route_module()
+    client = auth_client(auth_route)
+
+    assert client.post("/api/auth/desktop-login", json = {"secret": raw}).status_code == 200
+
+    for i in range(auth_route._LOGIN_IP_MAX_FAILS):
+        client.post("/api/auth/login", json = {"username": f"sprayed{i}", "password": "wrong-pw-1"})
+
+    admitted = client.post("/api/auth/desktop-login", json = {"secret": raw})
+    assert admitted.status_code == 200, "a password spray locked the shell out of its own backend"
+    assert admitted.json()["access_token"]
+    # /login is still throttled by its own aggregate, which is the point of that aggregate.
+    blocked = client.post("/api/auth/login", json = {"username": "sprayed0", "password": "wrong-pw-1"})
+    assert blocked.status_code == 429
+
+
 def test_a_desktop_exchange_does_not_reset_the_shared_password_throttle():
     """The desktop secret proves the shell owns the backend, not that anyone signed in.
 
