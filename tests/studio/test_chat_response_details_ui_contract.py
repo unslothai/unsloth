@@ -67,7 +67,11 @@ def _class_list(source: str, marker: str) -> str | None:
     # spreads props is an element whose class list is unknown, which is not the same as one
     # that states none: returning None would send the caller back to the base classes and
     # let an override through.
-    if re.search(r"\{\s*\.\.\.", opening):
+    #
+    # Only a spread AFTER the explicit attribute, though. JSX applies attributes in order, so
+    # `{...props} className="min-w-0"` ends with the explicit one whatever the spread holds,
+    # and refusing that shape would fail a safe refactor rather than catch anything.
+    if _spread_overrides(opening, "className"):
         return _UNREADABLE
     # On an attribute boundary, so that the name has to be the whole attribute. Unanchored,
     # `data-className="flex min-w-0"` matched on its suffix and its tokens came back as the
@@ -246,6 +250,24 @@ def _opening_tag(source: str, marker: str) -> str | None:
         elif source[index] == ">" and depth == 0:
             return _without_comments(source[opens : index + 1])
     return None
+
+
+def _spread_overrides(tag: str, attribute: str) -> bool:
+    """True when `tag` spreads props in a position that can beat an explicit `attribute`.
+
+    JSX applies attributes left to right and the last write wins, so `{...props} name={x}`
+    ends with `x` whatever the spread holds, while `name={x} {...props}` does not. Refusing
+    both would make the guard red on a safe refactor that forwards unrelated props, which is
+    a worse failure than the one it is guarding: it stops correct work.
+
+    A tag with no explicit attribute at all is unknown if it spreads anything, since the
+    spread is then the only thing that could be supplying it.
+    """
+    spreads = [match.start() for match in re.finditer(r"\{\s*\.\.\.", tag)]
+    if not spreads:
+        return False
+    explicit = re.search(rf"(?:^|[\s{{]){re.escape(attribute)}=", tag)
+    return explicit is None or max(spreads) > explicit.start()
 
 
 def _without_comments(tag: str) -> str:
@@ -456,7 +478,7 @@ def test_reasoning_keeps_streaming_height_cap_through_automatic_collapse():
     )
     # A spread can supply the same prop and, written after it, wins. Nothing here can say
     # what is in one, so a holder that spreads is refused rather than read.
-    spreading = [tag for tag in holders if re.search(r"\{\s*\.\.\.", tag)]
+    spreading = [tag for tag in holders if _spread_overrides(tag, "retainStreamingHeight")]
     assert not spreading, (
         f"a ReasoningBody holding this state spreads props, so whether the retained flag it "
         f"is handed survives depends on what the spread contains, which this guard cannot "
@@ -480,8 +502,9 @@ def test_reasoning_keeps_streaming_height_cap_through_automatic_collapse():
     # Same ground as the holder above, and it has to be said again here: JSX takes the last
     # write of a prop, so a spread after `streaming=` decides the cap and the explicit text
     # this guard reads goes on satisfying it.
-    assert not re.search(r"\{\s*\.\.\.", tag), (
-        f"ReasoningText spreads props, so whether the streaming cap it is given survives "
+    assert not _spread_overrides(tag, "streaming"), (
+        f"ReasoningText spreads props after its streaming prop, so whether the cap it is "
+        f"given survives "
         f"depends on what the spread contains, which this guard cannot resolve: {tag!r}"
     )
     # The left operand has to be the component's own streaming input. `\w+` accepted any

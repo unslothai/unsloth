@@ -852,6 +852,40 @@ def test_chat_sidebar_rows_are_compact_without_vertical_padding():
     assert 'variant === "project" ? "pl-[39px]" : "pl-3"' in block
 
 
+def _labelled_actions(block: str, variant: str) -> set[str]:
+    """The row actions one variant renders, identified by the label each carries.
+
+    A row's actions are not all shared: the pin sits inside `{variant === "recent" && (` or
+    its project counterpart, while the options button is outside both and renders on every
+    row. Counting them together and applying the total to both rows would make an action
+    added to one of them require room on the other, failing a change that is correct.
+
+    A gate is read as everything between `{variant === "x" && (` and the parenthesis that
+    closes it; a button outside every gate belongs to both rows.
+    """
+    gates = []
+    for match in re.finditer(r'\{\s*variant\s*===\s*"(\w+)"\s*&&\s*\(', block):
+        depth = 0
+        for index in range(match.end() - 1, len(block)):
+            if block[index] == "(":
+                depth += 1
+            elif block[index] == ")":
+                depth -= 1
+                if depth == 0:
+                    gates.append((match.group(1), match.start(), index))
+                    break
+    found = set()
+    for tag in _opening_jsx_tags(block, "<button"):
+        if "sidebar-row-action" not in tag and "actionClass" not in tag:
+            continue
+        at = block.find(tag)
+        owners = [name for name, start, stop in gates if start <= at <= stop]
+        if owners and variant not in owners:
+            continue
+        found.update(re.findall(r"aria-label=\{?([^\n]{0,60})", tag))
+    return found
+
+
 def _opening_jsx_tags(source: str, marker: str) -> list[str]:
     """Every `marker ... >` opening tag in `source`, braces balanced.
 
@@ -1082,7 +1116,11 @@ def test_chat_sidebar_row_actions_visible_on_coarse_pointers():
     # On an attribute boundary, and in code rather than in a comment: `data-className=` ends
     # in the same text, and an assignment that survives only as a comment reads the same to a
     # substring search while the button that renders receives none of these classes.
-    applied = "\n".join(re.sub(r"(?<!:)//.*$", "", line) for line in block.splitlines())
+    # `{/* ... */}` is how a prop is commented out in JSX, and it is the spelling that would
+    # be used here, so a stripper that only knew `//` left a disabled className reading as a
+    # live one. Block form first, then line form.
+    applied = re.sub(r"\{?\s*/\*.*?\*/\s*\}?", " ", block, flags = re.S)
+    applied = "\n".join(re.sub(r"(?<!:)//.*$", "", line) for line in applied.splitlines())
     # On the row button itself, not merely somewhere in the function. The row also renders an
     # inline rename input and a pin, and handing buttonClass to one of those while the button
     # went without would leave every padding check below describing classes that reach nothing
@@ -1206,18 +1244,21 @@ def test_chat_sidebar_row_actions_visible_on_coarse_pointers():
         "guard cannot tell how much room one action needs"
     )
     # Counted by the label each one carries, so the two branches of a per-variant class do not
-    # read as two actions while the one button they dress reads as none.
-    labelled = {
-        label
-        for tag in _opening_jsx_tags(applied, "<button")
-        if "sidebar-row-action" in tag or "actionClass" in tag
-        for label in re.findall(r"aria-label=\{?([^\n]{0,60})", tag)
-    }
-    assert labelled, (
-        "no labelled row action left in renderChatSidebarItem, so this guard cannot tell how "
-        "much room the row has to reserve"
+    # read as two actions while the one button they dress reads as none. Per variant, because
+    # the count decides that variant's floor: an action added to one row only would otherwise
+    # require the other to reserve room for something it does not render, and this guard would
+    # fail a correct change.
+    glyph_size = float(glyph.group(1))
+    actions = {name: _labelled_actions(applied, name) for name in ("project", "recent")}
+    assert all(actions.values()), (
+        f"no labelled row action left for one of the variants, so this guard cannot tell how "
+        f"much room that row has to reserve: "
+        f"{ {name: len(found) for name, found in actions.items()} }"
     )
-    floor = float(glyph.group(1)) * len(labelled)
+    floors = {
+        "project-chat-item": glyph_size * len(actions["project"]),
+        "recent-item": glyph_size * len(actions["recent"]),
+    }
 
     for variant in variants:
         # Any qualified gutter for this variant, not the hover one alone: hover, an open menu
@@ -1259,12 +1300,13 @@ def test_chat_sidebar_row_actions_visible_on_coarse_pointers():
             # width whatever the row says, so a row that claims less than one action's worth
             # has not been fixed, it has stopped claiming. The gutter's exact size is still
             # not pinned here, only that it holds at least one action.
-            assert needed >= floor, (
+            assert needed >= floors[variant], (
                 f"a {variant} row states its action gutter as {claimed}, under the "
-                f"{floor} that one .sidebar-row-action-glyph occupies. Nothing then reserves "
-                f"room for an action that still has its width, and the comparison below is "
-                f"satisfied by two equally small numbers, which is the overlap this test "
-                f"exists to catch rather than a row that has been fixed (#7276)"
+                f"{floors[variant]} its {len(actions[variant.split('-')[0]])} actions occupy "
+                f"at .sidebar-row-action-glyph's size. Nothing then reserves room for actions "
+                f"that still have their width, and the comparison below is satisfied by two "
+                f"equally small numbers, which is the overlap this test exists to catch "
+                f"rather than a row that has been fixed (#7276)"
             )
             assert reserved is not None and reserved >= needed, (
                 f"a {variant} row reserves less room on a coarse pointer than it says its "
