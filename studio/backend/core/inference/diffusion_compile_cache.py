@@ -148,10 +148,9 @@ def _portable_mode() -> bool:
 def _toolchain_path_unparseable(value: str) -> bool:
     """storage_roots' test, imported per call like _default_root's.
 
-    The fallback repeats the rule rather than narrowing to whitespace, or the same path would be
-    refused or accepted depending only on whether studio/backend happened to be on sys.path when
-    a CLI entry point reached this module. test_the_import_fallback_matches_the_resolver sweeps
-    both against every printable character, so the copy cannot drift.
+    The fallback repeats the whole rule rather than narrowing to whitespace, or one path would
+    be refused or accepted depending only on whether studio/backend was on sys.path.
+    test_the_import_fallback_matches_the_resolver sweeps both over every printable character.
     """
     try:
         from utils.paths.storage_roots import toolchain_path_unparseable
@@ -399,18 +398,14 @@ def begin(
         cdir.mkdir(parents = True, exist_ok = True)
         inductor_dir = str(cdir / "inductor")
         # Startup applies this same test before pinning TORCHINDUCTOR_CACHE_DIR, and this
-        # assignment used to overwrite whatever it decided. A Studio root the C++ builders cannot
-        # parse therefore came back on the first compiled diffusion run, having looked fine in
-        # the environment right after launch. The bundle still lives under cdir either way; only
-        # the Inductor pin is withheld, which returns it to the temporary directory it picks on
-        # its own.
+        # assignment used to overwrite whatever it decided, so a Studio root the builders cannot
+        # parse came back on the first compiled diffusion run after looking fine at launch. The
+        # bundle still lives under cdir either way; only the Inductor pin is withheld.
         if _toolchain_path_unparseable(inductor_dir):
-            # Leaving the pin alone is not neutral any more. Startup publishes ONE parseable
-            # fallback for the whole process, so keeping it here means save_cache_artifacts
-            # serialises that shared cache into every fingerprinted bundle and each model
-            # accumulates the others'. Ask for a fallback keyed on THIS cdir instead, which is
-            # per-key, so the isolation the per-key directory was for survives. If none can be
-            # had safely the pin stays as it was, which is the old behaviour.
+            # Leaving the pin alone is not neutral: startup publishes ONE parseable fallback for
+            # the process, so keeping it here would have save_cache_artifacts serialise that
+            # shared cache into every fingerprinted bundle. Ask for one keyed on THIS cdir so the
+            # per-key isolation survives; if none can be had safely the pin stays as it was.
             isolated = _parseable_cache_fallback("TORCHINDUCTOR_CACHE_DIR", inductor_dir)
             if isolated is None:
                 _warn(

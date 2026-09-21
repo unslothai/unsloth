@@ -1069,18 +1069,16 @@ def test_the_windows_setup_records_the_master_root_for_the_uninstaller():
 def test_the_refused_windows_cache_path_is_taken_away_on_upgrade():
     """Declining to write a value is not enough: the old one is already persisted.
 
-    Every setup before the refusal existed sent an apostrophe-named account's contained path
-    straight to $TorchCacheDir and wrote it to the USER environment, so on an upgrade the value is
-    sitting there and this process inherited it. _setup_cache_env honours any inherited value as
-    the caller's own choice and never applies its per-account rule, which would leave the one
-    account this branch exists for as the one account the backend never gets to help. So the
-    refusal has to clear both copies, and only when the value is one the builders cannot read: a
-    parseable path is somebody's decision.
+    Every setup before the refusal existed wrote an apostrophe-named account's contained path to
+    the USER environment, so on an upgrade it is already there for exactly the account the
+    refusal exists for, and every other process on that account still inherits it. The backend
+    refuses such a value for its own process; clearing it here is what stops it reaching the
+    rest. Only a value the builders cannot read is cleared, and only one this installer wrote.
 
-    And it has to clear them on EVERY launch. The refusal itself lives inside
-    `if (-not $SkipPythonDeps)`, which a current core package and a verified UV_OFFLINE tree both
-    skip, so a cleanup nested in there would never reach the account that is already in this
-    state. The clear needs nothing that block computes, so it is hoisted out of it.
+    And it has to clear on EVERY launch. The refusal itself lives inside
+    `if (-not $SkipPythonDeps)`, which a current core package and a verified UV_OFFLINE tree
+    both skip, so a cleanup nested in there would never reach that account. The clear needs
+    nothing that block computes, so it is hoisted out of it.
     """
     ps = SETUP_PS1.read_text(encoding = "utf-8")
     body = _slice(

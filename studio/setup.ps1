@@ -7378,18 +7378,15 @@ if ($script:PinChangedForceReinstall -or $script:TorchImportDefinitivelyFailed) 
     $SkipPythonDeps = $false
 }
 
-# An upgrade has to take the old value away, not merely stop writing a new one. Every setup before
-# the refusal existed sent an apostrophe-named account's contained path to $TorchCacheDir and wrote
-# it to the USER environment, so the value is already there and this process inherited it, and
-# _setup_cache_env honours an inherited value as the caller's own choice. Left alone, the one
-# account the refusal exists for is the one account the backend rule never runs for.
+# An upgrade has to take the old value away, not merely stop writing a new one: every setup
+# before the refusal existed wrote an apostrophe-named account's contained path to the USER
+# environment, so it is already there for exactly the account the refusal exists for. The backend
+# refuses such a value too, but only for its own process; this is what stops it being handed to
+# everything else on the account.
 #
-# Outside the dependency block on purpose. The refusal itself can only run when that block does,
-# but a current core package takes the fast path, and so does a verified UV_OFFLINE tree, so an
-# account in exactly this state would keep the refused value until something else forced a
-# dependency pass. Taking it away needs none of that block's work, only the value's own
-# characters, so it runs on every launch. Only a value the builders cannot read is cleared: a
-# parseable path is somebody's decision and stays.
+# Outside the dependency block on purpose, since a current core package and a verified UV_OFFLINE
+# tree both skip that block, and clearing needs none of its work. Only a value the builders
+# cannot read AND that this installer wrote is cleared.
 function Test-UnparseableManagedTorchCache {
     param([string]$Value, [string]$Managed)
     if (-not $Value) { return $false }
@@ -7493,13 +7490,11 @@ if ($script:UnslothVerbose) {
 #
 # Two things outrank that. Long paths off keeps the short drive-root directory, since Inductor's
 # filenames hit MAX_PATH and a contained cache that cannot be written is worse than an
-# uncontained one. And a path holding whitespace or an apostrophe is refused as
-# storage_roots.toolchain_path_unparseable refuses one: cpp_builder.py pastes it into a compiler
-# command line unquoted and reparses it with shlex in POSIX mode, where an apostrophe swallows
-# the rest of the command. "C:\Users\First Last" and "C:\Users\O'Brien" are both ordinary
-# account names. The other two characters that predicate rejects cannot arise here: a double
-# quote is illegal in an NTFS name, and a backslash is the separator, which cpp_builder rewrites
-# to "/" on Windows before it builds the command.
+# uncontained one. And whitespace or an apostrophe is refused exactly as
+# storage_roots.toolchain_path_unparseable refuses it, "C:\Users\First Last" and
+# "C:\Users\O'Brien" both being ordinary account names. The other two characters that predicate
+# rejects cannot arise here: a double quote is illegal in an NTFS name, and a backslash is the
+# separator, which cpp_builder rewrites to "/" before it builds the command.
 $TorchCacheDir = $null
 $TorchCacheUnparseable = $false
 if ($StageRoot) {
@@ -7515,12 +7510,11 @@ if ($StageRoot) {
     }
 }
 # C:\tc is shared and predictable at a drive root, where the default ACL lets any account
-# create. Persisting it for a NEW population would hand an O'Brien account an Inductor cache
-# another local user could have made first, and because _setup_cache_env honours any inherited
-# value, the backend's own per-account rule would never get to run. So the widened refusal
-# publishes nothing and leaves the choice to storage_roots, which puts it under the per-account
-# %LOCALAPPDATA%\Temp or declines. The pre-existing triggers, long paths off and a spaced path,
-# keep the drive-root directory they have always used: that is not this change's to move.
+# create, so persisting it for a NEW population would hand an O'Brien account an Inductor cache
+# another local user could have made first. The widened refusal publishes nothing and leaves the
+# choice to storage_roots, which puts it under the per-account %LOCALAPPDATA%\Temp or declines.
+# The pre-existing triggers, long paths off and a spaced path, keep the drive-root directory
+# they have always used: that is not this change's to move.
 if (-not $TorchCacheDir -and -not $TorchCacheUnparseable) {
     $TorchCacheDir = "C:\tc"
 }

@@ -490,14 +490,12 @@ def test_the_holding_directory_decides_whether_the_fallback_can_be_swapped(
 def test_an_ancestor_owned_by_another_account_is_refused(tmp_path):
     """A mode is not a promise, because changing it belongs to the owner.
 
-    A holding directory at 0755 owned by another ordinary account, with the temporary root inside
-    it at 0700 owned by us, used to pass: the walk asked the outer one only what its write bits
-    said today. Its owner can open it whenever it likes, rename the root away and leave a tree
-    holding the predictable cache name, which is the same substitution the walk exists to stop.
-    So an ancestor has to be held by this account or by root as well as be closed to others.
-
-    The foreign owner is applied through os.stat, since changing it for real needs privileges
-    this test does not have; everything else about the tree is real.
+    A 0755 holding directory owned by another ordinary account, with our 0700 temporary root
+    inside it, used to pass on today's write bits alone. Its owner can open it whenever it
+    likes, rename the root away and leave a tree holding the predictable cache name. So an
+    ancestor has to be held by this account or by root as well as be closed to others. The
+    foreign owner is applied through os.stat, since changing it for real needs privileges this
+    test does not have; everything else about the tree is real.
     """
     from utils.paths import storage_roots
 
@@ -533,16 +531,11 @@ def test_an_ancestor_owned_by_another_account_is_refused(tmp_path):
 def test_a_temporary_root_reached_through_a_swappable_link_is_refused(tmp_path, monkeypatch):
     """A symlink is a name, and a name in a directory another account can write is not ours.
 
-    Resolving the holding directory before walking it threw the lexical path away, so
-    TMPDIR=/shared/tmp-link was judged on the 0700 directory it happened to point at while
-    /shared stayed 0777. The link is replaceable after the answer is given, and the mkdir that
-    follows lands wherever it now points, which is the whole attack the ancestor walk was added
-    to stop. Both chains are walked now, so the reverse also fails: a link in a safe directory
-    aimed into a shared tree.
-
-    A symlinked temporary root is NOT refused outright. /tmp and /var are symlinks on macOS, so
-    that would decline every fallback there without making anything safer, and the third case
-    below is the one that has to keep passing.
+    Resolving the holding directory first discarded the lexical path, so a link in a 0777
+    directory was judged on the private directory it pointed at while staying replaceable.
+    Both chains are walked now, which also catches the reverse, a link in a safe directory
+    aimed into a shared tree. Symlinked roots are not refused outright: /tmp and /var are
+    symlinks on macOS, so the third case below has to keep passing.
     """
     from utils.paths.storage_roots import _holding_dir_is_safe
 
@@ -726,15 +719,12 @@ def test_an_explicit_compiler_cache_is_left_alone_when_the_builders_can_read_it(
 def test_an_inherited_unreadable_compiler_cache_is_refused(monkeypatch, tmp_path):
     """The one thing an explicit value cannot buy: a path the builders cannot paste in.
 
-    Honouring it is not carrying out a preference, it is guaranteeing a failed compile, since
-    the command is built by pasting the path in unquoted. And it arrives by routes nobody chose.
-    Windows persists this variable to the account, so an upgrade inherits what the OLD setup
-    wrote, through any shell already open and through Tauri's relaunch, which spawns the
-    replacement from the running desktop process. Clearing the stored copy cannot reach a
-    process that already read it, so the refusal has to be where the path is about to be used.
-
-    Nothing is destroyed by refusing: the pin is process-local and the cache is regenerable,
-    which is why setup.ps1 still establishes provenance before it deletes a stored value.
+    Honouring it guarantees a failed compile rather than carrying out a preference, and it
+    arrives by routes nobody chose. Windows persists the variable to the account, so an upgrade
+    inherits what the OLD setup wrote, through any shell already open and through the desktop
+    relaunch; clearing a stored copy cannot reach a process that already read it. Refusing
+    destroys nothing, the pin being process-local and the cache regenerable, which is why
+    setup.ps1 still establishes provenance before it deletes a stored value.
     """
     monkeypatch.setenv("TORCHINDUCTOR_CACHE_DIR", str(tmp_path / "their choice"))
     sr = _load_storage_roots()
