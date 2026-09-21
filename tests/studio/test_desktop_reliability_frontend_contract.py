@@ -910,9 +910,13 @@ def _branches(argument: str) -> list[tuple[tuple[tuple[str, bool], ...], str]]:
         assert closed is not None, f"unbalanced ternary in {argument!r}"
         condition = " ".join(text[: marks[opened][0]].split())
         taken = []
-        for part, truth in ((text[marks[opened][0] + 1 : closed], True), (text[closed + 1 :], False)):
+        for part, truth in (
+            (text[marks[opened][0] + 1 : closed], True),
+            (text[closed + 1 :], False),
+        ):
             taken += [
-                (((condition, truth),) + constraints, value) for constraints, value in _branches(part)
+                (((condition, truth),) + constraints, value)
+                for constraints, value in _branches(part)
             ]
         return taken
     short = [mark for mark in marks if mark[1] in ("&&", "||")]
@@ -1082,15 +1086,15 @@ def test_chat_sidebar_row_actions_visible_on_coarse_pointers():
     # nothing here changes the same edge by another route or jumps the queue with `!`. A
     # single `"!pr-0"` argument beats every coarse gutter below it and carries no marker that
     # a search for coarse-pointer strings would find.
-    marked = [cls for cls in every_class if re.fullmatch(r"(?:\S*:)?!p\w*-\S+|(?:\S*:)?p\w*-\S+!", cls)]
+    marked = [
+        cls for cls in every_class if re.fullmatch(r"(?:\S*:)?!p\w*-\S+|(?:\S*:)?p\w*-\S+!", cls)
+    ]
     assert not marked, (
         f"buttonClass sets padding with an importance marker: {marked}. `!` beats an "
         f"ordinary utility written after it, so which gutter the row ends up with stops "
         f"being a question of order, and this guard will not adjudicate it"
     )
-    shorthand = [
-        cls for cls in every_class if re.fullmatch(r"(?:\S*:)?(?:p|px|pe)-\S+", cls)
-    ]
+    shorthand = [cls for cls in every_class if re.fullmatch(r"(?:\S*:)?(?:p|px|pe)-\S+", cls)]
     assert not shorthand, (
         f"buttonClass sets padding with a shorthand that also moves the right edge: "
         f"{shorthand}. It overrides the pr-N gutters this guard compares, so state the "
