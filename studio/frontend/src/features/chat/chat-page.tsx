@@ -1399,10 +1399,19 @@ function ProjectLanding({
     }
   }
 
+  /** A project workspace is a bigger thing to remove than a chat's sandbox, so it asks from
+   *  scratch rather than following the chat preference, as the sidebar does it. */
+  function openProjectDelete(): void {
+    setDeleteFilesOnDelete(false);
+    setDeletingProject(true);
+  }
+
   async function commitProjectDelete(): Promise<void> {
+    const deleteFiles = deleteFilesOnDelete;
     setDeletingProject(false);
+    setDeleteFilesOnDelete(false);
     try {
-      await deleteChatProject(projectId);
+      await deleteChatProject(projectId, { deleteFiles });
       // Refresh chat history so the project's now-deleted chats do not linger in the sidebar, matching
       // the sidebar delete path.
       notifyChatHistoryUpdated();
@@ -1765,7 +1774,7 @@ function ProjectLanding({
                 <DropdownMenuSeparator />
                 <DropdownMenuItem
                   variant="destructive"
-                  onSelect={() => setDeletingProject(true)}
+                  onSelect={() => openProjectDelete()}
                 >
                   <HugeiconsIcon icon={Delete02Icon} strokeWidth={1.75} className="size-icon" />
                   <span>Delete project</span>
@@ -2083,7 +2092,7 @@ function ProjectLanding({
         }}
         onDelete={() => {
           setEditingProject(false);
-          setDeletingProject(true);
+          openProjectDelete();
         }}
       />
       <AlertDialog
@@ -2099,10 +2108,20 @@ function ProjectLanding({
               Delete "{projectName}"? Its chats will be permanently deleted.
             </AlertDialogDescription>
           </AlertDialogHeader>
+          {/* Same offer the sidebar makes, naming the folder when the record carries one. */}
+          <DeleteChatFilesSwitch
+            id="chat-landing-delete-project-files"
+            checked={deleteFilesOnDelete}
+            onCheckedChange={setDeleteFilesOnDelete}
+            description={
+              currentProject?.rootPath ??
+              "The project workspace folder will be removed from disk."
+            }
+          />
           <AlertDialogFooter>
             <AlertDialogCancel>Cancel</AlertDialogCancel>
             <AlertDialogAction onClick={() => void commitProjectDelete()}>
-              Delete
+              {deleteFilesOnDelete ? "Delete all" : "Delete"}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

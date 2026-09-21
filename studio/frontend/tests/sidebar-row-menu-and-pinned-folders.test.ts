@@ -329,7 +329,29 @@ test("the project page edits through the same dialog the sidebar opens", async (
   // Delete hands back to the page's own confirmation, as it does in the sidebar.
   assert.match(
     page,
-    /onDelete=\{\(\) => \{\n\s*setEditingProject\(false\);\n\s*setDeletingProject\(true\);/,
+    /onDelete=\{\(\) => \{\n\s*setEditingProject\(false\);\n\s*openProjectDelete\(\);/,
+  );
+  // And that confirmation says what else it takes: the workspace folder, named where the record
+  // has a path. Without it, deleting from here always left the folder with nothing able to reach it.
+  assert.match(
+    page,
+    /function openProjectDelete\(\): void \{\n\s*setDeleteFilesOnDelete\(false\);\n\s*setDeletingProject\(true\);/,
+  );
+  assert.match(
+    page,
+    /const deleteFiles = deleteFilesOnDelete;\n\s*setDeletingProject\(false\);\n\s*setDeleteFilesOnDelete\(false\);/,
+  );
+  assert.match(page, /await deleteChatProject\(projectId, \{ deleteFiles \}\);/);
+  assert.match(
+    page,
+    /id="chat-landing-delete-project-files"[\s\S]{0,220}?currentProject\?\.rootPath \?\?\n\s*"The project workspace folder will be removed from disk\."/,
+  );
+  assert.match(page, /\{deleteFilesOnDelete \? "Delete all" : "Delete"\}/);
+  // Nothing opens the confirmation without seeding the switch first.
+  assert.equal(
+    (page.match(/setDeletingProject\((?!false\))/g) ?? []).length,
+    1,
+    "setDeletingProject is called outside its opener",
   );
 });
 
