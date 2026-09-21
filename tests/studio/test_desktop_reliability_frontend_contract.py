@@ -919,11 +919,16 @@ def _branches(argument: str) -> list[tuple[tuple[tuple[str, bool], ...], str]]:
                 for constraints, value in _branches(part)
             ]
         return taken
-    short = [mark for mark in marks if mark[1] in ("&&", "||")]
+    # `||` binds looser than `&&`, so it splits first: `a || b && "x"` is `a || (b && "x")`,
+    # and taking the last operator textually would read it as `(a || b) && "x"` and hand the
+    # classes to a row that renders none of them. Within one operator they are
+    # left-associative, so the last of those is the outermost: `a && b && "x"` is one
+    # condition `a && b` carrying one value. Keeping the head whole rather than splitting it
+    # is what lets an identical head elsewhere correlate with this one.
+    short = [mark for mark in marks if mark[1] == "||"] or [
+        mark for mark in marks if mark[1] == "&&"
+    ]
     if short:
-        # Left-associative, so the last operator is the outermost: `a && b && "x"` is one
-        # condition `a && b` carrying one value. Keeping the head whole rather than splitting
-        # it is what lets an identical head elsewhere correlate with this one.
         cut, token = short[-1]
         head = " ".join(text[:cut].split())
         tail = text[cut + 2 :].strip()

@@ -69,7 +69,10 @@ def _class_list(source: str, marker: str) -> str | None:
     # let an override through.
     if re.search(r"\{\s*\.\.\.", opening):
         return _UNREADABLE
-    literal = re.search(r'className="([^"]*)"', opening)
+    # On an attribute boundary, so that the name has to be the whole attribute. Unanchored,
+    # `data-className="flex min-w-0"` matched on its suffix and its tokens came back as the
+    # element's rendered classes, which the browser never applies.
+    literal = re.search(r'(?:^|[\s{])className="([^"]*)"', opening)
     if literal:
         return literal.group(1)
     # An expression-valued className, `className={cn(...)}` or `className={"min-w-max"}`.
@@ -77,7 +80,7 @@ def _class_list(source: str, marker: str) -> str | None:
     # expression is beyond a reader like this one. Returning None here would be worse than
     # useless: the caller would fall back on the base classes and pass while the call site
     # overrode them, so an expression with no readable piece has to say so instead.
-    expression = re.search(r"className=\{", opening)
+    expression = re.search(r"(?:^|[\s{])className=\{", opening)
     if not expression:
         return None
     # Only the className expression, closed by its own brace. Reading to the end of the tag
