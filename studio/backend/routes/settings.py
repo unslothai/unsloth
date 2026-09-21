@@ -138,6 +138,12 @@ from utils.preview_sharing_settings import (
     get_preview_sharing_enabled,
     set_preview_sharing_enabled,
 )
+from utils.managed_provider_url_settings import (
+    DEFAULT_MANAGED_PRIVATE_PROVIDER_URLS_ALLOWED,
+    get_managed_private_provider_urls_allowed,
+    private_urls_locked_by_environment,
+    set_managed_private_provider_urls_allowed,
+)
 from utils.current_date_prompt_settings import (
     DEFAULT_CURRENT_DATE_PROMPT_ENABLED,
     get_current_date_prompt_enabled,
@@ -3042,6 +3048,18 @@ class PreviewSharingResponse(BaseModel):
     default_enabled: bool = DEFAULT_PREVIEW_SHARING_ENABLED
 
 
+class ManagedProviderUrlsPayload(BaseModel):
+    allowed: StrictBool
+
+
+class ManagedProviderUrlsResponse(BaseModel):
+    allowed: bool
+    default_allowed: bool = DEFAULT_MANAGED_PRIVATE_PROVIDER_URLS_ALLOWED
+    # True when UNSLOTH_STUDIO_BLOCK_PRIVATE_PROVIDER_URLS=1 holds the answer, so the UI can say why
+    # the switch does nothing rather than showing one that silently reverts.
+    locked_by_environment: bool = False
+
+
 class CurrentDatePromptPayload(BaseModel):
     enabled: StrictBool
 
@@ -3274,6 +3292,57 @@ def update_preview_sharing(
         ) from exc
     logger.info("settings.preview_sharing_updated subject=%s enabled=%s", current_subject, enabled)
     return PreviewSharingResponse(enabled = enabled)
+
+
+def _managed_provider_urls_response() -> ManagedProviderUrlsResponse:
+    # `allowed` is the EFFECTIVE answer, not the stored preference: with the environment opt-in set
+    # the backend refuses private addresses whatever is stored, and a switch reading back on while
+    # every save is refused would be the worst of the three things this could say.
+    return ManagedProviderUrlsResponse(
+        allowed = get_managed_private_provider_urls_allowed(),
+        locked_by_environment = private_urls_locked_by_environment(),
+    )
+
+
+@_shared_settings_router.get(
+    "/managed-provider-urls", response_model = ManagedProviderUrlsResponse
+)
+def get_managed_provider_urls(
+    current_subject: str = Depends(get_current_subject),
+) -> ManagedProviderUrlsResponse:
+    """Readable by any account: a managed one has to be able to tell a refusal the owner can lift
+    from one nobody on this installation can, and it learns the same bit by trying to save a URL."""
+    return _managed_provider_urls_response()
+
+
+@_owner_settings_router.put("/managed-provider-urls", response_model = ManagedProviderUrlsResponse)
+def update_managed_provider_urls(
+    payload: ManagedProviderUrlsPayload,
+    current_subject: str = Depends(get_current_subject),
+    # What a managed account may dial is installation policy, so it is set from an interactive
+    # session at the console, not from a remote key that happens to be the owner's.
+    _ui_session: None = Depends(_require_ui_session),
+) -> ManagedProviderUrlsResponse:
+    """Allow or refuse private and LAN provider base URLs for the installation's managed accounts.
+
+    Off by default. The preference is stored either way, so removing
+    ``UNSLOTH_STUDIO_BLOCK_PRIVATE_PROVIDER_URLS`` later restores what the owner chose here rather
+    than a default.
+    """
+    try:
+        allowed = set_managed_private_provider_urls_allowed(payload.allowed)
+    except ValueError as exc:
+        raise log_and_http_error(
+            exc,
+            400,
+            safe_error_detail(exc, fallback = "Invalid managed provider URL setting."),
+            event = "settings.update_managed_provider_urls_failed",
+            log = logger,
+        ) from exc
+    logger.info(
+        "settings.managed_provider_urls_updated subject=%s allowed=%s", current_subject, allowed
+    )
+    return _managed_provider_urls_response()
 
 
 @_account_settings_router.get("/current-date-prompt", response_model = CurrentDatePromptResponse)

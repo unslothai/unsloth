@@ -894,6 +894,16 @@ export const en = {
         revoked: "All preview links revoked",
         revokeError: "Couldn't revoke preview links",
       },
+      managedProviderUrls: {
+        sectionTitle: "Managed accounts",
+        enableLabel: "Local and network connections",
+        enableDescription:
+          "Let managed accounts point their connections at local or network addresses, such as an Ollama or llama.cpp server on this computer or your LAN. Off by default, because it lets those accounts reach services running on your computer and your network.",
+        lockedByEnvironment:
+          "Set by UNSLOTH_STUDIO_BLOCK_PRIVATE_PROVIDER_URLS=1 on this server, which refuses private addresses for every account.",
+        loadError: "Failed to load managed account connection settings.",
+        saveError: "Failed to save managed account connection settings.",
+      },
       permissions: {
         sectionTitle: "Permissions",
         bypassLabel: "Tool permissions",

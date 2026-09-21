@@ -111,6 +111,64 @@ def test_managed_account_cannot_save_a_private_provider_base_url(local_provider)
             assert created.status_code == 400, f"{base_url}: {created.text}"
 
 
+@pytest.fixture
+def owner_allows_private_urls(monkeypatch):
+    """The installation owner has opened private addresses to managed accounts (#11382)."""
+    from core.inference import external_provider
+    from utils import managed_provider_url_settings
+
+    monkeypatch.setattr(
+        managed_provider_url_settings, "get_managed_private_provider_urls_allowed", lambda: True
+    )
+    # The pinning client is a module-level singleton; drop it so the choice is made fresh.
+    monkeypatch.setattr(external_provider, "_managed_http_client", None, raising = False)
+
+
+def test_managed_account_may_save_a_private_base_url_once_the_owner_allows_it(
+    local_provider, owner_allows_private_urls
+):
+    with client_for(ALICE) as client:
+        created = client.post(
+            "/providers/",
+            json = {
+                "provider_type": "custom",
+                "display_name": "Shared LAN llama-server",
+                "base_url": local_provider,
+            },
+        )
+        assert created.status_code == 201, created.text
+        assert created.json()["base_url"] == local_provider
+
+
+def test_managed_account_may_list_models_from_a_private_url_once_the_owner_allows_it(
+    local_provider, owner_allows_private_urls
+):
+    """The save and the send have to agree, or the connection saves and then never works."""
+    with client_for(ALICE) as client:
+        listed = client.post(
+            "/providers/models",
+            json = {"provider_type": "custom", "base_url": local_provider},
+        )
+    assert listed.status_code == 200, listed.text
+    assert [m["id"] for m in listed.json()] == [OWNER_LOCAL_MODEL]
+
+
+def test_cloud_metadata_stays_refused_even_when_the_owner_allows_private_urls(
+    owner_allows_private_urls,
+):
+    with client_for(ALICE) as client:
+        created = client.post(
+            "/providers/",
+            json = {
+                "provider_type": "custom",
+                "display_name": "metadata",
+                "base_url": "http://169.254.169.254/v1",
+            },
+        )
+    assert created.status_code == 400, created.text
+    assert "metadata" in created.text.lower()
+
+
 def test_owner_keeps_local_providers(local_provider):
     with client_for(OWNER) as client:
         created = client.post(

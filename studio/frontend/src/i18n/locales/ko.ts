@@ -892,6 +892,16 @@ export const ko = {
         revoked: "모든 미리보기 링크가 취소되었습니다",
         revokeError: "미리보기 링크를 취소하지 못했습니다",
       },
+      managedProviderUrls: {
+        sectionTitle: "관리 계정",
+        enableLabel: "로컬 및 네트워크 연결",
+        enableDescription:
+          "관리 계정이 이 컴퓨터나 LAN의 Ollama 또는 llama.cpp 서버처럼 로컬 또는 네트워크 주소로 연결을 지정할 수 있도록 합니다. 기본적으로 꺼져 있으며, 켜면 해당 계정이 사용자의 컴퓨터와 네트워크에서 실행 중인 서비스에 접근할 수 있기 때문입니다.",
+        lockedByEnvironment:
+          "이 서버의 UNSLOTH_STUDIO_BLOCK_PRIVATE_PROVIDER_URLS=1 설정에 따릅니다. 모든 계정에서 사설 주소가 거부됩니다.",
+        loadError: "관리 계정 연결 설정을 불러오지 못했습니다.",
+        saveError: "관리 계정 연결 설정을 저장하지 못했습니다.",
+      },
       notifications: {
         sectionTitle: "알림",
         showLlamaUpdates: "llama.cpp 업데이트 알림",

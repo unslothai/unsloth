@@ -856,10 +856,16 @@ _managed_http_client: Optional[httpx.AsyncClient] = None
 
 
 def _client() -> httpx.AsyncClient:
-    """The shared client for the owner; a pinning client for a managed account."""
+    """The shared client for the owner; a pinning client for a managed account, unless the owner has
+    allowed managed accounts private addresses, which is the same client again."""
     from utils.account_context import is_owner_context
+    from utils.managed_provider_url_settings import get_managed_private_provider_urls_allowed
 
     if is_owner_context():
+        return _http_client
+    if get_managed_private_provider_urls_allowed():
+        # Pinning to a public address would refuse at connect time exactly what the owner allowed at
+        # save time. Read per call, so flipping the setting takes effect without a restart.
         return _http_client
     global _managed_http_client
     if _managed_http_client is None:

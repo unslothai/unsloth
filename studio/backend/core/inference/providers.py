@@ -609,6 +609,16 @@ _METADATA_NETWORK = ipaddress.ip_network("169.254.0.0/16")
 # LAN endpoints are the normal case (Ollama, llama.cpp, vLLM, custom gateways).
 _BLOCK_PRIVATE_ENV = "UNSLOTH_STUDIO_BLOCK_PRIVATE_PROVIDER_URLS"
 
+# Said in one place because a managed account meets it from three: saving the connection, sending
+# through it, and running a data recipe on it. Names the setting that lifts it, since the person
+# reading it cannot lift it themselves and would otherwise have nothing to go on.
+MANAGED_PRIVATE_URL_HINT = (
+    " The installation owner can allow private and LAN addresses in Settings > General."
+)
+MANAGED_PUBLIC_ONLY_REASON = (
+    "Managed accounts may only use public-network provider base URLs." + MANAGED_PRIVATE_URL_HINT
+)
+
 
 # An all-numeric host is an IPv4 literal to the resolver, in decimal, octal or
 # hex. `ipaddress` parses only the dotted quad, so 2852039166, 0xA9FEA9FE and
@@ -858,6 +868,17 @@ def _managed_account_caller() -> bool:
     return not is_owner_context()
 
 
+def _managed_private_urls_allowed() -> bool:
+    """True when the owner has opened private provider addresses to managed accounts.
+
+    Imported here rather than at module scope because this module is loaded standalone by
+    ``tests/test_provider_base_url_validation.py``, and because a settings read is worth nothing on
+    the owner path that never asks.
+    """
+    from utils.managed_provider_url_settings import get_managed_private_provider_urls_allowed
+    return get_managed_private_provider_urls_allowed()
+
+
 def _reject_non_public(hostname: str, port: int | None, scheme: str, reason: str) -> None:
     """Raise when ``hostname`` is, or resolves to, a non-public address."""
     try:
@@ -901,7 +922,7 @@ def public_provider_address(url: str) -> str:
     hostname = (parts.hostname or "").rstrip(".")
     if not hostname:
         raise ValueError("Provider URL must contain a hostname.")
-    reason = "Managed accounts may only use public-network provider base URLs."
+    reason = MANAGED_PUBLIC_ONLY_REASON
     try:
         addresses = [ipaddress.ip_address(_canonical_host(hostname))]
     except ValueError:
@@ -930,7 +951,9 @@ def validate_provider_base_url(base_url: str) -> str:
     stay valid -- Ollama, llama.cpp, vLLM and custom gateways rely on them. A
     caller-supplied hostname is resolved far enough to apply the metadata block
     to DNS aliases of it; rejecting other private addresses stays opt-in for the
-    owner, and is always on for a managed account (as managed MCP servers are).
+    owner, and is on for a managed account until the owner turns it off for the
+    installation (``utils.managed_provider_url_settings``), which is how a team
+    sharing one LAN model server gets to use it from more than one account.
 
     Normalization is strip + trailing-slash removal only (what the client did
     before), so validating an already-validated URL returns it unchanged.
@@ -969,14 +992,14 @@ def validate_provider_base_url(base_url: str) -> str:
             "Provider base URL points at a private address, which is disabled on this "
             f"server ({_BLOCK_PRIVATE_ENV}=1).",
         )
-    elif _managed_account_caller() and not _public_registry_hostname(hostname):
-        # Caller-controlled egress must not reach the owner's loopback models or LAN.
-        _reject_non_public(
-            hostname,
-            port,
-            scheme,
-            "Managed accounts may only use public-network provider base URLs.",
-        )
+    elif (
+        _managed_account_caller()
+        and not _public_registry_hostname(hostname)
+        and not _managed_private_urls_allowed()
+    ):
+        # Caller-controlled egress must not reach the owner's loopback models or LAN, unless the
+        # owner has said the accounts on this installation share one local model on purpose.
+        _reject_non_public(hostname, port, scheme, MANAGED_PUBLIC_ONLY_REASON)
 
     return raw.rstrip("/")
 

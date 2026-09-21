@@ -139,17 +139,26 @@ def _apply_data_designer_image_context_patch() -> None:
 def _require_public_provider_endpoint(endpoint: str) -> None:
     """The recipe engine dials providers itself, so a managed account's endpoint cannot use the pinned
     transport: require HTTPS, which binds the peer to its certificate rather than to a DNS answer that
-    may rebind to loopback or the LAN after this public-address check."""
+    may rebind to loopback or the LAN after this public-address check.
+
+    Skipped entirely once the owner has opened private addresses to managed accounts, so a
+    connection that saves in Settings > Connections is one a recipe can actually run on."""
     if not managed_account():
         return
     from urllib.parse import urlsplit
 
-    from core.inference.providers import public_provider_address
+    from core.inference.providers import MANAGED_PRIVATE_URL_HINT, public_provider_address
+    from utils.managed_provider_url_settings import get_managed_private_provider_urls_allowed
+
+    if get_managed_private_provider_urls_allowed():
+        return
 
     url = str(endpoint or "")
     try:
         if urlsplit(url).scheme != "https":
-            raise ValueError("Managed accounts may only use HTTPS provider endpoints.")
+            raise ValueError(
+                "Managed accounts may only use HTTPS provider endpoints." + MANAGED_PRIVATE_URL_HINT
+            )
         public_provider_address(url)
     except ValueError as exc:
         raise HTTPException(
@@ -160,8 +169,17 @@ def _require_public_provider_endpoint(endpoint: str) -> None:
 def install_public_egress_guard() -> None:
     """Managed recipe workers: the engine dials providers itself, so every name resolves through this
     guard and a host that rebinds to loopback or the LAN after the endpoint check is refused at connect
-    time rather than dialled. Process-wide, so it is installed only in the job subprocess."""
+    time rather than dialled. Process-wide, so it is installed only in the job subprocess.
+
+    Not installed when the owner has opened private addresses to managed accounts: the guard is the
+    connect-time half of the same rule the endpoint check states, and half a rule is worse than
+    neither, since the endpoint would pass and the dial would still fail."""
     if not managed_account():
+        return
+    from utils.managed_provider_url_settings import get_managed_private_provider_urls_allowed
+
+    # Read before socket is patched below; the setting is a SQLite read and resolves no names.
+    if get_managed_private_provider_urls_allowed():
         return
     import ipaddress
     import socket

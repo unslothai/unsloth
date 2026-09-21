@@ -876,6 +876,16 @@ export const zhCN = {
         revoked: "所有预览链接已撤销",
         revokeError: "无法撤销预览链接",
       },
+      managedProviderUrls: {
+        sectionTitle: "受管账户",
+        enableLabel: "本地和网络连接",
+        enableDescription:
+          "允许受管账户将连接指向本地或网络地址，例如本机或局域网中的 Ollama 或 llama.cpp 服务器。默认关闭，因为开启后这些账户可以访问在你的计算机和网络中运行的服务。",
+        lockedByEnvironment:
+          "由本服务器上的 UNSLOTH_STUDIO_BLOCK_PRIVATE_PROVIDER_URLS=1 决定，该设置会对所有账户拒绝私有地址。",
+        loadError: "无法加载受管账户的连接设置。",
+        saveError: "无法保存受管账户的连接设置。",
+      },
       notifications: {
         sectionTitle: "通知",
         showLlamaUpdates: "llama.cpp 更新通知",
