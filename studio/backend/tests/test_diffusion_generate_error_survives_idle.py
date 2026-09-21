@@ -863,3 +863,58 @@ def test_a_new_execution_supersedes_the_outcome_retained_under_its_id():
     assert (
         "clear_generate_failure(request.attempt_id)" in src[at : at + 700]
     ), "a new execution does not supersede the outcome retained under its id"
+
+
+def test_a_live_execution_outranks_an_outcome_retained_under_its_id():
+    """A Tauri retry reuses the id, and the predecessor can fail after the retry starts.
+
+    The early clear happens when the retry takes the id, so a predecessor failing later
+    retains an outcome under an id the retry owns; the progress route answered from that
+    retained outcome before looking at the markers, so the client reported failure and
+    stopped settling while the retry was queued or running.
+    """
+    import routes.inference as route
+    from core.inference.generate_outcomes import _retain_generate_failure, attempt_scope_key
+
+    _retain_generate_failure("attempt-shared", "CUDA out of memory")
+    idle = {
+        "active": False,
+        "step": 0,
+        "total_steps": 0,
+        "fraction": 0.0,
+        "eta_seconds": None,
+        "error": None,
+        "generation_attempt": None,
+    }
+
+    key = attempt_scope_key("attempt-shared")
+    route._note_queued_attempt(key, 1)
+    try:
+        assert route._attempt_execution_is_live("attempt-shared") is True
+        pending = _answer_progress(idle, "attempt-shared")
+        assert (
+            pending.error is None
+        ), "the predecessor's failure answered for an execution that is still running"
+        assert pending.active is True, "a queued retry was reported as absent"
+    finally:
+        route._note_queued_attempt(key, -1)
+
+    # With no execution holding the id, the retained outcome answers again, which is what a
+    # settling client whose run really did fail needs.
+    settled = _answer_progress(idle, "attempt-shared")
+    assert settled.error, "a genuinely failed attempt stopped being told its reason"
+
+    # And the persist window counts as live too, so the gap between them is covered.
+    route._note_persisting_attempt(key, 1)
+    try:
+        assert route._attempt_execution_is_live("attempt-shared") is True
+    finally:
+        route._note_persisting_attempt(key, -1)
+    assert route._attempt_execution_is_live("attempt-shared") is False
+
+    # The successful path clears the stale outcome once its own run has happened.
+    src = _src("routes/inference.py")
+    persist_at = src.index("def _persist() -> list[dict]:")
+    assert (
+        "_clear_outcome(request.attempt_id)" in src[persist_at - 900 : persist_at]
+    ), "a retry that ran leaves its predecessor's failure to resurface"

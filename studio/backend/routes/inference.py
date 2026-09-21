@@ -38930,6 +38930,19 @@ def _note_queued_attempt(attempt_id, delta: int) -> None:
         _diffusion_queued_attempts.pop(attempt_id, None)
 
 
+def _attempt_execution_is_live(attempt_id) -> bool:
+    """Whether a generate request is holding *attempt_id* right now.
+
+    Queued behind the slot, running, or persisting. A retry reuses its predecessor's id, so
+    a predecessor that fails AFTER the retry started retains an outcome under an id the
+    retry owns, and the retained answer must not outrank the execution that is still going.
+    """
+    from core.inference.generate_outcomes import attempt_scope_key
+
+    key = attempt_scope_key(attempt_id) or ""
+    return bool(_diffusion_queued_attempts.get(key) or _diffusion_persist_attempts.get(key))
+
+
 def _note_unscoped_generate_failure(backend, attempt_id, reason: str) -> None:
     """Park *reason* in the engine's unscoped slot, the only channel a reload has left.
 
@@ -39134,6 +39147,13 @@ async def generate_diffusion_image(
             # Whatever happened: a failure has its reason retained above, so it does not need
             # the marker, and a DiffusionModelReplacedError retry re-takes it on the next lap.
             _note_queued_attempt(queued_attempt, -1)
+
+    # The retry acquired the slot and ran: anything its predecessor retained under this id
+    # after the early clear above is stale, and would otherwise resurface the moment the
+    # markers drop. Imported again rather than relying on the loop's binding.
+    from core.inference.generate_outcomes import clear_generate_failure as _clear_outcome
+
+    _clear_outcome(request.attempt_id)
 
     # Persist each image with its full recipe. BOTH engines batch with a distinct seed per image, returned in ``seeds``, so each is individually reproducible.
     created_at = time.time()
@@ -39654,7 +39674,11 @@ async def diffusion_generate_progress(
     # between this caller's failure and its next poll, and the hidden idle response then
     # reads as success to a client that had already seen its own run active. The key is
     # account-qualified, so this can only ever answer about the caller's own attempt.
-    if attempt_id is not None:
+    # Not while a request is still holding this id: a Tauri retry reuses it, so a
+    # predecessor that fails after the retry started would answer for an execution that is
+    # queued or running and may yet produce images.
+    live = attempt_id is not None and _attempt_execution_is_live(attempt_id)
+    if attempt_id is not None and not live:
         from core.inference.generate_outcomes import (
             generate_failure_for_attempt,
             generate_failure_was_logged,
@@ -39695,7 +39719,7 @@ async def diffusion_generate_progress(
     if attempt_id is not None:
         from core.inference.generate_outcomes import generate_failure_for_attempt
 
-        raw_error = generate_failure_for_attempt(attempt_id)
+        raw_error = None if live else generate_failure_for_attempt(attempt_id)
         # Active is per attempt too, not just the reason. A generation running for someone
         # else says nothing about this one, and a settling caller that counted it as its own
         # treated that run going idle as its own success, skipping the gallery proof.
