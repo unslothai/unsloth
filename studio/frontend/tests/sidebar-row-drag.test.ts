@@ -596,7 +596,7 @@ test("every drop cue is drawn inside its row", () => {
 });
 
 // Alt + arrow is the keyboard's reorder.
-test("alt and an arrow reorder a row without a pointer", () => {
+test("alt and an arrow reorder a row without a pointer", async () => {
   assert.match(
     APP_SIDEBAR,
     /onKeyDown: \(event: React\.KeyboardEvent\) => \{\n\s*if \(\n\s*!event\.altKey \|\|\n\s*\(event\.key !== "ArrowUp" && event\.key !== "ArrowDown"\)\n\s*\)/,
@@ -608,6 +608,9 @@ test("alt and an arrow reorder a row without a pointer", () => {
   assert.match(APP_SIDEBAR, /function renderMoveRowItems\(/);
   assert.match(APP_SIDEBAR, /if \(!coarsePointer\) return null;/);
   assert.match(APP_SIDEBAR, /const coarsePointer = useIsCoarsePointer\(\);/);
+  // Any touch pointer counts: a laptop with a touchscreen keeps the items too.
+  const MOBILE = await readSrcAsync("hooks/use-mobile.ts");
+  assert.match(MOBILE, /const COARSE_POINTER_QUERY = "\(any-pointer: coarse\)";/);
   for (const key of ["moveUp", "moveDown"]) {
     assert.ok(EN.includes(`${key}:`), `${key} is missing from the en locale`);
   }

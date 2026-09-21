@@ -15,9 +15,10 @@ test("a project row opens its chats in place", () => {
   assert.match(PAGE, /aria-label=\{chatsOpen \? "Hide chats" : "Show chats"\}/);
   assert.match(PAGE, /aria-expanded=\{chatsOpen\}/);
   // Loaded the first time the row is opened, and again when chat history changes.
-  assert.match(PAGE, /if \(cached !== undefined && cached !== "error"\) return;\n\s*loadProjectChats\(projectId\);/);
-  // A failed first load says so and retries; a failed reload keeps the rows showing.
-  assert.match(PAGE, /if \(silent\) return;\n\s*setProjectChats\(\(prev\) => \(\{ \.\.\.prev, \[projectId\]: "error" \}\)\);/);
+  // Only an open loads; a close after a failed load must not.
+  assert.match(PAGE, /if \(!opening\) return;\n\s*const cached = projectChats\[projectId\];\n\s*if \(cached !== undefined && cached !== "error"\) return;\n\s*loadProjectChats\(projectId\);/);
+  // A failed reload keeps loaded rows; a pending or failed first load becomes a retryable error.
+  assert.match(PAGE, /silent && Array\.isArray\(prev\[projectId\]\)\n\s*\? prev\n\s*: \{ \.\.\.prev, \[projectId\]: "error" \}/);
   assert.match(PAGE, /Could not load chats\. Retry/);
   assert.ok(!PAGE.includes("[projectId]: [] }"), "a failed load is still cached as an empty list");
   assert.match(

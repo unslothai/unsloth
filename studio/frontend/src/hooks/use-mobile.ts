@@ -27,7 +27,8 @@ export function useIsMobile(): boolean {
   return useSyncExternalStore(subscribe, getSnapshot, () => false);
 }
 
-const COARSE_POINTER_QUERY = "(pointer: coarse)";
+// any-pointer, not pointer: a laptop with a touchscreen and a trackpad still has a finger.
+const COARSE_POINTER_QUERY = "(any-pointer: coarse)";
 
 function getCoarseSnapshot(): boolean {
   if (typeof window === "undefined") return false;
@@ -41,7 +42,7 @@ function subscribeCoarse(callback: () => void): () => void {
   return () => mql.removeEventListener("change", callback);
 }
 
-/** A touch screen as the main pointer, where the browser never starts a native drag. */
+/** A touch screen is present, where the browser never starts a native drag from it. */
 export function useIsCoarsePointer(): boolean {
   return useSyncExternalStore(subscribeCoarse, getCoarseSnapshot, () => false);
 }

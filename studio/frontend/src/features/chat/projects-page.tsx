@@ -185,9 +185,13 @@ export function ProjectsPage() {
       })
       .catch(() => {
         if (loadSeqRef.current.get(projectId) !== seq) return;
-        // A failed reload keeps the rows already showing; a failed first load says so.
-        if (silent) return;
-        setProjectChats((prev) => ({ ...prev, [projectId]: "error" }));
+        // A failed reload keeps rows already showing; anything else becomes a retryable error,
+        // including a first load this reload overtook while it was still pending.
+        setProjectChats((prev) =>
+          silent && Array.isArray(prev[projectId])
+            ? prev
+            : { ...prev, [projectId]: "error" },
+        );
       });
   }, []);
 
@@ -391,12 +395,16 @@ export function ProjectsPage() {
   }, [hasMore, visibleCount]);
 
   function toggleProjectChats(projectId: string) {
+    const opening = !openProjectIds.has(projectId);
     setOpenProjectIds((prev) => {
       const next = new Set(prev);
-      if (next.has(projectId)) next.delete(projectId);
-      else next.add(projectId);
+      if (opening) next.add(projectId);
+      else next.delete(projectId);
       return next;
     });
+    // Only an open asks: a close after a failed load must not start a request the reopen
+    // then waits on.
+    if (!opening) return;
     const cached = projectChats[projectId];
     if (cached !== undefined && cached !== "error") return;
     loadProjectChats(projectId);
