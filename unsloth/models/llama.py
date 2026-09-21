@@ -1340,6 +1340,25 @@ def _LlamaModel_fast_forward_inference(
 LlamaModel_fast_forward_inference = _LlamaModel_fast_forward_inference()
 
 
+# Mirrors unsloth_zoo.device_map_planner's tables. Only consulted when the installed
+# unsloth_zoo predates detect_logit_transforms; kept here so that arm does not silently
+# drop a family the planner knows about.
+_FALLBACK_TRANSFORM_FIELDS = (
+    ("logit_softcapping",
+     ("final_logit_softcapping", "logits_soft_cap", "output_logit_soft_cap")),
+    ("logit_scale_multiply",
+     ("logit_scale", "lm_head_multiplier", "output_multiplier")),
+    ("logit_scale_divide", ("logits_scaling",)),
+)
+_FALLBACK_TRANSFORM_BUCKETS = tuple(bucket for bucket, _ in _FALLBACK_TRANSFORM_FIELDS)
+# `logits_scaling` is not one knob: Granite divides by it, HyperCLOVA X multiplies (MuP),
+# and MiniCPM3 scales the hidden states before the head, so it is not a logit transform.
+_FALLBACK_BUCKET_OVERRIDES = {
+    ("logits_scaling", "hyperclovax"): "logit_scale_multiply",
+    ("logits_scaling", "minicpm3"): None,
+}
+
+
 def resolve_logit_transforms(config):
     """What the loss must do to the logits, as (softcapping, multiply, divide).
 
@@ -1353,18 +1372,27 @@ def resolve_logit_transforms(config):
             transforms["logit_scale_multiply"],
             transforms["logit_scale_divide"],
         )
-    # `or 0` and `or ""` throughout: these fields are all nullable, and a None reaches
-    # the kernel and raises instead of reading as "off".
-    logit_softcapping = getattr(config, "final_logit_softcapping", 0) or 0
-    logit_scale_multiply = getattr(config, "logit_scale", 0) or 0
-    logit_scale_divide = 0
+    # Same field table and same overrides as detect_logit_transforms, so the two arms
+    # answer alike: an old unsloth_zoo must not train a different loss than a new one.
+    found = dict.fromkeys(_FALLBACK_TRANSFORM_BUCKETS, 0)
     model_type = getattr(config, "model_type", "") or ""
-    if model_type.startswith("granite"):
-        # The composites keep it on text_config, which only detect_logit_transforms reads.
-        logit_scale_divide = getattr(config, "logits_scaling", 0) or 0
-    elif model_type == "falcon_h1":
-        logit_scale_multiply = getattr(config, "lm_head_multiplier", 0) or 0
-    return logit_softcapping, logit_scale_multiply, logit_scale_divide
+    for bucket, names in _FALLBACK_TRANSFORM_FIELDS:
+        for name in names:
+            # Same spelling, different meaning in some families.
+            target = _FALLBACK_BUCKET_OVERRIDES.get((name, model_type), bucket)
+            if target is None or found[target]:
+                continue
+            # These fields are all nullable, and a None reaches the kernel and raises
+            # instead of reading as "off".
+            value = getattr(config, name, 0) or 0
+            if value:
+                found[target] = value
+                break
+    return (
+        found["logit_softcapping"],
+        found["logit_scale_multiply"],
+        found["logit_scale_divide"],
+    )
 
 
 def resolve_logit_scaling(config):

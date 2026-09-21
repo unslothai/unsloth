@@ -209,6 +209,57 @@ def test_transforms_resolve_without_unsloth_zoo(config, expected, monkeypatch):
 
 
 @pytest.mark.parametrize(
+    "model_type,fields",
+    [
+        ("cohere", {"logit_scale": 0.0625}),
+        ("granite", {"logits_scaling": 8.0}),
+        ("granitemoehybrid", {"logits_scaling": 8.0}),
+        ("falcon_h1", {"lm_head_multiplier": 3.0}),
+        # logits_scaling multiplies here (MuP), the opposite of Granite.
+        ("hyperclovax", {"logits_scaling": 4.0}),
+        # logits_scaling scales the hidden states, so it is not a logit transform.
+        ("minicpm3", {"logits_scaling": 4.0}),
+        ("gemma2", {"final_logit_softcapping": 30.0}),
+        # The softcap spellings only the planner's table knows.
+        ("recurrentgemma", {"logits_soft_cap": 30.0}),
+        ("xlstm", {"output_logit_soft_cap": 30.0}),
+        ("muse_glimmer", {"output_multiplier": 2.0, "final_logit_softcapping": 30.0}),
+    ],
+)
+def test_both_resolver_arms_agree(model_type, fields, monkeypatch):
+    """An old unsloth_zoo must not train a different loss than a new one.
+
+    The fallback arm is only reached when the installed unsloth_zoo predates
+    detect_logit_transforms, which is exactly when nobody would notice it disagreeing.
+    """
+    def build():
+        config = MistralConfig(
+            hidden_size = HIDDEN_SIZE,
+            intermediate_size = 2 * HIDDEN_SIZE,
+            num_hidden_layers = 1,
+            num_attention_heads = 2,
+            vocab_size = VOCAB_SIZE,
+        )
+        config.model_type = model_type
+        for name, value in fields.items():
+            setattr(config, name, value)
+        return config
+
+    planner = llama_module.detect_logit_transforms
+    if planner is None:
+        pytest.skip("this unsloth_zoo predates detect_logit_transforms")
+    with_planner = resolve_logit_transforms(build())
+
+    monkeypatch.setattr(llama_module, "detect_logit_transforms", None)
+    without_planner = resolve_logit_transforms(build())
+
+    assert without_planner == pytest.approx(with_planner), (
+        f"the two arms disagree on {model_type}: the planner says {with_planner}, "
+        f"the fallback says {without_planner}"
+    )
+
+
+@pytest.mark.parametrize(
     "model_type,field",
     [
         ("cohere", "logit_scale"),
