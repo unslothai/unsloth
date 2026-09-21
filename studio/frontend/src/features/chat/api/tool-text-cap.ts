@@ -6,8 +6,7 @@ export const MAX_TOOL_TEXT_CHARS = 256_000;
 const TOOL_TEXT_TRUNCATION_NOTICE =
   "\n\n... (tool result truncated to 256,000 chars for the model; the full output is not retained in model context.)";
 
-/** Mirror of `cap_tool_text` in studio/backend/core/inference/tools.py, for model-bound text only. */
-export function capToolText(text: string): string {
+  export function capToolText(text: string): string {
   if (text.length <= MAX_TOOL_TEXT_CHARS) {
     return text;
   }
