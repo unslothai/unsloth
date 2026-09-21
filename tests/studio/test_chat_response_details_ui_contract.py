@@ -123,13 +123,20 @@ def test_response_model_badge_is_user_configurable_and_rendered_once_per_message
     # left the shrinking on the trigger. Pinning the old pair asserted the layout of that one
     # commit rather than the property, so this reads the property: the trigger can shrink,
     # and it sits in a flex row that can shrink too.
-    assert re.search(r'<ReasoningTrigger\s+className="[^"]*\bmin-w-0\b', reasoning_src), (
-        "the reasoning trigger can no longer shrink below its content, so a long summary "
-        "widens the row past the thread"
+    # Whole class tokens, not a substring. `\b` treats the colon in `md:min-w-0` as a
+    # boundary, so a variant-qualified utility satisfied the match while leaving the trigger
+    # unable to shrink on every viewport it was not qualified for.
+    trigger = re.search(r'<ReasoningTrigger\s+className="([^"]*)"', reasoning_src)
+    assert trigger, "the reasoning trigger no longer carries a className this can read"
+    assert "min-w-0" in trigger.group(1).split(), (
+        f"the reasoning trigger can no longer shrink below its content at every width, so a "
+        f"long summary widens the row past the thread: {trigger.group(1)!r}"
     )
-    assert "flex min-w-0 items-center" in reasoning_src, (
-        "the header row holding the trigger can no longer shrink either, which puts the "
-        "overflow back one level up"
+    header = re.search(r'data-slot="reasoning-header"\s+className="([^"]*)"', reasoning_src)
+    assert header, "the reasoning header row no longer carries a className this can read"
+    assert {"flex", "min-w-0"} <= set(header.group(1).split()), (
+        f"the header row holding the trigger can no longer shrink either, which puts the "
+        f"overflow back one level up: {header.group(1)!r}"
     )
 
 
@@ -156,9 +163,14 @@ def test_reasoning_keeps_streaming_height_cap_through_automatic_collapse():
         "the retained-height flag no longer reaches the component that renders the block, so "
         "nothing can OR it into the streaming cap"
     )
-    assert re.search(r"streaming=\{\w+ \|\| retainStreamingHeight\}", src), (
-        "the streaming cap no longer ORs in retainStreamingHeight, so the block collapses to "
-        "its idle height the moment streaming stops, which is the jump this test exists for"
+    # On ReasoningText specifically. It is the element that writes data-streaming and so owns
+    # the height cap; the same OR on a sibling reads identically here and caps nothing.
+    text_element = re.search(r"<ReasoningText\b[^>]*>", src, re.S)
+    assert text_element, "ReasoningText is no longer rendered, so nothing here caps the height"
+    assert re.search(r"streaming=\{\w+ \|\| retainStreamingHeight\}", text_element.group(0)), (
+        f"ReasoningText's streaming prop no longer ORs in retainStreamingHeight, so the block "
+        f"collapses to its idle height the moment streaming stops, which is the jump this "
+        f"test exists for: {text_element.group(0)!r}"
     )
 
 
