@@ -36,18 +36,10 @@ export interface SidebarOrganizationState {
   pinnedSort: SidebarChatSort;
   /** Scope key -> row ids, in the order the user dragged them into. */
   manualOrder: Record<string, string[]>;
-  /** Drag-and-drop preferences: the hint beside the cursor, whether a reorder switches a
-   *  sorted list to Manual, and whether folders open under a resting pointer. */
-  dragHints: boolean;
-  reorderSwitchesSort: boolean;
-  dragOpensFolders: boolean;
   setOrganizeBy: (value: SidebarOrganizeBy) => void;
   setChatSort: (value: SidebarChatSort) => void;
   setPinnedSort: (value: SidebarChatSort) => void;
   setManualOrder: (scope: string, ids: string[]) => void;
-  setDragHints: (value: boolean) => void;
-  setReorderSwitchesSort: (value: boolean) => void;
-  setDragOpensFolders: (value: boolean) => void;
 }
 
 /** Drops `draggedId` against the `edge` side of `targetId`, keeping the rest in order. The edge
@@ -169,9 +161,6 @@ export const useSidebarOrganizationStore = create<SidebarOrganizationState>()(
       chatSort: "priority",
       pinnedSort: "manual",
       manualOrder: {},
-      dragHints: true,
-      reorderSwitchesSort: true,
-      dragOpensFolders: true,
       setOrganizeBy: (value) => set({ organizeBy: value }),
       setChatSort: (value) => set({ chatSort: value }),
       setPinnedSort: (value) => set({ pinnedSort: value }),
@@ -179,9 +168,6 @@ export const useSidebarOrganizationStore = create<SidebarOrganizationState>()(
         set((state) => ({
           manualOrder: { ...state.manualOrder, [scope]: ids },
         })),
-      setDragHints: (value) => set({ dragHints: value }),
-      setReorderSwitchesSort: (value) => set({ reorderSwitchesSort: value }),
-      setDragOpensFolders: (value) => set({ dragOpensFolders: value }),
     }),
     {
       name: SIDEBAR_ORGANIZATION_STORAGE_KEY,
@@ -211,17 +197,12 @@ export const useSidebarOrganizationStore = create<SidebarOrganizationState>()(
             }
           }
         }
-        const readFlag = (value: unknown, fallback: boolean): boolean =>
-          typeof value === "boolean" ? value : fallback;
         return {
           ...current,
           organizeBy,
           chatSort,
           pinnedSort,
           manualOrder,
-          dragHints: readFlag(saved?.dragHints, true),
-          reorderSwitchesSort: readFlag(saved?.reorderSwitchesSort, true),
-          dragOpensFolders: readFlag(saved?.dragOpensFolders, true),
         };
       },
     },

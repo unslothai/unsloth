@@ -220,10 +220,6 @@ export const ar = {
       organizeChats: "تنظيم المحادثات",
       organizeProjects: "تنظيم المشاريع",
       sortPinnedChats: "ترتيب المحادثات المثبتة",
-      dragDrop: "السحب والإفلات",
-      dragHints: "إظهار تلميح أثناء السحب",
-      reorderSwitchesSort: "إعادة الترتيب تبدّل إلى الترتيب اليدوي",
-      dragOpensFolders: "فتح المجلدات أسفل المؤشر",
       moveUp: "تحريك لأعلى",
       moveDown: "تحريك لأسفل",
     },
@@ -1535,11 +1531,6 @@ export const ar = {
         "يصبح النص الملصق الذي يبلغ {count} حرفًا أو أكثر مرفقًا بصيغة .txt. يبقى النص الأقصر في مربع الرسالة.",
       pastedTextOffDescription:
         "يبقى كل النص الملصق في مربع الرسالة، مهما كان طوله.",
-      compactionDescriptionInherit: "يتبع سياسة السياق المحددة على الخادم.",
-      compactionDescriptionCheckpoint:
-        "يحتفظ بآخر تبادل للرسائل وبما يتّسع من التعليمات الدائمة، ويؤرشف البقية ليتسنى استرجاعها.",
-      compactionDescriptionRolling:
-        "يؤرشف أقدم التبادلات للاحتفاظ بالسجل الحديث والمساحة الإضافية المحددة.",
       projectsSection: "إظهار قسم المشاريع",
       projectsSectionDescription:
         "يجمع محادثات المشروع تحت عنوان المشاريع. أوقف هذا الخيار لعرضها ضمن الأخيرة بدلاً من ذلك.",
@@ -1587,15 +1578,6 @@ export const ar = {
       autoCompact: "ضغط المحادثات الطويلة تلقائيًا",
       autoCompactDescription:
         "تنتقل الأدوار الأقدم إلى أرشيف قابل للبحث عندما تمتلئ نافذة سياق المحادثة.",
-      compactionStyle: "عند امتلاء السياق",
-      compactionStyleDescription:
-        "يُبقي الخيار الافتراضي للخادم UNSLOTH_CONTEXT_POLICY. تحتفظ إعادة ضبط المحادثة بأحدث دور وبما يتّسع من التعليمات الدائمة. تحذف النافذة المنزلقة الأدوار الأقدم ويمكنها الاحتفاظ بمزيد من السجل الحديث.",
-      compactionStyleInherit: "استخدام إعداد الخادم الافتراضي",
-      compactionStyleCheckpoint: "إعادة ضبط المحادثة",
-      compactionStyleRollingDefault: "أرشفة الأدوار الأقدم (مساحة إضافية نحو 25%)",
-      compactionStyleRolling10: "أرشفة الأدوار الأقدم (مساحة إضافية نحو 10%)",
-      compactionStyleRolling5: "أرشفة الأدوار الأقدم (مساحة إضافية نحو 5%)",
-      compactionStyleRollingNone: "أرشفة الأدوار الأقدم (دون اقتطاع إضافي)",
       autoCompactKeywords:
         "ضغط تلقائي سياق نافذة اقتطاع منزلقة نقطة تحقق هامش أرشيف استرجاع بحث compaction rolling checkpoint headroom archive retrieval rag",
       visibility: {

@@ -223,10 +223,6 @@ export const hi = {
       organizeChats: "चैट व्यवस्थित करें",
       organizeProjects: "प्रोजेक्ट व्यवस्थित करें",
       sortPinnedChats: "पिन की गई चैट क्रमबद्ध करें",
-      dragDrop: "खींचें और छोड़ें",
-      dragHints: "खींचते समय संकेत दिखाएँ",
-      reorderSwitchesSort: "क्रम बदलने पर मैन्युअल क्रम पर स्विच करें",
-      dragOpensFolders: "पॉइंटर के नीचे फ़ोल्डर खोलें",
       moveUp: "ऊपर ले जाएँ",
       moveDown: "नीचे ले जाएँ",
     },
@@ -1541,12 +1537,6 @@ export const hi = {
         "{count} या अधिक अक्षरों वाला पेस्ट किया गया टेक्स्ट .txt अटैचमेंट बन जाता है। छोटा टेक्स्ट संदेश बॉक्स में रहता है।",
       pastedTextOffDescription:
         "पेस्ट किया गया सारा टेक्स्ट संदेश बॉक्स में रहता है, चाहे उसकी लंबाई कितनी भी हो।",
-      compactionDescriptionInherit:
-        "सर्वर की संदर्भ नीति का पालन करें।",
-      compactionDescriptionCheckpoint:
-        "सबसे हाल का संवाद और जितने स्थायी निर्देश समा सकें, उन्हें बनाए रखें, और बाकी को खोज के लिए आर्काइव करें।",
-      compactionDescriptionRolling:
-        "पुराने संवाद आर्काइव करके हाल का इतिहास और चुनी गई अतिरिक्त खाली जगह बनाए रखें।",
       projectsSection: "प्रोजेक्ट अनुभाग दिखाएँ",
       projectsSectionDescription:
         "प्रोजेक्ट चैट को प्रोजेक्ट शीर्षक के नीचे समूहित करता है। बंद करने पर वे हाल ही के अंतर्गत दिखती हैं।",
@@ -1594,15 +1584,6 @@ export const hi = {
       autoCompact: "लंबी चैट को अपने आप कॉम्पैक्ट करें",
       autoCompactDescription:
         "चैट का कॉन्टेक्स्ट भरने पर पुराने टर्न खोजे जा सकने वाले आर्काइव में चले जाते हैं।",
-      compactionStyle: "कॉन्टेक्स्ट भरने पर",
-      compactionStyleDescription:
-        "सर्वर डिफ़ॉल्ट से UNSLOTH_CONTEXT_POLICY बना रहता है। बातचीत रीसेट करने पर नवीनतम टर्न और जितने स्थायी निर्देश समा सकें, वे रहते हैं। स्लाइडिंग विंडो सबसे पुराने टर्न हटाती है और हाल का अधिक इतिहास रख सकती है।",
-      compactionStyleInherit: "सर्वर डिफ़ॉल्ट उपयोग करें",
-      compactionStyleCheckpoint: "बातचीत रीसेट करें",
-      compactionStyleRollingDefault: "पुराने टर्न आर्काइव करें (~25% अतिरिक्त जगह)",
-      compactionStyleRolling10: "पुराने टर्न आर्काइव करें (~10% अतिरिक्त जगह)",
-      compactionStyleRolling5: "पुराने टर्न आर्काइव करें (~5% अतिरिक्त जगह)",
-      compactionStyleRollingNone: "पुराने टर्न आर्काइव करें (कोई अतिरिक्त कटौती नहीं)",
       autoCompactKeywords:
         "कॉम्पैक्शन कॉम्पैक्ट कॉन्टेक्स्ट विंडो ट्रंकेट स्लाइडिंग चेकपॉइंट हेडरूम आर्काइव पुनर्प्राप्ति खोज compaction rolling checkpoint headroom archive retrieval rag",
       visibility: {

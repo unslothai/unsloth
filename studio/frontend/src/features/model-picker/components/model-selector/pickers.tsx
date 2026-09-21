@@ -1414,9 +1414,6 @@ function isValidGgufVariant(variant: unknown): variant is GgufVariantDetail {
     typeof candidate.size_bytes === "number" &&
     Number.isFinite(candidate.size_bytes) &&
     candidate.size_bytes >= 0 &&
-    (candidate.shard_count === undefined ||
-      (Number.isSafeInteger(candidate.shard_count) &&
-        candidate.shard_count >= 0)) &&
     (candidate.downloaded === undefined ||
       typeof candidate.downloaded === "boolean") &&
     (candidate.pending_drafter_filename === undefined ||
@@ -2160,11 +2157,6 @@ function GgufVariantExpander({
                   hideH3PrunedBuild,
                 })}
               </span>
-              {(v.shard_count ?? 0) > 1 ? (
-                <span className="ml-1.5 text-ui-9 font-sans font-medium text-sky-700 dark:text-sky-300">
-                  Sharded · {v.shard_count} parts
-                </span>
-              ) : null}
               {unusableLocal ? (
                 <span className="ml-1.5 text-ui-9 font-sans font-medium text-amber-700 dark:text-amber-300">
                   incomplete

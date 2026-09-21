@@ -223,10 +223,6 @@ export const fr = {
       organizeChats: "Organiser les discussions",
       organizeProjects: "Organiser les projets",
       sortPinnedChats: "Trier les discussions épinglées",
-      dragDrop: "Glisser-déposer",
-      dragHints: "Afficher une indication pendant le glissement",
-      reorderSwitchesSort: "Réordonner passe en ordre manuel",
-      dragOpensFolders: "Ouvrir les dossiers sous le pointeur",
       moveUp: "Monter",
       moveDown: "Descendre",
     },
@@ -1568,11 +1564,6 @@ export const fr = {
         "Le texte collé de {count} caractères ou plus devient une pièce jointe .txt. Le texte plus court reste dans le champ de message.",
       pastedTextOffDescription:
         "Tout le texte collé reste dans le champ de message, quelle que soit sa longueur.",
-      compactionDescriptionInherit: "Suit la politique de contexte du serveur.",
-      compactionDescriptionCheckpoint:
-        "Conserve le dernier échange et les instructions permanentes qui tiennent, et archive le reste pour pouvoir le retrouver.",
-      compactionDescriptionRolling:
-        "Archive les échanges les plus anciens pour conserver les plus récents et la marge choisie.",
       projectsSection: "Afficher la section Projets",
       projectsSectionDescription:
         "Regroupe les discussions de projet sous un titre Projets. Désactivez cette option pour les lister dans Récents.",
@@ -1620,19 +1611,6 @@ export const fr = {
       autoCompact: "Compacter automatiquement les longues discussions",
       autoCompactDescription:
         "Les anciens échanges vont dans une archive consultable quand un chat sature son contexte.",
-      compactionStyle: "Lorsque le contexte est plein",
-      compactionStyleDescription:
-        "La valeur par défaut du serveur conserve UNSLOTH_CONTEXT_POLICY. Réinitialiser la discussion garde le dernier tour et les instructions permanentes qui tiennent. Une fenêtre glissante supprime les tours les plus anciens et peut conserver davantage d’historique récent.",
-      compactionStyleInherit: "Utiliser la valeur du serveur",
-      compactionStyleCheckpoint: "Réinitialiser la discussion",
-      compactionStyleRollingDefault:
-        "Archiver les anciens tours (~25 % d’espace supplémentaire)",
-      compactionStyleRolling10:
-        "Archiver les anciens tours (~10 % d’espace supplémentaire)",
-      compactionStyleRolling5:
-        "Archiver les anciens tours (~5 % d’espace supplémentaire)",
-      compactionStyleRollingNone:
-        "Archiver les anciens tours (sans réduction supplémentaire)",
       autoCompactKeywords:
         "compaction automatique contexte fenêtre tronquer glissante point de contrôle marge archive récupération recherche rolling checkpoint headroom retrieval rag",
       visibility: {
