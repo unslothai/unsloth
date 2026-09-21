@@ -109,6 +109,53 @@ test("a closing run longer than the opener agrees across the handover", () => {
   }
 });
 
+test("a block holding more than one fence is claimed by neither classifier", () => {
+  /*
+   * CommonMark closes a fence at the FIRST bare run on its own line. A match that runs past one has
+   * swallowed the real close, the prose after it, and the next fence's opener, and because
+   * `FenceBody` renders `source` the reader sees all of that as their own code.
+   *
+   * Each expectation below is `micromark`'s, read off its HTML rather than asserted from this
+   * file's reading of the spec:
+   *   "```md\nA:\n```\nB\n```"          -> <pre><code class="language-md">A:</code></pre>
+   *                                        <p>B</p><pre><code></code></pre>
+   *   "```js\ncode\n```\n```"           -> <pre><code class="language-js">code</code></pre>
+   *                                        <pre><code></code></pre>
+   * Neither is ONE fence, so `getCodeFence` must decline and hand the block to the renderer that
+   * parses it properly, which is exactly what `markdownBlockFallback` already reports.
+   */
+  for (const block of [
+    "```md\nA:\n```\nB\n```",
+    "```js\ncode\n```\n```",
+    "```md\nUse this:\n```js\nx\n```\nDone.\n```",
+    "```js\ncode\n```\n\nprose\n\n```py\nmore\n```",
+  ]) {
+    assert.equal(
+      getCodeFence(block),
+      null,
+      `a multi-fence block is not one fence: ${JSON.stringify(block)}`,
+    );
+    assert.equal(
+      markdownBlockFallback(block).fenced,
+      false,
+      `and the streaming scanner must say the same: ${JSON.stringify(block)}`,
+    );
+  }
+});
+
+test("a delimiter line that carries an info string is still code", () => {
+  // The other side of the rule, so the fix above cannot be "reject anything with backticks in it".
+  // An indented or info-carrying run is not a close, so these remain single fences.
+  assert.equal(
+    getCodeFence("```js\nconst s = `x`;\n```")?.source,
+    "const s = `x`;",
+  );
+  assert.equal(getCodeFence("```\nfoo `\n```")?.source, "foo `");
+  assert.equal(getCodeFence("```\nfoo ``\n```")?.source, "foo ``");
+  // A closing run longer than the opener still closes, and the body keeps its own backticks.
+  assert.equal(getCodeFence("```python\nx = 1\n`````")?.source, "x = 1");
+});
+
 test("a run too short to close leaves the block streaming on both routes", () => {
   // The other direction: a stream that has written only its first delimiter backtick must not be
   // read as a completed fence by either classifier, or the block settles early and then re-opens.
