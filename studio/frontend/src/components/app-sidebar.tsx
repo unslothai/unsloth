@@ -3437,6 +3437,9 @@ export function AppSidebar() {
       // A spinner glyph cannot truncate, and the pin and the kebab overlay that same edge, so a
       // working row holds their room open whether or not it is hovered.
       showWorkSpinner ? "pr-16" : hasUnreadActivity ? "pr-7" : undefined,
+      // Coarse pointers reveal the actions permanently, so the spinner drops back beside
+      // them (right-16, ending 78px in) and the title has to clear that, not just pr-16.
+      showWorkSpinner && "[@media(pointer:coarse)]:pr-[78px]",
       variant === "project"
         ? showWorkSpinner
           ? undefined
@@ -3552,9 +3555,12 @@ export function AppSidebar() {
               <span
                 className={cn(
                   "pointer-events-none absolute right-4 top-1/2 z-10 -translate-y-1/2 transition-opacity",
+                  // Touch reveals the pin and kebab for good, so there is nothing to fade
+                  // behind: sit left of them instead, where this used to be.
+                  "[@media(pointer:coarse)]:right-16",
                   variant === "project"
-                    ? "group-hover/project-chat-item:opacity-0 group-has-[.sidebar-row-action[data-state=open]]/project-chat-item:opacity-0"
-                    : "group-hover/recent-item:opacity-0 group-has-[.sidebar-row-action[data-state=open]]/recent-item:opacity-0",
+                    ? "group-hover/project-chat-item:opacity-0 group-has-[.sidebar-row-action[data-state=open]]/project-chat-item:opacity-0 group-has-[.sidebar-row-action:focus-visible]/project-chat-item:opacity-0"
+                    : "group-hover/recent-item:opacity-0 group-has-[.sidebar-row-action[data-state=open]]/recent-item:opacity-0 group-has-[.sidebar-row-action:focus-visible]/recent-item:opacity-0",
                 )}
               >
                 <Spinner

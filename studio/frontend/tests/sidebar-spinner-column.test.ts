@@ -40,7 +40,7 @@ test("nav and Recents spinners land on one trailing column", async () => {
   // The wrapper the chat spinner hangs off, anchored to the row rather than its text box.
   const chatSpinnerAnchor = grab(
     APP_SIDEBAR,
-    /className=\{cn\(\s*"(pointer-events-none absolute right-[0-9.]+[^"]*)"[\s\S]{0,600}?data-testid="chat-row-spinner"/,
+    /className=\{cn\(\s*"(pointer-events-none absolute right-[0-9.]+[^"]*)"[\s\S]{0,1200}?data-testid="chat-row-spinner"/,
     "Recents chat spinner anchor",
   );
 
