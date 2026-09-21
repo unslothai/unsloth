@@ -404,3 +404,53 @@ def test_the_wrapper_returns_the_upstream_mapping_when_it_cannot_reason(composit
     assert [_renaming_signature(c) for c in through_patch] == [
         _renaming_signature(c) for c in upstream
     ]
+
+
+def test_a_module_holding_the_pre_zoo_function_is_still_rebound(monkeypatch):
+    """unsloth_zoo patches the same function first, WITHOUT `__wrapped__`.
+
+    `temporary_patches/moe_utils_bnb4bit.py` sets only `_unsloth_moe_patched`, no
+    functools.wraps, so the `getattr(original, "__wrapped__", original)` unwrap cannot see
+    past it and `original` stays zoo's wrapper. A module that imported the name before zoo
+    ran still holds the underlying upstream function and matches neither object, so an
+    identity test leaves it bound to the unscoped mapping and
+    `PeftAdapterMixin.load_adapter()` renames Qwen3.5 and Gemma 3n adapter keys away from
+    their real `model.language_model.*` modules.
+    """
+    import sys
+    import types
+
+    from transformers import conversion_mapping
+
+    import unsloth.import_fixes as import_fixes
+
+    # Pin the starting state: importing unsloth may already have installed this patch.
+    pristine = conversion_mapping.get_model_conversion_mapping
+    while getattr(pristine, import_fixes._COMPOSITE_PREFIX_RENAMING_FLAG, False):
+        unwrapped = getattr(pristine, "__wrapped__", None)
+        if unwrapped is None:
+            break
+        pristine = unwrapped
+
+    # Zoo's wrapper, spelled the way zoo really spells it: no functools.wraps, no
+    # __wrapped__, just its own marker attribute.
+    def zoo_wrapper(model, key_mapping = None, hf_quantizer = None, add_legacy = True):
+        return pristine(model, key_mapping, hf_quantizer, add_legacy)
+
+    zoo_wrapper._unsloth_moe_patched = True
+    assert not hasattr(zoo_wrapper, "__wrapped__"), "this test models zoo's real wrapper"
+    monkeypatch.setattr(conversion_mapping, "get_model_conversion_mapping", zoo_wrapper)
+
+    # A module that imported the function BEFORE zoo wrapped, so it holds `pristine`.
+    early = types.ModuleType("_unsloth_test_early_importer")
+    early.get_model_conversion_mapping = pristine
+    monkeypatch.setitem(sys.modules, early.__name__, early)
+
+    import_fixes.fix_transformers_composite_prefix_renaming()
+
+    patched = conversion_mapping.get_model_conversion_mapping
+    if patched is zoo_wrapper:
+        pytest.skip("this transformers is outside the defect window, so the repair declines")
+    assert early.get_model_conversion_mapping is patched, (
+        "a module holding the pre-zoo function was left bound to the unscoped mapping"
+    )

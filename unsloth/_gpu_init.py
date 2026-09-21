@@ -126,7 +126,6 @@ del propagate_torchao_fix_to_subprocesses
 del check_fbgemm_gpu_version
 del check_transformers_dependency_versions
 del check_triton_py_ssize_t_clean
-del check_transformers_prequantized_vlm_quant_state
 del torchvision_compatibility_check
 del fix_diffusers_warnings
 del fix_huggingface_hub
@@ -304,6 +303,12 @@ fix_transformers_fully_masked_rows()
 # composite model's conversion mapping. Ordered here, before anything loads a checkpoint, so a
 # plain transformers.from_pretrained in the same process keeps its bitsandbytes quant_state too.
 fix_transformers_composite_prefix_renaming()
+# After the repair above, never before it: on exactly the releases that repair covers, warning
+# first would tell users to downgrade or upgrade away from a version that now works. The check
+# reads the live attribute, so a repair that declined to install still warns.
+# A run that loads no pre-quantized multimodal checkpoint never fails either way.
+check_transformers_prequantized_vlm_quant_state()
+del check_transformers_prequantized_vlm_quant_state
 # Probe-gated: no-ops unless replacing config.rope_scaling on this transformers really loses the
 # RoPE base frequency. Ordered here, before any config is built, so the object-style delegation
 # retry in models/llama.py sees a config that kept its base (#2405).

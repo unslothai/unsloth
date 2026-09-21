@@ -1246,8 +1246,21 @@ def fix_transformers_composite_prefix_renaming():
             # .models.vitmatte.image_processing_vitmatte" several hundred times. Only a
             # module that really did `from ... import get_model_conversion_mapping` has the
             # name in its own namespace, and those are the only ones that need rebinding.
+            # Any binding under this name that is not already ours, rather than an identity
+            # test against `original`. unsloth_zoo patches the same function without
+            # functools.wraps and without `__wrapped__` (temporary_patches/moe_utils_bnb4bit.py),
+            # so when zoo goes first `original` is zoo's wrapper and the unwrap above cannot
+            # see past it. A module that imported the name before zoo ran still holds the
+            # UNDERLYING upstream function, matches neither, and stays bound to the unscoped
+            # mapping. transformers.integrations.peft is exactly that module, imported during
+            # modeling_utils init, and PeftAdapterMixin.load_adapter() then renames Qwen3.5 and
+            # Gemma 3n adapter keys away from their real `model.language_model.*` modules.
+            #
+            # Rebinding zoo's own wrapper to ours does not drop zoo's fix: ours wraps
+            # `original`, which IS zoo's wrapper when zoo went first, so its work still runs.
             try:
-                if namespace.get("get_model_conversion_mapping", None) is original:
+                bound = namespace.get("get_model_conversion_mapping", None)
+                if callable(bound) and bound is not get_model_conversion_mapping:
                     module.get_model_conversion_mapping = get_model_conversion_mapping
             except Exception:
                 continue
@@ -3742,6 +3755,22 @@ def check_transformers_prequantized_vlm_quant_state():
         transformers_version = importlib_version("transformers")
     except Exception:
         transformers_version = "unknown"
+
+    # The runtime repair covers exactly these releases, and it is installed in the same
+    # import. Warning anyway would tell users to downgrade or upgrade away from a version
+    # that now works, which is worse than saying nothing: the advice contradicts the fix.
+    # Checked on the live attribute, so a repair that declined to install still warns.
+    try:
+        from transformers import conversion_mapping
+
+        if getattr(
+            getattr(conversion_mapping, "get_model_conversion_mapping", None),
+            _COMPOSITE_PREFIX_RENAMING_FLAG,
+            False,
+        ):
+            return
+    except Exception:
+        pass
 
     logger.warning(
         f"Unsloth: transformers=={transformers_version} drops the bitsandbytes "
