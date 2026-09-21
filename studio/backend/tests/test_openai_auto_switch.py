@@ -11770,3 +11770,51 @@ def test_a_failed_index_scan_does_not_count_as_a_confirmed_absence(monkeypatch):
     assert inference_route._alias_probed_load_paths == {path}, (
         "a recovered scan must settle the probe, or the index rebuilds forever"
     )
+
+
+def test_a_positive_resolution_that_aborts_does_not_settle_the_probe(monkeypatch):
+    # The marker means "this load path has no alias to record". A POSITIVE resolution is
+    # the opposite claim, and the switch behind it can still abort before recording
+    # anything -- a resident directory asked for at a different quant is not already
+    # serving, so it goes on to the arbiter and the load, either of which can refuse.
+    # Settling there left the path answered from the shortcut with _openai_advertised_id
+    # never set, so /v1/models and every response kept reporting the filename.
+    path = "/models/lmstudio/TheBloke/weights-file-01.gguf"
+    # Resident at Q4_K_M; the request names the same path at Q8_0, which is what makes
+    # _already_serving false without inventing a state the route cannot reach.
+    backend = _FakeBackend(path, hf_variant = "Q4_K_M")
+    rec = _LoadRecorder(backend, fail = True)
+    monkeypatch.setattr(settings, "get_openai_auto_switch_enabled", lambda: True)
+    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: backend)
+    monkeypatch.setattr(inference_route, "_load_model_impl", rec)
+    monkeypatch.setattr(inference_route, "_auto_switch_waiters", {})
+    monkeypatch.setattr(inference_route, "_alias_probed_load_paths", set())
+    monkeypatch.setattr(inference_route, "_alias_probe_inflight", set())
+    monkeypatch.setattr(inference_route, "_alias_probe_generation", -1)
+    monkeypatch.setattr(resolver, "warm_index_soon", lambda *a, **k: None)
+    monkeypatch.setattr(
+        resolver,
+        "resolve_local_gguf",
+        lambda m, **_kw: (path, "Q8_0", "Qwen3-4B-Instruct-GGUF"),
+    )
+    # The index is trustworthy, so the ONLY thing standing between this pass and a settle
+    # is that it resolved POSITIVELY. Left at whatever the process happens to hold, the
+    # assertions below pass for the wrong reason and the case discriminates nothing.
+    monkeypatch.setattr(resolver, "index_answer_is_trustworthy", lambda: True)
+
+    try:
+        _run_hook(f"{path}:Q8_0")
+    except Exception:
+        pass
+    assert rec.calls, "the switch must have been attempted for this case to mean anything"
+    assert backend._openai_advertised_id is None, (
+        "the alias was never recorded, which is the premise of this case"
+    )
+    assert inference_route._alias_probed_load_paths == set(), (
+        "a resolution that aborted before recording its alias settled the probe"
+    )
+    assert inference_route._alias_probe_inflight == set(), "and the claim was not given back"
+    # So the next request reaches the resolver again and the alias can still be recorded.
+    monkeypatch.setattr(inference_route, "_load_model_impl", _LoadRecorder(backend))
+    _run_hook(path)
+    assert backend._openai_advertised_id == "Qwen3-4B-Instruct-GGUF"

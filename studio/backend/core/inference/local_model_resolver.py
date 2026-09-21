@@ -992,6 +992,17 @@ def index_scan_stamp() -> float:
     return _snapshot()[0]
 
 
+def index_answer_is_trustworthy() -> bool:
+    """Whether the published snapshot may be read as a definite answer right now.
+
+    Same trust rule a model switch is held to (``_snapshot_is_trusted``), so a caller can
+    ask "was that None a real absence?" without reaching into the snapshot itself. A scan
+    that landed during the caller's own pass is the other way to earn that, and
+    ``index_scan_stamp`` answers it; an index that was already fresh never needed one.
+    """
+    return _snapshot_is_trusted(_snapshot()[0], time.monotonic())
+
+
 def index_is_built() -> bool:
     """Whether a scan has ever completed, freshness aside.
 

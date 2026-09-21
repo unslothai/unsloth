@@ -9682,6 +9682,7 @@ async def _maybe_auto_switch_model(
         model_override_load_kwargs,
     )
     from core.inference.local_model_resolver import (
+        index_answer_is_trustworthy,
         index_scan_stamp,
         local_gguf_companion_roots,
         local_gguf_companion_state,
@@ -9825,8 +9826,6 @@ async def _maybe_auto_switch_model(
                 include_companion_scope = True,
             )
             if resolved is not None:
-                # A trusted hit is a definite answer from an index that did complete.
-                alias_probe_answered = True
                 warm_index_soon()
             else:
                 resolved = await asyncio.to_thread(
@@ -9834,14 +9833,23 @@ async def _maybe_auto_switch_model(
                     requested_model,
                     include_companion_scope = True,
                 )
-                # resolve_local_gguf swallows a failed scan and returns None, which is
-                # indistinguishable from "no such model" at this level. A published stamp
-                # is the difference: _build_index raising never reaches _publish, so the
-                # absence is only confirmed once a scan has actually landed.
-                scan_stamp_after = index_scan_stamp()
-                alias_probe_answered = (
-                    scan_stamp_after > 0.0 and scan_stamp_after != scan_stamp_before
-                )
+            # The marker means "this load path has no alias to record", so only a
+            # CONFIRMED ABSENCE earns it. A positive resolution is the opposite claim and
+            # must not settle: the switch may still abort before recording the alias
+            # (_already_serving false, then a refusal or a failed load), and once it does
+            # record one _openai_advertised_id is set and the shortcut is unreachable
+            # anyway, so the marker buys nothing there and a stale one is wrong.
+            #
+            # And an absence is only confirmed by an index that answered for real:
+            # resolve_local_gguf swallows a failed scan and returns None, which at this
+            # level looks exactly like "no such model". A scan that landed during the pass
+            # says so through its published stamp (_build_index raising never reaches
+            # _publish), and an index that was already trustworthy never needed one.
+            scan_stamp_after = index_scan_stamp()
+            alias_probe_answered = resolved is None and (
+                (scan_stamp_after > 0.0 and scan_stamp_after != scan_stamp_before)
+                or index_answer_is_trustworthy()
+            )
         if resolved is None:
             # Not on disk. Opt-in: fetch in the background and ask the caller to retry.
             if auto_switch_on and not reload_only:
