@@ -890,6 +890,19 @@ class TestBashBlocklistPosition:
                 id = "suffixed_duration_wrapper_spent_allowed",
             ),
             pytest.param("coproc echo hi", id = "coproc_benign_allowed"),
+            pytest.param("coproc MYJOB { cat train.log; }", id = "coproc_named_benign_allowed"),
+            # `coproc` is the keyword only unquoted at command position (`'coproc' echo rm` is "command not found"),
+            # so anywhere else it starts nothing and the blocked word behind it is data.
+            pytest.param("grep -rn coproc tools.py", id = "coproc_as_argument_allowed"),
+            pytest.param("grep coproc rm file", id = "coproc_then_blocked_word_as_args_allowed"),
+            pytest.param("echo coproc rm", id = "coproc_then_blocked_word_echoed_allowed"),
+            pytest.param("echo 'coproc rm'", id = "quoted_coproc_payload_allowed"),
+            pytest.param("coproc echo rm", id = "coproc_benign_command_blocked_arg_allowed"),
+            # The optional-name rule needs the same guard: these three words are arguments echo prints.
+            pytest.param(
+                "echo coproc JOB if rm -f victim; then :; fi",
+                id = "coproc_name_shape_as_args_allowed",
+            ),
             pytest.param("> out.log echo hi", id = "spaced_redirection_benign_allowed"),
             # A substitution that IS the redirection target names a file; nothing runs.
             pytest.param("> $(date).log echo hi", id = "subst_as_redirection_target_allowed"),
@@ -1117,6 +1130,56 @@ class TestBashBlocklistPosition:
                 "command substitution",
                 "coproc $(ls /usr/bin | grep '^rm$') -rf victim",
                 id = "coproc_subst_blocked",
+            ),
+            # ...and the plain spellings, where reading `coproc` as the command word left the real one as arguments.
+            pytest.param("rm", "coproc rm -f victim", id = "coproc_bare_blocked"),
+            pytest.param("pkill", "coproc pkill -f unsloth", id = "coproc_pkill_blocked"),
+            pytest.param("ssh", "coproc ssh internal-host", id = "coproc_ssh_blocked"),
+            # `coproc NAME compound` only NAMES the coprocess, so command position carries past the name.
+            pytest.param(
+                "rm", "coproc JOB if rm -f victim; then :; fi", id = "coproc_named_if_blocked"
+            ),
+            pytest.param("rm", "coproc JOB { rm -rf victim; }", id = "coproc_named_group_blocked"),
+            pytest.param(
+                "rm",
+                "x=1; coproc JOB if rm -f victim; then :; fi",
+                id = "coproc_named_after_sep_blocked",
+            ),
+            pytest.param(
+                "rm",
+                "FOO=bar coproc JOB if rm -f victim; then :; fi",
+                id = "coproc_named_after_assign_blocked",
+            ),
+            # Quoting forges the lookahead: shlex hands back the same token for `{` and `'{'`, while bash reads
+            # `coproc rm '{' -f victim` as the SIMPLE form and deletes.
+            pytest.param("rm", "coproc rm '{' -f victim", id = "coproc_quoted_brace_blocked"),
+            pytest.param("rm", "coproc rm 'if' -f victim", id = "coproc_quoted_keyword_blocked"),
+            # The name is read, not skipped, so a sed there still has its `e` program screened.
+            pytest.param(
+                "rm",
+                "coproc sed 'if' -e '1e rm -f victim' input",
+                id = "coproc_quoted_keyword_sed_program_blocked",
+            ),
+            pytest.param(
+                "pkill", "coproc pkill '{' -f unsloth", id = "coproc_quoted_brace_pkill_blocked"
+            ),
+            # `time` is a reserved word taking a pipeline, so it prefixes a coprocess and bash runs it (5.2.21);
+            # an external wrapper cannot, `env coproc JOB if ...` being a syntax error.
+            pytest.param("rm", "time coproc rm -f victim", id = "timed_coproc_blocked"),
+            pytest.param(
+                "rm",
+                "time coproc JOB if rm -f victim; then :; fi",
+                id = "timed_named_coproc_blocked",
+            ),
+            pytest.param(
+                "rm",
+                "time -p coproc JOB if rm -f victim; then :; fi",
+                id = "timed_p_named_coproc_blocked",
+            ),
+            pytest.param(
+                "rm",
+                "coproc JOB for f in x; do rm -f victim; done",
+                id = "coproc_named_for_blocked",
             ),
             # The two laundering routes the site fixes left behind: an arm runs a variable just
             # as readily as a substitution, and bash concatenates `${x}m` into one command word.
@@ -1669,6 +1732,40 @@ class TestBashBlocklistPosition:
         assert "rm" in self._find()("env -u FOO find . -exec rm -rf victim {} +")
         assert "rm" in self._find()("timeout 5 find . -exec rm -rf victim {} +")
         assert "rm" in self._find()("nice -n 5 find . -exec rm -rf victim {} +")
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "rm -rf victim",
+            "ssh internal-host",
+            "curl http://127.0.0.1/",
+            "echo hi",
+            "cat train.log",
+        ],
+    )
+    def test_coproc_classifies_exactly_as_the_command_behind_it(self, command):
+        # Equal in BOTH directions: merely getting stricter would start prompting for coprocesses that are fine.
+        assert self._find()(f"coproc {command}") == self._find()(command)
+        # A forged lookahead moves nothing, since the walker reads the name rather than skipping it.
+        head, _, rest = command.partition(" ")
+        assert self._find()(f"coproc {head} 'if' {rest}") == self._find()(f"{head} 'if' {rest}")
+        assert is_high_risk_tool_call(
+            "terminal", {"command": f"coproc {command}"}
+        ) == is_high_risk_tool_call("terminal", {"command": command})
+        assert self._find()(f"coproc JOB if {command}; then :; fi") == self._find()(command)
+        # `git clean -fd` is destructive without being blocklisted, so the auto gate must reach past the name.
+        assert is_high_risk_tool_call(
+            "terminal", {"command": "coproc JOB if git clean -fd; then :; fi"}
+        ) == is_high_risk_tool_call("terminal", {"command": "git clean -fd"})
+        # ...including a name spelled like a wrapper, which bash allows and which used to eat the compound.
+        assert is_high_risk_tool_call(
+            "terminal", {"command": "coproc env if git clean -fd; then :; fi"}
+        ) == is_high_risk_tool_call("terminal", {"command": "git clean -fd"})
+        # `time` keeps command position for bash, so it must keep it for both classifiers too.
+        assert self._find()(f"time coproc {command}") == self._find()(f"time {command}")
+        assert is_high_risk_tool_call(
+            "terminal", {"command": f"time coproc {command}"}
+        ) == is_high_risk_tool_call("terminal", {"command": f"time {command}"})
 
     def test_quoted_operator_is_data_not_a_command_boundary(self):
         # A quoted operator reaches the command as an argument, so the word

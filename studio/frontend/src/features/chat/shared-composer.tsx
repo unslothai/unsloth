@@ -79,7 +79,6 @@ import type { ModelLifecycleLease } from "./utils/model-lifecycle-gate";
 import { useAui } from "@assistant-ui/react";
 import {
   ArrowUpIcon,
-  BookOpenIcon,
   ChevronDownIcon,
   Columns2Icon,
   GlobeIcon,
@@ -101,6 +100,7 @@ import {
   Image03Icon,
   McpServerIcon,
   PencilRulerIcon,
+  Scroll01Icon,
 } from "@hugeicons/core-free-icons";
 import { useNavigate } from "@tanstack/react-router";
 import { useChatActive } from "./runtime-provider";
@@ -116,7 +116,6 @@ import {
 } from "./prompt-storage/prompt-storage-dialog";
 import { listPromptEntries, type PromptEntry } from "./api/prompts-api";
 import { McpComposerButton } from "./mcp-composer-button";
-import { BypassPermissionsMenuItem } from "./bypass-permissions-menu-item";
 import { PermissionModeComposerPill } from "./permission-mode-select";
 import { reasoningCapsFromLoad } from "./lib/apply-inference-status-to-store";
 import { KnowledgeBaseComposerButton } from "@/features/rag/components/knowledge-base-composer-button";
@@ -184,6 +183,7 @@ import {
   persistGpuMemoryModeOnLoad,
   resolveSpeculativeSettingsForLoad,
   saveSpeculativeType,
+  codeToolsOn,
   useChatRuntimeStore,
 } from "./stores/chat-runtime-store";
 import {
@@ -684,7 +684,7 @@ export function SharedComposer({
   );
   const toolsEnabled = useChatRuntimeStore((s) => s.toolsEnabled);
   const setToolsEnabled = useChatRuntimeStore((s) => s.setToolsEnabled);
-  const codeToolsEnabled = useChatRuntimeStore((s) => s.codeToolsEnabled);
+  const codeToolsEnabled = useChatRuntimeStore(codeToolsOn);
   const setCodeToolsEnabled = useChatRuntimeStore((s) => s.setCodeToolsEnabled);
   const imageToolsEnabled = useChatRuntimeStore((s) => s.imageToolsEnabled);
   const setImageToolsEnabled = useChatRuntimeStore(
@@ -2051,7 +2051,7 @@ export function SharedComposer({
         onSelect={() => setRagEnabled(!ragEnabled)}
       >
         <HugeiconsIcon icon={FileDatabaseIcon} strokeWidth={2} />
-        Chat with Files
+        Chat with files
         {ragEnabled && !ragDisabled ? (
           <HugeiconsIcon icon={Tick02Icon} strokeWidth={2} className="ml-auto" />
         ) : null}
@@ -2072,8 +2072,8 @@ export function SharedComposer({
     ),
     skills: (
       <DropdownMenuItem onSelect={() => setSkillsOpen(true)}>
-        <BookOpenIcon />
-        Agent Skills
+        <HugeiconsIcon icon={Scroll01Icon} strokeWidth={2} />
+        Skills
       </DropdownMenuItem>
     ),
     savedPrompts: (
@@ -2171,7 +2171,6 @@ export function SharedComposer({
         ) : null}
       </DropdownMenuItem>
     ) : null,
-    bypassPermissions: <BypassPermissionsMenuItem />,
     projects: (
       <DropdownMenuSub>
         <DropdownMenuSubTrigger>

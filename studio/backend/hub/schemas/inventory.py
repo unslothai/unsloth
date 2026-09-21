@@ -249,6 +249,8 @@ class CachedRepoBase(BaseModel):
     repo_id: str
     size_bytes: int = 0
     cache_path: Optional[str] = None
+    # Opaque stand-in for ``cache_path``, stable for the server's life and not reversible.
+    cache_ref: Optional[str] = None
     last_modified: Optional[float] = None
     partial: bool = False
     partial_transport: Optional[str] = None
@@ -382,6 +384,8 @@ class OrphanCompanionInfo(BaseModel):
     repo_id: str
     size_bytes: int = 0
     cache_path: Optional[str] = None
+    # Opaque stand-in for ``cache_path``, stable for the server's life and not reversible.
+    cache_ref: Optional[str] = None
 
 
 class OrphanCompanionsResponse(BaseModel):

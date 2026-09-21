@@ -653,6 +653,7 @@ class TrainingProgress:
     status_message: str = "Ready to train"
     elapsed_seconds: Optional[float] = None
     eta_seconds: Optional[float] = None
+    session_start_step: int = 0
     grad_norm: Optional[float] = None
     num_tokens: Optional[int] = None
     eval_loss: Optional[float] = None
@@ -1051,6 +1052,10 @@ class _MLXTrainerAdapter:
                     self.training_progress.elapsed_seconds,
                 ),
                 eta_seconds = event.get("eta_seconds", self.training_progress.eta_seconds),
+                session_start_step = event.get(
+                    "session_start_step",
+                    self.training_progress.session_start_step,
+                ),
                 grad_norm = event.get("grad_norm", self.training_progress.grad_norm),
                 num_tokens = event.get("num_tokens", self.training_progress.num_tokens),
                 eval_loss = event.get("eval_loss", self.training_progress.eval_loss),
@@ -3064,6 +3069,9 @@ class TrainingBackend:
                 self._progress.total_steps = event.get("total_steps", self._progress.total_steps)
                 self._progress.elapsed_seconds = event.get("elapsed_seconds")
                 self._progress.eta_seconds = event.get("eta_seconds")
+                self._progress.session_start_step = event.get(
+                    "session_start_step", self._progress.session_start_step
+                )
                 self._progress.grad_norm = event.get("grad_norm")
                 self._progress.num_tokens = event.get("num_tokens")
                 self._progress.eval_loss = event.get("eval_loss")
