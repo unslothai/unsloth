@@ -126,18 +126,22 @@ test("the Updated column names the list's order and turns it around", () => {
   // An arrow, not a chevron: it points the way the column is sorted.
   assert.match(PAGE, /\n\s*Updated\n(?:\s*\{\/\*[^\n]*\*\/\}\n)?\s*<ArrowDownIcon/);
   assert.match(PAGE, /import \{ ArrowDownIcon, ChevronDownIcon, MoreHorizontalIcon \} from "lucide-react";/);
-  // One click puts the list back on this column, the next turns it around.
+  // Clicking it turns the order around, and it is the only thing that orders the list.
   assert.match(
     PAGE,
-    /if \(sortMode !== "activity"\) setSortMode\("activity"\);\n\s*else setSortDir\(\(dir\) => \(dir === "desc" \? "asc" : "desc"\)\);/,
+    /onClick=\{\(\) => setSortDir\(\(dir\) => \(dir === "desc" \? "asc" : "desc"\)\)\}/,
   );
   assert.match(PAGE, /sortDir === "asc" && "rotate-180",/);
-  // The arrow stands for this column alone, so sorting by name hides it rather than lying.
-  assert.match(PAGE, /sortMode !== "activity" && "invisible",/);
   assert.match(
     PAGE,
-    /return sortDir === "asc" \? a\.updatedAt - b\.updatedAt : b\.updatedAt - a\.updatedAt;/,
+    /sortDir === "asc" \? a\.updatedAt - b\.updatedAt : b\.updatedAt - a\.updatedAt,/,
   );
+  // The Sort by control it replaces is gone, with the mode it carried.
+  assert.ok(!PAGE.includes("Sort by"), "the sort control is still in the header");
+  assert.ok(!PAGE.includes("sortMode"), "the sort mode outlived its control");
+  // Search takes the room it leaves.
+  assert.match(PAGE, /<div className="relative min-w-0 flex-1 sm:max-w-md">/);
+  assert.match(PAGE, /className="h-9 w-full rounded-full border-none bg-muted pl-10/);
   // Newest first to begin with, as a file list opens.
   assert.match(PAGE, /useState<"desc" \| "asc">\("desc"\)/);
   // The header's trailing spacers match the row's pin and menu, so the label sits over its

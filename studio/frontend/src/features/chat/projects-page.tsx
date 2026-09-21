@@ -88,8 +88,6 @@ import {
 import { CHAT_HISTORY_UPDATED_EVENT } from "./api/chat-api";
 import { groupThreads, type SidebarItem } from "./hooks/use-chat-sidebar-items";
 
-type SortMode = "activity" | "name";
-
 // Reveal this many more projects each time the user scrolls near the bottom.
 const PROJECTS_PAGE_STEP = 12;
 // A streaming chat fires the history event per chunk; one reload per quiet window is enough.
@@ -132,7 +130,6 @@ export function ProjectsPage() {
   const { projects, hasLoaded } = useChatProjects();
 
   const [query, setQuery] = useState("");
-  const [sortMode, setSortMode] = useState<SortMode>("activity");
   // Newest first, the way a file list opens.
   const [sortDir, setSortDir] = useState<"desc" | "asc">("desc");
   // Rows that fit the page height (measured), plus any revealed via Show more.
@@ -359,13 +356,11 @@ export function ProjectsPage() {
     const filtered = trimmed
       ? projects.filter((p) => p.name.toLowerCase().includes(trimmed))
       : projects.slice();
-    filtered.sort((a, b) => {
-      if (sortMode === "name") return a.name.localeCompare(b.name);
-      // Direction belongs to the Updated column, which is the only one that carries an arrow.
-      return sortDir === "asc" ? a.updatedAt - b.updatedAt : b.updatedAt - a.updatedAt;
-    });
+    filtered.sort((a, b) =>
+      sortDir === "asc" ? a.updatedAt - b.updatedAt : b.updatedAt - a.updatedAt,
+    );
     return filtered;
-  }, [projects, query, sortMode, sortDir]);
+  }, [projects, query, sortDir]);
   // Default view shows as many rows as fit the page, then loads more as the user scrolls near the
   // bottom. Search always spans every project.
   const isSearching = query.trim() !== "";
@@ -601,8 +596,9 @@ export function ProjectsPage() {
         <h1 className="text-ui-30 font-semibold leading-[1.04] tracking-[-0.028em] text-foreground sm:text-ui-34">
           Projects
         </h1>
-        <div className="flex items-center gap-3">
-          <div className="relative">
+        {/* The Updated column orders the list, so search takes the room a sort control had. */}
+        <div className="flex min-w-0 flex-1 items-center justify-end gap-3">
+          <div className="relative min-w-0 flex-1 sm:max-w-md">
             <span className="pointer-events-none absolute left-3.5 top-1/2 -translate-y-1/2 text-muted-foreground">
               <HugeiconsIcon icon={Search01Icon} strokeWidth={1.75} className="size-4" />
             </span>
@@ -610,24 +606,9 @@ export function ProjectsPage() {
               value={query}
               onChange={(e) => setQuery(e.target.value)}
               placeholder="Search projects"
-              className="h-9 w-52 rounded-full border-none bg-muted pl-10 pr-4 shadow-none dark:bg-card sm:w-64"
+              className="h-9 w-full rounded-full border-none bg-muted pl-10 pr-4 shadow-none dark:bg-card"
               aria-label="Search projects"
             />
-          </div>
-          <div className="flex items-center gap-2">
-            <span className="text-sm text-muted-foreground">Sort by</span>
-            <Select
-              value={sortMode}
-              onValueChange={(v) => setSortMode(v as SortMode)}
-            >
-              <SelectTrigger className="h-9 w-[130px] rounded-full border-none bg-muted shadow-none dark:bg-card">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="activity">Activity</SelectItem>
-                <SelectItem value="name">Name</SelectItem>
-              </SelectContent>
-            </Select>
           </div>
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
@@ -757,10 +738,7 @@ export function ProjectsPage() {
             {/* The column sorts the list, and the arrow says which way. */}
             <button
               type="button"
-              onClick={() => {
-                if (sortMode !== "activity") setSortMode("activity");
-                else setSortDir((dir) => (dir === "desc" ? "asc" : "desc"));
-              }}
+              onClick={() => setSortDir((dir) => (dir === "desc" ? "asc" : "desc"))}
               title={sortDir === "desc" ? "Newest first" : "Oldest first"}
               className="flex w-40 shrink-0 cursor-pointer items-center gap-1 text-left transition-colors hover:text-foreground"
             >
@@ -771,8 +749,6 @@ export function ProjectsPage() {
                 className={cn(
                   "size-3.5 transition-transform",
                   sortDir === "asc" && "rotate-180",
-                  // The list is by name, so this column is not what orders it.
-                  sortMode !== "activity" && "invisible",
                 )}
               />
             </button>
