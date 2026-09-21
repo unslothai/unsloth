@@ -57,6 +57,7 @@ import {
   useCallback,
   useContext,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -740,21 +741,10 @@ function useFenceTokens(
 ): FenceTokens | null {
   const [tokens, setTokens] = useState<FenceTokens | null>(null);
   const wanted = useRef("");
-  // The synchronous cache hit, so a fence that was already highlighted while streaming paints
-  // coloured on its first completed frame instead of flashing the plain shell.
-  const seeded = useRef(false);
   useEffect(() => {
     if (!enabled) return;
     const body = trimTrailingNewlines(source);
     wanted.current = body;
-    if (!seeded.current) {
-      seeded.current = true;
-      const ready = code.highlight(
-        { code: body, language: (languageToken ?? "text") as never, themes: STREAMDOWN_SHIKI_THEME },
-        () => {},
-      );
-      if (ready) setTokens(ready);
-    }
     const settled = code.highlight(
       {
         code: body,
@@ -768,6 +758,22 @@ function useFenceTokens(
     // `settled === null` means the plugin caught a tokenization error; keeping the previous
     // tokens would show an older, shorter body. The callback restores them if it succeeds later.
     setTokens(settled ?? null);
+  }, [enabled, source, languageToken]);
+
+  // BEFORE PAINT. A fence that is already cached -- the one that just finished streaming, or a
+  // static fence on a settled reply -- has to be coloured on its first frame, and the passive
+  // effect above lands after that frame.
+  useLayoutEffect(() => {
+    if (!enabled) return;
+    const ready = code.highlight(
+      {
+        code: trimTrailingNewlines(source),
+        language: (languageToken ?? "text") as never,
+        themes: STREAMDOWN_SHIKI_THEME,
+      },
+      () => {},
+    );
+    if (ready) setTokens(ready);
   }, [enabled, source, languageToken]);
   return tokens;
 }
