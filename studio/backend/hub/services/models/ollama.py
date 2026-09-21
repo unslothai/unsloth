@@ -125,6 +125,25 @@ def _unsupported_ollama_layer_media_types(layers: list[object]) -> tuple[str, ..
     return tuple(sorted(unsupported))
 
 
+def _walk_manifest_files(manifests_root: Path):
+    """Every file under *manifests_root*, with enumeration failures REPORTED.
+
+    ``rglob`` swallows the OSError from reading a directory and simply yields nothing for
+    it, so an unreadable manifests tree reached the caller as an empty one and the scan
+    published as complete over rows it never saw. ``os.walk`` with ``onerror`` is the
+    enumeration that can say so; the traversal order and the set of files are otherwise the
+    same.
+    """
+    import os as _os
+
+    def _onerror(exc: OSError) -> None:
+        note_scan_incident(f"ollama manifests unreadable: {getattr(exc, 'filename', '')}")
+
+    for parent, _dirs, names in _os.walk(manifests_root, onerror = _onerror):
+        for name in sorted(names):
+            yield Path(parent) / name
+
+
 def _safe_is_file(path: Path) -> bool:
     try:
         return path.is_file()
@@ -539,7 +558,7 @@ def scan_ollama_dir(
         return []
 
     try:
-        for tag_file in manifests_root.rglob("*"):
+        for tag_file in _walk_manifest_files(manifests_root):
             if not _safe_is_file(tag_file):
                 continue
 
@@ -598,7 +617,7 @@ def ollama_manifest_ref_for_path(model_path: str) -> Optional[str]:
             continue
         manifests_root = ollama_dir / "manifests"
         try:
-            for tag_file in manifests_root.rglob("*"):
+            for tag_file in _walk_manifest_files(manifests_root):
                 if not _safe_is_file(tag_file):
                     continue
                 rel = _manifest_rel_path(tag_file, manifests_root)

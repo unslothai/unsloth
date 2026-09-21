@@ -12292,12 +12292,19 @@ def test_the_hermes_and_ollama_scanners_report_a_directory_they_could_not_walk(m
     """The two scanners that swallow a traversal error inside their OWN module.
 
     The per-child notes added in routes/models.py do not reach these: Hermes catches an
-    OSError around its glob and returns [], and the Ollama scan catches one around its
-    rglob and returns whatever it had. Both are indistinguishable from a directory holding
-    nothing, so a resident split GGUF served out of a Hermes dir that blinked would have
-    its miss memoized and go on being reported by its part filename after the dir came
-    back.
+    OSError and returns [], and the Ollama scan catches one and returns whatever it had.
+    Both are indistinguishable from a directory holding nothing, so a resident split GGUF
+    served out of a Hermes dir that blinked would have its miss memoized and go on being
+    reported by its part filename after the dir came back.
+
+    Patched at the enumeration each scanner actually calls. An earlier version of this test
+    patched Path.glob and Path.rglob, which both scanners have since stopped using -- they
+    suppress the directory error themselves, which is the defect
+    test_a_scan_directory_that_cannot_be_enumerated_is_reported now pins against the real
+    filesystem -- so it was asserting about calls that no longer happen.
     """
+    import os
+
     from core.inference.scan_incidents import collecting_scan_incidents
     from hub.services.models import hermes, ollama
 
@@ -12307,7 +12314,7 @@ def test_the_hermes_and_ollama_scanners_report_a_directory_they_could_not_walk(m
     with tempfile.TemporaryDirectory() as root:
         hermes_dir = pathlib.Path(root) / "hermes"
         hermes_dir.mkdir()
-        monkeypatch.setattr(pathlib.Path, "glob", boom)
+        monkeypatch.setattr(pathlib.Path, "iterdir", boom)
         with collecting_scan_incidents() as incidents:
             assert hermes.staged_gguf_files(hermes_dir) == []
         assert any(
@@ -12317,7 +12324,17 @@ def test_the_hermes_and_ollama_scanners_report_a_directory_they_could_not_walk(m
 
         ollama_dir = pathlib.Path(root) / "ollama"
         (ollama_dir / "manifests").mkdir(parents = True)
-        monkeypatch.setattr(pathlib.Path, "rglob", boom)
+
+        def walk_fails(
+            top,
+            onerror = None,
+            **kwargs,
+        ):
+            if onerror is not None:
+                onerror(PermissionError(13, "Permission denied", str(top)))
+            return iter(())
+
+        monkeypatch.setattr(os, "walk", walk_fails)
         with collecting_scan_incidents() as incidents:
             assert ollama.scan_ollama_dir(ollama_dir) == []
         assert any(
@@ -13045,3 +13062,59 @@ def test_a_root_the_classifier_could_not_read_is_not_a_complete_scan(monkeypatch
         with collecting_scan_incidents() as incidents:
             assert models_route._is_model_directory(directory) is False
         assert incidents == [], f"a config-only directory was reported as a gap: {incidents}"
+
+
+def test_a_scan_directory_that_cannot_be_enumerated_is_reported():
+    """``glob`` and ``rglob`` SWALLOW the OSError from reading a directory.
+
+    They yield nothing for it, so an unreadable or stale-mounted root reached the caller as
+    an empty one and the pass published as complete over rows it never saw. Confirmed here
+    against the real filesystem rather than a patched stat, since the suppression is
+    pathlib's: a directory with no search permission makes glob return [] while iterdir
+    raises.
+    """
+    import os
+    import pathlib
+
+    from core.inference.scan_incidents import collecting_scan_incidents
+    from hub.services.models import hermes as hermes_service
+    from hub.services.models import ollama as ollama_service
+
+    with tempfile.TemporaryDirectory() as root:
+        unreadable = pathlib.Path(root) / "hermes"
+        unreadable.mkdir()
+        (unreadable / "model-Q4_K_M.gguf").write_bytes(b"GGUF")
+        # The premise of the whole case, asserted rather than assumed.
+        os.chmod(unreadable, 0o000)
+        try:
+            assert (
+                list(unreadable.glob("*.gguf")) == []
+            ), "glob no longer suppresses the enumeration failure, so this case is stale"
+            with collecting_scan_incidents() as incidents:
+                assert hermes_service.staged_gguf_files(unreadable) == []
+            assert any(
+                "hermes" in note for note in incidents
+            ), f"an unreadable Hermes folder read as an empty one: {incidents}"
+
+            manifests = pathlib.Path(root) / "ollama" / "manifests"
+            manifests.mkdir(parents = True)
+            (manifests / "library").mkdir()
+            os.chmod(manifests / "library", 0o000)
+            with collecting_scan_incidents() as incidents:
+                list(ollama_service._walk_manifest_files(manifests))
+            assert any(
+                "ollama manifests" in note for note in incidents
+            ), f"an unreadable Ollama manifests tree read as an empty one: {incidents}"
+        finally:
+            os.chmod(unreadable, 0o755)
+            library = pathlib.Path(root) / "ollama" / "manifests" / "library"
+            if library.exists():
+                os.chmod(library, 0o755)
+
+    # A readable folder with nothing in it is an ANSWER, and stays silent.
+    with tempfile.TemporaryDirectory() as root:
+        empty = pathlib.Path(root) / "hermes"
+        empty.mkdir()
+        with collecting_scan_incidents() as incidents:
+            assert hermes_service.staged_gguf_files(empty) == []
+        assert incidents == [], f"an empty Hermes folder was reported as a gap: {incidents}"

@@ -49,7 +49,12 @@ def staged_gguf_files(hermes_dir: Path) -> List[Path]:
     never rows of their own; llama.cpp opens the whole set from part one.
     """
     try:
-        files = sorted(p for p in hermes_dir.glob("*.gguf") if p.is_file())
+        # iterdir, not glob: glob SWALLOWS the OSError from enumerating the directory and
+        # yields nothing, so an unreadable or stale-mounted Hermes folder reached the
+        # caller as an empty one and the pass published as complete over it. Verified
+        # against CPython: a directory with no search permission makes glob return [] while
+        # iterdir raises. Matching is unchanged -- the same flat, case-sensitive suffix.
+        files = sorted(p for p in hermes_dir.iterdir() if p.name.endswith(".gguf") and p.is_file())
     except OSError as exc:
         logger.warning("Error scanning Hermes directory %s: %s", hermes_dir, exc)
         # An empty list here is indistinguishable from a directory holding nothing, and a
