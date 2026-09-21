@@ -2598,35 +2598,42 @@ def run(
             typer.echo(f"UNSLOTH_START_PORT: {actual_port}")
             typer.echo(f"UNSLOTH_START_API_KEY: {api_key}")
 
+        if not silent:
+            typer.echo(f"Loading model: {model}...")
         try:
-            results = []
-            for repo, variant in [(model, gguf_variant), *map(_split_repo_variant, also)]:
+            result = _load_model_via_http(
+                port = actual_port,
+                api_key = api_key,
+                model = model,
+                gguf_variant = gguf_variant,
+                max_seq_length = max_seq_length,
+                load_in_4bit = load_in_4bit,
+                gpu_memory_mode = gpu_memory_mode,
+                tensor_parallel = tensor_parallel,
+                speculative_type = speculative_type,
+                spec_draft_n_max = spec_draft_n_max,
+                llama_extra_args = extra_llama_args,
+                request_host = request_host,
+            )
+            # The tuning flags describe --model; a model loaded alongside takes its own defaults.
+            for extra in also:
                 if not silent:
-                    typer.echo(f"Loading model: {repo}...")
-                # The tuning flags describe --model; a model loaded alongside takes its own defaults.
-                tuning = {} if results else {
-                    "tensor_parallel": tensor_parallel,
-                    "speculative_type": speculative_type,
-                    "spec_draft_n_max": spec_draft_n_max,
-                    "llama_extra_args": extra_llama_args,
-                }
+                    typer.echo(f"Loading model: {extra}...")
+                repo, variant = _split_repo_variant(extra)
                 try:
-                    results.append(
-                        _load_model_via_http(
-                            port = actual_port,
-                            api_key = api_key,
-                            model = repo,
-                            gguf_variant = variant,
-                            max_seq_length = max_seq_length,
-                            load_in_4bit = load_in_4bit,
-                            gpu_memory_mode = gpu_memory_mode,
-                            request_host = request_host,
-                            alongside = bool(results),
-                            **tuning,
-                        )
+                    _load_model_via_http(
+                        port = actual_port,
+                        api_key = api_key,
+                        model = repo,
+                        gguf_variant = variant,
+                        max_seq_length = max_seq_length,
+                        load_in_4bit = load_in_4bit,
+                        gpu_memory_mode = gpu_memory_mode,
+                        request_host = request_host,
+                        alongside = True,
                     )
                 except RuntimeError as exc:
-                    raise RuntimeError(f"{repo}: {exc}") from exc
+                    raise RuntimeError(f"{extra}: {exc}") from exc
         except RuntimeError as exc:
             typer.echo(f"Error: {exc}", err = True)
             raise typer.Exit(1)
@@ -2635,7 +2642,6 @@ def run(
         getattr(run_mod, "_wait_for_server_shutdown", lambda: None)()
         raise
 
-    result = results[0]
     loaded_model = result.get("model", model)
     display_variant = f" ({gguf_variant})" if gguf_variant else ""
     context_length_line = _format_context_length_line(result)

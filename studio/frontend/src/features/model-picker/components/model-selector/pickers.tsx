@@ -2642,6 +2642,8 @@ export function HubModelPicker({
   const residentCheckpoint = useChatRuntimeStore((s) => s.residentCheckpoint);
   const keepModelsLoaded = useChatRuntimeStore((s) => s.keepModelsLoaded);
   const setKeepModelsLoaded = useChatRuntimeStore((s) => s.setKeepModelsLoaded);
+  // Chat only: a task picker's pipeline takes the whole GPU, so nothing stays loaded there.
+  const isChatPicker = task === undefined;
   const chatLoadedModelId = chatModelLoaded({
     checkpoint: selectedCheckpoint,
     isExternalModel: isExternalModelId(selectedCheckpoint),
@@ -5690,7 +5692,7 @@ export function HubModelPicker({
               // On Device pulls the heading block tight to the controls; Recommended keeps more top room
               // above its first row.
               showDownloaded ? "pt-0" : "pt-[4px]",
-              onEject || task === undefined ? "pb-[60px]" : "pb-4",
+              onEject || isChatPicker ? "pb-[60px]" : "pb-4",
             )}
           >
             {showConnected ? (
@@ -6957,11 +6959,10 @@ export function HubModelPicker({
         <div
           className={cn(
             "pointer-events-none absolute inset-x-0 bottom-0 flex items-center justify-between rounded-b-[inherit] px-3.5 pb-[19px]",
-            task === undefined && "bg-popover pt-2",
+            isChatPicker && "bg-popover pt-2",
           )}
         >
-          {/* Chat only: a task picker's pipeline takes the whole GPU, so nothing stays loaded. */}
-          {task === undefined ? (
+          {isChatPicker ? (
             <Tooltip>
               <TooltipTrigger asChild={true}>
                 <button

@@ -214,7 +214,6 @@ export async function listLoras(
   return parseJsonOrThrow<ListLorasResponse>(response);
 }
 
-/** ``model`` asks about that loaded model rather than the primary one. */
 export async function getInferenceStatus(
   signal?: AbortSignal,
   model?: string,

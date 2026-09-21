@@ -9,10 +9,18 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+import inspect
+
 import core.inference.orchestrator as orchestrator
 import routes.inference as inf
+from auth import policy
 from auth.authentication import get_current_subject
+from core.inference import gpu_arbiter
 from models.inference import InferenceStatusResponse, LoadRequest, UnloadRequest
+from utils.account_context import AccountContext, run_as
+
+ALICE = AccountContext("a" * 32, "alice")
+BOB = AccountContext("b" * 32, "bob")
 
 
 class FakeLlama:
@@ -95,7 +103,7 @@ def _selected(monkeypatch, request):
 
     async def run():
         slot = await inf._select_load_slot(request)
-        assert inf._routed_llama_backend.get() is (slot.llama if slot else None)
+        assert inf.routed_slot.get() is slot
         return slot
 
     return asyncio.run(run())
@@ -123,12 +131,24 @@ def test_loading_a_model_an_extra_slot_serves_reuses_it(backends, monkeypatch):
     assert _selected(monkeypatch, request) is extra
 
 
-def test_unload_drops_only_the_named_extra_slot(backends):
+def test_unload_drops_only_the_named_extra_slot(backends, monkeypatch):
     primary, extra = backends
+    released = []
+    monkeypatch.setattr(inf, "release_chat_gpu_claim", lambda: released.append(True))
     response = asyncio.run(inf._unload_model_impl(UnloadRequest(model_path = "org/B-GGUF"), "s"))
     assert response.status == "unloaded"
     assert primary.is_loaded and not extra.llama.is_loaded
-    assert inf._extra_slots == []
+    assert inf._extra_slots == [] and released == [True]
+
+
+def test_a_failed_llama_unload_still_cleans_the_orchestrator(backends):
+    _, extra = backends
+    cleaned = []
+    extra.llama.unload_model = lambda: 1 / 0
+    extra.orchestrator._cleanup = lambda: cleaned.append(True)
+    with pytest.raises(ZeroDivisionError):
+        inf._drop_extra_slot(extra)
+    assert inf._extra_slots == [] and cleaned == [True]
 
 
 def test_a_managed_account_sees_only_its_own_slots(backends, monkeypatch):
@@ -202,6 +222,79 @@ def test_a_slot_evicted_while_it_loads_is_torn_down(backends, monkeypatch):
         return "loaded"
 
     monkeypatch.setattr(inf, "_run_tracked_load_model_impl", load_after_eviction)
+    monkeypatch.setattr(inf, "release_chat_gpu_claim", lambda: None)
     request = LoadRequest(model_path = "org/C-GGUF", alongside = True)
     assert asyncio.run(inf.load_model_gated(request, None, "s")) == "loaded"
     assert inf._extra_slots == [] and not spawned[0].llama.is_active
+
+
+def test_only_a_new_slot_skips_the_running_chat_check(backends, monkeypatch):
+    monkeypatch.setattr(inf, "LlamaCppBackend", FakeLlama)
+    monkeypatch.setattr(inf, "InferenceOrchestrator", FakeOrchestrator)
+    monkeypatch.setattr(inf, "_raise_if_sidecar_swap_in_progress", lambda: None)
+    seen = []
+
+    async def load(request, *args, on_reload_confirmed, **kwargs):
+        seen.append(on_reload_confirmed is None)
+        llama = inf.get_llama_cpp_backend()
+        llama.model_identifier = request.model_path
+        llama.is_loaded = llama.is_active = True
+        return "loaded"
+
+    monkeypatch.setattr(inf, "_run_tracked_load_model_impl", load)
+    for request in (
+        LoadRequest(model_path = "org/C-GGUF", alongside = True),
+        LoadRequest(model_path = "org/B-GGUF", gguf_variant = "Q8_0", force_reload = True),
+        LoadRequest(model_path = "org/D-GGUF"),
+    ):
+        asyncio.run(inf.load_model_gated(request, None, "s"))
+    assert seen == [True, False, False]
+
+
+def test_loading_alongside_leaves_the_primary_with_the_account_that_loaded_it(monkeypatch):
+    monkeypatch.setattr(gpu_arbiter, "_owner", None)
+    monkeypatch.setattr(gpu_arbiter, "_owner_account", None)
+    gpu_arbiter.acquire_for(gpu_arbiter.CHAT, lambda: None, account_id = ALICE.account_id)
+    gpu_arbiter.acquire_for(
+        gpu_arbiter.CHAT, lambda: None, account_id = BOB.account_id, alongside = True
+    )
+    assert gpu_arbiter.owner_account() == ALICE.account_id
+    gpu_arbiter.acquire_for(gpu_arbiter.CHAT, lambda: None, account_id = BOB.account_id)
+    assert gpu_arbiter.owner_account() == BOB.account_id
+
+
+def test_an_account_lists_its_own_slot_but_not_a_foreign_primary(backends, monkeypatch):
+    primary, extra = backends
+    monkeypatch.setattr(policy, "installation_is_multi_user", lambda: True)
+    monkeypatch.setattr(gpu_arbiter, "_owner", gpu_arbiter.CHAT)
+    monkeypatch.setattr(gpu_arbiter, "_owner_account", ALICE.account_id)
+    inf._extra_slots[:] = [extra._replace(account = BOB.account_id)]
+
+    def listed():
+        return [entry["id"] for entry in inf._openai_model_objects()]
+
+    assert run_as(BOB, listed) == ["org/B-GGUF"]
+    assert run_as(ALICE, listed) == ["org/A-GGUF"]
+
+
+def test_a_slot_load_never_drops_the_chat_claim_the_primary_holds():
+    source = inspect.getsource(inf._load_model_impl)
+    assert source.count("if replacing and not chat_load_needs_gpu:") == 2
+    assert "if not chat_load_needs_gpu:" not in source
+
+
+def test_a_failed_slot_load_drops_the_slot_and_releases_the_claim(backends, monkeypatch):
+    monkeypatch.setattr(inf, "LlamaCppBackend", FakeLlama)
+    monkeypatch.setattr(inf, "InferenceOrchestrator", FakeOrchestrator)
+    monkeypatch.setattr(inf, "_raise_if_sidecar_swap_in_progress", lambda: None)
+    released = []
+    monkeypatch.setattr(inf, "release_chat_gpu_claim", lambda: released.append(True))
+
+    async def failing_load(*args, **kwargs):
+        raise RuntimeError("no such repo")
+
+    monkeypatch.setattr(inf, "_run_tracked_load_model_impl", failing_load)
+    request = LoadRequest(model_path = "org/missing-GGUF", alongside = True)
+    with pytest.raises(RuntimeError):
+        asyncio.run(inf.load_model_gated(request, None, "s"))
+    assert len(inf._extra_slots) == 1 and inf._loading_slot is None and released == [True]

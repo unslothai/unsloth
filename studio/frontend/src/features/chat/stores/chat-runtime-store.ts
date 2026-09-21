@@ -2246,7 +2246,6 @@ type ChatRuntimeStore = {
   /** Whether the provider exposes server-side web_fetch (Anthropic `web_fetch_*`). Gates the
    *  composer's Fetch pill, independent of Search. */
   supportsBuiltinWebFetch: boolean;
-  /** Loading a model keeps the ones already loaded instead of replacing them. */
   keepModelsLoaded: boolean;
   toolsEnabled: boolean;
   codeToolsEnabled: boolean;
@@ -5049,7 +5048,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       };
     }),
   setKeepModelsLoaded: (keepModelsLoaded) => {
-    writeStorageValue(CHAT_KEEP_MODELS_LOADED_KEY, String(keepModelsLoaded));
+    saveBool(CHAT_KEEP_MODELS_LOADED_KEY, keepModelsLoaded);
     set({ keepModelsLoaded });
   },
   setCodeToolsEnabled: (codeToolsEnabled) =>

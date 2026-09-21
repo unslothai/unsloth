@@ -809,7 +809,7 @@ export function useChatModelRuntime() {
     setLoadingModel(null);
     setLoadProgress(null);
     setLoadToastDismissedState(false);
-    // Kept models are still loaded, so the selection the load started from still stands.
+    // The kept models are still loaded, so the selection the load started from stands.
     if (!useChatRuntimeStore.getState().keepModelsLoaded) clearCheckpoint();
     if (tid != null) toast.dismiss(tid);
     const isCachedOrLocal = model.isDownloaded || model.isCachedLora;
@@ -916,7 +916,6 @@ export function useChatModelRuntime() {
       // nativePathToken is excluded: a leased file is named by a label two files can share, and only a
       // completed load writes the lease, so adopting would keep a stale token.
       if (!forceReload && !nativePathToken) {
-        // Asked about the pick itself, so a model loaded alongside answers for it.
         const readPickStatus = () =>
           getInferenceStatus(undefined, modelId).catch(() => null);
         const residentStatus = await readPickStatus();
@@ -1134,7 +1133,7 @@ export function useChatModelRuntime() {
       >;
       const keepModelsLoaded = useChatRuntimeStore.getState().keepModelsLoaded;
       try {
-        // A load next to the loaded models replaces nothing, so no running chat is in its way.
+        // Loading alongside replaces nothing, so no running chat is in its way.
         stopDecision =
           keepModelsLoaded && !forceReload
             ? {

@@ -55,7 +55,7 @@ _kv_resume = None
 _lifecycle_lock = threading.Lock()
 
 
-# Loads run one at a time. A load into a new slot holds only this, so inference keeps starting.
+# Serializes loads. A load into a new slot holds only this, so inference keeps starting.
 _load_lock = threading.Lock()
 
 
@@ -846,15 +846,19 @@ async def idle_unload_loop(poll_seconds: float = 15.0) -> None:
             ttl = await asyncio.to_thread(get_auto_unload_idle_seconds)
             if ttl <= 0:
                 continue
-            from routes.inference import get_llama_cpp_backend, unload_extra_models
+            from routes.inference import (
+                get_llama_cpp_backend,
+                release_chat_gpu_claim,
+                unload_extra_models,
+            )
 
-            async with _unload_gate():
-                if _is_idle(ttl):
-                    await asyncio.to_thread(unload_extra_models, _user_pinned)
             backend = get_llama_cpp_backend()
             # track by (id, variant): a (re)loaded model counts as activity so it survives one TTL before its first
             # request
             async with _unload_gate():
+                if _is_idle(ttl):
+                    await asyncio.to_thread(unload_extra_models, _user_pinned)
+                    await asyncio.to_thread(release_chat_gpu_claim)
                 # Purging the stash mid-reload would race the restore.
                 current = _loaded_identity(backend)
                 if current != seen_model:

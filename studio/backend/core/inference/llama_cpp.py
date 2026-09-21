@@ -495,6 +495,12 @@ class LlamaServerNotFoundError(RuntimeError):
     __slots__ = ()
 
 
+class GpuMemoryShortError(RuntimeError):
+    """A load that must fit next to the loaded models does not."""
+
+    __slots__ = ()
+
+
 class GgufDownloadCancelled(RuntimeError):
     """Expected signal from a cancelled GGUF download."""
 
@@ -586,6 +592,8 @@ class GgufLoadIntent:
     # a launch-time rewrite makes the launched and requested lists diverge.
     extra_args_inherited: bool = False
     preserve_multi_gpu_on_layer: bool = False
+    # Loaded alongside others: refuse rather than spill out of the GPU memory they left.
+    refuse_partial_gpu_fit: bool = False
     compare_mtp_draft: bool = False
     force_reload: bool = False
 
@@ -25318,6 +25326,20 @@ class LlamaCppBackend:
                 # Vulkan and APU checks, which describe hardware this branch has ruled out.
                 if _metal_ctx_refusal:
                     raise RuntimeError(_metal_ctx_refusal)
+
+                if (
+                    intent.refuse_partial_gpu_fit
+                    and _placement_verdict_partial
+                    and gpu_memory_mode != "manual"
+                ):
+                    need_gb = (gguf_size + mmproj_size + kv_cache_bytes) / 1024**3
+                    free_gb = sum(free for _, free in gpus) / 1024
+                    raise GpuMemoryShortError(
+                        f"This model needs about {need_gb:.0f} GB of GPU memory and "
+                        f"{free_gb:.0f} GB is free next to the models already loaded. Unload a "
+                        "model or lower the context length. force_alongside loads it anyway, "
+                        "running partly from system RAM."
+                    )
 
                 # An unenumerated explicit Vulkan ordinal can't be pinned; fail loudly
                 # instead of fitting onto an unselected device. Clear the raw selection

@@ -55,6 +55,10 @@ class LoadRequest(BaseModel):
         False,
         description = "Keep the loaded model and serve this one next to it",
     )
+    force_alongside: bool = Field(
+        False,
+        description = "Load alongside even when it only partly fits the free GPU memory",
+    )
     native_path_lease: Optional[str] = Field(
         None, description = "Frontend-visible signed native path grant"
     )
