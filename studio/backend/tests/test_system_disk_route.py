@@ -75,6 +75,22 @@ def test_the_route_walks_nothing():
     ), "the route reports the default cache, not the configured one"
 
 
+def _redact_host_paths(
+    payload,
+    *,
+    via_api_key,
+    echo = (),
+):
+    """The real redactor's contract, without importing the backend.
+
+    hub.utils.host_paths drops host paths for an API-key caller and returns the payload
+    untouched otherwise; that is the boundary this route now sits behind.
+    """
+    if not via_api_key:
+        return payload
+    return {key: value for key, value in payload.items() if key != "path"}
+
+
 def _load_route(
     monkeypatch,
     *,
@@ -82,6 +98,7 @@ def _load_route(
     default_cache,
     studio,
     xet_cache = None,
+    via_api_key = False,
 ):
     """Run the real route body against stub resolvers, without importing main.py.
 
@@ -97,6 +114,8 @@ def _load_route(
         "os": os,
         "Path": Path,
         "logger": types.SimpleNamespace(debug = lambda *_a, **_k: None),
+        "authenticated_via_api_key": lambda: via_api_key,
+        "redact_host_paths": _redact_host_paths,
     }
     storage = types.ModuleType("utils.paths.storage_roots")
     storage.hf_default_cache_dir = lambda: default_cache
@@ -153,6 +172,8 @@ def test_the_route_still_answers_when_the_settings_read_fails(monkeypatch, tmp_p
         "os": os,
         "Path": Path,
         "logger": types.SimpleNamespace(debug = lambda *_a, **_k: None),
+        "authenticated_via_api_key": lambda: False,
+        "redact_host_paths": _redact_host_paths,
     }
     exec(compile(_route_source(), "<route>", "exec"), namespace)
     assert namespace["get_disk_space"](current_subject = "alice")["path"] == str(default)
@@ -273,3 +294,41 @@ def test_one_volume_is_read_once(monkeypatch, tmp_path):
     route(current_subject = "alice")
 
     assert len(calls) == 2, f"expected one reading per root before dedup, got {calls}"
+
+
+def test_an_api_key_caller_is_not_told_the_host_path(monkeypatch, tmp_path):
+    """get_current_subject accepts an sk-unsloth key, and `path` is a raw host path naming the
+    service account and its home layout. hub/utils/host_paths draws that boundary for the Hub
+    inventory routes already; a capacity reading is not a reason to cross it, and the low-disk
+    client reads only the numbers."""
+    hub = tmp_path / "cache" / "hub"
+    hub.mkdir(parents = True)
+
+    route = _load_route(
+        monkeypatch,
+        hub_cache = hub,
+        default_cache = tmp_path / "d",
+        studio = tmp_path / "s",
+        via_api_key = True,
+    )
+    reading = route(current_subject = "alice", via_api_key = True)
+
+    assert "path" not in reading, "the raw host path went out to an API-key caller"
+    assert reading["free_gb"] is not None, "the capacity fields must survive redaction"
+
+
+def test_a_ui_session_still_sees_the_path(monkeypatch, tmp_path):
+    """The control. Redacting for everyone would take the path off the Resources tab, which is
+    where a user checks WHICH volume the reading is about."""
+    hub = tmp_path / "cache" / "hub"
+    hub.mkdir(parents = True)
+
+    route = _load_route(
+        monkeypatch,
+        hub_cache = hub,
+        default_cache = tmp_path / "d",
+        studio = tmp_path / "s",
+    )
+    reading = route(current_subject = "alice", via_api_key = False)
+
+    assert reading["path"], "a UI session lost the path it needs to identify the volume"

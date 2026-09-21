@@ -305,3 +305,40 @@ test("the download that used the space is the one that reports it", () => {
       + "finished asks again on every poll",
   );
 });
+
+test("the notice is owner only, because its action is", () => {
+  // The shell mounts this hook for every authenticated user, but "resources" is in
+  // OWNER_ONLY_SETTINGS_TABS, so resolveSettingsTab sends a managed account to General.
+  // Warning someone about a disk and handing them a button that lands somewhere else is
+  // worse than not warning them: the caches are install-wide state they cannot clear.
+  const hook = readFileSync(
+    new URL(
+      "../src/features/settings/hooks/use-low-disk-notice.ts",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  assert.match(
+    hook,
+    /useIsAccountOwner\(\)/,
+    "the low-disk notice does not ask whether the account owns this installation",
+  );
+  assert.match(
+    hook,
+    /if \(!isOwner\) return;/,
+    "the notifier is registered before ownership is checked, so a managed account still gets the toast",
+  );
+
+  const visibility = readFileSync(
+    new URL(
+      "../src/features/settings/settings-tab-visibility.ts",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  assert.match(
+    visibility,
+    /OWNER_ONLY_SETTINGS_TABS[\s\S]*"resources"/,
+    "resources stopped being owner-only, so this gate may no longer be the right one",
+  );
+});

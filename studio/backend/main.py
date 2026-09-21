@@ -368,7 +368,8 @@ from routes.settings import router as settings_router
 from routes.prompts import router as prompts_router
 from routes.profile_stats import router as profile_stats_router
 from auth import policy as auth_policy, storage
-from auth.authentication import get_current_subject
+from auth.authentication import authenticated_via_api_key, get_current_subject
+from hub.utils.host_paths import redact_host_paths
 from utils.hardware import (
     start_background_detection,
     get_device,
@@ -2405,7 +2406,10 @@ def get_system_info(
 
 
 @app.get("/api/system/disk")
-def get_disk_space(current_subject: str = Depends(get_current_subject)):
+def get_disk_space(
+    current_subject: str = Depends(get_current_subject),
+    via_api_key: bool = Depends(authenticated_via_api_key),
+):
     """Free space where downloads land. One syscall, and nothing else.
 
     Separate from /api/system because that route enumerates GPUs, reads package metadata and
@@ -2499,7 +2503,12 @@ def get_disk_space(current_subject: str = Depends(get_current_subject)):
 
     if readings:
         tightest = min(readings, key = lambda r: r["free_gb"])
-        return {key: value for key, value in tightest.items() if key != "device"}
+        answer = {key: value for key, value in tightest.items() if key != "device"}
+        # An API key reaches this route through get_current_subject, and `path` is a raw host
+        # path naming the service account and its home layout. The repo already draws that
+        # boundary for the Hub inventory routes; a capacity reading is not a reason to cross
+        # it, and the low-disk client uses only the numbers.
+        return redact_host_paths(answer, via_api_key = via_api_key)
     # Every probe failed. Nulls, not zeros: diskPressure() reads a zero total as psutil having
     # failed and a zero free as a full disk, and this is neither.
     return {"path": None, "total_gb": None, "free_gb": None, "percent_used": None}

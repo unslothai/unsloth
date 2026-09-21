@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { useIsAccountOwner } from "@/features/auth";
 import { useT } from "@/i18n";
 import { toast } from "@/lib/toast";
 import { useEffect } from "react";
@@ -29,12 +30,20 @@ function formatGb(value: number | null | undefined): string {
  *
  * observeDiskPressure holds the notified level in module scope for the browser session, so a
  * threshold is announced when it is CROSSED, not on every reading while the disk sits below it.
+ *
+ * Owner only. The shell mounts this for every authenticated user, but "resources" is in
+ * OWNER_ONLY_SETTINGS_TABS, so resolveSettingsTab sends a managed account to General: the
+ * action would be a dead end, and the caches it names are install-wide state that account
+ * cannot clear anyway. A warning nobody can act on is worse than no warning, so the notice
+ * is not registered at all rather than shown with its action removed.
  */
 export function useLowDiskNotice(): void {
   const t = useT();
+  const isOwner = useIsAccountOwner();
   const openDialog = useSettingsDialogStore((state) => state.openDialog);
 
   useEffect(() => {
+    if (!isOwner) return;
     setLowDiskNotifier((level, disk) => {
       toast.warning(
         level === "critical"
@@ -57,5 +66,5 @@ export function useLowDiskNotice(): void {
     // disk that was already full before Studio started is exactly who this is for.
     void checkDiskSpace({ force: true });
     return () => setLowDiskNotifier(null);
-  }, [openDialog, t]);
+  }, [isOwner, openDialog, t]);
 }
