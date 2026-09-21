@@ -38464,12 +38464,7 @@ async def diffusion_download_plan(
             model_kind = kind,
             base_repo = request.base_repo,
         )
-        # Plan for the engine /images/load will pick, not diffusers unconditionally: a GGUF on a GPU-less host routes to native
-        # sd.cpp, which reads different files. predict_engine applies the policy without activating anything.
         planner = backend
-        if fam is not None and predict_engine(fam, model_kind = kind) == ENGINE_SD_CPP:
-            from core.inference.sd_cpp_backend import get_sd_cpp_backend
-            planner = get_sd_cpp_backend()
         # BEFORE the plan is handed back and staged. The load route refuses a precision this
         # host cannot honour, but the UI plans and downloads first, so an explicit FP8 on an
         # unsupported host paid for the GGUF and its companions -- or tens of GB of video
@@ -38484,11 +38479,20 @@ async def diffusion_download_plan(
         # the training guard below exists to prevent, so the RANKING waits until training is known
         # idle. The ids are validated and translated either way -- that costs no CUDA context, and
         # skipping it entirely let the plan accept a GPU the load would refuse, and size its file
-        # set for the wrong card. ONE resolution for the whole request, reused by preflight + plan.
+        # set for the wrong card. ONE resolution for the whole request, reused by the engine
+        # prediction below, the preflight and the plan.
         gpu_ordinal = None
         training = fam is not None and await asyncio.to_thread(_training_is_active)
         if fam is not None:
             gpu_ordinal = await _selected_gpu_ordinal(request.gpu_ids, allow_ranking = not training)
+        # Plan for the engine /images/load will pick: a GGUF on a GPU-less host routes to native
+        # sd.cpp, which reads different files. Card-scoped, since the failure records are per card.
+        if (
+            fam is not None
+            and predict_engine(fam, model_kind = kind, gpu_ordinal = gpu_ordinal) == ENGINE_SD_CPP
+        ):
+            from core.inference.sd_cpp_backend import get_sd_cpp_backend
+            planner = get_sd_cpp_backend()
         if fam is not None and not training:
             if planner is backend:
                 await asyncio.to_thread(
@@ -38722,7 +38726,12 @@ async def load_diffusion_model_gated(
         # afterwards destroys the model this preserves. Fails open on offline/transient, and runs
         # only where something is at stake -- a GPU handoff, or an engine switch.
         try:
-            pending_name = predict_engine(fam, model_kind = kind) if fam is not None else None
+            # Card-scoped like the activation below, or the wrong engine's preflight runs.
+            pending_name = (
+                predict_engine(fam, model_kind = kind, gpu_ordinal = gpu_ordinal)
+                if fam is not None
+                else None
+            )
         except Exception:  # noqa: BLE001 -- a probe failure must not refuse a loadable pick
             pending_name = None
         # Same bar, same reason, for an EXPLICIT precision this host can never honor. begin_load
@@ -38776,7 +38785,14 @@ async def load_diffusion_model_gated(
         require_no_foreign_generations()
         # Pick the engine for this host (diffusers on GPU, native sd.cpp otherwise), installing sd-cli if needed, BEFORE evicting chat.
         engine = await asyncio.to_thread(
-            select_and_activate_engine, fam, hf_token = request.hf_token, model_kind = kind
+            functools.partial(
+                select_and_activate_engine,
+                fam,
+                hf_token = request.hf_token,
+                model_kind = kind,
+                # The ordinal resolved above: re-resolving re-ranks by free VRAM and can pick another card.
+                gpu_ordinal = gpu_ordinal,
+            )
         )
         # predict_engine is selection's read-only twin: it never installs, so a host whose sd-cli
         # install then fails lands on the OTHER engine. Re-ask the engine actually activated when

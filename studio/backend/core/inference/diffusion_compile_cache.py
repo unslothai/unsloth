@@ -145,6 +145,35 @@ def _portable_mode() -> bool:
         return False
 
 
+def _toolchain_path_unparseable(value: str) -> bool:
+    """storage_roots' test, imported per call like _default_root's.
+
+    The fallback repeats the whole rule rather than narrowing to whitespace, or one path would
+    be refused or accepted depending only on whether studio/backend was on sys.path.
+    test_the_import_fallback_matches_the_resolver sweeps both over every printable character.
+    """
+    try:
+        from utils.paths.storage_roots import toolchain_path_unparseable
+    except ImportError:
+        return (
+            any(ch.isspace() for ch in value)
+            or "'" in value
+            or '"' in value
+            or (os.name != "nt" and "\\" in value)
+        )
+    return toolchain_path_unparseable(value)
+
+
+def _parseable_cache_fallback(key: str, intended: str) -> str | None:
+    """storage_roots' ready-to-publish fallback, or None when this module is reached without
+    studio/backend on sys.path, where there is no safe directory to offer."""
+    try:
+        from utils.paths.storage_roots import parseable_cache_fallback
+    except ImportError:
+        return None
+    return parseable_cache_fallback(key, intended)
+
+
 def _default_root() -> Path:
     """Resolved per call, not a module constant: this module is imported before startup sets
     UNSLOTH_STUDIO_HOME, which storage_roots reads."""
@@ -367,9 +396,32 @@ def begin(
 
     try:
         cdir.mkdir(parents = True, exist_ok = True)
-        ctx.prev_inductor_dir = os.environ.get("TORCHINDUCTOR_CACHE_DIR")
-        ctx.prev_inductor_dir_set = True
-        os.environ["TORCHINDUCTOR_CACHE_DIR"] = str(cdir / "inductor")
+        inductor_dir = str(cdir / "inductor")
+        # Startup applies this same test before pinning TORCHINDUCTOR_CACHE_DIR, and this
+        # assignment used to overwrite whatever it decided, so a Studio root the builders cannot
+        # parse came back on the first compiled diffusion run after looking fine at launch. The
+        # bundle still lives under cdir either way; only the Inductor pin is withheld.
+        if _toolchain_path_unparseable(inductor_dir):
+            # Leaving the pin alone is not neutral: startup publishes ONE parseable fallback for
+            # the process, so keeping it here would have save_cache_artifacts serialise that
+            # shared cache into every fingerprinted bundle. Ask for one keyed on THIS cdir so the
+            # per-key isolation survives; if none can be had safely the pin stays as it was.
+            isolated = _parseable_cache_fallback("TORCHINDUCTOR_CACHE_DIR", inductor_dir)
+            if isolated is None:
+                _warn(
+                    logger,
+                    f"compile-cache: leaving TORCHINDUCTOR_CACHE_DIR as it is: {inductor_dir} "
+                    "holds a character the C++ builders cannot paste into a command line "
+                    "unquoted, and no safe replacement is available",
+                )
+            else:
+                ctx.prev_inductor_dir = os.environ.get("TORCHINDUCTOR_CACHE_DIR")
+                ctx.prev_inductor_dir_set = True
+                os.environ["TORCHINDUCTOR_CACHE_DIR"] = isolated
+        else:
+            ctx.prev_inductor_dir = os.environ.get("TORCHINDUCTOR_CACHE_DIR")
+            ctx.prev_inductor_dir_set = True
+            os.environ["TORCHINDUCTOR_CACHE_DIR"] = inductor_dir
     except Exception as exc:  # noqa: BLE001
         _warn(logger, f"could not set TORCHINDUCTOR_CACHE_DIR: {exc}")
 

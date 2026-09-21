@@ -31,6 +31,7 @@ import {
 } from "@/components/ui/unmeasured-collapsible";
 import {
   clearReasoningRound,
+  foldIsActive,
   resolveReasoningGroupDuration,
   resolveReasoningOpen,
   resolveReasoningToggle,
@@ -68,6 +69,7 @@ import { ChevronDownIcon } from "lucide-react";
 import { Tick02Icon } from "@/lib/tick-icon";
 import { Copy01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
+import { IconActionButton } from "./icon-action-button";
 import {
   type CSSProperties,
   type ComponentProps,
@@ -517,19 +519,16 @@ function ReasoningCopyButton({
   }, [reasoningText]);
 
   return (
-    <button
-      type="button"
+    <IconActionButton
+      label={copied ? "Copied" : "Copy reasoning"}
       onClick={handleCopy}
-      className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-xs text-muted-foreground transition-colors hover:text-foreground hover:bg-muted"
-      aria-label="Copy reasoning"
     >
       {copied ? (
         <HugeiconsIcon icon={Tick02Icon} strokeWidth={2} className="size-3" />
       ) : (
         <HugeiconsIcon icon={Copy01Icon} className="size-3" />
       )}
-      {copied ? "Copied" : "Copy"}
-    </button>
+    </IconActionButton>
   );
 }
 
@@ -750,8 +749,8 @@ function ReasoningBody({
 // answer. Later reasoning groups in that span render as plain rounds inside it, following its
 // open state, and the tool groups between them do the same (see tool-group.tsx).
 const ReasoningGroupImpl: ReasoningGroupComponent = (props) => {
-  const foldToolActivity = useChatPreferencesStore(
-    (state) => state.foldToolActivityIntoThinking,
+  const foldToolActivity = useChatPreferencesStore((state) =>
+    foldIsActive(state.foldToolActivityIntoThinking, state.toolVisibility),
   );
   const folded = useAuiState(
     ({ message }) =>
@@ -765,12 +764,14 @@ const ReasoningGroupImpl: ReasoningGroupComponent = (props) => {
 
 // A thin line closing the trace when the answer comes right after it, so the two do not read
 // as one text. Rendered inside whatever is last under the header, so it hides with it.
+// Full --border, not 60% of it: at 60% the line was 14/255 off the dark background and
+// 19/255 off the light one, which is under the rule rather than a quiet version of it.
 function ReasoningEndRule() {
   return (
     <div
       data-slot="reasoning-end-rule"
       aria-hidden={true}
-      className="mt-4 border-border/60 border-t"
+      className="mt-4 border-border border-t"
     />
   );
 }
@@ -918,12 +919,12 @@ const ReasoningGroupBlock = ({
     return resolveReasoningGroupDuration(message.parts, startIndex, custom);
   });
 
-  const collapseByDefault = useChatPreferencesStore(
-    (state) => state.collapseThinkingByDefault,
+  const visibility = useChatPreferencesStore(
+    (state) => state.thinkingVisibility,
   );
 
-  const [manualOpen, setManualOpen] = useState(false);
-  const [dismissedWhileStreaming, setDismissedWhileStreaming] = useState(false);
+  // null until toggled by hand, then it outranks the setting for the round.
+  const [override, setOverride] = useState<boolean | null>(null);
   const [retainStreamingHeight, setRetainStreamingHeight] = useState(false);
   const [duration, setDuration] = useState<number>(0);
   const startTimeRef = useRef<number | null>(null);
@@ -940,17 +941,29 @@ const ReasoningGroupBlock = ({
     }
   }, [isReasoningStreaming]);
 
-  // Reset per-round open state. manualOpen is sticky and regenerate reuses this instance, so a
-  // hand-opened block would stay pinned open and never collapse. Adjusted during render, not in an
-  // effect: React re-runs this component before committing, so a stale open never reaches the DOM.
+  // Reset per-round open state. Regenerate reuses this instance, so a hand-opened block would
+  // stay pinned open. Adjusted during render, not in an effect, so no stale open reaches the DOM.
   const [wasStreaming, setWasStreaming] = useState(isReasoningStreaming);
   if (wasStreaming !== isReasoningStreaming) {
     setWasStreaming(isReasoningStreaming);
     if (startsNewReasoningRound(isReasoningStreaming, wasStreaming)) {
-      setDismissedWhileStreaming(false);
-      setManualOpen(false);
+      setOverride(null);
     }
   }
+
+  // Changing the setting hands every block back to it, including those already on screen.
+  const [lastVisibility, setLastVisibility] = useState(visibility);
+  if (lastVisibility !== visibility) {
+    setLastVisibility(visibility);
+    setOverride(null);
+  }
+
+  // Whatever the setting says, until this block is toggled by hand.
+  const isOpen = resolveReasoningOpen({
+    isStreaming: isReasoningStreaming,
+    visibility,
+    override,
+  });
 
   // Keep the streaming height cap until the automatic close finishes. Removing it on the completion
   // frame expands long reasoning to its full height before the collapsible can close, which makes
@@ -959,7 +972,10 @@ const ReasoningGroupBlock = ({
   // mid-animation cannot change what they animate; `1fr` instead resolves against the live content
   // every frame, so an early release grows the row in the middle of the collapse and produces
   // exactly the jump this timer prevents. The transition also starts a render after this timer is
-  // armed, so an exact ANIMATION_DURATION lands inside it.
+  // armed, so an exact ANIMATION_DURATION lands inside it. A block the setting keeps open past
+  // its stream has no collapse to wait out and grows into its full height when this fires. isOpen
+  // is deliberately not a dependency: re-running on a manual open would re-arm the cap that
+  // handleOpenChange just released.
   useEffect(() => {
     const closeDelay = GRID_COLLAPSE_REASONING_ENABLED
       ? ANIMATION_DURATION + CLOSE_FALLBACK_MARGIN_MS
@@ -970,15 +986,6 @@ const ReasoningGroupBlock = ({
     );
     return () => window.clearTimeout(timeout);
   }, [isReasoningStreaming]);
-
-  // Open while streaming (unless dismissed), or once manually opened. With
-  // collapse by default on, only a manual open shows the block.
-  const isOpen = resolveReasoningOpen({
-    isStreaming: isReasoningStreaming,
-    collapseByDefault,
-    dismissedWhileStreaming,
-    manualOpen,
-  });
   // Publish the lead's open state for everything folded under it, and count the tool calls for
   // its header. A layout effect, so the folded parts settle before the frame the user sees.
   const roundKey = reasoningRoundKey(messageId, endIndex);
@@ -1017,17 +1024,14 @@ const ReasoningGroupBlock = ({
       }
       const next = resolveReasoningToggle(open, {
         isStreaming: isReasoningStreaming,
-        collapseByDefault,
+        visibility,
       });
       if (next.releaseStreamingHeight) {
         setRetainStreamingHeight(false);
       }
-      setManualOpen(next.manualOpen);
-      if (next.dismissedWhileStreaming !== undefined) {
-        setDismissedWhileStreaming(next.dismissedWhileStreaming);
-      }
+      setOverride(next.override);
     },
-    [isReasoningStreaming, collapseByDefault, detachFromBottom],
+    [isReasoningStreaming, visibility, detachFromBottom],
   );
 
   return (

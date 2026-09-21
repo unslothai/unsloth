@@ -187,10 +187,6 @@ export const it = {
       organizeChats: "Organizza le chat",
       organizeProjects: "Organizza i progetti",
       sortPinnedChats: "Ordina le chat fissate",
-      dragDrop: "Trascina e rilascia",
-      dragHints: "Mostra un suggerimento durante il trascinamento",
-      reorderSwitchesSort: "Riordinare passa all'ordine manuale",
-      dragOpensFolders: "Apri le cartelle sotto il puntatore",
       moveUp: "Sposta su",
       moveDown: "Sposta giù",
     },
@@ -1500,9 +1496,9 @@ export const it = {
         yolo: "Salta le richieste di approvazione. Usa solo in ambienti fidati.",
       },
       remote: {
-        title: "Connettersi a un Unsloth Studio remoto",
+        title: "Connettersi a un Unsloth remoto",
         description:
-          "Punta unsloth start a un Unsloth Studio in esecuzione altrove impostando queste variabili prima dell'avvio (oppure passa direttamente --api-key):",
+          "Punta unsloth start a un Unsloth in esecuzione altrove impostando queste variabili prima dell'avvio (oppure passa direttamente --api-key):",
       },
       passthrough: {
         title: "Passare argomenti all'agente",
@@ -1530,16 +1526,11 @@ export const it = {
       rememberParamsPerModelHint:
         "Quando è disattivata, tutti i modelli usano le stesse impostazioni.",
       autoCompactHint:
-        "Usa la lunghezza del contesto impostata, non la VRAM disponibile.",
+        "Solo chat GGUF locali. I turni rimossi vengono indicizzati perché il modello possa recuperarli, e un ripristino cita parola per parola le istruzioni permanenti che rientrano, privilegiando le più vecchie e le più recenti rispetto a quelle intermedie. L’archiviazione richiede una chat salvata e l’indice vettoriale; senza di essi i turni più vecchi vengono eliminati. Usa la lunghezza del contesto impostata, non la VRAM disponibile.",
       pastedTextShortDescription:
         "Il testo incollato di almeno {count} caratteri diventa un allegato .txt. Il testo più breve resta nel campo del messaggio.",
       pastedTextOffDescription:
         "Tutto il testo incollato resta nel campo del messaggio, indipendentemente dalla lunghezza.",
-      compactionDescriptionInherit: "Segue la politica del contesto del server.",
-      compactionDescriptionCheckpoint:
-        "Mantiene l’ultimo scambio e le istruzioni permanenti.",
-      compactionDescriptionRolling:
-        "Rimuove i turni più vecchi per conservare la cronologia recente e lo spazio aggiuntivo selezionato.",
       projectsSection: "Mostra la sezione Progetti",
       projectsSectionDescription:
         "Raggruppa le chat di progetto sotto un titolo Progetti. Disattivalo per elencarle in Recenti.",
@@ -1564,7 +1555,7 @@ export const it = {
           "Fissa le voci nel menu laterale «+» della chat. Le altre verranno spostate in «Altro».",
         chatWithFiles: "Chat con file (RAG)",
         mcp: "MCP",
-        skills: "Competenze degli agenti",
+        skills: "Competenze",
         savedPrompts: "Prompt salvati",
         compareChat: "Confronta chat",
         exportChat: "Esporta chat",
@@ -1587,26 +1578,20 @@ export const it = {
         "Ripristina l’ultimo prompt, la temperatura e le altre impostazioni usate con ogni modello.",
       autoCompact: "Compatta automaticamente le chat lunghe",
       autoCompactDescription:
-        "Rimuove i turni più vecchi quando una chat GGUF locale raggiunge il limite del contesto.",
-      compactionStyle: "Quando il contesto è pieno",
-      compactionStyleDescription:
-        "Il valore predefinito del server mantiene UNSLOTH_CONTEXT_POLICY. Reimpostare la conversazione conserva l'ultimo turno e le istruzioni permanenti. Una finestra scorrevole elimina i turni più vecchi e può conservare più cronologia recente.",
-      compactionStyleInherit: "Usa il valore del server",
-      compactionStyleCheckpoint: "Reimposta la conversazione",
-      compactionStyleRollingDefault:
-        "Elimina i turni precedenti (~25% di spazio aggiuntivo)",
-      compactionStyleRolling10:
-        "Elimina i turni precedenti (~10% di spazio aggiuntivo)",
-      compactionStyleRolling5:
-        "Elimina i turni precedenti (~5% di spazio aggiuntivo)",
-      compactionStyleRollingNone:
-        "Elimina i turni precedenti (nessun taglio aggiuntivo)",
+        "I turni più vecchi passano in un archivio consultabile quando una chat riempie il contesto.",
       autoCompactKeywords:
-        "compattazione automatica contesto finestra troncare scorrevole checkpoint margine compaction rolling headroom",
+        "compattazione automatica contesto finestra troncare scorrevole checkpoint margine archivio recupero ricerca compaction rolling headroom archive retrieval rag",
+      visibility: {
+        collapsed: "Compresso",
+        auto: "Espandi durante l’esecuzione",
+        expanded: "Sempre espanso",
+      },
+      visibilityKeywords:
+        "comprimi compresso espandi espanso aperto chiuso ragionamento chiamate agli strumenti attività raggruppa streaming",
       thinking: {
-        collapseByDefault: "Comprimi il ragionamento per impostazione predefinita",
-        collapseByDefaultDescription:
-          "Mantieni il ragionamento compresso mentre il modello pensa, invece di aprirlo automaticamente. Espandi un blocco per leggerlo.",
+        visibility: "Ragionamento",
+        visibilityDescription:
+          "Come si apre il ragionamento. Puoi comunque espandere o comprimere ogni blocco a mano.",
       },
       currentDate: {
         label: "Comunica al modello la data di oggi",
@@ -1616,12 +1601,14 @@ export const it = {
         saveError: "Impossibile aggiornare le impostazioni della data corrente",
       },
       tools: {
-        collapseByDefault: "Comprimi l’attività degli strumenti per impostazione predefinita",
-        collapseByDefaultDescription:
-          "Mantieni compressi input e output degli strumenti durante l’esecuzione. Espandi una riga per esaminarla.",
-        foldIntoThinking: "Comprimi le chiamate agli strumenti nel Ragionamento",
+        visibility: "Chiamate agli strumenti",
+        visibilityDescription:
+          "Come si apre l’attività degli strumenti. Puoi comunque espandere o comprimere ogni chiamata a mano.",
+        foldIntoThinking: "Raggruppa le chiamate agli strumenti nel Ragionamento",
         foldIntoThinkingDescription:
-          "Nasconde le chiamate agli strumenti di un turno finché non si apre il blocco Ragionamento.",
+          "Mostra le chiamate agli strumenti di un turno nel blocco Ragionamento invece che su righe proprie.",
+        foldIntoThinkingBlocked:
+          "Non disponibile finché le chiamate agli strumenti sono su «Sempre espanso», che le tiene su righe proprie.",
       },
       webSearch: {
         title: "Ricerca web",
@@ -2792,7 +2779,7 @@ export const it = {
     tooLarge: "Più grande della VRAM, verrà scaricato sulla CPU. Una quantizzazione più piccola è più veloce",
   },
   skills: {
-    title: "Competenze degli agenti",
+    title: "Competenze",
     description: "Le competenze vengono rilevate nelle cartelle standard degli agenti. Attivale qui, poi digita @ nella chat per menzionarne una.",
     precedence: "~/.agents/skills ha la precedenza rispetto a ~/.claude/skills.",
     refresh: "Aggiorna",
@@ -2807,6 +2794,6 @@ export const it = {
     enable: "Attiva {name}",
     disable: "Disattiva {name}",
     updateError: "Impossibile aggiornare la competenza",
-    mentions: "Competenze degli agenti",
+    mentions: "Competenze",
   },
 } as const;
