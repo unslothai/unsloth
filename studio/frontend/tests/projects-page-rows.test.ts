@@ -15,7 +15,11 @@ test("a project row opens its chats in place", () => {
   assert.match(PAGE, /aria-label=\{chatsOpen \? "Hide chats" : "Show chats"\}/);
   assert.match(PAGE, /aria-expanded=\{chatsOpen\}/);
   // Loaded the first time the row is opened, and again when chat history changes.
-  assert.match(PAGE, /if \(projectChats\[projectId\] !== undefined\) return;\n\s*loadProjectChats\(projectId\);/);
+  assert.match(PAGE, /if \(cached !== undefined && cached !== "error"\) return;\n\s*loadProjectChats\(projectId\);/);
+  // A failed first load says so and retries; a failed reload keeps the rows showing.
+  assert.match(PAGE, /if \(silent\) return;\n\s*setProjectChats\(\(prev\) => \(\{ \.\.\.prev, \[projectId\]: "error" \}\)\);/);
+  assert.match(PAGE, /Could not load chats\. Retry/);
+  assert.ok(!PAGE.includes("[projectId]: [] }"), "a failed load is still cached as an empty list");
   assert.match(
     PAGE,
     /listStoredChatThreads\(\{ projectId, includeArchived: false \}\)/,

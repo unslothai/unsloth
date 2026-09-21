@@ -157,8 +157,10 @@ export function ProjectsPage() {
     () => new Set(),
   );
   // Grouped as the sidebar groups them, so a comparison is one row that opens as one.
+  // "error" is a failed first load: the row says so and offers a retry, and reopening it loads
+  // again rather than trusting the entry.
   const [projectChats, setProjectChats] = useState<
-    Record<string, SidebarItem[] | "loading">
+    Record<string, SidebarItem[] | "loading" | "error">
   >({});
 
   // One sequence per project: a response that a newer request overtook is dropped, so a chat
@@ -183,7 +185,9 @@ export function ProjectsPage() {
       })
       .catch(() => {
         if (loadSeqRef.current.get(projectId) !== seq) return;
-        setProjectChats((prev) => ({ ...prev, [projectId]: [] }));
+        // A failed reload keeps the rows already showing; a failed first load says so.
+        if (silent) return;
+        setProjectChats((prev) => ({ ...prev, [projectId]: "error" }));
       });
   }, []);
 
@@ -393,7 +397,8 @@ export function ProjectsPage() {
       else next.add(projectId);
       return next;
     });
-    if (projectChats[projectId] !== undefined) return;
+    const cached = projectChats[projectId];
+    if (cached !== undefined && cached !== "error") return;
     loadProjectChats(projectId);
   }
 
@@ -846,6 +851,14 @@ export function ProjectsPage() {
               <div className="mb-2 flex flex-col gap-0.5 pl-[76px] pr-5">
                 {chats === undefined || chats === "loading" ? (
                   <Skeleton className="h-6 w-48 rounded-[8px]" />
+                ) : chats === "error" ? (
+                  <button
+                    type="button"
+                    onClick={() => loadProjectChats(project.id)}
+                    className="cursor-pointer self-start py-1 text-left text-sm text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
+                  >
+                    Could not load chats. Retry
+                  </button>
                 ) : chats.length === 0 ? (
                   <p className="py-1 text-sm text-muted-foreground">No chats</p>
                 ) : (
