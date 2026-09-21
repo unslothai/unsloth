@@ -698,6 +698,30 @@ def local_load_dir(path: Optional[str]) -> Optional[str]:
         return path
 
 
+# How many sources the scan in progress had to skip. Each source is guarded on its own so one
+# bad root does not crash the index, which means a published snapshot can be fresh and
+# incomplete at the same time: a caller reading a miss from it as a confirmed ABSENCE would
+# memoize an answer the recovered scan contradicts. Both are written only in ``_index``,
+# which holds ``_lock`` for the whole pass.
+_scan_sources_skipped = 0
+_last_scan_was_complete = False
+
+
+def _note_scan_source_skipped() -> None:
+    global _scan_sources_skipped
+    _scan_sources_skipped += 1
+
+
+def index_last_scan_was_complete() -> bool:
+    """Whether the most recent completed scan reached every source it tried.
+
+    A miss from an INCOMPLETE scan is not evidence of absence, only of what this pass could
+    see. Callers memoizing a negative answer must check this; ones simply resolving a name do
+    not, since a partial index is still better than none.
+    """
+    return _last_scan_was_complete
+
+
 def _build_index() -> dict[str, _LocalGgufEntry]:
     """Map normalized id/model_id/display_name -> local model entry.
 
@@ -746,6 +770,7 @@ def _build_index() -> dict[str, _LocalGgufEntry]:
             # would duplicate the one _local_gguf_entry already does per snapshot, on the request path.
             return _scan_hf_cache(directory, active_cache = rp == active_root, classify_format = False)
         except Exception as exc:  # a missing/malformed root must skip, never crash the index
+            _note_scan_source_skipped()
             logger.debug("auto-switch: skipping HF cache dir %r: %s", directory, exc)
             return []
 
@@ -755,6 +780,7 @@ def _build_index() -> dict[str, _LocalGgufEntry]:
     try:
         found += _scan_models_dir(Path("./models").resolve())
     except Exception as exc:
+        _note_scan_source_skipped()
         logger.debug("auto-switch: ./models scan failed: %s", exc)
     try:
         for hf_dir in (
@@ -765,11 +791,13 @@ def _build_index() -> dict[str, _LocalGgufEntry]:
         ):
             found += _scan_hf_once(hf_dir)
     except Exception as exc:
+        _note_scan_source_skipped()
         logger.debug("auto-switch: HF cache scan failed: %s", exc)
     try:
         for lm_dir in lmstudio_model_dirs():
             found += _scan_lmstudio_dir(lm_dir)
     except Exception as exc:
+        _note_scan_source_skipped()
         logger.debug("auto-switch: LM Studio scan failed: %s", exc)
     # Read-only like the LM Studio scan, so it is safe on the request path. This is the path Hermes
     # itself takes: it downloads the GGUF, then asks Unsloth for it by name.
@@ -779,12 +807,14 @@ def _build_index() -> dict[str, _LocalGgufEntry]:
         for hermes_dir in hermes_model_dirs():
             found += scan_hermes_dir(hermes_dir)
     except Exception as exc:
+        _note_scan_source_skipped()
         logger.debug("auto-switch: Hermes scan failed: %s", exc)
     try:
         from utils.paths import ollama_model_dirs
         for ollama_dir in ollama_model_dirs():
             found += _scan_ollama_dir(ollama_dir, materialize_links = False)
     except Exception as exc:
+        _note_scan_source_skipped()
         logger.debug("auto-switch: Ollama scan failed: %s", exc)
     try:
         from storage.studio_db import list_scan_folders
@@ -800,9 +830,11 @@ def _build_index() -> dict[str, _LocalGgufEntry]:
                     + _scan_ollama_dir(fp, limit = 200, materialize_links = False)
                 )
             except Exception as exc:
+                _note_scan_source_skipped()
                 logger.debug("auto-switch: scan folder %r failed: %s", folder, exc)
         found += suppress_grouped_gguf_file_rows(custom_found)
     except Exception as exc:
+        _note_scan_source_skipped()
         logger.debug("auto-switch: scan folders enumerate failed: %s", exc)
     for info in found:
         raw_id = getattr(info, "id", None)
@@ -968,7 +1000,14 @@ def _index() -> dict[str, _LocalGgufEntry]:
         # would serve what was just revoked
         if ts > 0.0 and now - ts < _CACHE_TTL_S:
             return cached
+        global _scan_sources_skipped, _last_scan_was_complete
+        # Around the call, not inside it, so the verdict belongs to whatever actually built
+        # this snapshot. Reset first: the count is per pass.
+        _scan_sources_skipped = 0
         fresh = _build_index()
+        # Only after it returned. A build that raised publishes nothing, and must not leave
+        # the previous pass's verdict standing over an unchanged snapshot.
+        _last_scan_was_complete = _scan_sources_skipped == 0
         # Stamp AFTER the scan, not with the pre-scan ``now``: a multi-root scan on an install with many local models
         # can itself exceed the TTL, which would store the cache already expired and make every request rebuild the
         # index.

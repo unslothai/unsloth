@@ -11895,3 +11895,86 @@ def test_a_released_claim_does_not_take_a_concurrent_one_with_it(monkeypatch):
     inference_route._alias_probe_release(path)
     assert inference_route._alias_probe_inflight == {}
     assert inference_route._alias_probed_load_paths == set()
+
+
+def test_a_miss_from_a_partial_scan_is_not_a_confirmed_absence(monkeypatch):
+    # Every source in _build_index is guarded on its own, so one bad root drops that source
+    # and the index is still published, fresh. A miss read from that snapshot is only what
+    # the pass could SEE: memoizing it left the resident shortcut answering with the
+    # filename after the failing source recovered, with nothing to reopen the probe short of
+    # an explicit invalidation or a reload.
+    path = "/elsewhere/unscanned-model.gguf"
+    backend = _FakeBackend(path)
+    rec = _LoadRecorder(backend)
+    monkeypatch.setattr(settings, "get_openai_auto_switch_enabled", lambda: True)
+    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: backend)
+    monkeypatch.setattr(inference_route, "_load_model_impl", rec)
+    monkeypatch.setattr(inference_route, "_auto_switch_waiters", {})
+    monkeypatch.setattr(inference_route, "_alias_probed_load_paths", set())
+    monkeypatch.setattr(inference_route, "_alias_probe_inflight", {})
+    monkeypatch.setattr(inference_route, "_alias_probe_generation", -1)
+    monkeypatch.setattr(resolver, "warm_index_soon", lambda *a, **k: None)
+    monkeypatch.setattr(resolver, "_CACHE_TTL_S", 0)
+
+    # A scan that publishes a real snapshot having skipped a source, exactly as a transient
+    # LM Studio or scan-folder failure does.
+    def partial_build():
+        resolver._note_scan_source_skipped()
+        return {}
+
+    monkeypatch.setattr(resolver, "_build_index", partial_build)
+    _run_hook(path)
+    assert resolver.index_last_scan_was_complete() is False, (
+        "the harness did not actually produce a partial scan"
+    )
+    assert inference_route._alias_probed_load_paths == set(), (
+        "a miss from a partial scan was memoized as a confirmed absence"
+    )
+    assert inference_route._alias_probe_inflight == {}, "and the claim was not given back"
+
+    # The source recovers, and THAT pass is what settles the probe.
+    monkeypatch.setattr(resolver, "_build_index", lambda: {})
+    _run_hook(path)
+    assert resolver.index_last_scan_was_complete() is True
+    assert inference_route._alias_probed_load_paths == {KEY(path)}, (
+        "a complete scan must still settle, or the index rebuilds for every message"
+    )
+
+
+def test_the_completeness_verdict_belongs_to_the_scan_that_published(monkeypatch):
+    """Reset per pass and set only after the build returns.
+
+    Left over from a previous pass it would either condemn a good scan or bless a partial
+    one, and a build that RAISES publishes nothing, so the snapshot a later caller reads was
+    not produced by that attempt at all.
+    """
+    monkeypatch.setattr(resolver, "_CACHE_TTL_S", 0)
+
+    monkeypatch.setattr(resolver, "_build_index", lambda: {})
+    resolver._index()
+    assert resolver.index_last_scan_was_complete() is True
+
+    def partial():
+        resolver._note_scan_source_skipped()
+        return {}
+
+    monkeypatch.setattr(resolver, "_build_index", partial)
+    resolver._index()
+    assert resolver.index_last_scan_was_complete() is False, "a partial pass read as complete"
+
+    # And back again: the count does not accumulate across passes.
+    monkeypatch.setattr(resolver, "_build_index", lambda: {})
+    resolver._index()
+    assert resolver.index_last_scan_was_complete() is True, "the skip count leaked into the next pass"
+
+    # A build that raises leaves no verdict claiming otherwise.
+    def boom():
+        resolver._note_scan_source_skipped()
+        raise OSError("scan root vanished")
+
+    monkeypatch.setattr(resolver, "_build_index", boom)
+    with pytest.raises(OSError):
+        resolver._index()
+    assert resolver.index_last_scan_was_complete() is True, (
+        "a raising build must not rewrite the verdict of the snapshot still published"
+    )

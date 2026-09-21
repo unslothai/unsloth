@@ -9714,6 +9714,7 @@ async def _maybe_auto_switch_model(
     )
     from core.inference.local_model_resolver import (
         index_answer_is_trustworthy,
+        index_last_scan_was_complete,
         index_scan_stamp,
         local_gguf_companion_roots,
         local_gguf_companion_state,
@@ -9876,10 +9877,20 @@ async def _maybe_auto_switch_model(
             # level looks exactly like "no such model". A scan that landed during the pass
             # says so through its published stamp (_build_index raising never reaches
             # _publish), and an index that was already trustworthy never needed one.
+            #
+            # Fresh is still not the same as complete. Every source in the scan is guarded
+            # on its own so one bad root does not crash the index, so a transient LM Studio
+            # or scan-folder failure publishes a fresh PARTIAL snapshot, and a miss read
+            # from that is only what this pass could see. Memoizing it would keep the
+            # shortcut answering with the filename after the scan recovered.
             scan_stamp_after = index_scan_stamp()
-            alias_probe_answered = resolved is None and (
-                (scan_stamp_after > 0.0 and scan_stamp_after != scan_stamp_before)
-                or index_answer_is_trustworthy()
+            alias_probe_answered = (
+                resolved is None
+                and index_last_scan_was_complete()
+                and (
+                    (scan_stamp_after > 0.0 and scan_stamp_after != scan_stamp_before)
+                    or index_answer_is_trustworthy()
+                )
             )
         if resolved is None:
             # Not on disk. Opt-in: fetch in the background and ask the caller to retry.
