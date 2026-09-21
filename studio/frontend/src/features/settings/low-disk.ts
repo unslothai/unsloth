@@ -2,14 +2,10 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 /**
- * When to say the disk is filling up, and how often.
- *
- * A threshold is announced once when it is crossed, not once per reading: a
- * level is re-armed only after free space climbs clear of it by
- * REARM_MARGIN_GB, so a disk hovering on the line does not toast every poll.
- *
- * Thresholds are absolute free space, in the decimal GB /api/system reports. A
- * percentage would nag on a full 4 TB disk that still has 400 GB free.
+ * When to say the disk is filling up, and how often. A level is announced on CROSSING and
+ * re-armed only once free space clears it by REARM_MARGIN_GB, so a disk on the line does not
+ * toast every reading. Thresholds are absolute: a percentage would nag on a 4 TB disk with
+ * 400 GB free.
  */
 
 export const LOW_DISK_FREE_GB = 20;
@@ -60,8 +56,7 @@ export type LowDiskDecision = {
   notify: Exclude<DiskPressure, "ok"> | null;
 };
 
-/** Announce only an escalation, and forget a level only once the disk is clear
- * of it by the re-arm margin, so crossing back does not toast again. */
+/** Announce only an escalation; forget a level only past its re-arm margin. */
 export function nextLowDiskNotice(
   state: LowDiskState,
   disk: DiskReading,
@@ -84,13 +79,9 @@ export function nextLowDiskNotice(
   return { state, notify: null };
 }
 
-/**
- * The highest level still armed at *free*, stepping down from *notified*.
- *
- * The instantaneous pressure would drop a level the disk has not cleared:
- * recovering from critical to 21 GB passes critical's re-arm point but not
- * low's, and forgetting low there earns a second low warning on the next dip.
- */
+/** The highest level still armed at *free*. Instantaneous pressure would drop a level the disk
+ * has not cleared: 21 GB clears critical's re-arm point but not low's, earning a second low
+ * warning on the next dip. */
 function forgetRearmedLevels(
   notified: DiskPressure,
   free: number,

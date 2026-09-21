@@ -5,21 +5,11 @@ import { authFetch } from "@/features/auth";
 import { observeDiskPressure, type DiskPressure } from "./low-disk";
 
 /**
- * Ask the host how much room is left, at the moments that room matters.
- *
- * This replaced a 60 s interval on /api/system. That route enumerates GPUs, reads package
- * metadata and samples CPU, so running it forever in every open tab on the chance that a disk
- * is filling was the wrong trade twice over: too expensive for what it asks, and still no help
- * to the person who has not opened Studio. /api/system/disk is one syscall.
- *
- * A disk fills because something writes to it, and in Studio that something is nearly always a
- * download. So the check runs where the bytes are about to be requested, plus once when the app
- * mounts to catch a disk that was already full before the user did anything.
+ * Ask the host how much room is left, at the moments room matters: when a download is about to
+ * request bytes, plus once at app mount. No interval; /api/system/disk is one syscall.
  */
 
-/** How the reading is turned into a message. Registered by the mounted hook, because the
- * wording needs i18n and the action needs the settings dialog store, and neither is reachable
- * from a plain module function. Null until the app shell mounts. */
+/** Registered by the mounted hook: the wording needs i18n and the store, neither reachable here. */
 type Notifier = (level: Exclude<DiskPressure, "ok">, disk: DiskReadingResponse) => void;
 
 let notifier: Notifier | null = null;
@@ -35,9 +25,7 @@ export interface DiskReadingResponse {
   percent_used?: number | null;
 }
 
-/** Two downloads queued back to back are one disk, so the second re-read tells nobody
- * anything. Long enough to collapse a burst, short enough that a download that filled the disk
- * is noticed before the next one starts. */
+/** Long enough to collapse a burst of queued downloads, short enough to catch one that filled the disk. */
 const MIN_INTERVAL_MS = 30_000;
 
 let lastCheckedAt = 0;
@@ -69,11 +57,8 @@ function runCheck(): Promise<void> {
   inFlight = (async () => {
     const disk = await readDisk();
     if (!disk) return;
-    // Ask BEFORE observing, not after. observeDiskPressure records the level it returns, so
-    // running it with nobody listening spends the crossing: a managed account's download, or a
-    // reading that lands after logout, would mark the disk as already warned about, and the
-    // owner signing in later in the same SPA session would hear nothing until free space
-    // recovered past the re-arm margin.
+    // BEFORE observing: observeDiskPressure records the level it returns, so running it unheard
+    // spends the crossing and a later owner login hears nothing until free space re-arms.
     if (!notifier) return;
     const level = observeDiskPressure(disk);
     if (level === null) return;
@@ -87,22 +72,16 @@ function runCheck(): Promise<void> {
 /**
  * Read the disk and warn if a threshold was crossed. Never rejects, never blocks the caller.
  *
- * `force` means the caller needs a reading taken AFTER it asked: the app mount, which is the
- * first of the session and has nothing to collapse against, and a finished download, which is
- * asking precisely because the number from before it started writing is now wrong. So force
- * skips the interval AND declines to share an in-flight request, since that request may well be
- * the pre-download reading it is trying to correct. It chains behind it instead.
- *
- * Still bounded: one in flight and at most one waiting, so a queue of files finishing together
- * costs two readings rather than one per file.
+ * `force` needs a reading taken AFTER it asked, so it skips the interval AND declines to share
+ * an in-flight request, which may be the pre-download reading it is correcting; it chains
+ * behind instead. Bounded at one in flight plus one waiting.
  */
 export function checkDiskSpace(options: { force?: boolean } = {}): Promise<void> {
   if (!options.force && Date.now() - lastCheckedAt < MIN_INTERVAL_MS) {
     return Promise.resolve();
   }
   if (inFlight) {
-    // Unforced callers arrive together when a page starts several downloads at once, and any
-    // reading answers them.
+    // Unforced callers arrive together; any reading answers them all.
     if (!options.force) return inFlight;
     if (!queued) {
       queued = inFlight
