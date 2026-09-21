@@ -59,6 +59,11 @@ export function getCodeFence(blockContent: string): CodeFence | null {
   if (!match) {
     return null;
   }
+  // A block can hold MORE than one fence (a reply with a footnote is one block), and a greedy
+  // body would then span both of them, prose included. Only a single fence may be treated as one.
+  if (/^ {0,3}(?:`{3,}|~{3,})\S*\s*$/m.test(match[2])) {
+    return null;
+  }
 
   return {
     language: match[1]?.trim() || null,

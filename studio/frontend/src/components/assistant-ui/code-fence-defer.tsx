@@ -25,6 +25,7 @@ import {
   selectLineWindow,
 } from "./code-fence-window";
 import { normalizeLanguage } from "./code-plugin";
+import { WINDOW_CAP_LINES } from "./code-fence-window";
 
 /*
  * MONOTONIC fence highlighting: a fence renders as a plain shell until the first time it comes near
@@ -864,6 +865,9 @@ function useLineWindow(
     const node = code.current;
     const outer = frame.current;
     if (!node || !outer) return;
+    // Under the cap a window can never apply, so no layout read is needed. A streaming fence that
+    // grows past the cap re-registers through the ResizeObserver.
+    if (lines.current <= WINDOW_CAP_LINES && current.current === null) return;
     // See `setPrinting`: the whole document is on the page, so the whole fence is coloured.
     if (printing) {
       if (current.current === null) return;
