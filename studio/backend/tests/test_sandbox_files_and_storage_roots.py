@@ -5148,7 +5148,9 @@ def test_a_traversal_id_stays_inside_the_sandbox_root_and_opens_nothing(tmp_path
     # because a fresh runner has no such folder.
     _shared_setup_11(tmp_path / "fake-home", monkeypatch, tmp_path)
     legacy_bucket = tmp_path / "fake-home" / "studio_sandbox" / "_invalid"
-    assert not legacy_bucket.exists(), "the refusals below only hold while the legacy bucket is absent"
+    assert (
+        not legacy_bucket.exists()
+    ), "the refusals below only hold while the legacy bucket is absent"
 
     from routes import inference
 
