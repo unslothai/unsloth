@@ -165,3 +165,43 @@ test("the reasoning header says Worked for", async () => {
   assert.match(reasoning, /Worked for \{formatWorkedFor\(duration \?\? 0\)\}/);
   assert.ok(!reasoning.includes("Thought for"), "the old label is still rendered");
 });
+
+// A chat under an open project could only be opened: everything else meant going to the chat
+// first. ChatGPT puts the row's own actions on the right, under the cursor.
+test("a chat row carries its own actions, revealed by hovering it", async () => {
+  const start = PAGE.indexOf("{chats.map((chat) => {");
+  assert.notEqual(start, -1, "the chat list moved");
+  const row = PAGE.slice(start, PAGE.indexOf("</DropdownMenu>", start));
+  // Its own hover group, so one chat's actions do not answer for its neighbours.
+  assert.match(row, /className="group\/chat-row /);
+  assert.equal(
+    (row.match(/group-hover\/chat-row:opacity-100/g) ?? []).length,
+    2,
+    "the pin and the menu are not both tied to the row's hover",
+  );
+  assert.match(row, /chatPinned \? "opacity-100" : "opacity-0",/);
+  assert.match(row, /aria-label="Chat options"/);
+  // Nested buttons are invalid, so the row is a div that still opens on Enter and Space.
+  assert.match(row, /role="button"\n\s*tabIndex=\{0\}/);
+  assert.match(row, /if \(e\.target !== e\.currentTarget\) return;/);
+  // The same columns as a project row, so the two line up.
+  assert.match(row, /<span className="w-40 shrink-0">\n\s*\{formatUpdated\(chat\.updatedAt\)\}/);
+  assert.match(row, /<div className="relative flex w-8 shrink-0 items-center justify-end">/);
+});
+
+// The actions are the sidebar's, so a chat behaves the same wherever it is acted on.
+test("the chat menu writes through the shared chat helpers", () => {
+  assert.match(PAGE, /await renameChatItem\(target, name\);\n\s*notifyChatHistoryUpdated\(\);/);
+  assert.match(PAGE, /await archiveChatItem\(chat, activeThreadId\(\), \(\) => \{\}\);/);
+  assert.match(PAGE, /await deleteChatItem\(target, activeThreadId\(\), \(\) => \{\}\);/);
+  // Deleting asks first, like deleting a project.
+  assert.match(PAGE, /onSelect=\{\(\) => setDeletingChat\(chat\)\}/);
+  assert.match(PAGE, /<DialogTitle>Delete chat<\/DialogTitle>/);
+  assert.match(PAGE, /<DialogTitle>Rename chat<\/DialogTitle>/);
+  // A comparison is two threads, so it only offers the formats that merge.
+  assert.match(
+    PAGE,
+    /\(chat\.threadIds\?\.length \?\? 1\) > 1\n\s*\? COMBINED_EXPORT_FORMATS_LIST\n\s*: EXPORT_FORMATS_LIST/,
+  );
+  assert.match(PAGE, /await exportBulkConversationsMerged\(ids, fmt, `chat-\$\{safe\}`\);/);
+});

@@ -36,9 +36,14 @@ import { cn } from "@/lib/utils";
 import { isDownloadCancelled, pickNativeChatImport } from "@/lib/native-files";
 import { toast } from "@/lib/toast";
 import {
+  archiveChatItem,
+  deleteChatItem,
   deleteChatProject,
+  notifyChatHistoryUpdated,
+  renameChatItem,
   useChatProjects,
   useChatRuntimeStore,
+  usePinnedChatsStore,
   usePinnedProjectsStore,
   type ProjectRecord,
 } from "@/features/chat";
@@ -47,6 +52,7 @@ import { buildProjectsTourSteps } from "./tour";
 import { EditProjectDialog } from "./components/edit-project-dialog";
 import { NewProjectDialog } from "./components/new-project-dialog";
 import {
+  Archive03Icon,
   Delete02Icon,
   Download01Icon,
   Edit03Icon,
@@ -141,10 +147,16 @@ export function ProjectsPage() {
     () => new Set(pinnedProjectIds),
     [pinnedProjectIds],
   );
+  const pinnedChatIds = usePinnedChatsStore((s) => s.pinnedIds);
+  const togglePinChat = usePinnedChatsStore((s) => s.togglePin);
+  const pinnedChatIdSet = useMemo(() => new Set(pinnedChatIds), [pinnedChatIds]);
 
   const [creating, setCreating] = useState(false);
   const [editing, setEditing] = useState<ProjectRecord | null>(null);
   const [deleting, setDeleting] = useState<ProjectRecord | null>(null);
+  const [renamingChat, setRenamingChat] = useState<SidebarItem | null>(null);
+  const [chatNameDraft, setChatNameDraft] = useState("");
+  const [deletingChat, setDeletingChat] = useState<SidebarItem | null>(null);
 
   const globalImportRef = useRef<HTMLInputElement>(null);
   const projectImportRefs = useRef<Map<string, HTMLInputElement>>(new Map());
@@ -491,6 +503,62 @@ export function ProjectsPage() {
       } else {
         await exportBulkConversationsSeparate(ids, fmt, basename);
       }
+    } catch (error) {
+      if (!isDownloadCancelled(error)) {
+        toast.error("Export failed.");
+      }
+    }
+  }
+
+  // Chat row actions, the same calls the sidebar's chat menu makes.
+  async function commitChatRename() {
+    const target = renamingChat;
+    const name = chatNameDraft.trim();
+    setRenamingChat(null);
+    if (!target || !name || name === target.title) return;
+    try {
+      await renameChatItem(target, name);
+      notifyChatHistoryUpdated();
+    } catch (err) {
+      toast.error("Failed to rename chat", {
+        description: err instanceof Error ? err.message : undefined,
+      });
+    }
+  }
+
+  // The open chat is the runtime's, not this page's, so its id comes from there.
+  function activeThreadId(): string | undefined {
+    return useChatRuntimeStore.getState().activeThreadId ?? undefined;
+  }
+
+  async function archiveChat(chat: SidebarItem) {
+    try {
+      await archiveChatItem(chat, activeThreadId(), () => {});
+    } catch (err) {
+      toast.error("Failed to archive chat", {
+        description: err instanceof Error ? err.message : undefined,
+      });
+    }
+  }
+
+  async function commitChatDelete() {
+    const target = deletingChat;
+    if (!target) return;
+    setDeletingChat(null);
+    try {
+      await deleteChatItem(target, activeThreadId(), () => {});
+    } catch (err) {
+      toast.error("Failed to delete chat", {
+        description: err instanceof Error ? err.message : undefined,
+      });
+    }
+  }
+
+  async function handleChatExport(chat: SidebarItem, fmt: ConvExportFormat) {
+    try {
+      const ids = chat.threadIds?.length ? chat.threadIds : [chat.id];
+      const safe = chat.title.replace(/[^a-z0-9_-]/gi, "_").slice(0, 40);
+      await exportBulkConversationsMerged(ids, fmt, `chat-${safe}`);
     } catch (error) {
       if (!isDownloadCancelled(error)) {
         toast.error("Export failed.");
@@ -872,7 +940,7 @@ export function ProjectsPage() {
               </div>
             </div>
             {chatsOpen && (
-              <div className="mb-2 flex flex-col gap-0.5 pl-[76px] pr-5">
+              <div className="mb-2 flex flex-col gap-0.5 pl-[76px]">
                 {chats === undefined || chats === "loading" ? (
                   <Skeleton className="h-6 w-48 rounded-[8px]" />
                 ) : chats === "error" ? (
@@ -887,21 +955,125 @@ export function ProjectsPage() {
                   <p className="py-1 text-sm text-muted-foreground">No chats</p>
                 ) : (
                   <>
-                    {chats.map((chat) => (
-                      <button
+                    {chats.map((chat) => {
+                      const chatPinned = pinnedChatIdSet.has(chat.id);
+                      return (
+                      <div
                         key={chat.id}
-                        type="button"
+                        role="button"
+                        tabIndex={0}
                         onClick={() => openChat(chat, project.id)}
-                        className="flex cursor-pointer items-center gap-2 truncate rounded-lg px-2 py-1.5 text-left text-sm text-muted-foreground transition-colors hover:bg-muted/70 hover:text-foreground dark:hover:bg-white/[0.055]"
+                        onKeyDown={(e) => {
+                          // A key pressed on a control inside the row is that control's.
+                          if (e.target !== e.currentTarget) return;
+                          if (e.key === "Enter" || e.key === " ") {
+                            e.preventDefault();
+                            openChat(chat, project.id);
+                          }
+                        }}
+                        className="group/chat-row flex cursor-pointer items-center gap-3 rounded-xl py-1.5 pl-2 pr-5 text-left text-sm text-muted-foreground transition-colors hover:bg-muted/70 hover:text-foreground dark:hover:bg-white/[0.055]"
                       >
                         <HugeiconsIcon
                           icon={MessageCircleIcon}
                           strokeWidth={1.75}
                           className="size-4 shrink-0"
                         />
-                        <span className="truncate">{chat.title}</span>
-                      </button>
-                    ))}
+                        <span className="min-w-0 flex-1 truncate">{chat.title}</span>
+                        {/* Same widths as a project row, so the columns line up under it. */}
+                        <span className="w-40 shrink-0">
+                          {formatUpdated(chat.updatedAt)}
+                        </span>
+                        {/* A chat's actions belong to the row the cursor is on, so they stay
+                            hover-revealed, and show outright without a cursor to hover with. */}
+                        <button
+                          type="button"
+                          aria-label={chatPinned ? "Unpin chat" : "Pin chat"}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            togglePinChat(chat.id);
+                          }}
+                          className={cn(
+                            "flex size-7 shrink-0 items-center justify-center rounded-full text-muted-foreground transition hover:bg-black/5 hover:text-foreground focus-visible:opacity-100 group-hover/chat-row:opacity-100 pointer-coarse:opacity-100 dark:hover:bg-white/10",
+                            chatPinned ? "opacity-100" : "opacity-0",
+                          )}
+                        >
+                          <HugeiconsIcon
+                            icon={chatPinned ? PinOffIcon : PinIcon}
+                            strokeWidth={1.75}
+                            className="size-4"
+                          />
+                        </button>
+                        <div className="relative flex w-8 shrink-0 items-center justify-end">
+                          <DropdownMenu>
+                            <DropdownMenuTrigger asChild>
+                              <button
+                                type="button"
+                                onClick={(e) => e.stopPropagation()}
+                                aria-label="Chat options"
+                                className="absolute right-0 flex size-7 shrink-0 items-center justify-center rounded-full text-muted-foreground opacity-0 transition hover:bg-black/5 hover:text-foreground focus-visible:opacity-100 group-hover/chat-row:opacity-100 pointer-coarse:opacity-100 data-[state=open]:bg-black/5 data-[state=open]:opacity-100 dark:hover:bg-white/10 dark:data-[state=open]:bg-white/10"
+                              >
+                                <MoreHorizontalIcon strokeWidth={1.75} className="size-icon" />
+                              </button>
+                            </DropdownMenuTrigger>
+                            <DropdownMenuContent
+                              side="bottom"
+                              align="end"
+                              sideOffset={0}
+                              onClick={(e) => e.stopPropagation()}
+                              onKeyDown={(e) => e.stopPropagation()}
+                              className="app-user-menu menu-soft-surface menu-flat-destructive ring-0 w-44 py-2 font-heading rounded-[14px] border-0"
+                            >
+                              <DropdownMenuItem
+                                onSelect={() => {
+                                  setChatNameDraft(chat.title);
+                                  setRenamingChat(chat);
+                                }}
+                              >
+                                <HugeiconsIcon icon={Edit03Icon} strokeWidth={1.75} className="size-icon" />
+                                <span>Rename</span>
+                              </DropdownMenuItem>
+                              <DropdownMenuItem onSelect={() => void archiveChat(chat)}>
+                                <HugeiconsIcon icon={Archive03Icon} strokeWidth={1.75} className="size-icon" />
+                                <span>Archive</span>
+                              </DropdownMenuItem>
+                              <DropdownMenuSub>
+                                <DropdownMenuSubTrigger>
+                                  <HugeiconsIcon icon={Download01Icon} strokeWidth={1.75} className="size-icon mr-1" />
+                                  <span>Export</span>
+                                </DropdownMenuSubTrigger>
+                                <DropdownMenuSubContent className="w-52">
+                                  {/* A comparison is two threads, so it can only take the
+                                      formats that merge. */}
+                                  {((chat.threadIds?.length ?? 1) > 1
+                                    ? COMBINED_EXPORT_FORMATS_LIST
+                                    : EXPORT_FORMATS_LIST
+                                  ).map(({ fmt, label }) => (
+                                    <DropdownMenuItem
+                                      key={`${chat.id}-${fmt}`}
+                                      onSelect={(e) => {
+                                        e.stopPropagation();
+                                        void handleChatExport(chat, fmt);
+                                      }}
+                                    >
+                                      {label}
+                                    </DropdownMenuItem>
+                                  ))}
+                                </DropdownMenuSubContent>
+                              </DropdownMenuSub>
+                              <DropdownMenuSeparator />
+                              <DropdownMenuItem
+                                variant="destructive"
+                                onSelect={() => setDeletingChat(chat)}
+                              >
+                                <HugeiconsIcon icon={Delete02Icon} strokeWidth={1.75} className="size-icon" />
+                                <span>Delete</span>
+                              </DropdownMenuItem>
+                            </DropdownMenuContent>
+                          </DropdownMenu>
+                        </div>
+                      </div>
+                      );
+                    })}
                     {staleProjectIds.has(project.id) && (
                       <button
                         type="button"
@@ -937,6 +1109,80 @@ export function ProjectsPage() {
         // Delete keeps this page's own confirmation.
         onDelete={(project) => setDeleting(project)}
       />
+
+      {/* Rename chat */}
+      <Dialog
+        open={renamingChat !== null}
+        onOpenChange={(open) => {
+          if (!open) setRenamingChat(null);
+        }}
+      >
+        <DialogContent className="corner-squircle dialog-soft-surface sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Rename chat</DialogTitle>
+          </DialogHeader>
+          <Input
+            value={chatNameDraft}
+            onChange={(e) => setChatNameDraft(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                e.preventDefault();
+                void commitChatRename();
+              }
+            }}
+            autoFocus
+            maxLength={200}
+            placeholder="Chat name"
+            aria-label="Chat name"
+            className="focus-visible:border-input focus-visible:ring-0"
+          />
+          <DialogFooter className="flex-wrap gap-2 sm:justify-end">
+            <Button type="button" variant="ghost" onClick={() => setRenamingChat(null)}>
+              Cancel
+            </Button>
+            <Button
+              type="button"
+              onClick={() => void commitChatRename()}
+              disabled={
+                !chatNameDraft.trim() ||
+                chatNameDraft.trim() === renamingChat?.title
+              }
+            >
+              Save
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Delete chat */}
+      <Dialog
+        open={deletingChat !== null}
+        onOpenChange={(open) => {
+          if (!open) setDeletingChat(null);
+        }}
+      >
+        <DialogContent className="menu-flat-destructive corner-squircle dialog-soft-surface sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Delete chat</DialogTitle>
+          </DialogHeader>
+          <p className="text-sm text-muted-foreground">
+            Are you sure you want to delete <em>{deletingChat?.title}</em>? Its messages
+            will be permanently deleted.
+          </p>
+          <DialogFooter className="flex-wrap gap-2 sm:justify-end">
+            <Button type="button" variant="ghost" onClick={() => setDeletingChat(null)}>
+              Cancel
+            </Button>
+            <Button
+              type="button"
+              variant="destructive"
+              onClick={() => void commitChatDelete()}
+            >
+              Delete
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       {/* Import destination picker */}
       <Dialog open={importFile !== null} onOpenChange={(open) => { if (!open) setImportFile(null); }}>
