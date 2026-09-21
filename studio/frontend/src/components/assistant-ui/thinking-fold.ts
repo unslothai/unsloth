@@ -90,8 +90,10 @@ export function countFoldedToolParts(
   return count;
 }
 
-/** Time the lead reports: every reasoning group it holds, added up. Undefined while any of them
- *  has no saved duration yet, so the caller falls back to its own clock. */
+/** Time the lead reports: every reasoning group it holds, added up. Rounds with no saved
+ *  duration are left out rather than zeroing the total: a reply saved with only the legacy
+ *  last-round duration still reports that. Undefined only when no round is known, so the
+ *  caller falls back to its own clock. */
 export function foldedTurnDuration(
   parts: readonly PartLike[],
   resolve: (
@@ -102,14 +104,13 @@ export function foldedTurnDuration(
   const lead = leadReasoningEnd(parts);
   if (lead === null) return undefined;
   const end = foldEnd(parts, lead);
-  let total = 0;
+  let total: number | undefined;
   let previousWasReasoning = false;
   for (let i = 0; i < end; i += 1) {
     const isReasoning = parts[i]?.type === "reasoning";
     if (isReasoning && !previousWasReasoning) {
       const duration = resolve(parts, i);
-      if (duration === undefined) return undefined;
-      total += duration;
+      if (duration !== undefined) total = (total ?? 0) + duration;
     }
     previousWasReasoning = isReasoning;
   }

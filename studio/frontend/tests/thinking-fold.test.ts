@@ -181,9 +181,14 @@ test("the lead reports the turn's thinking time added up", () => {
   const resolve = (_parts: readonly { type: string }[], start: number) =>
     byStart[start];
   assert.equal(foldedTurnDuration(twoRounds, resolve), 10);
-  // One round still unmeasured and the caller keeps its own clock.
+  // A reply saved with only the legacy last-round duration still reports it.
   assert.equal(
-    foldedTurnDuration(twoRounds, (_p, start) => (start === 0 ? 4 : undefined)),
+    foldedTurnDuration(twoRounds, (_p, start) => (start === 3 ? 6 : undefined)),
+    6,
+  );
+  // Nothing known and the caller keeps its own clock.
+  assert.equal(
+    foldedTurnDuration(twoRounds, () => undefined),
     undefined,
   );
   assert.equal(foldedTurnDuration(parts(["text"]), resolve), undefined);
