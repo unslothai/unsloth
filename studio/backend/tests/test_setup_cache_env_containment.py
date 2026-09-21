@@ -13,6 +13,7 @@ import platform
 import re
 import shlex
 import shutil
+import stat
 import string
 import subprocess
 import sys
@@ -374,6 +375,69 @@ def test_an_unusable_fallback_is_not_published_either(occupy, monkeypatch, tmp_p
             squatter.chmod(0o700)
 
     assert "TORCHINDUCTOR_CACHE_DIR" not in os.environ
+
+
+def _fallback_name(sr, key, intended):
+    """The name the resolver will choose, derived the way the resolver derives it."""
+    digest = hashlib.sha256(intended.encode("utf-8", "replace")).hexdigest()[:12]
+    return f"unsloth-{key.lower().replace('_', '-')}-{digest}"
+
+
+@pytest.mark.skipif(os.name == "nt", reason = "the temporary root is per-account on Windows")
+@pytest.mark.parametrize(
+    "plant",
+    [
+        pytest.param("world-writable", id = "a directory another user left writable"),
+        pytest.param("symlink", id = "a symlink planted at the name"),
+    ],
+)
+def test_a_fallback_another_user_could_have_planted_is_refused(plant, monkeypatch, tmp_path):
+    """The fallback sits in the SHARED temporary root under a name derived from the install, so
+    it is predictable to anyone on the host. A write probe alone accepted a directory another
+    local user had pre-created world-writable, and TORCH_EXTENSIONS_DIR is where torch loads
+    compiled .so files from, so that is code execution in the Studio process rather than an
+    untidy cache. Ownership cannot be staged here without a second uid, so these two cover the
+    permission bits and the symlink; the uid check is exercised by inspection only."""
+    refused = tmp_path / "o'brien" / "studio"
+    refused.mkdir(parents = True)
+    shared = tmp_path / "shared-tmp"
+    shared.mkdir()
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(refused))
+    sr = _load_storage_roots()
+    monkeypatch.setattr(sr.tempfile, "gettempdir", lambda: str(shared))
+
+    intended = str(sr.cache_root() / "torch-extensions" / sr._torch_runtime_tag())
+    planted = shared / _fallback_name(sr, "TORCH_EXTENSIONS_DIR", intended)
+    if plant == "world-writable":
+        planted.mkdir(mode = 0o777)
+        planted.chmod(0o777)
+    else:
+        (shared / "elsewhere").mkdir()
+        planted.symlink_to(shared / "elsewhere")
+
+    sr._setup_cache_env()
+
+    assert "TORCH_EXTENSIONS_DIR" not in os.environ
+
+
+@pytest.mark.skipif(os.name == "nt", reason = "POSIX permission bits")
+def test_the_fallback_it_creates_is_closed_to_everyone_else(monkeypatch, tmp_path):
+    """The other half: when nothing is in the way it must not create a cache the rest of the
+    host can write into either."""
+    refused = tmp_path / "o'brien" / "studio"
+    refused.mkdir(parents = True)
+    shared = tmp_path / "shared-tmp"
+    shared.mkdir()
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(refused))
+    sr = _load_storage_roots()
+    monkeypatch.setattr(sr.tempfile, "gettempdir", lambda: str(shared))
+
+    sr._setup_cache_env()
+
+    published = Path(os.environ["TORCH_EXTENSIONS_DIR"])
+    mode = published.stat().st_mode
+    assert not mode & (stat.S_IWGRP | stat.S_IWOTH), oct(mode & 0o777)
+    assert published.stat().st_uid == os.geteuid()
 
 
 def test_a_refused_root_with_no_usable_temp_root_still_publishes_nothing(monkeypatch, tmp_path):

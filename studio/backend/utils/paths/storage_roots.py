@@ -1075,6 +1075,41 @@ def _toolchain_unsafe(key: str, value: str) -> bool:
     return key in _TOOLCHAIN_PATH_KEYS and toolchain_path_unparseable(value)
 
 
+def _private_dir(path: str) -> bool:
+    """Whether *path* is a directory only this account can write, creating it if it is absent.
+
+    The fallback below lives in the SHARED temporary root and its name is derived from the
+    install, so it is predictable to anyone on the host. Left to _usable_dir alone, a directory
+    another local user pre-created world-writable passed the write probe and was published as
+    TORCH_EXTENSIONS_DIR, which torch then loads compiled .so files from: local code execution
+    in the Studio process. So create it with owner-only bits, and accept an existing one only
+    when it is a real directory, ours, and closed to group and other.
+
+    lstat, not stat: a symlink planted at the name would otherwise be judged by its target.
+    Ownership is POSIX-only. On Windows the temporary root is already per-account under
+    %LOCALAPPDATA%, and st_uid carries no meaning there.
+    """
+    try:
+        Path(path).parent.mkdir(parents = True, exist_ok = True)
+        os.mkdir(path, 0o700)
+        return True
+    except FileExistsError:
+        pass
+    except (OSError, ValueError):
+        return False
+    try:
+        info = os.lstat(path)
+    except (OSError, ValueError):
+        return False
+    if not stat_module.S_ISDIR(info.st_mode) or stat_module.S_ISLNK(info.st_mode):
+        return False
+    if os.name == "nt":
+        return True
+    if info.st_uid != os.geteuid():
+        return False
+    return not info.st_mode & (stat_module.S_IWGRP | stat_module.S_IWOTH)
+
+
 def _parseable_toolchain_fallback(key: str, intended: str) -> str | None:
     """A cache directory the C++ builders can read, or None when even the temp root is unusable.
 
@@ -1146,15 +1181,12 @@ def _setup_cache_env() -> None:
                 # a digest, which is hex and therefore always parseable, and only when the
                 # temporary directory itself is.
                 fallback = _parseable_toolchain_fallback(key, value)
-                if fallback is not None:
-                    with contextlib.suppress(OSError):
-                        Path(fallback).mkdir(parents = True, exist_ok = True)
-                # Created and probed BEFORE it is published, which the ordinary path below does
-                # too: torch treats the value as authoritative and never reconsiders, so a name
-                # already taken by a regular file, or a directory it cannot write, fails every
-                # build instead of the one thing this branch exists to prevent. The mkdir cannot
-                # answer that on its own, since exist_ok swallows the file case.
-                if fallback is not None and _usable_dir(fallback):
+                # Created private, then probed, BEFORE it is published. Both halves are needed
+                # and neither implies the other: _private_dir settles who may write there, which
+                # matters because this name is predictable in a shared temporary root, and
+                # _usable_dir settles whether WE can, which the ordinary path below also asks
+                # because torch treats the value as authoritative and never reconsiders.
+                if fallback is not None and _private_dir(fallback) and _usable_dir(fallback):
                     logger.debug(
                         "%s holds a character the C++ builders cannot paste into a command "
                         "line unquoted; pinning %s to %s instead",
