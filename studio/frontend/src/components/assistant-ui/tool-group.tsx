@@ -11,6 +11,13 @@ import {
 import { useAuiState } from "@assistant-ui/react";
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
 import { useChatPreferencesStore } from "@/features/chat/stores/chat-preferences-store";
+// eslint-disable-next-line no-restricted-imports -- this file is in the startup cycle; the chat barrel closes it.
+import { useReasoningRoundStore } from "@/features/chat/stores/reasoning-round-store";
+import {
+  endsFoldedSpan,
+  governingReasoningEnd,
+  reasoningRoundKey,
+} from "./thinking-fold";
 import {
   toolOutputKey,
   useToolPaneScope,
@@ -25,10 +32,11 @@ import {
   CollapsibleContent,
   CollapsibleTrigger,
 } from "@/components/ui/collapsible";
+import { useDetachThreadFromBottom } from "@/components/assistant-ui/use-intent-aware-autoscroll";
 import { useCollapseScrollLock } from "@/hooks/use-collapse-scroll-lock";
 import { cn } from "@/lib/utils";
 import { Spinner } from "@/components/ui/spinner";
-import { hasCreatedFiles } from "./sandbox-files";
+import { awaitsConfirmation, holdsOwnOutput } from "./tool-fold-exemptions";
 import { syncToolActivityPreference } from "./tool-activity-open-state";
 
 const ANIMATION_DURATION = 200;
@@ -37,7 +45,7 @@ const toolGroupVariants = cva("aui-tool-group-root group/tool-group w-full", {
   variants: {
     variant: {
       outline: "corner-squircle rounded-lg border py-3",
-      ghost: "py-2",
+      ghost: "",
       muted:
         "corner-squircle rounded-lg border border-muted-foreground/30 bg-muted/30 py-3",
     },
@@ -88,17 +96,31 @@ function ToolGroupRoot({
   const isControlled = controlledOpen !== undefined;
   const isOpen = isControlled ? controlledOpen : syncedUncontrolledState.open;
 
+  // Opening by hand grows the group downward; see the same note in reasoning.tsx.
+  const detachFromBottom = useDetachThreadFromBottom();
+  const messageRunning = useAuiState(
+    ({ message }) => message.status?.type === "running",
+  );
   const handleOpenChange = useCallback(
     (open: boolean) => {
       if (!open) {
         lockScroll();
+      } else if (!messageRunning) {
+        detachFromBottom();
       }
       if (!isControlled) {
         setUncontrolledState({ collapseByDefault, open });
       }
       controlledOnOpenChange?.(open);
     },
-    [collapseByDefault, lockScroll, isControlled, controlledOnOpenChange],
+    [
+      collapseByDefault,
+      lockScroll,
+      isControlled,
+      controlledOnOpenChange,
+      detachFromBottom,
+      messageRunning,
+    ],
   );
 
   return (
@@ -214,7 +236,7 @@ function ToolGroupContent({
           "mt-2 flex flex-col gap-2",
           "group-data-[variant=outline]/tool-group-root:mt-3 group-data-[variant=outline]/tool-group-root:border-t group-data-[variant=outline]/tool-group-root:px-4 group-data-[variant=outline]/tool-group-root:pt-3",
           "group-data-[variant=muted]/tool-group-root:mt-3 group-data-[variant=muted]/tool-group-root:border-t group-data-[variant=muted]/tool-group-root:px-4 group-data-[variant=muted]/tool-group-root:pt-3",
-          "group-data-[variant=ghost]/tool-group-root:mt-1 group-data-[variant=ghost]/tool-group-root:gap-1",
+          "group-data-[variant=ghost]/tool-group-root:mt-3 group-data-[variant=ghost]/tool-group-root:gap-3",
         )}
       >
         {children}
@@ -236,15 +258,7 @@ const ToolGroupImpl: FC<
 > = ({ children, startIndex, endIndex }) => {
   const toolCount = endIndex - startIndex + 1;
   const containsUngroupedTool = useAuiState(({ message }) =>
-    message.parts
-      .slice(startIndex, endIndex + 1)
-      .some(
-        (part) =>
-          part.type === "tool-call" &&
-          (part.toolName === "render_html" ||
-            part.toolName === "python" ||
-            hasCreatedFiles(part.toolName, part.result)),
-      ),
+    message.parts.slice(startIndex, endIndex + 1).some(holdsOwnOutput),
   );
   // A blocking allow/deny prompt must never be hidden inside a collapsed
   // group, so force the group open while any of its calls awaits confirmation.
@@ -252,14 +266,7 @@ const ToolGroupImpl: FC<
   const hasPendingConfirmation = useAuiState(({ message }) =>
     message.parts
       .slice(startIndex, endIndex + 1)
-      .some(
-        (part) =>
-          part.type === "tool-call" &&
-          Object.prototype.hasOwnProperty.call(
-            toolConfirmations,
-            part.toolCallId,
-          ),
-      ),
+      .some((part) => awaitsConfirmation(part, toolConfirmations)),
   );
   const messageRunning = useAuiState(
     ({ message }) => message.status?.type === "running",
@@ -303,17 +310,62 @@ const ToolGroupImpl: FC<
       ((hasLiveOutput && messageRunning) ||
         (forcedOpenRef.current && messageRunning)));
 
+  // With the fold preference on, this run of calls belongs to the turn's first thinking block
+  // and shows only while that block is open. Calls that hold their own output, and any awaiting
+  // an allow or deny, are never folded away.
+  const foldToolActivity = useChatPreferencesStore(
+    (state) => state.foldToolActivityIntoThinking,
+  );
+  const roundKey = useAuiState(({ message }) => {
+    const reasoningEnd = governingReasoningEnd(message.parts, startIndex);
+    return reasoningEnd === null
+      ? null
+      : reasoningRoundKey(message.id, reasoningEnd);
+  });
+  const roundOpen = useReasoningRoundStore((state) =>
+    roundKey === null ? true : (state.open[roundKey] ?? false),
+  );
+  const underThinking = foldToolActivity && roundKey !== null;
+  const exempt = containsUngroupedTool || hasPendingConfirmation;
+  // Last thing under the block, with the answer right after: close the trace with a rule.
+  const closesTrace = useAuiState(({ message }) =>
+    endsFoldedSpan(message.parts, endIndex),
+  );
+
   // Render single calls, canvases, Python scripts, and calls that created files
   // directly so their persistent content never hides in a collapsed group.
-  if (toolCount <= 1 || containsUngroupedTool) {
-    return <>{children}</>;
+  const group =
+    toolCount <= 1 || containsUngroupedTool ? (
+      <>{children}</>
+    ) : (
+      <ToolGroupRoot open={forceOpen ? true : undefined}>
+        <ToolGroupTrigger count={toolCount} />
+        <ToolGroupContent>{children}</ToolGroupContent>
+      </ToolGroupRoot>
+    );
+
+  if (!underThinking) {
+    return group;
   }
 
+  // Hidden rather than unmounted: a folded run keeps its cards, its scroll positions and any
+  // output still streaming into it, so opening the block is instant and loses nothing. The
+  // wrapper stays while the run is under a block, exempt or not, so an approval arriving or
+  // clearing only changes visibility and never remounts the cards.
   return (
-    <ToolGroupRoot open={forceOpen ? true : undefined}>
-      <ToolGroupTrigger count={toolCount} />
-      <ToolGroupContent>{children}</ToolGroupContent>
-    </ToolGroupRoot>
+    <div
+      data-slot="tool-run-under-thinking"
+      className={cn(!(roundOpen || exempt) && "hidden")}
+    >
+      {group}
+      {closesTrace && (
+        <div
+          data-slot="reasoning-end-rule"
+          aria-hidden={true}
+          className={cn("mt-4 border-border/60 border-t", !roundOpen && "hidden")}
+        />
+      )}
+    </div>
   );
 };
 

@@ -694,11 +694,19 @@ test("a call that created files keeps its group from collapsing", async () => {
     false,
   );
 
-  const source = await sourceOf(
+  // The rule lives in tool-fold-exemptions.ts; the group asks it per part.
+  const group = await sourceOf(
     "../src/components/assistant-ui/tool-group.tsx",
   );
+  assert.match(
+    initializerOf(group, "containsUngroupedTool").getText(),
+    /\.some\(holdsOwnOutput\)/,
+  );
+  const source = await sourceOf(
+    "../src/components/assistant-ui/tool-fold-exemptions.ts",
+  );
   const call = find(
-    initializerOf(source, "containsUngroupedTool"),
+    source,
     (node) =>
       ts.isCallExpression(node) &&
       ts.isIdentifier(node.expression) &&

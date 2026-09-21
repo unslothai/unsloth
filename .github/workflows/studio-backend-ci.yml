@@ -437,6 +437,14 @@ jobs:
             tests/test_recommended_folders_permission.py \
             tests/test_hf_cache_settings.py
 
+      - name: Why a failure here might already be fixed on the base branch
+        # `if: failure()` so a green job never runs it, and the action itself stays
+        # quiet unless the base branch has actually moved since this run's merge ref
+        # was built. See .github/actions/merge-ref-age for the three pull requests
+        # that were misread this way.
+        if: failure() && github.event_name == 'pull_request'
+        uses: ./.github/actions/merge-ref-age
+
       - name: Save the pip cache
         if: always()
         uses: ./.github/actions/pip-cache-save
@@ -718,6 +726,14 @@ jobs:
         # run explicitly so notebook/Colab/branding regressions fail CI.
         if: matrix.shard == 'rest'
         run: python tests/validate_studio_features.py
+
+      - name: Why a failure here might already be fixed on the base branch
+        # `if: failure()` so a green job never runs it, and the action itself stays
+        # quiet unless the base branch has actually moved since this run's merge ref
+        # was built. See .github/actions/merge-ref-age for the three pull requests
+        # that were misread this way.
+        if: failure() && github.event_name == 'pull_request'
+        uses: ./.github/actions/merge-ref-age
 
       - name: Save the pip cache
         if: always()

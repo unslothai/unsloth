@@ -72,27 +72,24 @@ test("a working Recents row clears the kebab on hover", async () => {
     inset(grab(css, /\.sidebar-row-action-glyph \{\s*@apply ([^;]*);/, "action glyph"), "size");
   assert.equal(kebabInset, 30);
 
+  // The row holds that room open at rest rather than on hover: a spinner sits against the same
+  // edge the actions reveal over, so there is nothing to reclaim by waiting for the pointer.
   const working = grab(
     source,
-    // Anchor on the branch comment so nested spinner ternaries cannot redirect
-    // the match to a pinned or project row.
-    /A spinner glyph cannot truncate[\s\S]{0,120}?"(group-hover\/recent-item:pr-[^"]*)"/,
-    "the showWorkSpinner padding branch",
+    /A spinner glyph cannot truncate[\s\S]{0,240}?showWorkSpinner \? "pr-([0-9.]+)"/,
+    "the showWorkSpinner padding",
   );
-  // hover, menu-open and coarse-pointer all reveal the kebab, so all must clear it
-  const pads = [...working.matchAll(/:pr-([0-9.]+)(?: |$)/g)].map(
-    (m) => Number(m[1]) * TAILWIND_UNIT,
+  assert.ok(
+    Number(working) * TAILWIND_UNIT >= kebabInset,
+    `${Number(working) * TAILWIND_UNIT}px padding, needs ${kebabInset}px to clear the kebab`,
   );
-  assert.ok(pads.length >= 3, `expected hover, open and coarse paddings, got ${pads.length}`);
-  for (const pad of pads) {
-    assert.ok(pad >= kebabInset, `${pad}px padding, needs ${kebabInset}px to clear the kebab`);
-  }
 
-  // focus-visible reveals the kebab without hover, so every spinner row reserves room there too.
+  // focus-visible reveals the actions without hover, so every row reserves room there too: one
+  // padding for the project rows and one for every row of Pinned and Recents.
   const focusPads = [...source.matchAll(/:focus-visible\]\/[a-z-]+:pr-([0-9.]+)/g)].map(
     (m) => Number(m[1]) * TAILWIND_UNIT,
   );
-  assert.equal(focusPads.length, 3, `expected 3 focus paddings, got ${focusPads.length}`);
+  assert.equal(focusPads.length, 2, `expected 2 focus paddings, got ${focusPads.length}`);
   for (const pad of focusPads) {
     assert.ok(pad >= kebabInset, `${pad}px focus padding, needs ${kebabInset}px`);
   }
