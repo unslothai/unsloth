@@ -264,3 +264,29 @@ def test_the_recipe_endpoint_check_still_requires_http_with_the_setting_on(
     with pytest.raises(Exception) as refusal:
         service._require_public_provider_endpoint(url)
     assert "http" in str(getattr(refusal.value, "detail", refusal.value)).lower()
+
+
+def test_a_link_local_provider_that_saves_can_also_be_dialled(monkeypatch, as_alice):
+    """Save and dial have to agree. 169.254.0.0/16 is also where a self-assigned host and an
+    mDNS name land, so a DNS answer there is an ordinary LAN provider, not the metadata service.
+    A typed literal in that range stays refused at both ends, which is what the validator does."""
+    import socket
+
+    from core.inference.providers import provider_address_excluding_metadata
+
+    _allow(monkeypatch, True)
+
+    def fake_getaddrinfo(host, port, *args, **kwargs):
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("169.254.3.7", port or 80))]
+
+    # providers.py imports socket inside each function, so patching the stdlib module reaches it.
+    monkeypatch.setattr(socket, "getaddrinfo", fake_getaddrinfo)
+
+    saved = providers.validate_provider_base_url("http://printer.local:8000/v1")
+    assert saved == "http://printer.local:8000/v1"
+    assert provider_address_excluding_metadata(saved) == "169.254.3.7"
+
+    # The metadata service itself, and a literal anywhere in the range, still refused.
+    for literal in ("http://169.254.169.254/v1", "http://169.254.3.7/v1"):
+        with pytest.raises(ValueError):
+            provider_address_excluding_metadata(literal)

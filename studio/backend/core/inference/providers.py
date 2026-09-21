@@ -959,9 +959,11 @@ def provider_address_excluding_metadata(url: str) -> str:
     hostname = (parts.hostname or "").rstrip(".")
     if not hostname:
         raise ValueError("Provider URL must contain a hostname.")
+    literal = True
     try:
         addresses = [ipaddress.ip_address(_canonical_host(hostname))]
     except ValueError:
+        literal = False
         try:
             infos = socket.getaddrinfo(
                 _transport_host(hostname),
@@ -973,7 +975,12 @@ def provider_address_excluding_metadata(url: str) -> str:
         addresses = [ipaddress.ip_address(str(info[4][0]).split("%", 1)[0]) for info in infos]
     if not addresses:
         raise ValueError("Provider base URL hostname could not be resolved.")
-    if any(_metadata_address(str(ip)) or _metadata_host(str(ip)) for ip in addresses):
+    # The same split the validator makes, so a URL that saves is one that dials. A typed literal
+    # gets `_metadata_host`, which reads all of 169.254.0.0/16 as the metadata service; a DNS
+    # answer gets `_metadata_address`, which does not, because that range is also where a
+    # self-assigned host or an mDNS name lands.
+    refuses = _metadata_host if literal else _metadata_address
+    if any(refuses(str(ip)) for ip in addresses):
         raise ValueError(METADATA_REFUSED_REASON)
     return str(addresses[0])
 
