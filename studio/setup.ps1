@@ -7378,6 +7378,32 @@ if ($script:PinChangedForceReinstall -or $script:TorchImportDefinitivelyFailed) 
     $SkipPythonDeps = $false
 }
 
+# An upgrade has to take the old value away, not merely stop writing a new one. Every setup before
+# the refusal existed sent an apostrophe-named account's contained path to $TorchCacheDir and wrote
+# it to the USER environment, so the value is already there and this process inherited it, and
+# _setup_cache_env honours an inherited value as the caller's own choice. Left alone, the one
+# account the refusal exists for is the one account the backend rule never runs for.
+#
+# Outside the dependency block on purpose. The refusal itself can only run when that block does,
+# but a current core package takes the fast path, and so does a verified UV_OFFLINE tree, so an
+# account in exactly this state would keep the refused value until something else forced a
+# dependency pass. Taking it away needs none of that block's work, only the value's own
+# characters, so it runs on every launch. Only a value the builders cannot read is cleared: a
+# parseable path is somebody's decision and stays.
+function Clear-UnparseableTorchCacheEnv {
+    if (-not $StageRoot) {
+        $persisted = [Environment]::GetEnvironmentVariable('TORCHINDUCTOR_CACHE_DIR', 'User')
+        if ($persisted -and $persisted -match '[\s'']') {
+            [Environment]::SetEnvironmentVariable('TORCHINDUCTOR_CACHE_DIR', [NullString]::Value, 'User')
+            substep "cleared the persisted TORCHINDUCTOR_CACHE_DIR ($persisted): an earlier setup wrote it before the character was refused"
+        }
+    }
+    if ($env:TORCHINDUCTOR_CACHE_DIR -and $env:TORCHINDUCTOR_CACHE_DIR -match '[\s'']') {
+        Remove-Item -LiteralPath Env:TORCHINDUCTOR_CACHE_DIR -ErrorAction SilentlyContinue
+    }
+}
+Clear-UnparseableTorchCacheEnv
+
 if (-not $SkipPythonDeps) {
 
 # Recover what a fresh shell lost, BEFORE the manifest is dropped below: recovery reads that file.
@@ -7485,20 +7511,6 @@ if (-not $TorchCacheDir -and -not $TorchCacheUnparseable) {
     $TorchCacheDir = "C:\tc"
 }
 if (-not $TorchCacheDir) {
-    # An upgrade has to take the old value away, not merely stop writing a new one. Every setup
-    # before this one persisted the contained path to the USER environment for this same account,
-    # so the value is already there, this process inherited it, and _setup_cache_env honours any
-    # inherited value as the caller's own choice. Leaving it would mean the account that this
-    # branch exists for is the one account the backend rule never runs for. Only a value the
-    # builders cannot read is cleared: a parseable path is somebody's decision and stays.
-    $staleTorchCache = [Environment]::GetEnvironmentVariable('TORCHINDUCTOR_CACHE_DIR', 'User')
-    if ($staleTorchCache -and $staleTorchCache -match '[\s'']') {
-        [Environment]::SetEnvironmentVariable('TORCHINDUCTOR_CACHE_DIR', [NullString]::Value, 'User')
-        substep "cleared the persisted TORCHINDUCTOR_CACHE_DIR ($staleTorchCache): an earlier setup wrote it before the character was refused"
-    }
-    if ($env:TORCHINDUCTOR_CACHE_DIR -and $env:TORCHINDUCTOR_CACHE_DIR -match '[\s'']') {
-        Remove-Item -LiteralPath Env:TORCHINDUCTOR_CACHE_DIR -ErrorAction SilentlyContinue
-    }
     substep "TORCHINDUCTOR_CACHE_DIR left unset: $candidate holds a character the C++ builders cannot paste into a command line, and the shared fallback is not account-private"
 }
 if ($TorchCacheDir) {

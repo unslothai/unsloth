@@ -1075,18 +1075,38 @@ def test_the_refused_windows_cache_path_is_taken_away_on_upgrade():
     the caller's own choice and never applies its per-account rule, which would leave the one
     account this branch exists for as the one account the backend never gets to help. So the
     refusal has to clear both copies, and only when the value is one the builders cannot read: a
-    parseable path is somebody's decision. The process half is exercised under pwsh in
-    tests/studio/; the USER half is Windows-only and is held to its shape here.
+    parseable path is somebody's decision.
+
+    And it has to clear them on EVERY launch. The refusal itself lives inside
+    `if (-not $SkipPythonDeps)`, which a current core package and a verified UV_OFFLINE tree both
+    skip, so a cleanup nested in there would never reach the account that is already in this
+    state. The clear needs nothing that block computes, so it is hoisted out of it.
     """
     ps = SETUP_PS1.read_text(encoding = "utf-8")
-    block = _slice(ps, "if (-not $TorchCacheDir) {", "if ($TorchCacheDir) {")
-    code = "\n".join(line for line in block.splitlines() if not line.lstrip().startswith("#"))
+    body = _slice(ps, "function Clear-UnparseableTorchCacheEnv {", "\nClear-UnparseableTorchCacheEnv")
+    code = "\n".join(line for line in body.splitlines() if not line.lstrip().startswith("#"))
     assert "GetEnvironmentVariable('TORCHINDUCTOR_CACHE_DIR', 'User')" in code, code
     assert "[NullString]::Value, 'User'" in code, code
     assert "Remove-Item -LiteralPath Env:TORCHINDUCTOR_CACHE_DIR" in code, code
     # Guarded on the same characters the refusal itself uses, both times. An unguarded clear
     # would throw away a directory the user chose on purpose.
     assert code.count("-match '[\\s'']'") == 2, code
+    # A staged run never writes the real account's environment, as the persist below does not.
+    assert "-not $StageRoot" in code, code
+
+    # The call is outside the dependency block, measured by brace depth rather than by reading.
+    lines = ps.splitlines()
+    gate = lines.index("if (-not $SkipPythonDeps) {")
+    depth = 0
+    for close, line in enumerate(lines[gate:], start = gate):
+        depth += line.count("{") - line.count("}")
+        if depth == 0:
+            break
+    calls = [i for i, line in enumerate(lines) if line.strip() == "Clear-UnparseableTorchCacheEnv"]
+    assert calls, "nothing calls the cleanup"
+    assert any(i < gate for i in calls), (
+        "the cleanup only runs on a dependency pass, which the fast paths skip"
+    )
 
 
 def test_the_windows_uninstaller_clears_the_inductor_path_it_persisted():
