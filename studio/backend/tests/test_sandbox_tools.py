@@ -902,6 +902,16 @@ class TestNetworkTargetResolution:
                 f"def outer():\n    return inner()\nouter().get('http://{_H}/')",
                 id = "client_through_two_factories",
             ),
+            pytest.param(
+                "import requests\nclass Factory:\n    def make(self):\n        return requests.Session()\n"
+                f"s = Factory().make()\ns.get('http://{_H}/')",
+                id = "client_from_a_factory_method",
+            ),
+            pytest.param(
+                "import httpx\nasync def make():\n    return httpx.AsyncClient()\n"
+                f"async def go():\n    c = await make()\n    await c.get('http://{_H}/')",
+                id = "client_from_an_awaited_factory",
+            ),
         ],
     )
     def test_known_untrusted_host_blocked(self, code):
@@ -1020,6 +1030,9 @@ class TestNetworkTargetResolution:
             "import httpx\nhttpx.Client(transport=httpx.HTTPTransport(retries=3)).get('https://pypi.org/')",
             "import requests\ndef make():\n    return requests.Session()\nmake().get('https://pypi.org/')",
             "def make():\n    return {}\nmake().get('http://203.0.113.5/')",
+            # A local function named like a method does not make every such method a factory.
+            "import requests\ndef get():\n    return requests.Session()\nd = {}\n"
+            "y = d.get('k')\ny.get('http://203.0.113.5/')",
         ],
     )
     def test_known_trusted_host_runs(self, code):

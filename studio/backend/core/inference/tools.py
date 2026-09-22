@@ -17109,7 +17109,7 @@ def _check_signal_escape_patterns(code: str):
 
     def _alternatives(value) -> "list[ast.AST]":
         """Every expression a value can evaluate to: both arms of `a if c else b`, each operand of
-        `a or b`, and the value a walrus passes on. A client or a network function on either path
+        `a or b`, and the value a walrus passes on or an `await` resolves to. A client or a network function on either path
         can be the one that runs."""
         out: "list[ast.AST]" = []
         stack = [value]
@@ -17119,7 +17119,7 @@ def _check_signal_escape_patterns(code: str):
                 stack.extend((cur.body, cur.orelse))
             elif isinstance(cur, ast.BoolOp):
                 stack.extend(cur.values)
-            elif isinstance(cur, ast.NamedExpr):
+            elif isinstance(cur, (ast.NamedExpr, ast.Await)):
                 stack.append(cur.value)
             else:
                 out.append(cur)
@@ -17345,10 +17345,18 @@ def _check_signal_escape_patterns(code: str):
             )
             for alt in _alternatives(value):
                 path = self._receiver_path(alt)
-                if isinstance(alt, ast.Call) and isinstance(alt.func, ast.Name):
-                    path = _returns_of(alt.func.id)
+                if isinstance(alt, ast.Call) and self._local_callee(alt.func):
+                    path = _returns_of(self._local_callee(alt.func))
                 if path is not None:
                     self.flows_from.setdefault(path, []).append(index)
+
+        def _local_callee(self, func) -> "str | None":
+            """The local function `make()`, or local method `obj.make()`, a call reaches."""
+            if isinstance(func, ast.Name) and func.id in self.local_functions:
+                return func.id
+            if isinstance(func, ast.Attribute) and func.attr in self.local_methods:
+                return func.attr
+            return None
 
         def _bind_call_arguments(self, node) -> None:
             """Record the arguments of a call to a function or method defined in this file."""
@@ -17414,9 +17422,10 @@ def _check_signal_escape_patterns(code: str):
                     found.update(
                         c for c in self._fq_candidates(alt.func, at) if c in _CLIENT_CLASSES
                     )
-                    if isinstance(alt.func, ast.Name):
-                        # A local factory: `make()` holds whatever `make` returns.
-                        found.update(self.instance_aliases.get(_returns_of(alt.func.id), ()))
+                    callee = self._local_callee(alt.func)
+                    if callee:
+                        # A local factory: `make()` or `f.make()` holds whatever `make` returns.
+                        found.update(self.instance_aliases.get(_returns_of(callee), ()))
                     continue
                 path = self._receiver_path(alt)
                 if path is None:
