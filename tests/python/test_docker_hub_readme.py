@@ -177,8 +177,10 @@ def _run_sync(
     (bin_dir / "curl").chmod(0o755)
     (tmp_path / "docker").mkdir()
     shutil.copy(HUB_README, tmp_path / "docker" / "DOCKERHUB.md")
-    script = step["run"].replace("${{ secrets.DOCKER_API_KEY }}", secret).replace(
-        "${{ env.REGISTRY_USERNAME }}", "unsloth"
+    script = (
+        step["run"]
+        .replace("${{ secrets.DOCKER_API_KEY }}", secret)
+        .replace("${{ env.REGISTRY_USERNAME }}", "unsloth")
     )
     assert "${{" not in script, "unexpanded expression in the sync step"
     env = dict(os.environ)
@@ -215,8 +217,7 @@ def test_the_sync_patches_the_readme_and_confirms_it(sync_job: dict, tmp_path: P
     # an empty request logs no identifier either, so the bare `in log` check below
     # cannot tell "authenticated as someone else" from "sent nothing at all".
     assert f'"secret": "{DEFAULT_SECRET}"' in log, (
-        "the token request carried no body, so this proves nothing about who it "
-        "authenticates as"
+        "the token request carried no body, so this proves nothing about who it authenticates as"
     )
     assert '"identifier": "unsloth"' in log, "the organization token authenticates as the org"
 
