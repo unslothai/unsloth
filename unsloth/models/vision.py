@@ -1626,7 +1626,15 @@ class FastBaseModel:
             parent_config = auto_config
             text_config = _get_text_only_config(parent_config, model_name)
             text_class = resolve_model_class(
-                AutoModelForCausalLM, text_config, trust_remote_code = trust_remote_code
+                AutoModelForCausalLM,
+                text_config,
+                revision = _revision,
+                code_revision = kwargs.get("code_revision"),
+                token = token,
+                cache_dir = kwargs.get("cache_dir"),
+                local_files_only = local_files_only,
+                force_download = kwargs.get("force_download", None),
+                trust_remote_code = trust_remote_code,
             )
             if text_class is not None and _is_family_text_decoder(
                 getattr(parent_config, "model_type", ""),

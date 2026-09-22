@@ -257,7 +257,7 @@ def planner_model_class(config, trust_remote_code = False):
         from ._utils import resolve_model_class
 
         auto_class = _auto_class_for(config, trust_remote_code = trust_remote_code)
-        return resolve_model_class(auto_class, config)
+        return resolve_model_class(auto_class, config, trust_remote_code = trust_remote_code)
     except Exception:
         # Unknown, not mismatched: an unsloth_zoo without this has no planner to feed.
         return None

@@ -414,18 +414,34 @@ def test_force_download_bypasses_the_imported_sibling(monkeypatch):
 
 def test_every_resolver_probe_forwards_the_trust_decision():
     """A class probe that omits trust_remote_code would import a remote modeling module
-    before transformers can refuse the load."""
+    before transformers can refuse the load; the loader probes must also fetch it with the
+    load's own revision, credentials and offline mode."""
     import ast, inspect
-    from unsloth.models import loader, vision
+    from unsloth.models import llama, loader, loader_utils, vision
 
-    for module in (loader, vision):
-        tree = ast.parse(inspect.getsource(module))
+    probes = ("resolve_model_class", "_resolve_omni_auto_model")
+    planner = next(
+        node
+        for node in ast.walk(ast.parse(inspect.getsource(loader_utils)))
+        if isinstance(node, ast.FunctionDef) and node.name == "planner_model_class"
+    )
+    for module, tree in (
+        (loader, ast.parse(inspect.getsource(loader))),
+        (vision, ast.parse(inspect.getsource(vision))),
+        (llama, ast.parse(inspect.getsource(llama))),
+        (loader_utils, planner),
+    ):
         for node in ast.walk(tree):
-            if isinstance(node, ast.Call) and getattr(node.func, "id", None) in (
-                "resolve_model_class",
-                "_resolve_omni_auto_model",
-            ):
-                assert any(k.arg == "trust_remote_code" for k in node.keywords), (
+            if not (isinstance(node, ast.Call) and getattr(node.func, "id", None) in probes):
+                continue
+            names = {k.arg for k in node.keywords}
+            splats = [getattr(k.value, "id", "") for k in node.keywords if k.arg is None]
+            assert "trust_remote_code" in names or "_probe_hub_kwargs" in splats, (
+                module.__name__,
+                node.lineno,
+            )
+            if module in (loader, vision) and not splats:
+                assert {"revision", "token", "local_files_only"} <= names, (
                     module.__name__,
                     node.lineno,
                 )
