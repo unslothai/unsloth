@@ -656,6 +656,40 @@ def test_inheritance_works_when_stored_is_snapshot_and_load_is_repo():
         _routes.get_llama_cpp_backend = _get_llama_cpp_backend_orig
 
 
+def test_inheritance_works_when_case_differs():
+    """A stored snapshot/repo with different casing than the load model_identifier
+    still inherits extras for the same Hub GGUF + same variant."""
+    from routes.inference import _resolve_inherited_extra_args
+
+    class FakeRequest:
+        model_path = "unsloth/Qwen3.8-27B-GGUF"
+        gguf_variant = None
+        llama_extra_args = None
+        model_fields_set = set()
+
+    class FakeConfig:
+        is_gguf = True
+        gguf_variant = "ud-q6_k_l"
+        identifier = "unsloth/Qwen3.8-27B-GGUF"
+
+    class FakeBackend:
+        extra_args = ["--rope-scaling", "yarn", "-c", "300000"]
+        extra_args_source = ("/models--Unsloth--Qwen3.8-27B-GGUF/snapshots/abc123", "ud-q6_k_l")
+
+    import routes.inference as _routes
+    _get_llama_cpp_backend_orig = _routes.get_llama_cpp_backend
+    _routes.get_llama_cpp_backend = lambda: FakeBackend()
+    try:
+        result = _resolve_inherited_extra_args(
+            FakeRequest(), FakeConfig(), "unsloth/qwen3.8-27b-gguf", None
+        )
+        assert result == ["--rope-scaling", "yarn", "-c", "300000"], (
+            f"Expected inherited extras for case-variant match, got: {result}"
+        )
+    finally:
+        _routes.get_llama_cpp_backend = _get_llama_cpp_backend_orig
+
+
 def test_inheritance_refuses_different_repo():
     """Different repo ids must not inherit extras."""
     from routes.inference import _resolve_inherited_extra_args

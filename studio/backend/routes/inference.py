@@ -14736,8 +14736,8 @@ def _resolve_inherited_extra_args(
     same_model = bool(
         source
         and source[0]
-        and _canonical_model_identity(source[0])
-        == _canonical_model_identity(model_identifier)
+        and _canonical_model_identity(source[0]).lower()
+        == _canonical_model_identity(model_identifier).lower()
     )
     if request.gguf_variant:
         variant_mismatch = request_variant != stored_variant
@@ -14749,10 +14749,10 @@ def _resolve_inherited_extra_args(
         # mismatch for the *same* model is not confused with a real
         # cross-model case.
         _canonical_source = (
-            _canonical_model_identity(source[0]), source[1]
+            _canonical_model_identity(source[0]).lower(), source[1]
         )
         _canonical_load = (
-            _canonical_model_identity(model_identifier), resolved_variant
+            _canonical_model_identity(model_identifier).lower(), resolved_variant
         )
         logger.info(
             "Not inheriting llama_extra_args: stored args came from %s, "
