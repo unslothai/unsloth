@@ -4074,7 +4074,21 @@ def patch_harmony_tool_call_eos(model, tokenizer):
         # be caught after the shape check rather than with it.
         return model
 
-    generation_config.eos_token_id = eos_ids + [call_id]
+    # The shape checks above decline instead of raising, for the reason given there. The
+    # ASSIGNMENT needs the same treatment and cannot get it from a check: a
+    # `generation_config` whose `eos_token_id` is a read-only property, or a setter that
+    # validates and rejects a third id, raises here and that raise escapes `patch_tokenizer`
+    # mid-`from_pretrained`. Transformers' own `GenerationConfig` assigns plainly, so this
+    # is about subclasses and remote-code configs, and it costs a `try` to be sure.
+    try:
+        generation_config.eos_token_id = eos_ids + [call_id]
+    except Exception as error:
+        logger.warning(
+            f"Unsloth: Could not add `{_HARMONY_TOOL_CALL_TOKEN}` to the generation stop "
+            f"tokens ({error}). Tool calls may not stop on their own terminator. Pass "
+            "`eos_token_id` to `generate` to work around it."
+        )
+        return model
     logger.warning(
         f"Unsloth: Added `{_HARMONY_TOOL_CALL_TOKEN}` (id {call_id}) to the generation stop "
         "tokens. Harmony ends a tool call with it, and without it generation runs past a "

@@ -260,6 +260,48 @@ def test_an_unrecognised_stop_set_shape_is_left_alone(ns, harmony_tokenizer):
     assert model.generation_config.eos_token_id is sentinel
 
 
+def test_a_read_only_generation_config_does_not_raise(ns, harmony_tokenizer):
+    """The shape checks decline rather than raise; the ASSIGNMENT must do the same.
+
+    A `generation_config` whose `eos_token_id` is a read-only property raises on
+    assignment, and that raise escapes `patch_tokenizer` mid-`from_pretrained`, which is
+    the one failure mode this whole function is written to avoid.
+    """
+
+    class _ReadOnly:
+        @property
+        def eos_token_id(self):
+            return [RETURN_ID, ENDOFTEXT_ID]
+
+    model = type("_M", (), {})()
+    model.generation_config = _ReadOnly()
+    assert ns["patch_harmony_tool_call_eos"](model, harmony_tokenizer) is model
+    assert model.generation_config.eos_token_id == [RETURN_ID, ENDOFTEXT_ID]
+
+
+def test_a_validating_generation_config_setter_does_not_raise(ns, harmony_tokenizer):
+    """Same again for a setter that rejects the widened list outright."""
+
+    class _Validating:
+        def __init__(self):
+            self._value = [RETURN_ID, ENDOFTEXT_ID]
+
+        @property
+        def eos_token_id(self):
+            return self._value
+
+        @eos_token_id.setter
+        def eos_token_id(self, value):
+            if len(value) > 2:
+                raise ValueError("this config accepts at most two eos ids")
+            self._value = value
+
+    model = type("_M", (), {})()
+    model.generation_config = _Validating()
+    assert ns["patch_harmony_tool_call_eos"](model, harmony_tokenizer) is model
+    assert model.generation_config.eos_token_id == [RETURN_ID, ENDOFTEXT_ID]
+
+
 def test_a_tokenizer_whose_conversion_raises_is_safe(ns):
     class _Raises:
         unk_token_id = None
