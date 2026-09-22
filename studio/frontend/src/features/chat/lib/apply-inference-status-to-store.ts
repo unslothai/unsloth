@@ -155,7 +155,12 @@ export function applyActiveModelStatusToStore(
 
   // Only reached with a model active, so this is the one place both the status poll and the
   // readopt path can publish residency from. Without it a load looks unloaded for up to 10s.
-  useChatRuntimeStore.setState({ residentCheckpoint: checkpointId, loadedEngine: status.engine ?? "auto" });
+  useChatRuntimeStore.setState({
+    residentCheckpoint: checkpointId,
+    loadedEngine: status.engine ?? "auto",
+    loadedEnginePrecision: status.engine_precision ?? "auto",
+    loadedEngineParallelism: status.engine_parallelism ?? "tensor",
+  });
 
   const store = useChatRuntimeStore.getState();
   if ((store.params.engine ?? "auto") !== (status.engine ?? "auto") || (store.params.enginePrecision ?? "auto") !== (status.engine_precision ?? "auto") || (store.params.engineParallelism ?? "tensor") !== (status.engine_parallelism ?? "tensor")) {

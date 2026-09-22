@@ -2166,7 +2166,11 @@ export function useChatModelRuntime() {
               (loadResponse.is_gguf || isGguf || ggufVariant) &&
                 !isExternalModelId(modelId),
             );
-            useChatRuntimeStore.setState({ loadedEngine: loadResponse.engine ?? "auto" });
+            useChatRuntimeStore.setState({
+              loadedEngine: loadResponse.engine ?? "auto",
+              loadedEnginePrecision: loadResponse.engine_precision ?? "auto",
+              loadedEngineParallelism: loadResponse.engine_parallelism ?? "tensor",
+            });
             // Remembered so auto-load re-picks what the user ran, not the smallest. Native file-picker paths
             // need a signed, expiring lease, so they stay out.
             const indexedLocalPick =
@@ -2208,11 +2212,13 @@ export function useChatModelRuntime() {
                 const rollbackResponse = await loadModel({
                   // The pin it loaded from: without it this retries the ref that needed pinning.
                   model_path: previousActiveLoadId || previousCheckpoint,
-                  engine: stateBeforeUnload.loadedEngine ?? "auto",
+                  engine: stateBeforeUnload.loadedEngine,
+                  engine_precision: stateBeforeUnload.loadedEnginePrecision,
+                  engine_parallelism: stateBeforeUnload.loadedEngineParallelism,
                   nativePathLease: rollbackNativePathLease,
                   hf_token: hfToken,
                   max_seq_length: rollbackMaxSeqLength,
-                  load_in_4bit: true,
+                  load_in_4bit: stateBeforeUnload.loadedEngine === "auto",
                   is_lora: previousIsLora,
                   gguf_variant: previousVariant,
                   trust_remote_code:

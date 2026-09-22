@@ -2291,9 +2291,12 @@ type ChatRuntimeStore = {
   loadedContextLength: number | null;
   maxContextLength: number | null;
   nativeContextLength: number | null;
+  /** The resident's own engine launch settings, which a failed switch rolls back to. */
+  loadedEngine: "auto" | "vllm" | "sglang";
+  loadedEnginePrecision: NonNullable<InferenceParams["enginePrecision"]>;
+  loadedEngineParallelism: NonNullable<InferenceParams["engineParallelism"]>;
   /** The backend's own is_gguf for the loaded model; null until one loads. Set wherever
    *  loadedContextLength is, so a context never arrives unattributed. */
-  loadedEngine: "auto" | "vllm" | "sglang";
   loadedIsGguf: boolean | null;
   /** The backend's own is_mlx for the loaded model; null until one loads. The platform
    *  cannot answer it: the worker serves native-audio checkpoints off the MLX path. */
@@ -4107,6 +4110,8 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   maxContextLength: null,
   nativeContextLength: null,
   loadedEngine: "auto",
+  loadedEnginePrecision: "auto",
+  loadedEngineParallelism: "tensor",
   loadedIsGguf: null,
   loadedIsMlx: null,
   loadedContextEnforced: null,

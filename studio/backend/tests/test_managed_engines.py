@@ -361,6 +361,53 @@ def test_orchestrator_dispatches_managed_generation_without_worker(peer):
     ]
 
 
+def test_managed_load_launches_the_validated_local_path(monkeypatch):
+    import threading as _threading
+    from types import SimpleNamespace
+    from core.inference import managed_engine
+    from core.inference.engine_adapters import ADAPTERS
+    from core.inference.orchestrator import InferenceOrchestrator
+
+    started = {}
+
+    class Engine:
+        context = 4096
+
+        def __init__(self, name):
+            pass
+
+        def start(
+            self,
+            model,
+            *args,
+            model_path = None,
+        ):
+            started.update(model = model, model_path = model_path)
+
+        def alive(self):
+            return True
+
+    monkeypatch.setattr(managed_engine, "ManagedEngine", Engine)
+    orchestrator = InferenceOrchestrator.__new__(InferenceOrchestrator)
+    orchestrator._managed_engine = None
+    orchestrator._subprocess_shutdown_lock = _threading.RLock()
+    orchestrator._shutdown_subprocess = lambda *args, **kwargs: True
+    orchestrator.models, orchestrator.loading_models = {}, set()
+    orchestrator.active_model_name, orchestrator.load_generation = None, 0
+    config = SimpleNamespace(
+        identifier = "C:\\models\\foo", path = "/mnt/c/models/foo", is_local = True, is_vision = False
+    )
+    assert orchestrator._load_managed_engine("vllm", config, 4096, [0], None, None, None, False)
+    assert started == {"model": "C:\\models\\foo", "model_path": "/mnt/c/models/foo"}
+    assert orchestrator.active_model_name == "C:\\models\\foo"
+
+    args = ADAPTERS["vllm"].command(
+        "python", "/mnt/c/models/foo", 1, "key", 4096, 0.8, served_model_name = "C:\\models\\foo"
+    )
+    assert args[args.index("--model") + 1] == "/mnt/c/models/foo"
+    assert args[args.index("--served-model-name") + 1] == "C:\\models\\foo"
+
+
 def test_busy_install_does_not_overwrite_another_job(isolated):
     job = {"state": "running", "phase": "installing", "message": "Downloading"}
     (isolated / "vllm.job.json").write_text(json.dumps(job))

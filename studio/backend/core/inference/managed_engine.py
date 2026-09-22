@@ -205,7 +205,9 @@ class ManagedEngine:
         cancel_event = None,
         options = None,
         trust_remote_code = False,
+        model_path = None,
     ):
+        """``model`` is the served name; ``model_path`` is what the engine loads when they differ."""
         from utils.process_lifetime import (
             adopt_pid,
             child_popen_kwargs,
@@ -277,7 +279,7 @@ class ManagedEngine:
                     lambda: subprocess.Popen(
                         self.adapter.command(
                             info["path"] + "/bin/python",
-                            model,
+                            model_path or model,
                             port,
                             self.key,
                             self.context,
@@ -286,6 +288,11 @@ class ManagedEngine:
                             **(
                                 {"options": options, "trust_remote_code": trust_remote_code}
                                 if options
+                                else {}
+                            ),
+                            **(
+                                {"served_model_name": model}
+                                if model_path and model_path != model
                                 else {}
                             ),
                         ),

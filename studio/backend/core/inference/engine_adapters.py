@@ -70,6 +70,7 @@ class EngineAdapter:
         gpu_count = 1,
         options = None,
         trust_remote_code = False,
+        served_model_name = None,
     ):
         options = options or {}
         tool_args = []
@@ -185,7 +186,7 @@ class EngineAdapter:
             "--api-key",
             key,
             "--served-model-name",
-            model,
+            served_model_name or model,
             "--load-format",
             options.get("load_format", "auto"),
         ]

@@ -2128,7 +2128,17 @@ class InferenceOrchestrator:
             if cache_environment:
                 env.update(cache_environment)
             apply_token_to_child_env(env, False if anonymous else hf_token)
-            managed.start(model, context, gpu_ids, env, cancel, options, trust_remote_code)
+            managed.start(
+                model,
+                context,
+                gpu_ids,
+                env,
+                cancel,
+                options,
+                trust_remote_code,
+                # Validation read config.path; a WSL drive path only resolves in that form.
+                model_path = config.path if config.is_local else None,
+            )
             with self._subprocess_shutdown_lock:
                 if (
                     self._managed_engine is not managed
