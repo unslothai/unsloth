@@ -7225,6 +7225,23 @@ sys.exit(0 if installed is not None and required is not None and installed >= re
             $SkipPythonDeps = $false
         }
     }
+    # As setup.sh: the pinned Diffusers main build is installed only by the pass, so an install
+    # that never ran that step (updated by an installer that predates it) kept the release.
+    if ($SkipPythonDeps) {
+        $_diffusersMainMissing = $false
+        try {
+            & python (Join-Path $PSScriptRoot "install_python_stack.py") --diffusers-main-needs-dependency-pass *> $null
+            if ($LASTEXITCODE -eq 0) { $_diffusersMainMissing = $true }
+        } catch {}
+        if ($_diffusersMainMissing) {
+            if ($script:OfflineFastPath -or (Test-UvOfflineRequested)) {
+                substep "pinned Diffusers build is not installed but UV_OFFLINE is set -- left for the next online update" "Yellow"
+            } else {
+                substep "pinned Diffusers build is not installed -- forcing dependency pass..." "Cyan"
+                $SkipPythonDeps = $false
+            }
+        }
+    }
     # ...and for an Intel GPU, or a CPU wheel stays forever. Both escapes reach the XPU install,
     # gated on $XpuIndexUrl, so $_xpuIsReachable holds them back where a pin or no-torch mode
     # sends this host elsewhere and they would re-fire forever.

@@ -10400,7 +10400,11 @@ _COMMIT_REVISION_RE = re.compile(r"[0-9a-fA-F]{7,40}")
 _GITHUB_ARCHIVE_HOSTS = ("github.com", "www.github.com")
 
 
-def _github_archive_url(url: str, revision: str, subdirectory: str = "") -> "str | None":
+def _github_archive_url(
+    url: str,
+    revision: str,
+    subdirectory: str = "",
+) -> "str | None":
     """The zip GitHub serves for *revision* of *url*, or None when there is no such URL.
 
     This is the route a host with no working git takes. pip fetches a zip over plain https and
@@ -10438,6 +10442,16 @@ def _github_archive_url(url: str, revision: str, subdirectory: str = "") -> "str
     return f"https://github.com/{owner}/{repo}/archive/{revision.lower()}.zip"
 
 
+def _vcs_url_key(url: str) -> str:
+    """A git URL without the trailing slash or ``.git``, which uv drops from direct_url.json.
+
+    The requirements files name ``https://github.com/<org>/<repo>.git`` and uv records the URL
+    without the suffix, so an exact compare never matched and every pass rebuilt the checkout.
+    """
+    url = url.rstrip("/")
+    return url[: -len(".git")] if url.endswith(".git") else url
+
+
 def _direct_reference_is_installed(req: Path, dist_name: str) -> bool:
     """Whether the resident *dist_name* came from the ref *req* names.
 
@@ -10468,7 +10482,7 @@ def _direct_reference_is_installed(req: Path, dist_name: str) -> bool:
             and str(payload.get("url") or "") == archive
         )
     if not (
-        str(payload.get("url") or "").rstrip("/") == url.rstrip("/")
+        _vcs_url_key(str(payload.get("url") or "")) == _vcs_url_key(url)
         and str(vcs.get("requested_revision") or "") == revision
         and str(payload.get("subdirectory") or "") == subdirectory
     ):
@@ -10593,6 +10607,43 @@ def _diffusers_main_supersedes_release() -> bool:
     return _diffusers_main_requested() and _diffusers_main_resident()
 
 
+def _diffusers_main_archive(req: Path) -> "str | None":
+    """The zip route 11c takes on a host with no working git, or None when it has none."""
+    wanted = _direct_reference_in_requirements(req)
+    return _github_archive_url(*wanted) if wanted is not None else None
+
+
+def _diffusers_main_needs_dependency_pass() -> bool:
+    """For the setup fast path: is the resident Diffusers the wrong one for the requested mode?
+
+    The fast path skips this script whenever the core package is current, so without this an
+    install that never ran 11c (updated by an installer that predates it, or opted back in) stays
+    on the release until the next version bump. The same gates as 11c decide whether the pass
+    could install the build at all, so a host with neither git nor the zip route keeps its fast
+    path. A pass that tried
+    and failed records "failed" and also keeps it: without that, a host that cannot reach
+    github.com would repeat the whole dependency pass on every update.
+    """
+    req = REQ_ROOT / "diffusers-main.txt"
+    if not req.is_file():
+        return False
+    if not _diffusers_main_requested():
+        # Opted out while the build is still resident: 11b puts the release back.
+        return _diffusers_main_resident(req)
+    if sys.version_info < DIFFUSERS_MAIN_MIN_PYTHON:
+        return False
+    if not _has_working_git() and _diffusers_main_archive(req) is None:
+        return False
+    if _diffusers_main_resident(req):
+        return False
+    try:
+        manifest = install_manifest.read_manifest() or {}
+        last = (manifest.get("step_results") or {}).get("diffusers-main.txt")
+    except Exception:  # noqa: BLE001 - an unreadable manifest is no record of a failed try
+        last = None
+    return last != "failed"
+
+
 def _diffusers_main_step() -> None:
     """Install the pinned Diffusers commit, or leave the release pin alone.
 
@@ -10638,8 +10689,7 @@ def _diffusers_main_step() -> None:
     # over plain https. None when the pin is not a full GitHub commit, which keeps the old skip.
     archive = None
     if not _has_working_git():
-        wanted = _direct_reference_in_requirements(req)
-        archive = _github_archive_url(*wanted) if wanted is not None else None
+        archive = _diffusers_main_archive(req)
         if archive is None:
             _progress("diffusers main (skipped, no git)")
             _note(
@@ -10679,7 +10729,8 @@ def _diffusers_main_step() -> None:
             constrain = False,
         )
     if not installed:
-        _record_step("diffusers-main.txt", "skipped")
+        # "failed", not "skipped": the fast path reads it to stop forcing a pass that cannot succeed.
+        _record_step("diffusers-main.txt", "failed")
         _note(
             "Could not install the pinned Diffusers main build, so this install keeps the pinned "
             "Diffusers release. Everything else works; models that need an unreleased Diffusers "
@@ -10889,6 +10940,55 @@ def _local_plugin_digest(plugin_dir: Path) -> "str | None":
     except OSError:
         return None
     return digest.hexdigest()
+
+
+def _read_own_source() -> "bytes | None":
+    try:
+        return Path(__file__).read_bytes()
+    except OSError:
+        return None
+
+
+# This file as it was when the process started. The core-packages step upgrades the package
+# that ships it, and the process keeps running the old code while the new copy sits on disk.
+_INSTALLER_SOURCE_AT_START = _read_own_source()
+# Set on the rerun, so a second replacement cannot loop.
+_INSTALLER_RERUN_ENV = "UNSLOTH_INSTALLER_RERUN"
+
+
+class _InstallerReplaced(Exception):
+    """Raised once the core-packages step has replaced this file with another release's copy."""
+
+
+def _installer_replaced() -> bool:
+    if os.environ.get(_INSTALLER_RERUN_ENV) == "1" or _INSTALLER_SOURCE_AT_START is None:
+        return False
+    current = _read_own_source()
+    return current is not None and current != _INSTALLER_SOURCE_AT_START
+
+
+def _rerun_replaced_installer() -> int:
+    """Finish the pass with the installer the update just installed.
+
+    Without this every step a release adds is skipped by the update that installs it: the old
+    process upgrades the package in step 3 and completes its own step list. A subprocess rather
+    than an exec, because on Windows os.exec* returns to the caller while the child runs. It starts
+    after the pass lock is released, so the rerun does not read its parent as a contending peer.
+    """
+    _note("the update replaced this installer; finishing with the new version")
+    try:
+        # The child writes to the same descriptors, so anything still buffered here would land
+        # after its output.
+        sys.stdout.flush()
+        sys.stderr.flush()
+    except (OSError, ValueError):
+        pass
+    env = dict(os.environ)
+    env[_INSTALLER_RERUN_ENV] = "1"
+    return subprocess.run(
+        [sys.executable, str(Path(__file__).resolve()), *sys.argv[1:]],
+        env = env,
+    ).returncode
 
 
 def _under_pass_lock(func):
@@ -11201,6 +11301,11 @@ def install_python_stack() -> int:
             unsloth_spec,
             "unsloth-zoo",
         )
+
+    # The package just installed may ship a newer copy of this file. Raised rather than rerun
+    # here, so the pass lock is released first; the rerun repeats the cheap steps above.
+    if _installer_replaced():
+        raise _InstallerReplaced
 
     # The MLX step ran BEFORE the core phase, so it honoured the mlx-vlm range the OLD
     # unsloth-zoo declared. A normal update then upgrades the zoo, and without this the machine
@@ -11824,8 +11929,14 @@ if __name__ == "__main__":
     if sys.argv[1:] == ["--missing-torch-needs-dependency-pass"]:
         # Exit 0 forces the dependency pass; exit 1 keeps the fast path.
         sys.exit(0 if _missing_torch_needs_dependency_pass() else 1)
+    if sys.argv[1:] == ["--diffusers-main-needs-dependency-pass"]:
+        # Exit 0 forces the dependency pass; exit 1 keeps the fast path.
+        sys.exit(0 if _diffusers_main_needs_dependency_pass() else 1)
     if any(_arg.startswith("-") for _arg in sys.argv[1:]):
         # Never let a malformed probe call fall through into a multi-gigabyte install.
         _safe_print(f"Unknown argument: {' '.join(sys.argv[1:])}")
         sys.exit(2)
-    sys.exit(install_python_stack())
+    try:
+        sys.exit(install_python_stack())
+    except _InstallerReplaced:
+        sys.exit(_rerun_replaced_installer())

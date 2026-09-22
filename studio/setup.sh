@@ -2831,6 +2831,26 @@ sys.exit(0 if windows and installed not in windows[0] else 1)
         fi
     fi
     unset _fpe_missing_torch
+    # The pinned Diffusers main build is installed only by the pass, so an install that never ran
+    # that step (updated by an installer that predates it) kept the release while current.
+    _fpe_diffusers=false
+    if command -v timeout >/dev/null 2>&1; then
+        timeout -k 5 180 "$VENV_DIR/bin/python" \
+            "$SCRIPT_DIR/install_python_stack.py" --diffusers-main-needs-dependency-pass \
+            >/dev/null 2>&1 && _fpe_diffusers=true
+    elif "$VENV_DIR/bin/python" "$SCRIPT_DIR/install_python_stack.py" \
+            --diffusers-main-needs-dependency-pass >/dev/null 2>&1; then
+        _fpe_diffusers=true
+    fi
+    if [ "$_fpe_diffusers" = true ] && [ "$_SKIP_PYTHON_DEPS" = true ]; then
+        if [ "${_OFFLINE_FAST_PATH:-false}" = true ] || _uv_offline_requested; then
+            substep "pinned Diffusers build is not installed but UV_OFFLINE is set -- left for the next online update"
+        else
+            substep "pinned Diffusers build is not installed -- forcing dependency pass..."
+            _SKIP_PYTHON_DEPS=false
+        fi
+    fi
+    unset _fpe_diffusers
     # If the desktop app specifies a minimum required backend version and the installed
     # package is older than that requirement, force the dependency pass to upgrade it.
     if [ -n "${UNSLOTH_DESKTOP_BACKEND_VERSION:-}" ]; then
