@@ -210,9 +210,7 @@ def test_non_peft_gguf_uses_checkpoint_as_input_not_output(
     assert tokenizer.saved_to == [str(checkpoint)]
 
 
-def test_full_finetune_gguf_writes_trained_weights_not_source_checkpoint(
-    monkeypatch, tmp_path
-):
+def test_full_finetune_gguf_writes_trained_weights_not_source_checkpoint(monkeypatch, tmp_path):
     checkpoint = tmp_path / "checkpoint"
     checkpoint.mkdir()
     requested = tmp_path / "export" / "model"
