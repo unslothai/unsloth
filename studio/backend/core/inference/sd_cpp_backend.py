@@ -2050,6 +2050,17 @@ class SdCppDiffusionBackend:
     # Class-level defaults so an instance built with ``__new__`` answers before any load ran.
     _loading_cards = None
     _committed_loading_card: Optional[str] = None
+    # The family this backend is loading, kept so the executable checks below can ask whether the
+    # build they just resolved implements it. The router's answer does not travel: it clears its own
+    # local variables, and this class resolves sd-server and sd-cli again, independently, and can
+    # end up on the OTHER one when a server fails to start.
+    #
+    # Thread-local for the same reason as _loading_card: begin_load sets it BEFORE taking _lock to
+    # reject a concurrent load, so on shared state a request that is refused a line later would
+    # still have replaced the family the running worker validates its binaries against, and refuse
+    # a good build or accept an incapable one. Class-level default answers before any load ran.
+    _loading_families = None
+    _loading_family_default: Any = None
 
     def __init__(self, engine: Optional[SdCppEngine] = None) -> None:
         self._lock = threading.Lock()
@@ -2115,6 +2126,27 @@ class SdCppDiffusionBackend:
         except AttributeError:
             pass
 
+    def _loading_family_store(self) -> threading.local:
+        """Lazily, so an instance built with ``__new__`` (the unit-test seam) still answers."""
+        store = getattr(self, "_loading_families", None)
+        if store is None:
+            store = threading.local()
+            self._loading_families = store
+        return store
+
+    @property
+    def _loading_family(self) -> Any:
+        """The family THIS worker is loading. Off a load thread, the last one begun."""
+        return getattr(self._loading_family_store(), "family", self._loading_family_default)
+
+    @_loading_family.setter
+    def _loading_family(self, value: Any) -> None:
+        self._loading_family_store().family = value
+        # Per-INSTANCE (shadows the class default), for an off-thread reader that never ran
+        # begin_load. A rejected concurrent load can still move this one, which is why the worker
+        # reads its thread-local first and never this.
+        self._loading_family_default = value
+
     def _reserve_stop(self, count: int = 1) -> None:
         """Claim ``count`` pending stops. MUST be called under ``_lock`` in the same block that
         unpublishes the servers: incrementing afterwards leaves a gap in which _state,
@@ -2154,6 +2186,15 @@ class SdCppDiffusionBackend:
     def _resolve_engine(self) -> SdCppEngine:
         """The SdCppEngine, installing the binary on first use. Raises if unusable."""
         if self._engine is not None and self._engine.is_available():
+            # Checked on the CACHED engine too. It outlives the load that resolved it (nothing ever
+            # clears _engine), so an sd-cli cached by an older family's one-shot load would other-
+            # wise be committed for a family it cannot run and die on the first generation, which
+            # is the failure this gate exists to prevent. Only when it names a path: an engine with
+            # no binary is the injected test seam, and a None there reads as "carries no marker"
+            # and would refuse every marked family.
+            cached_binary = getattr(self._engine, "binary", None)
+            if cached_binary:
+                self._refuse_incapable_build(cached_binary, "sd-cli")
             return self._engine
         # The accelerator this host resolves to, never the "cpu" default: this is also the one-shot FALLBACK path (a
         # GPU sd-server that would not start lands here), and asking for the CPU build there would reinstall the plain
@@ -2164,8 +2205,28 @@ class SdCppDiffusionBackend:
         )
         if not binary:
             raise RuntimeError("sd-cli (stable-diffusion.cpp) binary is unavailable.")
+        self._refuse_incapable_build(binary, "sd-cli")
         self._engine = SdCppEngine(binary = binary)
         return self._engine
+
+    def _refuse_incapable_build(self, binary: Optional[str], name: str) -> None:
+        """Raise when ``binary`` does not implement the family being loaded.
+
+        The router drops an incapable build before choosing native, but its verdict is local to that
+        call: this class resolves both executables again, and the two can be DIFFERENT builds
+        (separate SD_SERVER_PATH / SD_CLI_PATH, or a partially upgraded tree). A current server that
+        fails to start then falls through to a pre-Qwen-2.1 sd-cli, which the router never approved.
+        Failing the load here is the point: the alternative is a one-shot backend that reports ready
+        and dies on the first generation.
+        """
+        fam = self._loading_family
+        if fam is None or sd_cpp_binary_runs_family(binary, fam):
+            return
+        raise RuntimeError(
+            f"the {name} build at {binary} predates {getattr(fam, 'name', 'this model')} support. "
+            "Reinstall the native engine (delete the managed stable-diffusion.cpp install, or point "
+            "SD_CLI_PATH / SD_SERVER_PATH at a build from after upstream added it)."
+        )
 
     def _resolve_backend(self) -> tuple[str, Optional[str], Optional[SdCppEngine]]:
         """Pick the native execution mode: ("server", binary, None) or ("oneshot", None, engine).
@@ -2189,6 +2250,17 @@ class SdCppDiffusionBackend:
         server_binary = ensure_sd_server_binary(
             allow_install = _install_allowed() and not upgrade_pending, accelerator = accelerator
         )
+        if server_binary is not None and not sd_cpp_binary_runs_family(
+            server_binary, self._loading_family
+        ) and self._loading_family is not None:
+            # Not fatal on its own: the one-shot path resolves its own binary, which may well be a
+            # newer build, and _resolve_engine refuses it if it is not.
+            logger.warning(
+                "sd-server at %s predates %s support; trying the one-shot sd-cli instead",
+                server_binary,
+                getattr(self._loading_family, "name", "this model"),
+            )
+            server_binary = None
         if server_binary is not None:
             return "server", server_binary, None
         logger.warning(
@@ -2303,6 +2375,7 @@ class SdCppDiffusionBackend:
             )
         if not family_sd_cpp_supported(fam):
             raise ValueError(f"Family '{fam.name}' has no native sd.cpp asset mapping.")
+        self._loading_family = fam
 
         base = resolve_base_repo(fam, base_repo)
         # Offline-only here, deliberately: begin_load returns at once by contract

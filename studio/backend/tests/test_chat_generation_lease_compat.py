@@ -201,7 +201,7 @@ def test_duplicate_column_error_is_swallowed(clock, monkeypatch):
         def __getattr__(self, name):
             return getattr(self._inner, name)
 
-    monkeypatch.setattr(runs_db, "get_connection", lambda: _Racy(real_get()))
+    monkeypatch.setattr(runs_db, "get_connection", lambda **kw: _Racy(real_get(**kw)))
     runs_db._connect()  # must not raise
     assert state["fired"], "the simulated race did not fire"
 
@@ -385,7 +385,7 @@ def _migration_blocked(monkeypatch):
         def __getattr__(self, name):
             return getattr(self._inner, name)
 
-    monkeypatch.setattr(runs_db, "get_connection", lambda: _Locked(real_get()))
+    monkeypatch.setattr(runs_db, "get_connection", lambda **kw: _Locked(real_get(**kw)))
     try:
         yield
     finally:
@@ -460,7 +460,7 @@ def test_a_real_no_such_column_error_is_not_swallowed(clock, monkeypatch):
         def __getattr__(self, name):
             return getattr(self._inner, name)
 
-    monkeypatch.setattr(runs_db, "get_connection", lambda: _Boom(real_get()))
+    monkeypatch.setattr(runs_db, "get_connection", lambda **kw: _Boom(real_get(**kw)))
     with pytest.raises(sqlite3.OperationalError, match = "some_other_column"):
         runs_db.get_progress("run-1")
 
