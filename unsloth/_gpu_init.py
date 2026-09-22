@@ -247,6 +247,7 @@ from .import_fixes import (
     fix_transformers5_bare_annotation_configs,
     fix_transformers_composite_prefix_renaming,
     fix_transformers_fully_masked_rows,
+    fix_transformers_longcat_lsa_config,
     fix_transformers_rope_scaling_drops_theta,
     fix_xformers_performance_issue,
     fix_flash_attn_4_namespace_shadow,
@@ -306,6 +307,8 @@ del check_transformers_prequantized_vlm_quant_state
 # RoPE base frequency. Ordered here, before any config is built, so the object-style delegation
 # retry in models/llama.py sees a config that kept its base (#2405).
 fix_transformers_rope_scaling_drops_theta()
+# Answers only AutoConfig's "Unrecognized model" on a LongcatCausalLM config; every other load is untouched.
+fix_transformers_longcat_lsa_config()
 fix_xformers_performance_issue()
 # Must run AFTER fix_xformers_performance_issue (it rewrites xformers' cutlass.py on disk) and
 # BEFORE models/_utils.py imports xformers.ops.
@@ -357,6 +360,7 @@ patch_accelerate_recursively_apply()
 
 del fix_transformers5_bare_annotation_configs
 del fix_transformers_rope_scaling_drops_theta
+del fix_transformers_longcat_lsa_config
 del fix_xformers_performance_issue
 del fix_flash_attn_4_namespace_shadow
 del fix_vllm_aimv2_issue
