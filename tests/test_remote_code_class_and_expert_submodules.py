@@ -304,3 +304,37 @@ def test_only_a_generated_regex_is_widened_to_the_routed_experts():
     # A leaf list as the detection target keeps its own identity through the widening.
     widened, detect, leaves = U.widen_target_regex_to_expert_submodules(model, generated, ["down_proj"], auto_regex = True)
     assert leaves == ["down_proj"] and detect == ["down_proj"] and widened != generated
+
+
+def test_gate_and_up_expert_leaves_stay_separate():
+    U = _utils()
+    model = _Model()
+    assert U.get_moe_expert_submodule_leaves(model, ["up_proj"]) == ["up_proj"]
+    assert U.get_moe_expert_submodule_leaves(model, ["gate_proj"]) == []  # the fixture has no gate leaf
+    assert U.get_moe_expert_submodule_leaves(model, ["gate_up_proj"]) == ["up_proj"]
+
+
+def test_legacy_flash_flag_follows_the_installed_dispatch_check():
+    """5.0 to 5.3 still accept _supports_flash_attn_2 in the dispatch check; later releases
+    keep the name only in an error message. The helper reads the installed function."""
+    U = _utils()
+
+    class OldDispatch:
+        _supports_flash_attn = False
+
+        def _flash_attn_can_dispatch(self):
+            if not (self._supports_flash_attn or getattr(self, "_supports_flash_attn_2", False)):
+                raise ValueError("no")
+
+    class NewDispatch:
+        _supports_flash_attn = False
+
+        def _flash_attn_can_dispatch(self):
+            if not self._supports_flash_attn:
+                message = "x"
+                if self._supports_flash_attn or getattr(self, "_supports_flash_attn_2", False):
+                    message += ", "
+                raise ValueError(message)
+
+    assert U._flash_dispatch_reads_legacy_flag(OldDispatch) is True
+    assert U._flash_dispatch_reads_legacy_flag(NewDispatch) is False

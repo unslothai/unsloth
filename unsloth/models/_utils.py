@@ -789,12 +789,37 @@ def _model_class_supports_flash_attention(model_class):
     except Exception:
         PreTrainedModel = None
     new_flag_dispatched = PreTrainedModel is not None and hasattr(PreTrainedModel, "_supports_flash_attn")
-    if new_flag_dispatched:
+    if new_flag_dispatched and not _flash_dispatch_reads_legacy_flag(PreTrainedModel):
         return bool(getattr(model_class, "_supports_flash_attn", False))
     return bool(
         getattr(model_class, "_supports_flash_attn_2", False)
         or getattr(model_class, "_supports_flash_attn", False)
     )
+
+
+def _flash_dispatch_reads_legacy_flag(PreTrainedModel) -> bool:
+    """True when the installed dispatch check still accepts ``_supports_flash_attn_2``.
+
+    transformers 5.0 to 5.3 test ``if not (self._supports_flash_attn or getattr(self,
+    "_supports_flash_attn_2", False))`` in the dispatch check, so an old-flag-only remote
+    class still gets flash attention there; from 5.5 the old name survives only in the
+    ``if self._supports_flash_attn or ...`` that builds the error message. Read the
+    installed function rather than infer it from a version."""
+    import inspect
+
+    for name in ("_flash_attn_can_dispatch", "_flash_attn_2_can_dispatch"):
+        check = getattr(PreTrainedModel, name, None)
+        if check is None:
+            continue
+        try:
+            source = inspect.getsource(check)
+        except (OSError, TypeError):
+            return False
+        return any(
+            "_supports_flash_attn_2" in line and line.lstrip().startswith("if not")
+            for line in source.splitlines()
+        )
+    return False
 
 
 def _enable_flex_attention_support(model_class, model_type = ""):
@@ -4976,7 +5001,10 @@ def get_moe_target_modules(model, target_modules = None) -> List[str]:
         return []
 
     # Scope the suffixes to the requested leaves, matching get_moe_target_parameters: gate/up/gate_up map to the fused gate_up ModuleList and down_proj to the down one, so a down-only request must not pull in the other projection.
-    want_gate_up = bool(target_set & {"gate_proj", "up_proj", "gate_up_proj"})
+    # gate and up stay separate: a request for gate_proj alone must not collect up_proj leaves
+    # (and the reverse); only the fused gate_up_proj spelling asks for both.
+    want_gate = bool(target_set & {"gate_proj", "gate_up_proj"})
+    want_up = bool(target_set & {"up_proj", "gate_up_proj"})
     want_down = "down_proj" in target_set
 
     targets = set()
@@ -4995,10 +5023,17 @@ def get_moe_target_modules(model, target_modules = None) -> List[str]:
             continue
         leaf_lower = leaf.lower()
         is_down = "down" in leaf_lower
-        is_gate_up = (not is_down) and ("gate" in leaf_lower or "up" in leaf_lower)
+        is_gate = (not is_down) and "gate" in leaf_lower
+        is_up = (not is_down) and "up" in leaf_lower
+        is_gate_up = is_gate or is_up
         if is_down and not want_down:
             continue
-        if is_gate_up and not want_gate_up:
+        if is_gate and is_up:  # a fused gate_up leaf: either request reaches it
+            if not (want_gate or want_up):
+                continue
+        elif is_gate and not want_gate:
+            continue
+        elif is_up and not want_up:
             continue
         # One entry per expert index; leaf.<i> matches expert i in every layer.
         for expert_index in range(len(module)):
@@ -5034,7 +5069,10 @@ def get_moe_expert_submodule_leaves(model, target_modules = None) -> List[str]:
         }
     if not (target_set & _MOE_BROAD_MLP_TARGETS):
         return []
-    want_gate_up = bool(target_set & {"gate_proj", "up_proj", "gate_up_proj"})
+    # gate and up stay separate: a request for gate_proj alone must not collect up_proj leaves
+    # (and the reverse); only the fused gate_up_proj spelling asks for both.
+    want_gate = bool(target_set & {"gate_proj", "gate_up_proj"})
+    want_up = bool(target_set & {"up_proj", "gate_up_proj"})
     want_down = "down_proj" in target_set
 
     leaves = set()
@@ -5050,10 +5088,17 @@ def get_moe_expert_submodule_leaves(model, target_modules = None) -> List[str]:
         leaf = matched.group(1)
         leaf_lower = leaf.lower()
         is_down = "down" in leaf_lower
-        is_gate_up = (not is_down) and ("gate" in leaf_lower or "up" in leaf_lower)
+        is_gate = (not is_down) and "gate" in leaf_lower
+        is_up = (not is_down) and "up" in leaf_lower
+        is_gate_up = is_gate or is_up
         if is_down and not want_down:
             continue
-        if is_gate_up and not want_gate_up:
+        if is_gate and is_up:  # a fused gate_up leaf: either request reaches it
+            if not (want_gate or want_up):
+                continue
+        elif is_gate and not want_gate:
+            continue
+        elif is_up and not want_up:
             continue
         if not (is_down or is_gate_up):
             continue
