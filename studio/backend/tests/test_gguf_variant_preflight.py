@@ -50,6 +50,7 @@ def hub_cache(tmp_path, monkeypatch):
     monkeypatch.setattr(
         hf_cache_settings, "get_hf_cache_paths", lambda: SimpleNamespace(hub_cache = tmp_path)
     )
+    monkeypatch.setattr("hub.utils.hf_cache_state.hf_cache_roots", lambda: [tmp_path])
     return tmp_path
 
 

@@ -1094,7 +1094,7 @@ def test_the_load_guard_sees_the_alias_the_delete_accepts():
 
 
 def test_every_branch_derives_the_default_from_the_root_rows():
-    """Remote, cached and partial-local all answer /gguf-variants, so all three have to define a
+    """Remote, cached, partial-local and merged caches all answer /gguf-variants and must define a
     bare repo id the way _match_variant(None, ...) and local_model_resolver do -- the ROOT
     checkpoint -- or the automatic default depends on which branch served the request. Cached
     rows derive it once more after download-state reconciliation can demote the original default."""
@@ -1110,9 +1110,11 @@ def test_every_branch_derives_the_default_from_the_root_rows():
     assert service._default_variant_candidates(rows) == ["model-Q6_K.gguf"]
     # Nothing at the root falls back to the whole set rather than answering nothing.
     assert service._default_variant_candidates(rows[:1]) == ["distilled/model-Q6_K.gguf"]
-    # No branch may call pick_best_gguf on the raw filenames any more.
     source = inspect.getsource(service)
-    assert source.count("pick_best_gguf(_default_variant_candidates(") == 4
+    # No branch may call pick_best_gguf on the raw filenames any more. One per answering branch,
+    # plus the extra pass _with_state_partials makes once reconciliation can demote the original
+    # default, plus the merged-cache pass this fix adds over the remembered folders.
+    assert source.count("pick_best_gguf(_default_variant_candidates(") == 5
     assert "pick_best_gguf(filenames)" not in source
 
 
