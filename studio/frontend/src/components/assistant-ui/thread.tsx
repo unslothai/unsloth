@@ -1804,7 +1804,9 @@ const ForkContinuationRule: FC = () => {
   return (
     <div
       data-slot="fork-continuation-rule"
-      className="mt-6 mb-2 flex w-full items-center gap-3 text-muted-foreground text-sm"
+      // Same column as the messages it sits between: it is their sibling, not their child,
+      // so it takes the width constraint every message root applies to itself.
+      className="mx-auto mt-6 mb-2 flex w-full max-w-(--thread-content-max-width) items-center gap-3 text-muted-foreground text-sm"
     >
       <span aria-hidden={true} className="h-px flex-1 bg-border" />
       {sourceThreadId ? (
