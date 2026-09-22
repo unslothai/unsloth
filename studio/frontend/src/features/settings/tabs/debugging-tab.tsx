@@ -123,7 +123,11 @@ function NoticeStrip({
       )}
     >
       {tone === "warning" ? (
-        <HugeiconsIcon icon={Alert02Icon} className="mt-px size-3.5 shrink-0" />
+        <HugeiconsIcon
+          strokeWidth={1.75}
+          icon={Alert02Icon}
+          className="mt-px size-3.5 shrink-0"
+        />
       ) : null}
       {children}
     </p>
@@ -550,7 +554,7 @@ export function DebuggingTab() {
                 void poll();
               }}
             >
-              <HugeiconsIcon icon={RefreshIcon} />
+              <HugeiconsIcon strokeWidth={1.75} icon={RefreshIcon} />
               {t("settings.debugging.refreshNow")}
             </Button>
           </div>
@@ -633,7 +637,7 @@ export function DebuggingTab() {
                     wrap ? "bg-muted text-foreground" : "text-muted-foreground",
                   )}
                 >
-                  <HugeiconsIcon icon={TextWrapIcon} />
+                  <HugeiconsIcon strokeWidth={1.75} icon={TextWrapIcon} />
                 </Button>
               </TooltipTrigger>
               <TooltipContent>
@@ -694,7 +698,7 @@ export function DebuggingTab() {
               data-testid="debug-log-jump-to-latest"
               className="absolute right-3 bottom-3 rounded-full shadow-md"
             >
-              <HugeiconsIcon icon={ArrowDownDoubleIcon} />
+              <HugeiconsIcon strokeWidth={1.75} icon={ArrowDownDoubleIcon} />
               {t("settings.debugging.jumpToLatest")}
             </Button>
           ) : null}
@@ -718,7 +722,10 @@ export function DebuggingTab() {
                   onClick={() => shownPath && copyPath(shownPath)}
                   className="text-muted-foreground"
                 >
-                  <HugeiconsIcon icon={pathCopied ? Tick02Icon : Copy01Icon} />
+                  <HugeiconsIcon
+                    strokeWidth={1.75}
+                    icon={pathCopied ? Tick02Icon : Copy01Icon}
+                  />
                 </Button>
               </TooltipTrigger>
               <TooltipContent>
@@ -733,7 +740,10 @@ export function DebuggingTab() {
               onClick={() => copy(text)}
               disabled={!text}
             >
-              <HugeiconsIcon icon={copied ? Tick02Icon : Copy01Icon} />
+              <HugeiconsIcon
+                strokeWidth={1.75}
+                icon={copied ? Tick02Icon : Copy01Icon}
+              />
               {t("settings.debugging.copyVisible")}
             </Button>
             <Button
@@ -744,7 +754,7 @@ export function DebuggingTab() {
               disabled={exporting}
               onClick={() => void downloadAllLogs()}
             >
-              <HugeiconsIcon icon={Download01Icon} />
+              <HugeiconsIcon strokeWidth={1.75} icon={Download01Icon} />
               {exporting
                 ? t("settings.debugging.downloadingAllLogs")
                 : t("settings.debugging.downloadAllLogs")}
@@ -758,6 +768,7 @@ export function DebuggingTab() {
                   className="flex size-8 shrink-0 cursor-help items-center justify-center rounded-full text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                 >
                   <HugeiconsIcon
+                    strokeWidth={1.75}
                     icon={InformationCircleIcon}
                     className="size-[var(--ui-icon-size-sm)]"
                   />
@@ -776,7 +787,7 @@ export function DebuggingTab() {
                 disabled={revealing}
                 onClick={() => void revealLogsFolder()}
               >
-                <HugeiconsIcon icon={FolderOpenIcon} />
+                <HugeiconsIcon strokeWidth={1.75} icon={FolderOpenIcon} />
                 {t("settings.debugging.openLogsFolder")}
               </Button>
             ) : null}
@@ -784,7 +795,11 @@ export function DebuggingTab() {
         </div>
 
         <p className="flex items-center gap-2 text-xs text-muted-foreground">
-          <HugeiconsIcon icon={Shield01Icon} className="size-3.5 shrink-0" />
+          <HugeiconsIcon
+            strokeWidth={1.75}
+            icon={Shield01Icon}
+            className="size-3.5 shrink-0"
+          />
           {t("settings.debugging.privacyNote")}
         </p>
       </div>
