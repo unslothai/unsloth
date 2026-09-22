@@ -59,7 +59,32 @@ __all__ = [
 # consumes and deletes it before the first weight loads so it never reaches a saved config.
 UNSLOTH_COMPRESSED_TENSORS_ATTR = "_unsloth_compressed_tensors_bnb"
 
-_SUPPORTED_FORMATS = ("pack-quantized",)
+_SUPPORTED_FORMATS = ("pack-quantized", "mxfp4-pack-quantized")
+
+
+def _weights_supported(fmt: str, weights: dict) -> bool:
+    """Whether a config group's weight scheme is one this module can decompress per tensor:
+    integer weight-only 2 to 8 bit for ``pack-quantized``, and the OCP MX FP4 layout (E2M1
+    values, one E8M0 scale per 32) for ``mxfp4-pack-quantized``."""
+    kind = str(weights.get("type", "int")).lower()
+    bits = int(weights.get("num_bits", 0) or 0)
+    if fmt == "mxfp4-pack-quantized":
+        return kind == "float" and bits == 4 and int(weights.get("group_size", 0) or 0) == 32
+    return kind == "int" and bits in (2, 3, 4, 5, 6, 7, 8)
+
+
+def _describe(plan: dict) -> str:
+    """``INT4``, ``INT4/INT8`` or ``MXFP4``: what the log line calls the packed checkpoint."""
+    names = set()
+    top = plan.get("format")
+    for group in (plan.get("config_groups") or {}).values():
+        fmt = group.get("format") or top
+        weights = group.get("weights") or {}
+        if fmt == "mxfp4-pack-quantized":
+            names.add("MXFP4")
+        else:
+            names.add(f"INT{int(weights.get('num_bits', 0) or 0)}")
+    return "/".join(sorted(names)) or "INT"
 
 
 def _quant_dict(config) -> Optional[dict]:
@@ -120,9 +145,11 @@ def compressed_tensors_bnb_plan(config) -> Optional[dict]:
     this module can re-quantize on the fly into bitsandbytes 4-bit, else ``None``.
 
     Accepted: ``quant_method`` compressed-tensors (or the legacy ``sparseml`` spelling),
-    ``format`` pack-quantized, every config group an integer weight-only scheme (no
-    activation quantization), and no sparsity compression. FP8, NVFP4, MXFP4, activation
-    quantized (W8A8) and sparse checkpoints are left to their own loaders.
+    ``format`` pack-quantized with every config group an integer weight-only scheme, or
+    ``format`` mxfp4-pack-quantized with every group FP4 in groups of 32 (Kimi-K3); no
+    activation quantization and no sparsity compression. FP8, NVFP4 (which also needs a
+    per-tensor global scale), activation quantized (W8A8) and sparse checkpoints are left to
+    their own loaders.
     """
     quant = _quant_dict(config)
     if quant is None:
@@ -142,16 +169,14 @@ def compressed_tensors_bnb_plan(config) -> Optional[dict]:
         weights = group.get("weights")
         if not isinstance(weights, dict):
             return None
-        if str(weights.get("type", "int")).lower() != "int":
+        group_format = group.get("format")
+        if group_format is not None and group_format not in _SUPPORTED_FORMATS:
             return None
-        if int(weights.get("num_bits", 0)) not in (2, 3, 4, 5, 6, 7, 8):
+        if not _weights_supported(group_format or fmt, weights):
             return None
         if group.get("input_activations") is not None:
             return None
         if group.get("output_activations") is not None:
-            return None
-        group_format = group.get("format")
-        if group_format is not None and group_format not in _SUPPORTED_FORMATS:
             return None
     sparsity = quant.get("sparsity_config")
     if isinstance(sparsity, dict):
@@ -172,7 +197,7 @@ def arm_compressed_tensors_bnb_loading(config, verbose: bool = True) -> Optional
     if not _transformers_supports_weight_converters():
         if verbose:
             print(
-                "Unsloth: This checkpoint is compressed-tensors packed INT4/INT8. Re-quantizing it "
+                f"Unsloth: This checkpoint is compressed-tensors packed {_describe(plan)}. Re-quantizing it "
                 "to bitsandbytes 4-bit on the fly needs transformers 5.8 or later; loading it as published instead."
             )
         return None
@@ -181,7 +206,7 @@ def arm_compressed_tensors_bnb_loading(config, verbose: bool = True) -> Optional
     except Exception:
         if verbose:
             print(
-                "Unsloth: This checkpoint is compressed-tensors packed INT4/INT8 but `compressed_tensors` "
+                f"Unsloth: This checkpoint is compressed-tensors packed {_describe(plan)} but `compressed_tensors` "
                 "is not installed; loading it as published. `pip install compressed-tensors` to train it in 4-bit."
             )
         return None
@@ -195,7 +220,7 @@ def arm_compressed_tensors_bnb_loading(config, verbose: bool = True) -> Optional
     except Exception as error:
         if verbose:
             print(
-                "Unsloth: This checkpoint is compressed-tensors packed INT4/INT8 but the installed "
+                f"Unsloth: This checkpoint is compressed-tensors packed {_describe(plan)} but the installed "
                 f"compressed-tensors cannot read its quantization config ({type(error).__name__}); "
                 "loading it as published. Upgrading or downgrading `compressed-tensors` may help."
             )
@@ -210,7 +235,7 @@ def arm_compressed_tensors_bnb_loading(config, verbose: bool = True) -> Optional
             else:
                 reason = "another library owns the bitsandbytes quantizer"
             print(
-                "Unsloth: This checkpoint is compressed-tensors packed INT4/INT8 but "
+                f"Unsloth: This checkpoint is compressed-tensors packed {_describe(plan)} but "
                 f"{reason}; loading it as published."
             )
         return None
@@ -226,9 +251,8 @@ def arm_compressed_tensors_bnb_loading(config, verbose: bool = True) -> Optional
             sub.__dict__.pop("quantization_config", None)
     setattr(config, UNSLOTH_COMPRESSED_TENSORS_ATTR, plan)
     if verbose:
-        bits = sorted({int(g["weights"]["num_bits"]) for g in plan["config_groups"].values()})
         print(
-            f"Unsloth: Checkpoint is compressed-tensors packed INT{'/'.join(map(str, bits))}. "
+            f"Unsloth: Checkpoint is compressed-tensors packed {_describe(plan)}. "
             f"Decompressing each weight on the fly and re-quantizing to bitsandbytes 4-bit (no 16-bit copy on disk)."
         )
     return plan
@@ -458,7 +482,9 @@ def _decompress_one(compressor, scheme, packed, scale, shape, zero_point, g_idx,
     if shape is not None and shape.numel():
         state["weight_shape"] = shape
     else:
-        pack_factor = 32 // int(scheme.weights.num_bits)
+        # int32 words for pack-quantized, uint8 bytes (two FP4 values each) for mxfp4.
+        storage_bits = 8 if packed.dtype == torch.uint8 else 32
+        pack_factor = storage_bits // int(scheme.weights.num_bits)
         state["weight_shape"] = torch.tensor([packed.shape[0], packed.shape[1] * pack_factor])
     if zero_point is not None:
         state["weight_zero_point"] = zero_point
@@ -489,7 +515,8 @@ class _DecompressPackedWeights:
 
     def _compressor(self, scheme):
         from compressed_tensors.compressors import BaseCompressor
-        fmt = scheme.format or "pack-quantized"
+        # A group that does not name its own format uses the checkpoint's.
+        fmt = scheme.format or getattr(self.ct_config, "format", None) or "pack-quantized"
         return BaseCompressor.get_value_from_registry(str(fmt))
 
     def convert(

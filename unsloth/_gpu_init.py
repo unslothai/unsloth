@@ -246,6 +246,7 @@ from .import_fixes import (
     fix_transformers5_bare_annotation_configs,
     fix_transformers_fully_masked_rows,
     fix_transformers_rope_scaling_drops_theta,
+    fix_transformers5_remote_code_model_api,
     fix_xformers_performance_issue,
     fix_flash_attn_4_namespace_shadow,
     fix_vllm_aimv2_issue,
@@ -291,6 +292,8 @@ fix_transformers_fully_masked_rows()
 # RoPE base frequency. Ordered here, before any config is built, so the object-style delegation
 # retry in models/llama.py sees a config that kept its base (#2405).
 fix_transformers_rope_scaling_drops_theta()
+# Remote code written for 4.x: OutputRecorder import, tie_weights keywords, list-form tied keys.
+fix_transformers5_remote_code_model_api()
 fix_xformers_performance_issue()
 # Must run AFTER fix_xformers_performance_issue (it rewrites xformers' cutlass.py on disk) and
 # BEFORE models/_utils.py imports xformers.ops.
@@ -342,6 +345,7 @@ patch_accelerate_recursively_apply()
 
 del fix_transformers5_bare_annotation_configs
 del fix_transformers_rope_scaling_drops_theta
+del fix_transformers5_remote_code_model_api
 del fix_xformers_performance_issue
 del fix_flash_attn_4_namespace_shadow
 del fix_vllm_aimv2_issue

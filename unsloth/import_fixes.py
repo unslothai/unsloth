@@ -1141,6 +1141,119 @@ def _transformers_rope_scaling_assignment_drops_theta():
         return False
 
 
+_REMOTE_MODEL_API_FLAG = "_unsloth_remote_model_api"
+
+
+def _tie_weights_accepting_new_keywords(own, accepted):
+    """``own`` (a remote class's ``tie_weights`` override written for 4.x) wrapped so the keywords
+    transformers 5 passes (``missing_keys``, ``recompute_mapping``) are dropped when it does not
+    take them; anything it does take is forwarded unchanged."""
+
+    @functools.wraps(own)
+    def tie_weights(self, *args, **kwargs):
+        return own(self, *args, **{k: v for k, v in kwargs.items() if k in accepted})
+
+    setattr(tie_weights, _REMOTE_MODEL_API_FLAG, True)
+    return tie_weights
+
+
+def _patch_remote_model_class(cls, new_keywords):
+    if "transformers_modules" not in (getattr(cls, "__module__", "") or ""):
+        return
+    own = cls.__dict__.get("tie_weights")
+    if own is None or getattr(own, _REMOTE_MODEL_API_FLAG, False):
+        return
+    try:
+        params = inspect.signature(own).parameters
+    except (TypeError, ValueError):
+        return
+    if any(p.kind == p.VAR_KEYWORD for p in params.values()):
+        return
+    if all(k in params for k in new_keywords):
+        return
+    cls.tie_weights = _tie_weights_accepting_new_keywords(own, set(params))
+
+
+def _legacy_tied_weights_mapping(model, keys):
+    """4.x ``_tied_weights_keys = ["lm_head.weight"]`` meant "tie these to the input
+    embeddings"; 5 wants ``{target: source}``. Resolved on the instance, where the input
+    embedding's own parameter name is known."""
+    try:
+        embedding = model.get_input_embeddings()
+    except Exception:
+        return {}
+    weight = getattr(embedding, "weight", None)
+    if weight is None:
+        return {}
+    names = {}
+    for name, param in model.named_parameters(remove_duplicate = False):
+        names.setdefault(id(param), name)
+    source = names.get(id(weight))
+    if source is None:
+        return {}
+    present = set(names.values())
+    return {key: source for key in keys if key in present and key != source}
+
+
+def fix_transformers5_remote_code_model_api():
+    """Let 4.x-era remote modeling code (moonshotai/Kimi-K3's ``modeling_kimi_linear.py``) import
+    and build on transformers 5, which changed three model-side APIs it relies on:
+
+    * ``transformers.utils.generic.OutputRecorder`` moved to ``transformers.utils.output_capturing``;
+      the remote module fails at import with ``ImportError: cannot import name 'OutputRecorder'``.
+      Restored as an alias, which has to happen before the remote module is imported.
+    * ``tie_weights`` is called with ``missing_keys`` / ``recompute_mapping``; a 4.x override
+      ``def tie_weights(self)`` raises ``TypeError`` from ``post_init``. Remote subclasses get a
+      wrapper that drops the keywords they do not accept.
+    * ``_tied_weights_keys`` became a ``{target: source}`` mapping; a 4.x list raises
+      ``AttributeError: 'list' object has no attribute 'keys'``. A list is turned into the mapping
+      onto the model's own input embeddings in ``post_init``, the 4.x meaning.
+
+    Only classes from ``transformers_modules`` are touched, and each part is a no-op on a
+    transformers that still has the old API (4.57), so native models keep 5.x's behaviour.
+    """
+    try:
+        import transformers.utils.generic as generic
+    except Exception:
+        return
+    if not hasattr(generic, "OutputRecorder"):
+        try:
+            from transformers.utils.output_capturing import OutputRecorder
+
+            generic.OutputRecorder = OutputRecorder
+        except Exception:
+            pass
+    try:
+        from transformers import PreTrainedModel
+    except Exception:
+        return
+    if getattr(PreTrainedModel, _REMOTE_MODEL_API_FLAG, False):
+        return
+    try:
+        params = inspect.signature(PreTrainedModel.tie_weights).parameters
+    except (TypeError, ValueError):
+        params = {}
+    new_keywords = tuple(k for k in ("missing_keys", "recompute_mapping") if k in params)
+    original_post_init = PreTrainedModel.post_init
+
+    @functools.wraps(original_post_init)
+    def post_init(self, *args, **kwargs):
+        keys = getattr(self, "_tied_weights_keys", None)
+        if isinstance(keys, (list, tuple)) and "transformers_modules" in (
+            type(self).__module__ or ""
+        ):
+            self._tied_weights_keys = _legacy_tied_weights_mapping(self, keys)
+        if new_keywords:
+            for klass in type(self).__mro__:
+                _patch_remote_model_class(klass, new_keywords)
+        return original_post_init(self, *args, **kwargs)
+
+    PreTrainedModel.post_init = post_init
+    setattr(PreTrainedModel, _REMOTE_MODEL_API_FLAG, True)
+    if UNSLOTH_ENABLE_LOGGING:
+        logger.info("Unsloth: Remote modeling code written for transformers 4.x gets the 5.x model API shims.")
+
+
 def fix_transformers_rope_scaling_drops_theta():
     """Stop a replaced ``rope_scaling`` silently unscaling RoPE (issue #2405).
 
