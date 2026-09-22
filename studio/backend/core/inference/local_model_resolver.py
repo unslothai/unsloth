@@ -180,10 +180,8 @@ def local_gguf_companion_roots(load_path: str, *, repo_level: bool = False) -> t
     # (`follow_symlinks=False` is 3.13+) and only the named snapshot was authorized.
     try:
         repo_resolved = repo.resolve()
-        # The selected snapshot by identity, not by spelling: a sibling symlinked to it is
-        # the same directory, and returning it twice made a lone snapshot look like two,
-        # which is exactly what the `len(roots) > 1` guard in local_path_gguf_companion_roots
-        # is there to refuse.
+        # By identity, not spelling: a sibling symlinked to the selected snapshot made one
+        # snapshot look like two, defeating the `len(roots) > 1` guard downstream.
         selected_resolved = selected.resolve()
     except OSError as exc:
         logger.debug("Stopping at unresolvable repo dir %s: %s", repo, exc)

@@ -2105,13 +2105,10 @@ def detect_mmproj_file(
                         break
             elif allow_disjoint_search_root:
                 _add(root_resolved)
-            # Only a root that does NOT hold the weights. Where it does, the incremental
-            # ancestor walk above IS the guard at the top of this function, and rglob
-            # defeats it: every other quant subdirectory of the same snapshot becomes a
-            # candidate, and two projectors that tie on metadata are then separated by the
-            # shorter-stem rule, so `UD-Q4_K_XL/...` loses to `UD-IQ1_S/mmproj-UD-IQ1_S`.
-            # A disjoint sibling revision still recurses, which is what #10210 needs to
-            # reach a companion published under `MTP/` or a quant subdir over there.
+            # Only a root that does NOT hold the weights: for the one that does, the
+            # ancestor walk above IS this function's guard and rglob defeats it, so a
+            # sibling QUANT's projector becomes a candidate and wins the shorter-stem
+            # tiebreak. A disjoint revision still recurses, which #10210 needs.
             if allow_disjoint_search_root and not root_contains_start:
                 recursive_root = root_resolved
         except OSError:
