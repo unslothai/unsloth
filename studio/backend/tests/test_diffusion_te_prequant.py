@@ -1005,3 +1005,28 @@ def test_an_unreachable_hub_is_not_a_missing_filename(monkeypatch):
     got = tpq._resolve_checkpoint_path(src, None, cache_dir = "/tmp/x", local_files_only = False)
     assert got == "/cache/hosted-text_encoder-FP8.pt", got
     assert len(asked) == 2, asked
+
+
+def test_the_video_prefetch_advances_only_on_a_missing_name():
+    """The prefetch plan and the load have to agree about what a failure MEANS.
+
+    The resolver advances to the next spelling only for "this name is absent"; if the prefetch
+    advanced on an unreachable Hub too, it could report a legacy artifact as fetched, the plan would
+    drop the dense encoder, and the load would then refuse to advance past the same error and have
+    neither.
+    """
+    from huggingface_hub.errors import EntryNotFoundError, LocalEntryNotFoundError
+
+    from core.inference.video import VideoBackend
+
+    miss = VideoBackend._te_fetch_miss
+    # A real 404 is a miss in both modes: try the next name.
+    assert miss(EntryNotFoundError("404"), local_files_only = False) is True
+    assert miss(EntryNotFoundError("404"), local_files_only = True) is True
+    # Offline, a cache miss is the only verdict there is.
+    assert miss(LocalEntryNotFoundError("no local copy"), local_files_only = True) is True
+    # Online, the same exception means the Hub could not be reached: stop, do not blame the name.
+    assert miss(LocalEntryNotFoundError("connection error"), local_files_only = False) is False
+    # Anything else is about the repo, not the name.
+    assert miss(PermissionError("401"), local_files_only = False) is False
+    assert miss(OSError("corrupt cache"), local_files_only = True) is False

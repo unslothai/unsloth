@@ -2964,6 +2964,24 @@ class VideoBackend:
         return te_prequant_hub_files(sources, api, logger)
 
     @staticmethod
+    def _te_fetch_miss(exc: BaseException, *, local_files_only: bool) -> bool:
+        """Whether ``exc`` means this NAME is absent, so the next candidate is worth a try.
+
+        ``LocalEntryNotFoundError`` subclasses ``EntryNotFoundError`` and means two different things
+        depending on the mode: offline it is a cache miss, which is the only verdict there is, while
+        online huggingface_hub raises it when the Hub could not be REACHED and the entry may well
+        exist. Mirrors ``diffusion_te_prequant._resolve_checkpoint_path`` on purpose, so the prefetch
+        plan and the load agree about what counts as a miss.
+        """
+        try:
+            from huggingface_hub.errors import EntryNotFoundError, LocalEntryNotFoundError
+        except Exception:  # noqa: BLE001 - an unknown hub layout keeps today's behaviour
+            return True
+        if isinstance(exc, LocalEntryNotFoundError):
+            return bool(local_files_only)
+        return isinstance(exc, EntryNotFoundError)
+
+    @staticmethod
     def _base_download_files(
         info: Any,
         kind: str,
@@ -3610,6 +3628,14 @@ class VideoBackend:
                         name,
                         exc,
                     )
+                    # Advance only on "this NAME is absent", the same distinction the resolver
+                    # makes. Anything else (an unreachable Hub, auth, a corrupt cache) is about the
+                    # REPO, so trying the next spelling repeats a slow failure and, worse, can
+                    # report a legacy artifact as fetched while the loader refuses to advance past
+                    # the same error: the plan would then drop the dense encoder and the load would
+                    # have neither.
+                    if not VideoBackend._te_fetch_miss(exc, local_files_only = local_files_only):
+                        break
                     continue
                 got = True
                 break
