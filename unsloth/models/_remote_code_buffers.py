@@ -1,0 +1,156 @@
+# Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#     http://www.apache.org/licenses/LICENSE-2.0
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+"""Rebuild the non-persistent buffers of remote-code modules after a transformers 5 load.
+
+transformers 5 builds the model under the meta device, gives every non-persistent buffer
+fresh `torch.empty_like` storage and relies on the model's `_init_weights` to fill it.
+Remote code written against transformers 4.x computed those buffers in `__init__` (RoPE
+`inv_freq`, lightning-attention decay slopes, cos / sin caches) and its `_init_weights`
+only touches Linear and Embedding weights, so they come back holding whatever the
+allocator returned: zeros on a fresh card, which silently removes the rotary embedding
+and the attention decay, or garbage. The model still trains, just as a different model.
+
+Each such module is rebuilt once on the CPU with its parameters on the meta device, and
+its non-persistent buffers are copied into the loaded ones in place (so device placement
+and dispatch hooks are kept). Native transformers modules are left alone: their
+`_init_weights` already recomputes these buffers.
+"""
+
+import inspect
+
+import torch
+
+__all__ = ["restore_remote_code_non_persistent_buffers"]
+
+_SCALAR_TYPES = (bool, int, float, str, type(None))
+
+
+def _transformers_builds_on_meta():
+    try:
+        import transformers
+        from packaging.version import Version
+        return Version(Version(transformers.__version__).base_version).major >= 5
+    except Exception:
+        return False
+
+
+def _is_remote_code_module(module):
+    return type(module).__module__.startswith("transformers_modules")
+
+
+def _constructor_kwargs(module, model_config):
+    """Arguments to rebuild ``module`` from its own attributes, or None when a required
+    one cannot be recovered."""
+    try:
+        signature = inspect.signature(type(module).__init__)
+    except (TypeError, ValueError):
+        return None
+    kwargs = {}
+    for name, parameter in list(signature.parameters.items())[1:]:
+        if parameter.kind in (parameter.VAR_POSITIONAL, parameter.VAR_KEYWORD):
+            continue
+        if name == "config":
+            value = module.__dict__.get("config", None) or model_config
+        elif name in module.__dict__:
+            value = module.__dict__[name]
+        else:
+            value = parameter.default
+        if value is inspect.Parameter.empty:
+            return None
+        if isinstance(value, (torch.Tensor, torch.nn.Module)):
+            if parameter.default is inspect.Parameter.empty:
+                return None
+            continue
+        kwargs[name] = value
+    return kwargs
+
+
+def _cache_key(module, kwargs):
+    parts = []
+    for name in sorted(kwargs):
+        value = kwargs[name]
+        parts.append((name, value if isinstance(value, _SCALAR_TYPES) else id(value)))
+    return type(module), tuple(parts)
+
+
+def _fresh_non_persistent_buffers(module, kwargs, dtype):
+    """Construct ``type(module)(**kwargs)`` on the CPU with parameters on meta and
+    return its non-persistent buffers, plus the attributes that alias them."""
+    from accelerate import init_empty_weights
+
+    previous_dtype = torch.get_default_dtype()
+    try:
+        # transformers constructs under the load dtype as the default dtype.
+        if dtype in (torch.float16, torch.bfloat16, torch.float32):
+            torch.set_default_dtype(dtype)
+        with torch.device("cpu"), init_empty_weights(include_buffers = False):
+            fresh = type(module)(**kwargs)
+    finally:
+        torch.set_default_dtype(previous_dtype)
+    buffers = {}
+    for name in getattr(fresh, "_non_persistent_buffers_set", ()):
+        buffer = fresh._buffers.get(name, None)
+        if buffer is not None and not buffer.is_meta:
+            buffers[name] = buffer
+    aliases = {}
+    for attribute, value in fresh.__dict__.items():
+        if not isinstance(value, torch.Tensor) or attribute in ("_buffers", "_parameters"):
+            continue
+        for name, buffer in buffers.items():
+            if value is buffer:
+                aliases[attribute] = name
+    return buffers, aliases
+
+
+def restore_remote_code_non_persistent_buffers(model):
+    """Recompute the non-persistent buffers of remote-code modules that transformers 5
+    left uninitialised. Returns the number of buffers restored; a no-op on 4.x, where
+    the model is built with real buffers."""
+    if model is None or not _transformers_builds_on_meta():
+        return 0
+    model_config = getattr(model, "config", None)
+    dtype = getattr(model, "dtype", None)
+    cache = {}
+    restored = 0
+    for module in model.modules():
+        own = getattr(module, "_non_persistent_buffers_set", None)
+        if not own or not _is_remote_code_module(module):
+            continue
+        kwargs = _constructor_kwargs(module, model_config)
+        if kwargs is None:
+            continue
+        key = _cache_key(module, kwargs)
+        if key not in cache:
+            try:
+                cache[key] = _fresh_non_persistent_buffers(module, kwargs, dtype)
+            except Exception:
+                cache[key] = None
+        if cache[key] is None:
+            continue
+        buffers, aliases = cache[key]
+        for name, fresh in buffers.items():
+            live = module._buffers.get(name, None)
+            if live is None or live.is_meta or live.shape != fresh.shape:
+                continue
+            with torch.no_grad():
+                live.copy_(fresh.to(dtype = live.dtype))
+            restored += 1
+        for attribute, name in aliases.items():
+            live = module._buffers.get(name, None)
+            if live is not None and not live.is_meta:
+                module.__dict__[attribute] = live
+    if restored:
+        print(
+            f"Unsloth: Recomputed {restored} non-persistent buffers (RoPE frequencies and similar) "
+            "that transformers 5 does not initialise for remote code."
+        )
+    return restored
