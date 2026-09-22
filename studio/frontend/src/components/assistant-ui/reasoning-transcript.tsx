@@ -308,6 +308,7 @@ export function ReasoningTranscript({
     if (!element || !scroll) return;
     let frame = 0;
     let width = 0;
+    let readingAnchor: (ReasoningReadingAnchor & { index: number }) | undefined;
     const measure = () => {
       frame = 0;
       const rect = element.getBoundingClientRect();
@@ -328,6 +329,14 @@ export function ReasoningTranscript({
           : next,
       );
       if (width && width !== rect.width) {
+        // Capture before reflow: a long user message above us may push the whole
+        // transcript offscreen at the new width before ResizeObserver runs.
+        if (readingAnchor) {
+          setAnchor(readingAnchor);
+          setAnchoring(true);
+        }
+        virtualizer.measure();
+      } else {
         const viewportTop = scroll.getBoundingClientRect().top;
         const passage = [
           ...element.querySelectorAll<HTMLElement>(
@@ -341,15 +350,14 @@ export function ReasoningTranscript({
               viewportTop + scroll.clientHeight,
         );
         const row = passage?.closest<HTMLElement>("[data-index]");
-        if (passage && row) {
-          setAnchor({
-            text: passage.textContent!.slice(0, 200),
-            top: passage.getBoundingClientRect().top,
-            index: Number(row.dataset.index),
-          });
-          setAnchoring(true);
-        }
-        virtualizer.measure();
+        readingAnchor =
+          passage && row
+            ? {
+                text: passage.textContent!.slice(0, 200),
+                top: passage.getBoundingClientRect().top,
+                index: Number(row.dataset.index),
+              }
+            : undefined;
       }
       width = rect.width;
     };

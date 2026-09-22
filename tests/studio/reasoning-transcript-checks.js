@@ -91,7 +91,24 @@ async (page) => {
   await page.waitForTimeout(500);
   check((await page.locator('[data-slot="reasoning-text"]').innerText()).includes("REASONING_END"), "following did not resume");
 
+  await page.evaluate(() => window.__reasoning.seed({
+    size: 100000,
+    userPrompt: "Create a dynamic demonstration with electrical arcs and interactive objects. ".repeat(30),
+  }));
+  await page.waitForTimeout(500);
+  await page.mouse.move(550, 350);
+  await page.mouse.wheel(0, -1500);
+  await page.waitForTimeout(400);
+  const narrowAnchor = await page.locator('[data-slot="reasoning-text"] p').evaluateAll((nodes) => {
+    const node = nodes.find((node) => node.getBoundingClientRect().top > 100 && node.getBoundingClientRect().top < 400);
+    if (!node) throw new Error("no resize passage");
+    return { text: node.textContent, top: node.getBoundingClientRect().top };
+  });
   await page.setViewportSize({ width: 390, height: 844 });
+  await page.waitForTimeout(500);
+  const narrowPassage = page.locator('[data-slot="reasoning-text"] p').filter({ hasText: narrowAnchor.text }).first();
+  check(await narrowPassage.count() === 1, "long prompt reflow recycled the reading passage");
+  check(Math.abs((await narrowPassage.boundingBox()).y - narrowAnchor.top) < 100, "long prompt reflow lost the reading position");
   await page.evaluate(() => window.__reasoning.seed({ size: 140000, kind: "code" }));
   await page.waitForTimeout(500);
   check(await page.locator('[data-slot="reasoning-code-fragment"]').count() > 0, "large fence has no code rendering");
@@ -102,5 +119,5 @@ async (page) => {
   await page.screenshot({ path: ".playwright-cli/reasoning-inline-mobile-dark.png" });
   await page.evaluate(() => document.documentElement.classList.remove("dark"));
   await page.emulateMedia({ reducedMotion: "no-preference" });
-  return { passed: true, checks: ["bounded saved trace", "no pagination chrome", "canonical copy", "collapse/reopen", "live collapse/reopen", "threshold anchor", "streaming anchor", "resize anchor", "selection", "resume following", "narrow code", "light/dark"] };
+  return { passed: true, checks: ["bounded saved trace", "no pagination chrome", "canonical copy", "collapse/reopen", "live collapse/reopen", "threshold anchor", "streaming anchor", "resize anchor", "long prompt reflow", "selection", "resume following", "narrow code", "light/dark"] };
 }

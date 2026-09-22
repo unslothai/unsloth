@@ -50,6 +50,7 @@ type Options = {
   kind?: "mixed" | "code" | "line";
   chunk?: number;
   gap?: number;
+  userPrompt?: string;
 };
 let source = "";
 let config: Required<Options> = {
@@ -57,6 +58,7 @@ let config: Required<Options> = {
   kind: "mixed",
   chunk: 4096,
   gap: 16,
+  userPrompt: "Create a Flappy Bird game in HTML.",
 };
 let started = 0;
 let finished = 0;
@@ -120,6 +122,7 @@ function Api() {
           kind: "mixed",
           chunk: 4096,
           gap: 16,
+          userPrompt: "Create a Flappy Bird game in HTML.",
           ...options,
         };
         source = fixture(config.size, config.kind);
@@ -129,9 +132,7 @@ function Api() {
         aui.thread().import(ExportedMessageRepository.fromArray([]));
         aui.thread().append({
           role: "user",
-          content: [
-            { type: "text", text: "Create a Flappy Bird game in HTML." },
-          ],
+          content: [{ type: "text", text: config.userPrompt }],
         });
       },
       seed(options: Options = {}) {
@@ -142,7 +143,10 @@ function Api() {
               id: "fixture-user",
               role: "user",
               content: [
-                { type: "text", text: "Create a Flappy Bird game in HTML." },
+                {
+                  type: "text",
+                  text: options.userPrompt ?? "Create a Flappy Bird game in HTML.",
+                },
               ],
             },
             {
