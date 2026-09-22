@@ -21,6 +21,10 @@ import {
   groupForRepoId,
   pickDefaultArtifact,
 } from "../src/features/model-picker/components/model-selector/model-catalog.ts";
+import {
+  curatedBudget,
+  curatedBudgetText,
+} from "../src/features/model-picker/components/model-selector/recommended-fit.ts";
 
 const Z_TURBO = "Tongyi-MAI/Z-Image-Turbo";
 const QWEN_IMAGE = "Qwen/Qwen-Image";
@@ -299,6 +303,25 @@ test("a transcription row judged on RAM names RAM as the budget's device", () =>
   const onGpu = curatedArtifactFit(WHISPER, AUDIO_CATALOG, { gpuGb: 5, systemRamGb: 1 });
   assert.equal(onGpu?.device, "GPU");
   assert.equal(onGpu?.deviceGb, 5);
+});
+
+test("the over-budget text never shows the size below the budget it exceeds", () => {
+  const text = (id: string, gpuGb: number) => {
+    const fit = curatedArtifactFit(id, IMAGE_CATALOG, onCard(gpuGb, ["int8", "fp8"]));
+    assert.ok(fit?.sizeGb !== undefined && fit.fits === false);
+    const budget = curatedBudget(fit);
+    assert.ok(budget);
+    return curatedBudgetText(Math.round(fit.sizeGb), gpuGb, budget);
+  };
+  // 24.40 GB rounds to 24, under the 24.1 budget, so it is shown rounded up.
+  assert.equal(
+    text(Z_TURBO, 34.5),
+    "Needs ~24.4GB for weights (budget: ~24.1GB, 70% of a 34.5GB GPU)",
+  );
+  assert.equal(
+    text(QWEN_21, 22.49),
+    "Needs ~27GB for weights (budget: ~15.7GB, 70% of a 22.49GB GPU)",
+  );
 });
 
 test("Qwen-Image-2.1 routes every card as on main", () => {

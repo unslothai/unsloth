@@ -5,7 +5,7 @@
 // the device. No React/DOM deps so they are easy to test.
 
 import { classifyGgufFit } from "../../../../lib/gguf-fit.ts";
-import { classifyMediaGgufFit } from "./model-catalog.ts";
+import { classifyMediaGgufFit, type curatedArtifactFit } from "./model-catalog.ts";
 
 const GGUF_SUFFIX_RE = /-GGUF(?:$|-)/i;
 // Mirrors the backend's _looks_like_mlx_repo: owner prefix, or a bounded mlx token in the leaf.
@@ -359,4 +359,33 @@ export function orderRecommendedRows<
     (r) => !curatedIds.has(r.id),
   );
   return [...curated, ...rest];
+}
+
+/** The allowance a curated row was judged against, the memory it is 70% of, and the unrounded size. */
+export type CuratedBudget = {
+  allowanceGb: number;
+  deviceGb: number;
+  device: "GPU" | "RAM";
+  sizeGb: number;
+};
+
+export function curatedBudget(
+  fit: NonNullable<ReturnType<typeof curatedArtifactFit>>,
+): CuratedBudget | undefined {
+  const { allowanceGb, deviceGb, device, sizeGb } = fit;
+  return allowanceGb != null && deviceGb != null && device && sizeGb != null
+    ? { allowanceGb, deviceGb, device, sizeGb }
+    : undefined;
+}
+
+/** Over-budget text for a curated row. The whole-GB badge figure can round below the one-decimal
+ *  budget (24 against 24.1), so the size is then rounded UP to a tenth to still read as over. */
+export function curatedBudgetText(est: number, gpuGb: number, budget: CuratedBudget): string {
+  const budgetGb = Number(budget.allowanceGb.toFixed(1));
+  const needGb = est > budgetGb ? `${est}` : (Math.ceil(budget.sizeGb * 10) / 10).toFixed(1);
+  const of =
+    budget.device === "RAM"
+      ? `${Number(budget.deviceGb.toFixed(2))}GB available RAM`
+      : `a ${gpuGb}GB GPU`;
+  return `Needs ~${needGb}GB for weights (budget: ~${budgetGb.toFixed(1)}GB, 70% of ${of})`;
 }

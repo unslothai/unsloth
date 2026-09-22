@@ -204,6 +204,9 @@ import {
   paramsFromId,
   searchRowFitsDevice,
   searchableRecommendedIds,
+  type CuratedBudget,
+  curatedBudget,
+  curatedBudgetText,
 } from "./recommended-fit";
 import {
   ggufVariantsMatchForPicker,
@@ -921,18 +924,6 @@ function artifactBudget(gpu: {
   };
 }
 
-/** The allowance a curated row was judged against, and the memory it is 70% of. */
-type CuratedBudget = { allowanceGb: number; deviceGb: number; device: "GPU" | "RAM" };
-
-function curatedBudget(
-  fit: NonNullable<ReturnType<typeof curatedArtifactFit>>,
-): CuratedBudget | undefined {
-  const { allowanceGb, deviceGb, device } = fit;
-  return allowanceGb != null && deviceGb != null && device
-    ? { allowanceGb, deviceGb, device }
-    : undefined;
-}
-
 const META_COLUMN = {
   // Fits "UD-Q4_K_XL"; a hard cap, so longer quants clip.
   quant: "min-[560px]:w-[7.2em]",
@@ -1132,11 +1123,7 @@ function ModelRow({
         // "memory", not "VRAM": a GGUF at `partial` splits across VRAM and RAM and the figure
         // is weights plus activations plus KV, so "Needs ~47GB VRAM" contradicted the verdict.
         ? vramBudget
-          ? `Needs ~${vramEst}GB for weights (budget: ~${vramBudget.allowanceGb.toFixed(1)}GB, 70% of ${
-              vramBudget.device === "RAM"
-                ? `${Number(vramBudget.deviceGb.toFixed(2))}GB available RAM`
-                : `a ${gpuGb}GB GPU`
-            })`
+          ? curatedBudgetText(vramEst, gpuGb, vramBudget)
           : `Needs ~${vramEst}GB memory (GPU: ${gpuGb}GB)`
         : vramStatus === "tight" || vramStatus === "marginal"
           ? `~${vramEst}GB VRAM (tight fit on ${gpuGb}GB)`
