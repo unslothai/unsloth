@@ -1283,7 +1283,9 @@ _TEXT_BATCH_KEYS = frozenset(
 # What a text collator really puts in a batch. A required control argument (cache_position,
 # use_cache, past_key_values, return_dict) is not supplied by the Trainer, so a forward that
 # demands one without a default cannot take a text batch either.
-_COLLATOR_SUPPLIED_KEYS = frozenset(("input_ids", "attention_mask", "labels", "token_type_ids", "position_ids"))
+_COLLATOR_SUPPLIED_KEYS = frozenset(
+    ("input_ids", "attention_mask", "labels", "token_type_ids", "position_ids")
+)
 
 
 def _required_non_text_inputs(forward):
