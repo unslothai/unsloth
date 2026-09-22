@@ -116,6 +116,20 @@ DEFAULT_CREDENTIAL_HOMES = {
 # Anything that makes a tool persist a credential into one of the directories above.
 # Matched against the shell body of every step, so a login added anywhere in a job that
 # caches its own credential home fails the guard.
+# Which variable overrides each default. A default is only where a tool looks when
+# nothing points it elsewhere, so a job that sets the variable writes its credentials
+# there instead and persisting the default location holds none. Flagging it anyway was a
+# false failure on a correct configuration.
+DEFAULT_OWNERS = {
+    "~/.cache/huggingface": "HF_HOME",
+    "~/.huggingface": "HF_HOME",
+    "~/.cargo": "CARGO_HOME",
+    "~/.docker": "DOCKER_CONFIG",
+    "~/.npmrc": "NPM_CONFIG_USERCONFIG",
+    "~/.aws": "AWS_SHARED_CREDENTIALS_FILE",
+    "~/.config/gh": None,
+}
+
 LOGIN_PATTERNS = (
     r"\bhf\s+auth\s+login\b",
     r"\bhuggingface-cli\s+login\b",
@@ -281,6 +295,45 @@ def _persisted_paths(job):
 
 
 
+
+def _reusable_jobs(job):
+    """(steps, env, inputs) for a job that delegates to a local reusable workflow.
+
+    `jobs.<id>.uses: ./.github/workflows/x.yml` has no `steps:` of its own, so the caller
+    scanned as an empty job and the called workflow was scanned separately with no access
+    to the caller's `with:` values. A reusable job that sets `HF_HOME: ${{ inputs.path }}`,
+    logs in and caches `${{ inputs.path }}` was therefore accepted when the caller passed
+    `path: hf-cache`: both expressions normalised away and neither document held enough to
+    see the combination. The same split that hid composite logins, one level up.
+    """
+    ref = str(job.get("uses") or "").strip().strip("'\"")
+    if not ref.startswith("./"):
+        return []
+    target = REPO / ref[2:]
+    if not target.is_file():
+        return []
+    try:
+        doc = yaml.safe_load(target.read_text(encoding = "utf-8"))
+    except yaml.YAMLError:
+        return []
+    if not isinstance(doc, dict):
+        return []
+    passed = {}
+    on = doc.get(True) if True in doc else doc.get("on")
+    call = on.get("workflow_call") if isinstance(on, dict) else None
+    declared = call.get("inputs") if isinstance(call, dict) else None
+    if isinstance(declared, dict):
+        for name, spec in declared.items():
+            if isinstance(spec, dict) and spec.get("default") is not None:
+                passed[str(name)] = str(spec["default"])
+    with_ = job.get("with")
+    if isinstance(with_, dict):
+        passed.update({str(k): str(v) for k, v in with_.items()})
+    out = []
+    for _jid, inner in _jobs(doc):
+        out.append((inner, _env_of(inner, doc), passed))
+    return out
+
 def _flat_steps(job, inherited = None, inputs = None, stack = None):
     """(step, inherited env, caller inputs) for this job and every local composite it uses.
 
@@ -305,6 +358,9 @@ def _flat_steps(job, inherited = None, inputs = None, stack = None):
     inputs = {} if inputs is None else inputs
     stack = () if stack is None else stack
     out = []
+    # A job may delegate wholesale to a local reusable workflow instead of listing steps.
+    for inner, inner_env, passed in _reusable_jobs(job):
+        out.extend(_flat_steps(inner, {**inherited, **inner_env}, passed, stack))
     for step in _steps(job):
         own = step.get("env")
         env = {**inherited, **({str(k): str(v) for k, v in own.items()}
@@ -367,7 +423,10 @@ def _persisted_with_env(job, doc):
     """
     job_env = _env_of(job, doc)
     out = []
-    for step, inherited, inputs in _flat_steps(job):
+    # The job's own env seeds the walk. Without it a root-level call passing
+    # `path: ${{ env.CACHE_DIR }}` resolved against inherited and step-level values only,
+    # `_expand` produced an empty string, and the composite appeared to persist nothing.
+    for step, inherited, inputs in _flat_steps(job, job_env):
         uses = str(step.get("uses") or "").casefold()
         if not any(marker.casefold() in uses for marker in _PERSIST):
             continue
@@ -404,11 +463,14 @@ def _login_offenders(doc, job):
     if not persisted:
         return []
     offenders = []
-    for step, inherited, inputs in _flat_steps(job):
+    for step, inherited, inputs in _flat_steps(job, job_env):
         body = str(step.get("run") or "")
         uses = str(step.get("uses") or "").strip().strip("'\"")
         action = uses.split("@")[0]
-        spec = LOGIN_ACTIONS.get(action)
+        # GitHub treats owner/repo case-insensitively, so `Docker/login-action` runs the
+        # same credential-writing action as `docker/login-action`. A case-sensitive
+        # lookup let a capital letter skip the step entirely, since it has no `run:` body.
+        spec = LOGIN_ACTIONS.get(action.casefold())
         if spec is not None:
             with_ = step.get("with")
             needed = spec.get("condition")
@@ -458,9 +520,31 @@ def _normalise(path: str) -> str:
     return path.strip("/")
 
 
+
+def _deglob(path: str) -> str:
+    """The fixed directory a glob pattern lives under.
+
+    `hf-cache/**` and `hf-cache/*.bin` both persist things inside `hf-cache`, so for a
+    containment question the fixed leading part is what matters. Anything from the first
+    wildcard segment onward is dropped.
+    """
+    parts = []
+    for segment in path.replace("\\", "/").split("/"):
+        if any(ch in segment for ch in "*?["):
+            break
+        parts.append(segment)
+    return "/".join(parts) if parts else path
+
 def _inside(inner: str, outer: str) -> bool:
-    """Is `inner` the same directory as `outer`, or below it?"""
-    inner, outer = _normalise(inner), _normalise(outer)
+    """Is `inner` the same directory as `outer`, or below it?
+
+    A glob suffix is trimmed off `outer` first. `path: hf-cache/**` uploads everything
+    beneath `hf-cache`, including a token written there, but compared literally
+    `_inside("hf-cache", "hf-cache/**")` is false and the whole upload looked unrelated to
+    the credential home it contains.
+    """
+    inner, outer = _normalise(inner), _normalise(_deglob(outer))
+    inner, outer = inner.strip("/"), outer.strip("/")
     if not inner or not outer:
         return False
     return inner == outer or inner.startswith(outer + "/")
@@ -627,8 +711,15 @@ def test_no_job_persists_a_default_credential_home():
     for path, doc in _docs():
         for jid, job in _jobs(doc):
             env = _env_of(job, doc)
+            overridden = {v for v in CREDENTIAL_HOMES if v in env}
             for persisted, _step in _persisted_with_env(job, doc):
                 for default, creds in DEFAULT_CREDENTIAL_HOMES.items():
+                    # A default is only where the tool looks when nothing overrides it.
+                    # A job setting `CARGO_HOME: /tmp/cargo` writes credentials there, so
+                    # persisting `~/.cargo` holds none, and flagging it was a false
+                    # failure on a correct configuration.
+                    if DEFAULT_OWNERS.get(default) in overridden:
+                        continue
                     if _inside(default, persisted):
                         offenders.append(
                             f"{path.name}:{jid}: caches {persisted!r}, a default "
@@ -1106,4 +1197,85 @@ def test_a_composite_input_default_is_applied(tmp_path, monkeypatch):
     assert paths == ["hf-cache"], f"the declared default was not applied; got {paths}"
     assert _login_offenders({}, job), (
         "the composite persists the credential home via its default, and the job logs in"
+    )
+
+
+def test_a_glob_path_still_contains_its_directory():
+    """`path: hf-cache/**` uploads whatever is beneath hf-cache, token included."""
+    assert _deglob("hf-cache/**") == "hf-cache"
+    assert _deglob("hf-cache/*.bin") == "hf-cache"
+    assert _deglob("hf-cache") == "hf-cache"
+    assert _inside("hf-cache", "hf-cache/**") is True
+    assert _inside("hf-cache", "hf-cache/*.bin") is True
+    assert _inside("other", "hf-cache/**") is False
+
+
+def test_a_login_action_is_matched_case_insensitively():
+    """GitHub treats owner/repo case-insensitively; a capital letter is not an escape."""
+    job = {"env": {"DOCKER_CONFIG": "docker-cache"}, "steps": [
+        {"uses": "Docker/Login-Action@v3"},
+        {"uses": "actions/cache/save@v4", "with": {"path": "docker-cache", "key": "k"}},
+    ]}
+    assert _login_offenders({}, job), (
+        "`Docker/Login-Action` runs the same credential-writing action, and the step has "
+        "no `run:` body, so a case-sensitive lookup skipped it entirely"
+    )
+
+
+def test_a_cached_path_resolves_against_job_level_env():
+    """The job's own env has to seed the walk, or a root-level call resolves to nothing."""
+    job = {"env": {"CACHE_DIR": "hf-cache", "HF_HOME": "hf-cache"}, "steps": [
+        {"name": "log in", "run": "hf auth login --token x"},
+        {"uses": "actions/cache/save@v4",
+         "with": {"path": "${{ env.CACHE_DIR }}", "key": "k"}},
+    ]}
+    assert [p for p, _s in _persisted_with_env(job, {})] == ["hf-cache"]
+    assert _login_offenders({}, job)
+
+
+def test_an_overridden_default_home_is_not_a_finding():
+    """A default is only where a tool looks when nothing points it elsewhere.
+
+    A job setting `CARGO_HOME: /tmp/cargo` writes credentials there, so persisting
+    `~/.cargo` holds none of them. Flagging it anyway was a false failure on a correct
+    configuration, and every variable in CREDENTIAL_HOMES had the same problem.
+    """
+    for default, owner in DEFAULT_OWNERS.items():
+        if owner is None:
+            continue
+        assert owner in CREDENTIAL_HOMES, (
+            f"{owner} overrides {default} but is not tracked as a credential home"
+        )
+    assert DEFAULT_OWNERS["~/.cargo"] == "CARGO_HOME"
+    assert DEFAULT_OWNERS["~/.cache/huggingface"] == "HF_HOME"
+
+
+def test_a_reusable_workflow_job_is_flattened(tmp_path, monkeypatch):
+    """A job may delegate wholesale to a local reusable workflow instead of listing steps.
+
+    The caller then scanned as an empty job and the called workflow was scanned
+    separately with no access to the caller's `with:` values, so a reusable job that sets
+    `HF_HOME: ${{ inputs.path }}`, logs in and caches `${{ inputs.path }}` was accepted.
+    The same split that hid composite logins, one level up.
+    """
+    import sys
+
+    module = sys.modules[__name__]
+    wf = tmp_path / ".github" / "workflows"
+    wf.mkdir(parents = True)
+    (wf / "shared.yml").write_text(
+        "name: shared\n"
+        "on:\n  workflow_call:\n    inputs:\n      path:\n        type: string\n"
+        "jobs:\n  build:\n    runs-on: ubuntu-latest\n"
+        "    env:\n      HF_HOME: ${{ inputs.path }}\n"
+        "    steps:\n      - run: hf auth login --token x\n"
+        "      - uses: actions/cache/save@v4\n"
+        "        with:\n          path: ${{ inputs.path }}\n          key: k\n"
+    )
+    monkeypatch.setattr(module, "REPO", tmp_path)
+
+    caller = {"uses": "./.github/workflows/shared.yml", "with": {"path": "hf-cache"}}
+    assert [p for p, _s in _persisted_with_env(caller, {})] == ["hf-cache"]
+    assert _login_offenders({}, caller), (
+        "the reusable job logs in and caches the same input-named directory"
     )

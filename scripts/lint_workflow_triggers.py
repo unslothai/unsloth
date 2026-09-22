@@ -366,7 +366,11 @@ def _input_namespaces(callers: list, targets: list) -> dict:
         # belongs in the namespace even when no call site mentions the input.
         for field, value in _declared_defaults(target).items():
             vals, ok = resolved.get(field, (set(), True))
-            resolved[field] = (vals | {value}, ok)
+            # The default IS the value an omitting call site produces, so recording it
+            # also settles that omission. Leaving `ok` false kept the raw expression in
+            # the undecidable list and rejected unrelated publish fallbacks, which is a
+            # false failure introduced by the fix for the omission itself.
+            resolved[field] = (vals | {value}, ok or field in _declared_defaults(target))
         for field, pair in resolved.items():
             vals, ok = merged.get(field, (set(), True))
             merged[field] = (vals | pair[0], ok and pair[1])
@@ -386,8 +390,14 @@ def _expand_input_key(key: str, namespaces: dict) -> list[str]:
     match = _INPUT_KEY.fullmatch(key.strip())
     if match is None:
         return [key]
-    values, _resolved = namespaces.get(match.group(1), (set(), False))
-    return sorted(values) or [key]
+    values, resolved = namespaces.get(match.group(1), (set(), False))
+    if not values:
+        return [key]
+    # An unresolved call site keeps the raw expression alongside the literals. Returning
+    # the literals alone dropped that caller: with one site passing `cache_key: safe-key`
+    # and another `${{ matrix.cache_key }}`, the matrix value could be anything, and
+    # discarding it meant neither comparison saw the namespace it writes.
+    return sorted(values) if resolved else sorted(values) + [key]
 
 
 def _declared_defaults(path: Path) -> dict:
@@ -795,6 +805,14 @@ def main() -> int:
     pr_callers = pr_workflow_paths + pr_reachable
     composite_keys: list[str] = []
     shell_built: set = set()
+    # A workflow can build its key in one of its OWN `run:` steps and consume it as
+    # `${{ steps.probe.outputs.key }}`, with no composite involved at all. Only actions
+    # were read for shell-built heads, so that key hit the delegation branch with nothing
+    # recovered and a publish `restore-keys: shared-` had nothing to compare against.
+    for pth in pr_workflow_paths:
+        built = _shell_built_key_prefixes(pth.read_text(ENC))
+        composite_keys.extend(built)
+        shell_built.update(built)
     for action_path in pr_reachable:
         composite_keys.extend(_extract_cache_keys(action_path))
         resolved = _resolved_inputs(pr_callers, action_path.parent.name)

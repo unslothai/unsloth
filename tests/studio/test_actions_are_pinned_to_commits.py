@@ -77,7 +77,13 @@ def _sources():
         yield path, path.read_text(encoding = "utf-8", errors = "ignore")
 
 
-_REF = re.compile(r"""^(?P<repo>[A-Za-z0-9][\w.-]*/[\w.-]+(?:/[\w.\-/]+)?)@(?P<rev>[\w.\-/]+)$""")
+# Split on the LAST `@` rather than enumerating what a ref may contain. Git ref names
+# accept characters the first version left out -- `+` among them, and
+# `git check-ref-format refs/tags/v1+build` agrees -- so `owner/action@v1+build` produced
+# no match and was omitted from every pinning check while still being a mutable tag. A
+# guard that silently skips what it cannot parse is worse than one that over-collects,
+# because the `_SHA` test below decides the verdict anyway.
+_REF = re.compile(r"""^(?P<repo>[A-Za-z0-9][\w.-]*/[\w.-]+(?:/[\w.\-/]+)?)@(?P<rev>[^@\s]+)$""")
 
 
 def _uses_values(node):
@@ -281,3 +287,22 @@ def test_every_split_exemption_still_exists_and_still_needs_one():
             f"{repo} is exempted from the one-commit rule but is now pinned to a single "
             f"commit, so the exemption is stale. Remove it from DELIBERATELY_SPLIT."
         )
+
+
+def test_the_reference_predicate_accepts_valid_git_ref_punctuation():
+    """A ref the scan cannot parse is a ref the guard silently skips.
+
+    Git ref names accept characters an enumerated character class leaves out: `+` among
+    them, and `git check-ref-format refs/tags/v1+build` agrees. `owner/action@v1+build`
+    produced no match and was omitted from every pinning check while still being a
+    mutable tag.
+    """
+    for ref in ("owner/action@v1+build", "owner/action@release~1", "owner/action@v1.2.3"):
+        match = _REF.match(ref)
+        assert match is not None, f"{ref} is a valid mutable reference and must be seen"
+        assert match.group("repo") == "owner/action", ref
+        assert not _SHA.match(match.group("rev")), f"{ref} is not a pin"
+
+    # Still not references, so over-collecting does not turn into over-reporting.
+    for ref in ("./.github/actions/x", "docker://alpine:3", "actions/checkout", ""):
+        assert _REF.match(ref) is None, ref
