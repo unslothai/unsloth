@@ -950,7 +950,8 @@ def test_notes_surface_is_borderless_and_lifts_in_dark_mode():
     # 0.06 white at the default gain of 1, so read the white and the amount rather than one
     # spelling. A darker inset, or a different amount, still fails.
     assert re.search(
-        r"dark:bg-(?:white/\[0\.06\]|\[rgb\(255_255_255_/_calc\(0\.06\*var\(--contrast-wash-gain)",
+        r"dark:bg-(?:white/\[0\.06\]"
+        r"|\[rgb\(255_255_255_/_calc\(0\.06\*var\(--contrast-wash-gain,\s*1\)\)\)\])",
         layout,
     ), "the dark notes surface is no longer a 0.06 white lift"
     # Streamdown's mt-6 clips the first heading against the scroller edge.

@@ -609,7 +609,7 @@ def test_expanded_titlebar_button_and_corner_match_sidebar_edge():
     # three lines. Both are the same 7rem at the default scale. A slot that stopped being
     # 7rem-based, or stopped keying off this branch, still fails.
     assert re.search(
-        r'showSidebarSurface && !pinned\s*\?\s*"[^"]*7rem[^"]*"\s*:\s*sidebarWidth',
+        r'showSidebarSurface && !pinned\s*\?\s*"[^"]*(?<![\d.])7rem(?![\w.])[^"]*"\s*:\s*sidebarWidth',
         source,
     ), "the unpinned sidebar surface no longer sizes the titlebar navigation slot from 7rem"
     assert "style={{ width: titlebarNavigationWidth }}" in source
