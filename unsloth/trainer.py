@@ -287,24 +287,26 @@ _HYBRID_CONFIG_MARKERS = (
 
 
 def _delegating_module_wrappers():
-    """`nn.Module` wrappers whose forward is `(*inputs, **kwargs)` over a real model.
+    """Wrappers whose forward is variadic over a real model, and the attribute holding it.
 
-    Resolved once, tolerantly: FSDP moved between torch versions and a missing
-    name must not turn the whole gate into an error.
+    The whole family, not one entry per report: a `forward(*args, **kwargs)`
+    answers yes for anything it holds, so reading it says nothing about the
+    checkpoint. What makes these safe to follow, and `PreTrainedModel.base_model`
+    not, is that the attribute below IS the checkpoint rather than an inner
+    decoder. Resolved tolerantly, because FSDP and dynamo have both moved between
+    torch versions and a missing name must not turn the gate into an error.
     """
-    import torch
-
     found = []
-    for module_path, name in (
-        ("torch.nn.parallel", "DataParallel"),
-        ("torch.nn.parallel", "DistributedDataParallel"),
-        ("torch.distributed.fsdp", "FullyShardedDataParallel"),
+    for module_path, name, attribute in (
+        ("torch.nn.parallel", "DataParallel", "module"),
+        ("torch.nn.parallel", "DistributedDataParallel", "module"),
+        ("torch.distributed.fsdp", "FullyShardedDataParallel", "module"),
+        ("torch._dynamo.eval_frame", "OptimizedModule", "_orig_mod"),
     ):
         try:
-            found.append(getattr(importlib.import_module(module_path), name))
+            found.append((getattr(importlib.import_module(module_path), name), attribute))
         except Exception:
             continue
-    del torch
     return tuple(found)
 
 
@@ -334,16 +336,23 @@ def _forward_accepts_packing_kwargs(model) -> bool:
     # **kwargs and answer for a model that does not.
     target = model
     for _ in range(4):
-        # The distributed wrappers delegate the same way: their forward is
-        # `(*inputs, **kwargs)`, so they answer yes for whatever they hold.
-        # `.module` on one of these IS the checkpoint, not an inner decoder,
-        # and the isinstance is exact so nothing else with a `.module`
-        # attribute is followed.
-        if isinstance(target, _DELEGATING_MODULE_WRAPPERS):
-            inner = getattr(target, "module", None)
-            if inner is not None and inner is not target:
-                target = inner
-                continue
+        # Delegating wrappers (DataParallel, DDP, FSDP, torch.compile) first: their
+        # forward is variadic, so they answer yes for whatever they hold. The
+        # isinstance is exact, so nothing else carrying the same attribute name is
+        # followed.
+        inner = next(
+            (
+                held
+                for wrapper, attribute in _DELEGATING_MODULE_WRAPPERS
+                if isinstance(target, wrapper)
+                for held in (getattr(target, attribute, None),)
+                if held is not None and held is not target
+            ),
+            None,
+        )
+        if inner is not None:
+            target = inner
+            continue
         # PEFT's own unwrap only. `PreTrainedModel.base_model` is a property
         # returning the inner decoder, whose forward usually does take
         # **kwargs, so following it would answer for the wrong module.

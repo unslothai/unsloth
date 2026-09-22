@@ -251,24 +251,26 @@ def test_a_string_model_that_can_take_the_metadata_is_left_alone(monkeypatch):
     assert instance.args.padding_free is True
 
 
-@pytest.mark.parametrize(
-    "wrapper",
-    [nn.DataParallel, nn.parallel.DistributedDataParallel],
-)
-def test_a_distributed_wrapper_is_unwrapped(wrapper, monkeypatch):
-    """Their forward is `(*inputs, **kwargs)`, so they answer yes for anything.
+def test_every_delegating_wrapper_is_unwrapped():
+    """Their forward is variadic, so they answer yes for anything they hold.
 
-    `.module` on one of these is the checkpoint itself, not the inner decoder
+    The attribute below is the checkpoint itself, not the inner decoder
     `base_model` would reach, so following it answers for the right module.
+    Driven over the whole registered family rather than a hand-written list, so
+    a wrapper added there without a matching unwrap fails here.
     """
+    from unsloth.trainer import _DELEGATING_MODULE_WRAPPERS
     from unsloth.trainer import _forward_accepts_packing_kwargs as gate
 
-    inner = _NoKwargs()
-    # Built without touching device placement or process groups.
-    wrapped = wrapper.__new__(wrapper)
-    nn.Module.__init__(wrapped)
-    wrapped.module = inner
+    assert _DELEGATING_MODULE_WRAPPERS, "nothing resolved: the gate would read the wrapper"
+    for wrapper, attribute in _DELEGATING_MODULE_WRAPPERS:
+        for inner, expected in ((_NoKwargs(), False), (_TakesKwargs(), True)):
+            # A subclass, because FSDP exposes `module` as a read-only property and a class
+            # attribute shadows it. Uninitialised on purpose: the gate reads only the type
+            # and the held model, so device placement, process groups and a compile step are
+            # all beside the question, and FSDP's __setattr__ rejects a stub anyway.
+            stub = type("_Stub", (wrapper,), {attribute: inner})
+            wrapped = stub.__new__(stub)
 
-    assert gate(wrapped.module) is False, "the negative control"
-    assert gate(wrapped) is False
-    assert gate(_TakesKwargs()) is True
+            assert gate(inner) is expected, f"{wrapper.__name__}: control"
+            assert gate(wrapped) is expected, wrapper.__name__
