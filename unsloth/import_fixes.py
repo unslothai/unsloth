@@ -1641,7 +1641,6 @@ def fix_transformers_fp8_modulelist_experts():
     def _process_model_before_weight_loading(self, model, *args, **kwargs):
         try:
             import transformers.integrations.finegrained_fp8 as fp8_integration
-
             current = getattr(fp8_integration, "replace_with_fp8_linear", None)
             if current is not None and _fp8_replace_swaps_named_experts(current):
                 fp8_integration.replace_with_fp8_linear = _wrap_fp8_replace_for_modulelist_experts(

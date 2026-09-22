@@ -166,4 +166,3 @@ def pop_modelopt_key_mapping(config, kwargs: dict) -> None:
         # A user rule for the same pattern wins.
         merged.setdefault(pattern, target)
     kwargs["key_mapping"] = merged
-

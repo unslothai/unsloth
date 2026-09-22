@@ -2608,6 +2608,7 @@ class FastLlamaModel:
         # A ModelOpt FP8 checkpoint was rewritten to the transformers fp8 form above. The rewrite
         # lives on model_config, so it has to be the config the weights load against.
         from .modelopt_fp8 import UNSLOTH_MODELOPT_KEY_MAPPING_ATTR, pop_modelopt_key_mapping
+
         _modelopt_rewritten = hasattr(model_config, UNSLOTH_MODELOPT_KEY_MAPPING_ATTR)
         pop_modelopt_key_mapping(model_config, kwargs)
         # Correct UNSLOTH_MODEL_NAME's bnb tokens now the effective bnb state is known (the per-load env
