@@ -585,3 +585,13 @@ def test_wrapped_many_to_many_op_still_passes_the_converter_type_check():
     wrapped = _with_original_sources(op, sources, sources)
     assert isinstance(wrapped, _WithOriginalSources) and isinstance(wrapped, ErnieFuseAndSplitTextVisionExperts)
     WeightConverter(source_patterns = [s + "_packed$" for s in sources] + [s + "$" for s in sources], target_patterns = targets, operations = [wrapped])
+
+
+def test_a_pickled_shard_is_refused_rather_than_read_in_the_model_dtype():
+    """A .bin shard is materialised in the model dtype before any converter runs, so the packed
+    words would be cast to bf16 garbage; the plan builder refuses it with an instruction."""
+    from unsloth.models.compressed_tensors_bnb import _checkpoint_keys
+
+    with pytest.raises(RuntimeError, match = "safetensors"):
+        _checkpoint_keys(["/x/pytorch_model-00001-of-00002.bin"])
+    assert _checkpoint_keys([]) == []

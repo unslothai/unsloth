@@ -41,6 +41,7 @@ Needs the transformers 5 weight-conversion loader; on older transformers the
 loader keeps its previous behaviour (load as published).
 """
 
+import os
 import re
 from typing import Any, Optional
 
@@ -242,6 +243,15 @@ def _checkpoint_keys(checkpoint_files) -> list:
         from safetensors import safe_open
     except Exception:
         return keys
+    others = [str(p) for p in (checkpoint_files or []) if not str(p).endswith(".safetensors")]
+    if others:
+        # A pickled shard is read whole in the model dtype before any converter sees it, which
+        # turns the packed int32 words into bf16 garbage with nothing left to decompress.
+        raise RuntimeError(
+            "Unsloth: re-quantizing a compressed-tensors packed checkpoint on the fly needs "
+            f"safetensors shards; {os.path.basename(others[0])} is not one. Convert the "
+            "checkpoint to safetensors, or load it as published without `load_in_4bit = True`."
+        )
     for path in checkpoint_files or []:
         if not str(path).endswith(".safetensors"):
             continue
@@ -598,8 +608,12 @@ def install_compressed_tensors_bnb_quantizer() -> bool:
                         conv = WeightConverter(
                             source_patterns=new_sources,
                             target_patterns=conv._original_target_patterns,
+                            # Only the op that receives the decompressed buckets is adapted; a
+                            # later op in the chain (Concatenate after MergeModulelist) gets the
+                            # previous op's output under the previous op's own contract.
                             operations=[op_cls(ct_config, dtype, stacked=True, scheme=scheme)]
-                            + [with_sources_cls(op, original_sources, weight_sources) for op in conv.operations],
+                            + [with_sources_cls(conv.operations[0], original_sources, weight_sources)]
+                            + list(conv.operations[1:]),
                         )
                         self._unsloth_keep_storage_dtype(conv._original_target_patterns)
                 updated.append(conv)
