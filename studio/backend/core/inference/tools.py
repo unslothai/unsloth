@@ -15766,7 +15766,18 @@ def _web_search_images_suffix(client, query, wanted, cancel_event, website_polic
 # The first component of every network module and of every recognised prefix. `urllib.request`
 # and `urllib3` share `urllib`; `http.client` and `httpx` share `http`.
 _NETWORK_ROOT_NAMES = frozenset(
-    {"socket", "urllib", "urllib3", "http", "httpx", "requests", "aiohttp"}
+    {
+        "socket",
+        "urllib",
+        "urllib3",
+        "http",
+        "httpx",
+        "requests",
+        "aiohttp",
+        "paramiko",
+        "fabric",
+        "asyncssh",
+    }
 )
 
 
@@ -16190,20 +16201,34 @@ def _check_signal_escape_patterns(code: str):
         "aiohttp.ClientSession",
     )
     # The modules an alias is resolved back to, so `import urllib.request as u` and `from urllib.request import
-    # urlopen` reach the prefixes above exactly as the spelled-out call does.
-    # The first component of every prefix above: one lookup rejects a callee that cannot be one.
-    _NETWORK_ROOTS = frozenset(p.partition(".")[0] for p in _NETWORK_FQ_PREFIXES)
+    # urlopen` reach the prefixes above exactly as the spelled-out call does. The submodules that define a
+    # listed name count too: `from urllib3.poolmanager import PoolManager` is the same class.
     _NETWORK_MODULES = frozenset(
         {
             "socket",
             "urllib.request",
             "urllib3",
+            "urllib3.connection",
+            "urllib3.connectionpool",
+            "urllib3.poolmanager",
+            "urllib3.util.connection",
+            "urllib3.contrib.socks",
             "http.client",
             "requests",
+            "requests.api",
+            "requests.sessions",
             "httpx",
             "aiohttp",
+            "aiohttp.client",
+            "paramiko",
+            "paramiko.client",
+            "paramiko.transport",
+            "fabric",
+            "fabric.connection",
+            "asyncssh",
         }
     )
+    _HTTP_VERBS = ("get", "post", "put", "delete", "patch", "head", "options")
     # Calls whose FIRST positional argument is the host or the URL. `socket.socket(AF_INET, ...)` and the
     # session/client constructors take neither, so an unreadable first argument says nothing about them.
     _NETWORK_URL_ARG0_FQ = frozenset(
@@ -16212,46 +16237,174 @@ def _check_signal_escape_patterns(code: str):
             "socket.getaddrinfo",
             "urllib.request.urlopen",
             "urllib.request.urlretrieve",
-            "requests.get",
-            "requests.post",
-            "requests.put",
-            "requests.delete",
-            "requests.patch",
-            "requests.head",
             "http.client.HTTPConnection",
             "http.client.HTTPSConnection",
-            "httpx.get",
-            "httpx.post",
-            "httpx.put",
-            "httpx.patch",
-            "httpx.delete",
+            *(
+                f"{module}.{verb}"
+                for module in ("requests", "requests.api", "httpx")
+                for verb in _HTTP_VERBS
+            ),
         }
     )
-    # Where the destination sits in a recognised egress call: the positional index, then the keyword
-    # spellings that carry it instead. Reading only the first positional left the rule below
-    # sidesteppable by one word, `requests.get(url = "http://evil.example/")`, which is the spelling
-    # a caller reaches for the moment there is a `timeout =` next to it.
+    # A host argument is a bare host (`"example.com"`, `"user@example.com:22"` or a `(host, port)`
+    # tuple), where a URL argument must carry a scheme before its host.
+    _HOST_ARG_ROOTS = ("socket.", "http.client.")
+    # Where the destination sits in a recognised egress call: the positional index (None when it is
+    # keyword-only), the keyword spellings that carry it instead, and whether it is a URL or a host.
+    # Reading only the first positional left the rule below sidesteppable by one word,
+    # `requests.get(url = "http://evil.example/")`, which is the spelling a caller reaches for the
+    # moment there is a `timeout =` next to it.
     _NETWORK_DESTINATION_ARG = {
-        fq: (0, ("url", "fullurl", "host", "address")) for fq in _NETWORK_URL_ARG0_FQ
+        fq: (
+            0,
+            ("url", "fullurl", "host", "address"),
+            "host" if fq.startswith(_HOST_ARG_ROOTS) else "url",
+        )
+        for fq in _NETWORK_URL_ARG0_FQ
     }
-    # `requests.request(method, url)` and its httpx twin carry the destination second.
-    _NETWORK_DESTINATION_ARG["requests.request"] = (1, ("url",))
-    _NETWORK_DESTINATION_ARG["httpx.request"] = (1, ("url",))
+    # `requests.request(method, url)` and its httpx and aiohttp twins carry the destination second.
     # `urllib3.request(method, url, ...)` is the same shape, and it matches the broad `urllib3.`
     # prefix, so without an entry here the fallback read argument 0 (the method) and never looked
     # at the destination. Signature checked against the installed urllib3 2.8.0.
-    _NETWORK_DESTINATION_ARG["urllib3.request"] = (1, ("url",))
+    _NETWORK_DESTINATION_ARG.update(
+        {
+            f"{module}.request": (1, ("url",), "url")
+            for module in (
+                "requests",
+                "requests.api",
+                "httpx",
+                "urllib3",
+                "aiohttp",
+                "aiohttp.client",
+            )
+        }
+    )
+    _NETWORK_DESTINATION_ARG["httpx.stream"] = (1, ("url",), "url")
+    # Constructors whose instances carry the methods below, so `s = requests.Session(); s.get(url)`
+    # reads as `requests.Session.get`. `requests.session()` is a factory for the same object.
+    _VERB_CLIENTS = (
+        "requests.Session",
+        "requests.sessions.Session",
+        "requests.session",
+        "requests.sessions.session",
+        "httpx.Client",
+        "httpx.AsyncClient",
+        "aiohttp.ClientSession",
+        "aiohttp.client.ClientSession",
+    )
+    _POOL_CLIENTS = (
+        "urllib3.PoolManager",
+        "urllib3.ProxyManager",
+        "urllib3.poolmanager.PoolManager",
+        "urllib3.poolmanager.ProxyManager",
+    )
+    _SOCKET_CLIENTS = ("socket.socket", "paramiko.SSHClient", "paramiko.client.SSHClient")
+    _CLIENT_CLASSES = frozenset((*_VERB_CLIENTS, *_POOL_CLIENTS, *_SOCKET_CLIENTS))
+    # Each entry below comes from the library's own signature: `Client.stream(method, url)` is not
+    # `Client.get(url)`, pools have no verbs, and paramiko names its host `hostname`.
+    _NETWORK_DESTINATION_ARG.update(
+        {
+            **{
+                f"{client}.{verb}": (0, ("url",), "url")
+                for client in _VERB_CLIENTS
+                for verb in _HTTP_VERBS
+            },
+            **{
+                f"{client}.request": (1, ("url",), "url")
+                for client in (*_VERB_CLIENTS, *_POOL_CLIENTS)
+            },
+            **{
+                f"{client}.stream": (1, ("url",), "url")
+                for client in ("httpx.Client", "httpx.AsyncClient")
+            },
+            **{
+                f"{client}.ws_connect": (0, ("url",), "url")
+                for client in ("aiohttp.ClientSession", "aiohttp.client.ClientSession")
+            },
+            # A client built on a base URL sends there even when each call passes a bare path.
+            **{
+                client: (None, ("base_url",), "url")
+                for client in ("httpx.Client", "httpx.AsyncClient")
+            },
+            **{
+                client: (0, ("base_url",), "url")
+                for client in ("aiohttp.ClientSession", "aiohttp.client.ClientSession")
+            },
+            # A request built ahead of the call carries its URL where no literal can be read, so the
+            # send fails closed rather than trusting a URL chosen elsewhere.
+            **{
+                f"{client}.send": (0, ("request",), "url")
+                for client in (
+                    "httpx.Client",
+                    "httpx.AsyncClient",
+                    "requests.Session",
+                    "requests.sessions.Session",
+                )
+            },
+            **{
+                f"{client}.{method}": (1, ("url",), "url")
+                for client in _POOL_CLIENTS
+                for method in ("urlopen", "request_encode_url", "request_encode_body")
+            },
+            **{f"{client}.connection_from_url": (0, ("url",), "url") for client in _POOL_CLIENTS},
+            # Each urllib3 URL factory under the top-level name and under the module defining it.
+            **{
+                f"{module}.{factory}": (0, ("url",), "url")
+                for factory, defined_in in (
+                    ("connection_from_url", "urllib3.connectionpool"),
+                    ("proxy_from_url", "urllib3.poolmanager"),
+                )
+                for module in ("urllib3", defined_in)
+            },
+            **{
+                f"{module}.ProxyManager": (0, ("proxy_url",), "url")
+                for module in ("urllib3", "urllib3.poolmanager")
+            },
+            "urllib3.contrib.socks.SOCKSProxyManager": (0, ("proxy_url",), "url"),
+            **{
+                f"{module}.{pool}": (0, ("host",), "host")
+                for module in ("urllib3", "urllib3.connectionpool")
+                for pool in ("HTTPConnectionPool", "HTTPSConnectionPool")
+            },
+            **{
+                f"urllib3.connection.{conn}": (0, ("host",), "host")
+                for conn in ("HTTPConnection", "HTTPSConnection")
+            },
+            "urllib3.util.connection.create_connection": (0, ("address",), "host"),
+            **{f"socket.socket.{m}": (0, ("address",), "host") for m in ("connect", "connect_ex")},
+            **{
+                f"{client}.connect": (0, ("hostname", "host"), "host")
+                for client in ("paramiko.SSHClient", "paramiko.client.SSHClient")
+            },
+            **{
+                f"{module}.Transport": (0, ("sock",), "host")
+                for module in ("paramiko", "paramiko.transport")
+            },
+            **{
+                f"{module}.Connection": (0, ("host",), "host")
+                for module in ("fabric", "fabric.connection")
+            },
+            "asyncssh.connect": (0, ("host",), "host"),
+        }
+    )
+    # Every call with a destination entry is recognised, on top of the prefixes above.
+    _NETWORK_FQ_PREFIXES = _NETWORK_FQ_PREFIXES + tuple(
+        fq
+        for fq in sorted(_NETWORK_DESTINATION_ARG)
+        if not any(fq.startswith(p) for p in _NETWORK_FQ_PREFIXES)
+    )
+    # The first component of every prefix above: one lookup rejects a callee that cannot be one.
+    _NETWORK_ROOTS = frozenset(p.partition(".")[0] for p in _NETWORK_FQ_PREFIXES)
+    # An explicit proxy is where the socket connects, whatever the request URL says.
+    _PROXY_KEYWORDS = ("proxy", "proxies")
     _UPLOAD_HTTP_METHODS = (
-        "requests.post",
-        "requests.put",
-        "requests.patch",
-        "requests.delete",
-        "requests.request",
-        "httpx.post",
-        "httpx.put",
-        "httpx.patch",
-        "httpx.delete",
-        "httpx.request",
+        *(
+            f"{owner}.{verb}"
+            for owner in ("requests", "requests.api", "httpx", *_VERB_CLIENTS)
+            for verb in ("post", "put", "patch", "delete", "request")
+        ),
+        "aiohttp.request",
+        "aiohttp.client.request",
         "urllib.request.urlopen",
         "urllib.request.Request",
     )
@@ -16930,6 +17083,64 @@ def _check_signal_escape_patterns(code: str):
             return out or [("", False)]
         return [("", False)]
 
+    def _alternatives(value) -> "list[ast.AST]":
+        """Every expression a value can evaluate to: both arms of `a if c else b`, each operand of
+        `a or b`, and the value a walrus passes on. A client or a network function on either path
+        can be the one that runs."""
+        out: "list[ast.AST]" = []
+        stack = [value]
+        while stack:
+            cur = stack.pop()
+            if isinstance(cur, ast.IfExp):
+                stack.extend((cur.body, cur.orelse))
+            elif isinstance(cur, ast.BoolOp):
+                stack.extend(cur.values)
+            elif isinstance(cur, ast.NamedExpr):
+                stack.append(cur.value)
+            else:
+                out.append(cur)
+        return out
+
+    def _constant_getattr(node) -> "ast.Attribute | None":
+        """`getattr(obj, "name")` read as the `obj.name` it is."""
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "getattr"
+            and len(node.args) >= 2
+            and isinstance(node.args[1], ast.Constant)
+            and isinstance(node.args[1].value, str)
+        ):
+            return ast.Attribute(value = node.args[0], attr = node.args[1].value, ctx = ast.Load())
+        return None
+
+    def _paired(target, value):
+        """The `(target, value)` pairs an assignment binds, matching a tuple target to a tuple value
+        element by element, around a starred target. A shape that cannot be matched binds nothing
+        this screen can follow."""
+        if not isinstance(target, (ast.Tuple, ast.List)):
+            yield target, value
+            return
+        if not isinstance(value, (ast.Tuple, ast.List)) or any(
+            isinstance(e, ast.Starred) for e in value.elts
+        ):
+            return
+        elts = target.elts
+        star = next((i for i, e in enumerate(elts) if isinstance(e, ast.Starred)), None)
+        if star is None:
+            if len(elts) != len(value.elts):
+                return
+            pairs = list(zip(elts, value.elts))
+        else:
+            before, after = elts[:star], elts[star + 1 :]
+            if len(value.elts) < len(before) + len(after):
+                return
+            pairs = list(zip(before, value.elts)) + list(
+                zip(after, value.elts[len(value.elts) - len(after) :])
+            )
+        for t, v in pairs:
+            yield from _paired(t, v)
+
     class NetworkAndIoVisitor(ast.NodeVisitor):
         def __init__(self):
             # Alias -> the module it binds, and bare name -> the network function it binds. The shell-exec half of
@@ -17009,6 +17220,73 @@ def _check_signal_escape_patterns(code: str):
             self.collecting = True
             # Whether any alias map can ever be non-empty. See `_NETWORK_SOURCE_HINTS`.
             self.aliases_possible = network_possible
+            # Receiver path -> every client class ever stored there, accumulated like the maps
+            # above, so `s = requests.Session(); s.get(url)` reads as `requests.Session.get`. A path
+            # is a name or a dotted attribute chain. A method's own first parameter is written as
+            # its class family, `<A>`, so `self.s` set in one method and `this.s` read in another,
+            # or in a subclass, are the same attribute, while an unrelated class's `self.s` is not.
+            self.instance_aliases: "dict[str, set[str]]" = {}
+            # Receiver path -> every value stored in its `proxies` / `proxy` attribute, including
+            # through `update()` and a subscript, since a session sends through them.
+            self.proxy_values: "dict[str, list[ast.AST]]" = {}
+            # Class id -> its family: the classes in this file joined through their base names,
+            # since an attribute set in a base is read through a subclass and the other way round.
+            self.class_family: "dict[int, str]" = {}
+            # Method id -> (its first parameter, its class family), and the stack of those in
+            # effect while visiting.
+            self.method_self: "dict[int, tuple[str, str]]" = {}
+            if network_possible:
+                classes = [n for n in nodes if isinstance(n, ast.ClassDef)]
+                parent = {c.name: c.name for c in classes}
+
+                def find(name):
+                    while parent[name] != name:
+                        name = parent[name]
+                    return name
+
+                for c in classes:
+                    for base in c.bases:
+                        if isinstance(base, ast.Name) and base.id in parent:
+                            parent[find(base.id)] = find(c.name)
+                for c in classes:
+                    family = f"<{find(c.name)}>"
+                    self.class_family[id(c)] = family
+                    for fn in c.body:
+                        if isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                            params = fn.args.posonlyargs + fn.args.args
+                            if params:
+                                self.method_self[id(fn)] = (params[0].arg, family)
+            self.self_names: "list[tuple[str, str]]" = []
+
+        def _receiver_path(self, expr) -> "str | None":
+            """`s`, `obj.session` or `<self>.session` for a name or attribute chain, else None."""
+            parts: list[str] = []
+            cur = expr
+            while isinstance(cur, ast.Attribute):
+                parts.insert(0, cur.attr)
+                cur = cur.value
+            if not isinstance(cur, ast.Name):
+                return None
+            root = next((f for name, f in reversed(self.self_names) if name == cur.id), cur.id)
+            return ".".join([root] + parts)
+
+        def _instances_named_by(self, value, at) -> "set[str]":
+            """Every client class a value can hold: a constructor call, or a copy of a path that
+            already holds one."""
+            found: set[str] = set()
+            for alt in _alternatives(value):
+                if isinstance(alt, ast.Call):
+                    found.update(
+                        c for c in self._fq_candidates(alt.func, at) if c in _CLIENT_CLASSES
+                    )
+                    continue
+                path = self._receiver_path(alt)
+                if path is None:
+                    continue
+                if isinstance(alt, ast.Name) and self._is_shadowed(alt.id, at):
+                    continue
+                found.update(self.instance_aliases.get(path, ()))
+            return found
 
         def _shadowing_names(self, node) -> "list[str]":
             """The names a node binds IN THE ENCLOSING scope, which is the only scope that can
@@ -17034,6 +17312,11 @@ def _check_signal_escape_patterns(code: str):
                 # fetch(url)` puts all three on line 1, and comparing lines alone made the
                 # rebinding invisible, so a harmless local call was refused as `requests.get`.
                 where = (getattr(node, "lineno", 0), getattr(node, "col_offset", 0))
+                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                    # A def or class binds its name only after its defaults, decorators and bases
+                    # have run: `import requests as fetch` then
+                    # `def fetch(arg = fetch.get(url))` calls `requests.get` first.
+                    where = (node.body[0].lineno, node.body[0].col_offset)
                 for name in self._shadowing_names(node):
                     if name in exempt:
                         # A statement that REGISTERS an alias must not also shadow the name it just
@@ -17133,7 +17416,24 @@ def _check_signal_escape_patterns(code: str):
                             self.visit(item)
                 elif isinstance(value, ast.AST):
                     self.visit(value)
+            args = getattr(node, "args", None)
+            if self.collecting and args is not None:
+                # A default is what the parameter holds when the caller passes nothing:
+                # `def fetch(f = requests.get): f(url)` calls `requests.get`.
+                positional = args.posonlyargs + args.args
+                defaults = list(
+                    zip(positional[len(positional) - len(args.defaults) :], args.defaults)
+                )
+                defaults += [
+                    (a, d) for a, d in zip(args.kwonlyargs, args.kw_defaults) if d is not None
+                ]
+                where = (getattr(node, "lineno", 0), getattr(node, "col_offset", 0))
+                for param, default in defaults:
+                    self._carry(ast.Name(id = param.arg, ctx = ast.Store()), default, where, node)
             self.scope_stack.append(id(node))
+            self_name = self.method_self.get(id(node))
+            if self_name is not None:
+                self.self_names.append(self_name)
             try:
                 body = node.body
                 if isinstance(body, list):
@@ -17144,6 +17444,8 @@ def _check_signal_escape_patterns(code: str):
                     self.visit(body)
             finally:
                 self.scope_stack.pop()
+                if self_name is not None:
+                    self.self_names.pop()
 
         visit_FunctionDef = _visit_scope
         visit_AsyncFunctionDef = _visit_scope
@@ -17214,6 +17516,9 @@ def _check_signal_escape_patterns(code: str):
             collapsing the set to one candidate resolved the later `s = r; s.get(...)` to the
             unrecognised `aiohttp.get` and let a hostile host through.
             """
+            alts = _alternatives(value)
+            if alts != [value]:
+                return set().union(*(self._modules_named_by(alt, at) for alt in alts))
             parts: list[str] = []
             cur = value
             while isinstance(cur, ast.Attribute):
@@ -17247,6 +17552,10 @@ def _check_signal_escape_patterns(code: str):
             `from requests import get as fetch` then `fetch = fetch`, or `g = fetch`, recorded the
             target as shadowed and left the later call with no candidate at all.
             """
+            alts = _alternatives(value)
+            if alts != [value]:
+                return set().union(*(self._functions_named_by(alt, at) for alt in alts))
+            value = _constant_getattr(value) or value
             if isinstance(value, ast.Name):
                 if self._is_shadowed(value.id, at):
                     # Same stale-source rule as `_modules_named_by`: `fetch = print` before
@@ -17261,25 +17570,84 @@ def _check_signal_escape_patterns(code: str):
                 }
             return set()
 
+        def _named_by(self, value, at) -> "tuple[set[str], set[str], set[str]]":
+            """The network modules, functions and client classes a value can name at `at`."""
+            return (
+                self._modules_named_by(value, at),
+                self._functions_named_by(value, at),
+                self._instances_named_by(value, at),
+            )
+
+        def _register(self, target, named, node) -> bool:
+            """Record what `_named_by` found on a target. True when a name took an alias, which
+            exempts that name from the shadow the same statement records."""
+            modules, functions, instances = named
+            path = self._receiver_path(target)
+            family = self.class_family.get(self.scope_stack[-1])
+            if family is not None and isinstance(target, ast.Name):
+                # A name bound in a class body is a class attribute, read as `self.<name>`.
+                if instances:
+                    self.instance_aliases.setdefault(f"{family}.{target.id}", set()).update(
+                        instances
+                    )
+                instances = set()
+            elif path is not None and instances:
+                self.instance_aliases.setdefault(path, set()).update(instances)
+            if not isinstance(target, ast.Name):
+                return False
+            if modules:
+                self.module_aliases.setdefault(target.id, set()).update(modules)
+            if functions:
+                self.func_aliases.setdefault(target.id, set()).update(functions)
+            if modules or functions or instances:
+                self._register_alias(target.id, node)
+                return True
+            return False
+
+        def _carry(self, target, value, at, node) -> bool:
+            return self._register(target, self._named_by(value, at), node)
+
+        def _record_proxy(self, target, value) -> None:
+            """`s.proxies = {...}` and `s.proxies["https"] = ...` configure where `s` connects."""
+            if isinstance(target, ast.Subscript):
+                target = target.value
+            if isinstance(target, ast.Attribute) and target.attr in _PROXY_KEYWORDS:
+                path = self._receiver_path(target.value)
+                if path is not None:
+                    self.proxy_values.setdefault(path, []).append(value)
+
         def visit_Assign(self, node):
             if not self.collecting:
                 self.generic_visit(node)
                 return
             at = (getattr(node, "lineno", 0), getattr(node, "col_offset", 0))
-            carried = self._modules_named_by(node.value, at)
-            carried_functions = self._functions_named_by(node.value, at)
+            # Every value is read before any target is bound, the way the runtime does it:
+            # `f, g = g, f` swaps.
+            pairs = [
+                (target, value, self._named_by(value, at))
+                for whole in node.targets
+                for target, value in _paired(whole, node.value)
+            ]
             registered: set[str] = set()
-            for target in node.targets:
-                if not isinstance(target, ast.Name):
-                    continue
-                if carried:
-                    self.module_aliases.setdefault(target.id, set()).update(carried)
-                if carried_functions:
-                    self.func_aliases.setdefault(target.id, set()).update(carried_functions)
-                if carried or carried_functions:
-                    self._register_alias(target.id, node)
+            for target, value, named in pairs:
+                self._record_proxy(target, value)
+                if self._register(target, named, node):
                     registered.add(target.id)
             self._rebind(node, exempt = registered)
+            self.generic_visit(node)
+
+        def visit_NamedExpr(self, node):
+            if self.collecting and isinstance(node.target, ast.Name):
+                at = (getattr(node, "lineno", 0), getattr(node, "col_offset", 0))
+                self._carry(node.target, node.value, at, node)
+            self.generic_visit(node)
+
+        def visit_withitem(self, node):
+            # `with requests.Session() as s` binds the session: these clients return themselves.
+            if self.collecting and node.optional_vars is not None:
+                ctx = node.context_expr
+                at = (getattr(ctx, "lineno", 0), getattr(ctx, "col_offset", 0))
+                self._carry(node.optional_vars, ctx, at, ctx)
             self.generic_visit(node)
 
         def _fq_candidates(
@@ -17288,11 +17656,23 @@ def _check_signal_escape_patterns(code: str):
             at = (0, 0),
         ) -> "list[str]":
             """Every fully qualified name a callee could be, written spelling first."""
+            alts = _alternatives(func)
+            if alts != [func]:
+                # `(requests.get if flag else print)(url)` may call either.
+                out: list[str] = []
+                for alt in alts:
+                    out.extend(c for c in self._fq_candidates(alt, at) if c not in out)
+                return out
             parts: list[str] = []
             cur = func
-            while isinstance(cur, ast.Attribute):
-                parts.insert(0, cur.attr)
-                cur = cur.value
+            while True:
+                if isinstance(cur, ast.Attribute):
+                    parts.insert(0, cur.attr)
+                    cur = cur.value
+                elif _constant_getattr(cur) is not None:
+                    cur = _constant_getattr(cur)
+                else:
+                    break
             if isinstance(cur, ast.Name):
                 parts.insert(0, cur.id)
             written = ".".join(parts) if parts else ""
@@ -17313,6 +17693,32 @@ def _check_signal_escape_patterns(code: str):
                 starred = self._star_imported_fq(parts[0], at)
                 if starred:
                     candidates.append(starred)
+            # A method on a client, reached through the constructor call itself or through a path
+            # that holds one: `requests.Session().get` and `s.get` both read as
+            # `requests.Session.get`.
+            held: "list[tuple[set[str], list[str]]]" = []
+            if not isinstance(cur, ast.Name):
+                if parts:
+                    held.append((self._instances_named_by(cur, at), parts))
+            elif self.instance_aliases:
+                root = next(
+                    (f for name, f in reversed(self.self_names) if name == parts[0]), parts[0]
+                )
+                for k in range(1, len(parts)):
+                    path = ".".join([root] + parts[1:k])
+                    if path in self.instance_aliases and not (
+                        k == 1 and self._is_shadowed(parts[0], at)
+                    ):
+                        held.append((self.instance_aliases[path], parts[k:]))
+            for classes, rest in held:
+                for cls in sorted(classes):
+                    fq = ".".join([cls] + rest)
+                    # Only a method the table places counts: `s.mount(prefix, adapter)` sends
+                    # nothing, though `requests.Session` is a recognised prefix.
+                    if (
+                        fq in _NETWORK_DESTINATION_ARG or fq in _UPLOAD_HTTP_METHODS
+                    ) and fq not in candidates:
+                        candidates.append(fq)
             return candidates
 
         def _unwrapped_url_arg(self, node: ast.AST) -> ast.AST:
@@ -17339,6 +17745,15 @@ def _check_signal_escape_patterns(code: str):
 
         def visit_Call(self, node):
             if self.collecting:
+                func = node.func
+                if (
+                    isinstance(func, ast.Attribute)
+                    and func.attr in ("update", "setdefault")
+                    and isinstance(func.value, ast.Attribute)
+                ):
+                    # `s.proxies.update({...})`, `update(https = ...)` and `setdefault(k, v)`.
+                    for value in [*node.args, *(kw.value for kw in node.keywords)]:
+                        self._record_proxy(func.value, value)
                 self.generic_visit(node)
                 return
             # Resolving an alias may only ADD a way to recognise this call, never take one away.
@@ -17367,6 +17782,31 @@ def _check_signal_escape_patterns(code: str):
             )
             fq = recognised[0] if recognised else (fq_candidates[0] if fq_candidates else "")
 
+            # `getattr(requests, name)(url)` picks the network function at runtime, so neither the
+            # call nor where it sends can be read.
+            chooser = node.func
+            if (
+                network_possible
+                and isinstance(chooser, ast.Call)
+                and isinstance(chooser.func, ast.Name)
+                and chooser.func.id == "getattr"
+                and len(chooser.args) >= 2
+                and _constant_getattr(chooser) is None
+            ):
+                at = (getattr(node, "lineno", 0), getattr(node, "col_offset", 0))
+                owner = chooser.args[0]
+                if self._modules_named_by(owner, at) or self._instances_named_by(owner, at):
+                    network_calls.append(
+                        {
+                            "type": "unreadable_host_blocked",
+                            "line": getattr(node, "lineno", -1),
+                            "description": (
+                                "Blocked: network call is chosen at runtime; "
+                                "call the function by name"
+                            ),
+                        }
+                    )
+
             hf_upload_name = _method_call_hf_upload_name(node)
             if hf_upload_name is not None:
                 violation = _hf_upload_violation(node, hf_upload_name)
@@ -17379,8 +17819,14 @@ def _check_signal_escape_patterns(code: str):
                         }
                     )
 
-            # Direct sock.connect((host, port)) bypasses the FQ-prefix branch.
-            if isinstance(node.func, ast.Attribute) and node.func.attr == "connect" and node.args:
+            # `x.connect((host, port))` on a receiver this screen cannot place is checked for a
+            # literal host only; a tracked socket or SSH client goes through the table below.
+            if (
+                not recognised
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "connect"
+                and node.args
+            ):
                 a0 = node.args[0]
                 host_lit = None
                 if isinstance(a0, ast.Tuple) and a0.elts:
@@ -17442,16 +17888,33 @@ def _check_signal_escape_patterns(code: str):
                 specs = [
                     _NETWORK_DESTINATION_ARG[c] for c in recognised if c in _NETWORK_DESTINATION_ARG
                 ]
-                destinations: "list[tuple[ast.AST, bool]]" = []
-                for index, keywords in specs:
-                    if len(node.args) > index:
+                destinations: "list[tuple[ast.AST, bool, str]]" = []
+                for index, keywords, kind in specs:
+                    if index is not None and len(node.args) > index:
                         found = node.args[index]
                     else:
                         found = next(
                             (kw.value for kw in node.keywords or [] if kw.arg in keywords), None
                         )
                     if found is not None:
-                        destinations.append((found, True))
+                        destinations.append((found, True, kind))
+                # A proxy is where the socket really connects: one passed to this call, or one
+                # configured on the client it is called on.
+                proxies = [kw.value for kw in node.keywords or [] if kw.arg in _PROXY_KEYWORDS]
+                if isinstance(node.func, ast.Attribute):
+                    receiver = self._receiver_path(node.func.value)
+                    proxies.extend(self.proxy_values.get(receiver, ()) if receiver else ())
+                for proxy in proxies:
+                    if isinstance(proxy, ast.Dict):
+                        if None in proxy.keys:
+                            unreadable = True  # `{**other}` merges a mapping not here to read
+                        values = proxy.values
+                    else:
+                        values = [proxy]
+                    for value in values:
+                        # `proxies = None` and `{"https": None}` switch the proxy off.
+                        if not (isinstance(value, ast.Constant) and value.value is None):
+                            destinations.append((value, True, "url"))
                 if specs:
                     # A splat can carry the destination past both spellings, and its contents are
                     # not here to read: `requests.get(**{"url": "http://evil.example/"})`.
@@ -17462,8 +17925,8 @@ def _check_signal_escape_patterns(code: str):
                 elif node.args:
                     # Not a call whose destination this screen knows how to locate, so arg0 is read
                     # for a literal host only and never made to fail closed.
-                    destinations.append((node.args[0], False))
-                for destination, fails_closed in destinations:
+                    destinations.append((node.args[0], False, "url"))
+                for destination, fails_closed, kind in destinations:
                     a0 = self._unwrapped_url_arg(destination)
                     is_tuple = isinstance(a0, ast.Tuple)
                     read = None if is_tuple and not a0.elts else (a0.elts[0] if is_tuple else a0)
@@ -17474,9 +17937,9 @@ def _check_signal_escape_patterns(code: str):
                     )
                     for head, whole in candidates:
                         host = None
-                        if is_tuple:
-                            if whole and head:
-                                host = head
+                        if is_tuple or kind == "host":
+                            if whole and head.strip():
+                                host = head.strip()
                         else:
                             # Leading whitespace is stripped by the client before the URL is
                             # parsed, so it cannot be used to hide the host: checked against
@@ -17486,7 +17949,9 @@ def _check_signal_escape_patterns(code: str):
                             # is still unparsable after stripping is left as no host, which is
                             # right: the client raises `MissingSchema` on it rather than reaching
                             # anything.
-                            reading = head.lstrip()
+                            # The URL parser also drops tab, CR and LF anywhere in the URL, so
+                            # `"ht\ttp://evil.example/"` is fetched from `evil.example`.
+                            reading = re.sub(r"[\t\r\n]", "", head).lstrip()
                             m = re.match(r"^\w+://([^/?#]+)", reading)
                             # The host ends at the first `/?#`, so a literal truncated past that point
                             # still names it in full; one truncated inside it does not
