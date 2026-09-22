@@ -812,6 +812,11 @@ def _repair_module(
         lambda *a, **k: contextlib.nullcontext(next(uncontended)),
     )
     monkeypatch.setattr(module, "_REPAIR_LOCK_POLL_S", 0)
+    recorded = []
+    monkeypatch.setattr(
+        module.install_manifest, "update_manifest", lambda **extra: recorded.append(extra)
+    )
+    module.recorded = recorded
     ran = []
     monkeypatch.setattr(module, "_diffusers_main_step", lambda: ran.append(True))
     return module, ran
@@ -821,8 +826,22 @@ def test_the_startup_repair_runs_only_the_main_step(monkeypatch):
     """The backend's self-heal: 0 once the build is in, 2 when the step could not install it."""
     module, ran = _repair_module(monkeypatch, needed = [True], resident_after = True)
     assert module._repair_diffusers_main() == 0 and ran == [True]
+    assert module.recorded == []
     module, ran = _repair_module(monkeypatch, needed = [True], resident_after = False)
     assert module._repair_diffusers_main() == 2 and ran == [True]
+    assert module.recorded == [{module._DIFFUSERS_MAIN_REPAIR_KEY: "failed"}]
+
+
+def test_a_failed_startup_repair_is_not_retried_until_the_next_pass(monkeypatch):
+    """Every start would otherwise refuse diffusion loads through another fetch this host cannot make."""
+    module = _fast_path_probe_module(monkeypatch, resident = False)
+    assert module._diffusers_main_needs_dependency_pass() is True
+    monkeypatch.setattr(
+        module.install_manifest,
+        "read_manifest",
+        lambda *a, **k: {module._DIFFUSERS_MAIN_REPAIR_KEY: "failed"},
+    )
+    assert module._diffusers_main_needs_dependency_pass() is False
 
 
 def test_the_startup_repair_leaves_a_healthy_install_alone(monkeypatch):

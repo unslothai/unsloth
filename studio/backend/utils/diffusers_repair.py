@@ -17,6 +17,7 @@ import os
 import subprocess
 import sys
 import threading
+import time
 from pathlib import Path
 from typing import Optional
 
@@ -29,6 +30,7 @@ _STUDIO_DIR = Path(__file__).resolve().parents[2]
 _INSTALLER = _STUDIO_DIR / "install_python_stack.py"
 _MAIN_PIN = _STUDIO_DIR / "backend" / "requirements" / "diffusers-main.txt"
 _REPAIR_TIMEOUT_S = 900
+_PEER_POLL_S = 5
 # The installer's exit codes for --repair-diffusers-main.
 _INSTALLED, _NOTHING_TO_DO = 0, 1
 
@@ -103,7 +105,8 @@ def _diffusers_is_an_index_install() -> bool:
         payload = {}
     if not isinstance(payload, dict):
         return True
-    return not ("vcs_info" in payload or "archive_info" in payload)
+    # dir_info is a local checkout, `pip install -e` included: the user's, not ours to replace.
+    return not ("vcs_info" in payload or "archive_info" in payload or "dir_info" in payload)
 
 
 def _repair_env() -> dict[str, str]:
@@ -118,6 +121,20 @@ def _repair_env() -> dict[str, str]:
     if uv:
         env["PATH"] = os.pathsep.join(filter(None, (str(Path(uv).parent), env.get("PATH"))))
     return env
+
+
+def _wait_for_peer_pass() -> None:
+    """Hold the gate until no process holds the dependency pass. Killing our installer released it,
+    but the pass it was waiting behind (a sibling's repair, an update) may still be writing."""
+    try:
+        from studio.install_manifest import pass_lock
+    except Exception:  # noqa: BLE001 - no lock to read is no peer to wait for
+        return
+    while True:
+        with pass_lock() as uncontended:
+            if uncontended:
+                return
+        time.sleep(_PEER_POLL_S)
 
 
 def _run_repair() -> None:
@@ -152,6 +169,7 @@ def _run_repair() -> None:
         proc.kill()
         proc.wait()
         logger.warning("diffusers self-heal timed out after %ss", _REPAIR_TIMEOUT_S)
+        _wait_for_peer_pass()
         return
     finally:
         if proc.poll() is not None:

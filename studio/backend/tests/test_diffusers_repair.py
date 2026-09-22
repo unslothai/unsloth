@@ -49,7 +49,8 @@ def _installed_diffusers(monkeypatch, direct_url):
     "direct_url, expected",
     [
         (None, True),  # a PyPI wheel records no direct_url.json
-        ({"url": "https://files.example/x.whl", "dir_info": {}}, True),
+        # A local checkout, editable or not, is the user's own build.
+        ({"url": "file:///src/diffusers", "dir_info": {"editable": True}}, False),
         ({"url": "https://github.com/huggingface/diffusers", "vcs_info": {"vcs": "git"}}, False),
         (
             {"url": "https://github.com/huggingface/diffusers/archive/x.zip", "archive_info": {}},
@@ -130,7 +131,10 @@ def test_a_timed_out_repair_stops_the_installers_children_too(monkeypatch, tmp_p
     )
     monkeypatch.setattr(dr, "_INSTALLER", installer)
     monkeypatch.setattr(dr, "_REPAIR_TIMEOUT_S", 3)
+    waited = []
+    monkeypatch.setattr(dr, "_wait_for_peer_pass", lambda: waited.append(True))
     dr._run_repair()
+    assert waited == [True], "a timed-out repair must hold the gate for a peer still in the pass"
     child = int(pid_file.read_text())
     for _ in range(50):
         if not _pid_alive(child) or _pid_is_zombie(child):
@@ -140,6 +144,21 @@ def test_a_timed_out_repair_stops_the_installers_children_too(monkeypatch, tmp_p
         os.kill(child, 9)
         pytest.fail("the installer's child outlived the timed-out repair")
     assert dr.diffusers_repair_installed() is False
+
+
+def test_the_gate_waits_for_a_peer_to_leave_the_pass(monkeypatch):
+    """The repair's installer may have been waiting behind a sibling's repair or an update when it
+    timed out; that peer can still be rewriting diffusers."""
+    import contextlib
+    import types
+
+    held = iter([False, False, True])
+    polls = []
+    fake = types.SimpleNamespace(pass_lock = lambda: contextlib.nullcontext(next(held)))
+    monkeypatch.setitem(sys.modules, "studio.install_manifest", fake)
+    monkeypatch.setattr(dr.time, "sleep", lambda seconds: polls.append(seconds))
+    dr._wait_for_peer_pass()
+    assert polls == [dr._PEER_POLL_S] * 2
 
 
 @pytest.mark.parametrize(
