@@ -345,8 +345,73 @@ class RecordingForward:
         return self._base.__call__(self._language_model, *args, **kwargs)
 
 
+def _cache_classes(name):
+    """``name`` from mlx-vlm's and mlx-lm's cache modules, whichever are loaded: a cache can
+    only be built from a loaded one."""
+    modules = (sys.modules.get(m) for m in ("mlx_vlm.models.cache", "mlx_lm.models.cache"))
+    return tuple(getattr(m, name) for m in modules if hasattr(m, name))
+
+
+def _rows_in_order(entry, classes):
+    """Whether ``entry`` holds its rows as positions 0..offset-1 in order: a plain KV entry, or
+    a sliding-window one that has not dropped a row yet (Studio's context limit makes every
+    layer one on models without their own cache layout)."""
+    kv, rings = classes
+    if entry.keys is None:
+        return False
+    return type(entry) in kv or (
+        type(entry) in rings and entry.offset == entry._idx == entry.keys.shape[2]
+    )
+
+
+def _shared_kv_pairs(entries, base, classes, pairs):
+    """Collect each entry of ``entries`` whose rows are in order with its counterpart in
+    ``base``; False when ``base`` cannot serve every one of them. All or none: an entry only
+    loses its order by growing, so what a snapshot shares with its base, the base shares with
+    any longer one, and the two always move together."""
+    if isinstance(entries, (list, tuple)):
+        if not isinstance(base, (list, tuple)) or len(entries) != len(base):
+            return False
+        return all(_shared_kv_pairs(e, b, classes, pairs) for e, b in zip(entries, base))
+    if type(entries) is not type(base):
+        return False
+    if type(entries) in classes[0] + classes[1]:
+        if not _rows_in_order(entries, classes):
+            return True
+        if not _rows_in_order(base, classes) or entries.offset > base.offset:
+            return False
+        if entries.keys.shape[2] > base.keys.shape[2]:
+            return False
+        pairs.append((entries, base))
+        return True
+    nested = getattr(entries, "caches", None)
+    if isinstance(nested, (list, tuple)):
+        return _shared_kv_pairs(nested, base.caches, classes, pairs)
+    return True
+
+
+def share_kv_rows(entries, base):
+    """Point every entry of ``entries`` that holds its rows in order at the leading rows of its
+    counterpart in ``base``, all or none, and return the bytes now read through ``base``."""
+    pairs = []
+    classes = (_cache_classes("KVCache"), _cache_classes("RotatingKVCache"))
+    if not _shared_kv_pairs(entries, base, classes, pairs):
+        return 0
+    shared = 0
+    for entry, source in pairs:
+        # Its own capacity too, so a resume grows the cache exactly as it would have.
+        rows = entry.keys.shape[2]
+        entry.keys = source.keys[..., :rows, :]
+        entry.values = source.values[..., :rows, :]
+        shared += entry.keys.nbytes + entry.values.nbytes
+    return shared
+
+
 class VLMPromptSnapshotStore:
-    """Boundary snapshots, most recently used last, under a byte budget."""
+    """Boundary snapshots, most recently used last, under a byte budget. A snapshot that a
+    longer one of the same conversation extends reads its in-order KV rows from that one, its
+    base: both were prefilled on one grid, so those rows are the same, and a base's views are
+    only counted once."""
 
     def __init__(
         self,
@@ -356,6 +421,7 @@ class VLMPromptSnapshotStore:
         self._max_bytes = max_bytes
         self._max_entries = max_entries
         self._entries = OrderedDict()
+        self._bases = {}
         self.nbytes = 0
 
     def __len__(self):
@@ -374,7 +440,7 @@ class VLMPromptSnapshotStore:
                 best = (prefix, entries)
         if best is None:
             return None, 0
-        self._entries.move_to_end((key, best[0]))
+        self._touch((key, best[0]))
         return best[1], len(best[0])
 
     def store(self, key, prefix_ids, entries):
@@ -387,27 +453,78 @@ class VLMPromptSnapshotStore:
             )
             return False
         item = (key, tuple(prefix_ids))
-        self.discard(item)
-        while self._entries and (
-            self.nbytes + nbytes > self._max_bytes or len(self._entries) >= self._max_entries
-        ):
-            self.discard(next(iter(self._entries)))
+        readers = [other for other, base in self._bases.items() if base == item]
+        self._pop(item)
         self._entries[item] = (entries, nbytes)
         self.nbytes += nbytes
-        return True
+        longer = [other for other in reversed(self._entries) if _extends(other, item)]
+        base = self._bases.get(longer[0], longer[0]) if longer else item
+        rebased = {
+            other
+            for other in list(self._entries)
+            if other != base
+            and (other == item or _extends(item, other))
+            and self._rebase(other, base)
+        }
+        for other in readers:
+            # Still reading the replaced buffers, which nothing counts any more.
+            if other not in rebased:
+                self.discard(other)
+        self._touch(item)
+        while self._entries and (
+            self.nbytes > self._max_bytes or len(self._entries) > self._max_entries
+        ):
+            self.discard(next(iter(self._entries)))
+        return item in self._entries
 
-    def discard(self, item):
+    def _rebase(self, item, base):
+        entries, nbytes = self._entries[item]
+        shared = share_kv_rows(entries, self._entries[base][0])
+        if shared:
+            owned = cache_entries_nbytes(entries) - shared
+            self._entries[item] = (entries, owned)
+            self.nbytes += owned - nbytes
+            self._bases[item] = base
+        return bool(shared)
+
+    def _touch(self, item):
+        self._entries.move_to_end(item)
+        base = self._bases.get(item)
+        if base is not None:
+            # Behind what reads through it, so eviction reaches it last.
+            self._entries.move_to_end(base)
+
+    def _pop(self, item):
         dropped = self._entries.pop(item, None)
+        self._bases.pop(item, None)
         if dropped is not None:
             self.nbytes -= dropped[1]
 
+    def discard(self, item):
+        self._pop(item)
+        # Views would keep a dropped base's buffers alive, uncounted.
+        for other in [other for other, base in self._bases.items() if base == item]:
+            self.discard(other)
+
     def retain(self, item):
-        for other in [other for other in self._entries if other != item]:
+        keep = (item, self._bases.get(item))
+        for other in [other for other in self._entries if other not in keep]:
             self.discard(other)
 
     def clear(self):
         self._entries.clear()
+        self._bases.clear()
         self.nbytes = 0
+
+
+def _extends(item, other):
+    """Whether ``item`` holds a strictly longer prefix of ``other``'s conversation."""
+    (key, prefix), (other_key, other_prefix) = item, other
+    return (
+        key == other_key
+        and len(prefix) > len(other_prefix)
+        and prefix[: len(other_prefix)] == other_prefix
+    )
 
 
 class VLMPromptCacheSession:

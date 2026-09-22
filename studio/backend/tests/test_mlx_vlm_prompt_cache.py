@@ -826,3 +826,81 @@ def test_session_restores_the_model_even_if_unpatching_fails(fake_mx):
     del host.chunked_prefill_policy
     session.__exit__(None, None, None)
     assert type(host) is before
+
+
+def test_store_holds_the_kv_rows_nested_snapshots_share_once():
+    mx = pytest.importorskip("mlx.core")
+    cache = pytest.importorskip("mlx_vlm.models.cache")
+
+    def advance(entries, start, n):
+        for entry in entries[:2]:
+            rows = mx.arange(start * 128, (start + n) * 128, dtype = mx.float32).reshape(1, 2, n, 64)
+            entry.update_and_fetch(rows, -rows)
+        entries[2][0] = mx.full((1, 64), float(start + n))
+        mx.eval([entry.state for entry in entries])
+
+    # A context-limited layer is a window that has not dropped a row yet.
+    short = [cache.KVCache(), cache.RotatingKVCache(max_size = 4096, keep = 4)]
+    short.append(cache.ArraysCache(size = 1))
+    advance(short, 0, 256)
+    served = [entry.state[0] * 1 for entry in short[:2]]
+    mx.eval(served)
+    extended = copy_cache_entries(short)
+    advance(extended, 256, 256)
+    ids = list(range(1000, 1512))
+    shared = sum(entry.keys.nbytes + entry.values.nbytes for entry in short[:2])
+
+    store = VLMPromptSnapshotStore(1 << 30)
+    store.store("m", ids[:256], short)
+    mx.synchronize()
+    before = mx.get_active_memory()
+    store.store("m", ids, extended)
+    mx.eval([entry.state for entry in short])
+    mx.synchronize()
+    assert before - mx.get_active_memory() >= shared
+    assert store.nbytes == cache_entries_nbytes(extended) + cache_entries_nbytes(short) - shared
+
+    entries, reused = store.lookup("m", ids[:300], 300)
+    assert reused == 256 and entries is short
+    for entry, rows in zip(entries, served):
+        assert mx.array_equal(entry.state[0], rows).item()
+    assert entries[2][0][0, 0].item() == 256.0
+    # The base stays behind what reads through it, is kept with it, and takes it along when dropped.
+    base = ("m", tuple(ids))
+    assert list(store._entries)[-1] == base
+    store.retain(("m", tuple(ids[:256])))
+    assert len(store) == 2
+    store.discard(base)
+    assert len(store) == 0 and store.nbytes == 0
+
+    # Replaced by a base it cannot read through, it would hold buffers nothing counts.
+    store.store("m", ids[:256], short)
+    store.store("m", ids, extended)
+    store.store("m", ids, copy_cache_entries(extended))
+    assert len(store) == 2
+    lone = [cache.ArraysCache(size = 1)]
+    lone[0][0] = mx.zeros((1, 64))
+    store.store("m", ids, lone)
+    assert len(store) == 1 and store.nbytes == cache_entries_nbytes(lone)
+
+    # A window that dropped rows no longer holds them from position 0.
+    windows = [[cache.RotatingKVCache(max_size = 16)] for _ in range(2)]
+    for entries, n in zip(windows, (32, 64)):
+        entries.append(cache.KVCache())
+        entries.append(cache.ArraysCache(size = 1))
+        advance(entries, 0, n // 2)
+        advance(entries, n // 2, n // 2)
+    assert snapshots.share_kv_rows(*windows) == windows[0][1].keys.nbytes * 2
+    # Snapshots whose windows are still whole cannot follow a base whose window is not, so none
+    # of their layers do: dropping the one they read through takes the other along.
+    nested = [[cache.KVCache(), cache.RotatingKVCache(max_size = 16)] for _ in range(3)]
+    for entries, n in zip(nested, (8, 12, 32)):
+        entries.append(cache.ArraysCache(size = 1))
+        advance(entries, 0, min(n, 16))
+        if n > 16:
+            advance(entries, 16, n - 16)
+        store.store("w", ids[:n], entries)
+    store.discard(("w", tuple(ids[:12])))
+    assert len(store) == 2
+    assert store.nbytes == cache_entries_nbytes(lone) + cache_entries_nbytes(nested[2])
+
