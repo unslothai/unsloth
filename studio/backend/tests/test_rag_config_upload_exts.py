@@ -30,15 +30,7 @@ def _reload_rag_config(monkeypatch, value: str | None):
 
 def test_upload_exts_default_when_env_unset(monkeypatch):
     _reload_rag_config(monkeypatch, None)
-    assert config.UPLOAD_EXTS == {
-        ".pdf",
-        ".txt",
-        ".md",
-        ".markdown",
-        ".docx",
-        ".html",
-        ".htm",
-    }
+    assert config.UPLOAD_EXTS == {".pdf", ".txt", ".md", ".markdown", ".docx", ".html", ".htm"}
 
 
 def test_upload_exts_from_env_normalizes_case_and_whitespace(monkeypatch):
