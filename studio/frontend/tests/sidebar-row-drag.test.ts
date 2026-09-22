@@ -1131,6 +1131,16 @@ test("a chat can be dropped after a folder that ends the Pinned list", () => {
     line: { rowKey: rowKey(PINNED_ORDER_SCOPE, SIDEBAR_TAIL_ID), edge: "bottom" },
   });
   assert.notDeepEqual(afterFolder.cue, intoFolder.cue);
+  // Printable, and not something a generated id can be. A control character reads the same
+  // on screen and turns the whole planner binary to Git, hiding it from every diff.
+  assert.ok(
+    [...SIDEBAR_TAIL_ID].every((ch) => {
+      const code = ch.codePointAt(0) ?? 0;
+      return code > 0x1f && code !== 0x7f;
+    }),
+    `the tail id holds a control character: ${JSON.stringify(SIDEBAR_TAIL_ID)}`,
+  );
+  assert.doesNotMatch(SIDEBAR_TAIL_ID, /^[0-9a-fA-F-]+$/);
   // Part of the layout, not summoned by the drag: a row mounting at drag start shifts every
   // section below it after the pointer was sampled, and the cue and the drop then disagree.
   const pinnedMenu = APP_SIDEBAR.slice(
