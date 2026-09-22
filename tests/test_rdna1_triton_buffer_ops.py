@@ -62,3 +62,31 @@ def test_bf16_gate_and_buffer_ops_gate_disagree_on_rdna2():
     assert device_type.arch_lacks_buffer_ops("gfx1034") is False
     assert device_type.arch_lacks_bf16("gfx1010") is True
     assert device_type.arch_lacks_buffer_ops("gfx1010") is True
+
+
+def test_workaround_sets_knob_and_a_separate_cache_dir():
+    """The knob alone is not enough: Triton leaves AMDGCN_USE_BUFFER_OPS out of the kernel
+    cache key, so kernels compiled with buffer ops on are reused with them off. Measured on
+    an RX 5700 XT: the same run trained cleanly with an empty cache and went -inf / nan
+    once a buffer-ops-on process had populated ~/.triton/cache."""
+    env = {}
+    assert device_type.apply_gfx101x_triton_workaround(env, triton_home = "/th") is True
+    assert env["AMDGCN_USE_BUFFER_OPS"] == "0"
+    assert env["TRITON_CACHE_DIR"].replace("\\", "/") == "/th/cache-no-buffer-ops"
+
+
+def test_workaround_honours_a_user_who_already_chose():
+    env = {"AMDGCN_USE_BUFFER_OPS": "1"}
+    assert device_type.apply_gfx101x_triton_workaround(env, triton_home = "/th") is False
+    assert env == {
+        "AMDGCN_USE_BUFFER_OPS": "1"
+    }, "an explicit choice is not overridden and no cache dir is forced"
+    env = {"TRITON_CACHE_DIR": "/mine"}
+    assert device_type.apply_gfx101x_triton_workaround(env, triton_home = "/th") is True
+    assert env["TRITON_CACHE_DIR"] == "/mine"
+
+
+def test_workaround_follows_triton_home():
+    env = {"TRITON_HOME": "/custom/triton"}
+    device_type.apply_gfx101x_triton_workaround(env)
+    assert env["TRITON_CACHE_DIR"].replace("\\", "/") == "/custom/triton/cache-no-buffer-ops"

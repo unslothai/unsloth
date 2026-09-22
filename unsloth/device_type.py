@@ -231,6 +231,29 @@ def arch_lacks_buffer_ops(gcn_arch):
     return str(gcn_arch or "").split(":", 1)[0].strip().lower().startswith("gfx101")
 
 
+def apply_gfx101x_triton_workaround(environ = None, triton_home = None):
+    """Turn Triton's AMD buffer ops off for gfx101x, and keep the compile cache apart.
+
+    Triton reads AMDGCN_USE_BUFFER_OPS when it compiles a kernel but does not fold it into
+    the kernel cache key, so a kernel built with buffer ops on is reused verbatim when they
+    are off. On an RX 5700 XT that turned a clean run into `loss -inf` then `nan` the moment
+    an earlier process had populated ~/.triton/cache with buffer-op kernels; the same run
+    with an empty cache directory trained normally. Redirecting the cache to a sibling
+    directory whenever this workaround is active keeps the two builds from ever mixing.
+
+    Both are setdefault: a user who set either variable on purpose keeps their value.
+    Returns True when the buffer-ops knob was set here, False when it was already set."""
+    import os
+    environ = os.environ if environ is None else environ
+    if environ.get("AMDGCN_USE_BUFFER_OPS") is not None:
+        return False
+    environ["AMDGCN_USE_BUFFER_OPS"] = "0"
+    if "TRITON_CACHE_DIR" not in environ:
+        home = triton_home or environ.get("TRITON_HOME") or os.path.join(os.path.expanduser("~"), ".triton")
+        environ["TRITON_CACHE_DIR"] = os.path.join(home, "cache-no-buffer-ops")
+    return True
+
+
 def hip_visible_archs():
     """Guarded per device: one unreadable device must not discard the archs beside it, or a
     gfx10 keeps bf16 and dies in Triton (#7922). Only an unreadable count returns []."""
