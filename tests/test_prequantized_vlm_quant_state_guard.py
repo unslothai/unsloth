@@ -1,38 +1,16 @@
-# Unsloth - 2x faster, 60% less VRAM LLM training and finetuning
-# Copyright 2023-present Daniel Han-Chen, Michael Han-Chen & the Unsloth team. All rights reserved.
-#
-# This program is free software: you can redistribute it and/or modify
-# it under the terms of the GNU Lesser General Public License as published by
-# the Free Software Foundation, either version 3 of the License, or
-# (at your option) any later version.
-#
-# This program is distributed in the hope that it will be useful,
-# but WITHOUT ANY WARRANTY; without even the implied warranty of
-# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-# GNU Lesser General Public License for more details.
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Tests for the pre-quantized quant_state guard.
+"""Tests for the pre-quantized quant_state guard (unsloth #9867, #10010, #10017, #10276).
 
-unsloth #9867, #10010, #10017, #10276. transformers 5.4.0 (PR #44300) made the
-conversion mapping recurse into `PreTrainedModel` submodules without re-scoping a
-submodule's renamings to where that submodule lives, so the text model's
-``^model.language_model.`` -> ``^model.`` renaming entered the composite model's
-mapping and the bitsandbytes sidecar keys (``weight.absmax``, ``weight.quant_map``,
-``weight.nested_absmax``, ``weight.nested_quant_map`` and
-``weight.quant_state.bitsandbytes__nf4``) were renamed to keys the model does not
-have and dropped as unexpected. Every quantized Linear then loads with
-``quant_state = None`` and the first forward raises ``mat1 and mat2 shapes cannot be
-multiplied``. Fixed upstream by PR #45567.
+transformers 5.4.0 (PR #44300) merged a submodule's renamings into the parent without
+re-scoping them, so a composite checkpoint's bitsandbytes sidecars renamed to keys the
+model does not have and were dropped and every quantized Linear loads with
+``quant_state = None``. Fixed upstream by PR #45567.
 
-Measured on one B200 with ``unsloth/qwen3.8-27b-unsloth-bnb-4bit``: 352 of 352
-quantized Linear modules lose quant_state on 5.4.0 and 5.5.4, and 0 of 352 on 5.2.0,
-5.3.0 and every release from 5.6.2 to 5.17.0.
-
-The guard asks the INSTALLED transformers whether it scopes submodule renamings. It
-never reads a version number, because a version number is the wrong instrument here:
-upstream main reported ``5.3.0.dev0`` at the commit that introduced the defect and
-``5.6.0.dev0`` at the commit that fixed it, so any closed version interval is wrong
-at both ends for a source install.
+The guard asks the INSTALLED transformers whether it scopes submodule renamings, never a
+version: main reported ``5.3.0.dev0`` at the commit that introduced the defect and
+``5.6.0.dev0`` at the one that fixed it.
 
 Loaded in isolation, no torch, no GPU, no network.
 """
@@ -75,9 +53,7 @@ def import_fixes():
     return _load_import_fixes()
 
 
-# --------------------------------------------------------------------------------------
 # Fake transformers builds. Each one is a shape upstream really shipped.
-# --------------------------------------------------------------------------------------
 
 
 def _install(
@@ -207,13 +183,10 @@ def _build_fixed_scope_prefix(monkeypatch):
 
 
 def _build_broken_without_core_model_loading(monkeypatch):
-    """The defect, where `core_model_loading` is not importable but the recursion is.
+    """The defect with `core_model_loading` unimportable: defensive, not observed.
 
-    Defensive, not observed: measured on ten real releases, `conversion_mapping` and
-    `core_model_loading` both need torch and both fail together, and a process without
-    torch cannot load a checkpoint to corrupt. The two imports are still kept separate
-    so that the `extract_weight_conversions_for_model` signature carries the answer on
-    its own if upstream ever splits them.
+    Measured on ten real releases both modules need torch and fail together, so the
+    signature check is what would have to carry the answer if upstream ever split them.
     """
 
     def extract_weight_conversions_for_model(model):
@@ -267,9 +240,7 @@ HEALTHY_BUILDS = [
 ]
 
 
-# --------------------------------------------------------------------------------------
 # The probe
-# --------------------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize("build", DEFECTIVE_BUILDS, ids = lambda b: b.__name__)
@@ -305,11 +276,8 @@ def test_an_unrecognisable_build_is_left_alone(import_fixes, monkeypatch):
 
 
 def test_the_detector_never_reads_a_version(import_fixes, monkeypatch):
-    """The nightly trap: main was 5.3.0.dev0 when broken and 5.6.0.dev0 when fixed.
-
-    A closed version interval is wrong at both ends there, so the answer must not move
-    when the reported version does.
-    """
+    """Main was 5.3.0.dev0 when broken and 5.6.0.dev0 when fixed: the answer must not
+    move when the reported version does."""
     for reported in ("5.3.0.dev0", "5.6.0.dev0", "5.17.0", "4.57.6", "not-a-version"):
         monkeypatch.setattr(
             import_fixes, "importlib_version", lambda name, reported = reported: reported
@@ -340,9 +308,7 @@ def test_a_fixed_nightly_is_not_told_it_is_broken(import_fixes, monkeypatch, cap
     assert "quant_state" not in caplog.text
 
 
-# --------------------------------------------------------------------------------------
 # The warning
-# --------------------------------------------------------------------------------------
 
 
 def _uninstall_runtime_repair(import_fixes, monkeypatch):
@@ -422,9 +388,7 @@ def test_the_check_is_warn_only(import_fixes, monkeypatch):
         assert import_fixes.check_transformers_prequantized_vlm_quant_state() is None
 
 
-# --------------------------------------------------------------------------------------
 # pyproject
-# --------------------------------------------------------------------------------------
 
 
 def _transformers_requirements():
@@ -449,13 +413,8 @@ def _transformers_requirements():
 
 
 def test_pyproject_still_allows_a_working_version():
-    """The exclusion this PR started as would have left nothing installable.
-
-    unsloth_zoo's published metadata caps transformers at 5.5.0, and
-    `unsloth/models/loader.py` requires 5.5.0 or newer for Gemma 4. Excluding 5.5.0
-    here therefore resolves DOWN to 5.3.0 and takes Gemma 4 with it. The exclusions
-    wait for the zoo cap to ship; this test is what says so.
-    """
+    """unsloth_zoo caps transformers at 5.5.0 and `loader.py` needs >= 5.5.0 for Gemma 4,
+    so excluding 5.5.0 here resolves DOWN to 5.3.0 and takes Gemma 4 with it."""
     reqs = _transformers_requirements()
     assert reqs, "no transformers requirement found in pyproject.toml"
     for req in reqs:
@@ -468,22 +427,12 @@ def test_pyproject_still_allows_a_working_version():
         )
 
 
-# --------------------------------------------------------------------------------------
 # Where the check is called from
-# --------------------------------------------------------------------------------------
 
 
 def test_the_check_runs_after_the_torchaudio_guard():
-    """This is the only check in `_gpu_init` that imports transformers, not just its metadata.
-
-    `from transformers import conversion_mapping` pulls in 271 transformers submodules.
-    `disable_torchaudio_if_cuda_mismatched` exists because anything reaching
-    `transformers.processing_utils` -> `transformers.audio_utils` -> `torchaudio` before it
-    runs takes the whole `import unsloth` down on a torchaudio that raises at extension init
-    (measured: Kaggle-Muse_Glimmer_(30B)-GRPO died at cell 4). The probe's import does not
-    reach those modules on transformers 5.17.0, and nothing holds that true for the next
-    release, so the call belongs below the guard and this keeps it there.
-    """
+    """The probe imports transformers, and `disable_torchaudio_if_cuda_mismatched` exists
+    because reaching torchaudio before it runs takes the whole `import unsloth` down."""
     import ast
 
     source = (_ROOT / "unsloth" / "_gpu_init.py").read_text(encoding = "utf-8")
