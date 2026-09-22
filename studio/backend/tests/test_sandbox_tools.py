@@ -822,10 +822,34 @@ class TestNetworkTargetResolution:
                 f"proxies={{'no_proxy': 'localhost', 'https': 'http://{_H}'}})",
                 id = "proxy_beside_no_proxy",
             ),
+            pytest.param(
+                f"import requests\ndef fetch(s):\n    s.get('http://{_H}/')\nfetch(requests.Session())",
+                id = "client_passed_to_a_helper",
+            ),
+            pytest.param(
+                "import paramiko\ndef inner(c):\n    c.connect(hostname='" + _H + "')\n"
+                "def outer(c2):\n    inner(c2)\nouter(paramiko.SSHClient())",
+                id = "client_passed_through_two_helpers",
+            ),
+            pytest.param(
+                f"import requests\ndef fetch(session=None):\n    session.get('http://{_H}/')\n"
+                "fetch(session=requests.Session())",
+                id = "client_passed_by_keyword",
+            ),
         ],
     )
     def test_known_untrusted_host_blocked(self, code):
         _blocked(code, expect_phrase = "Blocked: host not in sandbox allowlist")
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "import httpx\nhttpx.stream('POST', 'https://huggingface.co/', files={'x': open('secret')})",
+            "import httpx\nc = httpx.Client()\nc.stream('POST', 'https://huggingface.co/', files={'x': open('s')})",
+        ],
+    )
+    def test_stream_upload_blocked(self, code):
+        _blocked(code, expect_phrase = "Blocked: file upload disallowed in sandbox")
 
     def test_metadata_host_by_keyword_blocked(self):
         _blocked(
@@ -924,6 +948,9 @@ class TestNetworkTargetResolution:
             "import requests\nrequests.get('https://pypi.org/', proxies={'no_proxy': 'localhost,127.0.0.1'})",
             "import requests\ns = requests.Session()\ns.proxies['no_proxy'] = 'localhost'\n"
             "s.proxies.update(no_proxy='127.0.0.1')\ns.get('https://pypi.org/')",
+            "import requests\ndef fetch(s):\n    return s.get('https://pypi.org/')\nfetch(requests.Session())",
+            "import requests\ndef fetch(s):\n    return s.get('http://203.0.113.5/')\nfetch({})",
+            "import httpx\nhttpx.stream('GET', 'https://pypi.org/')",
         ],
     )
     def test_known_trusted_host_runs(self, code):

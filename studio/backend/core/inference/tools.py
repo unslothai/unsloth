@@ -16423,6 +16423,7 @@ def _check_signal_escape_patterns(code: str):
         ),
         "aiohttp.request",
         "aiohttp.client.request",
+        *(f"{owner}.stream" for owner in ("httpx", "httpx.Client", "httpx.AsyncClient")),
         "urllib.request.urlopen",
         "urllib.request.Request",
     )
@@ -17295,6 +17296,50 @@ def _check_signal_escape_patterns(code: str):
                             if params:
                                 self.method_self[id(fn)] = (params[0].arg, family)
             self.self_names: "list[tuple[str, str]]" = []
+            # Function name -> its local definitions, and every (parameter, argument) a call to
+            # one passes, so `fetch(requests.Session())` makes `s` in `def fetch(s)` a session.
+            self.local_functions: "dict[str, list[ast.AST]]" = {}
+            if network_possible:
+                for fn in nodes:
+                    if isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                        self.local_functions.setdefault(fn.name, []).append(fn)
+            self.call_bindings: "list[tuple]" = []
+
+        def _bind_call_arguments(self, node) -> None:
+            """Record the arguments of a call to a function defined in this file."""
+            if not isinstance(node.func, ast.Name):
+                return
+            at = (getattr(node, "lineno", 0), getattr(node, "col_offset", 0))
+            context = (tuple(self.scope_stack), tuple(self.self_names))
+            for fn in self.local_functions.get(node.func.id, ()):
+                positional = fn.args.posonlyargs + fn.args.args
+                pairs = []
+                for param, arg in zip(positional, node.args):
+                    if isinstance(arg, ast.Starred):
+                        break
+                    pairs.append((param.arg, arg))
+                named = {a.arg for a in positional + fn.args.kwonlyargs}
+                pairs += [(kw.arg, kw.value) for kw in node.keywords if kw.arg in named]
+                for param, arg in pairs:
+                    self.call_bindings.append((param, arg, at, fn, context))
+
+        def resolve_call_bindings(self) -> None:
+            """Carry clients into parameters until nothing changes, so a client handed through
+            two helpers reaches the inner one."""
+            for _ in range(len(self.call_bindings) + 1):
+                changed = False
+                for param, arg, at, fn, (scopes, selves) in self.call_bindings:
+                    self.scope_stack, self.self_names = list(scopes), list(selves)
+                    found = self._instances_named_by(arg, at)
+                    held = self.instance_aliases.setdefault(param, set())
+                    if not found <= held:
+                        held.update(found)
+                        # Bound where the parameter is, so the body's calls see it.
+                        self._register_alias(param, fn)
+                        changed = True
+                if not changed:
+                    break
+            self.scope_stack, self.self_names = [0], []
 
         def _receiver_path(self, expr) -> "str | None":
             """`s`, `obj.session` or `<self>.session` for a name or attribute chain, else None."""
@@ -17875,6 +17920,7 @@ def _check_signal_escape_patterns(code: str):
 
         def visit_Call(self, node):
             if self.collecting:
+                self._bind_call_arguments(node)
                 func = node.func
                 if isinstance(func, ast.Attribute) and func.attr in (
                     "update",
@@ -18182,6 +18228,7 @@ def _check_signal_escape_patterns(code: str):
     _network_visitor = NetworkAndIoVisitor()
     if network_possible:
         _network_visitor.visit(tree)  # pass 1: gather aliases, star imports and shadows
+        _network_visitor.resolve_call_bindings()
     _network_visitor.collecting = False
     _network_visitor.visit(tree)  # pass 2: check every call against the final maps
 
