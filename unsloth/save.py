@@ -3248,15 +3248,21 @@ def _imatrix_is_enabled(imatrix_file):
     return imatrix_file is not None and imatrix_file is not False
 
 
-def _gguf_writes_16bit_checkpoint(model):
-    """Whether a GGUF export writes a full 16-bit checkpoint before converting. A PEFT model is merged into one. A non-PEFT model reuses an existing checkpoint when `_name_or_path` names a directory, and otherwise falls back to `save_pretrained`, which writes the same two bytes per parameter; sizing that fallback at zero is what lets an export pass the preflight and then fill the disk. A module-level helper rather than a local, because the caller snapshots `locals()` into the kwargs of `unsloth_generic_save`."""
+def _gguf_reuses_loaded_checkpoint(model):
     if isinstance(model, (PeftModel, PeftModelForCausalLM)):
-        return True
+        return False
+    if getattr(model, "_unsloth_full_finetuning", False):
+        return False
     name_or_path = getattr(getattr(model, "config", None), "_name_or_path", None)
     try:
-        return not (name_or_path and os.path.isdir(str(name_or_path)))
+        return bool(name_or_path and os.path.isdir(str(name_or_path)))
     except Exception:
-        return True
+        return False
+
+
+def _gguf_writes_16bit_checkpoint(model):
+    """Whether a GGUF export writes a full 16-bit checkpoint before converting. A PEFT model is merged into one. A non-PEFT model reuses an existing checkpoint when `_name_or_path` names a directory, and otherwise falls back to `save_pretrained`, which writes the same two bytes per parameter; sizing that fallback at zero is what lets an export pass the preflight and then fill the disk. A module-level helper rather than a local, because the caller snapshots `locals()` into the kwargs of `unsloth_generic_save`."""
+    return not _gguf_reuses_loaded_checkpoint(model)
 
 
 def _fallback_checkpoint_extra_bytes(model):
@@ -3334,14 +3340,8 @@ def _gguf_conversion_directory(model_directory):
 
 def _gguf_model_input_directory(model, save_directory):
     """The folder the converter reads, which is not always `save_directory`. A non-PEFT model whose `_name_or_path` names a directory is converted from that checkpoint, which `unsloth_save_pretrained_gguf` assigns to `save_directory` before calling `save_to_gguf`; the same condition `_gguf_writes_16bit_checkpoint` uses. It matters only in the unwritable-CWD fallback, where the intermediate GGUF lands beside the reused checkpoint rather than the requested output, and the two can be on different filesystems."""
-    if isinstance(model, (PeftModel, PeftModelForCausalLM)):
-        return save_directory
-    name_or_path = getattr(getattr(model, "config", None), "_name_or_path", None)
-    try:
-        if name_or_path and os.path.isdir(str(name_or_path)):
-            return str(name_or_path)
-    except Exception:
-        pass
+    if _gguf_reuses_loaded_checkpoint(model):
+        return str(model.config._name_or_path)
     return save_directory
 
 
@@ -3973,7 +3973,7 @@ def unsloth_save_pretrained_gguf(
     else:
         # Non-PEFT model: the checkpoint already exists, so point save_to_gguf at the original path instead of re-saving into a temp subdir.
         original_path = getattr(self.config, "_name_or_path", None)
-        if original_path and os.path.isdir(original_path):
+        if _gguf_reuses_loaded_checkpoint(self):
             print(
                 f"Unsloth: Model is not a PEFT model. Using existing checkpoint at {original_path}"
             )
