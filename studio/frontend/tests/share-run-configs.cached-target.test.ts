@@ -34,7 +34,9 @@ const { buildLocalInventoryRows } = await import(
 const { ggufVariantsMatch, residentModelIdMatches } = await import(
   "../src/features/hub/lib/model-identity.ts"
 );
-const { resolveRunConfigTarget } = await import("./helpers/sharing-target.ts");
+const { isRunConfigVariantUnresolved, resolveRunConfigTarget } = await import(
+  "./helpers/sharing-target.ts"
+);
 const { modelConfigTarget } = await import(
   "../src/features/model-picker/model-config/model-config-handoff.ts"
 );
@@ -72,6 +74,7 @@ function harness({
   variants = [quant],
   hubVariants = [{ ...quant, downloaded: false }],
   defaultVariant = hubVariants[0]?.quant ?? null,
+  hubMetadataAvailable = true,
   hubError = false,
   listingsByRepo,
   status = 200,
@@ -87,6 +90,7 @@ function harness({
   variants?: GgufVariantDetail[];
   hubVariants?: GgufVariantDetail[];
   defaultVariant?: string | null;
+  hubMetadataAvailable?: boolean;
   hubError?: boolean;
   listingsByRepo?: Record<string, GgufVariantDetail[]>;
   status?: number;
@@ -144,7 +148,11 @@ function harness({
           if (variantDelayMs)
             await new Promise((resolve) => setTimeout(resolve, variantDelayMs));
           if (hubError) throw new Error("Hub listing unavailable");
-          return { variants: hubVariants, default_variant: defaultVariant };
+          return {
+            variants: hubVariants,
+            default_variant: defaultVariant,
+            dependencies_resolved: hubMetadataAvailable,
+          };
         },
         residentModelIdMatches,
         useDeviceInventoryStore: {
@@ -682,16 +690,86 @@ test("failed inventory scans still allow GGUF filename resolution", async () => 
   }
 });
 
-test("unresolved GGUF filenames and missing defaults never reach download staging", async () => {
+test("failed GGUF lookups preserve offline review without allowing an unresolved load", async () => {
   for (const ggufVariant of [quant.filename, undefined]) {
     const input = { ...target, meta: { ...target.meta, ggufVariant } };
     const offline = harness({ hubError: true });
-    await assert.rejects(offline.resolve(input), {
-      constructor: offline.RunConfigResolutionError,
-      message:
-        "Could not look up the shared GGUF model. Check your connection and access to the Hugging Face model, then reopen the link.",
-      cause: new Error("Hub listing unavailable"),
+    const resolved = await offline.resolve(input);
+    assert.equal(resolved, input);
+    assert.equal(
+      isRunConfigVariantUnresolved(
+        modelConfigTarget(resolved.id, resolved.meta),
+      ),
+      true,
+    );
+
+    const available = await harness().resolve(resolved);
+    assert.equal(available.meta.ggufVariant, quant.quant);
+    assert.equal(available.meta.ggufFilename, quant.filename);
+    assert.equal(
+      isRunConfigVariantUnresolved(
+        modelConfigTarget(available.id, available.meta),
+      ),
+      false,
+    );
+  }
+});
+
+test("variant resolution only blocks uncached Hub GGUFs without a canonical variant", () => {
+  for (const source of ["hub", "local"] as const) {
+    for (const isGguf of [false, true]) {
+      for (const isDownloaded of [false, true]) {
+        for (const ggufVariant of [
+          undefined,
+          "model.GGUF",
+          "Q4_K_M",
+          "chosen/Q4_K_M",
+        ]) {
+          const pick = modelConfigTarget(model, {
+            source,
+            isLora: false,
+            isGguf,
+            isDownloaded,
+            ggufVariant,
+          });
+          assert.equal(
+            isRunConfigVariantUnresolved(pick),
+            source === "hub" &&
+              isGguf &&
+              !isDownloaded &&
+              (ggufVariant === undefined || ggufVariant === "model.GGUF"),
+          );
+        }
+      }
+    }
+  }
+});
+
+test("cache-only listings cannot reject shared GGUF filenames or missing defaults", async () => {
+  for (const ggufVariant of ["model-Q8_0.gguf", undefined]) {
+    const input = { ...target, meta: { ...target.meta, ggufVariant } };
+    const app = harness({
+      cachedGguf: [{ repo_id: model, size_bytes: 1024 }],
+      variants: [{ ...quant, downloaded: false, partial: true }],
+      hubVariants: [{ ...quant, downloaded: false, partial: true }],
+      defaultVariant: null,
+      hubMetadataAvailable: false,
     });
+    const resolved = await app.resolve(input);
+    assert.equal(resolved, input);
+    assert.equal(
+      isRunConfigVariantUnresolved(
+        modelConfigTarget(resolved.id, resolved.meta),
+      ),
+      true,
+    );
+    assert.equal(app.hubRequests.length, 1);
+  }
+});
+
+test("known unavailable GGUF filenames and missing defaults report a resolution error", async () => {
+  for (const ggufVariant of [quant.filename, undefined]) {
+    const input = { ...target, meta: { ...target.meta, ggufVariant } };
     const missing = harness({ hubVariants: [] });
     await assert.rejects(missing.resolve(input), {
       constructor: missing.RunConfigResolutionError,

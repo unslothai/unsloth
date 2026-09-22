@@ -8,9 +8,11 @@ import type * as Target from "../../src/features/model-picker/sharing/target.ts"
 import * as localPath from "../../src/lib/local-path.ts";
 import { loadWithStubs } from "./module-stubs.ts";
 
-export const { isRunConfigModelInput, resolveRunConfigTarget } = loadWithStubs<
-  typeof Target
->(
+export const {
+  isRunConfigModelInput,
+  isRunConfigVariantUnresolved,
+  resolveRunConfigTarget,
+} = loadWithStubs<typeof Target>(
   new URL("../../src/features/model-picker/sharing/target.ts", import.meta.url),
   {
     "@/features/chat": { isExternalModelId },

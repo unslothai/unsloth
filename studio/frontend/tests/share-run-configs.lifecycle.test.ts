@@ -459,11 +459,36 @@ for (const failure of [false, true]) {
   });
 }
 
+test("an unresolved offline GGUF target still hands its settings to the editor", async () => {
+  for (const ggufVariant of [undefined, "model-Q4_K_M.gguf"]) {
+    const app = harness();
+    app.nav.pending.value.ggufVariant = ggufVariant;
+    app.openRunConfigTarget({ ...app.open, location: app.nav.location });
+    const lookup = app.lookups[0];
+    lookup.result.resolve(lookup.target);
+    await settle();
+    const pending = app.inbox.getSnapshot();
+    assert.ok(pending);
+    app.openRunConfigTarget({ ...app.open, pending });
+    assert.deepEqual(app.calls.at(-1), [
+      "handoff",
+      { requestId: "first", ...lookup.target },
+    ]);
+    assert.equal(lookup.target.meta.ggufVariant, ggufVariant);
+    assert.deepEqual(
+      app.inbox.take(
+        "first",
+        modelConfigDraftKey(lookup.target.id, ggufVariant),
+      ),
+      { nParallel: 3 },
+    );
+    assert.deepEqual(app.errors, []);
+    assert.equal(app.loading.size, 0);
+  }
+});
+
 for (const error of [
   new Error("Private backend details"),
-  new RunConfigResolutionError(
-    "Could not look up the shared GGUF model. Check your connection and access to the Hugging Face model, then reopen the link.",
-  ),
   new RunConfigResolutionError(
     "The shared GGUF variant is unavailable for this model. Ask the sender for an updated link.",
   ),

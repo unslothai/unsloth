@@ -10,3 +10,4 @@ export {
 
 export { SharedRunConfigReview } from "./config-review";
 export { isRunConfigEditorChange } from "./editor-events";
+export { isRunConfigVariantUnresolved } from "./target";

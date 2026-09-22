@@ -174,6 +174,7 @@ import {
   SharedRunConfigReview,
   cancelRunConfigImportForEdit,
   isRunConfigEditorChange,
+  isRunConfigVariantUnresolved,
 } from "../sharing";
 import { ChatTemplateEditorDialog } from "./chat-template-editor-dialog";
 import { MemoryEstimateRow } from "./memory-estimate-row";
@@ -1916,6 +1917,7 @@ export function ModelConfigPage({
     (s) => s.loadedMlxKvBitsRequested,
   );
   const isActiveModel = loadedConfig != null;
+  const sharedVariantUnresolved = isRunConfigVariantUnresolved(target);
   const hfToken = useChatRuntimeStore((s) => s.hfToken);
   const activeNativePathToken = useChatRuntimeStore(
     (s) => s.activeNativePathToken,
@@ -2120,7 +2122,7 @@ export function ModelConfigPage({
     : templateDefaults.loading;
 
   // Fetch GGUF header dims to size the GPU Memory sliders; the context also fills in below.
-  const contextFetchKey = target.isGguf
+  const contextFetchKey = target.isGguf && !sharedVariantUnresolved
     ? `${target.id}\n${target.ggufVariant ?? ""}\n${hfToken || ""}\n${nativePathToken ?? ""}`
     : null;
   const [fetchedStagedDims, setFetchedStagedDims] = useState<{
@@ -2917,6 +2919,9 @@ export function ModelConfigPage({
       : "Load model";
 
   const handleRun = () => {
+    if (sharedVariantUnresolved) {
+      return;
+    }
     if (budgetSettling) {
       return;
     }
@@ -3158,6 +3163,17 @@ export function ModelConfigPage({
         draftConfig={configState}
         currentConfig={config}
       />
+      {sharedVariantUnresolved && (
+        <p
+          role="status"
+          className="mb-5 rounded-lg border p-3 text-sm text-muted-foreground"
+        >
+          The GGUF variant could not be resolved. You can edit and share these
+          settings offline. Reopen the link when the Hugging Face model is
+          accessible before loading. To keep any edits, copy a new link with
+          Share first.
+        </p>
+      )}
       <div className="space-y-5">
         {target.isGguf && (
           <>
@@ -3362,6 +3378,7 @@ export function ModelConfigPage({
             size="sm"
             className={FOOTER_BUTTON_CLASS}
             disabled={
+              sharedVariantUnresolved ||
               stagedMetadataPending ||
               budgetSettling ||
               (!extraArgsLoadable && !sharedExtraArgsCleared) ||

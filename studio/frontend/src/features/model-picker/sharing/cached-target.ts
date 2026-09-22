@@ -150,12 +150,9 @@ export async function resolveCachedRunConfigTarget(
     listing = await listGgufVariants(target.id, options.hfToken, {
       signal: options.signal,
     });
-  } catch (error) {
+  } catch {
     options.signal.throwIfAborted();
-    throw new RunConfigResolutionError(
-      "Could not look up the shared GGUF model. Check your connection and access to the Hugging Face model, then reopen the link.",
-      { cause: error },
-    );
+    return target;
   }
   options.signal.throwIfAborted();
   const requested = target.meta.ggufVariant ?? listing.default_variant;
@@ -165,6 +162,9 @@ export async function resolveCachedRunConfigTarget(
       : ggufVariantsMatch(requested, entry.quant),
   );
   if (!variant) {
+    if (!listing.dependencies_resolved) {
+      return target;
+    }
     throw new RunConfigResolutionError(
       "The shared GGUF variant is unavailable for this model. Ask the sender for an updated link.",
     );
