@@ -335,3 +335,58 @@ def test_the_plateau_scheduler_min_lrs_are_remapped_too():
     assert len(new_scheduler.min_lrs) == len(new_optimizer.param_groups)
     for _ in range(14):
         new_scheduler.step(1.0)  # RuntimeError if min_lrs is still the legacy length
+
+
+def test_resuming_a_lora_checkpoint_keeps_the_corrected_decay():
+    # Old and new layouts coincide here, so nothing needs reshaping, but torch takes the
+    # hyperparameters from the saved dict: without the migration the run reloads the 0.0
+    # this change exists to correct and trains undecayed again, silently.
+    torch = pytest.importorskip("torch")
+    nn = torch.nn
+
+    model = _lora_shaped(torch, nn)
+    old = _legacy_optimizer(torch, model)
+    for _, param in [(n, p) for n, p in model.named_parameters() if p.requires_grad]:
+        param.grad = torch.randn_like(param)
+    old.step()
+    saved = old.state_dict()
+
+    new = _optimizer(torch, model, 0.1)
+    assert [len(g["params"]) for g in new.param_groups] == [
+        len(g["params"]) for g in saved["param_groups"]
+    ], "shapes must coincide or this is testing the reshaping path instead"
+    new.load_state_dict(saved)
+    assert all(group["weight_decay"] == 0.1 for group in new.param_groups), new.param_groups
+
+
+def test_scheduler_state_of_equal_length_is_remapped_by_role_not_position():
+    # No trainable embedding: both current groups are non-embeddings, so the saved
+    # [ordinary, embedding] pair is the same length but means something else.
+    torch = pytest.importorskip("torch")
+    nn = torch.nn
+    from torch.optim.lr_scheduler import LambdaLR
+    from unsloth.trainer import _create_unsloth_optimizer, _install_legacy_scheduler_resume
+
+    model = nn.Module()
+    model.proj = nn.Linear(4, 4)  # .weight decays, .bias does not
+    trainable = [p for p in model.parameters() if p.requires_grad]
+    old_optimizer = torch.optim.AdamW(
+        [{"params": trainable, "lr": 2e-4}, {"params": [], "lr": 5e-5}], lr = 2e-4
+    )
+    saved = LambdaLR(old_optimizer, lambda step: 1.0).state_dict()
+    assert saved["base_lrs"] == [2e-4, 5e-5]
+
+    new_optimizer = _create_unsloth_optimizer(
+        model,
+        torch.optim.AdamW,
+        {"lr": 2e-4},
+        5e-5,
+        weight_decay = 0.1,
+        decay_parameter_names = _decay_names(torch, model),
+    )
+    assert new_optimizer._unsloth_group_roles == ["non_embeddings", "non_embeddings"]
+    scheduler = _install_legacy_scheduler_resume(
+        LambdaLR(new_optimizer, lambda step: 1.0), new_optimizer
+    )
+    scheduler.load_state_dict(saved)
+    assert scheduler.base_lrs == [2e-4, 2e-4], scheduler.base_lrs

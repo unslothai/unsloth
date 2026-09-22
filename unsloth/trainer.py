@@ -606,9 +606,14 @@ def _install_legacy_scheduler_resume(scheduler, optimizer):
         state_dict = dict(state_dict)
         # min_lrs is reduce_lr_on_plateau's per-group floor; left at two entries it
         # replaces a correctly sized list and the next reduction indexes past its end.
+        # By ROLE, not by length. Two entries can mean two different things: with no
+        # trainable embedding both current groups are non-embeddings, so a saved
+        # [ordinary, embedding] pair is the same length yet would hand the second group
+        # the embedding rate and train it at the wrong lr without a word. Remapping by
+        # role is the identity whenever the roles already line up.
         for key in ("base_lrs", "_last_lr", "min_lrs"):
             saved = state_dict.get(key)
-            if isinstance(saved, list) and len(saved) == len(_LEGACY_ROLE_ORDER) != len(roles):
+            if isinstance(saved, list) and len(saved) == len(_LEGACY_ROLE_ORDER):
                 by_role = dict(zip(_LEGACY_ROLE_ORDER, saved))
                 state_dict[key] = [by_role[role] for role in roles]
         return original(state_dict)
@@ -625,21 +630,23 @@ def _install_legacy_resume(optimizer, legacy_params, legacy_sizes, group_roles):
     @wraps(original)
     def load_state_dict(state_dict):
         saved = state_dict.get("param_groups") or []
-        # Keyed on the SHAPE, not the count: a model with no trainable embedding has a
-        # legacy [all non-embeddings, empty embeddings] and a new [decayed, non-decayed],
-        # two groups either way but different sizes, which torch rejects just the same.
-        current_shape = [len(group["params"]) for group in optimizer.param_groups]
-        if [len(group["params"]) for group in saved] != current_shape:
-            migrated = _migrate_legacy_optimizer_state(
-                state_dict, optimizer, legacy_params, legacy_sizes, group_roles
-            )
-            if migrated is not None:
+        # Offered every recognisably legacy checkpoint, not only the reshaped ones.
+        # torch takes the group hyperparameters from the SAVED dict, so a LoRA resume,
+        # whose old and new layouts happen to coincide, would otherwise load the 0.0
+        # this change exists to correct and silently train undecayed again.
+        migrated = _migrate_legacy_optimizer_state(
+            state_dict, optimizer, legacy_params, legacy_sizes, group_roles
+        )
+        if migrated is not None:
+            if [len(group["params"]) for group in saved] != [
+                len(group["params"]) for group in optimizer.param_groups
+            ]:
                 print(
                     f"Unsloth: remapping {len(saved)} optimizer parameter group(s) from a "
                     f"checkpoint saved before weight decay was split out onto "
                     f"{len(optimizer.param_groups)}."
                 )
-                state_dict = migrated
+            state_dict = migrated
         return original(state_dict)
 
     optimizer.load_state_dict = load_state_dict
