@@ -674,9 +674,9 @@ def xpu_native_bf16_probe() -> Optional[bool]:
     reading ``has_bfloat16_conversions``, so the bare call answers True for EVERY available XPU:
     the same emulation trap ``native_bf16_supported`` avoids on the CUDA side. Ask explicitly.
 
-    Tri-state because the two callers need different halves. ``get_device_properties()`` raises when
-    no device is really there, and collapsing that to False made the PRE-EVICTION preflight refuse
-    nf4 on any host whose XPU cannot be interrogated, which is a probe failing CLOSED."""
+    Tri-state because ``get_device_properties()`` raises when no device is really there: collapsing
+    that to False made the pre-eviction preflight refuse nf4 on any host whose XPU cannot be
+    interrogated, a probe failing CLOSED."""
     import torch  # noqa: PLC0415
 
     fn = getattr(getattr(torch, "xpu", None), "is_bf16_supported", None)

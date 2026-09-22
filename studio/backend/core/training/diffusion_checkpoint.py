@@ -1758,11 +1758,10 @@ def _assert_required_state(path: Path, manifest: dict[str, Any]) -> None:
         isinstance(saved_streams.get(name), (list, tuple)) for name in _TRAINER_RNG_STREAMS
     ):
         missing.append("the trainer's random-number streams")
-    # Same failure one level down: a bundle written on CUDA carries only torch_cuda_* keys, so resuming it on an XPU
-    # box (or the reverse) leaves the destination device generator freshly seeded and every later noise draw differs,
-    # while the run reports a clean resume. Nothing else catches it -- the identity records the effective precision,
-    # which is bf16 on both. Absent on a bundle written before this was recorded, and an unknown backend must not
-    # refuse a resume that used to work, so only a KNOWN mismatch counts.
+    # Same failure one level down: a CUDA bundle carries only torch_cuda_* keys, so resuming it on XPU (or the
+    # reverse) leaves the destination generator freshly seeded and reports a clean resume. Nothing else catches it,
+    # since the identity records the effective precision and that is bf16 on both. Only a KNOWN mismatch counts: a
+    # bundle predating this field must still resume.
     saved_accel = rng_manifest.get("accelerator") if isinstance(rng_manifest, dict) else None
     if isinstance(saved_accel, str) and saved_accel and saved_accel != _rng_accelerator():
         missing.append(
