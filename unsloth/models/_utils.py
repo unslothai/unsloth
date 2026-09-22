@@ -775,13 +775,7 @@ def _declares_flex_support(model_class):
 
 def _model_class_supports_flash_attention(model_class):
     """Whether the installed transformers will let this class dispatch flash attention.
-
-    transformers renamed the class flag from `_supports_flash_attn_2` to `_supports_flash_attn`,
-    and `_flash_attn_can_dispatch` reads only the new name, so remote code written against the
-    old layout (`_supports_flash_attn_2 = True` and nothing else) is refused with
-    "does not support Flash Attention 2 yet" the moment flash_attention_2 is requested. Ask for
-    the flag the installed transformers dispatches on; the old name only counts where the base
-    class still knows it."""
+    The legacy `_supports_flash_attn_2` flag only counts where the dispatch check still reads it."""
     if model_class is None:
         return False
     try:
@@ -800,13 +794,8 @@ def _model_class_supports_flash_attention(model_class):
 
 
 def _flash_dispatch_reads_legacy_flag(PreTrainedModel) -> bool:
-    """True when the installed dispatch check still accepts ``_supports_flash_attn_2``.
-
-    transformers 5.0 to 5.3 test ``if not (self._supports_flash_attn or getattr(self,
-    "_supports_flash_attn_2", False))`` in the dispatch check, so an old-flag-only remote
-    class still gets flash attention there; from 5.5 the old name survives only in the
-    ``if self._supports_flash_attn or ...`` that builds the error message. Read the
-    installed function rather than infer it from a version."""
+    """True when the installed dispatch check still accepts ``_supports_flash_attn_2``
+    (read from its source, since later versions keep the name only in the error message)."""
     import inspect
 
     for name in ("_flash_attn_can_dispatch", "_flash_attn_2_can_dispatch"):
@@ -1149,22 +1138,12 @@ _REMOTE_CODE_HUB_KWARGS = (
 
 
 def _resolve_remote_model_class(auto_model, config, **hub_kwargs):
-    """The class `auto_model.from_pretrained(..., trust_remote_code = True)` instantiates for a
-    remote-code config, or None when the model is native.
+    """The remote-code class `auto_model` would instantiate for `config`, or None when native.
 
-    `hub_kwargs` (revision, code_revision, token, cache_dir, local_files_only) are what the
-    load itself will pass, so a modeling module that still has to be fetched comes from the
-    same revision, with the same credentials, and never from the network under
-    `local_files_only = True`.
-
-    transformers' auto mapping is keyed by config class name, so a remote config that reuses a
-    native name (`NemotronHConfig` on the Nemotron-H hub checkpoints) resolves to the native
-    model class, whose `_supports_*` flags then decide the attention implementation of a class
-    that is never built. Only a config that itself came out of `transformers_modules` and names
-    the requested auto class in `auto_map` is remote; everything else stays native."""
-    # The caller's trust decision comes first: a materialised remote config handed in with
-    # trust_remote_code = False must not have its modeling module imported here, before
-    # transformers gets to refuse the load.
+    The auto mapping is keyed by config class name, so a remote config reusing a native name
+    (e.g. `NemotronHConfig`) would otherwise resolve to the native class. `hub_kwargs` mirror
+    the load so any fetch uses the same revision, credentials and offline mode."""
+    # Never import remote code the caller did not trust.
     if hub_kwargs.get("trust_remote_code", None) is False:
         return None
     auto_name = getattr(auto_model, "__name__", None)
@@ -1182,18 +1161,13 @@ def _resolve_remote_model_class(auto_model, config, **hub_kwargs):
     if cross_repo:
         _, class_ref = class_ref.split("--", 1)
     module_name, class_name = class_ref.rsplit(".", 1)
-    # A forced download refreshes the repository, so an already imported sibling may be the
-    # implementation that is about to be replaced; go through transformers instead.
-    # The same holds for a code_revision: the config came from the model revision, the class
-    # transformers builds comes from the code revision.
+    # force_download or code_revision may replace an already imported sibling module.
     if (
         not cross_repo
         and not hub_kwargs.get("force_download", False)
         and not hub_kwargs.get("code_revision", None)
     ):
-        # The config module is already materialised; its modeling sibling usually is too. A
-        # `other/repo--module.Class` reference lives in another repository, so a same-named
-        # module next to the config is not the class transformers will build.
+        # The modeling module is usually already imported next to the config module.
         config_module = str(type(config).__module__)
         try:
             import importlib
@@ -1212,8 +1186,7 @@ def _resolve_remote_model_class(auto_model, config, **hub_kwargs):
         passed = {
             k: v for k, v in hub_kwargs.items() if k in _REMOTE_CODE_HUB_KWARGS and v is not None
         }
-        # The unsplit reference with the model's own path, exactly as from_pretrained calls it:
-        # transformers applies `revision` only when the code repository is the model repository.
+        # Same call as from_pretrained, so `revision` applies only to same-repo code.
         klass = get_class_from_dynamic_module(full_ref, repo_id, **passed)
         return klass if isinstance(klass, type) else None
     except Exception:
@@ -5026,8 +4999,7 @@ def get_moe_target_modules(model, target_modules = None) -> List[str]:
         return []
 
     # Scope the suffixes to the requested leaves, matching get_moe_target_parameters: gate/up/gate_up map to the fused gate_up ModuleList and down_proj to the down one, so a down-only request must not pull in the other projection.
-    # gate and up stay separate: a request for gate_proj alone must not collect up_proj leaves
-    # (and the reverse); only the fused gate_up_proj spelling asks for both.
+    # gate_proj alone must not collect up_proj leaves; only gate_up_proj asks for both.
     want_gate = bool(target_set & {"gate_proj", "gate_up_proj"})
     want_up = bool(target_set & {"up_proj", "gate_up_proj"})
     want_down = "down_proj" in target_set
@@ -5071,15 +5043,9 @@ _EXPERT_SUBMODULE_PATTERN = re.compile(r"(?:^|\.)(?:experts\.\d+|shared_experts?
 
 
 def get_moe_expert_submodule_leaves(model, target_modules = None) -> List[str]:
-    """Leaf names of the requested MLP projections that live one level down inside an expert
-    submodule: ``mixer.experts.<i>.up_proj`` / ``mixer.shared_experts.up_proj`` (the Nemotron-H
-    hub checkpoints, transformers 4.x Qwen2-MoE and DeepSeek). PEFT reaches these from a leaf
-    list by suffix, but the regex ``get_peft_regex`` builds for a text-only model only reaches a
-    leaf directly under the block (``layers.<n>.mixer.up_proj``), so the routed experts were
-    silently left frozen while the same layout inside a vision-language wrapper (whose name
-    carries the ``language`` tag) was trained. Returns [] for non-MoE models, fused-parameter
-    experts, per-expert Linear ModuleLists (``get_moe_target_modules``), or a request that omits
-    the MLP experts."""
+    """Requested MLP leaf names that live inside an expert submodule (``experts.<i>.up_proj``,
+    ``shared_experts.up_proj``), which the text-only ``get_peft_regex`` regex does not reach.
+    Returns [] when there are none."""
     if not is_moe_model(model):
         return []
     if target_modules is None or not hasattr(model, "named_modules"):
@@ -5094,8 +5060,7 @@ def get_moe_expert_submodule_leaves(model, target_modules = None) -> List[str]:
         }
     if not (target_set & _MOE_BROAD_MLP_TARGETS):
         return []
-    # gate and up stay separate: a request for gate_proj alone must not collect up_proj leaves
-    # (and the reverse); only the fused gate_up_proj spelling asks for both.
+    # gate_proj alone must not collect up_proj leaves; only gate_up_proj asks for both.
     want_gate = bool(target_set & {"gate_proj", "gate_up_proj"})
     want_up = bool(target_set & {"up_proj", "gate_up_proj"})
     want_down = "down_proj" in target_set
@@ -5143,13 +5108,9 @@ def moe_expert_submodule_regex(leaves) -> str:
 def widen_target_regex_to_expert_submodules(
     model, target_modules, detect_targets, auto_regex: bool
 ):
-    """Add the ``experts.<i>.<leaf>`` alternative to a target regex that stops one level short of
-    a per-expert submodule layout (the Nemotron-H hub code). Returns
-    ``(target_modules, detect_targets, leaves)``; ``leaves`` is empty when nothing changed.
-
-    Only a regex generated by ``get_peft_regex`` (``auto_regex = True``) is widened. A regex the
-    caller wrote, ``.*\\.shared_experts\\.down_proj`` say, matches no routed expert on purpose, and
-    widening it would attach an adapter to every routed expert in every layer."""
+    """Widen a ``get_peft_regex`` target regex (``auto_regex = True``) to reach
+    ``experts.<i>.<leaf>`` submodules. A user-written regex is never widened. Returns
+    ``(target_modules, detect_targets, leaves)``; ``leaves`` is empty when nothing changed."""
     if not auto_regex or not isinstance(target_modules, str):
         return target_modules, detect_targets, []
     leaves = get_moe_expert_submodule_leaves(model, detect_targets)

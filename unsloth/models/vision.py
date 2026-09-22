@@ -344,15 +344,9 @@ def _lift_endpoint_hooks_onto_adapters(model):
 def _align_root_hook_with_input_embeddings(model):
     """Point the root dispatch hook at the input embedding's device.
 
-    accelerate picks the root execution device as the first member of the SET of devices in the
-    map, so a plan that keeps the embedding off that device (the Nemotron Teacher lands it on
-    cuda:1 with the head on cuda:2) sends every input to cuda:0 first; the embedding hook then
-    carries input_ids on while attention_mask and labels stay behind. Modeling code that builds
-    its own mask on the embedding's device (the transformers 4.4x `_update_causal_mask` the
-    Nemotron-H hub checkpoints still ship) fails with "Expected all tensors to be on the same
-    device, but found at least two devices". Native transformers moves the mask itself, which is
-    what kept the extra hop invisible. Aligning the root with the embedding also drops both
-    copies from every batch. Returns the device the root now runs on, or None when untouched."""
+    accelerate uses the first device in the map, which may not hold the embedding; then only
+    input_ids follow it and remote code that builds its mask there hits a device mismatch.
+    Returns the new root device, or None when untouched."""
     device_map = getattr(model, "hf_device_map", None)
     if not device_map or len(set(device_map.values())) < 2:
         return None
@@ -1251,8 +1245,7 @@ def _cast_unquantized_floats(model, dtype):
     for tensor in list(model.parameters()) + list(model.buffers()):
         if not tensor.is_floating_point() or tensor.dtype == dtype:
             continue
-        # bitsandbytes keeps its packed weights in Params4bit / Int8Params with a
-        # quant_state (or CB/SCB); those must not move.
+        # Skip bitsandbytes packed weights.
         if (
             hasattr(tensor, "quant_state")
             or hasattr(tensor, "SCB")
@@ -1264,16 +1257,8 @@ def _cast_unquantized_floats(model, dtype):
 
 
 def _inherit_gradient_checkpointing_support(model):
-    """Let a wrapper model advertise the gradient checkpointing its submodels support.
-
-    Multimodal remote-code models (nvidia/Nemotron-3-Nano-Omni-30B-A3B) wrap a
-    complete CausalLM inside a PreTrainedModel that keeps transformers' default
-    `supports_gradient_checkpointing = False`, so Trainer's
-    `gradient_checkpointing_enable` raised "does not support gradient
-    checkpointing" although every layer underneath supports it. transformers
-    enables checkpointing by walking `model.modules()`, so the wrapper only needs
-    to say yes when a nested model does. Returns True when the flag was set.
-    """
+    """Set `supports_gradient_checkpointing` on a wrapper whose nested model or layers support
+    it (remote multimodal wrappers leave the default False). Returns True when set."""
     if getattr(model, "supports_gradient_checkpointing", False):
         return False
     if not hasattr(model, "gradient_checkpointing_enable"):
@@ -1285,9 +1270,6 @@ def _inherit_gradient_checkpointing_support(model):
     for name, module in model.named_modules():
         if module is model or not name:
             continue
-        # A nested model that says yes, or a layer built on transformers' own
-        # checkpointing layer (a remote NemotronHBlock is one) that the wrapper
-        # class simply forgot to advertise.
         if (
             getattr(module, "supports_gradient_checkpointing", False)
             and hasattr(module, "gradient_checkpointing_enable")
@@ -1320,17 +1302,14 @@ _TEXT_BATCH_KEYS = frozenset(
 )
 
 
-# What a text collator really puts in a batch. A required control argument (cache_position,
-# use_cache, past_key_values, return_dict) is not supplied by the Trainer, so a forward that
-# demands one without a default cannot take a text batch either.
+# What a text collator really puts in a batch.
 _COLLATOR_SUPPLIED_KEYS = frozenset(
     ("input_ids", "attention_mask", "labels", "token_type_ids", "position_ids")
 )
 
 
 def _required_non_text_inputs(forward):
-    """Parameters a text batch cannot supply: no default and not something the collator puts
-    in the batch."""
+    """Required forward parameters a text batch cannot supply."""
     try:
         parameters = inspect.signature(forward).parameters
     except (TypeError, ValueError):
@@ -1348,24 +1327,11 @@ def _required_non_text_inputs(forward):
 def _text_trainable_core(model, text_intent = True):
     """The module a text batch can train when the loaded wrapper's forward cannot take one.
 
-    nvidia/Nemotron-3-Nano-Omni-30B-A3B wraps a complete NemotronHForCausalLM as
-    `language_model` behind a forward whose first parameter, `pixel_values`, has
-    no default and whose body indexes `image_flags`; a text-only SFT batch died
-    on the first step with "missing 1 required positional argument:
-    'pixel_values'". When a wrapper's forward requires an input that a text
-    batch does not carry and exactly one direct child is a PreTrainedModel with
-    its own forward and both embedding accessors (`language_model` or `thinker`
-    when several qualify), training uses that child and the generation-time
-    siblings are dropped so their weights are freed. Wrappers whose forward
-    accepts a text batch (every transformers VLM, whose image inputs default to
-    None) are returned unchanged, as is anything ambiguous.
+    If the wrapper's forward requires a non-text input (e.g. `pixel_values`) and exactly one
+    child PreTrainedModel can take a text batch (`language_model` / `thinker` preferred), that
+    child is returned and its siblings are dropped. Only with `text_intent` (the caller's
+    `text_only = True`); otherwise the wrapper is kept with a hint.
     `UNSLOTH_KEEP_COMPOSED_WRAPPER=1` turns this off.
-
-    `text_intent` is True only when the caller passed `text_only = True`: a
-    multimodal batch does carry those inputs, and an audio-only wrapper has no
-    vision config to infer anything from, so otherwise the wrapper is kept and a
-    hint names `text_only = True` for the text case, instead of silently
-    discarding the vision or audio tower.
     """
     if os.environ.get("UNSLOTH_KEEP_COMPOSED_WRAPPER", "0") == "1":
         return model
@@ -1440,15 +1406,9 @@ _LOADER_STATE_ATTRIBUTES = (
 
 
 def _carry_loader_state_to_core(model, core, name):
-    """Move what from_pretrained recorded on the wrapper onto the child that replaces it.
-
-    transformers sets the bitsandbytes flags (`is_loaded_in_4bit`, `is_quantized`,
-    `quantization_method`, `hf_quantizer`) and `hf_device_map` on the object it
-    returns, not on its children. PEFT reads `is_loaded_in_4bit` off the model it
-    is given to choose `lora.bnb.Linear4bit` over the plain `lora.Linear`, so a
-    core without the flags trained through the wrong LoRA layer: forward ran, but
-    merging wrote a 16-bit delta into packed 4-bit weights and the fast QLoRA path
-    was skipped. The device map is re-keyed from the wrapper's names to the core's.
+    """Copy the quantization flags, re-keyed `hf_device_map` and quantization_config that
+    from_pretrained set on the wrapper onto the child replacing it (PEFT reads
+    `is_loaded_in_4bit` to pick the bnb LoRA layer).
     """
     for attribute in _LOADER_STATE_ATTRIBUTES:
         if attribute in vars(core):
@@ -1485,16 +1445,8 @@ def _carry_loader_state_to_core(model, core, name):
 
 @contextlib.contextmanager
 def _tolerate_dtype_cast_on_quantized_model(enabled):
-    """Let a remote-code from_pretrained finish its own model.to(dtype) on a
-    bitsandbytes model.
-
-    Some checkpoints override from_pretrained and end with `model.to(dtype)`
-    (Phi-4-reasoning-vision does, with the model's own dtype, so it is a no-op),
-    and transformers refuses any dtype cast on a bitsandbytes model, whatever
-    the dtype. Inside this context that call casts only the floating parameters
-    that are not quantized weights, which is what the checkpoint author meant
-    and what the 16-bit load already does, and a device move is passed through
-    untouched. Scoped to the load call; a cast anywhere else keeps refusing.
+    """Within the load, let a remote-code `model.to(dtype)` on a bitsandbytes model cast only
+    the unquantized floats instead of raising; device moves pass through.
     """
     if not enabled:
         yield
@@ -1515,11 +1467,7 @@ def _tolerate_dtype_cast_on_quantized_model(enabled):
             else:
                 rest.append(arg)
         if not quantized or dtype is None:
-            # Nothing to tolerate here, so hand the call on exactly as it arrived.
-            # Reading `dtype` with .get above rather than popping it keeps this
-            # pass-through byte-identical: popping dropped the cast on every
-            # non-quantized `model.to(dtype = ...)` made inside the load, which a
-            # remote-code from_pretrained does to its own submodules.
+            # Pass through unchanged (dtype was read with .get, not popped).
             return original_to(self, *args, **kwargs)
         kwargs.pop("dtype", None)
         _cast_unquantized_floats(self, dtype)
@@ -1571,9 +1519,7 @@ class FastBaseModel:
         text_only = False,
         # True when the caller already swapped a multimodal config for its text sub-config, so auto_config no longer describes the repo. Set by loader.py and by the block below.
         text_only_decoder = False,
-        # The caller's own text_only request. loader.py turns text_only off for a family
-        # without its own text decoder so the full wrapper loads, but the caller still
-        # wants a text-trainable model back; None means "same as text_only".
+        # The caller's own text_only request, which loader.py may turn off; None means text_only.
         text_intent = None,
         # True when auto_config came from the caller. It cannot be inferred here: FastModel pops config out of kwargs before this sees them, so it looks exactly like one we resolved ourselves.
         auto_config_from_caller = False,
@@ -2098,9 +2044,7 @@ class FastBaseModel:
                 _cfg_val = kwargs.pop("max_position_embeddings", None)
                 if _cfg_val is not None:
                     setattr(model_config, "max_position_embeddings", _cfg_val)
-                # A remote-code from_pretrained may end with model.to(dtype), which
-                # transformers refuses on a bitsandbytes model even when the dtype
-                # is the one the model already has. Tolerate it for the load only.
+                # Remote-code from_pretrained may call model.to(dtype) on a bnb model.
                 with _tolerate_dtype_cast_on_quantized_model(
                     bool(trust_remote_code) and (load_in_4bit or load_in_8bit)
                 ):
@@ -2112,7 +2056,6 @@ class FastBaseModel:
                         trust_remote_code = trust_remote_code,
                         **kwargs,
                     )
-                # Only the caller knows: a wrapper with an audio-only config has no vision_config either.
                 model = _text_trainable_core(
                     model, text_intent = bool(text_only) if text_intent is None else bool(text_intent)
                 )
@@ -2681,8 +2624,7 @@ class FastBaseModel:
             )
         _raise_if_fast_inference_modules_to_save(model, modules_to_save)
 
-        # True only when the regex below is generated here: a regex the caller wrote is kept as
-        # written, so a request for the shared expert alone never grows to every routed expert.
+        # Only a regex generated here may be widened to expert submodules below.
         _target_modules_auto_regex = False
         if target_modules is None or target_modules == "all-linear":
             target_modules = get_peft_regex(
@@ -2757,13 +2699,8 @@ class FastBaseModel:
             finetune_language_layers = finetune_language_layers,
         )
 
-        # Per-expert submodule layouts (mixer.experts.<i>.up_proj, the Nemotron-H hub code): a leaf
-        # list already reaches them by suffix; the text-only regex stops one level short, so add
-        # the nested alternative to it, scoped to the MLP leaves the caller asked for. Before the
-        # expert detection below, so the routed experts count as reachable. Only a regex built
-        # here is widened: one the caller wrote (`.*\.shared_experts\.down_proj`) is their scope.
-        # The routed experts live in the language model, so a vision-only request
-        # (finetune_language_layers = False) must not be widened onto them either.
+        # Per-expert submodules (mixer.experts.<i>.up_proj) are one level below what the
+        # generated regex reaches. Widen it before expert detection; never for vision-only.
         target_modules, _moe_module_detect, _expert_submodule_leaves = (
             widen_target_regex_to_expert_submodules(
                 model,

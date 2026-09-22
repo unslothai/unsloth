@@ -1,12 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
-"""The root dispatch hook runs where the input embedding lives.
-
-accelerate picks the root execution device as the first member of the SET of devices in the
-map. The planner put the Nemotron Teacher's embedding on cuda:1 (head on cuda:2, a few
-blocks on cuda:0), so every batch went to cuda:0 first, the embedding hook carried input_ids
-on, and attention_mask stayed behind. The hub `_update_causal_mask` then raised "Expected all
-tensors to be on the same device, but found at least two devices, cuda:1 and cuda:0".
-"""
+"""The root dispatch hook runs where the input embedding lives, not on the first device in
+the map, so attention_mask follows input_ids."""
 
 from types import SimpleNamespace
 

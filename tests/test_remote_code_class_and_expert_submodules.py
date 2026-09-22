@@ -1,15 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
-"""Remote code whose config shares a native class name, and per-expert submodule LoRA targets.
-
-The Nemotron-H hub checkpoints (NVIDIA-Nemotron-Labs-Teacher) ship `NemotronHConfig` and
-`NemotronHForCausalLM` as remote code. transformers' auto mapping is keyed by config class
-name, so `resolve_model_class` returned the native `NemotronHForCausalLM`, whose flags said
-flash attention is fine; the remote class that is actually built only carries the old
-`_supports_flash_attn_2` flag, which transformers 5 no longer dispatches on, and the load
-stopped with "does not support Flash Attention 2 yet". Their routed experts also live one
-level below the block (`mixer.experts.<i>.up_proj`), where the text-only LoRA regex never
-looked, so the experts trained inside the Omni wrapper but not in the standalone model.
-"""
+"""Remote code whose config shares a native class name (Nemotron-H hub checkpoints), and
+LoRA targets on per-expert submodules (`mixer.experts.<i>.up_proj`)."""
 
 import re
 import sys
@@ -115,8 +106,7 @@ def test_remote_config_resolves_to_remote_model_class(monkeypatch):
 
 
 def test_fetch_of_a_missing_modeling_module_uses_the_load_options(monkeypatch):
-    """On a cold cache only the configuration module exists; the modeling module is fetched
-    with the same revision, credentials and offline flag the load will use."""
+    """A cold-cache fetch uses the load's revision, token and offline flag."""
     U = _utils()
     from transformers import AutoModelForCausalLM
     import transformers.dynamic_module_utils as dmu
@@ -155,8 +145,7 @@ def test_fetch_of_a_missing_modeling_module_uses_the_load_options(monkeypatch):
 
 
 def test_cross_repository_auto_map_skips_the_local_sibling(monkeypatch):
-    """`other/repo--module.Class` names a class in another repository: a same-named module
-    next to the config must not answer for it."""
+    """An `other/repo--module.Class` reference must not resolve to a same-named sibling module."""
     U = _utils()
     from transformers import AutoModelForCausalLM
     import transformers.dynamic_module_utils as dmu
@@ -175,8 +164,7 @@ def test_cross_repository_auto_map_skips_the_local_sibling(monkeypatch):
     monkeypatch.setattr(dmu, "get_class_from_dynamic_module", fake_get)
     got = U.resolve_model_class(AutoModelForCausalLM, config)
     assert got is Remote and got is not local_cls
-    # Unsplit, with the model path: transformers decides which repository the code comes from
-    # and applies a model revision only when both are the same repository.
+    # Unsplit, with the model path, as from_pretrained calls it.
     assert seen == dict(
         class_ref = "other/repo--modeling_llama.LlamaForCausalLM", repo_id = "fake/repo"
     )
@@ -259,9 +247,7 @@ class _Model(torch.nn.Module):
 
 
 def _text_only_regex():
-    """The regex FastModel.get_peft_model builds with its defaults (every family on): the
-    tagged branch needs a `language` / `text` component in the name and the untagged branch
-    stops one level under the block, so a standalone text model's nested experts miss both."""
+    """The default FastModel.get_peft_model regex misses nested experts in a text-only model."""
     import importlib
 
     stub = sys.modules.get("unsloth_zoo.peft_utils")
@@ -311,9 +297,7 @@ def test_non_moe_model_adds_nothing():
 
 
 def test_only_a_generated_regex_is_widened_to_the_routed_experts():
-    """A regex the caller wrote is their scope: `.*\\.shared_experts\\.down_proj` matches no
-    routed expert on purpose, so widening it would attach an adapter to every routed expert in
-    every layer. The generated text-only regex still gets the nested alternative."""
+    """A caller-written regex is never widened; the generated text-only regex is."""
     U = _utils()
     model = _Model()
     caller_regex = r".*\.shared_experts\.down_proj"
@@ -351,8 +335,7 @@ def test_gate_and_up_expert_leaves_stay_separate():
 
 
 def test_legacy_flash_flag_follows_the_installed_dispatch_check():
-    """5.0 to 5.3 still accept _supports_flash_attn_2 in the dispatch check; later releases
-    keep the name only in an error message. The helper reads the installed function."""
+    """The helper reads the installed dispatch check for the legacy flag."""
     U = _utils()
 
     class OldDispatch:
@@ -416,9 +399,7 @@ def test_force_download_bypasses_the_imported_sibling(monkeypatch):
 
 
 def test_every_resolver_probe_forwards_the_trust_decision():
-    """A class probe that omits trust_remote_code would import a remote modeling module
-    before transformers can refuse the load; the loader probes must also fetch it with the
-    load's own revision, credentials and offline mode."""
+    """Class probes pass trust_remote_code and the load's hub kwargs."""
     import ast, inspect
     from unsloth.models import llama, loader, loader_utils, vision
 
@@ -451,8 +432,7 @@ def test_every_resolver_probe_forwards_the_trust_decision():
 
 
 def test_a_code_revision_skips_the_materialised_sibling(monkeypatch):
-    """The config's sibling module comes from the model revision; with a code_revision the
-    class transformers builds comes from another one, so the resolver must ask transformers."""
+    """With a code_revision the resolver must ask transformers, not the sibling module."""
     import importlib
     import types
 

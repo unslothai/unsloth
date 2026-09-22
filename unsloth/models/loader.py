@@ -1907,8 +1907,7 @@ class FastModel(FastBaseModel):
         is_vlm = any(x.endswith("ForConditionalGeneration") for x in architectures)
         is_vlm = is_vlm or hasattr(model_config, "vision_config")
         load_text_only = text_only and auto_model is None
-        # The class probes below may have to fetch a remote modeling module; they fetch it exactly as the
-        # load will (same trust decision, revision, credentials and offline mode).
+        # Class probes below fetch remote modeling code exactly as the load will.
         _probe_hub_kwargs = dict(
             trust_remote_code = trust_remote_code,
             revision = (

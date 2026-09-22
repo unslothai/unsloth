@@ -1,20 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
-"""Two gates that let a remote-code multimodal model reach its first training step.
-
-Padding-free batching adds `packed_seq_lengths` to every batch. A remote-code
-forward with a fixed signature (microsoft/Phi-4-reasoning-vision-15B) raised
-"got an unexpected keyword argument 'packed_seq_lengths'" on the first step, so
-auto padding-free now stays off for a forward that can take neither that key
-nor `**kwargs`.
-
-A wrapper model that keeps transformers' default
-`supports_gradient_checkpointing = False` around a CausalLM that supports it
-(nvidia/Nemotron-3-Nano-Omni-30B-A3B) made Trainer's
-`gradient_checkpointing_enable` raise. The wrapper now inherits the answer of
-the model it wraps.
-
-Small models, no downloads; each test states which arm it measures.
-"""
+"""Gates that let a remote-code multimodal model reach its first training step: padding-free
+stays off for a forward that cannot take `packed_seq_lengths`, a wrapper inherits gradient
+checkpointing support, and a text batch trains the wrapped language model. No downloads."""
 
 import pytest
 import torch
@@ -264,9 +251,7 @@ def test_ambiguous_wrapper_is_left_alone():
 
 
 def test_multimodal_intent_keeps_the_wrapper(capsys):
-    """A load that asked for the multimodal model (vision config, no text_only)
-    keeps the wrapper: an image batch carries pixel_values, and unwrapping would
-    silently drop the vision tower. The hint names text_only = True."""
+    """Without text_only the multimodal wrapper is kept, with a hint naming text_only = True."""
     model = _OmniWrapper(_Cfg())
     assert _text_trainable_core(model, text_intent = False) is model
     assert hasattr(model, "vision_model")
@@ -286,9 +271,7 @@ def test_opt_out_env_keeps_the_wrapper(monkeypatch):
 
 
 def test_core_carries_the_wrapper_loader_state():
-    """from_pretrained records the bitsandbytes flags and the device map on the object
-    it returns; the core that replaces it must carry them or PEFT picks the wrong
-    LoRA layer and saving forgets the checkpoint is 4-bit."""
+    """The core that replaces the wrapper carries the bitsandbytes flags and device map."""
     model = _OmniWrapper(_Cfg())
     model.is_loaded_in_4bit = True
     model.is_quantized = True
@@ -322,8 +305,7 @@ def test_core_without_loader_state_gets_none_invented():
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason = "bitsandbytes 4-bit needs a GPU")
 def test_peft_dispatches_the_4bit_lora_layer_on_the_core():
-    """The observable failure: without the flags PEFT wraps a Linear4bit in the plain
-    lora.Linear, whose merge writes a 16-bit delta into packed 4-bit weights."""
+    """Without the flags PEFT wraps a Linear4bit in the plain lora.Linear."""
     from transformers import AutoModelForCausalLM, BitsAndBytesConfig
     from peft import LoraConfig, get_peft_model
     import peft.tuners.lora.bnb as lora_bnb
@@ -343,8 +325,7 @@ def test_peft_dispatches_the_4bit_lora_layer_on_the_core():
             self.vision_model = nn.Linear(4, 4)
 
     wrapper = _Composed(_Cfg())
-    # transformers put these on the object from_pretrained returned; move them to
-    # the wrapper, which is what a composed remote-code checkpoint looks like.
+    # transformers sets these on the object from_pretrained returns, here the wrapper.
     for attribute in ("is_loaded_in_4bit", "is_quantized", "quantization_method", "hf_quantizer"):
         setattr(wrapper, attribute, vars(inner).pop(attribute))
     core = _text_trainable_core(wrapper)
@@ -387,10 +368,7 @@ def test_model_built_on_gradient_checkpointing_layer_is_recognised():
 
 
 def test_the_loader_carries_the_callers_text_intent_past_its_own_normalisation():
-    """loader.py turns text_only off for a family without its own text decoder so the full
-    wrapper loads, and used to forward that normalised value as the intent: a text_only
-    request for such a model then kept a wrapper whose forward needs pixel_values. The
-    caller's own request travels separately."""
+    """The caller's own text_only request reaches the loader even when loader.py turns it off."""
     import inspect
     from unsloth.models import loader, vision
 
@@ -401,16 +379,13 @@ def test_the_loader_carries_the_callers_text_intent_past_its_own_normalisation()
 
 
 def test_standard_tokenizer_fields_count_as_text_inputs():
-    """A wrapper whose forward requires token_type_ids can take a text batch: the Trainer
-    supplies it, so it is no reason to unwrap."""
+    """token_type_ids is supplied by the Trainer, so it is no reason to unwrap."""
     from unsloth.models.vision import _TEXT_BATCH_KEYS
     assert "token_type_ids" in _TEXT_BATCH_KEYS
 
 
 def test_a_required_cache_control_is_a_missing_text_input():
-    """cache_position without a default is not something the collator supplies, so a forward
-    that demands it cannot take a text batch; input_ids and attention_mask without defaults
-    are fine."""
+    """A required cache_position cannot come from a text batch; input_ids and attention_mask can."""
     from unsloth.models.vision import _required_non_text_inputs
 
     def needs_cache(
