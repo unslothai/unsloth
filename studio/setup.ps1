@@ -96,6 +96,9 @@ try {
 $OutputEncoding = $_UnslothUtf8NoBom
 $env:PYTHONUTF8 = '1'
 $env:PYTHONIOENCODING = 'utf-8'
+# This marker is valid only when this setup process observes a settled refusal and
+# successfully reaches the ROCm install handoff below. Never trust an inherited value.
+Remove-Item Env:UNSLOTH_ROCM_TORCH_POLICY_BLOCKED -ErrorAction SilentlyContinue
 
 # Resolved once: it picks the output sink in step/substep and must not change
 # mid-run. See Write-StudioStdoutMirror.
@@ -1637,6 +1640,24 @@ function Get-ProbeFailureText {
         $text = ("{0}`nthe process was terminated with status 0x{1:x8}" -f $text, $status)
     }
     return $text
+}
+
+function Get-ProbeCodeIntegrityBlockReason {
+    param($Probe)
+    if (-not $Probe -or $Probe.Ok) { return $null }
+
+    $reason = Get-CodeIntegrityBlockReason -Text (Get-ProbeFailureText -Probe $Probe)
+    if ($reason -ne "the image was refused by a code integrity fail-fast") {
+        return $reason
+    }
+
+    # STATUS_FAIL_FAST_EXCEPTION is generic: a corrupt native component can raise it
+    # without Windows policy being involved. Keep it in the raw classifier for backend
+    # parity and diagnostics, but require a second, policy-specific signal before repair
+    # decisions treat this probe as settled. Reclassifying stderr without the generic
+    # token also recovers a WinError or policy phrase that appeared beside the exit code.
+    $specificText = ([string]$Probe.Error) -replace '(?i)0xc0000602\b', ''
+    return (Get-CodeIntegrityBlockReason -Text $specificText)
 }
 
 # The two statuses Windows also raises for a damaged or incompletely downloaded file, so
@@ -6306,19 +6327,7 @@ if ((Test-Path -LiteralPath $VenvDir -PathType Container) -and -not $NoTorchMode
         $torchVer = $_verProbe.Output.Trim()
         # A Windows policy refusing an unsigned GPU library is not a driver fault and not a
         # broken wheel, and the three rescue arms below would otherwise say it was.
-        $_probeBlockReason = if ($_verProbe -and -not $_verProbe.Ok) {
-            Get-CodeIntegrityBlockReason -Text (Get-ProbeFailureText -Probe $_verProbe)
-        } else { $null }
-        # 0xC0000602 is the generic STATUS_FAIL_FAST_EXCEPTION: any native component can
-        # raise it, a corrupt DLL included, so an exit code carrying it and nothing else
-        # does not establish a policy. Suppressed rather than reclassified, which leaves
-        # the ordinary damaged-wheel repair in place instead of telling the user to go
-        # and change a Windows security setting. Text that says so on its own still
-        # counts, which keeps this in step with the backend classifier.
-        if ($_probeBlockReason -eq "the image was refused by a code integrity fail-fast" -and
-            -not (Get-CodeIntegrityBlockReason -Text $_verProbe.Error)) {
-            $_probeBlockReason = $null
-        }
+        $_probeBlockReason = Get-ProbeCodeIntegrityBlockReason -Probe $_verProbe
         # Carried for the fast-path escapes far below, which probe `import torch` again and
         # would otherwise read a refusal as a CPU-only wheel.
         $script:TorchProbeBlockReason = $_probeBlockReason
@@ -7583,13 +7592,22 @@ sys.exit(2 if conflict else (0 if version else 1))
             $_rocmTorchProbe = Invoke-BoundedPythonProbe -PythonExe "python" `
                 -Code "import torch, sys; sys.exit(0 if torch.cuda.is_available() else 1)"
             $_torchIsCpu = -not $_rocmTorchProbe.Ok
+            $_rocmProbeBlockReason = Get-ProbeCodeIntegrityBlockReason -Probe $_rocmTorchProbe
+            $_settledRocmProbeBlockReason = $null
+            foreach ($_candidateBlockReason in @($_rocmProbeBlockReason, $script:TorchProbeBlockReason)) {
+                if ($_candidateBlockReason -and
+                    -not (Test-CodeIntegrityReasonIsAmbiguous -Reason $_candidateBlockReason)) {
+                    $_settledRocmProbeBlockReason = $_candidateBlockReason
+                    break
+                }
+            }
             # A torch Windows is refusing cannot answer this question at all, and reading
             # the refusal as "CPU-only" announced a ROCm reinstall of the very wheels the
-            # policy just blocked. A settled verdict is left alone; an ambiguous one is
-            # still repaired, which is the case a reinstall can clear.
-            if ($_torchIsCpu -and $script:TorchProbeBlockReason -and
-                -not (Test-CodeIntegrityReasonIsAmbiguous -Reason $script:TorchProbeBlockReason)) {
-                substep "Windows is refusing this environment's PyTorch ($script:TorchProbeBlockReason), so whether it is a ROCm build cannot be read from it -- leaving the wheels as they are." "Yellow"
+            # policy just blocked. Classify this independent probe as well as consulting
+            # the earlier one; either settled verdict leaves the wheels alone, while an
+            # ambiguous one is still repaired because a reinstall can clear corruption.
+            if ($_torchIsCpu -and $_settledRocmProbeBlockReason) {
+                substep "Windows is refusing this environment's PyTorch ($_settledRocmProbeBlockReason), so whether it is a ROCm build cannot be read from it -- leaving the wheels as they are." "Yellow"
             } elseif ($_torchIsCpu) {
                 substep "AMD GPU ($script:ROCmGfxArch) detected but installed PyTorch is CPU-only -- reinstalling ROCm PyTorch" "Cyan"
                 $SkipPythonDeps = $false
@@ -8023,6 +8041,13 @@ if ($ROCmIndexUrl) {
     } else {
         # Tell install_python_stack.py to skip the probe and the manual-install warning.
         $env:UNSLOTH_ROCM_TORCH_INSTALLED = "1"
+        # A policy-blocked import cannot verify the trio a second time. The Python pass
+        # may trust its marker only together with this current-process verdict; setup
+        # clears inherited values at startup so a stale parent environment cannot opt in.
+        if ($script:TorchProbeBlockReason -and
+            -not (Test-CodeIntegrityReasonIsAmbiguous -Reason $script:TorchProbeBlockReason)) {
+            $env:UNSLOTH_ROCM_TORCH_POLICY_BLOCKED = "1"
+        }
         # Recorded after the trio landed (see $rocmForce).
         try {
             if ($script:RocmIndexRecord) { Set-Content -LiteralPath $script:RocmIndexRecord -Value (Get-IndexIdentity $ROCmIndexUrl) -Encoding ascii -NoNewline }

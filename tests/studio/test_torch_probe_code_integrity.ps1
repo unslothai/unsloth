@@ -232,12 +232,39 @@ Check "the notice says rebuild only when the rebuild survived every guard" {
 
 # An exit code is the only thing a fail-fast leaves behind, so the classifier has to be fed it.
 . ([scriptblock]::Create((Get-FunctionText -Path $setup -Name "Get-ProbeFailureText")))
+. ([scriptblock]::Create((Get-FunctionText -Path $setup -Name "Get-ProbeCodeIntegrityBlockReason")))
 
 Check "a probe killed with a code integrity NTSTATUS and no stderr is still classified" {
     # 0xC0000602 as Windows hands it back through Process.ExitCode.
     $probe = [pscustomobject]@{ Ok = $false; Output = ""; Error = ""; TimedOut = $false; ExitCode = -1073740286 }
     (Get-CodeIntegrityBlockReason -Text (Get-ProbeFailureText -Probe $probe)) -eq
         "the image was refused by a code integrity fail-fast"
+}
+Check "a bare fail-fast is diagnostic text, not a settled policy verdict" {
+    $probe = [pscustomobject]@{ Ok = $false; Output = ""; Error = ""; TimedOut = $false; ExitCode = -1073740286 }
+    $null -eq (Get-ProbeCodeIntegrityBlockReason -Probe $probe)
+}
+Check "textual generic fail-fast is not a settled policy verdict either" {
+    $probe = [pscustomobject]@{ Ok = $false; Output = ""; Error = "OSError: exited 0xc0000602"; TimedOut = $false; ExitCode = 1 }
+    $null -eq (Get-ProbeCodeIntegrityBlockReason -Probe $probe)
+}
+Check "a specific refusal beside fail-fast wins" {
+    $probe = [pscustomobject]@{ Ok = $false; Output = ""; Error = "[WinError 4551] blocked"; TimedOut = $false; ExitCode = -1073740286 }
+    (Get-ProbeCodeIntegrityBlockReason -Probe $probe) -eq "code integrity blocked the image"
+}
+Check "the independent AMD probe can settle the verdict when the first probe succeeded" {
+    $script:TorchProbeBlockReason = $null
+    $probe = [pscustomobject]@{ Ok = $false; Output = ""; Error = "[WinError 1260] blocked"; TimedOut = $false; ExitCode = 1 }
+    $_rocmProbeBlockReason = Get-ProbeCodeIntegrityBlockReason -Probe $probe
+    $_settledRocmProbeBlockReason = $null
+    foreach ($_candidateBlockReason in @($_rocmProbeBlockReason, $script:TorchProbeBlockReason)) {
+        if ($_candidateBlockReason -and
+            -not (Test-CodeIntegrityReasonIsAmbiguous -Reason $_candidateBlockReason)) {
+            $_settledRocmProbeBlockReason = $_candidateBlockReason
+            break
+        }
+    }
+    $_settledRocmProbeBlockReason -eq "an Application Control policy blocked this program"
 }
 Check "the stderr text survives beside the exit code" {
     $probe = [pscustomobject]@{ Ok = $false; Output = ""; Error = "[WinError 4551] blocked"; TimedOut = $false; ExitCode = -1073740286 }
@@ -263,10 +290,9 @@ Check "the probe helper keeps the exit code instead of only reducing it to Ok" {
     $helper = Get-FunctionText -Path $setup -Name "Invoke-BoundedPythonProbe"
     $helper.Contains('ExitCode = $null') -and $helper.Contains('$result.ExitCode = $proc.ExitCode')
 }
-Check "the probe is classified once, from its exit code as well as stderr" {
-    # One classification for one failure: the rebuild path used to redo it, which is how
-    # a rescued family that later went stale ended up with two notices.
-    ([regex]::Matches($setupText, [regex]::Escape('Get-CodeIntegrityBlockReason -Text (Get-ProbeFailureText -Probe $_verProbe)'))).Count -eq 1
+Check "both independent torch probes use the decision helper once" {
+    ([regex]::Matches($setupText, [regex]::Escape('Get-ProbeCodeIntegrityBlockReason -Probe $_verProbe'))).Count -eq 1 -and
+    ([regex]::Matches($setupText, [regex]::Escape('Get-ProbeCodeIntegrityBlockReason -Probe $_rocmTorchProbe'))).Count -eq 1
 }
 
 # The XPU and ROCm arms: ambiguous means a reinstall may clear it, and the notice says so, so
@@ -355,12 +381,10 @@ Check "the notice does not tell a user with no importable torch that the CPU is 
 
 # 0xC0000602 alone is the generic fail-fast, not a policy: any native component raises it.
 Check "a bare fail-fast exit code is not turned into a policy verdict" {
-    $setupText.Contains('$_probeBlockReason -eq "the image was refused by a code integrity fail-fast" -and') -and
-    $setupText.Contains('-not (Get-CodeIntegrityBlockReason -Text $_verProbe.Error)')
+    $setupText.Contains("function Get-ProbeCodeIntegrityBlockReason") -and
+    $setupText.Contains("`$specificText = ([string]`$Probe.Error) -replace '(?i)0xc0000602\b', ''")
 }
-Check "text that names the fail-fast is still classified" {
-    # The suppression is keyed on stderr having said nothing, so the backend's own
-    # mapping of this status is untouched.
+Check "the raw classifier retains backend parity for fail-fast diagnostics" {
     (Get-CodeIntegrityBlockReason -Text "OSError: exited 0xc0000602") -eq
         "the image was refused by a code integrity fail-fast"
 }
@@ -373,8 +397,8 @@ Check "the exit code still reaches the diagnostic line" {
 # The AMD fast-path escape probes import torch again, long after the verdict was reached.
 Check "a refused torch is not announced as a CPU-only wheel" {
     $setupText.Contains('$script:TorchProbeBlockReason = $_probeBlockReason') -and
-    $setupText.Contains('if ($_torchIsCpu -and $script:TorchProbeBlockReason -and') -and
-    $setupText.Contains('-not (Test-CodeIntegrityReasonIsAmbiguous -Reason $script:TorchProbeBlockReason))')
+    $setupText.Contains('$_rocmProbeBlockReason = Get-ProbeCodeIntegrityBlockReason -Probe $_rocmTorchProbe') -and
+    $setupText.Contains('if ($_torchIsCpu -and $_settledRocmProbeBlockReason)')
 }
 Check "an ambiguous refusal there still gets the dependency pass" {
     # A reinstall clears the damaged case, so only a settled verdict stops it.
@@ -384,6 +408,12 @@ Check "an ambiguous refusal there still gets the dependency pass" {
 Check "the carried verdict is declared before the block that assigns it" {
     $setupText.IndexOf('$script:TorchProbeBlockReason = $null') -lt
     $setupText.IndexOf('$script:TorchProbeBlockReason = $_probeBlockReason')
+}
+Check "the Python handoff trusts only a current-run settled ROCm verdict" {
+    $cleared = $setupText.IndexOf('Remove-Item Env:UNSLOTH_ROCM_TORCH_POLICY_BLOCKED')
+    $set = $setupText.IndexOf('$env:UNSLOTH_ROCM_TORCH_POLICY_BLOCKED = "1"')
+    $python = $setupText.IndexOf('python "$PSScriptRoot\install_python_stack.py"')
+    ($cleared -ge 0) -and ($set -gt $cleared) -and ($python -gt $set)
 }
 
 if ($failures.Count) {

@@ -5629,6 +5629,30 @@ class TestRocmTorchInstalledEnvVar:
         # macOS branch is the next exit; the point is the early-return did NOT fire.
         mock_bnb.assert_not_called()
 
+    @patch.object(stack_mod, "_install_bnb_windows_rocm")
+    @patch.object(stack_mod, "pip_install")
+    def test_current_policy_verdict_skips_the_blocked_reprobe(self, mock_pip, mock_bnb):
+        """The setup process already handled the trio; policy makes re-import inconclusive."""
+        stack_mod._rocm_windows_torch_installed = False
+        with (
+            patch.dict(
+                os.environ,
+                {
+                    "UNSLOTH_ROCM_TORCH_INSTALLED": "1",
+                    "UNSLOTH_ROCM_TORCH_POLICY_BLOCKED": "1",
+                },
+            ),
+            patch.object(
+                stack_mod.subprocess,
+                "run",
+                side_effect = AssertionError("policy-blocked torch was probed again"),
+            ),
+        ):
+            stack_mod._ensure_rocm_torch()
+        mock_pip.assert_not_called()
+        mock_bnb.assert_called_once()
+        assert stack_mod._rocm_windows_torch_installed is True
+
 
 class TestWindowsRocmTorchaoGuard:
     """Verify the torchao skip can detect an installed Windows ROCm torch build."""

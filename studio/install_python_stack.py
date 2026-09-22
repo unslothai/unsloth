@@ -5663,8 +5663,16 @@ def _ensure_rocm_torch() -> None:
     # An explicit unknown-family pin was applied VERBATIM at install time; leave it alone.
     if _explicit_unknown_family_torch_index_url() is not None:
         return
-    # setup.ps1's marker; trust it only when torch imports as ROCm (a wiped venv leaves it stale).
+    # setup.ps1's marker; normally trust it only when torch imports as ROCm (a wiped venv
+    # leaves it stale). When the same setup process recorded a settled Windows policy block,
+    # that import is the thing policy forbids, so requiring it would force-reinstall the trio
+    # setup just handled. setup.ps1 clears the policy marker before doing any work and exports
+    # it only alongside a successful ROCm handoff.
     if os.environ.get("UNSLOTH_ROCM_TORCH_INSTALLED") == "1":
+        if os.environ.get("UNSLOTH_ROCM_TORCH_POLICY_BLOCKED") == "1":
+            _rocm_windows_torch_installed = True
+            _install_bnb_windows_rocm()
+            return
         _ran, _importable, _version, _hip, _cuda = _probe_torch_runtime()
         _torch_ok = _ran and _importable and (bool(_hip) or "rocm" in (_version or "").lower())
         if _torch_ok:
