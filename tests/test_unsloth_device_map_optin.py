@@ -202,8 +202,7 @@ def test_a_text_only_decoder_is_never_planned_against_the_full_vlm():
     (`model.language_model.layers.0`, plus a vision tower this load never creates). Not one
     decoder weight matches a key of that map, and transformers raises
     "model.embed_tokens.weight doesn't have any device set" for the first of them. So the
-    planner is handed the text config the load uses (and an older one that cannot take it
-    declines; see test_text_only_device_plan.py).
+    planner gets the text config the load uses (see test_text_only_device_plan.py).
     """
     models = os.path.join(HERE, "unsloth", "models")
 

@@ -1,16 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""A text_only load of a vision-language checkpoint gets a planned device map.
+"""A text_only load of a VLM checkpoint plans its device map from the text config.
 
-It used to be declined outright ("text_only loads a decoder the repo config does not
-describe"), and the fallback, "sequential", fills GPU 0 to its whole free budget before
-touching GPU 1. On Qwen/Qwen3.5-397B-A17B-FP8 over 7 cards that left no room for the
-FP8 expert merge the loader does per layer, and the load died with an OOM on GPU 1.
-
-The loader now hands the planner the text config it really loads. A planner that cannot
-take one (an older unsloth_zoo) still declines, with the old reason. No GPU needed;
-the functions are extracted with ast like test_unsloth_device_map_optin.py.
+An older planner that cannot take a config still declines. No GPU needed.
 """
 
 import ast
@@ -95,8 +88,7 @@ def test_a_planner_that_takes_a_config_plans_the_text_decoder():
 
 
 def test_an_older_planner_still_declines_with_the_old_reason(capsys):
-    """An unsloth_zoo whose planner has no `config` parameter would pass it to AutoConfig
-    through **config_kwargs and plan the whole VLM. It must not be called at all."""
+    """A planner without a `config` parameter would plan the whole VLM, so it is not called."""
 
     def old_planner(
         model_name,
@@ -165,7 +157,7 @@ def test_vision_loader_hands_the_text_config_to_the_planner():
         passed = {kw.arg: ast.unparse(kw.value) for kw in call.keywords}
         assert passed.get("planner_config") == "_planner_config"
     assert "_planner_config = auto_config if text_only_decoder else None" in source
-    # The veto is gone: a text_only load only declines through the old-planner path.
+    # A text_only load only declines through the old-planner path.
     assert "if text_only_decoder\n            else None" not in source
 
 

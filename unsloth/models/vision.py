@@ -1498,7 +1498,7 @@ class FastBaseModel:
             load_in_8bit = False
             load_in_16bit = False
 
-        # text_only loads the decoder alone, but the planner rebuilds from model_name the whole VLM: it budgets a vision tower this load never creates and names model.language_model.layers.0 where the standalone decoder has model.layers.0. So hand it the text config the load uses; an unsloth_zoo that cannot take one declines with the reason below (and "sequential" then fills GPU 0 with no room for the FP8 / expert-merge load transients).
+        # text_only builds the decoder alone; from model_name the planner would plan the whole VLM (vision tower, model.language_model.layers.0), so hand it the text config.
         _planner_skip_reason = None
         _planner_config = auto_config if text_only_decoder else None
         # Same failure from the other direction: num_labels (or an explicit auto_model) loads a task head whose `score` replaces the planned lm_head, and dispatch refuses a map with no score.weight.

@@ -367,7 +367,7 @@ def resolve_unsloth_device_map(
     except Exception as error:
         return _fallback(f"the planner is unavailable ({error})")
 
-    # `planner_config` is the config the load really builds when the repo's own does not describe it (text_only). Only a planner that names `config` takes it: an older one would hand it to AutoConfig through **config_kwargs and plan the repo's model after all, so decline with the caller's reason instead.
+    # An older planner without a `config` parameter would pass it to AutoConfig and plan the repo's model, so decline.
     if planner_config is not None:
         try:
             _planner_params = inspect.signature(plan_device_map_for_pretrained).parameters
@@ -378,9 +378,7 @@ def resolve_unsloth_device_map(
                 planner_config_reason or "this unsloth_zoo cannot plan from a resolved config"
             )
         config_kwargs["config"] = planner_config
-    # One `config` only: the resolved one above describes the model the load builds, so it
-    # replaces a `config` the caller put in device_map_planner_kwargs (two would raise
-    # TypeError, which the handler below turns into a silent "sequential").
+    # One `config` only: two would raise TypeError and silently fall back to "sequential".
     if "config" in config_kwargs:
         planner_kwargs.pop("config", None)
 
