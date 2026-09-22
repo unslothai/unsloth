@@ -891,6 +891,28 @@ _COMPOSITE_PREFIX_RENAMING_FLAG = "_unsloth_patched_composite_prefix_renaming"
 _ZOO_COMPOSITE_PREFIX_RENAMING_FLAG = "_unsloth_zoo_patched_composite_prefix_renaming"
 
 
+def _composite_prefix_renaming_repaired():
+    """Is the live conversion mapping repaired, by either copy of the fix?
+
+    Ours and unsloth_zoo's are interchangeable here: whichever installed first, the mapping
+    is re-scoped and the downgrade advice would contradict it. The whole `__wrapped__` chain,
+    for the reason `_zoo_composite_prefix_renaming_installed` gives.
+    """
+    try:
+        from transformers import conversion_mapping
+    except Exception:
+        return False
+    function = getattr(conversion_mapping, "get_model_conversion_mapping", None)
+    seen = 0
+    while function is not None and seen < 8:
+        for flag in (_COMPOSITE_PREFIX_RENAMING_FLAG, _ZOO_COMPOSITE_PREFIX_RENAMING_FLAG):
+            if getattr(function, flag, False):
+                return True
+        function = getattr(function, "__wrapped__", None)
+        seen += 1
+    return False
+
+
 def _zoo_composite_prefix_renaming_installed():
     """Has unsloth_zoo's copy of this repair already wrapped the function?
 
@@ -3744,16 +3766,11 @@ def check_transformers_prequantized_vlm_quant_state():
     # import. Warning anyway would tell users to downgrade or upgrade away from a version
     # that now works, which is worse than saying nothing: the advice contradicts the fix.
     # Checked on the live attribute, so a repair that declined to install still warns.
-    try:
-        from transformers import conversion_mapping
-        if getattr(
-            getattr(conversion_mapping, "get_model_conversion_mapping", None),
-            _COMPOSITE_PREFIX_RENAMING_FLAG,
-            False,
-        ):
-            return
-    except Exception:
-        pass
+    # Either repair counts: when unsloth_zoo installed its copy first,
+    # `fix_transformers_composite_prefix_renaming` deliberately yields and the live function
+    # carries the zoo mark instead of ours, which is repaired all the same.
+    if _composite_prefix_renaming_repaired():
+        return
 
     logger.warning(
         f"Unsloth: transformers=={transformers_version} drops the bitsandbytes "

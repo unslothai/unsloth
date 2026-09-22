@@ -525,9 +525,9 @@ def test_a_vllm_module_holding_its_own_copy_is_rebound(monkeypatch, forced_insta
 
     patched = conversion_mapping.get_model_conversion_mapping
     assert getattr(patched, _COMPOSITE_PREFIX_RENAMING_FLAG, False), "the repair declined"
-    assert backend.get_model_conversion_mapping is patched, (
-        "vllm's own copy was left bound to the unscoped mapping"
-    )
+    assert (
+        backend.get_model_conversion_mapping is patched
+    ), "vllm's own copy was left bound to the unscoped mapping"
 
 
 @pytest.mark.parametrize(

@@ -104,10 +104,6 @@ torchvision_compatibility_check()
 disable_torchaudio_if_cuda_mismatched()
 fix_diffusers_warnings()
 fix_huggingface_hub()
-# Below the torchaudio guard, not up with the other version checks: this is the only check
-# here that IMPORTS transformers rather than reading its metadata, and that is the ordering
-# the guard above exists to prevent.
-check_transformers_prequantized_vlm_quant_state()
 del configure_amdgpu_asic_id_table_path
 del fix_bitsandbytes_rocm_arch_detection
 del disable_broken_causal_conv1d
@@ -297,9 +293,12 @@ fix_transformers_fully_masked_rows()
 # composite model's conversion mapping. Ordered here, before anything loads a checkpoint, so a
 # plain transformers.from_pretrained in the same process keeps its bitsandbytes quant_state too.
 fix_transformers_composite_prefix_renaming()
-# After the repair above, never before it: on exactly the releases that repair covers, warning
-# first would tell users to downgrade or upgrade away from a version that now works. The check
-# reads the live attribute, so a repair that declined to install still warns.
+# After the repair above, never before it, and this is the ONLY call: on exactly the releases
+# the repair covers, warning first tells users to downgrade away from a version that now works,
+# and a second call cannot retract a warning already logged. The check reads the live attribute,
+# so a repair that declined to install still warns. Being this late also keeps it below
+# `disable_torchaudio_if_cuda_mismatched`, which matters because this is the only check here
+# that IMPORTS transformers rather than reading its metadata.
 # A run that loads no pre-quantized multimodal checkpoint never fails either way.
 check_transformers_prequantized_vlm_quant_state()
 del check_transformers_prequantized_vlm_quant_state

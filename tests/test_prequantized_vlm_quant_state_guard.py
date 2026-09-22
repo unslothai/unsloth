@@ -481,3 +481,71 @@ def test_warning_is_silent_once_the_runtime_repair_is_installed(import_fixes, mo
     with caplog.at_level(_logging.WARNING):
         import_fixes.check_transformers_prequantized_vlm_quant_state()
     assert "quant_state" not in caplog.text
+
+
+def test_the_check_is_called_once_and_after_the_repair():
+    """Two calls warned before the repair and could not retract it.
+
+    `_gpu_init` gained a call from this branch's base and a second one after
+    `fix_transformers_composite_prefix_renaming`. On an affected transformers the first
+    emitted the downgrade advice moments before the repair made that advice wrong, and a
+    later silent call cannot unlog it.
+    """
+    import ast
+
+    source = (_ROOT / "unsloth" / "_gpu_init.py").read_text(encoding = "utf-8")
+    order = [
+        node.value.func.id
+        for node in ast.parse(source).body
+        if isinstance(node, ast.Expr)
+        and isinstance(node.value, ast.Call)
+        and isinstance(node.value.func, ast.Name)
+    ]
+    assert order.count("check_transformers_prequantized_vlm_quant_state") == 1, (
+        "the quant_state check must be called exactly once; a call before the repair warns "
+        "about a version the repair then fixes"
+    )
+    assert order.index("check_transformers_prequantized_vlm_quant_state") > order.index(
+        "fix_transformers_composite_prefix_renaming"
+    ), "the check reads the live attribute, so it has to run after the repair installs"
+
+
+def _install_repaired(monkeypatch, import_fixes, flag_name):
+    """An affected build whose conversion mapping already carries a repair mark."""
+    _build_broken(monkeypatch)
+    import sys as _sys
+
+    conversion_mapping = _sys.modules["transformers.conversion_mapping"]
+
+    def get_model_conversion_mapping(model):
+        return []
+
+    setattr(get_model_conversion_mapping, getattr(import_fixes, flag_name), True)
+    conversion_mapping.get_model_conversion_mapping = get_model_conversion_mapping
+
+
+@pytest.mark.parametrize(
+    "flag_name",
+    ["_COMPOSITE_PREFIX_RENAMING_FLAG", "_ZOO_COMPOSITE_PREFIX_RENAMING_FLAG"],
+)
+def test_either_repair_silences_the_warning(import_fixes, monkeypatch, caplog, flag_name):
+    """When unsloth_zoo installs first, ours yields and only the zoo mark is on the function."""
+    monkeypatch.setattr(import_fixes, "importlib_version", lambda name: "5.5.4")
+    monkeypatch.delenv("UNSLOTH_SKIP_TRANSFORMERS_QUANT_STATE_CHECK", raising = False)
+    _install_repaired(monkeypatch, import_fixes, flag_name)
+    with caplog.at_level(logging.WARNING):
+        import_fixes.check_transformers_prequantized_vlm_quant_state()
+    assert "quant_state" not in caplog.text
+
+
+def test_an_unmarked_wrapper_does_not_count_as_repaired(import_fixes, monkeypatch, caplog):
+    """Negative control: a wrapper carrying neither mark must still warn."""
+    monkeypatch.setattr(import_fixes, "importlib_version", lambda name: "5.5.4")
+    monkeypatch.delenv("UNSLOTH_SKIP_TRANSFORMERS_QUANT_STATE_CHECK", raising = False)
+    _build_broken(monkeypatch)
+    import sys as _sys
+
+    _sys.modules["transformers.conversion_mapping"].get_model_conversion_mapping = lambda model: []
+    with caplog.at_level(logging.WARNING):
+        import_fixes.check_transformers_prequantized_vlm_quant_state()
+    assert "quant_state" in caplog.text
