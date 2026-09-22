@@ -643,12 +643,19 @@ export function subscribeGenerationRecoveryTriggers(
       recover();
     }
   };
+  const onFocus = () => {
+    if (documentTarget.visibilityState !== "hidden") {
+      recover();
+    }
+  };
   windowTarget.addEventListener("online", recover);
   windowTarget.addEventListener("pageshow", recover);
+  windowTarget.addEventListener("focus", onFocus);
   documentTarget.addEventListener("visibilitychange", onVisible);
   return () => {
     windowTarget.removeEventListener("online", recover);
     windowTarget.removeEventListener("pageshow", recover);
+    windowTarget.removeEventListener("focus", onFocus);
     documentTarget.removeEventListener("visibilitychange", onVisible);
   };
 }
