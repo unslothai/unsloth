@@ -1637,6 +1637,7 @@ def fork_thread(
 
     from hub.services.models import account_access
     from state import active_generations
+    from storage import chat_generation_runs_db
 
     source = get_chat_thread(thread_id)
     if source is None:
@@ -1645,7 +1646,16 @@ def fork_thread(
     # answer yet, or a reply still being written, and a fork taken now would end there. A
     # client check cannot close this on its own, since another tab can start a generation
     # between its snapshot and this request.
-    if thread_id in active_generations.active_thread_ids(account_access.account_scope()):
+    #
+    # Two registers, because neither sees every generation. active_generations is in memory and
+    # holds browser-owned streams, which never write a run row. A durable run does write one,
+    # in the same transaction as its empty assistant placeholder, but only registers in memory
+    # once the supervisor starts it: between the commit and that start the placeholder is
+    # already the tip and nothing is registered. Reading the run table closes exactly that gap,
+    # since a fork that can see the placeholder can see the run beside it.
+    if thread_id in active_generations.active_thread_ids(
+        account_access.account_scope()
+    ) or chat_generation_runs_db.list_active(thread_id):
         raise HTTPException(
             status_code = 409,
             detail = "This chat is still generating. Fork it once it finishes.",

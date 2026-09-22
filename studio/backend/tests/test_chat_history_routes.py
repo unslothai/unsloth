@@ -730,6 +730,53 @@ def test_fork_thread_404_when_branch_message_missing(monkeypatch):
     assert exc.value.status_code == 404
 
 
+def test_fork_thread_409_for_a_durable_run_not_yet_registered(monkeypatch):
+    """The admission gap: create_run commits the run row and the empty assistant placeholder in
+    one transaction, then the supervisor registers the thread in memory. A fork landing between
+    the two saw nothing registered and would take the placeholder as the tip.
+
+    The run row is committed with the placeholder, so reading it closes exactly that window.
+    """
+    from storage import chat_generation_runs_db
+
+    monkeypatch.setattr(chat_history, "get_chat_thread", lambda _id: {"id": _id, "title": "T"})
+    # Nothing in the in-memory register: this is the gap, not a running generation.
+    monkeypatch.setattr(
+        chat_generation_runs_db, "list_active", lambda _t: [{"id": "run1", "status": "queued"}]
+    )
+
+    def _never(_t):
+        raise AssertionError("the tip was read while a run was admitted")
+
+    monkeypatch.setattr(chat_history, "list_chat_messages", _never)
+    with pytest.raises(HTTPException) as exc:
+        chat_history.fork_thread(
+            thread_id = "src",
+            payload = chat_history.ChatForkRequest(newThreadId = "new", createdAt = 1),
+            current_subject = "test-user",
+        )
+    assert exc.value.status_code == 409
+    assert "still generating" in str(exc.value.detail)
+
+
+def test_fork_thread_allows_a_thread_with_no_active_run(monkeypatch):
+    """A settled thread is not refused just because the run table has rows for it."""
+    from storage import chat_generation_runs_db
+
+    monkeypatch.setattr(chat_history, "get_chat_thread", lambda _id: {"id": _id, "title": "T"})
+    monkeypatch.setattr(chat_generation_runs_db, "list_active", lambda _t: [])
+    monkeypatch.setattr(chat_history, "list_chat_messages", lambda _t: [{"id": "tip"}])
+    monkeypatch.setattr(chat_history, "get_chat_message", lambda _t, _m: None)
+    with pytest.raises(HTTPException) as exc:
+        chat_history.fork_thread(
+            thread_id = "src",
+            payload = chat_history.ChatForkRequest(newThreadId = "new", createdAt = 1),
+            current_subject = "test-user",
+        )
+    # Past the generation gate, refused later for the branch message lookup.
+    assert exc.value.status_code == 404
+
+
 def test_fork_thread_resolves_the_tip_when_no_message_is_given(monkeypatch):
     """The route picks the tip, so no client read can choose one still being written.
 
