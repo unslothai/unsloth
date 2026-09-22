@@ -2272,6 +2272,33 @@ class TestTheWindowsXpuTritonSwapReachesADirectRun:
         assert block.index("_ensure_expected_torch_flavor") < block.index("_ensure_xpu_triton()")
 
 
+class TestTheLinuxFinalRepairEvictsMismatchedXformers:
+    """#11545: step 13 re-selects torchao when the repair moves torch (#10493), but left
+    whatever xFormers was already resident -- often built for a torch from a much earlier,
+    unrelated install -- untouched. diffusers/peft import xFormers eagerly, so a stale
+    build surfaces as an aten::_flash_attention_forward schema crash the first time an
+    image/diffusion model loads, not as an import-time warning."""
+
+    def test_the_final_repair_evicts_a_stale_xformers_when_torch_moved(self):
+        source = inspect.getsource(stack_mod.install_python_stack)
+        marker = "if _torch_after_repair and _torch_after_repair != _torch_before_repair:"
+        assert marker in source
+        block = source[source.index(marker) :][:1200]
+        assert "_install_torchao_for_torch(_torch_after_repair)" in block
+        assert "_evict_xformers_built_for_another_torch()" in block
+        # After torchao, matching the order #10493 established for that call: both are
+        # reselected/evicted only once the repair is known to have actually moved torch.
+        assert block.index("_install_torchao_for_torch") < block.index(
+            "_evict_xformers_built_for_another_torch"
+        )
+
+    def test_the_eviction_function_itself_is_platform_neutral(self):
+        """Reused from the win_arm64 wheelhouse path (#10282), which is where it was born;
+        its note text must not still claim "windows on arm" once Linux calls it too."""
+        source = inspect.getsource(stack_mod._evict_xformers_built_for_another_torch)
+        assert "windows on arm" not in source.lower()
+
+
 class TestTheDelegatedRocmRepairKeepsTheArm64Exception:
     """_ensure_rocm_torch's Windows branch asked for the full trio unconditionally.
 
