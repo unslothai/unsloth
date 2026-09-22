@@ -344,21 +344,20 @@ export function DebuggingTab() {
     };
   }, [mode, poll, rescanSourcesIfStale]);
 
+  // stripped once per line so the filter matches exactly what the pane shows
+  const plainLines = useMemo(() => buffer.lines.map(stripAnsi), [buffer.lines]);
   const trimmedFilter = filter.trim().toLowerCase();
   const visibleLines = useMemo(
     () =>
       trimmedFilter
-        ? buffer.lines.filter((line) =>
+        ? plainLines.filter((line) =>
             line.toLowerCase().includes(trimmedFilter),
           )
-        : buffer.lines,
-    [buffer.lines, trimmedFilter],
+        : plainLines,
+    [plainLines, trimmedFilter],
   );
 
-  const text = useMemo(
-    () => stripAnsi(visibleLines.join("\n")),
-    [visibleLines],
-  );
+  const text = useMemo(() => visibleLines.join("\n"), [visibleLines]);
 
   const scrollToBottom = useCallback(() => {
     const pane = paneRef.current;
