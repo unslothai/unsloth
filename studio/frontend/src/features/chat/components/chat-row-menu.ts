@@ -77,10 +77,30 @@ export function canForkChatRow(item: SidebarItem): boolean {
  * so an edit still in the debounce would be left out and the copy would open on the older modes.
  */
 export async function forkChatRow(item: SidebarItem) {
-  const { forkChatThread } = await import("../api/chat-api");
+  const { forkChatThread, getActiveGenerations } = await import(
+    "../api/chat-api"
+  );
   const { settleThreadScopedSettingsForCopy } = await import(
     "../stores/chat-runtime-store"
   );
+  // The menu item is disabled off `runningByThreadId`, but that map is this tab's memory: empty
+  // after a reload and blind to a second tab. A chat generating in either case still has no
+  // settled tip, so ask the backend, which knows. Checked here rather than in the disabled state
+  // because only the click can afford the round trip.
+  let generating = false;
+  try {
+    const active = await getActiveGenerations();
+    generating = (active.thread_ids ?? []).includes(item.id);
+  } catch {
+    // Backend unreachable or an older build: the local map is all there is.
+  }
+  if (generating) {
+    // Tagged, so the caller can say this rather than report a failure that did not happen.
+    throw Object.assign(
+      new Error("This chat is still generating. Fork it once it finishes."),
+      { unslothForkRefused: true },
+    );
+  }
   const messages = await listStoredChatMessages(item.id);
   const last = messages[messages.length - 1];
   if (!last) throw new Error("This chat has no messages to fork.");

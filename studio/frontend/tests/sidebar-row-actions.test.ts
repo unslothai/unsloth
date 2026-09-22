@@ -240,3 +240,28 @@ test("a row being generated into cannot be forked", async () => {
   const STORE = await readSrcAsync("features/chat/utils/fork-in-flight.ts");
   assert.match(STORE, /export const useForkInFlight = create</);
 });
+
+// runningByThreadId is this tab's memory: empty after a reload and blind to a second tab, so a
+// chat generating in either case would pass the disabled check and fork to a prompt or a
+// half-written reply. The backend snapshot is authoritative, and chat-api says so.
+test("a fork asks the backend whether the chat is still generating", async () => {
+  const ROW_MENU = await readSrcAsync(
+    "features/chat/components/chat-row-menu.ts",
+  );
+  const CHAT_API = await readSrcAsync("features/chat/api/chat-api.ts");
+  assert.match(CHAT_API, /Authoritative where `runningByThreadId` is not/);
+  assert.match(
+    ROW_MENU,
+    /const active = await getActiveGenerations\(\);\n\s*generating = \(active\.thread_ids \?\? \[\]\)\.includes\(item\.id\);/,
+  );
+  // Asked before the copy is set up, and an unreachable backend falls back to the local map
+  // rather than blocking every fork.
+  assert.ok(
+    ROW_MENU.indexOf("getActiveGenerations()") <
+      ROW_MENU.indexOf("settleThreadScopedSettingsForCopy(item.id)"),
+  );
+  assert.match(ROW_MENU, /\} catch \{\n\s*\/\/ Backend unreachable or an older build/);
+  // A refusal, not a failure: the toast says so without the alarm.
+  assert.match(ROW_MENU, /\{ unslothForkRefused: true \}/);
+  assert.match(APP_SIDEBAR, /\?\.unslothForkRefused\) \{\n\s*toast\.info\(/);
+});

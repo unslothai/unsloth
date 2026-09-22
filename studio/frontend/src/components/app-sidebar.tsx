@@ -2435,9 +2435,14 @@ export function AppSidebar() {
         toast.success("Fork created");
       }
     } catch (error) {
-      toast.error("Failed to fork", {
-        description: error instanceof Error ? error.message : undefined,
-      });
+      // A chat still generating is a refusal, not a failure: say so without the alarm.
+      if ((error as { unslothForkRefused?: boolean } | null)?.unslothForkRefused) {
+        toast.info(error instanceof Error ? error.message : "Cannot fork this chat.");
+      } else {
+        toast.error("Failed to fork", {
+          description: error instanceof Error ? error.message : undefined,
+        });
+      }
     } finally {
       inFlight.setForking(false);
     }
