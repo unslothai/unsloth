@@ -10,7 +10,10 @@ import {
 } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import {
+  DEFAULT_THINKING_VISIBILITY,
+  DEFAULT_TOOL_VISIBILITY,
   type PlusMenuItemId,
+  normaliseDisplayVisibility,
   refreshModelDisclaimerPreference,
   saveModelDisclaimerPreference,
   useChatPreferencesStore,
@@ -233,11 +236,11 @@ export function ChatTab() {
   const setShowResponseModel = useChatPreferencesStore(
     (state) => state.setShowResponseModel,
   );
-  const collapseThinkingByDefault = useChatPreferencesStore(
-    (state) => state.collapseThinkingByDefault,
+  const thinkingVisibility = useChatPreferencesStore(
+    (state) => state.thinkingVisibility,
   );
-  const setCollapseThinkingByDefault = useChatPreferencesStore(
-    (state) => state.setCollapseThinkingByDefault,
+  const setThinkingVisibility = useChatPreferencesStore(
+    (state) => state.setThinkingVisibility,
   );
   const [currentDatePrompt, setCurrentDatePrompt] =
     useState<CurrentDatePromptSettings | null>(null);
@@ -246,11 +249,11 @@ export function ChatTab() {
   >(null);
   const [isSavingCurrentDatePrompt, setIsSavingCurrentDatePrompt] =
     useState(false);
-  const collapseToolActivityByDefault = useChatPreferencesStore(
-    (state) => state.collapseToolActivityByDefault,
+  const toolVisibility = useChatPreferencesStore(
+    (state) => state.toolVisibility,
   );
-  const setCollapseToolActivityByDefault = useChatPreferencesStore(
-    (state) => state.setCollapseToolActivityByDefault,
+  const setToolVisibility = useChatPreferencesStore(
+    (state) => state.setToolVisibility,
   );
   const foldToolActivityIntoThinking = useChatPreferencesStore(
     (state) => state.foldToolActivityIntoThinking,
@@ -258,6 +261,8 @@ export function ChatTab() {
   const setFoldToolActivityIntoThinking = useChatPreferencesStore(
     (state) => state.setFoldToolActivityIntoThinking,
   );
+  // Cannot coexist with always expanded. The stored preference is left alone so it comes back.
+  const foldBlockedByAlwaysExpanded = toolVisibility === "expanded";
   const pastedTextMinChars = useChatPreferencesStore(
     (state) => state.pastedTextMinChars,
   );
@@ -443,32 +448,80 @@ export function ChatTab() {
           <Switch checked={searchImages} onCheckedChange={setSearchImages} />
         </SettingsRow>
         <SettingsRow
-          label={t("settings.chat.thinking.collapseByDefault")}
-          description={t("settings.chat.thinking.collapseByDefaultDescription")}
+          label={t("settings.chat.thinking.visibility")}
+          description={t("settings.chat.thinking.visibilityDescription")}
         >
-          <Switch
-            aria-label={t("settings.chat.thinking.collapseByDefault")}
-            checked={collapseThinkingByDefault}
-            onCheckedChange={setCollapseThinkingByDefault}
-          />
+          <Select
+            value={thinkingVisibility}
+            onValueChange={(value) =>
+              setThinkingVisibility(
+                normaliseDisplayVisibility(value, DEFAULT_THINKING_VISIBILITY),
+              )
+            }
+          >
+            <SelectTrigger
+              className="w-64"
+              aria-label={t("settings.chat.thinking.visibility")}
+            >
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="collapsed">
+                {t("settings.chat.visibility.collapsed")}
+              </SelectItem>
+              <SelectItem value="auto">
+                {t("settings.chat.visibility.auto")}
+              </SelectItem>
+              <SelectItem value="expanded">
+                {t("settings.chat.visibility.expanded")}
+              </SelectItem>
+            </SelectContent>
+          </Select>
         </SettingsRow>
         <SettingsRow
-          label={t("settings.chat.tools.collapseByDefault")}
-          description={t("settings.chat.tools.collapseByDefaultDescription")}
+          label={t("settings.chat.tools.visibility")}
+          description={t("settings.chat.tools.visibilityDescription")}
         >
-          <Switch
-            aria-label={t("settings.chat.tools.collapseByDefault")}
-            checked={collapseToolActivityByDefault}
-            onCheckedChange={setCollapseToolActivityByDefault}
-          />
+          <Select
+            value={toolVisibility}
+            onValueChange={(value) =>
+              setToolVisibility(
+                normaliseDisplayVisibility(value, DEFAULT_TOOL_VISIBILITY),
+              )
+            }
+          >
+            <SelectTrigger
+              className="w-64"
+              aria-label={t("settings.chat.tools.visibility")}
+            >
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="collapsed">
+                {t("settings.chat.visibility.collapsed")}
+              </SelectItem>
+              <SelectItem value="auto">
+                {t("settings.chat.visibility.auto")}
+              </SelectItem>
+              <SelectItem value="expanded">
+                {t("settings.chat.visibility.expanded")}
+              </SelectItem>
+            </SelectContent>
+          </Select>
         </SettingsRow>
         <SettingsRow
           label={t("settings.chat.tools.foldIntoThinking")}
-          description={t("settings.chat.tools.foldIntoThinkingDescription")}
+          // Says why the row is off rather than letting a checked switch do nothing.
+          description={t(
+            foldBlockedByAlwaysExpanded
+              ? "settings.chat.tools.foldIntoThinkingBlocked"
+              : "settings.chat.tools.foldIntoThinkingDescription",
+          )}
         >
           <Switch
             aria-label={t("settings.chat.tools.foldIntoThinking")}
-            checked={foldToolActivityIntoThinking}
+            checked={foldToolActivityIntoThinking && !foldBlockedByAlwaysExpanded}
+            disabled={foldBlockedByAlwaysExpanded}
             onCheckedChange={setFoldToolActivityIntoThinking}
           />
         </SettingsRow>

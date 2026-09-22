@@ -4224,6 +4224,13 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
             ),
             xet_disabled = os.environ.get("HF_HUB_DISABLE_XET") == "1",
         )
+
+        def _report_model_repo(repo_id):
+            # Local cache loads have no active Hub download to track.
+            if os.path.isdir(os.path.expanduser(repo_id)):
+                return
+            event_queue.put({"type": "model_load_resolved", "repo_id": repo_id, "ts": time.time()})
+
         # Latest-sidecar models load 16-bit: bnb 4-bit feeds quantized experts into unvalidated paths.
         try:
             _train_load_in_4bit = _effective_training_load_in_4bit(
@@ -4238,6 +4245,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                     model_load_name,
                 )
             success = trainer.load_model(
+                on_model_resolved = _report_model_repo,
                 model_name = model_name,
                 max_seq_length = config["max_seq_length"],
                 load_in_4bit = _train_load_in_4bit,
@@ -4303,6 +4311,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                     success = False
                 else:
                     success = trainer.load_model(
+                        on_model_resolved = _report_model_repo,
                         model_name = model_name,
                         max_seq_length = config["max_seq_length"],
                         load_in_4bit = _train_load_in_4bit,
