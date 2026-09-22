@@ -545,7 +545,10 @@ class TestRocmEntrypoint:
         assert "modprobe" not in err, err
         assert "run.sh --rocm" in err
 
-    @pytest.mark.skipif(os.geteuid() == 0, reason = "root reads a mode-0 file")
+    @pytest.mark.skipif(
+        os.name != "posix" or os.geteuid() == 0,
+        reason = "needs POSIX mode bits, and root reads a mode-0 file regardless",
+    )
     def test_an_unreadable_kfd_names_the_group_ids(self, tmp_path):
         rc, ran, err = _entrypoint(tmp_path, readable = False)
         assert rc == 1 and not ran
